@@ -204,8 +204,8 @@ function asciiDetail(text) {
  * runbook for the lifetime of the returned function. Grants are cached per
  * (member, runbook): in a small sprint one member plays several of these
  * roles and must receive each runbook's entries, but repeat cycles do not
- * re-grant. Deliberately does NOT read via a separate orchestrator member:
- * the orchestrator role may be shared across concurrent sprints and carries
+ * re-grant. Deliberately does NOT read via a separate backlog member:
+ * the backlog role may be shared across concurrent sprints and carries
  * no git checkout of its own to read from.
  *
  * A runbook that is absent, or has no Permissions section / no

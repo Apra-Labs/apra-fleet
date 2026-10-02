@@ -2099,6 +2099,9 @@ export async function runDevelopLoopScenario(tag, {
     // pushCode gating) against a member that provably never receives a
     // code-writing dispatch.
     roleMap,
+    // Backlog-alias warnings the CLI forwards as `args.roleMapWarnings`
+    // (bin/cli.mjs resolveRoleMapWithWarnings -> buildRunnerArgs).
+    roleMapWarnings,
     // Beads identity precondition passthroughs: `beadsIdentity` is
     // buildMockFleetApi's per-member probe override map (see its option
     // comment); `expectBeads` is the raw `args.expect_beads` value (a JSON
@@ -2221,6 +2224,7 @@ export async function runDevelopLoopScenario(tag, {
                 ...(resumeModelSwitch !== undefined ? { resume_model_switch: resumeModelSwitch } : {}),
                 ...(worklistEffortBudget !== undefined ? { worklist_effort_budget: worklistEffortBudget } : {}),
                 ...(roleMap !== undefined ? { roleMap } : {}),
+                ...(roleMapWarnings !== undefined ? { roleMapWarnings } : {}),
                 ...(expectBeads !== undefined ? { expect_beads: expectBeads } : {}),
                 ...(skipRegression !== undefined ? { skip_regression: skipRegression } : {}),
             }, true);
@@ -2311,11 +2315,13 @@ export async function runDevelopLoopScenario(tag, {
 // created the whole DAG). In both cases this harness's own post-run bead-state
 // read still needs to reflect real state -- the same exclusion set runner.js's
 // own isNoMutationDispatchFailure makes.
-const AGENT_RAN_DISPATCH_REASONS = new Set(['max_turns_exhausted', 'watchdog_timeout']);
+// 'max_total_time' too, unless the server marked it dispatched:false (the
+// budget ran out during setup, before anything was sent) -- mirrors runner.js.
+const AGENT_RAN_DISPATCH_REASONS = new Set(['max_turns_exhausted', 'watchdog_timeout', 'max_total_time']);
 
 export function isNoMutationTerminalDispatchError(err) {
     if (!err) return false;
-    if (err instanceof AgentDispatchError && err.details && AGENT_RAN_DISPATCH_REASONS.has(err.details.reason)) {
+    if (err instanceof AgentDispatchError && err.details && AGENT_RAN_DISPATCH_REASONS.has(err.details.reason) && err.details.dispatched !== false) {
         return false;
     }
     return err instanceof AgentDispatchError || err instanceof FleetTransportError;

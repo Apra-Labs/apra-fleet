@@ -338,7 +338,7 @@ async function publish({ gh, verdict, notes, runId, member }) {
         args: { callTool: gh.callTool, run_id: runId },
         validated: { branch: 'feat/x', baseBranch: 'main', goal: 'Ship X', runId },
         targetIssues: [],
-        orchestratorMember: member,
+        backlogMember: member,
         finalCycleLabel: '1',
         gitSync: { pushGitAfter: async () => {}, syncBeadsAfter: async () => {} },
         getMemberForRole: () => member,

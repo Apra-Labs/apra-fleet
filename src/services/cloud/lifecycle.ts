@@ -97,6 +97,9 @@ async function reProvisionAuth(agent: Agent): Promise<void> {
   }
 }
 
+/** In-flight ensureCloudReady per member id; cleared when it settles. */
+const cloudReadyInFlight = new Map<string, Promise<Agent>>();
+
 /**
  * Ensures a cloud member's instance is running and SSH-ready before a tool
  * call proceeds. Returns the (possibly updated) agent from the registry.
@@ -108,10 +111,23 @@ async function reProvisionAuth(agent: Agent): Promise<void> {
  * Pending:        wait for running, then update IP, poll SSH, re-provision auth.
  * Terminated/shutting-down: throw — instance cannot be used.
  */
-export async function ensureCloudReady(agent: Agent): Promise<Agent> {
-  if (!agent.cloud) return agent;
+export function ensureCloudReady(agent: Agent): Promise<Agent> {
+  if (!agent.cloud) return Promise.resolve(agent);
+  // GitHub #584 review: one in-flight bring-up per member. execute_prompt
+  // races this against its max_total_s budget and returns while the start
+  // keeps running in the background; a retry must join that start, not issue
+  // a second startInstance/SSH poll/auth re-provision that races it.
+  const pending = cloudReadyInFlight.get(agent.id);
+  if (pending) return pending;
+  const p = ensureCloudReadyOnce(agent).finally(() => {
+    if (cloudReadyInFlight.get(agent.id) === p) cloudReadyInFlight.delete(agent.id);
+  });
+  cloudReadyInFlight.set(agent.id, p);
+  return p;
+}
 
-  const config = agent.cloud;
+async function ensureCloudReadyOnce(agent: Agent): Promise<Agent> {
+  const config = agent.cloud!;
   const state = await awsProvider.getInstanceState(config);
 
   if (state === 'terminated' || state === 'shutting-down') {

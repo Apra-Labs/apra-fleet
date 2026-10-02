@@ -57,7 +57,18 @@ export function isTerminalSprintFailure(err) {
 //     alive-but-silent, so the turn may have run to completion (a stalled
 //     planner can have created the whole DAG) with only the RESULT lost. The
 //     watchdog abandons the dispatch promise, not the member's work.
-const AGENT_RAN_DISPATCH_REASONS = new Set(['max_turns_exhausted', 'watchdog_timeout']);
+//   - 'max_total_time': the server stopped a dispatch that had been running
+//     until its max_total_s ceiling -- the prompt was delivered and the agent
+//     worked for the whole budget, so partial work may exist. EXCEPT when the
+//     server marked it dispatched:false (details.dispatched === false): the
+//     budget ran out during setup, before anything was sent, so nothing ran.
+// ('agent_never_started' is deliberately NOT here: the member process never
+// produced a session, so nothing ran and nothing was mutated.)
+const AGENT_RAN_DISPATCH_REASONS = new Set(['max_turns_exhausted', 'watchdog_timeout', 'max_total_time']);
+
+function agentRan(details) {
+    return AGENT_RAN_DISPATCH_REASONS.has(details.reason) && details.dispatched !== false;
+}
 
 // True when a thrown dispatch error means the dispatch delivered no usable
 // result and therefore produced no code/beads mutation to publish: a failed
@@ -88,7 +99,7 @@ const AGENT_RAN_DISPATCH_REASONS = new Set(['max_turns_exhausted', 'watchdog_tim
 export function isNoMutationDispatchFailure(err) {
     if (!err) return false;
     if (err instanceof AgentOutputError) return false;
-    if (err instanceof AgentDispatchError && err.details && AGENT_RAN_DISPATCH_REASONS.has(err.details.reason)) {
+    if (err instanceof AgentDispatchError && err.details && agentRan(err.details)) {
         return false;
     }
     return err instanceof AgentDispatchError || err instanceof FleetTransportError || err instanceof BudgetExceededError;

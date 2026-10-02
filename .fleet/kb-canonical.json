@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "9eb97b3c06e7669b4c8f1d8e41c5e3a62a98040c",
     "branch": "chore/v05-kb-superset",
-    "entry_count": 373
+    "entry_count": 375
   },
   "entries": [
     {
@@ -6806,6 +6806,47 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-10-01T23:08:16.929Z"
+    },
+    {
+      "id": "07df0548-b185-4f64-9e17-92fc2fa092cd",
+      "type": "knowledge",
+      "title": "Live SSE state frame carries the namespace summary and history HTML backfills missing summaries",
+      "summary": "The viewer SSE 'state' frame payload is {namespace, data, summary}, and the client dispatches workflow:summary:NS before workflow:state:NS. History-mode HTML_TEMPLATE runs backfillExtensionSummaries on the frozen state before embedding it.",
+      "symbols": [
+        "backfillExtensionSummaries",
+        "applyExtensionSummary",
+        "HTML_TEMPLATE",
+        "createDashboardViewer"
+      ],
+      "source_files": [
+        "packages/apra-fleet-workflow/src/viewer/index.mjs",
+        "packages/apra-fleet-workflow/src/viewer/run-summary.mjs",
+        "packages/apra-fleet-workflow/test/viewer-run-summary.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-02T05:26:13.343Z"
+    },
+    {
+      "id": "70f0e881-49d9-40eb-85ab-ff9c8868f49b",
+      "type": "knowledge",
+      "title": "Backlog-role alias is rewritten in the CLI, so the runner learns of it only via args.roleMapWarnings",
+      "summary": "bin/cli.mjs resolveRoleMapWithWarnings folds roleMap.orchestrator into roleMap.backlog before buildRunnerArgs, so the runner's run-log deprecation warning depends on roleMapWarnings being forwarded; the supervisor forwards the alias-intact map to the child CLI.",
+      "symbols": [
+        "resolveBacklogRoleAlias",
+        "resolveRoleMapWithWarnings",
+        "buildRunnerArgs",
+        "validateArgs",
+        "createSprintController"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/backlog-role.mjs",
+        "packages/apra-fleet-se/bin/cli.mjs",
+        "packages/apra-fleet-se/fleet-sprint/sprint-args.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/src/supervisor/api.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-02T09:20:12.324Z"
     }
   ]
 }

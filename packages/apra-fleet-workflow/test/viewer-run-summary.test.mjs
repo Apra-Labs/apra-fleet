@@ -8,6 +8,7 @@ import { EventEmitter } from 'events';
 import { fileURLToPath } from 'url';
 import { createDashboardViewer, HTML_TEMPLATE } from '../src/viewer/index.mjs';
 import { resolveStringRefs } from '../src/viewer/lean-state.mjs';
+import { backfillExtensionSummaries } from '../src/viewer/run-summary.mjs';
 
 // Unit coverage for the generic once-per-publish summary hook and the
 // GET /state?summary=1 route (src/viewer/run-summary.mjs + the 'state'
@@ -259,6 +260,166 @@ describe('viewer run summary (GET /state?summary=1)', () => {
         events.length = 0;
         run({ extensions: { a: {} } }, doc, FakeCustomEvent);
         assert.deepStrictEqual(events, [['workflow:summary:a', null], ['workflow:state:a', {}]]);
+    });
+
+    describe('history backfill of missing extension summaries', () => {
+        const summarizeExt = (calls) => ({
+            id: 'x', title: 'X', html: '', js: '',
+            summarize(data) { calls.push(data); return { count: data.items.length }; }
+        });
+        const embedded = (html) => {
+            const m = html.match(/\n    renderState\((.*)\);/);
+            assert.ok(m, 'history html must embed the frozen state');
+            return JSON.parse(m[1]);
+        };
+        const silent = { warn() {} };
+
+        test('backfills a pre-summary frozen state with endedAt as publishedAt', () => {
+            const calls = [];
+            const state = { runId: 'r1', status: 'success', endedAt: 'E', updatedAt: 'U', extensions: { x: { items: [1, 2, 3] } } };
+            const out = embedded(HTML_TEMPLATE([summarizeExt(calls)], { history: true, state }));
+            assert.deepStrictEqual(out.summary.extensions.x, { publishedAt: 'E', count: 3 });
+            assert.strictEqual(out.summary.runId, 'r1');
+        });
+
+        test('publishedAt falls back to updatedAt, then null', () => {
+            const e = summarizeExt([]);
+            const a = backfillExtensionSummaries({ updatedAt: 'U', extensions: { x: { items: [] } } }, [e], silent);
+            assert.strictEqual(a.summary.extensions.x.publishedAt, 'U');
+            const b = backfillExtensionSummaries({ extensions: { x: { items: [] } } }, [e], silent);
+            assert.strictEqual(b.summary.extensions.x.publishedAt, null);
+        });
+
+        test('never overwrites an existing entry and does not call summarize for it', () => {
+            const calls = [];
+            const state = { endedAt: 'E', extensions: { x: { items: [1] } }, summary: { extensions: { x: { publishedAt: 'old', count: 99 } } } };
+            const before = JSON.stringify(state);
+            const out = embedded(HTML_TEMPLATE([summarizeExt(calls)], { history: true, state }));
+            assert.deepStrictEqual(out, state);
+            assert.strictEqual(calls.length, 0);
+            assert.strictEqual(JSON.stringify(state), before);
+        });
+
+        test('adds an extensions map to a summary that has none, keeping other fields', () => {
+            const state = { endedAt: 'E', extensions: { x: { items: [1] } }, summary: { status: 'success' } };
+            const out = backfillExtensionSummaries(state, [summarizeExt([])], silent);
+            assert.strictEqual(out.summary.status, 'success');
+            assert.strictEqual(out.summary.extensions.x.count, 1);
+        });
+
+        test('does not mutate its input', () => {
+            const state = { endedAt: 'E', extensions: { x: { items: [1, 2] } } };
+            const snapshot = JSON.parse(JSON.stringify(state));
+            const out = backfillExtensionSummaries(state, [summarizeExt([])], silent);
+            assert.deepStrictEqual(state, snapshot);
+            assert.notStrictEqual(out, state);
+        });
+
+        test('a throwing summarize() still renders, leaves no entry, and warns', () => {
+            const warnings = [];
+            const ext = { id: 'x', summarize() { throw new Error('boom'); } };
+            const state = { endedAt: 'E', extensions: { x: { items: [1] } } };
+            const out = backfillExtensionSummaries(state, [ext], { warn: (m) => warnings.push(m) });
+            assert.strictEqual(out.summary, undefined);
+            assert.ok(warnings.some((w) => /threw: boom/.test(w)));
+            const origWarn = console.warn;
+            const seen = [];
+            console.warn = (...a) => { seen.push(a.join(' ')); };
+            try {
+                const html = HTML_TEMPLATE([ext], { history: true, state });
+                assert.ok(html.includes('<html'));
+                assert.strictEqual(embedded(html).summary, undefined);
+            } finally { console.warn = origWarn; }
+            assert.ok(seen.some((w) => /threw: boom/.test(w)), 'warning logged');
+        });
+
+        test('unregistered namespace or extension without summarize() gets no entry', () => {
+            const state = { extensions: { y: { items: [1] }, z: { items: [1] } } };
+            const out = backfillExtensionSummaries(state, [summarizeExt([]), { id: 'z' }], silent);
+            assert.strictEqual(out, state);
+        });
+
+        test('live-mode output embeds no frozen state', () => {
+            const html = HTML_TEMPLATE([summarizeExt([])]);
+            assert.ok(!html.includes('data-view="history"'));
+            assert.ok(html.includes('new EventSource'));
+        });
+    });
+
+    describe('live SSE state push carries the summary before the state event', () => {
+        function runOnmessage(messages) {
+            const html = HTML_TEMPLATE([]);
+            const start = html.indexOf('source.onmessage = (e) => {');
+            assert.ok(start !== -1, 'live template must contain the onmessage handler');
+            const end = html.indexOf('};', html.indexOf('schedulePoll();', start)) + 2;
+            const handler = html.slice(start, end);
+            const events = [];
+            const counter = { count: 0 };
+            const document = { dispatchEvent(e) { events.push([e.type, e.detail]); } };
+            class FakeCustomEvent { constructor(type, init) { this.type = type; this.detail = init.detail; } }
+            const body = `const source = {}; function schedulePoll() { counter.count++; } ${handler} return source;`;
+            const source = new Function('document', 'CustomEvent', 'counter', body)(document, FakeCustomEvent, counter);
+            for (const m of messages) source.onmessage({ data: JSON.stringify(m) });
+            return { events, polls: counter.count };
+        }
+
+        test('dispatches workflow:summary:NS then workflow:state:NS', () => {
+            const { events, polls } = runOnmessage([
+                { type: 'state', payload: { namespace: 'a', data: { raw: 1 }, summary: { publishedAt: 't', n: 5 } } }
+            ]);
+            assert.deepStrictEqual(events, [['workflow:summary:a', { publishedAt: 't', n: 5 }], ['workflow:state:a', { raw: 1 }]]);
+            assert.strictEqual(polls, 1);
+        });
+
+        test('absent summary dispatches null first; non-state events dispatch nothing but still poll', () => {
+            const { events, polls } = runOnmessage([
+                { type: 'state', payload: { namespace: 'a', data: { raw: 1 } } },
+                { type: 'update' }
+            ]);
+            assert.deepStrictEqual(events, [['workflow:summary:a', null], ['workflow:state:a', { raw: 1 }]]);
+            assert.strictEqual(polls, 2);
+        });
+
+        function captureStateFrame(port) {
+            let req;
+            const got = new Promise((resolve, reject) => {
+                req = http.get(`http://127.0.0.1:${port}/events`, (res) => {
+                    let buf = '';
+                    res.on('data', (c) => {
+                        buf += c;
+                        const m = buf.match(/data: (\{"type":"state".*\})\n\n/);
+                        if (m) resolve(JSON.parse(m[1]));
+                    });
+                });
+                req.on('error', reject);
+            });
+            return { got, close: () => req.destroy() };
+        }
+
+        test('server frame payload.summary equals the /state?summary=1 entry; null without an extension', async () => {
+            const { ext } = fakeExtension();
+            await withViewer([ext], async (wf, port) => {
+                const cap = captureStateFrame(port);
+                await new Promise((r) => setTimeout(r, 100));
+                const data = { items: [1, 2, 3] };
+                wf.emit('state', { namespace: 'x', data });
+                const frame = await cap.got;
+                cap.close();
+                const r = await httpGetJson(port, '/state?summary=1');
+                assert.deepStrictEqual(frame.payload.summary, r.body.extensions.x);
+                assert.strictEqual(frame.payload.namespace, 'x');
+                assert.deepStrictEqual(frame.payload.data, data);
+
+                const cap2 = captureStateFrame(port);
+                await new Promise((r2) => setTimeout(r2, 100));
+                wf.emit('state', { namespace: 'nope', data: { k: 1 } });
+                const frame2 = await cap2.got;
+                cap2.close();
+                assert.strictEqual(frame2.payload.summary, null);
+                assert.strictEqual(frame2.payload.namespace, 'nope');
+                assert.deepStrictEqual(frame2.payload.data, { k: 1 });
+            });
+        });
     });
 
     test('core summary code names no extension', () => {

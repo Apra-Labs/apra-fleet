@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import type { RegisterOptions, ServiceDescriptor, ServiceId, ServiceManager, ServiceStatus } from './types.js';
-import { DEFAULT_SERVICE_ID, getServiceDescriptor } from './types.js';
+import { DEFAULT_SERVICE_ID, SERVICE_ENV_MARKER, getServiceDescriptor } from './types.js';
 import { gracefulStopByServerJson } from './index.js';
 
 const PLIST_DIR = path.join(os.homedir(), 'Library', 'LaunchAgents');
@@ -48,6 +48,18 @@ function buildPlist(
         `    <string>${xmlEscape(options.workingDirectory)}</string>`,
       ]
     : [];
+  // Lets the MCP server tell it runs under a restarting service manager
+  // (GitHub #584). Only the server reads it; the supervisor (no KeepAlive) must
+  // not leak the marker into the processes it spawns.
+  const serviceEnv = descriptor.gracefulStopViaServerJson
+    ? [
+        '    <key>EnvironmentVariables</key>',
+        '    <dict>',
+        `        <key>${SERVICE_ENV_MARKER}</key>`,
+        '        <string>1</string>',
+        '    </dict>',
+      ]
+    : [];
   return [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
@@ -59,6 +71,7 @@ function buildPlist(
     '    <array>',
     argElements,
     '    </array>',
+    ...serviceEnv,
     '    <key>RunAtLoad</key>',
     '    <true/>',
     ...keepAlive,
@@ -71,6 +84,23 @@ function buildPlist(
     '</plist>',
     '',
   ].join('\n');
+}
+
+/**
+ * Whether a launchd label is enabled in its domain, from `launchctl
+ * print-disabled <domain>` output: lines like `"label" => disabled` (newer
+ * macOS) or `"label" => true` (older, where true means disabled). A label not
+ * listed is enabled (launchd's default). If the query fails, assume enabled --
+ * the plist exists, which is the installed-and-enabled common case.
+ */
+export function macosLabelEnabled(label: string, printDisabled: () => string): boolean {
+  let out: string;
+  try { out = printDisabled(); } catch { return true; }
+  const esc = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const m = new RegExp(`"${esc}"\\s*=>\\s*(\\w+)`).exec(out);
+  if (!m) return true;
+  const v = m[1].toLowerCase();
+  return !(v === 'disabled' || v === 'true');
 }
 
 export class MacOSServiceManager implements ServiceManager {
@@ -110,32 +140,38 @@ export class MacOSServiceManager implements ServiceManager {
     execFileSync('launchctl', ['kickstart', this.target()]);
   }
 
-  async stop(): Promise<void> {
+  async stop(): Promise<boolean> {
     if (this.descriptor.gracefulStopViaServerJson) {
-      await gracefulStopByServerJson();
-      return;
+      return gracefulStopByServerJson();
     }
     // Services other than the MCP server never write server.json -- take them
     // down through launchd itself. bootout also unloads the job, so a later
     // start() re-bootstraps via register(); callers that only want a pause
     // should use kickstart semantics instead.
     try { execFileSync('launchctl', ['bootout', this.target()]); } catch {}
+    return true;
   }
 
   async query(): Promise<ServiceStatus> {
     if (!fs.existsSync(this.plistPath)) {
       return { installed: false, running: false };
     }
+    // GitHub #585: report enabled (status showed every installed agent as
+    // "installed (disabled)"), and pipe stderr so launchctl errors never print
+    // above apra-fleet status.
+    const enabled = macosLabelEnabled(this.label, () => execFileSync(
+      'launchctl', ['print-disabled', domain()], { encoding: 'utf8', stdio: 'pipe' },
+    ));
     try {
       const out = execFileSync(
         'launchctl', ['print', this.target()],
-        { encoding: 'utf8' },
+        { encoding: 'utf8', stdio: 'pipe' },
       );
       const pidMatch = out.match(/\bpid\s*=\s*(\d+)/);
       const pid = pidMatch ? parseInt(pidMatch[1], 10) : undefined;
-      return { installed: true, running: !!pid && pid > 0, pid };
+      return { installed: true, running: !!pid && pid > 0, pid, enabled };
     } catch {
-      return { installed: true, running: false };
+      return { installed: true, running: false, enabled };
     }
   }
 

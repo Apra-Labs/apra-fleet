@@ -100,7 +100,7 @@ test('(a) all three D-pull/D-push brackets fire, including the pre-`bd show` D-p
         return OK;
     };
     const unclosed = await verifyDoerStreakClosed({
-        command, orchestratorMember: 'orch', beadIds: ['BD-1', 'BD-2'],
+        command, backlogMember: 'orch', beadIds: ['BD-1', 'BD-2'],
     });
     assert.deepEqual(unclosed, [], 'a remote doer close is NOT falsely reported FAILED');
 

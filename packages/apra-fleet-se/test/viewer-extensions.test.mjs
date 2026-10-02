@@ -149,7 +149,7 @@ describe('renderProgressBarHtml', () => {
 describe('renderBeadsIdentityHtml', () => {
     const IDENTITY = {
         expected: { beadsDir: '/w/.beads', prefix: 'proj', syncRemote: 'https://example.com/o/r.git', repoRemote: 'https://example.com/o/r.git' },
-        expectedFrom: 'orchestrator',
+        expectedFrom: 'backlog',
         members: {
             orch: { beadsDir: '/w/.beads', prefix: 'proj', syncRemote: 'https://example.com/o/r.git', repoRemote: 'https://example.com/o/r.git' },
             m2: { beadsDir: '/m2/.beads', prefix: 'proj', syncRemote: '', repoRemote: 'https://example.com/o/r.git' },
@@ -159,7 +159,7 @@ describe('renderBeadsIdentityHtml', () => {
     test('renders one row per member plus the expectation row (dir | prefix | remote)', () => {
         const html = renderBeadsIdentityHtml(IDENTITY);
         assert.ok(html.includes('Beads database'));
-        assert.ok(html.includes('expected (from orchestrator)'));
+        assert.ok(html.includes('expected (from backlog)'));
         assert.ok(html.includes('>orch<') && html.includes('>m2<'));
         assert.ok(html.includes('/m2/.beads') && html.includes('>proj<'));
         assert.ok(html.includes('(unset)'), 'an empty sync.remote renders as (unset)');

@@ -5,6 +5,87 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { resolveFleetServerCommand, resolveRunnerScriptPath, resolveFleetServerConnection } from '../bin/cli.mjs';
+import { checkRunningInstance } from '@apralabs/apra-fleet-client/server-resolution';
+
+// GitHub #584: the client probe mirrors src/services/singleton.ts -- tri-state,
+// and server.json is removed only for a dead pid or a refused port.
+describe('client checkRunningInstance tri-state', () => {
+    const info = JSON.stringify({ pid: 4242, url: 'http://127.0.0.1:7523/mcp', port: 7523 });
+    function deps(overrides) {
+        const unlinked = [];
+        return {
+            unlinked,
+            d: {
+                env: { APRA_FLEET_DATA_DIR: path.join(os.tmpdir(), 'no-such-fleet-dir') },
+                readFile: () => info,
+                unlink: (p) => unlinked.push(p),
+                pidAlive: () => true,
+                health: async () => false,
+                tcpProbe: async () => 'open',
+                ...overrides,
+            },
+        };
+    }
+
+    test('live pid + silent /health + open port -> unresponsive, server.json kept', async () => {
+        const { unlinked, d } = deps({});
+        const r = await checkRunningInstance(d);
+        assert.strictEqual(r.state, 'unresponsive');
+        assert.strictEqual(r.running, false);
+        assert.strictEqual(r.pid, 4242);
+        assert.strictEqual(r.port, 7523);
+        assert.deepStrictEqual(unlinked, []);
+    });
+
+    test('live pid + refused port -> gone, server.json removed', async () => {
+        const { unlinked, d } = deps({ tcpProbe: async () => 'refused' });
+        const r = await checkRunningInstance(d);
+        assert.strictEqual(r.state, 'gone');
+        assert.strictEqual(unlinked.length, 1);
+    });
+
+    test("non-200 /health (foreign port owner) -> gone, server.json removed", async () => {
+        const { unlinked, d } = deps({ health: async () => 'foreign' });
+        const r = await checkRunningInstance(d);
+        assert.strictEqual(r.state, 'gone');
+        assert.strictEqual(unlinked.length, 1);
+    });
+
+    test('dead pid -> gone, server.json removed', async () => {
+        const { unlinked, d } = deps({ pidAlive: () => false });
+        const r = await checkRunningInstance(d);
+        assert.strictEqual(r.state, 'gone');
+        assert.strictEqual(unlinked.length, 1);
+    });
+
+    test('resolveFleetServerConnection refuses to self-spawn stdio beside an unresponsive HTTP server', async () => {
+        await assert.rejects(
+            resolveFleetServerConnection({
+                env: {},
+                dirname: 'anywhere',
+                exists: () => true,
+                checkRunningInstance: async () => ({ running: false, state: 'unresponsive', pid: 4242, url: 'http://127.0.0.1:7523/mcp', port: 7523 }),
+            }),
+            /alive but not answering \/health[\s\S]*apra-fleet stop/,
+        );
+        // An explicit stdio request is still honoured (no probe at all).
+        const forced = await resolveFleetServerConnection({
+            env: { APRA_FLEET_TRANSPORT: 'stdio' },
+            dirname: 'anywhere',
+            exists: (c) => c === path.join('anywhere', 'index.js'),
+            checkRunningInstance: async () => { throw new Error('must not probe'); },
+        });
+        assert.strictEqual(forced.mode, 'stdio');
+    });
+
+    test('healthy -> running', async () => {
+        const { unlinked, d } = deps({ health: async () => true });
+        const r = await checkRunningInstance(d);
+        assert.strictEqual(r.state, 'running');
+        assert.strictEqual(r.running, true);
+        assert.deepStrictEqual(unlinked, []);
+    });
+});
 
 // apra-fleet-3ns.1 -- layout-aware fleet-server + runner-script resolution.
 // Same-class bug as apra-fleet-bun: cli.mjs's defaults assumed a dev

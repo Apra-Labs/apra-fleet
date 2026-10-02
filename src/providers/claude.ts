@@ -449,14 +449,14 @@ export class ClaudeProvider implements ProviderAdapter {
   resolveSessionLogPath(sessionId: string, workFolder: string, homeDir?: string | null, targetOs?: TargetOS): string {
     const home = resolveHomeDir(homeDir);
     if (!home) return '';
-    const encoded = encodeClaudeProjectDir(workFolder);
+    const encoded = encodeClaudeProjectDir(workFolder, targetOs ? targetOs === 'windows' : process.platform === 'win32');
     return joinForOS(targetOs, home, '.claude', 'projects', encoded, `${sessionId}.jsonl`);
   }
 
   resolveSessionLogDir(workFolder: string, homeDir?: string | null, targetOs?: TargetOS): string | null {
     const home = resolveHomeDir(homeDir);
     if (!home) return null;
-    const encoded = encodeClaudeProjectDir(workFolder);
+    const encoded = encodeClaudeProjectDir(workFolder, targetOs ? targetOs === 'windows' : process.platform === 'win32');
     return joinForOS(targetOs, home, '.claude', 'projects', encoded);
   }
 

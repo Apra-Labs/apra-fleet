@@ -40,10 +40,10 @@
 // WHICH MEMBER DOES WHAT, AND WHY IT MATTERS. The branch push and the
 // `git remote get-url origin` read run on publishGitMember -- the role-resolved
 // 'harvester' member, a real dispatch member with an actual git checkout --
-// NEVER orchestratorMember, which may be a shared/unreservable, git-less member
+// NEVER backlogMember, which may be a shared/unreservable, git-less member
 // (docs/design-orchestrator-worktree-model-v2.md section 4.3/4.5).
 // raiseVcsPrForMember() and the direct `bd close` calls stay on
-// orchestratorMember: a credential-file read plus a REST call, and beads
+// backlogMember: a credential-file read plus a REST call, and beads
 // mutations, neither of which needs a git checkout (section 4.6).
 //
 // WHY ITS HELPERS ARE INJECTED RATHER THAN IMPORTED. command, gitSync,
@@ -56,7 +56,7 @@
 // GUARD COVERAGE: registered as 'phases/publish-pr.mjs' in
 // ../guarded-modules.mjs. It took TWO member_name-bearing command() call sites
 // out of runner.js -- the `git remote get-url origin` capability probe on
-// publishGitMember and the per-target-issue `bd close` on orchestratorMember --
+// publishGitMember and the per-target-issue `bd close` on backlogMember --
 // plus the branch push and the beads D-push described above, and NO
 // dispatchRole() site (it dispatches no agent; raiseVcsPrForMember is a REST
 // call). That is exactly what dispatch-safety-guard, unbracketed-push-guard
@@ -90,7 +90,7 @@ export async function runPublishPrPhase({
     args,
     validated,
     targetIssues,
-    orchestratorMember,
+    backlogMember,
     finalCycleLabel,
     // The sync brackets this phase's branch push and beads D-push go through.
     gitSync,
@@ -120,10 +120,10 @@ export async function runPublishPrPhase({
     // apra-fleet: this push and the origin-remote read just below it run on
     // publishGitMember -- a real dispatch member with an actual git checkout
     // (harvester, falling back to the fallback pool like every other role
-    // resolution in ../runner.js) -- NEVER orchestratorMember, which may be a
+    // resolution in ../runner.js) -- NEVER backlogMember, which may be a
     // shared/unreservable, git-less member (docs/design-orchestrator-
     // worktree-model-v2.md section 4.3/4.5). raiseVcsPrForMember() below
-    // stays on orchestratorMember: it is a credential-file read + REST call,
+    // stays on backlogMember: it is a credential-file read + REST call,
     // not git, and is explicitly designed to stay there (section 4.6).
     const publishGitMember = getMemberForRole('harvester');
     let pushed = false;
@@ -210,7 +210,7 @@ export async function runPublishPrPhase({
         if (finalVerdictResult.verdict === 'PASS') {
             for (const id of targetIssues) {
                 const closeRes = await command(`bd close ${id}`, {
-                    member_name: orchestratorMember,
+                    member_name: backlogMember,
                     silent: true,
                     failSoft: true,
                     label: `Close target issue '${id}' directly (non-hosted remote, no PR gate)`,
@@ -221,7 +221,7 @@ export async function runPublishPrPhase({
                     log(`Publish PR: failed to close target issue '${id}' directly (non-fatal, continuing): ${closeRes.error}`);
                 }
             }
-            await gitSync.syncBeadsAfter(orchestratorMember, { pushBeads: true });
+            await gitSync.syncBeadsAfter(backlogMember, { pushBeads: true });
         } else {
             log('Publish PR: final verdict is FAIL -- leaving target issue(s) open (not closing on a non-PASS verdict).');
         }
@@ -257,7 +257,7 @@ export async function runPublishPrPhase({
         // gh-based path is gone). A push+pr credential is minted just-in-time immediately
         // before this one call (never at sprint setup, never for any other
         // phase), VCSModule builds the orchestrator-side curl command, and
-        // `orchestratorMember` dispatches it via execute_command -- no gh, no
+        // `backlogMember` dispatches it via execute_command -- no gh, no
         // server-side fallback. A re-run of finalization against a branch
         // that ALREADY has an open PR from a prior, otherwise-successful run
         // can be told apart from a genuine failure: the REST create-PR call
@@ -283,12 +283,12 @@ export async function runPublishPrPhase({
             // MCP dependency for callers that legitimately have none. A genuine
             // PR-creation FAILURE (auth, network, a real API error) still
             // throws below -- only the callTool-absent case is degraded.
-            log(`[Publish PR Skipped] no MCP callTool available to mint a push+pr credential for member '${orchestratorMember}' -- branch '${validated.branch}' is pushed but the PR was not raised.`);
+            log(`[Publish PR Skipped] no MCP callTool available to mint a push+pr credential for member '${backlogMember}' -- branch '${validated.branch}' is pushed but the PR was not raised.`);
         } else {
             const prResult = await raiseVcsPrForMember({
                 fleetApi: fleetApiForPr,
                 command,
-                member: orchestratorMember,
+                member: backlogMember,
                 base: validated.baseBranch,
                 head: validated.branch,
                 title: prTitle,
@@ -298,7 +298,7 @@ export async function runPublishPrPhase({
                 // Already resolved above via publishGitMember (a real
                 // git-capable member) for the PR-capability gate -- skip
                 // re-deriving it a second time by shelling out to
-                // orchestratorMember, which may have no git checkout of its
+                // backlogMember, which may have no git checkout of its
                 // own to read a remote from (docs/design-orchestrator-
                 // worktree-model-v2.md section 4.6: this call stays workspace-
                 // independent by design, credential-file-read + REST only).

@@ -227,7 +227,7 @@ function buildScopeHarness({ targetIssues = ['root'], assignee = null, beads = [
         targetIssues,
         assignee,
         parseBdJson,
-        getOrchestratorMember: () => 'orchestrator-member',
+        getBacklogMember: () => 'orchestrator-member',
     });
 
     // A minimal `bd list` stand-in: the full-DB read returns everything, and a
@@ -425,12 +425,12 @@ describe('apra-fleet-3swo.4.6: the snapshot invalidation contract, enforced', ()
     });
 
     test('a read before wrapCommand() is installed fails loudly rather than silently bypassing invalidation', async () => {
-        const scope = createBeadsScope({ targetIssues: ['root'], parseBdJson, getOrchestratorMember: () => 'm' });
+        const scope = createBeadsScope({ targetIssues: ['root'], parseBdJson, getBacklogMember: () => 'm' });
         await assert.rejects(() => scope.fetchAllBeadsShared(), /wrapCommand\(\) must be installed/);
     });
 
     test('createBeadsScope refuses missing injected dependencies', () => {
-        assert.throws(() => createBeadsScope({ targetIssues: ['root'], getOrchestratorMember: () => 'm' }), /parseBdJson/);
-        assert.throws(() => createBeadsScope({ targetIssues: ['root'], parseBdJson }), /getOrchestratorMember/);
+        assert.throws(() => createBeadsScope({ targetIssues: ['root'], getBacklogMember: () => 'm' }), /parseBdJson/);
+        assert.throws(() => createBeadsScope({ targetIssues: ['root'], parseBdJson }), /getBacklogMember/);
     });
 });

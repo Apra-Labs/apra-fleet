@@ -40,7 +40,7 @@ test('mock sprint: all members share one beads identity -> sprint proceeds and l
         check(okLines[0].startsWith('beads ok: orch beads: ') && /prefix=mock/.test(okLines[0]), `orchestrator line: ${okLines[0]}`);
         check(okLines[1].startsWith('beads ok: m2 beads: '), `second member line: ${okLines[1]}`);
         // No --expect-beads: the expectation is taken from the orchestrator.
-        check(r.logs.some((l) => l.includes("taking the expectation from the orchestrator member 'orch'")), 'expected the orchestrator-derived expectation log line');
+        check(r.logs.some((l) => l.includes("taking the expectation from the backlog member 'orch'")), 'expected the orchestrator-derived expectation log line');
         // The probes run first, orchestrator first, and precede every mutating bd command.
         const first = r.commandLogDetailed.slice(0, 6);
         check(first[0].command === 'bd where --json' && first[0].member === 'orch', `expected the orchestrator's bd where first, got ${JSON.stringify(first[0])}`);
@@ -51,7 +51,7 @@ test('mock sprint: all members share one beads identity -> sprint proceeds and l
         const published = r.states.find((s) => s.namespace === 'beadsIdentity' || (s.payload && s.payload.namespace === 'beadsIdentity'));
         check(published, `expected a beadsIdentity state publish, got namespaces: ${JSON.stringify(r.states.map((s) => s.namespace || (s.payload && s.payload.namespace)))}`);
         const data = published.data || (published.payload && published.payload.data);
-        check(data && data.expectedFrom === 'orchestrator' && data.members && data.members.orch && data.members.m2, `unexpected beadsIdentity state shape: ${JSON.stringify(data)}`);
+        check(data && data.expectedFrom === 'backlog' && data.members && data.members.orch && data.members.m2, `unexpected beadsIdentity state shape: ${JSON.stringify(data)}`);
         check(data.members.m2.prefix === 'mock' && /\.beads$/.test(data.members.m2.beadsDir), `unexpected member identity: ${JSON.stringify(data.members.m2)}`);
     });
 });

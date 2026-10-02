@@ -77,7 +77,7 @@ export interface Agent {
    *  every existing reader (dispatch check, supervisor conflict check, hub
    *  member view) keeps using unchanged. */
   reservation?: { runId: string; pid: number | null; at: string } | null;
-  /** This member fills a role (e.g. fleet-sprint's `orchestrator`) that is
+  /** This member fills a role (e.g. fleet-sprint's `backlog`) that is
    *  designed to be shared by more than one sprint at once, so it can never
    *  be exclusively reserved: reserve/release/force_release are no-op
    *  successes and overlap guards skip it. Defaults to false/absent. */
