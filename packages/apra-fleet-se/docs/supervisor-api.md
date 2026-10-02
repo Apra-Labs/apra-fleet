@@ -327,10 +327,11 @@ When `bin/serve.mjs` wired its backlog-member handle, health also reports
 
 At startup the supervisor adopts a local LLM-less member whose work folder
 is its project folder (adding the `backlog` tag and `unreservable` when
-missing), or registers one named `backlog-<camelCaseFolderName>`. It
-REFUSES to start (exit 1) when an LLM member already owns that folder (use a
-separate clone) or the derived name is taken by a member for another
-folder. Fleet unreachable is not fatal: status is `degraded`, launches
+missing), or registers one named `backlog-<camelCaseFolderName>` -- also
+when an LLM member already uses that folder (the registry allows one LLM and
+one LLM-less member per folder; the LLM member is left alone and logged). It
+REFUSES to start (exit 1) when the derived name is taken by a member for
+another folder. Fleet unreachable is not fatal: status is `degraded`, launches
 answer `503`, and a background retry flips it to `ready`.
 
 ## Status-code summary (cross-endpoint)

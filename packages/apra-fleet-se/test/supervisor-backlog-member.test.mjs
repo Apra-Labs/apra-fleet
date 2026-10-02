@@ -205,34 +205,50 @@ describe('sanitizeBacklogMemberName', () => {
     });
 });
 
-describe('ensureBacklogMember: wrong kind', () => {
-    test('an LLM member at X -> refusal naming the member and telling the operator to use a separate clone', async () => {
+describe('ensureBacklogMember: an LLM member shares the folder', () => {
+    function capturingLogger() {
+        const lines = [];
+        return { lines, logger: { log: (...a) => lines.push(a.join(' ')), warn() {}, error() {} } };
+    }
+
+    test('an LLM member at X is left alone and an LLM-less backlog member is registered next to it (no refusal)', async () => {
         const fleet = fakeFleet([{ name: 'toy-doer', type: 'local', folder: '/srv/repo', llmProvider: 'claude', tags: null }]);
-        await assert.rejects(ensure(fleet, { beadsDir: '/srv/repo' }), (err) => {
-            assert.ok(err instanceof BacklogMemberRefusedError);
-            assert.equal(err.code, 'BACKLOG_MEMBER_WRONG_KIND');
-            assert.equal(err.member, 'toy-doer');
-            assert.match(err.message, /'toy-doer'/);
-            assert.match(err.message, /separate clone/);
-            return true;
-        });
-        assert.equal(fleet.state.registers.length, 0);
-        assert.equal(fleet.state.updates.length, 0);
+        const { lines, logger } = capturingLogger();
+        const h = await ensure(fleet, { beadsDir: '/srv/repo', logger });
+        assert.equal(h.get().status, 'ready');
+        assert.equal(h.get().member.name, 'backlog-repo');
+        assert.deepEqual(fleet.state.registers.map((r) => [r.friendly_name, r.work_folder, r.llm_provider, r.unreservable, r.tags]),
+            [['backlog-repo', '/srv/repo', 'none', true, ['backlog']]]);
+        assert.equal(fleet.state.updates.length, 0, 'the LLM member is never updated');
+        assert.ok(lines.some((l) => /'toy-doer'/.test(l) && /LLM-less/.test(l)), JSON.stringify(lines));
     });
 
     test('a member with no llmProvider field is treated as an LLM member (list_members defaults it to claude)', async () => {
         const fleet = fakeFleet([{ name: 'legacy', type: 'local', folder: '/srv/repo', tags: null }]);
-        await assert.rejects(ensure(fleet, { beadsDir: '/srv/repo' }), (err) => err.code === 'BACKLOG_MEMBER_WRONG_KIND');
+        const h = await ensure(fleet, { beadsDir: '/srv/repo' });
+        assert.equal(h.get().member.name, 'backlog-repo');
+        assert.equal(fleet.state.registers.length, 1);
     });
 
-    test('through the serve startup path a wrong-kind member yields exitCode 1 before any port is bound', async () => {
+    test('restart with the LLM member and the registered sibling both at X adopts the sibling (no second register)', async () => {
+        const fleet = fakeFleet([{ name: 'toy-doer', type: 'local', folder: '/srv/repo', llmProvider: 'claude', tags: null }]);
+        await ensure(fleet, { beadsDir: '/srv/repo' });
+        const h = await ensure(fleet, { beadsDir: '/srv/repo' });
+        assert.equal(h.get().member.name, 'backlog-repo');
+        assert.equal(fleet.state.registers.length, 1, 'idempotent across restarts');
+        assert.equal(fleet.state.updates.length, 0);
+    });
+});
+
+describe('ensureBacklogMember: refusals', () => {
+    test('through the serve startup path a refusal (derived name taken by another folder) yields exitCode 1 before any port is bound', async () => {
         const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'backlog-member-serve-')));
         const project = path.join(tmp, 'proj');
         fs.mkdirSync(path.join(project, '.beads'), { recursive: true });
         const prevCwd = process.cwd();
         const prevDataDir = process.env.FLEET_SE_DATA_DIR;
         process.env.FLEET_SE_DATA_DIR = path.join(tmp, 'se-data');
-        const fleet = fakeFleet([{ name: 'toy-doer', type: 'local', folder: project, llmProvider: 'claude', tags: null }]);
+        const fleet = fakeFleet([{ name: 'backlog-proj', type: 'local', folder: path.join(tmp, 'elsewhere', 'proj'), llmProvider: 'none', tags: ['backlog'] }]);
         const seen = [];
         const errors = [];
         const origErr = console.error;
@@ -250,7 +266,7 @@ describe('ensureBacklogMember: wrong kind', () => {
             });
             assert.equal(exitCode, 1);
             assert.deepEqual(seen, [project]);
-            assert.ok(errors.some((e) => /refusing to start/.test(e) && /toy-doer/.test(e) && /separate clone/.test(e)), JSON.stringify(errors));
+            assert.ok(errors.some((e) => /refusing to start/.test(e) && /backlog-proj/.test(e) && /already exists/.test(e)), JSON.stringify(errors));
         } finally {
             console.error = origErr;
             console.warn = origWarn;
@@ -267,10 +283,10 @@ describe('ensureBacklogMember: wrong kind', () => {
         const h = await ensure(fleet, { beadsDir: '/srv/repo', scheduler });
         assert.equal(h.get().status, 'degraded');
         fleet.state.up = true;
-        fleet.state.members.push({ name: 'toy-doer', type: 'local', folder: '/srv/repo', llmProvider: 'claude', tags: null });
+        fleet.state.members.push({ name: 'backlog-repo', type: 'local', folder: '/elsewhere/repo', llmProvider: 'none', tags: ['backlog'] });
         assert.equal(await scheduler.fire(), 1);
         assert.equal(h.get().status, 'degraded');
-        assert.match(h.get().reason, /toy-doer/);
+        assert.match(h.get().reason, /backlog-repo/);
         assert.equal(scheduler.pending.length, 0, 'no further retry is scheduled after a refusal');
     });
 });

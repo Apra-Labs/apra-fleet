@@ -42,7 +42,7 @@ export const updateMemberSchema = z.object({
   work_folder: z.string()
     .regex(/^[^<>\n\r]+$/, 'work_folder must not contain angle brackets or newlines')
     .optional()
-    .describe('New working directory on target machine. For non-local (remote/relay) members, must be a fully-qualified/absolute path (e.g. "/home/bella/repo" or "C:\\Users\\bella\\repo") -- "~" and relative paths are rejected, since they are never resolved for a non-local member.'),
+    .describe('New working directory on target machine. For non-local (remote/relay) members, must be a fully-qualified/absolute path (e.g. "/home/bella/repo" or "C:\\Users\\bella\\repo") -- "~" and relative paths are rejected, since they are never resolved for a non-local member. A folder may hold at most one LLM member and one LLM-less (llm_provider none) member.'),
   git_access: z.enum(['read', 'push', 'admin', 'issues', 'full']).optional().describe('Git access level for this member'),
   git_repos: z.array(z.string()).optional().describe('Git repositories this member can access (e.g. ["Apra-Labs/ApraPipes"])'),
   icon: z.string().optional().describe('Override the auto-assigned emoji icon. Use named aliases: blue-circle, green-square, red-circle, etc. (8 colors × 2 shapes: circle, square). Or pass raw emoji.'),
@@ -112,17 +112,21 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
     return '❌ "unreservable" requires llm_provider: "none" -- it is reserved for plain command-executor members that never receive an agent dispatch. Member was NOT updated.';
   }
 
+  // A change of LLM kind can create a same-kind clash in an unchanged folder,
+  // since a folder may hold one LLM member and one LLM-less member.
+  const llmKindChanged = ((existing.llmProvider ?? 'claude') === 'none') !== (resultingLlmProvider === 'none');
   const needsUniquenessCheck = existing.agentType === 'remote'
-    ? (hostChanged || portChanged || folderChanged)
-    : folderChanged;
+    ? (hostChanged || portChanged || folderChanged || llmKindChanged)
+    : (folderChanged || llmKindChanged);
 
   if (needsUniquenessCheck) {
     const newHost = input.host ?? existing.host;
     const newPort = input.port ?? existing.port;
     const newFolder = input.work_folder ?? existing.workFolder;
-    if (hasDuplicateFolder(existing.agentType, newFolder, newHost, newPort, existing.id)) {
+    if (hasDuplicateFolder(existing.agentType, newFolder, newHost, newPort, existing.id, resultingLlmProvider)) {
       const scope = existing.agentType === 'local' ? 'this machine' : `host ${newHost}:${newPort}`;
-      return `❌ Another member already uses folder "${newFolder}" on ${scope}. Update rejected.`;
+      const kind = resultingLlmProvider === 'none' ? 'LLM-less' : 'LLM';
+      return `❌ Another ${kind} member already uses folder "${newFolder}" on ${scope} (a folder may hold one LLM member and one LLM-less member). Update rejected.`;
     }
   }
 

@@ -236,8 +236,9 @@ export async function serveMain(argv = process.argv.slice(2), deps = {}) {
     // The supervisor's OWN backlog member (src/supervisor/backlog-member.mjs):
     // an LLM-less, unreservable local member whose work folder is repoRoot.
     // Ensured BEFORE any seam is built or the port is bound, so a
-    // refuse-to-start condition (an LLM member already owns repoRoot, a name
-    // clash) exits 1 without serving anything. Fleet unreachable is NOT a
+    // refuse-to-start condition (a name clash, an unconvertible member) exits
+    // 1 without serving anything. An LLM member at repoRoot is not one: the
+    // LLM-less backlog member is registered next to it. Fleet unreachable is NOT a
     // refusal: the supervisor starts degraded (launches answer 503 with the
     // reason) and the handle retries in the background until ready. No
     // .beads discovered -> degraded with a reason naming --beads-dir.

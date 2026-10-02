@@ -40,9 +40,11 @@ in v0.5.
   segment are accepted), regardless of tags. A match is adopted: it keeps its name, gains the
   `backlog` tag (existing tags are preserved, since `update_member` replaces the whole list) and
   is made `unreservable` if it is not. With no match, `backlog-<camelCaseFolder>` is registered
-  with `llm_provider: none`, `unreservable` and the `backlog` tag. If the member at that folder
-  is an LLM member, the supervisor refuses to start (exit 1) and names the member and the
-  fix (use a separate clone). If the fleet is unreachable the supervisor starts in degraded
+  with `llm_provider: none`, `unreservable` and the `backlog` tag. An LLM member at that folder
+  is left alone and logged: it cannot be the backlog member (only an LLM-less member can be
+  `unreservable`), so the LLM-less one is adopted or registered next to it -- the registry
+  allows one LLM member and one LLM-less member per folder. If the fleet is unreachable the
+  supervisor starts in degraded
   mode, answers launches with 503 and retries in the background until ready.
 - **Unreadable member list is a hidden signal.** `listFleetMembers` returns its usual
   `{ members: [] }` shape when the fleet list cannot be read, and marks that case with a

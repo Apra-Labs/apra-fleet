@@ -5,9 +5,10 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased] -- Supervisor owns and hard-pins its backlog member
 
 `fleet-se serve` now ensures its own LLM-less, `unreservable` backlog member for its project
-folder at startup (adopting a matching local member or registering `backlog-<folder>`), refusing
-to start if an LLM member already occupies that folder and degrading with a background retry when
-the fleet is unreachable. `POST /api/sprints` injects that member as `roleMap.backlog` when none
+folder at startup (adopting a matching LLM-less local member or registering `backlog-<folder>`,
+also when an LLM member already uses that folder -- `register_member`/`update_member` now allow one
+LLM member and one LLM-less member per folder) and degrading with a background retry when the fleet
+is unreachable. `POST /api/sprints` injects that member as `roleMap.backlog` when none
 is given, accepts it when named, rejects any other member with 400 on `roleMap`, and answers 503
 when the backlog member is degraded or the member list cannot be read. Direct CLI/runner launches
 share one `selectBacklogMember` selector (explicit, then unmapped member, then first doer, then

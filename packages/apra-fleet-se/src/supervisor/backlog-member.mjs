@@ -15,11 +15,11 @@
 //     the backlog tag and unreservable flag are added via update_member when
 //     missing -- tags are sent as existing + backlog because update_member
 //     REPLACES the whole tag list);
-//   * a local member at X has an LLM               -> REFUSED: an LLM member
-//     cannot be converted (update_member has no llm_provider none), and its
-//     agent would be editing the very clone the backlog role mutates; the
-//     operator must point the supervisor at a separate clone;
-//   * no member at X                               -> exactly one
+//   * a local member at X has an LLM               -> left alone and logged;
+//     it cannot be the backlog member (unreservable requires llm_provider
+//     none), so the LLM-less member for X is adopted or registered next to
+//     it (the registry allows one LLM and one LLM-less member per folder);
+//   * no LLM-less member at X                      -> exactly one
 //     register_member (backlog-<camelCaseFolderName>);
 //   * the fleet member list cannot be read         -> DEGRADED: the
 //     supervisor still starts and serves read-only views, launches answer
@@ -154,16 +154,17 @@ async function ensureOnce({ folder, listMembers, registerMember, updateMember, p
     }
     const members = memberList(raw).filter((m) => m && typeof m === 'object' && typeof m.name === 'string');
 
-    const atFolder = members.filter((m) => (m.type ?? 'local') === 'local' && sameProjectFolder(m.folder, work, platform));
-    const llmAtFolder = atFolder.find(hasLlm);
-    if (llmAtFolder) {
-        throw new BacklogMemberRefusedError(
-            `member '${llmAtFolder.name}' is an LLM member (llm provider '${llmAtFolder.llmProvider ?? 'claude'}') whose work folder is ` +
-            `this supervisor's project folder '${work}'. The supervisor's backlog member must be LLM-less and own that folder, ` +
-            'and an LLM member cannot be converted. Use a separate clone: start the supervisor with --beads-dir pointing at a ' +
-            `different clone of the project, or move '${llmAtFolder.name}' to its own clone.`,
-            { code: 'BACKLOG_MEMBER_WRONG_KIND', member: llmAtFolder.name },
-        );
+    const localAtFolder = members.filter((m) => (m.type ?? 'local') === 'local' && sameProjectFolder(m.folder, work, platform));
+    // An LLM member sharing the folder is fine -- it just cannot be the
+    // backlog member (unreservable requires llm_provider none, and only an
+    // unreservable member can be shared by concurrent sprints). The registry
+    // allows one LLM member and one LLM-less member per folder, so the
+    // backlog member is the LLM-less one: adopted if present, registered if not.
+    const llmAtFolder = localAtFolder.filter(hasLlm);
+    const atFolder = localAtFolder.filter((m) => !hasLlm(m));
+    if (llmAtFolder.length > 0) {
+        log(`[backlog-member] LLM member(s) ${llmAtFolder.map((m) => `'${m.name}'`).join(', ')} also use '${work}'; ` +
+            'the backlog role uses an LLM-less member for that folder (an LLM member cannot be shared by concurrent sprints).');
     }
 
     if (atFolder.length > 0) {
