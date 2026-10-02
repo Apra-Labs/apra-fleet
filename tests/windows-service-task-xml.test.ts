@@ -29,8 +29,9 @@ vi.mock('../src/services/service-start-guard.js', () => ({
 
 import {
   WindowsServiceManager, buildTaskXml, resolveTaskUserId, localStartBoundary, repeatMinutesFrom,
-  RUN_KEY, RUN_VALUE,
+  RUN_KEY, RUN_VALUE, buildWrapperBat, buildLauncherJs, launcherPathFor, launcherArguments, wscriptPath,
 } from '../src/services/service-manager/windows.js';
+import { spawnSync } from 'node:child_process';
 import { formatServiceLabel } from '../src/cli/status.js';
 
 const USER_ENV = { USERDOMAIN: 'BOX', USERNAME: 'alice' };
@@ -174,7 +175,11 @@ describe('WindowsServiceManager lifecycle', () => {
     const xml = createXml!.subarray(2).toString('utf16le');
     expect(xml).toContain('encoding="UTF-16"');
     expect(xml).toContain('<UserId>BOX\\alice</UserId>');
-    expect(xml).toContain(`<Command>${wrapper}</Command>`);
+    // Hidden launch: wscript runs the JScript launcher, never the .bat directly.
+    expect(xml).toContain('<Command>C:\\Windows\\System32\\wscript.exe</Command>');
+    expect(xml).toContain(`<Arguments>//B //Nologo //E:JScript &quot;${launcherPathFor(wrapper)}&quot;</Arguments>`);
+    expect(xml).not.toContain(`<Command>${wrapper}</Command>`);
+    expect(fs.readFileSync(launcherPathFor(wrapper), 'utf8')).toContain(JSON.stringify(wrapper));
     expect(xml).toContain('<Interval>PT5M</Interval>');
     expect(xml).toContain('<StartBoundary>2026-10-02T14:07:00</StartBoundary>');
     const create = schtasks.mock.calls.find(c => c[0][0] === '/create')![0];
@@ -238,7 +243,8 @@ describe('WindowsServiceManager lifecycle', () => {
 
     it('XML create denied and no task to reuse -> per-user Run entry for the wrapper, result run-key', async () => {
       expect(await mgr().register('x.exe', [], 'l')).toBe('run-key');
-      expect(reg).toHaveBeenCalledWith(['add', RUN_KEY, '/v', RUN_VALUE, '/t', 'REG_SZ', '/d', `"${wrapper}"`, '/f']);
+      expect(reg).toHaveBeenCalledWith(['add', RUN_KEY, '/v', RUN_VALUE, '/t', 'REG_SZ', '/d',
+        `"C:\\Windows\\System32\\wscript.exe" //B //Nologo //E:JScript "${launcherPathFor(wrapper)}"`, '/f']);
       expect(RUN_KEY.startsWith('HKCU\\')).toBe(true);
     });
 
@@ -264,4 +270,67 @@ describe('WindowsServiceManager lifecycle', () => {
       expect(mockGracefulStop).toHaveBeenCalled();
     });
   });
+});
+
+describe('service wrapper and hidden launcher', () => {
+  it('the wrapper re-creates a missing log dir before the >> redirect, after setting the service marker', () => {
+    const bat = buildWrapperBat('C:\\b\\apra-fleet.exe', ['--transport', 'http'], 'C:\\Users\\a\\.apra-fleet\\data\\fleet.log');
+    const lines = bat.split('\r\n');
+    expect(lines).toEqual([
+      '@echo off',
+      'set APRA_FLEET_SERVICE=1',
+      'if not exist "C:\\Users\\a\\.apra-fleet\\data\\" mkdir "C:\\Users\\a\\.apra-fleet\\data"',
+      '"C:\\b\\apra-fleet.exe" "--transport" "http" >> "C:\\Users\\a\\.apra-fleet\\data\\fleet.log" 2>&1',
+    ]);
+  });
+
+  it('the launcher runs the wrapper with window style 0, waits, and returns its exit code; path escaped', () => {
+    const js = buildLauncherJs('C:\\Users\\O\'N "x"\\b\\apra-fleet-service.bat');
+    expect(js).toContain('var wrapper = "C:\\\\Users\\\\O\'N \\"x\\"\\\\b\\\\apra-fleet-service.bat";');
+    expect(js).toContain("WScript.Quit(shell.Run('\"' + wrapper + '\"', 0, true));");
+  });
+
+  it('wscript is resolved from SystemRoot and the launcher arguments quote its path', () => {
+    expect(wscriptPath({ SystemRoot: 'D:\\Win' })).toBe('D:\\Win\\System32\\wscript.exe');
+    expect(launcherArguments('C:\\a b\\l.js')).toBe('//B //Nologo //E:JScript "C:\\a b\\l.js"');
+    expect(launcherPathFor('C:\\x y\\bin\\apra-fleet-service.bat')).toBe('C:\\x y\\bin\\apra-fleet-service.js');
+  });
+
+  it('register creates a missing log dir', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-logdir-'));
+    try {
+      const m = new WindowsServiceManager((() => 'SUCCESS') as any, path.join(dir, 'bin', 'apra-fleet-service.bat'), {
+        runReg: (() => { throw new Error('absent'); }) as any, env: USER_ENV, now: () => NOW, spawnDetached: () => {},
+      });
+      const log = path.join(dir, 'data', 'nested', 'fleet.log');
+      await m.register('x.exe', [], log);
+      expect(fs.existsSync(path.dirname(log))).toBe(true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // Real wscript run (no scheduled task): the generated launcher + wrapper run
+  // hidden, the server inherits the service marker, a deleted log dir is
+  // re-created, and the server's exit code reaches the caller (Task
+  // Scheduler's Last Result). Paths contain spaces, & and an apostrophe.
+  it.runIf(process.platform === 'win32')('real wscript: hidden run propagates the exit code, marker and log dir', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fleet wsh & o'k "));
+    try {
+      const script = path.join(dir, 'server.js');
+      fs.writeFileSync(script, "process.stdout.write('marker=' + process.env.APRA_FLEET_SERVICE); process.exit(7);");
+      const wrapper = path.join(dir, 'bin', 'apra-fleet-service.bat');
+      const log = path.join(dir, 'data', 'fleet.log');
+      fs.mkdirSync(path.dirname(wrapper), { recursive: true });
+      fs.writeFileSync(wrapper, buildWrapperBat(process.execPath, [script], log));
+      fs.writeFileSync(launcherPathFor(wrapper), buildLauncherJs(wrapper));
+      expect(fs.existsSync(path.dirname(log))).toBe(false); // the wrapper must create it
+      const args = launcherArguments(launcherPathFor(wrapper)).split(' ').slice(0, 3).concat(launcherPathFor(wrapper));
+      const r = spawnSync(wscriptPath(process.env), args, { encoding: 'utf8', timeout: 60_000 });
+      expect(r.status).toBe(7);
+      expect(fs.readFileSync(log, 'utf8')).toContain('marker=1');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }, 90_000);
 });

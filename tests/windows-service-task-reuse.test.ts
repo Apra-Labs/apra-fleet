@@ -87,6 +87,17 @@ describe('WindowsServiceManager task reuse on /create failure', () => {
     }
   });
 
+  it('(b) /create denied + existing task runs wscript with OUR hidden launcher -> "reused"; another launcher -> error', async () => {
+    const launcher = WRAPPER.replace(/\.bat$/, '.js');
+    const wsh = (args: string) =>
+      `<Task><Actions Context="Author"><Exec><Command>C:\\Windows\\System32\\wscript.exe</Command><Arguments>${args}</Arguments></Exec></Actions></Task>`;
+    const ours = fakeRunner({ '/create': deny, '/query': () => wsh(`//B //Nologo //E:JScript &quot;${launcher}&quot;`) });
+    expect(await new WindowsServiceManager(ours.run, WRAPPER, { runReg: vi.fn() }).register('x', [], 'l')).toBe('reused');
+    const other = fakeRunner({ '/create': deny, '/query': () => wsh('//B "C:\\evil\\other.js"') });
+    await expect(new WindowsServiceManager(other.run, WRAPPER, { runReg: vi.fn() }).register('x', [], 'l'))
+      .rejects.toThrow(/existing ApraFleet task runs .*wscript\.exe/);
+  });
+
   it('(c) /create denied + no existing task + HKCU Run fallback also fails -> loud error carrying both errors', async () => {
     const { run } = fakeRunner({ '/create': deny, '/query': () => { throw new Error('task not found'); } });
     const runReg = vi.fn((args: string[]) => {
