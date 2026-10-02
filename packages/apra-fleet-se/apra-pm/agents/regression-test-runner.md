@@ -76,8 +76,8 @@ playbook runs against branch HEAD, set up the way the playbook itself says.
 **Missing-input behavior**: if `regression-test-playbook.md` is entirely
 absent, stop and report it -- do not improvise test steps. If the
 playbook's `## Setup` fails (its environment cannot be brought up), do
-not run tests against it or fabricate results: run the playbook's
-`## Teardown` if it defines one, then stop and report that instead.
+not run tests that depend on it or fabricate results: run the playbook's
+`## Teardown` if it defines one, then report that instead.
 
 On BOTH early-exit paths, and on the Step 0 permissions stop below, still
 return the COMPLETE required field set -- `passed: false`,
@@ -109,9 +109,10 @@ never hand-edited. Do NOT proceed while any permission is missing.
 ## Step 1 -- Run the playbook
 
 Run the playbook exactly as written, at branch HEAD: every part it defines,
-in the order it gives. If it has a `## Setup`, run that first; if Setup
-fails, do not run the remaining parts -- run `## Teardown` (if defined) and
-report per "Missing-input behavior" above. No fail-fast across parts: a
+in the order it gives, running `## Setup` (if defined) where the playbook
+places it. If Setup fails, do not run the parts that depend on it -- run
+`## Teardown` (if defined) and report per "Missing-input behavior" above,
+keeping the results of any part that already ran. No fail-fast across parts: a
 failing test or part does not abort the pass. Record every failure and
 continue with the next part. If the playbook defines a `## Teardown`, ALWAYS
 run it once the parts are done, before doing anything else -- pass or fail.
