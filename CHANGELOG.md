@@ -2,6 +2,32 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- Supervisor sprint rows pull a once-per-publish run summary
+
+Sprint progress is now computed once by the sprint's own viewer and published; the supervisor
+dashboard and the live view render it instead of recomputing. The workflow viewer gains an
+optional per-namespace `summarize()` hook that runs only on state publish, and
+`GET /state?summary=1` serves the stored summary without invoking any hook. The beads extension
+summarizes progress (timestamped from the runner's snapshot fetch time). Supervisor rows pull the
+summary with a 2s timer, a 1MB cap, a last-good cache, a runId check, and explicit degradation
+states ("status unavailable", "no summary yet", unreachable with "as of"). Port resolution is
+shared between proxy and dashboard. A Windows CRT argv0 quoting test harness was also fixed.
+See `docs/sprint-run-summary.md`.
+
+```
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $16.5475.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.0848 across 2 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 16 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+```
+
+Carried forward: history-view runs without a summary key show "no summary yet"; the SSE handler
+does not dispatch the summary event before the state event; host-environment test failures
+(stale undici install, stale dist schema, symlink privilege) and the regression-pass failures
+remain open as backlog beads.
+
 ## [Unreleased] -- fleet-sprint: G-pull of a not-yet-pushed sprint branch is a no-op, not an auth failure
 
 A G-pull fetch of a sprint branch that is not on origin yet (`fatal: couldn't find remote ref`)

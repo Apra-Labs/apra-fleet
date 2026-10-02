@@ -244,7 +244,7 @@ describe('dashboard -- renderSprintStackHtml / renderSprintSection', () => {
         assert.ok(!html.includes('<role>'));
     });
 
-    test('apra-fleet-x8r.2: renders a progress bar plus M/N text when progress is available', () => {
+    test('apra-fleet-x8r.2: renders a progress bar plus M/N text when an ok summary is available', () => {
         const html = renderSprintSection({
             sprintId: 'sprint-1',
             branch: 'feat/x',
@@ -252,7 +252,7 @@ describe('dashboard -- renderSprintStackHtml / renderSprintSection', () => {
             status: WATCHDOG_STATUS.RUNNING_HEALTHY,
             issueRoots: [],
             beadCount: 3,
-            progress: { closed: 2, required: 3, fraction: 2 / 3 },
+            progress: { state: 'ok', closed: 2, required: 3, fraction: 2 / 3, computedAt: new Date().toISOString() },
             members: [],
         });
         assert.ok(html.includes('sprint-progress'));
@@ -275,7 +275,7 @@ describe('dashboard -- renderSprintStackHtml / renderSprintSection', () => {
             status: WATCHDOG_STATUS.RUNNING_HEALTHY,
             issueRoots: ['apra-fleet-eft.6'],
             beadCount: 7,
-            progress: { closed: 2, required: 3, fraction: 2 / 3 },
+            progress: { state: 'ok', closed: 2, required: 3, fraction: 2 / 3, computedAt: new Date().toISOString() },
             members: [],
         });
         assert.ok(html.includes('Required: 2/3'), `expected the labeled progress-bar text 'Required: 2/3' in: ${html}`);
@@ -285,7 +285,7 @@ describe('dashboard -- renderSprintStackHtml / renderSprintSection', () => {
         );
     });
 
-    test('apra-fleet-x8r.2: missing/unknown progress renders a neutral placeholder, never NaN or a throw', () => {
+    test('missing/unknown progress renders "status unavailable", never NaN, digits/digits, or a throw', () => {
         const html = renderSprintSection({
             sprintId: 'sprint-1',
             branch: 'feat/x',
@@ -297,7 +297,8 @@ describe('dashboard -- renderSprintStackHtml / renderSprintSection', () => {
             members: [],
         });
         assert.ok(!html.includes('NaN'));
-        assert.ok(html.toLowerCase().includes('progress unavailable'));
+        assert.ok(html.includes('status unavailable'));
+        assert.doesNotMatch(html, /Required: \d+\/\d+/);
     });
 
     // (apra-fleet-i9ag.5.2) Every card carries a stable, escaped anchor id
@@ -586,43 +587,172 @@ describe('dashboard -- createDashboard', () => {
         assert.equal(view.beadCount, 3);
     });
 
-    test('apra-fleet-x8r.2: progress reuses computeSprintProgress over the sprint scope, sourced from listAllBeads', async () => {
+    // vre7: sprint-row progress is the child's own published summary (GET
+    // /state?summary=1), never a supervisor recompute over its bulk beads
+    // fetch. The bulk fetch below would recompute to 0/3 (everything open);
+    // the stub summary says 4/7 and that is what must render.
+    function okSummary(sprintId, closed, required, computedAt = new Date().toISOString()) {
+        return {
+            status: 200,
+            json: {
+                summaryVersion: 1, runId: sprintId, status: 'running', phase: null,
+                extensions: { beads: { publishedAt: computedAt, closed, required, fraction: required ? closed / required : 0, computed_at: computedAt } },
+            },
+        };
+    }
+
+    test('progress comes from the pulled child summary, regardless of the bulk bd fetch contents', async () => {
+        const fetchCalls = [];
         const dashboard = createDashboard({
             ledger: fakeLedger([{ sprintId: 's1', members: [], issueRoots: ['root'], childPid: 1 }]),
             watchdog: fakeWatchdog({ s1: WATCHDOG_STATUS.RUNNING_HEALTHY }),
             expandScope: async () => new Set(['root', 'child1', 'child2']),
             listAllBeads: async () => normalizedBeadFixtures([
-                { id: 'root', status: 'closed' },
-                { id: 'child1', status: 'closed' },
+                { id: 'root', status: 'open' },
+                { id: 'child1', status: 'open' },
                 { id: 'child2', status: 'open' },
-                { id: 'out-of-scope', status: 'open' },
             ]),
+            resolvePort: (id) => (id === 's1' ? 4242 : undefined),
+            fetchSummary: async (port) => { fetchCalls.push(port); return okSummary('s1', 4, 7); },
             driftCheck: async () => null,
         });
         const [view] = await dashboard.buildSprintViews();
-        assert.deepEqual(view.progress, { closed: 2, required: 3, fraction: 2 / 3 });
+        assert.deepEqual(fetchCalls, [4242]);
+        assert.equal(view.progress.state, 'ok');
+        assert.equal(view.progress.closed, 4);
+        assert.equal(view.progress.required, 7);
+        assert.equal(view.beadCount, 3, 'claimed-scope count still comes from the bulk fetch');
+        const html = await dashboard.renderIndexPage();
+        assert.ok(html.includes('Required: 4/7'), `expected Required: 4/7 in: ${html}`);
+        assert.ok(!html.includes('Required: 0/3'));
     });
 
-    test('apra-fleet-x8r.4: below-goal beads and decomposed parents are excluded from progress required/closed, matching the completion gate', async () => {
+    test('degradation states classify and render without any digits/digits progress string', async () => {
+        const cases = [
+            { name: '404 (old child)', fetch: async () => ({ status: 404, json: undefined }), state: 'unavailable', text: 'status unavailable' },
+            { name: 'non-JSON', fetch: async () => ({ status: 200, json: undefined }), state: 'unavailable', text: 'status unavailable' },
+            { name: 'no summaryVersion (old child full state)', fetch: async () => ({ status: 200, json: { runId: 's1', status: 'running', tree: [] } }), state: 'unavailable', text: 'status unavailable' },
+            { name: 'no extensions.beads', fetch: async () => ({ status: 200, json: { summaryVersion: 1, runId: 's1', extensions: {} } }), state: 'no-summary', text: 'no summary yet' },
+            { name: 'malformed beads numbers', fetch: async () => ({ status: 200, json: { summaryVersion: 1, runId: 's1', extensions: { beads: { closed: 'x', required: null } } } }), state: 'unavailable', text: 'status unavailable' },
+            { name: 'connection error, no last good', fetch: async () => { throw new Error('ECONNREFUSED'); }, state: 'unavailable', text: 'status unavailable' },
+            { name: 'runId mismatch, no last good', fetch: async () => okSummary('other-run', 5, 9), state: 'unavailable', text: 'status unavailable' },
+        ];
+        for (const c of cases) {
+            const dashboard = createDashboard({
+                ledger: fakeLedger([{ sprintId: 's1', members: [], issueRoots: [], childPid: 1 }]),
+                watchdog: fakeWatchdog({ s1: WATCHDOG_STATUS.RUNNING_HEALTHY }),
+                listAllBeads: async () => [],
+                resolvePort: () => 4242,
+                fetchSummary: c.fetch,
+                driftCheck: async () => null,
+                logger: { log() {}, error() {} },
+            });
+            const [view] = await dashboard.buildSprintViews();
+            assert.equal(view.progress.state, c.state, c.name);
+            const html = renderSprintSection(view);
+            assert.ok(html.includes(c.text), `${c.name}: expected '${c.text}' in: ${html}`);
+            assert.doesNotMatch(html, /\d+\/\d+/, `${c.name}: no digits/digits for a non-ok state`);
+        }
+    });
+
+    test('unreachable: last good summary plus an unreachable marker; no port counts as unreachable too', async () => {
+        let port = 4242;
+        let respond = true;
         const dashboard = createDashboard({
-            ledger: fakeLedger([{ sprintId: 's1', members: [], issueRoots: ['root'], childPid: 1 }]),
+            ledger: fakeLedger([{ sprintId: 's1', members: [], issueRoots: [], childPid: 1 }]),
             watchdog: fakeWatchdog({ s1: WATCHDOG_STATUS.RUNNING_HEALTHY }),
-            expandScope: async () => new Set(['root', 'below-goal', 'decomposed-parent', 'decomposed-child']),
-            getSprintMeta: async () => ({ goal: 'P1' }),
-            listAllBeads: async () => normalizedBeadFixtures([
-                { id: 'root', status: 'closed', priority: 1, parentId: null },
-                // Below goal (P1 -> goalMax 1): excluded even though open.
-                { id: 'below-goal', status: 'open', priority: 3, parentId: null },
-                // Decomposed parent: excluded structurally, even though open.
-                { id: 'decomposed-parent', status: 'open', priority: 1, parentId: null },
-                { id: 'decomposed-child', status: 'closed', priority: 1, parentId: 'decomposed-parent' },
-            ]),
+            listAllBeads: async () => [],
+            resolvePort: () => port,
+            fetchSummary: async () => { if (!respond) throw new Error('ECONNREFUSED'); return okSummary('s1', 2, 5); },
             driftCheck: async () => null,
+            logger: { log() {}, error() {} },
         });
+        let [view] = await dashboard.buildSprintViews();
+        assert.equal(view.progress.state, 'ok');
+        respond = false;
+        [view] = await dashboard.buildSprintViews();
+        assert.equal(view.progress.state, 'unreachable');
+        assert.equal(view.progress.closed, 2);
+        const html = renderSprintSection(view);
+        assert.ok(html.includes('Required: 2/5'));
+        assert.ok(html.includes('unreachable'));
+        port = undefined;
+        [view] = await dashboard.buildSprintViews();
+        assert.equal(view.progress.state, 'unreachable', 'no port is unreachable too -- last good still shown');
+    });
+
+    test('a runId-mismatched summary never renders as this sprint\'s progress and is never cached', async () => {
+        let other = false;
+        const errors = [];
+        const dashboard = createDashboard({
+            ledger: fakeLedger([{ sprintId: 's1', members: [], issueRoots: [], childPid: 1 }]),
+            watchdog: fakeWatchdog({ s1: WATCHDOG_STATUS.RUNNING_HEALTHY }),
+            listAllBeads: async () => [],
+            resolvePort: () => 4242,
+            fetchSummary: async () => (other ? okSummary('other-run', 9, 9) : okSummary('s1', 1, 3)),
+            driftCheck: async () => null,
+            logger: { log() {}, error: (...a) => errors.push(a.join(' ')) },
+        });
+        await dashboard.buildSprintViews();
+        other = true;
         const [view] = await dashboard.buildSprintViews();
-        // Eligible set: root, decomposed-child -- both closed -> N/N, even
-        // though the raw scope contains two other, still-open beads.
-        assert.deepEqual(view.progress, { closed: 2, required: 2, fraction: 1 });
+        assert.equal(view.progress.state, 'unreachable');
+        assert.equal(view.progress.rejected, true);
+        assert.equal(view.progress.closed, 1, 'shows the last good for s1, not the other run\'s 9/9');
+        const html = renderSprintSection(view);
+        assert.ok(!html.includes('9/9'));
+        assert.ok(errors.some((e) => e.includes('other-run')), 'the mismatch is logged');
+    });
+
+    test('the last-good cache evicts sprints no longer in the ledger list', async () => {
+        let entries = [{ sprintId: 's1', members: [], issueRoots: [], childPid: 1 }];
+        let respond = true;
+        const dashboard = createDashboard({
+            ledger: { list: () => entries.map((e) => ({ ...e })) },
+            watchdog: fakeWatchdog({ s1: WATCHDOG_STATUS.RUNNING_HEALTHY }),
+            listAllBeads: async () => [],
+            resolvePort: () => 4242,
+            fetchSummary: async () => { if (!respond) throw new Error('down'); return okSummary('s1', 1, 2); },
+            driftCheck: async () => null,
+            logger: { log() {}, error() {} },
+        });
+        await dashboard.buildSprintViews();
+        entries = [];
+        await dashboard.buildSprintViews();
+        entries = [{ sprintId: 's1', members: [], issueRoots: [], childPid: 1 }];
+        respond = false;
+        const [view] = await dashboard.buildSprintViews();
+        assert.equal(view.progress.state, 'unavailable', 'the evicted last good is not resurrected');
+    });
+
+    test('rows are pulled concurrently: N hung children cost one timeout, not N', async () => {
+        const entries = ['a', 'b', 'c', 'd'].map((id) => ({ sprintId: id, members: [], issueRoots: [], childPid: 1 }));
+        const dashboard = createDashboard({
+            ledger: fakeLedger(entries),
+            watchdog: { classifySprint: async () => ({ status: WATCHDOG_STATUS.RUNNING_HEALTHY }) },
+            listAllBeads: async () => [],
+            resolvePort: () => 4242,
+            fetchSummary: () => new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 300)),
+            driftCheck: async () => null,
+            logger: { log() {}, error() {} },
+        });
+        const started = Date.now();
+        const views = await dashboard.buildSprintViews();
+        const elapsed = Date.now() - started;
+        assert.equal(views.length, 4);
+        assert.ok(views.every((v) => v.progress.state === 'unavailable'));
+        assert.ok(elapsed < 1000, `4 x 300ms pulls must overlap, took ${elapsed}ms`);
+    });
+
+    test('renders an "as of AGE" label from extensions.beads.computed_at', () => {
+        const now = Date.parse('2026-10-01T12:00:00.000Z');
+        const base = { sprintId: 's1', status: WATCHDOG_STATUS.RUNNING_HEALTHY, issueRoots: [], members: [] };
+        const at = (ms) => new Date(now - ms).toISOString();
+        const row = (computedAt) => renderSprintSection({ ...base, progress: { state: 'ok', closed: 1, required: 2, fraction: 0.5, computedAt } }, '', now);
+        assert.ok(row(at(12_000)).includes('as of 12s'));
+        assert.ok(row(at(3 * 60_000 + 5_000)).includes('as of 3m'));
+        assert.ok(row(at(2 * 3600_000)).includes('as of 2h'));
+        assert.ok(row(null).includes('as of unknown'));
     });
 
     test('apra-fleet-72o0 (dashboard follow-up): default listAllBeads wiring is bdListAllBeadsWithClosed (--all), never backlog.mjs bdListAllBeads', async () => {
@@ -675,26 +805,25 @@ describe('dashboard -- createDashboard', () => {
         // subtree fix) -- 4 nodes: epic, closed-parent, still-open-grandchild,
         // done-grandchild. 'unrelated' stays out of scope.
         assert.equal(view.beadCount, 4);
-        // 'epic' and 'closed-parent' are both someone's grouping parent, so
-        // computeSprintProgress()'s decomposedParentIds filter excludes them from
-        // required/closed the same way runner.js's completion gate does (x8r.4) --
-        // leaving the two leaf grandchildren. closed must be > 0 (done-grandchild):
-        // the whole point of this fix is that `--all` makes closed beads visible at
-        // all, instead of computeSprintProgress() always seeing closed: 0.
-        assert.deepEqual(view.progress, { closed: 1, required: 2, fraction: 0.5 });
+        // Progress is never recomputed from this bulk fetch: with no live
+        // child port it is status unavailable, not a supervisor-side count.
+        assert.equal(view.progress.state, 'unavailable');
     });
 
-    test('apra-fleet-x8r.2: a failed bulk beads fetch leaves progress null (placeholder) for every sprint, without throwing', async () => {
+    test('a failed bulk beads fetch does not affect the pulled progress and never throws', async () => {
         const dashboard = createDashboard({
             ledger: fakeLedger([{ sprintId: 's1', members: [], issueRoots: ['root'], childPid: 1 }]),
             watchdog: fakeWatchdog({ s1: WATCHDOG_STATUS.RUNNING_HEALTHY }),
             expandScope: async () => new Set(['root']),
             listAllBeads: async () => { throw new Error('bd unavailable'); },
+            resolvePort: () => 4242,
+            fetchSummary: async () => okSummary('s1', 3, 4),
             driftCheck: async () => null,
             logger: { log() {}, error() {} },
         });
         const views = await dashboard.buildSprintViews();
-        assert.equal(views[0].progress, null);
+        assert.equal(views[0].progress.state, 'ok');
+        assert.equal(views[0].progress.closed, 3);
         assert.equal(views[0].beadCount, 1);
     });
 
@@ -1020,7 +1149,9 @@ describe('dashboard -- createDashboard', () => {
             assert.equal(listAllBeadsSpy.mock.calls.length, 1);
 
             assert.equal(view.beadCount, 4, 'root + child1 + child2 + grandchild1 -- out-of-scope excluded');
-            assert.deepEqual(view.progress, { closed: 1, required: 2, fraction: 0.5 });
+            // Progress is the child's pulled summary, never derived from this
+            // fixture: no live port here -> status unavailable.
+            assert.equal(view.progress.state, 'unavailable');
         });
 
         test('renderIndexPage(): the same in-memory scope expansion renders correctly into the HTML page, with zero subprocess-walker calls', async () => {
@@ -1037,7 +1168,7 @@ describe('dashboard -- createDashboard', () => {
 
             assert.equal(listChildrenSpy.mock.calls.length, 0, 'the per-node subprocess scope walker must never be invoked');
             assert.ok(html.includes('4 bead'), `expected the rendered claimed-scope count to be 4: ${html}`);
-            assert.ok(html.includes('1/2'), `expected the rendered progress bar text to be 1/2: ${html}`);
+            assert.ok(html.includes('status unavailable'), `expected no recomputed progress bar text: ${html}`);
         });
     });
 });

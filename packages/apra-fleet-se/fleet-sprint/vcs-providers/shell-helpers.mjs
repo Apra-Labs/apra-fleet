@@ -131,7 +131,9 @@ function shQuote(value, os, shell) {
  *  exact JSON the caller built. Whitespace cannot appear outside a string
  *  in JSON.stringify() output, so the rewrite is always inside a string. */
 function shQuoteJson(json, os, shell) {
-    const text = String(json);
+    // A raw backtick can only occur inside a JSON string here; ` decodes
+    // back to it, and keeps backticks out of the dispatched command text.
+    const text = String(json).replace(/`/g, '\\u0060');
     if (!usesPowerShellQuoting(os, shell)) return shQuote(text, os, shell);
     const noWhitespace = text.replace(/\s/g, (ch) => `\\u${ch.charCodeAt(0).toString(16).padStart(4, '0')}`);
     return shQuote(noWhitespace, os, shell);

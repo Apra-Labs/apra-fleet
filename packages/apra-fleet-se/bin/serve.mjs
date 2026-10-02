@@ -29,6 +29,7 @@ import { createSpawner } from '../src/supervisor/spawner.mjs';
 import { createReconciler, registerReservationRoutes, killPid } from '../src/supervisor/reconcile.mjs';
 import { createReadopter } from '../src/supervisor/readopt.mjs';
 import { createLiveProxy, registerLiveRoutes } from '../src/supervisor/proxy.mjs';
+import { createChildPortResolver } from '../src/supervisor/child-port.mjs';
 import { createHistoryView, registerHistoryViewRoutes, createFinishedRunsIndex } from '../src/supervisor/history-view.mjs';
 import { createLogView, registerLogViewRoutes } from '../src/supervisor/log-view.mjs';
 import { installSelfLogTee, createSelfLogView, registerSelfLogRoutes } from '../src/supervisor/self-log.mjs';
@@ -680,7 +681,12 @@ export async function serveMain(argv = process.argv.slice(2)) {
     // createSupervisor({ ... toolchain }) below) -- threaded into the
     // dashboard too so its header line and the health JSON can never
     // disagree about the recorded node/bd.
-    const dashboard = createDashboard({ ledger, watchdog, backlog, beadsIdentity, consoleOrigin, finishedRuns, toolchain });
+    // Sprint rows pull each child's own GET /state?summary=1; the port comes
+    // from the shared ledger childPid -> spawner live-port resolver.
+    const dashboard = createDashboard({
+        ledger, watchdog, backlog, beadsIdentity, consoleOrigin, finishedRuns, toolchain,
+        resolvePort: createChildPortResolver({ ledger, spawner }),
+    });
 
     // docs/dolt-sync-redesign.md Part 3.3: kill any orphaned ephemeral
     // `dolt sql-server` a mid-settle orchestrator death left behind on a
