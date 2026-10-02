@@ -259,7 +259,7 @@ export async function serveMain(argv = process.argv.slice(2)) {
         // at each spawn (not captured at startup) so an identity recovered
         // by GET /api/health?refresh=1 reaches later sprints; while it is
         // unknown, --expect-beads is omitted and the engine falls back to
-        // the orchestrator member's own identity.
+        // the backlog member's own identity.
         cwd: repoRoot,
         expectBeads: () => {
             const id = beadsIdentity.get();

@@ -49,7 +49,7 @@ test('claimBeadsBatched: one invocation claims multiple ids (the core batching p
     });
 
     const { claimedBeadIds, skippedBeadIds } = await claimBeadsBatched({
-        command, orchestratorMember: 'orchestrator', beadIds: ['BD-1', 'BD-2', 'BD-3'],
+        command, backlogMember: 'orchestrator', beadIds: ['BD-1', 'BD-2', 'BD-3'],
     });
 
     assert.deepEqual(claimedBeadIds, ['BD-1', 'BD-2', 'BD-3']);
@@ -66,7 +66,7 @@ test('claimBeadsBatched: a partial failure (some ids already claimed elsewhere /
     const { command } = makeCommandMock(() => OK_JSON(['BD-1', 'BD-3']));
 
     const { claimedBeadIds, skippedBeadIds } = await claimBeadsBatched({
-        command, orchestratorMember: 'orchestrator', beadIds: ['BD-1', 'BD-2', 'BD-3'],
+        command, backlogMember: 'orchestrator', beadIds: ['BD-1', 'BD-2', 'BD-3'],
     });
 
     assert.deepEqual(claimedBeadIds, ['BD-1', 'BD-3']);
@@ -76,7 +76,7 @@ test('claimBeadsBatched: a partial failure (some ids already claimed elsewhere /
 test('claimBeadsBatched: every id skipped when the returned array is empty (all already claimed elsewhere)', async () => {
     const { command } = makeCommandMock(() => '[]');
     const { claimedBeadIds, skippedBeadIds } = await claimBeadsBatched({
-        command, orchestratorMember: 'orchestrator', beadIds: ['BD-1', 'BD-2'],
+        command, backlogMember: 'orchestrator', beadIds: ['BD-1', 'BD-2'],
     });
     assert.deepEqual(claimedBeadIds, []);
     assert.deepEqual(skippedBeadIds, ['BD-1', 'BD-2']);
@@ -86,7 +86,7 @@ test('claimBeadsBatched: a thrown command() (total call failure) degrades to "ev
     const command = async () => { throw new Error('member unreachable'); };
     const logs = [];
     const { claimedBeadIds, skippedBeadIds } = await claimBeadsBatched({
-        command, orchestratorMember: 'orchestrator', beadIds: ['BD-1', 'BD-2'], log: (m) => logs.push(m),
+        command, backlogMember: 'orchestrator', beadIds: ['BD-1', 'BD-2'], log: (m) => logs.push(m),
     });
     assert.deepEqual(claimedBeadIds, []);
     assert.deepEqual(skippedBeadIds, ['BD-1', 'BD-2']);
@@ -96,7 +96,7 @@ test('claimBeadsBatched: a thrown command() (total call failure) degrades to "ev
 test('claimBeadsBatched: an empty beadIds input is a no-op -- no command() call at all', async () => {
     const { command, calls } = makeCommandMock(() => { throw new Error('must never be called'); });
     const { claimedBeadIds, skippedBeadIds } = await claimBeadsBatched({
-        command, orchestratorMember: 'orchestrator', beadIds: [],
+        command, backlogMember: 'orchestrator', beadIds: [],
     });
     assert.deepEqual(claimedBeadIds, []);
     assert.deepEqual(skippedBeadIds, []);
@@ -106,7 +106,7 @@ test('claimBeadsBatched: an empty beadIds input is a no-op -- no command() call 
 test('claimBeadsBatched: malformed/non-JSON output from bd is a fatal parse error, never silently swallowed', async () => {
     const command = async () => 'not valid json {{{';
     await assert.rejects(
-        () => claimBeadsBatched({ command, orchestratorMember: 'orchestrator', beadIds: ['BD-1'] }),
+        () => claimBeadsBatched({ command, backlogMember: 'orchestrator', beadIds: ['BD-1'] }),
         /bd JSON Parse Error/,
     );
 });
@@ -117,7 +117,7 @@ test('claimBeadsBatched: a single id still works (batching is a superset of the 
         return OK_JSON(['BD-1']);
     });
     const { claimedBeadIds, skippedBeadIds } = await claimBeadsBatched({
-        command, orchestratorMember: 'orchestrator', beadIds: ['BD-1'],
+        command, backlogMember: 'orchestrator', beadIds: ['BD-1'],
     });
     assert.deepEqual(claimedBeadIds, ['BD-1']);
     assert.deepEqual(skippedBeadIds, []);

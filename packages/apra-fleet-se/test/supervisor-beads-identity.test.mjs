@@ -200,7 +200,7 @@ describe('createBeadsIdentityState', () => {
     test('the warning texts say what was found AND what to do', () => {
         const none = formatNoBeadsWarning('C:\\somewhere\\else');
         assert.match(none, /^no beads database found walking up from C:\\somewhere\\else\./);
-        assert.match(none, /Backlog and scope-overlap checks are disabled and sprints will verify against the orchestrator member's beads instead\./);
+        assert.match(none, /Backlog and scope-overlap checks are disabled and sprints will verify against the backlog member's beads instead\./);
         assert.match(none, /To fix: restart fleet-se from inside the project folder, or pass --beads-dir <project-or-\.beads-path>, then GET \/api\/health\?refresh=1\./);
         const failed = formatProbeFailedWarning('/proj', new Error('bd: command not found'));
         assert.match(failed, /^could not resolve the beads identity under \/proj: bd: command not found\./);

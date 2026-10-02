@@ -4,7 +4,7 @@ import { runDevelopLoopScenario, withScenarioMarkers } from './helpers/mock-spri
 
 // =============================================================================
 // The sprint-start memory sweep, end to end through the real runner.js: the
-// seeded token-usage memories are forgotten on the orchestrator member before
+// seeded token-usage memories are forgotten on the backlog member before
 // any dispatch, one WARNING line names them, the legitimate memory stays, and
 // the sprint proceeds.
 // =============================================================================

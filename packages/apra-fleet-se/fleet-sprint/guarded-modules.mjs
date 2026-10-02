@@ -66,6 +66,7 @@ export const GUARDED_MODULES = [
     'prompts.mjs',
     'worklists.mjs',
     'sprint-args.mjs',
+    'backlog-role.mjs',
     'git-sync.mjs',
     'coordination.mjs',
     'kb.mjs',

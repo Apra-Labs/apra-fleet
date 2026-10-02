@@ -18,6 +18,7 @@ import {
 import { beadsExtension } from '../fleet-sprint/viewer-extensions.mjs';
 import { validateIssueId, validateBranchName, checkMemberTopology, createMemberReservationClient, resyncReacquiredMember, commandResultToSoftGit } from '../fleet-sprint/runner.js';
 import { normalizeRole } from '../fleet-sprint/contracts.mjs';
+import { ROLE_BACKLOG, resolveBacklogRoleAlias } from '../fleet-sprint/backlog-role.mjs';
 import { BEADS_IDENTITY_PROBES, parseBeadsIdentity, formatBeadsIdentity, parseExpectedIdentity } from '../fleet-sprint/beads-identity.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -159,7 +160,7 @@ export function buildOptionsSpec() {
         // The beads identity (JSON, serializeExpectedIdentity output) every
         // member's bd must resolve to, injected by the supervisor's spawner;
         // env fallback FLEET_SPRINT_EXPECT_BEADS. Omitted (direct launch):
-        // the runner takes the expectation from the orchestrator member.
+        // the runner takes the expectation from the backlog member.
         'expect-beads': { type: 'string' },
         budget: { type: 'string' },
         // Stabilization Issue 32: per-dispatch time budget in seconds
@@ -211,7 +212,7 @@ Options:
       --expect-beads <json>    Beads identity every member must resolve to, as JSON
                                 ({"beadsDir","prefix","syncRemote","repoRemote"}). Normally injected by
                                 the supervisor; env fallback FLEET_SPRINT_EXPECT_BEADS. Omitted: the
-                                orchestrator member's own 'bd where' becomes the expectation and every
+                                backlog member's own 'bd where' becomes the expectation and every
                                 other member must match it. A mismatch aborts before any bd mutation.
       --budget <usd>            USD ceiling for this run's total estimated spend. Optional;
                                 omitted (the default) means unlimited, identical to prior behavior.
@@ -261,7 +262,18 @@ export function parseCliArgs(argv) {
  * @returns {Promise<object|undefined>}
  */
 export async function resolveRoleMap(rawValue, deps = {}) {
-    if (rawValue === undefined) return undefined;
+    return (await resolveRoleMapWithWarnings(rawValue, deps)).roleMap;
+}
+
+/**
+ * Same as resolveRoleMap() but also returns the backlog-alias deprecation
+ * warnings, so main() can print them and forward them to the runner (which
+ * logs them in the run log -- the rewritten roleMap no longer carries the
+ * deprecated key, so the runner could not detect it itself).
+ * @returns {Promise<{ roleMap: object|undefined, warnings: string[] }>}
+ */
+export async function resolveRoleMapWithWarnings(rawValue, deps = {}) {
+    if (rawValue === undefined) return { roleMap: undefined, warnings: [] };
     const readFile = deps.readFile || fs.readFile;
 
     let jsonText = rawValue;
@@ -294,12 +306,12 @@ export async function resolveRoleMap(rawValue, deps = {}) {
     // contracts.normalizeRole() (trim + lowercase) HERE -- this is where
     // roleMap keys first enter the system from a user-supplied
     // `--role-map`/`@file.json` value, so callers of `resolveRoleMap()`
-    // (including this CLI's own pre-transport `orchestratorMember` lookup
+    // (including this CLI's own pre-transport `backlogMember` lookup
     // below, and runner.js's `validateArgs()`, which normalizes again
     // defensively for callers that bypass the CLI and pass a raw roleMap
     // straight to `engine.executeFile()`) can rely on keys already being in
     // canonical lowercase form. This also covers the 'orchestrator'
-    // application-level pseudo-role key (see runner.js's ROLE_ORCHESTRATOR
+    // application-level pseudo-role key (see runner.js's ROLE_BACKLOG
     // doc comment) -- it is not a vendored contracts.ROLES member but is
     // still just a plain string key here, so the same normalization applies.
     const normalized = {};
@@ -314,7 +326,12 @@ export async function resolveRoleMap(rawValue, deps = {}) {
         normalized[key] = members;
     }
 
-    return normalized;
+    // Deprecated 'orchestrator' key -> 'backlog'; a conflict throws.
+    try {
+        return resolveBacklogRoleAlias(normalized);
+    } catch (err) {
+        throw new Error(`Error: --role-map ${err.message}`);
+    }
 }
 
 /**
@@ -330,7 +347,7 @@ export async function resolveRoleMap(rawValue, deps = {}) {
  * }} opts
  * @returns {object}
  */
-export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goal, maxCycles, requirementsFile, roleMap, budget, dispatchTimeoutS, usageLimitMaxWaitS, usageLimitMaxReprobes, serviceUrl, runId, expectBeads, skipRegression }) {
+export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goal, maxCycles, requirementsFile, roleMap, roleMapWarnings, budget, dispatchTimeoutS, usageLimitMaxWaitS, usageLimitMaxReprobes, serviceUrl, runId, expectBeads, skipRegression }) {
     const args = {
         target_issues: targetIssues,
         members,
@@ -341,6 +358,7 @@ export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goa
     };
     if (requirementsFile !== undefined) args.requirementsFile = requirementsFile;
     if (roleMap !== undefined) args.roleMap = roleMap;
+    if (Array.isArray(roleMapWarnings) && roleMapWarnings.length > 0) args.roleMapWarnings = roleMapWarnings;
     if (budget !== undefined) args.budget = budget;
     if (dispatchTimeoutS !== undefined) args.dispatch_timeout_s = dispatchTimeoutS;
     // apra-fleet-hzeb.4.2: the CLI-overridable usage-limit pause budgets,
@@ -382,7 +400,7 @@ export function resolveExpectBeads(flagValue, env = process.env) {
 }
 
 /**
- * Runs `bd where --json` on the ORCHESTRATOR MEMBER (never locally -- the
+ * Runs `bd where --json` on the BACKLOG MEMBER (never locally -- the
  * sprint's bd commands run in that member's workFolder, see
  * checkIssuesExistOnMember below) so the startup banner can show which
  * .beads the sprint is about to mutate, and so a member with no beads
@@ -470,9 +488,9 @@ export function resolveMemberValidation({ rawMembers, registeredNames, allowMiss
 }
 
 /**
- * Verifies every target issue exists, run on the ORCHESTRATOR MEMBER via the
+ * Verifies every target issue exists, run on the BACKLOG MEMBER via the
  * fleet transport (`runBdShow`) -- NOT on the local machine. The sprint's own
- * `bd` commands run against the orchestrator member's beads DB (see
+ * `bd` commands run against the backlog member's beads DB (see
  * fleet-sprint/runner.js's SUPPORTED-TOPOLOGY NOTE), which can be a different
  * database than whatever is local to wherever this CLI process happens to
  * run. Checking locally could pass (or worse, resolve a same-named-but-
@@ -632,11 +650,13 @@ async function main() {
     // is somehow bypassed -- both layers share the exact same validators
     // (imported from runner.js) so there is a single source of truth.
     let roleMap;
+    let roleMapWarnings = [];
     try {
         targetIssues.forEach(validateIssueId);
         validateBranchName(branchName, 'branch');
         validateBranchName(baseBranch, 'base');
-        roleMap = await resolveRoleMap(values['role-map']);
+        ({ roleMap, warnings: roleMapWarnings } = await resolveRoleMapWithWarnings(values['role-map']));
+        for (const w of roleMapWarnings) console.warn(`Warning: ${w}`);
     } catch (err) {
         console.error(`Error: ${err.message}`);
         process.exit(1);
@@ -686,7 +706,7 @@ async function main() {
     // 1. Attach to the fleet MCP transport FIRST, so member validation, the
     // "bd show" issue precondition (below), and the sprint itself all run
     // against the same live client/connection -- and so the issue
-    // precondition can target the orchestrator MEMBER rather than the local
+    // precondition can target the backlog MEMBER rather than the local
     // machine (apra-fleet-unw2.16, N14 (d): the sprint's own `bd` commands
     // run on the member via the fleet transport, which can be a different
     // database than whatever is local to this CLI process).
@@ -726,9 +746,9 @@ async function main() {
     let validMembers = [];
     // apra-fleet: names flagged unreservable in the SAME list_members read --
     // hoisted out of this try block so the topology filter below (item 4) can
-    // key on the actual unreservable flag, not on roleMap.orchestrator
+    // key on the actual unreservable flag, not on roleMap.backlog
     // membership (which would also match a real, git-having dispatch member
-    // that is ADDITIONALLY role-mapped as orchestrator, and wrongly skip its
+    // that is ADDITIONALLY role-mapped as backlog, and wrongly skip its
     // legitimate same-HEAD topology check).
     let unreservableNames = new Set();
     try {
@@ -751,18 +771,18 @@ async function main() {
         process.exit(1);
     }
 
-    // 3. bd show issue precondition -- run on the orchestrator MEMBER via the
+    // 3. bd show issue precondition -- run on the backlog MEMBER via the
     // fleet transport (apra-fleet-unw2.16, N14 (d)), immediately after the
     // transport/initialize handshake above and before any sprint phase
-    // begins. The orchestrator member mirrors fleet-sprint/runner.js's
-    // `getMemberForRole(ROLE_ORCHESTRATOR)` resolution: roleMap.orchestrator[0]
+    // begins. The backlog member mirrors fleet-sprint/runner.js's
+    // `getMemberForRole(ROLE_BACKLOG)` resolution: roleMap.backlog[0]
     // if configured, else the first valid member. `roleMap` here is already
     // key-normalized by `resolveRoleMap()` above (N15, apra-fleet-unw2.11),
-    // so the canonical lowercase 'orchestrator' key is the only one that can
+    // so the canonical lowercase 'backlog' key is the only one that can
     // be present -- this must NOT read a capitalized 'Orchestrator' key (the
     // N15 finding: that stray casing silently never matched a roleMap
     // author's natural lowercase key).
-    const orchestratorMember = (roleMap && roleMap.orchestrator && roleMap.orchestrator[0]) || validMembers[0];
+    const backlogMember = (roleMap && roleMap[ROLE_BACKLOG] && roleMap[ROLE_BACKLOG][0]) || validMembers[0];
     const runProbe = async (cmd, member) => {
         const res = await fleetApi.executeCommand({ command: cmd, member_name: member });
         const text = res && res.content && res.content[0] ? res.content[0].text : '';
@@ -771,20 +791,20 @@ async function main() {
         if (exitCode !== 0) throw new Error(text || `exit code ${exitCode}`);
         return res && res.structuredContent && typeof res.structuredContent.stdout === 'string' ? res.structuredContent.stdout : text;
     };
-    // Which .beads the orchestrator member's bd resolves to -- probed BEFORE
+    // Which .beads the backlog member's bd resolves to -- probed BEFORE
     // the `bd show` precondition below so a member with no beads database
     // is reported plainly (a warning with the fix) ahead of the bare bd
     // error that precondition would otherwise be the first to show, and
     // shown in the banner. A failed probe is a warning, not an exit: the
     // existing preconditions decide. The runner repeats this for every
     // member and hard-fails only a mismatch against --expect-beads.
-    const beadsProbe = await probeBeadsIdentityOnMember({ member: orchestratorMember, runCommand: runProbe });
+    const beadsProbe = await probeBeadsIdentityOnMember({ member: backlogMember, runCommand: runProbe });
     if (!beadsProbe.ok) {
         console.warn(beadsProbe.message);
     }
     const issueCheck = await checkIssuesExistOnMember({
         targetIssues,
-        member: orchestratorMember,
+        member: backlogMember,
         runBdShow: async (id, member) => fleetApi.executeCommand({ command: `bd show ${id}`, member_name: member }),
     });
     if (!issueCheck.ok) {
@@ -797,7 +817,7 @@ async function main() {
     //
     // LEGACY mode (default): the runner's cross-member coherence relies on
     // every member sharing one workspace/DB -- every orchestrator-side `bd`
-    // command runs against the orchestrator member's beads DB, and the sprint
+    // command runs against the backlog member's beads DB, and the sprint
     // git branch is only coherent if every member operates on the same working
     // state. Enforce that by comparing `git rev-parse HEAD` across members and
     // refusing to start on a mismatch.
@@ -823,16 +843,16 @@ async function main() {
     // fleet-sprint orchestrator, docs/design-orchestrator-worktree-model-v2.md)
     // may have no real checkout at all, and `git rev-parse HEAD` on one
     // hard-fails the launch (process.exit(1) just below). Deliberately keyed
-    // on the `unreservable` FLAG, not on roleMap.orchestrator membership: a
+    // on the `unreservable` FLAG, not on roleMap.backlog membership: a
     // real, git-having dispatch member that is ADDITIONALLY role-mapped as
-    // orchestrator (a supported topology, runner.js's branchEnsureMembers
+    // backlog (a supported topology, runner.js's branchEnsureMembers
     // dedupe comment) must still pass its legitimate same-HEAD check against
-    // the other dispatch members -- filtering on roleMap.orchestrator alone
+    // the other dispatch members -- filtering on roleMap.backlog alone
     // would silently skip that check instead of just skipping a git-less
     // member. This only matters when an operator also lists a shared member
-    // in --members (redundant with roleMap.orchestrator, and not required);
-    // a normal launch that passes the shared orchestrator ONLY via
-    // roleMap.orchestrator was never affected.
+    // in --members (redundant with roleMap.backlog, and not required);
+    // a normal launch that passes the shared backlog member ONLY via
+    // roleMap.backlog was never affected.
     const topologyMembersFiltered = validMembers.filter((m) => !unreservableNames.has(m));
     // Degrade back to the unfiltered list if excluding unreservable members
     // would empty it out entirely -- checkMemberTopology refuses to start on
@@ -863,7 +883,7 @@ async function main() {
     console.log(`Goal Constraint: ${goal}`);
     console.log(`Max Cycles: ${maxCycles}`);
     console.log(`Active Members (${validMembers.length}): ${validMembers.join(', ')}`);
-    console.log(`Beads: ${formatBeadsIdentity(beadsProbe.identity, { label: `orchestrator '${orchestratorMember}'` })}`);
+    console.log(`Beads: ${formatBeadsIdentity(beadsProbe.identity, { label: `backlog '${backlogMember}'` })}`);
     if (expectedBeads) {
         console.log(`Beads: ${formatBeadsIdentity(expectedBeads, { label: 'expected (--expect-beads)' })}`);
     }
@@ -1032,6 +1052,7 @@ async function main() {
                 maxCycles,
                 requirementsFile,
                 roleMap,
+                roleMapWarnings,
                 budget,
                 dispatchTimeoutS,
                 usageLimitMaxWaitS,

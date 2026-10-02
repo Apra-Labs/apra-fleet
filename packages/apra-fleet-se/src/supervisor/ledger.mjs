@@ -64,7 +64,7 @@ export const LEDGER_FILENAME = 'reservations.json';
  *
  * @typedef {object} Reservation
  * @property {string[]} members      Full member set reserved (union of members +
- *                                   every roleMap value incl. the orchestrator).
+ *                                   every roleMap value incl. the backlog role).
  * @property {string[]} issueRoots   Root issue id(s) the sprint launched with;
  *                                   the identity key for the issue-scope axis.
  * @property {number|null} childPid  Detached child PID (for restart PID-probe

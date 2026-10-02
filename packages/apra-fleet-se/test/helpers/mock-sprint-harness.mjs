@@ -2099,6 +2099,9 @@ export async function runDevelopLoopScenario(tag, {
     // pushCode gating) against a member that provably never receives a
     // code-writing dispatch.
     roleMap,
+    // Backlog-alias warnings the CLI forwards as `args.roleMapWarnings`
+    // (bin/cli.mjs resolveRoleMapWithWarnings -> buildRunnerArgs).
+    roleMapWarnings,
     // Beads identity precondition passthroughs: `beadsIdentity` is
     // buildMockFleetApi's per-member probe override map (see its option
     // comment); `expectBeads` is the raw `args.expect_beads` value (a JSON
@@ -2221,6 +2224,7 @@ export async function runDevelopLoopScenario(tag, {
                 ...(resumeModelSwitch !== undefined ? { resume_model_switch: resumeModelSwitch } : {}),
                 ...(worklistEffortBudget !== undefined ? { worklist_effort_budget: worklistEffortBudget } : {}),
                 ...(roleMap !== undefined ? { roleMap } : {}),
+                ...(roleMapWarnings !== undefined ? { roleMapWarnings } : {}),
                 ...(expectBeads !== undefined ? { expect_beads: expectBeads } : {}),
                 ...(skipRegression !== undefined ? { skip_regression: skipRegression } : {}),
             }, true);

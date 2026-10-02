@@ -25,11 +25,11 @@ const scriptPath = path.join(__dirname, '../fleet-sprint/runner.js');
 // eft.24.1 seeded bdListScoped's scopeIds with a childless leaf target's own
 // id; eft.24.2 covered that seed with mock-sprint coverage. The bug still
 // recurred live because members in this always-on multi-sprint supervisor
-// fleet are PERSISTENT across sprints, so the orchestrator member's local
+// fleet are PERSISTENT across sprints, so the backlog member's local
 // beads clone can be stale relative to the shared Dolt remote at the exact
 // moment a NEW sprint is dispatched: a freshly bd-created childless canary
 // target is genuinely invisible to fetchAllBeadsShared()'s
-// `bd list --all --limit 0 --json` (issued against the orchestrator member)
+// `bd list --all --limit 0 --json` (issued against the backlog member)
 // until that clone pulls it in. eft.24.1's scopeIds seed only matters if the
 // target bead is actually PRESENT in the queried result to begin with -- on a
 // stale clone it is not, regardless of scopeIds membership.
@@ -51,7 +51,7 @@ const scriptPath = path.join(__dirname, '../fleet-sprint/runner.js');
 //     state (via the base mock's real bd-replay execution) once the D-pull
 //     has fired.
 //
-// eft.34's fix is `await doltPullBefore(orchestratorMember, ...)` immediately
+// eft.34's fix is `await doltPullBefore(backlogMember, ...)` immediately
 // before pre-sprint validation's first bd query (updateDashboard's
 // bdListScoped('') call, then the `--ready`/notDoneBeads queries). With that
 // D-pull in place, the very first `bd list --all` read pre-sprint validation
