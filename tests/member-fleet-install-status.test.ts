@@ -113,7 +113,7 @@ describe('remote member: install, self-register, verify MEMBER session', () => {
     const world = newWorld({ installed: null });
     world.claudeJson = entryFor(agent);
     const s = await probeMemberFleetMcp(agent, deps(world));
-    expect(s).toEqual({ state: 'available', version: VERSION, checkedAt: expect.any(String) });
+    expect(s).toEqual({ state: 'available', version: VERSION, checkedAt: expect.any(String), fleetInstalledAt: expect.any(String) });
     expect(world.transfers).toBe(1); // an install actually ran
     const reg = world.execLog.find(c => c.includes("'register-member'"))!;
     expect(reg).toContain(`'register-member' '--type' 'local' '--id' '${agent.id}' '--name' 'bella' '--path' '${WORK}' '--llm' 'claude'`);
