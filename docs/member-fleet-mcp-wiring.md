@@ -41,7 +41,8 @@ Compose edits files the user may own, so it never destroys them:
 ## Member-side install
 
 `register_member` and `update_member` ensure a remote member runs its own
-apra-fleet, at least as new as the orchestrator, installed in HTTP member mode
+apra-fleet (`update_member` installs or upgrades only on a provider change or when
+called with `fleet_install: "auto"`), at least as new as the orchestrator, installed in HTTP member mode
 (server and auto-start only). `remove_member` undoes the wiring.
 
 - Version probe on the member's own install; on PowerShell the exit code is read
