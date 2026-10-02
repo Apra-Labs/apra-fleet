@@ -84,9 +84,9 @@ describe('verifyBeadsIdentity', () => {
         const { command } = fakeCommand({ orch: identityAnswers({ sync: '' }), m1: identityAnswers({ sync: '' }) });
         const logs = [];
         const res = await verifyBeadsIdentity({ command, log: (l) => logs.push(l), backlogMember: 'orch', members: ['m1'] });
-        assert.equal(res.expectedFrom, 'orchestrator');
+        assert.equal(res.expectedFrom, 'backlog');
         assert.equal(res.expected.beadsDir, '/w/.beads');
-        assert.ok(logs.some((l) => l.includes("taking the expectation from the orchestrator member 'orch'")));
+        assert.ok(logs.some((l) => l.includes("taking the expectation from the backlog member 'orch'")));
         assert.equal(logs.filter((l) => l.startsWith('beads ok: ')).length, 2);
     });
 
@@ -205,10 +205,10 @@ describe('verifyBeadsIdentity', () => {
         const res = await verifyBeadsIdentity({ command, log: (l) => logs.push(l), publishState: (ns, d) => published.push(d), backlogMember: 'orch', members: ['m1', 'm2'] });
         assert.equal(res.expectedFrom, 'none');
         assert.equal(res.expected, null);
-        const warn = logs.find((l) => l.includes("no expected beads identity was supplied and the orchestrator member 'orch' could not report its beads database"));
+        const warn = logs.find((l) => l.includes("no expected beads identity was supplied and the backlog member 'orch' could not report its beads database"));
         assert.ok(warn, JSON.stringify(logs));
         assert.match(warn, /no cross-member beads identity check will happen this sprint/);
-        assert.match(warn, /To restore it: fix the orchestrator member's beads \(run 'bd where' in the member's workFolder; ensure bd is installed there and the folder contains the project's \.beads\), or launch via the supervisor so --expect-beads is supplied/);
+        assert.match(warn, /To restore it: fix the backlog member's beads \(run 'bd where' in the member's workFolder; ensure bd is installed there and the folder contains the project's \.beads\), or launch via the supervisor so --expect-beads is supplied/);
         // m2 differs from m1 on prefix and origin, but with no expectation nothing is compared.
         assert.deepEqual(Object.keys(res.members), ['m1', 'm2']);
         assert.equal(res.members.m2.prefix, 'unrelated');
@@ -225,10 +225,10 @@ describe('verifyBeadsIdentity', () => {
             verifyBeadsIdentity({ command, log: (l) => logs.push(l), backlogMember: 'orch', members: ['m1', 'm2'] }),
             (err) => err instanceof BeadsIdentityError && err.member === 'm2' && err.mismatches[0].field === 'repoRemote'
         );
-        const derived = logs.filter((l) => l.includes("the orchestrator member 'orch' it was derived from could not report syncRemote"));
+        const derived = logs.filter((l) => l.includes("the backlog member 'orch' it was derived from could not report syncRemote"));
         assert.equal(derived.length, 1, JSON.stringify(logs));
         assert.match(derived[0], /syncRemote is not compared on any member this sprint/);
-        assert.match(derived[0], /To fix: set it on that member with 'bd config set sync\.remote <url>' in its workFolder \(on the orchestrator member\), or launch via the supervisor so --expect-beads is supplied/);
+        assert.match(derived[0], /To fix: set it on that member with 'bd config set sync\.remote <url>' in its workFolder \(on the backlog member\), or launch via the supervisor so --expect-beads is supplied/);
         assert.ok(!logs.some((l) => l.includes("member 'orch' could not report syncRemote")), 'the orchestrator gap is not reported twice');
         // m1 HAS a sync.remote; the expectation lacks one, so it is skipped rather than mismatched.
         assert.ok(logs.some((l) => l.startsWith('beads ok: m1 ')));
@@ -248,7 +248,7 @@ describe('verifyBeadsIdentity', () => {
         assert.deepEqual(Object.keys(BEADS_IDENTITY_FAILURE_REASONS), ['MISMATCH']);
     });
 
-    test('rejects a missing orchestrator member up front', async () => {
+    test('rejects a missing backlog member up front', async () => {
         await assert.rejects(verifyBeadsIdentity({ command: async () => ({ ok: true, output: '' }), backlogMember: '', members: [] }), TypeError);
     });
 });

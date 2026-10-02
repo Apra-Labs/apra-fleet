@@ -413,7 +413,7 @@ export async function verifyDoerStreakClosed({ command, backlogMember, beadIds, 
     // closes. Routed through the single dolt-sync module's purpose-based BEFORE
     // bracket (apra-fleet-417.2.1); behavior is identical to the previous
     // direct doltPullBefore() call.
-    // Thread the orchestrator member's REGISTERED shell into dolt-settle,
+    // Thread the backlog member's REGISTERED shell into dolt-settle,
     // guarded on args.callTool the same way the pre-dispatch bracket is
     // (apra-fleet-7dir.24).
     const shell = await resolveSettleShell({ args, member: backlogMember, log, sprintState });

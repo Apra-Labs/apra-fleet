@@ -150,7 +150,7 @@ const KNOWN_ARG_KEYS = new Set([
     // `--expect-beads`, env fallback FLEET_SPRINT_EXPECT_BEADS, or an already
     // parsed record from a programmatic caller). Consumed by the
     // verifyBeadsIdentity precondition (beads-identity-check.mjs); absent, the
-    // orchestrator member's own probed identity becomes the expectation.
+    // backlog member's own probed identity becomes the expectation.
     'expect_beads',
 ]);
 

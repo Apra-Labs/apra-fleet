@@ -152,7 +152,7 @@ export async function runFinalReviewPhase({
     // the sprint's closing evidence (finalOpenAtGoal / finalClosedCount)
     // reflects every member's D-pushed beads state, not the orchestrator's
     // stale local copy.
-    // Thread the orchestrator member's REGISTERED shell into dolt-settle,
+    // Thread the backlog member's REGISTERED shell into dolt-settle,
     // guarded on args.callTool the same way the pre-dispatch bracket is
     // (apra-fleet-7dir.24).
     const finalReviewSettleShell = await resolveSettleShell({ args, member: backlogMember, log, sprintState });

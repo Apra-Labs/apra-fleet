@@ -308,7 +308,7 @@ const DISPATCH_ROLE_PATH = path.join(__dirname, '../fleet-sprint/dispatch-role.m
 // `bd update <id> --status=open` reopen call sites with them -- the per-round
 // reviewer's, Final Review's (the --append-notes variant) and Re-Review's.
 // All three now share ONE applyGuardedReopens() site, which dispatches with
-// `member_name: member` (the orchestrator member each call site passes in),
+// `member_name: member` (the backlog member each call site passes in),
 // verified compliant. Not a member_name regression and not left unguarded --
 // beads-transitions.mjs is registered in GUARDED_MODULES, so the aggregate
 // checkModules(guardedModulePaths()) test below scans that shared site. Note
@@ -1429,7 +1429,7 @@ test('every command() call site in fatal-diagnostics.mjs passes member_name or m
 // beads-memory-hygiene.mjs -- the sprint-start token-usage memory sweep.
 //
 // Its command() baseline is TWO: the memory list and the per-key forget, both
-// run on the orchestrator member named explicitly. Its agent() baseline is
+// run on the backlog member named explicitly. Its agent() baseline is
 // ZERO: the sweep never dispatches a role.
 // =============================================================================
 const BEADS_MEMORY_HYGIENE_PATH = path.join(__dirname, '../fleet-sprint/beads-memory-hygiene.mjs');

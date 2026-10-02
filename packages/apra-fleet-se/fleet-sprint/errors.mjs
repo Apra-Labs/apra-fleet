@@ -794,12 +794,12 @@ export class ConcurrentSyncBracketError extends WorkflowError {
 // closed machine-readable vocabulary. Before this existed the block threw bare
 // `Error`s whose only discriminator was their prose, so a caller could not
 // tell "there is genuinely no ready work" (an operator-facing, often benign
-// outcome) from "this orchestrator's bd clone cannot see the target beads at
+// outcome) from "this backlog member's bd clone cannot see the target beads at
 // all" (a sync fault) or "the scope is deadlocked" (a graph fault) without
 // substring-matching a human-readable sentence.
 //
 //   TARGET_NOT_VISIBLE   One or more target issue ids are not present in the
-//                        orchestrator member's own bd clone AT ALL. NOT the
+//                        backlog member's own bd clone AT ALL. NOT the
 //                        same as those beads being closed: they are invisible
 //                        here, usually because they were created/mutated on a
 //                        different clone that was never dolt-pushed to the
@@ -846,7 +846,7 @@ export const PRE_SPRINT_REFUSAL_REASONS = Object.freeze({
  * @property {string} reason - one of PRE_SPRINT_REFUSAL_REASONS
  * @property {string|null} scope - the sprint filter the refusal was raised for
  * @property {string[]} [invisibleTargets] - TARGET_NOT_VISIBLE: the ids missing
- *   from the orchestrator member's clone
+ *   from the backlog member's clone
  * @property {Array<{blockedIssue: string, blockedBy: string}>} [cyclePairs] -
  *   CYCLE_REPAIR_FAILED: the parent-child + blocks edge pairs whose removal
  *   was attempted
@@ -894,7 +894,7 @@ export const BEADS_IDENTITY_FAILURE_REASONS = Object.freeze({
  * Thrown by verifyBeadsIdentity (beads-identity-check.mjs) BEFORE any
  * mutating bd command when a member's probed identity (`bd where` / `bd
  * config get sync.remote` / `git remote get-url origin`) DIFFERS from the
- * expected one (the supervisor's expectation, or the orchestrator member's
+ * expected one (the supervisor's expectation, or the backlog member's
  * own identity) on a field that resolved on both sides. A probe that fails
  * or cannot be parsed is a logged warning, never this error: only a proven
  * mismatch is a data-corruption risk worth refusing the sprint for.

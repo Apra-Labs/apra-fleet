@@ -457,7 +457,7 @@ test('mock sprint: multi-member doer pool distributes work and ensures branch on
 
         // apra-fleet-unw2.4 (N4): branch-ensure must be dispatched to EVERY member
         // in the union of the orchestrator/doer/reviewer pools, not just the
-        // orchestrator member. With 2 distinct members configured, the sprint-
+        // backlog member. With 2 distinct members configured, the sprint-
         // branch ensure (`git checkout -B <branch> origin/<base>`) must land on
         // BOTH members' checkouts before the first doer round.
         //
@@ -479,7 +479,7 @@ test('mock sprint: multi-member doer pool distributes work and ensures branch on
         );
         // The modeled per-member git state must agree: BOTH members' checkouts had
         // the sprint branch ensured (this is the state the pre-fix runner failed
-        // to establish on the non-orchestrator member).
+        // to establish on the non-backlog member).
         const m1Git = multiDoer.memberGitState.get('m1');
         const m2Git = multiDoer.memberGitState.get('m2');
         check(

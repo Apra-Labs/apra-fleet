@@ -1311,7 +1311,7 @@ async function runSprintCycle(context) {
             if (Array.isArray(list)) for (const m of list) roleMapSpecialists.add(m);
         }
     }
-    // apra-fleet: roleMap.orchestrator members are excluded from BOTH the
+    // apra-fleet: roleMap.backlog members are excluded from BOTH the
     // generalist pool and its degenerate physicalMembers fallback -- not just
     // from the generalist filter -- because the orchestrator role may be a
     // shared/unreservable, git-less member (docs/design-orchestrator-
@@ -1389,7 +1389,7 @@ async function runSprintCycle(context) {
     // fix) and that field is left out of the comparison -- only a proven
     // mismatch is fatal.
     // Sits here rather than next to wrapCommand() above because the
-    // orchestrator member is only resolved at this point; nothing between
+    // backlog member is only resolved at this point; nothing between
     // the two spots issues a command(). `context.verifyBeadsIdentity` is the
     // test-harness seam (same shape as the other injected preconditions);
     // there is deliberately no CLI flag to skip it.
@@ -1863,7 +1863,7 @@ async function runSprintCycle(context) {
     // silently absorbed the sprint branch's commits this way.
     //
     // SUPPORTED-TOPOLOGY NOTE: there is no cross-member bd/git sync layer here.
-    // Every `bd` command below runs against the orchestrator member's beads DB
+    // Every `bd` command below runs against the backlog member's beads DB
     // and a doer's own `bd close` runs against its member's DB, which only
     // coheres when all members share one workspace/DB (or there is a single
     // member). bin/cli.mjs enforces that via checkMemberTopology() before the
@@ -1872,7 +1872,7 @@ async function runSprintCycle(context) {
     // "Multi-member topology (fleet-sprint)".
     // apra-fleet: backlogMember is deliberately NOT included here -- the
     // orchestrator role issues only bd/Dolt commands (never git), and a
-    // shared/unreservable orchestrator member used across concurrent sprints
+    // shared/unreservable backlog member used across concurrent sprints
     // cannot be checked out onto N different branches at once. If an operator
     // explicitly role-maps a dispatch member (doer/reviewer/planner/etc.) as
     // orchestrator too, that member is still included below via its dispatch
@@ -1910,7 +1910,7 @@ async function runSprintCycle(context) {
     // Routed through the single dolt-sync module (apra-fleet-417.2.1):
     // readinessGate (apra-fleet-417.5 rename of healthGate) selects the
     // pre-flight variant of the BEFORE bracket.
-    // Thread the orchestrator member's REGISTERED shell into dolt-settle,
+    // Thread the backlog member's REGISTERED shell into dolt-settle,
     // guarded on args.callTool the same way the pre-dispatch bracket is
     // (apra-fleet-7dir.24).
     const preflightSettleShell = await resolveSettleShell({ args, member: backlogMember, log, sprintState });
@@ -2036,7 +2036,7 @@ async function runSprintCycle(context) {
     // escaped-quote-inside-quote traps). failSoft, so a probe failure can never
     // throw and kill the sprint -- it just means "skip the dependent phase".
     // Runs on `member` -- the role member about to consume the probed file --
-    // never on backlogMember: a shared/unreservable orchestrator member
+    // never on backlogMember: a shared/unreservable backlog member
     // carries no git checkout to probe.
     async function probeFileExists(filename, member) {
         const res = await command(
@@ -2055,7 +2055,7 @@ async function runSprintCycle(context) {
     // doer's work, so pull again immediately before the verification read.
     // DoltSync.syncBefore() is a benign no-op when the clone is current and
     // when no dolt remote is configured at all.
-    // Thread the orchestrator member's REGISTERED shell into dolt-settle,
+    // Thread the backlog member's REGISTERED shell into dolt-settle,
     // guarded on args.callTool the same way the pre-dispatch bracket is
     // (apra-fleet-7dir.24).
     const verifyReadSettleShell = await resolveSettleShell({ args, member: backlogMember, log, sprintState });
@@ -2140,7 +2140,7 @@ async function runSprintCycle(context) {
                 if (invisibleTargets.length > 0) {
                     throw new PreSprintValidationError(
                         `Pre-sprint validation failed: ${invisibleTargets.length} of ${targetIssues.length} target issue id(s) ` +
-                        `are not visible to the orchestrator member ('${backlogMember}')'s bd clone at all: ` +
+                        `are not visible to the backlog member ('${backlogMember}')'s bd clone at all: ` +
                         `${invisibleTargets.join(', ')}. This is NOT the same as those beads being closed/done -- it usually ` +
                         `means they were created/updated on a different clone that was never synced to the shared Dolt remote ` +
                         `(dolt-push it there first) or this member's clone has not picked them up yet. Scope: '${sprintFilter}'.`,
@@ -2781,7 +2781,7 @@ async function runSprintCycle(context) {
         // counts so the completion/stall math reads the current cross-member
         // beads state (every member's D-pushed closes) rather than the
         // orchestrator's stale local copy.
-        // Thread the orchestrator member's REGISTERED shell into dolt-settle,
+        // Thread the backlog member's REGISTERED shell into dolt-settle,
         // guarded on args.callTool the same way the pre-dispatch bracket is
         // (apra-fleet-7dir.24).
         const cycleEvalSettleShell = await resolveSettleShell({ args, member: backlogMember, log, sprintState });

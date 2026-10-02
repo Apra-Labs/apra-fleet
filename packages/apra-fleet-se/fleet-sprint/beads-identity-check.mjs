@@ -7,10 +7,10 @@
 // a sprint mutates. Nothing else in the engine verifies that the database a
 // member resolves to is the project the supervisor launched the sprint for.
 // This module runs the three read-only probes from beads-identity.mjs on the
-// orchestrator member first and then on every other distinct member, and
+// backlog member first and then on every other distinct member, and
 // compares each answer against the expected identity. The expected identity
 // is either the supervisor's (`--expect-beads`, args.expectBeads) or, absent
-// that, the orchestrator member's own probed identity -- in which case only
+// that, the backlog member's own probed identity -- in which case only
 // the OTHER members are compared and the log says so.
 //
 // Severity model (deliberate):
@@ -152,17 +152,17 @@ function unresolvedFieldWarning(member, field, probed) {
 // --expect-beads carries no value for it, or the orchestrator it was derived
 // from could not report it), so no member can be checked on it.
 function unresolvedExpectedWarning(field, expectedFrom, backlogMember) {
-    const source = expectedFrom === 'orchestrator'
-        ? `the orchestrator member '${backlogMember}' it was derived from could not report ${field}`
+    const source = expectedFrom === 'backlog'
+        ? `the backlog member '${backlogMember}' it was derived from could not report ${field}`
         : `the supplied expected beads identity carries no ${field}`;
     return `${source}; ${field} is not compared on any member this sprint. ` +
-        `To fix: ${BEADS_IDENTITY_FIELD_FIX[field]}${expectedFrom === 'orchestrator' ? ' (on the orchestrator member), or launch via the supervisor so --expect-beads is supplied' : ''}.`;
+        `To fix: ${BEADS_IDENTITY_FIELD_FIX[field]}${expectedFrom === 'backlog' ? ' (on the backlog member), or launch via the supervisor so --expect-beads is supplied' : ''}.`;
 }
 
 function noExpectationWarning(backlogMember, probed) {
-    return `no expected beads identity was supplied and the orchestrator member '${backlogMember}' could not report its beads database ` +
+    return `no expected beads identity was supplied and the backlog member '${backlogMember}' could not report its beads database ` +
         `('${BEADS_IDENTITY_PROBES.where}' -> ${probeDetail(probed, 'where')}); no cross-member beads identity check will happen this sprint. ` +
-        `To restore it: fix the orchestrator member's beads (${BEADS_IDENTITY_FIELD_FIX.prefix}), or launch via the supervisor so --expect-beads is supplied.`;
+        `To restore it: fix the backlog member's beads (${BEADS_IDENTITY_FIELD_FIX.prefix}), or launch via the supervisor so --expect-beads is supplied.`;
 }
 
 function assertMatches(member, expected, actual, cmp) {
@@ -176,7 +176,7 @@ function assertMatches(member, expected, actual, cmp) {
 }
 
 /**
- * The precondition itself. Probes the orchestrator member, then every other
+ * The precondition itself. Probes the backlog member, then every other
  * distinct member. Throws BeadsIdentityError (reason MISMATCH) before
  * returning when a field that resolved on both sides differs; every probe
  * that could not resolve a field is a logged + published warning instead.
@@ -187,7 +187,7 @@ function assertMatches(member, expected, actual, cmp) {
  *   expected?: object|null, prober?: object, timeoutS?: number,
  * }} opts
  * @returns {Promise<{
- *   expected: object|null, expectedFrom: 'args'|'orchestrator'|'none',
+ *   expected: object|null, expectedFrom: 'args'|'backlog'|'none',
  *   members: Record<string, object>, warnings: string[],
  * }>}
  *   `members[name]` is that member's probed identity record plus
@@ -215,9 +215,9 @@ export async function verifyBeadsIdentity({ command, log = () => {}, publishStat
     let expectedIdentity = expected;
     if (!expectedIdentity) {
         if (backlogHasDb) {
-            result.expectedFrom = 'orchestrator';
+            result.expectedFrom = 'backlog';
             expectedIdentity = { ...backlogProbe.identity };
-            log(`[beads-identity] no expected beads identity was supplied; taking the expectation from the orchestrator member '${backlogMember}'.`);
+            log(`[beads-identity] no expected beads identity was supplied; taking the expectation from the backlog member '${backlogMember}'.`);
         } else {
             result.expectedFrom = 'none';
             warn(noExpectationWarning(backlogMember, backlogProbe));

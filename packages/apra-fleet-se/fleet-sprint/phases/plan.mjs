@@ -367,7 +367,7 @@ export async function runPlanPhase({
                 `bd update ${id} --status=deferred`,
                 { member_name: backlogMember, silent: true, label: `Defer contested bead ${id} per plan-cap exhaustion` }
             );
-            // Stage the deferral note member-side: the orchestrator member
+            // Stage the deferral note member-side: the backlog member
             // can itself be remote, so a host-local body-file path would be
             // unreachable to `bd note`.
             const noteFile = await stageCommandBodyMemberSide({

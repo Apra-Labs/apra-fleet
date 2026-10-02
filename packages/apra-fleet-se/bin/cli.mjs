@@ -160,7 +160,7 @@ export function buildOptionsSpec() {
         // The beads identity (JSON, serializeExpectedIdentity output) every
         // member's bd must resolve to, injected by the supervisor's spawner;
         // env fallback FLEET_SPRINT_EXPECT_BEADS. Omitted (direct launch):
-        // the runner takes the expectation from the orchestrator member.
+        // the runner takes the expectation from the backlog member.
         'expect-beads': { type: 'string' },
         budget: { type: 'string' },
         // Stabilization Issue 32: per-dispatch time budget in seconds
@@ -212,7 +212,7 @@ Options:
       --expect-beads <json>    Beads identity every member must resolve to, as JSON
                                 ({"beadsDir","prefix","syncRemote","repoRemote"}). Normally injected by
                                 the supervisor; env fallback FLEET_SPRINT_EXPECT_BEADS. Omitted: the
-                                orchestrator member's own 'bd where' becomes the expectation and every
+                                backlog member's own 'bd where' becomes the expectation and every
                                 other member must match it. A mismatch aborts before any bd mutation.
       --budget <usd>            USD ceiling for this run's total estimated spend. Optional;
                                 omitted (the default) means unlimited, identical to prior behavior.
@@ -400,7 +400,7 @@ export function resolveExpectBeads(flagValue, env = process.env) {
 }
 
 /**
- * Runs `bd where --json` on the ORCHESTRATOR MEMBER (never locally -- the
+ * Runs `bd where --json` on the BACKLOG MEMBER (never locally -- the
  * sprint's bd commands run in that member's workFolder, see
  * checkIssuesExistOnMember below) so the startup banner can show which
  * .beads the sprint is about to mutate, and so a member with no beads
@@ -488,9 +488,9 @@ export function resolveMemberValidation({ rawMembers, registeredNames, allowMiss
 }
 
 /**
- * Verifies every target issue exists, run on the ORCHESTRATOR MEMBER via the
+ * Verifies every target issue exists, run on the BACKLOG MEMBER via the
  * fleet transport (`runBdShow`) -- NOT on the local machine. The sprint's own
- * `bd` commands run against the orchestrator member's beads DB (see
+ * `bd` commands run against the backlog member's beads DB (see
  * fleet-sprint/runner.js's SUPPORTED-TOPOLOGY NOTE), which can be a different
  * database than whatever is local to wherever this CLI process happens to
  * run. Checking locally could pass (or worse, resolve a same-named-but-
@@ -706,7 +706,7 @@ async function main() {
     // 1. Attach to the fleet MCP transport FIRST, so member validation, the
     // "bd show" issue precondition (below), and the sprint itself all run
     // against the same live client/connection -- and so the issue
-    // precondition can target the orchestrator MEMBER rather than the local
+    // precondition can target the backlog MEMBER rather than the local
     // machine (apra-fleet-unw2.16, N14 (d): the sprint's own `bd` commands
     // run on the member via the fleet transport, which can be a different
     // database than whatever is local to this CLI process).
@@ -771,10 +771,10 @@ async function main() {
         process.exit(1);
     }
 
-    // 3. bd show issue precondition -- run on the orchestrator MEMBER via the
+    // 3. bd show issue precondition -- run on the backlog MEMBER via the
     // fleet transport (apra-fleet-unw2.16, N14 (d)), immediately after the
     // transport/initialize handshake above and before any sprint phase
-    // begins. The orchestrator member mirrors fleet-sprint/runner.js's
+    // begins. The backlog member mirrors fleet-sprint/runner.js's
     // `getMemberForRole(ROLE_BACKLOG)` resolution: roleMap.backlog[0]
     // if configured, else the first valid member. `roleMap` here is already
     // key-normalized by `resolveRoleMap()` above (N15, apra-fleet-unw2.11),
@@ -791,7 +791,7 @@ async function main() {
         if (exitCode !== 0) throw new Error(text || `exit code ${exitCode}`);
         return res && res.structuredContent && typeof res.structuredContent.stdout === 'string' ? res.structuredContent.stdout : text;
     };
-    // Which .beads the orchestrator member's bd resolves to -- probed BEFORE
+    // Which .beads the backlog member's bd resolves to -- probed BEFORE
     // the `bd show` precondition below so a member with no beads database
     // is reported plainly (a warning with the fix) ahead of the bare bd
     // error that precondition would otherwise be the first to show, and
@@ -817,7 +817,7 @@ async function main() {
     //
     // LEGACY mode (default): the runner's cross-member coherence relies on
     // every member sharing one workspace/DB -- every orchestrator-side `bd`
-    // command runs against the orchestrator member's beads DB, and the sprint
+    // command runs against the backlog member's beads DB, and the sprint
     // git branch is only coherent if every member operates on the same working
     // state. Enforce that by comparing `git rev-parse HEAD` across members and
     // refusing to start on a mismatch.
@@ -843,7 +843,7 @@ async function main() {
     // fleet-sprint orchestrator, docs/design-orchestrator-worktree-model-v2.md)
     // may have no real checkout at all, and `git rev-parse HEAD` on one
     // hard-fails the launch (process.exit(1) just below). Deliberately keyed
-    // on the `unreservable` FLAG, not on roleMap.orchestrator membership: a
+    // on the `unreservable` FLAG, not on roleMap.backlog membership: a
     // real, git-having dispatch member that is ADDITIONALLY role-mapped as
     // orchestrator (a supported topology, runner.js's branchEnsureMembers
     // dedupe comment) must still pass its legitimate same-HEAD check against
@@ -883,7 +883,7 @@ async function main() {
     console.log(`Goal Constraint: ${goal}`);
     console.log(`Max Cycles: ${maxCycles}`);
     console.log(`Active Members (${validMembers.length}): ${validMembers.join(', ')}`);
-    console.log(`Beads: ${formatBeadsIdentity(beadsProbe.identity, { label: `orchestrator '${backlogMember}'` })}`);
+    console.log(`Beads: ${formatBeadsIdentity(beadsProbe.identity, { label: `backlog '${backlogMember}'` })}`);
     if (expectedBeads) {
         console.log(`Beads: ${formatBeadsIdentity(expectedBeads, { label: 'expected (--expect-beads)' })}`);
     }

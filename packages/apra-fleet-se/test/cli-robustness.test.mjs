@@ -22,7 +22,7 @@ import { validateArgs } from '../fleet-sprint/runner.js';
 //
 // (a) strict flag parsing; (b) missing-member abort/allow-list; (c)
 // --requirements-file/--role-map reach the runner's validated args; (d) the
-// `bd show` issue precondition targets the orchestrator MEMBER via the fleet
+// `bd show` issue precondition targets the backlog MEMBER via the fleet
 // transport, not the local machine; (e) --viewer-port + a clean port-
 // collision error instead of an unhandled crash.
 
@@ -219,7 +219,7 @@ describe('resolveRoleMap + buildRunnerArgs -> runner.js validateArgs (c)', () =>
 });
 
 // ---------------------------------------------------------------------------
-// (d) bd show precondition targets the orchestrator MEMBER via the fleet
+// (d) bd show precondition targets the backlog MEMBER via the fleet
 // transport, not the local machine
 // ---------------------------------------------------------------------------
 

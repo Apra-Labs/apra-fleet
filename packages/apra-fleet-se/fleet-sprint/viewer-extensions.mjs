@@ -795,7 +795,7 @@ export function renderBeadsIdentityHtml(identity) {
 
     let rows = '';
     if (identity.expected) {
-        const from = identity.expectedFrom === 'orchestrator' ? 'expected (from orchestrator)' : 'expected';
+        const from = identity.expectedFrom === 'backlog' ? 'expected (from backlog)' : 'expected';
         rows += row(from, identity.expected);
     }
     for (const name of names) rows += row(name, members[name]);

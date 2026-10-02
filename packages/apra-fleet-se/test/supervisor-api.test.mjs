@@ -439,7 +439,7 @@ describe('api -- apra-fleet-eft.5.2 member-axis overlap check (default beforeLau
         await fsp.rm(dir, { recursive: true, force: true });
     });
 
-    test('an unreservable orchestrator member is NOT caught by an existing overlap -- the launch succeeds and the ledger never claims it', async () => {
+    test('an unreservable backlog member is NOT caught by an existing overlap -- the launch succeeds and the ledger never claims it', async () => {
         const dir = await tmpDir();
         const { ledger, history } = await stores(dir);
         // s-active already claims 'supervisor' (e.g. from an earlier sprint that

@@ -7,7 +7,7 @@
 // memories (`<label> [role] <model> tokens: input=<N> output=<N>`); left in
 // the shared DB they grow without bound and bloat every session's context.
 // This module is the engine-side defence: it lists the memories once on the
-// orchestrator member and forgets
+// backlog member and forgets
 //   - every value that matches TOKEN_MEMORY_RE (anchored to the WHOLE value),
 //   - every key in RETIRED_MEMORY_KEYS (exact key, value ignored),
 // then pushes the beads DB once through the injected pushBeads().
