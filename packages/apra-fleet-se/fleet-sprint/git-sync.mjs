@@ -624,6 +624,35 @@ export function createGitSync(deps = {}) {
             return { safe: true };
         },
         /**
+         * Whether every local-only commit (origin/<branch>..HEAD) on the member's
+         * checkout touches nothing but `bibleFile`, i.e. a push would publish
+         * only bible commit(s). The kb_maintainer is usually also a doer, so a
+         * bible push must never carry an unpushed doer commit along. Resolves
+         * { onlyBible: true } or { onlyBible: false, reason }; any git failure
+         * is { onlyBible: false }. Git strings are built in JS (no shell
+         * expansion) so a PowerShell member works.
+         */
+        unpushedOnlyBible: async (memberName, bibleFile) => {
+            if (typeof branch !== 'string' || branch.length === 0) return { onlyBible: false, reason: 'no sprint branch is bound' };
+            const remoteTip = `origin/${branch}`;
+            const local = await command(`git log -m --name-only --pretty=format: ${remoteTip}..HEAD`, {
+                member_name: memberName, silent: true, failSoft: true,
+                label: `list local-only commits before the bible push on '${memberName}'`,
+            });
+            if (!local || !local.ok) return { onlyBible: false, reason: `could not list local-only commits against ${remoteTip}` };
+            const files = String(local.output || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+            const other = files.filter((f) => f !== bibleFile);
+            if (other.length > 0) return { onlyBible: false, reason: `unpushed non-bible commits touch ${[...new Set(other)].slice(0, 3).join(', ')}` };
+            const count = await command(`git rev-list --count ${remoteTip}..HEAD`, {
+                member_name: memberName, silent: true, failSoft: true,
+                label: `count local-only commits before the bible push on '${memberName}'`,
+            });
+            const n = count && count.ok ? parseInt(String(count.output || '').trim(), 10) : NaN;
+            if (!Number.isFinite(n)) return { onlyBible: false, reason: 'could not count local-only commits' };
+            if (n > 0 && files.length === 0) return { onlyBible: false, reason: 'unpushed local commits touch no recognizable file' };
+            return { onlyBible: true };
+        },
+        /**
          * Whether origin's sprint branch holds the member checkout's bible --
          * asked when kb_bible_commit committed nothing, so a bible commit an
          * earlier round could not push is not mistaken for a published one.

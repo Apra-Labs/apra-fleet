@@ -168,6 +168,7 @@ function makeEngine(fixture, fakeKb) {
         canResetCheckout: (m, f) => gitSync.canResetBibleCheckout(m, f),
         checkedOutBranch: (m) => gitSync.checkedOutBranch(m),
         bibleUnpushed: (m, f) => gitSync.bibleUnpushed(m, f),
+        unpushedOnlyBible: (m, f) => gitSync.unpushedOnlyBible(m, f),
         log,
     });
     return { kbWork, gitSync, logs };
@@ -368,7 +369,7 @@ describe('review-round bible commit against a real git origin', { skip: support.
         assert.ok(fixture.isAncestor(doerCommit, 'HEAD'), 'the unpushed doer commit is still reachable from HEAD');
         assert.equal(fs.readFileSync(path.join(fixture.clonePath, 'doer-work.txt'), 'utf8'), 'unpushed doer work\n');
         assert.deepEqual(kbWork.pendingConfirmations(), ['e1']);
-        assert.ok(logs.some((l) => /^\[kb-work\] WARN: not resetting maintainer 'maint'.*unrelated local work was preserved/.test(l)), logs.join('\n'));
+        assert.ok(logs.some((l) => /^\[kb-work\] WARN: not pushing the bible commit from maintainer 'maint'.*doer-work\.txt.*stay queued/.test(l)), logs.join('\n'));
         assert.equal(fakeKb.calls.filter((c2) => c2.tool === 'kb_bible_commit').length, 1, 'no retry ran');
     });
 
@@ -396,34 +397,33 @@ describe('review-round bible commit against a real git origin', { skip: support.
         return fixture.localTip();
     }
 
-    test('10. an unpushed bible commit left by a refused reset (unpushed doer commit) is pushed by the next round although kb_bible_commit commits nothing', async () => {
+    test('10. a bible push never publishes an unpushed doer commit: it is skipped with a WARN and the ids stay queued, in every round, until the doer commit is published', async () => {
         const fakeKb = createFakeKb(fixture);
         const { kbWork, logs } = makeEngine(fixture, fakeKb);
-        const hook = installRejectingHook(fixture);
         const doerCommit = await commitDoerWork();
         const tipBefore = fixture.originTip();
 
-        hook.on();
         const first = await reviewRound(kbWork, ['e1']);
-        assert.deepEqual(first, { committed: 0, pending: 1 }, 'round 1: push rejected, reset refused');
-        assert.equal(fixture.originTip(), tipBefore, 'round 1 published nothing');
-        assert.ok(logs.some((l) => /not resetting maintainer 'maint'/.test(l)), logs.join('\n'));
+        assert.deepEqual(first, { committed: 0, pending: 1 }, 'round 1: push skipped');
+        assert.equal(fixture.originTip(), tipBefore, 'round 1 published nothing (not the doer commit either)');
+        assert.equal(fixture.originFileAt('doer-work.txt'), null, 'the doer file never reached origin');
+        assert.ok(logs.some((l) => /not pushing the bible commit from maintainer 'maint'.*doer-work\.txt/.test(l)), logs.join('\n'));
 
-        hook.off();
-        const mark = fakeKb.calls.length;
+        // Round 2: kb_bible_commit commits nothing (the local commit holds the
+        // bible); the earlier commit is still unpushed, and still guarded.
         const second = await kbWork.commitRound('review');
-
-        const commits = fakeKb.calls.slice(mark).filter((c) => c.tool === 'kb_bible_commit');
-        assert.equal(commits.length, 1, 'round 2 called kb_bible_commit once');
-        assert.deepEqual(second, { committed: 1, pending: 0 }, logs.join('\n'));
-        assert.deepEqual(kbWork.pendingConfirmations(), []);
-        const bible = readBible(fixture.originFileAt(BIBLE));
-        assert.ok(bible, 'the bible reached origin');
-        assert.deepEqual(bible.entries.map((e) => e.id), ['e1']);
-        assert.equal(fixture.originTip(), fixture.localTip(), 'the maintainer is in sync with origin');
+        assert.deepEqual(second, { committed: 0, pending: 1 });
+        assert.equal(fixture.originTip(), tipBefore, 'round 2 published nothing');
         assert.ok(fixture.isAncestor(doerCommit, 'HEAD'), 'the doer commit was never reset away');
-        assert.ok(logs.some((l) => /an earlier bible commit is not on origin yet -- pushing it/.test(l)), logs.join('\n'));
-        assert.ok(!logs.some((l) => /already in the bible -- nothing to push/.test(l)), 'never reported as already published');
+        assert.deepEqual(kbWork.pendingConfirmations(), ['e1']);
+
+        // The doer's own push publishes everything; the next round then finds
+        // the bible on origin and releases the ids.
+        const push = await fixture.command(`git push origin HEAD:refs/heads/${fixture.branch}`);
+        assert.ok(push.ok, push.error);
+        const third = await kbWork.commitRound('review');
+        assert.deepEqual(third, { committed: 0, pending: 0 }, logs.join('\n'));
+        assert.deepEqual(readBible(fixture.originFileAt(BIBLE)).entries.map((e) => e.id), ['e1']);
     });
 
     test('11. an unpushed bible commit left by a refused reset (uncommitted tracked change) is pushed by the next round although kb_bible_commit commits nothing', async () => {
@@ -467,7 +467,7 @@ describe('review-round bible commit against a real git origin', { skip: support.
         assert.deepEqual(third, { committed: 0, pending: 2 });
         assert.deepEqual(kbWork.pendingConfirmations(), ['e1', 'e2']);
         assert.equal(fixture.originTip(), tipBefore, 'nothing ever reached origin');
-        assert.equal(logs.filter((l) => /^\[kb-work\] WARN: not resetting maintainer 'maint'.*stay queued/.test(l)).length, 3, 'each round WARNs and keeps the ids');
+        assert.equal(logs.filter((l) => /^\[kb-work\] WARN: not pushing the bible commit from maintainer 'maint'.*stay queued/.test(l)).length, 3, 'each round WARNs and keeps the ids');
         assert.ok(logs.some((l) => /^\[kb-work\] WARN: 2 confirmation\(s\) for example\.com\/org\/repo are not in a pushed bible commit/.test(l)), logs.join('\n'));
         assert.ok(!logs.some((l) => /already in the bible -- nothing to push/.test(l)));
 

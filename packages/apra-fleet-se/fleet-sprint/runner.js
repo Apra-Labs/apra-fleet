@@ -1421,6 +1421,9 @@ async function runSprintCycle(context) {
         // The bible-commit branch guard: no G-pull, reset, commit or push on a
         // maintainer whose checkout is not the sprint branch.
         checkedOutBranch: (maintainerName) => gitSync.checkedOutBranch(maintainerName),
+        // A bible push must publish only bible commit(s), never a doer's
+        // unpushed commit underneath them.
+        unpushedOnlyBible: (maintainerName, bibleFile) => gitSync.unpushedOnlyBible(maintainerName, bibleFile),
         // After a kb_bible_commit that committed nothing: does origin hold the
         // bible, or is an earlier round's bible commit still unpushed?
         bibleUnpushed: (maintainerName, bibleFile) => gitSync.bibleUnpushed(maintainerName, bibleFile),
