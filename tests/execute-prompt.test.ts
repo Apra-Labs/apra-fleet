@@ -1393,6 +1393,50 @@ describe('shared retry deadline budget (apra-fleet-y8q.1)', () => {
     expect(mockExecCommand).toHaveBeenCalledTimes(4);
   });
 
+  // GitHub #563: max_total_s is anchored at handler entry, so slow setup
+  // (preflight here) is charged to it, and the FIRST attempt gets only what
+  // remains minus the cleanup reserve. A long attempt then ends with the typed
+  // max_total_time error before the client's max_total_s + 30s deadline.
+  it('slow preflight + long first attempt -> typed max_total_time, first attempt capped by the shared budget, within max_total_s + 30s', async () => {
+    const member = makeTestAgent({ friendlyName: 'slow-preflight-long-attempt' });
+    memberId = member.id;
+    addAgent(member);
+    expect(member.agentType).not.toBe('local'); // preflight only runs for remote members
+
+    const maxTotalS = 100;
+    const start = Date.now();
+    vi.mocked(preflightCheck).mockImplementationOnce(async () => {
+      vi.setSystemTime(new Date(Date.now() + 40_000)); // 40s of setup
+      return { ok: true, connectivity: true, authValid: true, latencyMs: 40_000 } as any;
+    });
+
+    let firstAttemptMaxTotalMs: number | undefined;
+    let firstAttemptTimeoutMs: number | undefined;
+    mockExecCommand.mockImplementation(async (cmd: string, timeoutMs?: number, maxTotal?: number) => {
+      if (firstAttemptMaxTotalMs === undefined && maxTotal !== undefined && maxTotal > 1000 && !/rm -f|Remove-Item/.test(cmd)) {
+        firstAttemptMaxTotalMs = maxTotal;
+        firstAttemptTimeoutMs = timeoutMs;
+        // The attempt runs until its (capped) ceiling fires.
+        vi.setSystemTime(new Date(Date.now() + maxTotal));
+        throw new Error(`Command exceeded max total time of ${maxTotal}ms`);
+      }
+      return { stdout: '', stderr: '', code: 0 };
+    });
+
+    const result = await executePrompt({ member_id: memberId, prompt: 'hi', resume: false, timeout_s: 1000, max_total_s: maxTotalS });
+    mockExecCommand.mockReset();
+
+    expect(result.structuredContent).toMatchObject({ isError: true, reason: 'max_total_time' });
+    // First attempt: 100s - 40s setup - 5s cleanup reserve = 55s, not a fresh 100s.
+    expect(firstAttemptMaxTotalMs).toBeDefined();
+    expect(firstAttemptMaxTotalMs!).toBeLessThanOrEqual(55_000);
+    expect(firstAttemptMaxTotalMs!).toBeGreaterThan(50_000);
+    expect(firstAttemptTimeoutMs!).toBeLessThanOrEqual(55_000);
+    const elapsedMs = Date.now() - start;
+    expect(elapsedMs).toBeLessThan(maxTotalS * 1000 + 30_000);
+    expect(elapsedMs).toBeLessThanOrEqual(maxTotalS * 1000);
+  });
+
   it('skips the dispatch-exception retry entirely once the shared max_total_s budget is already exhausted', async () => {
     const member = makeTestAgent({ friendlyName: 'shared-budget-exhausted' });
     memberId = member.id;

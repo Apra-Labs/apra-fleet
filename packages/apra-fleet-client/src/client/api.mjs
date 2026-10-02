@@ -2,7 +2,8 @@
  * @typedef {Object} ExecutePromptOptions
  * @property {string} prompt - The prompt to send to the LLM on the remote member
  * @property {string} [agent] - Optional agent name to activate
- * @property {number} [max_total_s] - Hard ceiling in seconds
+ * @property {number} [max_total_s] - Hard ceiling in seconds, measured from when the server
+ *   receives the call (setup counts); exceeding it returns reason 'max_total_time'
  * @property {number} [max_turns] - Max turns for claude -p (default: 50)
  * @property {string} [member_id] - UUID of the member
  * @property {string} [member_name] - Friendly name of the member
@@ -92,7 +93,8 @@
  *   'usage_limit' | 'workspace_not_trusted' | 'session_not_found' | 'permission_denied' |
  *   'stalled' (transcript froze past the stall threshold) |
  *   'agent_never_started' (session log never appeared at its authoritative path within
- *   timeout_s; the process was killed) | ...
+ *   timeout_s; the process was killed) |
+ *   'max_total_time' (max_total_s, measured from the call including setup, ran out) | ...
  * @property {PermissionDenied} [permissionDenied] - Present when `reason === 'permission_denied'`:
  *   the member CLI refused tool calls for lack of a grant (AGY headless mode auto-denies them
  *   and exits 0, which used to surface as 'empty_response'). Pass `suggestedGrants` to
