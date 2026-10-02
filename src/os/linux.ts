@@ -3,7 +3,13 @@ import type { OsCommands, ProviderAdapter, PromptOptions } from './os-commands.j
 import { escapeDoubleQuoted, escapeGrepPattern, sanitizeSessionId } from './os-commands.js';
 import { escapeShellArg } from '../utils/shell-escape.js';
 
-const CLI_PATH = 'export PATH="$HOME/.local/bin:$PATH" && unset ANTIGRAVITY_SOURCE_METADATA CLAUDE_SOURCE_METADATA COPILOT_SOURCE_METADATA CODEX_SOURCE_METADATA && ';
+// The member's own fleet bin dir (<home>/.apra-fleet/bin: the member-install
+// apra-fleet, dolt, and bd when the installer could not place it on the system
+// PATH) is APPENDED, never prepended, so a tool the user already has on PATH
+// stays authoritative. $HOME is expanded by the member's own POSIX shell: these
+// builders have no probed home to resolve in JS, same as the .local/bin entry.
+export const FLEET_BIN_PATH_POSIX = '$HOME/.apra-fleet/bin';
+const CLI_PATH = `export PATH="$HOME/.local/bin:$PATH:${FLEET_BIN_PATH_POSIX}" && unset ANTIGRAVITY_SOURCE_METADATA CLAUDE_SOURCE_METADATA COPILOT_SOURCE_METADATA CODEX_SOURCE_METADATA && `;
 
 /**
  * Wrap a bash command string with PID capture.
@@ -335,7 +341,7 @@ export class LinuxCommands implements OsCommands {
   // --- Shell ---
 
   wrapInWorkFolder(folder: string, command: string): string {
-    return `cd "${escapeDoubleQuoted(folder)}" && ${command}`;
+    return `cd "${escapeDoubleQuoted(folder)}" && export PATH="$PATH:${FLEET_BIN_PATH_POSIX}" && ${command}`;
   }
 
   wrapPidCapture(command: string): string {

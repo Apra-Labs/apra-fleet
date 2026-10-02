@@ -17,6 +17,9 @@
 //   - MISMATCH is FATAL: a field that resolved on BOTH sides and differs
 //     means the member's bd points at a different project. Throws
 //     BeadsIdentityError (reason MISMATCH) before any bd mutation.
+//   - BD_MISSING is FATAL: the member's shell reports no bd executable at
+//     all, so every bd there would fail mid-sprint. Throws before any
+//     dispatch, naming the member and the fix.
 //   - an UNRESOLVED probe is a WARNING: a probe that failed, or answered
 //     something unparseable/empty, leaves that field out of the comparison.
 //     The warning names the member, the field, the probe, the error and the
@@ -165,6 +168,26 @@ function noExpectationWarning(backlogMember, probed) {
         `To restore it: fix the backlog member's beads (${BEADS_IDENTITY_FIELD_FIX.prefix}), or launch via the supervisor so --expect-beads is supplied.`;
 }
 
+// The shell reported that no `bd` executable exists (POSIX shells, cmd,
+// PowerShell), as opposed to bd running and failing.
+const BD_NOT_FOUND_RE = /\bbd: (?:command )?not found|bd: No such file or directory|'bd' is not recognized|The term 'bd' is not recognized|\bexit(?:ed)?(?: with)?(?: code)? 127\b/i;
+
+export const BD_MISSING_FIX =
+    "install the beads CLI (bd) on that member so 'bd --version' works in its workFolder shell " +
+    '(re-running the member fleet install places it in the member fleet bin dir), then rerun the sprint';
+
+/** Throws BD_MISSING when the member's `bd where` probe proved bd is absent. */
+export function assertBdPresent(member, probed) {
+    const failure = probed.failures.find((f) => f.key === 'where');
+    const text = `${failure ? failure.error : ''}\n${probed.raw.where || ''}`;
+    if (!failure || !BD_NOT_FOUND_RE.test(text)) return;
+    throw new BeadsIdentityError(
+        `Beads preflight failed: member '${member}' has no bd CLI ('${BEADS_IDENTITY_PROBES.where}' -> ${summarizeRaw(text)}). ` +
+        `Every sprint role on it runs bd, so the sprint stops before any dispatch. To fix: ${BD_MISSING_FIX}.`,
+        { reason: BEADS_IDENTITY_FAILURE_REASONS.BD_MISSING, member }
+    );
+}
+
 function assertMatches(member, expected, actual, cmp) {
     if (cmp.ok) return;
     const lines = cmp.mismatches.map((m) => `${m.field}: expected '${m.expected || '(unset)'}', actual '${m.actual || '(unset)'}'`);
@@ -210,6 +233,7 @@ export async function verifyBeadsIdentity({ command, log = () => {}, publishStat
     const result = { expected: null, expectedFrom: 'args', members: {}, warnings };
 
     const backlogProbe = await p.probe(backlogMember);
+    assertBdPresent(backlogMember, backlogProbe);
     const backlogHasDb = !!backlogProbe.identity.beadsDir;
 
     let expectedIdentity = expected;
@@ -267,6 +291,7 @@ export async function verifyBeadsIdentity({ command, log = () => {}, publishStat
     for (const member of ordered) {
         if (member === backlogMember) continue;
         const probed = await p.probe(member);
+        assertBdPresent(member, probed);
         settle(member, probed, !!expectedIdentity);
     }
 

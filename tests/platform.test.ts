@@ -333,14 +333,14 @@ describe('OsCommands via getOsCommands', () => {
   });
 
   describe('wrapInWorkFolder', () => {
-    it('linux: wraps with cd and &&', () => {
+    it('linux: wraps with cd and && and appends the member fleet bin dir to PATH', () => {
       expect(linux.wrapInWorkFolder('/home/user/project', 'echo hi'))
-        .toBe('cd "/home/user/project" && echo hi');
+        .toBe('cd "/home/user/project" && export PATH="$PATH:$HOME/.apra-fleet/bin" && echo hi');
     });
 
     it('macos: inherits linux wrapInWorkFolder', () => {
       expect(macos.wrapInWorkFolder('/opt/app', 'ls -la'))
-        .toBe('cd "/opt/app" && ls -la');
+        .toBe('cd "/opt/app" && export PATH="$PATH:$HOME/.apra-fleet/bin" && ls -la');
     });
 
     it('windows: wraps with Set-Location', () => {
@@ -348,6 +348,9 @@ describe('OsCommands via getOsCommands', () => {
         .toContain('Set-Location');
       expect(windows.wrapInWorkFolder('C:\\Users\\dev\\project', 'Get-ChildItem'))
         .toContain('Get-ChildItem');
+      // The member fleet bin dir (bd, dolt) is appended, after the user's own PATH.
+      expect(windows.wrapInWorkFolder('C:\\Users\\dev\\project', 'Get-ChildItem'))
+        .toContain('$env:Path = "$env:Path;$env:USERPROFILE\\.apra-fleet\\bin"; Get-ChildItem');
     });
 
     it('escapes folder injection in linux', () => {

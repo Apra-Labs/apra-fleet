@@ -1055,7 +1055,76 @@ export async function probeMemberFleetMcp(
   // Stamp fleetInstalledAt only from a successful fleet install in THIS probe;
   // otherwise carry the previously recorded value forward unchanged.
   const stamp = ctx.installedNow ? status.checkedAt : agent.fleetMcp?.fleetInstalledAt;
-  return stamp ? { ...status, fleetInstalledAt: stamp } : status;
+  const stamped = stamp ? { ...status, fleetInstalledAt: stamp } : status;
+  // Local members share this orchestrator's install (its installer reports bd).
+  if (agent.agentType === 'local') return stamped;
+  const beads = await probeMemberBeads(agent, deps);
+  return beads ? { ...stamped, beads } : stamped;
+}
+
+/** Fix line recorded with a missing/broken bd on a member. ASCII, one line. */
+export const BEADS_MISSING_FIX =
+  'Run update_member {member_id, fleet_install: "auto"} so the member installer puts bd in <home>/.apra-fleet/bin (or install bd on the member so bd --version works), then member_detail with refresh:true.';
+
+/** Suffix for a register/update fleetMcp result line: names a missing bd, else ''. */
+export function beadsStatusNote(status: Pick<FleetMcpStatus, 'beads'>): string {
+  return status.beads ? ` -- warning: bd ${status.beads.state} on the member (${status.beads.detail}). Fix: ${status.beads.fix}` : '';
+}
+
+/** Where the member installer places bd when npm -g is not writable. */
+export function memberBeadsPath(home: string, targetOs: TargetOS, shell: MemberShell): string {
+  return memberJoin(targetOs, shell, home, '.apra-fleet', 'bin', targetOs === 'windows' ? 'bd.exe' : 'bd');
+}
+
+/**
+ * The member-side bd probe: bd on the member's PATH first, else the member
+ * install's <home>/.apra-fleet/bin copy -- the same order every fleet-built
+ * member command resolves it in (BIN_DIR is appended to PATH). Tagged like
+ * buildFleetVersionProbe: always exits 0, outcome in stdout.
+ */
+export function buildBeadsProbe(bdPath: string, targetOs: TargetOS, shell: MemberShell): string {
+  const p = posixQuote(bdPath);
+  const ps = psQuote(bdPath);
+  return memberCommandFor(targetOs, shell, {
+    posix:
+      `if command -v bd >/dev/null 2>&1; then bd --version 2>/dev/null || printf '%s\\n' '${EXEC_FAILED_SENTINEL}'; ` +
+      `elif [ -x ${p} ]; then ${p} --version 2>/dev/null || printf '%s\\n' '${EXEC_FAILED_SENTINEL}'; ` +
+      `else printf '%s\\n' '${NO_INSTALL_SENTINEL}'; fi`,
+    powershell:
+      `if (Get-Command bd -ErrorAction SilentlyContinue) { $bd = 'bd' } elseif (Test-Path -LiteralPath ${ps}) { $bd = ${ps} } else { $bd = $null }; ` +
+      `if ($bd) { try { $out = & $bd --version; if ($LASTEXITCODE -ne 0) { [Console]::Out.Write('${EXEC_FAILED_SENTINEL}') } ` +
+      `else { [Console]::Out.Write(($out | Out-String)) } } catch { [Console]::Out.Write('${EXEC_FAILED_SENTINEL}') } } ` +
+      `else { [Console]::Out.Write('${NO_INSTALL_SENTINEL}') }; exit 0`,
+  });
+}
+
+/**
+ * Probe bd on a remote member. Returns the `beads` field to record when bd is
+ * missing or broken there, or null when it works or the probe itself could
+ * not run (an unreachable member is reported by the fleetMcp status already).
+ * Never throws.
+ */
+export async function probeMemberBeads(
+  agent: Agent,
+  deps: MemberFleetInstallDeps,
+): Promise<NonNullable<FleetMcpStatus['beads']> | null> {
+  try {
+    const targetOs = getAgentOS(agent) as TargetOS;
+    const shell = getAgentShell(agent);
+    const home = await deps.resolveHome(agent);
+    if (!home) return null;
+    const bdPath = memberBeadsPath(home, targetOs, shell);
+    const r = await deps.exec(agent, buildBeadsProbe(bdPath, targetOs, shell), PROBE_TIMEOUT_MS);
+    if (r.stdout.includes(NO_INSTALL_SENTINEL)) {
+      return { state: 'missing', detail: `bd is not on the member PATH and not at ${bdPath}`, fix: BEADS_MISSING_FIX };
+    }
+    if (r.stdout.includes(EXEC_FAILED_SENTINEL)) {
+      return { state: 'broken', detail: 'bd is present on the member but bd --version failed', fix: BEADS_MISSING_FIX };
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 async function probeMemberFleetMcpInner(

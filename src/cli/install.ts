@@ -24,6 +24,7 @@ import { transformAgentForOpenCode, transformAgentForAgy, transformAgentForClaud
 import { FLEET_DIR } from '../paths.js';
 import { extractWorkflowSubsystemAssets } from './workflow-assets.js';
 import { downloadAndExtractDolt, verifyDolt } from './dolt-install.js';
+import { installBeads, type BeadsInstallDeps } from './beads-install.js';
 import {
   classifyRunningServer, relevantServerPids, getInstallDataDir, memberForceMayStop, fullInstallRefusalText,
   writeMemberInstallMarker, clearMemberInstallMarker, FORCE_STOP_FULL_INSTALL_FLAG,
@@ -60,6 +61,19 @@ export function _setDoltStepDeps(overrides: Partial<DoltStepDeps>): void {
 /** Test-only: restore the real (non-mocked) dolt step dependencies. */
 export function _resetDoltStepDeps(): void {
   doltStepDeps = realDoltStepDeps;
+}
+
+/** Real transports for the Beads step (execFileSync is mocked by the install tests). */
+function beadsStepDeps(): BeadsInstallDeps {
+  return {
+    platform: process.platform,
+    exec: (cmd, args, opts) => execFileSync(cmd, args, { stdio: 'pipe', encoding: 'utf-8', shell: opts.shell }) as unknown as string,
+    existsSync: p => fs.existsSync(p),
+    mkdirSync: p => { fs.mkdirSync(p, { recursive: true }); },
+    rmSync: p => { fs.rmSync(p, { recursive: true, force: true }); },
+    copyFileSync: (src, dest) => fs.copyFileSync(src, dest),
+    chmodSync: (p, mode) => fs.chmodSync(p, mode),
+  };
 }
 
 function doltStepEnabled(): boolean {
@@ -1792,26 +1806,21 @@ ${manualStopHint(pidsAfterStop)}
   }
 
   // --- Beads install step ---
-  // shell:true required on Windows - npm global packages install as .cmd wrappers
-  // that cannot be directly spawned by Node without a shell
+  // PATH first, then BIN_DIR, then npm -g, then a user-level install into
+  // BIN_DIR (see beads-install.ts). NON-FATAL like dolt, but LOUD: a member
+  // without bd cannot run sprint work, so the reason and the fix are printed
+  // and repeated in the summary.
   // KB + code intelligence is the final step (before the optional service step),
   // so Beads sits one slot earlier than it does on main.
   const beadsStep = serviceStep ? totalSteps - 2 : totalSteps - 1;
   console.log(`  [${beadsStep}/${totalSteps}] Installing Beads task tracker...`);
-  try {
-    // Check if already installed
-    try {
-      execFileSync('bd', ['--version'], { stdio: 'pipe', shell: true });
-      // already installed - skip
-    } catch {
-      // not installed - install it
-      // apra-fleet-4ipl: bumped 1.1.2 -> 1.3.0 to match .github/workflows/ci.yml's
-      // pin -- see that file's comment for why (schema v66 compatibility).
-      execFileSync('npm', ['install', '-g', '@beads/bd@1.3.0'], { stdio: 'inherit', shell: true });
-    }
-  } catch (err) {
-    // non-fatal: warn but don't fail the install
-    console.warn('  - Beads install skipped - npm not available or install failed');
+  const beadsResult = installBeads(BIN_DIR, beadsStepDeps());
+  if (beadsResult.state === 'installed' && beadsResult.location === 'bin-dir') {
+    console.log(`  - bd installed for this user at ${beadsResult.binPath} (fleet commands find it there; add ${BIN_DIR} to your own shell PATH to use bd by hand)`);
+  } else if (beadsResult.state === 'missing') {
+    console.warn(`  [!] Beads (bd) NOT installed: ${beadsResult.reason}`);
+    console.warn(`  [!] Fix: ${beadsResult.fix}`);
+    console.warn('  - Beads install skipped - sprint work on this machine needs bd and will fail until it is installed');
   }
 
   // --- KB + code intelligence setup step ---
@@ -1939,13 +1948,9 @@ ${restartHint}
 
   // --- Done ---
   if (memberMode) writeMemberInstallMarker(serverVersion); else clearMemberInstallMarker();
-  let beadsVersion = 'installed';
-  try {
-    const versionOut = execFileSync('bd', ['--version'], { stdio: 'pipe', encoding: 'utf-8', shell: true });
-    beadsVersion = (versionOut as string).trim() || 'installed';
-  } catch {
-    beadsVersion = 'not available';
-  }
+  const beadsVersion = beadsResult.state === 'missing'
+    ? `not available -- ${beadsResult.reason}. Fix: ${beadsResult.fix}`
+    : `${beadsResult.version}${beadsResult.location === 'bin-dir' ? ` (${beadsResult.binPath})` : ''}`;
 
   const clientName = llm === 'claude' ? 'Claude Code' : paths.name;
   const instructions = llm === 'claude' ? 'Run /mcp in Claude Code to load the server.' : `Restart ${paths.name} to load the server.`;

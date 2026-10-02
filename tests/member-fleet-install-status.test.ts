@@ -230,7 +230,8 @@ describe('agy and local members', () => {
     const world = newWorld();
     const s = await probeMemberFleetMcp(makeTestAgent({ llmProvider: 'agy' }), deps(world));
     expect(s).toMatchObject({ state: 'unavailable', reason: 'no-per-project-mcp', unverified: true });
-    expect(world.execLog).toEqual([]);
+    // Only the bd probe runs: agy roles still run bd on the member.
+    expect(world.execLog.filter(c => !c.includes('command -v bd'))).toEqual([]);
   });
 
   it('local member gets its status from a direct MEMBER session with no install attempted', async () => {
