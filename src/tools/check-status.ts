@@ -18,6 +18,7 @@ import { parseGpuUtilization } from '../utils/gpu-parser.js';
 import { getUpdateNotice } from '../services/update-check.js';
 import { getActiveLogFile } from '../utils/log-helpers.js';
 import { USAGE_LOG_PATH, ROTATED_USAGE_LOG_PATH } from './code-intelligence-telemetry.js';
+import { codeIndexReadiness } from './code-intelligence-readiness.js';
 import { kbStats } from './kb-stats.js';
 import { checkVersionMismatch, type VersionMismatch } from '../services/version-check.js';
 
@@ -320,6 +321,9 @@ export function computeTopSymbols(
 export function codeIntelligenceHealth(repoDir: string): CodeIntelligenceHealth {
   const meta = readGitNexusMeta(repoDir);
   if (!meta) return { present: false };
+  // Same predicate as the code_* pre-flight: a placeholder meta.json, an
+  // incremental-in-progress index or a held analyze lock is not an index.
+  if (!codeIndexReadiness('gitnexus', repoDir).ready) return { present: false };
 
   const health: CodeIntelligenceHealth = {
     present: true,

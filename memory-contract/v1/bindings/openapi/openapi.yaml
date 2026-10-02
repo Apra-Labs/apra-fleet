@@ -138,21 +138,31 @@
     },
     {
       "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/provider_internal/codes/2",
-      "title": "The calling session's folder does not exist or is not a directory: a member session's registered work folder is missing or unset (or the member is not registered), or the fleet server's own working folder is gone.",
+      "title": "The active provider has no ready code index for the calling session's resolved (self) folder: no index exists yet, or one is still being built (gitnexus: <repo>/.gitnexus/meta.json absent while an analyze is running or has begun writing <repo>/.gitnexus/).",
       "status": 500
     },
     {
       "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/provider_internal/codes/3",
-      "title": "The calling session's folder exists but is not a git repository, so no KB identity can be derived from it.",
+      "title": "Code intelligence is off for the calling session: the resolved provider is 'none' (NullProvider), so no code_* call (including code_reindex and code_status, which resolve the provider before spawning or reading anything) can be answered. Always an error result, never an ok payload that merely says 'disabled'.",
       "status": 500
     },
     {
       "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/provider_internal/codes/4",
-      "title": "The calling session's folder has no origin remote (or a remote member has no single known origin remote), so it has no KB identity. Never silently mapped to a directory-name or 'default' KB.",
+      "title": "The calling session's folder does not exist or is not a directory: a member session's registered work folder is missing or unset (or the member is not registered), or the fleet server's own working folder is gone.",
       "status": 500
     },
     {
       "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/provider_internal/codes/5",
+      "title": "The calling session's folder exists but is not a git repository, so no KB identity can be derived from it and no code index is resolved for it.",
+      "status": 500
+    },
+    {
+      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/provider_internal/codes/6",
+      "title": "The calling session's folder has no origin remote (or a remote member has no single known origin remote), so it has no KB identity. Never silently mapped to a directory-name or 'default' KB.",
+      "status": 500
+    },
+    {
+      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/provider_internal/codes/7",
       "title": "kb_feedback was called in a MEMBER session. A member's reads come from the in-memory view of its own checkout bible, which is read-only; a downvote would flag an entry the member cannot see in the shared per-repo DB. Nothing is changed.",
       "status": 500
     }

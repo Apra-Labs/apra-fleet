@@ -2,6 +2,47 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- KB redesign stage 2b follow-up: provider gate and config-file safety
+
+Sprint goal: close review findings on stage 2b -- `code_reindex`/`code_status` honour the member's provider, compose never clobbers a member's config files, and CI portability fixes. The sprint verdict was FAIL: the product fixes are in and the local suite is green, but CI was not verified on all three OSes (the `llms-full.txt` freshness check failed first) and two goal items remain open.
+
+```
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $12.6223.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.0549 across 3 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 34 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+```
+
+- `code_reindex` and `code_status` are gated on the member's provider first and throw `E-CODE-INTEL-DISABLED` for the null provider; contract fixtures, spec and client updated.
+- OpenCode compose skips the write when the entry is current, refuses a git-tracked `opencode.json` (`E-OPENCODE-CONFIG-TRACKED`) and reports JSONC as `opencode-config-unparseable`.
+- An unreadable member config is distinguished from a missing one; compose and trust seeding never overwrite it.
+- Windows JSON-path assertion and live PowerShell test timeout fixes; CI now runs on feat/fix/chore pushes and the CI watcher fails loudly on a refused dispatch.
+
+Carried forward: regenerate `llms-full.txt` so the CI freshness check passes, then obtain a green run on ubuntu, windows and macos; make the code-intelligence self test assert on the parsed result rather than JSON-escaped text.
+
+## [Unreleased] -- KB redesign stage 2b: member MCP wiring, truthful code index, call counts
+
+Sprint goal: make a member's own session reliably reach the apra-fleet KB and code tools, make code-index answers honest, and measure tool use per dispatch.
+
+```
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $38.3125.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.1590 across 3 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 25 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+```
+
+- `compose_permissions` writes a per-folder `apra-fleet` MCP entry with `?member=<uuid>` (Claude local scope, OpenCode `opencode.json` git-excluded, none for agy), derives deny rules from the shared member allowlist, prunes legacy entries and re-composes on provider switch. The unreachable endpoint-registration path is deleted.
+- `code_*` tools resolve the caller's own folder; readiness requires a real indexed commit with no lock or incremental run; typed `E-CODE-INDEX-NOT-READY` and `E-CODE-INTEL-DISABLED` errors; every result carries `indexedCommit`.
+- New `code_reindex` and `code_status` tools (memory-contract v1 spec, schemas, fixtures, roster and client exports updated together).
+- `register_member`, `update_member` and `remove_member` install, verify and record the member's own apra-fleet as `fleetMcp`; `member_detail` gains `refresh`, `fleet_status` never probes.
+- New `session_stats` tool and per-member `kb_*`/`code_*` call counts (engine-origin sessions excluded); fleet-sprint records per-dispatch counts (unreadable counts are `unknown`, never 0) and adds a Knowledge & Code Intel viewer tab.
+
+Carried forward: a stale `planner-output.json` in a sandbox's built `dist` tripped the schema staleness guard in integration (not reproducible on the branch; filed as a bug). Secondary review findings are filed as open tasks.
+
 ## [Unreleased] -- KB redesign: kb_maintainer branch placement and bible-commit safety
 
 Sprint goal: close the defects carried forward from the KB redesign. Final verdict: PASS.

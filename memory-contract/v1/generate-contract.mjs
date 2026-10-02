@@ -139,8 +139,10 @@ const CODE_EXPORTS = [
   ['code_map', 'codeMapSchema'],
   ['code_flow', 'codeFlowSchema'],
   ['code_tests', 'codeTestsSchema'],
+  ['code_reindex', 'codeReindexSchema'],
+  ['code_status', 'codeStatusSchema'],
 ];
-const EXPECTED_TOOL_COUNT = KB_MODULES.length + CODE_EXPORTS.length; // 24, per INVENTORY.md section 1
+const EXPECTED_TOOL_COUNT = KB_MODULES.length + CODE_EXPORTS.length; // 26 (24 per INVENTORY.md section 1, plus code_reindex/code_status)
 
 // Registration description text, byte-exact from src/services/tool-registry.ts
 // (verified against INVENTORY.md Appendix A, which states it was "captured
@@ -153,6 +155,11 @@ const EXPECTED_TOOL_COUNT = KB_MODULES.length + CODE_EXPORTS.length; // 24, per 
 // reproduced byte-exact here for the same no-runtime-dependency reason.
 const KB_SELF_NOTE =
   ' Scope: always the calling session\'s own KB -- a member session uses its registered work folder, any other session the fleet server\'s working folder; there is no repo/path scope argument. Fails with E-SELF-NO-WORKFOLDER, E-SELF-NOT-A-REPO or E-SELF-NO-REMOTE (each with a one-line remediation) when that folder cannot carry a KB identity (it must be a git repository with an origin remote).';
+
+// Every code_* registration appends CODE_SELF_NOTE (src/tools/code-intelligence.ts),
+// reproduced byte-exact here for the same no-runtime-dependency reason.
+const CODE_SELF_NOTE =
+  ' Scope: always the calling session\'s own repo -- a member session uses its registered work folder, any other session the fleet server\'s working folder; there is no repo/path scope argument. Fails with E-SELF-NO-WORKFOLDER or E-SELF-NOT-A-REPO when that folder is missing or is not a git repository, E-CODE-INDEX-NOT-READY when it has no code index yet or the index is still building, and E-CODE-INTEL-DISABLED when code intelligence is off (each with a one-line remediation).';
 
 const BASE_DESCRIPTIONS = {
   kb_capture:
@@ -203,10 +210,14 @@ const BASE_DESCRIPTIONS = {
     'Find process flows (entry -> steps -> exit) matching a name or endpoints. Prefer this over manually tracing call chains across files -- the flows are pre-indexed.',
   code_tests:
     'Find the test files and test functions that exercise a symbol (transitive callers, depth 2). Use this to run targeted tests for the code you changed instead of the full suite. Prefer this over Grep for test discovery -- the call graph is pre-indexed.',
+  code_reindex:
+    'Rebuild the code index of the calling session\'s own repo (runs gitnexus analyze detached; its output is captured to <data>/code-index/<slug>/analyze.log). Returns after the first tick -- outcome "started" (lock held, process alive, output seen), "up-to-date", "starting" (running, no tick yet), "already-running", or "not-started" with a typed reason (npx-not-found, gitnexus-not-found, analyze-failed, spawn-failed, remote-member, provider-not-supported). Only the gitnexus provider is supported: provider none fails with E-CODE-INTEL-DISABLED, any other provider (e.g. codebase-memory, which manages its own index) gets not-started with reason provider-not-supported naming the provider. Poll code_status for completion.',
+  code_status:
+    'Report the code index state of the calling session\'s own repo: the last analyze run (phase, result indexed|up-to-date|incomplete|failed, last log line, log path), live readiness (ready|building|missing) and the indexed commit. Only the gitnexus provider is supported: provider none fails with E-CODE-INTEL-DISABLED, any other provider gets {outcome: "not-started", reason: "provider-not-supported", provider, indexedCommit: null} instead of gitnexus readiness.',
 };
 
 const DESCRIPTIONS = Object.fromEntries(
-  Object.entries(BASE_DESCRIPTIONS).map(([tool, text]) => [tool, tool.startsWith('kb_') ? text + KB_SELF_NOTE : text]),
+  Object.entries(BASE_DESCRIPTIONS).map(([tool, text]) => [tool, text + (tool.startsWith('kb_') ? KB_SELF_NOTE : CODE_SELF_NOTE)]),
 );
 
 // x-invariant stamping (GENERATOR-DECISION.md section 4): this is the "only

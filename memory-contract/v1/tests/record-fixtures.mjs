@@ -124,7 +124,6 @@ const { memberToolScope } = await import(pathToFileURL(path.join(DIST, 'services
 const { addAgent, removeAgent } = await import(pathToFileURL(path.join(DIST, 'services', 'registry.js')).href);
 
 const RECORDED_REMOTES = { A: RECORDED_REMOTE_A, B: RECORDED_REMOTE_B, IMPORT_REJECTED: RECORDED_REMOTE_IMPORT_REJECTED };
-const REMOTE_A = RECORDED_REMOTE_A;
 
 const world = await materializeSessionWorld(ENVIRONMENT, SCRATCH_ROOT, {
   remoteUrl: (key) => RECORDED_REMOTES[key],
@@ -505,16 +504,29 @@ await recordHappy('kb_invalidate', 'happy', {
   files: ['src/example.ts'],
 });
 
-// --- code_* (7 tools) -- all against a repo with no .gitnexus/meta.json, so
-// the real, honest "missing index" structured result is what gets recorded,
-// without ever spawning the gitnexus child process.
-await recordHappy('code_graph', 'happy-no-index', { symbol: 'exampleFn', repo: repoCode });
-await recordHappy('code_impact', 'happy-no-index', { target: 'exampleFn', direction: 'upstream', repo: repoCode });
-await recordHappy('code_query', 'happy-no-index', { query: 'exampleFn', repo: repoCode });
-await recordHappy('code_context', 'happy-no-index', { name: 'exampleFn', repo: repoCode, repo_remote_url: REMOTE_A });
-await recordHappy('code_map', 'happy-no-index', { repo: repoCode });
-await recordHappy('code_flow', 'happy-no-index', { name: 'exampleFn', repo: repoCode });
-await recordHappy('code_tests', 'happy-no-index', { symbol: 'exampleFn', repo: repoCode });
+// --- code_* (7 provider tools; code_reindex/code_status below) -- code (self): no repo argument; the CODE member
+// session (provider pinned to gitnexus) resolves its own work folder, a git
+// repo with no .gitnexus/meta.json, so every tool honestly refuses with
+// E-CODE-INDEX-NOT-READY from the pre-flight, without ever spawning the
+// gitnexus child process.
+await withSession('CODE', async () => {
+  await recordRefusal('code_graph', 'refusal-index-not-ready', { symbol: 'exampleFn' }, 'E-CODE-INDEX-NOT-READY');
+  await recordRefusal('code_impact', 'refusal-index-not-ready', { target: 'exampleFn', direction: 'upstream' }, 'E-CODE-INDEX-NOT-READY');
+  await recordRefusal('code_query', 'refusal-index-not-ready', { query: 'exampleFn' }, 'E-CODE-INDEX-NOT-READY');
+  await recordRefusal('code_context', 'refusal-index-not-ready', { name: 'exampleFn' }, 'E-CODE-INDEX-NOT-READY');
+  await recordRefusal('code_map', 'refusal-index-not-ready', {}, 'E-CODE-INDEX-NOT-READY');
+  await recordRefusal('code_flow', 'refusal-index-not-ready', { name: 'exampleFn' }, 'E-CODE-INDEX-NOT-READY');
+  await recordRefusal('code_tests', 'refusal-index-not-ready', { symbol: 'exampleFn' }, 'E-CODE-INDEX-NOT-READY');
+});
+// Provider 'none': an error result, never an ok "disabled" payload.
+await withSession('CODE_OFF', () => recordRefusal('code_query', 'refusal-intel-disabled', { query: 'exampleFn' }, 'E-CODE-INTEL-DISABLED'));
+await withSession('CODE_OFF', () => recordRefusal('code_reindex', 'refusal-intel-disabled', {}, 'E-CODE-INTEL-DISABLED'));
+await withSession('CODE_OFF', () => recordRefusal('code_status', 'refusal-intel-disabled', {}, 'E-CODE-INTEL-DISABLED'));
+// Provider 'codebase-memory' (any non-gitnexus, non-none provider): a typed
+// not-started result, not an error, and gitnexus analyze is never spawned.
+const providerNote = "code_reindex/code_status gate on the member's provider: only 'gitnexus' runs the fleet-level analyze/status; any other configured provider returns { outcome:'not-started', reason:'provider-not-supported', provider, indexedCommit:null, detail } as a normal result (no taxonomy code).";
+await withSession('CODE_CM', () => recordNonErrorOutcome('code_reindex', 'non-error-provider-not-supported', {}, providerNote));
+await withSession('CODE_CM', () => recordNonErrorOutcome('code_status', 'non-error-provider-not-supported', {}, providerNote));
 
 // ===========================================================================
 // PASS 2 -- hardening: taxonomy-coded refusals + one documented non-error
@@ -547,6 +559,16 @@ await withSession('NO_WORKFOLDER', () => recordRefusal('kb_query', 'refusal-self
 }, 'E-SELF-NO-WORKFOLDER'));
 await withSession('NOT_A_REPO', () => recordRefusal('kb_stats', 'refusal-self-not-a-repo', {}, 'E-SELF-NOT-A-REPO'));
 await withSession('NO_REMOTE', () => recordRefusal('kb_list', 'refusal-self-no-remote', {}, 'E-SELF-NO-REMOTE'));
+// code (self) resolution refusals: the same shared resolver, minus the
+// origin-remote check (a code index is keyed by folder, not KB identity).
+await withSession('NO_WORKFOLDER', () => recordRefusal('code_query', 'refusal-self-no-workfolder', {
+  query: 'exampleFn',
+}, 'E-SELF-NO-WORKFOLDER'));
+await withSession('NOT_A_REPO', () => recordRefusal('code_map', 'refusal-self-not-a-repo', {}, 'E-SELF-NOT-A-REPO'));
+// code_reindex / code_status resolve (self) the same way; a refusal is the
+// deterministic case (a happy code_reindex would spawn a real analyze).
+await withSession('NO_WORKFOLDER', () => recordRefusal('code_reindex', 'refusal-self-no-workfolder', {}, 'E-SELF-NO-WORKFOLDER'));
+await withSession('NOT_A_REPO', () => recordRefusal('code_status', 'refusal-self-not-a-repo', {}, 'E-SELF-NOT-A-REPO'));
 
 await recordRefusal('kb_import', 'refusal-bible-not-found', {
   path: path.join(repoA, '.fleet', 'no-such-bible.json'),

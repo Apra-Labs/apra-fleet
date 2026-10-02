@@ -17,6 +17,8 @@ import { recheckProjectAgentShadows, invalidateProjectAgentShadowCache } from '.
 import { getStrategy } from '../services/strategy.js';
 import { seedWorkspaceTrust } from '../utils/workspace-trust.js';
 import { ensureAgyProject } from '../services/agy-project.js';
+import { refreshMemberFleetMcp, getMemberFleetMcpDeps } from '../services/member-fleet-install.js';
+import { composePermissions, removeComposedMemberConfig } from './compose-permissions.js';
 import { isFullyQualifiedPath, workFolderNotAbsoluteError } from '../utils/work-folder-validation.js';
 
 export const updateMemberSchema = z.object({
@@ -310,6 +312,54 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
     await seedWorkspaceTrust(updated, undefined, 'update_member');
   }
 
+  // Provider switch: remove exactly what compose_permissions wrote for the OLD
+  // provider (its permission files, its per-folder apra-fleet MCP entry and the
+  // exclude lines), evaluated against the member as it was BEFORE this update
+  // (old provider, old folder/host), then re-compose for the NEW provider so
+  // the member is never left with the old provider's config or none at all.
+  // Skipped entirely when the provider did not change.
+  const oldProvider = existing.llmProvider ?? 'claude';
+  const newProvider = updated.llmProvider ?? 'claude';
+  if (oldProvider !== newProvider) {
+    try {
+      const removed = await removeComposedMemberConfig(existing);
+      logLine('update_member', `provider ${oldProvider} -> ${newProvider}: removed old config (${removed.join('; ') || 'nothing to remove'})`, updated);
+    } catch (e: any) {
+      warnings.push(`Provider switch ${oldProvider} -> ${newProvider}: could not remove the old ${oldProvider} config: ${e?.message ?? String(e)}`);
+    }
+    let composeResult: string;
+    try {
+      composeResult = await composePermissions({ member_id: updated.id, role: 'doer', tags: updated.tags });
+    } catch (e: any) {
+      composeResult = `compose_permissions threw: ${e?.message ?? String(e)}`;
+    }
+    if (!composeResult.startsWith('\u2705')) {
+      const asciiDetail = composeResult.replace(/^[^\x00-\x7F]+\s*/, '');
+      warnings.push(`ERROR: provider switched to ${newProvider} but compose_permissions failed -- the member has no ${newProvider} permission/MCP config: ${asciiDetail}`);
+    }
+  }
+
+  // fleetMcp: a provider change re-runs the member install with --llm <new
+  // provider>; a name or work-folder change re-runs `register-member --id` on
+  // the member's own install. Best-effort: the update itself already succeeded
+  // and the outcome is a recorded, recoverable status (apra-fleet-b4g.56).
+  const nameChanged = updated.friendlyName !== existing.friendlyName;
+  const folderMoved = updated.workFolder !== existing.workFolder;
+  let fleetMcpLine: string | undefined;
+  if (oldProvider !== newProvider || nameChanged || folderMoved) {
+    try {
+      const status = await refreshMemberFleetMcp(updated, getMemberFleetMcpDeps(), {
+        install: oldProvider !== newProvider && updated.agentType !== 'local',
+        forceInstall: oldProvider !== newProvider,
+      });
+      fleetMcpLine = status.state === 'available'
+        ? `available${status.version ? ` (apra-fleet ${status.version})` : ''}`
+        : `unavailable (${status.reason ?? 'unknown'})${status.detail ? ` -- ${status.detail}` : ''}`;
+    } catch (e: any) {
+      fleetMcpLine = `unavailable (probe-failed) -- ${e?.message ?? String(e)}`;
+    }
+  }
+
   // Re-check project-level agent files that would shadow the managed role set
   // (the work folder or provider may have changed). The dispatch-time cache is
   // always invalidated; the check itself runs only when the member is reachable
@@ -357,6 +407,7 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
     const mt = updated.modelTiers;
     result += `  Model Tiers: cheap=${mt.cheap ?? '-'} standard=${mt.standard ?? '-'} premium=${mt.premium ?? '-'}\n`;
   }
+  if (fleetMcpLine) result += `  fleetMcp: ${fleetMcpLine}\n`;
 
   if (warnings.length > 0) {
     result += '\n';

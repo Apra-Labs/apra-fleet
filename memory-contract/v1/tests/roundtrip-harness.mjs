@@ -145,7 +145,9 @@ export const ENVIRONMENT = {
       },
     },
     { key: 'B', dir: 'repo-b', placeholder: PATH_PLACEHOLDERS.REPO_B, git: true, remote: 'B', files: {} },
-    { key: 'CODE', dir: 'repo-code', placeholder: PATH_PLACEHOLDERS.REPO_CODE, files: {} },
+    // code_* (self): a git repository (E-SELF-NOT-A-REPO otherwise) with no
+    // code index; code tools need no origin remote.
+    { key: 'CODE', dir: 'repo-code', placeholder: PATH_PLACEHOLDERS.REPO_CODE, git: true, remote: null, files: {} },
     { key: 'IMPORT_REJECTED', dir: 'repo-import-rejected', placeholder: null, git: true, remote: 'IMPORT_REJECTED', files: {} },
     // E-SELF-NOT-A-REPO: a plain directory, never `git init`ed.
     { key: 'PLAIN', dir: 'repo-plain', placeholder: null, files: {} },
@@ -161,6 +163,11 @@ export const ENVIRONMENT = {
     A: { member: 'contract-a', kind: 'local', repo: 'A' },
     B: { member: 'contract-b', kind: 'local', repo: 'B' },
     IMPORT_REJECTED: { member: 'contract-import-rejected', kind: 'local', repo: 'IMPORT_REJECTED' },
+    // code_* sessions pin their provider (codeIntelProvider) so the recorded
+    // outcome never depends on the host's global code-intelligence config.
+    CODE: { member: 'contract-code', kind: 'local', repo: 'CODE', codeIntelProvider: 'gitnexus' },
+    CODE_OFF: { member: 'contract-code-off', kind: 'local', repo: 'CODE', codeIntelProvider: 'none' },
+    CODE_CM: { member: 'contract-code-cm', kind: 'local', repo: 'CODE', codeIntelProvider: 'codebase-memory' },
     NOT_A_REPO: { member: 'contract-not-a-repo', kind: 'local', repo: 'PLAIN' },
     NO_REMOTE: { member: 'contract-no-remote', kind: 'local', repo: 'NO_REMOTE' },
     NO_WORKFOLDER: { member: 'contract-no-workfolder', kind: 'local', dir: 'no-such-work-folder' },
@@ -174,6 +181,15 @@ export const ENVIRONMENT = {
 // rather than a thrown error. Each mirrors the assertion record-fixtures.mjs
 // made at recording time, so a silently-changed behaviour fails here too.
 // ---------------------------------------------------------------------------
+function assertProviderNotSupported(parsed) {
+  return parsed?.outcome === 'not-started'
+    && parsed?.reason === 'provider-not-supported'
+    && parsed?.provider === 'codebase-memory'
+    && parsed?.indexedCommit === null
+    ? null
+    : `expected { outcome:'not-started', reason:'provider-not-supported', provider:'codebase-memory', indexedCommit:null }, got ${JSON.stringify(parsed)}`;
+}
+
 function assertImportRejected(parsed) {
   return typeof parsed?.rejected === 'number' && parsed.rejected >= 1
     ? null
@@ -257,13 +273,13 @@ export const SCENARIO = [
     derive: { winnerId: 'FIXED', loserId: 'BROKEN' },
   },
   { tool: 'kb_invalidate', case: 'happy' },
-  { tool: 'code_graph', case: 'happy-no-index' },
-  { tool: 'code_impact', case: 'happy-no-index' },
-  { tool: 'code_query', case: 'happy-no-index' },
-  { tool: 'code_context', case: 'happy-no-index' },
-  { tool: 'code_map', case: 'happy-no-index' },
-  { tool: 'code_flow', case: 'happy-no-index' },
-  { tool: 'code_tests', case: 'happy-no-index' },
+  { tool: 'code_graph', case: 'refusal-index-not-ready' },
+  { tool: 'code_impact', case: 'refusal-index-not-ready' },
+  { tool: 'code_query', case: 'refusal-index-not-ready' },
+  { tool: 'code_context', case: 'refusal-index-not-ready' },
+  { tool: 'code_map', case: 'refusal-index-not-ready' },
+  { tool: 'code_flow', case: 'refusal-index-not-ready' },
+  { tool: 'code_tests', case: 'refusal-index-not-ready' },
 
   // -- PASS 2: taxonomy-coded refusals + non-error outcomes -----------------
   { tool: 'kb_query', case: 'refusal-no-selector' },
@@ -272,6 +288,15 @@ export const SCENARIO = [
   { tool: 'kb_bible_commit', case: 'refusal-repo-path-invalid' },
   { tool: 'kb_query', case: 'refusal-self-no-workfolder' },
   { tool: 'kb_stats', case: 'refusal-self-not-a-repo' },
+  { tool: 'code_query', case: 'refusal-self-no-workfolder' },
+  { tool: 'code_map', case: 'refusal-self-not-a-repo' },
+  { tool: 'code_reindex', case: 'refusal-self-no-workfolder' },
+  { tool: 'code_status', case: 'refusal-self-not-a-repo' },
+  { tool: 'code_query', case: 'refusal-intel-disabled' },
+  { tool: 'code_reindex', case: 'refusal-intel-disabled' },
+  { tool: 'code_status', case: 'refusal-intel-disabled' },
+  { tool: 'code_reindex', case: 'non-error-provider-not-supported', assertParsed: assertProviderNotSupported },
+  { tool: 'code_status', case: 'non-error-provider-not-supported', assertParsed: assertProviderNotSupported },
   { tool: 'kb_list', case: 'refusal-self-no-remote' },
   { tool: 'kb_import', case: 'refusal-bible-not-found' },
   {

@@ -1,0 +1,15 @@
+{
+  "tool": "code_impact",
+  "case": "refusal-index-not-ready",
+  "kind": "refusal",
+  "request": {
+    "target": "exampleFn",
+    "direction": "upstream"
+  },
+  "error": {
+    "message": "E-CODE-INDEX-NOT-READY: No gitnexus code index found for '<SCRATCH_REPO_CODE>'. Remediation: Run 'npx gitnexus analyze' in the repo (or /pm index), then retry.",
+    "thrown": true
+  },
+  "expected_error_code": "E-CODE-INDEX-NOT-READY",
+  "session": "CODE"
+}

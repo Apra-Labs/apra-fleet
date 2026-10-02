@@ -7,6 +7,7 @@ import { getProvider } from '../src/providers/index.js';
 import { buildResumeFlag, buildSessionIdFlag, buildForkFlag, isMaxTurnsResponse } from '../src/providers/provider.js';
 import { isMaxTurnsSignal, parseClaudeResetTime } from '../src/providers/claude.js';
 import type { SSHExecResult } from '../src/types.js';
+import { MEMBER_DENIED_TOOLS } from '../src/services/member-tool-allowlist.js';
 
 // --- Helpers -----------------------------------------------------------------
 
@@ -383,16 +384,20 @@ describe('ClaudeProvider', () => {
     expect(p.supportsApiKey()).toBe(true);
   });
 
-  it('composePermissionConfig disables fleet-mcp for doer (#151)', () => {
-    const [settings] = p.composePermissionConfig('doer') as [Record<string, unknown>];
-    const mcpServers = settings.mcpServers as Record<string, unknown>;
-    expect(mcpServers?.['apra-fleet']).toMatchObject({ disabled: true });
+  it('composePermissionConfig no longer writes the blanket apra-fleet {disabled:true} switch', () => {
+    for (const role of ['doer', 'reviewer'] as const) {
+      const [settings] = p.composePermissionConfig(role) as [Record<string, unknown>];
+      expect(settings.mcpServers).toBeUndefined();
+      expect(JSON.stringify(settings)).not.toContain('"disabled"');
+    }
   });
 
-  it('composePermissionConfig disables fleet-mcp for reviewer (#151)', () => {
-    const [settings] = p.composePermissionConfig('reviewer') as [Record<string, unknown>];
-    const mcpServers = settings.mcpServers as Record<string, unknown>;
-    expect(mcpServers?.['apra-fleet']).toMatchObject({ disabled: true });
+  it('composePermissionConfig denies exactly the complement of the member allowlist on apra-fleet', () => {
+    const [settings] = p.composePermissionConfig('doer', ['Read']) as [{ permissions: { allow: string[]; deny: string[] } }];
+    expect(settings.permissions.allow).toEqual(['Read']);
+    expect(settings.permissions.deny).toEqual(MEMBER_DENIED_TOOLS.map(t => `mcp__apra-fleet__${t}`));
+    expect(settings.permissions.deny.some(r => r.includes('deepwiki'))).toBe(false);
+    expect(settings.permissions.deny).not.toContain('mcp__apra-fleet__kb_query');
   });
 });
 

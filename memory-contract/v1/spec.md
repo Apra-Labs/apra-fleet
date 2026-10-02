@@ -18,7 +18,7 @@ full. Do not copy invariant prose between this file, `methods.json`, and
 
 ## 1. Envelope
 
-Every one of the 23 tools (16 `kb_*`, 7 `code_*`) is registered through the
+Every one of the 25 tools (16 `kb_*`, 9 `code_*`) is registered through the
 shared `wrapTool` helper (`src/services/tool-registry.ts`), so every response is
 wrapped in the same minimal text-content envelope, current fields only:
 
@@ -90,13 +90,25 @@ array, and not counted against "every method has an entry").
 A binding generated only against the declared `MemoryProvider` interface is
 INCOMPLETE without this set (`INVENTORY.md` section 4.2).
 
-### 2.3 `CodeIntelligenceProvider` interface methods (`methods.json` ids C-1..C-7)
+### 2.3 `CodeIntelligenceProvider` interface methods (`methods.json` ids C-1..C-9)
 
 `graph`, `impact`, `query`, `context`, `map`, `flow`, `tests`. All seven are
 pure proxies to the active provider (`codebase-memory`, `gitnexus`, or `none`)
 and are classified `pure read` here at the fleet boundary; the ACTIVE PROVIDER
 owns the real effect and idempotency of its own payload (`INVENTORY.md`
 section 4.3).
+
+C-8 `reindex` (`code_reindex`) and C-9 `status` (`code_status`) are fleet-level index
+maintenance tools, not provider proxies, and are gated on the calling member's
+code-intelligence provider. Provider `none` is refused (`E-CODE-INTEL-DISABLED`, never an
+ok "disabled" payload). Any provider other than `gitnexus` (e.g. `codebase-memory`, which
+manages its own index) returns the normal typed result
+`{ outcome: 'not-started', reason: 'provider-not-supported', provider, indexedCommit: null, detail }`
+without spawning anything. Only `gitnexus` runs the tool: `code_reindex` starts a detached
+`gitnexus analyze` for the calling session's own folder (output captured to
+`<data>/code-index/<slug>/analyze.log`, state in `status.json`) and returns
+after the first tick; `code_status` reads that state plus live readiness and
+the indexed commit.
 
 ### 2.4 Every kb_* call is scoped to the calling session (KB constraint)
 
@@ -149,6 +161,30 @@ working folder, which is typically a feature branch.
   rejected push can be retried with no manual merge. An existing bible that
   cannot be parsed is refused (thrown), never overwritten.
 
+### 2.7 Every code_* call is scoped to the calling session (code constraint)
+
+No `code_*` tool takes a repo/scope argument either. The repo a call is about
+is resolved exactly as for `kb_*` (section 2.4): a member session's registered
+work folder, any other session the fleet server's working folder. A local
+folder that is missing or is not a git repository is refused before the
+provider is reached (`E-SELF-NO-WORKFOLDER`, `E-SELF-NOT-A-REPO`); unlike
+`kb_*`, no origin remote is required, because a code index is keyed by folder,
+not by KB identity. A member session never falls back to the server folder.
+A remote member's folder lives on another host and is passed to the provider
+verbatim. The resolved folder is what the provider receives as its repo, what
+usage telemetry records, and (for `code_context`) whose KB enriches the result.
+Owned by `resolveCodeSelf()` in `src/tools/code-intelligence.ts`, over the
+shared `resolveSelfSession()` / `validateSelfRepoFolder()` in
+`src/services/knowledge/kb-self.ts`. Past resolution, a folder with no ready
+code index (none yet, or one still being built) is refused with
+`E-CODE-INDEX-NOT-READY`, and provider `none` with `E-CODE-INTEL-DISABLED` --
+an error result, never an ok payload that says "disabled". Fixtures
+`code_query/refusal-self-no-workfolder` and `code_map/refusal-self-not-a-repo`
+pin the two (self) refusals; every `code_*` tool has a
+`refusal-index-not-ready` fixture run as the `CODE` member session (provider
+pinned to `gitnexus`, no index), and `code_query/refusal-intel-disabled` runs as
+the `CODE_OFF` member session (provider `none`).
+
 ## 3. Error model
 
 `taxonomy.json` in this directory is the source of truth: a CLOSED set of
@@ -190,7 +226,7 @@ deliberately get NO code, each with its reason. They fall into three kinds:
   carried verbatim. The writing branch of that same one policy does refuse, and
   that branch is the one with a code.
 - **A failure was degraded into an answer** -- the `code_*` adapters' offline
-  and missing-index results, the swallowed bible read, the emptied
+  result, the swallowed bible read, the emptied
   `related_claims`, the unknown author role, and a provider reporting stats as
   unsupported.
 

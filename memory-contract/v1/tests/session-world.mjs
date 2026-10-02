@@ -64,6 +64,9 @@ export async function materializeSessionWorld(env, root, deps) {
       agentType: session.kind === 'remote' ? 'remote' : 'local',
       workFolder,
       createdAt: new Date().toISOString(),
+      // A pinned code-intelligence provider keeps code_* fixtures independent
+      // of the host's global code-intelligence config.
+      ...(session.codeIntelProvider ? { codeIntelProvider: session.codeIntelProvider } : {}),
       ...(session.kind === 'remote'
         ? { host: 'contract-remote.example.test', port: 22, username: 'contract', authType: 'key', gitRepos: [deps.remoteUrl(session.remote)] }
         : {}),

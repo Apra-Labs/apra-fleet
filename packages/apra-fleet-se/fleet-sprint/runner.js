@@ -57,6 +57,7 @@ import { getSeCommands } from './se-os-commands.mjs';
 import { resultText, toolErrorText } from './mcp-result.mjs';
 import { resolveMemberTarget, resolveMemberOs, clearMemberOsCache } from './member-target.mjs';
 import { createMemberCall, buildRemoteCallCommand, MemberCallError, MEMBER_CALL_ARGS_DIR } from './member-call.mjs';
+import { createDispatchAccounting } from './dispatch-accounting.mjs';
 import { createSprintState, sprintScopedFleetApi, resolveSettleShellWith } from './sprint-state.mjs';
 // apra-fleet-3swo.6.10: the per-member git/dolt sync brackets, moved verbatim
 // out of this file into ./member-sync.mjs (see that module's header for the
@@ -964,6 +965,9 @@ async function runSprintCycle(context) {
     // in withGitSync (which awaits this promise before syncing) on success
     // AND on failure, and covers the dispatches outside withGitSync too
     // (Streak Assignment).
+    // Assigned once kbPriming exists (below); until then (no dispatch can run
+    // before it) a pass-through.
+    let dispatchAccounting = { around: (_info, fn) => fn() };
     const agent = async (prompt, opts = {}) => {
         let finalPrompt = prompt;
         if (opts.agentType && !KB_SELF_INJECTING_ROLES.has(opts.agentType) && opts.member_name) {
@@ -977,7 +981,13 @@ async function runSprintCycle(context) {
         }
         return withKbDispatchLifecycle(opts.member_name, async () => {
             try {
-                return await agentRaw(finalPrompt, { sprint_id: sprintMutexId, ...opts });
+                // Per-dispatch kb_* and code_* counts: session_stats snapshots of the
+                // dispatched member immediately before and after (best-effort;
+                // an unreadable count is recorded as unknown, never 0).
+                return await dispatchAccounting.around(
+                    { memberName: opts.member_name, role: opts.agentType, label: opts.label },
+                    () => agentRaw(finalPrompt, { sprint_id: sprintMutexId, ...opts }),
+                );
             } finally {
                 if (opts.member_name) DoltSync.noteMemberDispatchCompleted(opts.member_name);
             }
@@ -1369,6 +1379,19 @@ async function runSprintCycle(context) {
         log,
     });
     await kbPriming.primeAll();
+
+    // Per-dispatch kb_* and code_* call accounting (dispatch-accounting.mjs),
+    // used by the agent() wrapper above. Reads session_stats AS the member
+    // through the same memberCall the kb work uses (engine-origin, so the
+    // reads themselves are not counted); records land in sprint state and
+    // are published to the viewer. context.dispatchAccounting is a test seam.
+    dispatchAccounting = context.dispatchAccounting ?? createDispatchAccounting({
+        memberCall: kbMemberCall,
+        memberOf: (name) => (typeof kbPriming.memberOf === 'function' ? kbPriming.memberOf(name) : null),
+        store: sprintState.dispatchToolCalls,
+        publishState,
+        log,
+    });
 
     // The role output schemas are shared with apra-pm, so every role dispatched
     // below is now asked for kb_captures (and the reviewer for kb_promotions).
@@ -3338,6 +3361,7 @@ async function runSprintCycle(context) {
         deployFailures, integFailures, rejectedNewTasks,
         integTestRunnerSpend, integTestRunnerDispatchCount,
         finalVerdictResult, finalClosedCount, finalOpenAtGoalCount, finalDeferredAtGoalIds, regressionResult, regressionSkippedBy,
+        dispatchToolCalls: sprintState.dispatchToolCalls,
         kbWork,
         computeBranchSlug, buildAnalysisText, buildCostAnalysis,
     });

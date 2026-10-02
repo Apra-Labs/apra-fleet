@@ -149,7 +149,8 @@ export function createMemberCall(deps = {}) {
     const resolveTarget = deps.resolveTarget || resolveMemberTarget;
     const connectLocal = deps.connectLocal || (async (memberId) => {
         const m = await import('@apralabs/apra-fleet-client/server-resolution');
-        return m.connectFleetMember(memberId);
+        // origin=engine: the engine's own reads are excluded from the member's session_stats counts.
+        return m.connectFleetMember(memberId, { origin: 'engine' });
     });
 
     async function withLocalSession(member, fn) {

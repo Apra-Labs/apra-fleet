@@ -1,5 +1,6 @@
 import { escapeHtml } from '@apralabs/apra-fleet-workflow/viewer/html-utils';
 import { computeSprintProgress } from './sprint-progress.mjs';
+import { DISPATCH_TOOL_CALLS_STATE_NAMESPACE } from './dispatch-accounting.mjs';
 
 /**
  * apra-fleet-x8r.1: pure HTML-string builder for the beads-closed/required
@@ -1118,5 +1119,123 @@ export const beadsExtension = {
         document.addEventListener('workflow:result', (e) => {
             renderResultExtras(e.detail);
         });
+    `
+};
+
+/**
+ * Pure HTML-string builder for the Knowledge and Code Intel tab: per-member and
+ * per-dispatch kb_* / code_* tool call counts, from the records
+ * dispatch-accounting.mjs publishes (`{ dispatches: [{ index, member, role,
+ * label, kb, code, reason }] }` -- session_stats snapshots taken before and
+ * after each dispatch). It never re-derives a count from anything else.
+ *
+ * A count is either a non-negative integer or unknown: anything that is not
+ * an integer (the 'unknown' marker, a missing or malformed value) renders as
+ * the word "unknown", never as 0. A member total is unknown when any of its
+ * dispatches is unknown for that kind.
+ *
+ * Same embed rule as renderBeadsHtml above: string concatenation only (this
+ * source is embedded verbatim into the browser script via .toString()), every
+ * interpolated value through escapeHtml, every helper nested inside so the one
+ * embed captures everything, and a try/catch backstop so a malformed record
+ * can never take the dashboard down.
+ *
+ * @param {{ dispatches?: object[] }|null|undefined} data
+ * @returns {string}
+ */
+export function renderKbCodeIntelHtml(data) {
+    try {
+        function isCount(n) {
+            return typeof n === 'number' && Number.isInteger(n) && n >= 0;
+        }
+        function countCell(n, title) {
+            if (isCount(n)) {
+                return '<td style="padding: 2px 8px; font-size: 11px; text-align: right;">' + escapeHtml(String(n)) + '</td>';
+            }
+            const tip = title ? ' title="' + escapeHtml(String(title)) + '"' : '';
+            return '<td data-kb-panel-unknown="true" style="padding: 2px 8px; font-size: 11px; text-align: right; color: #f59e0b;"' + tip + '>unknown</td>';
+        }
+        function textCell(v) {
+            return '<td style="padding: 2px 8px; font-size: 11px;">' + escapeHtml(String(v)) + '</td>';
+        }
+        function th(label) {
+            return '<th style="padding: 2px 8px; font-size: 10px; color: #71717a; text-align: left;">' + escapeHtml(label) + '</th>';
+        }
+        const records = (data && typeof data === 'object' && Array.isArray(data.dispatches))
+            ? data.dispatches.filter(function (r) { return r && typeof r === 'object'; })
+            : [];
+
+        let html = '<div data-kb-code-intel="true" style="padding: 8px;">';
+        html += '<div style="font-size: 11px; color: #a1a1aa; padding: 2px 8px;">kb_* and code_* tool calls counted by each member\'s own fleet server, read before and after every dispatch. "unknown" means the count could not be read -- it is not zero.</div>';
+        if (records.length === 0) {
+            html += '<div data-kb-panel-empty="true" style="font-size: 11px; color: #71717a; padding: 8px;">(no dispatches recorded yet)</div>';
+            return html + '</div>';
+        }
+
+        // Per-member totals, in first-dispatch order.
+        const order = [];
+        const totals = {};
+        for (const r of records) {
+            const name = String(r.member || '(unknown member)');
+            if (!Object.prototype.hasOwnProperty.call(totals, name)) {
+                totals[name] = { dispatches: 0, kb: 0, code: 0 };
+                order.push(name);
+            }
+            const t = totals[name];
+            t.dispatches++;
+            t.kb = isCount(t.kb) && isCount(r.kb) ? t.kb + r.kb : 'unknown';
+            t.code = isCount(t.code) && isCount(r.code) ? t.code + r.code : 'unknown';
+        }
+        html += '<div style="font-size: 11px; font-weight: 600; color: #a1a1aa; padding: 8px 8px 2px 8px;">Per member</div>';
+        html += '<table data-kb-panel-members="true" style="border-collapse: collapse;"><tr>' + th('member') + th('dispatches') + th('kb_* calls') + th('code_* calls') + '</tr>';
+        for (const name of order) {
+            const t = totals[name];
+            html += '<tr data-member="' + escapeHtml(name) + '">' + textCell(name) + textCell(t.dispatches)
+                + countCell(t.kb, 'at least one dispatch count is unknown') + countCell(t.code, 'at least one dispatch count is unknown') + '</tr>';
+        }
+        html += '</table>';
+
+        html += '<div style="font-size: 11px; font-weight: 600; color: #a1a1aa; padding: 8px 8px 2px 8px;">Per dispatch</div>';
+        html += '<table data-kb-panel-dispatches="true" style="border-collapse: collapse;"><tr>' + th('#') + th('member') + th('role') + th('label') + th('kb_* calls') + th('code_* calls') + '</tr>';
+        for (const r of records) {
+            html += '<tr>' + textCell(isCount(r.index) ? r.index : '-') + textCell(r.member || '(unknown member)')
+                + textCell(r.role || '-') + textCell(r.label || '-')
+                + countCell(r.kb, r.reason) + countCell(r.code, r.reason) + '</tr>';
+        }
+        html += '</table>';
+        return html + '</div>';
+    } catch (err) {
+        return '<div data-kb-code-intel="true" data-kb-code-intel-error="true" style="font-size: 11px; color: #71717a; padding: 8px;">(Knowledge and Code Intel panel unavailable)</div>';
+    }
+}
+
+/**
+ * The Knowledge and Code Intel tab: its own dashboardExtensions entry
+ * (registered alongside beadsExtension in bin/cli.mjs), subscribed to
+ * dispatch-accounting.mjs's publishState namespace.
+ */
+export const kbCodeIntelExtension = {
+    id: 'kb-code-intel',
+    title: 'Knowledge & Code Intel',
+    js: `
+        ${escapeHtml.toString()}
+        ${renderKbCodeIntelHtml.toString()}
+
+        let lastDispatchToolCalls = null;
+
+        function renderKbCodeIntelPanel() {
+            const container = document.getElementById('extension-kb-code-intel');
+            if (!container) return;
+            container.innerHTML = renderKbCodeIntelHtml(lastDispatchToolCalls);
+        }
+
+        // String-concat form (not a quoted interpolation) so the per-line
+        // shell-command guard does not read it as a member-bound command.
+        document.addEventListener('workflow:state:' + ${JSON.stringify(DISPATCH_TOOL_CALLS_STATE_NAMESPACE)}, (e) => {
+            lastDispatchToolCalls = e.detail || null;
+            renderKbCodeIntelPanel();
+        });
+
+        renderKbCodeIntelPanel();
     `
 };

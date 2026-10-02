@@ -24,10 +24,10 @@ describe('member tool allowlist', () => {
     expect([...REGISTERED_TOOL_NAMES].sort()).toEqual([...registered].sort());
   });
 
-  it('contains every registered kb_* and code_* tool plus version and report_status', () => {
+  it('contains every registered kb_* and code_* tool plus version, report_status and session_stats', () => {
     const kbCode = registered.filter(t => t.startsWith('kb_') || t.startsWith('code_'));
     expect(kbCode.length).toBeGreaterThan(0);
-    for (const t of [...kbCode, 'version', 'report_status']) {
+    for (const t of [...kbCode, 'version', 'report_status', 'session_stats']) {
       expect(MEMBER_ALLOWED_TOOLS).toContain(t);
     }
   });

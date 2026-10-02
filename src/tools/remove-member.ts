@@ -19,6 +19,7 @@ import { azureDevOpsProvider } from '../services/vcs/azure-devops.js';
 import type { Agent } from '../types.js';
 import type { VcsProviderService } from '../services/vcs/types.js';
 import { logLine } from '../utils/log-helpers.js';
+import { removeMemberFromOwnInstall, getMemberFleetMcpDeps } from '../services/member-fleet-install.js';
 import { invalidatePreflightCache } from '../services/preflight-check.js';
 
 const vcsProviders: Record<string, VcsProviderService> = {
@@ -138,6 +139,19 @@ export async function removeMember(input: RemoveMemberInput): Promise<string> {
       } catch (err) {
         warnings.push(`Could not remove agy project file for "${agent.friendlyName}": ${err instanceof Error ? err.message : String(err)}`);
       }
+    }
+  }
+
+  // Best-effort: drop the member's self-registration on its OWN apra-fleet
+  // install (apra-fleet-b4g.56). A failure is reported, never silent.
+  if (agent.agentType === 'remote') {
+    try {
+      const r = await removeMemberFromOwnInstall(agent, getMemberFleetMcpDeps());
+      if (!r.removed && 'reason' in r) {
+        warnings.push(`Could not remove the member's registration from its own apra-fleet install (${r.reason}): ${r.detail}`);
+      }
+    } catch (e: unknown) {
+      warnings.push(`Could not remove the member's registration from its own apra-fleet install: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 

@@ -5,6 +5,10 @@ export const FLEET_DIR = process.env.APRA_FLEET_DATA_DIR ?? path.join(os.homedir
 
 const RAW_DEFAULT_PORT = 7523;
 
+/** The built-in fleet port, ignoring any APRA_FLEET_PORT override of THIS
+ *  process -- the port a member's own default install listens on. */
+export const BUILTIN_DEFAULT_PORT = RAW_DEFAULT_PORT;
+
 export const DEFAULT_PORT = parseInt(process.env.APRA_FLEET_PORT ?? '', 10) || RAW_DEFAULT_PORT;
 
 /**

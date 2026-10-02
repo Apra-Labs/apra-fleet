@@ -249,6 +249,8 @@ const CODE_TOOLS = [
   'code_map',
   'code_flow',
   'code_tests',
+  'code_reindex',
+  'code_status',
 ];
 
 /**

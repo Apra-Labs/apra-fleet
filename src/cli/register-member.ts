@@ -202,7 +202,7 @@ export async function runRegisterMember(args: string[]): Promise<void> {
     return;
   }
 
-  const result = await registerMember(parsed, memberId ? { id: memberId } : {});
+  const result = await registerMember(parsed, memberId ? { id: memberId, skipFleetMcp: true } : { skipFleetMcp: true });
   // registerMember returns a human-readable string. The success path always
   // contains "registered successfully"; every failure path returns a message
   // stating the member was NOT registered. Mirror that into an exit code.

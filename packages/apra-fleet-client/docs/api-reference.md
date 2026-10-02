@@ -154,7 +154,10 @@ abort support on top of a transport.
 ### `connectFleetMember(memberId, deps)` (`server-resolution.mjs`)
 
 Resolves the local HTTP singleton, appends `?member=<memberId>` and connects,
-returning `{ transport, mcpClient, mode: 'http', url, close }`. Always `await close()` when done: it DELETEs the server session (`transport.stop()` alone leaks it). Refuses a stdio
+returning `{ transport, mcpClient, mode: 'http', url, close }`. `deps.origin:
+'engine'` also appends `origin=engine` (engine-origin session: its kb_/code_
+calls are excluded from the member's `session_stats` counts; only memberCall and
+`apra-fleet call` set it). Always `await close()` when done: it DELETEs the server session (`transport.stop()` alone leaks it). Refuses a stdio
 resolution (a member identity rides on the URL). An unregistered uuid rejects
 with `err.status === 403` / `err.code === 'HTTP_403'` (raised by
 `StreamableHttpTransport.start()` for any non-OK initialize response as
@@ -344,6 +347,9 @@ session (`session.id`, the current session ID or `null`), work folder
 | `member_id` | `string?` | UUID of the member. |
 | `member_name` | `string?` | Friendly name of the member. |
 | `format` | `"compact" \| "json"?` | Output format (default: `"compact"`). |
+| `refresh` | `boolean?` | Re-probe the member's own apra-fleet MCP now and record the new `fleetMcp` status. Without it the recorded status is returned and nothing is probed. |
+
+`fleetMcp` (`{state, reason?, version?, checkedAt, detail?, unverified?}` or `null`) is the last recorded status of the member's own apra-fleet MCP server.
 
 Returns a plain multi-line text summary for `"compact"`, or the structured
 `MemberDetailResult` object for `"json"` -- `server_version`, `name`, `icon`,
@@ -414,6 +420,7 @@ Calls `register_member` -- adds a machine to the fleet.
 | `tags` | `string[]?` | Optional list of free-form labels (max 10 tags, each max 64 chars). Used for filtering and grouping. |
 | `code_intel_provider` | `"codebase-memory" \| "gitnexus" \| "none"?` | Code-intelligence provider for this member. Omit for fleet-wide default. |
 | `unreservable` | `boolean?` | Mark this member as never exclusively reservable, so it can be shared by more than one sprint (e.g. fleet-sprint's shared "orchestrator" role). Default: `false`. |
+| `fleet_install` | `"auto" \| "skip"?` | Install/update apra-fleet on the member and verify its own MCP (default `"auto"`); `"skip"` only reports the probe result. Registration succeeds either way; the result reports `fleetMcp`. |
 | `shell` | `"gitbash" \| "pwsh7" \| "powershell5"?` | Override the probed Windows shell for this member. Windows members only -- ignored for non-Windows members. |
 
 
@@ -443,7 +450,7 @@ and means "new value for this field". Identifies the target member via
 | `cloud_profile` | `string?` | New AWS CLI profile name. |
 | `cloud_idle_timeout_min` | `number?` | New minutes of inactivity before auto-stop. |
 | `cloud_activity_command` | `string?` | New custom shell command for workload detection. Must output "busy" or "idle". Pass empty string to clear. |
-| `llm_provider` | `"claude" \| "codex" \| "copilot" \| "agy" \| "opencode"?` | Change the LLM provider for this member. |
+| `llm_provider` | `"claude" \| "codex" \| "copilot" \| "agy" \| "opencode"?` | Change the LLM provider for this member. A real change removes what `compose_permissions` wrote for the OLD provider (its permission file, its per-folder `apra-fleet` MCP entry, its `.git/info/exclude` lines; other MCP servers such as `deepwiki` are kept) and re-runs `compose_permissions` for the new one. Passing the current provider does nothing extra. |
 | `model_cheap` | `string?` | Change custom cheap model. |
 | `model_standard` | `string?` | Change custom standard model. |
 | `model_premium` | `string?` | Change custom premium model. |
@@ -532,6 +539,18 @@ request: `sudo`/`su`/`doas`, `bash -c`/`sh -c`/`eval`, `env`/`printenv`,
 containing a shell-chaining metacharacter (`|`, `;`, `&&`, backtick, `$()`)
 -- rejected outright, for every caller.
 
+Every compose (proactive or `grant`) also wires the member's per-folder
+`apra-fleet` MCP entry, whose URL ends in `?member=<member uuid>`: claude
+writes it to Claude's local scope (`projects[<workFolder>].mcpServers` in the
+member's `~/.claude.json`), opencode to `<workFolder>/opencode.json`, and agy
+gets none (it has no per-project MCP config). claude and agy also receive
+client-side deny rules for exactly the registered fleet tools outside the
+member allowlist; opencode gets none. The retired `apra-fleet-member`
+url+bearer entry is pruned wherever compose finds it, `deepwiki` is never
+touched, a tracked `.mcp.json` is never written, and work-folder files compose
+writes are listed in the clone's `.git/info/exclude` so it stays clean. A
+failure to write the entry is returned as a `[FAIL]` result.
+
 #### `setupSshKey(options: SetupSshKeyOptions)`
 
 Calls `setup_ssh_key` -- converts a remote member from password to SSH key
@@ -559,6 +578,26 @@ only, never values (a JSON array of `{ name, scope, ... }` entries; extract
 it with `parseToolJson()`). `credentialStoreDelete({ name })` removes one.
 `credentialStoreUpdate({ name, members?, ttl_seconds?, network_policy? })`
 changes metadata without re-entering the secret.
+
+#### `codeReindex()` / `codeStatus()`
+
+Calls `code_reindex` / `code_status` -- index maintenance for the calling
+session's own repo (a member session's registered work folder, otherwise the
+fleet server's folder; neither takes arguments). `codeReindex()` starts a
+detached `gitnexus analyze`, captures its output to
+`<data>/code-index/<slug>/analyze.log`, and returns after the first tick; its
+`outcome` is `started`, `up-to-date`, `starting`, `already-running` or
+`not-started` (with a typed `reason`: `npx-not-found`, `gitnexus-not-found`,
+`analyze-failed`, `spawn-failed`, `remote-member`, `provider-not-supported`). Both tools are
+gated on the member's code-intel provider: `none` fails with
+`E-CODE-INTEL-DISABLED` (nothing is spawned); any non-gitnexus provider (e.g.
+`codebase-memory`) returns `{ outcome: 'not-started', reason:
+'provider-not-supported', provider, indexedCommit: null, detail }` from both
+tools instead of gitnexus readiness. `codeStatus()` returns the
+last run (`analyze.phase`, `analyze.result` = `indexed` | `up-to-date` |
+`incomplete` | `failed`, `analyze.lastLine`), live `readiness`
+(`ready` | `building` | `missing`) and `indexedCommit`. Extract both with
+`parseToolJson()`.
 
 #### `doltPushMutex(options)`
 

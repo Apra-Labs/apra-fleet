@@ -11,9 +11,13 @@ after merging main at `97877f5e` (kb_*/code_* surface unchanged; server total
 
 ## 1. Verified tool count
 
-**24 tools: 17 `kb_*` + 7 `code_*`.**
+**26 tools: 17 `kb_*` + 9 `code_*`.**
 
-Update: `kb_bible_commit` (the kb_maintainer's per-round, entry-level bible
+Update: `code_reindex` and `code_status` (rebuild / report the calling
+session's own code index) were added as the 8th and 9th `code_*` tools, taking
+the surface from 24 to 26.
+
+Earlier update: `kb_bible_commit` (the kb_maintainer's per-round, entry-level bible
 commit with target-base-branch provenance) was added as the 17th `kb_*` tool,
 taking the surface from 23 to 24. The verification below was the original
 23-tool count and stands as stated for that tree; the same runtime registration
@@ -83,28 +87,35 @@ the session's folder and writes a single global config; it skips the hook (with
 the typed reason) rather than refusing when that folder cannot carry a KB
 identity.
 
-### 2.2 code_* tools (7)
+### 2.2 code_* tools (9)
 
 | # | Tool | Request schema | Request fields | Response (observed) | Description (summarized) |
 |---|------|----------------|----------------|---------------------|---------------------------|
-| 18 | `code_graph` | `codeGraphSchema` (`src/tools/code-intelligence.ts`) | symbol, repo | `text(JSON): opaque` (provider payload) | Trace the call graph for a symbol. Returns callers and callees across the codebase for structural analysis (symbol lookup, call chains, impact). |
-| 19 | `code_impact` | `codeImpactSchema` (`src/tools/code-intelligence.ts`) | target, direction, file_path, repo | `text(JSON): opaque` (provider payload) | Find what is affected by changes to a symbol. Analyzes the blast radius of modifications across the codebase for impact assessment. |
-| 20 | `code_query` | `codeQuerySchema` (`src/tools/code-intelligence.ts`) | query, repo | `text(JSON): opaque` (provider payload) | Search the codebase for symbols, patterns, or concepts using natural language or code patterns. Pre-indexed for instant answers. |
-| 21 | `code_context` | `codeContextSchema` (`src/tools/code-intelligence.ts`) | name, repo, repo_remote_url | `text(JSON): opaque` (provider payload, KB-enriched by `enrichContextWithKb`) | Get callers, callees, and execution flows for a symbol. Enriched with KB context for full understanding of symbol role and dependencies. |
-| 22 | `code_map` | `codeMapSchema` (`src/tools/code-intelligence.ts`) | repo, top | `text(JSON): opaque` (provider payload) | Get the architectural map of a repository: module communities with their key symbols and files, ranked by size. |
-| 23 | `code_flow` | `codeFlowSchema` (`src/tools/code-intelligence.ts`) | from, to, name, repo | `text(JSON): opaque` (provider payload) | Find process flows (entry -> steps -> exit) matching a name or specific endpoints. Pre-indexed alternative to manual call chain tracing. |
-| 24 | `code_tests` | `codeTestsSchema` (`src/tools/code-intelligence.ts`) | symbol, repo | `text(JSON): opaque` (provider payload) | Find the test files and test functions that exercise a symbol (transitive callers, depth 2). Faster than grep for test discovery. |
+| 18 | `code_graph` | `codeGraphSchema` (`src/tools/code-intelligence.ts`) | symbol | `text(JSON): opaque` (provider payload) | Trace the call graph for a symbol. Returns callers and callees across the codebase for structural analysis (symbol lookup, call chains, impact). |
+| 19 | `code_impact` | `codeImpactSchema` (`src/tools/code-intelligence.ts`) | target, direction, file_path | `text(JSON): opaque` (provider payload) | Find what is affected by changes to a symbol. Analyzes the blast radius of modifications across the codebase for impact assessment. |
+| 20 | `code_query` | `codeQuerySchema` (`src/tools/code-intelligence.ts`) | query | `text(JSON): opaque` (provider payload) | Search the codebase for symbols, patterns, or concepts using natural language or code patterns. Pre-indexed for instant answers. |
+| 21 | `code_context` | `codeContextSchema` (`src/tools/code-intelligence.ts`) | name | `text(JSON): opaque` (provider payload, KB-enriched by `enrichContextWithKb`) | Get callers, callees, and execution flows for a symbol. Enriched with KB context for full understanding of symbol role and dependencies. |
+| 22 | `code_map` | `codeMapSchema` (`src/tools/code-intelligence.ts`) | top | `text(JSON): opaque` (provider payload) | Get the architectural map of a repository: module communities with their key symbols and files, ranked by size. |
+| 23 | `code_flow` | `codeFlowSchema` (`src/tools/code-intelligence.ts`) | from, to, name | `text(JSON): opaque` (provider payload) | Find process flows (entry -> steps -> exit) matching a name or specific endpoints. Pre-indexed alternative to manual call chain tracing. |
+| 24 | `code_tests` | `codeTestsSchema` (`src/tools/code-intelligence.ts`) | symbol | `text(JSON): opaque` (provider payload) | Find the test files and test functions that exercise a symbol (transitive callers, depth 2). Faster than grep for test discovery. |
+| 25 | `code_reindex` | `codeReindexSchema` (`src/tools/code-intelligence.ts`) | (none) | `text(JSON)`: {outcome, reason?, indexedCommit, ...} (typed; `provider-not-supported` for a non-gitnexus provider) | Rebuild the calling session's own code index (gitnexus analyze, detached, output captured); returns after the first tick with a typed outcome. Provider `none` fails with E-CODE-INTEL-DISABLED. |
+| 26 | `code_status` | `codeStatusSchema` (`src/tools/code-intelligence.ts`) | (none) | `text(JSON)`: {last run, readiness, indexedCommit} (typed; `provider-not-supported` for a non-gitnexus provider) | Report the calling session's own code index state: last analyze run, live readiness, indexed commit. Provider `none` fails with E-CODE-INTEL-DISABLED. |
 
-`code_context` is the only `code_*` tool that takes `repo_remote_url`, because it
-is the only one that touches the KB.
+No `code_*` tool takes a repo/scope argument (`repo`, `repo_path`,
+`repo_remote_url`): like `kb_*`, the repo a call is about is the calling
+session's own folder (`resolveCodeSelf()`, `src/tools/code-intelligence.ts`,
+over the shared `resolveSelfSession()` / `validateSelfRepoFolder()` in
+`src/services/knowledge/kb-self.ts`), refused with `E-SELF-NO-WORKFOLDER` /
+`E-SELF-NOT-A-REPO`. No origin remote is required. `code_context` enriches from
+the KB of that same resolved folder.
 
-Registration descriptions for all 24 tools are reproduced verbatim in Appendix A.
+Registration descriptions for all 26 tools are reproduced verbatim in Appendix A.
 
 ## 3. Decision rule: responses that are not schema-shaped
 
 Observed facts about the response side of this surface:
 
-- Every one of the 23 tools is registered through the shared `wrapTool` helper in
+- Every one of the 26 tools is registered through the shared `wrapTool` helper in
   `src/services/tool-registry.ts`, which converts the handler return value into
   MCP `content: [{type: 'text', text}]` blocks.
 - NO tool in this surface declares a response zod schema. The registration call
@@ -229,12 +240,11 @@ implementations are registered in `PROVIDERS`: `codebase-memory`, `gitnexus`, an
 | C-6 | `flow` | `code_flow` | read (proxy) |
 | C-7 | `tests` | `code_tests` | read (proxy) |
 
-`NullProvider` returns an MCP-content-shaped object -- a `content` array holding a
-single text block reading "Code intelligence is disabled for this member (method:
-X)." -- which the registry then JSON-stringifies into a text block. A disabled
-member therefore yields a nested content object inside the text, not an error.
-That is a shape a v1 response schema must tolerate; it is covered by the
-permissive `code_*` body from section 3.
+`NullProvider` throws `E-CODE-INTEL-DISABLED` from every method (one line, with a
+`Remediation:` clause), so a disabled member's call is an error result, never an
+ok payload that merely says "disabled". A missing or still-building index throws
+`E-CODE-INDEX-NOT-READY` from the adapters' pre-flight (`codeIndexReadiness`,
+`src/tools/code-intelligence-readiness.ts` -- the one readiness check).
 
 ### 4.4 Implementation-coverage cross-check: SqliteProvider vs HttpKbProvider
 
@@ -359,7 +369,6 @@ throw sites are not part of the `kb_*` grep set above.
 | `E-SUPERSEDE-CONSENT-MISSING` | `makeAudnDecision` explicit-supersede branch, `src/services/knowledge/audn.ts:145-157` | a `supersedes` request takes effect ONLY if AUDN independently matches that candidate under the dedup gates (same type, symbol overlap, file overlap, target not an ACTIVE user-directive). Otherwise the request silently falls through to the ordinary paths | the named target is NOT retired and `audn_decision` is whatever the fallthrough decided. NO error is raised -- the most easily missed refusal in the surface |
 | `E-DEDUP-NONE` | `makeAudnDecision`, `src/services/knowledge/audn.ts:180-183` (exact-match pre-pass) and `:231-233` (loop) | exact content equality, or a same-topic match with no contradiction signal | `audn_decision: none` -- the capture is skipped, not failed |
 | `E-ACTIVE-DIRECTIVE-SUPERSEDE-GUARD` | `makeAudnDecision`, `src/services/knowledge/audn.ts:224` | an ACTIVE (CONFIRMED) user-directive candidate can never be superseded or updated by any `capture()` path; the loop skips past it | the candidate degrades to `flagged` (if a contradiction signal was present) or is skipped. NOT an error |
-| `E-CODE-INTEL-DISABLED` | `NullProvider`, `src/tools/code-intelligence.ts:22-26` (`nullResult`) and `:28-36` (class body) | code intelligence disabled for the member | a text payload naming the disabled method. NOT an error |
 | `E-STATS-UNSUPPORTED` | `ProviderStats.supported === false` (HTTP provider, per design D4), `src/services/knowledge/http-provider.ts:284-287` | a provider that cannot compute stats returns a documented not-supported result rather than throwing | `{supported: false, reason}` in the `kb_stats` response |
 | `E-BIBLE-READ-DEGRADED` | `src/tools/kb-stats.ts:116-122` (nested `catch` blocks) | any failure reading or comparing the canonical bible is swallowed | the response falls back to the absent/drift-zero bible shape. `kb_stats` never throws over the bible file |
 | `E-RELATED-CLAIMS-DEGRADED` | `src/tools/kb-query.ts:113-118` | `relatedClaims` throws | caught; `related_claims` becomes `[]` and the query result still returns |
@@ -421,8 +430,11 @@ unrecognised `role` degrades to the literal `unknown`. Provisional name
 
 The `code_*` tools route through `getProvider()` in
 `src/tools/code-intelligence.ts`, which is the only throwing surface on this
-side (the seven `handleCode*` wrappers and `NullProvider`, 5.1, never throw
-themselves).
+side for provider configuration (the seven `handleCode*` wrappers never throw
+themselves). The other `code_*` throws are (self) resolution
+(`E-SELF-NO-WORKFOLDER`, `E-SELF-NOT-A-REPO`), a missing or still-building index
+(`E-CODE-INDEX-NOT-READY`) and provider `none` (`E-CODE-INTEL-DISABLED`, thrown by
+every `NullProvider` method); see `taxonomy.json`.
 
 | Provisional name | Where | Trigger |
 |------------------|-------|---------|
@@ -563,42 +575,54 @@ Commit one round of confirmed entries to the bible: { ids, baseBranch, baseCommi
 ### code_graph
 
 ```text
-Trace the call graph for a symbol. Returns callers and callees across the codebase. Prefer this over Glob/Grep/file reads for structural questions (symbol lookup, call chains, impact) -- the answer is pre-indexed.
+Trace the call graph for a symbol. Returns callers and callees across the codebase. Prefer this over Glob/Grep/file reads for structural questions (symbol lookup, call chains, impact) -- the answer is pre-indexed. Scope: always the calling session's own repo -- a member session uses its registered work folder, any other session the fleet server's working folder; there is no repo/path scope argument. Fails with E-SELF-NO-WORKFOLDER or E-SELF-NOT-A-REPO when that folder is missing or is not a git repository, E-CODE-INDEX-NOT-READY when it has no code index yet or the index is still building, and E-CODE-INTEL-DISABLED when code intelligence is off (each with a one-line remediation).
 ```
 
 ### code_impact
 
 ```text
-Find what is affected by changes to a symbol. Prefer this over Glob/Grep/file reads for structural questions (symbol lookup, call chains, impact) -- the answer is pre-indexed.
+Find what is affected by changes to a symbol. Prefer this over Glob/Grep/file reads for structural questions (symbol lookup, call chains, impact) -- the answer is pre-indexed. Scope: always the calling session's own repo -- a member session uses its registered work folder, any other session the fleet server's working folder; there is no repo/path scope argument. Fails with E-SELF-NO-WORKFOLDER or E-SELF-NOT-A-REPO when that folder is missing or is not a git repository, E-CODE-INDEX-NOT-READY when it has no code index yet or the index is still building, and E-CODE-INTEL-DISABLED when code intelligence is off (each with a one-line remediation).
 ```
 
 ### code_query
 
 ```text
-Search the codebase for symbols, patterns, or concepts using natural language or code patterns. Prefer this over Glob/Grep/file reads for structural questions (symbol lookup, call chains, impact) -- the answer is pre-indexed.
+Search the codebase for symbols, patterns, or concepts using natural language or code patterns. Prefer this over Glob/Grep/file reads for structural questions (symbol lookup, call chains, impact) -- the answer is pre-indexed. Scope: always the calling session's own repo -- a member session uses its registered work folder, any other session the fleet server's working folder; there is no repo/path scope argument. Fails with E-SELF-NO-WORKFOLDER or E-SELF-NOT-A-REPO when that folder is missing or is not a git repository, E-CODE-INDEX-NOT-READY when it has no code index yet or the index is still building, and E-CODE-INTEL-DISABLED when code intelligence is off (each with a one-line remediation).
 ```
 
 ### code_context
 
 ```text
-Get callers, callees, and execution flows for a symbol. Prefer this over Glob/Grep/file reads for structural questions (symbol lookup, call chains, impact) -- the answer is pre-indexed.
+Get callers, callees, and execution flows for a symbol. Prefer this over Glob/Grep/file reads for structural questions (symbol lookup, call chains, impact) -- the answer is pre-indexed. Scope: always the calling session's own repo -- a member session uses its registered work folder, any other session the fleet server's working folder; there is no repo/path scope argument. Fails with E-SELF-NO-WORKFOLDER or E-SELF-NOT-A-REPO when that folder is missing or is not a git repository, E-CODE-INDEX-NOT-READY when it has no code index yet or the index is still building, and E-CODE-INTEL-DISABLED when code intelligence is off (each with a one-line remediation).
 ```
 
 ### code_map
 
 ```text
-Get the architectural map of a repository: module communities with their key symbols and files, ranked by size. Prefer this over directory listings or file reads when orienting in an unfamiliar codebase -- the answer is pre-indexed.
+Get the architectural map of a repository: module communities with their key symbols and files, ranked by size. Prefer this over directory listings or file reads when orienting in an unfamiliar codebase -- the answer is pre-indexed. Scope: always the calling session's own repo -- a member session uses its registered work folder, any other session the fleet server's working folder; there is no repo/path scope argument. Fails with E-SELF-NO-WORKFOLDER or E-SELF-NOT-A-REPO when that folder is missing or is not a git repository, E-CODE-INDEX-NOT-READY when it has no code index yet or the index is still building, and E-CODE-INTEL-DISABLED when code intelligence is off (each with a one-line remediation).
 ```
 
 ### code_flow
 
 ```text
-Find process flows (entry -> steps -> exit) matching a name or endpoints. Prefer this over manually tracing call chains across files -- the flows are pre-indexed.
+Find process flows (entry -> steps -> exit) matching a name or endpoints. Prefer this over manually tracing call chains across files -- the flows are pre-indexed. Scope: always the calling session's own repo -- a member session uses its registered work folder, any other session the fleet server's working folder; there is no repo/path scope argument. Fails with E-SELF-NO-WORKFOLDER or E-SELF-NOT-A-REPO when that folder is missing or is not a git repository, E-CODE-INDEX-NOT-READY when it has no code index yet or the index is still building, and E-CODE-INTEL-DISABLED when code intelligence is off (each with a one-line remediation).
 ```
 
 ### code_tests
 
 ```text
-Find the test files and test functions that exercise a symbol (transitive callers, depth 2). Use this to run targeted tests for the code you changed instead of the full suite. Prefer this over Grep for test discovery -- the call graph is pre-indexed.
+Find the test files and test functions that exercise a symbol (transitive callers, depth 2). Use this to run targeted tests for the code you changed instead of the full suite. Prefer this over Grep for test discovery -- the call graph is pre-indexed. Scope: always the calling session's own repo -- a member session uses its registered work folder, any other session the fleet server's working folder; there is no repo/path scope argument. Fails with E-SELF-NO-WORKFOLDER or E-SELF-NOT-A-REPO when that folder is missing or is not a git repository, E-CODE-INDEX-NOT-READY when it has no code index yet or the index is still building, and E-CODE-INTEL-DISABLED when code intelligence is off (each with a one-line remediation).
+```
+
+### code_reindex
+
+```text
+Rebuild the code index of the calling session's own repo (runs gitnexus analyze detached; its output is captured to <data>/code-index/<slug>/analyze.log). Returns after the first tick -- outcome "started" (lock held, process alive, output seen), "up-to-date", "starting" (running, no tick yet), "already-running", or "not-started" with a typed reason (npx-not-found, gitnexus-not-found, analyze-failed, spawn-failed, remote-member, provider-not-supported). Only the gitnexus provider is supported: provider none fails with E-CODE-INTEL-DISABLED, any other provider (e.g. codebase-memory, which manages its own index) gets not-started with reason provider-not-supported naming the provider. Poll code_status for completion. Scope: always the calling session's own repo -- a member session uses its registered work folder, any other session the fleet server's working folder; there is no repo/path scope argument. Fails with E-SELF-NO-WORKFOLDER or E-SELF-NOT-A-REPO when that folder is missing or is not a git repository, E-CODE-INDEX-NOT-READY when it has no code index yet or the index is still building, and E-CODE-INTEL-DISABLED when code intelligence is off (each with a one-line remediation).
+```
+
+### code_status
+
+```text
+Report the code index state of the calling session's own repo: the last analyze run (phase, result indexed|up-to-date|incomplete|failed, last log line, log path), live readiness (ready|building|missing) and the indexed commit. Only the gitnexus provider is supported: provider none fails with E-CODE-INTEL-DISABLED, any other provider gets {outcome: "not-started", reason: "provider-not-supported", provider, indexedCommit: null} instead of gitnexus readiness. Scope: always the calling session's own repo -- a member session uses its registered work folder, any other session the fleet server's working folder; there is no repo/path scope argument. Fails with E-SELF-NO-WORKFOLDER or E-SELF-NOT-A-REPO when that folder is missing or is not a git repository, E-CODE-INDEX-NOT-READY when it has no code index yet or the index is still building, and E-CODE-INTEL-DISABLED when code intelligence is off (each with a one-line remediation).
 ```
 

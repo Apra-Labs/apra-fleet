@@ -52,3 +52,20 @@ test('connectFleetMember appends ?member= and close() sends the session DELETE',
         assert.ok(s.seen.includes('DELETE /mcp?member=abcdef12-0000-4000-8000-000000000000 sid-1'), JSON.stringify(s.seen));
     } finally { await stopServer(s); }
 });
+
+test('connectFleetMember adds origin=engine only when asked, and refuses any other origin', async () => {
+    const s = await startServer(200);
+    try {
+        const deps = { env: {}, checkRunningInstance: async () => ({ running: true, url: s.url, pid: process.pid }) };
+        const plain = await connectFleetMember('abcdef12-0000-4000-8000-000000000000', deps);
+        assert.ok(!plain.url.includes('origin='), plain.url);
+        await plain.close();
+        const engine = await connectFleetMember('abcdef12-0000-4000-8000-000000000000', { ...deps, origin: 'engine' });
+        assert.ok(engine.url.endsWith('?member=abcdef12-0000-4000-8000-000000000000&origin=engine'), engine.url);
+        await engine.close();
+        await assert.rejects(
+            () => connectFleetMember('abcdef12-0000-4000-8000-000000000000', { ...deps, origin: 'agent' }),
+            /unsupported origin/,
+        );
+    } finally { await stopServer(s); }
+});

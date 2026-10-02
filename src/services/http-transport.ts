@@ -201,6 +201,11 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
       const rawToken = extractBearer(req);
       const parsedUrl = new URL(req.url ?? '/', 'http://localhost');
       const memberParam = parsedUrl.searchParams.get('member');
+      // origin=engine: set ONLY by the engine's own member-session paths
+      // (client connectFleetMember with { origin: 'engine' }, used by memberCall
+      // and the `apra-fleet call` verb). Recorded on the session's tool scope so
+      // its kb_/code_ calls are not counted against the member.
+      const engineOrigin = parsedUrl.searchParams.get('origin') === 'engine';
       let postClaims: JwtClaims | null = null;
       if (rawToken !== null) {
         postClaims = getTokenIssuer().verify(rawToken);
@@ -225,7 +230,7 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
       }
 
       if (isInitializeRequest(parsedBody)) {
-        logLine('session', `initialize jwt=${rawToken !== null} jwt_valid=${postClaims !== null} member_param=${memberParam ?? 'none'}`);
+        logLine('session', `initialize jwt=${rawToken !== null} jwt_valid=${postClaims !== null} member_param=${memberParam ?? 'none'} engine_origin=${engineOrigin}`);
         const body = parsedBody as {
           params?: {
             clientInfo?: { name?: string; version?: string };
@@ -285,7 +290,7 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
         // local orchestrator/PM/tool session and keeps the FULL set.
         const sessionMemberId = postClaims?.member_id ?? fallbackMemberId;
         const toolScope: ToolScope = sessionMemberId
-          ? memberToolScope(sessionMemberId, channelCapable)
+          ? memberToolScope(sessionMemberId, channelCapable, engineOrigin)
           : FULL_TOOL_SCOPE;
 
         const sessionServer = new McpServer(

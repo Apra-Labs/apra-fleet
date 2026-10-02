@@ -1,8 +1,6 @@
 import { escapePowerShellArgInner } from '../utils/shell-escape.js';
-import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { promisify } from 'node:util';
-import type { ProviderAdapter, PromptOptions, ParsedResponse, UsageLimitSignal, RegisterMcpEndpointOptions, RegisterMcpEndpointResult, WorkspaceTrustExecFn, WorkspaceTrustTransport, EnsureWorkspaceTrustedResult, SessionIdStrategy, ExecTimeoutSource, TargetOS } from './provider.js';
+import type { ProviderAdapter, PromptOptions, ParsedResponse, UsageLimitSignal, MemberMcpSyncContext, MemberMcpSyncResult, WorkspaceTrustExecFn, WorkspaceTrustTransport, EnsureWorkspaceTrustedResult, SessionIdStrategy, ExecTimeoutSource, TargetOS } from './provider.js';
 import { buildResumeFlag, buildSessionIdFlag, buildForkFlag, encodeClaudeProjectDir, joinForOS, resolveHomeDir, guessedUsageLimitSignal } from './provider.js';
 import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
@@ -12,8 +10,14 @@ import type { MemberShell } from '../os/os-commands.js';
 import { wrapPowerShellEncoded } from '../os/windows.js';
 import { isPosixShell } from '../utils/agent-helpers.js';
 import { transformAgentForClaude } from '../cli/agent-transform.js';
+import {
+  claudeMemberDenyRules,
+  joinMemberPath,
+  readMemberJson,
+  LEGACY_MEMBER_MCP_SERVER_NAME,
+  MEMBER_MCP_SERVER_NAME,
+} from '../services/member-config-io.js';
 
-const execFileAsync = promisify(execFile);
 
 // apra-fleet-iuc.1 / apra-fleet-ekm: reliable max_turns detection in the CLI
 // transcript. A max_turns-terminated session must ALWAYS classify as max_turns,
@@ -504,8 +508,76 @@ export class ClaudeProvider implements ProviderAdapter {
     return ['.claude/settings.local.json'];
   }
 
+  // The member's apra-fleet MCP entry is NOT written here: it lives in Claude's
+  // LOCAL scope (~/.claude.json projects[<workFolder>].mcpServers), written by
+  // syncMemberMcpEntry. This file only carries the client-side deny rules for
+  // every registered fleet tool outside the member allowlist.
   composePermissionConfig(_role: 'doer' | 'reviewer', allow: string[] = []): Array<Record<string, unknown> | string> {
-    return [{ permissions: { allow }, mcpServers: { 'apra-fleet': { disabled: true } }, skillOverrides: { pm: 'off', fleet: 'off' } }];
+    return [{ permissions: { allow, deny: claudeMemberDenyRules() }, skillOverrides: { pm: 'off', fleet: 'off' } }];
+  }
+
+  async syncMemberMcpEntry(ctx: MemberMcpSyncContext): Promise<MemberMcpSyncResult> {
+    const { agent, url } = ctx;
+    const posix = isPosixShell(ctx.agentOs, ctx.shell);
+    const isWindows = ctx.agentOs === 'windows';
+    const configDir = await probeMemberClaudeConfigDir(ctx.execCommand, ctx.agentOs, ctx.shell);
+    const target = claudeLocalScopeConfigFile(configDir, ctx.memberHomeDir, isWindows, ctx.shell);
+    const exec = checkedExec(ctx.execCommand);
+
+    const config = await readMemberJson(ctx.execCommand, target.file, posix);
+    const key = agent.workFolder.replace(/\\/g, '/').replace(/\/+$/, '');
+    let changed = false;
+
+    // User-scope legacy entry (top-level mcpServers).
+    const userServers = config.mcpServers;
+    if (isRecord(userServers) && LEGACY_MEMBER_MCP_SERVER_NAME in userServers) {
+      delete userServers[LEGACY_MEMBER_MCP_SERVER_NAME];
+      changed = true;
+    }
+
+    const projects = isRecord(config.projects) ? config.projects : {};
+    const entry = isRecord(projects[key]) ? projects[key] as Record<string, unknown> : null;
+    if (url !== null || entry) {
+      const project: Record<string, unknown> = entry ?? {};
+      const servers: Record<string, unknown> = isRecord(project.mcpServers) ? project.mcpServers as Record<string, unknown> : {};
+      if (LEGACY_MEMBER_MCP_SERVER_NAME in servers) {
+        delete servers[LEGACY_MEMBER_MCP_SERVER_NAME];
+        changed = true;
+      }
+      if (url !== null) {
+        const current = servers[MEMBER_MCP_SERVER_NAME];
+        if (!isRecord(current) || current.type !== 'http' || current.url !== url || Object.keys(current).length !== 2) {
+          servers[MEMBER_MCP_SERVER_NAME] = { type: 'http', url };
+          changed = true;
+        }
+      } else if (MEMBER_MCP_SERVER_NAME in servers) {
+        delete servers[MEMBER_MCP_SERVER_NAME];
+        changed = true;
+      }
+      project.mcpServers = servers;
+      projects[key] = project;
+      config.projects = projects;
+    }
+
+    if (!changed) {
+      return { workFolderFiles: [], detail: `claude: ${target.file} already up to date for ${key}` };
+    }
+
+    const staging = workspaceTrustStagingNames();
+    await deliverWorkspaceTrustFile(JSON.stringify(config, null, 2), {
+      isWindows: !posix,
+      agentOs: ctx.agentOs,
+      execCommand: exec,
+      // The file channel writes relative to the member's HOME, so it only fits
+      // when the config file is home-anchored (not a CLAUDE_CONFIG_DIR override).
+      transport: target.homeAnchored ? ctx.transport : undefined,
+      homeFile: target.file,
+      tmpFile: joinMemberPath(target.dir, staging.tmpRel, isWindows, ctx.shell),
+      b64File: joinMemberPath(target.dir, staging.b64Rel, isWindows, ctx.shell),
+      staging,
+    });
+    const what = url !== null ? `wrote ${MEMBER_MCP_SERVER_NAME} (local scope)` : `removed ${MEMBER_MCP_SERVER_NAME}`;
+    return { workFolderFiles: [], detail: `claude: ${what} for ${key} in ${target.file}` };
   }
 
   supportsOAuthCopy(): boolean {
@@ -547,29 +619,6 @@ export class ClaudeProvider implements ProviderAdapter {
 
   headlessInvocation(promptLiteral: string): string {
     return `-p "${promptLiteral}"`;
-  }
-
-  async registerMcpEndpoint(opts: RegisterMcpEndpointOptions): Promise<RegisterMcpEndpointResult> {
-    // Live-verified (apra-fleet-2xs.5, docs/member-onboarding-journey.md 3a): `claude
-    // mcp add` is Claude's own native registration mechanism -- it writes .mcp.json
-    // (project scope) or the user-scope config itself, round-tripping the bearer
-    // header intact. Shelling out here (rather than hand-writing .mcp.json) means
-    // future changes to Claude Code's config format are Anthropic's problem, not
-    // ours, and it composes correctly with whatever the user does afterward via the
-    // same CLI.
-    const args = [
-      'mcp', 'add',
-      '--transport', 'http',
-      '--scope', opts.scope,
-      'apra-fleet-member',
-      opts.url,
-      '--header', `Authorization: Bearer ${opts.token}`,
-    ];
-    await execFileAsync('claude', args, { cwd: opts.workFolder });
-    return {
-      mechanism: 'cli-verb',
-      detail: `claude mcp add --transport http --scope ${opts.scope} apra-fleet-member <url> (cwd=${opts.workFolder})`,
-    };
   }
 
   async ensureWorkspaceTrusted(workFolder: string, execCommand: WorkspaceTrustExecFn, agentOs: 'linux' | 'macos' | 'windows' = 'linux', shell?: MemberShell, transport?: WorkspaceTrustTransport, memberHomeDir?: string | null): Promise<EnsureWorkspaceTrustedResult> {
@@ -622,10 +671,17 @@ export class ClaudeProvider implements ProviderAdapter {
     // exec, so the "no write when nothing to do" contract is observable as before.
     const mcpFile = `${key}/.mcp.json`;
     const SPLIT = '---FLEET_MCP_SPLIT---';
+    const HOME_UNREADABLE = 'FLEET_HOME_CONFIG_UNREADABLE';
 
+    // An EXISTING but unreadable ~/.claude.json must never be read as {} and then
+    // atomically replaced with just the trust entry (that destroys the user's MCP
+    // servers and state). The read stays a one-exec round trip; when the home
+    // file exists and cat/Get-Content fails, a sentinel (printed without echo /
+    // Write-Output, which the split-marker lookup keys on) is emitted instead
+    // of the content, and nothing is written.
     const readCmd = isWindows
-      ? `Get-Content -Raw "${homeFile}" -ErrorAction SilentlyContinue; Write-Output "${SPLIT}"; Get-Content -Raw "${mcpFile}" -ErrorAction SilentlyContinue`
-      : `cat "${homeFile}" 2>/dev/null || true; echo "${SPLIT}"; cat "${mcpFile}" 2>/dev/null || true`;
+      ? `Get-Content -Raw "${homeFile}" -ErrorAction SilentlyContinue -ErrorVariable fleetHomeReadErr; if ($fleetHomeReadErr -and (Test-Path "${homeFile}")) { [Console]::Out.Write("${HOME_UNREADABLE}") }; Write-Output "${SPLIT}"; Get-Content -Raw "${mcpFile}" -ErrorAction SilentlyContinue`
+      : `cat "${homeFile}" 2>/dev/null || { if test -e "${homeFile}"; then printf '%s' "${HOME_UNREADABLE}"; fi; }; echo "${SPLIT}"; cat "${mcpFile}" 2>/dev/null || true`;
     const readResult = await execCommand(readCmd, 10000);
 
     // Substring split (not line-split): if ~/.claude.json has no trailing newline the
@@ -635,6 +691,12 @@ export class ClaudeProvider implements ProviderAdapter {
     const splitIdx = rawStdout.indexOf(SPLIT);
     const homeRaw = (splitIdx === -1 ? rawStdout : rawStdout.slice(0, splitIdx)).trim();
     const mcpRaw = (splitIdx === -1 ? '' : rawStdout.slice(splitIdx + SPLIT.length)).trim();
+
+    if (homeRaw.includes(HOME_UNREADABLE)) {
+      const detail = `E-MEMBER-CONFIG-UNREADABLE: ${homeFile} exists but could not be read; workspace trust NOT seeded (the file is left untouched)`;
+      console.error(`[claude] workspace trust: ${detail}`);
+      return { seeded: false, detail, mcpServersSeeded: [] };
+    }
 
     let existing: Record<string, unknown> = {};
     try {
@@ -835,6 +897,9 @@ export async function deliverWorkspaceTrustFile(
     tmpFile: string;
     staging: WorkspaceTrustStagingNames;
     homeRel?: string;
+    /** Fully resolved member-side path for the chunked-delivery base64 staging
+     *  file. Defaults to the home-relative staging name (shell-expanded). */
+    b64File?: string;
   },
 ): Promise<WorkspaceTrustWritePlan> {
   const { isWindows, agentOs, execCommand, transport, homeFile, tmpFile, staging, homeRel } = opts;
@@ -869,7 +934,7 @@ export async function deliverWorkspaceTrustFile(
   }
 
   // 3. Chunked delivery for a Windows host (either shell flavour).
-  const b64File = isWindows ? `$env:USERPROFILE\\${staging.b64Rel}` : `$HOME/${staging.b64Rel}`;
+  const b64File = opts.b64File ?? (isWindows ? `$env:USERPROFILE\\${staging.b64Rel}` : `$HOME/${staging.b64Rel}`);
   const cmds = buildChunkedTrustWriteCommands(contentStr, { posix: !isWindows, homeFile, tmpFile, b64File });
   for (const cmd of cmds) {
     const r = await execCommand(cmd, 10000);
@@ -884,4 +949,76 @@ export async function deliverWorkspaceTrustFile(
     }
   }
   return { mechanism: 'chunked-exec', commands: cmds };
+}
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+/** Wraps an exec fn so a nonzero exit throws instead of passing silently. */
+function checkedExec(exec: WorkspaceTrustExecFn): WorkspaceTrustExecFn {
+  return async (cmd, timeoutMs) => {
+    const r = await exec(cmd, timeoutMs);
+    if (r.code !== 0) {
+      throw new Error(`member command failed (exit ${r.code}): ${(r.stderr || r.stdout || '').trim().slice(0, 300)}`);
+    }
+    return r;
+  };
+}
+
+/**
+ * Reads CLAUDE_CONFIG_DIR as the MEMBER's own shell sees it -- the environment
+ * a dispatched claude actually runs with (for a local member that is the
+ * clean login env LocalStrategy builds, not this server's env). Returns null
+ * when unset or not an absolute path. Same probe shape as member-home.ts:
+ * POSIX printf, or base64-encoded PowerShell so no outer shell re-expands it.
+ */
+export async function probeMemberClaudeConfigDir(
+  exec: WorkspaceTrustExecFn,
+  agentOs: 'linux' | 'macos' | 'windows',
+  shell?: MemberShell,
+): Promise<string | null> {
+  const posix = isPosixShell(agentOs, shell);
+  const cmd = posix
+    ? 'printf \'%s\' "${CLAUDE_CONFIG_DIR:-}"'
+    : wrapPowerShellEncoded('[Console]::Out.Write($env:CLAUDE_CONFIG_DIR)');
+  let out = '';
+  try {
+    const r = await exec(cmd, 10000);
+    if (r.code !== 0) return null;
+    out = (r.stdout ?? '').trim();
+  } catch {
+    return null;
+  }
+  if (!out) return null;
+  const absolute = out.startsWith('/') || /^[A-Za-z]:[\\/]/.test(out) || out.startsWith('\\\\');
+  return absolute ? out : null;
+}
+
+/**
+ * The member-side Claude config file that holds LOCAL-scope MCP servers
+ * (projects[<folder>].mcpServers): $CLAUDE_CONFIG_DIR/.claude.json when the
+ * member's environment sets that variable (see probeMemberClaudeConfigDir),
+ * else ~/.claude.json. Throws when the member's home could not be resolved --
+ * never guesses a path.
+ */
+export function claudeLocalScopeConfigFile(
+  configDirOverride: string | null,
+  memberHomeDir: string | null,
+  isWindows: boolean,
+  shell?: MemberShell,
+): { file: string; dir: string; homeAnchored: boolean } {
+  const normalize = (p: string) => (isWindows && !isPosixShell(isWindows, shell)
+    ? p.trim().replace(/\//g, '\\').replace(/\\+$/, '')
+    : p.trim().replace(/\\/g, '/').replace(/\/+$/, ''));
+  if (configDirOverride) {
+    const dir = normalize(configDirOverride);
+    const homeAnchored = !!memberHomeDir && normalize(memberHomeDir) === dir;
+    return { file: joinMemberPath(dir, '.claude.json', isWindows, shell), dir, homeAnchored };
+  }
+  if (!memberHomeDir) {
+    throw new Error('claude: the member home directory could not be resolved, so its ~/.claude.json cannot be located');
+  }
+  const dir = normalize(memberHomeDir);
+  return { file: joinMemberPath(dir, '.claude.json', isWindows, shell), dir, homeAnchored: true };
 }

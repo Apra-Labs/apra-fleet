@@ -25,6 +25,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { getSessionMemberId } from '../tool-scope.js';
 import { getAgent } from '../registry.js';
+import type { Agent } from '../../types.js';
 import { knownRepoRemoteUrl } from '../member-remote-url.js';
 import { getKbProviders, getGlobalKbProvider, getProjectSlug, type KbProviders } from './kb-providers.js';
 import { getMemberBibleView } from './member-bible-view.js';
@@ -83,8 +84,13 @@ function gitOut(folder: string, args: string[]): string | null {
   }
 }
 
-/** Validate a local folder as a KB anchor: exists, is a git repo, has an origin remote. */
-export function validateSelfFolder(folder: string, memberLabel?: string): KbAnchor {
+/**
+ * Validate a local folder as a (self) repo: it exists and is a git repository.
+ * Shared by kb (self) and code (self) resolution -- code tools need no origin
+ * remote (an index is keyed by folder, not by KB identity), kb tools add the
+ * remote check on top (validateSelfFolder).
+ */
+export function validateSelfRepoFolder(folder: string, memberLabel?: string): void {
   let isDir = false;
   try { isDir = !!folder && fs.statSync(folder).isDirectory(); } catch { isDir = false; }
   if (!isDir) throw noWorkFolder(folder, memberLabel);
@@ -96,6 +102,11 @@ export function validateSelfFolder(folder: string, memberLabel?: string): KbAnch
       `Run 'git init' (or clone the project) in '${folder}' and add an origin remote.`,
     );
   }
+}
+
+/** Validate a local folder as a KB anchor: exists, is a git repo, has an origin remote. */
+export function validateSelfFolder(folder: string, memberLabel?: string): KbAnchor {
+  validateSelfRepoFolder(folder, memberLabel);
   const remote = gitOut(folder, ['remote', 'get-url', 'origin']);
   if (!remote) {
     throw new KbSelfError(
@@ -108,19 +119,42 @@ export function validateSelfFolder(folder: string, memberLabel?: string): KbAnch
   return { folder };
 }
 
+/** The calling session's (self) folder before any repo validation. */
+export interface SelfSession {
+  /** Member id of a MEMBER session; undefined for a FULL session. */
+  memberId?: string;
+  /** Member friendly name (or id) used in error text; undefined for FULL. */
+  memberLabel?: string;
+  /** The member's registered work folder, or the server working folder. */
+  folder: string;
+  /** The registered member (MEMBER session only). */
+  agent?: Agent;
+}
+
+/**
+ * Resolve WHICH folder the calling session means by (self): a MEMBER session's
+ * registered work folder, a FULL session's server working folder. A MEMBER
+ * session whose member is unregistered or has no work folder is refused with
+ * E-SELF-NO-WORKFOLDER -- it never falls back to the server folder.
+ */
+export function resolveSelfSession(): SelfSession {
+  const memberId = getSessionMemberId();
+  if (memberId === undefined) return { folder: process.cwd() };
+  const agent = getAgent(memberId);
+  const label = agent?.friendlyName ?? memberId;
+  const folder = agent?.workFolder ?? '';
+  if (!agent || !folder) throw noWorkFolder(folder, label);
+  return { memberId, memberLabel: label, folder, agent };
+}
+
 /**
  * Resolve the calling session's own KB anchor (see header). Throws KbSelfError
  * when the resolved folder cannot carry a KB identity.
  */
 export function resolveSelfAnchor(): KbAnchor {
-  const memberId = getSessionMemberId();
-  if (memberId === undefined) {
-    return validateSelfFolder(process.cwd());
-  }
-  const agent = getAgent(memberId);
-  const label = agent?.friendlyName ?? memberId;
-  const folder = agent?.workFolder ?? '';
-  if (!agent || !folder) throw noWorkFolder(folder, label);
+  const self = resolveSelfSession();
+  const { agent, folder, memberLabel: label, memberId } = self;
+  if (!agent) return validateSelfFolder(folder);
   if (agent.agentType !== 'local') {
     // The work folder lives on another host: git cannot be shelled out there,
     // so the KB identity is the member's single known origin remote.

@@ -72,6 +72,28 @@ export interface Agent {
    *  be exclusively reserved: reserve/release/force_release are no-op
    *  successes and overlap guards skip it. Defaults to false/absent. */
   unreservable?: boolean;
+  /** Last OBSERVED state of this member's own apra-fleet MCP server (install,
+   *  self-registration, per-folder MCP entry, MEMBER session). Never sticky:
+   *  every probe overwrites it, so a manual fix flips unavailable -> available
+   *  on the next probe with no restart (src/services/member-fleet-install.ts). */
+  fleetMcp?: FleetMcpStatus;
+}
+
+/** Observation of a member's apra-fleet MCP server (see Agent.fleetMcp). */
+export interface FleetMcpStatus {
+  state: 'available' | 'unavailable';
+  /** Machine-readable cause when unavailable (e.g. install-too-old,
+   *  E-FOLDER-TAKEN, mcp-entry-missing, no-per-project-mcp). */
+  reason?: string;
+  /** apra-fleet version the member's own install reports, when known. */
+  version?: string;
+  /** ISO 8601 time of the probe that produced this observation. */
+  checkedAt: string;
+  /** Human-readable diagnostic for the reason. Never required. */
+  detail?: string;
+  /** True when the member's KB/code tools could not be verified (e.g. agy),
+   *  so callers must treat it as unverified (it gets the injected KB block). */
+  unverified?: boolean;
 }
 
 export interface GitHubAppConfig {

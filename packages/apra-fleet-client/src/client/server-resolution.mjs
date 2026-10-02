@@ -272,15 +272,24 @@ export async function connectFleet(deps = {}) {
  * An unregistered uuid is refused by the server with HTTP 403 at initialize;
  * the rejection carries `.status === 403` and `.code === 'HTTP_403'`.
  *
+ * `deps.origin === 'engine'` adds `origin=engine` to the URL: the session is
+ * the ENGINE acting as the member (memberCall, `apra-fleet call`), and the
+ * server excludes its kb_/code_ calls from the member's session_stats counts.
+ * Only those engine paths set it; any other origin value is refused.
+ *
  * @param {string} memberId registered member uuid
  * @param {object} [deps] same bag as resolveFleetServerConnection, plus `options`
- *                        forwarded to the transport.
+ *                        forwarded to the transport and optional
+ *                        `origin: 'engine'`.
  * @returns {Promise<{transport: object, mcpClient: McpClient, mode: 'http', url: string, close: () => Promise<void>}>}
  *          Always `await close()` when done: it DELETEs the server session so no
  *          McpServer or registry entry is leaked (`transport.stop()` does not).
  */
 export async function connectFleetMember(memberId, deps = {}) {
     if (!memberId) throw new Error('connectFleetMember requires a member id.');
+    if (deps.origin !== undefined && deps.origin !== 'engine') {
+        throw new Error(`connectFleetMember: unsupported origin '${deps.origin}' (only 'engine' is accepted).`);
+    }
     const resolution = await resolveFleetServerConnection(deps);
     if (resolution.mode !== 'http') {
         throw new Error(
@@ -290,6 +299,7 @@ export async function connectFleetMember(memberId, deps = {}) {
     }
     const url = new URL(resolution.url);
     url.searchParams.set('member', memberId);
+    if (deps.origin === 'engine') url.searchParams.set('origin', 'engine');
     const transport = new StreamableHttpTransport(url.toString(), deps.options || {});
     await transport.start();
     return {

@@ -6,7 +6,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // getSessionMemberId()). The over-the-wire behaviour (tools/list, 403, JWT and
 // channel sessions) is covered by tests/member-session-scope.test.ts.
 //
-// Isolation: kbQuery, handleCodeGraph and recordUsage are mocked, so no KB is
+// Isolation: kbQuery, handleCodeGraph, resolveCodeSelf and recordUsage are mocked, so no KB is
 // opened, no code-intel provider resolved and no telemetry written.
 
 const seen = vi.hoisted(() => ({ kb: [] as unknown[], code: [] as unknown[], extras: [] as unknown[] }));
@@ -31,6 +31,10 @@ vi.mock('../src/tools/code-intelligence.js', async importOriginal => {
       seen.code.push(getSessionMemberId());
       return { ok: true };
     }),
+    // The member ids here are not registered, so the real (self) resolver
+    // would refuse with E-SELF-NO-WORKFOLDER before the handler runs; that
+    // path is covered by tests/code-intelligence-self.test.ts.
+    resolveCodeSelf: vi.fn(() => ({ repo: '/scope-test/repo', memberId: getSessionMemberId() })),
   };
 });
 vi.mock('../src/tools/report-status.js', async importOriginal => {

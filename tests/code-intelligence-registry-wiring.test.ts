@@ -1,26 +1,28 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, beforeAll, afterAll, afterEach } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 
-// apra-fleet-b4g.13: the code_context handler body in
-// src/services/tool-registry.ts is what joins the two layers b4g.8 pinned --
-// codeContextSchema (which accepts repo/repo_remote_url) and
-// enrichContextWithKb (which forwards them to getKbProviders). That join was
-// itself unpinned: deleting `input.repo_remote_url ?? undefined`, or the
-// equally old `input.repo ?? undefined`, from the enrichContextWithKb call
-// left the whole suite green, because NO test imported tool-registry.ts.
+// The code_context handler body in src/services/tool-registry.ts joins three
+// layers: (self) resolution (resolveCodeSelf), the provider call
+// (handleCodeContext) and KB enrichment (enrichContextWithKb). This test
+// drives the REAL registered closure through a minimal fake McpServer that
+// records every (name, schemaShape, handler) triple registerAllTools()
+// registers, so the wiring itself is pinned: deleting the resolved folder
+// from the enrichContextWithKb call, or resolving a different folder for the
+// provider than for enrichment, turns these assertions red.
 //
-// Shape (b) of the two shapes the bead offered was chosen: a minimal fake
-// McpServer that records every (name, schemaShape, handler) triple
-// registerAllTools() registers, so the real registered closure can be invoked
-// directly. Shape (a) (extracting the handler body into an exported function)
-// would have moved the wiring OUT of the registry and left the registry line
-// itself just as unpinned; shape (b) needs no source change at all and makes
-// every other handler body in that file reachable from a test for the first
-// time.
+// code (self): no code_* tool takes a repo/repo_remote_url argument any more.
+// The folder is the calling session's own -- a FULL session's server working
+// folder (process.cwd(), stubbed here to a temp git repo), a MEMBER session's
+// registered work folder.
 //
 // Isolation: handleCodeContext, enrichContextWithKb and recordUsage are
 // mocked, so no code-intel provider is resolved, no KB is opened, and no
-// telemetry is appended to the real ~/.apra-fleet data dir. registerAllTools
-// imports its tool modules but nothing else here executes them.
+// telemetry is appended to the real ~/.apra-fleet data dir. The registry is
+// the isolated test registry (backupAndResetRegistry/restoreRegistry); temp
+// repos live under one scratch dir removed in afterAll.
 
 const enrichSpy = vi.hoisted(() => vi.fn());
 const handleCodeContextSpy = vi.hoisted(() => vi.fn());
@@ -39,6 +41,9 @@ vi.mock('../src/tools/code-intelligence-telemetry.js', () => ({
 
 import { registerAllTools } from '../src/services/tool-registry.js';
 import { codeContextSchema } from '../src/tools/code-intelligence.js';
+import { memberToolScope, type ToolScope } from '../src/services/tool-scope.js';
+import { addAgent } from '../src/services/registry.js';
+import { makeTestLocalAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
 
 type ToolHandler = (input: unknown, extra?: unknown) => Promise<{ content: { type: string; text: string }[] }>;
 
@@ -50,7 +55,7 @@ interface Registered {
 // Minimal stand-in for McpServer: records what each server.tool() call
 // registered. `server.server.sendLoggingMessage` is the only other member
 // registerAllTools touches (onboarding notifications).
-async function recordRegisteredTools(): Promise<Map<string, Registered>> {
+async function recordRegisteredTools(scope?: ToolScope): Promise<Map<string, Registered>> {
   const registered = new Map<string, Registered>();
   const fakeServer = {
     tool: (name: string, _description: string, schema: Record<string, unknown>, handler: ToolHandler) => {
@@ -58,58 +63,79 @@ async function recordRegisteredTools(): Promise<Map<string, Registered>> {
     },
     server: { sendLoggingMessage: async () => {} },
   };
-  await registerAllTools(fakeServer as never);
+  await registerAllTools(fakeServer as never, scope);
   return registered;
 }
 
 const PROVIDER_RESULT = { content: [{ type: 'text', text: 'provider result' }] };
 const ENRICHED_RESULT = { content: [{ type: 'text', text: 'provider result' }, { type: 'text', text: '[knowledge-bank] ...' }] };
 
-describe('code_context registry wiring (apra-fleet-b4g.13)', () => {
+let scratch: string;
+let serverRepo: string;
+let memberRepo: string;
+let memberId: string;
+
+function gitRepo(name: string): string {
+  const dir = path.join(scratch, name);
+  fs.mkdirSync(dir, { recursive: true });
+  execFileSync('git', ['init', '-q'], { cwd: dir });
+  return dir;
+}
+
+beforeAll(() => {
+  backupAndResetRegistry();
+  scratch = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'code-registry-wiring-')));
+  serverRepo = gitRepo('server');
+  memberRepo = gitRepo('member');
+  const agent = makeTestLocalAgent({ friendlyName: 'code-wiring-member', workFolder: memberRepo });
+  addAgent(agent);
+  memberId = agent.id;
+});
+
+afterAll(() => {
+  restoreRegistry();
+  fs.rmSync(scratch, { recursive: true, force: true });
+});
+
+describe('code_context registry wiring (code self)', () => {
   beforeEach(() => {
     handleCodeContextSpy.mockReset();
     handleCodeContextSpy.mockResolvedValue(PROVIDER_RESULT);
     enrichSpy.mockReset();
     enrichSpy.mockResolvedValue(ENRICHED_RESULT);
     recordUsageSpy.mockReset();
+    vi.spyOn(process, 'cwd').mockReturnValue(serverRepo);
   });
 
-  it('registers code_context with a schema that accepts repo and repo_remote_url', async () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('registers code_context with a schema that has no repo scope argument', async () => {
     const { schema } = (await recordRegisteredTools()).get('code_context')!;
-    expect(Object.keys(schema)).toEqual(expect.arrayContaining(['name', 'repo', 'repo_remote_url']));
+    expect(Object.keys(schema)).toEqual(['name']);
   });
 
-  it('forwards BOTH the repo path and the repo remote url from the parsed input into enrichContextWithKb', async () => {
+  it('FULL session: provider, telemetry and KB enrichment all get the server working folder', async () => {
     const { handler } = (await recordRegisteredTools()).get('code_context')!;
-
-    // Parse through the registered schema exactly as the MCP server would,
-    // so the handler sees the same shape it sees in production.
-    const input = codeContextSchema.parse({
-      name: 'validateUser',
-      repo: 'C:\\Users\\member\\work\\acme',
-      repo_remote_url: 'git@github.com:acme/acme.git',
-    });
+    const input = codeContextSchema.parse({ name: 'validateUser' });
 
     await handler(input);
 
-    // Third argument = repo path, fourth = remote url. Deleting EITHER from
-    // the enrichContextWithKb call in src/services/tool-registry.ts turns this
-    // assertion red (verified by mutation, not inspection).
-    expect(enrichSpy).toHaveBeenCalledWith(
-      'validateUser',
-      PROVIDER_RESULT,
-      'C:\\Users\\member\\work\\acme',
-      'git@github.com:acme/acme.git',
-    );
-    expect(handleCodeContextSpy).toHaveBeenCalledWith(input, undefined);
+    expect(handleCodeContextSpy).toHaveBeenCalledWith(input, { repo: serverRepo, memberId: undefined });
+    expect(recordUsageSpy).toHaveBeenCalledWith('code_context', 'validateUser', serverRepo);
+    expect(enrichSpy).toHaveBeenCalledWith('validateUser', PROVIDER_RESULT, serverRepo, undefined);
   });
 
-  it('normalises absent repo/repo_remote_url to undefined rather than dropping the arguments', async () => {
-    const { handler } = (await recordRegisteredTools()).get('code_context')!;
+  it('MEMBER session: provider, telemetry and KB enrichment all get the member work folder', async () => {
+    const { handler } = (await recordRegisteredTools(memberToolScope(memberId, false))).get('code_context')!;
+    const input = codeContextSchema.parse({ name: 'validateUser' });
 
-    await handler(codeContextSchema.parse({ name: 'validateUser' }));
+    await handler(input);
 
-    expect(enrichSpy.mock.calls[0]).toEqual(['validateUser', PROVIDER_RESULT, undefined, undefined]);
+    expect(handleCodeContextSpy).toHaveBeenCalledWith(input, { repo: memberRepo, memberId });
+    expect(recordUsageSpy).toHaveBeenCalledWith('code_context', 'validateUser', memberRepo);
+    expect(enrichSpy).toHaveBeenCalledWith('validateUser', PROVIDER_RESULT, memberRepo, undefined);
   });
 
   it('returns the ENRICHED result, not the raw provider result', async () => {

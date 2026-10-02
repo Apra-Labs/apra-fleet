@@ -764,8 +764,8 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   // practice, but that is a fact about what each provider adapter currently
   // advertises, not a name-based pre-filter here -- any provider that
   // implements the same MCP channel capability is picked up automatically. A
-  // member CAN still have a live sessionRegistry entry (registerMcpEndpoint
-  // gives it basic MCP tool access, apra-fleet-fnz.1-3) without that meaning
+  // member CAN still have a live sessionRegistry entry (its per-folder
+  // apra-fleet MCP entry gives it basic MCP tool access) without that meaning
   // it can receive or act on this push -- routing to it anyway would silently
   // spend the full timeout_s waiting for a response that can never arrive.
   // R2-F3: re-query session registry after the preflight await (10-20s) so

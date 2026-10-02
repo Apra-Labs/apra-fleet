@@ -133,6 +133,21 @@
  */
 
 /**
+ * @typedef {Object} SessionStatsOptions
+ * @property {string} [member_id] - Member uuid to read; omit on a member session (the calling member is used), required on a non-member session
+ */
+
+/**
+ * @typedef {Object} SessionStatsResult
+ * @property {string} member_id - Member uuid the counts belong to
+ * @property {string} since - ISO time counting started (server start); a change between two snapshots means the server restarted
+ * @property {number} kb - kb_* calls counted
+ * @property {number} code - code_* calls counted
+ * @property {number} total - kb + code
+ * @property {Object<string, number>} tools - Per-tool counts (tools called at least once)
+ */
+
+/**
  * @typedef {Object} ListMembersOptions
  * @property {"compact" | "json"} [format] - Output format
  * @property {string[]} [tags] - Filter members by tags (AND semantics)
@@ -190,6 +205,7 @@
  * @property {string[]} [tags] - Optional list of free-form labels
  * @property {"false" | "auto" | "dangerous"} [unattended] - Permission mode for unattended execution
  * @property {boolean} [unreservable] - Mark this member as never exclusively reservable, so it can be shared by more than one sprint at once (e.g. fleet-sprint's shared "orchestrator" role)
+ * @property {"auto" | "skip"} [fleet_install] - Whether registration installs/updates apra-fleet on the member (default "auto"; local members only get the MEMBER-session probe). "skip" performs no install and reports the probe result only. Registration succeeds either way; the result reports fleetMcp.
  * @property {"gitbash" | "pwsh7" | "powershell5"} [shell] - Override the probed Windows shell for this member. Windows members only -- ignored for non-windows members.
  */
 
@@ -228,6 +244,17 @@
  */
 
 /**
+ * A member's own apra-fleet MCP observation (src/types.ts FleetMcpStatus).
+ * @typedef {Object} FleetMcpStatus
+ * @property {"available" | "unavailable"} state
+ * @property {string} [reason] - Machine-readable cause when unavailable (e.g. install-too-old, E-FOLDER-TAKEN, mcp-entry-missing, no-per-project-mcp)
+ * @property {string} [version] - apra-fleet version the member's own install reports
+ * @property {string} checkedAt - ISO 8601 time of the probe
+ * @property {string} [detail] - Human-readable diagnostic
+ * @property {boolean} [unverified] - KB/code tools could not be verified (e.g. agy)
+ */
+
+/**
  * Structured result returned by memberDetail() when called with format: 'json'
  * (src/tools/member-detail.ts). When format is 'compact' (the default), memberDetail()
  * instead returns a plain multi-line text summary, not this shape.
@@ -256,6 +283,8 @@
  * @property {string|null} [agyProjectId] - agy members only: id of the member's own agy project
  *   (~/.gemini/config/projects/<id>.json), passed as `--project <id>` on every dispatch; null until
  *   provisioned (compose_permissions/execute_prompt provision it on first use)
+ * @property {FleetMcpStatus|null} fleetMcp - Last recorded state of the member's own apra-fleet MCP
+ *   server (null when never probed). Recoverable: `member_detail { refresh: true }` re-probes and records.
  * @property {Object} [llm_cli] - LLM CLI info: { version, auth }
  * @property {Object|string} [tokenUsage] - Cumulative token usage, or "compute only" for llmProvider "none"
  * @property {Object} [session] - Session info: { id, lastActivity, lastLlmActivityAt, status, idleSecs }
@@ -674,7 +703,7 @@ export class ApraFleet {
 
     /**
      * Get detailed status for one member: connectivity, session, work folder, provider, registered shell (Windows).
-     * @param {{ member_id?: string, member_name?: string, format?: 'compact'|'json' }} options
+     * @param {{ member_id?: string, member_name?: string, format?: 'compact'|'json', refresh?: boolean }} options
      * @returns {Promise<string|MemberDetailResult>} A compact text summary when format is
      *   "compact" (default), or the structured MemberDetailResult object when format is "json".
      */
@@ -716,7 +745,9 @@ export class ApraFleet {
     }
 
     /**
-     * Change a member's settings.
+     * Change a member's settings. Changing `llm_provider` removes the old
+     * provider's composed permission/MCP config and re-composes for the new
+     * provider (see docs/api-reference.md).
      * @param {UpdateMemberOptions} options
      */
     async updateMember(options) {
@@ -804,7 +835,11 @@ export class ApraFleet {
     }
 
     /**
-     * Compose and deliver a scoped permission profile to a member.
+     * Compose and deliver a scoped permission profile to a member. Also writes
+     * the member's per-folder `apra-fleet` MCP entry (`?member=<uuid>`) through
+     * the member provider's own per-project config, with deny rules for every
+     * fleet tool outside the member allowlist (claude, agy); see
+     * docs/api-reference.md.
      * @param {ComposePermissionsOptions} options
      */
     async composePermissions(options) {
@@ -862,6 +897,57 @@ export class ApraFleet {
      */
     async credentialStoreSet(options) {
         return this.mcpClient.callTool('credential_store_set', options);
+    }
+
+    /**
+     * code_reindex -- rebuild the code index of the calling session's own repo
+     * (a member session's work folder, otherwise the fleet server's folder;
+     * there is no repo argument). Starts gitnexus analyze detached with its
+     * output captured to <data>/code-index/<slug>/analyze.log and returns
+     * after the first tick. Extract the JSON with parseToolJson(): `outcome`
+     * is 'started' | 'up-to-date' | 'starting' | 'already-running' |
+     * 'not-started'; a not-started result carries a typed `reason`
+     * ('npx-not-found' | 'gitnexus-not-found' | 'analyze-failed' |
+     * 'spawn-failed' | 'remote-member' | 'provider-not-supported'). Only the
+     * gitnexus provider is supported: provider 'none' makes the tool fail with
+     * E-CODE-INTEL-DISABLED, and any other provider (e.g. codebase-memory)
+     * yields { outcome: 'not-started', reason: 'provider-not-supported',
+     * provider, indexedCommit: null, detail }. Every result carries
+     * `indexedCommit` (the commit the index is built at, or null when there
+     * is no index or the folder is remote). Poll codeStatus() for completion.
+     */
+    async codeReindex() {
+        return this.mcpClient.callTool('code_reindex', {});
+    }
+
+    /**
+     * code_status -- the calling session's own code index state: the last
+     * analyze run (`analyze`: phase, result 'indexed' | 'up-to-date' |
+     * 'incomplete' | 'failed', lastLine, ...), live `readiness`
+     * ('ready' | 'building' | 'missing'), `indexedCommit`, `lockHeld`, and
+     * `logPath`. A remote work folder returns { remote: true, repo,
+     * indexedCommit: null, detail }. Same provider gate as codeReindex():
+     * provider 'none' fails with E-CODE-INTEL-DISABLED; a non-gitnexus
+     * provider returns the not-supported shape { outcome: 'not-started',
+     * reason: 'provider-not-supported', provider, indexedCommit: null,
+     * detail } rather than gitnexus readiness. Extract the JSON with
+     * parseToolJson().
+     */
+    async codeStatus() {
+        return this.mcpClient.callTool('code_status', {});
+    }
+
+    /**
+     * session_stats -- a member's kb_* / code_* tool call counts on this
+     * server, aggregated across that member's sessions (engine-origin
+     * sessions excluded). On a member session the calling member is reported
+     * and `member_id` may be omitted; a non-member session must pass it.
+     * Extract the JSON with parseToolJson(): a SessionStatsResult.
+     *
+     * @param {SessionStatsOptions} [options]
+     */
+    async sessionStats(options = {}) {
+        return this.mcpClient.callTool('session_stats', options);
     }
 
     /**

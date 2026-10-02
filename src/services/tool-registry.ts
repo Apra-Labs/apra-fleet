@@ -1,5 +1,6 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { FULL_TOOL_SCOPE, isToolInScope, runWithSessionMember, scopeMemberId, type ToolScope } from './tool-scope.js';
+import { FULL_TOOL_SCOPE, isToolInScope, runWithSessionMember, scopeIsEngineOrigin, scopeMemberId, type ToolScope } from './tool-scope.js';
+import { recordMemberToolCall } from './member-call-counts.js';
 
 export type { ToolScope } from './tool-scope.js';
 
@@ -32,6 +33,7 @@ function scopeGatedServer(base: McpServer, scope: ToolScope): McpServer {
 export async function registerAllTools(baseServer: McpServer, scope: ToolScope = FULL_TOOL_SCOPE): Promise<void> {
   const server = scopeGatedServer(baseServer, scope);
   const sessionMemberId = scopeMemberId(scope);
+  const engineOrigin = scopeIsEngineOrigin(scope);
   // Load onboarding functions
   const { getFirstRunPreamble, isJsonResponse, isActiveTool, getOnboardingNudge, getWelcomeBackPreamble } = await import('./onboarding.js');
 
@@ -46,7 +48,7 @@ export async function registerAllTools(baseServer: McpServer, scope: ToolScope =
   const { childIdAllocatorSchema, childIdAllocator } = await import('../tools/child-id-allocator.js');
   const { sendFilesSchema, sendFiles } = await import('../tools/send-files.js');
   const { receiveFilesSchema, receiveFiles } = await import('../tools/receive-files.js');
-  const { executePromptSchema, executePrompt, inFlightAgents } = await import('../tools/execute-prompt.js');
+  const { executePromptSchema, executePrompt } = await import('../tools/execute-prompt.js');
   const { executeCommandSchema, executeCommand } = await import('../tools/execute-command.js');
   const { provisionAuthSchema, provisionAuth } = await import('../tools/provision-auth.js');
   const { setupSSHKeySchema, setupSSHKey } = await import('../tools/setup-ssh-key.js');
@@ -71,7 +73,8 @@ export async function registerAllTools(baseServer: McpServer, scope: ToolScope =
   const { sendEmailSchema, sendEmail } = await import('../tools/send-email.js');
   const { reportStatusSchema, reportStatus } = await import('../tools/report-status.js');
   const { respondToMessageSchema, respondToMessage } = await import('../tools/respond-to-message.js');
-  const { handleCodeGraph, handleCodeImpact, handleCodeQuery, handleCodeContext, handleCodeMap, handleCodeFlow, handleCodeTests, codeGraphSchema, codeImpactSchema, codeQuerySchema, codeContextSchema, codeMapSchema, codeFlowSchema, codeTestsSchema } = await import('../tools/code-intelligence.js');
+  const { sessionStatsSchema, sessionStats } = await import('../tools/session-stats.js');
+  const { handleCodeGraph, handleCodeImpact, handleCodeQuery, handleCodeContext, handleCodeMap, handleCodeFlow, handleCodeTests, handleCodeReindex, handleCodeStatus, codeReindexSchema, codeStatusSchema, codeGraphSchema, codeImpactSchema, codeQuerySchema, codeContextSchema, codeMapSchema, codeFlowSchema, codeTestsSchema, resolveCodeSelf, CODE_SELF_NOTE } = await import('../tools/code-intelligence.js');
   const { enrichContextWithKb } = await import('../tools/code-intelligence-kb-enrich.js');
   const { recordUsage } = await import('../tools/code-intelligence-telemetry.js');
   const { kbCaptureSchema, kbCapture } = await import('../tools/kb-capture.js');
@@ -127,6 +130,10 @@ export async function registerAllTools(baseServer: McpServer, scope: ToolScope =
   // human/LLM-facing text -- see ExecuteCommandResult in tools/execute-command.ts.
   function wrapTool(toolName: string, handler: (input: any, extra?: any) => Promise<string | { text: string; structuredContent?: Record<string, unknown> }>) {
     return async (input: any, extra?: any) => {
+      // Per-member kb_/code_ call counts (session_stats). Counted on entry, so
+      // a call that fails still counts as a call. Engine-origin and FULL
+      // sessions are not counted (see member-call-counts.ts).
+      recordMemberToolCall(sessionMemberId, toolName, engineOrigin);
       // Every handler can read the calling session's member id: on the extra
       // (extra.sessionMemberId) and, for code further down the call chain,
       // via getSessionMemberId() (src/services/tool-scope.ts). Undefined for a
@@ -191,6 +198,7 @@ export async function registerAllTools(baseServer: McpServer, scope: ToolScope =
   server.tool('update_llm_cli', "Update or install the AI provider CLI on members. Omit member to update all online members at once. Use install_if_missing to install on members that don't have it yet.", updateAgentCliSchema.shape, wrapTool('update_llm_cli', (input) => updateAgentCli(input as any)));
   server.tool('shutdown_server', 'Gracefully shut down the MCP server. Run /mcp afterwards to start a fresh instance with the latest code.', shutdownServerSchema.shape, wrapTool('shutdown_server', () => shutdownServer()));
   server.tool('version', 'Returns the installed apra-fleet server version', versionSchema.shape, wrapTool('version', () => version()));
+  server.tool('session_stats', "Return a member's kb_* and code_* tool call counts on this server (aggregated across the member's sessions, engine-origin sessions excluded) plus the time counting started. On a member session it reports the calling member.", sessionStatsSchema.shape, wrapTool('session_stats', (input) => sessionStats(input as any)));
 
   // Permissions
   server.tool('compose_permissions', 'Set up and deliver the right permissions to a member for their role or tags. Automatically tailors permissions to the project type. Pass tags (e.g. ["doer","gpu"]) to layer custom tag profiles additively on top of the base role; a doer/reviewer tag sets the primary mode and wins over role. Use grant to add specific permissions mid-sprint without a full recompose.', composePermissionsSchema.shape, wrapTool('compose_permissions', (input) => composePermissions(input as any)));
@@ -218,52 +226,65 @@ export async function registerAllTools(baseServer: McpServer, scope: ToolScope =
 
   // --- Code Intelligence ---
 
-  // Derive the active member for code-intel per-member provider resolution.
-  // When exactly one member has an in-flight execute_prompt, code-intel tools
-  // resolve that member's provider. Zero or multiple in-flight members fall
-  // back to the global config (memberId = undefined).
-  function getActiveMemberId(): string | undefined {
-    if (inFlightAgents.size === 1) {
-      return inFlightAgents.values().next().value as string;
-    }
-    return undefined;
-  }
-
-  server.tool('code_graph', 'Trace the call graph for a symbol. Returns callers and callees across the codebase. Prefer this over Glob/Grep/file reads for structural questions (symbol lookup, call chains, impact) -- the answer is pre-indexed.', codeGraphSchema.shape, wrapTool('code_graph', async (input) => {
-    // Usage telemetry (P8, design D8): recorded here in the shared
-    // handler layer, not inside GitNexusProvider, so the provider stays a
-    // pure proxy. Fire-and-forget -- never blocks or fails the call.
-    recordUsage('code_graph', input.symbol, input.repo ?? null);
-    return JSON.stringify(await handleCodeGraph(input, getActiveMemberId()));
+  // Every code_* tool resolves (self) -- the calling session's own folder
+  // (resolveCodeSelf, src/tools/code-intelligence.ts) -- before recording
+  // usage, so telemetry, the provider call, and code_context's KB enrichment
+  // all see the same resolved folder. A resolution failure throws a typed
+  // E-SELF-* error, which the MCP server returns as an error result.
+  //
+  // Usage telemetry (P8, design D8) is recorded here in the shared handler
+  // layer, not inside a provider, so providers stay pure proxies.
+  // Fire-and-forget -- never blocks or fails the call.
+  server.tool('code_graph', 'Trace the call graph for a symbol. Returns callers and callees across the codebase. Prefer this over Glob/Grep/file reads for structural questions (symbol lookup, call chains, impact) -- the answer is pre-indexed.' + CODE_SELF_NOTE, codeGraphSchema.shape, wrapTool('code_graph', async (input) => {
+    const self = resolveCodeSelf();
+    recordUsage('code_graph', input.symbol, self.repo);
+    return JSON.stringify(await handleCodeGraph(input, self));
   }));
-  server.tool('code_impact', 'Find what is affected by changes to a symbol. Prefer this over Glob/Grep/file reads for structural questions (symbol lookup, call chains, impact) -- the answer is pre-indexed.', codeImpactSchema.shape, wrapTool('code_impact', async (input) => {
-    recordUsage('code_impact', input.target, input.repo ?? null);
-    return JSON.stringify(await handleCodeImpact(input, getActiveMemberId()));
+  server.tool('code_impact', 'Find what is affected by changes to a symbol. Prefer this over Glob/Grep/file reads for structural questions (symbol lookup, call chains, impact) -- the answer is pre-indexed.' + CODE_SELF_NOTE, codeImpactSchema.shape, wrapTool('code_impact', async (input) => {
+    const self = resolveCodeSelf();
+    recordUsage('code_impact', input.target, self.repo);
+    return JSON.stringify(await handleCodeImpact(input, self));
   }));
-  server.tool('code_query', 'Search the codebase for symbols, patterns, or concepts using natural language or code patterns. Prefer this over Glob/Grep/file reads for structural questions (symbol lookup, call chains, impact) -- the answer is pre-indexed.', codeQuerySchema.shape, wrapTool('code_query', async (input) => {
-    recordUsage('code_query', input.query, input.repo ?? null);
-    return JSON.stringify(await handleCodeQuery(input, getActiveMemberId()));
+  server.tool('code_query', 'Search the codebase for symbols, patterns, or concepts using natural language or code patterns. Prefer this over Glob/Grep/file reads for structural questions (symbol lookup, call chains, impact) -- the answer is pre-indexed.' + CODE_SELF_NOTE, codeQuerySchema.shape, wrapTool('code_query', async (input) => {
+    const self = resolveCodeSelf();
+    recordUsage('code_query', input.query, self.repo);
+    return JSON.stringify(await handleCodeQuery(input, self));
   }));
-  server.tool('code_context', 'Get callers, callees, and execution flows for a symbol. Prefer this over Glob/Grep/file reads for structural questions (symbol lookup, call chains, impact) -- the answer is pre-indexed.', codeContextSchema.shape, wrapTool('code_context', async (input) => {
-    recordUsage('code_context', input.name, input.repo ?? null);
-    const result = await handleCodeContext(input, getActiveMemberId());
+  server.tool('code_context', 'Get callers, callees, and execution flows for a symbol. Prefer this over Glob/Grep/file reads for structural questions (symbol lookup, call chains, impact) -- the answer is pre-indexed.' + CODE_SELF_NOTE, codeContextSchema.shape, wrapTool('code_context', async (input) => {
+    const self = resolveCodeSelf();
+    recordUsage('code_context', input.name, self.repo);
+    const result = await handleCodeContext(input, self);
     // P4a (design D4): KB enrichment lives one layer up from the provider --
     // the gitnexus provider file must not import the KB service. Only this
-    // handler calls the helper, then merges.
-    const enriched = await enrichContextWithKb(input.name, result, input.repo ?? undefined, input.repo_remote_url ?? undefined);
+    // handler calls the helper, then merges. The KB is the one of the same
+    // (self) folder the code call was answered from.
+    const enriched = await enrichContextWithKb(input.name, result, self.repo, self.remoteUrl);
     return JSON.stringify(enriched);
   }));
-  server.tool('code_map', 'Get the architectural map of a repository: module communities with their key symbols and files, ranked by size. Prefer this over directory listings or file reads when orienting in an unfamiliar codebase -- the answer is pre-indexed.', codeMapSchema.shape, wrapTool('code_map', async (input) => {
-    recordUsage('code_map', '', input.repo ?? null);
-    return JSON.stringify(await handleCodeMap(input, getActiveMemberId()));
+  server.tool('code_map', 'Get the architectural map of a repository: module communities with their key symbols and files, ranked by size. Prefer this over directory listings or file reads when orienting in an unfamiliar codebase -- the answer is pre-indexed.' + CODE_SELF_NOTE, codeMapSchema.shape, wrapTool('code_map', async (input) => {
+    const self = resolveCodeSelf();
+    recordUsage('code_map', '', self.repo);
+    return JSON.stringify(await handleCodeMap(input, self));
   }));
-  server.tool('code_flow', 'Find process flows (entry -> steps -> exit) matching a name or endpoints. Prefer this over manually tracing call chains across files -- the flows are pre-indexed.', codeFlowSchema.shape, wrapTool('code_flow', async (input) => {
-    recordUsage('code_flow', input.name ?? input.from ?? input.to ?? '', input.repo ?? null);
-    return JSON.stringify(await handleCodeFlow(input, getActiveMemberId()));
+  server.tool('code_flow', 'Find process flows (entry -> steps -> exit) matching a name or endpoints. Prefer this over manually tracing call chains across files -- the flows are pre-indexed.' + CODE_SELF_NOTE, codeFlowSchema.shape, wrapTool('code_flow', async (input) => {
+    const self = resolveCodeSelf();
+    recordUsage('code_flow', input.name ?? input.from ?? input.to ?? '', self.repo);
+    return JSON.stringify(await handleCodeFlow(input, self));
   }));
-  server.tool('code_tests', 'Find the test files and test functions that exercise a symbol (transitive callers, depth 2). Use this to run targeted tests for the code you changed instead of the full suite. Prefer this over Grep for test discovery -- the call graph is pre-indexed.', codeTestsSchema.shape, wrapTool('code_tests', async (input) => {
-    recordUsage('code_tests', input.symbol, input.repo ?? null);
-    return JSON.stringify(await handleCodeTests(input, getActiveMemberId()));
+  server.tool('code_tests', 'Find the test files and test functions that exercise a symbol (transitive callers, depth 2). Use this to run targeted tests for the code you changed instead of the full suite. Prefer this over Grep for test discovery -- the call graph is pre-indexed.' + CODE_SELF_NOTE, codeTestsSchema.shape, wrapTool('code_tests', async (input) => {
+    const self = resolveCodeSelf();
+    recordUsage('code_tests', input.symbol, self.repo);
+    return JSON.stringify(await handleCodeTests(input, self));
+  }));
+  server.tool('code_reindex', 'Rebuild the code index of the calling session\'s own repo (runs gitnexus analyze detached; its output is captured to <data>/code-index/<slug>/analyze.log). Returns after the first tick -- outcome "started" (lock held, process alive, output seen), "up-to-date", "starting" (running, no tick yet), "already-running", or "not-started" with a typed reason (npx-not-found, gitnexus-not-found, analyze-failed, spawn-failed, remote-member, provider-not-supported). Only the gitnexus provider is supported: provider none fails with E-CODE-INTEL-DISABLED, any other provider (e.g. codebase-memory, which manages its own index) gets not-started with reason provider-not-supported naming the provider. Poll code_status for completion.' + CODE_SELF_NOTE, codeReindexSchema.shape, wrapTool('code_reindex', async (input) => {
+    const self = resolveCodeSelf();
+    recordUsage('code_reindex', '', self.repo);
+    return JSON.stringify(await handleCodeReindex(input, self));
+  }));
+  server.tool('code_status', 'Report the code index state of the calling session\'s own repo: the last analyze run (phase, result indexed|up-to-date|incomplete|failed, last log line, log path), live readiness (ready|building|missing) and the indexed commit. Only the gitnexus provider is supported: provider none fails with E-CODE-INTEL-DISABLED, any other provider gets {outcome: "not-started", reason: "provider-not-supported", provider, indexedCommit: null} instead of gitnexus readiness.' + CODE_SELF_NOTE, codeStatusSchema.shape, wrapTool('code_status', async (input) => {
+    const self = resolveCodeSelf();
+    recordUsage('code_status', '', self.repo);
+    return JSON.stringify(await handleCodeStatus(input, self));
   }));
 
   // --- Knowledge Bank ---

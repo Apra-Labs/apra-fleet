@@ -212,6 +212,17 @@ MCP tools that ship with the KB:
 | `kb_bible_commit` | Merge confirmed entry ids into the bible and commit locally with base-branch provenance (used by the sprint kb_maintainer) |
 | `kb_setup` | Install git hook, write provider config, store remote token encrypted |
 
+`code_*` tools resolve the calling session's own folder, refuse with typed
+`E-CODE-INDEX-NOT-READY` / `E-CODE-INTEL-DISABLED` errors when the index is not
+usable, and report `indexedCommit` on every result; `code_reindex` and
+`code_status` drive and inspect the index (see
+[docs/code-index-readiness.md](docs/code-index-readiness.md)). Registering a
+remote member also installs a member-mode apra-fleet on it and wires a
+per-folder MCP entry, recorded as `fleetMcp` (see
+[docs/member-fleet-mcp-wiring.md](docs/member-fleet-mcp-wiring.md)).
+`session_stats` reports each member's `kb_*` / `code_*` call counts, which
+fleet-sprint shows per dispatch in its Knowledge & Code Intel viewer tab.
+
 `kb_setup --remote <url> --token <key>` takes effect immediately: the next
 KB tool call resolves its project provider from this config, so a stock build
 points at a remote KB server by configuration alone, with no code change and

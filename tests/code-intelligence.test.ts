@@ -63,7 +63,7 @@ vi.mock('@modelcontextprotocol/sdk/client/stdio.js', () => {
 // ---------------------------------------------------------------------------
 // Static imports (resolved after mocks are hoisted)
 // ---------------------------------------------------------------------------
-import { getProvider, PROVIDERS, NullProvider, handleCodeGraph, handleCodeImpact, handleCodeQuery, handleCodeContext, handleCodeMap, handleCodeFlow, handleCodeTests, codeMapSchema, codeFlowSchema, codeTestsSchema, codeContextSchema } from '../src/tools/code-intelligence.js';
+import { getProvider, PROVIDERS, NullProvider, handleCodeGraph, handleCodeImpact, handleCodeQuery, handleCodeContext, handleCodeMap, handleCodeFlow, handleCodeTests, codeMapSchema, codeFlowSchema, codeTestsSchema, codeContextSchema, codeGraphSchema, codeImpactSchema, codeQuerySchema } from '../src/tools/code-intelligence.js';
 import { GitNexusProvider, parseMarkdownTable, asciiSanitizeLabel } from '../src/tools/code-intelligence-gitnexus.js';
 import { CodebaseMemoryProvider } from '../src/tools/code-intelligence-codebase-memory.js';
 
@@ -158,98 +158,60 @@ describe('getProvider(memberId)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Handler functions -- memberId forwarding
+// Handler functions -- (self) forwarding: the resolved CodeSelf's memberId
+// selects the per-member provider and its repo is passed as params.repo,
+// overwriting any repo key a caller might smuggle onto the input.
 // ---------------------------------------------------------------------------
-describe('handler functions forward memberId to getProvider()', () => {
+describe('handler functions forward the resolved (self) to the provider', () => {
+  const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
+  const recorder = (method: string) => async (params: Record<string, unknown>) => {
+    calls.push({ method, params });
+    return { content: [{ type: 'text', text: `fake ${method}` }] };
+  };
+  const fake = {
+    graph: recorder('graph'), impact: recorder('impact'), query: recorder('query'), context: recorder('context'),
+    map: recorder('map'), flow: recorder('flow'), tests: recorder('tests'),
+  };
+  const SELF = { repo: '/work/member-1-repo', memberId: 'member-1' };
+
   beforeEach(() => {
     vi.clearAllMocks();
-    // Default: no agent found, falls back to global config (codebase-memory)
-    mockGetAgent.mockReturnValue(undefined);
+    calls.length = 0;
+    PROVIDERS['fake-recorder'] = fake;
+    mockGetAgent.mockReturnValue({ id: 'member-1', codeIntelProvider: 'fake-recorder' });
     mockReadFile.mockRejectedValue(Object.assign(new Error('no such file'), { code: 'ENOENT' }));
   });
 
-  it('handleCodeGraph forwards memberId and delegates to provider.graph()', async () => {
-    mockGetAgent.mockReturnValue({ id: 'member-1', codeIntelProvider: 'none' });
-
-    const result = (await handleCodeGraph({ symbol: 'foo' }, 'member-1')) as { content: { type: string; text: string }[] };
-
-    expect(mockGetAgent).toHaveBeenCalledWith('member-1');
-    expect(result.content[0].text).toContain('disabled for this member');
-    expect(result.content[0].text).toContain('graph');
+  afterEach(() => {
+    delete PROVIDERS['fake-recorder'];
   });
 
-  it('handleCodeImpact forwards memberId and delegates to provider.impact()', async () => {
-    mockGetAgent.mockReturnValue({ id: 'member-1', codeIntelProvider: 'none' });
+  const cases: Array<[string, (input: Record<string, unknown>, self: typeof SELF) => Promise<unknown>, Record<string, unknown>]> = [
+    ['graph', handleCodeGraph, { symbol: 'foo' }],
+    ['impact', handleCodeImpact, { target: 'foo', direction: 'upstream' }],
+    ['query', handleCodeQuery, { query: 'exports' }],
+    ['context', handleCodeContext, { name: 'foo' }],
+    ['map', handleCodeMap, {}],
+    ['flow', handleCodeFlow, {}],
+    ['tests', handleCodeTests, { symbol: 'foo' }],
+  ];
+  for (const [method, handler, input] of cases) {
+    it(`${method}: resolves the member provider and passes the (self) folder as params.repo`, async () => {
+      const result = (await handler({ ...input, repo: '/smuggled/elsewhere' }, SELF)) as { content: { text: string }[] };
 
-    const result = (await handleCodeImpact({ target: 'foo', direction: 'upstream' }, 'member-1')) as { content: { type: string; text: string }[] };
+      expect(mockGetAgent).toHaveBeenCalledWith('member-1');
+      expect(result.content[0].text).toBe(`fake ${method}`);
+      expect(calls).toEqual([{ method, params: { ...input, repo: '/work/member-1-repo' } }]);
+    });
+  }
 
-    expect(mockGetAgent).toHaveBeenCalledWith('member-1');
-    expect(result.content[0].text).toContain('disabled for this member');
-    expect(result.content[0].text).toContain('impact');
-  });
+  it('a FULL-session (self) (no memberId) skips the registry and uses the global config', async () => {
+    mockReadFile.mockResolvedValue(JSON.stringify({ provider: 'fake-recorder' }));
 
-  it('handleCodeQuery forwards memberId and delegates to provider.query()', async () => {
-    mockGetAgent.mockReturnValue({ id: 'member-1', codeIntelProvider: 'none' });
-
-    const result = (await handleCodeQuery({ query: 'exports' }, 'member-1')) as { content: { type: string; text: string }[] };
-
-    expect(mockGetAgent).toHaveBeenCalledWith('member-1');
-    expect(result.content[0].text).toContain('disabled for this member');
-    expect(result.content[0].text).toContain('query');
-  });
-
-  it('handleCodeContext forwards memberId and delegates to provider.context()', async () => {
-    mockGetAgent.mockReturnValue({ id: 'member-1', codeIntelProvider: 'none' });
-
-    const result = (await handleCodeContext({ name: 'foo' }, 'member-1')) as { content: { type: string; text: string }[] };
-
-    expect(mockGetAgent).toHaveBeenCalledWith('member-1');
-    expect(result.content[0].text).toContain('disabled for this member');
-    expect(result.content[0].text).toContain('context');
-  });
-
-  it('handleCodeMap forwards memberId and delegates to provider.map()', async () => {
-    mockGetAgent.mockReturnValue({ id: 'member-1', codeIntelProvider: 'none' });
-
-    const result = (await handleCodeMap({}, 'member-1')) as { content: { type: string; text: string }[] };
-
-    expect(mockGetAgent).toHaveBeenCalledWith('member-1');
-    expect(result.content[0].text).toContain('disabled for this member');
-    expect(result.content[0].text).toContain('map');
-  });
-
-  it('handleCodeFlow forwards memberId and delegates to provider.flow()', async () => {
-    mockGetAgent.mockReturnValue({ id: 'member-1', codeIntelProvider: 'none' });
-
-    const result = (await handleCodeFlow({}, 'member-1')) as { content: { type: string; text: string }[] };
-
-    expect(mockGetAgent).toHaveBeenCalledWith('member-1');
-    expect(result.content[0].text).toContain('disabled for this member');
-    expect(result.content[0].text).toContain('flow');
-  });
-
-  it('handleCodeTests forwards memberId and delegates to provider.tests()', async () => {
-    mockGetAgent.mockReturnValue({ id: 'member-1', codeIntelProvider: 'none' });
-
-    const result = (await handleCodeTests({ symbol: 'foo' }, 'member-1')) as { content: { type: string; text: string }[] };
-
-    expect(mockGetAgent).toHaveBeenCalledWith('member-1');
-    expect(result.content[0].text).toContain('disabled for this member');
-    expect(result.content[0].text).toContain('tests');
-  });
-
-  it('handlers fall back to global config when memberId is omitted', async () => {
-    mockReadFile.mockRejectedValue(Object.assign(new Error('no such file'), { code: 'ENOENT' }));
-    // No memberId: should NOT call getAgent, should use global config (codebase-memory)
-    // codebase-memory will try to connect, but we just verify getAgent was NOT called
-    mockGetAgent.mockReturnValue(undefined);
-
-    // handleCodeGraph with no memberId should fall through to global provider
-    // (codebase-memory). Since codebase-memory tries a real connection, we
-    // just verify the registry lookup was skipped.
-    await handleCodeGraph({ symbol: 'foo' }).catch(() => { /* expected: codebase-memory connection fails in test */ });
+    await handleCodeQuery({ query: 'x' }, { repo: '/server/cwd' });
 
     expect(mockGetAgent).not.toHaveBeenCalled();
+    expect(calls).toEqual([{ method: 'query', params: { query: 'x', repo: '/server/cwd' } }]);
   });
 });
 
@@ -262,12 +224,14 @@ describe('NullProvider', () => {
   const methods = ['graph', 'impact', 'query', 'context', 'map', 'flow', 'tests'] as const;
 
   for (const method of methods) {
-    it(`${method}() returns a structured disabled message and does not throw`, async () => {
-      const result = (await nullProvider[method]({})) as { content: { type: string; text: string }[] };
-      expect(result.content).toHaveLength(1);
-      expect(result.content[0].type).toBe('text');
-      expect(result.content[0].text).toContain('disabled for this member');
-      expect(result.content[0].text).toContain(method);
+    it(`${method}() throws E-CODE-INTEL-DISABLED with exactly one Remediation line -- never an ok result`, async () => {
+      const err = await nullProvider[method]({}).then(
+        () => { throw new Error('NullProvider resolved -- it must never return an ok result'); },
+        (e: unknown) => e as Error,
+      );
+      expect(err.message).toMatch(new RegExp(`^E-CODE-INTEL-DISABLED: .*code_${method}`));
+      expect(err.message.split('Remediation:')).toHaveLength(2);
+      expect(err.message).not.toContain('\n');
     });
   }
 });
@@ -555,9 +519,9 @@ describe('GitNexusProvider connection resilience', () => {
 // ---------------------------------------------------------------------------
 // GitNexusProvider pre-flight index check (F3.1)
 //
-// When a call carries a `repo` param, the provider must check
-// `<repo>/.gitnexus/meta.json` with fs.existsSync BEFORE ever touching the
-// child process. Missing index -> structured error, no connect, no callTool.
+// When a call carries a `repo` param, the provider must check index
+// readiness (codeIndexReadiness) BEFORE ever touching the child process.
+// Missing index -> thrown E-CODE-INDEX-NOT-READY, no connect, no callTool.
 // Calls without `repo` are forwarded untouched.
 // ---------------------------------------------------------------------------
 describe('GitNexusProvider pre-flight index check (F3.1)', () => {
@@ -573,61 +537,37 @@ describe('GitNexusProvider pre-flight index check (F3.1)', () => {
     rmSync(tempRepo, { recursive: true, force: true });
   });
 
-  it('graph() returns the missing-index error without connecting when repo has no .gitnexus', async () => {
+  it('graph() throws E-CODE-INDEX-NOT-READY without connecting when repo has no .gitnexus', async () => {
     const provider = new GitNexusProvider();
-    const result = (await provider.impact({ target: 'x', direction: 'upstream', repo: tempRepo })) as {
-      isError?: boolean;
-      content: { text: string }[];
-    };
-
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toBe(
-      `No code intelligence index found for ${tempRepo}. Run 'npx gitnexus analyze' in the repo (or /pm index) and retry.`,
+    await expect(provider.impact({ target: 'x', direction: 'upstream', repo: tempRepo })).rejects.toThrow(
+      `E-CODE-INDEX-NOT-READY: No gitnexus code index found for '${tempRepo}'. Remediation: Run 'npx gitnexus analyze' in the repo (or /pm index), then retry.`,
     );
     expect(mockConnect).not.toHaveBeenCalled();
     expect(mockCallTool).not.toHaveBeenCalled();
   });
 
-  it('impact() returns the missing-index error without connecting when repo has no .gitnexus', async () => {
+  it('impact() throws E-CODE-INDEX-NOT-READY without connecting when repo has no .gitnexus', async () => {
     const provider = new GitNexusProvider();
-    const result = (await provider.impact({ target: 'x', direction: 'upstream', repo: tempRepo })) as {
-      isError?: boolean;
-      content: { text: string }[];
-    };
-
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toBe(
-      `No code intelligence index found for ${tempRepo}. Run 'npx gitnexus analyze' in the repo (or /pm index) and retry.`,
+    await expect(provider.impact({ target: 'x', direction: 'upstream', repo: tempRepo })).rejects.toThrow(
+      `E-CODE-INDEX-NOT-READY: No gitnexus code index found for '${tempRepo}'. Remediation: Run 'npx gitnexus analyze' in the repo (or /pm index), then retry.`,
     );
     expect(mockConnect).not.toHaveBeenCalled();
     expect(mockCallTool).not.toHaveBeenCalled();
   });
 
-  it('query() returns the missing-index error without connecting when repo has no .gitnexus', async () => {
+  it('query() throws E-CODE-INDEX-NOT-READY without connecting when repo has no .gitnexus', async () => {
     const provider = new GitNexusProvider();
-    const result = (await provider.query({ query: 'find exports', repo: tempRepo })) as {
-      isError?: boolean;
-      content: { text: string }[];
-    };
-
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toBe(
-      `No code intelligence index found for ${tempRepo}. Run 'npx gitnexus analyze' in the repo (or /pm index) and retry.`,
+    await expect(provider.query({ query: 'find exports', repo: tempRepo })).rejects.toThrow(
+      `E-CODE-INDEX-NOT-READY: No gitnexus code index found for '${tempRepo}'. Remediation: Run 'npx gitnexus analyze' in the repo (or /pm index), then retry.`,
     );
     expect(mockConnect).not.toHaveBeenCalled();
     expect(mockCallTool).not.toHaveBeenCalled();
   });
 
-  it('context() returns the missing-index error without connecting when repo has no .gitnexus', async () => {
+  it('context() throws E-CODE-INDEX-NOT-READY without connecting when repo has no .gitnexus', async () => {
     const provider = new GitNexusProvider();
-    const result = (await provider.context({ name: 'x', repo: tempRepo })) as {
-      isError?: boolean;
-      content: { text: string }[];
-    };
-
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toBe(
-      `No code intelligence index found for ${tempRepo}. Run 'npx gitnexus analyze' in the repo (or /pm index) and retry.`,
+    await expect(provider.context({ name: 'x', repo: tempRepo })).rejects.toThrow(
+      `E-CODE-INDEX-NOT-READY: No gitnexus code index found for '${tempRepo}'. Remediation: Run 'npx gitnexus analyze' in the repo (or /pm index), then retry.`,
     );
     expect(mockConnect).not.toHaveBeenCalled();
     expect(mockCallTool).not.toHaveBeenCalled();
@@ -807,17 +747,14 @@ describe('GitNexusProvider freshness note wiring (F2.2)', () => {
     expect(result).toBe(original);
   });
 
-  it('does not append a note when meta.json is unreadable/invalid JSON', async () => {
+  it('treats an unparseable meta.json as no index (not ready) rather than answering', async () => {
     writeFileSync(join(tempRepo, '.gitnexus', 'meta.json'), '{ not valid json');
     mockExecFileSync.mockReturnValue('bbbbbbbb111122223333444455556666777788\n');
 
     const provider = new GitNexusProvider();
-    const original = { content: [{ type: 'text', text: 'call graph result' }] };
-    mockCallTool.mockResolvedValueOnce(original);
-
-    const result = await provider.impact({ target: 'x', direction: 'upstream', repo: tempRepo });
-
-    expect(result).toBe(original);
+    await expect(provider.impact({ target: 'x', direction: 'upstream', repo: tempRepo }))
+      .rejects.toThrow(/E-CODE-INDEX-NOT-READY/);
+    expect(mockCallTool).not.toHaveBeenCalled();
   });
 });
 
@@ -830,8 +767,8 @@ describe('codeMapSchema validation', () => {
     expect(result.success).toBe(true);
   });
 
-  it('accepts repo and top', () => {
-    const result = codeMapSchema.safeParse({ repo: '/a/b', top: 5 });
+  it('accepts top', () => {
+    const result = codeMapSchema.safeParse({ top: 5 });
     expect(result.success).toBe(true);
   });
 
@@ -846,23 +783,18 @@ describe('codeMapSchema validation', () => {
   });
 });
 
-// apra-fleet-b4g.8: codeContextSchema must accept and preserve
-// repo_remote_url so the code_context handler can forward it to the KB
-// enrichment helper. Guards the zod silent-strip mode if kbScopeFields is
-// ever dropped from this schema's spread.
-describe('codeContextSchema validation', () => {
-  it('accepts and preserves repo_remote_url through .parse()', () => {
-    const parsed = codeContextSchema.parse({
-      name: 'someSymbol',
-      repo_remote_url: 'https://example.com/acme/repo.git',
+// code (self): no code_* tool input schema declares a repo/path scope
+// argument -- the repo is always the calling session's own folder.
+describe('code_* input schemas carry no repo scope argument', () => {
+  const schemas = { codeGraphSchema, codeImpactSchema, codeQuerySchema, codeContextSchema, codeMapSchema, codeFlowSchema, codeTestsSchema };
+  for (const [name, schema] of Object.entries(schemas)) {
+    it(`${name} declares none of repo / repo_path / repo_remote_url`, () => {
+      const keys = Object.keys(schema.shape);
+      expect(keys).not.toContain('repo');
+      expect(keys).not.toContain('repo_path');
+      expect(keys).not.toContain('repo_remote_url');
     });
-    expect(parsed.repo_remote_url).toBe('https://example.com/acme/repo.git');
-  });
-
-  it('omitting repo_remote_url keeps it undefined (no default injected)', () => {
-    const parsed = codeContextSchema.parse({ name: 'someSymbol' });
-    expect(parsed.repo_remote_url).toBeUndefined();
-  });
+  }
 });
 
 describe('codeFlowSchema validation', () => {
@@ -871,8 +803,8 @@ describe('codeFlowSchema validation', () => {
     expect(result.success).toBe(true);
   });
 
-  it('accepts from/to/name/repo together', () => {
-    const result = codeFlowSchema.safeParse({ from: 'Entry', to: 'Exit', name: 'RemoveMember', repo: '/a/b' });
+  it('accepts from/to/name together', () => {
+    const result = codeFlowSchema.safeParse({ from: 'Entry', to: 'Exit', name: 'RemoveMember' });
     expect(result.success).toBe(true);
   });
 });
@@ -1006,13 +938,10 @@ describe('GitNexusProvider.map() pre-flight index check', () => {
     rmSync(tempRepo, { recursive: true, force: true });
   });
 
-  it('returns the missing-index error without connecting when repo has no .gitnexus', async () => {
+  it('throws E-CODE-INDEX-NOT-READY without connecting when repo has no .gitnexus', async () => {
     const provider = new GitNexusProvider();
-    const result = (await provider.map({ repo: tempRepo })) as { isError?: boolean; content: { text: string }[] };
-
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toBe(
-      `No code intelligence index found for ${tempRepo}. Run 'npx gitnexus analyze' in the repo (or /pm index) and retry.`,
+    await expect(provider.map({ repo: tempRepo })).rejects.toThrow(
+      `E-CODE-INDEX-NOT-READY: No gitnexus code index found for '${tempRepo}'. Remediation: Run 'npx gitnexus analyze' in the repo (or /pm index), then retry.`,
     );
     expect(mockConnect).not.toHaveBeenCalled();
     expect(mockCallTool).not.toHaveBeenCalled();
@@ -1152,13 +1081,10 @@ describe('GitNexusProvider.flow() pre-flight index check', () => {
     rmSync(tempRepo, { recursive: true, force: true });
   });
 
-  it('returns the missing-index error without connecting when repo has no .gitnexus', async () => {
+  it('throws E-CODE-INDEX-NOT-READY without connecting when repo has no .gitnexus', async () => {
     const provider = new GitNexusProvider();
-    const result = (await provider.flow({ name: 'x', repo: tempRepo })) as { isError?: boolean; content: { text: string }[] };
-
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toBe(
-      `No code intelligence index found for ${tempRepo}. Run 'npx gitnexus analyze' in the repo (or /pm index) and retry.`,
+    await expect(provider.flow({ name: 'x', repo: tempRepo })).rejects.toThrow(
+      `E-CODE-INDEX-NOT-READY: No gitnexus code index found for '${tempRepo}'. Remediation: Run 'npx gitnexus analyze' in the repo (or /pm index), then retry.`,
     );
     expect(mockConnect).not.toHaveBeenCalled();
     expect(mockCallTool).not.toHaveBeenCalled();
@@ -1171,12 +1097,7 @@ describe('codeTestsSchema validation', () => {
     expect(result.success).toBe(false);
   });
 
-  it('accepts symbol with optional repo', () => {
-    const result = codeTestsSchema.safeParse({ symbol: 'handleIPChange', repo: '/a/b' });
-    expect(result.success).toBe(true);
-  });
-
-  it('accepts symbol alone (repo omitted)', () => {
+  it('accepts symbol alone', () => {
     const result = codeTestsSchema.safeParse({ symbol: 'handleIPChange' });
     expect(result.success).toBe(true);
   });
@@ -1300,13 +1221,10 @@ describe('GitNexusProvider.tests() pre-flight index check', () => {
     rmSync(tempRepo, { recursive: true, force: true });
   });
 
-  it('returns the missing-index error without connecting when repo has no .gitnexus', async () => {
+  it('throws E-CODE-INDEX-NOT-READY without connecting when repo has no .gitnexus', async () => {
     const provider = new GitNexusProvider();
-    const result = (await provider.tests({ symbol: 'x', repo: tempRepo })) as { isError?: boolean; content: { text: string }[] };
-
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toBe(
-      `No code intelligence index found for ${tempRepo}. Run 'npx gitnexus analyze' in the repo (or /pm index) and retry.`,
+    await expect(provider.tests({ symbol: 'x', repo: tempRepo })).rejects.toThrow(
+      `E-CODE-INDEX-NOT-READY: No gitnexus code index found for '${tempRepo}'. Remediation: Run 'npx gitnexus analyze' in the repo (or /pm index), then retry.`,
     );
     expect(mockConnect).not.toHaveBeenCalled();
     expect(mockCallTool).not.toHaveBeenCalled();
