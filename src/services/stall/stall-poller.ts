@@ -72,7 +72,7 @@ export async function pollRecentProjectTranscript(memberId: string, sinceMs: num
     const minutes = Math.max(1, Math.ceil((Date.now() - sinceMs) / 60_000) + 1);
     const cmd = posix
       ? `if [ -d "${escapeDoubleQuoted(root)}" ]; then find "${escapeDoubleQuoted(root)}" -maxdepth 2 -name '*.jsonl' -mmin -${minutes} 2>/dev/null | head -n 1; echo FLEET_ROOT_OK; fi`
-      : wrapStallPowerShell(`if (Test-Path -Path '${psQuote(root)}') { Get-ChildItem -Path '${psQuote(root)}' -Filter *.jsonl -Recurse -Depth 1 -File -ErrorAction SilentlyContinue | Where-Object LastWriteTimeUtc -gt ([DateTime]::UtcNow.AddMinutes(-${minutes})) | Select-Object -First 1 -ExpandProperty FullName; 'FLEET_ROOT_OK' }`);
+      : wrapStallPowerShell(`if (Test-Path -LiteralPath '${psQuote(root)}') { Get-ChildItem -LiteralPath '${psQuote(root)}' -Filter *.jsonl -Recurse -Depth 1 -File -ErrorAction SilentlyContinue | Where-Object LastWriteTimeUtc -gt ([DateTime]::UtcNow.AddMinutes(-${minutes})) | Select-Object -First 1 -ExpandProperty FullName; 'FLEET_ROOT_OK' }`);
     const result = await getStrategy(agent).execCommand(cmd, 10_000);
     const lines = result.stdout.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
     if (!lines.includes('FLEET_ROOT_OK')) return null;

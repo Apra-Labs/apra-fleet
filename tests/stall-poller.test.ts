@@ -549,6 +549,17 @@ describe('pollLogFile', () => {
       expect(await pollRecentProjectTranscript('member-1', Date.now() - 120_000)).toBe(false);
     });
 
+    it('Windows: probes the root with -LiteralPath (a [ or ] in the home path is not a wildcard)', async () => {
+      mockGetAgent.mockReturnValue(makeAgent({ os: 'windows' }));
+      mockGetAgentOS.mockReturnValue('windows');
+      mockExecCommand.mockResolvedValue({ stdout: 'FLEET_ROOT_OK\r\n', stderr: '', code: 0 });
+      expect(await pollRecentProjectTranscript('member-1', Date.now() - 120_000)).toBe(false);
+      const cmd = decodePowerShellEncodedCommand(mockExecCommand.mock.calls[0][0]);
+      expect(cmd).toContain('Test-Path -LiteralPath');
+      expect(cmd).toContain('Get-ChildItem -LiteralPath');
+      expect(cmd).not.toMatch(/-Path '/);
+    });
+
     it('null (unknown) when the root is missing, the probe fails, or the provider has no log dir', async () => {
       mockGetAgent.mockReturnValue(makeAgent());
       mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });

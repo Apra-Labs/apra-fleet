@@ -435,6 +435,36 @@ describe('StallDetector', () => {
       expect(mockLogLine.mock.calls.filter((c: string[]) => c[0] === 'stall_never_started_unconfirmed')).toHaveLength(1);
     });
 
+    it('an unconfirmed result is logged once per dispatch and the root is rescanned at most once per threshold', async () => {
+      process.env['STALL_THRESHOLD_MS'] = '5000';
+      mockPollRecent.mockResolvedValue(null);
+      const onStall = vi.fn();
+      detector.add('member-1', makeEntry({ lastActivityAt: Date.now() - 10_000, logPathAuthoritative: true, onStall }));
+      mockPollLogFile.mockResolvedValue({ lastTimestamp: null, mtimeMs: null });
+      const unconfirmed = () => mockLogLine.mock.calls.filter((c: string[]) => c[0] === 'stall_never_started_unconfirmed').length;
+
+      // Force a probe on every tick (bypass the adaptive probe cadence).
+      const tick = async () => { detector.update('member-1', { lastPolledAt: undefined }); await detector._poll(); };
+      await tick();
+      await tick();
+      await tick();
+      expect(mockPollLogFile).toHaveBeenCalledTimes(3);
+      expect(mockPollRecent).toHaveBeenCalledTimes(1);
+      expect(unconfirmed()).toBe(1);
+
+      // A threshold later the root is scanned again -- still not re-logged.
+      detector.update('member-1', { neverStartedCheckedAt: Date.now() - 6_000 });
+      await tick();
+      expect(mockPollRecent).toHaveBeenCalledTimes(2);
+      expect(unconfirmed()).toBe(1);
+
+      // If that later scan confirms it, the kill still happens.
+      mockPollRecent.mockResolvedValue(false);
+      detector.update('member-1', { neverStartedCheckedAt: Date.now() - 6_000 });
+      await tick();
+      expect(onStall).toHaveBeenCalledWith('agent_never_started');
+    });
+
     it('authoritative path with no file and an UNKNOWN second signal -> warn only, no kill', async () => {
       process.env['STALL_THRESHOLD_MS'] = '5000';
       mockPollRecent.mockResolvedValue(null);

@@ -171,6 +171,11 @@ export interface StallEntry {
   logPathAuthoritative?: boolean;
   /** Set once the session log has been seen to exist (mtime or content). */
   logFileSeen?: boolean;
+  /** When the never-started second signal (a projects-root scan) last came
+   *  back unconfirmed; the next scan waits a full threshold after it. */
+  neverStartedCheckedAt?: number;
+  /** stall_never_started_unconfirmed is logged once per dispatch. */
+  neverStartedUnconfirmedLogged?: boolean;
   // Called once when stall is confirmed -- clears busy state from outside the hung execCommand.
   // `reason` distinguishes a frozen transcript ('stalled') from a session log
   // that never appeared at an authoritative path ('agent_never_started').
@@ -520,16 +525,21 @@ export class StallDetector {
           // a symlinked cwd or a relocated config dir can put the transcript
           // elsewhere), so a kill also needs a second, independent signal:
           // no *.jsonl under the provider's projects root changed since the
-          // dispatch started. If that cannot be established, warn only.
+          // dispatch started. If that cannot be established, warn only --
+          // once per dispatch -- and rescan the root at most once per
+          // threshold rather than on every tick.
           let neverStarted = false;
           if (entry.logPathAuthoritative && !entry.logFileSeen && contentSeen !== true
-              && now - entry.lastActivityAt > stallThresholdMs && !entry.stallReported) {
+              && now - entry.lastActivityAt > stallThresholdMs && !entry.stallReported
+              && (entry.neverStartedCheckedAt === undefined || now - entry.neverStartedCheckedAt >= stallThresholdMs)) {
             let recent: boolean | null = null;
             try { recent = await pollRecentProjectTranscript(memberId, entry.lastActivityAt); } catch { recent = null; }
             if (this.isStale(memberId, entry)) continue;
             neverStarted = recent === false;
             if (!neverStarted) {
-              logLine('stall_never_started_unconfirmed', JSON.stringify({
+              const alreadyLogged = entry.neverStartedUnconfirmedLogged === true;
+              this.update(memberId, { neverStartedCheckedAt: now, neverStartedUnconfirmedLogged: true });
+              if (!alreadyLogged) logLine('stall_never_started_unconfirmed', JSON.stringify({
                 memberId,
                 memberName: entry.memberName,
                 logPath: entry.logFilePath,
