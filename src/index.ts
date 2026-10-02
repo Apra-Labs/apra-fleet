@@ -356,6 +356,20 @@ async function startStdioServer() {
 }
 
 async function startHttpServer() {
+  // GitHub #585 recovery: a service launch (logon, the Windows task's repeating
+  // revive trigger) that keeps failing backs off instead of retrying -- and
+  // writing a new fleet-<pid>.log -- every interval. See service-start-guard.ts.
+  const { launchedByServiceManager } = await import('./services/service-manager/types.js');
+  const startGuard = launchedByServiceManager() ? await import('./services/service-start-guard.js') : null;
+  if (startGuard) {
+    const skip = startGuard.serviceStartBackoff();
+    if (skip) {
+      console.log(`${new Date().toISOString()} ${skip}`);
+      process.exit(0);
+    }
+    startGuard.recordServiceStartAttempt();
+  }
+
   const { loadOnboardingState, resetSessionFlags } = await import('./services/onboarding.js');
   const { getAllAgents: getAgentsForStartup } = await import('./services/registry.js');
   // Pass current member count so upgrade detection works: existing registry + no onboarding.json -> skip banner
@@ -381,7 +395,15 @@ async function startHttpServer() {
   // Detect already-running instance before starting
   const instance = await checkRunningInstance();
   if (instance.running) {
-    logLine('startup', `apra-fleet already running at ${instance.url} pid=${instance.pid} -- exiting`);
+    const msg = `apra-fleet already running at ${instance.url} pid=${instance.pid} -- exiting`;
+    if (startGuard) {
+      // Service launches (a revive-trigger tick) go to the service log only,
+      // not a fresh fleet-<pid>.log per tick.
+      console.log(`${new Date().toISOString()} ${msg}`);
+      startGuard.clearServiceStartFailures();
+    } else {
+      logLine('startup', msg);
+    }
     process.exit(0);
   }
   if (instance.state === 'gone') {
@@ -429,6 +451,7 @@ async function startHttpServer() {
 
   // Release startup lock now that server.json is written (server.json is the long-lived detection mechanism)
   lock.release();
+  startGuard?.clearServiceStartFailures();
 
   // Make HTTP handle available to shutdown_server tool
   setHttpHandle(handle);

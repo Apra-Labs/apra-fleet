@@ -50,6 +50,13 @@ function readServerInfo(): { pid?: number; port?: number; url?: string } {
   }
 }
 
+/** "installed (enabled)", "installed (disabled -- stopped by user ...)", "not installed". */
+export function formatServiceLabel(svcStatus: ServiceStatus): string {
+  if (!svcStatus.installed) return 'not installed';
+  const state = svcStatus.enabled ? 'enabled' : 'disabled';
+  return svcStatus.detail ? `installed (${state} -- ${svcStatus.detail})` : `installed (${state})`;
+}
+
 export async function runStatus(_args: string[]): Promise<void> {
   const instance = await checkRunningInstance();
   // GitHub #585: a stale server.json means the previous server died uncleanly.
@@ -58,14 +65,7 @@ export async function runStatus(_args: string[]): Promise<void> {
   const svcMgr = await getServiceManager();
   const svcStatus: ServiceStatus = await svcMgr.query().catch(() => ({ installed: false, running: false }));
 
-  let serviceLabel: string;
-  if (!svcStatus.installed) {
-    serviceLabel = 'not installed';
-  } else if (svcStatus.enabled) {
-    serviceLabel = 'installed (enabled)';
-  } else {
-    serviceLabel = 'installed (disabled)';
-  }
+  const serviceLabel = formatServiceLabel(svcStatus);
 
   if (instance.state === 'unresponsive') {
     console.log('apra-fleet status');

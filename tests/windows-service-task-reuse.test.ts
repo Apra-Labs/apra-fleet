@@ -32,11 +32,11 @@ const taskXml = (cmd: string) =>
   `<?xml version="1.0" encoding="UTF-16"?>\r\n<Task><Actions Context="Author"><Exec><Command>${cmd}</Command></Exec></Actions></Task>`;
 const deny = () => { throw new Error('ERROR: Access is denied.'); };
 
-function fakeRunner(handlers: Partial<Record<'/create' | '/query' | '/run', () => Buffer | string>>) {
+function fakeRunner(handlers: Partial<Record<string, () => Buffer | string>>) {
   const calls: string[][] = [];
   const run = vi.fn((args: string[]) => {
     calls.push(args);
-    const h = handlers[args[0] as '/create' | '/query' | '/run'];
+    const h = handlers[args[0]];
     if (!h) throw new Error(`unexpected schtasks ${args.join(' ')}`);
     return h();
   });
@@ -52,7 +52,7 @@ describe('WindowsServiceManager task reuse on /create failure', () => {
 
   it('(a) /create succeeds -> "created", no query, start() uses the detached path', async () => {
     const { run, calls } = fakeRunner({ '/create': () => '' });
-    const mgr = new WindowsServiceManager(run, WRAPPER);
+    const mgr = new WindowsServiceManager(run, WRAPPER, { runReg: vi.fn() });
     expect(await mgr.register('C:\\bin\\apra-fleet.exe', ['--transport', 'http'], 'C:\\log.txt')).toBe('created');
     expect(calls.map(c => c[0])).toEqual(['/create']);
     // Wrapper written before /create so a reused task would run the new binary.
@@ -60,13 +60,17 @@ describe('WindowsServiceManager task reuse on /create failure', () => {
   });
 
   it('(b) /create denied + existing task runs the wrapper -> "reused", start runs /run synchronously', async () => {
-    const { run, calls } = fakeRunner({ '/create': deny, '/query': () => taskXml(WRAPPER), '/run': () => 'SUCCESS' });
-    const mgr = new WindowsServiceManager(run, WRAPPER);
+    const { run, calls } = fakeRunner({
+      '/create': deny, '/query': () => taskXml(WRAPPER), '/run': () => 'SUCCESS', '/change': () => 'SUCCESS',
+    });
+    const mgr = new WindowsServiceManager(run, WRAPPER, { runReg: vi.fn() });
     expect(await mgr.register('C:\\bin\\apra-fleet.exe', [], 'C:\\log.txt')).toBe('reused');
     await mgr.start();
     expect(calls).toEqual([
       expect.arrayContaining(['/create']),
       ['/query', '/tn', 'ApraFleet', '/xml'],
+      ['/query', '/tn', 'ApraFleet'],
+      ['/change', '/tn', 'ApraFleet', '/enable'],
       ['/run', '/tn', 'ApraFleet'],
     ]);
   });
@@ -79,25 +83,29 @@ describe('WindowsServiceManager task reuse on /create failure', () => {
     expect(taskXmlCommand(nulLaden)).toBe(variant);
     for (const raw of [utf16, nulLaden]) {
       const { run } = fakeRunner({ '/create': deny, '/query': () => raw });
-      expect(await new WindowsServiceManager(run, WRAPPER).register('x', [], 'l')).toBe('reused');
+      expect(await new WindowsServiceManager(run, WRAPPER, { runReg: vi.fn() }).register('x', [], 'l')).toBe('reused');
     }
   });
 
-  it('(c) /create denied + no existing task -> loud error carrying the /create error', async () => {
+  it('(c) /create denied + no existing task + HKCU Run fallback also fails -> loud error carrying both errors', async () => {
     const { run } = fakeRunner({ '/create': deny, '/query': () => { throw new Error('task not found'); } });
-    await expect(new WindowsServiceManager(run, WRAPPER).register('x', [], 'l'))
-      .rejects.toThrow(/no existing ApraFleet task.*Access is denied/);
+    const runReg = vi.fn((args: string[]) => {
+      if (args[0] === 'add') throw new Error('reg add denied');
+      throw new Error('not found');
+    });
+    await expect(new WindowsServiceManager(run, WRAPPER, { runReg }).register('x', [], 'l'))
+      .rejects.toThrow(/no existing ApraFleet task.*Access is denied.*HKCU Run fallback also failed: reg add denied/);
   });
 
   it('(d) /create denied + existing task points elsewhere -> loud error', async () => {
     const { run } = fakeRunner({ '/create': deny, '/query': () => taskXml('C:\\other\\thing.bat') });
-    await expect(new WindowsServiceManager(run, WRAPPER).register('x', [], 'l'))
+    await expect(new WindowsServiceManager(run, WRAPPER, { runReg: vi.fn() }).register('x', [], 'l'))
       .rejects.toThrow(/runs C:\\other\\thing\.bat.*Access is denied/);
   });
 
   it('(e) reused task + /run fails -> start() rejects', async () => {
     const { run } = fakeRunner({ '/create': deny, '/query': () => taskXml(WRAPPER), '/run': () => { throw new Error('exit 1'); } });
-    const mgr = new WindowsServiceManager(run, WRAPPER);
+    const mgr = new WindowsServiceManager(run, WRAPPER, { runReg: vi.fn() });
     await mgr.register('x', [], 'l');
     await expect(mgr.start()).rejects.toThrow(/schtasks \/run \/tn ApraFleet failed: exit 1/);
   });

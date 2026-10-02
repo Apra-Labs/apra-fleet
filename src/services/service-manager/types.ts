@@ -24,10 +24,16 @@ export interface ServiceStatus {
   running: boolean;
   pid?: number;
   enabled?: boolean;
+  /** Extra human-readable state for apra-fleet status (e.g. why it is disabled). */
+  detail?: string;
 }
 
-/** 'reused': the platform kept an existing registration it could not recreate (Windows). */
-export type RegisterResult = 'created' | 'reused';
+/**
+ * 'reused': the platform kept an existing registration it could not recreate (Windows).
+ * 'run-key': last-resort Windows fallback -- a per-user HKCU Run entry (logon
+ * autostart only, nothing restarts a server that dies mid-session).
+ */
+export type RegisterResult = 'created' | 'reused' | 'run-key';
 
 export interface ServiceManager {
   register(binaryPath: string, args: string[], logPath: string): Promise<RegisterResult | void>;
