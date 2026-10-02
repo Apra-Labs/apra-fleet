@@ -84,7 +84,11 @@ describe('built server honours the backoff under the service marker', () => {
   afterEach(() => { fs.rmSync(dataDir, { recursive: true, force: true }); });
 
   it('service launch in backoff: exit 0, one line to the service log, no fleet-<pid>.log, no server.json', async () => {
-    const { code, stdout } = await runServer({ APRA_FLEET_DATA_DIR: dataDir, APRA_FLEET_PORT: '1', APRA_FLEET_SERVICE: '1' });
+    // HOME/USERPROFILE sandboxed too: if the guard regressed, a full server would start and
+    // must not touch the real ~/.apra-fleet (fleet.key) or ~/.fleet-tasks.
+    const { code, stdout } = await runServer({
+      APRA_FLEET_DATA_DIR: dataDir, APRA_FLEET_PORT: '1', APRA_FLEET_SERVICE: '1', HOME: dataDir, USERPROFILE: dataDir,
+    });
     expect(code).toBe(0);
     expect(stdout).toMatch(/service launch skipped/);
     expect(fs.existsSync(path.join(dataDir, 'server.json'))).toBe(false);
