@@ -745,9 +745,10 @@ export class ApraFleet {
     }
 
     /**
-     * Change a member's settings. Changing `llm_provider` removes the old
-     * provider's composed permission/MCP config and re-composes for the new
-     * provider (see docs/api-reference.md).
+     * Change a member's settings. Changing `llm_provider` or `work_folder`
+     * removes the composed permission/MCP config written for the old
+     * provider/folder and re-composes for the member as updated (see
+     * docs/api-reference.md).
      * @param {UpdateMemberOptions} options
      */
     async updateMember(options) {
@@ -755,7 +756,9 @@ export class ApraFleet {
     }
 
     /**
-     * Remove a member from the fleet.
+     * Remove a member from the fleet. Member-side composed config (the
+     * per-folder `apra-fleet` MCP entry, permission keys) is removed first;
+     * what could not be removed is reported as a warning.
      * @param {RemoveMemberOptions} options
      */
     async removeMember(options) {

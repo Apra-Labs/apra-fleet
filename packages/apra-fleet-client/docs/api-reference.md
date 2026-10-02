@@ -435,7 +435,7 @@ and means "new value for this field". Identifies the target member via
 | `member_id` | `string?` | UUID of the member. |
 | `member_name` | `string?` | Friendly name of the member. |
 | `friendly_name` | `string?` | New friendly name. |
-| `work_folder` | `string?` | New working directory. For non-local (remote/relay) members, must be a fully-qualified/absolute path (e.g. `/home/bella/repo` or `C:\Users\bella\repo`) -- tilde and relative paths are rejected. |
+| `work_folder` | `string?` | New working directory. For non-local (remote/relay) members, must be a fully-qualified/absolute path (e.g. `/home/bella/repo` or `C:\Users\bella\repo`) -- tilde and relative paths are rejected. A real change removes what `compose_permissions` wrote in the OLD folder (per-folder `apra-fleet` MCP entry, permission keys, `.git/info/exclude` lines) and re-runs `compose_permissions`, so the new folder gets its `?member=<uuid>` entry at once. |
 | `host` | `string?` | New host (remote members only). |
 | `port` | `number?` | New SSH port (remote members only). |
 | `username` | `string?` | New SSH username (remote members only). |
@@ -465,7 +465,7 @@ and means "new value for this field". Identifies the target member via
 
 #### `removeMember(options: RemoveMemberOptions)`
 
-Calls `remove_member` -- removes a member from the fleet.
+Calls `remove_member` -- removes a member from the fleet. Before the member is deleted (and before the fleet's own SSH key is removed from the member), it removes what `compose_permissions` wrote for the member (per-folder `apra-fleet` MCP entry, permission keys, `.git/info/exclude` lines); anything it could not remove, or could not reach, is reported as a warning in the result.
 
 | Field | Type | Notes |
 |---|---|---|
