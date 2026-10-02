@@ -727,7 +727,7 @@ describe('runner.js mock-level execution', () => {
             // canonical lowercase 'orchestrator' key and route every
             // orchestrator-side BOOKKEEPING `bd` command (bd list/show/
             // update -- the orchestrator's own reads/writes, dispatched via
-            // `orchestratorMember`) to 'member-x'. (git fetch/checkout
+            // `backlogMember`) to 'member-x'. (git fetch/checkout
             // commands go to the UNION of orchestrator/doer/reviewer pools --
             // see runner.js's branchEnsureMembers/N4 -- so this asserts on
             // the `bd `-prefixed commands specifically.)
@@ -739,7 +739,7 @@ describe('runner.js mock-level execution', () => {
             // -- they correctly sync THAT agent's own member (here 'local',
             // since 'planner' etc. have no roleMap entry of their own and
             // fall back to the first physical member), never
-            // `orchestratorMember`. Verified live: every non-dolt `bd `
+            // `backlogMember`. Verified live: every non-dolt `bd `
             // command in this scenario dispatches to 'member-x' as expected;
             // only `bd dolt pull`/`bd dolt push` legitimately go to 'local'.
             roleMap: { '  Orchestrator  ': ['member-x'] },
@@ -782,7 +782,7 @@ describe('runner.js mock-level execution', () => {
         // in the mixed-case roleMap test above: those are per-member
         // beads-sync brackets around each dispatched agent's own call, not
         // orchestrator bookkeeping, and correctly use that agent's own
-        // member rather than `orchestratorMember`.
+        // member rather than `backlogMember`.
         // `bd config get sync.remote` excluded like `bd dolt *` -- part of
         // the per-member D-push bracket (Issue 31 pre-gate), see above.
         // `bd where` (per-member beads identity probe) excluded, see above.

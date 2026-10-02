@@ -462,7 +462,7 @@ test('mock sprint: multi-member doer pool distributes work and ensures branch on
         // BOTH members' checkouts before the first doer round.
         //
         // This is the regression tripwire for N4: against the PRE-FIX runner
-        // (which dispatched the ensure to `orchestratorMember` only) the second
+        // (which dispatched the ensure to `backlogMember` only) the second
         // member's checkout is never ensured, so both the per-member command-log
         // assertion and the per-member git-state assertion below FAIL; against the
         // fixed runner (ensure over the union of the pools) both PASS.

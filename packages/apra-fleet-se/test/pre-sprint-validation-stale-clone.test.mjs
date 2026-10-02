@@ -51,7 +51,7 @@ const scriptPath = path.join(__dirname, '../fleet-sprint/runner.js');
 //     state (via the base mock's real bd-replay execution) once the D-pull
 //     has fired.
 //
-// eft.34's fix is `await doltPullBefore(orchestratorMember, ...)` immediately
+// eft.34's fix is `await doltPullBefore(backlogMember, ...)` immediately
 // before pre-sprint validation's first bd query (updateDashboard's
 // bdListScoped('') call, then the `--ready`/notDoneBeads queries). With that
 // D-pull in place, the very first `bd list --all` read pre-sprint validation

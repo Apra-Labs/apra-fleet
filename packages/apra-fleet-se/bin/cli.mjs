@@ -306,7 +306,7 @@ export async function resolveRoleMapWithWarnings(rawValue, deps = {}) {
     // contracts.normalizeRole() (trim + lowercase) HERE -- this is where
     // roleMap keys first enter the system from a user-supplied
     // `--role-map`/`@file.json` value, so callers of `resolveRoleMap()`
-    // (including this CLI's own pre-transport `orchestratorMember` lookup
+    // (including this CLI's own pre-transport `backlogMember` lookup
     // below, and runner.js's `validateArgs()`, which normalizes again
     // defensively for callers that bypass the CLI and pass a raw roleMap
     // straight to `engine.executeFile()`) can rely on keys already being in
@@ -782,7 +782,7 @@ async function main() {
     // be present -- this must NOT read a capitalized 'Orchestrator' key (the
     // N15 finding: that stray casing silently never matched a roleMap
     // author's natural lowercase key).
-    const orchestratorMember = (roleMap && roleMap[ROLE_BACKLOG] && roleMap[ROLE_BACKLOG][0]) || validMembers[0];
+    const backlogMember = (roleMap && roleMap[ROLE_BACKLOG] && roleMap[ROLE_BACKLOG][0]) || validMembers[0];
     const runProbe = async (cmd, member) => {
         const res = await fleetApi.executeCommand({ command: cmd, member_name: member });
         const text = res && res.content && res.content[0] ? res.content[0].text : '';
@@ -798,13 +798,13 @@ async function main() {
     // shown in the banner. A failed probe is a warning, not an exit: the
     // existing preconditions decide. The runner repeats this for every
     // member and hard-fails only a mismatch against --expect-beads.
-    const beadsProbe = await probeBeadsIdentityOnMember({ member: orchestratorMember, runCommand: runProbe });
+    const beadsProbe = await probeBeadsIdentityOnMember({ member: backlogMember, runCommand: runProbe });
     if (!beadsProbe.ok) {
         console.warn(beadsProbe.message);
     }
     const issueCheck = await checkIssuesExistOnMember({
         targetIssues,
-        member: orchestratorMember,
+        member: backlogMember,
         runBdShow: async (id, member) => fleetApi.executeCommand({ command: `bd show ${id}`, member_name: member }),
     });
     if (!issueCheck.ok) {
@@ -883,7 +883,7 @@ async function main() {
     console.log(`Goal Constraint: ${goal}`);
     console.log(`Max Cycles: ${maxCycles}`);
     console.log(`Active Members (${validMembers.length}): ${validMembers.join(', ')}`);
-    console.log(`Beads: ${formatBeadsIdentity(beadsProbe.identity, { label: `orchestrator '${orchestratorMember}'` })}`);
+    console.log(`Beads: ${formatBeadsIdentity(beadsProbe.identity, { label: `orchestrator '${backlogMember}'` })}`);
     if (expectedBeads) {
         console.log(`Beads: ${formatBeadsIdentity(expectedBeads, { label: 'expected (--expect-beads)' })}`);
     }

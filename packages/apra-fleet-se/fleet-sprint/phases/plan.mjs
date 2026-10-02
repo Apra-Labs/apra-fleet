@@ -79,7 +79,7 @@ export async function runPlanPhase({
     validated,
     targetIssues,
     requirementsContent,
-    orchestratorMember,
+    backlogMember,
     getMemberForRole,
     // Per-sprint resolved state (../sprint-state.mjs) and the git/beads sync
     // bracket the post-plan cross-clone re-pull goes through.
@@ -131,7 +131,7 @@ export async function runPlanPhase({
     // the phase degrades to the pre-existing prompt-only behaviour.
     const parentNotesStalenessNotes = await collectParentNotesStalenessNotes({
         command,
-        member: orchestratorMember,
+        member: backlogMember,
         rootIds: targetIssues,
         parseBdJson,
         log,
@@ -193,7 +193,7 @@ export async function runPlanPhase({
         // planner already mutated beads), any retry attempt, and a planner on
         // a DISTINCT clone from the orchestrator (never freshened by the
         // setup pull).
-        const plannerSharesOrchestratorClone = getMemberForRole('planner') === orchestratorMember;
+        const plannerSharesBacklogClone = getMemberForRole('planner') === backlogMember;
         await dispatchRole(dispatchCtx, 'planner', {
             prompt: plannerPrompt,
             resumePrompt: 'Continue your planning pass exactly where you left off in this same session -- do not restart or re-derive the DAG from scratch. Finish creating/updating the remaining beads and return your final summary now.',
@@ -210,7 +210,7 @@ export async function runPlanPhase({
             onSessionId: (id, meta) => roundSessions.record('planner', cycle, id, meta),
             attemptOptions: ({ attempt }) => ({
                 skipPreDispatchDoltPull:
-                    attempt === 1 && cycle === 1 && planningRounds === 1 && plannerSharesOrchestratorClone,
+                    attempt === 1 && cycle === 1 && planningRounds === 1 && plannerSharesBacklogClone,
             }),
             // Runs INSIDE the attempt's try, so a failure here is classified
             // by the same ladder that classifies the dispatch itself.
@@ -225,11 +225,11 @@ export async function runPlanPhase({
             // orchestrator cannot actually see reproduces exactly the "epic
             // looks like a childless ready leaf" failure this fix closes.
             afterAttempt: async () => {
-                if (plannerSharesOrchestratorClone) return;
-                const postPlanSettleShell = await resolveSettleShell({ args, member: orchestratorMember, log, sprintState });
-                await gitSync.syncBeadsBefore(orchestratorMember, {
+                if (plannerSharesBacklogClone) return;
+                const postPlanSettleShell = await resolveSettleShell({ args, member: backlogMember, log, sprintState });
+                await gitSync.syncBeadsBefore(backlogMember, {
                     fatal: true,
-                    settle: buildSettleCallback(orchestratorMember, { command, log, shell: postPlanSettleShell }),
+                    settle: buildSettleCallback(backlogMember, { command, log, shell: postPlanSettleShell }),
                 });
             },
         });
@@ -247,7 +247,7 @@ export async function runPlanPhase({
             for (const parentId of targetIssues) {
                 try {
                     const label = `bd list --parent ${parentId} --json`;
-                    const raw = await command(label, { member_name: orchestratorMember, silent: true });
+                    const raw = await command(label, { member_name: backlogMember, silent: true });
                     const children = parseBdJson(raw, label);
                     pendingRejectedNewTasks = reconcilePendingRejectedNewTasks(pendingRejectedNewTasks, children);
                 } catch (err) {
@@ -365,13 +365,13 @@ export async function runPlanPhase({
         for (const id of contestedIds) {
             await command(
                 `bd update ${id} --status=deferred`,
-                { member_name: orchestratorMember, silent: true, label: `Defer contested bead ${id} per plan-cap exhaustion` }
+                { member_name: backlogMember, silent: true, label: `Defer contested bead ${id} per plan-cap exhaustion` }
             );
             // Stage the deferral note member-side: the orchestrator member
             // can itself be remote, so a host-local body-file path would be
             // unreachable to `bd note`.
             const noteFile = await stageCommandBodyMemberSide({
-                command, member: orchestratorMember,
+                command, member: backlogMember,
                 content:
                     `[fleet-sprint plan-cap deferral] Deferred after ${planningRounds} plan round(s) of CHANGES_NEEDED ` +
                     `confined to this bead (cycle ${cycle}). Plan reviewer finding:\n${lastVerdict.notes}`,
@@ -379,10 +379,10 @@ export async function runPlanPhase({
             });
             await command(
                 `bd note ${id} --file "${noteFile}"`,
-                { member_name: orchestratorMember, silent: true, label: `Attach plan-cap deferral finding to ${id}` }
+                { member_name: backlogMember, silent: true, label: `Attach plan-cap deferral finding to ${id}` }
             );
         }
-        await gitSync.syncBeadsAfter(orchestratorMember, { pushBeads: true });
+        await gitSync.syncBeadsAfter(backlogMember, { pushBeads: true });
         planCapDeferredIds = contestedIds;
     }
 

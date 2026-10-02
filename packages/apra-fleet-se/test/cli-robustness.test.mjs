@@ -193,7 +193,7 @@ describe('resolveRoleMap + buildRunnerArgs -> runner.js validateArgs (c)', () =>
     // N15 (apra-fleet-unw2.11): resolveRoleMap() normalizes keys via
     // contracts.normalizeRole() -- this is where roleMap keys first enter
     // the system from a user-supplied --role-map value, so downstream
-    // consumers (this CLI's own orchestratorMember lookup, and
+    // consumers (this CLI's own backlogMember lookup, and
     // runner.js's validateArgs()) can rely on canonical lowercase keys.
     // -------------------------------------------------------------------
 

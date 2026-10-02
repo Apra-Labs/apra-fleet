@@ -858,11 +858,11 @@ async function runSprintCycle(context) {
         targetIssues: validated.targetIssues,
         assignee: validated.assignee,
         parseBdJson,
-        // A getter, not a value: `orchestratorMember` is resolved from the
+        // A getter, not a value: `backlogMember` is resolved from the
         // role->member mapping further down this function, but this client
         // has to exist BEFORE `command` does. No beads read can happen in
         // between, so the getter is always called on a resolved value.
-        getOrchestratorMember: () => orchestratorMember,
+        getBacklogMember: () => backlogMember,
     });
     const { invalidateAllBeadsCache, fetchAllBeadsShared, bdListScoped } = beadsScope;
     const command = beadsScope.wrapCommand(rawCommand, {
@@ -1321,13 +1321,13 @@ async function runSprintCycle(context) {
     // removal and every probeFileExists/publishGitMember fix elsewhere in this
     // file: those call getMemberForRole()/getMembersForRole() for roles that
     // still expect a real git checkout.
-    const orchestratorRoleMapMembers = new Set(
+    const backlogRoleMapMembers = new Set(
         (validated.roleMap && Array.isArray(validated.roleMap[ROLE_BACKLOG]))
             ? validated.roleMap[ROLE_BACKLOG]
             : []
     );
     const unmappedRoleFallbackPool = (() => {
-        const eligible = physicalMembers.filter((m) => !orchestratorRoleMapMembers.has(m));
+        const eligible = physicalMembers.filter((m) => !backlogRoleMapMembers.has(m));
         const generalists = eligible.filter((m) => !roleMapSpecialists.has(m));
         if (generalists.length > 0) return generalists;
         if (eligible.length > 0) return eligible;
@@ -1373,7 +1373,7 @@ async function runSprintCycle(context) {
     // not yet implemented) -- otherwise every existing caller that relies on
     // the implicit fallback (including this file's own test harness) breaks.
     // Land 6.2, update callers, THEN make this throw.
-    const orchestratorMember = getMemberForRole(ROLE_BACKLOG);
+    const backlogMember = getMemberForRole(ROLE_BACKLOG);
 
     // Deprecated-alias warnings (roleMap.orchestrator -> roleMap.backlog),
     // collected by validateArgs() and/or forwarded by bin/cli.mjs.
@@ -1397,7 +1397,7 @@ async function runSprintCycle(context) {
         command,
         log,
         publishState,
-        orchestratorMember,
+        backlogMember,
         members: physicalMembers,
         expected: validated.expectBeads ?? null,
     });
@@ -1706,7 +1706,7 @@ async function runSprintCycle(context) {
             }
             staleInProgressReclaimCounts.set(bead.id, priorAttempts + 1);
             log(`${reasonTag}: ${bead.id} is stuck 'in_progress' (started_at=${bead.started_at || 'n/a'}) with no unmet blockers and predates this sprint's launch -- reclaiming to 'open' so the sprint can dispatch it (attempt ${priorAttempts + 1}/${STALE_IN_PROGRESS_RECLAIM_LIMIT}).`);
-            await command(`bd update ${bead.id} --status open`, { member_name: orchestratorMember, silent: true });
+            await command(`bd update ${bead.id} --status open`, { member_name: backlogMember, silent: true });
             reclaimedIds.push(bead.id);
         }
         if (cappedIds.length > 0) {
@@ -1870,7 +1870,7 @@ async function runSprintCycle(context) {
     // sprint starts; this ensure-everywhere is the git half of the same "every
     // member starts from the same state" guarantee. See docs/architecture.md
     // "Multi-member topology (fleet-sprint)".
-    // apra-fleet: orchestratorMember is deliberately NOT included here -- the
+    // apra-fleet: backlogMember is deliberately NOT included here -- the
     // orchestrator role issues only bd/Dolt commands (never git), and a
     // shared/unreservable orchestrator member used across concurrent sprints
     // cannot be checked out onto N different branches at once. If an operator
@@ -1913,8 +1913,8 @@ async function runSprintCycle(context) {
     // Thread the orchestrator member's REGISTERED shell into dolt-settle,
     // guarded on args.callTool the same way the pre-dispatch bracket is
     // (apra-fleet-7dir.24).
-    const preflightSettleShell = await resolveSettleShell({ args, member: orchestratorMember, log, sprintState });
-    await gitSync.syncBeadsBefore(orchestratorMember, { readinessGate: true, settle: buildSettleCallback(orchestratorMember, { command, log, shell: preflightSettleShell }) });
+    const preflightSettleShell = await resolveSettleShell({ args, member: backlogMember, log, sprintState });
+    await gitSync.syncBeadsBefore(backlogMember, { readinessGate: true, settle: buildSettleCallback(backlogMember, { command, log, shell: preflightSettleShell }) });
 
     // =======================
     // 0. Git Setup: ensure the sprint branch exists off base_branch
@@ -2036,7 +2036,7 @@ async function runSprintCycle(context) {
     // escaped-quote-inside-quote traps). failSoft, so a probe failure can never
     // throw and kill the sprint -- it just means "skip the dependent phase".
     // Runs on `member` -- the role member about to consume the probed file --
-    // never on orchestratorMember: a shared/unreservable orchestrator member
+    // never on backlogMember: a shared/unreservable orchestrator member
     // carries no git checkout to probe.
     async function probeFileExists(filename, member) {
         const res = await command(
@@ -2058,8 +2058,8 @@ async function runSprintCycle(context) {
     // Thread the orchestrator member's REGISTERED shell into dolt-settle,
     // guarded on args.callTool the same way the pre-dispatch bracket is
     // (apra-fleet-7dir.24).
-    const verifyReadSettleShell = await resolveSettleShell({ args, member: orchestratorMember, log, sprintState });
-    await gitSync.syncBeadsBefore(orchestratorMember, { fatal: true, settle: buildSettleCallback(orchestratorMember, { command, log, shell: verifyReadSettleShell }) });
+    const verifyReadSettleShell = await resolveSettleShell({ args, member: backlogMember, log, sprintState });
+    await gitSync.syncBeadsBefore(backlogMember, { fatal: true, settle: buildSettleCallback(backlogMember, { command, log, shell: verifyReadSettleShell }) });
 
     // Beads memory hygiene: forget token-usage memories (and retired keys)
     // before any dispatch, so `bd prime` never injects them into a session.
@@ -2068,8 +2068,8 @@ async function runSprintCycle(context) {
     await (context.sweepTokenMemories ?? sweepTokenMemories)({
         command,
         log,
-        member: orchestratorMember,
-        pushBeads: () => gitSync.syncBeadsAfter(orchestratorMember, { pushBeads: true }),
+        member: backlogMember,
+        pushBeads: () => gitSync.syncBeadsAfter(backlogMember, { pushBeads: true }),
     });
 
     await updateDashboard();
@@ -2140,7 +2140,7 @@ async function runSprintCycle(context) {
                 if (invisibleTargets.length > 0) {
                     throw new PreSprintValidationError(
                         `Pre-sprint validation failed: ${invisibleTargets.length} of ${targetIssues.length} target issue id(s) ` +
-                        `are not visible to the orchestrator member ('${orchestratorMember}')'s bd clone at all: ` +
+                        `are not visible to the orchestrator member ('${backlogMember}')'s bd clone at all: ` +
                         `${invisibleTargets.join(', ')}. This is NOT the same as those beads being closed/done -- it usually ` +
                         `means they were created/updated on a different clone that was never synced to the shared Dolt remote ` +
                         `(dolt-push it there first) or this member's clone has not picked them up yet. Scope: '${sprintFilter}'.`,
@@ -2192,7 +2192,7 @@ async function runSprintCycle(context) {
                 // the throw; it is never silently swallowed.
                 try {
                     for (const pair of cyclePairs) {
-                        await command(`bd dep remove ${pair.blockedIssue} ${pair.blockedBy}`, { member_name: orchestratorMember, silent: true });
+                        await command(`bd dep remove ${pair.blockedIssue} ${pair.blockedBy}`, { member_name: backlogMember, silent: true });
                         log(`Pre-sprint auto-repair: removed the 'blocks' edge between ${pair.blockedIssue} and ${pair.blockedBy} (parent-child + blocks cycle) -- auto-removed via bd dep remove.`);
                     }
                 } catch (repairErr) {
@@ -2404,7 +2404,7 @@ async function runSprintCycle(context) {
         const planOutcome = await runPlanPhase({
             phase, log, command, dispatchCtx,
             cycle, validated, targetIssues, requirementsContent,
-            orchestratorMember, getMemberForRole,
+            backlogMember, getMemberForRole,
             sprintState, gitSync, args,
             verifySetThisCycle, roundSessions, pendingRejectedNewTasks,
             resolveSettleShell,
@@ -2584,7 +2584,7 @@ async function runSprintCycle(context) {
                 await runReplanPhase({
                     phase, log, dispatchCtx,
                     cycle, validated, targetIssues, requirementsContent,
-                    orchestratorMember,
+                    backlogMember,
                     gitSync, updateDashboard,
                     verifySetThisCycle, pendingRejectedNewTasks,
                     devRounds, eligibleReplan, replanIds, replannedThisCycle, perBeadFeedback,
@@ -2635,7 +2635,7 @@ async function runSprintCycle(context) {
             // reviewer prompt free of doer-completion-order drift.
             const { streakOutcomes, readyTitleById } = await runDevelopPhase({
                 phase, log, command, parallel, dispatchCtx,
-                cycle, validated, args, orchestratorMember,
+                cycle, validated, args, backlogMember,
                 sprintState, gitSync, updateDashboard,
                 kbPriming, kbWork,
                 devRounds, currentReady, doerPool, perBeadFeedback,
@@ -2659,7 +2659,7 @@ async function runSprintCycle(context) {
             // unchanged, which is why no `if` is needed here.
             ({ lastReviewVerdict, reviewedThisCycle, pendingRejectedNewTasks } = await runReviewPhase({
                 phase, log, command,
-                cycle, validated, targetIssues, orchestratorMember,
+                cycle, validated, targetIssues, backlogMember,
                 gitSync,
                 replanIds, replannedThisCycle, perBeadFeedback, rejectedNewTasks,
                 devRounds, streakOutcomes, readyTitleById,
@@ -2753,7 +2753,7 @@ async function runSprintCycle(context) {
             // the closure did; the three genuinely reassigned values come back.
             ({ verifySetForIntegTest, integTestRunnerDispatchCount, integTestRunnerSpend } = await runIntegTestPhase({
                 phase, log, command, dispatchCtx,
-                cycle, targetIssues, orchestratorMember, sprintSelfIdLine,
+                cycle, targetIssues, backlogMember, sprintSelfIdLine,
                 budget,
                 integFailures, verifyEverIds, verifyGapCounts,
                 verifySetForIntegTest, integTestRunnerDispatchCount, integTestRunnerSpend,
@@ -2784,8 +2784,8 @@ async function runSprintCycle(context) {
         // Thread the orchestrator member's REGISTERED shell into dolt-settle,
         // guarded on args.callTool the same way the pre-dispatch bracket is
         // (apra-fleet-7dir.24).
-        const cycleEvalSettleShell = await resolveSettleShell({ args, member: orchestratorMember, log, sprintState });
-        await gitSync.syncBeadsBefore(orchestratorMember, { fatal: true, settle: buildSettleCallback(orchestratorMember, { command, log, shell: cycleEvalSettleShell }) });
+        const cycleEvalSettleShell = await resolveSettleShell({ args, member: backlogMember, log, sprintState });
+        await gitSync.syncBeadsBefore(backlogMember, { fatal: true, settle: buildSettleCallback(backlogMember, { command, log, shell: cycleEvalSettleShell }) });
         // A decomposed parent (any bead that is itself someone's --parent,
         // including a childful --issue target) is excluded here the same way
         // readyLeafBeads() excludes it from dispatch: its own "done" status
@@ -2961,7 +2961,7 @@ async function runSprintCycle(context) {
             // reassigned values come back.
             ({ lastReviewVerdict, reviewedThisCycle, pendingRejectedNewTasks } = await runReReviewPhase({
                 phase, log, command,
-                cycle, validated, targetIssues, orchestratorMember,
+                cycle, validated, targetIssues, backlogMember,
                 gitSync,
                 rejectedNewTasks,
                 lastReviewVerdict, reviewedThisCycle, pendingRejectedNewTasks,
@@ -3089,7 +3089,7 @@ async function runSprintCycle(context) {
     // hold the line.
     const { finalVerdictResult, finalClosedCount, finalOpenAtGoalCount, finalDeferredAtGoalIds } = await runFinalReviewPhase({
         phase, log, command, dispatchCtx,
-        args, validated, targetIssues, orchestratorMember, finalCycleLabel, sprintState,
+        args, validated, targetIssues, backlogMember, finalCycleLabel, sprintState,
         gitSync,
         deployFailures, integFailures, rejectedNewTasks, verifyEverIds,
         bdListScoped, decomposedParentIds, goalMax, NOT_DONE_STATUSES,
@@ -3192,7 +3192,7 @@ async function runSprintCycle(context) {
     // phase, before the endGroup() below, exactly as the inline version did.
     const { pushed } = await runPublishPrPhase({
         phase, log, command,
-        args, validated, targetIssues, orchestratorMember, finalCycleLabel,
+        args, validated, targetIssues, backlogMember, finalCycleLabel,
         gitSync, getMemberForRole,
         finalVerdictResult,
     });

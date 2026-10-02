@@ -117,7 +117,7 @@ export async function runFinalReviewPhase({
     args,
     validated,
     targetIssues,
-    orchestratorMember,
+    backlogMember,
     finalCycleLabel,
     sprintState,
     // The git/beads sync brackets this phase's pre-read D-pull and its
@@ -155,8 +155,8 @@ export async function runFinalReviewPhase({
     // Thread the orchestrator member's REGISTERED shell into dolt-settle,
     // guarded on args.callTool the same way the pre-dispatch bracket is
     // (apra-fleet-7dir.24).
-    const finalReviewSettleShell = await resolveSettleShell({ args, member: orchestratorMember, log, sprintState });
-    await gitSync.syncBeadsBefore(orchestratorMember, { fatal: true, settle: buildSettleCallback(orchestratorMember, { command, log, shell: finalReviewSettleShell }) });
+    const finalReviewSettleShell = await resolveSettleShell({ args, member: backlogMember, log, sprintState });
+    await gitSync.syncBeadsBefore(backlogMember, { fatal: true, settle: buildSettleCallback(backlogMember, { command, log, shell: finalReviewSettleShell }) });
     const [finalOpenAtGoalRaw, finalOpenAtGoalParentIds, finalClosedBeads] = await Promise.all([
         bdListScoped(`--status=${NOT_DONE_STATUSES} --priority-max=${goalMax} --json`),
         decomposedParentIds(),
@@ -296,7 +296,7 @@ export async function runFinalReviewPhase({
                 // degrades to the run log.
                 try {
                     await appendRejectedFindingToParentNotes({
-                        command, member: orchestratorMember, parentId: targetIssues[0],
+                        command, member: backlogMember, parentId: targetIssues[0],
                         newTask, reason: validation.reason, cycle: finalCycleLabel, log,
                     });
                 } catch (noteErr) {
@@ -306,12 +306,12 @@ export async function runFinalReviewPhase({
             }
             const { title, description, priority } = validation;
             const created = await persistNewTaskBestEffort({
-                command, member: orchestratorMember, parentId: targetIssues[0],
+                command, member: backlogMember, parentId: targetIssues[0],
                 newTask, cycle: finalCycleLabel, log, stage: 'final-review',
                 createFn: async () => {
-                    const floor = await computeChildFloor({ command, member: orchestratorMember, parentId: targetIssues[0], log });
+                    const floor = await computeChildFloor({ command, member: backlogMember, parentId: targetIssues[0], log });
                     return createChildBeadWithAllocatedId({
-                        command, allocator: childIdAllocator, member: orchestratorMember,
+                        command, allocator: childIdAllocator, member: backlogMember,
                         title, description, priority, parentId: targetIssues[0],
                         sprintId: sprintMutexId, floor, log,
                         label: `Create follow-up task from Final Review findings: ${title}`,
@@ -349,7 +349,7 @@ export async function runFinalReviewPhase({
         const reopenedIds = await applyGuardedReopens({
             entries: finalReopenIds,
             bdListScoped, goalMax, goal: validated.goal, log, command,
-            member: orchestratorMember,
+            member: backlogMember,
             logPrefix: 'Final Review reopenIds',
             parseEntry: parseIdWithReasonEntry,
             buildReopenCommand: ({ id, reason }) => {
@@ -389,7 +389,7 @@ export async function runFinalReviewPhase({
         // "safe to pause" while the Final Review findings were mid-push.
         // pushBeadsAfter() is the bracketed entry point -- there is no
         // unbracketed way to reach doltPushAfter() from this file any more.
-        await gitSync.pushBeadsAfter(orchestratorMember, { pushBeads: true });
+        await gitSync.pushBeadsAfter(backlogMember, { pushBeads: true });
     }
 
     return {
