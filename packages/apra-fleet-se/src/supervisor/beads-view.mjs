@@ -202,6 +202,10 @@ export function createBeadsView(deps = {}) {
     let lastSkip = null;
     let inFlight = null;
     let stopped = false;
+    // True from the start of a pull until a check completes with current rows
+    // (see runCheck): a skipped/failed list after a successful pull must be
+    // retried even though the recorded remote tip no longer moves.
+    let listPending = false;
 
     function snapshot() {
         return { rows, asOf, lastCheckedAt, lastError, lastSkip, refreshing: inFlight !== null };
@@ -234,6 +238,14 @@ export function createBeadsView(deps = {}) {
             return recordError(`backlog member not ready (${st.reason || st.status || 'no backlog member'}); the beads clone cannot be pulled`);
         }
 
+        // doltPullBefore records the new remote tip as soon as the pull
+        // succeeds -- BEFORE the list below runs. If that list then skips or
+        // fails, the next check would see an "unchanged" tip and keep serving
+        // the pre-pull rows as fresh. So a list is owed from here until one
+        // succeeds (or a confirmed-current check clears it below).
+        const listOwed = listPending;
+        listPending = true;
+
         let pullRes;
         try {
             pullRes = await pull(memberName, { command, log, maxTransientRetries: 0, timeoutS: pullTimeoutS });
@@ -243,7 +255,7 @@ export function createBeadsView(deps = {}) {
         }
 
         const tipUnchanged = !!(pullRes && pullRes.skipped && pullRes.reason === 'remote-unchanged');
-        const needList = forceList || rows === null || !tipUnchanged;
+        const needList = forceList || rows === null || !tipUnchanged || listOwed;
         let listed = null;
         if (needList) {
             try {
@@ -255,6 +267,7 @@ export function createBeadsView(deps = {}) {
             if (!Array.isArray(listed)) return recordError('bd list --all returned a non-array result');
             rows = listed;
         }
+        listPending = false;
 
         const at = now();
         asOf = at;
