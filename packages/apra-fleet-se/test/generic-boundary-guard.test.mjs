@@ -106,6 +106,23 @@ test('the leak is only a leak in LLM-facing positions: the same strings in comme
     check(findings.length === 0, `comments/identifiers must never be findings, got: ${JSON.stringify(findings, null, 2)}`);
 });
 
+test("mutation self-check: the pre-fix regression prompt that dictated apra-fleet's two-part pass is a finding", () => {
+    // Verbatim from fleet-sprint/phases/regression-test.mjs before the fix.
+    const src = [
+        'const regressionPrompt =',
+        '    `Run the full regression pass using regression-test-playbook.md at the repo root: part 1 ` +',
+        '    `(the real functional suite) and part 2 (the sandbox smoke test), then ALWAYS run the ` +',
+        "    `playbook's Teardown before returning, pass or fail. `;",
+    ].join('\n');
+    const findings = scanSource('fleet-sprint/phases/regression-test.mjs', src, 'js')
+        .filter((f) => f.id === 'apra-fleet-regression-structure');
+    assert.deepStrictEqual(findings.map((f) => f.match.toLowerCase()).sort(), ['real functional suite', 'sandbox smoke']);
+    const md = '## Step 1 -- Run Part 1: the real-bd suite\n\nThen the toy-sprint smoke test.';
+    const mdFindings = scanSource('apra-pm/agents/regression-test-runner.md', md, 'md')
+        .filter((f) => f.id === 'apra-fleet-regression-structure');
+    assert.deepStrictEqual(mdFindings.map((f) => f.match).sort(), ['real-bd', 'toy-sprint']);
+});
+
 test('bead ids are findings in runtime strings but package names are not', () => {
     const bad = "throw new Error('see apra-fleet-417.5 and apra-fleet-eft.37.5 and apra-fleet-5co8');";
     const good = "import x from '@apralabs/apra-fleet-workflow'; const p = 'packages/apra-fleet-client-ish'; const s = 'apra-fleet-se';";

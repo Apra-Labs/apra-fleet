@@ -65,6 +65,25 @@ export function sanitizePrText(text) {
 // ---------------------------------------------------------------------------
 
 /**
+ * " (<part>: pass, <part>: fail)" from the playbook-defined `sections`, or
+ * from the deprecated two-part fields when an older runner returned those;
+ * '' when neither is present. The part names are the target playbook's own.
+ * @param {object} r regression-test-runner result
+ * @returns {string}
+ */
+export function formatRegressionParts(r) {
+    const pf = (v) => (v === true ? 'pass' : 'fail');
+    let parts = [];
+    if (Array.isArray(r.sections) && r.sections.length > 0) {
+        parts = r.sections.map((s) => `${s.name}: ${pf(s.passed)}`);
+    } else {
+        if (typeof r.suitePassed === 'boolean') parts.push(`part 1: ${pf(r.suitePassed)}`);
+        if (typeof r.smokePassed === 'boolean') parts.push(`part 2: ${pf(r.smokePassed)}`);
+    }
+    return parts.length ? ` (${parts.join(', ')})` : '';
+}
+
+/**
  * Assembles the `analysisText` block for the Harvester dispatch from this
  * run's in-memory tracking state: cycle-by-cycle closed-bead progress,
  * deploy/integration outcomes, rejected reviewer newTasks, the final verdict,
@@ -98,9 +117,8 @@ export function buildAnalysisText({
         : regressionResult === null
         ? ['Regression pass: not run this sprint (no regression-test-playbook.md, or the probe failed).']
         : [
-            `Regression pass: ${regressionResult.passed === true ? 'PASSED' : 'FAILED'} `
-            + `(real-bd suite: ${regressionResult.suitePassed === true ? 'pass' : 'fail'}, `
-            + `smoke test: ${regressionResult.smokePassed === true ? 'pass' : 'fail'}).`,
+            `Regression pass: ${regressionResult.passed === true ? 'PASSED' : 'FAILED'}`
+            + `${formatRegressionParts(regressionResult)}.`,
             `Carry-over beads filed: ${(regressionResult.bugsFiled || []).join(', ') || 'none'}.`,
             `Summary: ${regressionResult.summary || '(none reported)'}`,
             'Informational only -- this pass ran after the final verdict and did not gate it; any bead '

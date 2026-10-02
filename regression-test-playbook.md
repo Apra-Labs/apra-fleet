@@ -45,6 +45,9 @@ Run BOTH parts for a full regression pass:
   sandbox it provisions fresh for itself: install, server boot, member
   registration, sprint, harvest.
 
+Report one `sections` entry per part: `Part 1 -- real functional tests`
+and `Part 2 -- smoke test`.
+
 The smoke test's sandbox never touches the real `~/.apra-fleet`
 (production) install or its credentials/registry. It lives at a fixed,
 well-known path (not a random per-run directory) so no hand-off file is

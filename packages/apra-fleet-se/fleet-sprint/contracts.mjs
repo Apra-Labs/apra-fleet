@@ -619,6 +619,19 @@ const FALLBACK_regressionReport = {
     type: 'object',
     properties: {
         passed: { type: 'boolean' },
+        sections: {
+            type: 'array',
+            items: {
+                type: 'object',
+                properties: {
+                    name: { type: 'string' },
+                    passed: { type: 'boolean' },
+                    detail: { type: 'string' },
+                },
+                required: ['name', 'passed'],
+            },
+        },
+        // Deprecated two-part fields: still accepted, never required.
         suitePassed: { type: 'boolean' },
         smokePassed: { type: 'boolean' },
         bugsFiled: { type: 'array', items: { type: 'string' } },
@@ -628,7 +641,7 @@ const FALLBACK_regressionReport = {
             additionalProperties: true,
         },
     },
-    required: ['passed', 'suitePassed', 'smokePassed', 'bugsFiled', 'summary'],
+    required: ['passed', 'bugsFiled', 'summary'],
 };
 
 // Fallback for role "ci-watcher". Canonical source:
