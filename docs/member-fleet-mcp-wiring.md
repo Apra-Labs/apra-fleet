@@ -82,3 +82,24 @@ probes, so it stays cheap.
   the injected KB block.
 - Any change to the member tools surface must update the client package and the
   memory-contract in the same change.
+
+## Member-install marker and upgrade caveat
+
+`install --member` writes a marker recording that the running server was
+started by a member install; `--force` stops only a server that carries it.
+A remote member installed by a build that predates the marker has none, so its
+first automatic upgrade (which passes `--force` but not
+`--force-stop-full-install`) is refused as `E-FULL-INSTALL-RUNNING` and needs
+manual intervention once. Treat this as a known gap until the upgrade path
+handles marker-less members itself.
+
+## Compose and member lifecycle invariants
+
+- Compose keeps user-authored deny rules (merged with fleet's own), writes the
+  permission ledger before syncing the MCP entry, and reports a reason per
+  member; stale compose-owned `fleetMcp` statuses are cleared.
+- `update_member` re-composes when the member's work folder changes;
+  `remove_member` cleans the member side first, then removes credentials and
+  the key, and reports anything it could not clean.
+- Member-side file checks use `test -f` / `-PathType Leaf` and per-shell path
+  quoting, never shell expansion.

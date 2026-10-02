@@ -2,6 +2,29 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- KB redesign stage 4: review-finding hardening and delivery notes
+
+Sprint goal: close the remaining KB redesign review findings and finish the delivery notes. Verdict PASS: build and `npm test` green, `contract:check` OK (26 tools).
+
+```
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $20.8406.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.0459 across 2 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 25 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+```
+
+- `kb_*` tools refuse `repo_path`/`repo`/`repo_remote_url` (server and client) with `E-SCOPE-KEY-REMOVED`; FULL-session self-resolution errors name cause and fix; `kb_context` defaults to CONFIRMED + INFERRED.
+- Bible git operations check the sprint branch first and never push other unpushed commits.
+- `update_member` re-composes when the work folder moves; `remove_member` cleans the member side first and reports leftovers.
+- Release downloads are time-bounded and SHA256SUMS-verified; a running full-install server is refused with `E-FULL-INSTALL-RUNNING` unless `--force-stop-full-install`.
+- Compose preserves user deny rules, writes the ledger before MCP sync, and reports a reason per member; per-shell path quoting for member file checks.
+- `fleet_status` enumerates every KB scope and derives bible drift from `repo_path`.
+- Sprint-engine prompts: CI gate removed from reviewer, plan-reviewer criterion added, schema text made generic.
+
+Carried forward: members installed by a build before the member-install marker have no marker, so their first automatic upgrade is refused as `E-FULL-INSTALL-RUNNING` and needs a manual fix; filed as a task.
+
 ## [Unreleased] -- KB redesign: member kb/code access
 
 Delivery notes for the whole KB redesign (stages 1 to 2b and the upgrade-safety follow-ups). Each entry ends with an `Upgrade:` line saying what an existing install or caller must check.
