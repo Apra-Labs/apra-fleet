@@ -174,6 +174,33 @@ describe('(b) health endpoint check', () => {
     expect(fs.existsSync(SERVER_INFO)).toBe(false);
   });
 
+  // GitHub #584 review: a non-200 /health answer comes from a foreign port
+  // owner (a blocked fleet server cannot answer at all) -> gone, not unresponsive.
+  it('returns state=gone and removes server.json when /health answers non-200 (foreign port owner)', async () => {
+    const foreign = http.createServer((_req, res) => { res.writeHead(404); res.end('not here'); });
+    await new Promise<void>(resolve => foreign.listen(0, '127.0.0.1', resolve));
+    const port = (foreign.address() as net.AddressInfo).port;
+    try {
+      fs.writeFileSync(SERVER_INFO, JSON.stringify({ pid: process.pid, url: `http://127.0.0.1:${port}/mcp`, port }));
+      const result = await checkRunningInstance();
+      expect(result.state).toBe('gone');
+      expect(fs.existsSync(SERVER_INFO)).toBe(false);
+    } finally {
+      await new Promise<void>(resolve => foreign.close(() => resolve()));
+    }
+  });
+
+  it('live pid + refused (closed) port -> state=gone, server.json removed', async () => {
+    const tmp = net.createServer();
+    await new Promise<void>(resolve => tmp.listen(0, '127.0.0.1', resolve));
+    const port = (tmp.address() as net.AddressInfo).port;
+    await new Promise<void>(resolve => tmp.close(() => resolve())); // now nothing listens there
+    fs.writeFileSync(SERVER_INFO, JSON.stringify({ pid: process.pid, url: `http://127.0.0.1:${port}/mcp`, port }));
+    const result = await checkRunningInstance();
+    expect(result.state).toBe('gone');
+    expect(fs.existsSync(SERVER_INFO)).toBe(false);
+  }, 15_000);
+
   // GitHub #584: a live pid whose port still accepts TCP but whose /health
   // never answers (blocked event loop) is unresponsive, not dead -- its
   // server.json must survive so no second server is started.

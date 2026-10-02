@@ -348,6 +348,54 @@ describe('runStop', () => {
     expect(http.request).toHaveBeenCalled();
   });
 
+  // GitHub #584 review: never force-kill a reused pid that is not apra-fleet.
+  describe('force-kill guard', () => {
+    function pidStaysAlive() {
+      killSpy.mockImplementation(() => true); // kill(pid, 0) succeeds -> alive
+    }
+    function forceKillCalls(): number {
+      const taskkills = vi.mocked(execFileSync).mock.calls.filter((c) => c[0] === 'taskkill').length;
+      const sigkills = killSpy.mock.calls.filter((c: unknown[]) => c[1] === 'SIGKILL').length;
+      return taskkills + sigkills;
+    }
+
+    it('refuses to force-kill a surviving pid whose command line is not apra-fleet', async () => {
+      mockCheckRunning.mockResolvedValue(UNRESPONSIVE);
+      pidStaysAlive();
+      vi.mocked(execFileSync).mockReturnValue('C:\\Windows\\System32\\notepad.exe' as any);
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      vi.useFakeTimers();
+      try {
+        const p = runStop([]);
+        await vi.advanceTimersByTimeAsync(6000);
+        await p;
+      } finally {
+        vi.useRealTimers();
+      }
+      expect(forceKillCalls()).toBe(0);
+      expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('not force-killing'));
+      expect(logSpy).not.toHaveBeenCalledWith('Server stopped.');
+      expect(fs.unlinkSync).not.toHaveBeenCalled();
+      process.exitCode = 0;
+    });
+
+    it('force-kills a surviving pid that is verifiably apra-fleet', async () => {
+      mockCheckRunning.mockResolvedValue(UNRESPONSIVE);
+      pidStaysAlive();
+      vi.mocked(execFileSync).mockReturnValue('"C:\\Users\\u\\bin\\apra-fleet.exe" --transport http' as any);
+      vi.useFakeTimers();
+      try {
+        const p = runStop([]);
+        await vi.advanceTimersByTimeAsync(6000);
+        await p;
+      } finally {
+        vi.useRealTimers();
+      }
+      expect(forceKillCalls()).toBe(1);
+      expect(logSpy).toHaveBeenCalledWith('Server stopped.');
+    });
+  });
+
   it('reports "Server stopped." after shutdown', async () => {
     mockCheckRunning.mockResolvedValue(RUNNING);
     await runStop([]);

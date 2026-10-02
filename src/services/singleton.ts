@@ -81,7 +81,9 @@ export interface StartupLock {
   release: () => void;
 }
 
-type HealthResult = 'ok' | 'refused' | 'failed';
+// 'foreign': something answered HTTP with a non-200 -- a blocked fleet server
+// cannot answer at all, so the port belongs to someone else.
+type HealthResult = 'ok' | 'refused' | 'foreign' | 'failed';
 
 function checkHealthEndpoint(url: string): Promise<HealthResult> {
   const healthUrl = url.replace(/\/mcp$/, '/health');
@@ -90,7 +92,7 @@ function checkHealthEndpoint(url: string): Promise<HealthResult> {
     const finish = (r: HealthResult) => { if (!settled) { settled = true; resolve(r); } };
     const req = http.get(healthUrl, { timeout: HEALTH_TIMEOUT_MS }, (res) => {
       res.resume(); // drain response body
-      finish(res.statusCode === 200 ? 'ok' : 'failed');
+      finish(res.statusCode === 200 ? 'ok' : 'foreign');
     });
     req.on('error', (err: NodeJS.ErrnoException) => finish(err.code === 'ECONNREFUSED' ? 'refused' : 'failed'));
     req.on('timeout', () => { finish('failed'); req.destroy(); });
@@ -218,7 +220,7 @@ export async function checkRunningInstance(): Promise<InstanceCheckResult> {
   const port = typeof info.port === 'number' && info.port > 0 ? info.port : portFromUrl(info.url);
   let host = '127.0.0.1';
   try { host = new URL(info.url).hostname || host; } catch { /* keep loopback */ }
-  if (health === 'refused' || (port !== undefined && (await probeTcpPort(port, host)) === 'refused')) {
+  if (health === 'refused' || health === 'foreign' || (port !== undefined && (await probeTcpPort(port, host)) === 'refused')) {
     const previous = inspectPreviousServer(info.pid, info.startedAt);
     try { fs.unlinkSync(serverInfoPath); } catch {}
     return { running: false, state: 'gone', previous };

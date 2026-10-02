@@ -68,14 +68,15 @@ function isPidAlive(pid) {
 /**
  * GET <url with a trailing /mcp replaced by /health>, 2s timeout.
  * @param {string} url
- * @returns {Promise<boolean>}
+ * @returns {Promise<boolean|'foreign'>} 'foreign' when something answered with a non-200
+ *   (a blocked fleet server cannot answer at all, so the port belongs to someone else)
  */
 function checkHealthEndpoint(url) {
     const healthUrl = url.replace(/\/mcp$/, '/health');
     return new Promise((resolve) => {
         const req = http.get(healthUrl, { timeout: 2000 }, (res) => {
             res.resume();
-            resolve(res.statusCode === 200);
+            resolve(res.statusCode === 200 ? true : 'foreign');
         });
         req.on('error', () => resolve(false));
         req.on('timeout', () => { req.destroy(); resolve(false); });
@@ -146,7 +147,12 @@ export async function checkRunningInstance(deps = {}) {
         return { running: false, state: 'gone' };
     }
 
-    if (!(await health(info.url))) {
+    const healthResult = await health(info.url);
+    if (healthResult === 'foreign') {
+        unlink(serverInfoPath);
+        return { running: false, state: 'gone' };
+    }
+    if (healthResult !== true) {
         let port;
         let host = '127.0.0.1';
         try {

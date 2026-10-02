@@ -44,6 +44,13 @@ describe('client checkRunningInstance tri-state', () => {
         assert.strictEqual(unlinked.length, 1);
     });
 
+    test("non-200 /health (foreign port owner) -> gone, server.json removed", async () => {
+        const { unlinked, d } = deps({ health: async () => 'foreign' });
+        const r = await checkRunningInstance(d);
+        assert.strictEqual(r.state, 'gone');
+        assert.strictEqual(unlinked.length, 1);
+    });
+
     test('dead pid -> gone, server.json removed', async () => {
         const { unlinked, d } = deps({ pidAlive: () => false });
         const r = await checkRunningInstance(d);

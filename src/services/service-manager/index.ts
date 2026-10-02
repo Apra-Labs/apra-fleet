@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import { SERVER_INFO_PATH } from '../../paths.js';
 import type { ServiceManager, ServiceStatus } from './types.js';
-import { isPidAlive, postShutdown } from '../../utils/process-utils.js';
+import { isApraFleetProcess, isPidAlive, postShutdown } from '../../utils/process-utils.js';
 
 export type { ServiceManager, ServiceStatus };
 
@@ -24,6 +24,12 @@ export async function gracefulStopByServerJson(fallbackKill?: (pid: number) => v
   }
 
   if (isPidAlive(pid)) {
+    // GitHub #584 review: never force-kill a reused pid that is no longer an
+    // apra-fleet server; leave server.json for the operator to inspect.
+    if (isApraFleetProcess(pid) !== true) {
+      console.error(`Server pid ${pid} did not exit after /shutdown and could not be verified as an apra-fleet process -- not force-killing it.`);
+      return;
+    }
     if (fallbackKill) {
       fallbackKill(pid);
     } else {

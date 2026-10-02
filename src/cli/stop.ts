@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { checkRunningInstance } from '../services/singleton.js';
 import { SERVER_INFO_PATH, FLEET_DIR, isNonDefaultInstance } from '../paths.js';
 import { getServiceManager } from '../services/service-manager/index.js';
-import { isPidAlive, postShutdown } from '../utils/process-utils.js';
+import { isApraFleetProcess, isPidAlive, postShutdown } from '../utils/process-utils.js';
 
 export async function runStop(_args: string[]): Promise<void> {
   // A sandboxed instance (non-default port or data dir) must never touch the
@@ -54,8 +54,19 @@ export async function runStop(_args: string[]): Promise<void> {
   }
 
   if (isPidAlive(pid)) {
+    // GitHub #584 review: pids are reused -- only force-kill a process that
+    // is verifiably still an apra-fleet server.
+    const isFleet = isApraFleetProcess(pid);
+    if (isFleet !== true) {
+      console.error(
+        `Server pid ${pid} did not exit after /shutdown, and it ${isFleet === false ? 'is not' : 'could not be verified as'} `
+        + `an apra-fleet process -- not force-killing it. Check pid ${pid} yourself; server.json was left in place.`,
+      );
+      process.exitCode = 1;
+      return;
+    }
     if (process.platform === 'win32') {
-      try { execFileSync('taskkill', ['/F', '/PID', String(pid)]); } catch {}
+      try { execFileSync('taskkill', ['/F', '/PID', String(pid)], { stdio: 'pipe', windowsHide: true, timeout: 10_000 }); } catch {}
     } else {
       try { process.kill(pid, 'SIGKILL'); } catch {}
     }
