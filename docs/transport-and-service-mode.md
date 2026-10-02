@@ -166,7 +166,8 @@ first. State: `<data dir>/service-start-failures.json`.
 Workflow/fleet-sprint clients (not Claude Code or other MCP hosts, which connect by URL and rely on
 the service) start the shared HTTP server themselves when it is verifiably gone: they run
 `apra-fleet start`, wait for `/health` (default 45s, `APRA_FLEET_AUTOSTART_TIMEOUT_MS`) and attach
-over HTTP. See `packages/apra-fleet-client/docs/api-reference.md`.
+over HTTP. They only start an apra-fleet of their own version and refuse on a version skew (run
+`apra-fleet install`). See `packages/apra-fleet-client/docs/api-reference.md`.
 
 ### Upgrading
 

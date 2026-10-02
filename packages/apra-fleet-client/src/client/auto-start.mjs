@@ -21,7 +21,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -34,7 +34,11 @@ const POLL_MS = 500;
 export const AUTOSTART_LEDGER_FILE = 'client-autostart.json';
 export const AUTOSTART_LOCK_FILE = 'client-autostart.lock';
 
-/** Typed failure of a client auto-start. code: AUTOSTART_LIMIT | AUTOSTART_TIMEOUT | AUTOSTART_NO_BINARY | SERVER_UNRESPONSIVE */
+/**
+ * Typed failure of a client auto-start. code: AUTOSTART_LIMIT | AUTOSTART_TIMEOUT |
+ * AUTOSTART_NO_BINARY | AUTOSTART_VERSION_SKEW | AUTOSTART_VERSION_UNKNOWN |
+ * AUTOSTART_TEST_UNINJECTED | SERVER_UNRESPONSIVE
+ */
 export class FleetAutoStartError extends Error {
     constructor(message, { code, details } = {}) {
         super(message);
@@ -52,26 +56,104 @@ function nodeCommand() {
     return /^node(\.exe)?$/i.test(path.basename(process.execPath)) ? process.execPath : 'node';
 }
 
+/** "v0.4.3_95435e" / "0.4.4" -> "0.4.3" / "0.4.4" (null when absent). */
+export function versionCore(v) {
+    const m = /(\d+\.\d+\.\d+)/.exec(String(v || ''));
+    return m ? m[1] : null;
+}
+
+function readJsonVersion(file, exists, readFile) {
+    try {
+        if (!exists(file)) return null;
+        const v = JSON.parse(readFile(file)).version;
+        return typeof v === 'string' && v ? v : null;
+    } catch {
+        return null;
+    }
+}
+
 /**
- * The `apra-fleet start` command line, most exact match first:
+ * The apra-fleet version this client package ships with: the nearest
+ * version.json above this module (dev monorepo) or the workflows/.installed.json
+ * written by the install that extracted it (~/.apra-fleet/node_modules/...).
+ * @param {{ expectedVersion?: string|null, clientDir?: string,
+ *           exists?: (p: string) => boolean, readFile?: (p: string) => string }} [deps]
+ * @returns {string|null}
+ */
+export function clientServerVersion(deps = {}) {
+    if (deps.expectedVersion !== undefined) return deps.expectedVersion;
+    const exists = deps.exists || fs.existsSync;
+    const readFile = deps.readFile || ((f) => fs.readFileSync(f, 'utf8'));
+    let dir = deps.clientDir || __dirname;
+    try { dir = fs.realpathSync(dir); } catch { /* keep */ }
+    for (let i = 0; i < 8; i++) {
+        const v = readJsonVersion(path.join(dir, 'version.json'), exists, readFile)
+            || readJsonVersion(path.join(dir, 'workflows', '.installed.json'), exists, readFile);
+        if (v) return v;
+        const up = path.dirname(dir);
+        if (up === dir) break;
+        dir = up;
+    }
+    return null;
+}
+
+/**
+ * Version of a start candidate: <root>/version.json for a node entry
+ * (<root>/dist/index.js), `<binary> --version` for a binary.
+ */
+function defaultProbeVersion(candidate, env) {
+    if (candidate.kind === 'entry') {
+        return readJsonVersion(path.join(path.dirname(path.dirname(candidate.entry)), 'version.json'), fs.existsSync, (f) => fs.readFileSync(f, 'utf8'));
+    }
+    try {
+        const out = execFileSync(candidate.command, ['--version'], { env, stdio: 'pipe', windowsHide: true, timeout: 15_000 }).toString();
+        const m = /apra-fleet\s+(v?\S+)/i.exec(out);
+        return m ? m[1] : null;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * The `apra-fleet start` command line. Candidates, most exact first:
  *  1. this process IS the apra-fleet binary (the SEA `apra-fleet workflow` trampoline);
  *  2. <dirname>/index.js (bundled layout), <dirname>/../../../dist/index.js
  *     (dev monorepo, keyed off the consumer's dirname) and the repo dist/
  *     relative to this module -- run with node;
  *  3. the installed binary, ~/.apra-fleet/bin/apra-fleet[.exe].
+ * The first candidate whose version matches this client's apra-fleet version
+ * (clientServerVersion) wins. A different version is NEVER started: an older
+ * server can lack guards the client relies on (e.g. a pre-#584 server binds a
+ * random port beside the real one -- a split fleet). With no match the client
+ * fails with AUTOSTART_VERSION_SKEW naming both versions and 'apra-fleet install'.
  *
- * @param {{ dirname?: string, exists?: (p: string) => boolean, execPath?: string,
- *           homedir?: () => string, platform?: string }} [deps]
- * @returns {{ command: string, args: string[] }}
+ * Inside the test sandbox (APRA_TEST_SANDBOX_ROOT) the lookup must be
+ * injected (exists + homedir): a test may never fall through to a real
+ * installed binary.
+ *
+ * @param {{ env?: object, dirname?: string, exists?: (p: string) => boolean, execPath?: string,
+ *           homedir?: () => string, platform?: string, expectedVersion?: string|null,
+ *           probeVersion?: (candidate: object) => string|null }} [deps]
+ * @returns {{ command: string, args: string[], version: string }}
  */
 export function resolveFleetStartCommand(deps = {}) {
+    const env = deps.env || process.env;
+    if (env.APRA_TEST_SANDBOX_ROOT && !(deps.exists && deps.homedir)) {
+        throw new FleetAutoStartError(
+            'auto-start binary resolution was not injected in a test run (pass startCommand, or exists + homedir) -- ' +
+                'a test must never start a real installed apra-fleet binary.',
+            { code: 'AUTOSTART_TEST_UNINJECTED' },
+        );
+    }
     const exists = deps.exists || fs.existsSync;
     const execPath = deps.execPath || process.execPath;
     const platform = deps.platform || process.platform;
     const homedir = deps.homedir || os.homedir;
+    const probeVersion = deps.probeVersion || ((c) => defaultProbeVersion(c, env));
 
+    const candidates = [];
     if (/^apra-fleet(\.exe)?$/i.test(path.basename(execPath))) {
-        return { command: execPath, args: ['start'] };
+        candidates.push({ kind: 'binary', label: 'this apra-fleet binary', command: execPath, args: ['start'] });
     }
     const entries = [];
     if (deps.dirname) {
@@ -80,18 +162,41 @@ export function resolveFleetStartCommand(deps = {}) {
     }
     entries.push(path.resolve(__dirname, '..', '..', '..', '..', 'dist', 'index.js'));
     for (const entry of entries) {
-        if (exists(entry)) return { command: nodeCommand(), args: [entry, 'start'] };
+        if (exists(entry)) candidates.push({ kind: 'entry', label: 'build', entry, command: nodeCommand(), args: [entry, 'start'] });
     }
     const installed = path.join(homedir(), '.apra-fleet', 'bin', platform === 'win32' ? 'apra-fleet.exe' : 'apra-fleet');
-    if (exists(installed)) return { command: installed, args: ['start'] };
+    if (exists(installed)) candidates.push({ kind: 'binary', label: 'installed binary', command: installed, args: ['start'] });
 
+    if (candidates.length === 0) {
+        throw new FleetAutoStartError(
+            'The apra-fleet HTTP server is not running and no apra-fleet installation was found to start it. Tried:\n' +
+                entries.map((e) => `  - ${e}\n`).join('') +
+                `  - ${installed}\n` +
+                "Install apra-fleet ('apra-fleet install'), start the server yourself ('apra-fleet start'), " +
+                'or set APRA_FLEET_TRANSPORT=stdio to run a private stdio server.',
+            { code: 'AUTOSTART_NO_BINARY' },
+        );
+    }
+
+    const expected = clientServerVersion(deps);
+    if (!versionCore(expected)) {
+        throw new FleetAutoStartError(
+            'The apra-fleet HTTP server is not running, and this client cannot tell which apra-fleet version it ' +
+                "belongs to, so it will not start one. Start the server yourself ('apra-fleet start').",
+            { code: 'AUTOSTART_VERSION_UNKNOWN' },
+        );
+    }
+    const seen = [];
+    for (const c of candidates) {
+        const v = probeVersion(c);
+        if (versionCore(v) === versionCore(expected)) return { command: c.command, args: c.args, version: v };
+        seen.push(`${c.label} ${c.entry || c.command}: ${v || 'unknown version'}`);
+    }
     throw new FleetAutoStartError(
-        'The apra-fleet HTTP server is not running and no apra-fleet installation was found to start it. Tried:\n' +
-            entries.map((e) => `  - ${e}\n`).join('') +
-            `  - ${installed}\n` +
-            "Install apra-fleet ('apra-fleet install'), start the server yourself ('apra-fleet start'), " +
-            'or set APRA_FLEET_TRANSPORT=stdio to run a private stdio server.',
-        { code: 'AUTOSTART_NO_BINARY' },
+        `The apra-fleet HTTP server is not running. This client belongs to apra-fleet ${expected}, but the only apra-fleet ` +
+            `found to start it is a different version (${seen.join('; ')}) -- not starting a mismatched server. ` +
+            "Run 'apra-fleet install' to install the matching version, or start the server yourself ('apra-fleet start').",
+        { code: 'AUTOSTART_VERSION_SKEW', details: { expected, found: seen } },
     );
 }
 

@@ -61,7 +61,8 @@ test('gone server: two concurrent clients start exactly one shared HTTP server, 
         const script = path.join(root, 'client.mjs');
         fs.writeFileSync(script, [
             `import { connectFleet } from ${JSON.stringify(RESOLUTION)};`,
-            'const { transport, fleetApi, mode } = await connectFleet({});',
+            // Binary resolution is injected: this test starts THIS build, never an installed binary.
+            `const { transport, fleetApi, mode } = await connectFleet({ startCommand: { command: process.execPath, args: [${JSON.stringify(DIST_INDEX)}, 'start'] } });`,
             "const res = await fleetApi.listMembers({ format: 'json' });",
             'console.log(JSON.stringify({ mode, transport: transport.constructor.name, listed: !!res }));',
             'transport.stop();',

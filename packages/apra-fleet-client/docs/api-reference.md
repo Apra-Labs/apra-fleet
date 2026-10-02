@@ -595,7 +595,16 @@ Resolution order:
    `<data dir>/client-autostart.lock` (one runs start, others wait for
    `/health`). Loop guard: `<data dir>/client-autostart.json` allows 3
    auto-starts per 10 minutes, then `FleetAutoStartError` `AUTOSTART_LIMIT`
-   naming the newest server log. Other codes: `AUTOSTART_TIMEOUT`,
+   naming the newest server log. Version match: only a candidate whose
+   version equals the apra-fleet version this client ships with
+   (`clientServerVersion()`: nearest `version.json`, else
+   `workflows/.installed.json` of the install) is started -- the matching
+   build is preferred, and with no match the client refuses with
+   `AUTOSTART_VERSION_SKEW` naming both versions and `apra-fleet install`
+   (`AUTOSTART_VERSION_UNKNOWN` when its own version is unknown); an older
+   server can lack guards the client relies on. Inside the test sandbox
+   (`APRA_TEST_SANDBOX_ROOT`) an uninjected lookup fails with
+   `AUTOSTART_TEST_UNINJECTED`. Other codes: `AUTOSTART_TIMEOUT`,
    `AUTOSTART_NO_BINARY`, `SERVER_UNRESPONSIVE`. An unresponsive server gets
    the actionable error and no start. This replaces the old private stdio
    self-spawn fallback; stdio is now only the explicit

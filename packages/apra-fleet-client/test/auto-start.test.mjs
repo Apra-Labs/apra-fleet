@@ -6,7 +6,7 @@ import path from 'node:path';
 
 import {
     autoStartFleetServer, resolveFleetStartCommand, lastServerLog, FleetAutoStartError,
-    AUTOSTART_MAX_STARTS,
+    AUTOSTART_MAX_STARTS, clientServerVersion, versionCore,
 } from '../src/client/auto-start.mjs';
 import { resolveFleetServerConnection } from '../src/client/server-resolution.mjs';
 
@@ -131,29 +131,89 @@ describe('autoStartFleetServer', () => {
 });
 
 describe('resolveFleetStartCommand', () => {
-    test('the running apra-fleet binary itself wins', () => {
-        const r = resolveFleetStartCommand({ execPath: path.join('C:', 'bin', 'apra-fleet.exe'), exists: () => false });
+    // Every lookup here is injected (exists/homedir/probeVersion): a test never
+    // probes or starts a real installed binary.
+    const HOME = path.join(os.tmpdir(), 'h');
+    const BIN = path.join(HOME, '.apra-fleet', 'bin', 'apra-fleet.exe');
+    const base = { execPath: '/usr/bin/node', homedir: () => HOME, platform: 'win32', expectedVersion: 'v0.4.4_abc' };
+
+    test('the running apra-fleet binary itself wins when its version matches', () => {
+        const r = resolveFleetStartCommand({ ...base, execPath: path.join('C:', 'bin', 'apra-fleet.exe'), exists: () => false, probeVersion: () => 'v0.4.4_abc' });
         assert.deepStrictEqual(r.args, ['start']);
         assert.match(r.command, /apra-fleet\.exe$/);
     });
 
-    test('bundled sibling index.js, then dev dist, run with node + start', () => {
-        const r = resolveFleetStartCommand({ execPath: '/usr/bin/node', dirname: 'D', exists: (p) => p === path.join('D', 'index.js') });
+    test('bundled sibling index.js, run with node + start, when its version matches', () => {
+        const r = resolveFleetStartCommand({ ...base, dirname: 'D', exists: (p) => p === path.join('D', 'index.js'), probeVersion: () => '0.4.4' });
         assert.deepStrictEqual(r.args, [path.join('D', 'index.js'), 'start']);
     });
 
-    test('installed binary under ~/.apra-fleet/bin', () => {
-        const home = path.join(os.tmpdir(), 'h');
-        const bin = path.join(home, '.apra-fleet', 'bin', 'apra-fleet.exe');
-        const r = resolveFleetStartCommand({ execPath: '/usr/bin/node', homedir: () => home, platform: 'win32', exists: (p) => p === bin });
-        assert.deepStrictEqual(r, { command: bin, args: ['start'] });
+    test('installed binary under ~/.apra-fleet/bin when its version matches', () => {
+        const r = resolveFleetStartCommand({ ...base, exists: (p) => p === BIN, probeVersion: () => 'v0.4.4_def' });
+        assert.deepStrictEqual(r, { command: BIN, args: ['start'], version: 'v0.4.4_def' });
+    });
+
+    test('prefers the matching build over a mismatched installed binary', () => {
+        const entry = path.join('D', 'index.js');
+        const r = resolveFleetStartCommand({
+            ...base, dirname: 'D', exists: (p) => p === entry || p === BIN,
+            probeVersion: (c) => (c.kind === 'binary' ? 'v0.4.3_95435e' : '0.4.4'),
+        });
+        assert.deepStrictEqual(r.args, [entry, 'start']);
+    });
+
+    test('version skew -> refuses, naming both versions and apra-fleet install', () => {
+        assert.throws(
+            () => resolveFleetStartCommand({ ...base, exists: (p) => p === BIN, probeVersion: () => 'v0.4.3_95435e' }),
+            (err) => err.code === 'AUTOSTART_VERSION_SKEW'
+                && err.message.includes('v0.4.4_abc') && err.message.includes('v0.4.3_95435e')
+                && err.message.includes(BIN) && /apra-fleet install/.test(err.message),
+        );
+    });
+
+    test('unknown client version -> refuses rather than guessing', () => {
+        assert.throws(
+            () => resolveFleetStartCommand({ ...base, expectedVersion: null, exists: (p) => p === BIN, probeVersion: () => 'v0.4.4' }),
+            (err) => err.code === 'AUTOSTART_VERSION_UNKNOWN',
+        );
     });
 
     test('nothing found -> actionable AUTOSTART_NO_BINARY error', () => {
         assert.throws(
-            () => resolveFleetStartCommand({ execPath: '/usr/bin/node', homedir: () => 'H', exists: () => false }),
+            () => resolveFleetStartCommand({ ...base, exists: () => false }),
             (err) => err.code === 'AUTOSTART_NO_BINARY' && /APRA_FLEET_TRANSPORT=stdio/.test(err.message),
         );
+    });
+
+    test('inside the test sandbox an uninjected lookup is refused (never falls through to ~/.apra-fleet/bin)', () => {
+        assert.throws(
+            () => resolveFleetStartCommand({ env: { APRA_TEST_SANDBOX_ROOT: os.tmpdir() } }),
+            (err) => err.code === 'AUTOSTART_TEST_UNINJECTED',
+        );
+    });
+});
+
+describe('clientServerVersion', () => {
+    test('nearest version.json (dev monorepo)', () => {
+        const files = { [path.join('R', 'version.json')]: '{"version":"0.4.4"}' };
+        const v = clientServerVersion({ clientDir: path.join('R', 'packages', 'apra-fleet-client', 'src', 'client'), exists: (f) => f in files, readFile: (f) => files[f] });
+        assert.strictEqual(v, '0.4.4');
+    });
+
+    test('workflows/.installed.json of the install that extracted the client', () => {
+        const base = path.join('H', '.apra-fleet');
+        const files = { [path.join(base, 'workflows', '.installed.json')]: '{"version":"v0.4.3_95435e"}' };
+        const v = clientServerVersion({
+            clientDir: path.join(base, 'node_modules', '@apralabs', 'apra-fleet-client', 'src', 'client'),
+            exists: (f) => f in files, readFile: (f) => files[f],
+        });
+        assert.strictEqual(v, 'v0.4.3_95435e');
+        assert.strictEqual(versionCore(v), '0.4.3');
+    });
+
+    test('this checkout: the client belongs to the repo version', () => {
+        const repo = JSON.parse(fs.readFileSync(path.resolve(import.meta.dirname, '..', '..', '..', 'version.json'), 'utf8')).version;
+        assert.strictEqual(versionCore(clientServerVersion()), versionCore(repo));
     });
 });
 
