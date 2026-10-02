@@ -28,6 +28,13 @@ in v0.5.
     child process spawns. A deprecated alias yields a `warnings[]` array in the response. The
     original map (alias intact) is passed to the child so the child's own run log also warns.
     A string `@file` roleMap is rejected with 400 over HTTP (file expansion is CLI-only).
+- **Supervisor launches hard-pin the backlog role.** `fleet-se serve` ensures its own LLM-less,
+  `unreservable` backlog member for its project folder at startup
+  (`src/supervisor/backlog-member.mjs`). `POST /api/sprints` then injects that member as
+  `backlog` when the request names no backlog role, accepts it when named (via either
+  spelling), rejects any other member with 400 on field `roleMap`, and answers 503 when the
+  backlog member is degraded or the fleet member list cannot be read. Launch-time
+  auto-selection (`selectBacklogMember`) therefore only applies to direct CLI/runner launches.
 - **Member tags are labels only.** No code reads member tags, so the `orchestrator` tag alias is
   documentation only and can never produce a warning.
 - **Internal identifiers use `backlog`.** Role-sense identifiers (for example the former
