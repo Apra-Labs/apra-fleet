@@ -250,6 +250,9 @@ describe('verifyBeadsIdentity', () => {
 
     for (const [shell, error] of [
         ['POSIX', 'Exit code 127: bash: line 1: bd: command not found'],
+        // The real shape: FleetWorkflow.command() failSoft error over an execute_command result.
+        ['POSIX (real failSoft shape)', '[Command Failed] Exit code 127: Exit code: 127\n[stderr]\nbash: line 1: bd: command not found'],
+        ['PowerShell (real failSoft shape)', "[Command Failed] Exit code 1: Exit code: 1\n[stderr]\nbd : The term 'bd' is not recognized as the name of a cmdlet, function, script file, or operable program."],
         ['PowerShell', "bd : The term 'bd' is not recognized as the name of a cmdlet, function, script file, or operable program."],
         ['cmd', "'bd' is not recognized as an internal or external command"],
     ]) {

@@ -170,7 +170,7 @@ function noExpectationWarning(backlogMember, probed) {
 
 // The shell reported that no `bd` executable exists (POSIX shells, cmd,
 // PowerShell), as opposed to bd running and failing.
-const BD_NOT_FOUND_RE = /\bbd: (?:command )?not found|bd: No such file or directory|'bd' is not recognized|The term 'bd' is not recognized|\bexit(?:ed)?(?: with)?(?: code)? 127\b/i;
+const BD_NOT_FOUND_RE = /\bbd: (?:command )?not found|bd: No such file or directory|'bd' is not recognized|The term 'bd' is not recognized|\bexit(?:ed)?(?: with)?(?: code)?:? 127\b/i;
 
 export const BD_MISSING_FIX =
     "install the beads CLI (bd) on that member so 'bd --version' works in its workFolder shell " +
