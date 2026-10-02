@@ -58,6 +58,7 @@ import { resultText, toolErrorText } from './mcp-result.mjs';
 import { resolveMemberTarget, resolveMemberOs, clearMemberOsCache } from './member-target.mjs';
 import { createMemberCall, buildRemoteCallCommand, MemberCallError, MEMBER_CALL_ARGS_DIR } from './member-call.mjs';
 import { createDispatchAccounting } from './dispatch-accounting.mjs';
+import { lowerQuality, logLowerQualityWarn } from './lower-quality.mjs';
 import { createMemberInitProbe, createMemberVerifiedLookup, MEMBER_INIT_LOG_PREFIX, MEMBER_INIT_STATE_NAMESPACE } from './member-init-probe.mjs';
 import { createSprintState, sprintScopedFleetApi, resolveSettleShellWith } from './sprint-state.mjs';
 // apra-fleet-3swo.6.10: the per-member git/dolt sync brackets, moved verbatim
@@ -1429,9 +1430,11 @@ async function runSprintCycle(context) {
     sprintState.memberInit.splice(0, sprintState.memberInit.length, ...memberInitRecords);
     context.memberInit = sprintState.memberInit;
     context.isMemberVerified = createMemberVerifiedLookup(() => sprintState.memberInit);
+    // Banner WARN at init (the per-member WARN lines come from the probe).
+    logLowerQualityWarn(log, MEMBER_INIT_LOG_PREFIX, sprintState.memberInit, 'init');
     if (typeof publishState === 'function') {
         try {
-            publishState(MEMBER_INIT_STATE_NAMESPACE, { members: sprintState.memberInit.slice() });
+            publishState(MEMBER_INIT_STATE_NAMESPACE, { members: sprintState.memberInit.slice(), banner: lowerQuality(sprintState.memberInit).banner });
         } catch (err) {
             log(`${MEMBER_INIT_LOG_PREFIX} could not publish the init records (non-fatal): ${err && err.message ? err.message : err}`);
         }
@@ -3465,7 +3468,10 @@ async function runSprintCycle(context) {
     // unpushed branch) while PRESERVING the sprint's own computed verdict; a
     // genuine PR-creation failure still throws a typed CommandError out of the
     // phase, before the endGroup() below, exactly as the inline version did.
+    // Sprint-summary WARN: repeat the lower-quality banner once at the end.
+    const lowerQualityBanner = logLowerQualityWarn(log, MEMBER_INIT_LOG_PREFIX, sprintState.memberInit, 'summary');
     const { pushed } = await runPublishPrPhase({
+        lowerQualityBanner,
         phase, log, command,
         args, validated, targetIssues, orchestratorMember, finalCycleLabel,
         gitSync, getMemberForRole,

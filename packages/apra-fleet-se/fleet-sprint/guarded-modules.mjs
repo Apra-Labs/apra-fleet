@@ -78,6 +78,8 @@ export const GUARDED_MODULES = [
     // (the diff-file listing is a runner.js-supplied callback), no direct command().
     'kb-hints.mjs',
     'kb-injection.mjs',
+    // Pure lower-quality banner derivation; no command() site.
+    'lower-quality.mjs',
     'beads-scope.mjs',
     'beads-transitions.mjs',
     'role-policies.mjs',
