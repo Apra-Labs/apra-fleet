@@ -43,7 +43,8 @@ import {
 
 /**
  * Provider-dispatched command build step. `action` is one of
- * 'create-pull-request' | 'comment'; `params.provider` selects the REST
+ * 'create-pull-request' | 'comment' | 'find-pull-request' |
+ * 'update-pull-request'; `params.provider` selects the REST
  * dispatch. Pure and deterministic -- no network I/O, no filesystem access,
  * no randomness (beyond whatever caller-supplied fields it is handed).
  *
@@ -101,6 +102,12 @@ export const PR_DESCRIPTION_MAX_LENGTH = 3500;
  * log/emit the warning through its own logging convention.
  */
 export function buildCreatePrCommand(params) {
+    return buildCappedBodyCommand('create-pull-request', params);
+}
+
+/** Shared PR_DESCRIPTION_MAX_LENGTH enforcement for every action that sends a
+ *  PR description (create-pull-request, update-pull-request). */
+function buildCappedBodyCommand(action, params) {
     const { body } = params || {};
     let effectiveBody = body;
     let descriptionTruncated = null;
@@ -108,8 +115,29 @@ export function buildCreatePrCommand(params) {
         descriptionTruncated = { originalLength: body.length, maxLength: PR_DESCRIPTION_MAX_LENGTH };
         effectiveBody = body.slice(0, PR_DESCRIPTION_MAX_LENGTH);
     }
-    const built = buildVcsCommand('create-pull-request', { ...params, body: effectiveBody });
+    const built = buildVcsCommand(action, { ...params, body: effectiveBody });
     return descriptionTruncated ? { ...built, descriptionTruncated } : { ...built, descriptionTruncated: null };
+}
+
+/**
+ * Build a "find the open PR for head -> base" command for the given provider.
+ * The returned object carries `mapResponse(body)` -> [{ id, title, body, url }]
+ * so a caller reads the provider's list dialect without knowing it. A
+ * provider with no such builder fails with the same typed "ERROR: ... does
+ * not yet implement action" as every other missing action.
+ */
+export function buildFindPrCommand(params) {
+    return buildVcsCommand('find-pull-request', params);
+}
+
+/**
+ * Build an "update an existing PR's title/description" command for the given
+ * provider (`params.pull_request_id` from buildFindPrCommand's mapping). Same
+ * deterministic PR_DESCRIPTION_MAX_LENGTH cap and `descriptionTruncated`
+ * report as buildCreatePrCommand.
+ */
+export function buildUpdatePrCommand(params) {
+    return buildCappedBodyCommand('update-pull-request', params);
 }
 
 // ---------------------------------------------------------------------------
@@ -572,6 +600,8 @@ export function parseProviderRepoRef(remoteUrl) {
 
 export const VCSModule = {
     buildCreatePrCommand,
+    buildFindPrCommand,
+    buildUpdatePrCommand,
     parseProviderRepoRef,
     buildCommentCommand,
     classifyFailure,

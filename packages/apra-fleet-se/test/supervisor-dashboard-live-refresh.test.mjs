@@ -35,7 +35,6 @@ import { WATCHDOG_STATUS, createWatchdog } from '../src/supervisor/watchdog.mjs'
 // renderers above and launch-form.mjs's follow phase consult.
 import { isFailedRunOutcome } from '../src/supervisor/run-outcome.mjs';
 import { createSupervisor } from '../src/supervisor/server.mjs';
-import { computeSprintProgress } from '../fleet-sprint/sprint-progress.mjs';
 
 /** Minimal in-memory ledger exposing only list(). */
 function fakeLedger(entries) {
@@ -560,36 +559,41 @@ describe('apra-fleet-siqi.1.3: /events change signal schedules a poll that re-re
     });
 });
 
-describe('apra-fleet-siqi.4.2: Sprint Stack progress bar M/N updates in place from /state as beads close', () => {
-    test('a bead closing between two /state polls updates the row\'s progress bar M/N in place (same section, no full page reload), sourced from the same computeSprintProgress() data that feeds /state', async (t) => {
-        t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+describe('apra-fleet-siqi.4.2: Sprint Stack progress bar M/N updates in place from /state as the child summary advances', () => {
+    test('the child\'s published closed count advancing between two /state polls updates the row\'s progress bar M/N (and its "as of" label) in place, sourced from the same pulled summary that feeds /state', async (t) => {
+        // Date is mocked too, so the "as of AGE" label (computed from
+        // Date.now() on both the server and the client render) is
+        // deterministic and the byte-equality check below cannot straddle a
+        // second boundary.
+        const NOW = Date.parse('2026-10-01T12:00:00.000Z');
+        t.mock.timers.enable({ apis: ['setTimeout', 'setInterval', 'Date'], now: NOW });
         try {
-            // Two beads in this sprint's scope, both open at first poll -- one
-            // closes between the first and second poll, simulating real
-            // engine progress (the thing apra-fleet-siqi.4's bug report says
-            // the row never picked up without a full page reload).
-            const beads = [
-                { id: 'b1', status: 'open', parentId: null },
-                { id: 'b2', status: 'open', parentId: null },
-            ];
+            // The child's own published summary (GET /state?summary=1 wire
+            // shape). It advances between polls, simulating real engine
+            // progress; the supervisor pulls it on every buildSprintViews().
+            const summary = { closed: 0, required: 2, computedAt: new Date(NOW - 12_000).toISOString() };
             const dashboard = createDashboard({
                 ledger: fakeLedger([{ sprintId: 'sprint-1', members: [], issueRoots: ['b1'], childPid: 1 }]),
                 watchdog: fakeWatchdog({ 'sprint-1': WATCHDOG_STATUS.RUNNING_HEALTHY }),
                 expandScope: async () => new Set(['b1', 'b2']),
-                // A fresh snapshot per call (mutated below) -- exactly like a
-                // real `bd list --json` re-fetch would see the live bead
-                // store's current state on each buildSprintViews() call.
-                listAllBeads: async () => beads.map((b) => ({ ...b })),
+                // Every bead "open" in the supervisor's own bulk fetch: a
+                // supervisor-side recompute would read 0/2 forever.
+                listAllBeads: async () => [{ id: 'b1', status: 'open' }, { id: 'b2', status: 'open' }],
+                resolvePort: () => 4242,
+                fetchSummary: async () => ({
+                    status: 200,
+                    json: {
+                        summaryVersion: 1, runId: 'sprint-1', status: 'running',
+                        extensions: { beads: { closed: summary.closed, required: summary.required, fraction: summary.closed / summary.required, computed_at: summary.computedAt } },
+                    },
+                }),
                 driftCheck: async () => null,
             });
             const supervisor = createSupervisor({ logger: { log() {}, error() {} } });
             registerDashboardRoutes(supervisor, dashboard);
 
             // The client's poll() always fetches through the real GET /state
-            // route (not a canned payload) -- so both polls below reflect
-            // whatever buildSprintViews()/computeSprintProgress() actually
-            // compute server-side at that moment, the SAME data source /state
-            // serves and the row bar reads from (acceptance criterion).
+            // route (not a canned payload).
             const fetchCalls = [];
             const fetchImpl = async (url) => {
                 fetchCalls.push(url);
@@ -605,31 +609,15 @@ describe('apra-fleet-siqi.4.2: Sprint Stack progress bar M/N updates in place fr
             assert.equal(container.children.length, 1, 'exactly one Sprint Stack row for the one running sprint');
             const rowBeforeClose = container.children[0];
             // Snapshot the markup NOW -- `rowBeforeClose` stays the SAME live
-            // MockSection object across the second poll (that is exactly the
-            // "updated in place" behavior under test), so its `.outerHTML`
-            // getter would otherwise reflect the POST-close markup too by the
-            // time we compare below.
+            // MockSection object across the second poll.
             const initialRowHtml = rowBeforeClose.outerHTML;
-            assert.ok(initialRowHtml.includes('Required: 0/2'), 'initial row bar reads 0/2, matching the two open beads in scope');
+            assert.ok(initialRowHtml.includes('Required: 0/2'), 'initial row bar reads 0/2, the child summary');
+            assert.ok(initialRowHtml.includes('as of 12s'), 'the client render carries the "as of" label (embedded age helper works)');
 
-            // Sanity: /state's own payload right now agrees with a direct
-            // computeSprintProgress() call over the SAME bead snapshot -- one
-            // shared data source, not two independently-computed M/N values.
-            const directProgressBefore = computeSprintProgress(beads);
-            assert.equal(directProgressBefore.closed, 0);
-            assert.equal(directProgressBefore.required, 2);
+            // The child publishes a new summary between polls.
+            summary.closed = 1;
+            summary.computedAt = new Date(NOW - 3_000).toISOString();
 
-            // A real bead in this sprint's scope closes server-side, between
-            // polls (e.g. the engine finished a task) -- nothing here touches
-            // the client at all yet.
-            beads[0].status = 'closed';
-            const directProgressAfter = computeSprintProgress(beads);
-            assert.equal(directProgressAfter.closed, 1);
-            assert.equal(directProgressAfter.required, 2);
-
-            // Drive the next poll the SAME way production does: the heartbeat
-            // interval fires, schedulePoll() coalesces, then poll() re-fetches
-            // /state and re-renders the row in place.
             const heartbeatMs = extractHeartbeatIntervalMs();
             t.mock.timers.tick(heartbeatMs);
             t.mock.timers.tick(400); // schedulePoll()'s own coalesce timer
@@ -640,15 +628,15 @@ describe('apra-fleet-siqi.4.2: Sprint Stack progress bar M/N updates in place fr
             assert.equal(container.children[0], rowBeforeClose, 'the SAME row object is updated in place -- never a full container/page re-render that would replace it');
 
             const rowAfterClose = container.children[0];
-            assert.ok(rowAfterClose.outerHTML.includes('Required: 1/2'), 'the row bar picks up the closed bead -- M/N now reads 1/2');
+            assert.ok(rowAfterClose.outerHTML.includes('Required: 1/2'), 'the row bar picks up the advanced summary -- M/N now reads 1/2');
             assert.notEqual(rowAfterClose.outerHTML, initialRowHtml, 'the row markup actually changed to reflect the new M/N');
 
-            // And the client-rendered row after the close is still
-            // byte-identical to renderSprintSection() over the SAME view the
-            // server computed for the second poll -- confirming the row bar
-            // and /state never drift into two different M/N values.
+            // The client-rendered row is byte-identical to the server-side
+            // renderSprintSection() over the SAME /state payload -- one
+            // markup builder, no drift between server and client render.
             const secondHttpRes = await request(supervisor, 'GET', '/state');
             const secondPayload = JSON.parse(secondHttpRes.body);
+            assert.equal(secondPayload.sprints[0].progress.state, 'ok');
             assert.equal(secondPayload.sprints[0].progress.closed, 1);
             assert.equal(secondPayload.sprints[0].progress.required, 2);
             assert.equal(rowAfterClose.outerHTML, renderSprintSection(secondPayload.sprints[0]));

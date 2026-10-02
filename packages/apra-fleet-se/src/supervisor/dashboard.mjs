@@ -41,6 +41,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { EventEmitter } from 'node:events';
+import http from 'node:http';
 import { escapeHtml } from '@apralabs/apra-fleet-workflow/viewer/html-utils';
 import { WATCHDOG_STATUS } from './watchdog.mjs';
 // (apra-fleet-i9ag.16.7) The single "did this run end badly?" answer shared
@@ -49,30 +50,23 @@ import { FAILED_VERDICTS, FAILED_RUN_STATUSES, isFailedRunOutcome } from './run-
 import { renderLaunchFormHtml, formatLaunchError } from './launch-form.mjs';
 import { TOKEN_COOKIE_NAME } from './auth.mjs';
 import { renderBacklogPanelHtml, normalizeBead, expandScopeInMemory, buildChildIndex } from './backlog.mjs';
-// apra-fleet-72o0 (dashboard follow-up): progress bars and the structural
-// decomposedParentIds check below both need CLOSED beads present in the bulk
-// fetch -- computeSprintProgress() derives its `closed` count by filtering
-// for status === 'closed' (sprint-progress.mjs), and a closed intermediate
-// parent must still surface its open descendants to expandScopeInMemory(),
-// same correctness requirement scope-overlap.mjs's launch guard already has.
-// backlog.mjs's own bdListAllBeads()/bdListAllBeadsRaw() deliberately omit
-// `--all` (that fetch feeds the visible backlog BOARD, which intentionally
-// shows open work only) -- reusing it here would silently zero out every
-// sprint's closed count and repeat the closed-parent-hides-subtree hole this
-// module's progress bars were meant to close. Use scope-overlap.mjs's
-// `--all` fetcher instead; it is the one correctness-appropriate default.
+// apra-fleet-72o0 (dashboard follow-up): the claimed-scope count needs CLOSED
+// beads present in the bulk fetch -- a closed intermediate parent must still
+// surface its open descendants to expandScopeInMemory(), same correctness
+// requirement scope-overlap.mjs's launch guard already has. backlog.mjs's own
+// bdListAllBeads()/bdListAllBeadsRaw() deliberately omit `--all` (that fetch
+// feeds the visible backlog BOARD, which intentionally shows open work only)
+// -- reusing it here would repeat the closed-parent-hides-subtree hole. Use
+// scope-overlap.mjs's `--all` fetcher instead; it is the one
+// correctness-appropriate default.
 import { bdListAllBeadsWithClosed } from './scope-overlap.mjs';
-// apra-fleet-x8r.2: the SAME closed/required helper apra-fleet-x8r.1 landed
-// for the fleet-sprint viewer's Sprint Stack widget (and its HTML renderer) --
-// deliberately reused here rather than a second count implementation, so
-// there is exactly one closed/required computation in the package.
-import { computeSprintProgress } from '../../fleet-sprint/sprint-progress.mjs';
+// The progress bar markup is shared with the fleet-sprint viewer; its
+// NUMBERS come from each child's own published summary (GET
+// /state?summary=1, see fetchChildSummary()/classifyChildSummary() below),
+// never from a supervisor-side recompute over the supervisor's beads clone
+// (vre7: that clone can be stale relative to the child's, rendering 0/N for
+// a sprint that has in fact closed work).
 import { renderProgressBarHtml } from '../../fleet-sprint/viewer-extensions.mjs';
-// apra-fleet-x8r.4: goalPriorityMax() is the SAME pure priority-tier parser
-// runner.js's own completion gate uses (goalMax = goalPriorityMax(goal)) --
-// reused here rather than a second parser, so the supervisor's progress bar
-// excludes below-goal beads the identical way the per-sprint viewer's does.
-import { goalPriorityMax } from '../../fleet-sprint/runner.js';
 import { toBeadsSummary } from './beads-identity.mjs';
 // (apra-fleet-i9ag.3.2) Mount-aware app-paths: every absolute path this page
 // emits -- header links, per-card live/log anchors, the client scripts' fetch()
@@ -87,6 +81,7 @@ import { mountHref, resolveMountPrefix } from './mount-prefix.mjs';
 // the one shared source instead of two independent id schemes.
 import { sprintCardAnchorId } from './sprint-anchor.mjs';
 import { DASHBOARD_CSS } from './theme.mjs';
+import { createChildPortResolver } from './child-port.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -361,21 +356,75 @@ function memberChip(member) {
 }
 
 /**
- * apra-fleet-x8r.2: the Sprint Stack row's progress-bar markup, or a neutral
- * placeholder when `view.progress` is unavailable (e.g. the bulk beads fetch
- * or scope expansion failed for this sprint this render -- see
- * buildSprintViews() below). Never NaN/a crash: `renderProgressBarHtml()`
- * itself only ever receives an already-computed `{closed, required,
- * fraction}` object here, never null passed through to it, so its own
- * divide-by-zero guard is not what's protecting this path.
- * @param {{ closed: number, required: number, fraction: number }|null|undefined} progress
+ * Compact "how long ago" label for a pulled summary's computedAt: `12s`,
+ * `3m`, `2h`, `1d`. Returns null when the timestamp is missing/unparseable.
+ * Self-contained (no module-level references) because it is embedded
+ * verbatim into the client live-refresh script via `.toString()`.
+ * @param {string|null|undefined} iso
+ * @param {number} nowMs
+ * @returns {string|null}
+ */
+function formatSummaryAge(iso, nowMs) {
+    if (typeof iso !== 'string' || iso.length === 0) return null;
+    var t = Date.parse(iso);
+    if (!Number.isFinite(t)) return null;
+    var secs = Math.max(0, Math.floor((nowMs - t) / 1000));
+    if (secs < 60) return secs + 's';
+    var mins = Math.floor(secs / 60);
+    if (mins < 60) return mins + 'm';
+    var hours = Math.floor(mins / 60);
+    if (hours < 24) return hours + 'h';
+    return Math.floor(hours / 24) + 'd';
+}
+
+/**
+ * The Sprint Stack row's progress markup, driven by the summary view
+ * buildSprintViews() pulls from the child (`view.progress`, see
+ * classifyChildSummary()):
+ *   - state 'ok'          -> the shared bar + "as of AGE"
+ *   - state 'unreachable' -> the LAST GOOD bar + "as of AGE" + an
+ *                            "unreachable" marker (only built when a last
+ *                            good summary exists)
+ *   - state 'no-summary'  -> "no summary yet"
+ *   - anything else (state 'unavailable', null, a legacy shape) -> "status
+ *     unavailable"
+ * Never renders digits/digits for a non-ok state without its last-good
+ * marker, and never a 0/N placeholder. Self-contained apart from
+ * renderProgressBarHtml/formatSummaryAge/escapeHtml, which the client script
+ * embeds alongside it.
+ * @param {{ state: string, closed?: number, required?: number, fraction?: number, computedAt?: string|null, rejected?: boolean }|null|undefined} progress
+ * @param {number} [nowMs] - pinned "now" for the age label; defaults to Date.now()
  * @returns {string}
  */
-function renderSprintProgressHtml(progress) {
-    if (!progress || typeof progress.required !== 'number') {
-        return '<div style="padding: 8px 0; font-size: 12px; color: #71717a; font-style: italic;">progress unavailable</div>';
+function renderSprintProgressHtml(progress, nowMs) {
+    var placeholder = function (text, cls) {
+        return '<div class="sprint-progress-status ' + cls + '" style="padding: 8px 0; font-size: 12px; color: #71717a; font-style: italic;">' + text + '</div>';
+    };
+    var state = progress && typeof progress === 'object' ? progress.state : null;
+    var hasNumbers = !!progress && typeof progress.closed === 'number' && Number.isFinite(progress.closed) &&
+        typeof progress.required === 'number' && Number.isFinite(progress.required);
+    if (state === 'no-summary') {
+        return placeholder('no summary yet', 'sprint-progress-no-summary');
     }
-    return renderProgressBarHtml(progress);
+    if ((state !== 'ok' && state !== 'unreachable') || !hasNumbers) {
+        return placeholder('status unavailable', 'sprint-progress-unavailable');
+    }
+    var now = typeof nowMs === 'number' && Number.isFinite(nowMs) ? nowMs : Date.now();
+    var age = formatSummaryAge(progress.computedAt, now);
+    var ageHtml = '<span class="sprint-progress-age" style="color: #a1a1aa; font-size: 12px; white-space: nowrap;">as of ' +
+        (age === null ? 'unknown' : age) + '</span>';
+    var markerHtml = state === 'unreachable'
+        ? '<span class="sprint-progress-unreachable" style="color: #f59e0b; font-size: 12px; white-space: nowrap;">unreachable</span>'
+        : '';
+    return (
+        '<div class="sprint-progress-row" style="display: flex; align-items: center; gap: 8px;">' +
+        '<div style="flex: 1;">' +
+        renderProgressBarHtml({ closed: progress.closed, required: progress.required, fraction: progress.fraction }) +
+        '</div>' +
+        ageHtml +
+        markerHtml +
+        '</div>'
+    );
 }
 
 /**
@@ -389,9 +438,10 @@ function renderSprintProgressHtml(progress) {
  * re-derive the prefix from the request. Omitted/'' -> paths exactly as before.
  * @param {SprintView} view
  * @param {string} [mountPrefix] - mount-prefix.mjs's resolved prefix (e.g. '/ext/se'), or '' to serve direct
+ * @param {number} [nowMs] - pinned "now" for the progress "as of" label; defaults to Date.now()
  * @returns {string}
  */
-export function renderSprintSection(view, mountPrefix) {
+export function renderSprintSection(view, mountPrefix, nowMs) {
     const sprintId = escapeHtml(view.sprintId);
     // (apra-fleet-i9ag.5.2) Stable, escaped anchor id for this card -- the
     // live-view proxy's injected back-link (proxy.mjs) targets this same id
@@ -402,7 +452,7 @@ export function renderSprintSection(view, mountPrefix) {
     const base = view.base ? escapeHtml(view.base) : '';
     const goal = view.goal ? escapeHtml(view.goal) : 'unknown';
     const beadCount = Number.isInteger(view.beadCount) ? String(view.beadCount) : 'unknown';
-    const progressHtml = renderSprintProgressHtml(view.progress);
+    const progressHtml = renderSprintProgressHtml(view.progress, nowMs);
     const scopeRoots = (view.issueRoots ?? []).map((id) => escapeHtml(id)).join(', ') || 'none';
     const members = (view.members ?? []);
     const membersHtml = members.length > 0
@@ -493,8 +543,8 @@ export function renderSprintSection(view, mountPrefix) {
         '<div><span style="color:#a1a1aa;">Goal:</span> ' + goal + '</div>' +
         // apra-fleet-vk0a.3: explicitly labeled 'total in scope' -- distinct
         // from the progress bar's OWN, differently-scoped 'Required: M/N'
-        // widget a few lines above (renderProgressBarHtml(), goal+
-        // decomposedParentIds-filtered). This raw count legitimately GROWS
+        // widget a few lines above (the child's own published summary,
+        // goal-filtered). This raw count legitimately GROWS
         // over a sprint's life (planners/reviewers add tasks under an
         // already-claimed root); labeling it distinguishes that from a
         // glitch and from the filtered 'Required' count staying flat.
@@ -959,6 +1009,7 @@ const sprintStackLiveScript = (mountPrefix) => `
     ${failureReasonHtml.toString()}
     ${renderFinishedRunsHtml.toString()}
     ${renderProgressBarHtml.toString()}
+    ${formatSummaryAge.toString()}
     ${renderSprintProgressHtml.toString()}
     // (apra-fleet-i9ag.5.2) renderSprintSection() below now calls
     // sprintCardAnchorId() to stamp the card's anchor id -- embedded here,
@@ -1294,7 +1345,7 @@ export function renderIndexPageHtml(views, backlogHtml, launchFormHtml, opts = {
  * @property {string} status - one of WATCHDOG_STATUS's six values
  * @property {string[]} issueRoots
  * @property {number|null} beadCount
- * @property {{ closed: number, required: number, fraction: number }|null} progress
+ * @property {SummaryView|null} progress - the child's pulled summary, classified (see classifyChildSummary())
  * @property {Array<{ name: string, role: string|null }>} members
  * @property {string|null} base - (apra-fleet-p2to.3.1) the sprint's launch `--base` branch, as recorded on the ledger entry
  * @property {number|null} baseDrift - (apra-fleet-p2to.3.1) commits on `base` not yet reachable from `branch`; `null` when unknown (see computeBaseDrift())
@@ -1388,6 +1439,129 @@ export function buildStatePayload(views, finishedRuns) {
 // from a real per-mutation push from the client's point of view.
 const DEFAULT_EVENTS_INTERVAL_MS = 5000;
 
+// Per-row budget for pulling a child's GET /state?summary=1. Rows are pulled
+// concurrently, so a hung child delays the whole page by at most this much.
+const DEFAULT_SUMMARY_TIMEOUT_MS = 2000;
+// A summary is a few hundred bytes; an old child serving its FULL /state on
+// ?summary=1 can be far larger. Past this cap the body is not worth reading --
+// it cannot be a summary.
+const MAX_SUMMARY_BYTES = 1024 * 1024;
+
+/**
+ * @typedef {object} SummaryView
+ * @property {'ok'|'unreachable'|'no-summary'|'unavailable'} state
+ * @property {number} [closed]
+ * @property {number} [required]
+ * @property {number} [fraction]
+ * @property {string|null} [computedAt] - extensions.beads.computed_at (when the child FETCHED the beads)
+ * @property {boolean} [rejected] - unreachable because the port answered for a different runId
+ */
+
+/**
+ * Default `fetchSummary` seam: HTTP GET http://127.0.0.1:PORT/state?summary=1.
+ * One overall timer (started before the request) covers connect, headers AND
+ * body, so a child that accepts the connection and then stalls still times
+ * out. `agent: false` -- no pooled keep-alive socket outlives the call.
+ *
+ * Resolves `{ status, json }` for ANY HTTP response (`json` is `undefined`
+ * when the body is not valid JSON or exceeds MAX_SUMMARY_BYTES); rejects on
+ * connection error or timeout (the caller classifies that as unreachable).
+ * @param {number} port
+ * @param {{ timeoutMs?: number, host?: string }} [opts]
+ * @returns {Promise<{ status: number, json: any }>}
+ */
+export function fetchChildSummary(port, opts = {}) {
+    const timeoutMs = Number.isFinite(opts.timeoutMs) && opts.timeoutMs > 0 ? opts.timeoutMs : DEFAULT_SUMMARY_TIMEOUT_MS;
+    const host = opts.host ?? '127.0.0.1';
+    return new Promise((resolve, reject) => {
+        let settled = false;
+        let req = null;
+        let res = null;
+        const finish = (fn, value) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            fn(value);
+        };
+        const timer = setTimeout(() => {
+            const err = new Error(`child summary request timed out after ${timeoutMs}ms`);
+            err.code = 'ETIMEDOUT';
+            finish(reject, err);
+            try { if (res) res.destroy(); } catch { /* ignore */ }
+            try { if (req) req.destroy(); } catch { /* ignore */ }
+        }, timeoutMs);
+        try {
+            req = http.get({ host, port, path: '/state?summary=1', agent: false, headers: { accept: 'application/json' } }, (response) => {
+                res = response;
+                const chunks = [];
+                let size = 0;
+                let oversize = false;
+                response.on('data', (chunk) => {
+                    if (oversize) return;
+                    size += chunk.length;
+                    if (size > MAX_SUMMARY_BYTES) {
+                        oversize = true;
+                        chunks.length = 0;
+                        finish(resolve, { status: response.statusCode, json: undefined });
+                        response.destroy();
+                        return;
+                    }
+                    chunks.push(chunk);
+                });
+                response.on('end', () => {
+                    let json;
+                    try {
+                        json = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+                    } catch {
+                        json = undefined;
+                    }
+                    finish(resolve, { status: response.statusCode, json });
+                });
+                response.on('error', (err) => finish(reject, err));
+            });
+            req.on('error', (err) => finish(reject, err));
+        } catch (err) {
+            finish(reject, err);
+        }
+    });
+}
+
+/**
+ * Classify one pulled child summary response against the pinned wire shape
+ * (GET /state?summary=1 -> { summaryVersion, runId, ..., extensions: { beads:
+ * { closed, required, fraction, computed_at } } }). Order matters:
+ *   1. non-200 / non-JSON / no summaryVersion (an old child) -> unavailable
+ *   2. runId !== sprintId (the port now belongs to another run) -> rejected,
+ *      checked BEFORE beads presence so another run's empty summary never
+ *      reads as "no summary yet" for this sprint
+ *   3. no extensions.beads -> no-summary
+ *   4. non-finite closed/required -> unavailable (never 0/N)
+ *   5. otherwise ok
+ * @param {{ status: number, json: any }} response
+ * @param {string} sprintId
+ * @returns {{ kind: 'ok', summary: SummaryView }|{ kind: 'rejected', runId: any }|{ kind: 'no-summary' }|{ kind: 'unavailable' }}
+ */
+export function classifyChildSummary(response, sprintId) {
+    const json = response ? response.json : undefined;
+    if (!response || response.status !== 200 || !json || typeof json !== 'object' || Array.isArray(json)) {
+        return { kind: 'unavailable' };
+    }
+    if (json.summaryVersion === undefined || json.summaryVersion === null) return { kind: 'unavailable' };
+    if (json.runId !== sprintId) return { kind: 'rejected', runId: json.runId };
+    const ext = json.extensions && typeof json.extensions === 'object' ? json.extensions : null;
+    const beads = ext && ext.beads && typeof ext.beads === 'object' ? ext.beads : null;
+    if (!beads) return { kind: 'no-summary' };
+    const { closed, required } = beads;
+    if (typeof closed !== 'number' || !Number.isFinite(closed) || typeof required !== 'number' || !Number.isFinite(required)) {
+        return { kind: 'unavailable' };
+    }
+    const fraction = typeof beads.fraction === 'number' && Number.isFinite(beads.fraction)
+        ? beads.fraction
+        : (required > 0 ? closed / required : 0);
+    const computedAt = typeof beads.computed_at === 'string' ? beads.computed_at : null;
+    return { kind: 'ok', summary: { state: 'ok', closed, required, fraction, computedAt } };
+}
+
 /**
  * Create the dashboard seam (see src/supervisor/server.mjs's seam docs).
  * Builds the list of RUNNING (non-finished) sprint view models from the
@@ -1400,6 +1574,10 @@ const DEFAULT_EVENTS_INTERVAL_MS = 5000;
  *   },
  *   watchdog: { classifySprint: (entry: object) => Promise<{ status: string }> },
  *   expandScope?: (roots: string[]) => Promise<Set<string>>, // test seam only -- production leaves this unset and expands in-memory (apra-fleet-c4s.1)
+ *   resolvePort?: (sprintId: string) => number|undefined, // live child viewer port; production injects child-port.mjs's ledger+spawner resolver
+ *   spawner?: { getLiveEntry: (pid: number) => { port?: number }|undefined }, // used to build the default resolvePort when none is injected
+ *   fetchSummary?: (port: number, opts: { timeoutMs: number, sprintId: string }) => Promise<{ status: number, json: any }>, // test seam; defaults to fetchChildSummary()
+ *   summaryTimeoutMs?: number, // per-row summary pull budget; defaults to DEFAULT_SUMMARY_TIMEOUT_MS
 
  *   listAllBeads?: () => Promise<Array<{ id: string, status: string }>>,
  *   getSprintMeta?: (sprintId: string) => Promise<{ branch?: string, goal?: string, roles?: Record<string,string> }>|{ branch?: string, goal?: string, roles?: Record<string,string> },
@@ -1505,6 +1683,64 @@ export function createDashboard(deps = {}) {
         }
     }
 
+    // Per-row progress comes from the child's own published summary (GET
+    // /state?summary=1), pulled on every buildSprintViews(). resolvePort
+    // defaults to the shared ledger+spawner resolver (child-port.mjs);
+    // without a spawner it resolves nothing and every row reads as
+    // unreachable/status unavailable rather than a supervisor recompute.
+    const resolvePort = typeof deps.resolvePort === 'function'
+        ? deps.resolvePort
+        : createChildPortResolver({ ledger, spawner: deps.spawner ?? null });
+    const summaryTimeoutMs = Number.isFinite(deps.summaryTimeoutMs) && deps.summaryTimeoutMs > 0
+        ? deps.summaryTimeoutMs
+        : DEFAULT_SUMMARY_TIMEOUT_MS;
+    const fetchSummary = typeof deps.fetchSummary === 'function'
+        ? deps.fetchSummary
+        : (port) => fetchChildSummary(port, { timeoutMs: summaryTimeoutMs });
+    // Last good (state 'ok') summary per sprintId -- in memory only; entries
+    // for sprints no longer in the ledger list are evicted each build.
+    const lastGoodSummary = new Map();
+
+    /**
+     * Pull + classify one sprint's summary. Never throws.
+     * @param {string} sprintId
+     * @returns {Promise<SummaryView>}
+     */
+    async function pullSprintSummary(sprintId) {
+        let port;
+        try {
+            port = resolvePort(sprintId);
+        } catch (err) {
+            logError(`[dashboard] resolvePort failed for sprint '${sprintId}':`, err);
+            port = undefined;
+        }
+        const unreachable = (rejected) => {
+            const last = lastGoodSummary.get(sprintId);
+            if (!last) return { state: 'unavailable' };
+            return { ...last, state: 'unreachable', ...(rejected ? { rejected: true } : {}) };
+        };
+        if (!Number.isInteger(port) || port <= 0) return unreachable(false);
+        let response;
+        try {
+            response = await fetchSummary(port, { timeoutMs: summaryTimeoutMs, sprintId });
+        } catch {
+            return unreachable(false);
+        }
+        const verdict = classifyChildSummary(response, sprintId);
+        switch (verdict.kind) {
+            case 'ok':
+                lastGoodSummary.set(sprintId, verdict.summary);
+                return verdict.summary;
+            case 'rejected':
+                logError(`[dashboard] summary from port ${port} carries runId '${String(verdict.runId)}', not sprint '${sprintId}' -- port reused by another run; ignoring it`);
+                return unreachable(true);
+            case 'no-summary':
+                return { state: 'no-summary' };
+            default:
+                return { state: 'unavailable' };
+        }
+    }
+
     // (apra-fleet-siqi.1.1) GET /events plumbing -- see DEFAULT_EVENTS_INTERVAL_MS
     // above for why this is a periodic signal rather than a per-mutation push.
     // Lifecycle-owned by THIS seam's own start()/stop() (below), the same
@@ -1533,41 +1769,39 @@ export function createDashboard(deps = {}) {
      */
     async function buildSprintViews(finished) {
         const entries = ledger.list();
+        // Last-good cache eviction: a sprint no longer in the ledger list
+        // never comes back under the same id, so its cached summary is dead.
+        const liveIds = new Set(entries.map((e) => e.sprintId));
+        for (const id of lastGoodSummary.keys()) {
+            if (!liveIds.has(id)) lastGoodSummary.delete(id);
+        }
+        // Every row's child summary is pulled CONCURRENTLY and started FIRST
+        // (before the finished-runs read, the bulk beads fetch and any per-row await), so the page
+        // waits at most one summary timeout, never a serial sum of them.
+        // pullSprintSummary() never rejects.
+        const summaryPulls = new Map(entries.map((e) => [e.sprintId, pullSprintSummary(e.sprintId)]));
         // (apra-fleet-i9ag.4) verdict/PR per sprint, once its terminal state
         // exists -- looked up in the finished-runs rows (reused when the
         // caller already fetched them for this render).
         const finishedRows = Array.isArray(finished) ? finished : await buildFinishedRuns();
         const outcomeById = new Map(finishedRows.map((r) => [r.sprintId, r]));
         // apra-fleet-x8r.2: fetched ONCE for the whole page render (not once
-        // per sprint row) -- a failure here is isolated to "no progress bar
-        // this round" for every row (each falls back to its own placeholder
-        // below), never a thrown page render.
+        // per sprint row) -- feeds only the claimed-scope bead count now; a
+        // failure here is isolated to "unknown" counts this round, never a
+        // thrown page render.
         let allBeads = null;
         try {
             const rawBeads = await listAllBeads();
             // The default fetcher (bdListAllBeadsWithClosed) returns RAW,
             // unnormalized `bd list` rows -- normalizeBead() derives
-            // `parentId` (buildChildIndex()/decomposedParentIdsAll below both
-            // need it) and coerces `priority` to a number|null
-            // (computeSprintProgress() requires that shape). A test-injected
+            // `parentId` (buildChildIndex() below needs it). A test-injected
             // `deps.listAllBeads` may already return normalized rows;
-            // normalizeBead() is idempotent on its own six fields and passes
-            // a `placement` field through (the one extra field
-            // computeSprintProgress() branches on), so mapping unconditionally
-            // is safe either way. It is NOT identity-preserving for any other
-            // extra field an injector might add -- none is consumed here.
+            // normalizeBead() is idempotent on its own fields, so mapping
+            // unconditionally is safe either way.
             allBeads = (Array.isArray(rawBeads) ? rawBeads : []).map(normalizeBead).filter((b) => b.id.length > 0);
         } catch (err) {
-            logError('[dashboard] bulk beads fetch failed (progress bars will show placeholders this round):', err);
+            logError('[dashboard] bulk beads fetch failed (claimed-scope counts will show unknown this round):', err);
         }
-        // apra-fleet-x8r.4: structural, project-wide, ANY status -- the same
-        // "is this id someone's .parent" check runner.js's own
-        // decomposedParentIds() applies, built off the same bulk fetch
-        // buildSprintViews() already made above (no extra `bd` call, and
-        // shared across every sprint row rather than recomputed per row).
-        const decomposedParentIdsAll = Array.isArray(allBeads)
-            ? new Set(allBeads.filter((b) => b && b.parentId).map((b) => b.parentId))
-            : null;
         // apra-fleet-c4s.1: built ONCE off the same bulk fetch above (not one
         // subprocess walk per sprint row) -- `null` when either a test injects
         // its own `explicitExpand` (childIndex would be unused) or the bulk
@@ -1601,7 +1835,6 @@ export function createDashboard(deps = {}) {
             }
 
             let beadCount = null;
-            let progress = null;
             try {
                 const roots = entry.issueRoots ?? [];
                 // apra-fleet-c4s.1: in-memory expansion off `childIndex`
@@ -1612,25 +1845,11 @@ export function createDashboard(deps = {}) {
                     ? await explicitExpand(roots)
                     : expandScopeInMemory(roots, childIndex ?? new Map());
                 beadCount = scope.size;
-                if (Array.isArray(allBeads)) {
-                    const beadsInScope = allBeads.filter((b) => b && scope.has(b.id));
-                    // apra-fleet-x8r.4: goalMax is derived from THIS sprint's
-                    // own goal (falls back to no priority filtering when the
-                    // goal is not recoverable, same as the pre-x8r.4 "every
-                    // bead in scope" behavior) -- never a project-wide
-                    // constant, since two concurrent sprints can have
-                    // different goal bands.
-                    const goalMax = typeof meta.goal === 'string' && meta.goal.length > 0
-                        ? Number(goalPriorityMax(meta.goal).slice(1))
-                        : undefined;
-                    progress = computeSprintProgress(beadsInScope, {
-                        goalMax,
-                        decomposedParentIds: decomposedParentIdsAll,
-                    });
-                }
             } catch (err) {
                 logError(`[dashboard] scope expansion failed for sprint '${entry.sprintId}':`, err);
             }
+
+            const progress = await summaryPulls.get(entry.sprintId);
 
             return {
                 sprintId: entry.sprintId,
