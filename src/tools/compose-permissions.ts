@@ -736,7 +736,19 @@ async function syncMemberMcpConfig(
   // Read the CURRENT record (the caller's agent object may predate it).
   const recorded = getAgent(agent.id)?.fleetMcp;
   if (recorded?.state === 'unavailable' && recorded.reason && COMPOSE_OWNED_FLEET_MCP_REASONS.has(recorded.reason)) {
-    updateAgent(agent.id, { fleetMcp: undefined });
+    if (recorded.fleetInstalledAt) {
+      // Keep the install stamp (the only "this fleet installed it" signal): record a
+      // minimal, explicitly unverified, non-unavailable status carrying it.
+      recordFleetMcpStatus(agent.id, {
+        state: 'available',
+        checkedAt: new Date().toISOString(),
+        unverified: true,
+        detail: 'stale compose status cleared; not yet re-probed',
+        fleetInstalledAt: recorded.fleetInstalledAt,
+      });
+    } else {
+      updateAgent(agent.id, { fleetMcp: undefined });
+    }
     return {
       note: `fleetMcp: cleared the stale unavailable status (${recorded.reason}) -- the member MCP entry is now written; re-probe with member_detail refresh:true`,
     };
