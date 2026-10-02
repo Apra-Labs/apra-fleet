@@ -308,6 +308,11 @@ export const GUARDED_MODULES = [
     // not a formality: it is what turns a future raw command()/agent() landing
     // in either file into a red test instead of a silently unguarded site.
     'sprint-report.mjs',
+    // The sprint PR title/body builder (markdown, run-history block) shared by
+    // the Publish PR phase and the [ABORTED] PR path. Pure text: no command(),
+    // no agent(), no push -- registered so a future dispatch landing here is
+    // caught rather than silently unguarded.
+    'pr-body.mjs',
     'newtask-text.mjs',
     // apra-fleet-fsxg: the parent-NOTES staleness signal. Its pure core is text
     // formatting, but collectParentNotesStalenessNotes carries TWO member_name-

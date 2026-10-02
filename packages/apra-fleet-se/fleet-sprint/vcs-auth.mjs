@@ -10,7 +10,7 @@
 // (provisionOutcome below), keeping the prose regexes only as a fallback for
 // a result with no structuredContent at all.
 import { ApraFleet } from '@apralabs/apra-fleet-client';
-import { buildCreatePrCommand, resolveProvider, capabilities as vcsCapabilities, parseProviderRepoRef, getVcsProvider, resolveVcsAuthProviderForHost, isAuthBackend, VCS_NO_REGISTERED_PROVIDER, DEFAULT_VCS_PROVIDER } from './vcs-module.mjs';
+import { buildCreatePrCommand, buildFindPrCommand, buildUpdatePrCommand, resolveProvider, capabilities as vcsCapabilities, parseProviderRepoRef, getVcsProvider, resolveVcsAuthProviderForHost, isAuthBackend, VCS_NO_REGISTERED_PROVIDER, DEFAULT_VCS_PROVIDER } from './vcs-module.mjs';
 import { getSeCommands } from './se-os-commands.mjs';
 import { resolveMemberTarget } from './member-target.mjs';
 import { resultText } from './mcp-result.mjs';
@@ -658,11 +658,24 @@ function isPrAuthFailure(status, errorText) {
 // server-side. If the retry still fails, the failure (auth or not) is
 // returned as-is; the raw token is never logged (and is never even held
 // here), only `built.logSafeCommand`.
+//
+// EXISTING-PR UPDATE (optional `updateExisting`). A sprint relaunched on a
+// branch that already has a PR must not leave the old run's verdict in the
+// title/body. When the caller passes `updateExisting(old) -> { title, body }`
+// and creation reports already-exists, this finds the open PR for
+// head -> base (provider 'find-pull-request' builder -- the create response
+// carries neither the PR id nor its current body), hands the old title/body
+// to `updateExisting`, and PATCHes the result ('update-pull-request'
+// builder), with the same placeholder handoff, body cap and one-shot auth
+// self-heal as creation. It never throws: any failure (including a provider
+// with no such builder) comes back as `updated: false` + `updateError` for
+// the caller to log as a WARNING, leaving the PR as it was. Without
+// `updateExisting` the returned shape is exactly the historical one.
 /**
- * @param {{ fleetApi: object, command: Function, member: string, base: string, head: string, title: string, body?: string, log?: Function, logPrefix: string }} opts
- * @returns {Promise<{ ok: boolean, alreadyExists: boolean, prUrl: string|null, error: string|null, authFailure: boolean }>}
+ * @param {{ fleetApi: object, command: Function, member: string, base: string, head: string, title: string, body?: string, log?: Function, logPrefix: string, updateExisting?: Function }} opts
+ * @returns {Promise<{ ok: boolean, alreadyExists: boolean, prUrl: string|null, error: string|null, authFailure: boolean, updated?: boolean, updateError?: string|null }>}
  */
-export async function raiseVcsPrForMember({ fleetApi, command, member, base, head, title, body, log = () => {}, logPrefix, remoteUrlOverride }) {
+export async function raiseVcsPrForMember({ fleetApi, command, member, base, head, title, body, log = () => {}, logPrefix, remoteUrlOverride, updateExisting }) {
     let repo;
     try {
         ({ repo } = await provisionPrCapableAuthForMember({ fleetApi, command, member, log, logPrefix, remoteUrlOverride }));
@@ -765,6 +778,70 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
     }
     const repoRef = providerRef ? providerRef.ref : null;
 
+    // One REST round trip for the existing-PR update path (see the header
+    // note): placeholder handoff, 2xx check, one-shot auth self-heal. Returns
+    // { ok, built, body } or { ok: false, error } -- never throws on an HTTP
+    // or handoff failure.
+    const runUpdatePathCall = async (buildFn, what) => {
+        let healed = false;
+        // eslint-disable-next-line no-constant-condition
+        while (true) {
+            const b = buildFn();
+            const res = await fleetApi.vcsCredentialExec({ member_name: member, label: credentialLabel, command: b.command });
+            const h = (res && res.structuredContent) || {};
+            if (!h.ok || (typeof h.exitCode === 'number' && h.exitCode !== 0)) {
+                return { ok: false, error: `${what} dispatch failed (${h.reason || 'nonzero exit'}): ${h.stderr || resultText(res) || '(no detail)'}` };
+            }
+            const parsed = parseVcsCurlOutput(h.stdout);
+            const [lo, hi] = b.interpret.successStatusRange;
+            if (parsed.status !== null && parsed.status >= lo && parsed.status <= hi) return { ok: true, built: b, body: parsed.body };
+            const msg = (parsed.body && typeof parsed.body.message === 'string') ? parsed.body.message : (parsed.bodyText || '');
+            if (isPrAuthFailure(parsed.status, msg) && !healed) {
+                healed = true;
+                log(`${logPrefix}: ${what} returned an auth-classified failure (HTTP ${parsed.status ?? '(unknown)'}) for member '${member}'; re-provisioning a push+pr credential and retrying once (command: ${b.logSafeCommand}): ${msg}`);
+                try {
+                    const reprov = await provisionPrCapableAuthForMember({ fleetApi, command, member, log, logPrefix, remoteUrlOverride });
+                    if (reprov.repo) repo = reprov.repo;
+                } catch (healErr) {
+                    return { ok: false, error: `${what} auth self-heal failed: ${healErr.message}` };
+                }
+                continue;
+            }
+            return { ok: false, error: `${what} failed: HTTP ${parsed.status ?? '(unknown)'}: ${msg}` };
+        }
+    };
+    const updateExistingPr = async () => {
+        try {
+            const coords = () => ({ provider, ...(repoRef ? { repoRef } : { repo }), token, os, shell });
+            const found = await runUpdatePathCall(() => buildFindPrCommand({ ...coords(), base, head }), 'find-pull-request');
+            if (!found.ok) return { updated: false, updateError: found.error, prUrl: null };
+            const prs = found.built.mapResponse(found.body);
+            if (!prs.length) {
+                return { updated: false, updateError: `no open pull request found for '${head}' -> '${base}'`, prUrl: null };
+            }
+            const pr = prs[0];
+            const next = updateExisting({ title: pr.title, body: pr.body }) || {};
+            let warned = false;
+            const upd = await runUpdatePathCall(() => {
+                const b = buildUpdatePrCommand({
+                    ...coords(),
+                    pull_request_id: pr.id,
+                    title: next.title || title,
+                    body: next.body !== undefined ? next.body : body,
+                });
+                if (b.descriptionTruncated && !warned) {
+                    warned = true;
+                    log(`${logPrefix}: WARNING: updated PR description for member '${member}' was ${b.descriptionTruncated.originalLength} chars, exceeding the ${b.descriptionTruncated.maxLength}-char limit; truncated.`);
+                }
+                return b;
+            }, 'update-pull-request');
+            if (!upd.ok) return { updated: false, updateError: upd.error, prUrl: pr.url };
+            return { updated: true, updateError: null, prUrl: pr.url };
+        } catch (err) {
+            return { updated: false, updateError: (err && err.message) ? err.message : String(err), prUrl: null };
+        }
+    };
+
     let authHealAttempted = false;
     // apra-fleet PR-body length fix: buildCreatePrCommand deterministically
     // truncates `body` to PR_DESCRIPTION_MAX_LENGTH and reports it back via
@@ -854,7 +931,10 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
         if (status === built.interpret.alreadyExistsStatus && new RegExp(built.interpret.alreadyExistsPattern, 'i').test(errorText)) {
             const urlMatch = /https?:\/\/\S+/.exec(errorText);
             const existingUrl = urlMatch ? urlMatch[0].replace(/[.,)]+$/, '') : null;
-            return { ok: true, alreadyExists: true, prUrl: existingUrl, error: null, authFailure: false };
+            const existing = { ok: true, alreadyExists: true, prUrl: existingUrl, error: null, authFailure: false };
+            if (typeof updateExisting !== 'function') return existing;
+            const upd = await updateExistingPr();
+            return { ...existing, prUrl: upd.prUrl || existingUrl, updated: upd.updated, updateError: upd.updateError };
         }
 
         if (isPrAuthFailure(status, errorText) && !authHealAttempted) {
