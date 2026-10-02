@@ -314,10 +314,14 @@ export function chooseInstallSource(
 }
 
 /** The member-mode install command line arguments (exported for tests). */
-export function memberInstallArgs(provider: LlmProvider): string[] {
+export function memberInstallArgs(provider: LlmProvider, opts: { forceStopFullInstall?: boolean } = {}): string[] {
   // --force stops a running member server before the binary is replaced, so an
   // upgrade of a live member does not abort on the running-process guard.
-  return ['install', '--llm', provider, '--member', '--workflows', 'none', '--transport', 'http', '--force'];
+  const args = ['install', '--llm', provider, '--member', '--workflows', 'none', '--transport', 'http', '--force'];
+  // The override is added ONLY for the one retry ensureOnce makes for a member
+  // this fleet installed itself (see fleetPreviouslyInstalled).
+  if (opts.forceStopFullInstall) args.push(FORCE_STOP_FULL_INSTALL_FLAG);
+  return args;
 }
 
 /** Command that makes the staged installer executable and runs it in member mode. */
@@ -326,8 +330,9 @@ export function buildInstallCommand(
   provider: LlmProvider,
   targetOs: TargetOS,
   shell: MemberShell,
+  opts: { forceStopFullInstall?: boolean } = {},
 ): string {
-  const args = memberInstallArgs(provider);
+  const args = memberInstallArgs(provider, opts);
   return memberCommandFor(targetOs, shell, {
     posix: `chmod +x ${posixQuote(installerPath)} && ${posixQuote(installerPath)} ${args.map(posixQuote).join(' ')}`,
     powershell: `& ${psQuote(installerPath)} ${args.map(psQuote).join(' ')}`,
@@ -513,6 +518,28 @@ async function probeMemberArch(agent: Agent, deps: MemberFleetInstallDeps): Prom
 }
 
 /**
+ * True when this fleet's registry shows it previously installed apra-fleet on
+ * the member, so a running server there is the fleet's own member server.
+ *
+ * Exact signal: the member's recorded fleetMcp status (Agent.fleetMcp, written
+ * only by this fleet's own probe/install flow) carries a `version` -- this
+ * fleet has already found its member apra-fleet at <home>/.apra-fleet/bin on
+ * that member. A member with no recorded fleetMcp, or one recorded without a
+ * version (nothing installed), has no such record.
+ *
+ * Used for members installed by a build that predates the member-install
+ * marker (~/.apra-fleet/data/member-install.json): their running server has no
+ * marker, so `install --member --force` refuses it as E-FULL-INSTALL-RUNNING
+ * (src/cli/install-guard.ts memberForceMayStop). The fleet then retries once
+ * with --force-stop-full-install. Without this record no override is ever
+ * sent, so a genuine human full install is still protected.
+ */
+export function fleetPreviouslyInstalled(agent: Agent): boolean {
+  const v = agent.fleetMcp?.version;
+  return typeof v === 'string' && v.trim().length > 0;
+}
+
+/**
  * Ensure a REMOTE member runs an apra-fleet at least as new as this
  * orchestrator, installed in HTTP member mode. Never throws: every failure is a
  * typed `unavailable(<reason>)` result so the caller's registration proceeds.
@@ -590,19 +617,30 @@ async function ensureOnce(agent: Agent, deps: MemberFleetInstallDeps, force: boo
       return { state: 'unavailable', reason: 'transfer-failed', detail: why, version: priorVersion };
     }
     const installerPath = memberJoin(targetOs, shell, stagingDir, anyBasename(localPath));
-    const run = await deps.exec(agent, buildInstallCommand(installerPath, provider, targetOs, shell), INSTALL_TIMEOUT_MS);
+    const runInstaller = (forceStopFullInstall: boolean) =>
+      deps.exec(agent, buildInstallCommand(installerPath, provider, targetOs, shell, { forceStopFullInstall }), INSTALL_TIMEOUT_MS);
+    const isRefused = (r: SSHExecResult) => `${r.stdout}\n${r.stderr}`.includes(FULL_INSTALL_RUNNING_CODE);
+    let run = await runInstaller(false);
+    let retried = false;
+    // Pre-marker member: the server this fleet installed earlier has no
+    // member-install marker, so --force alone is refused. Retry exactly once
+    // with the override -- only when the registry shows this fleet installed it.
+    if (run.code !== 0 && isRefused(run) && fleetPreviouslyInstalled(agent)) {
+      run = await runInstaller(true);
+      retried = true;
+    }
     if (run.code !== 0) {
       const tail = (run.stderr.trim() || run.stdout.trim()).slice(-400);
-      const refused = `${run.stdout}\n${run.stderr}`.includes(FULL_INSTALL_RUNNING_CODE);
-      if (refused) {
+      const after = retried ? ` (retried once with ${FORCE_STOP_FULL_INSTALL_FLAG})` : '';
+      if (isRefused(run)) {
         return {
           state: 'unavailable',
           reason: 'full-install-running',
-          detail: `a running apra-fleet server on the member was not started by a member install and was left running: ${tail}. Override on the member: apra-fleet install --member --force ${FORCE_STOP_FULL_INSTALL_FLAG}`,
+          detail: `a running apra-fleet server on the member was not started by a member install and was left running${after}: ${tail}. Override on the member: apra-fleet install --member --force ${FORCE_STOP_FULL_INSTALL_FLAG}`,
           version: priorVersion,
         };
       }
-      return { state: 'unavailable', reason: 'install-failed', detail: `installer exited ${run.code}: ${tail}`, version: priorVersion };
+      return { state: 'unavailable', reason: 'install-failed', detail: `installer exited ${run.code}${after}: ${tail}`, version: priorVersion };
     }
   } finally {
     if (downloaded) deps.removeLocal(localPath);
@@ -998,6 +1036,11 @@ async function probeRemote(
   if (install) {
     const r = await ensureMemberFleetInstall(agent, deps, { force: forceInstall });
     if (r.state === 'available') version = r.version;
+    // A refused install over a running full (non-member) install is reported
+    // as such, never papered over by using that install: the running server
+    // belongs to a human full install, and self-registering the member into it
+    // would wire the member session to a server the fleet does not own.
+    else if (r.reason === 'full-install-running') return unavailable(r.reason, r.detail, r.version ? { version: r.version } : {});
     else if (r.version) version = r.version; // an older install is still there: try to use it
     else return unavailable(r.reason, r.detail);
   } else {

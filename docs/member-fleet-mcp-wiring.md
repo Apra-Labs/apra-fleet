@@ -95,15 +95,28 @@ probes, so it stays cheap.
 - Any change to the member tools surface must update the client package and the
   memory-contract in the same change.
 
-## Member-install marker and upgrade caveat
+## Member-install marker and pre-marker members
 
-`install --member` writes a marker recording that the running server was
-started by a member install; `--force` stops only a server that carries it.
-A remote member installed by a build that predates the marker has none, so its
-first automatic upgrade (which passes `--force` but not
-`--force-stop-full-install`) is refused as `E-FULL-INSTALL-RUNNING` and needs
-manual intervention once. Treat this as a known gap until the upgrade path
-handles marker-less members itself.
+`install --member` writes a marker (`~/.apra-fleet/data/member-install.json`)
+recording that the running server was started by a member install; `--force`
+stops only a server that carries it.
+
+A remote member installed by a build that predates the marker (the pre-marker
+case) has none, so the fleet's install (`install --member --force`) is refused
+with `E-FULL-INSTALL-RUNNING`. The fleet then retries the install exactly once,
+pre-marker case only, with `--force-stop-full-install` appended, but only when its registry shows it
+installed apra-fleet on that member before: the member's recorded `fleetMcp`
+carries a `version` (see `fleetPreviouslyInstalled` in
+`src/services/member-fleet-install.ts`). If the retry fails too, its own typed
+reason is recorded.
+
+A member with no such record gets no override: the install is refused once,
+recorded as `full-install-running`, and a human full install on that host is
+never stopped. For a member the fleet did not install (or whose registry entry
+was re-created, e.g. by `remove_member` + `register_member`), run once on the
+member (pre-marker manual override):
+
+    apra-fleet install --member --force --force-stop-full-install
 
 ## Compose and member lifecycle invariants
 
