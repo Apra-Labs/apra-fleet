@@ -2,6 +2,31 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- Supervisor owns and hard-pins its backlog member
+
+`fleet-se serve` now ensures its own LLM-less, `unreservable` backlog member for its project
+folder at startup (adopting a matching local member or registering `backlog-<folder>`), refusing
+to start if an LLM member already occupies that folder and degrading with a background retry when
+the fleet is unreachable. `POST /api/sprints` injects that member as `roleMap.backlog` when none
+is given, accepts it when named, rejects any other member with 400 on `roleMap`, and answers 503
+when the backlog member is degraded or the member list cannot be read. Direct CLI/runner launches
+share one `selectBacklogMember` selector (explicit, then unmapped member, then first doer, then
+first member) that logs the auto-selection. See `docs/backlog-role.md`.
+
+```
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $10.8013.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.1061 across 1 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 12 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+```
+
+Carried forward as open P3 backlog: the overlap guard not seeing the injected backlog member, a
+sprint-state test that slices `runner.js` with an LF-only pattern (fails on CRLF checkouts), a
+`kb_session_prime` test timeout, and the regression-pass failures already tracked by earlier
+carry-over issues.
+
 ## [Unreleased] -- Beads role renamed to `backlog`; `orchestrator` kept as a deprecated alias
 
 The fleet-sprint role that names the member holding the beads clone is now `backlog`. The old
