@@ -57,7 +57,12 @@ export function isTerminalSprintFailure(err) {
 //     alive-but-silent, so the turn may have run to completion (a stalled
 //     planner can have created the whole DAG) with only the RESULT lost. The
 //     watchdog abandons the dispatch promise, not the member's work.
-const AGENT_RAN_DISPATCH_REASONS = new Set(['max_turns_exhausted', 'watchdog_timeout']);
+//   - 'max_total_time': the server stopped a dispatch that had been running
+//     until its max_total_s ceiling -- the prompt was delivered and the agent
+//     worked for the whole budget, so partial work may exist.
+// ('agent_never_started' is deliberately NOT here: the member process never
+// produced a session, so nothing ran and nothing was mutated.)
+const AGENT_RAN_DISPATCH_REASONS = new Set(['max_turns_exhausted', 'watchdog_timeout', 'max_total_time']);
 
 // True when a thrown dispatch error means the dispatch delivered no usable
 // result and therefore produced no code/beads mutation to publish: a failed
