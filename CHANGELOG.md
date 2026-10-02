@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased] -- KB redesign stage 5: member install fixes
 
+Sprint goal: fix clean remote member self-registration and the pre-marker member upgrade. Verdict FAIL overall: self-registration passed review; the pre-marker upgrade did not meet its first acceptance criterion because the retry is gated on `fleetInstalledAt`, which members installed by older builds never carry, so they still need the manual `--force-stop-full-install` step. Build and `npm test` passed locally.
+
+```
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $7.5496.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.0565 across 2 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 14 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+```
+
+Carried forward: detect pre-marker ownership from the member's own registry; preserve `fleetInstalledAt` across compose-permissions writes; add `fleetInstalledAt` to the client `FleetMcpStatus` typedef.
+
 - Member self-registration no longer fails on a clean remote member: `register-member --id <uuid>` (the self-registration the orchestrator runs on the member's own install) skips `compose_permissions`, which needs fleet skill profiles a member install does not have; the orchestrating server composes the member's permissions and per-folder MCP entry itself. A failed self-registration now keeps the member's leading `ERROR:` line and cause in `fleetMcp.detail` (head kept, capped at 4000 characters) instead of only the last 300 characters. Upgrade: a member recorded as `fleetMcp` `register-failed` recovers once its own apra-fleet runs this build -- upgrade it (an `update_member` that changes `llm_provider` re-installs; otherwise run `apra-fleet install --member --force` on the member, or `remove_member` + `register_member`, which installs), then call `member_detail` with `refresh: true`. An `update_member` that changes only the name or work folder re-runs the self-registration without re-installing.
 
 - Pre-marker member upgrade: when the fleet's member install is refused with `E-FULL-INSTALL-RUNNING` and the registry shows the fleet installed that member before (a recorded `fleetMcp.fleetInstalledAt`, stamped only by a successful fleet install), the install is retried exactly once with `--force-stop-full-install`; a failing retry reports its own typed reason. With no such record no override is sent and the member is recorded `full-install-running` (it is no longer self-registered into the running full install). Upgrade: for a pre-marker member the fleet has no record of, run `apra-fleet install --member --force --force-stop-full-install` on the member once, then `member_detail` with `refresh: true`.

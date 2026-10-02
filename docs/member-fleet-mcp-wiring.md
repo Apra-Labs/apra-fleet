@@ -121,6 +121,18 @@ member (pre-marker manual override):
 
     apra-fleet install --member --force --force-stop-full-install
 
+Known gap: `fleetInstalledAt` is new, so a member installed by a build that
+predates it carries no such record even though the fleet did install it. In
+practice every true pre-marker member needs the manual override above once; the
+automatic retry only helps members the fleet installed with a build that stamps
+the field. The intended closing fix is to treat a running server as
+member-owned when the member's OWN registry, queried through its installed
+binary, holds an entry with this member's uuid (older builds created that
+entry through `register-member --id`). Related caveat: `compose_permissions`
+rewrites or clears `fleetMcp` on a member-config error, which discards
+`fleetInstalledAt`; the stamp must be carried through those writes. The client
+typedef for `fleetMcp` status must also list `fleetInstalledAt`.
+
 ## Compose and member lifecycle invariants
 
 - Compose keeps user-authored deny rules (merged with fleet's own), writes the
