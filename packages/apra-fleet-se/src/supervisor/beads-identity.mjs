@@ -176,7 +176,7 @@ const FIX_TAIL = 'then GET /api/health?refresh=1.';
 /** No `.beads` reachable by walking up from `cwd`. */
 export function formatNoBeadsWarning(cwd) {
     return `no beads database found walking up from ${cwd}. ` +
-        "Backlog and scope-overlap checks are disabled and sprints will verify against the orchestrator member's beads instead. " +
+        "Backlog and scope-overlap checks are disabled and sprints will verify against the backlog member's beads instead. " +
         `To fix: restart fleet-se from inside the project folder, or pass --beads-dir <project-or-.beads-path>, ${FIX_TAIL}`;
 }
 
@@ -184,7 +184,7 @@ export function formatNoBeadsWarning(cwd) {
 export function formatProbeFailedWarning(repoRoot, error) {
     const detail = error && error.message ? error.message : String(error);
     return `could not resolve the beads identity under ${repoRoot}: ${detail}. ` +
-        "Backlog and scope-overlap checks may fail and sprints will verify against the orchestrator member's beads instead. " +
+        "Backlog and scope-overlap checks may fail and sprints will verify against the backlog member's beads instead. " +
         `To fix: run 'bd where' in ${repoRoot} to see the error, ensure bd is on PATH and the project is initialised (bd init / sync.remote set), ${FIX_TAIL}`;
 }
 
