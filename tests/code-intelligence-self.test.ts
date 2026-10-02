@@ -47,6 +47,24 @@ const fakeProvider: CodeIntelligenceProvider = Object.fromEntries(
   }]),
 ) as unknown as CodeIntelligenceProvider;
 
+/**
+ * Every string leaf of a tool result's last text block, parsed as JSON when it
+ * is JSON (the code_* handlers wrap provider output), else the raw text.
+ */
+function resultStrings(result: { content: { type: string; text: string }[] }): string[] {
+  const text = result.content.at(-1)!.text;
+  let value: unknown;
+  try { value = JSON.parse(text); } catch { return [text]; }
+  const out: string[] = [];
+  const walk = (v: unknown): void => {
+    if (typeof v === 'string') out.push(v);
+    else if (Array.isArray(v)) v.forEach(walk);
+    else if (v && typeof v === 'object') Object.values(v).forEach(walk);
+  };
+  walk(value);
+  return out;
+}
+
 async function codeTool(name: string, scope?: ToolScope): Promise<ToolHandler> {
   const registered = new Map<string, ToolHandler>();
   const fakeServer = {
@@ -113,24 +131,11 @@ describe('code (self): each session is answered from its own folder', () => {
     const b = await betaQuery({ query: 'widget' });
 
     expect(seenRepos).toEqual([folders.alpha, folders.beta]);
-    // Parse the folder path through JSON stringification to handle escaped backslashes on Windows
-    expect(a.content.at(-1)!.text).toContain(`index of ${JSON.stringify(folders.alpha).slice(1, -1)}`);
-    expect(b.content.at(-1)!.text).toContain(`index of ${JSON.stringify(folders.beta).slice(1, -1)}`);
+    // Assert on the PARSED tool result: a raw path matched against JSON text
+    // fails on Windows, where the JSON escapes every backslash.
+    expect(resultStrings(a)).toContain(`index of ${folders.alpha}`);
+    expect(resultStrings(b)).toContain(`index of ${folders.beta}`);
     expect(recordUsageSpy.mock.calls.map(c => c[2])).toEqual([folders.alpha, folders.beta]);
-  });
-
-  it('path assertions work correctly with Windows-style backslashes (JSON-escaped)', async () => {
-    // Simulate a Windows-style path and verify our assertion method handles it correctly
-    const windowsPath = 'C:\\Users\\test\\project';
-    // Simulate what the tool returns: JSON.stringify of a structured result containing the path
-    const toolResultJson = JSON.stringify({ content: [{ type: 'text', text: `index of ${windowsPath}` }] });
-    // The MCP tool returns this JSON string as text, so consumers receive it stringified.
-    // To verify the path is present, we must compare against the JSON-escaped version,
-    // which is what JSON.stringify(windowsPath).slice(1,-1) produces.
-    expect(toolResultJson).toContain(`index of ${JSON.stringify(windowsPath).slice(1, -1)}`);
-    // Also verify that a bare raw-path assertion WOULD fail (proving the fix is necessary):
-    // the raw path contains single backslashes, but the JSON string contains escaped ones.
-    expect(toolResultJson).not.toContain(`index of ${windowsPath}`);
   });
 
   it('a FULL session\'s code_query resolves to the server working folder', async () => {
