@@ -248,8 +248,58 @@ describe('cached beads view: busy skip and failures', () => {
         assert.deepEqual(snap.rows, [{ id: 'row-1' }]);
     });
 
+    // Regression: doltPullBefore records the new remote tip as soon as the
+    // pull succeeds, before listAllBeads runs. A list that then skips or fails
+    // must NOT let the next refresh read the tip as unchanged and keep serving
+    // the pre-pull rows as fresh. Revert-proof: drop the `listOwed` term from
+    // runCheck()'s needList in beads-view.mjs and the third refresh issues no
+    // list, returning [row-1] with lastSkip/lastError cleared -- these fail.
+    for (const [label, listError, expectSkip] of [
+        ['lock/busy', 'database is locked', true],
+        ['non-busy (parse)', 'Unexpected token } in JSON at position 12', false],
+    ]) {
+        test(`a ${label} list failure after a successful pull on a moved tip is retried by the next refresh()`, async () => {
+            const member = fakeMember();
+            const ledger = await realLedger();
+            let n = 0;
+            const listAllBeads = async () => { n += 1; if (n === 2) throw new Error(listError); return [{ id: `row-${n}` }]; };
+            const view = createBeadsView({ backlogMember: readyMember(), ledger, command: member.command, repoRoot: REPO_ROOT, listAllBeads, now: steppingClock(), logger: QUIET });
+
+            await view.refresh();
+            assert.equal(n, 1);
+            const freshnessBefore = ledger.getScopeFreshness().lastSyncedAt;
+
+            member.state.tip = SHA_B;
+            const pullsBefore = member.state.pulls;
+            const failed = await view.refresh();
+            assert.equal(member.state.pulls - pullsBefore, 1, 'the pull on the moved tip succeeded');
+            assert.equal(n, 2, 'the list after the pull was attempted');
+            if (expectSkip) {
+                assert.ok(failed.lastSkip, 'lock/busy list is a skip');
+                assert.equal(failed.lastError, null);
+            } else {
+                assert.ok(failed.lastError, 'non-busy list failure is an error');
+            }
+            assert.deepEqual(failed.rows, [{ id: 'row-1' }]);
+            assert.equal(ledger.getScopeFreshness().lastSyncedAt, freshnessBefore, 'no freshness on a failed list');
+
+            // Tip is unchanged since the (successful) pull, yet a list is owed.
+            const next = await view.refresh();
+            assert.equal(member.state.pulls - pullsBefore, 1, 'no second pull: the tip did not move again');
+            assert.equal(n, 3, 'the next refresh re-lists because the previous list did not land');
+            assert.deepEqual(next.rows, [{ id: 'row-3' }]);
+            assert.equal(next.lastSkip, null);
+            assert.equal(next.lastError, null);
+            assert.notEqual(ledger.getScopeFreshness().lastSyncedAt, freshnessBefore);
+
+            // Once a list lands, an unchanged tip goes back to no re-list.
+            await view.refresh();
+            assert.equal(n, 3, 'no re-list once the owed list succeeded');
+        });
+    }
+
     for (const [label, errorText, pattern] of [
-        ['auth', 'fatal: Authentication failed for https://example.test/org/beads.git', /credentials/i],
+        ['auth','fatal: Authentication failed for https://example.test/org/beads.git', /credentials/i],
         ['unreachable', 'failed to get remote db: file:///gone/beads: no such file or directory', /unreachable/i],
     ]) {
         test(`an ${label} pull failure records lastError with the reason and keeps cached rows`, async () => {
