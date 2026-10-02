@@ -18,7 +18,7 @@ import {
 import { beadsExtension } from '../fleet-sprint/viewer-extensions.mjs';
 import { validateIssueId, validateBranchName, checkMemberTopology, createMemberReservationClient, resyncReacquiredMember, commandResultToSoftGit } from '../fleet-sprint/runner.js';
 import { normalizeRole } from '../fleet-sprint/contracts.mjs';
-import { ROLE_BACKLOG, resolveBacklogRoleAlias } from '../fleet-sprint/backlog-role.mjs';
+import { ROLE_BACKLOG, resolveBacklogRoleAlias, selectBacklogMember, formatBacklogSelection } from '../fleet-sprint/backlog-role.mjs';
 import { BEADS_IDENTITY_PROBES, parseBeadsIdentity, formatBeadsIdentity, parseExpectedIdentity } from '../fleet-sprint/beads-identity.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -782,7 +782,10 @@ async function main() {
     // be present -- this must NOT read a capitalized 'Orchestrator' key (the
     // N15 finding: that stray casing silently never matched a roleMap
     // author's natural lowercase key).
-    const backlogMember = (roleMap && roleMap[ROLE_BACKLOG] && roleMap[ROLE_BACKLOG][0]) || validMembers[0];
+    const backlogSelection = selectBacklogMember({ roleMap, members: validMembers });
+    const backlogMember = backlogSelection.member;
+    const backlogSelectionLine = formatBacklogSelection(backlogSelection);
+    if (backlogSelectionLine) console.log(backlogSelectionLine);
     const runProbe = async (cmd, member) => {
         const res = await fleetApi.executeCommand({ command: cmd, member_name: member });
         const text = res && res.content && res.content[0] ? res.content[0].text : '';

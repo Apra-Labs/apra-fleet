@@ -95,6 +95,16 @@ paths:
                   beadsRefreshError:
                     type: string
                     description: present only when ?refresh=1 was requested and the re-probe failed (beads then holds the last good identity, or stays null with an updated beadsWarning)
+                  backlogMember:
+                    type: object
+                    description: >
+                      present only when the supervisor wired its backlog-member
+                      handle (bin/serve.mjs). degraded means launches answer
+                      503 until a background retry makes it ready.
+                    properties:
+                      status: { type: string, enum: [ready, degraded] }
+                      name: { type: [string, "null"] }
+                      reason: { type: [string, "null"] }
 
   /api/shutdown:
     post:
@@ -347,7 +357,12 @@ paths:
                     send the map inline. The backlog role key is "backlog";
                     "orchestrator" is accepted as a deprecated alias and adds an
                     entry to the 201 response's warnings[]. Giving both keys with
-                    different values -> 400 (field roleMap).
+                    different values -> 400 (field roleMap). Backlog hard pin:
+                    when the supervisor runs with its own backlog member, an
+                    absent backlog role (no "backlog" and no "orchestrator"
+                    key) is injected as [<supervisor backlog member>] into
+                    the map the child receives; naming that member is
+                    accepted; naming any other member -> 400 (field roleMap).
                   type: object
                   additionalProperties:
                     type: array
@@ -418,8 +433,9 @@ paths:
           description: >
             request-shape validation failed, including (field roleMap) a
             roleMap that gives both "backlog" and the deprecated
-            "orchestrator" key with different values, or the "@path" file
-            form
+            "orchestrator" key with different values, the "@path" file
+            form, or a backlog role (or its alias) naming a member other
+            than this supervisor's own backlog member (the error names it)
           content:
             application/json:
               schema: { $ref: "#/components/schemas/FieldError" }
@@ -433,6 +449,16 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/FieldError" }
+        "503":
+          description: >
+            Backlog hard pin cannot be enforced, nothing spawned: the
+            supervisor's backlog member is degraded (error "this
+            supervisor's backlog member is not ready: <reason>"), or the
+            fleet member list cannot be read at launch time (error contains
+            "cannot verify backlog member").
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
   /api/sprints/{id}:
     get:
