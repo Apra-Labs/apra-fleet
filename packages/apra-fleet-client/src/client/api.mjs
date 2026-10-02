@@ -265,6 +265,7 @@
  * @property {string} [detail] - Human-readable diagnostic
  * @property {boolean} [unverified] - KB/code tools could not be verified (e.g. agy)
  * @property {string} [fleetInstalledAt] - ISO 8601 time this fleet's own install run last succeeded on the member; carried across later probes; absent when the fleet never installed it (a refusal or observation-only probe never sets it)
+ * @property {{reason: string, detail?: string}} [installFailure] - A requested apra-fleet upgrade that failed before the member was touched while the older install stayed in use; present on available and unavailable statuses, also named in detail
  */
 
 /**

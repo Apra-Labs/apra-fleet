@@ -50,10 +50,19 @@ function serverRunning(killLog: string[]) {
       if (killed) throw Object.assign(new Error('no match'), { status: 1 });
       return '5678\n' as any;
     }
-    if (c === 'pkill -x apra-fleet') { killLog.push(c); killed = true; return '' as any; }
+    if (c.startsWith('pkill') || c.includes('/IM ')) throw new Error('name-based kill issued: ' + c);
     if (c.startsWith('readlink -f /proc/') || c.startsWith('ps -p ')) return `${runningExe}\n` as any;
     return '' as any;
   });
+  // install --force stops the server by pid (never by name); process.kill is
+  // stubbed so no real process is signalled. Signal 0 (isPidAlive) sees none.
+  vi.spyOn(process, 'kill').mockImplementation(((pid: number, sig?: string | number) => {
+    const s = String(sig ?? 'SIGTERM');
+    if (s === '0') throw Object.assign(new Error('kill ESRCH'), { code: 'ESRCH' });
+    killLog.push(`${s}:${pid}`);
+    if (pid === 5678) killed = true;
+    return true;
+  }) as any);
 }
 
 describe('install --member --force over a server it did not start', () => {
@@ -103,13 +112,13 @@ describe('install --member --force over a server it did not start', () => {
 
   it('the explicit override stops it', async () => {
     await runInstall([...memberArgs, '--force-stop-full-install']);
-    expect(kills).toContain('pkill -x apra-fleet');
+    expect(kills).toEqual(['SIGTERM:5678']);
   });
 
   it('a server a previous member install left behind (marker present) is stopped by plain --force', async () => {
     files.set(memberInstallMarkerPath(), '{}');
     await runInstall(memberArgs);
-    expect(kills).toContain('pkill -x apra-fleet');
+    expect(kills).toEqual(['SIGTERM:5678']);
   });
 
   it('legacy pre-marker member server (member install state, no member-install.json): --force alone exits 3 and does not kill it; the override stops it and the install proceeds', async () => {
@@ -128,14 +137,14 @@ describe('install --member --force over a server it did not start', () => {
     exitSpy.mockClear();
     await runInstall([...memberArgs, '--force-stop-full-install']);
     expect(exitSpy).not.toHaveBeenCalled();
-    expect(kills).toEqual(['pkill -x apra-fleet']);
+    expect(kills).toEqual(['SIGTERM:5678']);
     expect(svc.register).toHaveBeenCalledTimes(1);
     expect(files.has(memberInstallMarkerPath())).toBe(true);
   });
 
   it('a full (non-member) install --force is unaffected', async () => {
     await runInstall(['--skill', 'none', '--force']);
-    expect(kills).toContain('pkill -x apra-fleet');
+    expect(kills).toEqual(['SIGTERM:5678']);
   });
 
   it('pure gate: only member-mode installs are gated', () => {

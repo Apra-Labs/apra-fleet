@@ -1348,7 +1348,9 @@ ${manualStopHint(pidsAfterStop)}
 `);
       process.exit(1);
     }
-    console.log('  Stopped running server.');
+    console.log(pidsBeforeStop.length > 0 || guardStoppedService
+      ? '  Stopped running server.'
+      : '  No running server process of this install was found to stop.');
   }
 
   console.log(`\nInstalling Apra Fleet ${serverVersion} for ${paths.name}...\n`);

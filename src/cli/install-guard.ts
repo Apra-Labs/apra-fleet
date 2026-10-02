@@ -39,7 +39,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { execSync } from 'node:child_process';
-import { isPidAlive, isApraFleetCommandLine, processCommandLine } from '../utils/process-utils.js';
+import { isPidAlive, isApraFleetProcess } from '../utils/process-utils.js';
 
 export interface RunningApraFleetProcess {
   pid: number;
@@ -201,8 +201,7 @@ export function relevantServerPids(installPrefixDir: string): number[] {
   const livePid = liveInstancePidForDataDir();
   if (livePid !== null && livePid !== process.pid) {
     const namedApraFleet = procs.some(p => p.pid === livePid);
-    const cmdLine = namedApraFleet ? null : processCommandLine(livePid);
-    if (namedApraFleet || (cmdLine !== null && isApraFleetCommandLine(cmdLine))) pids.add(livePid);
+    if (namedApraFleet || isApraFleetProcess(livePid) === true) pids.add(livePid);
   }
   return [...pids].sort((a, b) => a - b);
 }

@@ -11,6 +11,8 @@ import {
   removeMemberFromOwnInstall,
   defaultMemberFleetMcpDeps,
   NO_INSTALL_SENTINEL,
+  ReleaseDownloadError,
+  fleetMcpFixLine,
   memberErrorDetail,
   MEMBER_ERROR_DETAIL_MAX,
   type MemberFleetMcpDeps,
@@ -41,6 +43,10 @@ interface World {
   listTools: string[];
   /** Installer outcome: 'ok' upgrades; 'killed' exits 143 (Terminated); 'no-upgrade' exits 0 but leaves the old version. */
   installer?: 'ok' | 'killed' | 'no-upgrade';
+  /** The installer is a release asset to download; 'timeout' makes the download time out. */
+  releaseAsset?: 'timeout';
+  /** The installer transfer to the member fails. */
+  transferFails?: boolean;
   execLog: string[];
   transfers: number;
   recorded: FleetMcpStatus[];
@@ -93,12 +99,22 @@ function deps(world: World, local?: { connect: (id: string) => Promise<MemberSes
       if (c.includes('cat "') && c.includes('.claude.json')) return ok(world.claudeJson ? JSON.stringify(world.claudeJson) : '');
       return { stdout: '', stderr: `unexpected: ${c}`, code: 127 };
     },
-    transfer: async (_a, localPaths) => { world.transfers++; return { success: localPaths, failed: [] }; },
+    transfer: async (_a, localPaths) => {
+      world.transfers++;
+      return world.transferFails
+        ? { success: [], failed: localPaths.map(path => ({ path, error: 'No space left on device' })) }
+        : { success: localPaths, failed: [] };
+    },
     resolveHome: async () => HOME,
-    orchestratorPlatform: () => ({ os: 'linux', arch: 'x64' }),
+    // A release-asset world runs the orchestrator on another platform, so the
+    // member's installer must be downloaded instead of copied.
+    orchestratorPlatform: () => (world.releaseAsset ? { os: 'darwin', arch: 'arm64' } : { os: 'linux', arch: 'x64' }),
     orchestratorExecutable: () => '/opt/fleet/apra-fleet',
     orchestratorVersion: () => VERSION,
-    downloadReleaseAsset: async () => { throw new Error('not expected'); },
+    downloadReleaseAsset: async () => {
+      if (world.releaseAsset === 'timeout') throw new ReleaseDownloadError('download-timeout', 'no response within 120s');
+      throw new Error('not expected');
+    },
     removeLocal: () => {},
     connectLocalMember: local?.connect ?? (async () => { throw new Error('no local session expected'); }),
     now: () => new Date(Date.UTC(2026, 9, 1, 12, 0, tick++)),
@@ -286,6 +302,55 @@ describe('a failed member install is reported as such', () => {
     expect(s).not.toHaveProperty('version');
     expect(s.detail).toContain('installer exited 143');
     expect(s.detail).not.toContain('which was not used');
+  });
+
+  it('download-timeout over an OLD marked install: the member stays usable on it, registered, and the status names the failed upgrade', async () => {
+    const agent = remoteClaude();
+    const world = newWorld({ installed: OLD, releaseAsset: 'timeout' });
+    world.claudeJson = entryFor(agent);
+    const s = await refreshMemberFleetMcp(agent, deps(world), { install: true });
+    expect(s).toMatchObject({ state: 'available', version: OLD, installFailure: { reason: 'download-timeout' } });
+    expect(s.detail).toContain('upgrade on the member failed (download-timeout');
+    expect(s.detail).toContain(`older apra-fleet ${OLD} install is in use`);
+    expect(world.execLog.some(c => c.includes("'register-member'"))).toBe(true);
+    expect(world.transfers).toBe(0);
+    // Visible, not silent: the fix line is shown even though the status is available.
+    expect(fleetMcpFixLine(s)).toContain('release host');
+  });
+
+  it('transfer-failed over an OLD marked install: registered on the old install; a later register failure still names the failed upgrade', async () => {
+    const agent = remoteClaude();
+    const okWorld = newWorld({ installed: OLD, transferFails: true });
+    okWorld.claudeJson = entryFor(agent);
+    const ok = await probeMemberFleetMcp(agent, deps(okWorld), { install: true });
+    expect(ok).toMatchObject({ state: 'available', version: OLD, installFailure: { reason: 'transfer-failed' } });
+    expect(ok.detail).toContain('No space left on device');
+    expect(okWorld.execLog.some(c => c.includes("'register-member'"))).toBe(true);
+
+    const badWorld = newWorld({ installed: OLD, transferFails: true, register: 'long-error' });
+    badWorld.claudeJson = entryFor(agent);
+    const bad = await probeMemberFleetMcp(agent, deps(badWorld), { install: true });
+    expect(bad).toMatchObject({ state: 'unavailable', reason: 'register-failed', version: OLD, installFailure: { reason: 'transfer-failed' } });
+    expect(bad.detail).toContain('register-member exited 1');
+    expect(bad.detail).toContain('upgrade on the member failed (transfer-failed');
+  });
+
+  it('an unmarked OLD install with a download failure still stops at full-install-running, never registered', async () => {
+    const agent = remoteClaude();
+    const world = newWorld({ installed: OLD, marker: false, releaseAsset: 'timeout' });
+    world.claudeJson = entryFor(agent);
+    const s = await probeMemberFleetMcp(agent, deps(world), { install: true });
+    expect(s).toMatchObject({ state: 'unavailable', reason: 'full-install-running' });
+    expect(world.execLog.some(c => c.includes("'register-member'"))).toBe(false);
+  });
+
+  it('a provider-change forced install that fails before touching the member still fails closed', async () => {
+    const agent = remoteClaude();
+    const world = newWorld({ installed: OLD, transferFails: true });
+    world.claudeJson = entryFor(agent);
+    const s = await probeMemberFleetMcp(agent, deps(world), { install: true, forceInstall: true });
+    expect(s).toMatchObject({ state: 'unavailable', reason: 'transfer-failed', version: OLD });
+    expect(world.execLog.some(c => c.includes("'register-member'"))).toBe(false);
   });
 
   it('a successful upgrade from the old version still registers and verifies', async () => {
