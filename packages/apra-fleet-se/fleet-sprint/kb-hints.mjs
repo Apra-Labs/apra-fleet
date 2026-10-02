@@ -37,6 +37,14 @@ const TRACKER_ID_RE = /^(?:[a-z][a-z0-9]*-)+(?=[a-z0-9]*\d)[a-z0-9]{2,6}(?:\.\d+
 // A bare dotted-numeric child of a known id ("19.3") is also tracker residue.
 const DOTTED_NUMERIC_RE = /^\d+(?:\.\d+)+$/;
 
+// A priority-tier token ('P1', 'P1/P2/P3') is sprint scope metadata, not a topic.
+const PRIORITY_TIER_RE = /^P\d+(?:\/P\d+)*$/i;
+
+/** True for a priority-tier goal token such as 'P2' or 'P1/P2/P3'. */
+export function isPriorityTierToken(token) {
+    return typeof token === 'string' && PRIORITY_TIER_RE.test(token.trim());
+}
+
 /**
  * @param {string} token
  * @param {Set<string>|string[]} [knownIds] bead ids the caller already holds
@@ -72,7 +80,7 @@ export function cleanQueryTerms(texts, opts = {}) {
         for (const tok of tokenize(text)) {
             const low = tok.toLowerCase();
             if (low.length < 2 || KB_STOPWORDS.has(low)) continue;
-            if (isTrackerIdToken(tok, opts.knownIds)) continue;
+            if (isTrackerIdToken(tok, opts.knownIds) || isPriorityTierToken(tok)) continue;
             if (seen.has(low)) continue;
             seen.add(low);
             out.push(tok);

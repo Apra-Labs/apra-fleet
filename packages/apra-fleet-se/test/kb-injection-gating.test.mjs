@@ -2,7 +2,8 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { createKbWorkClient, kbKnowledgeBlock, KB_MAX_KNOWLEDGE_ENTRIES } from '../fleet-sprint/kb.mjs';
 import { createKbInjection } from '../fleet-sprint/kb-injection.mjs';
-import { roleHints, cleanQueryTerms, isTrackerIdToken } from '../fleet-sprint/kb-hints.mjs';
+import fs from 'node:fs';
+import { roleHints, cleanQueryTerms, isTrackerIdToken, isPriorityTierToken } from '../fleet-sprint/kb-hints.mjs';
 import { kbQueryTerms } from '../fleet-sprint/kb.mjs';
 import { createMemberInitProbe, createMemberVerifiedLookup } from '../fleet-sprint/member-init-probe.mjs';
 import { buildDoerPrompt } from '../fleet-sprint/prompts.mjs';
@@ -35,9 +36,9 @@ function fakeKb({ query = [], related = [], prime = [] } = {}) {
     return { calls, memberCall };
 }
 
-function injection({ kb, verified = () => false, diffFiles } = {}) {
+function injection({ kb, verified = () => false, diffFiles, deployTargets } = {}) {
     const kbWork = createKbWorkClient({ memberCall: kb.memberCall, maintainers: selector(), log: () => {} });
-    return createKbInjection({ kbWork, isMemberVerified: verified, diffFiles, log: () => {} });
+    return createKbInjection({ kbWork, isMemberVerified: verified, diffFiles, deployTargets, log: () => {} });
 }
 
 describe('per-role KB hints (b4g.19.1)', () => {
@@ -219,5 +220,38 @@ describe('verified-member injection gating (b4g.18.3)', () => {
         const never = await run(() => true);     // gate removed: never inject
         assert.notEqual(always.verifiedBlock.length, 0, 'always-inject injects for a verified member');
         assert.equal(never.unverifiedBlock.length, 0, 'never-inject skips an unverified member');
+    });
+});
+
+describe('engine-supplied hint sources and priority-tier goals (b4g.19.1)', () => {
+    test('priority-tier goal tokens (P2, P1/P2/P3) are never query terms', () => {
+        assert.ok(isPriorityTierToken('P1/P2/P3') && isPriorityTierToken('p2') && !isPriorityTierToken('P2p'));
+        const h = roleHints('planner', { goals: ['P1/P2/P3'], beadTitles: ['Fix the parser'] });
+        assert.deepEqual(h.terms, ['Fix', 'parser']);
+    });
+
+    test('deployer dispatch: deploy targets read by the engine reach kb_query and kb_session_prime', async () => {
+        const kb = fakeKb({ query: [], prime: [entry('p1', 'primed')] });
+        const seen = [];
+        const inj = injection({ kb, deployTargets: async (m, role) => { seen.push([m, role]); return ['deploy/staging.yml']; } });
+        await inj.blockFor({ role: 'deployer', member: 'dep-1', context: { beadTitles: ['Ship it'] } });
+        assert.deepEqual(seen, [['dep-1', 'deployer']]);
+        assert.ok(kb.calls.find((c) => c.name === 'kb_query').args.query.split(' ').includes('staging'));
+        assert.deepEqual(kb.calls.find((c) => c.name === 'kb_session_prime').args.hint_modules, ['deploy/staging.yml']);
+    });
+
+    test('harvester dispatch: sprint closed bead titles and the engine diff files reach kb_query', async () => {
+        const kb = fakeKb({ query: [entry('q1', 'hit')] });
+        const inj = injection({ kb, diffFiles: async () => ['src/diff/changed.mjs'] });
+        await inj.blockFor({ role: 'harvester', member: 'hv-1', context: { closedBeadTitles: ['Retry transit ingest'] } });
+        const terms = kb.calls.find((c) => c.name === 'kb_query').args.query.split(' ');
+        for (const t of ['changed', 'Retry', 'transit']) assert.ok(terms.includes(t), `${terms} carries ${t}`);
+    });
+
+    test('runner wires closedBeadTitles, deployTargets and the priority guard into the engine', () => {
+        const src = fs.readFileSync(new URL('../fleet-sprint/runner.js', import.meta.url), 'utf8');
+        assert.match(src, /kbSprintContext\.closedBeadTitles = sprintTasks\.filter\(\(t\) => t && t\.status === 'closed'/);
+        assert.match(src, /createKbInjection\(\{[\s\S]*?deployTargets: async \(memberName, role\)/);
+        assert.match(src, /!isPriorityTierToken\(validated\.goal\.trim\(\)\)/);
     });
 });

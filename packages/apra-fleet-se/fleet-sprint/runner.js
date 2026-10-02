@@ -229,7 +229,7 @@ import {
     kbKnowledgeBlock, kbPromotionBlock,
 } from './kb.mjs';
 import { createKbInjection } from './kb-injection.mjs';
-import { pathsFromText } from './kb-hints.mjs';
+import { pathsFromText, isPriorityTierToken } from './kb-hints.mjs';
 // Beads scope discovery + the shared full-DB snapshot: the single in-memory
 // BFS scope rule (now shared by bdListScoped and classifyVerifySet instead of
 // duplicated), the `bd list --all --limit 0 --json` snapshot, and the
@@ -975,7 +975,7 @@ async function runSprintCycle(context) {
     // KNOWLEDGE BANK injection (kb-injection.mjs), bound once kbWork exists
     // below; sprint-level hint sources the dispatch wrapper falls back to.
     let kbInjection = null;
-    const kbSprintContext = { goals: [], beadTitles: [], beadIds: [], testFiles: [] };
+    const kbSprintContext = { goals: [], beadTitles: [], closedBeadTitles: [], beadIds: [], testFiles: [] };
     // bead id -> bead, refreshed with the sprint tree; the reviewer's hint
     // sources (titles of the beads under review) are read from it.
     let kbBeadIndex = new Map();
@@ -1504,12 +1504,24 @@ async function runSprintCycle(context) {
     // Engine-side KNOWLEDGE BANK injection: skipped for a member whose own
     // fleet MCP was verified at sprint init (context.isMemberVerified, set by
     // the init probe above), applied to every other member.
-    if (typeof validated.goal === 'string' && validated.goal.trim() && !/^P\d$/i.test(validated.goal.trim())) {
+    if (typeof validated.goal === 'string' && validated.goal.trim() && !isPriorityTierToken(validated.goal.trim())) {
         kbSprintContext.goals = [validated.goal.trim()];
     }
     kbInjection = context.kbInjection ?? createKbInjection({
         kbWork,
         isMemberVerified: (name) => (typeof context.isMemberVerified === 'function' ? context.isMemberVerified(name) : false),
+        // Deploy targets: the file paths named in the runbook the role follows
+        // (deploy.md for the deployer, the playbooks for the test runners).
+        deployTargets: async (memberName, role) => {
+            const file = role === 'deployer' ? 'deploy.md'
+                : role === 'integ-test-runner' ? 'integ-test-playbook.md' : 'regression-test-playbook.md';
+            const res = await command(
+                `node -e "try{console.log(require('fs').readFileSync('${file}','utf8').slice(0,20000))}catch(e){}"`,
+                { member_name: memberName, silent: true, failSoft: true, label: `Read '${file}' for KB hints` },
+            );
+            if (!res || !res.ok) return [];
+            return pathsFromText([String(res.output || '')]);
+        },
         diffFiles: async (memberName) => {
             const res = await command(`git diff --name-only origin/${validated.baseBranch}...${validated.branch}`, { member_name: memberName, silent: true, failSoft: true });
             if (!res || !res.ok) return [];
@@ -2247,6 +2259,7 @@ async function runSprintCycle(context) {
             // Sprint-level KB hint sources for the roles whose dispatch does
             // not name its own beads (planner, deployer, test runners, ...).
             kbSprintContext.beadTitles = sprintTasks.filter((t) => t && typeof t.title === 'string').map((t) => t.title);
+            kbSprintContext.closedBeadTitles = sprintTasks.filter((t) => t && t.status === 'closed' && typeof t.title === 'string').map((t) => t.title);
             kbSprintContext.beadIds = sprintTasks.filter((t) => t && typeof t.id === 'string').map((t) => t.id);
             kbSprintContext.testFiles = pathsFromText(sprintTasks.map((t) => t && t.description)).filter((p) => /test|spec/i.test(p));
             kbBeadIndex = new Map(sprintTasks.filter((t) => t && t.id).map((t) => [t.id, t]));

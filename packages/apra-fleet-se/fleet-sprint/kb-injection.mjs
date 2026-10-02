@@ -22,6 +22,7 @@ import { roleHints } from './kb-hints.mjs';
  *   kbWork: { knowledgeFor: Function },
  *   isMemberVerified?: (memberName: string) => boolean,
  *   diffFiles?: (memberName: string) => Promise<string[]>,
+ *   deployTargets?: (memberName: string, role: string) => Promise<string[]>,
  *   log?: Function,
  * }} opts
  */
@@ -47,6 +48,12 @@ export function createKbInjection(opts = {}) {
             if (!ctx.diffFiles && typeof opts.diffFiles === 'function' && /^(reviewer|harvester)$/.test(role)) {
                 try { ctx.diffFiles = await opts.diffFiles(member); } catch (err) {
                     log(`[kb-inject] could not list the diff files for ${member} (non-fatal): ${err && err.message ? err.message : err}`);
+                }
+            }
+            if (!ctx.deployTargets && typeof opts.deployTargets === 'function'
+                && /^(deployer|integ-test-runner|regression-test-runner)$/.test(role)) {
+                try { ctx.deployTargets = await opts.deployTargets(member, role); } catch (err) {
+                    log(`[kb-inject] could not read the deploy targets for ${member} (non-fatal): ${err && err.message ? err.message : err}`);
                 }
             }
             const hints = roleHints(role, ctx);

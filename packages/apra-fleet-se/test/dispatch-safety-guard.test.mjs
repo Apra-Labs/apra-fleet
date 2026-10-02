@@ -418,7 +418,7 @@ const DISPATCH_ROLE_PATH = path.join(__dirname, '../fleet-sprint/dispatch-role.m
 // gets its own explicit baseline count below.
 // Bumped 4 -> 5: the KB injection's diff-file listing (`git diff --name-only`,
 // role hint source for reviewer/harvester) passes member_name and is failSoft.
-const EXPECTED_COMMAND_COUNT = 5;
+const EXPECTED_COMMAND_COUNT = 6;
 // Bumped 9 -> 10 (2026-07-18): the doer max_turns-exhaustion resume path
 // (dispatchDoerResume) adds one new agent() call site -- a resume-and-continue
 // dispatch on the SAME session with an escalated max_turns, verified compliant
