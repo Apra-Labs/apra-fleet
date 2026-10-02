@@ -110,7 +110,12 @@ describe('POST /shutdown', () => {
   it('records reason http_shutdown (not the SIGINT it re-enters)', async () => {
     const { createHttpTransport } = await import('../src/services/http-transport.js');
     const { getOrCreateKey } = await import('../src/services/jwt.js');
-    const emitSpy = vi.spyOn(process, 'emit').mockImplementation(() => true);
+    // Observe the re-entered SIGINT with a real listener, NOT a process.emit spy: a
+    // swallowing spy also drops the IPC 'message' events Node delivers through
+    // process.emit, and a lost vitest RPC reply hangs the worker forever (the run
+    // then dies at the suite timeout on a slow runner).
+    const sigintSeen = vi.fn();
+    process.on('SIGINT', sigintSeen);
     const handle = await createHttpTransport({ registerTools: () => {}, preferredPort: 0 });
     try {
       const status = await new Promise<number>((resolve, reject) => {
@@ -125,9 +130,10 @@ describe('POST /shutdown', () => {
       const recs = shutdownRecords();
       expect(recs).toHaveLength(1);
       expect(recs[0]).toMatchObject({ tag: 'shutdown', reason: 'http_shutdown' });
-      await new Promise((r) => setTimeout(r, 150)); // let the deferred SIGINT emit hit the spy
-      expect(emitSpy).toHaveBeenCalledWith('SIGINT');
+      await new Promise((r) => setTimeout(r, 150)); // let the deferred SIGINT emit reach the listener
+      expect(sigintSeen).toHaveBeenCalledTimes(1);
     } finally {
+      process.off('SIGINT', sigintSeen);
       await handle.close();
     }
   });
