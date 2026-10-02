@@ -54,8 +54,29 @@ consumer reads the published result. No consumer recomputes it.
   create and push from their clones, so locally computed progress diverged from the sprint's
   live view (two sources of truth). The sprint is now the single source of truth; the cost is a
   bounded per-row HTTP call, mitigated by concurrency, the 2 s timer and the cache.
-- Saved history-view runs from before this change have no `summary` key and render
-  "no summary yet" rather than their old progress.
+- Runs archived before the summary existed have no `summary` key on disk. The History view
+  backfills them on read (see below) instead of showing "no summary yet".
+
+## History backfill and the live SSE frame
+
+- `backfillExtensionSummaries(state, extensions, logger)` (in `run-summary.mjs`) is called by
+  the viewer's history branch, so every history consumer gets summaries for old runs. Live mode
+  is unchanged.
+- It is pure: it returns a new object and never mutates its input. A namespace that already has
+  an entry is never overwritten (checked with `hasOwnProperty`).
+- It reuses `applyExtensionSummary`, so a throwing `summarize()` is logged and leaves no entry
+  rather than failing the view. If the state has no summary at all, one is built with
+  `createRunSummary` + `refreshSummaryCore`. `publishedAt` falls back from `endedAt` to
+  `updatedAt` to `null`.
+- Archived run files hold the full state (not the lean `$ref` form), so `summarize()` sees real
+  data. Core code still names no extension.
+- The server's live SSE state frame now carries the namespace summary:
+  `{...stateData, summary: state.summary.extensions[ns] ?? null}`, built as a new object. The
+  client dispatches `workflow:summary:NS` (null when absent) BEFORE `workflow:state:NS`, so
+  renderers have the summary when the state event fires. The frame's `namespace`/`data` fields
+  are unchanged for other readers.
+- Tests: backfill and SSE cases in `viewer-run-summary.test.mjs`; the History HTTP route with
+  the real beads extension in `supervisor-history-view.test.mjs`.
 
 ## Invariants
 

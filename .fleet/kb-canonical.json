@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "a993f497d35892ff89039edb94be940fd1fb0b5e",
     "branch": "main",
-    "entry_count": 261
+    "entry_count": 262
   },
   "entries": [
     {
@@ -148,6 +148,25 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:26.056Z"
+    },
+    {
+      "id": "07df0548-b185-4f64-9e17-92fc2fa092cd",
+      "type": "knowledge",
+      "title": "Live SSE state frame carries the namespace summary and history HTML backfills missing summaries",
+      "summary": "The viewer SSE 'state' frame payload is {namespace, data, summary}, and the client dispatches workflow:summary:NS before workflow:state:NS. History-mode HTML_TEMPLATE runs backfillExtensionSummaries on the frozen state before embedding it.",
+      "symbols": [
+        "backfillExtensionSummaries",
+        "applyExtensionSummary",
+        "HTML_TEMPLATE",
+        "createDashboardViewer"
+      ],
+      "source_files": [
+        "packages/apra-fleet-workflow/src/viewer/index.mjs",
+        "packages/apra-fleet-workflow/src/viewer/run-summary.mjs",
+        "packages/apra-fleet-workflow/test/viewer-run-summary.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-02T05:26:13.343Z"
     },
     {
       "id": "08302d15-a3f6-466e-9ef1-df210a077a1f",
