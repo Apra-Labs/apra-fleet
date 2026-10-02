@@ -1802,6 +1802,50 @@ describe('max_turns classification (apra-fleet-p4f.2)', () => {
     expect(resultText(result)).toContain('/login');
   });
 
+  // GitHub #585: a non-zero exit logs a capped, redacted stderr tail plus the
+  // last result/error event; a success logs nothing extra.
+  it('logs a capped, redacted prompt_failure_output on a non-zero exit, and nothing on success', async () => {
+    const { getActiveLogFile } = await import('../src/utils/log-helpers.js');
+    const logFile = getActiveLogFile()!;
+    const failureLines = () => (fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8') : '')
+      .split('\n').filter(Boolean).map((l) => JSON.parse(l) as { tag: string; msg: string })
+      .filter((r) => r.tag === 'prompt_failure_output');
+    const before = failureLines().length;
+
+    const member = makeTestAgent({ friendlyName: 'failure-tail' });
+    addAgent(member);
+    const noisy = Array.from({ length: 60 }, (_, i) => `noise line ${i}`).join('\n');
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockResolvedValueOnce({
+        stdout: '{"type":"system"}\n{"type":"result","is_error":true,"result":"API Error: 500 boom"}\n',
+        stderr: `${noisy}\nfatal: token {{secret.MY_TOKEN}} rejected`,
+        code: 2,
+      })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
+
+    await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+
+    const after = failureLines();
+    expect(after.length).toBe(before + 1);
+    const payload = JSON.parse(after[after.length - 1].msg) as { exit: number; stderrTail: string; lastEvent?: string };
+    expect(payload.exit).toBe(2);
+    expect(payload.stderrTail).toContain('fatal: token [REDACTED] rejected'); // the tail, redacted
+    expect(payload.stderrTail).not.toContain('noise line 0');                // capped to the last lines
+    expect(payload.stderrTail.split('\n').length).toBeLessThanOrEqual(20);
+    expect(payload.lastEvent).toContain('API Error: 500 boom');
+
+    // Success: nothing extra.
+    const ok = makeTestAgent({ friendlyName: 'failure-tail-ok' });
+    addAgent(ok);
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })
+      .mockResolvedValueOnce({ stdout: JSON.stringify({ result: 'fine', session_id: 's-ok' }), stderr: 'warn', code: 0 })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });
+    await executePrompt({ member_id: ok.id, prompt: 'hi', resume: false, timeout_s: 5 });
+    expect(failureLines().length).toBe(before + 1);
+  });
+
   // apra-fleet-eft.14 (2026-07-19 stabilization loop): the member CLI can
   // die silently mid-turn -- its session transcript stops at a tool_result
   // with no final assistant message -- and still exit 0 with EMPTY stdout.

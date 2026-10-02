@@ -185,6 +185,37 @@ ${output}`;
 // removes, and for these providers timeout_s belongs to the StallDetector.
 const EXEC_TIMER_NEVER_BINDS_MS = 86_400_000;
 
+const FAILURE_STDERR_TAIL_CHARS = 2000;
+const FAILURE_STDERR_TAIL_LINES = 20;
+const FAILURE_EVENT_CHARS = 1000;
+
+/**
+ * GitHub #585: the diagnostic payload logged when execute_prompt's dispatch
+ * exits non-zero -- the TAIL of stderr (the end is where CLIs print the
+ * fatal error), capped by lines and characters, plus the last JSON
+ * result/error event on stdout, capped. Redaction happens in logLine.
+ */
+export function formatPromptFailureTail(result: Pick<SSHExecResult, 'code' | 'stdout' | 'stderr'>): string {
+  let stderrTail = (result.stderr ?? '').trimEnd();
+  const lines = stderrTail.split('\n');
+  if (lines.length > FAILURE_STDERR_TAIL_LINES) stderrTail = lines.slice(-FAILURE_STDERR_TAIL_LINES).join('\n');
+  if (stderrTail.length > FAILURE_STDERR_TAIL_CHARS) stderrTail = stderrTail.slice(-FAILURE_STDERR_TAIL_CHARS);
+
+  let lastEvent: string | undefined;
+  const outLines = (result.stdout ?? '').split('\n');
+  for (let i = outLines.length - 1; i >= 0 && lastEvent === undefined; i--) {
+    const line = outLines[i].trim();
+    if (!line.startsWith('{')) continue;
+    try {
+      const ev = JSON.parse(line) as { type?: unknown; is_error?: unknown; error?: unknown; subtype?: unknown };
+      if (ev.type === 'result' || ev.type === 'error' || ev.is_error === true || ev.error !== undefined) {
+        lastEvent = line.length > FAILURE_EVENT_CHARS ? line.slice(0, FAILURE_EVENT_CHARS) + '...[truncated]' : line;
+      }
+    } catch { /* not a JSON event line */ }
+  }
+  return JSON.stringify({ exit: result.code, stderrTail, ...(lastEvent !== undefined ? { lastEvent } : {}) });
+}
+
 /** GitHub #563: max_total_s time held back from every attempt for prompt-file
  *  cleanup and the response (see cleanupReserveMs in executePrompt). */
 export const EXECUTE_PROMPT_CLEANUP_RESERVE_MS = 5000;
@@ -1595,6 +1626,10 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     }
 
     if (result.code !== 0) {
+      // GitHub #585: a failed dispatch used to log only exit=N. Log a capped
+      // stderr tail plus the last result/error event (logLine applies the
+      // usual secret redaction). Success paths log nothing extra.
+      logLine('prompt_failure_output', formatPromptFailureTail(result), { id: agent.id, friendlyName: agent.friendlyName }, scope.getInv());
       // apra-fleet-391: surface an auth failure as a STRUCTURED reason (not
       // just prose in `text`) so callers -- notably fleet-sprint's
       // isAuthDispatchError -- can key off it directly instead of regexing
