@@ -73,7 +73,7 @@ export default {
     "src/tools/monitor-task.ts": 1,
     "src/tools/receive-files.ts": 8,
     "src/tools/register-member.ts": 33,
-    "src/tools/remove-member.ts": 8,
+    "src/tools/remove-member.ts": 7,
     "src/tools/revoke-vcs-auth.ts": 4,
     "src/tools/setup-git-app.ts": 8,
     "src/tools/setup-ssh-key.ts": 7,

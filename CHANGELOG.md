@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased] -- KB redesign stage 4: review-finding hardening and delivery notes
 
-Sprint goal: close the remaining KB redesign review findings and finish the delivery notes. Verdict PASS: build and `npm test` green, `contract:check` OK (26 tools).
+Sprint goal: close the remaining KB redesign review findings and finish the delivery notes. Verdict PASS: build, `npm test` and `contract:check` (26 tools) passed on the sprint member only; CI on all three OSes was not part of the verdict, and the windows-latest run then failed in `tests/compose-member-config-windows.test.ts` (fixed below).
 
 ```
 Budget ceiling: not set (no --budget flag) -- unlimited for this run.
@@ -22,6 +22,7 @@ Note: dispatches using an unpriced model id are not reflected above (see N10, fe
 - Compose preserves user deny rules, writes the ledger before MCP sync, and reports a reason per member; per-shell path quoting for member file checks.
 - `fleet_status` enumerates every KB scope and derives bible drift from `repo_path`.
 - Sprint-engine prompts: CI gate removed from reviewer, plan-reviewer criterion added, schema text made generic.
+- Workspace-trust seeding builds every member-side path (`~/.claude.json`, its staging files) from the member home resolved in JS, never from `$env:USERPROFILE`/`$HOME` expanded by the member shell, which could disagree with the file channel and write the trust seed into a different home. A member whose home cannot be resolved (remote probe failed) now skips trust seeding with `E-MEMBER-HOME-UNRESOLVED` instead of relying on shell expansion; the next compose retries.
 
 Carried forward: members installed by a build before the member-install marker have no marker, so their first automatic upgrade is refused as `E-FULL-INSTALL-RUNNING` and needs a manual fix; filed as a task.
 

@@ -647,22 +647,24 @@ export class ClaudeProvider implements ProviderAdapter {
     const isWindows = !usePosix;
     const staging = workspaceTrustStagingNames();
 
-    const resolvedHome = memberHomeDir ? memberHomeDir.trim() : null;
-    const homeFile = resolvedHome
-      ? (isWindows
-          ? `${resolvedHome.replace(/\//g, '\\').replace(/\\+$/, '')}\\.claude.json`
-          : `${resolvedHome.replace(/\\/g, '/').replace(/\/+$/, '')}/.claude.json`)
-      : (isWindows
-          ? '$env:USERPROFILE\\.claude.json'
-          : '$HOME/.claude.json');
-
-    const tmpFile = resolvedHome
-      ? (isWindows
-          ? `${resolvedHome.replace(/\//g, '\\').replace(/\\+$/, '')}\\${staging.tmpRel}`
-          : `${resolvedHome.replace(/\\/g, '/').replace(/\/+$/, '')}/${staging.tmpRel}`)
-      : (isWindows
-          ? `$env:USERPROFILE\\${staging.tmpRel}`
-          : `$HOME/${staging.tmpRel}`);
+    // Every member-side path is resolved HERE, from the JS-resolved member home
+    // -- never left to the member shell ($env:USERPROFILE / $HOME). A shell
+    // expansion can resolve a different home than the one the file channel
+    // (getMemberHomeDir) writes to, so the read, the staged write and the move
+    // would address different files. No resolved home -> refuse, loudly.
+    const resolvedHome = memberHomeDir ? memberHomeDir.trim() : '';
+    if (!resolvedHome) {
+      const detail = 'E-MEMBER-HOME-UNRESOLVED: the member home directory could not be resolved, so its ~/.claude.json cannot be located; workspace trust NOT seeded';
+      console.error(`[claude] workspace trust: ${detail}`);
+      return { seeded: false, detail, mcpServersSeeded: [] };
+    }
+    const homeDir = isWindows
+      ? resolvedHome.replace(/\//g, '\\').replace(/\\+$/, '')
+      : resolvedHome.replace(/\\/g, '/').replace(/\/+$/, '');
+    const inHome = (rel: string) => (isWindows ? `${homeDir}\\${rel}` : `${homeDir}/${rel}`);
+    const homeFile = inHome('.claude.json');
+    const tmpFile = inHome(staging.tmpRel);
+    const b64File = inHome(staging.b64Rel);
 
     // apra-fleet-9oo: the project's .mcp.json lives in the MEMBER's work folder, not on
     // the orchestrator host, so it must be read through the same execCommand channel --
@@ -777,7 +779,7 @@ export class ClaudeProvider implements ProviderAdapter {
     //   3. otherwise base64 chunks appended with several small execs, then one
     //      decode+move -- works for both PowerShell and gitbash members.
     // Non-Windows POSIX hosts keep the heredoc: their ARG_MAX is far larger.
-    await deliverWorkspaceTrustFile(contentStr, { isWindows, agentOs, execCommand, transport, homeFile, tmpFile, staging });
+    await deliverWorkspaceTrustFile(contentStr, { isWindows, agentOs, execCommand, transport, homeFile, tmpFile, b64File, staging });
 
     const mcpNote = serversToAdd.length > 0 ? `; enabled MCP servers: ${serversToAdd.join(', ')}` : '';
     // eft.40.1 requires logging distinctly when trust is SEEDED vs already present --
@@ -898,8 +900,8 @@ export async function deliverWorkspaceTrustFile(
     staging: WorkspaceTrustStagingNames;
     homeRel?: string;
     /** Fully resolved member-side path for the chunked-delivery base64 staging
-     *  file. Defaults to the home-relative staging name (shell-expanded). */
-    b64File?: string;
+     *  file, resolved in JS (never a shell home variable). */
+    b64File: string;
   },
 ): Promise<WorkspaceTrustWritePlan> {
   const { isWindows, agentOs, execCommand, transport, homeFile, tmpFile, staging, homeRel } = opts;
@@ -934,7 +936,7 @@ export async function deliverWorkspaceTrustFile(
   }
 
   // 3. Chunked delivery for a Windows host (either shell flavour).
-  const b64File = opts.b64File ?? (isWindows ? `$env:USERPROFILE\\${staging.b64Rel}` : `$HOME/${staging.b64Rel}`);
+  const b64File = opts.b64File;
   const cmds = buildChunkedTrustWriteCommands(contentStr, { posix: !isWindows, homeFile, tmpFile, b64File });
   for (const cmd of cmds) {
     const r = await execCommand(cmd, 10000);

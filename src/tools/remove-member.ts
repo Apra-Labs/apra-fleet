@@ -123,7 +123,7 @@ export async function removeMember(input: RemoveMemberInput): Promise<string> {
   // fleet's own SSH key. Skip for local members -- their credentials belong to
   // the host machine.
   if (agent.agentType === 'remote' && connectThrew) {
-    warnings.push('Could not connect to member — auth credentials may still be present');
+    warnings.push('Could not connect to member -- auth credentials may still be present');
   } else if (agent.agentType === 'remote') {
     try {
       if (reachable) {

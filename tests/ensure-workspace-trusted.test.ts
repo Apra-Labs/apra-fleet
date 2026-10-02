@@ -22,6 +22,12 @@ import { CopilotProvider } from '../src/providers/copilot.js';
 import { NoneProvider } from '../src/providers/none.js';
 import type { SSHExecResult } from '../src/types.js';
 
+/** The JS-resolved member home every caller passes (getMemberHomeDir): trust
+ *  seeding never lets the member shell expand $env:USERPROFILE / $HOME. */
+const TEST_HOME = (agentOs?: string, shell?: string) =>
+  agentOs !== 'windows' ? '/home/member' : shell === 'gitbash' ? '/c/Users/member' : 'C:\\Users\\member';
+const SHELL_HOME_VAR = /\$env:USERPROFILE|\$HOME|(^|[\s"'])~[\\/]/;
+
 /** A fake delivery channel standing in for AgentStrategy.execCommand -- tracks a
  *  single virtual remote file (~/.claude.json) across read/write commands, the same
  *  way the real member-side file would evolve across calls.
@@ -70,7 +76,7 @@ describe('ClaudeProvider.ensureWorkspaceTrusted (apra-fleet-eft.40.1)', () => {
     const provider = new ClaudeProvider();
     const { exec, getFileContent } = makeFakeExec(null);
 
-    const result = await provider.ensureWorkspaceTrusted('/home/member/work/project-a', exec, 'linux');
+    const result = await provider.ensureWorkspaceTrusted('/home/member/work/project-a', exec, 'linux', undefined, undefined, TEST_HOME('linux', undefined));
 
     expect(result.seeded).toBe(true);
     const written = JSON.parse(getFileContent()!);
@@ -89,7 +95,7 @@ describe('ClaudeProvider.ensureWorkspaceTrusted (apra-fleet-eft.40.1)', () => {
     };
     const { exec, getFileContent } = makeFakeExec(JSON.stringify(existing));
 
-    const result = await provider.ensureWorkspaceTrusted('/home/member/work/project-a', exec, 'linux');
+    const result = await provider.ensureWorkspaceTrusted('/home/member/work/project-a', exec, 'linux', undefined, undefined, TEST_HOME('linux', undefined));
 
     expect(result.seeded).toBe(true);
     const written = JSON.parse(getFileContent()!);
@@ -108,7 +114,7 @@ describe('ClaudeProvider.ensureWorkspaceTrusted (apra-fleet-eft.40.1)', () => {
     };
     const { exec, calls, getFileContent } = makeFakeExec(JSON.stringify(existing));
 
-    const result = await provider.ensureWorkspaceTrusted('/home/member/work/project-a', exec, 'linux');
+    const result = await provider.ensureWorkspaceTrusted('/home/member/work/project-a', exec, 'linux', undefined, undefined, TEST_HOME('linux', undefined));
 
     expect(result.seeded).toBe(false);
     // Only the read happens -- no write command issued when trust is already present.
@@ -122,11 +128,11 @@ describe('ClaudeProvider.ensureWorkspaceTrusted (apra-fleet-eft.40.1)', () => {
     const provider = new ClaudeProvider();
     const { exec, getFileContent } = makeFakeExec(null);
 
-    const first = await provider.ensureWorkspaceTrusted('/home/member/work/project-a', exec, 'linux');
+    const first = await provider.ensureWorkspaceTrusted('/home/member/work/project-a', exec, 'linux', undefined, undefined, TEST_HOME('linux', undefined));
     expect(first.seeded).toBe(true);
     const afterFirst = getFileContent();
 
-    const second = await provider.ensureWorkspaceTrusted('/home/member/work/project-a', exec, 'linux');
+    const second = await provider.ensureWorkspaceTrusted('/home/member/work/project-a', exec, 'linux', undefined, undefined, TEST_HOME('linux', undefined));
     expect(second.seeded).toBe(false);
     expect(getFileContent()).toBe(afterFirst);
   });
@@ -135,7 +141,7 @@ describe('ClaudeProvider.ensureWorkspaceTrusted (apra-fleet-eft.40.1)', () => {
     const provider = new ClaudeProvider();
     const { exec, getFileContent } = makeFakeExec(null);
 
-    await provider.ensureWorkspaceTrusted('/home/member/work/project-a/nested', exec, 'linux');
+    await provider.ensureWorkspaceTrusted('/home/member/work/project-a/nested', exec, 'linux', undefined, undefined, TEST_HOME('linux', undefined));
 
     const written = JSON.parse(getFileContent()!);
     expect(Object.keys(written.projects)).toEqual(['/home/member/work/project-a/nested']);
@@ -146,7 +152,7 @@ describe('ClaudeProvider.ensureWorkspaceTrusted (apra-fleet-eft.40.1)', () => {
     const provider = new ClaudeProvider();
     const { exec, getFileContent } = makeFakeExec(null);
 
-    await provider.ensureWorkspaceTrusted('C:\\akhil\\git\\project-a\\', exec, 'windows');
+    await provider.ensureWorkspaceTrusted('C:\\akhil\\git\\project-a\\', exec, 'windows', undefined, undefined, TEST_HOME('windows', undefined));
 
     const written = JSON.parse(getFileContent()!);
     expect(Object.keys(written.projects)).toEqual(['C:/akhil/git/project-a']);
@@ -157,7 +163,7 @@ describe('ClaudeProvider.ensureWorkspaceTrusted (apra-fleet-eft.40.1)', () => {
     const existing = { projects: { '/home/member/work/project-a': { hasTrustDialogAccepted: true } } };
     const { exec } = makeFakeExec(JSON.stringify(existing));
 
-    const result = await provider.ensureWorkspaceTrusted('/home/member/work/project-a/', exec, 'linux');
+    const result = await provider.ensureWorkspaceTrusted('/home/member/work/project-a/', exec, 'linux', undefined, undefined, TEST_HOME('linux', undefined));
     expect(result.seeded).toBe(false);
   });
 
@@ -165,7 +171,7 @@ describe('ClaudeProvider.ensureWorkspaceTrusted (apra-fleet-eft.40.1)', () => {
     const provider = new ClaudeProvider();
     const { exec, calls, getFileContent } = makeFakeExec(null);
 
-    await provider.ensureWorkspaceTrusted('C:/akhil/git/project-a', exec, 'windows');
+    await provider.ensureWorkspaceTrusted('C:/akhil/git/project-a', exec, 'windows', undefined, undefined, TEST_HOME('windows', undefined));
 
     expect(calls.some(c => c.includes('Get-Content'))).toBe(true);
     expect(calls.some(c => c.includes('WriteAllText') && c.includes('Move-Item'))).toBe(true);
@@ -176,7 +182,7 @@ describe('ClaudeProvider.ensureWorkspaceTrusted (apra-fleet-eft.40.1)', () => {
     const provider = new ClaudeProvider();
     const { exec, calls, getFileContent } = makeFakeExec(null);
 
-    const result = await provider.ensureWorkspaceTrusted('C:/akhil/git/project-a', exec, 'windows', 'gitbash');
+    const result = await provider.ensureWorkspaceTrusted('C:/akhil/git/project-a', exec, 'windows', 'gitbash', undefined, TEST_HOME('windows', 'gitbash'));
 
     expect(result.seeded).toBe(true);
     expect(calls.some(c => c.includes('cat "') || c.includes("<< 'FLEET_TRUST_EOF'"))).toBe(true);
@@ -189,8 +195,8 @@ describe('ClaudeProvider.ensureWorkspaceTrusted (apra-fleet-eft.40.1)', () => {
     const powershell5 = makeFakeExec(null);
 
     const provider = new ClaudeProvider();
-    await provider.ensureWorkspaceTrusted('C:/akhil/git/project-a', legacy.exec, 'windows');
-    await provider.ensureWorkspaceTrusted('C:/akhil/git/project-a', powershell5.exec, 'windows', 'powershell5');
+    await provider.ensureWorkspaceTrusted('C:/akhil/git/project-a', legacy.exec, 'windows', undefined, undefined, TEST_HOME('windows', undefined));
+    await provider.ensureWorkspaceTrusted('C:/akhil/git/project-a', powershell5.exec, 'windows', 'powershell5', undefined, TEST_HOME('windows', 'powershell5'));
 
     // The staging file name carries a per-call token (GitHub #499); normalise it
     // before comparing the two members' command sequences.
@@ -204,7 +210,7 @@ describe('ClaudeProvider.ensureWorkspaceTrusted (apra-fleet-eft.40.1)', () => {
     const provider = new ClaudeProvider();
     const { exec, getFileContent } = makeFakeExec('not-json-at-all{{{');
 
-    const result = await provider.ensureWorkspaceTrusted('/home/member/work/project-a', exec, 'linux');
+    const result = await provider.ensureWorkspaceTrusted('/home/member/work/project-a', exec, 'linux', undefined, undefined, TEST_HOME('linux', undefined));
 
     expect(result.seeded).toBe(true);
     expect(JSON.parse(getFileContent()!).projects['/home/member/work/project-a'].hasTrustDialogAccepted).toBe(true);
@@ -217,7 +223,7 @@ describe('ClaudeProvider.ensureWorkspaceTrusted (apra-fleet-eft.40.1)', () => {
     };
     const exec = vi.fn().mockResolvedValue({ code: 0, stdout: '', stderr: '' });
 
-    await provider.ensureWorkspaceTrusted('/home/member/work/project-a', exec, 'linux', undefined, transport as any);
+    await provider.ensureWorkspaceTrusted('/home/member/work/project-a', exec, 'linux', undefined, transport as any, TEST_HOME('linux', undefined));
 
     // Transport writes to temp file first (e.g. .claude.json.fleet-trust-*.tmp), NOT .claude.json directly
     expect(transport.writeHomeFile).toHaveBeenCalledTimes(1);
@@ -239,7 +245,7 @@ describe('ClaudeProvider.ensureWorkspaceTrusted -- enabledMcpjsonServers seeding
     const provider = new ClaudeProvider();
     const { exec, getFileContent } = makeFakeExec(null, mcpJson);
 
-    const result = await provider.ensureWorkspaceTrusted('/home/member/work/project-a', exec, 'linux');
+    const result = await provider.ensureWorkspaceTrusted('/home/member/work/project-a', exec, 'linux', undefined, undefined, TEST_HOME('linux', undefined));
 
     expect(result.seeded).toBe(true);
     expect(result.mcpServersSeeded).toEqual(['serverA', 'serverB']);
@@ -256,7 +262,7 @@ describe('ClaudeProvider.ensureWorkspaceTrusted -- enabledMcpjsonServers seeding
     };
     const { exec, getFileContent } = makeFakeExec(JSON.stringify(existing), mcpJson);
 
-    const result = await provider.ensureWorkspaceTrusted('/home/member/work/project-a', exec, 'linux');
+    const result = await provider.ensureWorkspaceTrusted('/home/member/work/project-a', exec, 'linux', undefined, undefined, TEST_HOME('linux', undefined));
 
     // Trust was already present, so `seeded` (trust-seeded) stays false, but the
     // servers must still be added -- this is exactly the bug apra-fleet-9oo.1 fixed.
@@ -276,7 +282,7 @@ describe('ClaudeProvider.ensureWorkspaceTrusted -- enabledMcpjsonServers seeding
     };
     const { exec, getFileContent } = makeFakeExec(JSON.stringify(existing), mcpJson);
 
-    const result = await provider.ensureWorkspaceTrusted('/home/member/work/project-a', exec, 'linux');
+    const result = await provider.ensureWorkspaceTrusted('/home/member/work/project-a', exec, 'linux', undefined, undefined, TEST_HOME('linux', undefined));
 
     expect(result.mcpServersSeeded).toEqual(['serverA']);
     const written = JSON.parse(getFileContent()!);
@@ -294,7 +300,7 @@ describe('ClaudeProvider.ensureWorkspaceTrusted -- enabledMcpjsonServers seeding
     };
     const { exec, getFileContent } = makeFakeExec(JSON.stringify(existing), mcpJson);
 
-    const result = await provider.ensureWorkspaceTrusted('/home/member/work/project-a', exec, 'linux');
+    const result = await provider.ensureWorkspaceTrusted('/home/member/work/project-a', exec, 'linux', undefined, undefined, TEST_HOME('linux', undefined));
 
     expect(result.mcpServersSeeded).toEqual(['serverA', 'serverB']);
     const written = JSON.parse(getFileContent()!);
@@ -313,10 +319,10 @@ describe('ClaudeProvider.ensureWorkspaceTrusted -- enabledMcpjsonServers seeding
     };
     const { exec, getFileContent } = makeFakeExec(JSON.stringify(existing), mcpJson);
 
-    const first = await provider.ensureWorkspaceTrusted('/home/member/work/project-a', exec, 'linux');
+    const first = await provider.ensureWorkspaceTrusted('/home/member/work/project-a', exec, 'linux', undefined, undefined, TEST_HOME('linux', undefined));
     expect(first.mcpServersSeeded).toEqual(['serverA', 'serverB']);
 
-    const second = await provider.ensureWorkspaceTrusted('/home/member/work/project-a', exec, 'linux');
+    const second = await provider.ensureWorkspaceTrusted('/home/member/work/project-a', exec, 'linux', undefined, undefined, TEST_HOME('linux', undefined));
     expect(second.seeded).toBe(false);
     expect(second.mcpServersSeeded).toEqual([]);
 
@@ -333,7 +339,7 @@ describe('ClaudeProvider.ensureWorkspaceTrusted -- enabledMcpjsonServers seeding
     const provider = new ClaudeProvider();
     const { exec, getFileContent } = makeFakeExec(null, null);
 
-    const result = await provider.ensureWorkspaceTrusted('/home/member/work/project-a', exec, 'linux');
+    const result = await provider.ensureWorkspaceTrusted('/home/member/work/project-a', exec, 'linux', undefined, undefined, TEST_HOME('linux', undefined));
 
     expect(result.seeded).toBe(true);
     expect(result.mcpServersSeeded).toEqual([]);
@@ -346,7 +352,7 @@ describe('ClaudeProvider.ensureWorkspaceTrusted -- enabledMcpjsonServers seeding
     const provider = new ClaudeProvider();
     const { exec, getFileContent } = makeFakeExec(null, 'not-json-at-all{{{');
 
-    const result = await provider.ensureWorkspaceTrusted('/home/member/work/project-a', exec, 'linux');
+    const result = await provider.ensureWorkspaceTrusted('/home/member/work/project-a', exec, 'linux', undefined, undefined, TEST_HOME('linux', undefined));
 
     expect(result.seeded).toBe(true);
     expect(result.mcpServersSeeded).toEqual([]);
@@ -375,4 +381,44 @@ describe('ensureWorkspaceTrusted no-ops for providers without trust requirements
       expect(exec).not.toHaveBeenCalled();
     });
   }
+});
+
+describe('ClaudeProvider.ensureWorkspaceTrusted -- member paths resolved in JS, never by the member shell', () => {
+  const shells: Array<[string, 'linux' | 'windows', string | undefined]> = [
+    ['linux', 'linux', undefined],
+    ['powershell5', 'windows', 'powershell5'],
+    ['pwsh7', 'windows', 'pwsh7'],
+    ['unrecorded windows shell', 'windows', undefined],
+    ['gitbash', 'windows', 'gitbash'],
+  ];
+
+  for (const [label, agentOs, shell] of shells) {
+    it(`${label}: no command carries a shell home variable; the read targets the resolved home`, async () => {
+      const provider = new ClaudeProvider();
+      const home = TEST_HOME(agentOs, shell);
+      // Read + exec write path (no file channel).
+      const plain = makeFakeExec(null);
+      await provider.ensureWorkspaceTrusted('/w/project', plain.exec, agentOs, shell as any, undefined, home);
+      // File channel + move step.
+      const viaChannel = makeFakeExec(null);
+      const transport = { writeHomeFile: vi.fn().mockResolvedValue(undefined) };
+      await provider.ensureWorkspaceTrusted('/w/project', viaChannel.exec, agentOs, shell as any, transport as any, home);
+
+      const all = [...plain.calls, ...viaChannel.calls];
+      expect(all.length).toBeGreaterThanOrEqual(4);
+      for (const cmd of all) expect(cmd).not.toMatch(SHELL_HOME_VAR);
+      expect(plain.calls[0]).toContain(`${home}${agentOs === 'windows' && shell !== 'gitbash' ? '\\' : '/'}.claude.json`);
+    });
+  }
+
+  it('an unresolved member home refuses loudly and runs nothing (no shell-expansion fallback)', async () => {
+    const provider = new ClaudeProvider();
+    for (const home of [null, undefined, '  ']) {
+      const { exec } = makeFakeExec(null);
+      const result = await provider.ensureWorkspaceTrusted('/w/project', exec, 'windows', 'powershell5', undefined, home as any);
+      expect(result.seeded).toBe(false);
+      expect(result.detail).toMatch(/^E-MEMBER-HOME-UNRESOLVED/);
+      expect(exec).not.toHaveBeenCalled();
+    }
+  });
 });
