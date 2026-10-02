@@ -28,6 +28,16 @@ short-circuits before anything downstream runs:
    Optional `phases` is validated too: only `{ "regression": "run" | "skip" }`
    is accepted (anything else -> `400`, field `phases`); `"skip"` forwards
    `--skip-regression` to the child.
+   Optional `roleMap` (object or JSON string) is resolved too. The
+   `roleMap.orchestrator` key is a DEPRECATED alias of `roleMap.backlog`:
+   using it still works, and the response carries a top-level
+   `warnings: string[]` (empty `[]` when no alias was used; one deprecation
+   message per alias use otherwise). The operator's original map (alias
+   intact) is forwarded to the child, so its run log warns too. A `roleMap`
+   holding BOTH keys with different members, any `roleMap` that fails to
+   resolve (bad JSON, bad shape), and a string `'@file'` reference (a
+   CLI-only form; never read from a request body) are all `400`, field
+   `roleMap`.
    Any failure -> `400` naming the field. Note the split has to happen first:
    `ISSUE_ID_PATTERN` has no comma in its charset, so an un-split `"a,b"`
    would be rejected.

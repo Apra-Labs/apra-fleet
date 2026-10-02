@@ -507,6 +507,12 @@ export function createSprintController(deps = {}) {
     // -- POST /api/sprints : validated, goal-forwarding launch ----------------
     async function launch(body = {}) {
         const { issue, issueIds, branch, base, members, skipRegression } = validateLaunchRequest(body);
+        // An '@file' roleMap is a CLI-only convenience: over HTTP it would make
+        // the supervisor read an arbitrary server-side path named by the request
+        // body, and the alias warning could not be computed from it. Reject it.
+        if (typeof body.roleMap === 'string' && body.roleMap.trim().startsWith('@')) {
+            throw new ApiError(400, "[Arg Contract] roleMap '@file' references are not accepted over HTTP; send the role map as a JSON object or JSON string", 'roleMap');
+        }
         const rawRoleMap = body.roleMap === undefined
             ? undefined
             : (typeof body.roleMap === 'string' ? body.roleMap : JSON.stringify(body.roleMap));

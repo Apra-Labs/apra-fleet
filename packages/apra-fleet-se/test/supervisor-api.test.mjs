@@ -521,6 +521,25 @@ describe('api -- apra-fleet-eft.5.2 member-axis overlap check (default beforeLau
         await fsp.rm(dir, { recursive: true, force: true });
     });
 
+    test("a string '@file' roleMap is rejected over HTTP => 400 naming roleMap, no child spawned", async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const captured = [];
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner(captured),
+            listMembers: () => ({ members: [] }), getBacklog: () => ({}),
+        });
+        await assert.rejects(
+            () => controller.launch({
+                issue: 'PROJ-2', members: ['dave'], branch: 'feat/y', base: 'main',
+                roleMap: '@/etc/roles.json',
+            }),
+            (err) => err instanceof ApiError && err.status === 400 && err.field === 'roleMap',
+        );
+        assert.equal(captured.length, 0);
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
     test('a rejected launch leaves the ledger byte-identical (no partial claim)', async () => {
         const dir = await tmpDir();
         const { ledger, history } = await stores(dir);
