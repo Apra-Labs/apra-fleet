@@ -58,7 +58,9 @@ function selfRegisterArgv(): string[] {
   const agent = makeTestAgent({ id: MEMBER_ID, friendlyName: 'bella', workFolder: work, llmProvider: 'claude', os: 'linux' });
   const cmd = buildSelfRegisterCommand(memberBinPath(home, 'linux', 'bash' as never), agent, 'linux', 'bash' as never);
   const tokens = [...cmd.matchAll(/'((?:[^']|'\\'')*)'/g)].map(m => m[1].replace(/'\\''/g, "'"));
-  expect(tokens[0]).toBe(path.join(home, '.apra-fleet', 'bin', 'apra-fleet'));
+  // The command targets a LINUX member, so the binary path is POSIX-joined
+  // (forward slashes) even when this test runs on a Windows host.
+  expect(tokens[0]).toBe(path.posix.join(home, '.apra-fleet', 'bin', 'apra-fleet'));
   expect(tokens[1]).toBe('register-member');
   return tokens.slice(2);
 }
