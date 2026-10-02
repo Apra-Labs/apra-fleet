@@ -171,7 +171,7 @@ export interface StallEntry {
   logPathAuthoritative?: boolean;
   /** Set once the session log has been seen to exist (mtime or content). */
   logFileSeen?: boolean;
-  // Called once when stall is confirmed — clears busy state from outside the hung execCommand.
+  // Called once when stall is confirmed -- clears busy state from outside the hung execCommand.
   // `reason` distinguishes a frozen transcript ('stalled') from a session log
   // that never appeared at an authoritative path ('agent_never_started').
   onStall?: (reason?: StallReason) => void;
@@ -592,7 +592,7 @@ export class StallDetector {
         const ts = new Date(lastTimestamp).getTime();
         const contentAdvancedTo = (!isNaN(ts) && ts > entry.lastActivityAt) ? ts : null;
         if (contentAdvancedTo !== null || mtimeAdvancedTo !== null) {
-          // Activity advanced — update and reset counters, then reflect fresh elapsed in statusline
+          // Activity advanced -- update and reset counters, then reflect fresh elapsed in statusline
           const advancedTo = Math.max(contentAdvancedTo ?? 0, mtimeAdvancedTo ?? 0);
           this.update(memberId, {
             lastActivityAt: advancedTo,
@@ -608,7 +608,7 @@ export class StallDetector {
         }
       }
 
-      // No new activity per EITHER signal — increment idle cycle counter and
+      // No new activity per EITHER signal -- increment idle cycle counter and
       // check stall threshold. Requiring both the content scan and the
       // filesystem's own mtime to agree the transcript is frozen is what
       // makes this threshold check genuinely mtime-corroborated, not just a

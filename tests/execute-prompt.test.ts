@@ -233,8 +233,8 @@ describe('executePrompt', () => {
     mockExecCommand
       .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })                    // writePromptFile
       .mockResolvedValueOnce({ stdout: '', stderr: 'session not found', code: 1 })   // stale session
-      .mockResolvedValueOnce({ stdout: '', stderr: 'HTTP 500 error', code: 1 })       // stale retry → 500
-      .mockResolvedValueOnce({                                                          // server retry → ok
+      .mockResolvedValueOnce({ stdout: '', stderr: 'HTTP 500 error', code: 1 })       // stale retry -> 500
+      .mockResolvedValueOnce({                                                          // server retry -> ok
         stdout: JSON.stringify({ result: 'finally', session_id: 'sess-new' }),
         stderr: '',
         code: 0,
@@ -563,7 +563,7 @@ describe('kill-before-retry (T5)', () => {
     setStoredPid(memberId, 5555);
 
     mockExecCommand
-      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // tryKillPid → kill -9 5555
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // tryKillPid -> kill -9 5555
       .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
       .mockResolvedValueOnce({ stdout: JSON.stringify({ result: 'ok', session_id: 's1' }), stderr: '', code: 0 })
       .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
@@ -791,7 +791,7 @@ describe('busy-state clear on all exit paths (T5)', () => {
 
     mockExecCommand
       .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
-      .mockImplementationOnce(() => mainPromise)                    // main — hangs until killed
+      .mockImplementationOnce(() => mainPromise)                    // main -- hangs until killed
       .mockResolvedValue({ stdout: '', stderr: '', code: 0 });      // tryKillPid + deletePromptFile
 
     const promise = executePrompt(
@@ -1067,13 +1067,13 @@ describe('MCP disconnect cleanup (T10)', () => {
         return Promise.resolve({ stdout: '', stderr: '', code: 0 });
       }
       if (callCount === 3) {
-        // main execCommand — hangs until abort
+        // main execCommand -- hangs until abort
         return new Promise<SSHExecResult>((_resolve, reject) => {
           signal?.addEventListener('abort', () => reject(new Error('Command aborted by client')), { once: true });
         });
       }
       if (callCount === 4) {
-        // tryKillPid from abortHandler — rejects (kill failed)
+        // tryKillPid from abortHandler -- rejects (kill failed)
         return Promise.reject(new Error('kill failed: no such process'));
       }
       // deletePromptFile

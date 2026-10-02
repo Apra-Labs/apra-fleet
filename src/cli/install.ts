@@ -1754,7 +1754,7 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
         }
       }
     } catch (err) {
-      console.warn('    ⚠ .mcp.json cleanup skipped:', err instanceof Error ? err.message : String(err));
+      console.warn('    [!] .mcp.json cleanup skipped:', err instanceof Error ? err.message : String(err));
     }
   } else {
     console.log('    Skipped: not in a git repository. Run apra-fleet install from your project root to set up KB.');
@@ -1773,7 +1773,7 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
     fs.writeFileSync(path.join(ciConfigDir, 'config.json'), JSON.stringify({ provider: 'gitnexus' }, null, 2));
     console.log('    [OK] Code intelligence provider config written');
   } catch (err) {
-    console.warn('    ⚠ Code intelligence config skipped:', err instanceof Error ? err.message : String(err));
+    console.warn('    [!] Code intelligence config skipped:', err instanceof Error ? err.message : String(err));
   }
 
   // Write code intelligence routing instruction to ~/.claude/CLAUDE.md
@@ -1788,7 +1788,7 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
       console.log('    [OK] Code intelligence routing instruction written to ~/.claude/CLAUDE.md');
     }
   } catch (err) {
-    console.warn('    ⚠ ~/.claude/CLAUDE.md update skipped:', err instanceof Error ? err.message : String(err));
+    console.warn('    [!] ~/.claude/CLAUDE.md update skipped:', err instanceof Error ? err.message : String(err));
   }
 
   // OpenCode uses --dangerously-skip-permissions and per-agent permission: frontmatter;

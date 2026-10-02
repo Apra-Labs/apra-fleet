@@ -98,7 +98,7 @@ describe('StallDetector', () => {
       expect(detector.getEntry('member-1')).toBeUndefined();
     });
 
-    it('double-remove is idempotent — no error', () => {
+    it('double-remove is idempotent -- no error', () => {
       detector.add('member-1', makeEntry());
       detector.remove('member-1');
       expect(() => detector.remove('member-1')).not.toThrow();
@@ -151,7 +151,7 @@ describe('StallDetector', () => {
     });
   });
 
-  describe('_poll — activity advancing (no stall)', () => {
+  describe('_poll -- activity advancing (no stall)', () => {
     it('updates lastActivityAt and calls updateAgent when timestamp advances', async () => {
       const baseTime = Date.now();
       const entry = makeEntry({ lastActivityAt: baseTime });
@@ -180,14 +180,14 @@ describe('StallDetector', () => {
     });
   });
 
-  describe('_poll — stale timestamp (stall fires)', () => {
+  describe('_poll -- stale timestamp (stall fires)', () => {
     it('emits stall_detected after STALL_THRESHOLD_MS of no activity', async () => {
       process.env['STALL_THRESHOLD_MS'] = '5000';
       const pastTime = Date.now() - 10_000; // 10s ago
       const entry = makeEntry({ lastActivityAt: pastTime });
       detector.add('member-1', entry);
 
-      // Timestamp is older than lastActivityAt — no new activity
+      // Timestamp is older than lastActivityAt -- no new activity
       const oldTimestamp = new Date(pastTime - 1000).toISOString();
       mockPollLogFile.mockResolvedValue({ lastTimestamp: oldTimestamp });
 
@@ -215,7 +215,7 @@ describe('StallDetector', () => {
     });
   });
 
-  describe('_poll — pending tool_use timeout overrides the idle threshold', () => {
+  describe('_poll -- pending tool_use timeout overrides the idle threshold', () => {
     // apra-fleet: reproduces confirmed stall site d2e30668 (fleet-win-dev1,
     // sprint apra-fleet-ivxi/u1qw/69pp) -- the pending Bash tool_use had
     // declared an explicit 900000ms budget. Idle past the generic
@@ -295,7 +295,7 @@ describe('StallDetector', () => {
     });
   });
 
-  describe('_poll — per-entry thresholdMs (apra-fleet-25yl.1.1)', () => {
+  describe('_poll -- per-entry thresholdMs (apra-fleet-25yl.1.1)', () => {
     it('a non-provisional entry with its own thresholdMs is evaluated against it, ignoring the env fallback', async () => {
       process.env['STALL_THRESHOLD_MS'] = '5000'; // would fire if honored
       const pastTime = Date.now() - 10_000; // 10s idle -- past the 5s env value
@@ -383,7 +383,7 @@ describe('StallDetector', () => {
     });
   });
 
-  describe('_poll — missing log file (no false stall)', () => {
+  describe('_poll -- missing log file (no false stall)', () => {
     it('does not count as stall cycle when file not yet created', async () => {
       process.env['STALL_THRESHOLD_MS'] = '5000';
       const baseTime = Date.now() - 10_000;
@@ -576,7 +576,7 @@ describe('StallDetector', () => {
     });
   });
 
-  describe('_poll — read failure (no false stall)', () => {
+  describe('_poll -- read failure (no false stall)', () => {
     it('increments consecutiveReadFailures on error, does not count as stall cycle', async () => {
       process.env['STALL_THRESHOLD_MS'] = '5000';
       const baseTime = Date.now() - 10_000;
@@ -604,7 +604,7 @@ describe('StallDetector', () => {
     });
   });
 
-  describe('_poll — provisional entries', () => {
+  describe('_poll -- provisional entries', () => {
     it('skips log reading for provisional entries', async () => {
       detector.add('member-1', makeEntry({ provisional: true, logFilePath: null }));
       await detector._poll();
@@ -689,7 +689,7 @@ describe('StallDetector', () => {
    * The same happened to remote AGY/OpenCode members whose log directory could
    * not be resolved at all (unknown member home dir).
    */
-  describe('_poll — no-signal providers are never killed by the stall detector', () => {
+  describe('_poll -- no-signal providers are never killed by the stall detector', () => {
     const stallDetectedCalls = () => mockScopeWarn.mock.calls.filter((c: string[]) => {
       try { return JSON.parse(c[0]).event === 'stall_detected'; } catch { return false; }
     });
@@ -773,7 +773,7 @@ describe('StallDetector', () => {
     });
   });
 
-  describe('_poll — once-per-stall guard (stallReported)', () => {
+  describe('_poll -- once-per-stall guard (stallReported)', () => {
     it('fires stall_detected exactly once per stall period across multiple polls', async () => {
       process.env['STALL_THRESHOLD_MS'] = '5000';
       const pastTime = Date.now() - 10_000;
@@ -786,11 +786,11 @@ describe('StallDetector', () => {
         try { return JSON.parse(c[0]).event === 'stall_detected'; } catch { return false; }
       });
 
-      // First poll — stall fires
+      // First poll -- stall fires
       await detector._poll();
       expect(stallDetectedCalls()).toHaveLength(1);
 
-      // Second poll — stallReported=true, must NOT fire again
+      // Second poll -- stallReported=true, must NOT fire again
       await detector._poll();
       expect(stallDetectedCalls()).toHaveLength(1);
     });
@@ -819,7 +819,7 @@ describe('StallDetector', () => {
   // probeIntervalMs = min(ceiling, max(tick, threshold/5)) let the ceiling
   // win instead, so an over-ceiling tick interval produced a probe interval
   // BELOW the tick interval and the gate fired on every tick.
-  describe('_poll — adaptive probe cadence floor wins over the ceiling (apra-fleet-25yl.4)', () => {
+  describe('_poll -- adaptive probe cadence floor wins over the ceiling (apra-fleet-25yl.4)', () => {
     it('does not probe again until the over-ceiling tick interval has elapsed', async () => {
       const tickIntervalMs = 360_000; // 6 minutes -- above the 300_000ms ceiling
       process.env['STALL_POLL_INTERVAL_MS'] = String(tickIntervalMs);
@@ -851,7 +851,7 @@ describe('StallDetector', () => {
   // probe cadence introduced by apra-fleet-25yl.3.1/.3/.4 -- the ceiling, the
   // false-kill-window guard, and the stall_poll_tick observability fields
   // added by apra-fleet-25yl.3.3. All fake timers; no real waits.
-  describe('_poll — adaptive probe cadence (apra-fleet-25yl.3.2)', () => {
+  describe('_poll -- adaptive probe cadence (apra-fleet-25yl.3.2)', () => {
     const TICK_MS = 30_000; // DEFAULT_POLL_INTERVAL_MS
 
     /** Advances fake time by `deltaMs` and drives one more _poll() tick. */
@@ -1053,7 +1053,7 @@ describe('StallDetector', () => {
 
   // apra-fleet-25yl.6: a malformed STALL_THRESHOLD_MS must not silently wedge
   // the adaptive probe gate for entries with no per-dispatch thresholdMs.
-  describe('_poll — malformed STALL_THRESHOLD_MS env guard (apra-fleet-25yl.6)', () => {
+  describe('_poll -- malformed STALL_THRESHOLD_MS env guard (apra-fleet-25yl.6)', () => {
     it('a non-numeric STALL_THRESHOLD_MS still yields a finite probeIntervalMs, and an entry with no thresholdMs is probed a second time on a later tick', async () => {
       process.env['STALL_THRESHOLD_MS'] = 'not-a-number';
       const start = Date.now();
@@ -1107,7 +1107,7 @@ describe('StallDetector', () => {
   // mtimeMs (undefined), so this block is what actually exercises the new
   // branches -- the rest stays a pure regression guard that behavior is
   // unchanged when no mtime signal is present.
-  describe('_poll — mtime cross-check (apra-fleet-iuc.2)', () => {
+  describe('_poll -- mtime cross-check (apra-fleet-iuc.2)', () => {
     it('counts mtime advancement as activity even when content parsing found nothing (no false stall)', async () => {
       process.env['STALL_THRESHOLD_MS'] = '5000';
       const baseTime = Date.now() - 10_000;
@@ -1142,7 +1142,7 @@ describe('StallDetector', () => {
       const pastTime = Date.now() - 10_000;
       detector.add('member-1', makeEntry({ lastActivityAt: pastTime }));
 
-      // mtime is older than (or equal to) lastActivityAt — no corroborating
+      // mtime is older than (or equal to) lastActivityAt -- no corroborating
       // advancement, but it IS known (not undefined/null): the file exists.
       mockPollLogFile.mockResolvedValue({ lastTimestamp: null, mtimeMs: pastTime - 1000 });
 
@@ -1227,7 +1227,7 @@ describe('StallDetector', () => {
    * (lastTimestamp: null, mtimeMs pinned) so this block isolates the
    * DETECTOR's classification of that result, not the extraction itself.
    */
-  describe('_poll — frozen-tail-null-timestamp (apra-fleet-qe83.2)', () => {
+  describe('_poll -- frozen-tail-null-timestamp (apra-fleet-qe83.2)', () => {
     // apra-fleet-qe83.2.1 pinned the pre-fix behaviour here (no stall_detected,
     // no onStall, no log line at all, past a 30-minute threshold). This is
     // the flip: apra-fleet-qe83.2.2's fix now classifies the frozen,
@@ -1271,7 +1271,7 @@ describe('StallDetector', () => {
    * Asserted by capturing the actual logged call for each path, not by
    * inspecting the source for a call site.
    */
-  describe('_poll — silent-continue / error-return paths are all logged (apra-fleet-qe83.2.2)', () => {
+  describe('_poll -- silent-continue / error-return paths are all logged (apra-fleet-qe83.2.2)', () => {
     it('logs stall_no_signal when there is no content timestamp and no file mtime at all (file not yet created)', async () => {
       const baseTime = Date.now();
       detector.add('member-1', makeEntry({ lastActivityAt: baseTime }));

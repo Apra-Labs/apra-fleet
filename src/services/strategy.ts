@@ -68,7 +68,7 @@ export interface AgentStrategy {
   execCommand(command: string, timeoutMs?: number, maxTotalMs?: number, onPidCaptured?: (pid: number) => void, abortSignal?: AbortSignal): Promise<SSHExecResult>;
   transferFiles(localPaths: string[], destinationPath?: string, abortSignal?: AbortSignal): Promise<TransferResult>;
   receiveFiles(remotePaths: string[], localDestination: string, abortSignal?: AbortSignal): Promise<TransferResult>;
-  /** Delete files relative to the agent's workFolder. Best-effort — errors are silently ignored. */
+  /** Delete files relative to the agent's workFolder. Best-effort -- errors are silently ignored. */
   deleteFiles(relativePaths: string[]): Promise<void>;
   testConnection(): Promise<{ ok: boolean; latencyMs: number; error?: string }>;
   close(): void;
@@ -117,7 +117,7 @@ class RemoteStrategy implements AgentStrategy {
         const files = relativePaths.map(p => `"${escapeDoubleQuoted(p)}"`).join(' ');
         await this.execCommand(`cd "${escapeDoubleQuoted(folder)}" && rm -f ${files}`, 10000);
       }
-    } catch { /* ignore — best-effort cleanup */ }
+    } catch { /* ignore -- best-effort cleanup */ }
   }
 
   async testConnection(): Promise<{ ok: boolean; latencyMs: number; error?: string }> {
@@ -169,7 +169,7 @@ class LocalStrategy implements AgentStrategy {
         fn();
       }
 
-      // Rolling inactivity timer — resets on each stdout/stderr data event
+      // Rolling inactivity timer -- resets on each stdout/stderr data event
       let inactivityTimer: ReturnType<typeof setTimeout>;
       function resetInactivityTimer() {
         clearTimeout(inactivityTimer);
@@ -182,7 +182,7 @@ class LocalStrategy implements AgentStrategy {
       }
       resetInactivityTimer();
 
-      // Hard ceiling — never reset regardless of activity
+      // Hard ceiling -- never reset regardless of activity
       let maxTotalTimer: ReturnType<typeof setTimeout> | undefined;
       if (maxTotalMs !== undefined) {
         maxTotalTimer = setTimeout(() => {
@@ -202,7 +202,7 @@ class LocalStrategy implements AgentStrategy {
       let stdoutSpillPath: string | null = null;
       let stderrSpillPath: string | null = null;
       // StringDecoder buffers a trailing incomplete multi-byte UTF-8 sequence
-      // across chunks instead of substituting U+FFFD for it — a naive
+      // across chunks instead of substituting U+FFFD for it -- a naive
       // per-chunk `.toString()` corrupts any multi-byte character that
       // happens to straddle a stream chunk boundary (apra-fleet-grq).
       const stdoutDecoder = new StringDecoder('utf8');
@@ -264,10 +264,10 @@ class LocalStrategy implements AgentStrategy {
         if (stdoutSpillStream) stdoutSpillStream.end();
         if (stderrSpillStream) stderrSpillStream.end();
         if (stdoutSpillPath) {
-          stdout = `[OUTPUT TRUNCATED — full stdout saved to ${stdoutSpillPath}]\n${stdout}`;
+          stdout = `[OUTPUT TRUNCATED -- full stdout saved to ${stdoutSpillPath}]\n${stdout}`;
         }
         if (stderrSpillPath) {
-          stderr = `[OUTPUT TRUNCATED — full stderr saved to ${stderrSpillPath}]\n${stderr}`;
+          stderr = `[OUTPUT TRUNCATED -- full stderr saved to ${stderrSpillPath}]\n${stderr}`;
         }
         settle(() => resolve({ stdout, stderr, code: code ?? 0 }));
       };

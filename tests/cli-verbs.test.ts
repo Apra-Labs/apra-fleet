@@ -4,7 +4,7 @@ import http from 'node:http';
 import { spawn, execFileSync } from 'node:child_process';
 
 // ---------------------------------------------------------------------------
-// Hoisted mock refs — local modules only (these are safe; factory mocks for
+// Hoisted mock refs -- local modules only (these are safe; factory mocks for
 // built-in node modules leak in fileParallelism:false mode, so we use spies)
 // ---------------------------------------------------------------------------
 const { mockCheckRunning, mockGetSvcMgr, mockSvcMgr } = vi.hoisted(() => {
@@ -40,7 +40,7 @@ vi.mock('../src/services/service-manager/index.js', () => ({
   getServiceManager: mockGetSvcMgr,
 }));
 
-// Auto-mock (no factory) so named imports get stubs — auto-mocks clean up
+// Auto-mock (no factory) so named imports get stubs -- auto-mocks clean up
 // between files in sequential mode; factory mocks do not.
 vi.mock('node:child_process');
 
@@ -63,7 +63,7 @@ const SERVER_INFO = JSON.stringify({ pid: 1234, port: 7523, url: 'http://127.0.0
 const HEALTH_BODY = JSON.stringify({ version: 'v0.1', uptime: 30, sessions: 1 });
 
 // ---------------------------------------------------------------------------
-// Per-test spy helpers (vi.spyOn restores cleanly in afterEach — no leakage)
+// Per-test spy helpers (vi.spyOn restores cleanly in afterEach -- no leakage)
 // ---------------------------------------------------------------------------
 function setupFsSpies() {
   vi.spyOn(fs, 'mkdirSync').mockReturnValue(undefined as any);
