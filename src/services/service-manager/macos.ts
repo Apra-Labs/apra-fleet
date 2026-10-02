@@ -53,6 +53,23 @@ function buildPlist(binaryPath: string, args: string[], logPath: string): string
   ].join('\n');
 }
 
+/**
+ * Whether a launchd label is enabled in its domain, from `launchctl
+ * print-disabled <domain>` output: lines like `"label" => disabled` (newer
+ * macOS) or `"label" => true` (older, where true means disabled). A label not
+ * listed is enabled (launchd's default). If the query fails, assume enabled --
+ * the plist exists, which is the installed-and-enabled common case.
+ */
+export function macosLabelEnabled(label: string, printDisabled: () => string): boolean {
+  let out: string;
+  try { out = printDisabled(); } catch { return true; }
+  const esc = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const m = new RegExp(`"${esc}"\\s*=>\\s*(\\w+)`).exec(out);
+  if (!m) return true;
+  const v = m[1].toLowerCase();
+  return !(v === 'disabled' || v === 'true');
+}
+
 export class MacOSServiceManager implements ServiceManager {
   async register(binaryPath: string, args: string[], logPath: string): Promise<void> {
     fs.mkdirSync(PLIST_DIR, { recursive: true });
@@ -79,16 +96,22 @@ export class MacOSServiceManager implements ServiceManager {
     if (!fs.existsSync(PLIST_PATH)) {
       return { installed: false, running: false };
     }
+    // GitHub #585: report enabled (status showed every installed agent as
+    // "installed (disabled)"), and pipe stderr so launchctl errors never print
+    // above apra-fleet status.
+    const enabled = macosLabelEnabled(MACOS_PLIST_LABEL, () => execFileSync(
+      'launchctl', ['print-disabled', domain()], { encoding: 'utf8', stdio: 'pipe' },
+    ));
     try {
       const out = execFileSync(
         'launchctl', ['print', `${domain()}/${MACOS_PLIST_LABEL}`],
-        { encoding: 'utf8' },
+        { encoding: 'utf8', stdio: 'pipe' },
       );
       const pidMatch = out.match(/\bpid\s*=\s*(\d+)/);
       const pid = pidMatch ? parseInt(pidMatch[1], 10) : undefined;
-      return { installed: true, running: !!pid && pid > 0, pid };
+      return { installed: true, running: !!pid && pid > 0, pid, enabled };
     } catch {
-      return { installed: true, running: false };
+      return { installed: true, running: false, enabled };
     }
   }
 

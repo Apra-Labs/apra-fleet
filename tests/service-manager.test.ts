@@ -62,7 +62,7 @@ describe('WindowsServiceManager', () => {
     it('deletes the scheduled task and removes the wrapper bat', async () => {
       const mgr = new WindowsServiceManager();
       await mgr.unregister();
-      expect(execFileSync).toHaveBeenCalledWith('schtasks', ['/delete', '/tn', 'ApraFleet', '/f']);
+      expect(execFileSync).toHaveBeenCalledWith('schtasks', ['/delete', '/tn', 'ApraFleet', '/f'], expect.objectContaining({ stdio: 'pipe', windowsHide: true }));
       expect(fs.unlinkSync).toHaveBeenCalledWith(expect.stringContaining('apra-fleet-service.bat'));
     });
 
@@ -80,7 +80,7 @@ describe('WindowsServiceManager', () => {
       vi.mocked(spawn).mockReturnValueOnce(mockChild as any);
       const mgr = new WindowsServiceManager();
       await mgr.start();
-      expect(spawn).toHaveBeenCalledWith('schtasks', ['/run', '/tn', 'ApraFleet'], { detached: true, stdio: 'ignore' });
+      expect(spawn).toHaveBeenCalledWith('schtasks', ['/run', '/tn', 'ApraFleet'], { detached: true, stdio: 'ignore', windowsHide: true });
       expect(mockChild.unref).toHaveBeenCalled();
     });
   });
@@ -98,7 +98,7 @@ describe('WindowsServiceManager', () => {
       const mgr = new WindowsServiceManager();
       await mgr.stop();
       capturedFallback!(4242);
-      expect(execFileSync).toHaveBeenCalledWith('taskkill', ['/F', '/PID', '4242']);
+      expect(execFileSync).toHaveBeenCalledWith('taskkill', ['/F', '/PID', '4242'], expect.objectContaining({ stdio: 'pipe', windowsHide: true }));
     });
   });
 
@@ -106,19 +106,48 @@ describe('WindowsServiceManager', () => {
     it('returns installed=true, running=false for Ready status', async () => {
       vi.mocked(execFileSync).mockReturnValue('"ApraFleet","N/A","Ready"\r\n' as any);
       const mgr = new WindowsServiceManager();
-      expect(await mgr.query()).toEqual({ installed: true, running: false });
+      expect(await mgr.query()).toEqual({ installed: true, running: false, enabled: true });
     });
 
     it('returns installed=true, running=true for Running status', async () => {
       vi.mocked(execFileSync).mockReturnValue('"ApraFleet","N/A","Running"\r\n' as any);
       const mgr = new WindowsServiceManager();
-      expect(await mgr.query()).toEqual({ installed: true, running: true });
+      expect(await mgr.query()).toEqual({ installed: true, running: true, enabled: true });
     });
 
     it('returns installed=false when task is not found', async () => {
       vi.mocked(execFileSync).mockImplementation(() => { throw new Error('task not found'); });
       const mgr = new WindowsServiceManager();
       expect(await mgr.query()).toEqual({ installed: false, running: false });
+    });
+
+    // GitHub #585: an installed, enabled task must report enabled (status
+    // showed every installed task as "installed (disabled)").
+    it('reports enabled=true for a task whose XML has <Settings><Enabled>true', async () => {
+      vi.mocked(execFileSync).mockImplementation(((_cmd: string, args: string[]) => args.includes('/xml')
+        ? '<Task><Settings><Enabled>true</Enabled></Settings><Actions><Exec><Command>x</Command></Exec></Actions></Task>'
+        : '"ApraFleet","N/A","Ready"\r\n') as any);
+      expect(await new WindowsServiceManager().query()).toEqual({ installed: true, running: false, enabled: true });
+    });
+
+    it('reports enabled=false for a task whose (UTF-16) XML has <Settings><Enabled>false', async () => {
+      vi.mocked(execFileSync).mockImplementation(((_cmd: string, args: string[]) => args.includes('/xml')
+        ? Buffer.from('﻿<Task><Settings><Enabled>false</Enabled></Settings></Task>', 'utf16le')
+        : '"ApraFleet","N/A","Disabled"\r\n') as any);
+      expect(await new WindowsServiceManager().query()).toEqual({ installed: true, running: false, enabled: false });
+    });
+
+    // GitHub #585: no schtasks/taskkill stderr may reach the console above status.
+    it('every schtasks probe pipes stdio and hides its window', async () => {
+      vi.mocked(execFileSync).mockImplementation(() => { throw new Error('ERROR: The system cannot find the file specified.'); });
+      const mgr = new WindowsServiceManager();
+      await mgr.query();
+      await mgr.isInstalled();
+      await mgr.unregister();
+      expect(vi.mocked(execFileSync).mock.calls.length).toBeGreaterThanOrEqual(3);
+      for (const call of vi.mocked(execFileSync).mock.calls) {
+        expect(call[2]).toMatchObject({ stdio: 'pipe', windowsHide: true });
+      }
     });
   });
 
@@ -364,19 +393,45 @@ describe('MacOSServiceManager', () => {
     it('extracts pid from launchctl print output', async () => {
       vi.mocked(fs.existsSync).mockReturnValue(true);
       vi.mocked(execFileSync).mockReturnValue('com.apra-fleet.server {\n\tpid = 1234\n\tstate = running\n}\n' as any);
-      expect(await new MacOSServiceManager().query()).toEqual({ installed: true, running: true, pid: 1234 });
+      expect(await new MacOSServiceManager().query()).toEqual({ installed: true, running: true, pid: 1234, enabled: true });
     });
 
     it('returns running=false when launchctl print fails (not loaded)', async () => {
       vi.mocked(fs.existsSync).mockReturnValue(true);
       vi.mocked(execFileSync).mockImplementation(() => { throw new Error('Could not find specified service'); });
-      expect(await new MacOSServiceManager().query()).toEqual({ installed: true, running: false });
+      expect(await new MacOSServiceManager().query()).toEqual({ installed: true, running: false, enabled: true });
     });
 
     it('returns running=false when launchctl print shows no pid', async () => {
       vi.mocked(fs.existsSync).mockReturnValue(true);
       vi.mocked(execFileSync).mockReturnValue('com.apra-fleet.server {\n\tstate = stopped\n}\n' as any);
-      expect(await new MacOSServiceManager().query()).toEqual({ installed: true, running: false, pid: undefined });
+      expect(await new MacOSServiceManager().query()).toEqual({ installed: true, running: false, pid: undefined, enabled: true });
+    });
+
+    // GitHub #585: installed + enabled shows (enabled); a disabled label shows disabled.
+    it('reports enabled=false when launchctl print-disabled lists the label as disabled', async () => {
+      vi.mocked(fs.existsSync).mockReturnValue(true);
+      vi.mocked(execFileSync).mockImplementation(((_cmd: string, args: string[]) => args[0] === 'print-disabled'
+        ? 'disabled services = {\n\t"com.apra-fleet.server" => disabled\n\t"com.other" => enabled\n}\n'
+        : 'com.apra-fleet.server {\n\tpid = 7\n}\n') as any);
+      expect(await new MacOSServiceManager().query()).toEqual({ installed: true, running: true, pid: 7, enabled: false });
+    });
+
+    it('reports enabled=true when print-disabled lists the label as enabled (older "=> false" form too)', async () => {
+      vi.mocked(fs.existsSync).mockReturnValue(true);
+      vi.mocked(execFileSync).mockImplementation(((_cmd: string, args: string[]) => args[0] === 'print-disabled'
+        ? 'disabled services = {\n\t"com.apra-fleet.server" => false\n}\n'
+        : 'com.apra-fleet.server {\n\tpid = 7\n}\n') as any);
+      expect(await new MacOSServiceManager().query()).toEqual({ installed: true, running: true, pid: 7, enabled: true });
+    });
+
+    it('launchctl probes pipe stdio', async () => {
+      vi.mocked(fs.existsSync).mockReturnValue(true);
+      vi.mocked(execFileSync).mockImplementation(() => { throw new Error('Could not find specified service'); });
+      await new MacOSServiceManager().query();
+      for (const call of vi.mocked(execFileSync).mock.calls) {
+        expect(call[2]).toMatchObject({ stdio: 'pipe' });
+      }
     });
   });
 
