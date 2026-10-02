@@ -367,6 +367,25 @@ describe('cached beads view: execute_command adapter', () => {
         assert.deepEqual(normalizeFleetCommandResult({ ok: true, output: 'Exit code: 0\nhello' }), { ok: true, output: 'hello' });
         assert.deepEqual(normalizeFleetCommandResult({ ok: false, error: 'nope' }), { ok: false, error: 'nope' });
     });
+
+    test('a reply with no exit code (member not found) fails closed: lastError, no freshness, freshForLaunch rejects', async () => {
+        // The fleet server answers a missing member with plain text -- no
+        // isError, no exit code. Read as success, the pull would "land", the
+        // unpulled clone would be listed, and freshness would advance.
+        const executeFleetCommand = async (req) => ({ ok: true, output: `Member "${req.member}" not found.` });
+        const command = createBeadsViewCommand({ executeFleetCommand, resolveConnection: async () => ({ mode: 'http', url: 'http://127.0.0.1:1/mcp' }) });
+        const ledger = await realLedger();
+        const list = fakeList();
+        const view = createBeadsView({ backlogMember: readyMember(), ledger, command, repoRoot: REPO_ROOT, listAllBeads: list.listAllBeads, logger: QUIET });
+        const snap = await view.refresh();
+        assert.ok(snap.lastError, 'lastError set');
+        assert.match(snap.lastError.message, /not found/);
+        assert.equal(snap.rows, null);
+        assert.equal(list.state.calls, 0);
+        assert.equal(ledger.getScopeFreshness().ageSeconds, 'never-synced');
+        await assert.rejects(view.freshForLaunch({ timeoutMs: 5_000 }), (err) => err instanceof BeadsViewUnavailableError && /not found/.test(err.reason));
+        assert.equal(list.state.calls, 0);
+    });
 });
 
 describe('cached beads view: freshForLaunch', () => {

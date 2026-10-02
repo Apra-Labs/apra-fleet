@@ -102,10 +102,12 @@ export function normalizeFleetCommandResult(res) {
         if (code !== 0) return { ok: false, error: `Exit code ${code}: ${body.trim() || '(no output)'}` };
         return { ok: true, output: body };
     }
-    // A plain string with no exit code is the tool's own transport-level
-    // failure text (`Failed to execute command on "<member>": ...`).
-    if (/^Failed to execute command on /.test(text)) return { ok: false, error: text };
-    return { ok: true, output: text };
+    // No recoverable exit code means the command never ran: every such
+    // execute_command reply is the tool's own refusal/failure text (`Member
+    // "<x>" not found.`, a credential refusal, `Failed to execute command on
+    // "<member>": ...`). Fail CLOSED -- reading it as success would let an
+    // unpulled clone be listed and reported fresh.
+    return { ok: false, error: text.trim() || 'execute_command returned no exit code and no output' };
 }
 
 /**
