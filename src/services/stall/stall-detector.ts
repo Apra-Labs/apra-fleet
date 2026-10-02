@@ -212,6 +212,18 @@ export class StallDetector {
     return this.stallCheckList.get(memberId);
   }
 
+  /**
+   * GitHub #585: a poll awaits a (possibly remote) probe; meanwhile the entry
+   * can be removed (dispatch finished) or replaced (a new dispatch, or an
+   * update() that swapped the object). Its result then describes something
+   * that no longer exists -- applying it warned "Cannot update non-existent
+   * entry" or merged stale state (even stallReported) into a NEW dispatch's
+   * entry. Callers drop the result when this returns true.
+   */
+  private isStale(memberId: string, entry: StallEntry): boolean {
+    return this.stallCheckList.get(memberId) !== entry;
+  }
+
   start(): void {
     if (this.pollInterval !== null) {
       logWarn('stall_detector', 'Already started');
@@ -346,6 +358,7 @@ export class StallDetector {
         if (entry.logFilePath) {
           try {
             const pollResult = await pollLogFile(memberId, entry.logFilePath);
+            if (this.isStale(memberId, entry)) continue;
             provisionalPendingToolTimeoutMs = pollResult.pendingToolTimeoutMs;
             if (pollResult.mtimeMs && pollResult.mtimeMs > entry.lastActivityAt) {
               entry.lastActivityAt = pollResult.mtimeMs;
@@ -361,6 +374,7 @@ export class StallDetector {
           // this entry out of the baseline-timeout kill below.
           try {
             const activity = await pollDirectoryActivity(memberId);
+            if (this.isStale(memberId, entry)) continue;
             signalAvailable = activity?.signalAvailable !== false;
             if (activity?.mtimeMs && activity.mtimeMs > entry.lastActivityAt) {
               entry.lastActivityAt = activity.mtimeMs;
@@ -436,6 +450,7 @@ export class StallDetector {
       }));
 
       const { lastTimestamp, mtimeMs, error, pendingToolTimeoutMs } = await pollLogFile(memberId, entry.logFilePath);
+      if (this.isStale(memberId, entry)) continue;
 
       // apra-fleet: a pending tool_use's own declared timeout, when present,
       // overrides the generic idle threshold for THIS tick's stall check --

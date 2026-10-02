@@ -464,6 +464,73 @@ describe('StallDetector', () => {
     });
   });
 
+  // GitHub #585: the poll awaits a remote probe; the entry can be removed or
+  // replaced meanwhile. The stale result must be dropped -- no WARN, no merge.
+  describe('_poll — entry removed or replaced during an in-flight poll', () => {
+    function deferred<T>() {
+      let resolve!: (v: T) => void;
+      const promise = new Promise<T>((r) => { resolve = r; });
+      return { promise, resolve };
+    }
+
+    it('a remove during the await produces no "Cannot update non-existent entry" WARN', async () => {
+      process.env['STALL_THRESHOLD_MS'] = '5000';
+      const d = deferred<unknown>();
+      mockPollLogFile.mockReturnValue(d.promise);
+      detector.add('member-1', makeEntry({ lastActivityAt: Date.now() - 10_000 }));
+
+      const tick = detector._poll();
+      detector.remove('member-1');
+      d.resolve({ lastTimestamp: new Date(Date.now() - 10_000).toISOString(), mtimeMs: Date.now() - 10_000 });
+      await tick;
+
+      expect(mockLogWarn.mock.calls.filter((c: string[]) => String(c[1]).includes('non-existent'))).toHaveLength(0);
+      expect(detector.getEntry('member-1')).toBeUndefined();
+    });
+
+    it('a re-add for a new dispatch during the await does not inherit the stale result (no stallReported)', async () => {
+      process.env['STALL_THRESHOLD_MS'] = '5000';
+      const d = deferred<unknown>();
+      mockPollLogFile.mockReturnValue(d.promise);
+      const staleOnStall = vi.fn();
+      detector.add('member-1', makeEntry({ lastActivityAt: Date.now() - 10_000, onStall: staleOnStall }));
+
+      const tick = detector._poll();
+      detector.remove('member-1');
+      const freshOnStall = vi.fn();
+      const fresh = makeEntry({ lastActivityAt: Date.now(), onStall: freshOnStall, sessionId: 'session-new' });
+      detector.add('member-1', fresh);
+      // The stale probe reports a frozen transcript -- would have been a stall for the OLD entry.
+      d.resolve({ lastTimestamp: new Date(Date.now() - 10_000).toISOString(), mtimeMs: Date.now() - 10_000 });
+      await tick;
+
+      // (The live Map iterator may legitimately visit the re-added entry later in
+      // the same tick and poll it on its own merits -- identity is not asserted.)
+      const now = detector.getEntry('member-1');
+      expect(now?.sessionId).toBe('session-new');
+      expect(now?.stallReported).toBe(false);
+      expect(staleOnStall).not.toHaveBeenCalled();
+      expect(freshOnStall).not.toHaveBeenCalled();
+      expect(mockLogWarn.mock.calls.filter((c: string[]) => String(c[1]).includes('non-existent'))).toHaveLength(0);
+    });
+
+    it('a remove during an in-flight provisional directory poll is dropped the same way', async () => {
+      process.env['STALL_THRESHOLD_MS'] = '5000';
+      const d = deferred<unknown>();
+      mockPollDirectoryActivity.mockReturnValue(d.promise);
+      const onStall = vi.fn();
+      detector.add('member-1', makeEntry({ provisional: true, logFilePath: null, lastActivityAt: Date.now() - 10_000, onStall }));
+
+      const tick = detector._poll();
+      detector.remove('member-1');
+      d.resolve({ mtimeMs: null, signalAvailable: false });
+      await tick;
+
+      expect(onStall).not.toHaveBeenCalled();
+      expect(mockLogWarn.mock.calls.filter((c: string[]) => String(c[1]).includes('non-existent'))).toHaveLength(0);
+    });
+  });
+
   describe('_poll — read failure (no false stall)', () => {
     it('increments consecutiveReadFailures on error, does not count as stall cycle', async () => {
       process.env['STALL_THRESHOLD_MS'] = '5000';
