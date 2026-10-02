@@ -398,6 +398,11 @@ export const GUARDED_MODULES = [
     // Per-dispatch kb_* and code_* accounting: reads session_stats through the
     // injected memberCall around each dispatch. No command() or agent() site.
     'dispatch-accounting.mjs',
+    // The per-member sprint-init probe: kb_*/code_* calls through the injected
+    // memberCall, member_detail on the orchestrator session, and ONE
+    // member-bound command channel (fleetApi.executeCommand, command strings
+    // built by getSeCommands().wrapForMember) for the remote start-if-down.
+    'member-init-probe.mjs',
     'vcs-providers/azure-devops.mjs',
     'vcs-providers/bitbucket.mjs',
     'vcs-providers/dolt.mjs',
