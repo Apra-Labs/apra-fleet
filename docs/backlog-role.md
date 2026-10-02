@@ -44,6 +44,11 @@ in v0.5.
   is an LLM member, the supervisor refuses to start (exit 1) and names the member and the
   fix (use a separate clone). If the fleet is unreachable the supervisor starts in degraded
   mode, answers launches with 503 and retries in the background until ready.
+- **Unreadable member list is a hidden signal.** `listFleetMembers` returns its usual
+  `{ members: [] }` shape when the fleet list cannot be read, and marks that case with a
+  non-enumerable symbol-keyed property carrying the reason. The pin reads it to answer 503
+  ("cannot verify backlog member"); existing callers never see it. Do not simplify the return
+  value to drop the flag, or the 503 path silently turns into an empty-roster 400.
 - **Overlap-guard caveat.** The member-overlap/reservation check runs on the roleMap before the
   backlog member is injected, so the injected member is never checked. This is safe only
   because the backlog member is `unreservable`; relaxing that requires moving injection ahead
