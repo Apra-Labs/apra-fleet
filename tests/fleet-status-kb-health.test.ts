@@ -321,7 +321,7 @@ describe('fleetStatus() KB + code-intel sections are independent of process.cwd(
     try {
       mkdirSync(join(repo, '.gitnexus'));
       writeFileSync(join(repo, '.gitnexus', 'meta.json'), JSON.stringify({
-        indexedAt: '2026-07-01T00:00:00.000Z', stats: { files: 1, nodes: 2, edges: 3 },
+        indexedAt: '2026-07-01T00:00:00.000Z', lastCommit: 'abc1234', stats: { files: 1, nodes: 2, edges: 3 },
       }));
       mockKbStats.mockResolvedValue(JSON.stringify(flatStats()));
       const { fleetStatus } = await import('../src/tools/check-status.js');

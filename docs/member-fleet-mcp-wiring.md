@@ -46,10 +46,22 @@ apra-fleet, at least as new as the orchestrator, installed in HTTP member mode
 
 - Version probe on the member's own install; on PowerShell the exit code is read
   from `$LASTEXITCODE`.
-- Install source: copy the orchestrator's single-executable binary when the
-  member has the same OS and arch; otherwise download the release asset for the
-  orchestrator's version; otherwise report `unavailable(<reason>)`. Absence is an
-  observation, never a throw: registration still succeeds.
+- Install source: copy the running executable (the orchestrator's
+  single-executable binary) when the member has the same OS and arch;
+  otherwise download the release asset for the orchestrator's version;
+  otherwise report `unavailable(<reason>)`. Absence is an observation, never a
+  throw: registration still succeeds. There is no GitHub Actions-artifact
+  fallback and no node-based fallback. An untagged (dev) build, whose version
+  looks like `v0.4.4_abc123`, downloads the asset of the tag its version core
+  maps to (`v0.4.4`).
+- The release asset download is bounded by a timeout and verified against the
+  release's published `SHA256SUMS` before use; a timeout, a checksum mismatch
+  or an unavailable checksum is a typed, recoverable `fleetMcp` reason and
+  nothing unverified is installed.
+- A member install (`install --member`) with `--force` stops only a server a
+  previous member install left behind; a running full-install server it did not
+  start is refused with `E-FULL-INSTALL-RUNNING` unless `--force-stop-full-install`
+  is also given.
 - After install the member registers itself, and a MEMBER-session is opened to
   verify the tools are really reachable.
 - Every member-bound command is built in JavaScript for the member's OS/shell
