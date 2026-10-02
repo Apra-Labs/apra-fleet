@@ -194,7 +194,7 @@ carve-out, not a change to the general failure-handling path.
 ### Batched bead claiming is a dormant contract, not yet live behavior
 
 `claimBeadsBatched()` exists to replace a per-id claim loop with one `bd
-update <ids...> --claim --json` call issued by the orchestrator member before
+update <ids...> --claim --json` call issued by the backlog member before
 a streak is dispatched, but it only activates when a streak carries an
 `assignee` -- which no current caller sets (`validated.assignee` is always
 unset), so today it is dead code exercised only by its own unit tests, not a
@@ -239,7 +239,7 @@ are malformed.
 
 Runbook presence is checked via `probeFileExists()`, which shells out `node
 -e "console.log(require('fs').existsSync('<file>') ? 'found' : 'not
-found')"` on the orchestrator member with `failSoft: true` -- a probe failure
+found')"` on the backlog member with `failSoft: true` -- a probe failure
 (transient error, member-side quirk) is treated as "not found" (skip the
 phase) and logged as a warning, never fatal.
 
@@ -462,7 +462,7 @@ start rather than silently degrading:
 
 **Branch-ensure everywhere** (both modes) -- before the first doer round, the
 sprint branch is `git fetch`+`checkout -B`'d on every member in the union of
-the orchestrator/doer/reviewer pools (not just the orchestrator). At the top
+the backlog/doer/reviewer pools (not just the backlog member). At the top
 of every subsequent cycle, a non-destructive `git checkout <branch>`
 (`failSoft: true`) re-ensures each member is still on the sprint branch --
 deliberately not a `checkout -B ... origin/<base>`, which would discard any
