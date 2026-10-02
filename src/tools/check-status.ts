@@ -474,7 +474,7 @@ export interface KbHealth {
 // Bible drift needs a repo checkout (.fleet/kb-canonical.json). A scope does
 // not record one and the server's cwd is not a repo, so drift is reported
 // only for the scope of an explicitly supplied repo_path.
-export const KB_BIBLE_NO_REPO_REASON = 'bible drift needs a repo checkout; pass repo_path to fleet_status (or call kb_stats with repo_path)';
+export const KB_BIBLE_NO_REPO_REASON = 'bible drift needs a repo checkout; pass repo_path to fleet_status';
 export const KB_BIBLE_GLOBAL_REASON = 'bible drift is not tracked for the global KB';
 // Expected "not computed" states; rendering them on every compact line would
 // be noise. The HTTP-provider reason is NOT here: it is a real signal.
@@ -493,7 +493,7 @@ async function readScopeStats(loc: KbScopeLocation): Promise<Omit<KbScopeStats, 
 
 async function bibleForRepo(repoPath: string): Promise<KbHealthBible | null> {
   try {
-    const parsed = JSON.parse(await kbStats({ repo_path: repoPath })) as { bible?: KbHealthBible };
+    const parsed = JSON.parse(await kbStats({}, { folder: repoPath })) as { bible?: KbHealthBible };
     return parsed.bible ?? null;
   } catch {
     return null;

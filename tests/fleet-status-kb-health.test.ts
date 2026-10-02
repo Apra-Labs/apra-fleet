@@ -17,7 +17,7 @@ import { SqliteProvider } from '../src/services/knowledge/sqlite-provider.js';
 // drift of an explicitly supplied repo_path's scope.
 const mockKbStats = vi.fn();
 vi.mock('../src/tools/kb-stats.js', () => ({
-  kbStats: (input: unknown) => mockKbStats(input),
+  kbStats: (input: unknown, anchor?: unknown) => mockKbStats(input, anchor),
 }));
 
 const kbRoot = { dir: '', throwOnList: false };
@@ -237,7 +237,7 @@ describe('kbHealthSummary (multi-scope, degraded-safe)', () => {
 
       const { kbHealthSummary, kbHealthCompactLines } = await import('../src/tools/check-status.js');
       const health = (await kbHealthSummary({ repoPath: repo }))!;
-      expect(mockKbStats).toHaveBeenCalledWith({ repo_path: repo });
+      expect(mockKbStats).toHaveBeenCalledWith({}, { folder: repo });
       expect(health.scopes.find(s => s.scope === 'default')!.bible).toEqual({ present: true, entries: 1, drift: 4 });
       expect(health.scopes.find(s => s.scope === 'githubcom-acme-widgets')!.bible).toMatchObject({ computable: false });
       expect(kbHealthCompactLines(health)).toContain('kb[default]: 1 entries (confirmed:1 stale:0 flagged:0) | hit-rate:0% | promote-ratio:0% | bible: 4 promotions behind');
