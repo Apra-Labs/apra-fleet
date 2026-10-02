@@ -70,7 +70,7 @@ export const updateMemberSchema = z.object({
     .optional()
     .describe('Free-form labels for this member (max 10 tags, each max 64 chars). Empty array clears all tags; non-empty array replaces existing tags.'),
   code_intel_provider: z.enum(['codebase-memory', 'gitnexus', 'none']).optional().describe('Change the code-intelligence provider for this member.'),
-  unreservable: z.boolean().optional().describe('Mark this member as never exclusively reservable, so it can be shared by more than one sprint at once (e.g. a member filling fleet-sprint\'s shared "orchestrator" role). reserve/release/force_release become no-op successes and overlap guards skip it.'),
+  unreservable: z.boolean().optional().describe('Mark this member as never exclusively reservable, so it can be shared by more than one sprint at once (e.g. a member filling fleet-sprint\'s shared "backlog" role). reserve/release/force_release become no-op successes and overlap guards skip it.'),
   shell: z.enum(['gitbash', 'pwsh7', 'powershell5']).optional().describe('Override the probed Windows shell for this member (gitbash, pwsh7, or powershell5). Windows members only -- ignored for non-windows members.'),
   vcs_provider: z.enum(['github', 'bitbucket', 'azure-devops', 'none']).optional().describe('Directly set (override) this member\'s VCS provider -- an explicit operator value, never auto-detected. Use this to correct a wrong auto-detect from register_member, or to set the provider for a member with no credentials to provision (so provision_vcs_auth is not required just to record it). Pass "none" to clear it, declaring the member deliberately has no VCS provider.'),
 });
