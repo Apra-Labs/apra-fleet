@@ -72,6 +72,11 @@ function setupFsSpies() {
   vi.spyOn(fs, 'unlinkSync').mockReturnValue(undefined);
   vi.spyOn(fs, 'existsSync').mockReturnValue(true); // lets findProjectRoot() succeed
   vi.spyOn(fs, 'readFileSync').mockReturnValue(SERVER_INFO as any);
+  // runStop -> postShutdown -> getOrCreateKey() reads the fleet key through the
+  // readFileSync spy above (SERVER_INFO is not a 64-char key) and then WROTE a
+  // fresh key to ~/.apra-fleet/fleet.key with the real writeFileSync --
+  // rewriting the developer's real signing key and invalidating member JWTs.
+  vi.spyOn(fs, 'writeFileSync').mockReturnValue(undefined);
 }
 
 function setupHttpSpies() {
