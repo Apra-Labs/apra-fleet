@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "a993f497d35892ff89039edb94be940fd1fb0b5e",
     "branch": "main",
-    "entry_count": 256
+    "entry_count": 261
   },
   "entries": [
     {
@@ -1712,6 +1712,22 @@
       "updated_at": "2026-09-25T22:26:41.145Z"
     },
     {
+      "id": "4ffa865b-cb8c-42ea-8c11-a0a88a22d09e",
+      "type": "learning",
+      "title": "Viewer SSE /events sends no headers until the first broadcast, so awaiting the http.get response hangs",
+      "summary": "createDashboardViewer's /events route calls writeHead without writing a body, so Node does not flush headers until the first broadcast. A test that awaits the http.get response callback before emitting an event deadlocks.",
+      "symbols": [
+        "createDashboardViewer",
+        "broadcast"
+      ],
+      "source_files": [
+        "packages/apra-fleet-workflow/src/viewer/index.mjs",
+        "packages/apra-fleet-workflow/test/viewer-run-summary.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-01T21:41:49.145Z"
+    },
+    {
       "id": "501d7380-c67e-4f67-bb89-3fa2d3031e33",
       "type": "runbook",
       "title": "Execute the generated win32 sweep probe for real by swapping only its Get-CimInstance source",
@@ -2403,6 +2419,28 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:13.250Z"
+    },
+    {
+      "id": "78f14fd2-717c-4201-9897-fb638379f393",
+      "type": "knowledge",
+      "title": "Supervisor sprint-row progress is pulled from each child's GET /state?summary=1, never recomputed",
+      "summary": "dashboard.mjs buildSprintViews() no longer computes progress from the supervisor's own beads clone; it pulls each child's published summary concurrently, classifies it (ok/unreachable/no-summary/unavailable), and caches the last good summary in memory per sprintId.",
+      "symbols": [
+        "buildSprintViews",
+        "fetchChildSummary",
+        "classifyChildSummary",
+        "renderSprintProgressHtml",
+        "createChildPortResolver"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/src/supervisor/dashboard.mjs",
+        "packages/apra-fleet-se/src/supervisor/child-port.mjs",
+        "packages/apra-fleet-se/src/supervisor/proxy.mjs",
+        "packages/apra-fleet-se/bin/serve.mjs",
+        "packages/apra-fleet-se/test/supervisor-dashboard-pulled-summary.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-01T22:08:20.217Z"
     },
     {
       "id": "7cc58351-c7f9-4f14-99b0-cdd04cf83d7c",
@@ -3124,6 +3162,24 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:38.263Z"
+    },
+    {
+      "id": "a747de82-1e06-429f-81e1-0e0ec2c69aef",
+      "type": "learning",
+      "title": "Adding any duplicated top-level string to viewer state can turn plain /state fields into $ref markers",
+      "summary": "buildListStatePayload() dedupes every string of 24+ chars that occurs 2+ times anywhere in the payload, top-level fields included. Copying runId or timestamps into a new top-level object turns state.runId into {$ref:n} for consumers that read /state without resolveStringRefs.",
+      "symbols": [
+        "buildListStatePayload",
+        "dedupeStrings",
+        "createDashboardViewer"
+      ],
+      "source_files": [
+        "packages/apra-fleet-workflow/src/viewer/lean-state.mjs",
+        "packages/apra-fleet-workflow/src/viewer/index.mjs",
+        "packages/apra-fleet-se/src/supervisor/api.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-01T21:41:49.142Z"
     },
     {
       "id": "a8b20071-c096-4ad4-8ce5-7defb5db33be",
@@ -4284,6 +4340,23 @@
       "updated_at": "2026-09-25T22:26:38.335Z"
     },
     {
+      "id": "e7d3e8e5-0564-4f16-8318-f5e81c436302",
+      "type": "knowledge",
+      "title": "Viewer summary core fields refresh via broadcast(), so a new lifecycle handler must broadcast or call refreshSummary",
+      "summary": "state.summary core fields in createDashboardViewer are only kept current because refreshSummary() runs inside broadcast() plus the SIGINT/SIGTERM paths; a handler that mutates state without broadcasting leaves GET /state?summary=1 stale.",
+      "symbols": [
+        "createDashboardViewer",
+        "refreshSummaryCore",
+        "applyExtensionSummary"
+      ],
+      "source_files": [
+        "packages/apra-fleet-workflow/src/viewer/index.mjs",
+        "packages/apra-fleet-workflow/src/viewer/run-summary.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-01T22:08:20.219Z"
+    },
+    {
       "id": "ea3bc985-569c-4eed-846d-1785c17be33f",
       "type": "knowledge",
       "title": "The child-id collision probe reads bd's error payload out of CommandError.details.text, and depends on structuredContent.exitCode",
@@ -4585,6 +4658,23 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:39.384Z"
+    },
+    {
+      "id": "ff9ae373-4bc6-469c-8271-cbd101c9bb35",
+      "type": "learning",
+      "title": "Supervisor summary pulls must be started before any per-row await in buildSprintViews",
+      "summary": "dashboard.mjs buildSprintViews only stays within one summary timeout because every row's pullSprintSummary promise is created up front, before the bulk bd fetch and per-row awaits; moving the pull inside the per-row body makes N hung children cost up to N timeouts.",
+      "symbols": [
+        "buildSprintViews",
+        "pullSprintSummary",
+        "fetchChildSummary"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/src/supervisor/dashboard.mjs",
+        "packages/apra-fleet-se/test/supervisor-dashboard.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-01T23:08:16.929Z"
     }
   ]
 }

@@ -135,8 +135,11 @@ describe('renderProgressBarHtml', () => {
     });
 
     test('is embedded into the browser-side beadsExtension.js script', () => {
-        assert.ok(beadsExtension.js.includes('computeSprintProgress'));
         assert.ok(beadsExtension.js.includes('renderProgressBarHtml'));
+        assert.ok(beadsExtension.js.includes('renderBeadsSummaryProgressHtml'));
+        // The live view renders the server-side summary; it no longer
+        // recomputes progress in the browser.
+        assert.ok(!beadsExtension.js.includes('computeSprintProgress'));
     });
 });
 
@@ -1217,6 +1220,7 @@ describe('beadsExtension.js: embedded browser-side collapse/expand click handlin
         const { doc, listeners, containers } = createMockDocument();
         new Function('document', beadsExtension.js)(doc);
 
+        listeners['workflow:summary:beads'][0]({ detail: { closed: 1, required: 2, fraction: 0.5, computed_at: null } });
         listeners['workflow:state:beads'][0]({
             detail: {
                 sprintTasks: [
@@ -1250,6 +1254,7 @@ describe('beadsExtension.js: embedded browser-side collapse/expand click handlin
         const { doc, listeners, containers } = createMockDocument();
         new Function('document', beadsExtension.js)(doc);
 
+        listeners['workflow:summary:beads'][0]({ detail: { closed: 1, required: 2, fraction: 0.5, computed_at: null } });
         listeners['workflow:state:beads'][0]({
             detail: {
                 sprintTasks: [
@@ -1276,6 +1281,78 @@ describe('beadsExtension.js: embedded browser-side collapse/expand click handlin
             beadsContainer.innerHTML.includes('All tasks (incl. backlog): 2 open / 3 total'),
             `expected the labeled beads-tree count text in: ${beadsContainer.innerHTML}`,
         );
+    });
+});
+
+describe('beadsExtension: server-side summarize() and summary-driven live view progress', () => {
+    function createMockDocument() {
+        const listeners = {};
+        const containers = {};
+        const doc = {
+            addEventListener(type, handler) {
+                (listeners[type] = listeners[type] || []).push(handler);
+            },
+            getElementById(id) {
+                if (!containers[id]) containers[id] = { innerHTML: '' };
+                return containers[id];
+            }
+        };
+        return { doc, listeners, containers };
+    }
+
+    const fixture = {
+        sprintTasks: [
+            { id: 'T', title: 'target', status: 'open', priority: 1 },
+            { id: 'T.1', parent: 'T', title: 'a', status: 'closed', priority: 1 },
+            { id: 'T.2', parent: 'T', title: 'b', status: 'open', priority: 2 },
+            { id: 'T.3', parent: 'T', title: 'below goal', status: 'open', priority: 4 },
+        ],
+        goalMax: 2,
+        decomposedParentIds: ['T'],
+        fetchedAt: '2026-01-02T03:04:05.000Z',
+    };
+
+    test('summarize() returns exactly the computeSprintProgress fields plus computed_at = fetchedAt', () => {
+        const expected = computeSprintProgress(fixture.sprintTasks, { goalMax: fixture.goalMax, decomposedParentIds: fixture.decomposedParentIds });
+        const out = beadsExtension.summarize(fixture);
+        assert.deepStrictEqual(out, { ...expected, computed_at: fixture.fetchedAt });
+        assert.deepStrictEqual(Object.keys(out).sort(), ['closed', 'computed_at', 'fraction', 'required']);
+        // Sanity on the fixture: the below-goal bead and decomposed parent are excluded.
+        assert.strictEqual(out.required, 2);
+        assert.strictEqual(out.closed, 1);
+    });
+
+    test('summarize() tolerates a missing payload and missing fetchedAt (computed_at null)', () => {
+        assert.deepStrictEqual(beadsExtension.summarize({ sprintTasks: [] }), { closed: 0, required: 0, fraction: 0, computed_at: null });
+        assert.doesNotThrow(() => beadsExtension.summarize(undefined));
+        assert.strictEqual(beadsExtension.summarize(undefined).computed_at, null);
+    });
+
+    test('the live view progress text renders the published summary, not a recompute of sprintTasks', () => {
+        const { doc, listeners, containers } = createMockDocument();
+        new Function('document', beadsExtension.js)(doc);
+        // Deliberately inconsistent with the fixture: a naive recompute
+        // would give Required: 1/2.
+        listeners['workflow:summary:beads'][0]({ detail: { publishedAt: 'x', closed: 7, required: 9, fraction: 7 / 9, computed_at: fixture.fetchedAt } });
+        listeners['workflow:state:beads'][0]({ detail: fixture });
+        const header = containers['panel-header-beads-extra'].innerHTML;
+        assert.ok(header.includes('Required: 7/9'), `expected the summary values in: ${header}`);
+        assert.ok(!header.includes('Required: 1/2'), 'must not render a browser-side recompute');
+    });
+
+    test('with no beads summary, the progress area shows a placeholder, never 0/N', () => {
+        const { doc, listeners, containers } = createMockDocument();
+        new Function('document', beadsExtension.js)(doc);
+        listeners['workflow:state:beads'][0]({ detail: fixture });
+        let header = containers['panel-header-beads-extra'].innerHTML;
+        assert.ok(header.includes('no summary yet'), `expected a placeholder in: ${header}`);
+        assert.ok(!/Required: \d+\/\d+/.test(header), `placeholder must not show M/N: ${header}`);
+        // An explicit null summary (core's "no summary yet" detail) also
+        // yields the placeholder.
+        listeners['workflow:summary:beads'][0]({ detail: null });
+        listeners['workflow:state:beads'][0]({ detail: fixture });
+        header = containers['panel-header-beads-extra'].innerHTML;
+        assert.ok(header.includes('no summary yet'));
     });
 });
 
