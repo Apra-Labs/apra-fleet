@@ -1,19 +1,14 @@
 // =============================================================================
 // ENGINE CI GATE.
 //
-// WHY THIS EXISTS. A doer dispatch cannot trigger the target repo's CI: its
-// credential is refused workflow_dispatch (GitHub answers HTTP 403 "Resource
-// not accessible by integration"). A bead whose acceptance criteria say "CI is
-// green on every OS" was therefore impossible for a doer to satisfy and looped
-// between doer and reviewer. CI verification is an ENGINE step instead: the
-// orchestrator -- which holds the sprint's VCS credential -- triggers (or
-// locates) the configured workflow run on the sprint branch head, awaits it
-// with a bounded timeout, records run id/url/head sha/per-job conclusion, and
-// hands that result to the reviewer dispatch as an engine-verified fact.
+// STATUS: DORMANT. Nothing in the sprint runtime calls this module: CI never
+// blocks or reaches doer/reviewer loops, no sprint arg configures a gate, and
+// no prompt carries a CI result. The module (and its unit tests) are kept as a
+// building block for a future design where CI is owned by a dedicated phase.
 //
-// CONFIG. The optional `ci_gate` sprint arg ({ workflow, timeout_s }, validated
-// by sprint-args.mjs validateCiGate()). Absent: the gate makes no CI calls at
-// all and logs exactly one 'CI gate not configured' line per sprint.
+// WHAT IT DOES. Triggers (or locates) a workflow run on a branch head with the
+// caller's VCS credential, awaits it with a bounded timeout and records run
+// id/url/head sha/per-job conclusion.
 //
 // NEVER A SILENT SKIP. Every way the gate can fail to produce a real verdict
 // -- the trigger refused for a missing permission, a provider with no CI
@@ -55,7 +50,7 @@ export const CI_GATE_OUTCOME = Object.freeze({
 
 /** The single log line an unconfigured gate emits (once per sprint). */
 export const CI_GATE_NOT_CONFIGURED_LOG =
-    '[CI Gate] CI gate not configured (no ci_gate sprint arg) -- the engine will not trigger or check CI this sprint.';
+    '[CI Gate] CI gate not configured -- the engine does not trigger or check CI.';
 
 const DEFAULT_POLL_INTERVAL_MS = 30_000;
 const LOG_PREFIX = '[CI Gate]';
@@ -249,40 +244,6 @@ export async function runCiGate({
 function formatJobs(jobs) {
     if (!Array.isArray(jobs) || jobs.length === 0) return '(no job detail)';
     return jobs.map((j) => `${j.name}=${j.conclusion}`).join(', ');
-}
-
-/**
- * Reviewer-prompt lines for a CI gate record. Empty for no record (gate not
- * configured), so an unconfigured sprint's reviewer prompt is unchanged.
- * Non-pass wording never says CI is green.
- * @param {object|null|undefined} result
- * @returns {string[]}
- */
-export function buildCiGatePromptLines(result) {
-    if (!result || !result.outcome) return [];
-    const head = `CI GATE (engine-verified -- the orchestrator ran this CI check itself): `
-        + `workflow '${result.workflow}' on ${result.branch}${result.headSha ? `@${result.headSha}` : ''}`;
-    const run = result.runId ? `run id ${result.runId}${result.runUrl ? ` (${result.runUrl})` : ''}` : 'no run';
-    const jobs = Array.isArray(result.jobs) && result.jobs.length > 0
-        ? `Per-job result: ${result.jobs.map((j) => `${j.name}: ${j.conclusion}`).join('; ')}.`
-        : 'Per-job result: (no job detail).';
-    const rule = 'CI status is verified by the engine, not by the doer: never ask the doer to trigger, re-run or prove CI, '
-        + 'and never reopen a bead only because its doer did not run CI -- doer dispatches cannot trigger CI.';
-    if (result.outcome === CI_GATE_OUTCOME.PASS) {
-        return [`${head}: ${run} -- result PASS (CI green). ${jobs}`, rule];
-    }
-    if (result.outcome === CI_GATE_OUTCOME.FAIL) {
-        return [
-            `${head}: ${run} -- result FAIL. ${jobs}`,
-            'The failing jobs are real evidence against this head: judge whether the reviewed change caused them, and if so reopen the responsible bead naming the failing job(s).',
-            rule,
-        ];
-    }
-    return [
-        `${head}: ${run} -- result ${result.outcome}: ${result.reason || '(no reason recorded)'}`,
-        'CI is NOT verified for this head: do not treat any CI criterion as met. Record that in notes; it is an engine/operator issue, not doer work.',
-        rule,
-    ];
 }
 
 /**

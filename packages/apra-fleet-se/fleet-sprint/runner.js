@@ -96,7 +96,6 @@ import {
     createLlmAuthSelfHealCallback,
 } from './vcs-auth.mjs';
 import { validateIssueId, validateBranchName, validateArgs } from './sprint-args.mjs';
-import { createCiGate, createCiGateContextResolver } from './ci-gate.mjs';
 import { verifyBeadsIdentity, createBeadsIdentityProber } from './beads-identity-check.mjs';
 import { createKbMaintainerSelector, createMemberDetailResolver, ROLE_KB_MAINTAINER } from './kb-maintainer.mjs';
 import { sweepTokenMemories } from './beads-memory-hygiene.mjs';
@@ -1536,29 +1535,6 @@ async function runSprintCycle(context) {
     // Land 6.2, update callers, THEN make this throw.
     const orchestratorMember = getMemberForRole(ROLE_ORCHESTRATOR);
 
-    // Engine CI gate (ci-gate.mjs): the ORCHESTRATOR triggers/awaits the
-    // configured CI workflow on the sprint branch head before each reviewer
-    // dispatch and hands the result to the reviewer, so CI-green is an
-    // engine-verified fact rather than a doer criterion. Unconfigured
-    // (no ci_gate arg): exactly one 'CI gate not configured' log line here and
-    // no CI calls at all. `context.resolveCiGateContext` is the test seam
-    // (stubbed provider transport); production reads the origin remote on the
-    // git-capable harvester member and runs the requests through the
-    // orchestrator's push+pr credential via vcs_credential_exec.
-    const ciGate = createCiGate({
-        ciGate: validated.ciGate,
-        branch: validated.branch,
-        log,
-        resolveContext: context.resolveCiGateContext ?? createCiGateContextResolver({
-            fleetApi: sprintState.fleetApi,
-            command,
-            orchestratorMember,
-            gitMember: getMemberForRole('harvester'),
-            log,
-        }),
-        gateOptions: context.ciGateOptions ?? {},
-    });
-
     // Beads identity precondition: prove which .beads every member's bd
     // resolves to BEFORE the first mutating bd command (the earliest bd
     // dispatch is the beads-health gate further down). Probes the
@@ -1967,11 +1943,6 @@ async function runSprintCycle(context) {
         //     on it rather than a nudge -- a verdict that contradicts itself
         //     cannot be repaired in place. Once the budget is spent the caller
         //     gets a ReviewerContractViolationError, never a fabricated verdict.
-        // Engine CI gate: run (or reuse, for an unchanged head) BEFORE the
-        // reviewer is dispatched, so the reviewer judges an engine-verified CI
-        // result instead of asking the doer to trigger CI. null when the gate
-        // is not configured -- the prompt is then unchanged.
-        const ciGateResult = await ciGate.check({ label: `Review C${cycle}` });
         const reviewOutcome = await dispatchRole(dispatchCtx, 'reviewer', {
             prompt: buildReviewerPrompt({
                 beadIds,
@@ -1981,7 +1952,6 @@ async function runSprintCycle(context) {
                 goal: validated.goal,
                 kbCandidates,
                 kbKnowledge: reviewerKnowledge,
-                ciGate: ciGateResult,
             }),
             // Restate the review scope: a resumed dispatch replaces the
             // delivered prompt artifact, so the scope must be repeated inline.
