@@ -49,17 +49,55 @@ describe('signal exit paths', () => {
         // The record is already on disk when the graceful shutdown starts.
         expect(shutdownRecords()).toHaveLength(1);
       });
-      lifecycle.installShutdownHandlers(onSignal, proc, 'win32');
+      const exit = vi.fn();
+      const uninstall = lifecycle.installShutdownHandlers(onSignal, proc, 'win32', { exit });
+      try {
+        (proc as unknown as EventEmitter).emit(sig);
+        expect(exit).not.toHaveBeenCalled();
+        (proc as unknown as EventEmitter).emit(sig); // a second signal exits at once
 
-      (proc as unknown as EventEmitter).emit(sig);
-      (proc as unknown as EventEmitter).emit(sig); // a repeat signal adds no second line
-
-      expect(onSignal).toHaveBeenCalledWith(sig);
-      const recs = shutdownRecords();
-      expect(recs).toHaveLength(1);
-      expect(recs[0]).toMatchObject({ tag: 'shutdown', reason: sig, pid: process.pid });
+        expect(onSignal).toHaveBeenCalledWith(sig);
+        expect(onSignal).toHaveBeenCalledTimes(1);
+        expect(exit).toHaveBeenCalledWith(1);
+        const recs = shutdownRecords();
+        expect(recs).toHaveLength(1); // still exactly one shutdown record
+        expect(recs[0]).toMatchObject({ tag: 'shutdown', reason: sig, pid: process.pid });
+      } finally {
+        uninstall();
+      }
     });
   }
+
+  // GitHub #585 review: a hung graceful shutdown must not keep the process up.
+  it('a graceful shutdown that hangs is force-exited after the deadline', async () => {
+    const proc = new EventEmitter() as unknown as NodeJS.Process;
+    const exit = vi.fn();
+    const uninstall = lifecycle.installShutdownHandlers(() => { /* never finishes */ }, proc, 'win32', { exit, forceExitMs: 200 });
+    try {
+      (proc as unknown as EventEmitter).emit('SIGHUP');
+      expect(exit).not.toHaveBeenCalled();
+      await new Promise((r) => setTimeout(r, 400));
+      expect(exit).toHaveBeenCalledWith(1);
+      const file = path.join(dataDir, 'logs', `fleet-${process.pid}.log`);
+      expect(fs.readFileSync(file, 'utf8')).toContain('"tag":"shutdown_forced"');
+    } finally {
+      uninstall();
+    }
+  });
+
+  it('the force-exit deadline timer is unref\'d (never keeps the process alive by itself)', () => {
+    const proc = new EventEmitter() as unknown as NodeJS.Process;
+    const exit = vi.fn();
+    const spy = vi.spyOn(global, 'setTimeout');
+    const uninstall = lifecycle.installShutdownHandlers(() => {}, proc, 'win32', { exit, forceExitMs: 60_000 });
+    try {
+      (proc as unknown as EventEmitter).emit('SIGINT');
+      const timer = spy.mock.results.find((r) => r.type === 'return')?.value as NodeJS.Timeout;
+      expect(timer.hasRef()).toBe(false);
+    } finally {
+      uninstall();
+    }
+  });
 
   it('SIGBREAK is only wired on Windows', () => {
     expect(lifecycle.shutdownSignals('win32')).toContain('SIGBREAK');

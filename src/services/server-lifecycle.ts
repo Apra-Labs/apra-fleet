@@ -53,15 +53,44 @@ type ProcLike = Pick<NodeJS.Process, 'on' | 'off'>;
  * Wire every exit path to recordShutdown. `onSignal` runs the server's own
  * graceful shutdown (which ends in process.exit). Returns an uninstaller.
  */
+export interface ShutdownHandlerOptions {
+  /** Hard deadline for the graceful shutdown after the first signal (unref'd). */
+  forceExitMs?: number;
+  /** Injectable for tests. */
+  exit?: (code: number) => void;
+}
+
+export const SHUTDOWN_FORCE_EXIT_MS = 10_000;
+
 export function installShutdownHandlers(
   onSignal: (reason: ShutdownReason) => void,
   proc: ProcLike = process,
   platform: NodeJS.Platform = process.platform,
+  options: ShutdownHandlerOptions = {},
 ): () => void {
   const removers: Array<() => void> = [];
+  const exit = options.exit ?? ((code: number) => process.exit(code));
+  const forceExitMs = options.forceExitMs ?? SHUTDOWN_FORCE_EXIT_MS;
+  let shuttingDown = false;
+  let forceTimer: ReturnType<typeof setTimeout> | undefined;
+  const forceExit = (why: string) => {
+    appendLogRecord('warn', { tag: 'shutdown_forced', reason: why, pid: process.pid });
+    exit(1);
+  };
+  removers.push(() => { if (forceTimer) clearTimeout(forceTimer); });
   for (const sig of shutdownSignals(platform)) {
     const handler = () => {
+      // A graceful shutdown can hang (e.g. handle.close() waiting on open
+      // connections) where SIGHUP/SIGBREAK used to just end the process: a
+      // second signal exits at once, and an unref'd deadline bounds the wait.
+      if (shuttingDown) {
+        forceExit(`second ${sig}`);
+        return;
+      }
+      shuttingDown = true;
       recordShutdown(sig as ShutdownReason);
+      forceTimer = setTimeout(() => forceExit(`graceful shutdown exceeded ${forceExitMs}ms`), forceExitMs);
+      forceTimer.unref();
       onSignal(sig as ShutdownReason);
     };
     proc.on(sig, handler);
