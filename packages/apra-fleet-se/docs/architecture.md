@@ -86,12 +86,12 @@ not a member of that enum -- this exists specifically to prevent a
 casing/typo mismatch from silently collapsing the doer/reviewer pool back to
 a single member.
 
-`orchestrator` is a deliberately **non-vendored, application-level
-pseudo-role** (the constant `ROLE_ORCHESTRATOR = 'orchestrator'`): it names
+`backlog` is a deliberately **non-vendored, application-level
+pseudo-role** (`orchestrator` is its deprecated alias, removed in v0.5): it names
 which physical member the orchestrating process itself (this script, issuing
 every `bd`/`git` command directly) runs as. It has no
 `packages/apra-fleet-se/apra-pm/agents/*.md` definition, no schema, and is never passed to
-`agent()`. `getMemberForRole(ROLE_ORCHESTRATOR)` resolves the orchestrator
+`agent()`. `getMemberForRole()` for this role resolves the backlog
 member the same way any other role resolves via `roleMap`/fallback.
 
 ## The cycle loop
@@ -427,7 +427,7 @@ Two distinct topology modes are supported, selected explicitly (never
 inferred) when the sprint starts:
 
 - **`legacy` mode** -- no cross-member sync layer. Every orchestrator `bd`
-  command runs against the orchestrator member's beads DB; a doer's own
+  command runs against the backlog member's beads DB; a doer's own
   `bd close` runs against its own member's DB; the sprint git branch is only
   coherent if every member operates on the same working state. This mode
   only coheres for **single-member** sprints (one member does everything) or
@@ -1089,7 +1089,7 @@ claim and release together.
 
 **Member-axis overlap** (`src/supervisor/api.mjs`, `defaultMemberOverlapGuard`):
 `POST /api/sprints` computes the full member union (`--members` plus every
-`roleMap` value, including the orchestrator role) and rejects the whole launch
+`roleMap` value, including the backlog role) and rejects the whole launch
 with a 409 if that union intersects any other active reservation's members,
 naming the conflicting sprint id and the specific overlapping member names.
 The check runs strictly before `ledger.claim()`, so a rejected launch never

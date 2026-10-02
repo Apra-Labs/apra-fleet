@@ -62,7 +62,7 @@ full GC (another flatten or `bd gc`) to actually free that space -- wasteful
 given a full GC can take minutes on multi-gigabyte stores.
 
 Run from any single clone with dolt push access to the shared remote
-(the orchestrator member's beads-only folder is a good choice -- see
+(the backlog member's beads-only folder is a good choice -- see
 `supervisor-setup-guide.md` Step 3).
 
 1. **Dry-run the prune first:**
