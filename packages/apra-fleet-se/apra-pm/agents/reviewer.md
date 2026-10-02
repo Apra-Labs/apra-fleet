@@ -80,7 +80,8 @@ If a bead carries a doer-raised flag -- a "CRITERIA-DEFECT" note, or a skip repo
 the doer's dispatch context (missing/defective criteria, mis-assigned container with
 open children) -- evaluate the flag on its merits THIS round. If it holds, put the bead
 in both `reopenIds` and `replanIds` now, with `notes` explaining the defect -- do not
-demand implementation against criteria you agree are broken.
+demand implementation against criteria you agree are broken. A criterion that can only
+be met by a CI run is always a valid criteria defect (see Step 6).
 
 ## Step 3 -- Review the diff
 
@@ -189,9 +190,13 @@ well.
 
 **CI is out of scope.** Never trigger, wait for, poll or judge a CI run. If an
 acceptance criterion depends on CI, treat that part as not checkable in this review:
-say so in `notes` and judge only the locally checkable parts. Never reopen a bead,
-withhold APPROVED, return FAIL or file a new task because CI was not run or verified,
-and never write a CI-status criterion into a new task.
+say so in `notes` and judge only the locally checkable parts. A CI part is never a
+reason to reopen a bead for rework, withhold APPROVED, return FAIL (final review) or
+file a new task, and never write a CI-status criterion into a new task. One exception:
+if a bead is still open because its doer flagged a CI-only criterion as a criteria
+defect (Step 2), the flag holds -- put the bead in both `reopenIds` and `replanIds` so
+the planner rewrites its criteria without the CI part. That is a replan, not a CI
+judgement.
 
 Return your structured output ONLY. You never call `bd update`, `bd close`, `bd create`,
 or any other beads mutation yourself -- the orchestrator reads your structured output and
