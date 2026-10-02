@@ -335,6 +335,9 @@ Calls `fleet_status` -- status of all fleet members.
 | Field | Type | Notes |
 |---|---|---|
 | `format` | `"compact" \| "json"?` | Output format. |
+| `repo_path` | `string?` | Absolute path to a repo checkout. Adds that repo's code-intelligence index health and its KB scope's bible drift. |
+
+KB health (`kbHealth` in JSON) covers every project KB scope on the server plus the global KB, one entry per scope -- it never depends on the server's working directory.
 
 #### `memberDetail(options)`
 
@@ -435,7 +438,7 @@ and means "new value for this field". Identifies the target member via
 | `member_id` | `string?` | UUID of the member. |
 | `member_name` | `string?` | Friendly name of the member. |
 | `friendly_name` | `string?` | New friendly name. |
-| `work_folder` | `string?` | New working directory. For non-local (remote/relay) members, must be a fully-qualified/absolute path (e.g. `/home/bella/repo` or `C:\Users\bella\repo`) -- tilde and relative paths are rejected. |
+| `work_folder` | `string?` | New working directory. For non-local (remote/relay) members, must be a fully-qualified/absolute path (e.g. `/home/bella/repo` or `C:\Users\bella\repo`) -- tilde and relative paths are rejected. A real change removes what `compose_permissions` wrote in the OLD folder (per-folder `apra-fleet` MCP entry, permission keys, `.git/info/exclude` lines) and re-runs `compose_permissions`, so the new folder gets its `?member=<uuid>` entry at once. |
 | `host` | `string?` | New host (remote members only). |
 | `port` | `number?` | New SSH port (remote members only). |
 | `username` | `string?` | New SSH username (remote members only). |
@@ -465,7 +468,7 @@ and means "new value for this field". Identifies the target member via
 
 #### `removeMember(options: RemoveMemberOptions)`
 
-Calls `remove_member` -- removes a member from the fleet.
+Calls `remove_member` -- removes a member from the fleet. Before the member is deleted (and before the fleet's own SSH key is removed from the member), it removes what `compose_permissions` wrote for the member (per-folder `apra-fleet` MCP entry, permission keys, `.git/info/exclude` lines); anything it could not remove, or could not reach, is reported as a warning in the result.
 
 | Field | Type | Notes |
 |---|---|---|
@@ -500,6 +503,18 @@ token. `pat_expires_at` must be parseable by `Date.parse` -- the server
 rejects an unparseable value rather than storing it, because a `NaN` expiry
 silences the near-expiry warning and makes the credential-cleanup timer
 fall back to its default.
+
+#### kb_* scope keys
+
+Every `kb_*` call acts on the calling session's own KB (a member session's
+registered work folder; a FULL session's fleet server working folder). The
+pre-redesign scope keys `repo_path`, `repo` and `repo_remote_url` are removed:
+the server refuses a call carrying any of them with `E-SCOPE-KEY-REMOVED`,
+and `kbExport` / `kbBibleCommit` refuse them client-side with the same code
+before sending (`assertNoRemovedKbScopeKeys`, `KB_REMOVED_SCOPE_KEYS` are
+exported). For direct `callTool` users: `kb_list` accepts `confidence` as a
+list or as one tier string, and `kb_context` defaults to
+`["CONFIRMED","INFERRED"]`.
 
 #### `kbExport(options?: KbExportOptions)`
 
@@ -549,7 +564,16 @@ member allowlist; opencode gets none. The retired `apra-fleet-member`
 url+bearer entry is pruned wherever compose finds it, `deepwiki` is never
 touched, a tracked `.mcp.json` is never written, and work-folder files compose
 writes are listed in the clone's `.git/info/exclude` so it stays clean. A
-failure to write the entry is returned as a `[FAIL]` result.
+failure to write the entry is returned as a `[FAIL]` result (the permission
+files that did land are still recorded in the `project_folder` ledger; the
+ledger never records the MCP entry). A member config compose must not edit
+-- tracked by git, not strict JSON, or unreadable -- is left untouched and the
+otherwise-successful result carries a `Member MCP config NOT edited: <file> is
+<why> (fleetMcp unavailable: <reason>)` line; a later successful compose
+clears such a recorded fleetMcp status (`fleetMcp: cleared the stale
+unavailable status (<reason>)` line). Existing `deny` rules are merged by
+union -- a user-authored deny rule is never dropped; only fleet-derived
+`apra-fleet` deny rules compose no longer derives are retired.
 
 #### `setupSshKey(options: SetupSshKeyOptions)`
 

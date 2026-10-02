@@ -1,6 +1,6 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createKbWorkClient, vetKbWork, kbPromotionBlock, KB_MAX_PROMOTION_CANDIDATES } from '../fleet-sprint/kb.mjs';
+import { createKbWorkClient, vetKbWork, kbPromotionBlock, KB_MAX_PROMOTION_CANDIDATES, KB_MIN_PROMOTE_REASON } from '../fleet-sprint/kb.mjs';
 import { reviewerVerdict, finalVerdict } from '../fleet-sprint/contracts.mjs';
 import { fakeMaintainerSelector } from './helpers/kb-maintainer-fakes.mjs';
 
@@ -245,5 +245,10 @@ describe('the output schemas carry kb_discards', () => {
         assert.ok(d, 'finalVerdict must declare kb_discards');
         assert.deepEqual(d.items.required, ['id', 'reason']);
         assert.ok(!finalVerdict.required.includes('kb_discards'), 'optional');
+        // Described, and bounded by the engine's own evidence bar.
+        assert.ok(typeof d.description === 'string' && d.description.length > 0, 'kb_discards needs a description');
+        assert.ok(d.items.properties.reason.description, 'kb_discards reason needs a description');
+        assert.equal(d.items.properties.reason.minLength, KB_MIN_PROMOTE_REASON);
+        assert.equal(d.items.properties.id.minLength, 1);
     });
 });

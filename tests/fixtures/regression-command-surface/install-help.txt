@@ -33,3 +33,8 @@ Options:
                           schemas), and /workflows/{fleet-sprint,hello-world} (built-in workflows).
                           fleet-se requires Node.js 22.16+ and npm.
   --force                 Stop a running apra-fleet server before installing (SEA mode only).
+                          With --member, only a server a previous member install left behind
+                          is stopped; anything else is refused (E-FULL-INSTALL-RUNNING).
+  --force-stop-full-install
+                          With --member --force: also stop a running server that was not started
+                          by a member install (e.g. a full install on a shared machine).

@@ -114,3 +114,16 @@ listed in its "KB bible" section, per repository with a count.
 
 `kb_bible_commit` is declared in `memory-contract/v1` and the
 `apra-fleet-client` package.
+
+## Bible git safety invariants
+
+The maintainer's bible sync (pull, commit, push, reset) is an automated writer
+on a repository that other work shares, so it is conservative by construction:
+
+- Every bible git step first checks that the checkout is on the sprint branch;
+  on any other branch it refuses rather than touching history.
+- A bible push is blocked when it would also publish commits other than the
+  bible commit (the "unpushed-only-bible" check), so a maintainer can never
+  push someone else's unreviewed work as a side effect.
+- `kb_context` defaults to CONFIRMED + INFERRED; for a member that is the
+  committed bible merged with the member's own captures.

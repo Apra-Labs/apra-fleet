@@ -2,6 +2,46 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- KB redesign stage 4: review-finding hardening and delivery notes
+
+Sprint goal: close the remaining KB redesign review findings and finish the delivery notes. Verdict PASS: build, `npm test` and `contract:check` (26 tools) passed on the sprint member only; CI on all three OSes was not part of the verdict, and the windows-latest run then failed in `tests/compose-member-config-windows.test.ts` (fixed below).
+
+```
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $20.8406.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.0459 across 2 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 25 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+```
+
+- `kb_*` tools refuse `repo_path`/`repo`/`repo_remote_url` (server and client) with `E-SCOPE-KEY-REMOVED`; FULL-session self-resolution errors name cause and fix; `kb_context` defaults to CONFIRMED + INFERRED.
+- Bible git operations check the sprint branch first and never push other unpushed commits.
+- `update_member` re-composes when the work folder moves; `remove_member` cleans the member side first and reports leftovers.
+- Release downloads are time-bounded and SHA256SUMS-verified; a running full-install server is refused with `E-FULL-INSTALL-RUNNING` unless `--force-stop-full-install`.
+- Compose preserves user deny rules, writes the ledger before MCP sync, and reports a reason per member; per-shell path quoting for member file checks.
+- `fleet_status` enumerates every KB scope and derives bible drift from `repo_path`.
+- Sprint-engine prompts: CI gate removed from reviewer, plan-reviewer criterion added, schema text made generic.
+- Workspace-trust seeding builds every member-side path (`~/.claude.json`, its staging files) from the member home resolved in JS, never from `$env:USERPROFILE`/`$HOME` expanded by the member shell, which could disagree with the file channel and write the trust seed into a different home. A member whose home cannot be resolved (remote probe failed) now skips trust seeding with `E-MEMBER-HOME-UNRESOLVED` instead of relying on shell expansion; the next compose retries.
+
+Carried forward: members installed by a build before the member-install marker have no marker, so their first automatic upgrade is refused as `E-FULL-INSTALL-RUNNING` and needs a manual fix; filed as a task.
+
+## [Unreleased] -- KB redesign: member kb/code access
+
+Delivery notes for the whole KB redesign (stages 1 to 2b and the upgrade-safety follow-ups). Each entry ends with an `Upgrade:` line saying what an existing install or caller must check.
+
+- Each member gets a per-folder `apra-fleet` member MCP entry (`?member=<uuid>`), written by `compose_permissions` and installed on remote members by the `fleet_install` step of `register_member`/`update_member` (`install --member`). Upgrade: re-run `update_member` (or `compose_permissions`) for each member; `grep -n "apra-fleet" .claude.json` in the member's folder entry shows `?member=`.
+- Remote members get apra-fleet installed automatically at `register_member`/`update_member`; the source is a copy of the running executable (same OS and arch) or the release asset (checksum-verified, bounded timeout), with no Actions-artifact or node fallback, and an untagged build downloads the tag asset of its version core. Upgrade: expect the first `update_member` of a remote member to install; call the `member_detail` tool with `refresh: true` and read its `fleetMcp` for a typed reason when it cannot.
+- Member installs and `--force`: `install --member --force` stops only a server a previous member install left behind; a running full-install server is refused with `E-FULL-INSTALL-RUNNING` unless `--force-stop-full-install` is given. Upgrade: scripts that ran `install --member --force` on a shared machine must add `--force-stop-full-install` or stop the server themselves (grep scripts for `--member --force`).
+- The member tool scope is reduced: member sessions see only `kb_*`, `code_*`, `version`, `report_status` and `session_stats`; an unregistered `?member=` gets 403. Upgrade: a member prompt that called any other tool must be routed through the orchestrator (grep role prompts for `execute_command`).
+- `kb_*` tools take no `repo_path`, `repo` or `repo_remote_url`: a call carrying one is refused with `E-SCOPE-KEY-REMOVED` naming the key. A member resolves to its registered work folder; a FULL session resolves to the server working folder (not the client's directory), and an unusable folder fails with `E-SELF-NO-WORKFOLDER`/`E-SELF-NOT-A-REPO`/`E-SELF-NO-REMOTE` naming cause and fix. `fleet_status` keeps its optional `repo_path`, which drives that repo's code-index health and the bible drift of its KB scope (read from `<repo_path>/.fleet/kb-canonical.json`, independent of the server working folder). Upgrade: drop the three keys from every `kb_*` call (`grep -rn "repo_path" ` over callers); start the server in the intended repo for FULL sessions.
+- `kb_query`, `kb_list` and `kb_session_prime` read CONFIRMED by default (undisputed); `kb_context` defaults to CONFIRMED + INFERRED; `kb_list` still accepts the legacy single-tier string for `confidence` as well as the array. Upgrade: callers that need INFERRED/UNVERIFIED pass `confidence` explicitly (grep callers for `kb_query` without `confidence`).
+- One `kb_maintainer` per repository owns bible commits. Captures are dropped (not queued for a later maintainer) when no `kb_maintainer` resolves. Upgrade: ensure one member can be selected as `kb_maintainer` per repo, or captures made in that window are lost (grep sprint logs for the drop message).
+- A member reads from its checkout's bible; when the checkout has no bible the member read is empty rather than an error. Upgrade: commit the bible (`kb_bible_commit`) to the base branch before members start (`test -f` the bible path in the checkout).
+- `code_*` tools are unavailable (typed `E-CODE-INDEX-NOT-READY`) while an analyze runs on the repo. Upgrade: wait for `npx gitnexus analyze` to finish and retry (grep for `E-CODE-INDEX-NOT-READY`).
+- `code_reindex` and `code_status` return `provider-not-supported` unless the member's provider is gitnexus; codebase-memory is the default provider without config. Upgrade: if you rely on them, set the gitnexus provider per member with `update_member` `code_intel_provider`, or fleet-wide in `~/.apra-fleet/data/code-intelligence/config.json` (the per-member setting wins; grep that file for `gitnexus`).
+- `fleet_status` reports KB and code-intelligence health independent of the server's working folder: it enumerates every KB scope on disk with per-scope counts. Upgrade: none; tooling that parsed the old flat `kbHealth` should read `kbHealth.scopes[]` (grep consumers for `kbHealth`).
+
 ## [Unreleased] -- KB redesign stage 2b follow-up: provider gate and config-file safety
 
 Sprint goal: close review findings on stage 2b -- `code_reindex`/`code_status` honour the member's provider, compose never clobbers a member's config files, and CI portability fixes. The sprint verdict was FAIL: the product fixes are in and the local suite is green, but CI was not verified on all three OSes (the `llms-full.txt` freshness check failed first) and two goal items remain open.
@@ -86,7 +126,7 @@ The defects carried forward from this redesign (maintainer placement, reset data
 
 ## [Unreleased] -- fleet-sprint: remote memberCall no longer dirties the member's git checkout
 
-Sprint goal: a remote `memberCall` left its args file untracked in the member's git checkout. The engine now git-excludes `.apra-call/` before the first send to a member and deletes the args file after every call (success, error, unparseable output, timeout, failed send); failures of either step are logged and never hide the call's result. New per-shell `ensureGitExcluded` and `removeFile` command primitives (POSIX and PowerShell) validate paths strictly. Tests run the commands for real, against a temp git repo and real bash and PowerShell.
+Sprint goal: a remote `memberCall` left its args file untracked in the member's git checkout. The engine now git-excludes `.apra-call/` before the first send to a member and deletes the args file after every call (success, error, unparseable output, timeout, failed send); failures of either step are logged and never hide the call's result. New per-shell `ensureGitExcluded` and `removeFile` command primitives (POSIX and PowerShell) validate paths strictly. Tests run the commands for real against a temp git repo and real bash; the PowerShell variants are asserted on the generated command text, and real PowerShell runs only in the win32-gated tests.
 
 ```
 Budget ceiling: not set (no --budget flag) -- unlimited for this run.
@@ -106,8 +146,8 @@ Sprint goal: make the knowledge bank scope itself from the calling session inste
 - `kb_*` tools no longer accept `repo_path`, `repo` or `repo_remote_url` (schemas and memory contract updated). A member session resolves to its registered work folder, any other session to the server's folder; unusable folders fail with typed `E-SELF-NO-WORKFOLDER`, `E-SELF-NOT-A-REPO` or `E-SELF-NO-REMOTE` errors.
 - Member sessions get a reduced tool list derived from one shared allowlist (`kb_*`, `code_*`, `version`, `report_status`, `session_stats`); other tools are omitted and an unregistered `?member=` gets 403. The agy member lists derive from the same allowlist.
 - New `apra-fleet call` CLI verb (args from a file, typed errors), an engine `memberCall` helper (local in-process, remote via `send_files` + `execute_command`) and client `listTools`/`connectFleetMember` with HTTP `DELETE` session release. Engine KB calls now run as the member.
-- `kb_query`, `kb_list` and `kb_context` default to CONFIRMED, undisputed entries; `flagged_only` is exempt and internal callers pass confidence explicitly.
-- `register_member --id` is idempotent and returns `E-FOLDER-TAKEN` on folder conflicts; `install --member` installs only the server and its auto-start and fails with `E-MEMBER-AUTOSTART` when none runs.
+- `kb_query`, `kb_list` and `kb_session_prime` default to CONFIRMED, undisputed entries (`kb_context` was later changed, see the KB redesign member kb/code access entry); `flagged_only` is exempt and internal callers pass confidence explicitly.
+- `register-member --id` (a CLI option, not a `register_member` tool input) is idempotent and returns `E-FOLDER-TAKEN` on folder conflicts; `install --member` installs only the server and its auto-start and fails with `E-MEMBER-AUTOSTART` when none runs.
 - Role prompt Step 0 uses KB/code tools when present, otherwise the injected KNOWLEDGE BANK block, and never blocks on tool failure; a contract test guards the tool names.
 
 Carried forward: remote-member KB calls fail (non-fatal) until `apra-fleet` is installed and registered on the member; the remote branch of anchor resolution is untested; member sessions can reach write/admin KB tools by design; remote KB captures are not batched.

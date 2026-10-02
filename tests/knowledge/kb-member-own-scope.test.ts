@@ -147,6 +147,18 @@ describe('explicit INFERRED/UNVERIFIED reads return only the caller\'s own entri
     expect(await hits(asB)).toEqual([bCtx]);
   });
 
+  it('kb_context DEFAULT (no confidence) in a MEMBER session includes the member\'s own INFERRED cache entry, never another member\'s', async () => {
+    // kb_context's default tier set is CONFIRMED + INFERRED; in a MEMBER
+    // session the INFERRED half is answered from the per-repo DB own-tagged
+    // and merged with the checkout bible's CONFIRMED entries.
+    const hits = async (as: typeof asA) => {
+      const out = JSON.parse(await as(() => kbContext({ files: ['src/gizmo.ts'] })));
+      return [...out.fresh, ...out.stale].map((r: { entry_id: string }) => r.entry_id);
+    };
+    expect(await hits(asA)).toEqual([aCtx]);
+    expect(await hits(asB)).toEqual([bCtx]);
+  });
+
   it('kb_session_prime (no bible cold-seed of other entries)', async () => {
     const a = JSON.parse(await asA(() => kbSessionPrime({ hint_modules: ['gizmo'], confidence: ['INFERRED'] })));
     expect(ids(a.top_entries)).toEqual([aKnowledge]);

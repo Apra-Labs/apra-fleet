@@ -19,7 +19,7 @@
     },
     "kb_self_resolution": {
       "confirmed_by": "src/services/knowledge/kb-self.ts (resolveSelfAnchor, validateSelfFolder), src/tools/kb-*.ts",
-      "finding": "No kb_* tool takes a repo/scope argument. Every kb_* call operates on the CALLING SESSION's own KB: a member session resolves the member's registered work folder, any other session the fleet server's working folder. A local folder must exist, be a git repository and have an origin remote, else the call throws E-SELF-NO-WORKFOLDER, E-SELF-NOT-A-REPO or E-SELF-NO-REMOTE BEFORE getKbProviders is reached. A remote member's folder lives on another host, so its KB identity is the member's single known origin remote and the folder is carried verbatim (N-ANCHOR-VERBATIM-MISSING for the read tools); the WRITING tools kb_export, kb_bible_commit and kb_import then refuse with E-REPO-PATH-INVALID because they need the folder on this host. Recorded per affected tool below as 'anchor_validation' ('self-validated' | 'self-validated+local-folder-required').",
+      "finding": "No kb_* tool takes a repo/scope argument. Every kb_* call operates on the CALLING SESSION's own KB: a member session resolves the member's registered work folder, any other session the fleet server's working folder. A local folder must exist, be a git repository and have an origin remote, else the call throws E-SELF-NO-WORKFOLDER, E-SELF-NOT-A-REPO or E-SELF-NO-REMOTE BEFORE getKbProviders is reached. A remote member's folder lives on another host, so its KB identity is the member's single known origin remote and the folder is carried verbatim (N-ANCHOR-VERBATIM-MISSING for the read tools); the WRITING tools kb_export, kb_bible_commit and kb_import then refuse with E-REPO-PATH-INVALID because they need the folder on this host. Recorded per affected tool below as 'anchor_validation' ('self-validated' | 'self-validated+local-folder-required'). The removed pre-redesign scope keys (repo_path, repo, repo_remote_url) are still declared on every kb_* input schema, described as REMOVED, so they reach the tool wrapper, which refuses them with E-SCOPE-KEY-REMOVED before any self-resolution -- they are never silently stripped.",
       "affected_methods": ["P-2 capture", "P-3 query", "P-7 prime", "P-10 stats", "P-11 touch", "X-1 list", "X-3 freshnessSweep", "X-6 hasEntry"]
     },
     "not_in_scope": "approveDirective, rejectDirective, addDirective, flaggedPairs (INVENTORY.md section 4.2) are CLI-only and not reachable by any registered MCP tool, so they have no entry here.",
@@ -58,7 +58,7 @@
       "side_effect_class": "trust-mutating",
       "idempotent": false,
       "idempotent_note": "New row per call unless AUDN dedupes to E-DEDUP-NONE.",
-      "error_codes": ["E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-NO-BASIS", "E-BASIS-MISSING-FILES", "E-SUPERSEDE-CONSENT-MISSING", "E-ACTIVE-DIRECTIVE-SUPERSEDE-GUARD", "E-PROVIDER-UNINITIALIZED"],
+      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-NO-BASIS", "E-BASIS-MISSING-FILES", "E-SUPERSEDE-CONSENT-MISSING", "E-ACTIVE-DIRECTIVE-SUPERSEDE-GUARD", "E-PROVIDER-UNINITIALIZED"],
       "non_error_outcomes": ["E-CLAMP", "E-CONTRADICTION-FLAGGED", "E-DEDUP-NONE", "E-DIRECTIVE-QUARANTINE"],
       "see_also": ["Capture provenance and confidence clamp", "Directive quarantine", "Superseding and AUDN matching", "Freshness and content hashing"]
     },
@@ -76,7 +76,7 @@
       "side_effect_class": "append",
       "idempotent": false,
       "idempotent_note": "Read result is stable but each call bumps use_count/last_accessed telemetry.",
-      "error_codes": ["E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-QUERY-NO-SELECTOR", "E-PROVIDER-UNINITIALIZED"],
+      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-QUERY-NO-SELECTOR", "E-PROVIDER-UNINITIALIZED"],
       "see_also": ["Query modes"]
     },
     {
@@ -91,7 +91,7 @@
       ],
       "side_effect_class": "pure read",
       "idempotent": true,
-      "error_codes": ["E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-PATH-TRAVERSAL", "E-PROVIDER-UNINITIALIZED"],
+      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-PATH-TRAVERSAL", "E-PROVIDER-UNINITIALIZED"],
       "see_also": ["Freshness and content hashing"]
     },
     {
@@ -106,7 +106,7 @@
       ],
       "side_effect_class": "trust-mutating",
       "idempotent": true,
-      "error_codes": ["E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-PATH-TRAVERSAL", "E-PROVIDER-UNINITIALIZED"],
+      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-PATH-TRAVERSAL", "E-PROVIDER-UNINITIALIZED"],
       "see_also": ["Freshness and content hashing"]
     },
     {
@@ -135,7 +135,7 @@
       ],
       "side_effect_class": "pure read",
       "idempotent": true,
-      "error_codes": ["E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-PROVIDER-UNINITIALIZED"],
+      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-PROVIDER-UNINITIALIZED"],
       "see_also": []
     },
     {
@@ -151,7 +151,7 @@
       "side_effect_class": "trust-mutating",
       "idempotent": false,
       "idempotent_note": "No-op only at the CONFIRMED ceiling; below it every call advances one tier.",
-      "error_codes": ["E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-ENTRY-NOT-FOUND", "E-PROMOTE-SUPERSEDED", "E-PROMOTE-REFUSED-DIRECTIVE", "E-PROMOTE-REASON-REQUIRED", "E-PROMOTE-BASIS-UNRESOLVED", "E-PROVIDER-UNINITIALIZED"],
+      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-ENTRY-NOT-FOUND", "E-PROMOTE-SUPERSEDED", "E-PROMOTE-REFUSED-DIRECTIVE", "E-PROMOTE-REASON-REQUIRED", "E-PROMOTE-BASIS-UNRESOLVED", "E-PROVIDER-UNINITIALIZED"],
       "see_also": ["Directive quarantine"]
     },
     {
@@ -181,7 +181,7 @@
       "side_effect_class": "pure read",
       "idempotent": true,
       "idempotent_note": "Explicitly never bumps use_count/last_accessed.",
-      "error_codes": ["E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-PROVIDER-UNINITIALIZED"],
+      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-PROVIDER-UNINITIALIZED"],
       "non_error_outcomes": ["E-STATS-UNSUPPORTED", "E-BIBLE-READ-DEGRADED"],
       "see_also": ["Query modes"]
     },
@@ -198,7 +198,7 @@
       "side_effect_class": "append",
       "idempotent": false,
       "idempotent_note": "Existence-tolerant; counter advances on each call.",
-      "error_codes": ["E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-PROVIDER-UNINITIALIZED"],
+      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-PROVIDER-UNINITIALIZED"],
       "see_also": []
     },
     {
@@ -214,7 +214,7 @@
       "tools_note": "Only called from kb_query when expand_related is true.",
       "side_effect_class": "pure read",
       "idempotent": true,
-      "error_codes": ["E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-PROVIDER-UNINITIALIZED"],
+      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-PROVIDER-UNINITIALIZED"],
       "non_error_outcomes": ["E-RELATED-CLAIMS-DEGRADED"],
       "see_also": ["Query modes"]
     },
@@ -234,7 +234,7 @@
       "tools_note": "kb_stats calls it for bible-drift comparison; kb_export calls it (confidence: 'CONFIRMED') to select entries to export; kb_bible_commit calls it (confidence: 'CONFIRMED') to resolve the given ids to live CONFIRMED entries before merging them into the bible.",
       "side_effect_class": "pure read",
       "idempotent": true,
-      "error_codes": ["E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-REPO-PATH-INVALID", "E-PROVIDER-UNINITIALIZED"],
+      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-REPO-PATH-INVALID", "E-PROVIDER-UNINITIALIZED"],
       "error_codes_note": "E-REPO-PATH-INVALID only applies on the kb_export and kb_bible_commit routes (a remote member session, whose folder is not on this host), thrown before this member is reached. The E-SELF-* codes apply on every route, also before this member is reached.",
       "see_also": []
     },
@@ -251,7 +251,7 @@
       "side_effect_class": "trust-mutating",
       "idempotent": false,
       "idempotent_note": "Each call appends another note.",
-      "error_codes": ["E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-MEMBER-VIEW-READ-ONLY", "E-ENTRY-NOT-FOUND", "E-PROVIDER-UNINITIALIZED"],
+      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-MEMBER-VIEW-READ-ONLY", "E-ENTRY-NOT-FOUND", "E-PROVIDER-UNINITIALIZED"],
       "non_error_outcomes": ["E-ROLE-UNKNOWN-DEGRADED"],
       "see_also": []
     },
@@ -270,7 +270,7 @@
       "side_effect_class": "trust-mutating",
       "idempotent": true,
       "idempotent_note": "Idempotent for a fixed worktree state.",
-      "error_codes": ["E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-PROVIDER-UNINITIALIZED"],
+      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-PROVIDER-UNINITIALIZED"],
       "see_also": ["Freshness and content hashing"]
     },
     {
@@ -287,7 +287,7 @@
       "side_effect_class": "trust-mutating",
       "idempotent": false,
       "idempotent_note": "A second call on the same pair REFUSES (E-RESOLVE-ALREADY-SUPERSEDED) because the loser is already superseded.",
-      "error_codes": ["E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-RESOLVE-MISSING-ENTRY", "E-RESOLVE-ALREADY-SUPERSEDED", "E-RESOLVE-NOT-A-PAIR", "E-RESOLVE-DIRECTIVE-PAIR", "E-PROVIDER-UNINITIALIZED"],
+      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-RESOLVE-MISSING-ENTRY", "E-RESOLVE-ALREADY-SUPERSEDED", "E-RESOLVE-NOT-A-PAIR", "E-RESOLVE-DIRECTIVE-PAIR", "E-PROVIDER-UNINITIALIZED"],
       "see_also": []
     },
     {
@@ -303,7 +303,7 @@
       "side_effect_class": "trust-mutating",
       "idempotent": true,
       "idempotent_note": "Writes only via resolveContradiction (X-4); a resolved pair is no longer flagged, so re-running is a no-op on it.",
-      "error_codes": ["E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-PROVIDER-UNINITIALIZED"],
+      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-PROVIDER-UNINITIALIZED"],
       "see_also": []
     },
     {
@@ -319,7 +319,7 @@
       "side_effect_class": "pure read",
       "idempotent": true,
       "idempotent_note": "The only synchronous (non-Promise) member on this surface.",
-      "error_codes": ["E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-PROVIDER-UNINITIALIZED"],
+      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-PROVIDER-UNINITIALIZED"],
       "see_also": []
     }
   ],
@@ -350,7 +350,7 @@
       "side_effect_class": "pure read",
       "idempotent": true,
       "idempotent_note": "Pure proxy to the active provider (codebase-memory, gitnexus, or none); effect and idempotency truly belong to that provider, not this repo.",
-      "error_codes": ["E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-CODE-PROVIDER-UNCONFIGURED", "E-CODE-INTEL-DISABLED", "E-CODE-INDEX-NOT-READY"],
+      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-CODE-PROVIDER-UNCONFIGURED", "E-CODE-INTEL-DISABLED", "E-CODE-INDEX-NOT-READY"],
       "see_also": []
     },
     {
@@ -365,7 +365,7 @@
       ],
       "side_effect_class": "pure read",
       "idempotent": true,
-      "error_codes": ["E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-CODE-PROVIDER-UNCONFIGURED", "E-CODE-INTEL-DISABLED", "E-CODE-INDEX-NOT-READY"],
+      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-CODE-PROVIDER-UNCONFIGURED", "E-CODE-INTEL-DISABLED", "E-CODE-INDEX-NOT-READY"],
       "see_also": []
     },
     {
@@ -380,7 +380,7 @@
       ],
       "side_effect_class": "pure read",
       "idempotent": true,
-      "error_codes": ["E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-CODE-PROVIDER-UNCONFIGURED", "E-CODE-INTEL-DISABLED", "E-CODE-INDEX-NOT-READY"],
+      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-CODE-PROVIDER-UNCONFIGURED", "E-CODE-INTEL-DISABLED", "E-CODE-INDEX-NOT-READY"],
       "see_also": []
     },
     {
@@ -396,7 +396,7 @@
       "tools_note": "Also used internally by kb_session_prime for neighbor-symbol expansion, and merged with KB data by enrichContextWithKb -- so its observed shape is provider-shape-plus-enrichment, not the raw provider payload.",
       "side_effect_class": "pure read",
       "idempotent": true,
-      "error_codes": ["E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-CODE-PROVIDER-UNCONFIGURED", "E-CODE-INTEL-DISABLED", "E-CODE-INDEX-NOT-READY"],
+      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-CODE-PROVIDER-UNCONFIGURED", "E-CODE-INTEL-DISABLED", "E-CODE-INDEX-NOT-READY"],
       "see_also": []
     },
     {
@@ -411,7 +411,7 @@
       ],
       "side_effect_class": "pure read",
       "idempotent": true,
-      "error_codes": ["E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-CODE-PROVIDER-UNCONFIGURED", "E-CODE-INTEL-DISABLED", "E-CODE-INDEX-NOT-READY"],
+      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-CODE-PROVIDER-UNCONFIGURED", "E-CODE-INTEL-DISABLED", "E-CODE-INDEX-NOT-READY"],
       "see_also": []
     },
     {
@@ -426,7 +426,7 @@
       ],
       "side_effect_class": "pure read",
       "idempotent": true,
-      "error_codes": ["E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-CODE-PROVIDER-UNCONFIGURED", "E-CODE-INTEL-DISABLED", "E-CODE-INDEX-NOT-READY"],
+      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-CODE-PROVIDER-UNCONFIGURED", "E-CODE-INTEL-DISABLED", "E-CODE-INDEX-NOT-READY"],
       "see_also": []
     },
     {
@@ -441,7 +441,7 @@
       ],
       "side_effect_class": "pure read",
       "idempotent": true,
-      "error_codes": ["E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-CODE-PROVIDER-UNCONFIGURED", "E-CODE-INTEL-DISABLED", "E-CODE-INDEX-NOT-READY"],
+      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-CODE-PROVIDER-UNCONFIGURED", "E-CODE-INTEL-DISABLED", "E-CODE-INDEX-NOT-READY"],
       "see_also": []
     },
     {
@@ -456,7 +456,7 @@
       ],
       "side_effect_class": "starts a detached analyze process; writes analyze.log and status.json under the server data dir",
       "idempotent": false,
-      "error_codes": ["E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-CODE-INTEL-DISABLED"],
+      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-CODE-INTEL-DISABLED"],
       "see_also": ["C-9"]
     },
     {
@@ -471,7 +471,7 @@
       ],
       "side_effect_class": "pure read",
       "idempotent": true,
-      "error_codes": ["E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-CODE-INTEL-DISABLED"],
+      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-CODE-INTEL-DISABLED"],
       "see_also": ["C-8"]
     }
   ]

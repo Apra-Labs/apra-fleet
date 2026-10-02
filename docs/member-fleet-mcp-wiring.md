@@ -46,10 +46,22 @@ apra-fleet, at least as new as the orchestrator, installed in HTTP member mode
 
 - Version probe on the member's own install; on PowerShell the exit code is read
   from `$LASTEXITCODE`.
-- Install source: copy the orchestrator's single-executable binary when the
-  member has the same OS and arch; otherwise download the release asset for the
-  orchestrator's version; otherwise report `unavailable(<reason>)`. Absence is an
-  observation, never a throw: registration still succeeds.
+- Install source: copy the running executable (the orchestrator's
+  single-executable binary) when the member has the same OS and arch;
+  otherwise download the release asset for the orchestrator's version;
+  otherwise report `unavailable(<reason>)`. Absence is an observation, never a
+  throw: registration still succeeds. There is no GitHub Actions-artifact
+  fallback and no node-based fallback. An untagged (dev) build, whose version
+  looks like `v0.4.4_abc123`, downloads the asset of the tag its version core
+  maps to (`v0.4.4`).
+- The release asset download is bounded by a timeout and verified against the
+  release's published `SHA256SUMS` before use; a timeout, a checksum mismatch
+  or an unavailable checksum is a typed, recoverable `fleetMcp` reason and
+  nothing unverified is installed.
+- A member install (`install --member`) with `--force` stops only a server a
+  previous member install left behind; a running full-install server it did not
+  start is refused with `E-FULL-INSTALL-RUNNING` unless `--force-stop-full-install`
+  is also given.
 - After install the member registers itself, and a MEMBER-session is opened to
   verify the tools are really reachable.
 - Every member-bound command is built in JavaScript for the member's OS/shell
@@ -70,3 +82,24 @@ probes, so it stays cheap.
   the injected KB block.
 - Any change to the member tools surface must update the client package and the
   memory-contract in the same change.
+
+## Member-install marker and upgrade caveat
+
+`install --member` writes a marker recording that the running server was
+started by a member install; `--force` stops only a server that carries it.
+A remote member installed by a build that predates the marker has none, so its
+first automatic upgrade (which passes `--force` but not
+`--force-stop-full-install`) is refused as `E-FULL-INSTALL-RUNNING` and needs
+manual intervention once. Treat this as a known gap until the upgrade path
+handles marker-less members itself.
+
+## Compose and member lifecycle invariants
+
+- Compose keeps user-authored deny rules (merged with fleet's own), writes the
+  permission ledger before syncing the MCP entry, and reports a reason per
+  member; stale compose-owned `fleetMcp` statuses are cleared.
+- `update_member` re-composes when the member's work folder changes;
+  `remove_member` cleans the member side first, then removes credentials and
+  the key, and reports anything it could not clean.
+- Member-side file checks use `test -f` / `-PathType Leaf` and per-shell path
+  quoting, never shell expansion.

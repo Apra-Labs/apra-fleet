@@ -8,14 +8,16 @@ import { SqliteProvider } from '../../src/services/knowledge/sqlite-provider.js'
 import type { KbProviders } from '../../src/services/knowledge/kb-providers.js';
 import type { KBEntry, KBEntryInput } from '../../src/services/knowledge/types.js';
 import type { KbAnchor } from '../../src/services/knowledge/kb-self.js';
+import { KB_REMOVED_SCOPE_KEYS_SHAPE } from '../../src/services/knowledge/kb-removed-scope-keys.js';
 
 // KB anchor wiring for every kb_* tool that resolves providers (kb_setup never
 // calls getKbProviders). No kb_* request declares a scope field -- the KB is
 // the calling session's own (src/services/knowledge/kb-self.ts). The one way
 // to name a repo is the in-process KbAnchor passed as the handler's second
 // argument (execute_prompt's post-dispatch harvest, the kb CLIs), which no MCP
-// request can carry. This file pins, per tool: (1) the schema declares no scope
-// field and strips one sent anyway; (2) the anchor's folder AND remoteUrl reach
+// request can carry. This file pins, per tool: (1) the schema declares the
+// removed scope keys only as REMOVED markers that parse through (the tool
+// wrapper refuses them with E-SCOPE-KEY-REMOVED); (2) the anchor's folder AND remoteUrl reach
 // getKbProviders; (3) an anchor without remoteUrl injects no default.
 //
 // TABLE-DRIVEN: adding a tool requires no new assertion code, only a new TOOLS
@@ -406,15 +408,21 @@ describe.each(TOOLS)('$name KB anchor wiring', ({ schema, call, minimalInput, fo
     mockGetKbProviders.mockResolvedValue(providersStub());
   });
 
-  it('schema declares no scope field, and strips one sent anyway', () => {
+  it('schema keeps the removed scope keys only as the shared REMOVED markers, so the wrapper can refuse them', () => {
+    // A removed key is no longer stripped (that silently re-scoped old
+    // callers): it parses through to the tool wrapper, which refuses it with
+    // E-SCOPE-KEY-REMOVED (tests/knowledge/kb-no-scope-params.test.ts).
     const shape = (schema as unknown as z.ZodObject<z.ZodRawShape>).shape;
-    for (const field of SCOPE_FIELDS) expect(Object.keys(shape)).not.toContain(field);
+    for (const field of SCOPE_FIELDS) {
+      expect(shape[field]).toBe(KB_REMOVED_SCOPE_KEYS_SHAPE[field as keyof typeof KB_REMOVED_SCOPE_KEYS_SHAPE]);
+    }
     const parsed = schema.parse({
       ...minimalInput,
       repo_path: '/elsewhere',
       repo_remote_url: 'https://example.com/acme/repo.git',
     }) as Record<string, unknown>;
-    for (const field of SCOPE_FIELDS) expect(parsed[field]).toBeUndefined();
+    expect(parsed.repo_path).toBe('/elsewhere');
+    expect(parsed.repo_remote_url).toBe('https://example.com/acme/repo.git');
   });
 
   it('forwards the in-process anchor folder and remoteUrl to getKbProviders', async () => {

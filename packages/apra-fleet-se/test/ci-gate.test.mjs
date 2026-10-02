@@ -2,12 +2,11 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-    runCiGate, createCiGate, createCiGateContextResolver, buildCiGatePromptLines, parseCurlStatusOutput,
+    runCiGate, createCiGate, createCiGateContextResolver, parseCurlStatusOutput,
     CI_GATE_OUTCOME, CI_GATE_NOT_CONFIGURED_LOG,
 } from '../fleet-sprint/ci-gate.mjs';
 import { validateCiGate, validateArgs, DEFAULT_CI_GATE_TIMEOUT_S } from '../fleet-sprint/sprint-args.mjs';
 import { getVcsProvider, supportsCiGate } from '../fleet-sprint/vcs-providers/index.mjs';
-import { buildReviewerPrompt } from '../fleet-sprint/prompts.mjs';
 
 // =============================================================================
 // Engine CI gate (fleet-sprint/ci-gate.mjs). The orchestrator -- never a doer --
@@ -96,17 +95,6 @@ describe('(1) configured gate + successful run', () => {
         // The recorded result reaches the sprint log too.
         const passLine = logs.find((l) => l.includes('PASS'));
         assert.ok(passLine && passLine.includes('4242') && passLine.includes(RUN_URL) && passLine.includes(SHA), `PASS log line must carry run id/url/sha: ${passLine}`);
-
-        const prompt = buildReviewerPrompt({
-            beadIds: ['x-1'], acceptanceCriteriaJson: '[]', baseBranch: 'main', branch: 'feat/x', goal: 'P1/P2', ciGate: result,
-        });
-        assert.ok(prompt.includes('4242'), 'reviewer prompt must carry the run id');
-        assert.ok(prompt.includes(RUN_URL), 'reviewer prompt must carry the run url');
-        for (const job of result.jobs) {
-            assert.ok(prompt.includes(`${job.name}: ${job.conclusion}`), `reviewer prompt must carry job result '${job.name}: ${job.conclusion}'`);
-        }
-        assert.match(prompt, /engine-verified/);
-        assert.match(prompt, /never ask the doer to trigger/);
     });
 
     test('no run for the head sha: the gate triggers the workflow on the branch, then finds and awaits the new run', async () => {
@@ -129,21 +117,19 @@ describe('(1) configured gate + successful run', () => {
         assert.doesNotMatch(dispatch.command, /vcs_token_inline/, 'the log-safe command must redact the credential placeholder');
     });
 
-    test('a completed non-success run is FAIL with the failing job named, and the prompt never says CI is green', async () => {
+    test('a completed non-success run is FAIL with the failing job named,', async () => {
         const { transport } = stubTransport({
             'ci-find-runs': () => ({ status: 200, body: { workflow_runs: [{ id: 4242, html_url: RUN_URL, head_sha: SHA, status: 'completed', conclusion: 'failure' }] } }),
             'ci-list-jobs': () => ({ status: 200, body: { jobs: [{ name: 'build (os-a)', conclusion: 'success' }, { name: 'build (os-b)', conclusion: 'failure' }] } }),
         });
         const result = await runCiGate({ ciGate: GATE, provider: GITHUB, repo: 'o/r', branch: 'feat/x', transport, ...virtualClock() });
         assert.equal(result.outcome, CI_GATE_OUTCOME.FAIL);
-        const prompt = buildReviewerPrompt({ beadIds: ['x-1'], acceptanceCriteriaJson: '[]', baseBranch: 'main', branch: 'feat/x', ciGate: result });
-        assert.ok(prompt.includes('build (os-b): failure'));
-        assert.doesNotMatch(prompt, /CI green/);
+        assert.match(result.reason, /build \(os-b\)=failure/);
     });
 });
 
 describe('(2) trigger refused with HTTP 403', () => {
-    test('FAILED-TO-RUN (never pass), the log names the missing permission and the credential, and no CI-green wording reaches the reviewer', async () => {
+    test('FAILED-TO-RUN (never pass), the log names the missing permission and the credential', async () => {
         const logs = [];
         const { transport, calls } = stubTransport({
             'ci-dispatch': () => ({ status: 403, body: { message: 'Resource not accessible by integration' }, bodyText: '{"message":"Resource not accessible by integration"}' }),
@@ -164,11 +150,7 @@ describe('(2) trigger refused with HTTP 403', () => {
         assert.ok(errorLine.includes("member 'orch'"), `the ERROR line must name the credential in use: ${errorLine}`);
         assert.ok(errorLine.includes('Resource not accessible by integration'), 'the provider refusal text must be preserved');
 
-        const prompt = buildReviewerPrompt({ beadIds: ['x-1'], acceptanceCriteriaJson: '[]', baseBranch: 'main', branch: 'feat/x', ciGate: result });
-        assert.ok(prompt.includes(CI_GATE_OUTCOME.FAILED_TO_RUN));
-        assert.doesNotMatch(prompt, /CI green/i);
-        assert.doesNotMatch(prompt, /result PASS/);
-        assert.match(prompt, /CI is NOT verified/);
+        assert.equal(result.outcome, CI_GATE_OUTCOME.FAILED_TO_RUN);
     });
 
     test('a 403-shaped refusal text at another status is still a named-permission FAILED-TO-RUN', async () => {
@@ -288,11 +270,6 @@ describe('(4) ci_gate arg validation, unsupported provider, unconfigured gate', 
         assert.equal(logs.filter((l) => l.includes('CI gate not configured')).length, 1);
         assert.equal(logs.length, 1);
         assert.equal(logs[0], CI_GATE_NOT_CONFIGURED_LOG);
-        // ...and the reviewer prompt is untouched.
-        const withNull = buildReviewerPrompt({ beadIds: ['x-1'], acceptanceCriteriaJson: '[]', baseBranch: 'main', branch: 'feat/x', ciGate: null });
-        const without = buildReviewerPrompt({ beadIds: ['x-1'], acceptanceCriteriaJson: '[]', baseBranch: 'main', branch: 'feat/x' });
-        assert.equal(withNull, without);
-        assert.doesNotMatch(without, /CI GATE/);
     });
 });
 
@@ -341,9 +318,4 @@ test('parseCurlStatusOutput splits the -w status trailer from the JSON body', ()
     assert.deepEqual(parseCurlStatusOutput('{"a":1}\n200'), { status: 200, body: { a: 1 }, bodyText: '{"a":1}' });
     assert.equal(parseCurlStatusOutput('\n204').status, 204);
     assert.equal(parseCurlStatusOutput('garbage').status, null);
-});
-
-test('buildCiGatePromptLines is empty for no result', () => {
-    assert.deepEqual(buildCiGatePromptLines(null), []);
-    assert.deepEqual(buildCiGatePromptLines(undefined), []);
 });

@@ -369,7 +369,7 @@ function branchesNamed(cmd) {
 
 describe('commitRound: the branch guard on the maintainer checkout', () => {
     test('a maintainer on another branch gets no commit, push or reset; a WARN names it and both branches; every id stays queued', async () => {
-        const { client, commands, logs, toolCalls } = guardHarness({ branchAnswers: [OTHER_BRANCH] });
+        const { client, commands, logs, toolCalls } = guardHarness({ branchAnswers: [SPRINT_BRANCH, OTHER_BRANCH] });
         await confirm(client, ['e1', 'e2']);
         const before = commands.length;
 
@@ -391,14 +391,14 @@ describe('commitRound: the branch guard on the maintainer checkout', () => {
     });
 
     test('a maintainer that leaves the sprint branch before the retry gets no reset --hard and no second commit', async () => {
-        const { client, commands, logs } = guardHarness({ branchAnswers: [SPRINT_BRANCH, OTHER_BRANCH], pushFailures: 1 });
+        const { client, commands, logs } = guardHarness({ branchAnswers: [SPRINT_BRANCH, SPRINT_BRANCH, SPRINT_BRANCH, SPRINT_BRANCH, SPRINT_BRANCH, OTHER_BRANCH], pushFailures: 1 });
         await confirm(client, ['e1']);
 
         const out = await client.commitRound('review C1');
 
         assert.deepEqual(out, { committed: 0, pending: 1 });
         assert.ok(logs.some((l) => /retrying once/.test(l)), 'the first push failed and the retry path ran');
-        assert.equal(commands.filter((c) => c.cmd === 'git rev-parse --abbrev-ref HEAD').length, 2, 'the branch is re-checked before the retry reset');
+        assert.equal(commands.filter((c) => c.cmd === 'git rev-parse --abbrev-ref HEAD').length, 6, 'the branch is re-checked before every git command of the bible path, including the retry reset');
         assert.ok(!commands.some((c) => c.cmd.includes('reset --hard')), JSON.stringify(commands.map((c) => c.cmd)));
         assert.equal(commands.filter((c) => c.cmd.startsWith('(kb_bible_commit')).length, 1, 'only the first attempt committed');
         assert.equal(commands.filter((c) => /^git push\b/.test(c.cmd)).length, 1, 'only the first (failed) push');
@@ -406,6 +406,45 @@ describe('commitRound: the branch guard on the maintainer checkout', () => {
             for (const b of branchesNamed(cmd)) assert.equal(b, SPRINT_BRANCH, `a git command named another branch: ${cmd}`);
         }
         assert.ok(logs.some((l) => l.startsWith('[kb-work] WARN:') && l.includes(`'${OTHER_BRANCH}'`) && l.includes(`'${SPRINT_BRANCH}'`)), logs.join('\n'));
+    });
+
+    test('the per-batch KB write flush runs no pull on another branch: a WARN names both branches and the write stays queued', async () => {
+        const { client, commands, logs, toolCalls } = guardHarness({ branchAnswers: [OTHER_BRANCH] });
+
+        await confirm(client, ['e1']);
+
+        assert.deepEqual(commands.map((c) => c.cmd), ['git rev-parse --abbrev-ref HEAD'], 'the guard is the only command');
+        assert.ok(!toolCalls.includes('kb_promote'), 'no write was applied');
+        const warn = logs.filter((l) => l.startsWith('[kb-work] WARN:') && l.includes("maintainer 'maint'"));
+        assert.equal(warn.length, 1, logs.join('\n'));
+        assert.ok(warn[0].includes(`'${OTHER_BRANCH}'`) && warn[0].includes(`'${SPRINT_BRANCH}'`), warn[0]);
+        assert.match(warn[0], /1 KB write\(s\) stay queued/);
+    });
+
+    test('a maintainer that leaves the sprint branch before kb_bible_commit gets no bible commit and no push', async () => {
+        // reads: flush, bible-attempt pull, then the commit's read answers OTHER
+        const { client, commands, logs, toolCalls } = guardHarness({ branchAnswers: [SPRINT_BRANCH, SPRINT_BRANCH, OTHER_BRANCH] });
+        await confirm(client, ['e1']);
+
+        const out = await client.commitRound('review C1');
+
+        assert.deepEqual(out, { committed: 0, pending: 1 });
+        assert.ok(!toolCalls.includes('kb_bible_commit'), 'no kb_bible_commit call');
+        assert.ok(!commands.some((c) => /^git push\b/.test(c.cmd)), 'no push');
+        assert.ok(logs.some((l) => l.startsWith('[kb-work] WARN:') && l.includes(`'${OTHER_BRANCH}'`) && l.includes(`'${SPRINT_BRANCH}'`)), logs.join('\n'));
+    });
+
+    test('a maintainer that leaves the sprint branch right before the push gets no push', async () => {
+        // reads: flush, pull, kb_bible_commit, then the push's read answers OTHER
+        const { client, commands, logs } = guardHarness({ branchAnswers: [SPRINT_BRANCH, SPRINT_BRANCH, SPRINT_BRANCH, OTHER_BRANCH] });
+        await confirm(client, ['e1']);
+
+        const out = await client.commitRound('review C1');
+
+        assert.deepEqual(out, { committed: 0, pending: 1 });
+        assert.ok(commands.some((c) => c.cmd.startsWith('(kb_bible_commit')), 'the commit ran before the branch moved');
+        assert.ok(!commands.some((c) => /^git push\b/.test(c.cmd)), 'no push');
+        assert.ok(logs.some((l) => l.startsWith('[kb-work] WARN:') && l.includes(`'${OTHER_BRANCH}'`)), logs.join('\n'));
     });
 
     test('a maintainer on the sprint branch commits and pushes as before, after one branch read', async () => {

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { KB_REMOVED_SCOPE_KEYS_SHAPE } from '../services/knowledge/kb-removed-scope-keys.js';
 import { getSelfKbProviders, type KbAnchor } from '../services/knowledge/kb-self.js';
 import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
 
@@ -26,6 +27,9 @@ export const kbResolveContradictionSchema = z.object({
   winnerId: z.string().min(1).describe('ID of the KB entry the merged code (or trust tier) supports. Ends confidence=CONFIRMED with flags cleared; stale is cleared only if the D2 un-stale predicate holds post-flag-clear.'),
   loserId: z.string().min(1).describe('ID of the KB entry the merged code contradicts. Ends superseded_at=now, stale=1, flagged_for_review cleared. Never deleted.'),
   evidence: z.string().min(1).describe('Evidence note appended to the winner content, e.g. a file+symbol citation or the trust-tier rule applied. Verbatim "hash-basis match on merged worktree" when called by kb_reconcile_prefilter.'),
+  // Removed pre-redesign scope keys: declared only so a caller still passing one
+  // is refused with E-SCOPE-KEY-REMOVED instead of silently re-scoped.
+  ...KB_REMOVED_SCOPE_KEYS_SHAPE,
 });
 
 export type KbResolveContradictionInput = z.infer<typeof kbResolveContradictionSchema>;

@@ -91,24 +91,17 @@ export function sftpHomePath(home: string, agentOs: Agent['os']): string {
  *   compose_permissions, should pass it instead of paying for a second lookup).
  * @param tag Log tag identifying the call site (e.g. 'register_member').
  */
-const isHomeAnchored = (p: string) => p.startsWith('~/') || p.startsWith('~\\');
 
 export async function seedWorkspaceTrust(agent: Agent, strategy?: AgentStrategy, tag = 'workspace-trust'): Promise<void> {
   try {
     const provider = getProvider(agent.llmProvider);
     const strat = strategy ?? getStrategy(agent);
-    // AGY's config path needs the member's project id, which a member may not
-    // have yet (it is provisioned by compose_permissions/execute_prompt); agy
-    // seeds no trust anyway, so treat "no path yet" as not home-anchored.
-    let configPaths: string[];
-    try {
-      configPaths = provider.permissionConfigPaths(agent);
-    } catch {
-      configPaths = [];
-    }
-    const memberHomeDir = configPaths.some(isHomeAnchored)
-      ? await getMemberHomeDir(agent)
-      : null;
+    // The trust file lives in the member HOME regardless of where the
+    // provider's permission files live, so always resolve the home in JS
+    // (os.homedir() locally, the cached probe remotely): the adapter builds
+    // every member-side path from it and never lets the member shell expand
+    // $env:USERPROFILE / $HOME, which can disagree with the file channel.
+    const memberHomeDir = await getMemberHomeDir(agent);
     const result = await provider.ensureWorkspaceTrusted(
       agent.workFolder,
       (command: string, timeoutMs?: number) => strat.execCommand(command, timeoutMs),

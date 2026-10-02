@@ -180,6 +180,14 @@ For each open feature and its tasks, run `bd show <id>` to read the full descrip
     passage in `detail` -- a vague "may not be aligned with parent notes" is not
     sufficient; the finding must be falsifiable by inspection. Use `kind: "other"` for
     findings of this type (Step 4's closed vocabulary has no dedicated kind for it).
+13. **No CI-status criterion**: no bead in the plan (task, feature or bug) may carry an
+    acceptance criterion that depends on a CI run -- "CI is green", "the CI workflow
+    passes on every OS", "the pipeline succeeds". Doers and reviewers do not trigger,
+    wait for or judge CI, so such a criterion cannot be closed inside the sprint and
+    stalls it. A plan that puts a CI-status criterion on any bead is CHANGES_NEEDED
+    referencing "criterion 13" and naming the bead id and the offending criterion text;
+    the fix is to replace it with what can be checked locally (build, lint, the tests a
+    doer can run). Use `kind: "acceptance_criteria"` for this finding.
 
 ## Step 3 -- Classify each task
 
@@ -220,7 +228,7 @@ Return your verdict:
 joined by `blocks` edges) so the orchestrator can see review cadence before development
 starts.
 
-**APPROVED** means all twelve criteria in Step 2 pass.
+**APPROVED** means all thirteen criteria in Step 2 pass.
 
 **CHANGES_NEEDED** means one or more criteria fail. Notes must name the specific beads ID
 and what is wrong. Do not return CHANGES_NEEDED for minor style preferences -- but a plan

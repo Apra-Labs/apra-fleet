@@ -33,6 +33,7 @@
  * orchestrator platform/executable/version) is injected through
  * MemberFleetInstallDeps so tests drive the whole flow with a fake transport.
  */
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -44,6 +45,7 @@ import { getAgentOS, getAgentShell, isPosixShell } from '../utils/agent-helpers.
 import { escapePowerShellArgInner, escapeShellArgInner } from '../utils/shell-escape.js';
 import { wrapPowerShellEncoded } from '../os/windows.js';
 import { serverVersion } from '../version.js';
+import { FULL_INSTALL_RUNNING_CODE, FORCE_STOP_FULL_INSTALL_FLAG } from '../cli/install-guard.js';
 import { parseVersion, isNewer } from './update-check.js';
 import { recordFleetMcpStatus } from './registry.js';
 import { probeMemberClaudeConfigDir, claudeLocalScopeConfigFile } from '../providers/claude.js';
@@ -92,6 +94,14 @@ export type FleetInstallUnavailableReason =
   | 'no-install-source'
   /** Downloading the release asset failed. */
   | 'download-failed'
+  /** The release asset download did not finish within the bounded timeout. Recoverable: retry. */
+  | 'download-timeout'
+  /** The downloaded asset's SHA-256 does not match the published checksum; it was discarded. */
+  | 'checksum-mismatch'
+  /** No published checksum for the asset could be fetched, so it cannot be verified; it was discarded. */
+  | 'checksum-unavailable'
+  /** A running apra-fleet server on the member was not started by a member install; it was left running. */
+  | 'full-install-running'
   /** Copying the installer onto the member failed. */
   | 'transfer-failed'
   /** The installer ran but exited non-zero. */
@@ -333,14 +343,85 @@ function hostPlatform(): MemberPlatform {
   return { os: osName, arch: process.arch };
 }
 
-async function defaultDownload(url: string, assetName: string): Promise<string> {
-  const res = await fetch(url, { headers: { 'User-Agent': `apra-fleet/${serverVersion}` } });
-  if (!res.ok) throw new Error(`GET ${url} -> HTTP ${res.status}`);
+/** Bound on each release HTTP request (asset and checksum list). */
+export const DOWNLOAD_TIMEOUT_MS = 120_000;
+
+/** Name of the checksum list published next to the release assets (ci.yml release job). */
+export const CHECKSUM_ASSET = 'SHA256SUMS';
+
+/** A typed download failure; ensureOnce maps `reason` onto the fleetMcp status. */
+export class ReleaseDownloadError extends Error {
+  constructor(
+    public readonly reason: 'download-failed' | 'download-timeout' | 'checksum-mismatch' | 'checksum-unavailable',
+    message: string,
+  ) {
+    super(message);
+    this.name = 'ReleaseDownloadError';
+  }
+}
+
+/** The expected hex digest for `assetName` in a `sha256sum`-format list, or null. */
+export function parseSha256Sums(text: string, assetName: string): string | null {
+  for (const line of text.split(/\r?\n/)) {
+    const m = /^([0-9a-fA-F]{64})\s+\*?(\S+)\s*$/.exec(line.trim());
+    if (m && m[2] === assetName) return m[1].toLowerCase();
+  }
+  return null;
+}
+
+export interface DownloadOpts {
+  fetchImpl?: typeof fetch;
+  timeoutMs?: number;
+}
+
+async function boundedGet(url: string, opts: DownloadOpts): Promise<Buffer> {
+  const doFetch = opts.fetchImpl ?? fetch;
+  const timeoutMs = opts.timeoutMs ?? DOWNLOAD_TIMEOUT_MS;
+  try {
+    const res = await doFetch(url, {
+      headers: { 'User-Agent': `apra-fleet/${serverVersion}` },
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!res.ok) throw new ReleaseDownloadError('download-failed', `GET ${url} -> HTTP ${res.status}`);
+    return Buffer.from(await res.arrayBuffer());
+  } catch (err: unknown) {
+    if (err instanceof ReleaseDownloadError) throw err;
+    const name = err instanceof Error ? err.name : '';
+    if (name === 'TimeoutError' || name === 'AbortError') {
+      throw new ReleaseDownloadError('download-timeout', `GET ${url} did not complete within ${Math.round(timeoutMs / 1000)}s`);
+    }
+    throw new ReleaseDownloadError('download-failed', `GET ${url}: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+/**
+ * Download a release asset to a temp file, bounded by a timeout, and verify its
+ * SHA-256 against the release's published SHA256SUMS before returning the path.
+ * Fails closed: a missing checksum is `checksum-unavailable`, a differing one
+ * `checksum-mismatch`; nothing unverified is ever written to disk.
+ */
+export async function downloadVerifiedAsset(url: string, assetName: string, opts: DownloadOpts = {}): Promise<string> {
+  const sumsUrl = url.slice(0, url.lastIndexOf('/') + 1) + CHECKSUM_ASSET;
+  let expected: string | null;
+  try {
+    expected = parseSha256Sums((await boundedGet(sumsUrl, opts)).toString('utf8'), assetName);
+  } catch (err: unknown) {
+    if (err instanceof ReleaseDownloadError && err.reason === 'download-timeout') throw err;
+    throw new ReleaseDownloadError('checksum-unavailable', `no published checksum could be fetched (${err instanceof Error ? err.message : String(err)})`);
+  }
+  if (!expected) throw new ReleaseDownloadError('checksum-unavailable', `${sumsUrl} does not list ${assetName}`);
+  const body = await boundedGet(url, opts);
+  const actual = crypto.createHash('sha256').update(body).digest('hex');
+  if (actual !== expected) {
+    throw new ReleaseDownloadError('checksum-mismatch', `${assetName} sha256 ${actual} does not match the published ${expected}`);
+  }
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-member-install-'));
   const out = path.join(dir, assetName);
-  fs.writeFileSync(out, Buffer.from(await res.arrayBuffer()));
+  fs.writeFileSync(out, body);
   return out;
 }
+
+const defaultDownload = (url: string, assetName: string): Promise<string> => downloadVerifiedAsset(url, assetName);
 
 export function defaultMemberFleetInstallDeps(): MemberFleetInstallDeps {
   return {
@@ -494,7 +575,7 @@ async function ensureOnce(agent: Agent, deps: MemberFleetInstallDeps, force: boo
     } catch (err: unknown) {
       return {
         state: 'unavailable',
-        reason: 'download-failed',
+        reason: err instanceof ReleaseDownloadError ? err.reason : 'download-failed',
         detail: `${source.url}: ${err instanceof Error ? err.message : String(err)}`,
         version: priorVersion,
       };
@@ -512,6 +593,15 @@ async function ensureOnce(agent: Agent, deps: MemberFleetInstallDeps, force: boo
     const run = await deps.exec(agent, buildInstallCommand(installerPath, provider, targetOs, shell), INSTALL_TIMEOUT_MS);
     if (run.code !== 0) {
       const tail = (run.stderr.trim() || run.stdout.trim()).slice(-400);
+      const refused = `${run.stdout}\n${run.stderr}`.includes(FULL_INSTALL_RUNNING_CODE);
+      if (refused) {
+        return {
+          state: 'unavailable',
+          reason: 'full-install-running',
+          detail: `a running apra-fleet server on the member was not started by a member install and was left running: ${tail}. Override on the member: apra-fleet install --member --force ${FORCE_STOP_FULL_INSTALL_FLAG}`,
+          version: priorVersion,
+        };
+      }
       return { state: 'unavailable', reason: 'install-failed', detail: `installer exited ${run.code}: ${tail}`, version: priorVersion };
     }
   } finally {
@@ -580,6 +670,10 @@ export const FLEET_MCP_FIX: Record<FleetMcpUnavailableReason | FleetMcpProviderR
   'unsupported-platform': 'Install apra-fleet on the member by hand; no release asset exists for its OS/arch.',
   'no-install-source': 'Run the orchestrator as the single-executable binary or make release assets reachable, then re-run fleet install.',
   'download-failed': 'Check the member/orchestrator can reach the release host, then re-run fleet install.',
+  'download-timeout': 'The release download did not finish in time; check the network to the release host, then re-run fleet install.',
+  'checksum-mismatch': 'The downloaded installer did not match its published SHA256SUMS; do not install it -- re-run fleet install, and report it if it repeats.',
+  'checksum-unavailable': 'No published SHA256SUMS lists this installer (release missing or incomplete); publish the release assets, then re-run fleet install.',
+  'full-install-running': 'A full apra-fleet install (not a member install) is running on that host; stop it or re-run the member install with --force-stop-full-install.',
   'transfer-failed': 'Check file transfer to the member works (disk space, permissions), then re-run fleet install.',
   'install-failed': 'Run the apra-fleet installer on the member by hand and read its error, then member_detail with refresh:true.',
   'install-unverified': 'Update apra-fleet on the member to the orchestrator version, then member_detail with refresh:true.',

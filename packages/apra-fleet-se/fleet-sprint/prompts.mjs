@@ -15,7 +15,6 @@
 import { wrapUntrustedBlock } from './contracts.mjs';
 import { PR_DESCRIPTION_MAX_LENGTH } from './vcs-module.mjs';
 import { formatStalenessBlock } from './parent-notes-staleness.mjs';
-import { buildCiGatePromptLines } from './ci-gate.mjs';
 import { buildRejectedNewTaskResurfaceLines, kbKnowledgeBlock, kbPromotionBlock } from './runner.js';
 
 /**
@@ -399,7 +398,7 @@ export function buildDoerPrompt({ beadIds, branch, feedback, kbKnowledge, kbBloc
     return lines.join('\n\n');
 }
 
-export function buildReviewerPrompt({ beadIds, acceptanceCriteriaJson, baseBranch, branch, goal, kbCandidates, kbKnowledge, kbBlock, ciGate }) {
+export function buildReviewerPrompt({ beadIds, acceptanceCriteriaJson, baseBranch, branch, goal, kbCandidates, kbKnowledge, kbBlock }) {
     const ids = Array.isArray(beadIds) ? beadIds : [];
     const scopeWide = ids.length === 0;
     // Scope-wide re-reviews are fed `bd list --json` (the whole remaining
@@ -418,10 +417,6 @@ export function buildReviewerPrompt({ beadIds, acceptanceCriteriaJson, baseBranc
             : 'Full task detail (including acceptance criteria), from `bd show --json`:',
         wrapUntrustedBlock(scopeCommand, acceptanceCriteriaJson),
         `Diff range to review: ${baseBranch}..${branch} (base_branch..branch).`,
-        // Engine CI gate result (ci-gate.mjs): an engine-verified CI run on the
-        // branch head, so the reviewer never asks a doer to trigger CI. No
-        // lines at all when the gate is not configured.
-        ...buildCiGatePromptLines(ciGate),
         // Without an explicit scope clause a reviewer can withhold APPROVED
         // over below-goal work the sprint deliberately defers, which starves
         // the completion gate (zero open goal beads AND an APPROVED verdict).
@@ -534,6 +529,12 @@ export function buildFinalVerdictPrompt({ targetIssues, branch, baseBranch, goal
             `actually in scope, but say so in your notes if deferring any of these means the sprint's stated goal was not really met.`
         );
     }
+    lines.push(
+        'CI is out of scope for this verdict: if the only criterion still unmet on a bead (including a ' +
+        'verify-routed bead listed above) is a CI-status criterion (for example "CI is green"), that is NOT ' +
+        'a reason to FAIL. Nothing in this sprint triggers, waits for or judges CI. Judge only what the ' +
+        'diff, the tests the sprint ran and the beads evidence show.'
+    );
     lines.push(
         'Return a PASS/FAIL verdict per your agent contract, grounded in the evidence above -- ' +
         'never rubber-stamp PASS regardless of open goal-priority beads or deploy/integration failures.'

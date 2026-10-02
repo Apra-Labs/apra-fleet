@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { KB_REMOVED_SCOPE_KEYS_SHAPE } from '../services/knowledge/kb-removed-scope-keys.js';
 import { getSelfKbProviders, memberOwnerTag, type KbAnchor } from '../services/knowledge/kb-self.js';
 import { KbMemberViewError } from '../services/knowledge/member-bible-view.js';
 import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
@@ -22,6 +23,9 @@ export const kbFeedbackSchema = z.object({
   reason: z.string().min(1).describe('What was wrong in practice -- appended to the entry content as an ASCII feedback note'),
   role: z.string().optional()
     .describe('Role hint for provenance: doer/reviewer/planner/plan-reviewer/kb-agent/harvest/pm/user. Validated server-side against the Author enum; invalid or absent stamps "unknown" in the note.'),
+  // Removed pre-redesign scope keys: declared only so a caller still passing one
+  // is refused with E-SCOPE-KEY-REMOVED instead of silently re-scoped.
+  ...KB_REMOVED_SCOPE_KEYS_SHAPE,
 });
 
 export type KbFeedbackInput = z.infer<typeof kbFeedbackSchema>;

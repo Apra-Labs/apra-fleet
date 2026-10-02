@@ -20,7 +20,7 @@
             ]
           },
           "minItems": 1,
-          "description": "Only consider cached file entries whose confidence tier is in this list. Default when omitted: [\"CONFIRMED\"] -- INFERRED and UNVERIFIED entries are considered only when listed explicitly."
+          "description": "Only consider cached file entries whose confidence tier is in this list. Default when omitted: [\"CONFIRMED\",\"INFERRED\"], undisputed entries only -- a context-cache entry is verified by its content hash, and captures are stored at most INFERRED, so a CONFIRMED-only default would report almost every file missing. UNVERIFIED entries are considered only when listed explicitly."
         },
         "files": {
           "type": "array",
@@ -29,6 +29,15 @@
           },
           "minItems": 1,
           "description": "File paths to check freshness for"
+        },
+        "repo_path": {
+          "description": "REMOVED -- do not pass. A call carrying it fails with E-SCOPE-KEY-REMOVED; the KB is always the calling session's own."
+        },
+        "repo": {
+          "description": "REMOVED -- do not pass. A call carrying it fails with E-SCOPE-KEY-REMOVED; the KB is always the calling session's own."
+        },
+        "repo_remote_url": {
+          "description": "REMOVED -- do not pass. A call carrying it fails with E-SCOPE-KEY-REMOVED; the KB is always the calling session's own."
         }
       },
       "required": [

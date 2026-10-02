@@ -123,6 +123,24 @@ tolerate the missing anchor, while the writing tools (`kb_export`,
 `methods.json`'s `_meta.kb_self_resolution` and per tool in each method
 entry's `tools[].anchor_validation` field.
 
+The pre-redesign scope keys `repo_path`, `repo` and `repo_remote_url` are
+REMOVED, not ignored. Every `kb_*` request schema still declares them (each
+described as removed) so that an MCP server, which strips undeclared keys,
+cannot silently re-point an old caller at a different KB; a request carrying
+any of them (any value other than absent/undefined) MUST be refused with
+`E-SCOPE-KEY-REMOVED` before any KB is resolved, and the error message names
+every removed key present and what replaces it. A FULL session's self is the
+fleet server's working folder, never the client's directory; its
+self-resolution messages say so and name both fixes (start the server from the
+intended repository, or call from a member session registered on it).
+
+Two read-tool input forms exist for compatibility: `kb_list` accepts
+`confidence` either as a list of tiers or as one tier string (the
+pre-redesign form, read as a one-element list). `kb_context` defaults to
+`["CONFIRMED","INFERRED"]`, undisputed (not CONFIRMED-only like `kb_query` and
+`kb_list`): a context-cache entry is verified mechanically by its content
+hash, and captures are stored at most INFERRED.
+
 ### 2.5 MEMBER-session behaviour (bible view and own-scope writes)
 
 In a MEMBER session the default reads (`kb_query`, `kb_session_prime`,
@@ -308,20 +326,26 @@ argument, which no MCP request can carry.
 two anchors resolving to the same project slug but different folders get
 distinct basis-hash roots rather than sharing the first caller's.
 
-**THE OBLIGATION.** A generated binding MUST NOT reintroduce a scope field on
-any `kb_*` request; scope is a property of the session, not of the call. An
+**THE OBLIGATION.** A generated binding MUST NOT reintroduce a live scope field
+on any `kb_*` request; scope is a property of the session, not of the call. The
+removed keys (`repo_path`, `repo`, `repo_remote_url`) appear only as REMOVED
+markers, and every value of one is refused with `E-SCOPE-KEY-REMOVED`. An
 implementation MUST derive KB identity from the resolved folder's origin
 remote and MUST surface the three self-resolution (`E-SELF-NO-WORKFOLDER`, `E-SELF-NOT-A-REPO`, `E-SELF-NO-REMOTE`) codes rather than guessing. Any
 provider-instance cache MUST key on the (slug, repoPath) pair, not slug
 alone. An implementation MUST preserve which tools refuse versus tolerate an
 unreachable remote folder -- read tools tolerate, writing tools refuse.
 
-**THE TEST HOOK.** The round-trip harness dispatches every fixture as a
-registered member session (`tests/roundtrip-harness.mjs` `ENVIRONMENT.sessions`)
-and carries one refusal fixture per self-resolution (`E-SELF-NO-WORKFOLDER`, `E-SELF-NOT-A-REPO`, `E-SELF-NO-REMOTE`) code
+**THE TEST HOOK.** The round-trip harness dispatches every fixture as the
+session it names (`tests/roundtrip-harness.mjs` `ENVIRONMENT.sessions`: a
+registered member session, or the FULL session `FULL_A` whose server working
+folder is repo A) and carries one refusal fixture per self-resolution (`E-SELF-NO-WORKFOLDER`, `E-SELF-NOT-A-REPO`, `E-SELF-NO-REMOTE`) code
 (`kb_query/refusal-self-no-workfolder`, `kb_stats/refusal-self-not-a-repo`,
-`kb_list/refusal-self-no-remote`); the request schemas' `additionalProperties:
-false` rejects a scope field before dispatch. The (slug, repoPath)
+`kb_list/refusal-self-no-remote`) and one `E-SCOPE-KEY-REMOVED` refusal fixture
+per tool family (`kb_query`, `kb_capture`, `kb_export` and
+`kb_freshness_sweep`, each `refusal-scope-key-removed`); the request schemas'
+`additionalProperties: false` rejects any other undeclared field before
+dispatch. The (slug, repoPath)
 cache-keying invariant is `tests/DEGRADATION.md` D-2.
 
 ### 4.2 Capture provenance and confidence clamp

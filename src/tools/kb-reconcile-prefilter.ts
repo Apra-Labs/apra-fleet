@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { KB_REMOVED_SCOPE_KEYS_SHAPE } from '../services/knowledge/kb-removed-scope-keys.js';
 import { getSelfKbProviders, type KbAnchor } from '../services/knowledge/kb-self.js';
 import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
 
@@ -15,6 +16,9 @@ import { requireSqliteProject } from '../services/knowledge/require-sqlite-proje
 // an ACTIVE user-directive are never touched (no resolve, no supersede, no
 // flag-clear) -- directives outrank mechanics.
 export const kbReconcilePrefilterSchema = z.object({
+  // Removed pre-redesign scope keys: declared only so a caller still passing one
+  // is refused with E-SCOPE-KEY-REMOVED instead of silently re-scoped.
+  ...KB_REMOVED_SCOPE_KEYS_SHAPE,
 });
 
 export type KbReconcilePrefilterInput = z.infer<typeof kbReconcilePrefilterSchema>;

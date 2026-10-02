@@ -154,7 +154,7 @@ const EXPECTED_TOOL_COUNT = KB_MODULES.length + CODE_EXPORTS.length; // 26 (24 p
 // Every kb_* registration appends KB_SELF_NOTE (src/services/knowledge/kb-self.ts),
 // reproduced byte-exact here for the same no-runtime-dependency reason.
 const KB_SELF_NOTE =
-  ' Scope: always the calling session\'s own KB -- a member session uses its registered work folder, any other session the fleet server\'s working folder; there is no repo/path scope argument. Fails with E-SELF-NO-WORKFOLDER, E-SELF-NOT-A-REPO or E-SELF-NO-REMOTE (each with a one-line remediation) when that folder cannot carry a KB identity (it must be a git repository with an origin remote).';
+  ' Scope: always the calling session\'s own KB -- a member session uses its registered work folder, any other session the fleet server\'s working folder; there is no repo/path scope argument (the removed repo_path, repo and repo_remote_url keys fail with E-SCOPE-KEY-REMOVED). Fails with E-SELF-NO-WORKFOLDER, E-SELF-NOT-A-REPO or E-SELF-NO-REMOTE (each with a one-line remediation) when that folder cannot carry a KB identity (it must be a git repository with an origin remote).';
 
 // Every code_* registration appends CODE_SELF_NOTE (src/tools/code-intelligence.ts),
 // reproduced byte-exact here for the same no-runtime-dependency reason.
@@ -167,13 +167,13 @@ const BASE_DESCRIPTIONS = {
   kb_invalidate:
     'Mark context-cache entries stale for the given file paths (pass files), or discard entries by id (pass ids): discarding sets superseded_at so the entry drops out of every read. Exactly one of files or ids. ids returns {discarded, not_found, already_discarded}. In a MEMBER session both forms act only on entries tagged member:<caller uuid>: files leaves other entries for those files untouched, and with ids any other id is reported in not_found and changes nothing. Call after modifying files to ensure the KB reflects the current state.',
   kb_context:
-    'Check freshness of files against the knowledge bank. Returns {fresh, stale, missing} -- fresh files can be skipped, stale/missing files must be re-read. In a MEMBER session freshness is judged against entries from the member\'s checkout bible.',
+    'Check freshness of files against the knowledge bank. Returns {fresh, stale, missing} -- fresh files can be skipped, stale/missing files must be re-read. With no confidence filter the default is confidence ["CONFIRMED","INFERRED"] plus exclude_disputed (a context-cache entry is verified by its content hash); UNVERIFIED only when listed explicitly. In a MEMBER session the default read merges the member\'s checkout bible (CONFIRMED) with the member\'s own CONFIRMED/INFERRED captures (tagged member:<caller uuid>).',
   kb_session_prime:
     'Prime a session with KB context. Returns session_warm status, stale files needing re-read, top KB entries, and recommended GitNexus calls. In a MEMBER session the entries come from the member\'s checkout bible.',
   kb_query:
     'Two-level knowledge bank search. L1: FTS5 on title+summary (up to 20 results). L2: full content for top 5 hits (max 800 tokens each). Excludes stale/superseded by default. Optional tag filter (exact match) ANDs alongside other filters without touching FTS/OR-join logic, and may be used alone (no query) to list all entries carrying the tag. Pass flagged_only: true to list all contradiction-flagged entry pairs for resolution. Pass expand_related: true to also receive related_claims -- entries joined to the top hits by a refines or contradiction_of edge. Those record the KB own judgements about its contents (there is a newer framing of this; something disputes this) and cannot be reached by a text match. shares_file/shares_symbol edges are deliberately not traversed, since FTS over those same fields already surfaces them. Default false, in which case related_claims is absent and the result shape is unchanged. With no confidence filter the default is confidence ["CONFIRMED"] plus exclude_disputed: true, so only CONFIRMED entries outside any unresolved contradiction are returned (related_claims included). Pass an explicit confidence list (e.g. ["CONFIRMED","INFERRED","UNVERIFIED"]) to opt into other tiers; exclude_disputed then defaults off unless set true. flagged_only is exempt. In a MEMBER session the default (CONFIRMED) read comes from the member\'s checkout bible; an explicit INFERRED/UNVERIFIED read comes from the per-repo DB and returns only entries tagged member:<caller uuid>.',
   kb_list:
-    'List KB entries by confidence/type/module/symbol/tag -- audit the KB. With no confidence filter, returns only CONFIRMED, undisputed entries; pass an explicit confidence list (e.g. ["INFERRED","UNVERIFIED"]) to see other tiers without touching FTS ranking or use_count telemetry. Excludes superseded/stale entries. Returns {results, total} with each entry as {id, type, confidence, title, summary, symbols, source_files}. In a MEMBER session the default (CONFIRMED) list comes from the member\'s checkout bible; an explicit INFERRED/UNVERIFIED list comes from the per-repo DB, own-tagged entries only.',
+    'List KB entries by confidence/type/module/symbol/tag -- audit the KB. With no confidence filter, returns only CONFIRMED, undisputed entries; pass an explicit confidence list (e.g. ["INFERRED","UNVERIFIED"]; a single tier string such as "INFERRED" is accepted as a one-element list) to see other tiers without touching FTS ranking or use_count telemetry. Excludes superseded/stale entries. Returns {results, total} with each entry as {id, type, confidence, title, summary, symbols, source_files}. In a MEMBER session the default (CONFIRMED) list comes from the member\'s checkout bible; an explicit INFERRED/UNVERIFIED list comes from the per-repo DB, own-tagged entries only.',
   kb_harvest:
     'Scan a session transcript for learnings and capture them into the KB. Returns {entries_captured, entries_updated, entries_skipped}. Extracted entries are UNVERIFIED and author=harvest, source=harvest.',
   kb_promote:
@@ -335,7 +335,7 @@ function loadTaxonomy() {
 function loadProjectableCodes(taxonomy) {
   const codes = [];
   for (const [group, body] of Object.entries(taxonomy.groups)) {
-    body.codes.forEach((entry, index) => {
+    body.codes.forEach((entry) => {
       if (entry.surfaced !== 'thrown' && entry.surfaced !== 'response-field') {
         if (entry.surfaced !== 'silent') {
           throw new Error(
@@ -345,8 +345,14 @@ function loadProjectableCodes(taxonomy) {
         }
         return;
       }
+      if (entry.$anchor !== entry.code) {
+        throw new Error(
+          `${entry.code}: taxonomy.json entry has $anchor "${entry.$anchor}" -- every groups code must carry ` +
+            '$anchor equal to its code (taxonomy.json _meta.ref_rule), because projections reference codes by id',
+        );
+      }
       const tools = [...new Set(entry.raising_methods.map((m) => m.tool))];
-      codes.push({ code: entry.code, group, index, meaning: entry.meaning, tools });
+      codes.push({ code: entry.code, group, meaning: entry.meaning, tools });
     });
   }
   return codes;
@@ -380,14 +386,19 @@ function checkDirectiveActivationAbsence(taxonomy, bindingDocs, openApiDoc) {
 }
 
 /**
- * The taxonomy.json reference URI for one projectable code -- a JSON Pointer
- * (RFC 6901) fragment appended to TAXONOMY_ID_BASE. This is how both
- * projections point AT taxonomy.json's own entry instead of inlining the code
- * string a second time: the pointer identifies the entry structurally (by
- * group + array index), so neither projection re-types `entry.code` anywhere.
+ * The taxonomy.json reference URI for one projectable code -- a plain-name
+ * fragment (the code's own `$anchor` in taxonomy.json, which always equals its
+ * `code` string; see taxonomy.json `_meta.ref_rule`) appended to
+ * TAXONOMY_ID_BASE. This is how both projections point AT taxonomy.json's own
+ * entry. The reference is BY ID, never a positional JSON Pointer
+ * (#/groups/<group>/codes/<index>): a positional pointer silently changes
+ * meaning when a code is inserted mid-array, whereas an id reference keeps
+ * meaning the same code under any insertion, removal or reorder.
+ * loadProjectableCodes refuses an entry whose `$anchor` is missing or differs
+ * from its code, so the fragment always resolves.
  */
 function taxonomyCodeRef(entry) {
-  return `${TAXONOMY_ID_BASE}#/groups/${entry.group}/codes/${entry.index}`;
+  return `${TAXONOMY_ID_BASE}#${entry.code}`;
 }
 
 /**

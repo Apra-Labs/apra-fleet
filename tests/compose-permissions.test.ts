@@ -679,6 +679,11 @@ describe('composePermissions -- legacy fleet MCP entries pruned from settings.lo
     addAgent(member);
     const fs0 = makeFsHandler();
     mockExecCommand.mockImplementation(async (cmd: string) => {
+      // Workspace-trust read: emulate the member shell's `cat ... || { test -e && printf SENTINEL }`.
+      if (cmd.startsWith('cat "/home/testuser/.claude.json" 2>/dev/null ||')) {
+        const marker = cmd.match(/echo "([^"]+)"/)![1];
+        return { stdout: `FLEET_HOME_CONFIG_UNREADABLE${marker}\n`, stderr: 'cat: Permission denied', code: 0 };
+      }
       if (cmd.includes('/home/testuser/.claude.json') && cmd.includes('cat "/home/testuser/.claude.json"') && !cmd.includes('cat >')) {
         return { stdout: '', stderr: 'cat: Permission denied', code: 1 };
       }
@@ -1202,7 +1207,7 @@ describe('composePermissions -- invokes ensureWorkspaceTrusted (apra-fleet-eft.4
     expect(spy).toHaveBeenCalledTimes(1);
     // apra-fleet-7dir.2.8 widened the hook with a 4th `shell` argument; this
     // member records no shell, so seedWorkspaceTrust forwards undefined.
-    expect(spy).toHaveBeenCalledWith('/home/testuser/project', expect.any(Function), 'linux', undefined, TRUST_TRANSPORT, null);
+    expect(spy).toHaveBeenCalledWith('/home/testuser/project', expect.any(Function), 'linux', undefined, TRUST_TRANSPORT, '/home/testuser');
     spy.mockRestore();
   });
 
@@ -1218,7 +1223,7 @@ describe('composePermissions -- invokes ensureWorkspaceTrusted (apra-fleet-eft.4
     expect(spy).toHaveBeenCalledTimes(1);
     // apra-fleet-7dir.2.8 widened the hook with a 4th `shell` argument; this
     // member records no shell, so seedWorkspaceTrust forwards undefined.
-    expect(spy).toHaveBeenCalledWith('/home/testuser/project', expect.any(Function), 'linux', undefined, TRUST_TRANSPORT, null);
+    expect(spy).toHaveBeenCalledWith('/home/testuser/project', expect.any(Function), 'linux', undefined, TRUST_TRANSPORT, '/home/testuser');
     spy.mockRestore();
   });
 

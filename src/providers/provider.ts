@@ -550,7 +550,10 @@ export interface ProviderAdapter {
    *  because the PowerShell ones are handed straight to bash.exe and fail (apra-fleet-7dir.2.8).
    *  `transport.writeHomeFile`, when present, delivers the merged file without a shell
    *  command line (node:fs / SFTP) so a large ~/.claude.json cannot overflow the Windows
-   *  CreateProcess limit (GitHub #499); without it the adapter chunks the write on Windows. */
+   *  CreateProcess limit (GitHub #499); without it the adapter chunks the write on Windows.
+   *  `memberHomeDir` is the member home resolved in JavaScript (getMemberHomeDir); every
+   *  member-side path is built from it, never from a shell home variable, and an adapter
+   *  that needs it refuses (seeded: false, E-MEMBER-HOME-UNRESOLVED) when it is absent. */
   ensureWorkspaceTrusted(workFolder: string, execCommand: WorkspaceTrustExecFn, agentOs?: 'linux' | 'macos' | 'windows', shell?: MemberShell, transport?: WorkspaceTrustTransport, memberHomeDir?: string | null): Promise<EnsureWorkspaceTrustedResult>;
 }
 

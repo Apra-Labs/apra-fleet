@@ -289,12 +289,13 @@ function memberNameOf(member) {
  *   canResetCheckout?: (memberName: string, bibleFile: string) => Promise<{ safe: boolean, reason?: string }>,
  *   checkedOutBranch?: (memberName: string) => Promise<{ branch: string|null, sprintBranch: string|null }>,
  *   bibleUnpushed?: (memberName: string, bibleFile: string) => Promise<{ unpushed: boolean|null, reason?: string }>,
+ *   unpushedOnlyBible?: (memberName: string, bibleFile: string) => Promise<{ onlyBible: boolean, reason?: string }>,
  *   sprintStartMs?: number|(() => number),
  *   log?: Function,
  * }} opts
  */
 export function createKbWorkClient(opts = {}) {
-    const { memberCall, gPull, gPush, abortRebase, bibleBase, canResetCheckout, checkedOutBranch, bibleUnpushed, log = () => {} } = opts;
+    const { memberCall, gPull, gPush, abortRebase, bibleBase, canResetCheckout, checkedOutBranch, bibleUnpushed, unpushedOnlyBible, log = () => {} } = opts;
     /** The sprint's start time (ms since epoch) from the sprint state, or null when unknown. */
     const sprintStartMs = () => {
         const v = typeof opts.sprintStartMs === 'function' ? opts.sprintStartMs() : opts.sprintStartMs;
@@ -498,6 +499,9 @@ export function createKbWorkClient(opts = {}) {
         // G-pull BEFORE every batch: the maintainer's checkout must hold the
         // files the queued captures cite before kb_capture's basis check runs.
         if (typeof gPull === 'function') {
+            // Same sprint-branch guard as the bible commit path: a pull on any
+            // other branch would move that branch, so nothing runs there.
+            if (!(await onSprintBranch(maintainer, repo, queue.length, 'KB write'))) return counts;
             // Register the pull in inFlight so dispatchStarted() waits it out
             // instead of running its own G-pull concurrently on the same checkout.
             const pull = Promise.resolve().then(() => gPull(maintainer));
@@ -584,8 +588,9 @@ export function createKbWorkClient(opts = {}) {
      * fast-forward pull would fail by construction; kb_bible_commit re-merges
      * the same ids at entry level on top of the new tip instead.
      */
-    async function bibleAttempt(target, ids, { resetToRemoteTip = false } = {}) {
+    async function bibleAttempt(target, repo, ids, { resetToRemoteTip = false } = {}) {
         const maintainer = target.member;
+        if (!(await onSprintBranch(maintainer, repo, ids.length))) return { ok: false, stage: 'branch check', error: 'the maintainer is not on the sprint branch', branchBlocked: true };
         try {
             await gPull(maintainer, resetToRemoteTip ? { resetToRemoteTip: true } : {});
         } catch (err) {
@@ -600,6 +605,7 @@ export function createKbWorkClient(opts = {}) {
         if (!base || typeof base.baseBranch !== 'string' || !base.baseBranch || typeof base.baseCommit !== 'string' || !base.baseCommit) {
             return { ok: false, stage: 'base resolution', error: 'the base branch or base commit could not be resolved on the maintainer' };
         }
+        if (!(await onSprintBranch(maintainer, repo, ids.length))) return { ok: false, stage: 'branch check', error: 'the maintainer is not on the sprint branch', branchBlocked: true };
         let res;
         try {
             res = await memberCall(target.record, 'kb_bible_commit', { ids, baseBranch: base.baseBranch, baseCommit: base.baseCommit });
@@ -621,6 +627,18 @@ export function createKbWorkClient(opts = {}) {
             if (where.unpushed === false) return { ok: true, result, pushed: false };
             if (where.unpushed !== true) return { ok: false, stage: 'publication check', error: where.reason || 'whether origin holds the bible could not be established' };
             log(`[kb-work] kb_bible_commit made no new commit on maintainer '${maintainer}', but an earlier bible commit is not on origin yet -- pushing it`);
+        }
+        if (!(await onSprintBranch(maintainer, repo, ids.length))) return { ok: false, stage: 'branch check', error: 'the maintainer is not on the sprint branch', branchBlocked: true };
+        // A bible push must publish the bible commit(s) only: never a doer
+        // commit that sits unpushed underneath them. Without an injected
+        // probe the push is allowed.
+        if (typeof unpushedOnlyBible === 'function') {
+            let verdict;
+            try { verdict = await unpushedOnlyBible(maintainer, BIBLE_FILE); } catch (err) { verdict = { onlyBible: false, reason: errText(err) }; }
+            if (!verdict || verdict.onlyBible !== true) {
+                log(`[kb-work] WARN: not pushing the bible commit from maintainer '${maintainer}' (${repo}): ${(verdict && verdict.reason) || 'unknown'} -- a bible push must not publish other commits; the ${ids.length} confirmation(s) stay queued for the next round`);
+                return { ok: false, stage: 'push guard', error: (verdict && verdict.reason) || 'unpushed non-bible commits', branchBlocked: true };
+            }
         }
         try {
             await gPush(maintainer);
@@ -670,7 +688,7 @@ export function createKbWorkClient(opts = {}) {
      * false -- the caller keeps the ids queued. Without an injected guard
      * the check passes.
      */
-    async function onSprintBranch(maintainer, repo, count) {
+    async function onSprintBranch(maintainer, repo, count, what = 'confirmation') {
         if (typeof checkedOutBranch !== 'function') return true;
         let found = null;
         let sprintBranch = null;
@@ -684,7 +702,7 @@ export function createKbWorkClient(opts = {}) {
         }
         if (found && sprintBranch && found === sprintBranch) return true;
         const foundText = found ? `'${found}'` : `an unreadable branch${readError ? ` (${readError})` : ''}`;
-        log(`[kb-work] WARN: maintainer '${maintainer}' (${repo}) has ${foundText} checked out, not the sprint branch '${sprintBranch || 'unknown'}' -- no bible commit, push or reset is made there; ${count} confirmation(s) stay queued for the next round`);
+        log(`[kb-work] WARN: maintainer '${maintainer}' (${repo}) has ${foundText} checked out, not the sprint branch '${sprintBranch || 'unknown'}' -- no pull, bible commit, push or reset is made there; ${count} ${what}(s) stay queued for the next round`);
         return false;
     }
 
@@ -717,11 +735,10 @@ export function createKbWorkClient(opts = {}) {
         let release;
         inFlight.set(maintainer, new Promise((r) => { release = r; }));
         try {
-            if (!(await onSprintBranch(maintainer, repo, ids.length))) return { committed: 0, pending: ids.length };
-            let outcome = await bibleAttempt(target, ids);
+            let outcome = await bibleAttempt(target, repo, ids);
             if (!outcome.ok && outcome.stage === 'G-push') {
                 log(`[kb-work] G-push of the bible commit on maintainer '${maintainer}' (${repo}) was rejected (${outcome.error}) -- retrying once: rebase --abort, G-pull, kb_bible_commit, G-push`);
-                if (typeof abortRebase === 'function') {
+                if (typeof abortRebase === 'function' && (await onSprintBranch(maintainer, repo, ids.length))) {
                     try { await abortRebase(maintainer); } catch (err) { log(`[kb-work] rebase --abort on maintainer '${maintainer}' failed (non-fatal): ${errText(err)}`); }
                 }
                 // The reset throws away the maintainer's local-only commits and
@@ -729,13 +746,13 @@ export function createKbWorkClient(opts = {}) {
                 // when that is the bible commit alone.
                 if (!(await onSprintBranch(maintainer, repo, ids.length))) return { committed: 0, pending: ids.length };
                 if (!(await resetIsSafe(maintainer, repo))) return { committed: 0, pending: ids.length };
-                outcome = await bibleAttempt(target, ids, { resetToRemoteTip: true });
+                outcome = await bibleAttempt(target, repo, ids, { resetToRemoteTip: true });
                 if (!outcome.ok && (outcome.stage === 'G-push' || outcome.stage === 'kb_bible_commit')) {
                     // Leave the checkout on the remote tip: an unpushed bible
                     // commit would make the maintainer's next fast-forward
                     // G-pull fail. The ids stay queued and are re-merged by
                     // the next round's kb_bible_commit.
-                    if (typeof abortRebase === 'function') {
+                    if (typeof abortRebase === 'function' && !outcome.branchBlocked && (await onSprintBranch(maintainer, repo, ids.length))) {
                         try { await abortRebase(maintainer); } catch { /* best-effort */ }
                     }
                     try { if ((await onSprintBranch(maintainer, repo, ids.length)) && (await resetIsSafe(maintainer, repo))) await gPull(maintainer, { resetToRemoteTip: true }); } catch (err) {
@@ -743,6 +760,7 @@ export function createKbWorkClient(opts = {}) {
                     }
                 }
             }
+            if (!outcome.ok && outcome.branchBlocked) return { committed: 0, pending: ids.length };
             if (!outcome.ok) {
                 log(`[kb-work] WARN: bible commit for ${repo} on maintainer '${maintainer}' failed at ${outcome.stage} (${outcome.error}) -- ${ids.length} confirmation(s) stay queued for the next round`);
                 return { committed: 0, pending: ids.length };

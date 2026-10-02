@@ -312,20 +312,28 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
     await seedWorkspaceTrust(updated, undefined, 'update_member');
   }
 
-  // Provider switch: remove exactly what compose_permissions wrote for the OLD
-  // provider (its permission files, its per-folder apra-fleet MCP entry and the
-  // exclude lines), evaluated against the member as it was BEFORE this update
-  // (old provider, old folder/host), then re-compose for the NEW provider so
-  // the member is never left with the old provider's config or none at all.
-  // Skipped entirely when the provider did not change.
+  // Provider switch OR work-folder move: remove exactly what
+  // compose_permissions wrote for the member as it was BEFORE this update (old
+  // provider, old folder/host -- its permission files, its per-folder
+  // apra-fleet MCP entry and the exclude lines), then re-compose for the
+  // member as it is now, so the new folder gets its ?member= entry at once
+  // (until then a session there would see the FULL user-scope entry) and the
+  // old folder is left with no stale member entry. Skipped entirely when
+  // neither the provider nor the work folder changed.
   const oldProvider = existing.llmProvider ?? 'claude';
   const newProvider = updated.llmProvider ?? 'claude';
-  if (oldProvider !== newProvider) {
+  const providerChanged = oldProvider !== newProvider;
+  const workFolderMoved = updated.workFolder !== existing.workFolder;
+  if (providerChanged || workFolderMoved) {
+    const why = providerChanged
+      ? `Provider switch ${oldProvider} -> ${newProvider}`
+      : `Work folder move ${existing.workFolder} -> ${updated.workFolder}`;
+    const oldWhat = providerChanged ? `the old ${oldProvider} config` : `the config in the old work folder`;
     try {
       const removed = await removeComposedMemberConfig(existing);
-      logLine('update_member', `provider ${oldProvider} -> ${newProvider}: removed old config (${removed.join('; ') || 'nothing to remove'})`, updated);
+      logLine('update_member', `${why}: removed old config (${removed.join('; ') || 'nothing to remove'})`, updated);
     } catch (e: any) {
-      warnings.push(`Provider switch ${oldProvider} -> ${newProvider}: could not remove the old ${oldProvider} config: ${e?.message ?? String(e)}`);
+      warnings.push(`${why}: could not remove ${oldWhat}: ${e?.message ?? String(e)}`);
     }
     let composeResult: string;
     try {
@@ -335,7 +343,9 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
     }
     if (!composeResult.startsWith('\u2705')) {
       const asciiDetail = composeResult.replace(/^[^\x00-\x7F]+\s*/, '');
-      warnings.push(`ERROR: provider switched to ${newProvider} but compose_permissions failed -- the member has no ${newProvider} permission/MCP config: ${asciiDetail}`);
+      warnings.push(providerChanged
+        ? `ERROR: provider switched to ${newProvider} but compose_permissions failed -- the member has no ${newProvider} permission/MCP config: ${asciiDetail}`
+        : `ERROR: work folder moved to ${updated.workFolder} but compose_permissions failed -- the new folder has no member permission/MCP config: ${asciiDetail}`);
     }
   }
 
@@ -344,13 +354,12 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
   // the member's own install. Best-effort: the update itself already succeeded
   // and the outcome is a recorded, recoverable status (apra-fleet-b4g.56).
   const nameChanged = updated.friendlyName !== existing.friendlyName;
-  const folderMoved = updated.workFolder !== existing.workFolder;
   let fleetMcpLine: string | undefined;
-  if (oldProvider !== newProvider || nameChanged || folderMoved) {
+  if (providerChanged || nameChanged || workFolderMoved) {
     try {
       const status = await refreshMemberFleetMcp(updated, getMemberFleetMcpDeps(), {
-        install: oldProvider !== newProvider && updated.agentType !== 'local',
-        forceInstall: oldProvider !== newProvider,
+        install: providerChanged && updated.agentType !== 'local',
+        forceInstall: providerChanged,
       });
       fleetMcpLine = status.state === 'available'
         ? `available${status.version ? ` (apra-fleet ${status.version})` : ''}`

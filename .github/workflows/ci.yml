@@ -560,10 +560,19 @@ jobs:
           pattern: apra-fleet-*
           merge-multiple: true
 
+      - name: Publish SHA-256 checksums for the binary assets
+        run: |
+          # Member installs download these assets and verify them against
+          # SHA256SUMS before running them (src/services/member-fleet-install.ts).
+          cd release-binaries
+          sha256sum apra-fleet-installer-linux-x64 apra-fleet-installer-darwin-arm64 apra-fleet-installer-win-x64.exe > SHA256SUMS
+          cat SHA256SUMS
+
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
           files: |
+            release-binaries/SHA256SUMS
             ${{ env.TARBALL_NAME }}
             release-binaries/apra-fleet-installer-linux-x64
             release-binaries/apra-fleet-installer-darwin-arm64

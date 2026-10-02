@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { KB_REMOVED_SCOPE_KEYS_SHAPE } from '../services/knowledge/kb-removed-scope-keys.js';
 import { getSelfKbProviders, type KbAnchor } from '../services/knowledge/kb-self.js';
 import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
 
@@ -12,6 +13,9 @@ import { requireSqliteProject } from '../services/knowledge/require-sqlite-proje
 // revival requires a sweep, not just a prime. Invoked standalone by the PM
 // reconcile flow and internally by kb_import.
 export const kbFreshnessSweepSchema = z.object({
+  // Removed pre-redesign scope keys: declared only so a caller still passing one
+  // is refused with E-SCOPE-KEY-REMOVED instead of silently re-scoped.
+  ...KB_REMOVED_SCOPE_KEYS_SHAPE,
 });
 
 export type KbFreshnessSweepInput = z.infer<typeof kbFreshnessSweepSchema>;

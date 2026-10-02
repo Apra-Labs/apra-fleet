@@ -172,6 +172,11 @@ export const ENVIRONMENT = {
     NO_REMOTE: { member: 'contract-no-remote', kind: 'local', repo: 'NO_REMOTE' },
     NO_WORKFOLDER: { member: 'contract-no-workfolder', kind: 'local', dir: 'no-such-work-folder' },
     REMOTE_UNREACHABLE: { member: 'contract-remote', kind: 'remote', dir: 'this-directory-does-not-exist', remote: 'A' },
+    // A FULL session (no member identity): its (self) is the fleet server's
+    // working folder, which the provider points at repo A for each call. It
+    // shares repo A's KB with session A (same origin remote), but its reads and
+    // writes go to the live KB, not a member's read-only checkout bible view.
+    FULL_A: { kind: 'full', repo: 'A' },
   },
   defaultSession: 'A',
 };
@@ -246,6 +251,7 @@ export const SCENARIO = [
   { tool: 'kb_session_prime', case: 'happy' },
   { tool: 'kb_query', case: 'happy' },
   { tool: 'kb_list', case: 'happy' },
+  { tool: 'kb_list', case: 'happy-confidence-string' },
   { tool: 'kb_promote', case: 'happy', derive: { id: 'FOO' } },
   // kb_export writes .fleet/kb-canonical.json into repo A; the kb_import step
   // below reads it back through the path anchor, no derive needed. It runs
@@ -260,9 +266,11 @@ export const SCENARIO = [
   { tool: 'kb_stats', case: 'happy' },
   { tool: 'kb_import', case: 'happy' },
   { tool: 'kb_freshness_sweep', case: 'happy' },
-  // Every session here is a MEMBER session, so kb_feedback is the typed
-  // E-MEMBER-VIEW-READ-ONLY refusal (the member's bible view is read-only).
+  // A MEMBER session's kb_feedback is the typed E-MEMBER-VIEW-READ-ONLY
+  // refusal (the member's bible view is read-only); the same request from a
+  // FULL (non-member) session succeeds against the live KB.
   { tool: 'kb_feedback', case: 'refusal-member-view-read-only', derive: { id: 'FOO' } },
+  { tool: 'kb_feedback', case: 'happy', derive: { id: 'FOO' } },
   { tool: 'kb_harvest', case: 'happy' },
   { tool: 'kb_capture', case: 'happy-contradiction-a', captureId: 'BROKEN' },
   { tool: 'kb_capture', case: 'happy-contradiction-b', captureId: 'FIXED' },
@@ -283,6 +291,10 @@ export const SCENARIO = [
 
   // -- PASS 2: taxonomy-coded refusals + non-error outcomes -----------------
   { tool: 'kb_query', case: 'refusal-no-selector' },
+  { tool: 'kb_query', case: 'refusal-scope-key-removed' },
+  { tool: 'kb_capture', case: 'refusal-scope-key-removed' },
+  { tool: 'kb_export', case: 'refusal-scope-key-removed' },
+  { tool: 'kb_freshness_sweep', case: 'refusal-scope-key-removed' },
   { tool: 'kb_context', case: 'refusal-path-traversal' },
   { tool: 'kb_export', case: 'refusal-repo-path-invalid' },
   { tool: 'kb_bible_commit', case: 'refusal-repo-path-invalid' },
@@ -450,18 +462,17 @@ function loadNonErrorOutcomeNames() {
 
 /**
  * The taxonomy codes a tool's MCP binding claims it can raise. bindings/mcp
- * stores them as `$ref` JSON pointers into taxonomy.json
- * (`#/groups/<group>/codes/<index>`), so they are resolved back to codes here.
+ * stores them as `$ref`s into taxonomy.json BY ID (`taxonomy.json#<CODE>`,
+ * the entry's `$anchor`; taxonomy.json `_meta.ref_rule`), so the fragment is
+ * the code itself. A fragment naming no closed-set code is kept as-is so the
+ * caller's membership check fails loudly rather than silently dropping it.
  */
-function bindingErrorCodes(tool, taxonomyIndex) {
+function bindingErrorCodes(tool) {
   const binding = readJson(path.join(BINDINGS_MCP_DIR, `${tool}.json`));
   const codes = new Set();
   for (const ref of binding.errors ?? []) {
-    const pointer = String(ref.$ref ?? '').split('#')[1] ?? '';
-    const [, , group, , index] = pointer.split('/');
-    for (const [code, meta] of taxonomyIndex) {
-      if (meta.group === group && String(meta.index) === index) codes.add(code);
-    }
+    const fragment = String(ref.$ref ?? '').split('#')[1] ?? '';
+    if (fragment) codes.add(fragment);
   }
   return codes;
 }
@@ -703,7 +714,7 @@ function taxonomyFailures(fixture, taxonomyIndex) {
   if (!raisers.includes(fixture.tool)) {
     failures.push(`taxonomy raising_methods for ${code} do not name ${fixture.tool} (names ${raisers.join(', ')})`);
   }
-  if (!bindingErrorCodes(fixture.tool, taxonomyIndex).has(code)) {
+  if (!bindingErrorCodes(fixture.tool).has(code)) {
     failures.push(`bindings/mcp/${fixture.tool}.json carries no error ref for ${code}`);
   }
 

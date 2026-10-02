@@ -156,6 +156,7 @@
 /**
  * @typedef {Object} FleetStatusOptions
  * @property {"compact" | "json"} [format] - Output format
+ * @property {string} [repo_path] - Absolute path to a repo checkout; adds that repo's code-intelligence index health and its KB scope's bible drift. The server's own cwd is never used. KB health itself always covers every project KB scope plus the global KB.
  */
 
 /**
@@ -515,6 +516,8 @@
 
 /**
  * @typedef {Object} KbExportOptions
+ * No scope key: the KB is the calling session's own. The removed repo_path, repo and
+ * repo_remote_url are refused with E-SCOPE-KEY-REMOVED (client-side and by the server).
  * @property {"project" | "global"} [scope] - project (default): export the project KB to
  *   .fleet/kb-canonical.json. global: export the GLOBAL KB to .fleet/kb-canonical-global.json.
  * @property {string} [baseBranch] - The target base branch (the branch the entries merge
@@ -627,6 +630,34 @@ export function parseToolJson(result) {
 }
 
 const isStringArray = (v) => Array.isArray(v) && v.every((s) => typeof s === 'string');
+
+/**
+ * The pre-redesign kb_* scope keys. Every kb_* tool acts on the calling
+ * session's own KB, so the server refuses a call carrying any of these with
+ * E-SCOPE-KEY-REMOVED (src/services/knowledge/kb-removed-scope-keys.ts). The
+ * kb_* wrappers below refuse them client-side with the same code, so a stale
+ * caller fails fast and identically whichever side catches it.
+ */
+export const KB_REMOVED_SCOPE_KEYS = Object.freeze(['repo_path', 'repo', 'repo_remote_url']);
+
+/**
+ * Throw E-SCOPE-KEY-REMOVED when `options` carries a removed kb_* scope key
+ * (any value other than undefined).
+ * @param {string} tool - the kb_* tool name, for the message
+ * @param {Record<string, unknown>} [options]
+ */
+export function assertNoRemovedKbScopeKeys(tool, options) {
+    if (!options || typeof options !== 'object') return;
+    const present = KB_REMOVED_SCOPE_KEYS.filter((k) => options[k] !== undefined);
+    if (present.length === 0) return;
+    const err = new Error(
+        `E-SCOPE-KEY-REMOVED: ${tool} no longer accepts ${present.map((k) => `'${k}'`).join(', ')} ` +
+        '(removed in the KB redesign); the call was not sent. Remediation: drop it -- every kb_* call acts on the ' +
+        "calling session's own KB (a member session's registered work folder; a FULL session's fleet server working folder).",
+    );
+    err.code = 'E-SCOPE-KEY-REMOVED';
+    throw err;
+}
 
 /**
  * Typed read of an execute_prompt permission denial. Accepts the raw executePrompt()
@@ -747,9 +778,10 @@ export class ApraFleet {
     }
 
     /**
-     * Change a member's settings. Changing `llm_provider` removes the old
-     * provider's composed permission/MCP config and re-composes for the new
-     * provider (see docs/api-reference.md).
+     * Change a member's settings. Changing `llm_provider` or `work_folder`
+     * removes the composed permission/MCP config written for the old
+     * provider/folder and re-composes for the member as updated (see
+     * docs/api-reference.md).
      * @param {UpdateMemberOptions} options
      */
     async updateMember(options) {
@@ -757,7 +789,9 @@ export class ApraFleet {
     }
 
     /**
-     * Remove a member from the fleet.
+     * Remove a member from the fleet. Member-side composed config (the
+     * per-folder `apra-fleet` MCP entry, permission keys) is removed first;
+     * what could not be removed is reported as a warning.
      * @param {RemoveMemberOptions} options
      */
     async removeMember(options) {
@@ -840,8 +874,10 @@ export class ApraFleet {
      * Compose and deliver a scoped permission profile to a member. Also writes
      * the member's per-folder `apra-fleet` MCP entry (`?member=<uuid>`) through
      * the member provider's own per-project config, with deny rules for every
-     * fleet tool outside the member allowlist (claude, agy); see
-     * docs/api-reference.md.
+     * fleet tool outside the member allowlist (claude, agy), merged by union
+     * with any existing deny rules. The result states why a member config was
+     * not edited (tracked by git, not strict JSON, unreadable) and when a stale
+     * fleetMcp unavailable status was cleared; see docs/api-reference.md.
      * @param {ComposePermissionsOptions} options
      */
     async composePermissions(options) {
@@ -853,9 +889,12 @@ export class ApraFleet {
      * file and auto-commit it locally (never pushed). Pass baseBranch/baseCommit
      * to record the target base branch and base commit in provenance.
      * Result JSON: {exported, path, scope, committed}; extract with parseToolJson().
+     * The removed scope keys (repo_path, repo, repo_remote_url) are refused
+     * with E-SCOPE-KEY-REMOVED before anything is sent.
      * @param {KbExportOptions} [options]
      */
     async kbExport(options = {}) {
+        assertNoRemovedKbScopeKeys('kb_export', options);
         return this.mcpClient.callTool('kb_export', options);
     }
 
@@ -866,9 +905,12 @@ export class ApraFleet {
      * same ids after resetting to a newer HEAD re-merges, so a rejected push can
      * be retried. Result JSON: {path, merged, skipped, entry_count, committed};
      * extract with parseToolJson().
+     * The removed scope keys (repo_path, repo, repo_remote_url) are refused
+     * with E-SCOPE-KEY-REMOVED before anything is sent.
      * @param {KbBibleCommitOptions} options
      */
     async kbBibleCommit(options) {
+        assertNoRemovedKbScopeKeys('kb_bible_commit', options);
         return this.mcpClient.callTool('kb_bible_commit', options);
     }
 

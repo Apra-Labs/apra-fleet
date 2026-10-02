@@ -4,16 +4,21 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { SqliteProvider } from '../../src/services/knowledge/sqlite-provider.js';
 import { kbQuery } from '../../src/tools/kb-query.js';
-import { kbList } from '../../src/tools/kb-list.js';
+import { kbList, kbListSchema } from '../../src/tools/kb-list.js';
 import { kbSessionPrime } from '../../src/tools/kb-session-prime.js';
-import { kbContext } from '../../src/tools/kb-context.js';
+import { kbContext, KB_CONTEXT_DEFAULT_CONFIDENCE } from '../../src/tools/kb-context.js';
 import * as kbProvidersModule from '../../src/services/knowledge/kb-providers.js';
 import type { KBEntryInput } from '../../src/services/knowledge/types.js';
 
-// The four KB read tools (kb_query, kb_list, kb_session_prime, kb_context)
-// return only CONFIRMED, undisputed entries when the caller gives no
-// confidence filter; other tiers appear only when listed explicitly, and
-// kb_query {flagged_only:true} is exempt (it exists to list disputed entries).
+// Three KB read tools (kb_query, kb_list, kb_session_prime) return only
+// CONFIRMED, undisputed entries when the caller gives no confidence filter;
+// other tiers appear only when listed explicitly, and kb_query
+// {flagged_only:true} is exempt (it exists to list disputed entries).
+// kb_context is the deliberate exception (KB_CONTEXT_DEFAULT_CONFIDENCE,
+// docs/knowledge-layer.md): its default is CONFIRMED + INFERRED, undisputed --
+// a context-cache entry is verified by its content hash and captures are stored
+// at most INFERRED, so a CONFIRMED-only default reported almost every file
+// missing. UNVERIFIED stays opt-in there too.
 
 function makeInput(overrides: Partial<KBEntryInput> = {}): KBEntryInput {
   return {
@@ -111,21 +116,25 @@ describe('default (no confidence filter) is CONFIRMED + undisputed', () => {
     expect(got).not.toContain(ids.challenger);
   });
 
-  it('kb_context', async () => {
-    const mk = (file: string, confidence: 'CONFIRMED' | 'INFERRED') => makeInput({
+  it('kb_context: the default is CONFIRMED + INFERRED (pinned), UNVERIFIED opt-in', async () => {
+    expect([...KB_CONTEXT_DEFAULT_CONFIDENCE]).toEqual(['CONFIRMED', 'INFERRED']);
+    const mk = (file: string, confidence: 'CONFIRMED' | 'INFERRED' | 'UNVERIFIED') => makeInput({
       type: 'context-cache', title: `cache ${file}`, source_files: [file],
       content_hash: 'invalidated', confidence,
     });
     await provider.capture(mk('src/cd/ctx-confirmed.ts', 'CONFIRMED'), { importMode: true });
     await provider.capture(mk('src/cd/ctx-inferred.ts', 'INFERRED'));
-    const files = ['src/cd/ctx-confirmed.ts', 'src/cd/ctx-inferred.ts'];
+    await provider.capture(mk('src/cd/ctx-unverified.ts', 'UNVERIFIED'), { importMode: true });
+    const files = ['src/cd/ctx-confirmed.ts', 'src/cd/ctx-inferred.ts', 'src/cd/ctx-unverified.ts'];
 
     const byDefault = JSON.parse(await kbContext({ files } as any));
-    expect(byDefault.missing).toEqual(['src/cd/ctx-inferred.ts']);
-    expect(byDefault.stale.map((r: any) => r.file)).toEqual(['src/cd/ctx-confirmed.ts']);
+    expect(byDefault.missing).toEqual(['src/cd/ctx-unverified.ts']);
+    expect(byDefault.stale.map((r: any) => r.file)).toEqual(['src/cd/ctx-confirmed.ts', 'src/cd/ctx-inferred.ts']);
 
-    const explicit = JSON.parse(await kbContext({ files, confidence: ['INFERRED'] } as any));
-    expect(explicit.stale.map((r: any) => r.file)).toEqual(['src/cd/ctx-inferred.ts']);
+    const explicit = JSON.parse(await kbContext({ files, confidence: ['UNVERIFIED'] } as any));
+    expect(explicit.stale.map((r: any) => r.file)).toEqual(['src/cd/ctx-unverified.ts']);
+    const confirmedOnly = JSON.parse(await kbContext({ files, confidence: ['CONFIRMED'] } as any));
+    expect(confirmedOnly.stale.map((r: any) => r.file)).toEqual(['src/cd/ctx-confirmed.ts']);
   });
 
   it('kb_context excludes disputed CONFIRMED cache entries by default', async () => {
@@ -159,6 +168,25 @@ describe('explicit confidence opts in to other tiers', () => {
   it('kb_list accepts an array confidence input', async () => {
     const parsed = JSON.parse(await kbList({ limit: 50, confidence: ['INFERRED', 'UNVERIFIED'] }));
     expect(parsed.results.map((e: any) => e.id).sort()).toEqual([ids.inferred, ids.unverified].sort());
+  });
+
+  it('kb_list accepts the legacy single-tier string form as a one-element list', async () => {
+    const asString = JSON.parse(await kbList({ limit: 50, confidence: 'INFERRED' }));
+    const asArray = JSON.parse(await kbList({ limit: 50, confidence: ['INFERRED'] }));
+    expect(asString.results.map((e: any) => e.id)).toEqual([ids.inferred]);
+    expect(asString).toEqual(asArray);
+    // The string form is an explicit tier, so it opts out of the dispute filter
+    // exactly like the one-element list does.
+    const confirmedString = JSON.parse(await kbList({ limit: 50, confidence: 'CONFIRMED' }));
+    const confirmedArray = JSON.parse(await kbList({ limit: 50, confidence: ['CONFIRMED'] }));
+    expect(confirmedString).toEqual(confirmedArray);
+  });
+
+  it('kb_list schema accepts both forms and rejects an unknown tier string', () => {
+    expect(kbListSchema.safeParse({ confidence: 'INFERRED' }).success).toBe(true);
+    expect(kbListSchema.safeParse({ confidence: ['INFERRED', 'UNVERIFIED'] }).success).toBe(true);
+    expect(kbListSchema.safeParse({ confidence: 'MAYBE' }).success).toBe(false);
+    expect(kbListSchema.safeParse({ confidence: [] }).success).toBe(false);
   });
 
   it('kb_session_prime accepts a confidence array', async () => {

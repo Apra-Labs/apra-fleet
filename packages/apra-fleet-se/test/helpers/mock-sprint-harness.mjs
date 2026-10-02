@@ -1073,6 +1073,8 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
     let planRound = 0;
     let reviewRound = 0;
     let extraTaskAdded = false;
+    /** member name -> the branch the engine last put it on (`git checkout [-B] <b>`), for `git rev-parse --abbrev-ref HEAD`. */
+    const mockCheckedOut = new Map();
     // apra-fleet-02s.3: a schema-repair re-ask RESUMES the session that just
     // failed and sends a lean reminder prompt (no longer a self-contained
     // echo of the original prompt) -- so opts.prompt.startsWith('Final review
@@ -1170,6 +1172,19 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
                 } else {
                     const coMatch = opts.command.match(/^git checkout (\S+)\s*$/);
                     if (coMatch) st.checkedOut = coMatch[1];
+                }
+            }
+
+            // The KB write path reads the maintainer's checked-out branch before
+            // every git command it runs there. Answer with the branch the member
+            // was last put on (`git checkout -B/<b>`), independent of the
+            // optional memberGitState model; unknown falls through below.
+            {
+                const mName = opts.member_name || '(none)';
+                const co = opts.command.match(/git checkout (?:-B )?([^\s-]\S*)/);
+                if (co) mockCheckedOut.set(mName, co[1]);
+                if (/^git rev-parse --abbrev-ref HEAD\s*$/.test(opts.command) && mockCheckedOut.has(mName)) {
+                    return mockCmdResult(0, mockCheckedOut.get(mName), '');
                 }
             }
 
