@@ -51,6 +51,7 @@ import { createSprintController, registerSprintRoutes, defaultMemberOverlapGuard
 import { createScopeGuard, formatScopeConflict } from '../src/supervisor/scope-overlap.mjs';
 import { listFleetMembers, executeFleetCommand, registerFleetMember, updateFleetMember } from '../src/supervisor/fleet-members.mjs';
 import { ensureBacklogMember, BacklogMemberRefusedError } from '../src/supervisor/backlog-member.mjs';
+import { createBeadsView, createBeadsViewCommand } from '../src/supervisor/beads-view.mjs';
 import { createDoltOrphanSweep, normalizeMsysPathForPlatform } from '../src/supervisor/dolt-orphan-sweep.mjs';
 import { resolveFleetServerConnection } from './cli.mjs';
 import {
@@ -156,7 +157,7 @@ export function defaultEnsureBacklogMember({ beadsDir }) {
 
 /**
  * @param {string[]} [argv]
- * @param {{ ensureBacklogMember?: (opts: { beadsDir: string|null }) => Promise<{ get: Function, stop?: Function }> }} [deps]
+ * @param {{ ensureBacklogMember?: (opts: { beadsDir: string|null }) => Promise<{ get: Function, stop?: Function }>, createBeadsView?: (deps: object) => { refreshIfStale: Function, stop: Function } }} [deps]
  */
 export async function serveMain(argv = process.argv.slice(2), deps = {}) {
     const { values } = parseServeArgs(argv);
@@ -265,6 +266,21 @@ export async function serveMain(argv = process.argv.slice(2), deps = {}) {
     // collaborators so a restarted supervisor reconciles against on-disk state.
     const ledger = createLedger();
     const history = createHistory();
+
+    // The supervisor's cached beads view (src/supervisor/beads-view.mjs):
+    // raw `bd list --all` rows for repoRoot, refreshed through the backlog
+    // member's tip-checked D-pull. Constructed here, but its first refresh is
+    // only kicked AFTER supervisor.start() below has loaded the ledger from
+    // disk -- a scope-freshness write before that load would persist an
+    // empty ledger over the real one. A degraded/null backlog member is not
+    // fatal: the view records lastError with the reason instead of throwing.
+    const buildBeadsView = deps.createBeadsView ?? createBeadsView;
+    const beadsView = buildBeadsView({
+        backlogMember,
+        ledger,
+        repoRoot,
+        command: createBeadsViewCommand({ executeFleetCommand, resolveConnection: resolveFleetServerConnection }),
+    });
     // apra-fleet-f34.1: pass this supervisor's OWN listening address so every
     // spawned sprint child's cli.mjs receives --service-url and threads it
     // into runner.js's HTTP-backed dolt-mutex/id-allocator clients (see
@@ -538,9 +554,14 @@ export async function serveMain(argv = process.argv.slice(2), deps = {}) {
     await history.start();
     await readopter.readopt();
 
+    // One non-blocking startup refresh of the cached beads view (never
+    // awaited, never rejects -- failures land in the view's lastError).
+    beadsView.refreshIfStale();
+
     // Keep the process alive until an explicit shutdown resolves. Awaiting this
     // is what makes `fleet-se serve` "always-on" -- nothing else drives exit.
     await supervisor.shutdownRequested;
+    beadsView.stop();
     if (typeof backlogMember.stop === 'function') backlogMember.stop();
     return { exitCode: 0 };
 }
