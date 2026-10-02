@@ -841,8 +841,10 @@ export class ApraFleet {
      * Compose and deliver a scoped permission profile to a member. Also writes
      * the member's per-folder `apra-fleet` MCP entry (`?member=<uuid>`) through
      * the member provider's own per-project config, with deny rules for every
-     * fleet tool outside the member allowlist (claude, agy); see
-     * docs/api-reference.md.
+     * fleet tool outside the member allowlist (claude, agy), merged by union
+     * with any existing deny rules. The result states why a member config was
+     * not edited (tracked by git, not strict JSON, unreadable) and when a stale
+     * fleetMcp unavailable status was cleared; see docs/api-reference.md.
      * @param {ComposePermissionsOptions} options
      */
     async composePermissions(options) {

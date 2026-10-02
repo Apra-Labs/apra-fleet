@@ -549,7 +549,16 @@ member allowlist; opencode gets none. The retired `apra-fleet-member`
 url+bearer entry is pruned wherever compose finds it, `deepwiki` is never
 touched, a tracked `.mcp.json` is never written, and work-folder files compose
 writes are listed in the clone's `.git/info/exclude` so it stays clean. A
-failure to write the entry is returned as a `[FAIL]` result.
+failure to write the entry is returned as a `[FAIL]` result (the permission
+files that did land are still recorded in the `project_folder` ledger; the
+ledger never records the MCP entry). A member config compose must not edit
+-- tracked by git, not strict JSON, or unreadable -- is left untouched and the
+otherwise-successful result carries a `Member MCP config NOT edited: <file> is
+<why> (fleetMcp unavailable: <reason>)` line; a later successful compose
+clears such a recorded fleetMcp status (`fleetMcp: cleared the stale
+unavailable status (<reason>)` line). Existing `deny` rules are merged by
+union -- a user-authored deny rule is never dropped; only fleet-derived
+`apra-fleet` deny rules compose no longer derives are retired.
 
 #### `setupSshKey(options: SetupSshKeyOptions)`
 
