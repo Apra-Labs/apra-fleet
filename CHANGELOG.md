@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- KB redesign stage 6: update_member fleet_install and build-aware upgrade
+
+Sprint goal: let `update_member` upgrade a remote member's own apra-fleet on request, reject unknown input, and make the member version check build-aware. Both are delivered. Build and `npm test` passed (one unrelated timer-granularity flake in the client timeout test passed on rerun). Carried forward: that flaky test, and untested paths (`fleet_install: "skip"` with a provider change; build-only difference when arch is unknown or no install source exists).
+
+```
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $3.0235.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.0228 across 1 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 7 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+```
+
+- `update_member` takes `fleet_install` (`auto` | `skip`): `auto` upgrades an existing remote member's own apra-fleet when it is missing or older (build-aware) even when nothing else changed, then self-registers and verifies, and the result carries the `fleetMcp` line; `skip` never installs; omitting it keeps the old behavior (install only on a provider change). `update_member` now rejects unknown input keys with an error naming the key and leaves the member unchanged, instead of silently dropping them. `member_detail`'s `fleetMcp fix:` lines now name `update_member` with `fleet_install: "auto"`. Upgrade: callers that passed unknown or misspelled keys to `update_member` now get an error -- remove them (`grep -rn update_member` in your scripts); to upgrade a member, call `update_member` `{member_id, fleet_install: "auto"}` then `member_detail` with `refresh: true`.
+
+- Member install version check is build-aware: a member running a different build of the same version core (e.g. `v0.4.4_aaaaaa` vs the orchestrator's `v0.4.4_bbbbbb`) is now upgraded when the install source is the orchestrator's own executable; a member on a NEWER core is never downgraded, and with a release-asset source (which installs the release build of the core) a same-core member counts as up to date, so it is not reinstalled on every registration. Release versions without a suffix keep equal = up to date. Upgrade: no action; same-core dev-build members are upgraded the next time the member install runs (`register_member`, or `update_member` with `fleet_install: "auto"`).
+
 ## [Unreleased] -- KB redesign stage 5: member install fixes
 
 Sprint goal: fix clean remote member self-registration and the pre-marker member upgrade. Both are delivered: a member installed by an older build upgrades without a manual step, and a human full install is never stopped. Build and `npm test` passed.
@@ -14,10 +31,6 @@ Integ-test-runner spend: $0.0349 across 1 dispatch(es) this sprint (a subset of 
 Pricing source: all 8 priced dispatch(es) used real per-member rates (get_member_model_pricing).
 Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
 ```
-
-- `update_member` takes `fleet_install` (`auto` | `skip`): `auto` upgrades an existing remote member's own apra-fleet when it is missing or older (build-aware) even when nothing else changed, then self-registers and verifies, and the result carries the `fleetMcp` line; `skip` never installs; omitting it keeps the old behavior (install only on a provider change). `update_member` now rejects unknown input keys with an error naming the key and leaves the member unchanged, instead of silently dropping them. `member_detail`'s `fleetMcp fix:` lines now name `update_member` with `fleet_install: "auto"`. Upgrade: callers that passed unknown or misspelled keys to `update_member` now get an error -- remove them (`grep -rn update_member` in your scripts); to upgrade a member, call `update_member` `{member_id, fleet_install: "auto"}` then `member_detail` with `refresh: true`.
-
-- Member install version check is build-aware: a member running a different build of the same version core (e.g. `v0.4.4_aaaaaa` vs the orchestrator's `v0.4.4_bbbbbb`) is now upgraded when the install source is the orchestrator's own executable; a member on a NEWER core is never downgraded, and with a release-asset source (which installs the release build of the core) a same-core member counts as up to date, so it is not reinstalled on every registration. Release versions without a suffix keep equal = up to date. Upgrade: no action; same-core dev-build members are upgraded the next time the member install runs (`register_member`, or `update_member` with `fleet_install: "auto"`).
 
 Carried forward from the first pass, now delivered: pre-marker ownership is detected from the member registry uuid (the member's own LOCAL-type registry entry for its fleet id); `fleetInstalledAt` is carried through compose-permissions writes; the client `FleetMcpStatus` typedef lists `fleetInstalledAt`.
 

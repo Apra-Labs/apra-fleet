@@ -47,6 +47,22 @@ called with `fleet_install: "auto"`), at least as new as the orchestrator, insta
 
 - Version probe on the member's own install; on PowerShell the exit code is read
   from `$LASTEXITCODE`.
+- Outdated rule (`isMemberOutdated`): an older version core is always outdated
+  and a newer core never is, so a member is never downgraded. At the same core, a
+  different build suffix (`v0.4.4_aaaaaa` vs `v0.4.4_bbbbbb`) counts as outdated
+  only when the install source is the orchestrator's own executable. A
+  release-asset source installs the release build of the core, so treating a
+  same-core member as outdated would reinstall on every registration and then
+  fail verification as `install-unverified`; there a same-core member is up to
+  date. The post-install verification uses the same rule. Versions without a
+  suffix keep equal = up to date.
+- `update_member` is registered with a strict input schema: an unknown or
+  misspelled key is rejected at the MCP layer with an error naming the key,
+  before the handler runs, and the member registry is left unchanged. `fleet_install`
+  is `auto` (install or upgrade even when nothing else changed, remote members
+  only) or `skip` (never install, even on a provider change); omitting it keeps
+  the provider-change-only default. The `fleetMcp fix:` lines name
+  `update_member {member_id, fleet_install: "auto"}` as the remedy.
 - Install source: copy the running executable (the orchestrator's
   single-executable binary) when the member has the same OS and arch;
   otherwise download the release asset for the orchestrator's version;
