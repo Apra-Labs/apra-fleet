@@ -11,7 +11,7 @@ import { writeStatusline } from '../services/statusline.js';
 import { awsProvider } from '../services/cloud/aws.js';
 import { estimateCost, formatUptimeDuration, uptimeHoursFromLaunch } from '../services/cloud/cost.js';
 import { serverVersion } from '../version.js';
-import { refreshMemberFleetMcp, getMemberFleetMcpDeps } from '../services/member-fleet-install.js';
+import { refreshMemberFleetMcp, getMemberFleetMcpDeps, fleetMcpFixLine } from '../services/member-fleet-install.js';
 import { knownRepoRemoteUrl } from '../services/member-remote-url.js';
 
 export const memberDetailSchema = z.object({
@@ -76,6 +76,9 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
     }
   }
   result.fleetMcp = fleetMcp ?? null;
+  // One-line fix when the member's KB/code tools are not usable; null otherwise.
+  const fleetMcpFix = fleetMcpFixLine(fleetMcp);
+  result.fleetMcpFix = fleetMcpFix;
 
   // -- Cloud Info (parallel with connectivity check) --
   let cloudSection: Record<string, unknown> | undefined;
@@ -310,6 +313,7 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
 
   if (fleetMcp) {
     t += `  fleetMcp=${fleetMcp.state}${fleetMcp.reason ? ` (${fleetMcp.reason})` : ''}${fleetMcp.version ? ` | v${fleetMcp.version}` : ''}\n`;
+    if (fleetMcpFix) t += `  fleetMcp fix: ${fleetMcpFix}\n`;
   }
 
   if (cloudSection) {

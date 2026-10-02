@@ -655,6 +655,54 @@ export type FleetMcpUnavailableReason =
   /** The MEMBER session answered but did not list kb_* and code_* tools. */
   | 'member-tools-missing';
 
+/** Reasons the sprint init (not the server probe) records for providers it treats as unverified. */
+export type FleetMcpProviderReason = 'no-per-tool-deny' | 'no-per-project-mcp';
+
+/**
+ * One-line operator fix per fleetMcp reason. ASCII only, no newlines. Covers
+ * every FleetMcpUnavailableReason plus the provider-level reasons the sprint
+ * init records (opencode: no-per-tool-deny; agy: no-per-project-mcp).
+ */
+export const FLEET_MCP_FIX: Record<FleetMcpUnavailableReason | FleetMcpProviderReason, string> = {
+  'home-unresolved': 'Check the member is reachable and its home directory resolves, then run member_detail with refresh:true.',
+  'probe-failed': 'Check the member is reachable (member_detail shows connectivity), then run member_detail with refresh:true.',
+  'arch-unknown': 'Check the member shell works (uname -m / PROCESSOR_ARCHITECTURE), then re-run update_member with fleet_install auto.',
+  'unsupported-platform': 'Install apra-fleet on the member by hand; no release asset exists for its OS/arch.',
+  'no-install-source': 'Run the orchestrator as the single-executable binary or make release assets reachable, then re-run fleet install.',
+  'download-failed': 'Check the member/orchestrator can reach the release host, then re-run fleet install.',
+  'download-timeout': 'The release download did not finish in time; check the network to the release host, then re-run fleet install.',
+  'checksum-mismatch': 'The downloaded installer did not match its published SHA256SUMS; do not install it -- re-run fleet install, and report it if it repeats.',
+  'checksum-unavailable': 'No published SHA256SUMS lists this installer (release missing or incomplete); publish the release assets, then re-run fleet install.',
+  'full-install-running': 'A full apra-fleet install (not a member install) is running on that host; stop it or re-run the member install with --force-stop-full-install.',
+  'transfer-failed': 'Check file transfer to the member works (disk space, permissions), then re-run fleet install.',
+  'install-failed': 'Run the apra-fleet installer on the member by hand and read its error, then member_detail with refresh:true.',
+  'install-unverified': 'Update apra-fleet on the member to the orchestrator version, then member_detail with refresh:true.',
+  'install-too-old': 'Update apra-fleet on the member (its install predates register-member --id), then member_detail with refresh:true.',
+  'E-FOLDER-TAKEN': 'The member install has this work folder registered under another id; unregister it there, then member_detail with refresh:true.',
+  'register-failed': 'Run apra-fleet register-member on the member by hand and read its error, then member_detail with refresh:true.',
+  'mcp-entry-missing': 'Re-run compose_permissions for the member so its per-folder apra-fleet MCP entry points at ?member=<uuid>, then member_detail with refresh:true.',
+  'no-per-project-mcp': 'agy has no per-project MCP config; its roles get injected knowledge only. Use another provider for KB/code tools.',
+  'provider-unsupported': 'This LLM provider has no MCP entry fleet configures; its roles get injected knowledge only.',
+  'member-config-unreadable': 'Fix permissions on the member config file named in the detail, then re-run compose_permissions.',
+  'member-config-unparseable': 'Make the member config file named in the detail strict JSON, then re-run compose_permissions.',
+  'opencode-config-tracked': 'Untrack opencode.json from git (add it to .gitignore), then re-run compose_permissions.',
+  'opencode-config-unparseable': 'Make the work folder opencode.json strict JSON (no comments), then re-run compose_permissions.',
+  'member-session-failed': 'Check the member apra-fleet server is running (apra-fleet status / start on the member), then member_detail with refresh:true.',
+  'member-tools-missing': 'Update apra-fleet on the member so its session lists kb_* and code_* tools, then member_detail with refresh:true.',
+  'no-per-tool-deny': 'opencode cannot deny individual tools, so its roles get injected knowledge only. Use another provider for KB/code tools.',
+};
+
+/**
+ * The one-line fix to show for a fleetMcp status, or null when the member's KB
+ * and code tools are usable (available and not flagged unverified).
+ */
+export function fleetMcpFixLine(status: { state: string; reason?: string; unverified?: boolean } | null | undefined): string | null {
+  if (!status) return null;
+  if (status.state === 'available' && !status.unverified) return null;
+  const known = status.reason ? (FLEET_MCP_FIX as Record<string, string>)[status.reason] : undefined;
+  return known ?? 'Run member_detail with refresh:true after fixing the cause named in the detail; KB/code tools are unverified on this member.';
+}
+
 /** A MEMBER session's client surface (subset of the MCP client). */
 export interface MemberSession {
   mcpClient: {

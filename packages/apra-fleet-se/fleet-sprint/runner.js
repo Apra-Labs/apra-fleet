@@ -58,6 +58,8 @@ import { resultText, toolErrorText } from './mcp-result.mjs';
 import { resolveMemberTarget, resolveMemberOs, clearMemberOsCache } from './member-target.mjs';
 import { createMemberCall, buildRemoteCallCommand, MemberCallError, MEMBER_CALL_ARGS_DIR } from './member-call.mjs';
 import { createDispatchAccounting } from './dispatch-accounting.mjs';
+import { lowerQuality, logLowerQualityWarn } from './lower-quality.mjs';
+import { createMemberInitProbe, createMemberVerifiedLookup, MEMBER_INIT_LOG_PREFIX, MEMBER_INIT_STATE_NAMESPACE } from './member-init-probe.mjs';
 import { createSprintState, sprintScopedFleetApi, resolveSettleShellWith } from './sprint-state.mjs';
 // apra-fleet-3swo.6.10: the per-member git/dolt sync brackets, moved verbatim
 // out of this file into ./member-sync.mjs (see that module's header for the
@@ -225,6 +227,8 @@ import {
     createKbPrimingClient, KB_SELF_INJECTING_ROLES, kbQueryTerms,
     kbKnowledgeBlock, kbPromotionBlock,
 } from './kb.mjs';
+import { createKbInjection } from './kb-injection.mjs';
+import { pathsFromText, isPriorityTierToken } from './kb-hints.mjs';
 // Beads scope discovery + the shared full-DB snapshot: the single in-memory
 // BFS scope rule (now shared by bdListScoped and classifyVerifySet instead of
 // duplicated), the `bd list --all --limit 0 --json` snapshot, and the
@@ -967,15 +971,32 @@ async function runSprintCycle(context) {
     // Assigned once kbPriming exists (below); until then (no dispatch can run
     // before it) a pass-through.
     let dispatchAccounting = { around: (_info, fn) => fn() };
+    // KNOWLEDGE BANK injection (kb-injection.mjs), bound once kbWork exists
+    // below; sprint-level hint sources the dispatch wrapper falls back to.
+    let kbInjection = null;
+    const kbSprintContext = { goals: [], beadTitles: [], closedBeadTitles: [], beadIds: [], testFiles: [] };
+    // bead id -> bead, refreshed with the sprint tree; the reviewer's hint
+    // sources (titles of the beads under review) are read from it.
+    let kbBeadIndex = new Map();
+    const kbBeadTitles = (ids) => (Array.isArray(ids) ? ids : []).map((id) => kbBeadIndex.get(id)?.title).filter((t) => typeof t === 'string' && t);
     const agent = async (prompt, opts = {}) => {
         let finalPrompt = prompt;
         if (opts.agentType && !KB_SELF_INJECTING_ROLES.has(opts.agentType) && opts.member_name) {
             // Only promise the kb_captures channel to a persona whose returned
             // captures the engine actually applies (e.g. harvester); planner,
             // plan-reviewer, deployer and the test runners have none.
-            const [block] = kbKnowledgeBlock(kbPriming.knowledgeOf(opts.member_name), {
-                captureChannel: agentTypeAppliesKbCaptures(opts.agentType),
-            });
+            // A member whose own fleet MCP was verified at sprint init reads
+            // the KB itself and gets no block; every other member gets one,
+            // fetched from the repository's kb_maintainer (kb-injection.mjs).
+            const captureChannel = agentTypeAppliesKbCaptures(opts.agentType);
+            const [block] = kbInjection
+                ? await kbInjection.blockFor({
+                    role: opts.agentType,
+                    member: opts.member_name,
+                    context: { ...kbSprintContext, ...(opts.kbContext || {}) },
+                    captureChannel,
+                })
+                : kbKnowledgeBlock(kbPriming.knowledgeOf(opts.member_name), { captureChannel });
             if (block) finalPrompt = prompt + '\n\n' + block;
         }
         return withKbDispatchLifecycle(opts.member_name, async () => {
@@ -1371,6 +1392,53 @@ async function runSprintCycle(context) {
     await kbMaintainers.selectAll();
     context.kbMaintainers = kbMaintainers;
 
+    // Per-member sprint-init probe (member-init-probe.mjs): once per member,
+    // after kb_maintainer selection and before KB priming and the first
+    // dispatch -- start-if-down (remote), the MEMBER tools/list check plus a
+    // recorded fleetMcp refresh, the CONFIRMED count and the code index first
+    // tick. Every kb_*/code_* call goes through the same memberCall the KB work
+    // uses; the orchestrator callTool only reads member_detail. Never blocks:
+    // a probe that throws leaves every member unverified and the sprint goes
+    // on. Records land in sprint state (sprintState.memberInit), on the
+    // context (context.memberInit + context.isMemberVerified, read by the
+    // KNOWLEDGE BANK injection) and in the published viewer state.
+    // context.memberInitProbe is the test seam.
+    const kbListTools = canMemberCall
+        ? (member) => {
+            memberCaller ??= createMemberCall({ fleetApi: sprintScopedFleetApi({ callTool: args.callTool, log }), log });
+            if (typeof memberCaller.listTools !== 'function') throw new Error('member session channel has no listTools');
+            return memberCaller.listTools(member);
+        }
+        : undefined;
+    const memberInitProbe = context.memberInitProbe ?? createMemberInitProbe({
+        members: physicalMembers,
+        callTool: (args && typeof args.callTool === 'function') ? args.callTool : undefined,
+        memberCall: kbMemberCall,
+        listTools: kbListTools,
+        fleetApi: sprintState.fleetApi,
+        kbMaintainers: () => context.kbMaintainers,
+        log,
+    });
+    let memberInitRecords = [];
+    try {
+        const probed = await memberInitProbe.probeAll();
+        memberInitRecords = Array.isArray(probed) ? probed : [];
+    } catch (err) {
+        log(`${MEMBER_INIT_LOG_PREFIX} WARN probe failed (non-fatal; every member is treated as unverified): ${err && err.message ? err.message : err}`);
+    }
+    sprintState.memberInit.splice(0, sprintState.memberInit.length, ...memberInitRecords);
+    context.memberInit = sprintState.memberInit;
+    context.isMemberVerified = createMemberVerifiedLookup(() => sprintState.memberInit);
+    // Banner WARN at init (the per-member WARN lines come from the probe).
+    logLowerQualityWarn(log, MEMBER_INIT_LOG_PREFIX, sprintState.memberInit, 'init');
+    if (typeof publishState === 'function') {
+        try {
+            publishState(MEMBER_INIT_STATE_NAMESPACE, { members: sprintState.memberInit.slice(), banner: lowerQuality(sprintState.memberInit).banner });
+        } catch (err) {
+            log(`${MEMBER_INIT_LOG_PREFIX} could not publish the init records (non-fatal): ${err && err.message ? err.message : err}`);
+        }
+    }
+
     const kbPriming = context.kbPriming ?? createKbPrimingClient({
         callTool: (args && typeof args.callTool === 'function') ? args.callTool : undefined,
         memberCall: kbMemberCall,
@@ -1435,6 +1503,34 @@ async function runSprintCycle(context) {
     // handler can seal the bible commit: an aborted sprint commits nothing
     // further to the bible.
     context.kbWork = kbWork;
+    // Engine-side KNOWLEDGE BANK injection: skipped for a member whose own
+    // fleet MCP was verified at sprint init (context.isMemberVerified, set by
+    // the init probe above), applied to every other member.
+    if (typeof validated.goal === 'string' && validated.goal.trim() && !isPriorityTierToken(validated.goal.trim())) {
+        kbSprintContext.goals = [validated.goal.trim()];
+    }
+    kbInjection = context.kbInjection ?? createKbInjection({
+        kbWork,
+        isMemberVerified: (name) => (typeof context.isMemberVerified === 'function' ? context.isMemberVerified(name) : false),
+        // Deploy targets: the file paths named in the runbook the role follows
+        // (deploy.md for the deployer, the playbooks for the test runners).
+        deployTargets: async (memberName, role) => {
+            const file = role === 'deployer' ? 'deploy.md'
+                : role === 'integ-test-runner' ? 'integ-test-playbook.md' : 'regression-test-playbook.md';
+            const res = await command(
+                `node -e "try{console.log(require('fs').readFileSync('${file}','utf8').slice(0,20000))}catch(e){}"`,
+                { member_name: memberName, silent: true, failSoft: true, label: `Read '${file}' for KB hints` },
+            );
+            if (!res || !res.ok) return [];
+            return pathsFromText([String(res.output || '')]);
+        },
+        diffFiles: async (memberName) => {
+            const res = await command(`git diff --name-only origin/${validated.baseBranch}...${validated.branch}`, { member_name: memberName, silent: true, failSoft: true });
+            if (!res || !res.ok) return [];
+            return String(res.output || '').split('\n').map((l) => l.trim()).filter(Boolean);
+        },
+        log,
+    });
     // Dispatch lifecycle for the KB write queue: a member is busy from the
     // moment its dispatch bracket opens until it closes, and writes queued for
     // a repository it maintains are applied when it goes idle. Both hooks are
@@ -1443,10 +1539,6 @@ async function runSprintCycle(context) {
         started: (memberName) => (typeof kbWork.dispatchStarted === 'function' ? kbWork.dispatchStarted(memberName) : undefined),
         ended: (memberName) => (typeof kbWork.dispatchEnded === 'function' ? kbWork.dispatchEnded(memberName) : undefined),
     };
-    // The member record kb work for a member name runs as. context.kbPriming is
-    // an injection seam; a stub without memberOf degrades to "no member", which
-    // every kbWork method treats as a best-effort no-op.
-    const kbMember = (member) => (typeof kbPriming.memberOf === 'function' ? kbPriming.memberOf(member) : null);
     // A member named in ANY roleMap value is a "specialist" for whatever
     // role(s) named it -- e.g. a member pinned to roleMap.reviewer has been
     // deliberately reserved for review. Without this, a role the caller left
@@ -1902,7 +1994,6 @@ async function runSprintCycle(context) {
         // repository kb_maintainer -- the session every KB write is routed to,
         // so the one holding this sprint's captures -- and best-effort: a
         // cold KB must not fail the review.
-        const reviewerKbMember = kbMember(reviewerPool[0]);
         const kbCandidates = await kbWork.promotionCandidates(reviewerPool[0]);
         if (kbCandidates.length > 0) {
             log(`[kb-work] offering ${kbCandidates.length} INFERRED entr(ies) to the reviewer for promotion.`);
@@ -1910,10 +2001,12 @@ async function runSprintCycle(context) {
         // What the KB knows about the beads UNDER REVIEW, not just whatever the
         // sprint-start prime happened to surface. Falls back to the primed set
         // when the query returns nothing (a KB with no matching rows yet).
-        const reviewerQueried = await kbWork.relevantKnowledge(reviewerKbMember, kbQueryTerms([], beadIds));
-        const reviewerKnowledge = reviewerQueried.length > 0
-            ? reviewerQueried
-            : kbPriming.knowledgeOf(reviewerPool[0]);
+        const reviewerKbBlock = await kbInjection.blockFor({
+            role: ROLE_REVIEWER,
+            member: reviewerPool[0],
+            context: { ...kbSprintContext, beadIds, beadTitles: kbBeadTitles(beadIds) },
+            captureChannel: true,
+        });
         // A full-cycle review can genuinely exhaust the fleet's default turn
         // budget, and a fresh retry deterministically hits the same wall. Make
         // the budget explicit and, on max_turns exhaustion, RESUME the same
@@ -1951,7 +2044,7 @@ async function runSprintCycle(context) {
                 branch: validated.branch,
                 goal: validated.goal,
                 kbCandidates,
-                kbKnowledge: reviewerKnowledge,
+                kbBlock: reviewerKbBlock,
             }),
             // Restate the review scope: a resumed dispatch replaces the
             // delivered prompt artifact, so the scope must be repeated inline.
@@ -2136,6 +2229,13 @@ async function runSprintCycle(context) {
             // --all` fetch filtered to scope -- every status, one query fewer.
             sprintTasks = await bdListScoped('');
             fetchedAt = new Date().toISOString();
+            // Sprint-level KB hint sources for the roles whose dispatch does
+            // not name its own beads (planner, deployer, test runners, ...).
+            kbSprintContext.beadTitles = sprintTasks.filter((t) => t && typeof t.title === 'string').map((t) => t.title);
+            kbSprintContext.closedBeadTitles = sprintTasks.filter((t) => t && t.status === 'closed' && typeof t.title === 'string').map((t) => t.title);
+            kbSprintContext.beadIds = sprintTasks.filter((t) => t && typeof t.id === 'string').map((t) => t.id);
+            kbSprintContext.testFiles = pathsFromText(sprintTasks.map((t) => t && t.description)).filter((p) => /test|spec/i.test(p));
+            kbBeadIndex = new Map(sprintTasks.filter((t) => t && t.id).map((t) => [t.id, t]));
             // A bead whose stored `status` is 'open' but which is NOT in the
             // scope's `--ready` set is blocked. The viewer only sees stored
             // status, so without this flag a deadlocked bead renders
@@ -2799,7 +2899,7 @@ async function runSprintCycle(context) {
                 phase, log, command, parallel, dispatchCtx,
                 cycle, validated, args, orchestratorMember,
                 sprintState, gitSync, updateDashboard,
-                kbPriming, kbWork,
+                kbPriming, kbWork, kbInjection, kbSprintContext,
                 devRounds, currentReady, doerPool, perBeadFeedback,
                 claimBeadsBatched,
                 verifyDoerStreakClosed,
@@ -3255,7 +3355,7 @@ async function runSprintCycle(context) {
         gitSync,
         deployFailures, integFailures, rejectedNewTasks, verifyEverIds,
         bdListScoped, decomposedParentIds, goalMax, NOT_DONE_STATUSES,
-        kbPriming, kbWork, getMemberForRole,
+        kbPriming, kbWork, kbInjection, kbSprintContext, getMemberForRole,
         childIdAllocator, sprintMutexId, resolveSettleShell,
         computeChildFloor, createChildBeadWithAllocatedId, sanitizePrText,
     });
@@ -3354,7 +3454,10 @@ async function runSprintCycle(context) {
     // unpushed branch) while PRESERVING the sprint's own computed verdict; a
     // genuine PR-creation failure still throws a typed CommandError out of the
     // phase, before the endGroup() below, exactly as the inline version did.
+    // Sprint-summary WARN: repeat the lower-quality banner once at the end.
+    const lowerQualityBanner = logLowerQualityWarn(log, MEMBER_INIT_LOG_PREFIX, sprintState.memberInit, 'summary');
     const { pushed } = await runPublishPrPhase({
+        lowerQualityBanner,
         phase, log, command,
         args, validated, targetIssues, orchestratorMember, finalCycleLabel,
         gitSync, getMemberForRole,

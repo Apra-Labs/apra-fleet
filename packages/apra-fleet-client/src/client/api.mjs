@@ -286,6 +286,8 @@
  *   provisioned (compose_permissions/execute_prompt provision it on first use)
  * @property {FleetMcpStatus|null} fleetMcp - Last recorded state of the member's own apra-fleet MCP
  *   server (null when never probed). Recoverable: `member_detail { refresh: true }` re-probes and records.
+ * @property {string|null} [fleetMcpFix] - One-line operator fix for `fleetMcp` when the member's KB/code tools are
+ *   not usable (state "unavailable" or `unverified`); null when available and verified
  * @property {Object} [llm_cli] - LLM CLI info: { version, auth }
  * @property {Object|string} [tokenUsage] - Cumulative token usage, or "compute only" for llmProvider "none"
  * @property {Object} [session] - Session info: { id, lastActivity, lastLlmActivityAt, status, idleSecs }

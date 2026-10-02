@@ -364,10 +364,12 @@ export function buildStreakAssignmentPrompt({ readyBeadIds }) {
  * `kbKnowledge` carries the entries kb_session_prime returned for this member
  * (see kbKnowledgeBlock): the doer cannot read the KB itself on a member
  * dispatch, so this prompt is its only route to prior knowledge.
- * @param {{ beadIds: string[], branch: string, feedback: string|null, kbKnowledge?: object[] }} opts
+ * `kbBlock`, when an array, is the engine-gated KNOWLEDGE BANK block
+ * (kb-injection.mjs) and replaces `kbKnowledge`: [] means none is injected.
+ * @param {{ beadIds: string[], branch: string, feedback: string|null, kbKnowledge?: object[], kbBlock?: string[] }} opts
  * @returns {string}
  */
-export function buildDoerPrompt({ beadIds, branch, feedback, kbKnowledge }) {
+export function buildDoerPrompt({ beadIds, branch, feedback, kbKnowledge, kbBlock }) {
     const lines = [
         `Sprint track branch to work on: ${branch}. Work on this branch only; do not push to the base branch.`,
         `Assigned bead ids (comma-separated): ${beadIds.join(', ')}`,
@@ -384,7 +386,7 @@ export function buildDoerPrompt({ beadIds, branch, feedback, kbKnowledge }) {
         'workaround whose purpose is to bypass the block, even for a brand-new file and ' +
         'even if you judge the underlying operation safe. This matches this repo\'s ' +
         'CLAUDE.md permission-block policy.',
-        ...kbKnowledgeBlock(kbKnowledge),
+        ...(Array.isArray(kbBlock) ? kbBlock : kbKnowledgeBlock(kbKnowledge)),
     ];
     if (feedback) {
         lines.push(
@@ -396,7 +398,7 @@ export function buildDoerPrompt({ beadIds, branch, feedback, kbKnowledge }) {
     return lines.join('\n\n');
 }
 
-export function buildReviewerPrompt({ beadIds, acceptanceCriteriaJson, baseBranch, branch, goal, kbCandidates, kbKnowledge }) {
+export function buildReviewerPrompt({ beadIds, acceptanceCriteriaJson, baseBranch, branch, goal, kbCandidates, kbKnowledge, kbBlock }) {
     const ids = Array.isArray(beadIds) ? beadIds : [];
     const scopeWide = ids.length === 0;
     // Scope-wide re-reviews are fed `bd list --json` (the whole remaining
@@ -438,7 +440,7 @@ export function buildReviewerPrompt({ beadIds, acceptanceCriteriaJson, baseBranc
         // Prior knowledge FIRST, then the promotion candidates: the reviewer
         // judges the work against what the repo already knows before it decides
         // which of this sprint's captures earned CONFIRMED.
-        ...kbKnowledgeBlock(kbKnowledge),
+        ...(Array.isArray(kbBlock) ? kbBlock : kbKnowledgeBlock(kbKnowledge)),
         ...kbPromotionBlock(kbCandidates),
         'Do NOT run any `bd` command yourself and do NOT mutate beads directly in any way ' +
         '(no bd update, bd close, bd create, etc.) -- the orchestrator applies your ' +
@@ -470,7 +472,7 @@ export function buildReviewerPrompt({ beadIds, acceptanceCriteriaJson, baseBranc
  * }} opts
  * @returns {string}
  */
-export function buildFinalVerdictPrompt({ targetIssues, branch, baseBranch, goal, cyclesRun, closedCount, openAtGoalCount, deployFailures, integFailures, rejectedNewTasks = [], unclosedVerifyIds = [], deferredAtGoalIds = [], kbCandidates, kbKnowledge }) {
+export function buildFinalVerdictPrompt({ targetIssues, branch, baseBranch, goal, cyclesRun, closedCount, openAtGoalCount, deployFailures, integFailures, rejectedNewTasks = [], unclosedVerifyIds = [], deferredAtGoalIds = [], kbCandidates, kbKnowledge, kbBlock }) {
     const lines = [
         `Final review for sprint scope issue id(s): ${targetIssues.join(', ')}.`,
         `Branch: ${branch} (base: ${baseBranch}). Goal priority: ${goal}. The sprint ran ${cyclesRun} cycle(s).`,
@@ -577,7 +579,7 @@ export function buildFinalVerdictPrompt({ targetIssues, branch, baseBranch, goal
     // all (0ef wired kbCandidates through buildReviewerPrompt only), so anything
     // captured in a sprint's LAST round reached this reviewer and nobody else,
     // and was stranded at INFERRED forever.
-    lines.push(...kbKnowledgeBlock(kbKnowledge));
+    lines.push(...(Array.isArray(kbBlock) ? kbBlock : kbKnowledgeBlock(kbKnowledge)));
     lines.push(...kbPromotionBlock(kbCandidates));
     return lines.join('\n\n');
 }

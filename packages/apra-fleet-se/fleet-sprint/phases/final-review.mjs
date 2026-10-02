@@ -136,6 +136,8 @@ export async function runFinalReviewPhase({
     goalMax,
     NOT_DONE_STATUSES,
     kbPriming,
+    kbInjection,
+    kbSprintContext,
     kbWork,
     getMemberForRole,
     childIdAllocator,
@@ -243,7 +245,15 @@ export async function runFinalReviewPhase({
             unclosedVerifyIds: finalUnclosedVerifyIds,
             deferredAtGoalIds: finalDeferredAtGoalIds,
             kbCandidates: finalKbCandidates,
-            kbKnowledge: kbPriming.knowledgeOf(getMemberForRole('reviewer')),
+            kbKnowledge: kbInjection ? undefined : kbPriming.knowledgeOf(getMemberForRole('reviewer')),
+            kbBlock: kbInjection
+                ? await kbInjection.blockFor({
+                    role: 'reviewer',
+                    member: getMemberForRole('reviewer'),
+                    context: { ...(kbSprintContext || {}) },
+                    captureChannel: true,
+                })
+                : undefined,
         }),
         resumePrompt: 'Continue your final review exactly where you left off in this same session -- do not restart or re-read the diff from scratch. Weigh the remaining evidence and return your final PASS/FAIL verdict now (with newTasks findings if FAIL).',
         roleLabel: 'Final Review',

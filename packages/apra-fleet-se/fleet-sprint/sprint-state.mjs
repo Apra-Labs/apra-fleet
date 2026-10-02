@@ -138,6 +138,7 @@ export async function resolveSettleShellWith({ fleetApi, member, log = () => {} 
  *   resolveMemberProvider: ((member: string) => Promise<string|undefined>)|undefined,
  *   resolveSettleShell: (opts: { member: string, log?: Function }) => Promise<string>,
  *   dispatchToolCalls: object[],
+ *   memberInit: object[],
  *   startedAtMs: number,
  * }}
  *
@@ -145,6 +146,11 @@ export async function resolveSettleShellWith({ fleetApi, member, log = () => {} 
  * list (dispatch-accounting.mjs appends one entry per member dispatch, from
  * session_stats snapshots taken before and after it). The sprint summary and
  * the viewer read it from here.
+ *
+ * `memberInit` holds one record per member from the sprint-init probe
+ * (member-init-probe.mjs MemberInitRecord): verified status, fleetMcp, tool
+ * presence, CONFIRMED count and code index state. Filled once at sprint init
+ * and read by the KNOWLEDGE BANK injection and the viewer.
  */
 export function createSprintState({ callTool, log = () => {}, createFleetApi } = {}) {
     const active = typeof callTool === 'function';
@@ -174,5 +180,6 @@ export function createSprintState({ callTool, log = () => {}, createFleetApi } =
             return resolveSettleShellWith({ fleetApi, member, log: callLog });
         },
         dispatchToolCalls: [],
+        memberInit: [],
     };
 }

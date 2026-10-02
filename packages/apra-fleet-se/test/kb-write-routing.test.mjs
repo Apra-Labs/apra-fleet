@@ -39,9 +39,11 @@ function selector() {
 function harness({ memberCall, gPull, maintainers = selector() } = {}) {
     const events = [];
     const logs = [];
+    let offered = [];
     const client = createKbWorkClient({
         maintainers,
         memberCall: async (member, tool, args) => {
+            if (tool === 'kb_query') return { l1_results: offered.map((id) => ({ id })) };
             events.push({ type: 'call', member: member.name, tool, args });
             return memberCall ? memberCall(member, tool, args) : {};
         },
@@ -52,8 +54,17 @@ function harness({ memberCall, gPull, maintainers = selector() } = {}) {
         log: (m) => logs.push(m),
     });
     const calls = () => events.filter((e) => e.type === 'call');
+    // Offer candidate ids as a review dispatch does, then drop the bookkeeping
+    // kb_query so the test asserts only what apply() writes.
+    const offer = async (member, ids) => {
+        offered = ids;
+        await client.promotionCandidates(member);
+        offered = [];
+        events.length = 0;
+        logs.length = 0;
+    };
     const shape = () => events.map((e) => (e.type === 'gpull' ? `gpull:${e.member}` : `${e.tool}@${e.member}`));
-    return { client, events, logs, calls, shape };
+    return { client, events, logs, calls, shape, offer };
 }
 
 describe('KB write routing: the queue and the maintainer session', () => {
@@ -81,6 +92,7 @@ describe('KB write routing: the queue and the maintainer session', () => {
 
     test('a G-pull precedes EVERY batch, and a batch carries captures and promotions together', async () => {
         const h = harness();
+        await h.offer('doer-a', ['entry-1']);
         await h.client.apply('reviewer', 'doer-a', {
             kb_captures: [capture('claim one'), capture('claim two')],
             kb_promotions: [{ id: 'entry-1', reason: REASON }],

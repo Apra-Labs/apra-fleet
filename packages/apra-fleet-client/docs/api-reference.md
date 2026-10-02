@@ -352,7 +352,7 @@ session (`session.id`, the current session ID or `null`), work folder
 | `format` | `"compact" \| "json"?` | Output format (default: `"compact"`). |
 | `refresh` | `boolean?` | Re-probe the member's own apra-fleet MCP now and record the new `fleetMcp` status. Without it the recorded status is returned and nothing is probed. |
 
-`fleetMcp` (`{state, reason?, version?, checkedAt, detail?, unverified?}` or `null`) is the last recorded status of the member's own apra-fleet MCP server.
+`fleetMcp` (`{state, reason?, version?, checkedAt, detail?, unverified?}` or `null`) is the last recorded status of the member's own apra-fleet MCP server. `fleetMcpFix` (`string` or `null`) is a one-line operator fix, present when `fleetMcp` is `unavailable` or `unverified` and `null` when the member's KB/code tools are usable; the text output prints it as a `fleetMcp fix:` line.
 
 Returns a plain multi-line text summary for `"compact"`, or the structured
 `MemberDetailResult` object for `"json"` -- `server_version`, `name`, `icon`,
