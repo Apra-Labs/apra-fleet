@@ -321,6 +321,11 @@ async function startStdioServer() {
   purgeExpiredCredentials();
   void checkForUpdate();
 
+  // GitHub #562: leave a trace when the event loop freezes.
+  const { startEventLoopWatchdog } = await import('./services/event-loop-watchdog.js');
+  const { getActiveLogFile } = await import('./utils/log-helpers.js');
+  const watchdog = startEventLoopWatchdog({ logFile: getActiveLogFile() });
+
   const { cleanupAuthSocket } = await import('./services/auth-socket.js');
   // GitHub #585: every exit path (SIGINT/SIGTERM/SIGHUP/SIGBREAK, crashes)
   // writes one synchronous shutdown record before the process exits.
@@ -329,6 +334,7 @@ async function startStdioServer() {
   installShutdownHandlers(() => {
     if (stdioStopping) return;
     stdioStopping = true;
+    void watchdog.stop();
     cleanupAuthSocket().then(() => { closeAllConnections(); stallDetector.stop(); process.exit(0); });
   });
 }
@@ -427,9 +433,15 @@ async function startHttpServer() {
   purgeExpiredCredentials();
   void checkForUpdate();
 
+  // GitHub #562: leave a trace when the event loop freezes.
+  const { startEventLoopWatchdog } = await import('./services/event-loop-watchdog.js');
+  const { getActiveLogFile } = await import('./utils/log-helpers.js');
+  const watchdog = startEventLoopWatchdog({ logFile: getActiveLogFile() });
+
   async function shutdown() {
     try { lock.release(); } catch {}
     try { fs.unlinkSync(SERVER_INFO_PATH); } catch {}
+    try { await watchdog.stop(); } catch {}
     try { await handle.close(); } catch {}
     try { await cleanupAuthSocket(); } catch {}
     try { closeAllConnections(); } catch {}
