@@ -236,6 +236,20 @@ Usage:
   process.exit(1);
 }
 
+/**
+ * Exit code for "refusing to start because another/foreign server holds the
+ * port or data dir" (GitHub #584). Under a service manager (systemd
+ * Restart=on-failure, launchd KeepAlive SuccessfulExit=false) a non-zero exit
+ * restarts the server every few seconds -- each attempt a new fleet-<pid>.log
+ * that `apra-fleet watch` then follows -- while the cause persists. Those
+ * launches (and `apra-fleet start`'s detached spawn) have no terminal on
+ * stdin, so they exit 0 like the already-running case; an interactive
+ * `apra-fleet run` in a terminal keeps exit 1.
+ */
+function refusalExitCode(): number {
+  return process.stdin.isTTY ? 1 : 0;
+}
+
 function resolveTransport(args: string[]): 'http' | 'stdio' | 'invalid' {
   if (args.length === 0) return 'http';
   if (args[0] === '--stdio') return 'stdio';
@@ -376,7 +390,7 @@ async function startHttpServer() {
     // A live server with a blocked event loop is not dead: starting a second
     // one would split the fleet (GitHub #584). Refuse; the operator stops it.
     logError('startup', unresponsiveInstanceMessage(instance));
-    process.exit(1);
+    process.exit(refusalExitCode());
   }
 
   // Atomic startup lock to prevent concurrent double-start race
@@ -393,7 +407,7 @@ async function startHttpServer() {
     lock.release();
     if (err instanceof PortInUseError) {
       logError('startup', portInUseMessage(err.port, readServerInfoPid()));
-      process.exit(1);
+      process.exit(refusalExitCode());
     }
     throw err;
   }

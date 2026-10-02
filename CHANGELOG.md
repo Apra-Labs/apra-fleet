@@ -5,12 +5,16 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased] -- Server lifecycle: no random-port fallback, unresponsive-server detection (#584)
 
 - **Behaviour change -- a busy configured port is now a hard error.** If port 7523 (or
-  your `APRA_FLEET_PORT`) is already in use, the server exits 1 with an error naming the
-  port, the pid recorded in `server.json` and `APRA_FLEET_PORT`, instead of silently
-  binding a random port no MCP client could reach. If another application owns 7523 on
-  your machine, set `APRA_FLEET_PORT` to a free port and re-run `apra-fleet install` so
-  your MCP clients point at it. `apra-fleet start` and `apra-fleet install` check the
-  port up front and print the same message.
+  your `APRA_FLEET_PORT`) is already in use, the server refuses to start with an error
+  naming the port, the pid recorded in `server.json` and `APRA_FLEET_PORT`, instead of
+  silently binding a random port no MCP client could reach. If another application owns
+  7523 on your machine, set `APRA_FLEET_PORT` to a free port and re-run
+  `apra-fleet install` so your MCP clients point at it. `apra-fleet start` and
+  `apra-fleet install` check the port up front and print the same message (exit 1).
+  In service mode (systemd, launchd, Scheduled Task) the refusing server exits 0, so the
+  service manager does not restart it in a loop; the reason is in the server log and
+  `apra-fleet status` -- the service stays down until the port is freed and it is
+  started again. An interactive `apra-fleet run` in a terminal exits 1.
 - The singleton probe is tri-state (running / unresponsive / gone). A live server whose
   `/health` does not answer (e.g. a blocked event loop) is no longer declared stopped:
   its `server.json` is kept, `start`/`run` refuse with the pid/port and an
