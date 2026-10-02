@@ -50,13 +50,12 @@ consumer reads the published result. No consumer recomputes it.
 
 ## Trade-offs and known limits
 
-- Pull (not push) keeps the supervisor stateless about progress rules; the cost is a bounded
-  per-row HTTP call, mitigated by concurrency, the 2 s timer and the cache.
+- Rationale: the supervisor's own beads clone does not see child beads that sprint members
+  create and push from their clones, so locally computed progress diverged from the sprint's
+  live view (two sources of truth). The sprint is now the single source of truth; the cost is a
+  bounded per-row HTTP call, mitigated by concurrency, the 2 s timer and the cache.
 - Saved history-view runs from before this change have no `summary` key and render
   "no summary yet" rather than their old progress.
-- The viewer's SSE handler dispatches the beads state event without first dispatching the
-  summary event, so until the coalesced poll runs the panel can show new tasks with the
-  previous summary. This contradicts the ordering intended in `viewer-extensions.mjs`.
 
 ## Invariants
 
