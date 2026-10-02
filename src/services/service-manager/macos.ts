@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import type { ServiceManager, ServiceStatus } from './types.js';
-import { MACOS_PLIST_LABEL } from './types.js';
+import { MACOS_PLIST_LABEL, SERVICE_ENV_MARKER } from './types.js';
 import { gracefulStopByServerJson } from './index.js';
 
 const PLIST_DIR = path.join(os.homedir(), 'Library', 'LaunchAgents');
@@ -36,6 +36,11 @@ function buildPlist(binaryPath: string, args: string[], logPath: string): string
     '    <array>',
     argElements,
     '    </array>',
+    '    <key>EnvironmentVariables</key>',
+    '    <dict>',
+    `        <key>${SERVICE_ENV_MARKER}</key>`,
+    '        <string>1</string>',
+    '    </dict>',
     '    <key>RunAtLoad</key>',
     '    <true/>',
     '    <key>KeepAlive</key>',

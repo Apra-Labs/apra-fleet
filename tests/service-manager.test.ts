@@ -47,6 +47,7 @@ describe('WindowsServiceManager', () => {
       const call = vi.mocked(fs.writeFileSync).mock.calls[0];
       expect(call[1]).toContain('/bin/apra-fleet.exe');
       expect(call[1]).toContain('"--transport" "http"');
+      expect(call[1]).toContain('set APRA_FLEET_SERVICE=1'); // service-launch marker
     });
 
     it('calls schtasks /create with onlogon trigger and limited run-level', async () => {
@@ -217,6 +218,7 @@ describe('LinuxServiceManager', () => {
       expect(content).toContain('Type=simple');
       expect(content).toContain('ExecStart=/usr/local/bin/apra-fleet --transport http');
       expect(content).toContain('Restart=on-failure');
+      expect(content).toContain('Environment=APRA_FLEET_SERVICE=1'); // service-launch marker
       expect(content).toContain('WantedBy=default.target');
     });
 
@@ -347,6 +349,7 @@ describe('MacOSServiceManager', () => {
       expect(content).toContain('<true/>'); // RunAtLoad
       expect(content).toContain('<key>SuccessfulExit</key>');
       expect(content).toContain('<false/>'); // KeepAlive.SuccessfulExit
+      expect(content).toContain('<key>APRA_FLEET_SERVICE</key>'); // service-launch marker
     });
 
     it('bootouts before bootstrap to be idempotent', async () => {

@@ -32,10 +32,12 @@ When the server starts, it writes a `server.json` file to `~/.apra-fleet/` conta
 You can override the default port with the `APRA_FLEET_PORT` environment variable.
 If the configured port is already in use, the server refuses to start with an error
 naming the port, the pid recorded in `server.json` (if any) and `APRA_FLEET_PORT`.
-It exits 1 when run interactively in a terminal and 0 otherwise (service manager,
-`apra-fleet start`'s background spawn), so systemd/launchd do not restart a server
-that cannot start in a loop -- the same applies to refusing because an unresponsive
-server holds the data dir. It does not fall back to a random port: every configured MCP
+It exits 0 only when launched by a service manager -- `APRA_FLEET_SERVICE=1` (set by
+the systemd unit, launchd plist and Windows task wrapper that `apra-fleet install`
+writes), or systemd's `INVOCATION_ID` / launchd's `XPC_SERVICE_NAME` for older
+installs -- so systemd/launchd do not restart a server that cannot start in a loop.
+Every other launch (terminal, CI, nohup, containers, scripts) exits 1. The same
+applies to refusing because an unresponsive server holds the data dir. It does not fall back to a random port: every configured MCP
 client only knows the configured port, so a re-homed server would be unreachable.
 Free the port, or set `APRA_FLEET_PORT` to a free port and re-run `apra-fleet install`
 so the MCP clients point at it. `apra-fleet start` and `apra-fleet install` check the

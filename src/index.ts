@@ -241,13 +241,15 @@ Usage:
  * port or data dir" (GitHub #584). Under a service manager (systemd
  * Restart=on-failure, launchd KeepAlive SuccessfulExit=false) a non-zero exit
  * restarts the server every few seconds -- each attempt a new fleet-<pid>.log
- * that `apra-fleet watch` then follows -- while the cause persists. Those
- * launches (and `apra-fleet start`'s detached spawn) have no terminal on
- * stdin, so they exit 0 like the already-running case; an interactive
- * `apra-fleet run` in a terminal keeps exit 1.
+ * that `apra-fleet watch` then follows -- while the cause persists. Only a
+ * launch by such a service manager (launchedByServiceManager: the
+ * APRA_FLEET_SERVICE marker, systemd INVOCATION_ID, launchd XPC_SERVICE_NAME)
+ * exits 0, like the already-running case. Every other launch (terminal, CI,
+ * nohup, containers, scripts) exits 1 so the refusal stays visible.
  */
-function refusalExitCode(): number {
-  return process.stdin.isTTY ? 1 : 0;
+async function refusalExitCode(): Promise<number> {
+  const { launchedByServiceManager } = await import('./services/service-manager/types.js');
+  return launchedByServiceManager() ? 0 : 1;
 }
 
 function resolveTransport(args: string[]): 'http' | 'stdio' | 'invalid' {
@@ -390,7 +392,7 @@ async function startHttpServer() {
     // A live server with a blocked event loop is not dead: starting a second
     // one would split the fleet (GitHub #584). Refuse; the operator stops it.
     logError('startup', unresponsiveInstanceMessage(instance));
-    process.exit(refusalExitCode());
+    process.exit(await refusalExitCode());
   }
 
   // Atomic startup lock to prevent concurrent double-start race
@@ -407,7 +409,7 @@ async function startHttpServer() {
     lock.release();
     if (err instanceof PortInUseError) {
       logError('startup', portInUseMessage(err.port, readServerInfoPid()));
-      process.exit(refusalExitCode());
+      process.exit(await refusalExitCode());
     }
     throw err;
   }

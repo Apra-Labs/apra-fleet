@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import type { ServiceManager, ServiceStatus } from './types.js';
-import { LINUX_UNIT_NAME } from './types.js';
+import { LINUX_UNIT_NAME, SERVICE_ENV_MARKER } from './types.js';
 import { gracefulStopByServerJson } from './index.js';
 
 const UNIT_DIR = path.join(os.homedir(), '.config', 'systemd', 'user');
@@ -29,6 +29,8 @@ export class LinuxServiceManager implements ServiceManager {
       'Type=simple',
       `ExecStart=${binaryPath} ${args.join(' ')}`,
       'Restart=on-failure',
+      // Lets the server tell it runs under a restarting service manager.
+      `Environment=${SERVICE_ENV_MARKER}=1`,
       `StandardOutput=append:${logPath}`,
       `StandardError=append:${logPath}`,
       '',

@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { RegisterResult, ServiceManager, ServiceStatus } from './types.js';
-import { WINDOWS_TASK_NAME } from './types.js';
+import { WINDOWS_TASK_NAME, SERVICE_ENV_MARKER } from './types.js';
 import { gracefulStopByServerJson } from './index.js';
 import { BIN_DIR } from '../../cli/config.js';
 
@@ -73,7 +73,7 @@ export class WindowsServiceManager implements ServiceManager {
     // also launches the new binary.
     fs.mkdirSync(path.dirname(this.wrapperPath), { recursive: true });
     const quotedArgs = args.map(a => `"${a}"`).join(' ');
-    const lines = ['@echo off', `"${binaryPath}" ${quotedArgs} >> "${logPath}" 2>&1`];
+    const lines = ['@echo off', `set ${SERVICE_ENV_MARKER}=1`, `"${binaryPath}" ${quotedArgs} >> "${logPath}" 2>&1`];
     fs.writeFileSync(this.wrapperPath, lines.join('\r\n'), 'utf8');
     try {
       this.runSchtasks([
