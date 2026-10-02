@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { KB_REMOVED_SCOPE_KEYS_SHAPE } from '../services/knowledge/kb-removed-scope-keys.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { getSelfReadKb, type KbAnchor } from '../services/knowledge/kb-self.js';
@@ -14,6 +15,9 @@ export const kbSessionPrimeSchema = z.object({
   session_files: z.array(z.string()).optional().describe('Files the agent expects to touch this session'),
   hint_symbols: z.array(z.string()).optional().describe('Symbols likely to be relevant'),
   hint_modules: z.array(z.string()).optional().describe('Module names likely to be relevant'),
+  // Removed pre-redesign scope keys: declared only so a caller still passing one
+  // is refused with E-SCOPE-KEY-REMOVED instead of silently re-scoped.
+  ...KB_REMOVED_SCOPE_KEYS_SHAPE,
 });
 
 export type KbSessionPrimeInput = z.infer<typeof kbSessionPrimeSchema>;

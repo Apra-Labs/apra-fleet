@@ -390,6 +390,10 @@ await recordHappy('kb_query', 'happy', {
 // --- kb_list ------------------------------------------------------------
 await recordHappy('kb_list', 'happy', {
 });
+// The pre-redesign single-tier string form, read as a one-element list.
+await recordHappy('kb_list', 'happy-confidence-string', {
+  confidence: 'INFERRED',
+});
 
 // --- kb_promote -----------------------------------------------------------
 if (idFoo) {
@@ -539,9 +543,30 @@ await withSession('CODE_CM', () => recordNonErrorOutcome('code_status', 'non-err
 // ===========================================================================
 console.log('== PASS 2: refusal + non-error-outcome fixtures ==');
 
-// -- validation group (all 6 codes) ---------------------------------------
+// -- validation group (all 7 codes) ---------------------------------------
 await recordRefusal('kb_query', 'refusal-no-selector', {
 }, 'E-QUERY-NO-SELECTOR');
+
+// E-SCOPE-KEY-REMOVED: one per kb_* tool family (read, write, bible,
+// maintenance), each with a different removed key.
+await recordRefusal('kb_query', 'refusal-scope-key-removed', {
+  query: 'exampleFn',
+  repo_path: '/elsewhere/other-repo',
+}, 'E-SCOPE-KEY-REMOVED');
+await recordRefusal('kb_capture', 'refusal-scope-key-removed', {
+  type: 'knowledge',
+  title: 'Never stored: carries a removed scope key',
+  summary: 'A capture naming another repository by a removed key is refused.',
+  content: 'Refused before any KB is resolved, so nothing is written anywhere.',
+  source_files: ['src/example.ts'],
+  repo_remote_url: 'https://example.test/some-other-repo.git',
+}, 'E-SCOPE-KEY-REMOVED');
+await recordRefusal('kb_export', 'refusal-scope-key-removed', {
+  repo_path: '/elsewhere/other-repo',
+}, 'E-SCOPE-KEY-REMOVED');
+await recordRefusal('kb_freshness_sweep', 'refusal-scope-key-removed', {
+  repo: '/elsewhere/other-repo',
+}, 'E-SCOPE-KEY-REMOVED');
 
 await recordRefusal('kb_context', 'refusal-path-traversal', {
   files: ['../outside-the-repo.txt'],

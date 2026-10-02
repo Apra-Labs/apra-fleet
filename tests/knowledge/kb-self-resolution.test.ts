@@ -194,29 +194,53 @@ describe('kb (self): a FULL session resolves the server working folder', () => {
     expect(alphaHits.l1_results.map((e: { id: string }) => e.id)).not.toContain(captured.id);
   });
 
-  it('a FULL session whose working folder has no origin remote is refused with E-SELF-NO-REMOTE', async () => {
+  it('a FULL session whose working folder has no origin remote is refused with E-SELF-NO-REMOTE naming the cause and the fix', async () => {
     vi.spyOn(process, 'cwd').mockReturnValue(folders.noremote);
     const out = await call(await connect(), 'kb_stats');
     expect(out.isError).toBe(true);
-    expect(out.text).toMatch(/E-SELF-NO-REMOTE: The server working folder/);
+    expect(out.text).toMatch(/E-SELF-NO-REMOTE: This is a FULL session \(no member identity\), so its KB is the fleet server's own working folder, not the calling client's directory; '[^']+' has no origin remote/);
+    expect(out.text).toMatch(/Remediation: Restart the fleet server with its working folder set to the repository whose KB you want, or call from a member session \(\?member=<id>\)/);
+    expect(out.text).toContain("git remote add origin <url>");
+  });
+
+  it('a FULL session whose working folder is not a repository is refused with E-SELF-NOT-A-REPO naming the cause and the fix', async () => {
+    vi.spyOn(process, 'cwd').mockReturnValue(folders.plain);
+    const out = await call(await connect(), 'kb_query', { query: 'anything' });
+    expect(out.isError).toBe(true);
+    expect(out.text).toContain(`E-SELF-NOT-A-REPO: This is a FULL session (no member identity), so its KB is the fleet server's own working folder, not the calling client's directory; '${folders.plain}' is not a git repository.`);
+    expect(out.text).toMatch(/Remediation: Restart the fleet server with its working folder set to the repository whose KB you want, or call from a member session \(\?member=<id>\) of a member registered on that repository\./);
   });
 });
 
-describe('kb (self): no kb_* tool input schema declares a scope parameter', () => {
-  it('every kb_* tool listed over HTTP declares none of repo, repo_path, repo_remote_url', async () => {
+describe('kb (self): the removed scope keys are refused, never silently stripped', () => {
+  it('every kb_* tool listed over HTTP carries repo, repo_path, repo_remote_url only as REMOVED markers', async () => {
     const tools = (await (await connect()).listTools()).tools.filter(t => t.name.startsWith('kb_'));
     expect(tools.length).toBe(17);
-    const offenders = tools.flatMap(t =>
-      SCOPE_FIELDS.filter(f => Object.prototype.hasOwnProperty.call((t.inputSchema as { properties?: object }).properties ?? {}, f))
-        .map(f => `${t.name}.${f}`));
+    const offenders = tools.flatMap(t => SCOPE_FIELDS
+      .filter(f => !/^REMOVED -- /.test(((t.inputSchema as { properties?: Record<string, { description?: string }> }).properties ?? {})[f]?.description ?? ''))
+      .map(f => `${t.name}.${f}`));
     expect(offenders).toEqual([]);
   });
 
-  it('a scope argument sent anyway is ignored: the member session still decides the KB', async () => {
+  it('a scope argument sent over HTTP fails with E-SCOPE-KEY-REMOVED and redirects nothing', async () => {
     const beta = await connect(members.beta);
-    const out = await callJson(beta, 'kb_list', { confidence: ALL_TIERS, repo_path: folders.alpha, repo_remote_url: remoteFor('alpha') });
-    // Alpha's KB holds an entry; beta's does not. The stray arguments did not
-    // redirect the call to alpha.
-    expect(out.total).toBe(0);
+    const out = await call(beta, 'kb_list', { confidence: ALL_TIERS, repo_path: folders.alpha, repo_remote_url: remoteFor('alpha') });
+    expect(out.isError).toBe(true);
+    expect(out.text).toContain("E-SCOPE-KEY-REMOVED: kb_list no longer accepts 'repo_path', 'repo_remote_url'");
+    expect(out.text).toContain('Remediation: repo_path: nothing -- drop it');
+    // A write carrying one is refused before any KB is opened: alpha's KB is unchanged.
+    const before = (await callJson(await connect(members.alpha), 'kb_list', { confidence: ALL_TIERS })).total;
+    const refused = await call(beta, 'kb_capture', { ...capture('alpha', 'Never stored via a removed key'), repo_path: folders.alpha });
+    expect(refused.isError).toBe(true);
+    expect(refused.text).toContain("E-SCOPE-KEY-REMOVED: kb_capture no longer accepts 'repo_path'");
+    expect((await callJson(await connect(members.alpha), 'kb_list', { confidence: ALL_TIERS })).total).toBe(before);
+  });
+
+  it('kb_list accepts the legacy single-tier string over HTTP', async () => {
+    const alpha = await connect(members.alpha);
+    const asString = await callJson(alpha, 'kb_list', { confidence: 'INFERRED' });
+    const asArray = await callJson(alpha, 'kb_list', { confidence: ['INFERRED'] });
+    expect(asString.total).toBeGreaterThan(0);
+    expect(asString).toEqual(asArray);
   });
 });

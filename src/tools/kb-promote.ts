@@ -1,10 +1,14 @@
 import { z } from 'zod';
+import { KB_REMOVED_SCOPE_KEYS_SHAPE } from '../services/knowledge/kb-removed-scope-keys.js';
 import { getSelfKbProviders, memberOwnerTag, type KbAnchor } from '../services/knowledge/kb-self.js';
 import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
 
 export const kbPromoteSchema = z.object({
   id: z.string().min(1).describe('ID of the KB entry to promote'),
   reason: z.string().optional().describe('Reason for promotion (appended to content as evidence trail)'),
+  // Removed pre-redesign scope keys: declared only so a caller still passing one
+  // is refused with E-SCOPE-KEY-REMOVED instead of silently re-scoped.
+  ...KB_REMOVED_SCOPE_KEYS_SHAPE,
 });
 
 export type KbPromoteInput = z.infer<typeof kbPromoteSchema>;

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { KB_REMOVED_SCOPE_KEYS_SHAPE } from '../services/knowledge/kb-removed-scope-keys.js';
 import { getSelfKbProviders, type KbAnchor } from '../services/knowledge/kb-self.js';
 import { KbCaptureRejected } from '../services/knowledge/types.js';
 import type { KBEntryInput, CaptureSource, AudnDecision } from '../services/knowledge/types.js';
@@ -8,6 +9,9 @@ export const kbHarvestSchema = z.object({
     .describe('Full session transcript text to scan for learnings'),
   session_id: z.string().optional()
     .describe('Session ID for attribution'),
+  // Removed pre-redesign scope keys: declared only so a caller still passing one
+  // is refused with E-SCOPE-KEY-REMOVED instead of silently re-scoped.
+  ...KB_REMOVED_SCOPE_KEYS_SHAPE,
 });
 
 export type KbHarvestInput = z.infer<typeof kbHarvestSchema>;

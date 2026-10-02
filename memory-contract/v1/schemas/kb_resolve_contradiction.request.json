@@ -23,6 +23,15 @@
           "type": "string",
           "minLength": 1,
           "description": "Evidence note appended to the winner content, e.g. a file+symbol citation or the trust-tier rule applied. Verbatim \"hash-basis match on merged worktree\" when called by kb_reconcile_prefilter."
+        },
+        "repo_path": {
+          "description": "REMOVED -- do not pass. A call carrying it fails with E-SCOPE-KEY-REMOVED; the KB is always the calling session's own."
+        },
+        "repo": {
+          "description": "REMOVED -- do not pass. A call carrying it fails with E-SCOPE-KEY-REMOVED; the KB is always the calling session's own."
+        },
+        "repo_remote_url": {
+          "description": "REMOVED -- do not pass. A call carrying it fails with E-SCOPE-KEY-REMOVED; the KB is always the calling session's own."
         }
       },
       "required": [

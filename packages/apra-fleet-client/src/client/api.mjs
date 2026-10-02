@@ -513,6 +513,8 @@
 
 /**
  * @typedef {Object} KbExportOptions
+ * No scope key: the KB is the calling session's own. The removed repo_path, repo and
+ * repo_remote_url are refused with E-SCOPE-KEY-REMOVED (client-side and by the server).
  * @property {"project" | "global"} [scope] - project (default): export the project KB to
  *   .fleet/kb-canonical.json. global: export the GLOBAL KB to .fleet/kb-canonical-global.json.
  * @property {string} [baseBranch] - The target base branch (the branch the entries merge
@@ -625,6 +627,34 @@ export function parseToolJson(result) {
 }
 
 const isStringArray = (v) => Array.isArray(v) && v.every((s) => typeof s === 'string');
+
+/**
+ * The pre-redesign kb_* scope keys. Every kb_* tool acts on the calling
+ * session's own KB, so the server refuses a call carrying any of these with
+ * E-SCOPE-KEY-REMOVED (src/services/knowledge/kb-removed-scope-keys.ts). The
+ * kb_* wrappers below refuse them client-side with the same code, so a stale
+ * caller fails fast and identically whichever side catches it.
+ */
+export const KB_REMOVED_SCOPE_KEYS = Object.freeze(['repo_path', 'repo', 'repo_remote_url']);
+
+/**
+ * Throw E-SCOPE-KEY-REMOVED when `options` carries a removed kb_* scope key
+ * (any value other than undefined).
+ * @param {string} tool - the kb_* tool name, for the message
+ * @param {Record<string, unknown>} [options]
+ */
+export function assertNoRemovedKbScopeKeys(tool, options) {
+    if (!options || typeof options !== 'object') return;
+    const present = KB_REMOVED_SCOPE_KEYS.filter((k) => options[k] !== undefined);
+    if (present.length === 0) return;
+    const err = new Error(
+        `E-SCOPE-KEY-REMOVED: ${tool} no longer accepts ${present.map((k) => `'${k}'`).join(', ')} ` +
+        '(removed in the KB redesign); the call was not sent. Remediation: drop it -- every kb_* call acts on the ' +
+        "calling session's own KB (a member session's registered work folder; a FULL session's fleet server working folder).",
+    );
+    err.code = 'E-SCOPE-KEY-REMOVED';
+    throw err;
+}
 
 /**
  * Typed read of an execute_prompt permission denial. Accepts the raw executePrompt()
@@ -856,9 +886,12 @@ export class ApraFleet {
      * file and auto-commit it locally (never pushed). Pass baseBranch/baseCommit
      * to record the target base branch and base commit in provenance.
      * Result JSON: {exported, path, scope, committed}; extract with parseToolJson().
+     * The removed scope keys (repo_path, repo, repo_remote_url) are refused
+     * with E-SCOPE-KEY-REMOVED before anything is sent.
      * @param {KbExportOptions} [options]
      */
     async kbExport(options = {}) {
+        assertNoRemovedKbScopeKeys('kb_export', options);
         return this.mcpClient.callTool('kb_export', options);
     }
 
@@ -869,9 +902,12 @@ export class ApraFleet {
      * same ids after resetting to a newer HEAD re-merges, so a rejected push can
      * be retried. Result JSON: {path, merged, skipped, entry_count, committed};
      * extract with parseToolJson().
+     * The removed scope keys (repo_path, repo, repo_remote_url) are refused
+     * with E-SCOPE-KEY-REMOVED before anything is sent.
      * @param {KbBibleCommitOptions} options
      */
     async kbBibleCommit(options) {
+        assertNoRemovedKbScopeKeys('kb_bible_commit', options);
         return this.mcpClient.callTool('kb_bible_commit', options);
     }
 

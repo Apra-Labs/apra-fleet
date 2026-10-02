@@ -42,6 +42,11 @@
       "status": 400
     },
     {
+      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-SCOPE-KEY-REMOVED",
+      "title": "A kb_* request carries a removed pre-redesign scope key (repo_path, repo or repo_remote_url). The KB a kb_* call acts on is always the calling session's own, so these keys are refused -- never silently stripped, which would re-point an old caller at a different KB. Nothing is resolved, opened or changed.",
+      "status": 400
+    },
+    {
       "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-PATH-TRAVERSAL",
       "title": "A file list contains an absolute path or a parent-directory traversal.",
       "status": 400

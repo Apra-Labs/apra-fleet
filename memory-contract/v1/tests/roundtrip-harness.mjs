@@ -251,6 +251,7 @@ export const SCENARIO = [
   { tool: 'kb_session_prime', case: 'happy' },
   { tool: 'kb_query', case: 'happy' },
   { tool: 'kb_list', case: 'happy' },
+  { tool: 'kb_list', case: 'happy-confidence-string' },
   { tool: 'kb_promote', case: 'happy', derive: { id: 'FOO' } },
   // kb_export writes .fleet/kb-canonical.json into repo A; the kb_import step
   // below reads it back through the path anchor, no derive needed. It runs
@@ -290,6 +291,10 @@ export const SCENARIO = [
 
   // -- PASS 2: taxonomy-coded refusals + non-error outcomes -----------------
   { tool: 'kb_query', case: 'refusal-no-selector' },
+  { tool: 'kb_query', case: 'refusal-scope-key-removed' },
+  { tool: 'kb_capture', case: 'refusal-scope-key-removed' },
+  { tool: 'kb_export', case: 'refusal-scope-key-removed' },
+  { tool: 'kb_freshness_sweep', case: 'refusal-scope-key-removed' },
   { tool: 'kb_context', case: 'refusal-path-traversal' },
   { tool: 'kb_export', case: 'refusal-repo-path-invalid' },
   { tool: 'kb_bible_commit', case: 'refusal-repo-path-invalid' },

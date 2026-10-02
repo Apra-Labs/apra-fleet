@@ -59,6 +59,15 @@ function whose(memberLabel: string | undefined): string {
   return memberLabel ? `member '${memberLabel}' work folder` : 'server working folder';
 }
 
+// A FULL session (no member identity) resolves to the fleet SERVER's working
+// folder, never the client's: an HTTP server cannot see a client's cwd. A
+// caller hitting a self error there usually expected its own directory, so the
+// error names that cause and both fixes explicitly.
+const FULL_SESSION_CAUSE =
+  "This is a FULL session (no member identity), so its KB is the fleet server's own working folder, not the calling client's directory";
+const FULL_SESSION_FIX =
+  'Restart the fleet server with its working folder set to the repository whose KB you want, or call from a member session (?member=<id>) of a member registered on that repository.';
+
 function noWorkFolder(folder: string, memberLabel?: string): KbSelfError {
   return new KbSelfError(
     'E-SELF-NO-WORKFOLDER',
@@ -66,7 +75,7 @@ function noWorkFolder(folder: string, memberLabel?: string): KbSelfError {
     `The ${whose(memberLabel)} ${folder ? `'${folder}' does not exist or is not a directory.` : 'is not set.'}`,
     memberLabel
       ? 'Create the folder or re-register the member with an existing work folder (register_member / update_member).'
-      : 'Start the fleet server from an existing repository folder.',
+      : FULL_SESSION_FIX,
   );
 }
 
@@ -98,8 +107,12 @@ export function validateSelfRepoFolder(folder: string, memberLabel?: string): vo
     throw new KbSelfError(
       'E-SELF-NOT-A-REPO',
       folder,
-      `The ${whose(memberLabel)} '${folder}' is not a git repository.`,
-      `Run 'git init' (or clone the project) in '${folder}' and add an origin remote.`,
+      memberLabel
+        ? `The ${whose(memberLabel)} '${folder}' is not a git repository.`
+        : `${FULL_SESSION_CAUSE}; '${folder}' is not a git repository.`,
+      memberLabel
+        ? `Run 'git init' (or clone the project) in '${folder}' and add an origin remote.`
+        : `${FULL_SESSION_FIX} Or make '${folder}' itself a git repository with an origin remote.`,
     );
   }
 }
@@ -112,8 +125,12 @@ export function validateSelfFolder(folder: string, memberLabel?: string): KbAnch
     throw new KbSelfError(
       'E-SELF-NO-REMOTE',
       folder,
-      `The ${whose(memberLabel)} '${folder}' has no origin remote, so it has no KB identity.`,
-      `Run 'git remote add origin <url>' in '${folder}'.`,
+      memberLabel
+        ? `The ${whose(memberLabel)} '${folder}' has no origin remote, so it has no KB identity.`
+        : `${FULL_SESSION_CAUSE}; '${folder}' has no origin remote, so it has no KB identity.`,
+      memberLabel
+        ? `Run 'git remote add origin <url>' in '${folder}'.`
+        : `${FULL_SESSION_FIX} Or run 'git remote add origin <url>' in '${folder}'.`,
     );
   }
   return { folder };
@@ -247,4 +264,4 @@ export async function getSelfReadKb(
 
 /** Appended to every kb_* tool description so callers know there is no scope argument. */
 export const KB_SELF_NOTE =
-  ' Scope: always the calling session\'s own KB -- a member session uses its registered work folder, any other session the fleet server\'s working folder; there is no repo/path scope argument. Fails with E-SELF-NO-WORKFOLDER, E-SELF-NOT-A-REPO or E-SELF-NO-REMOTE (each with a one-line remediation) when that folder cannot carry a KB identity (it must be a git repository with an origin remote).';
+  ' Scope: always the calling session\'s own KB -- a member session uses its registered work folder, any other session the fleet server\'s working folder; there is no repo/path scope argument (the removed repo_path, repo and repo_remote_url keys fail with E-SCOPE-KEY-REMOVED). Fails with E-SELF-NO-WORKFOLDER, E-SELF-NOT-A-REPO or E-SELF-NO-REMOTE (each with a one-line remediation) when that folder cannot carry a KB identity (it must be a git repository with an origin remote).';

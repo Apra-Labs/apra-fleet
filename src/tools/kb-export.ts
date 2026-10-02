@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { KB_REMOVED_SCOPE_KEYS_SHAPE } from '../services/knowledge/kb-removed-scope-keys.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -45,6 +46,9 @@ export const kbExportSchema = z.object({
     .describe('The target base branch (the branch the entries merge into). Written to provenance.branch. Omitted: the export folder HEAD branch.'),
   baseCommit: z.string().min(1).optional()
     .describe('The base commit the entries were verified against. Written to provenance.commit. Omitted: the export folder HEAD commit.'),
+  // Removed pre-redesign scope keys: declared only so a caller still passing one
+  // is refused with E-SCOPE-KEY-REMOVED instead of silently re-scoped.
+  ...KB_REMOVED_SCOPE_KEYS_SHAPE,
 });
 
 export type KbExportInput = z.infer<typeof kbExportSchema>;

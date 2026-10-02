@@ -90,17 +90,39 @@ git hook), even though each repo's entries stay in their own KB -- see below.
 The fleet server is one long-lived process that serves many members working
 in many different repos, so nothing about the server's own working directory
 can identify which repo a given tool call is about. No `kb_*` tool takes a
-scope argument (`repo_path`, `repo` and `repo_remote_url` were removed from
-every schema and from the memory contract). Instead the KB a call reads or
-writes is derived from **who is calling** -- the calling session's "self":
+scope argument. Instead the KB a call reads or writes is derived from **who
+is calling** -- the calling session's "self" (below).
+
+**The removed scope keys are refused, not ignored.** Before the redesign every
+`kb_*` tool took `repo_path` and `repo_remote_url` (`kb_stats` and `kb_import`
+also took `repo`). An MCP server built from a zod shape strips undeclared
+keys before the handler runs, so simply deleting them would have silently
+re-pointed an existing caller at a different KB. Instead every `kb_*` input
+schema still declares the three keys, described as `REMOVED`
+(`KB_REMOVED_SCOPE_KEYS_SHAPE`, `src/services/knowledge/kb-removed-scope-keys.ts`),
+and the `kb_*` tool wrapper in `src/services/tool-registry.ts` refuses any call
+carrying one (any value but absent/undefined) with `E-SCOPE-KEY-REMOVED`
+before any KB is resolved or opened. The message names every removed key
+present and what replaces it (nothing: drop it -- a member session acts on
+its registered work folder, a remote member's KB identity is its registered
+origin remote, and a FULL session acts on the server's working folder;
+`kb_import` keeps `path` for naming a bible file).
 
 - **Member session** (`?member=<uuid>` or a member JWT): the member's
   registered work folder. The session's member id travels from the HTTP
   transport to the handler through an `AsyncLocalStorage` lane
   (`src/services/tool-scope.ts`), so handlers never receive it as a parameter.
 - **Full session** (no member identity): the fleet server's own working
-  folder. An HTTP server cannot see a client's cwd, so there is no separate
-  "self" for local non-member callers.
+  folder (`process.cwd()` of the server process). An HTTP server cannot see a
+  client's cwd, so there is no separate "self" for local non-member callers:
+  a FULL session started from any client directory still reads and writes
+  the KB of the repository the SERVER was started in. When that folder cannot
+  carry a KB identity, the self-resolution error says exactly that -- "This is
+  a FULL session (no member identity), so its KB is the fleet server's own
+  working folder, not the calling client's directory; '<folder>' is not a git
+  repository" (or "has no origin remote") -- and names both fixes: restart
+  the fleet server with its working folder set to the intended repository, or
+  call from a member session (`?member=<id>`) of a member registered on it.
 
 `resolveSelfAnchor()` (`src/services/knowledge/kb-self.ts`) performs the
 resolution and `getSelfKbProviders()` feeds the result to `getKbProviders`.
@@ -128,7 +150,8 @@ exactly which repo they mean (the `execute_prompt` post-dispatch harvest, the
 not part of any tool input schema, so no MCP client can supply it.
 
 Every `kb_*` tool description carries a shared note (`KB_SELF_NOTE`) stating
-that scope is the calling session's own KB and listing the three error codes.
+that scope is the calling session's own KB, that the removed scope keys fail
+with `E-SCOPE-KEY-REMOVED`, and listing the three self-resolution error codes.
 
 **Provider caching is keyed by (slug, repoPath), not slug alone.** Two callers
 that resolve to the same project slug but different anchors get distinct
@@ -169,12 +192,31 @@ caller; do not rely on the guard test alone.
 
 ### Read defaults
 
-`kb_query`, `kb_list` and `kb_context` default to CONFIRMED, undisputed
-entries only. `confidence` is an array input, so a caller wanting other
-tiers names them explicitly; internal callers that need UNVERIFIED or
-INFERRED entries (e.g. reconcile and prime paths) pass an explicit list.
-`flagged_only` is exempt from the default because its purpose is to surface
-disputed entries.
+`kb_query`, `kb_list` and `kb_session_prime` default to CONFIRMED, undisputed
+entries only. `confidence` is a list input, so a caller wanting other tiers
+names them explicitly; internal callers that need UNVERIFIED or INFERRED
+entries (e.g. reconcile and prime paths) pass an explicit list. `flagged_only`
+is exempt from the default because its purpose is to surface disputed entries.
+
+**`kb_list` also accepts the legacy single-tier string.** Before the redesign
+`kb_list`'s `confidence` was one tier as a string (`"INFERRED"`); it is now a
+list. Both forms are accepted: a string is read as the one-element list, so
+`{ confidence: "INFERRED" }` and `{ confidence: ["INFERRED"] }` return the
+same result (and, being an explicit tier, both opt out of the dispute filter).
+
+**`kb_context` defaults to CONFIRMED + INFERRED (decision).** Its default
+tier set is `["CONFIRMED","INFERRED"]`, undisputed (`KB_CONTEXT_DEFAULT_CONFIDENCE`,
+`src/tools/kb-context.ts`, pinned by `tests/knowledge/kb-confidence-default.test.ts`).
+`kb_context` answers only "is my cached summary of this file still current?",
+and a context-cache entry's freshness is decided mechanically by its content
+hash against the file on disk -- not by trust in its claims. `kb_capture`
+stores at most INFERRED and context-cache entries are rarely promoted, so the
+CONFIRMED-only default reported almost every file missing. UNVERIFIED
+(harvest output) stays opt-in. In a MEMBER session the default read merges
+the member's checkout bible (CONFIRMED) with the member's own
+CONFIRMED/INFERRED captures from the per-repo DB (tagged
+`member:<caller uuid>`), so it never exposes another member's captures; its
+global-KB fallback stays CONFIRMED-only.
 
 ### Member-session tool calls
 

@@ -501,6 +501,18 @@ rejects an unparseable value rather than storing it, because a `NaN` expiry
 silences the near-expiry warning and makes the credential-cleanup timer
 fall back to its default.
 
+#### kb_* scope keys
+
+Every `kb_*` call acts on the calling session's own KB (a member session's
+registered work folder; a FULL session's fleet server working folder). The
+pre-redesign scope keys `repo_path`, `repo` and `repo_remote_url` are removed:
+the server refuses a call carrying any of them with `E-SCOPE-KEY-REMOVED`,
+and `kbExport` / `kbBibleCommit` refuse them client-side with the same code
+before sending (`assertNoRemovedKbScopeKeys`, `KB_REMOVED_SCOPE_KEYS` are
+exported). For direct `callTool` users: `kb_list` accepts `confidence` as a
+list or as one tier string, and `kb_context` defaults to
+`["CONFIRMED","INFERRED"]`.
+
 #### `kbExport(options?: KbExportOptions)`
 
 Calls `kb_export` -- exports the calling session's CONFIRMED KB entries to the
