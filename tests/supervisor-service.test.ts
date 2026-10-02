@@ -33,8 +33,13 @@ const { mockGetSvcMgr, mcpMgr, supervisorMgr, mockCheckRunning } = vi.hoisted(()
 vi.mock('../src/services/service-manager/index.js', () => ({
   getServiceManager: mockGetSvcMgr,
 }));
-vi.mock('../src/services/singleton.js', () => ({
+// runStart also probes the configured port (GitHub #584): keep the real
+// helpers and report the port free, as tests/cli-verbs.test.ts does.
+vi.mock('../src/services/singleton.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/services/singleton.js')>()),
   checkRunningInstance: mockCheckRunning,
+  isPortInUse: async () => false,
+  readServerInfoPid: () => undefined,
 }));
 vi.mock('node:child_process');
 import { execFileSync, spawn } from 'node:child_process';
