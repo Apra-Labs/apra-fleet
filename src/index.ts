@@ -322,8 +322,15 @@ async function startStdioServer() {
   void checkForUpdate();
 
   const { cleanupAuthSocket } = await import('./services/auth-socket.js');
-  process.on('SIGINT', () => { cleanupAuthSocket().then(() => { closeAllConnections(); stallDetector.stop(); process.exit(0); }); });
-  process.on('SIGTERM', () => { cleanupAuthSocket().then(() => { closeAllConnections(); stallDetector.stop(); process.exit(0); }); });
+  // GitHub #585: every exit path (SIGINT/SIGTERM/SIGHUP/SIGBREAK, crashes)
+  // writes one synchronous shutdown record before the process exits.
+  const { installShutdownHandlers } = await import('./services/server-lifecycle.js');
+  let stdioStopping = false;
+  installShutdownHandlers(() => {
+    if (stdioStopping) return;
+    stdioStopping = true;
+    cleanupAuthSocket().then(() => { closeAllConnections(); stallDetector.stop(); process.exit(0); });
+  });
 }
 
 async function startHttpServer() {
@@ -425,6 +432,14 @@ async function startHttpServer() {
     process.exit(0);
   }
 
-  process.on('SIGINT', () => void shutdown());
-  process.on('SIGTERM', () => void shutdown());
+  // GitHub #585: every exit path (SIGINT/SIGTERM/SIGHUP/SIGBREAK, POST
+  // /shutdown, shutdown_server, crashes) writes one synchronous shutdown
+  // record to fleet-<pid>.log before the process exits.
+  const { installShutdownHandlers } = await import('./services/server-lifecycle.js');
+  let stopping = false;
+  installShutdownHandlers(() => {
+    if (stopping) return;
+    stopping = true;
+    void shutdown();
+  });
 }

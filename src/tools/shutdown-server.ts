@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import { closeAllConnections } from '../services/ssh.js';
 import type { HttpTransportHandle } from '../services/http-transport.js';
 import { SERVER_INFO_PATH } from '../paths.js';
+import { recordShutdown } from '../services/server-lifecycle.js';
 
 export const shutdownServerSchema = z.object({});
 
@@ -38,6 +39,8 @@ export function cancelScheduledExit(): void {
 }
 
 export async function shutdownServer(): Promise<string> {
+  // GitHub #585: one synchronous shutdown record before the deferred exit.
+  recordShutdown('shutdown_server');
   if (httpHandle) {
     // Close the transport BEFORE deleting the singleton pointer, not after --
     // a caller polling checkRunningInstance() (server.json gone => not

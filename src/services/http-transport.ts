@@ -10,6 +10,7 @@ import { getAgent, findAgentByName } from './registry.js';
 import { DEFAULT_PORT, DEFAULT_HOST } from '../paths.js';
 import { serverVersion } from '../version.js';
 import { logLine } from '../utils/log-helpers.js';
+import { recordShutdown } from './server-lifecycle.js';
 
 interface Session {
   server: McpServer;
@@ -186,6 +187,8 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
         return;
       }
       const body = JSON.stringify({ status: 'shutting-down' });
+      // GitHub #585: name the real cause before re-entering the SIGINT path.
+      recordShutdown('http_shutdown');
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(body);
       setTimeout(() => {
