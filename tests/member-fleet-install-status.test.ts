@@ -39,6 +39,8 @@ interface World {
   /** ~/.claude.json content on the member. */
   claudeJson: Record<string, unknown> | null;
   listTools: string[];
+  /** Installer outcome: 'ok' upgrades; 'killed' exits 143 (Terminated); 'no-upgrade' exits 0 but leaves the old version. */
+  installer?: 'ok' | 'killed' | 'no-upgrade';
   execLog: string[];
   transfers: number;
   recorded: FleetMcpStatus[];
@@ -80,7 +82,13 @@ function deps(world: World, local?: { connect: (id: string) => Promise<MemberSes
         return ok(world.installed ? `apra-fleet ${world.installed}\n` : `${NO_INSTALL_SENTINEL}\n`);
       }
       if (c.includes('uname -m')) return ok('x86_64');
-      if (c.includes("'install'")) { world.installed = VERSION; world.marker = true; return ok('installed'); }
+      if (c.includes("'install'")) {
+        if (world.installer === 'killed') {
+          return { stdout: 'Registered service detected -- stopping it through the service manager.\n', stderr: 'Terminated', code: 143 };
+        }
+        if (world.installer === 'no-upgrade') return ok('installed');
+        world.installed = VERSION; world.marker = true; return ok('installed');
+      }
       if (c.includes('CLAUDE_CONFIG_DIR')) return ok('');
       if (c.includes('cat "') && c.includes('.claude.json')) return ok(world.claudeJson ? JSON.stringify(world.claudeJson) : '');
       return { stdout: '', stderr: `unexpected: ${c}`, code: 127 };
@@ -238,6 +246,55 @@ describe('agy and local members', () => {
       connect: async () => { throw Object.assign(new Error('Forbidden'), { status: 403 }); },
     }));
     expect(s).toMatchObject({ state: 'unavailable', reason: 'member-session-failed' });
+  });
+});
+
+// apra-fleet-b4g.73: a requested install that failed is reported with its own
+// reason and detail, never masked by a later step run against the old install.
+describe('a failed member install is reported as such', () => {
+  const OLD = 'v0.4.3';
+
+  it('installer killed (exit 143): install-failed with the installer detail, old version recorded, no register into the stale install', async () => {
+    const agent = remoteClaude();
+    const world = newWorld({ installed: OLD, installer: 'killed', register: 'long-error' });
+    world.claudeJson = entryFor(agent);
+    const s = await refreshMemberFleetMcp(agent, deps(world), { install: true });
+    expect(s).toMatchObject({ state: 'unavailable', reason: 'install-failed', version: OLD });
+    expect(s.detail).toContain('installer exited 143');
+    expect(s.detail).toContain('Terminated');
+    expect(s.detail).toContain(`still has apra-fleet ${OLD}, which was not used`);
+    expect(world.execLog.some(c => c.includes("'register-member'"))).toBe(false);
+    expect(world.recorded).toEqual([s]);
+  });
+
+  it('installer exits 0 but the member still reports the old version: install-unverified, not a later step error', async () => {
+    const agent = remoteClaude();
+    const world = newWorld({ installed: OLD, installer: 'no-upgrade', register: 'long-error' });
+    world.claudeJson = entryFor(agent);
+    const s = await probeMemberFleetMcp(agent, deps(world), { install: true });
+    expect(s).toMatchObject({ state: 'unavailable', reason: 'install-unverified', version: OLD });
+    expect(s.detail).toContain(`reports ${OLD}`);
+    expect(s.detail).toContain('which was not used');
+    expect(world.execLog.some(c => c.includes("'register-member'"))).toBe(false);
+  });
+
+  it('a failure with no prior install keeps the plain install reason and detail', async () => {
+    const agent = remoteClaude();
+    const world = newWorld({ installed: null, installer: 'killed' });
+    const s = await probeMemberFleetMcp(agent, deps(world), { install: true });
+    expect(s).toMatchObject({ state: 'unavailable', reason: 'install-failed' });
+    expect(s).not.toHaveProperty('version');
+    expect(s.detail).toContain('installer exited 143');
+    expect(s.detail).not.toContain('which was not used');
+  });
+
+  it('a successful upgrade from the old version still registers and verifies', async () => {
+    const agent = remoteClaude();
+    const world = newWorld({ installed: OLD, installer: 'ok' });
+    world.claudeJson = entryFor(agent);
+    const s = await probeMemberFleetMcp(agent, deps(world), { install: true });
+    expect(s).toMatchObject({ state: 'available', version: VERSION });
+    expect(world.execLog.some(c => c.includes("'register-member'"))).toBe(true);
   });
 });
 

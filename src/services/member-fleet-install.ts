@@ -1127,13 +1127,19 @@ async function probeRemote(
   if (install) {
     const r = await ensureMemberFleetInstall(agent, deps, { force: forceInstall });
     if (r.state === 'available') { version = r.version; if (r.installed) { ctx.installedNow = true; installedNow = true; } }
-    // A refused install over a running full (non-member) install is reported
-    // as such, never papered over by using that install: the running server
-    // belongs to a human full install, and self-registering the member into it
-    // would wire the member session to a server the fleet does not own.
-    else if (r.reason === 'full-install-running') return unavailable(r.reason, r.detail);
-    else if (r.version) version = r.version; // an older install is still there: try to use it
-    else return unavailable(r.reason, r.detail);
+    // A requested install that failed is reported with ITS reason and detail,
+    // never papered over by registering into whatever older install is still
+    // there: that hid the real cause behind a later step's error (e.g.
+    // register-failed from a stale install, apra-fleet-b4g.73). A refused
+    // install over a running full (non-member) install is the same: the server
+    // belongs to a human full install the fleet does not own. The version
+    // still on the member is recorded, and named in the detail as not used.
+    else {
+      const detail = r.version
+        ? `${r.detail ?? r.reason}; the member still has apra-fleet ${r.version}, which was not used`
+        : r.detail;
+      return unavailable(r.reason, detail, r.version ? { version: r.version } : {});
+    }
   } else {
     const p = await probeMemberFleetVersion(agent, binPath, deps);
     if (p.kind === 'probe-failed') return unavailable('probe-failed', p.detail);
