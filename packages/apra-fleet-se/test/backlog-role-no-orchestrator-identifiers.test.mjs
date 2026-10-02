@@ -24,8 +24,7 @@ const ROOTS = ['fleet-sprint', 'bin', 'src'].map((d) => path.join(PKG, d));
 const ALLOWLIST = new Set([path.join(PKG, 'fleet-sprint', 'backlog-role.mjs')]);
 
 export const PATTERNS = [
-    ['compound identifier', /[A-Za-z0-9_]*(orchestrator|Orchestrator|ORCHESTRATOR)[A-Z0-9_][A-Za-z0-9_]*/],
-    ['prefixed identifier (ROLE_ORCHESTRATOR, fooOrchestrator)', /[A-Za-z0-9]_ORCHESTRATOR|[a-z0-9]Orchestrator/],
+    ['compound identifier', /[A-Za-z0-9_](orchestrator|Orchestrator|ORCHESTRATOR)|(orchestrator|Orchestrator|ORCHESTRATOR)[A-Z0-9_]/],
     ['roleMap.orchestrator', /roleMap\.orchestrator\b/],
     ['roleMap bracket access', /roleMap\[\s*['"`]orchestrator['"`]\s*\]/],
     ['orchestrator member', /orchestrator member/i],
@@ -64,6 +63,7 @@ test('no role-sense orchestrator identifiers/strings outside the alias module', 
 test('the patterns catch each reintroduced name and spare engine-sense words', () => {
     for (const bad of ['orchestratorMember', 'orchestratorProbe', 'plannerSharesOrchestratorClone', 'ORCHESTRATOR_ROLE',
         'getOrchestratorMember', 'orchestratorHasDb', 'orchestratorRoleMapMembers', 'ROLE_ORCHESTRATOR',
+        'role_orchestrator', '_orchestrator', 'ROLE_Orchestrator', 'getorchestrator', 'ROLEORCHESTRATOR', 'backlog_orchestrator',
         'x = roleMap.orchestrator', "roleMap['orchestrator']", 'the Orchestrator Member', "label: `orchestrator '${m}'`"]) {
         assert.ok(scan(bad).length > 0, `expected a hit for: ${bad}`);
     }

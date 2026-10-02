@@ -166,7 +166,7 @@ describe('validateArgs', () => {
         assert.equal(equal.roleMapWarnings.length, 1);
         assert.throws(
             () => validateArgs({ ...VALID_ARGS, roleMap: { backlog: ['a'], orchestrator: ['b'] } }),
-            (e) => /[Arg Contract]/.test(e.message) && /"backlog"/.test(e.message) && /"orchestrator"/.test(e.message),
+            (e) => /\[Arg Contract\]/.test(e.message) && /"backlog"/.test(e.message) && /"orchestrator"/.test(e.message),
         );
     });
 
