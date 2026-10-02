@@ -53,12 +53,6 @@ export interface RunningServerScope {
   reason: 'data-dir' | 'install-prefix' | null;
   /** Human-readable one-liner describing what was found. */
   detail: string;
-  /**
-   * The pids relevant to this install (data-dir live pid, every process running
-   * from the install prefix), never this process. These -- and only these --
-   * are what install --force may stop. Empty when not relevant.
-   */
-  pids: number[];
 }
 
 /** Data dir this process would use -- mirrors services/singleton.ts getFleetDir(). */
@@ -165,7 +159,6 @@ export function classifyRunningServer(installPrefixDir: string): RunningServerSc
       relevant: true,
       reason: 'data-dir',
       detail: `pid ${livePid} is recorded live in the data dir this install targets (${getInstallDataDir()})`,
-      pids: relevantServerPids(installPrefixDir),
     };
   }
 
@@ -176,11 +169,10 @@ export function classifyRunningServer(installPrefixDir: string): RunningServerSc
       relevant: true,
       reason: 'install-prefix',
       detail: `pid ${inPrefix.pid} runs from ${inPrefix.exePath}, inside the install prefix being written (${installPrefixDir})`,
-      pids: inPrefixPids(procs, installPrefixDir),
     };
   }
 
-  return { relevant: false, reason: null, detail: describeProcesses(procs), pids: [] };
+  return { relevant: false, reason: null, detail: describeProcesses(procs) };
 }
 
 function inPrefixPids(procs: RunningApraFleetProcess[], installPrefixDir: string): number[] {

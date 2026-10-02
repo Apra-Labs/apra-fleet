@@ -1136,7 +1136,7 @@ async function probeRemote(
     // still on the member is recorded, and named in the detail as not used.
     else {
       const detail = r.version
-        ? `${r.detail ?? r.reason}; the member still has apra-fleet ${r.version}, which was not used`
+        ? `${(r.detail ?? r.reason).replace(/\.\s*$/, '')}; the member still has apra-fleet ${r.version}, which was not used`
         : r.detail;
       return unavailable(r.reason, detail, r.version ? { version: r.version } : {});
     }
