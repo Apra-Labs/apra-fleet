@@ -137,18 +137,18 @@ foreground command, treat it as if you backgrounded it yourself; do not chain sh
 sleeps to route around the sleep-block. Do not return a verdict while the suite is
 still running -- a backgrounded run with no reported outcome is not a completed step.
 
-## Step 5 -- Promote knowledge you verified
+## Step 5 -- Promote or discard knowledge you verified
 
-This step covers promotions only (existing INFERRED entry -> CONFIRMED); fresh findings
-go in `kb_captures` (Step 0, item 3) -- the two fields are independent and can both be
-returned. You are the only role permitted to mint CONFIRMED. **You do not call any
-`kb_*` tool for this** -- the orchestrator hands you the candidates and executes your
-decisions.
+This step covers judgements on existing INFERRED candidates: promote one to CONFIRMED,
+or discard one you showed to be wrong. Fresh findings go in `kb_captures` (Step 0,
+item 3) -- the fields are independent and can all be returned. You are the only role
+permitted to mint CONFIRMED. **You do not call any `kb_*` tool for this** -- the
+orchestrator hands you the candidates and executes your decisions.
 
 1. Read the **KNOWLEDGE BANK -- promotion candidates** block in your dispatch prompt. It
    lists every INFERRED entry for the repo under review as `{id, title, summary,
-   source_files}`. If that block is absent, there is nothing to promote: return `[]` and
-   move on.
+   source_files}`. If that block is absent, there is nothing to promote or discard:
+   return `[]` for both and move on.
 2. Promote **only** entries whose claim you independently verified during THIS review --
    by reading the diff, running the tests, or checking the cited files yourself.
 3. Return them in the `kb_promotions` field of your structured output as
@@ -176,14 +176,22 @@ Hard limits:
   verified even when the code needs rework.
 - **User-directives are off limits.** Activation is human-only; the orchestrator filters
   them from your candidate list. If one appears anyway, leave it alone.
-- **Never invent an id.** Only ids from the candidate block are promotable or
-  discardable; a promotion or discard naming any other id is dropped.
+- **Never invent an id.** Only ids from the candidate block in THIS dispatch are
+  promotable or discardable. The orchestrator does not re-check this, so an id from
+  anywhere else -- including one you remember from an earlier round -- would change an
+  entry you never reviewed.
 
 Promotion and discard are KB decisions, not beads mutations -- they do not conflict with
 the "never mutate beads" rule below. Report what you promoted or discarded in `notes` as
 well.
 
 ## Step 6 -- Verdict
+
+**CI is out of scope.** Never trigger, wait for, poll or judge a CI run. If an
+acceptance criterion depends on CI, treat that part as not checkable in this review:
+say so in `notes` and judge only the locally checkable parts. Never reopen a bead,
+withhold APPROVED, return FAIL or file a new task because CI was not run or verified,
+and never write a CI-status criterion into a new task.
 
 Return your structured output ONLY. You never call `bd update`, `bd close`, `bd create`,
 or any other beads mutation yourself -- the orchestrator reads your structured output and

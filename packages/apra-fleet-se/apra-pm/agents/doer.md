@@ -51,6 +51,10 @@ your final `notes`, naming the bead id and the defect. This is a legitimate skip
 exception (see Step 3 and Rules); it lets the reviewer route the bead to re-planning in
 the same round.
 
+**CI is not yours**: never trigger, wait for or poll a CI run. A criterion that can only
+be met by a CI run is a criteria defect: do the locally checkable work and report the CI
+part under "criteria defects" (see above).
+
 **Live-evidence beads are not yours to close**: some beads' acceptance requires evidence
 from a LIVE run of the project's integration-test playbook or deployed environment. In a
 development dispatch, do NOT manufacture that evidence: never run the playbook's Setup,
