@@ -76,9 +76,18 @@ Required:
 
 Optional (defaults applied inside `validateArgs()`):
 - `goal` -- default `'P1/P2'`; must match `GOAL_PATTERN`.
-- `max_cycles`, `requirementsFile`, `roleMap`, `budget`, `dispatch_timeout_s`, `usage_limit_max_wait_s`, `usage_limit_max_reprobes`, `serviceUrl`, `run_id`, `expect_beads`, `assignee`, `doer_worklist_mode`, `resume_model_switch`, `worklist_effort_budget`, `azdevops_pat_secret_name`, `ci_gate`, `callTool` -- see `KNOWN_ARG_KEYS` in the source for the authoritative, currently-recognized set and which of these have a CLI flag vs. are programmatic-only. `usage_limit_max_wait_s` (integer >= 60) and `usage_limit_max_reprobes` (integer >= 1) are the CLI-overridable usage-limit pause budgets (`--usage-limit-max-wait-s` / `--usage-limit-max-reprobes`); omitted, they fall back to `role-policies.mjs`'s `USAGE_LIMIT_BUDGET_DEFAULTS`.
+- `max_cycles`, `requirementsFile`, `roleMap`, `budget`, `dispatch_timeout_s`, `usage_limit_max_wait_s`, `usage_limit_max_reprobes`, `serviceUrl`, `run_id`, `expect_beads`, `assignee`, `doer_worklist_mode`, `resume_model_switch`, `worklist_effort_budget`, `azdevops_pat_secret_name`, `callTool` -- see `KNOWN_ARG_KEYS` in the source for the authoritative, currently-recognized set and which of these have a CLI flag vs. are programmatic-only. `usage_limit_max_wait_s` (integer >= 60) and `usage_limit_max_reprobes` (integer >= 1) are the CLI-overridable usage-limit pause budgets (`--usage-limit-max-wait-s` / `--usage-limit-max-reprobes`); omitted, they fall back to `role-policies.mjs`'s `USAGE_LIMIT_BUDGET_DEFAULTS`.
 
-`ci_gate` (optional; CLI `--ci-gate <json>`, forwarded verbatim) configures
+**NOT WIRED (2026-10-01).** `ci_gate` / `--ci-gate` are disabled: `ci_gate` is
+not in `KNOWN_ARG_KEYS` (passing it fails as an unknown arg) and the CLI has no
+`--ci-gate` flag. The gate below runs CI per reviewer dispatch, which conflicts
+with the agreed direction (CI never blocks or reaches doer/reviewer loops; the
+integration-test phase owns CI through one reopenable bead; per-push vs
+end-of-cycle triggering per project). It stays in the code, unconfigured, until
+the CI-as-quality-resource epic (apra-fleet-dv8i) designs the flow. The text
+below describes the module as built, not a supported option.
+
+`ci_gate` (as built; CLI `--ci-gate <json>`, forwarded verbatim) configured
 the engine CI gate (`fleet-sprint/ci-gate.mjs`). Shape:
 `{"workflow": "<workflow file name or id>", "timeout_s": <positive integer, default 3600>}`.
 `validateArgs()` (`validateCiGate`) rejects bad JSON, a non-object, unknown

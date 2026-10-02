@@ -132,14 +132,15 @@ const KNOWN_ARG_KEYS = new Set([
     // formula units). Default DEFAULT_EFFORT_THRESHOLD.
     // No CLI flag sets this today; only test/programmatic callers pass it.
     'worklist_effort_budget',
-    // Engine CI gate (optional): { workflow, timeout_s }. When set, the
-    // orchestrator triggers/awaits that CI workflow on the sprint branch head
-    // before each reviewer dispatch and hands the result to the reviewer, so
-    // "CI green" is an engine-verified fact rather than a doer criterion.
-    // Absent: no CI calls at all, and one 'CI gate not configured' log line.
-    // Validated by validateCiGate() below; consumed by ci-gate.mjs. CLI:
-    // --ci-gate <json>.
-    'ci_gate',
+    // Engine CI gate arg -- DELIBERATELY NOT WIRED (2026-10-01). ci-gate.mjs
+    // runs CI per reviewer dispatch and hands the result to the reviewer; the
+    // agreed direction is the opposite (CI never blocks or reaches doer/
+    // reviewer loops; the integ-test phase owns CI via one reopenable bead;
+    // per-push vs end-of-cycle triggering per project). Until the "fleet-sprint
+    // must also utilize CI as a resource for quality" epic (apra-fleet-dv8i)
+    // designs that flow, ci_gate is not a known arg, so passing it fails loudly
+    // as an unknown arg. The gate module stays in place, unconfigured.
+    // 'ci_gate',
     // An optional live `(name, args) => Promise<any>` MCP tool-call function,
     // wired by bin/cli.mjs from its already-connected `mcpClient.callTool`.
     // Consumed by createMemberSessionGuard() to call the fleet's own
@@ -505,8 +506,9 @@ export function validateArgs(args) {
     // --- expect_beads (optional) ------------------------------------------
     const expectBeads = validateExpectBeads(args.expect_beads);
 
-    // --- ci_gate (optional) -----------------------------------------------
-    const ciGate = validateCiGate(args.ci_gate);
+    // --- ci_gate: NOT WIRED (see the KNOWN_ARG_KEYS note; apra-fleet-dv8i) ---
+    // const ciGate = validateCiGate(args.ci_gate);
+    const ciGate = undefined;
 
     return {
         targetIssues,

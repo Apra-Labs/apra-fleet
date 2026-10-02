@@ -228,11 +228,13 @@ describe('(4) ci_gate arg validation, unsupported provider, unconfigured gate', 
         assert.equal(validateCiGate(undefined), undefined);
     });
 
-    test('validateArgs threads ci_gate through and rejects a bad one before anything runs', () => {
+    // The ci_gate arg is deliberately NOT WIRED until the CI-as-quality-resource
+    // epic (apra-fleet-dv8i) designs the flow: passing it must fail loudly as an
+    // unknown arg, and a launch without it never configures the gate.
+    test('validateArgs never configures the gate; ci_gate is rejected as an unknown arg', () => {
         const base = { target_issues: ['x-1'], members: ['m'], branch: 'feat/x', base_branch: 'main' };
         assert.equal(validateArgs(base).ciGate, undefined);
-        assert.deepEqual(validateArgs({ ...base, ci_gate: { workflow: 'ci.yml' } }).ciGate, { workflow: 'ci.yml', timeoutS: 3600 });
-        assert.throws(() => validateArgs({ ...base, ci_gate: { workflow: 'ci.yml', timeout_s: 0 } }), /\[Arg Contract\] Invalid ci_gate\.timeout_s/);
+        assert.throws(() => validateArgs({ ...base, ci_gate: { workflow: 'ci.yml' } }), /\[Arg Contract\] Unknown arg\(s\): ci_gate/);
     });
 
     test('a provider without CI-trigger support + ci_gate set -> loud FAILED-TO-RUN naming the provider, zero CI requests', async () => {

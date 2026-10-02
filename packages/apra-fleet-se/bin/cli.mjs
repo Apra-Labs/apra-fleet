@@ -179,10 +179,10 @@ export function buildOptionsSpec() {
         // body's phases.regression:"skip"). Never silent: logged, and reported in
         // the sprint analysis and the PR body.
         'skip-regression': { type: 'boolean' },
-        // Engine CI gate config as JSON ({"workflow": "<file or id>",
-        // "timeout_s": <n>}), forwarded verbatim as the runner's ci_gate arg;
-        // validateArgs() parses and validates it. Omitted: gate not configured.
-        'ci-gate': { type: 'string' },
+        // --ci-gate is DELIBERATELY NOT WIRED (2026-10-01): the runner's
+        // ci_gate arg is disabled until the CI-as-quality-resource epic
+        // (apra-fleet-dv8i) designs the flow -- see fleet-sprint/sprint-args.mjs.
+        // 'ci-gate': { type: 'string' },
         help: { type: 'boolean', short: 'h' },
     };
 }
@@ -234,10 +234,6 @@ Options:
                                 uses legacy shared-workspace mode (all members on the same HEAD).
       --skip-regression        Skip the once-per-sprint regression pass. Logged, and stated in the
                                 sprint analysis and the PR body. Integration tests still run.
-      --ci-gate <json>         Engine CI gate: {"workflow":"<workflow file or id>","timeout_s":<n>}
-                                (timeout_s default 3600). Before each review the orchestrator
-                                triggers/awaits that workflow on the branch head and hands the result
-                                to the reviewer. Omitted: no CI calls ('CI gate not configured').
   -h, --help                   Show this help message.
 `.trim();
 
@@ -372,9 +368,8 @@ export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goa
     // The raw --expect-beads JSON, forwarded verbatim; runner.js's
     // validateArgs() parses it (validateExpectBeads) and rejects bad JSON.
     if (expectBeads !== undefined) args.expect_beads = expectBeads;
-    // The raw --ci-gate JSON, forwarded verbatim; validateArgs() parses and
-    // validates it (validateCiGate). Only set when supplied.
-    if (ciGate !== undefined) args.ci_gate = ciGate;
+    // --ci-gate is not wired (apra-fleet-dv8i); ci_gate is never forwarded.
+    // if (ciGate !== undefined) args.ci_gate = ciGate;
     return args;
 }
 
@@ -1051,7 +1046,7 @@ async function main() {
                 runId: effectiveRunId,
                 expectBeads,
                 skipRegression: Boolean(values['skip-regression']),
-                ciGate: values['ci-gate'],
+                // ciGate: values['ci-gate'],  -- not wired (apra-fleet-dv8i)
             }),
             // apra-fleet-eft.75.1: wires this already-connected mcpClient
             // through to runner.js's createMemberSessionGuard (see its doc
