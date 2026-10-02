@@ -11,7 +11,7 @@ const { mockCheckRunning, mockGetSvcMgr, mockSvcMgr } = vi.hoisted(() => {
   const mockSvcMgr = {
     isInstalled: vi.fn<() => Promise<boolean>>().mockResolvedValue(false),
     start: vi.fn<() => Promise<void>>().mockResolvedValue(undefined),
-    stop: vi.fn<() => Promise<void>>().mockResolvedValue(undefined),
+    stop: vi.fn<() => Promise<boolean | void>>().mockResolvedValue(undefined),
     query: vi.fn<() => Promise<{ installed: boolean; running: boolean; enabled?: boolean }>>()
       .mockResolvedValue({ installed: false, running: false }),
     register: vi.fn<() => Promise<void>>().mockResolvedValue(undefined),
@@ -393,6 +393,36 @@ describe('runStop', () => {
       }
       expect(forceKillCalls()).toBe(1);
       expect(logSpy).toHaveBeenCalledWith('Server stopped.');
+    });
+  });
+
+  describe('registered OS service', () => {
+    // tests/setup.ts sets APRA_FLEET_DATA_DIR; clear it (and any port override)
+    // so this is the default instance that owns the registered service.
+    const saved = { dir: process.env.APRA_FLEET_DATA_DIR, port: process.env.APRA_FLEET_PORT };
+    beforeEach(() => { delete process.env.APRA_FLEET_DATA_DIR; delete process.env.APRA_FLEET_PORT; });
+    afterEach(() => {
+      if (saved.dir !== undefined) process.env.APRA_FLEET_DATA_DIR = saved.dir;
+      if (saved.port !== undefined) process.env.APRA_FLEET_PORT = saved.port;
+      mockSvcMgr.isInstalled.mockResolvedValue(false);
+      process.exitCode = 0;
+    });
+
+    it('reports "Server stopped." when the service stop succeeds', async () => {
+      mockSvcMgr.isInstalled.mockResolvedValue(true);
+      mockSvcMgr.stop.mockResolvedValueOnce(true);
+      await runStop([]);
+      expect(mockSvcMgr.stop).toHaveBeenCalled();
+      expect(logSpy).toHaveBeenCalledWith('Server stopped.');
+      expect(process.exitCode ?? 0).toBe(0);
+    });
+
+    it('propagates a force-kill refusal: no success line, exit code 1', async () => {
+      mockSvcMgr.isInstalled.mockResolvedValue(true);
+      mockSvcMgr.stop.mockResolvedValueOnce(false);
+      await runStop([]);
+      expect(logSpy).not.toHaveBeenCalledWith('Server stopped.');
+      expect(process.exitCode).toBe(1);
     });
   });
 

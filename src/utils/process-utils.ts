@@ -33,13 +33,57 @@ export function processCommandLine(pid: number): string | null {
 }
 
 /**
+ * Windows image name of a live pid from `tasklist /FI "PID eq N" /FO CSV /NH`,
+ * or null when it cannot be read (no such pid, or tasklist failed).
+ */
+export function processImageName(pid: number): string | null {
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  try {
+    const out = execFileSync('tasklist', ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH'],
+      { encoding: 'utf8', stdio: 'pipe', windowsHide: true, timeout: 10_000 });
+    return parseTasklistImage(String(out), pid);
+  } catch {
+    return null;
+  }
+}
+
+/** The image name from tasklist CSV output for pid, or null (e.g. the
+ *  localized "INFO: No tasks are running..." line, which is not CSV). */
+export function parseTasklistImage(out: string, pid: number): string | null {
+  for (const line of out.split(/\r?\n/)) {
+    const m = /^"([^"]+)","(\d+)"/.exec(line.trim());
+    if (m && Number(m[2]) === pid) return m[1];
+  }
+  return null;
+}
+
+/** Image names an apra-fleet server runs as: the SEA binary, or node. */
+export function isApraFleetImage(image: string): boolean {
+  return /^(apra-fleet|node)\.exe$/i.test(image.trim());
+}
+
+export interface FleetIdentityProbes {
+  platform: NodeJS.Platform;
+  commandLine: (pid: number) => string | null;
+  imageName: (pid: number) => string | null;
+}
+
+/**
  * GitHub #584 review: before force-killing the pid recorded in server.json,
  * confirm it is still an apra-fleet server -- pids are reused, and the port
  * owner may be a foreign app. true / false, or null when it cannot be told.
+ * On Windows, when the command line is unreadable (Get-CimInstance returned
+ * nothing), fall back to the tasklist image name.
  */
-export function isApraFleetProcess(pid: number): boolean | null {
-  const cmd = processCommandLine(pid);
-  return cmd === null ? null : isApraFleetCommandLine(cmd);
+export function isApraFleetProcess(
+  pid: number,
+  probes: FleetIdentityProbes = { platform: process.platform, commandLine: processCommandLine, imageName: processImageName },
+): boolean | null {
+  const cmd = probes.commandLine(pid);
+  if (cmd !== null) return isApraFleetCommandLine(cmd);
+  if (probes.platform !== 'win32') return null;
+  const image = probes.imageName(pid);
+  return image === null ? null : isApraFleetImage(image);
 }
 
 export async function postShutdown(url: string): Promise<void> {

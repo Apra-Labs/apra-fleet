@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 
 // vi.hoisted so these refs are available inside vi.mock factory closures
 const { mockGracefulStop } = vi.hoisted(() => ({
-  mockGracefulStop: vi.fn<(fallback?: (pid: number) => void) => Promise<void>>().mockResolvedValue(undefined),
+  mockGracefulStop: vi.fn<(fallback?: (pid: number) => void) => Promise<boolean | void>>().mockResolvedValue(true),
 }));
 
 vi.mock('node:child_process');
@@ -91,6 +91,11 @@ describe('WindowsServiceManager', () => {
       const mgr = new WindowsServiceManager();
       await mgr.stop();
       expect(mockGracefulStop).toHaveBeenCalledWith(expect.any(Function));
+    });
+
+    it('returns false when the graceful stop refused to force-kill', async () => {
+      mockGracefulStop.mockResolvedValueOnce(false);
+      expect(await new WindowsServiceManager().stop()).toBe(false);
     });
 
     it('fallback invokes taskkill /F /PID', async () => {
@@ -265,6 +270,11 @@ describe('LinuxServiceManager', () => {
       await new LinuxServiceManager().stop();
       expect(mockGracefulStop).toHaveBeenCalled();
     });
+
+    it('returns false when the graceful stop refused to force-kill', async () => {
+      mockGracefulStop.mockResolvedValueOnce(false);
+      expect(await new LinuxServiceManager().stop()).toBe(false);
+    });
   });
 
   describe('query', () => {
@@ -394,6 +404,11 @@ describe('MacOSServiceManager', () => {
     it('calls gracefulStopByServerJson', async () => {
       await new MacOSServiceManager().stop();
       expect(mockGracefulStop).toHaveBeenCalled();
+    });
+
+    it('returns false when the graceful stop refused to force-kill', async () => {
+      mockGracefulStop.mockResolvedValueOnce(false);
+      expect(await new MacOSServiceManager().stop()).toBe(false);
     });
   });
 

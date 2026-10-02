@@ -93,8 +93,8 @@ export class MacOSServiceManager implements ServiceManager {
     execFileSync('launchctl', ['kickstart', `${domain()}/${MACOS_PLIST_LABEL}`]);
   }
 
-  async stop(): Promise<void> {
-    await gracefulStopByServerJson();
+  async stop(): Promise<boolean> {
+    return gracefulStopByServerJson();
   }
 
   async query(): Promise<ServiceStatus> {

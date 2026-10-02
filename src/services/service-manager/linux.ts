@@ -63,9 +63,9 @@ export class LinuxServiceManager implements ServiceManager {
     execFileSync('systemctl', ['--user', 'start', SERVICE_NAME]);
   }
 
-  async stop(): Promise<void> {
+  async stop(): Promise<boolean> {
     checkSystemd();
-    await gracefulStopByServerJson();
+    return gracefulStopByServerJson();
   }
 
   async query(): Promise<ServiceStatus> {

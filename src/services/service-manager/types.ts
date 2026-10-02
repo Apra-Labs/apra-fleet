@@ -33,7 +33,8 @@ export interface ServiceManager {
   register(binaryPath: string, args: string[], logPath: string): Promise<RegisterResult | void>;
   unregister(): Promise<void>;
   start(): Promise<void>;
-  stop(): Promise<void>;
+  /** Resolves false when the server was left running (pid not verifiable as apra-fleet). */
+  stop(): Promise<boolean | void>;
   query(): Promise<ServiceStatus>;
   isInstalled(): Promise<boolean>;
 }

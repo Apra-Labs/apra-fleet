@@ -133,8 +133,8 @@ export class WindowsServiceManager implements ServiceManager {
     child.unref();
   }
 
-  async stop(): Promise<void> {
-    await gracefulStopByServerJson((pid) => {
+  async stop(): Promise<boolean> {
+    return gracefulStopByServerJson((pid) => {
       try { quietExec('taskkill', ['/F', '/PID', String(pid)]); } catch {}
     });
   }

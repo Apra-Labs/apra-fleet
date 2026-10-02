@@ -16,7 +16,11 @@ export async function runStop(_args: string[]): Promise<void> {
   } else {
     const svcMgr = await getServiceManager();
     if (await svcMgr.isInstalled()) {
-      await svcMgr.stop();
+      if (await svcMgr.stop() === false) {
+        // The refusal reason was already printed; the server is still up.
+        process.exitCode = 1;
+        return;
+      }
       console.log('Server stopped.');
       return;
     }
