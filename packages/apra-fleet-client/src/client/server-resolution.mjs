@@ -15,7 +15,8 @@
  *      - unset                         -> http is the product default: probe, then fall back.
  *   2. HTTP singleton probe -- checkRunningInstance(): ~/.apra-fleet/data/server.json
  *      {pid, url}, pid-alive check + GET <url with /mcp -> /health> (2s timeout),
- *      self-healing (deletes a stale server.json). On success: attach over
+ *      self-healing (deletes server.json only for a dead pid or a refused port;
+ *      a live-but-unresponsive server keeps it). On success: attach over
  *      StreamableHttpTransport, spawn nothing.
  *   3. stdio self-spawn fallback -- the existing four command tiers
  *      (APRA_FLEET_SERVER_CMD, APRA_FLEET_SERVER_BIN, bundled sibling index.js,
@@ -29,6 +30,7 @@
  */
 import fs from 'node:fs';
 import http from 'node:http';
+import net from 'node:net';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -81,14 +83,44 @@ function checkHealthEndpoint(url) {
 }
 
 /**
+ * Plain TCP connect probe (mirrors src/services/singleton.ts probeTcpPort).
+ * @param {number} port
+ * @param {string} host
+ * @returns {Promise<'open'|'refused'|'timeout'|'error'>}
+ */
+function probeTcpPort(port, host) {
+    return new Promise((resolve) => {
+        let settled = false;
+        const sock = net.connect({ port, host });
+        const finish = (r) => {
+            if (settled) return;
+            settled = true;
+            try { sock.destroy(); } catch { /* ignore */ }
+            resolve(r);
+        };
+        sock.setTimeout(3000); // Windows takes ~2s to report a refused loopback connect
+        sock.once('connect', () => finish('open'));
+        sock.once('timeout', () => finish('timeout'));
+        sock.once('error', (err) => finish(err && err.code === 'ECONNREFUSED' ? 'refused' : 'error'));
+    });
+}
+
+/**
  * The HTTP-singleton probe. Same semantics as src/services/singleton.ts's
- * checkRunningInstance() (pid + /health + self-heal), so the launcher's probe and
- * the server's own startup-dedup can never disagree.
+ * checkRunningInstance() (pid + /health + tri-state self-heal), so the launcher's
+ * probe and the server's own startup-dedup can never disagree.
+ *
+ * Tri-state: running (pid alive + /health 200), unresponsive (pid alive, /health
+ * silent, recorded port still accepts TCP -- server.json is KEPT), gone (no
+ * server.json, dead pid, or the recorded port refuses TCP -- server.json removed).
  *
  * @param {{ env?: Record<string, string|undefined>, readFile?: (p: string) => string,
  *           unlink?: (p: string) => void, pidAlive?: (pid: number) => boolean,
- *           health?: (url: string) => Promise<boolean> }} [deps]
- * @returns {Promise<{running: true, url: string, pid: number} | {running: false}>}
+ *           health?: (url: string) => Promise<boolean>,
+ *           tcpProbe?: (port: number, host: string) => Promise<'open'|'refused'|'timeout'|'error'> }} [deps]
+ * @returns {Promise<{running: true, state: 'running', url: string, pid: number}
+ *                 | {running: false, state: 'unresponsive', url: string, pid: number, port?: number}
+ *                 | {running: false, state: 'gone'}>}
  */
 export async function checkRunningInstance(deps = {}) {
     const env = deps.env || process.env;
@@ -96,6 +128,7 @@ export async function checkRunningInstance(deps = {}) {
     const unlink = deps.unlink || ((p) => { try { fs.unlinkSync(p); } catch { /* already gone */ } });
     const pidAlive = deps.pidAlive || isPidAlive;
     const health = deps.health || checkHealthEndpoint;
+    const tcpProbe = deps.tcpProbe || probeTcpPort;
 
     const serverInfoPath = getServerInfoPath(env);
 
@@ -103,22 +136,32 @@ export async function checkRunningInstance(deps = {}) {
     try {
         info = JSON.parse(readFile(serverInfoPath));
     } catch {
-        return { running: false };
+        return { running: false, state: 'gone' };
     }
 
-    if (!info || !info.pid || !info.url) return { running: false };
+    if (!info || !info.pid || !info.url) return { running: false, state: 'gone' };
 
     if (!pidAlive(info.pid)) {
         unlink(serverInfoPath);
-        return { running: false };
+        return { running: false, state: 'gone' };
     }
 
     if (!(await health(info.url))) {
-        unlink(serverInfoPath);
-        return { running: false };
+        let port;
+        let host = '127.0.0.1';
+        try {
+            const u = new URL(info.url);
+            port = Number(info.port) > 0 ? Number(info.port) : (Number(u.port) > 0 ? Number(u.port) : undefined);
+            host = u.hostname || host;
+        } catch { /* keep defaults */ }
+        if (port !== undefined && (await tcpProbe(port, host)) === 'refused') {
+            unlink(serverInfoPath);
+            return { running: false, state: 'gone' };
+        }
+        return { running: false, state: 'unresponsive', url: info.url, pid: info.pid, port };
     }
 
-    return { running: true, url: info.url, pid: info.pid };
+    return { running: true, state: 'running', url: info.url, pid: info.pid };
 }
 
 /**
@@ -225,10 +268,13 @@ export async function resolveFleetServerConnection(deps = {}) {
 
     // Step 3 -- stdio self-spawn fallback.
     const cmd = resolveFleetServerCommand(deps);
+    const unresponsive = instance && instance.state === 'unresponsive'
+        ? ` (HTTP singleton pid ${instance.pid} at ${instance.url} is alive but not answering /health)`
+        : '';
     return {
         mode: 'stdio',
         ...cmd,
-        reason: `no healthy fleet singleton found; self-spawning stdio server via ${cmd.command} ${cmd.args.join(' ')}`,
+        reason: `no healthy fleet singleton found${unresponsive}; self-spawning stdio server via ${cmd.command} ${cmd.args.join(' ')}`,
     };
 }
 

@@ -23,9 +23,14 @@ export async function runStop(_args: string[]): Promise<void> {
   }
 
   const instance = await checkRunningInstance();
-  if (!instance.running) {
+  // An unresponsive server (alive, not answering /health) is still a server:
+  // fall through to the graceful-then-forced stop below.
+  if (!instance.running && instance.state !== 'unresponsive') {
     console.log('Server is not running.');
     return;
+  }
+  if (!instance.running) {
+    console.log(`Server pid ${instance.pid} is not answering /health; stopping it.`);
   }
 
   // Port-only override shares the default data dir, so server.json may

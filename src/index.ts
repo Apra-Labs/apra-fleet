@@ -333,8 +333,10 @@ async function startHttpServer() {
   loadOnboardingState(getAgentsForStartup().length);
   resetSessionFlags();
 
-  const { checkRunningInstance, claimStartupLock } = await import('./services/singleton.js');
-  const { createHttpTransport } = await import('./services/http-transport.js');
+  const {
+    checkRunningInstance, claimStartupLock, unresponsiveInstanceMessage, portInUseMessage, readServerInfoPid,
+  } = await import('./services/singleton.js');
+  const { createHttpTransport, PortInUseError } = await import('./services/http-transport.js');
   const { registerAllTools } = await import('./services/tool-registry.js');
   const { FLEET_DIR, SERVER_INFO_PATH } = await import('./paths.js');
   const { closeAllConnections } = await import('./services/ssh.js');
@@ -352,6 +354,12 @@ async function startHttpServer() {
     logLine('startup', `apra-fleet already running at ${instance.url} pid=${instance.pid} -- exiting`);
     process.exit(0);
   }
+  if (instance.state === 'unresponsive') {
+    // A live server with a blocked event loop is not dead: starting a second
+    // one would split the fleet (GitHub #584). Refuse; the operator stops it.
+    logError('startup', unresponsiveInstanceMessage(instance));
+    process.exit(1);
+  }
 
   // Atomic startup lock to prevent concurrent double-start race
   const lock = claimStartupLock();
@@ -360,7 +368,17 @@ async function startHttpServer() {
     process.exit(0);
   }
 
-  const handle = await createHttpTransport({ registerTools: registerAllTools });
+  let handle: Awaited<ReturnType<typeof createHttpTransport>>;
+  try {
+    handle = await createHttpTransport({ registerTools: registerAllTools });
+  } catch (err) {
+    lock.release();
+    if (err instanceof PortInUseError) {
+      logError('startup', portInUseMessage(err.port, readServerInfoPid()));
+      process.exit(1);
+    }
+    throw err;
+  }
 
   // Write server.json so other processes can detect this instance
   fs.mkdirSync(FLEET_DIR, { recursive: true });

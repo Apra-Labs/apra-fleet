@@ -64,6 +64,17 @@ export async function runStatus(_args: string[]): Promise<void> {
     serviceLabel = 'installed (disabled)';
   }
 
+  if (instance.state === 'unresponsive') {
+    console.log('apra-fleet status');
+    console.log(`  State:    unresponsive`);
+    console.log(`  PID:      ${instance.pid}`);
+    if (instance.port) console.log(`  Port:     ${instance.port}`);
+    console.log(`  URL:      ${instance.url}`);
+    console.log(`  Service:  ${serviceLabel}`);
+    console.log('  The server process is alive but not answering /health. Run "apra-fleet stop" to stop it.');
+    return;
+  }
+
   if (!instance.running) {
     console.log('apra-fleet status');
     console.log(`  State:    stopped`);

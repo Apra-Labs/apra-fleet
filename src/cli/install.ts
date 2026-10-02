@@ -4,7 +4,7 @@ import os from 'node:os';
 import { execSync, execFileSync } from 'node:child_process';
 import { serverVersion } from '../version.js';
 import type { LlmProvider } from '../types.js';
-import { DEFAULT_PORT, LOG_FILE_PATH } from '../paths.js';
+import { DEFAULT_PORT, DEFAULT_HOST, LOG_FILE_PATH } from '../paths.js';
 import { getServiceManager } from '../services/service-manager/index.js';
 import type { ServiceManager } from '../services/service-manager/types.js';
 import { LINUX_UNIT_NAME, MACOS_PLIST_LABEL, WINDOWS_TASK_NAME } from '../services/service-manager/types.js';
@@ -1808,6 +1808,16 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
   let serviceReused = false;
   if (serviceStep) {
     console.log(`  [${totalSteps}/${totalSteps}] Registering and starting service...`);
+    // The server refuses to start when its configured port is taken (no
+    // random-port fallback, GitHub #584) -- say so here rather than leaving a
+    // service that exits on every launch with the reason only in the log.
+    {
+      const { checkRunningInstance, isPortInUse, portInUseMessage, readServerInfoPid } = await import('../services/singleton.js');
+      const probe = await checkRunningInstance();
+      if (probe.state === 'gone' && await isPortInUse(DEFAULT_PORT, DEFAULT_HOST)) {
+        console.warn(`    Warning: ${portInUseMessage(DEFAULT_PORT, readServerInfoPid())}`);
+      }
+    }
     const svcMgr = await getServiceManager();
     try {
       serviceReused = (await svcMgr.register(binaryPath, ['--transport', 'http'], LOG_FILE_PATH)) === 'reused';

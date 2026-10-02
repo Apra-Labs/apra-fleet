@@ -25,8 +25,15 @@ const { mockCheckRunning, mockGetSvcMgr, mockSvcMgr } = vi.hoisted(() => {
   };
 });
 
-vi.mock('../src/services/singleton.js', () => ({
+const { mockPortInUse } = vi.hoisted(() => ({
+  mockPortInUse: vi.fn<(port: number, host?: string) => Promise<boolean>>().mockResolvedValue(false),
+}));
+
+vi.mock('../src/services/singleton.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/services/singleton.js')>()),
   checkRunningInstance: mockCheckRunning,
+  isPortInUse: mockPortInUse,
+  readServerInfoPid: () => undefined,
 }));
 
 vi.mock('../src/services/service-manager/index.js', () => ({
@@ -49,8 +56,9 @@ import { serverVersion } from '../src/version.js';
 // ---------------------------------------------------------------------------
 // Shared fixtures
 // ---------------------------------------------------------------------------
-const RUNNING = { running: true as const, url: 'http://127.0.0.1:7523/mcp', pid: 1234 };
-const STOPPED = { running: false as const };
+const RUNNING = { running: true as const, state: 'running' as const, url: 'http://127.0.0.1:7523/mcp', pid: 1234 };
+const STOPPED = { running: false as const, state: 'gone' as const };
+const UNRESPONSIVE = { running: false as const, state: 'unresponsive' as const, url: 'http://127.0.0.1:7523/mcp', pid: 1234, port: 7523 };
 const SERVER_INFO = JSON.stringify({ pid: 1234, port: 7523, url: 'http://127.0.0.1:7523/mcp' });
 const HEALTH_BODY = JSON.stringify({ version: 'v0.1', uptime: 30, sessions: 1 });
 
@@ -99,6 +107,7 @@ describe('runStart', () => {
     vi.clearAllMocks();
     setupFsSpies();
     mockCheckRunning.mockResolvedValue(STOPPED);
+    mockPortInUse.mockResolvedValue(false);
     mockSvcMgr.isInstalled.mockResolvedValue(false);
     vi.mocked(spawn).mockReturnValue({ unref: vi.fn() } as any);
     logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -109,6 +118,31 @@ describe('runStart', () => {
   afterEach(() => {
     vi.restoreAllMocks();
     vi.useRealTimers();
+  });
+
+  // GitHub #584: a live-but-unresponsive server is not "stopped".
+  it('refuses with pid/port and a stop hint when the server is unresponsive', async () => {
+    mockCheckRunning.mockResolvedValue(UNRESPONSIVE);
+    await runStart([]);
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    const msg = errSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n');
+    expect(msg).toContain('pid 1234');
+    expect(msg).toContain('port 7523');
+    expect(msg).toContain('apra-fleet stop');
+    expect(vi.mocked(spawn)).not.toHaveBeenCalled();
+    expect(mockGetSvcMgr).not.toHaveBeenCalled();
+  });
+
+  // GitHub #584: no random-port fallback -- a taken port is a clear error.
+  it('refuses with a message naming the port and APRA_FLEET_PORT when the configured port is taken', async () => {
+    mockPortInUse.mockResolvedValue(true);
+    await runStart([]);
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    const msg = errSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n');
+    expect(msg).toContain('Port 7523');
+    expect(msg).toContain('APRA_FLEET_PORT');
+    expect(vi.mocked(spawn)).not.toHaveBeenCalled();
+    expect(mockGetSvcMgr).not.toHaveBeenCalled();
   });
 
   it('reports already running and skips service manager when server is up', async () => {
@@ -284,6 +318,14 @@ describe('runStop', () => {
     await runStop([]);
     expect(logSpy).toHaveBeenCalledWith('Server is not running.');
     expect(http.request).not.toHaveBeenCalled();
+  });
+
+  it('force-stops an unresponsive server instead of reporting it not running', async () => {
+    mockCheckRunning.mockResolvedValue(UNRESPONSIVE);
+    await runStop([]);
+    expect(logSpy).not.toHaveBeenCalledWith('Server is not running.');
+    expect(http.request).toHaveBeenCalled();
+    expect(logSpy).toHaveBeenCalledWith('Server stopped.');
   });
 
   it('posts /shutdown when server is running', async () => {
@@ -475,5 +517,17 @@ describe('runStatus', () => {
     expect(out).not.toContain('PID');
     expect(out).not.toContain('Port');
     expect(out).not.toContain('URL');
+  });
+
+  // GitHub #584: alive-but-silent is reported as such, never as "stopped".
+  it('shows State: unresponsive with pid/port and a stop hint when the server is unresponsive', async () => {
+    mockCheckRunning.mockResolvedValue(UNRESPONSIVE);
+    await runStatus([]);
+    const out = output();
+    expect(out).toContain('State:    unresponsive');
+    expect(out).toContain('1234');
+    expect(out).toContain('7523');
+    expect(out).toContain('apra-fleet stop');
+    expect(out).not.toContain('stopped');
   });
 });

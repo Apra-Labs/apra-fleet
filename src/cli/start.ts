@@ -3,9 +3,11 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
-import { checkRunningInstance } from '../services/singleton.js';
+import {
+  checkRunningInstance, isPortInUse, portInUseMessage, readServerInfoPid, unresponsiveInstanceMessage,
+} from '../services/singleton.js';
 import { getServiceManager } from '../services/service-manager/index.js';
-import { LOG_FILE_PATH, FLEET_DIR, isNonDefaultInstance } from '../paths.js';
+import { LOG_FILE_PATH, FLEET_DIR, DEFAULT_PORT, DEFAULT_HOST, isNonDefaultInstance } from '../paths.js';
 import { BIN_DIR } from './config.js';
 import { serverVersion } from '../version.js';
 
@@ -64,6 +66,19 @@ export async function runStart(_args: string[]): Promise<void> {
       process.exit(1);
     }
     console.log(`Server already running at ${instance.url} pid=${instance.pid}`);
+    return;
+  }
+  if (instance.state === 'unresponsive') {
+    console.error(unresponsiveInstanceMessage(instance));
+    process.exit(1);
+    return;
+  }
+  // The server does not fall back to a random port when its configured
+  // port is taken (GitHub #584): fail here with the actionable message
+  // instead of spawning a server that exits immediately.
+  if (await isPortInUse(DEFAULT_PORT, DEFAULT_HOST)) {
+    console.error(portInUseMessage(DEFAULT_PORT, readServerInfoPid()));
+    process.exit(1);
     return;
   }
 

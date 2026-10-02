@@ -1,9 +1,21 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import http from 'node:http';
+import net from 'node:net';
 import path from 'node:path';
 import os from 'node:os';
-import { checkRunningInstance, claimStartupLock } from '../src/services/singleton.js';
+import { checkRunningInstance, claimStartupLock, isPortInUse } from '../src/services/singleton.js';
+
+describe('isPortInUse', () => {
+  it('is true for a bound port and false once it is released', async () => {
+    const srv = net.createServer();
+    await new Promise<void>(resolve => srv.listen(0, '127.0.0.1', resolve));
+    const port = (srv.address() as net.AddressInfo).port;
+    expect(await isPortInUse(port)).toBe(true);
+    await new Promise<void>(resolve => srv.close(() => resolve()));
+    expect(await isPortInUse(port)).toBe(false);
+  });
+});
 
 // Use a per-run temp directory so tests are isolated and don't touch the real FLEET_DIR
 const TEST_DIR = path.join(os.tmpdir(), `apra-fleet-singleton-test-${process.pid}`);
@@ -116,8 +128,41 @@ describe('(b) health endpoint check', () => {
     const result = await checkRunningInstance();
 
     expect(result.running).toBe(false);
+    expect(result.state).toBe('gone');
     expect(fs.existsSync(SERVER_INFO)).toBe(false);
   });
+
+  // GitHub #584: a live pid whose port still accepts TCP but whose /health
+  // never answers (blocked event loop) is unresponsive, not dead -- its
+  // server.json must survive so no second server is started.
+  it('returns state=unresponsive and KEEPS server.json when the port accepts TCP but /health never answers', async () => {
+    const sockets: net.Socket[] = [];
+    const silent = net.createServer((s) => { sockets.push(s); }); // accept, never reply
+    await new Promise<void>(resolve => silent.listen(0, '127.0.0.1', resolve));
+    const port = (silent.address() as net.AddressInfo).port;
+    try {
+      fs.writeFileSync(SERVER_INFO, JSON.stringify({
+        pid: process.pid,
+        url: `http://127.0.0.1:${port}/mcp`,
+        version: 'v0.0.1',
+        port,
+        startedAt: new Date().toISOString(),
+      }));
+
+      const result = await checkRunningInstance();
+
+      expect(result.running).toBe(false);
+      expect(result.state).toBe('unresponsive');
+      if (result.state === 'unresponsive') {
+        expect(result.pid).toBe(process.pid);
+        expect(result.port).toBe(port);
+      }
+      expect(fs.existsSync(SERVER_INFO)).toBe(true);
+    } finally {
+      for (const s of sockets) s.destroy();
+      await new Promise<void>(resolve => silent.close(() => resolve()));
+    }
+  }, 15_000);
 });
 
 // ---------------------------------------------------------------------------

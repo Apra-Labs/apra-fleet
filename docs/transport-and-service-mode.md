@@ -29,9 +29,26 @@ When the server starts, it writes a `server.json` file to `~/.apra-fleet/` conta
 }
 ```
 
-If port 7523 is busy, the server falls back to port 0 (OS-assigned random port) and
-records the actual port in `server.json`. You can override the default port with the
-`APRA_FLEET_PORT` environment variable.
+You can override the default port with the `APRA_FLEET_PORT` environment variable.
+If the configured port is already in use, the server refuses to start and exits 1
+with an error naming the port, the pid recorded in `server.json` (if any) and
+`APRA_FLEET_PORT`. It does not fall back to a random port: every configured MCP
+client only knows the configured port, so a re-homed server would be unreachable.
+Free the port, or set `APRA_FLEET_PORT` to a free port and re-run `apra-fleet install`
+so the MCP clients point at it. `apra-fleet start` and `apra-fleet install` check the
+port up front and print the same message. (Only an explicit port 0 -- used
+internally and in tests -- binds an OS-assigned port.)
+
+**Singleton probe states.** Before starting, `start`, `run`, `status` and `stop` probe
+`server.json`:
+
+- `running` -- the pid is alive and `GET /health` answers 200.
+- `unresponsive` -- the pid is alive and the recorded port still accepts TCP, but
+  `/health` does not answer (e.g. a blocked event loop). `server.json` is kept;
+  `start`/`run` refuse with the pid/port and an `apra-fleet stop` hint, `status`
+  shows `State: unresponsive`, and `stop` force-stops it.
+- `gone` -- no `server.json`, the pid is dead, or the recorded port refuses TCP. Only
+  this state removes `server.json`.
 
 **Multiple clients, one server.** When a second LLM client starts, it reads
 `server.json`, detects the running server, and connects to it. All clients share the
