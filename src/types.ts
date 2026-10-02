@@ -94,6 +94,12 @@ export interface FleetMcpStatus {
   /** True when the member's KB/code tools could not be verified (e.g. agy),
    *  so callers must treat it as unverified (it gets the injected KB block). */
   unverified?: boolean;
+  /** ISO 8601 time this fleet last SUCCESSFULLY installed apra-fleet on the
+   *  member (ensureOnce returned installed:true). Written only by a successful
+   *  fleet install and carried across later probes; never set by a refusal or
+   *  an observation-only probe. It is the sole "this fleet owns the member's
+   *  server" signal that permits --force-stop-full-install. */
+  fleetInstalledAt?: string;
 }
 
 export interface GitHubAppConfig {

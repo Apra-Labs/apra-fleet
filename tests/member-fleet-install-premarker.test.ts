@@ -3,7 +3,7 @@
  * member-install marker has a running server `install --member --force` alone
  * refuses (E-FULL-INSTALL-RUNNING). The fleet retries that install exactly
  * once with --force-stop-full-install, but ONLY when its registry shows it
- * installed the member before (a recorded fleetMcp.version); a host with no
+ * installed the member before (a recorded fleetMcp.fleetInstalledAt); a host with no
  * such record (a genuine human full install) is never overridden.
  *
  * Driven by a fake member transport; assertions read the actual installer
@@ -84,7 +84,7 @@ function member(fleetMcp?: FleetMcpStatus): Agent {
   return makeTestAgent({ os: 'linux', llmProvider: 'claude', workFolder: WORK, friendlyName: 'bella', ...(fleetMcp ? { fleetMcp } : {}) });
 }
 
-const PRIOR_FLEET_INSTALL: FleetMcpStatus = { state: 'available', version: OLD, checkedAt: '2026-09-01T00:00:00.000Z' };
+const PRIOR_FLEET_INSTALL: FleetMcpStatus = { state: 'available', version: OLD, checkedAt: '2026-09-01T00:00:00.000Z', fleetInstalledAt: '2026-09-01T00:00:00.000Z' };
 
 describe('pre-marker member upgrade', () => {
   it('a member the fleet installed before is upgraded after exactly one retry carrying the override; fleetMcp ends available', async () => {
@@ -110,7 +110,8 @@ describe('pre-marker member upgrade', () => {
     expect(m.unmarkedServerRunning).toBe(true);
     // The refusal is recorded even though an older install is present: the
     // fleet does not fall back to registering into a human's full install.
-    expect(s).toMatchObject({ state: 'unavailable', reason: 'full-install-running', version: OLD });
+    expect(s).toMatchObject({ state: 'unavailable', reason: 'full-install-running' });
+    expect(s.version).toBeUndefined();
     expect(m.recorded.at(-1)).toMatchObject({ state: 'unavailable', reason: 'full-install-running' });
     expect(m.log.some(c => c.includes("'register-member'"))).toBe(false);
   });
@@ -143,7 +144,39 @@ describe('pre-marker member upgrade', () => {
     expect(installRuns(m)).toHaveLength(1);
   });
 
-  it('fleetPreviouslyInstalled reads only a recorded fleetMcp version', () => {
+  it('a second ensure on a human-full-install host, fed the status the first refusal recorded, sends no override', async () => {
+    const m: Member = { installed: OLD, unmarkedServerRunning: true, log: [], recorded: [] };
+    await refreshMemberFleetMcp(member(), deps(m), { install: true });
+    const first = m.recorded.at(-1)!;
+    expect(first.fleetInstalledAt).toBeUndefined();
+    const s = await refreshMemberFleetMcp(member(first), deps(m), { install: true });
+    expect(s).toMatchObject({ state: 'unavailable', reason: 'full-install-running' });
+    expect(installRuns(m)).toHaveLength(2);
+    for (const c of m.log) expect(c).not.toContain(FORCE_STOP_FULL_INSTALL_FLAG);
+    expect(m.unmarkedServerRunning).toBe(true);
+  });
+
+  it('a probe-only (install:false) observation followed by install:true on a human host sends no override', async () => {
+    const m: Member = { installed: OLD, unmarkedServerRunning: true, log: [], recorded: [] };
+    const observed = await refreshMemberFleetMcp(member(), deps(m), { install: false });
+    expect(observed.fleetInstalledAt).toBeUndefined();
+    const s = await refreshMemberFleetMcp(member(m.recorded.at(-1)), deps(m), { install: true });
+    expect(s).toMatchObject({ state: 'unavailable', reason: 'full-install-running' });
+    expect(installRuns(m)).toHaveLength(1);
+    for (const c of m.log) expect(c).not.toContain(FORCE_STOP_FULL_INSTALL_FLAG);
+    expect(m.unmarkedServerRunning).toBe(true);
+  });
+
+  it('a successful fleet install stamps fleetInstalledAt, and later probes carry it forward', async () => {
+    const m: Member = { installed: null, unmarkedServerRunning: false, log: [], recorded: [] };
+    const s = await refreshMemberFleetMcp(member(), deps(m), { install: true });
+    expect(s.fleetInstalledAt).toBe('2026-10-02T12:00:00.000Z');
+    const again = await refreshMemberFleetMcp(member(s), deps(m), { install: false });
+    expect(again.fleetInstalledAt).toBe(s.fleetInstalledAt);
+  });
+
+  it('fleetPreviouslyInstalled reads only fleetInstalledAt, not a recorded version', () => {
+    expect(fleetPreviouslyInstalled(member({ state: 'available', version: OLD, checkedAt: 'x' }))).toBe(false);
     expect(fleetPreviouslyInstalled(member())).toBe(false);
     expect(fleetPreviouslyInstalled(member({ state: 'unavailable', reason: 'probe-failed', checkedAt: 'x' }))).toBe(false);
     expect(fleetPreviouslyInstalled(member(PRIOR_FLEET_INSTALL))).toBe(true);

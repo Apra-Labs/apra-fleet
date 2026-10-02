@@ -106,8 +106,11 @@ case) has none, so the fleet's install (`install --member --force`) is refused
 with `E-FULL-INSTALL-RUNNING`. The fleet then retries the install exactly once,
 pre-marker case only, with `--force-stop-full-install` appended, but only when its registry shows it
 installed apra-fleet on that member before: the member's recorded `fleetMcp`
-carries a `version` (see `fleetPreviouslyInstalled` in
-`src/services/member-fleet-install.ts`). If the retry fails too, its own typed
+carries `fleetInstalledAt`, a timestamp stamped only when this fleet's own install run
+succeeded and carried across later probes. A refusal, `member_detail refresh`, or any
+observation-only probe never sets it, and `fleetMcp.version` is not the signal (a human
+full install reports a version at the same path). See `fleetPreviouslyInstalled` in
+`src/services/member-fleet-install.ts`. If the retry fails too, its own typed
 reason is recorded.
 
 A member with no such record gets no override: the install is refused once,

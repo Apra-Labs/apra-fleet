@@ -521,11 +521,12 @@ async function probeMemberArch(agent: Agent, deps: MemberFleetInstallDeps): Prom
  * True when this fleet's registry shows it previously installed apra-fleet on
  * the member, so a running server there is the fleet's own member server.
  *
- * Exact signal: the member's recorded fleetMcp status (Agent.fleetMcp, written
- * only by this fleet's own probe/install flow) carries a `version` -- this
- * fleet has already found its member apra-fleet at <home>/.apra-fleet/bin on
- * that member. A member with no recorded fleetMcp, or one recorded without a
- * version (nothing installed), has no such record.
+ * Exact signal: Agent.fleetMcp.fleetInstalledAt, stamped ONLY when this
+ * fleet's own install run succeeded (ensureOnce returned installed:true) and
+ * carried across later probes. fleetMcp.version is NOT the signal: it is just
+ * what the member's install reports at <home>/.apra-fleet/bin, the same path a
+ * human full install uses, and a refusal or observation-only probe records it
+ * too. A member with no fleetInstalledAt has no such record.
  *
  * Used for members installed by a build that predates the member-install
  * marker (~/.apra-fleet/data/member-install.json): their running server has no
@@ -535,7 +536,7 @@ async function probeMemberArch(agent: Agent, deps: MemberFleetInstallDeps): Prom
  * sent, so a genuine human full install is still protected.
  */
 export function fleetPreviouslyInstalled(agent: Agent): boolean {
-  const v = agent.fleetMcp?.version;
+  const v = agent.fleetMcp?.fleetInstalledAt;
   return typeof v === 'string' && v.trim().length > 0;
 }
 
@@ -969,6 +970,20 @@ export async function probeMemberFleetMcp(
   deps: MemberFleetMcpDeps = defaultMemberFleetMcpDeps(),
   opts: { install?: boolean; forceInstall?: boolean } = {},
 ): Promise<FleetMcpStatus> {
+  const ctx = { installedNow: false };
+  const status = await probeMemberFleetMcpInner(agent, deps, opts, ctx);
+  // Stamp fleetInstalledAt only from a successful fleet install in THIS probe;
+  // otherwise carry the previously recorded value forward unchanged.
+  const stamp = ctx.installedNow ? status.checkedAt : agent.fleetMcp?.version;
+  return stamp ? { ...status, fleetInstalledAt: stamp } : status;
+}
+
+async function probeMemberFleetMcpInner(
+  agent: Agent,
+  deps: MemberFleetMcpDeps,
+  opts: { install?: boolean; forceInstall?: boolean },
+  ctx: { installedNow: boolean },
+): Promise<FleetMcpStatus> {
   const checkedAt = () => deps.now().toISOString();
   const unavailable = (reason: FleetMcpUnavailableReason, detail?: string, extra: Partial<FleetMcpStatus> = {}): FleetMcpStatus => ({
     state: 'unavailable', reason, checkedAt: checkedAt(), ...(detail ? { detail } : {}), ...extra,
@@ -983,7 +998,7 @@ export async function probeMemberFleetMcp(
     }
 
     if (agent.agentType === 'local') return await probeLocal(agent, deps, unavailable, checkedAt);
-    return await probeRemote(agent, deps, opts.install !== false, unavailable, checkedAt, opts.forceInstall === true);
+    return await probeRemote(agent, deps, opts.install !== false, unavailable, checkedAt, opts.forceInstall === true, ctx);
   } catch (err: unknown) {
     return unavailable('probe-failed', `probe threw: ${err instanceof Error ? err.message : String(err)}`);
   }
@@ -1023,6 +1038,7 @@ async function probeRemote(
   unavailable: Unavailable,
   checkedAt: () => string,
   forceInstall = false,
+  ctx: { installedNow: boolean } = { installedNow: false },
 ): Promise<FleetMcpStatus> {
   const targetOs = getAgentOS(agent) as TargetOS;
   const shell = getAgentShell(agent);
@@ -1035,12 +1051,12 @@ async function probeRemote(
   let version: string | undefined;
   if (install) {
     const r = await ensureMemberFleetInstall(agent, deps, { force: forceInstall });
-    if (r.state === 'available') version = r.version;
+    if (r.state === 'available') { version = r.version; if (r.installed) ctx.installedNow = true; }
     // A refused install over a running full (non-member) install is reported
     // as such, never papered over by using that install: the running server
     // belongs to a human full install, and self-registering the member into it
     // would wire the member session to a server the fleet does not own.
-    else if (r.reason === 'full-install-running') return unavailable(r.reason, r.detail, r.version ? { version: r.version } : {});
+    else if (r.reason === 'full-install-running') return unavailable(r.reason, r.detail);
     else if (r.version) version = r.version; // an older install is still there: try to use it
     else return unavailable(r.reason, r.detail);
   } else {
