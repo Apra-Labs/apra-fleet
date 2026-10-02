@@ -103,9 +103,11 @@ Fleet keeps a singleton server running so all your LLM clients share one instanc
 Registering it as an OS service keeps it alive across terminal sessions -- the server
 survives terminal close and restarts automatically on login:
 
-- Windows: a per-user Scheduled Task (Task Scheduler, OnLogon trigger)
-- Linux: a systemd user unit (`systemctl --user`)
-- macOS: a LaunchAgent in `~/Library/LaunchAgents/`
+The service is always user-level on every OS, never a system service:
+
+- Windows: a per-user Scheduled Task named `ApraFleet` (see below)
+- Linux: a systemd user unit (`systemctl --user`, `Restart=on-failure`)
+- macOS: a LaunchAgent in `~/Library/LaunchAgents/` (`KeepAlive` `SuccessfulExit=false`)
 
 Four verbs manage the lifecycle directly:
 
@@ -122,6 +124,54 @@ registers and starts the OS service automatically -- no extra step.
 `apra-fleet uninstall` stops and deregisters the service before removing files.
 Service registration failures are non-fatal: a warning is printed and the install
 continues.
+
+### Windows task definition
+
+Install registers the task from a UTF-16 XML (`schtasks /create /tn ApraFleet /xml <file> /f`);
+`/sc onlogon /rl limited` is "Access is denied" for a standard user. The XML has:
+
+- a LogonTrigger scoped to the current `DOMAIN\user` (the only form a standard user may register)
+- a TimeTrigger repeating every 5 minutes indefinitely, which revives a server that was killed or crashed
+- `MultipleInstancesPolicy` IgnoreNew (the repeat is a no-op while the server runs)
+- `ExecutionTimeLimit` PT0S, `StartWhenAvailable`, no stop on battery, InteractiveToken + LeastPrivilege
+
+Task Scheduler RestartOnFailure is deliberately not used: it never fires for a killed or
+non-zero-exit process. (`APRA_FLEET_TASK_REPEAT_MINUTES`, 1..1440, overrides the interval at
+install time; test-only, not a supported setting.)
+
+If the XML create fails and an existing `ApraFleet` task already runs our wrapper, it is reused.
+Only when there is no reusable task does install fall back to a per-user
+`HKCU\Software\Microsoft\Windows\CurrentVersion\Run` entry (value `ApraFleet`) that starts the
+wrapper at logon: autostart without automatic restart. Install and status say so; uninstall removes it.
+
+### Stop, start, status
+
+- `apra-fleet stop` disables the task first (`schtasks /change /disable`) so the repeating trigger
+  cannot undo a deliberate stop. The stop sticks, including across logon, until `apra-fleet start`
+  (or install) re-enables it. `uninstall` deletes the task.
+- `apra-fleet status` shows `installed (enabled)` or
+  `installed (disabled -- stopped by user -- 'apra-fleet start' re-enables it)`.
+- macOS/Linux: `stop` (graceful `/shutdown`, exit 0) is not undone by `SuccessfulExit=false` /
+  `Restart=on-failure`. Unlike Windows, the server still starts at the next login/boot after a stop.
+
+### Start back-off
+
+Service launches (`APRA_FLEET_SERVICE=1`) back off: after 3 consecutive failed or refused starts,
+launches are skipped for 30 minutes (one line to the service log `fleet.log`, exit 0, no new
+`fleet-<pid>.log`). A successful start clears it; an explicit `apra-fleet start`/install clears it
+first. State: `<data dir>/service-start-failures.json`.
+
+### Client auto-start
+
+Workflow/fleet-sprint clients (not Claude Code or other MCP hosts, which connect by URL and rely on
+the service) start the shared HTTP server themselves when it is verifiably gone: they run
+`apra-fleet start`, wait for `/health` (default 45s, `APRA_FLEET_AUTOSTART_TIMEOUT_MS`) and attach
+over HTTP. See `packages/apra-fleet-client/docs/api-reference.md`.
+
+### Upgrading
+
+Re-run `apra-fleet install` to get the new task definition. An existing onlogon task keeps working
+(logon start only, no revive) until then.
 
 ## Supported user-facing interfaces
 
