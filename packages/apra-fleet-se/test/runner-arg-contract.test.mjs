@@ -795,8 +795,17 @@ describe('runner.js mock-level execution', () => {
             target_issue: 'bd-1', members: ['local', 'member-y'], branch: 'auto-sprint/rolemap-alias-log',
             base_branch: 'main', max_cycles: 1, ...runnerArgs,
         }, true);
-        return { result, logs: logs.filter((l) => String(l).startsWith('[role-map] WARNING: ')) };
+        return { result, allLogs: logs, logs: logs.filter((l) => String(l).startsWith('[role-map] WARNING: ')) };
     }
+
+    test('runner logs "backlog: MEMBER (auto-selected: REASON)" when roleMap.backlog is absent, and not when explicit', async () => {
+        const auto = await runAndCaptureRoleMapLog({ members: ['local', 'member-y'] });
+        const lines = auto.allLogs.filter((l) => /^backlog: /.test(String(l)));
+        assert.equal(lines.length, 1, JSON.stringify(auto.allLogs.slice(0, 10)));
+        assert.match(lines[0], /^backlog: local \(auto-selected: .+\)$/);
+        const explicit = await runAndCaptureRoleMapLog({ members: ['local', 'member-y'], roleMap: { backlog: ['member-y'] } });
+        assert.equal(explicit.allLogs.filter((l) => /^backlog: /.test(String(l))).length, 0);
+    });
 
     test('CLI path: --role-map {orchestrator} -> resolveRoleMapWithWarnings -> buildRunnerArgs -> runner logs the deprecation warning', async () => {
         const { roleMap, warnings } = await resolveRoleMapWithWarnings('{"orchestrator":["member-y"]}');

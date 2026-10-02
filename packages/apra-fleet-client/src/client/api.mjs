@@ -189,7 +189,7 @@
 /**
  * @typedef {Object} RegisterMemberOptions
  * @property {string} friendly_name - Human-friendly name for this member (required)
- * @property {string} work_folder - Working directory on the target machine (required). For remote members, must be a fully-qualified/absolute path -- "~" and relative paths are rejected.
+ * @property {string} work_folder - Working directory on the target machine (required). For remote members, must be a fully-qualified/absolute path -- "~" and relative paths are rejected. A folder may hold at most one LLM member and one LLM-less (llm_provider none) member.
  * @property {"local" | "remote"} [member_type] - Member type (default: "remote")
  * @property {string} [host] - IP address or hostname of the remote machine
  * @property {string} [username] - SSH username
@@ -226,7 +226,7 @@
  * @property {string} [member_name] - Friendly name of the member
  * @property {"auto" | "skip"} [fleet_install] - "auto": for a remote member, install/upgrade the member's own apra-fleet when missing or older (build-aware), self-register and verify, even when nothing else changed. "skip": never install. Omit: install only on a provider change. Unknown input keys are rejected by the server.
  * @property {string} [friendly_name] - New friendly name
- * @property {string} [work_folder] - New working directory. For non-local (remote/relay) members, must be a fully-qualified/absolute path -- "~" and relative paths are rejected.
+ * @property {string} [work_folder] - New working directory. For non-local (remote/relay) members, must be a fully-qualified/absolute path -- "~" and relative paths are rejected. A folder may hold at most one LLM member and one LLM-less (llm_provider none) member.
  * @property {string} [host] - New host
  * @property {string} [username] - New SSH username
  * @property {number} [port] - New SSH port
