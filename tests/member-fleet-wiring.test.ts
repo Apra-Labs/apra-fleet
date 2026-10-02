@@ -51,6 +51,8 @@ const WORK = '/home/bella/repo';
 
 interface World {
   installed: string | null;
+  /** The member-install marker exists on the member (a member install). */
+  marker: boolean;
   register: 'ok' | 'id-rejected' | 'folder-taken';
   /** Per-folder MCP entry present on the member. */
   entry: boolean;
@@ -66,7 +68,7 @@ interface World {
 
 function newWorld(over: Partial<World> = {}): World {
   return {
-    installed: VERSION, register: 'ok', entry: true, arch: 'x86_64', orchestrator: { os: 'linux', arch: 'x64' },
+    installed: VERSION, marker: true, register: 'ok', entry: true, arch: 'x86_64', orchestrator: { os: 'linux', arch: 'x64' },
     listTools: ['version', 'kb_query', 'kb_capture', 'code_query', 'code_context'],
     log: [], transfers: 0, downloads: [], lastId: '', probes: 0, ...over,
   };
@@ -82,6 +84,7 @@ function fakeDeps(world: World, local?: () => Promise<MemberSession>, home = HOM
       const c = plain(command);
       world.log.push(c);
       world.lastId = agent.id;
+      if (c.includes('member-install.json')) return world.marker ? ok('') : { stdout: '', stderr: '', code: 1 };
       if (c.includes("'register-member'")) {
         world.probes++;
         if (world.register === 'id-rejected') return { stdout: '', stderr: `Error: Unknown or unexpected argument "--id".`, code: 1 };
@@ -93,7 +96,7 @@ function fakeDeps(world: World, local?: () => Promise<MemberSession>, home = HOM
       if (c.includes("'call'") && c.includes("'version'")) return ok(JSON.stringify({ content: [{ type: 'text', text: `apra-fleet ${world.installed}` }] }));
       if (c.includes('--version')) return ok(world.installed ? `apra-fleet ${world.installed}\n` : `${NO_INSTALL_SENTINEL}\n`);
       if (c.includes('uname -m')) return ok(world.arch);
-      if (c.includes("'install'")) { world.installed = VERSION; return ok('installed'); }
+      if (c.includes("'install'")) { world.installed = VERSION; world.marker = true; return ok('installed'); }
       if (c.includes('CLAUDE_CONFIG_DIR')) return ok('');
       if (c.includes('cat "') && c.includes('.claude.json')) {
         return ok(world.entry

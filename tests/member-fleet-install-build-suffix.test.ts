@@ -32,6 +32,7 @@ function run(opts: {
         return ok(f.version ? `apra-fleet ${f.version}\n  Mode:   sea\n` : `${NO_INSTALL_SENTINEL}\n`);
       }
       if (command.includes('uname -m')) return ok('x86_64\n');
+      if (command.includes('member-install.json')) return ok(''); // a marked member install
       if (command.includes("'install'")) { f.installs++; f.version = f.installsVersion; return ok('installed'); }
       return { stdout: '', stderr: `unexpected: ${command}`, code: 127 };
     },

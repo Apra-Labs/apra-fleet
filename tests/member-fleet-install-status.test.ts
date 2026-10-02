@@ -32,6 +32,8 @@ const LONG_REGISTER_ERROR = REGISTER_ERROR_HEAD +
 
 interface World {
   installed: string | null;
+  /** The member-install marker exists on the member (a member install). */
+  marker: boolean;
   /** register-member outcome on the member's own install. */
   register: 'ok' | 'id-rejected' | 'folder-taken' | 'unknown-verb' | 'long-error';
   /** ~/.claude.json content on the member. */
@@ -57,6 +59,7 @@ function deps(world: World, local?: { connect: (id: string) => Promise<MemberSes
     exec: async (_a, command) => {
       const c = text(command);
       world.execLog.push(c);
+      if (c.includes('member-install.json')) return world.marker ? ok('') : { stdout: '', stderr: '', code: 1 };
       if (c.includes("'register-member'")) {
         switch (world.register) {
           case 'ok': return ok('Member registered successfully');
@@ -77,7 +80,7 @@ function deps(world: World, local?: { connect: (id: string) => Promise<MemberSes
         return ok(world.installed ? `apra-fleet ${world.installed}\n` : `${NO_INSTALL_SENTINEL}\n`);
       }
       if (c.includes('uname -m')) return ok('x86_64');
-      if (c.includes("'install'")) { world.installed = VERSION; return ok('installed'); }
+      if (c.includes("'install'")) { world.installed = VERSION; world.marker = true; return ok('installed'); }
       if (c.includes('CLAUDE_CONFIG_DIR')) return ok('');
       if (c.includes('cat "') && c.includes('.claude.json')) return ok(world.claudeJson ? JSON.stringify(world.claudeJson) : '');
       return { stdout: '', stderr: `unexpected: ${c}`, code: 127 };
@@ -97,7 +100,7 @@ function deps(world: World, local?: { connect: (id: string) => Promise<MemberSes
 
 function newWorld(over: Partial<World> = {}): World {
   return {
-    installed: VERSION, register: 'ok', claudeJson: null,
+    installed: VERSION, marker: true, register: 'ok', claudeJson: null,
     listTools: ['version', 'kb_query', 'kb_capture', 'code_query', 'code_context'],
     execLog: [], transfers: 0, recorded: [], ...over,
   };

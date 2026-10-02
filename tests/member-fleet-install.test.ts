@@ -32,6 +32,8 @@ interface FakeMember {
   /** Version the installer leaves behind when it runs. */
   installsVersion: string;
   installerExit?: number;
+  /** The member-install marker exists (default true: a fleet member install). */
+  marker?: boolean;
   execLog: string[];
   transfers: { localPaths: string[]; dest: string }[];
   downloads: string[];
@@ -59,6 +61,7 @@ function fakeDeps(member: FakeMember, opts: {
           : `apra-fleet ${member.version}\n  Mode:   sea\n  Binary: /x\n`);
       }
       if (text.includes('uname -m') || text.includes('PROCESSOR_ARCHITECTURE')) return ok(`${member.arch}\n`);
+      if (text.includes('member-install.json')) return member.marker === false ? { stdout: '', stderr: '', code: 1 } : ok('');
       if (text.includes(' install') || text.includes("'install'")) {
         const code = member.installerExit ?? 0;
         if (code === 0) member.version = member.installsVersion;

@@ -97,10 +97,10 @@ export interface FleetMcpStatus {
   /** ISO 8601 time this fleet last SUCCESSFULLY installed apra-fleet on the
    *  member (ensureOnce returned installed:true). Written only by a successful
    *  fleet install and carried across later probes; never set by a refusal or
-   *  an observation-only probe. It is one of two "this fleet owns the member's
-   *  server" signals that permit --force-stop-full-install; the other is the
-   *  member registry holding a LOCAL-type entry with the member's fleet uuid
-   *  (covers pre-marker members; a remote entry is the orchestrator's own record). */
+   *  an observation-only probe. An observation only: it is NOT an ownership
+   *  signal (a human full install over a fleet install clears the marker but
+   *  leaves this set); the member-install marker alone is (see
+   *  memberHasInstallMarker), and the fleet never sends --force-stop-full-install. */
   fleetInstalledAt?: string;
 }
 

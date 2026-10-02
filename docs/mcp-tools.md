@@ -166,6 +166,7 @@ Modifies an existing member's registration. All fields except `member_id` are op
 | `shell` | `"gitbash"` \| `"pwsh7"` \| `"powershell5"` | no | Override the probed Windows shell |
 | `unreservable` | boolean | no | Make the member shareable across sprints |
 | `cloud_region` / `cloud_profile` / `cloud_idle_timeout_min` / `cloud_activity_command` | - | no | Cloud settings; pass an empty string to clear `cloud_activity_command` |
+| `fleet_install` | `"auto"` \| `"skip"` | no | `"auto"`: for a remote member, installs or upgrades its own apra-fleet when missing or older (build-aware) even when nothing else changed, then self-registers and verifies; a local member gets only the MEMBER-session probe; the result carries the `fleetMcp` line. `"skip"`: never installs (a refresh triggered by another change runs with install off). Omitted: install only on a provider change. A member whose apra-fleet lacks the member-install marker is not touched and records `full-install-running` (see docs/member-fleet-mcp-wiring.md) |
 
 **What it does:**
 
