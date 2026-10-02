@@ -112,6 +112,27 @@ describe('install --member --force over a server it did not start', () => {
     expect(kills).toContain('pkill -x apra-fleet');
   });
 
+  it('legacy pre-marker member server (member install state, no member-install.json): --force alone exits 3 and does not kill it; the override stops it and the install proceeds', async () => {
+    // A member installed by a build before the marker: its data dir exists,
+    // the server runs from the member bin path, but no marker was ever written.
+    files.set(`${mockHome}/.apra-fleet/data/install-config.json`, JSON.stringify({ providers: {} }));
+    expect(files.has(memberInstallMarkerPath())).toBe(false);
+
+    await expect(runInstall(memberArgs)).rejects.toThrow('exit');
+    expect(exitSpy).toHaveBeenCalledWith(3);
+    expect(kills).toEqual([]);
+    expect(errorSpy.mock.calls.map(c => c.join(' ')).join('\n')).toContain('E-FULL-INSTALL-RUNNING');
+    const svc = await getServiceManager();
+    expect(svc.register).not.toHaveBeenCalled();
+
+    exitSpy.mockClear();
+    await runInstall([...memberArgs, '--force-stop-full-install']);
+    expect(exitSpy).not.toHaveBeenCalled();
+    expect(kills).toEqual(['pkill -x apra-fleet']);
+    expect(svc.register).toHaveBeenCalledTimes(1);
+    expect(files.has(memberInstallMarkerPath())).toBe(true);
+  });
+
   it('a full (non-member) install --force is unaffected', async () => {
     await runInstall(['--skill', 'none', '--force']);
     expect(kills).toContain('pkill -x apra-fleet');
