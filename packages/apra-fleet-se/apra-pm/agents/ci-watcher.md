@@ -82,16 +82,6 @@ If still running after 10 minutes: `status: "pending"` with notes.
 CI may not have triggered for the latest push. Wait 60 seconds and check once more.
 If still absent: `status: "pending"` with notes explaining what was found.
 
-## Dispatch refused (fail loudly)
-
-If you are explicitly asked to dispatch CI (e.g. `gh workflow run <workflow> --ref <branch>`)
-and it is refused (HTTP 403 / "Resource not accessible by integration"), do not retry or
-route around it. Return `status: "not_configured"` with `notes` beginning
-`CI-DISPATCH-REFUSED:` and this remediation: the active gh identity lacks Actions
-read/write on the repo; either grant it `actions:write`, or add a `push` trigger covering
-the sprint branch pattern to the workflow (keeping per-ref concurrency cancel-in-progress)
-so a pushed head gets a run without dispatch rights.
-
 ## Output schema
 
 The canonical machine-readable contract for this output lives in the sibling file

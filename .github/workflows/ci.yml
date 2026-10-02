@@ -3,7 +3,7 @@ name: CI - Build & Test
 on:
   workflow_dispatch:
   push:
-    branches: [main, 'feat/**', 'fix/**', 'chore/**']
+    branches: [main]
     tags: ['v*']
     paths-ignore:
       - '.github/e2e/**'
