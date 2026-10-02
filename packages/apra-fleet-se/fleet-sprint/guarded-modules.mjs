@@ -74,6 +74,10 @@ export const GUARDED_MODULES = [
     // (every member access is injected by runner.js), registered so a future
     // direct call added here is scanned from the start.
     'kb-maintainer.mjs',
+    // KB hint building and KNOWLEDGE BANK injection gating: pure / injected
+    // (the diff-file listing is a runner.js-supplied callback), no direct command().
+    'kb-hints.mjs',
+    'kb-injection.mjs',
     'beads-scope.mjs',
     'beads-transitions.mjs',
     'role-policies.mjs',

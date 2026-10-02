@@ -52,6 +52,7 @@
 // dispatchRole call sites for the streak-assignment and doer ladders.
 // =============================================================================
 
+import { pathsFromText } from '../kb-hints.mjs';
 import { WorkflowError } from '@apralabs/apra-fleet-workflow';
 
 import { dispatchRole, TURN_BASES } from '../dispatch-role.mjs';
@@ -98,6 +99,7 @@ export async function runDevelopPhase({
     updateDashboard,
     // The KB clients the doer prompt is primed from.
     kbPriming,
+    kbInjection,
     kbWork,
     // Per-round inputs. `devRounds` arrives already incremented (see header);
     // `perBeadFeedback` is read-only here.
@@ -517,23 +519,30 @@ export async function runDevelopPhase({
                     );
                 }
 
-                // The doer cannot read the KB itself (the member's
-                // composed permission config disables the fleet MCP
-                // server), so the entries primed for THIS member travel in
-                // its prompt. Relevance-ranked read for THESE beads,
-                // falling back to the sprint-start primed set when the
-                // query returns nothing. The query terms are the bead ids
-                // and titles the engine already holds; expand_related on
-                // that call is what traverses the refines/contradiction_of
-                // edges.
-                // Read AS the doer member: its session resolves its own repo's KB.
-                const doerKbMember = typeof kbPriming.memberOf === 'function' ? kbPriming.memberOf(doerMember) : null;
-                const doerKnowledge = await kbWork.relevantKnowledge(doerKbMember, kbQueryTerms(streak, actualBeadIds));
+                // KNOWLEDGE BANK: injected unless this doer member's own fleet
+                // MCP was verified at sprint init (it then reads the KB
+                // itself); otherwise fetched from the repository's
+                // kb_maintainer, ranked by the bead titles and the files the
+                // lane touches (kb-injection.mjs).
+                const laneBeads = Array.isArray(streak) ? streak : [];
+                const doerKbBlock = kbInjection
+                    ? await kbInjection.blockFor({
+                        role: 'doer',
+                        member: doerMember,
+                        context: {
+                            beadIds: actualBeadIds,
+                            beadTitles: laneBeads,
+                            laneFiles: pathsFromText(laneBeads.map((b) => b && `${b.description || ''}\n${b.acceptance_criteria || ''}\n${b.notes || ''}`)),
+                        },
+                        captureChannel: true,
+                    })
+                    : undefined;
                 const basePrompt = buildDoerPrompt({
                     beadIds: actualBeadIds,
                     branch: validated.branch,
                     feedback: feedbackForStreak || null,
-                    kbKnowledge: doerKnowledge.length > 0 ? doerKnowledge : kbPriming.knowledgeOf(doerMember),
+                    kbKnowledge: kbInjection ? undefined : kbPriming.knowledgeOf(doerMember),
+                    kbBlock: doerKbBlock,
                 });
                 let doerPrompt = basePrompt;
                 if (batchStreaks) {

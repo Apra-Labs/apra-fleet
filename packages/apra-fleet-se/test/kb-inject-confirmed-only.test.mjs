@@ -183,26 +183,24 @@ describe('only CONFIRMED, undisputed KB entries reach a role prompt', () => {
             'INFERRED entries ranked first must not crowd the CONFIRMED ones out of the cap');
     });
 
-    // The sources own the cap; the block only filters. A block-level cap would
-    // silently drop entries a caller deliberately handed it (e.g. related claims
-    // appended after a full page of direct hits).
-    test('kbKnowledgeBlock filters but never caps -- every CONFIRMED entry handed to it is rendered', () => {
+    // b4g.19.2: the block itself enforces the 12-entry cap (CONFIRMED-first,
+    // in the relevance order the source handed them over).
+    test('kbKnowledgeBlock caps at KB_MAX_KNOWLEDGE_ENTRIES after filtering, keeping the first (most relevant) entries', () => {
         const many = Array.from({ length: KB_MAX_KNOWLEDGE_ENTRIES + 5 }, (_, i) => entry(`m${i}`, `confirmedmarker many ${i}`, 'CONFIRMED'));
-        const [block] = kbKnowledgeBlock([...many, ...REJECTS]);
-        for (const e of many) assert.ok(block.includes(`"${e.title}"`), `${e.title} must be rendered`);
+        const [block] = kbKnowledgeBlock([...REJECTS, ...many]);
+        many.forEach((e, i) => assert.equal(block.includes(`"${e.title}"`), i < KB_MAX_KNOWLEDGE_ENTRIES, `${e.title}`));
         for (const marker of REJECT_MARKERS) assert.ok(!block.includes(marker), marker);
     });
 
-    // develop.mjs / runner.js: `queried.length > 0 ? queried : kbPriming.knowledgeOf(member)`.
-    test('an all-unconfirmed query result falls back to the (filtered) sprint-start set', async () => {
-        const { callTool, memberCall } = oldServer({ l1: REJECTS, related: RELATED_REJECTS });
+    // b4g.19.2: there is no fall-back to the hint-less sprint-start set.
+    test('an all-unconfirmed query result yields no entries and an explicit "nothing relevant" block, never an arbitrary set', async () => {
+        const { memberCall } = oldServer({ l1: REJECTS, related: RELATED_REJECTS });
         const work = createKbWorkClient({ memberCall, log: () => {} });
-        const priming = createKbPrimingClient({ callTool, memberCall, members: ['alpha'], log: () => {} });
-        await priming.primeAll();
 
-        const queried = await work.relevantKnowledge(ALPHA_MEMBER, ['x']);
-        assert.deepEqual(queried, [], 'nothing injectable from the query');
-        const kbKnowledge = queried.length > 0 ? queried : priming.knowledgeOf('alpha');
-        assertOnlyConfirmed(buildDoerPrompt({ beadIds: ['x-1'], branch: 'feat/x', feedback: null, kbKnowledge }), 'doer fallback');
+        const { entries, source } = await work.knowledgeFor(ALPHA_MEMBER, ['x']);
+        assert.deepEqual(entries, [], 'nothing injectable from the query');
+        const [block] = kbKnowledgeBlock(entries, { source, reportEmpty: true });
+        assert.match(block, /Nothing relevant was found/);
+        for (const marker of REJECT_MARKERS) assert.ok(!block.includes(marker), marker);
     });
 });

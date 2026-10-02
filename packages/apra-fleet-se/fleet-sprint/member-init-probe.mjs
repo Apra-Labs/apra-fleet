@@ -495,3 +495,19 @@ export function createMemberInitProbe(opts = {}) {
         },
     };
 }
+
+/**
+ * The per-member verified lookup the sprint context exposes
+ * (context.isMemberVerified): true only for a member whose init record says
+ * verified. A member with no init record is unverified. `getRecords` is read
+ * on every call so a later refresh of the records is seen.
+ *
+ * @param {() => Array<{member: string, verified: boolean}>} getRecords
+ * @returns {(memberName: string) => boolean}
+ */
+export function createMemberVerifiedLookup(getRecords) {
+    return (memberName) => {
+        const records = typeof getRecords === 'function' ? getRecords() : [];
+        return Array.isArray(records) && records.some((r) => r && r.member === memberName && r.verified === true);
+    };
+}
