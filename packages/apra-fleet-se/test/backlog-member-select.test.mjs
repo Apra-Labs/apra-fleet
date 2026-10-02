@@ -45,9 +45,7 @@ test('cli.mjs and runner.js both use the shared selector and keep no independent
     const cli = fs.readFileSync(path.join(__dirname, '../bin/cli.mjs'), 'utf8');
     const runner = fs.readFileSync(path.join(__dirname, '../fleet-sprint/runner.js'), 'utf8');
     for (const raw of [cli, runner]) {
-        const src = raw.split('
-').filter((l) => !l.trim().startsWith('//')).join('
-');
+        const src = raw.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
         assert.match(src, /selectBacklogMember\(\{ roleMap/);
         assert.doesNotMatch(src, /getMemberForRole\(ROLE_BACKLOG\)/);
         assert.doesNotMatch(src, /roleMap\[ROLE_BACKLOG\]\[0\]/);
