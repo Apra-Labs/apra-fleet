@@ -974,7 +974,7 @@ export async function probeMemberFleetMcp(
   const status = await probeMemberFleetMcpInner(agent, deps, opts, ctx);
   // Stamp fleetInstalledAt only from a successful fleet install in THIS probe;
   // otherwise carry the previously recorded value forward unchanged.
-  const stamp = ctx.installedNow ? status.checkedAt : agent.fleetMcp?.version;
+  const stamp = ctx.installedNow ? status.checkedAt : agent.fleetMcp?.fleetInstalledAt;
   return stamp ? { ...status, fleetInstalledAt: stamp } : status;
 }
 
