@@ -1,6 +1,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { createKbWorkClient, buildReviewerPrompt } from '../fleet-sprint/runner.js';
+import { fakeMaintainerSelector } from './helpers/kb-maintainer-fakes.mjs';
 
 // apra-fleet-0ef: kb_promote succeeded ZERO times across ~10 capture rounds in
 // two live sprints -- every entry stayed INFERRED -- and the sprint logs
@@ -22,6 +23,13 @@ import { createKbWorkClient, buildReviewerPrompt } from '../fleet-sprint/runner.
 //    kb_* call is scoped by its SESSION: both run AS the reviewer member.
 
 const REVIEWER = Object.freeze({ id: 'id-warehouse-reviewer', name: 'warehouse-reviewer', type: 'local' });
+// Every KB write is routed to the repository's kb_maintainer, so the INFERRED
+// candidates live in -- and are read from -- the maintainer's KB.
+const MAINTAINER = Object.freeze({ id: 'id-warehouse-maint', name: 'warehouse-maint', type: 'remote' });
+const withMaintainer = () => fakeMaintainerSelector({
+    repoOf: { [REVIEWER.name]: 'example.com/warehouse', [MAINTAINER.name]: 'example.com/warehouse' },
+    maintainerOf: { 'example.com/warehouse': MAINTAINER },
+});
 
 function makeCallTool(entries, opts = {}) {
     const calls = [];
@@ -29,9 +37,9 @@ function makeCallTool(entries, opts = {}) {
         calls,
         memberCall: async (member, name, args) => {
             calls.push({ name, args, member });
-            if (name === 'kb_list') {
+            if (name === 'kb_query') {
                 if (opts.throwOnList) throw new Error('kb unavailable');
-                return { content: [{ type: 'text', text: JSON.stringify({ results: entries, total: entries.length }) }] };
+                return { content: [{ type: 'text', text: JSON.stringify({ l1_results: entries }) }] };
             }
             return {};
         },
@@ -44,17 +52,16 @@ const INFERRED_ENTRIES = [
 ];
 
 describe('createKbWorkClient.promotionCandidates (apra-fleet-0ef)', () => {
-    test('asks kb_list for INFERRED entries, as the reviewer member', async () => {
+    test("asks the reviewer's repository maintainer for its own INFERRED entries", async () => {
         const { calls, memberCall } = makeCallTool(INFERRED_ENTRIES);
-        const client = createKbWorkClient({ memberCall, log: () => {} });
+        const client = createKbWorkClient({ memberCall, maintainers: withMaintainer(), log: () => {} });
 
         const candidates = await client.promotionCandidates(REVIEWER);
 
-        const listCall = calls.find((c) => c.name === 'kb_list');
-        assert.ok(listCall, 'kb_list was never called -- the reviewer gets no candidates');
-        assert.deepEqual(listCall.args.confidence, ['INFERRED']);
-        assert.equal(listCall.member, REVIEWER, 'kb_list must run as the reviewer member, whose session is its repo');
-        assert.equal(listCall.args.repo_path, undefined);
+        const queryCall = calls.find((c) => c.name === 'kb_query');
+        assert.ok(queryCall, 'kb_query was never called -- the reviewer gets no candidates');
+        assert.deepEqual(queryCall.args, { tag: `member:${MAINTAINER.id}`, confidence: ['INFERRED'], limit: 40 });
+        assert.equal(queryCall.member, MAINTAINER, 'the read must run in the maintainer session that holds the captures');
         assert.deepEqual(candidates.map((c) => c.id), ['kb-aaa', 'kb-bbb']);
     });
 
@@ -63,24 +70,25 @@ describe('createKbWorkClient.promotionCandidates (apra-fleet-0ef)', () => {
             ...INFERRED_ENTRIES,
             { id: 'kb-ddd', type: 'user-directive', confidence: 'INFERRED', title: 'pending directive', summary: 'x', source_files: ['a.js'] },
         ]);
-        const client = createKbWorkClient({ memberCall, log: () => {} });
+        const client = createKbWorkClient({ memberCall, maintainers: withMaintainer(), log: () => {} });
 
         const candidates = await client.promotionCandidates(REVIEWER);
 
         assert.ok(!candidates.some((c) => c.id === 'kb-ddd'), 'a pending user-directive was offered for promotion');
     });
 
-    test('returns [] rather than reading the wrong KB when no member is resolved', async () => {
+    test('returns [] rather than reading the wrong KB when no maintainer is resolved', async () => {
         const { calls, memberCall } = makeCallTool(INFERRED_ENTRIES);
-        const client = createKbWorkClient({ memberCall, log: () => {} });
-
+        const noSelection = createKbWorkClient({ memberCall, log: () => {} });
+        assert.deepEqual(await noSelection.promotionCandidates(REVIEWER), []);
+        const client = createKbWorkClient({ memberCall, maintainers: withMaintainer(), log: () => {} });
         assert.deepEqual(await client.promotionCandidates(null), []);
-        assert.equal(calls.filter((c) => c.name === 'kb_list').length, 0, 'kb_list called with no member -- would read some other KB');
+        assert.equal(calls.length, 0, 'a kb_* read with no maintainer would read some other KB');
     });
 
     test('a cold or broken KB yields [] and never throws into the dispatch', async () => {
         const { memberCall } = makeCallTool([], { throwOnList: true });
-        const client = createKbWorkClient({ memberCall, log: () => {} });
+        const client = createKbWorkClient({ memberCall, maintainers: withMaintainer(), log: () => {} });
 
         assert.deepEqual(await client.promotionCandidates(REVIEWER), []);
     });
@@ -92,10 +100,15 @@ describe('createKbWorkClient.promotionCandidates (apra-fleet-0ef)', () => {
 });
 
 describe('createKbWorkClient.apply: kb_promote member scoping (apra-fleet-0ef)', () => {
-    test('runs kb_promote as the member, exactly as kb_capture is', async () => {
+    test("runs kb_promote in the repository maintainer's session, exactly as kb_capture is", async () => {
+        // The promotion candidates are read from the maintainer's KB, so the
+        // promotion must run there too -- in the reviewer's own session the id
+        // would not exist and every promotion would fail "Entry not found".
         const calls = [];
         const client = createKbWorkClient({
             memberCall: async (member, name, args) => { calls.push({ name, args, member }); return {}; },
+            maintainers: withMaintainer(),
+            gPull: async () => {},
             log: () => {},
         });
 
@@ -105,11 +118,7 @@ describe('createKbWorkClient.apply: kb_promote member scoping (apra-fleet-0ef)',
 
         const promoteCall = calls.find((c) => c.name === 'kb_promote');
         assert.ok(promoteCall, 'kb_promote was never called');
-        assert.equal(
-            promoteCall.member,
-            REVIEWER,
-            'kb_promote outside the member session would resolve another KB and fail "Entry not found"'
-        );
+        assert.equal(promoteCall.member, MAINTAINER, 'kb_promote must run in the maintainer session that holds the entry');
         assert.equal(promoteCall.args.repo_path, undefined);
         assert.equal(result.promoted, 1);
     });

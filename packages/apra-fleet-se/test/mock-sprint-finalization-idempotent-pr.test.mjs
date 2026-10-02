@@ -24,6 +24,7 @@ const check = (cond, msg) => assert.ok(cond, msg);
 test('mock sprint: re-running finalization against the same branch is idempotent (no throw on existing PR)', async () => {
     console.log('Running mock sprint scenario (idempotent PR creation: re-run same branch)...');
     const idempotentPrState = new Set();
+    const idempotentPrRecords = new Map();
     const idempotentBranch = 'auto-sprint/mock-idempotent-pr-rerun';
 
     const idemPrRun1 = await withScenarioMarkers('idempr1', () => runDevelopLoopScenario('idempr1', {
@@ -31,6 +32,7 @@ test('mock sprint: re-running finalization against the same branch is idempotent
         taskSpecs: [{ title: 'Task: Idempotent PR creation run 1' }],
         maxCycles: 1,
         prExistsState: idempotentPrState,
+        prRecordState: idempotentPrRecords,
         branchOverride: idempotentBranch,
     }));
     check(!idemPrRun1.error, `Idempotent-PR run1 (first publish, no prior PR) should not throw: ${idemPrRun1.error ? idemPrRun1.error.message : ''}`);
@@ -48,6 +50,7 @@ test('mock sprint: re-running finalization against the same branch is idempotent
         taskSpecs: [{ title: 'Task: Idempotent PR creation run 2 (re-run)' }],
         maxCycles: 1,
         prExistsState: idempotentPrState,
+        prRecordState: idempotentPrRecords,
         branchOverride: idempotentBranch,
     }));
     check(
@@ -62,9 +65,27 @@ test('mock sprint: re-running finalization against the same branch is idempotent
         idemPrRun2.commandLog.some((c) => c.startsWith('curl -sS -X POST') && c.includes('/pulls') && c.includes(`"head":"${idempotentBranch}"`)),
         `Expected run2 to still dispatch a VCSModule create-pull-request command (idempotently) for '${idempotentBranch}', commandLog: ${JSON.stringify(idemPrRun2.commandLog)}`
     );
+    // A relaunch must REWRITE the existing PR for its own run (stale
+    // titles/bodies were the field bug): the find + PATCH round trip runs,
+    // the title carries this run's verdict and the body's run history keeps
+    // run1 as a previous run.
     check(
-        idemPrRun2.logs.some((m) => m.includes('already exists') && m.includes('idempotent success')),
-        `Expected a logged message noting the PR already exists and was treated as an idempotent success, logs: ${JSON.stringify(idemPrRun2.logs)}`
+        idemPrRun2.logs.some((m) => m.includes('already exists') && m.includes('updated its title and body')),
+        `Expected a logged message noting the existing PR was updated to this run's verdict, logs: ${JSON.stringify(idemPrRun2.logs)}`
+    );
+    check(
+        idemPrRun2.commandLog.some((c) => c.startsWith('curl -sS -X GET') && c.includes('/pulls?head=')),
+        `Expected run2 to look up the existing PR (find-pull-request), commandLog: ${JSON.stringify(idemPrRun2.commandLog)}`
+    );
+    check(
+        idemPrRun2.commandLog.some((c) => c.startsWith('curl -sS -X PATCH') && /\/pulls\/101$/.test(c.trim())),
+        `Expected run2 to PATCH the existing PR (update-pull-request), commandLog: ${JSON.stringify(idemPrRun2.commandLog)}`
+    );
+    const rec = idempotentPrRecords.get(idempotentBranch);
+    check(rec && rec.title === `Auto-sprint [PASS]: ${idempotentBranch}`, `Expected the existing PR's title rewritten for run2, got: ${JSON.stringify(rec)}`);
+    check(
+        rec && /### Previous runs\n\n- `[^`]+` \([^)]+\): PASS/.test(rec.body) && (rec.body.match(/"verdict":"PASS"/g) || []).length === 2,
+        `Expected the rewritten body to carry run1 forward in its run history, got: ${rec && rec.body}`
     );
 
     // apra-fleet-unw2.9 (N11) acceptance criterion 2: the PR title/body must

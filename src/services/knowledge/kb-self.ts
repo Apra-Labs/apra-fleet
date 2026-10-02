@@ -27,7 +27,8 @@ import { getSessionMemberId } from '../tool-scope.js';
 import { getAgent } from '../registry.js';
 import type { Agent } from '../../types.js';
 import { knownRepoRemoteUrl } from '../member-remote-url.js';
-import { getKbProviders, type KbProviders } from './kb-providers.js';
+import { getKbProviders, getGlobalKbProvider, getProjectSlug, type KbProviders } from './kb-providers.js';
+import { getMemberBibleView } from './member-bible-view.js';
 
 /** Explicit KB anchor for in-process callers. Not exposed on any tool schema. */
 export interface KbAnchor {
@@ -35,6 +36,8 @@ export interface KbAnchor {
   folder: string;
   /** Origin remote URL, when the folder lives on another host. */
   remoteUrl?: string;
+  /** Registered member whose host the folder lives on (set with remoteUrl). */
+  memberId?: string;
 }
 
 export type KbSelfErrorCode = 'E-SELF-NO-WORKFOLDER' | 'E-SELF-NOT-A-REPO' | 'E-SELF-NO-REMOTE';
@@ -150,7 +153,7 @@ export function resolveSelfSession(): SelfSession {
  */
 export function resolveSelfAnchor(): KbAnchor {
   const self = resolveSelfSession();
-  const { agent, folder, memberLabel: label } = self;
+  const { agent, folder, memberLabel: label, memberId } = self;
   if (!agent) return validateSelfFolder(folder);
   if (agent.agentType !== 'local') {
     // The work folder lives on another host: git cannot be shelled out there,
@@ -164,7 +167,7 @@ export function resolveSelfAnchor(): KbAnchor {
         `Record the repo's origin URL on the member (update_member git_repos: ["<origin url>"]) or call kb tools from a session on the member's own host.`,
       );
     }
-    return { folder, remoteUrl };
+    return { folder, remoteUrl, memberId };
   }
   return validateSelfFolder(folder, label);
 }
@@ -178,6 +181,68 @@ export function resolveKbAnchor(anchor?: KbAnchor): KbAnchor {
 export async function getSelfKbProviders(anchor?: KbAnchor): Promise<KbProviders> {
   const resolved = resolveKbAnchor(anchor);
   return getKbProviders(resolved.folder, resolved.remoteUrl);
+}
+
+/**
+ * The own-scope tag of the calling MEMBER session, 'member:<uuid>', or
+ * undefined for a FULL session or an in-process caller passing an explicit
+ * KbAnchor (same predicate getSelfReadKb uses to pick the bible view).
+ * MEMBER captures carry this tag, and MEMBER INFERRED/UNVERIFIED reads,
+ * kb_promote and kb_invalidate act only on entries carrying it.
+ */
+export function memberOwnerTag(anchor?: KbAnchor): string | undefined {
+  if (anchor !== undefined) return undefined;
+  const memberId = getSessionMemberId();
+  return memberId === undefined ? undefined : `member:${memberId}`;
+}
+
+/** KB providers for a read-only kb_* call, plus the anchor they were resolved from. */
+export interface SelfReadKb {
+  providers: KbProviders;
+  anchor: KbAnchor;
+  /** True when `providers.project` is the member's in-memory bible view. */
+  memberView: boolean;
+  /**
+   * Set when a MEMBER session explicitly asked for INFERRED/UNVERIFIED: the
+   * request is answered from the per-repo DB and every read must return only
+   * entries carrying this tag (member:<uuid>), so a member never sees another
+   * member's unconfirmed captures even when they share a machine.
+   */
+  ownerTag?: string;
+}
+
+/**
+ * Providers for the read tools (kb_query, kb_session_prime, kb_list,
+ * kb_context, kb_stats). A MEMBER session (no explicit anchor) reads its own
+ * checkout bible through the in-memory view (member-bible-view.ts); the
+ * per-repo DB is shared by every member of the repo, whichever branch each is
+ * on. Everything else keeps the per-repo DB: FULL sessions, in-process callers
+ * passing an explicit KbAnchor, and a MEMBER request that explicitly names the
+ * INFERRED or UNVERIFIED tier (a bible carries the CONFIRMED set, so those
+ * tiers are not the view's to answer). The global KB is unchanged either way.
+ * That last MEMBER case carries `ownerTag`: it sees only its own captures.
+ */
+export async function getSelfReadKb(
+  anchor?: KbAnchor,
+  confidence?: readonly string[],
+): Promise<SelfReadKb> {
+  const resolved = resolveKbAnchor(anchor);
+  const namesUnconfirmedTier = (confidence ?? []).some(c => c !== 'CONFIRMED');
+  if (anchor === undefined && getSessionMemberId() !== undefined && !namesUnconfirmedTier) {
+    const [project, global] = await Promise.all([getMemberBibleView(resolved), getGlobalKbProvider()]);
+    return {
+      providers: { project, global, projectSlug: getProjectSlug(resolved.folder, resolved.remoteUrl) },
+      anchor: resolved,
+      memberView: true,
+    };
+  }
+  const ownerTag = memberOwnerTag(anchor);
+  return {
+    providers: await getKbProviders(resolved.folder, resolved.remoteUrl),
+    anchor: resolved,
+    memberView: false,
+    ...(ownerTag !== undefined ? { ownerTag } : {}),
+  };
 }
 
 /** Appended to every kb_* tool description so callers know there is no scope argument. */

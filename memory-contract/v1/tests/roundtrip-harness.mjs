@@ -233,7 +233,7 @@ function assertDirectiveQuarantined(parsed, ctx) {
  *
  *   tool / case  -- locate memory-contract/v1/fixtures/<tool>/<case>.json
  *   captureId    -- name the id this step's live response mints, for later steps
- *   derive       -- { requestField: 'CAPTURED_NAME' }, resolved from live ids
+ *   derive       -- { requestField: 'CAPTURED_NAME' | ['CAPTURED_NAME', ...] }, resolved from live ids
  *   setup        -- provider-executed preconditions, applied before dispatch
  *   assertParsed -- extra live evidence check (response-field refusals etc.)
  */
@@ -247,14 +247,22 @@ export const SCENARIO = [
   { tool: 'kb_query', case: 'happy' },
   { tool: 'kb_list', case: 'happy' },
   { tool: 'kb_promote', case: 'happy', derive: { id: 'FOO' } },
+  // kb_export writes .fleet/kb-canonical.json into repo A; the kb_import step
+  // below reads it back through the path anchor, no derive needed. It runs
+  // BEFORE the CONFIRMED-only read and kb_stats because a member session's
+  // default (CONFIRMED) reads come from its checkout bible: the promoted entry
+  // is visible to them once it has been exported into that bible.
+  { tool: 'kb_export', case: 'happy' },
+  // kb_bible_commit merges the promoted FOO entry into repo A's bible at entry
+  // level with explicit base-branch provenance (local commit only, no push).
+  { tool: 'kb_bible_commit', case: 'happy', derive: { ids: ['FOO'] } },
   { tool: 'kb_query', case: 'happy-confirmed-only', assertParsed: assertConfirmedOnly },
   { tool: 'kb_stats', case: 'happy' },
-  // kb_export writes .fleet/kb-canonical.json into repo A; the kb_import step
-  // below reads it back through the path anchor, no derive needed.
-  { tool: 'kb_export', case: 'happy' },
   { tool: 'kb_import', case: 'happy' },
   { tool: 'kb_freshness_sweep', case: 'happy' },
-  { tool: 'kb_feedback', case: 'happy', derive: { id: 'FOO' } },
+  // Every session here is a MEMBER session, so kb_feedback is the typed
+  // E-MEMBER-VIEW-READ-ONLY refusal (the member's bible view is read-only).
+  { tool: 'kb_feedback', case: 'refusal-member-view-read-only', derive: { id: 'FOO' } },
   { tool: 'kb_harvest', case: 'happy' },
   { tool: 'kb_capture', case: 'happy-contradiction-a', captureId: 'BROKEN' },
   { tool: 'kb_capture', case: 'happy-contradiction-b', captureId: 'FIXED' },
@@ -277,6 +285,7 @@ export const SCENARIO = [
   { tool: 'kb_query', case: 'refusal-no-selector' },
   { tool: 'kb_context', case: 'refusal-path-traversal' },
   { tool: 'kb_export', case: 'refusal-repo-path-invalid' },
+  { tool: 'kb_bible_commit', case: 'refusal-repo-path-invalid' },
   { tool: 'kb_query', case: 'refusal-self-no-workfolder' },
   { tool: 'kb_stats', case: 'refusal-self-not-a-repo' },
   { tool: 'code_query', case: 'refusal-self-no-workfolder' },
@@ -762,13 +771,17 @@ export async function runRoundTrip(provider, rosterTools) {
 
     // 1. request validates BEFORE dispatch
     const request = rehydrate(fixture.request, substitutions);
-    for (const [field, name] of Object.entries(step.derive ?? {})) {
-      const known = ids.get(name);
-      if (!known) {
-        fail(`derive needs the id captured as ${name}, which no earlier step produced`);
-      } else {
-        request[field] = known.live;
+    // A derive value is a captured name (scalar field) or an array of captured
+    // names (array-of-ids field, e.g. kb_bible_commit's ids).
+    for (const [field, nameOrNames] of Object.entries(step.derive ?? {})) {
+      const names = Array.isArray(nameOrNames) ? nameOrNames : [nameOrNames];
+      const live = [];
+      for (const name of names) {
+        const known = ids.get(name);
+        if (!known) fail(`derive needs the id captured as ${name}, which no earlier step produced`);
+        else live.push(known.live);
       }
+      if (live.length === names.length) request[field] = Array.isArray(nameOrNames) ? live : live[0];
     }
     const validateRequest = validatorFor(step.tool, 'request');
     record.requestValid = validateRequest(request);

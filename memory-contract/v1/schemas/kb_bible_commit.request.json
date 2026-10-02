@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/schemas/kb_bible_commit.request.json#",
+  "x-invariant": [
+    "INV-05"
+  ],
+  "$ref": "#/$defs/v1-kb_bible_commit-request",
+  "$defs": {
+    "v1-kb_bible_commit-request": {
+      "type": "object",
+      "properties": {
+        "ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Ids of the entries confirmed this round. Each must be a live (non-stale, non-superseded) CONFIRMED entry in this repository's KB; any other id is skipped and reported in skipped. An empty list makes no commit."
+        },
+        "baseBranch": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The sprint's target base branch (the branch the work merges into). Written to provenance.branch."
+        },
+        "baseCommit": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The base commit the entries were verified against. Written to provenance.commit."
+        }
+      },
+      "required": [
+        "ids",
+        "baseBranch",
+        "baseCommit"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

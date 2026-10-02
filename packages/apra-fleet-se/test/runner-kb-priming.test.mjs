@@ -8,6 +8,7 @@ import {
     buildDoerPrompt,
     buildReviewerPrompt,
 } from '../fleet-sprint/runner.js';
+import { selfMaintainer } from './helpers/kb-maintainer-fakes.mjs';
 
 // apra-fleet-e28 / KB trust pipeline Phase 2: the fleet-sprint engine had no KB
 // priming -- it lived only in the Claude workflow copy.
@@ -411,7 +412,7 @@ function errorRecorder(message) {
 describe('createKbWorkClient (KB trust pipeline Phase 2, fleet-sprint half)', () => {
     test('a vetted capture becomes a real kb_capture call, run AS the member', async () => {
         const { calls, memberCall } = recorder();
-        const client = createKbWorkClient({ memberCall, log: () => {} });
+        const client = createKbWorkClient({ memberCall, maintainers: selfMaintainer(ALPHA), log: () => {} });
 
         const out = await client.apply('doer', ALPHA, { kb_captures: [GOOD_CAPTURE] });
 
@@ -424,7 +425,7 @@ describe('createKbWorkClient (KB trust pipeline Phase 2, fleet-sprint half)', ()
 
     test('a reviewer promotion becomes a real kb_promote call', async () => {
         const { calls, memberCall } = recorder();
-        const client = createKbWorkClient({ memberCall, log: () => {} });
+        const client = createKbWorkClient({ memberCall, maintainers: selfMaintainer(ALPHA), log: () => {} });
 
         const out = await client.apply('reviewer', ALPHA, {
             kb_promotions: [{ id: 'abc123', reason: GOOD_REASON }],
@@ -445,7 +446,7 @@ describe('createKbWorkClient (KB trust pipeline Phase 2, fleet-sprint half)', ()
     // at the MCP boundary and persisted nothing, while the engine logged success.
     test('a capture carries content through -- kb_capture requires it', async () => {
         const { calls, memberCall } = recorder();
-        const client = createKbWorkClient({ memberCall, log: () => {} });
+        const client = createKbWorkClient({ memberCall, maintainers: selfMaintainer(ALPHA), log: () => {} });
 
         const out = await client.apply('doer', ALPHA, { kb_captures: [GOOD_CAPTURE] });
 
@@ -457,7 +458,7 @@ describe('createKbWorkClient (KB trust pipeline Phase 2, fleet-sprint half)', ()
 
     test('a capture with no content is refused rather than sent to fail server-side', async () => {
         const { calls, memberCall } = recorder();
-        const client = createKbWorkClient({ memberCall, log: () => {} });
+        const client = createKbWorkClient({ memberCall, maintainers: selfMaintainer(ALPHA), log: () => {} });
         const { content, ...noContent } = GOOD_CAPTURE;
 
         const out = await client.apply('doer', ALPHA, { kb_captures: [noContent] });
@@ -472,7 +473,7 @@ describe('createKbWorkClient (KB trust pipeline Phase 2, fleet-sprint half)', ()
     test('an MCP isError result counts as a failure, not a capture', async () => {
         const logs = [];
         const { calls, memberCall } = errorRecorder('kb capture rejected: an entry must cite at least one source file');
-        const client = createKbWorkClient({ memberCall, log: (m) => logs.push(m) });
+        const client = createKbWorkClient({ memberCall, maintainers: selfMaintainer(ALPHA), log: (m) => logs.push(m) });
 
         const out = await client.apply('doer', ALPHA, { kb_captures: [GOOD_CAPTURE] });
 
@@ -484,7 +485,7 @@ describe('createKbWorkClient (KB trust pipeline Phase 2, fleet-sprint half)', ()
 
     test('an MCP isError result on kb_promote is not counted as promoted', async () => {
         const { memberCall } = errorRecorder('no such entry');
-        const client = createKbWorkClient({ memberCall, log: () => {} });
+        const client = createKbWorkClient({ memberCall, maintainers: selfMaintainer(ALPHA), log: () => {} });
 
         const out = await client.apply('reviewer', ALPHA, {
             kb_promotions: [{ id: 'abc123', reason: GOOD_REASON }],
@@ -495,7 +496,7 @@ describe('createKbWorkClient (KB trust pipeline Phase 2, fleet-sprint half)', ()
 
     test('an unverifiable payload results in NO tool call', async () => {
         const { calls, memberCall } = recorder();
-        const client = createKbWorkClient({ memberCall, log: () => {} });
+        const client = createKbWorkClient({ memberCall, maintainers: selfMaintainer(ALPHA), log: () => {} });
 
         const out = await client.apply('doer', ALPHA, {
             kb_captures: [{ ...GOOD_CAPTURE, source_files: [] }],
@@ -508,7 +509,7 @@ describe('createKbWorkClient (KB trust pipeline Phase 2, fleet-sprint half)', ()
     test('kb_promotions from a non-reviewer role results in NO promote call', async () => {
         for (const role of ['doer', 'planner', 'harvester']) {
             const { calls, memberCall } = recorder();
-            const client = createKbWorkClient({ memberCall, log: () => {} });
+            const client = createKbWorkClient({ memberCall, maintainers: selfMaintainer(ALPHA), log: () => {} });
 
             const out = await client.apply(role, ALPHA, {
                 kb_promotions: [{ id: 'abc123', reason: GOOD_REASON }],
@@ -521,7 +522,7 @@ describe('createKbWorkClient (KB trust pipeline Phase 2, fleet-sprint half)', ()
 
     test('without a resolved member nothing is captured -- never another session', async () => {
         const { calls, memberCall } = recorder();
-        const client = createKbWorkClient({ memberCall, log: () => {} });
+        const client = createKbWorkClient({ memberCall, maintainers: selfMaintainer(ALPHA), log: () => {} });
 
         const out = await client.apply('doer', null, { kb_captures: [GOOD_CAPTURE] });
 
@@ -535,7 +536,7 @@ describe('createKbWorkClient (KB trust pipeline Phase 2, fleet-sprint half)', ()
             if (name === 'kb_capture' && n++ === 0) throw new Error('rejected');
             return {};
         };
-        const client = createKbWorkClient({ memberCall, log: () => {} });
+        const client = createKbWorkClient({ memberCall, maintainers: selfMaintainer(ALPHA), log: () => {} });
 
         const out = await client.apply('doer', ALPHA, {
             kb_captures: [GOOD_CAPTURE, { ...GOOD_CAPTURE, title: 'A second durable claim' }],
@@ -544,12 +545,6 @@ describe('createKbWorkClient (KB trust pipeline Phase 2, fleet-sprint half)', ()
         assert.equal(out.captured, 1);
     });
 
-    // KB audit 2026-08-11: of 17 checked repositories on the operator's machine,
-    // exactly ONE had a .fleet/kb-canonical.json -- because nothing in the
-    // sprint pipeline has ever called kb_export. A bible existed only where a
-    // human ran the tool by hand, so promoted CONFIRMED knowledge stayed on the
-    // machine that learned it and never reached a teammate or a fresh clone
-    // (and the cold-seed in kb_session_prime had nothing to read).
     // KB audit follow-up: one hint-less prime per member at sprint start gave
     // every role the same handful of entries regardless of what it was working
     // on, and left kb_query unused by the engine entirely. This is the
@@ -561,7 +556,7 @@ describe('createKbWorkClient (KB trust pipeline Phase 2, fleet-sprint half)', ()
             calls.push({ name, args, member });
             return { content: [{ text: JSON.stringify({ l1_results: [ENTRY], related_claims: [] }) }] };
         };
-        const client = createKbWorkClient({ memberCall, log: () => {} });
+        const client = createKbWorkClient({ memberCall, maintainers: selfMaintainer(ALPHA), log: () => {} });
 
         const out = await client.relevantKnowledge(ALPHA, ['resolveZoneBinding', 'transit ingest']);
 
@@ -579,7 +574,7 @@ describe('createKbWorkClient (KB trust pipeline Phase 2, fleet-sprint half)', ()
         const memberCall = async () => ({
             content: [{ text: JSON.stringify({ l1_results: [ENTRY], related_claims: [related] }) }],
         });
-        const client = createKbWorkClient({ memberCall, log: () => {} });
+        const client = createKbWorkClient({ memberCall, maintainers: selfMaintainer(ALPHA), log: () => {} });
 
         const out = await client.relevantKnowledge(ALPHA, ['anything']);
 
@@ -589,7 +584,7 @@ describe('createKbWorkClient (KB trust pipeline Phase 2, fleet-sprint half)', ()
 
     test('relevantKnowledge without a member or terms makes NO call', async () => {
         const { calls, memberCall } = recorder();
-        const client = createKbWorkClient({ memberCall, log: () => {} });
+        const client = createKbWorkClient({ memberCall, maintainers: selfMaintainer(ALPHA), log: () => {} });
 
         assert.deepEqual(await client.relevantKnowledge(null, ['x']), []);
         assert.deepEqual(await client.relevantKnowledge(ALPHA, []), []);
@@ -599,6 +594,7 @@ describe('createKbWorkClient (KB trust pipeline Phase 2, fleet-sprint half)', ()
     test('a failing kb_query degrades to no knowledge, never throws', async () => {
         const logs = [];
         const client = createKbWorkClient({
+            maintainers: selfMaintainer(ALPHA),
             memberCall: async () => { throw new Error('kb down'); },
             log: (m) => logs.push(m),
         });
@@ -618,7 +614,7 @@ describe('createKbWorkClient (KB trust pipeline Phase 2, fleet-sprint half)', ()
     // other kb_* site here already proves.
     test('a rejecting kb_query degrades to no knowledge, never throws', async () => {
         const { calls, memberCall } = errorRecorder('kb query rejected: cold store');
-        const client = createKbWorkClient({ memberCall, log: () => {} });
+        const client = createKbWorkClient({ memberCall, maintainers: selfMaintainer(ALPHA), log: () => {} });
 
         assert.deepEqual(await client.relevantKnowledge(ALPHA, ['x']), []);
         assert.equal(calls.length, 1, 'the call is still attempted');
@@ -629,50 +625,15 @@ describe('createKbWorkClient (KB trust pipeline Phase 2, fleet-sprint half)', ()
     // the code took the `if (!parsed) return [];` branch and never reached the
     // catch that every other kb_* site here uses to report a rejection. A cold
     // or misconfigured KB must degrade VISIBLY, matching the wording of the
-    // kb_capture/kb_promote/kb_export rejected branches.
+    // kb_capture/kb_promote rejected branches.
     test('a rejecting kb_query logs the rejection, non-fatal, matching every other kb_* site', async () => {
         const logs = [];
         const { memberCall } = errorRecorder('kb query rejected: cold store');
-        const client = createKbWorkClient({ memberCall, log: (m) => logs.push(m) });
+        const client = createKbWorkClient({ memberCall, maintainers: selfMaintainer(ALPHA), log: (m) => logs.push(m) });
 
         assert.deepEqual(await client.relevantKnowledge(ALPHA, ['x']), []);
         assert.equal(logs.length, 1, 'the rejection must be logged, not silently swallowed');
         assert.match(logs[0], /^\[kb-work\] kb_query rejected for alpha \(non-fatal\): kb query rejected: cold store$/);
-    });
-
-    test('exportBible writes the canonical bible AS the member it is given', async () => {
-        const { calls, memberCall } = recorder();
-        const client = createKbWorkClient({ memberCall, log: () => {} });
-
-        const ok = await client.exportBible(ALPHA);
-
-        assert.equal(ok, true);
-        const exportCall = calls.find((c) => c.name === 'kb_export');
-        assert.equal(exportCall.member, ALPHA);
-        assert.deepEqual(exportCall.args, {});
-    });
-
-    test('exportBible without a member makes NO call -- never another session', async () => {
-        const { calls, memberCall } = recorder();
-        const client = createKbWorkClient({ memberCall, log: () => {} });
-
-        const ok = await client.exportBible(null);
-
-        assert.equal(ok, false);
-        assert.equal(calls.filter((c) => c.name === 'kb_export').length, 0);
-    });
-
-    test('a failing kb_export is non-fatal -- a sprint never fails over the bible', async () => {
-        const { memberCall } = errorRecorder('export blew up');
-        const client = createKbWorkClient({ memberCall, log: () => {} });
-
-        assert.equal(await client.exportBible(ALPHA), false);
-
-        const throwing = createKbWorkClient({
-            memberCall: async () => { throw new Error('transport exploded'); },
-            log: () => {},
-        });
-        assert.equal(await throwing.exportBible(ALPHA), false);
     });
 
     test('vetKbWork here agrees with apra-pm lib/vet-kb-work.mjs on the reviewer-only rule', () => {
@@ -742,7 +703,9 @@ describe('kb calls run AS the member -- no scope argument anywhere', () => {
         const priming = createKbPrimingClient({ callTool, memberCall, members: ['remote-1'], log: () => {} });
         await priming.primeAll();
         const remote = priming.memberOf('remote-1');
-        const client = createKbWorkClient({ memberCall, log: () => {} });
+        // The member is its repository's kb_maintainer, so the writes route
+        // back to it -- through the maintainer queue, not the producer.
+        const client = createKbWorkClient({ memberCall, maintainers: selfMaintainer(remote), log: () => {} });
 
         await client.promotionCandidates(remote);
         await client.relevantKnowledge(remote, ['resolveZoneBinding']);
@@ -750,27 +713,28 @@ describe('kb calls run AS the member -- no scope argument anywhere', () => {
             kb_captures: [GOOD_CAPTURE],
             kb_promotions: [{ id: 'abc123', reason: GOOD_REASON }],
         });
-        await client.exportBible(remote);
 
         assert.equal(out.captured, 1);
         assert.equal(out.promoted, 1);
-        const workCalls = calls.filter((c) => ['kb_list', 'kb_query', 'kb_capture', 'kb_promote', 'kb_export'].includes(c.name));
-        assert.deepEqual(workCalls.map((c) => c.name), ['kb_list', 'kb_query', 'kb_capture', 'kb_promote', 'kb_export']);
+        const workCalls = calls.filter((c) => ['kb_list', 'kb_query', 'kb_capture', 'kb_promote'].includes(c.name));
+        // The candidate read and the per-dispatch read are both kb_query.
+        assert.deepEqual(workCalls.map((c) => c.name), ['kb_query', 'kb_query', 'kb_capture', 'kb_promote']);
         for (const c of workCalls) {
             assert.equal(c.member, remote, `${c.name} must run as the member whose repo it is about`);
             assertNoScopeArgs(c);
         }
     });
 
-    test('the explicit confidence lists survive the move: kb_list INFERRED, kb_query CONFIRMED', async () => {
+    test('the explicit confidence lists survive the move: candidates INFERRED, per-dispatch read CONFIRMED', async () => {
         const { calls, memberCall } = sprintFleet({ candidates: [] });
-        const client = createKbWorkClient({ memberCall, log: () => {} });
+        const client = createKbWorkClient({ memberCall, maintainers: selfMaintainer(ALPHA), log: () => {} });
 
         await client.promotionCandidates(ALPHA);
         await client.relevantKnowledge(ALPHA, ['x']);
 
-        assert.deepEqual(calls.find((c) => c.name === 'kb_list').args.confidence, ['INFERRED']);
-        assert.deepEqual(calls.find((c) => c.name === 'kb_query').args.confidence, ['CONFIRMED']);
+        const [candidateRead, knowledgeRead] = calls.filter((c) => c.name === 'kb_query');
+        assert.deepEqual(candidateRead.args.confidence, ['INFERRED']);
+        assert.deepEqual(knowledgeRead.args.confidence, ['CONFIRMED']);
     });
 
     test('no memberCall injected means no kb work at all -- never the orchestrator session', async () => {
@@ -778,7 +742,7 @@ describe('kb calls run AS the member -- no scope argument anywhere', () => {
 
         assert.deepEqual(await client.promotionCandidates(ALPHA), []);
         assert.deepEqual(await client.relevantKnowledge(ALPHA, ['x']), []);
-        assert.deepEqual(await client.apply('doer', ALPHA, { kb_captures: [GOOD_CAPTURE] }), { captured: 0, promoted: 0, refused: 0 });
-        assert.equal(await client.exportBible(ALPHA), false);
+        assert.deepEqual(await client.apply('doer', ALPHA, { kb_captures: [GOOD_CAPTURE] }), { captured: 0, promoted: 0, discarded: 0, refused: 0 });
+        assert.deepEqual(await client.commitRound(), { committed: 0, pending: 0 });
     });
 });

@@ -1,11 +1,13 @@
 import { z } from 'zod';
 import path from 'node:path';
 import fs from 'node:fs';
-import { getSelfKbProviders, type KbAnchor } from '../services/knowledge/kb-self.js';
+import { getSelfKbProviders, memberOwnerTag, type KbAnchor } from '../services/knowledge/kb-self.js';
+import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
 import { validateFilePaths } from '../services/knowledge/path-validation.js';
 
 export const kbInvalidateSchema = z.object({
-  files: z.array(z.string()).min(1).describe('File paths to invalidate (context-cache entries for these files will be marked stale)'),
+  files: z.array(z.string()).min(1).optional().describe('File paths to invalidate (context-cache entries for these files will be marked stale)'),
+  ids: z.array(z.string().min(1)).min(1).optional().describe('Entry ids to discard (sets superseded_at; the entry drops from all reads). Exactly one of files or ids.'),
 });
 
 export type KbInvalidateInput = z.infer<typeof kbInvalidateSchema>;
@@ -28,9 +30,23 @@ export function installKbPostCommitHook(repoPath: string): void {
 }
 
 export async function kbInvalidate(input: KbInvalidateInput, anchor?: KbAnchor): Promise<string> {
-  validateFilePaths(input.files);
+  if ((input.files === undefined) === (input.ids === undefined)) {
+    throw new Error('Provide exactly one of files or ids');
+  }
+  if (input.ids) {
+    const providers = await getSelfKbProviders(anchor);
+    const ownerTag = memberOwnerTag(anchor);
+    const result = await providers.project.discard(input.ids, ownerTag !== undefined ? { ownerTag } : undefined);
+    return JSON.stringify(result);
+  }
+  validateFilePaths(input.files!);
 
   const providers = await getSelfKbProviders(anchor);
-  const { invalidated } = await providers.project.invalidate(input.files);
+  // MEMBER session: only the caller's own captures (member:<uuid>) for these
+  // files are invalidated; other members' entries are left untouched.
+  const ownerTag = memberOwnerTag(anchor);
+  const { invalidated } = ownerTag !== undefined
+    ? await requireSqliteProject(providers.project, 'kb_invalidate').invalidate(input.files!, { ownerTag })
+    : await providers.project.invalidate(input.files!);
   return JSON.stringify({ invalidated, files: input.files });
 }

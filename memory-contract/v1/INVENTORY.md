@@ -11,7 +11,17 @@ after merging main at `97877f5e` (kb_*/code_* surface unchanged; server total
 
 ## 1. Verified tool count
 
-**23 tools: 16 `kb_*` + 7 `code_*`.**
+**26 tools: 17 `kb_*` + 9 `code_*`.**
+
+Update: `code_reindex` and `code_status` (rebuild / report the calling
+session's own code index) were added as the 8th and 9th `code_*` tools, taking
+the surface from 24 to 26.
+
+Earlier update: `kb_bible_commit` (the kb_maintainer's per-round, entry-level bible
+commit with target-base-branch provenance) was added as the 17th `kb_*` tool,
+taking the surface from 23 to 24. The verification below was the original
+23-tool count and stands as stated for that tree; the same runtime registration
+dump now records 17 `kb_` and 7 `code_` tools.
 
 The source plan claimed 24 (17 `kb_*` + 7 `code_*`). That claim is WRONG by one
 `kb_*` tool. The verified number is 23.
@@ -44,12 +54,12 @@ Response column notation:
 
 No tool in this surface declares a response zod schema; see section 3.
 
-### 2.1 kb_* tools (16)
+### 2.1 kb_* tools (17)
 
 | # | Tool | Request schema | Request fields | Response (observed) | Description (summarized) |
 |---|------|----------------|----------------|---------------------|---------------------------|
 | 1 | `kb_capture` | `kbCaptureSchema` (`src/tools/kb-capture.ts`) | type, title, summary, content, source_files, symbols, module, tags, source_file, role, confidence, scope, supersedes | `text(JSON): {id, audn_decision, confidence_clamped}` | Capture a learning/fact/file summary into the KB. Confidence is capped at INFERRED (CONFIRMED is minted only via `kb_promote`). Returns `audn_decision` (add/none/update/flagged); `supersedes` retires a prior entry only if AUDN independently matches it. |
-| 2 | `kb_invalidate` | `kbInvalidateSchema` (`src/tools/kb-invalidate.ts`) | files | `text(JSON): {invalidated, files}` | Mark context-cache entries stale for the given file paths. Call after modifying files so the KB reflects current state. |
+| 2 | `kb_invalidate` | `kbInvalidateSchema` (`src/tools/kb-invalidate.ts`) | files, ids (exactly one) | `text(JSON): {invalidated, files}` (files) or `{discarded, not_found, already_discarded}` (ids) | Mark context-cache entries stale for the given file paths. Call after modifying files so the KB reflects current state. |
 | 3 | `kb_context` | `kbContextSchema` (`src/tools/kb-context.ts`) | files | `text(JSON): {fresh, stale, missing}` | Check freshness of files against the KB. Fresh files can be skipped; stale/missing files must be re-read. |
 | 4 | `kb_session_prime` | `kbSessionPrimeSchema` (`src/tools/kb-session-prime.ts`) | session_files, hint_symbols, hint_modules | `text(JSON): PrimedContext {session_warm, stale_files, top_entries, fresh_summaries, recommended_code_calls, token_estimate}` | Prime a session with KB context: session_warm status, stale files needing re-read, top KB entries, and recommended GitNexus calls. |
 | 5 | `kb_query` | `kbQuerySchema` (`src/tools/kb-query.ts`) | query, type, tag, limit, include_stale, flagged_only, expand_related, confidence, exclude_disputed | TWO shapes -- default: `text(JSON): {l1_results, l2_expanded, related_claims?}`; with `flagged_only` true: `text(JSON): {flagged_entries, total, note}` | Two-level KB search: L1 FTS5 on title+summary (up to 20 hits), L2 full content for top 5. `tag` alone lists all entries with that tag; `flagged_only` lists contradiction pairs; `expand_related` adds refines/contradiction_of links; `confidence`/`exclude_disputed` restrict every returned entry (related_claims included) to trusted knowledge. |
@@ -61,9 +71,10 @@ No tool in this surface declares a response zod schema; see section 3.
 | 11 | `kb_resolve_contradiction` | `kbResolveContradictionSchema` (`src/tools/kb-resolve-contradiction.ts`) | winnerId, loserId, evidence | `text(JSON): {winnerId, loserId}` | Resolve a KB contradiction pair: winner goes to CONFIRMED with evidence appended, loser is superseded+stale. Refuses (writes nothing) if either id is missing, already superseded, not a genuine pair, or involves an ACTIVE directive. |
 | 12 | `kb_reconcile_prefilter` | `kbReconcilePrefilterSchema` (`src/tools/kb-reconcile-prefilter.ts`) | (none) | `text(JSON): {pairs, resolved[], left_for_agent[], skipped_directive}` | Mechanical hash-basis prefilter over flagged contradiction pairs: a pair with exactly one side hash-matching the current worktree is auto-resolved via `kb_resolve_contradiction`; the rest are left for the reconciler agent. |
 | 13 | `kb_setup` | `kbSetupSchema` (`src/tools/kb-setup.ts`) | provider, remote, token | `text(JSON): {success, steps}` | Set up the KB: install the git post-commit hook, write provider config, store remote credentials encrypted. Run once per repo. |
-| 14 | `kb_export` | `kbExportSchema` (`src/tools/kb-export.ts`) | scope | `text(JSON): {exported, path, scope, committed}` | Export all CONFIRMED/non-superseded/non-stale entries to a canonical bible file (project or global scope). Auto-commits the bible file by default when content changed. |
+| 14 | `kb_export` | `kbExportSchema` (`src/tools/kb-export.ts`) | scope, baseBranch, baseCommit | `text(JSON): {exported, path, scope, committed}` | Export all CONFIRMED/non-superseded/non-stale entries to a canonical bible file (project or global scope). Auto-commits the bible file by default when content changed. provenance.branch is the target base branch (baseBranch, else the export folder HEAD branch); provenance.commit is the base commit (baseCommit, else HEAD). |
 | 15 | `kb_stats` | `kbStatsSchema` (`src/tools/kb-stats.ts`) | symbols | `text(JSON): ProviderStats spread plus bible` -- `{supported?, reason?, totals, stale, flagged, superseded, retrieval, promote_ratio, coverage?, bible}` | Read-only KB health aggregation: totals by confidence/type, stale/flagged/superseded counts, retrieval hit_rate, promote_ratio, and canonical-bible presence/drift. Never bumps use_count/last_accessed. |
 | 16 | `kb_feedback` | `kbFeedbackSchema` (`src/tools/kb-feedback.ts`) | id, reason, role | `text(JSON): {id, stale, flagged_for_review, confidence}` | Downvote a KB entry that proved wrong in practice: marks stale+flagged_for_review and appends a feedback note. Never deletes or touches confidence, except an ACTIVE directive is flagged but not staled. |
+| 17 | `kb_bible_commit` | `kbBibleCommitSchema` (`src/tools/kb-bible-commit.ts`) | ids, baseBranch, baseCommit | `text(JSON): {path, merged, skipped, entry_count, committed}` | Merge exactly the given live CONFIRMED ids into the bible at ENTRY level (existing entries kept, never dropped), write provenance from baseBranch (the target base branch) and baseCommit, and make a local pathspec-scoped commit (pm-kb). Never pushes. Unknown/non-CONFIRMED ids are skipped and reported; no mergeable ids or an unchanged entry set makes no commit. |
 
 Scope-field note: no `kb_*` request schema declares a scope field (`repo`,
 `repo_path` or `repo_remote_url`). Every `kb_*` call operates on the CALLING
@@ -76,17 +87,19 @@ the session's folder and writes a single global config; it skips the hook (with
 the typed reason) rather than refusing when that folder cannot carry a KB
 identity.
 
-### 2.2 code_* tools (7)
+### 2.2 code_* tools (9)
 
 | # | Tool | Request schema | Request fields | Response (observed) | Description (summarized) |
 |---|------|----------------|----------------|---------------------|---------------------------|
-| 17 | `code_graph` | `codeGraphSchema` (`src/tools/code-intelligence.ts`) | symbol | `text(JSON): opaque` (provider payload) | Trace the call graph for a symbol. Returns callers and callees across the codebase for structural analysis (symbol lookup, call chains, impact). |
-| 18 | `code_impact` | `codeImpactSchema` (`src/tools/code-intelligence.ts`) | target, direction, file_path | `text(JSON): opaque` (provider payload) | Find what is affected by changes to a symbol. Analyzes the blast radius of modifications across the codebase for impact assessment. |
-| 19 | `code_query` | `codeQuerySchema` (`src/tools/code-intelligence.ts`) | query | `text(JSON): opaque` (provider payload) | Search the codebase for symbols, patterns, or concepts using natural language or code patterns. Pre-indexed for instant answers. |
-| 20 | `code_context` | `codeContextSchema` (`src/tools/code-intelligence.ts`) | name | `text(JSON): opaque` (provider payload, KB-enriched by `enrichContextWithKb`) | Get callers, callees, and execution flows for a symbol. Enriched with KB context for full understanding of symbol role and dependencies. |
-| 21 | `code_map` | `codeMapSchema` (`src/tools/code-intelligence.ts`) | top | `text(JSON): opaque` (provider payload) | Get the architectural map of a repository: module communities with their key symbols and files, ranked by size. |
-| 22 | `code_flow` | `codeFlowSchema` (`src/tools/code-intelligence.ts`) | from, to, name | `text(JSON): opaque` (provider payload) | Find process flows (entry -> steps -> exit) matching a name or specific endpoints. Pre-indexed alternative to manual call chain tracing. |
-| 23 | `code_tests` | `codeTestsSchema` (`src/tools/code-intelligence.ts`) | symbol | `text(JSON): opaque` (provider payload) | Find the test files and test functions that exercise a symbol (transitive callers, depth 2). Faster than grep for test discovery. |
+| 18 | `code_graph` | `codeGraphSchema` (`src/tools/code-intelligence.ts`) | symbol | `text(JSON): opaque` (provider payload) | Trace the call graph for a symbol. Returns callers and callees across the codebase for structural analysis (symbol lookup, call chains, impact). |
+| 19 | `code_impact` | `codeImpactSchema` (`src/tools/code-intelligence.ts`) | target, direction, file_path | `text(JSON): opaque` (provider payload) | Find what is affected by changes to a symbol. Analyzes the blast radius of modifications across the codebase for impact assessment. |
+| 20 | `code_query` | `codeQuerySchema` (`src/tools/code-intelligence.ts`) | query | `text(JSON): opaque` (provider payload) | Search the codebase for symbols, patterns, or concepts using natural language or code patterns. Pre-indexed for instant answers. |
+| 21 | `code_context` | `codeContextSchema` (`src/tools/code-intelligence.ts`) | name | `text(JSON): opaque` (provider payload, KB-enriched by `enrichContextWithKb`) | Get callers, callees, and execution flows for a symbol. Enriched with KB context for full understanding of symbol role and dependencies. |
+| 22 | `code_map` | `codeMapSchema` (`src/tools/code-intelligence.ts`) | top | `text(JSON): opaque` (provider payload) | Get the architectural map of a repository: module communities with their key symbols and files, ranked by size. |
+| 23 | `code_flow` | `codeFlowSchema` (`src/tools/code-intelligence.ts`) | from, to, name | `text(JSON): opaque` (provider payload) | Find process flows (entry -> steps -> exit) matching a name or specific endpoints. Pre-indexed alternative to manual call chain tracing. |
+| 24 | `code_tests` | `codeTestsSchema` (`src/tools/code-intelligence.ts`) | symbol | `text(JSON): opaque` (provider payload) | Find the test files and test functions that exercise a symbol (transitive callers, depth 2). Faster than grep for test discovery. |
+| 25 | `code_reindex` | `codeReindexSchema` (`src/tools/code-intelligence.ts`) | (none) | `text(JSON)`: {outcome, reason?, indexedCommit, ...} (typed; `provider-not-supported` for a non-gitnexus provider) | Rebuild the calling session's own code index (gitnexus analyze, detached, output captured); returns after the first tick with a typed outcome. Provider `none` fails with E-CODE-INTEL-DISABLED. |
+| 26 | `code_status` | `codeStatusSchema` (`src/tools/code-intelligence.ts`) | (none) | `text(JSON)`: {last run, readiness, indexedCommit} (typed; `provider-not-supported` for a non-gitnexus provider) | Report the calling session's own code index state: last analyze run, live readiness, indexed commit. Provider `none` fails with E-CODE-INTEL-DISABLED. |
 
 No `code_*` tool takes a repo/scope argument (`repo`, `repo_path`,
 `repo_remote_url`): like `kb_*`, the repo a call is about is the calling
@@ -96,13 +109,13 @@ over the shared `resolveSelfSession()` / `validateSelfRepoFolder()` in
 `E-SELF-NOT-A-REPO`. No origin remote is required. `code_context` enriches from
 the KB of that same resolved folder.
 
-Registration descriptions for all 23 tools are reproduced verbatim in Appendix A.
+Registration descriptions for all 26 tools are reproduced verbatim in Appendix A.
 
 ## 3. Decision rule: responses that are not schema-shaped
 
 Observed facts about the response side of this surface:
 
-- Every one of the 23 tools is registered through the shared `wrapTool` helper in
+- Every one of the 26 tools is registered through the shared `wrapTool` helper in
   `src/services/tool-registry.ts`, which converts the handler return value into
   MCP `content: [{type: 'text', text}]` blocks.
 - NO tool in this surface declares a response zod schema. The registration call
@@ -126,7 +139,7 @@ ToolTextResponse = { content: [ { type: "text", text: string } ] }
 On top of that envelope, each tool gets one of two response bodies:
 
 - **Body known** -- the handler stringifies an object whose top-level keys are
-  observable in this repo (all 16 `kb_*` tools). The generated response schema is
+  observable in this repo (all 17 `kb_*` tools). The generated response schema is
   the text envelope PLUS the documented parsed-body object.
 - **Body opaque** -- the handler stringifies a value this repo types as `unknown`
   because it is a pass-through from an external code-intelligence provider (all 7
@@ -195,7 +208,7 @@ against `MemoryProvider` would not cover them.
 
 | # | Member | Signature | Tools routing through it | Effect | Idempotent |
 |---|--------|-----------|--------------------------|--------|------------|
-| X-1 | `list` | `list(opts: {confidence?, type?, module?, symbol?, tag?, limit?}): Promise<KBEntry[]>` | `kb_list`, `kb_stats` (bible drift comparison), `kb_export` (`src/tools/kb-export.ts:337`, `source.list({confidence: 'CONFIRMED'})` to select entries to export) | read, no telemetry bump | yes |
+| X-1 | `list` | `list(opts: {confidence?, type?, module?, symbol?, tag?, limit?}): Promise<KBEntry[]>` | `kb_list`, `kb_stats` (bible drift comparison), `kb_export` (`src/tools/kb-export.ts:337`, `source.list({confidence: 'CONFIRMED'})` to select entries to export), `kb_bible_commit` (`src/tools/kb-bible-commit.ts`, `list({confidence: ['CONFIRMED']})` to resolve the given ids to live CONFIRMED entries) | read, no telemetry bump | yes |
 | X-2 | `feedback` | `feedback(id, reason, author): Promise<KBEntry>` | `kb_feedback` | mutate-trust (sets `stale` plus `flagged_for_review`, appends note; never deletes, never touches confidence) | no (each call appends another note) |
 | X-3 | `freshnessSweep` | `freshnessSweep(root?): Promise<{checked, staled, unstaled}>` | `kb_freshness_sweep`, `kb_import` (post-import unless `skip_sweep`) | mutate-trust (bidirectional stale/unstale) | yes for a fixed worktree |
 | X-4 | `resolveContradiction` | `resolveContradiction(winnerId, loserId, evidence): Promise<{winnerId, loserId}>` | `kb_resolve_contradiction`, and internally from `reconcilePrefilter` | mutate-trust (winner to CONFIRMED with flags cleared; loser superseded plus stale) | NO -- a second call REFUSES, because the loser is now superseded |
@@ -381,10 +394,11 @@ throw sites are not part of the `kb_*` grep set above.
 | `E-DIRECTIVE-ALREADY-DECIDED` | `approveDirective` (`sqlite-provider.ts:1726` already-rejected, `:1727` already-active), `rejectDirective` (`sqlite-provider.ts:1749` already-rejected) | already active, or already rejected (CLI-only surface) |
 | `E-PATH-TRAVERSAL` | `validateFilePaths`, `src/services/knowledge/path-validation.ts:6` (absolute path) and `:10` (parent-directory traversal) | an absolute path, or a parent-directory traversal, in a file list |
 | `E-QUERY-NO-SELECTOR` | `src/tools/kb-query.ts:34` | none of `query`, `tag`, `flagged_only` was supplied |
-| `E-REPO-PATH-INVALID` | `requireLocalFolder` in `src/tools/kb-export.ts`, `src/tools/kb-import.ts` | the calling session's folder is not a directory on this host (a remote member session). Both write into it, so both refuse rather than writing anywhere else |
+| `E-REPO-PATH-INVALID` | `requireLocalFolder` in `src/tools/kb-export.ts` (also used by `src/tools/kb-bible-commit.ts`), `src/tools/kb-import.ts` | the calling session's folder is not a directory on this host (a remote member session). All three write into it, so all three refuse rather than writing anywhere else |
 | `E-SELF-NO-WORKFOLDER` | `resolveSelfAnchor` / `validateSelfFolder`, `src/services/knowledge/kb-self.ts` | the calling session's folder (member work folder, or the server's working folder) is missing, unset, or not a directory |
 | `E-SELF-NOT-A-REPO` | `validateSelfFolder`, `src/services/knowledge/kb-self.ts` | the calling session's folder is not a git repository |
 | `E-SELF-NO-REMOTE` | `validateSelfFolder` / `resolveSelfAnchor`, `src/services/knowledge/kb-self.ts` | the calling session's folder has no origin remote (remote member: no single known origin remote), so it has no KB identity |
+| `E-MEMBER-VIEW-READ-ONLY` | `src/tools/kb-feedback.ts` | `kb_feedback` was called in a MEMBER session; the member's bible view is read-only. Writes NOTHING |
 | `E-BIBLE-NOT-FOUND` | `src/tools/kb-import.ts:143` | the resolved bible file does not exist |
 | `E-BIBLE-NOT-JSON` | `src/tools/kb-import.ts:150` | the bible file is not valid JSON |
 | `E-BIBLE-WRONG-SHAPE` | `src/tools/kb-import.ts:168` | the bible parses but is neither an entry array nor the v2 envelope |
@@ -428,8 +442,9 @@ every `NullProvider` method); see `taxonomy.json`.
 
 ## 6. Downstream notes
 
-- The tool count to propagate is **23** (16 `kb_*`, 7 `code_*`). Anything citing
-  24 is citing the unverified plan number.
+- The tool count to propagate is **24** (17 `kb_*`, 7 `code_*`), since
+  `kb_bible_commit` was added. (The original plan's 24 was unverified for its
+  tree, which had 23.)
 - A generated binding typed against `MemoryProvider` alone is INCOMPLETE: the six
   methods plus one property in section 4.2 are tool-reachable but undeclared.
 - Response-schema generation must handle three irregularities: `kb_query`'s
@@ -536,7 +551,7 @@ Set up KB: install git post-commit hook, write provider config, store remote cre
 ### kb_export
 
 ```text
-Export all CONFIRMED, non-superseded, non-stale KB entries to a canonical bible file (stable field set, deterministic id order, ASCII-safe). scope="project" (default): reads the project KB, writes <repo>/.fleet/kb-canonical.json. scope="global": reads the GLOBAL KB, writes <repo>/.fleet/kb-canonical-global.json (in practice the apra-fleet platform repo, committed there so the installer can distribute it to every project on the machine -- D8/F9). Run after kb_promote so the canonical set stays current. F6a: the tool itself auto-commits the bible file (pathspec-only, identity pm-kb) when the repo is a git repo and the content changed -- this is code, not agent discretion, so no manual git step is needed, and this applies to the global file too. Non-fatal on any git failure; push is not automatic. Writes the v2 format: {version:2, provenance:{commit, branch, entry_count}, entries:[...]}, recording the commit the entries were verified against (a commit, not a timestamp, so re-exports stay diff-free when nothing changed). An export whose entry set is unchanged rewrites nothing. Auto-commit defaults to ON (USER DIRECTIVE 2026-08-11 -- an export left uncommitted is knowledge nobody else ever sees): set FLEET_DIR/knowledge/config.json { bible: { autoCommit: false } } to opt out. A malformed config disables it. Scope: always the calling session's own KB -- a member session uses its registered work folder, any other session the fleet server's working folder; there is no repo/path scope argument. Fails with E-SELF-NO-WORKFOLDER, E-SELF-NOT-A-REPO or E-SELF-NO-REMOTE (each with a one-line remediation) when that folder cannot carry a KB identity (it must be a git repository with an origin remote).
+Export all CONFIRMED, non-superseded, non-stale KB entries to a canonical bible file (stable field set, deterministic id order, ASCII-safe). scope="project" (default): reads the project KB, writes <repo>/.fleet/kb-canonical.json. scope="global": reads the GLOBAL KB, writes <repo>/.fleet/kb-canonical-global.json (in practice the apra-fleet platform repo, committed there so the installer can distribute it to every project on the machine -- D8/F9). Run after kb_promote so the canonical set stays current. F6a: the tool itself auto-commits the bible file (pathspec-only, identity pm-kb) when the repo is a git repo and the content changed -- this is code, not agent discretion, so no manual git step is needed, and this applies to the global file too. Non-fatal on any git failure; push is not automatic. Writes the v2 format: {version:2, provenance:{commit, branch, entry_count}, entries:[...]}. provenance.branch is the target base branch (the branch the entries merge into) and provenance.commit the base commit the entries were verified against (a commit, not a timestamp, so re-exports stay diff-free when nothing changed): pass baseBranch and baseCommit to state them explicitly; when omitted they default to the export folder HEAD branch and commit. An export whose entry set is unchanged rewrites nothing. Auto-commit defaults to ON (USER DIRECTIVE 2026-08-11 -- an export left uncommitted is knowledge nobody else ever sees): set FLEET_DIR/knowledge/config.json { bible: { autoCommit: false } } to opt out. A malformed config disables it. Scope: always the calling session's own KB -- a member session uses its registered work folder, any other session the fleet server's working folder; there is no repo/path scope argument. Fails with E-SELF-NO-WORKFOLDER, E-SELF-NOT-A-REPO or E-SELF-NO-REMOTE (each with a one-line remediation) when that folder cannot carry a KB identity (it must be a git repository with an origin remote).
 ```
 
 ### kb_stats
@@ -549,6 +564,12 @@ Read-only KB health aggregation: totals by confidence/type, stale/flagged/supers
 
 ```text
 Downvote a KB entry that proved wrong in practice: { id, reason, role? }. Marks the entry stale=1 + flagged_for_review=1 and appends an ASCII feedback note "[feedback <ISO>] <validated-role>: <reason>" (CONTENT_CAP respected). NEVER deletes and NEVER touches confidence -- a downvoted CONFIRMED entry stays CONFIRMED-but-stale-flagged; the human resolves it in kb-review, this tool only flags it for that review. Exception: an ACTIVE user-directive is flagged for review but NOT staled (directives outrank agent experience -- the human decides); a pending directive proposal stales normally. Scope: always the calling session's own KB -- a member session uses its registered work folder, any other session the fleet server's working folder; there is no repo/path scope argument. Fails with E-SELF-NO-WORKFOLDER, E-SELF-NOT-A-REPO or E-SELF-NO-REMOTE (each with a one-line remediation) when that folder cannot carry a KB identity (it must be a git repository with an origin remote).
+```
+
+### kb_bible_commit
+
+```text
+Commit one round of confirmed entries to the bible: { ids, baseBranch, baseCommit }. Merges exactly the given ids from this repository's KB into <repo>/.fleet/kb-canonical.json at ENTRY level -- every entry already in the file is kept, only the given ids are added or replaced, and an entry in the file but not in the KB is never dropped -- in kb_export's stable serialization (v2 envelope, id order, ASCII-safe). provenance.branch is baseBranch (the sprint's target base branch) and provenance.commit is baseCommit (the base commit the entries were verified against), never the working folder HEAD. Then makes a local commit scoped to that one path (identity pm-kb). It NEVER pushes. Re-running with the same ids after resetting to a newer HEAD re-merges at entry level, so a rejected push can be retried with no manual merge. Ids that are unknown, stale, superseded, or not CONFIRMED are SKIPPED (never an error) and reported in skipped. No ids, no mergeable ids, or an unchanged entry set: no write and no commit. Refuses (throws) when the existing bible file is unreadable, or when the local commit fails. Returns {path, merged, skipped, entry_count, committed}. Scope: always the calling session's own KB -- a member session uses its registered work folder, any other session the fleet server's working folder; there is no repo/path scope argument. Fails with E-SELF-NO-WORKFOLDER, E-SELF-NOT-A-REPO or E-SELF-NO-REMOTE (each with a one-line remediation) when that folder cannot carry a KB identity (it must be a git repository with an origin remote).
 ```
 
 ### code_graph
@@ -591,5 +612,17 @@ Find process flows (entry -> steps -> exit) matching a name or endpoints. Prefer
 
 ```text
 Find the test files and test functions that exercise a symbol (transitive callers, depth 2). Use this to run targeted tests for the code you changed instead of the full suite. Prefer this over Grep for test discovery -- the call graph is pre-indexed. Scope: always the calling session's own repo -- a member session uses its registered work folder, any other session the fleet server's working folder; there is no repo/path scope argument. Fails with E-SELF-NO-WORKFOLDER or E-SELF-NOT-A-REPO when that folder is missing or is not a git repository, E-CODE-INDEX-NOT-READY when it has no code index yet or the index is still building, and E-CODE-INTEL-DISABLED when code intelligence is off (each with a one-line remediation).
+```
+
+### code_reindex
+
+```text
+Rebuild the code index of the calling session's own repo (runs gitnexus analyze detached; its output is captured to <data>/code-index/<slug>/analyze.log). Returns after the first tick -- outcome "started" (lock held, process alive, output seen), "up-to-date", "starting" (running, no tick yet), "already-running", or "not-started" with a typed reason (npx-not-found, gitnexus-not-found, analyze-failed, spawn-failed, remote-member, provider-not-supported). Only the gitnexus provider is supported: provider none fails with E-CODE-INTEL-DISABLED, any other provider (e.g. codebase-memory, which manages its own index) gets not-started with reason provider-not-supported naming the provider. Poll code_status for completion. Scope: always the calling session's own repo -- a member session uses its registered work folder, any other session the fleet server's working folder; there is no repo/path scope argument. Fails with E-SELF-NO-WORKFOLDER or E-SELF-NOT-A-REPO when that folder is missing or is not a git repository, E-CODE-INDEX-NOT-READY when it has no code index yet or the index is still building, and E-CODE-INTEL-DISABLED when code intelligence is off (each with a one-line remediation).
+```
+
+### code_status
+
+```text
+Report the code index state of the calling session's own repo: the last analyze run (phase, result indexed|up-to-date|incomplete|failed, last log line, log path), live readiness (ready|building|missing) and the indexed commit. Only the gitnexus provider is supported: provider none fails with E-CODE-INTEL-DISABLED, any other provider gets {outcome: "not-started", reason: "provider-not-supported", provider, indexedCommit: null} instead of gitnexus readiness. Scope: always the calling session's own repo -- a member session uses its registered work folder, any other session the fleet server's working folder; there is no repo/path scope argument. Fails with E-SELF-NO-WORKFOLDER or E-SELF-NOT-A-REPO when that folder is missing or is not a git repository, E-CODE-INDEX-NOT-READY when it has no code index yet or the index is still building, and E-CODE-INTEL-DISABLED when code intelligence is off (each with a one-line remediation).
 ```
 

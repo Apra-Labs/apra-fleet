@@ -1,5 +1,6 @@
 import { z } from 'zod';
-import { getSelfKbProviders, type KbAnchor } from '../services/knowledge/kb-self.js';
+import { getSelfKbProviders, memberOwnerTag, type KbAnchor } from '../services/knowledge/kb-self.js';
+import { KbMemberViewError } from '../services/knowledge/member-bible-view.js';
 import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
 import type { Author } from '../services/knowledge/types.js';
 
@@ -34,6 +35,16 @@ export type KbFeedbackInput = z.infer<typeof kbFeedbackSchema>;
 // review only (never staled) because directives outrank agent experience and
 // the human decides -- see SqliteProvider.feedback() for the exact guard.
 export async function kbFeedback(input: KbFeedbackInput, anchor?: KbAnchor): Promise<string> {
+  // A MEMBER session reads its checkout bible view, which is read-only: a
+  // typed no-op that touches no store (checked before any provider is opened).
+  if (memberOwnerTag(anchor) !== undefined) {
+    throw new KbMemberViewError(
+      'E-MEMBER-VIEW-READ-ONLY',
+      '',
+      `kb_feedback is not available in a member session: member KB reads come from the checkout bible, which is read-only; entry '${input.id}' was not changed.`,
+      'Run kb_feedback from a FULL session (no member identity), or flag the entry for review through the maintainer.',
+    );
+  }
   const providers = await getSelfKbProviders(anchor);
   const sqliteProvider = requireSqliteProject(providers.project, 'kb_feedback');
   const author = validateAuthor(input.role);

@@ -243,7 +243,7 @@ test('mock sprint: an explicit final FAIL verdict propagates to status:failed an
             `A FAIL verdict must still publish the PR (plan.md's already-made decision) -- expected a VCSModule create-pull-request command, commandLog: ${JSON.stringify(explicitFail.commandLog)}`
         );
         check(
-            !!explicitFailPrCmd && /"title":"[^"]*FAIL[^"]*"/.test(explicitFailPrCmd) && /Final Verdict: FAIL/.test(explicitFailPrCmd),
+            !!explicitFailPrCmd && /"title":"[^"]*FAIL[^"]*"/.test(explicitFailPrCmd) && /## Sprint verdict: FAIL/.test(explicitFailPrCmd),
             `Expected the PR title AND body to include the FAIL verdict, got: ${explicitFailPrCmd}`
         );
         // apra-fleet-eft.1.3 regression (folded in from the former

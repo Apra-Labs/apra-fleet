@@ -329,6 +329,18 @@ export function redactNetworkCommandForLog(command) {
 // substituting an empty token, and this mock must fail the same way (that is
 // exactly the label-mismatch bug those two exact-match executeCommand
 // branches exist to catch).
+// Reads the POSIX-quoted `-d '<json>'` payload back out of a VCSModule curl
+// command (the mock member is POSIX). Returns null when absent/unparseable.
+function extractMockCurlJson(cmd) {
+    const m = /-d '((?:[^']|'\\'')*)' -w/.exec(cmd);
+    if (!m) return null;
+    try {
+        return JSON.parse(m[1].replace(/'\\''/g, "'"));
+    } catch {
+        return null;
+    }
+}
+
 const MOCK_VCS_CREDENTIAL_TOKENS = {
     github: 'mock-vcs-module-token',
     'azure-devops': 'mock-azure-devops-pat',
@@ -964,6 +976,12 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
         // tests are unaffected.
         commandLogDetailed = null,
         memberGitState = null,
+        // Optional ({ command, member_name }) => result|undefined hook, called
+        // for every executeCommand() before anything else. A test uses it to
+        // observe the ORDER of member commands (e.g. a G-pull's `git fetch`)
+        // relative to its own callTool events, and to fail one member's
+        // command: a returned non-undefined value is the command's result.
+        onCommand = null,
         // apra-fleet-unw2.9 (N11): injectable git/gh failure. Optional
         // (cmd: string) => boolean predicate, tested ONLY against `git `/
         // `gh ` commands (the ones this mock otherwise short-circuits to a
@@ -1018,6 +1036,12 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
         // default simulation when provided; omitted (the default), the
         // existing 201/already-exists-422 behavior is completely unchanged.
         prCurlResponseQueue = null,
+        // Existing-PR update path (find + PATCH on the already-exists
+        // path): a Map branch -> { number, title, body } that the GitHub
+        // create-PR mock records into and the find (GET .../pulls?head=) /
+        // update (PATCH .../pulls/<n>) mocks read and rewrite. Share one Map
+        // across scenarios (like prExistsState) to simulate a relaunch.
+        prRecordState = new Map(),
         // Per-member beads identity overrides for the runner's beads identity
         // precondition (fleet-sprint/beads-identity-check.mjs), which probes
         // every member with `bd where --json`, `bd config get sync.remote
@@ -1125,6 +1149,10 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
     const api = {
         executeCommand: async (opts) => {
             commandLog.push(opts.command);
+            if (onCommand) {
+                const injected = await onCommand({ command: opts.command, member_name: opts.member_name });
+                if (injected !== undefined) return injected;
+            }
 
             // apra-fleet-unw2.4 (N4): per-member command log + simulated
             // per-member git checkout state (see the option comments above).
@@ -1234,6 +1262,32 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
             if (/^\$HOME\/\.fleet-git-credential-azure-devops$/.test(opts.command)) {
                 return mockCmdResult(0, 'protocol=https\nhost=dev.azure.com\nusername=\npassword=mock-azure-devops-pat\n', '');
             }
+            // Existing-PR update path: find (GET) and update (PATCH). Always
+            // intercepted so these never fall through to a real exec().
+            if (/^curl(?:\.exe)? -sS -X (?:GET|PATCH)\b/.test(opts.command) && /\/(?:pulls|pullrequests)\b/.test(opts.command)) {
+                if (/\/pullrequests\b/.test(opts.command)) {
+                    // Azure DevOps: hermetic default -- no recorded PRs.
+                    return mockCmdResult(0, `${JSON.stringify(/-X GET/.test(opts.command) ? { value: [] } : {})}\n200`, '');
+                }
+                const findMatch = /[?&]head=([^&']+)/.exec(opts.command);
+                if (/-X GET/.test(opts.command) && findMatch) {
+                    const ownerBranch = decodeURIComponent(findMatch[1]);
+                    const branch = ownerBranch.slice(ownerBranch.indexOf(':') + 1);
+                    const rec = prRecordState.get(branch);
+                    const list = rec ? [{ number: rec.number, title: rec.title, body: rec.body, html_url: `https://github.com/mock-org/mock-repo/pull/${rec.number}` }] : [];
+                    return mockCmdResult(0, `${JSON.stringify(list)}\n200`, '');
+                }
+                const patchMatch = /\/pulls\/(\d+)$/.exec(opts.command.trim());
+                const payload = extractMockCurlJson(opts.command);
+                if (patchMatch && payload) {
+                    for (const [branch, rec] of prRecordState) {
+                        if (String(rec.number) !== patchMatch[1]) continue;
+                        prRecordState.set(branch, { ...rec, title: payload.title ?? rec.title, body: payload.body ?? rec.body });
+                        return mockCmdResult(0, `${JSON.stringify({ number: rec.number, html_url: `https://github.com/mock-org/mock-repo/pull/${rec.number}` })}\n200`, '');
+                    }
+                }
+                return mockCmdResult(0, `${JSON.stringify({ message: 'Not Found' })}\n404`, '');
+            }
             const isAzureDevOpsCreatePr = /\/pullrequests\?/.test(opts.command);
             if (/^curl(?:\.exe)? -sS -X POST\b/.test(opts.command) && (/\/pulls\b/.test(opts.command) || isAzureDevOpsCreatePr)) {
                 if (prCurlResponseQueueLocal && prCurlResponseQueueLocal.length > 0) {
@@ -1299,6 +1353,8 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
                     return mockCmdResult(0, `${body}\n422`, '');
                 }
                 if (branch) prExistsState.add(branch);
+                const created = extractMockCurlJson(opts.command);
+                if (branch && created) prRecordState.set(branch, { number: 101, title: created.title, body: created.body });
                 const body = JSON.stringify({ number: 101, html_url: 'https://github.com/mock-org/mock-repo/pull/101' });
                 return mockCmdResult(0, `${body}\n201`, '');
             }
@@ -2004,6 +2060,9 @@ export async function runDevelopLoopScenario(tag, {
     // separate scenario runs against the exact SAME branch to simulate a
     // re-run of finalization.
     gitGhFailurePattern, gitGhFailureMessage, prExistsState, branchOverride,
+    // Existing-PR update path record store -- see buildMockFleetApi's
+    // `prRecordState` option comment.
+    prRecordState,
     // apra-fleet-647.1.1.3: see buildMockFleetApi's `prCurlResponseQueue`
     // option comment above.
     prCurlResponseQueue,
@@ -2062,6 +2121,9 @@ export async function runDevelopLoopScenario(tag, {
     // buildMockFleetApi's `beadsMemories` option comment. The keys the
     // sweep forgot come back as `forgottenMemories` on the result.
     beadsMemories,
+    // Optional executeCommand observer/override -- see buildMockFleetApi's
+    // `onCommand` option comment.
+    onCommand,
 }) {
     const { tempDir, epicBead, tasks } = await setupMinimal(tag, taskSpecs);
     if (withRunbooks) {
@@ -2130,10 +2192,12 @@ export async function runDevelopLoopScenario(tag, {
             gitGhFailurePattern,
             gitGhFailureMessage,
             prExistsState,
+            ...(prRecordState !== undefined ? { prRecordState } : {}),
             ...(originUrl !== undefined ? { originUrl } : {}),
             ...(prCurlResponseQueue !== undefined ? { prCurlResponseQueue } : {}),
             ...(beadsIdentity !== undefined ? { beadsIdentity } : {}),
             ...(beadsMemories !== undefined ? { beadsMemories, forgottenMemories, memoriesSink } : {}),
+            ...(onCommand !== undefined ? { onCommand } : {}),
         });
         // apra-fleet-20i.1.2: see runOnce() above -- same tag-as-logPrefix
         // threading, real single-sprint CLI path unaffected.

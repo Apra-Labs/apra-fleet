@@ -119,11 +119,49 @@ carry a KB identity is refused before the provider is reached
 (`E-SELF-NO-WORKFOLDER`, `E-SELF-NOT-A-REPO`, `E-SELF-NO-REMOTE`). A remote
 member's folder lives on another host: the read tools carry it verbatim and
 tolerate the missing anchor, while the writing tools (`kb_export`,
-`kb_import`) refuse with `E-REPO-PATH-INVALID`. This is recorded in
+`kb_bible_commit`, `kb_import`) refuse with `E-REPO-PATH-INVALID`. This is recorded in
 `methods.json`'s `_meta.kb_self_resolution` and per tool in each method
 entry's `tools[].anchor_validation` field.
 
-### 2.5 Every code_* call is scoped to the calling session (code constraint)
+### 2.5 MEMBER-session behaviour (bible view and own-scope writes)
+
+In a MEMBER session the default reads (`kb_query`, `kb_session_prime`,
+`kb_list`, `kb_context`, `kb_stats`) are answered from an in-memory view of the
+member's own checkout bible (`.fleet/kb-canonical.json`), rebuilt when the file
+changes. An explicit INFERRED/UNVERIFIED read comes from the per-repo DB and
+returns only entries tagged `member:<caller uuid>`. `kb_capture` tags the
+stored entry `member:<caller uuid>`; `kb_promote` and `kb_invalidate` act only
+on entries carrying that tag and report any other id as not found, changing
+nothing. `kb_invalidate` takes exactly one of `files` or `ids`; `ids` discards
+the entries (sets `superseded_at`, never deletes) and returns
+`{discarded, not_found, already_discarded}`. `kb_feedback` is refused with
+`E-MEMBER-VIEW-READ-ONLY`. A FULL session reads and writes the per-repo DB
+unchanged.
+
+### 2.6 Bible provenance (target base branch) and entry-level commits
+
+The v2 bible (`.fleet/kb-canonical.json`) records `provenance.branch` and
+`provenance.commit`. `provenance.branch` is the TARGET BASE branch -- the
+branch the bible's entries merge into -- and `provenance.commit` the base
+commit those entries were verified against. Neither is the HEAD of the
+working folder, which is typically a feature branch.
+
+- `kb_export` accepts optional `baseBranch` and `baseCommit` and writes them
+  into provenance. When omitted, provenance falls back to the export folder's
+  HEAD branch and commit (the pre-existing behaviour). It regenerates the whole
+  bible from the KB.
+- `kb_bible_commit` takes `ids`, `baseBranch` and `baseCommit` (all required)
+  and merges at ENTRY level: every entry already in the bible is kept, only
+  the given ids are added or replaced, and an entry in the file but absent from
+  the KB is never dropped. Ids that are not live CONFIRMED entries are skipped
+  and reported in `skipped` (never an error). It makes a local commit scoped to
+  the bible path (identity `pm-kb`) and never pushes. No ids, no mergeable
+  ids, or an unchanged entry set makes no write and no commit. Re-running with
+  the same ids after resetting to a newer HEAD re-merges at entry level, so a
+  rejected push can be retried with no manual merge. An existing bible that
+  cannot be parsed is refused (thrown), never overwritten.
+
+### 2.7 Every code_* call is scoped to the calling session (code constraint)
 
 No `code_*` tool takes a repo/scope argument either. The repo a call is about
 is resolved exactly as for `kb_*` (section 2.4): a member session's registered
@@ -260,8 +298,8 @@ A remote member (agentType not local) cannot be checked on this host, so its
 KB identity is its single known origin remote (`knownRepoRemoteUrl`) and the
 folder is passed verbatim; `kb_session_prime` and `kb_stats` tolerate that
 missing anchor (`taxonomy.json` non_error_outcomes
-`N-ANCHOR-VERBATIM-MISSING`), while `kb_export` and `kb_import` refuse with
-`E-REPO-PATH-INVALID` (`requireLocalFolder`). In-process callers that already
+`N-ANCHOR-VERBATIM-MISSING`), while `kb_export`, `kb_bible_commit` and
+`kb_import` refuse with `E-REPO-PATH-INVALID` (`requireLocalFolder`). In-process callers that already
 know the repo (the post-dispatch harvest in `src/tools/execute-prompt.ts`, the
 `kb commit` / `kb import` CLIs) pass an explicit anchor as the handler's second
 argument, which no MCP request can carry.

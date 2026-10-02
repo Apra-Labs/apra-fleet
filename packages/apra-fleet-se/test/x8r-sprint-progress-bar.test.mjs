@@ -63,6 +63,11 @@ describe('x8r: fleet-sprint viewer render path -- bar markup + M/N text', () => 
 });
 
 describe('x8r: supervisor dashboard Sprint Stack render path -- one bar per row', () => {
+    // The supervisor row renders the child's pulled summary (state ok),
+    // through the SAME shared renderProgressBarHtml() markup.
+    function okSummary(closed, required) {
+        return { state: 'ok', closed, required, fraction: required ? closed / required : 0, computedAt: new Date().toISOString() };
+    }
     function sprintView(sprintId, progress) {
         return {
             sprintId,
@@ -78,8 +83,8 @@ describe('x8r: supervisor dashboard Sprint Stack render path -- one bar per row'
 
     test('renders one progress bar (and its M/N text) per active sprint row', () => {
         const views = [
-            sprintView('sprint-a', { closed: 1, required: 2, fraction: 0.5 }),
-            sprintView('sprint-b', { closed: 3, required: 3, fraction: 1 }),
+            sprintView('sprint-a', okSummary(1, 2)),
+            sprintView('sprint-b', okSummary(3, 3)),
         ];
         const html = renderSprintStackHtml(views);
         const barCount = (html.match(/class="sprint-progress"/g) || []).length;
@@ -88,24 +93,20 @@ describe('x8r: supervisor dashboard Sprint Stack render path -- one bar per row'
         assert.ok(html.includes('>Required: 3/3<'));
     });
 
-    test('a row with unavailable progress renders the neutral placeholder, not a bar, and never throws', () => {
+    test('a row with unavailable progress renders status unavailable, not a bar, and never throws', () => {
         const views = [sprintView('sprint-c', null)];
         assert.doesNotThrow(() => renderSprintStackHtml(views));
         const html = renderSprintStackHtml(views);
-        assert.ok(html.toLowerCase().includes('progress unavailable'));
+        assert.ok(html.includes('status unavailable'));
         assert.ok(!html.includes('class="sprint-progress"'));
     });
 
-    test('the dashboard counts rendered come from the shared helper directly (same numbers on the same fixture)', () => {
-        const beads = [
-            { id: 'a', status: 'closed' },
-            { id: 'b', status: 'closed' },
-            { id: 'c', status: 'open' },
-        ];
-        const progress = computeSprintProgress(beads);
+    test('the dashboard row renders the pulled summary through the shared bar markup (same text as renderProgressBarHtml on the same numbers)', () => {
+        const progress = okSummary(2, 3);
         const views = [sprintView('sprint-d', progress)];
         const html = renderSprintStackHtml(views);
         assert.ok(html.includes(`>Required: ${progress.closed}/${progress.required}<`));
+        assert.ok(html.includes(renderProgressBarHtml({ closed: 2, required: 3, fraction: progress.fraction })));
     });
 
     // apra-fleet-vk0a.4: the SAME row stacks the progress bar's 'Required:
@@ -129,7 +130,7 @@ describe('x8r: supervisor dashboard Sprint Stack render path -- one bar per row'
             beadCount: 9,
             issueRoots: ['root'],
             members: [],
-            progress: { closed: 1, required: 3, fraction: 1 / 3 },
+            progress: okSummary(1, 3),
         };
         const html = renderSprintStackHtml([view]);
         assert.ok(html.includes('>Required: 1/3<'), `expected the labeled progress-bar text in: ${html}`);

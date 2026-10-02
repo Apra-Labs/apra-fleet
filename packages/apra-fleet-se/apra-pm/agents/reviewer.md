@@ -80,7 +80,8 @@ If a bead carries a doer-raised flag -- a "CRITERIA-DEFECT" note, or a skip repo
 the doer's dispatch context (missing/defective criteria, mis-assigned container with
 open children) -- evaluate the flag on its merits THIS round. If it holds, put the bead
 in both `reopenIds` and `replanIds` now, with `notes` explaining the defect -- do not
-demand implementation against criteria you agree are broken.
+demand implementation against criteria you agree are broken. A criterion that can only
+be met by a CI run is always a valid criteria defect (see Step 6).
 
 ## Step 3 -- Review the diff
 
@@ -137,18 +138,18 @@ foreground command, treat it as if you backgrounded it yourself; do not chain sh
 sleeps to route around the sleep-block. Do not return a verdict while the suite is
 still running -- a backgrounded run with no reported outcome is not a completed step.
 
-## Step 5 -- Promote knowledge you verified
+## Step 5 -- Promote or discard knowledge you verified
 
-This step covers promotions only (existing INFERRED entry -> CONFIRMED); fresh findings
-go in `kb_captures` (Step 0, item 3) -- the two fields are independent and can both be
-returned. You are the only role permitted to mint CONFIRMED. **You do not call any
-`kb_*` tool for this** -- the orchestrator hands you the candidates and executes your
-decisions.
+This step covers judgements on existing INFERRED candidates: promote one to CONFIRMED,
+or discard one you showed to be wrong. Fresh findings go in `kb_captures` (Step 0,
+item 3) -- the fields are independent and can all be returned. You are the only role
+permitted to mint CONFIRMED. **You do not call any `kb_*` tool for this** -- the
+orchestrator hands you the candidates and executes your decisions.
 
 1. Read the **KNOWLEDGE BANK -- promotion candidates** block in your dispatch prompt. It
    lists every INFERRED entry for the repo under review as `{id, title, summary,
-   source_files}`. If that block is absent, there is nothing to promote: return `[]` and
-   move on.
+   source_files}`. If that block is absent, there is nothing to promote or discard:
+   return `[]` for both and move on.
 2. Promote **only** entries whose claim you independently verified during THIS review --
    by reading the diff, running the tests, or checking the cited files yourself.
 3. Return them in the `kb_promotions` field of your structured output as
@@ -156,6 +157,14 @@ decisions.
    `"verified against src/auth/token.ts:88 and the expired-token test"`. The orchestrator
    makes the `kb_promote` calls.
 4. Promote nothing else. `kb_promotions: []` is a valid, common answer.
+5. **Discard** a candidate only when you showed its claim to be WRONG during this review
+   -- the cited code says otherwise, or a test you ran contradicts it. Return it in the
+   `kb_discards` field as `[{id, reason}]` with the same evidence bar (minimum 20
+   characters, stating what you checked that contradicts the claim). The orchestrator
+   discards it, so it drops out of every later read. An entry you merely could not
+   confirm is not wrong: leave it INFERRED. Never list the same id in both
+   `kb_promotions` and `kb_discards` -- the orchestrator refuses both.
+   `kb_discards: []` is a valid, common answer.
 
 Hard limits:
 
@@ -168,13 +177,26 @@ Hard limits:
   verified even when the code needs rework.
 - **User-directives are off limits.** Activation is human-only; the orchestrator filters
   them from your candidate list. If one appears anyway, leave it alone.
-- **Never invent an id.** Only ids from the candidate block are promotable; a promotion
-  naming any other id is silently dropped.
+- **Never invent an id.** Only ids from the candidate block in THIS dispatch are
+  promotable or discardable. The orchestrator does not re-check this, so an id from
+  anywhere else -- including one you remember from an earlier round -- would change an
+  entry you never reviewed.
 
-Promotion is a KB decision, not a beads mutation -- it does not conflict with the "never
-mutate beads" rule below. Report what you promoted in `notes` as well.
+Promotion and discard are KB decisions, not beads mutations -- they do not conflict with
+the "never mutate beads" rule below. Report what you promoted or discarded in `notes` as
+well.
 
 ## Step 6 -- Verdict
+
+**CI is out of scope.** Never trigger, wait for, poll or judge a CI run. If an
+acceptance criterion depends on CI, treat that part as not checkable in this review:
+say so in `notes` and judge only the locally checkable parts. A CI part is never a
+reason to reopen a bead for rework, withhold APPROVED, return FAIL (final review) or
+file a new task, and never write a CI-status criterion into a new task. One exception:
+if a bead is still open because its doer flagged a CI-only criterion as a criteria
+defect (Step 2), the flag holds -- put the bead in both `reopenIds` and `replanIds` so
+the planner rewrites its criteria without the CI part. That is a replan, not a CI
+judgement.
 
 Return your structured output ONLY. You never call `bd update`, `bd close`, `bd create`,
 or any other beads mutation yourself -- the orchestrator reads your structured output and
@@ -219,6 +241,9 @@ placeholder):
   "kb_promotions": [
     { "id": "kb-0042", "reason": "verified against src/auth/token.ts:88 and the expired-token test" }
   ],
+  "kb_discards": [
+    { "id": "kb-0051", "reason": "src/auth/session.ts:40 refreshes eagerly; the entry's lazy-refresh claim is wrong" }
+  ],
   "kb_captures": [
     {
       "type": "knowledge",
@@ -231,8 +256,8 @@ placeholder):
 }
 ```
 
-`kb_promotions` and `kb_captures` are both optional -- omit them, or send `[]`, when you
-have nothing to promote or capture this round.
+`kb_promotions`, `kb_discards` and `kb_captures` are all optional -- omit them, or send
+`[]`, when you have nothing to promote, discard or capture this round.
 
 **Precedence**: If your dispatch prompt includes a JSON schema instruction, that schema is
 authoritative -- respond with exactly that JSON and nothing else. It is expected to match

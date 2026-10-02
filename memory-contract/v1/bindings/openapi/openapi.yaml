@@ -160,6 +160,11 @@
       "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/provider_internal/codes/6",
       "title": "The calling session's folder has no origin remote (or a remote member has no single known origin remote), so it has no KB identity. Never silently mapped to a directory-name or 'default' KB.",
       "status": 500
+    },
+    {
+      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/provider_internal/codes/7",
+      "title": "kb_feedback was called in a MEMBER session. A member's reads come from the in-memory view of its own checkout bible, which is read-only; a downvote would flag an entry the member cannot see in the shared per-repo DB. Nothing is changed.",
+      "status": 500
     }
   ]
 }

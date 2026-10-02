@@ -399,6 +399,24 @@ if (idFoo) {
   });
 }
 
+// --- kb_export --------------------------------------------------------
+// Before the CONFIRMED-only read and kb_stats: a member session's default
+// (CONFIRMED) reads come from its checkout bible, so the promoted entry is
+// visible to them once kb_export has written it there.
+await recordHappy('kb_export', 'happy', {
+});
+
+// --- kb_bible_commit -----------------------------------------------------
+// Entry-level merge of the promoted entry into repo A's bible, with explicit
+// target-base-branch provenance. Local commit only; never pushed.
+if (idFoo) {
+  await recordHappy('kb_bible_commit', 'happy', {
+    ids: [idFoo],
+    baseBranch: 'main',
+    baseCommit: '0123456789abcdef0123456789abcdef01234567',
+  });
+}
+
 // --- kb_query trust filters (after kb_promote, so idFoo is CONFIRMED) -------
 // Same query as kb_query/happy, restricted to CONFIRMED and non-disputed
 // entries: the INFERRED context-cache entry that happy.json returns must be
@@ -417,9 +435,6 @@ await recordHappy('kb_stats', 'happy', {
   symbols: ['exampleFn'],
 });
 
-// --- kb_export --------------------------------------------------------
-await recordHappy('kb_export', 'happy', {
-});
 const bibleFromA = path.join(repoA, '.fleet', 'kb-canonical.json');
 
 // --- kb_import (into a genuinely separate KB -- repoB / REMOTE_B slug) ----
@@ -433,12 +448,15 @@ await recordHappy('kb_freshness_sweep', 'happy', {
 });
 
 // --- kb_feedback ------------------------------------------------------
+// Every recorded session is a MEMBER session, whose KB reads come from the
+// read-only checkout bible view: kb_feedback refuses with
+// E-MEMBER-VIEW-READ-ONLY before any KB is opened and changes nothing.
 if (idFoo) {
-  await recordHappy('kb_feedback', 'happy', {
+  await recordRefusal('kb_feedback', 'refusal-member-view-read-only', {
     id: idFoo,
     reason: 'On re-check, the summary overstated precision -- exampleFn is untyped-input tolerant, unlike the note implies.',
     role: 'reviewer',
-  });
+  }, 'E-MEMBER-VIEW-READ-ONLY');
 }
 
 // --- kb_harvest -------------------------------------------------------
@@ -529,6 +547,11 @@ await recordRefusal('kb_context', 'refusal-path-traversal', {
 // A remote member session: its folder lives on another host, so kb_export
 // (which writes the bible there) refuses.
 await withSession('REMOTE_UNREACHABLE', () => recordRefusal('kb_export', 'refusal-repo-path-invalid', {}, 'E-REPO-PATH-INVALID'));
+await withSession('REMOTE_UNREACHABLE', () => recordRefusal('kb_bible_commit', 'refusal-repo-path-invalid', {
+  ids: [],
+  baseBranch: 'main',
+  baseCommit: '0123456789abcdef0123456789abcdef01234567',
+}, 'E-REPO-PATH-INVALID'));
 
 // kb (self) resolution refusals: the calling member's folder cannot carry a KB identity.
 await withSession('NO_WORKFOLDER', () => recordRefusal('kb_query', 'refusal-self-no-workfolder', {

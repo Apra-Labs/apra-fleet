@@ -93,6 +93,10 @@ export function buildAnalysisText({
     // from session_stats snapshots). Omitted -> no section; an unknown count
     // is printed as unknown, never 0.
     dispatchToolCalls = null,
+    // The KB work client's unpublishedBible(): per repository, confirmations
+    // still not in a pushed bible commit. Rendered as a loud section only
+    // when any are, so a sprint whose bible was published reads as before.
+    kbBibleUnpublished = null,
 }) {
     // The once-per-sprint Regression Test phase runs after the final verdict
     // and never gates it. Its failures are filed as parent-less carry-over
@@ -151,6 +155,7 @@ export function buildAnalysisText({
         '## Regression pass (once per sprint, informational)',
         '',
         ...regressionLines,
+        ...kbBibleLines(kbBibleUnpublished),
     ];
     if (Array.isArray(dispatchToolCalls)) {
         lines.push(
@@ -163,6 +168,27 @@ export function buildAnalysisText({
         );
     }
     return lines.join('\n');
+}
+
+/**
+ * The analysis section for KB confirmations that never reached a pushed bible
+ * commit (the push kept failing, the maintainer stayed busy or unreachable, or
+ * bible commits were sealed). Empty when every confirmation was published.
+ * @param {{ repos?: Array<{ repo: string, count: number }>, sealedReason?: string|null }|null} unpublished
+ * @returns {string[]}
+ */
+function kbBibleLines(unpublished) {
+    const repos = unpublished && Array.isArray(unpublished.repos) ? unpublished.repos.filter((r) => r && r.count > 0) : [];
+    if (repos.length === 0) return [];
+    return [
+        '',
+        '## KB bible',
+        '',
+        'WARNING: bible not published -- these KB confirmations are not in a pushed bible commit on the sprint branch'
+        + ' as of this analysis (the harvest round retries once more after it is written):',
+        ...repos.map((r) => `- ${r.repo}: ${r.count} unpublished confirmation(s).`),
+        ...(unpublished.sealedReason ? [`Bible commits were sealed: ${unpublished.sealedReason}.`] : []),
+    ];
 }
 
 /**

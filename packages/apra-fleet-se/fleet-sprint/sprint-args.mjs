@@ -6,6 +6,7 @@
 // unchanged. This is a move-only extraction: behaviour, validation order and
 // error message text are all deliberately unchanged from the pre-move code.
 import { normalizeRole, validateCredentialStoreName } from './contracts.mjs';
+import { ROLE_KB_MAINTAINER } from './kb-maintainer.mjs';
 import { parseExpectedIdentity } from './beads-identity.mjs';
 
 // ---------------------------------------------------------------------------
@@ -131,6 +132,15 @@ const KNOWN_ARG_KEYS = new Set([
     // formula units). Default DEFAULT_EFFORT_THRESHOLD.
     // No CLI flag sets this today; only test/programmatic callers pass it.
     'worklist_effort_budget',
+    // Engine CI gate arg -- DELIBERATELY NOT WIRED (2026-10-01). ci-gate.mjs
+    // runs CI per reviewer dispatch and hands the result to the reviewer; the
+    // agreed direction is the opposite (CI never blocks or reaches doer/
+    // reviewer loops; the integ-test phase owns CI via one reopenable bead;
+    // per-push vs end-of-cycle triggering per project). Until the "fleet-sprint
+    // must also utilize CI as a resource for quality" epic (apra-fleet-dv8i)
+    // designs that flow, ci_gate is not a known arg, so passing it fails loudly
+    // as an unknown arg. The gate module stays in place, unconfigured.
+    // 'ci_gate',
     // An optional live `(name, args) => Promise<any>` MCP tool-call function,
     // wired by bin/cli.mjs from its already-connected `mcpClient.callTool`.
     // Consumed by createMemberSessionGuard() to call the fleet's own
@@ -173,6 +183,47 @@ export function validateExpectBeads(raw) {
         throw new Error('[Arg Contract] Invalid expect_beads: must carry at least one of prefix, syncRemote, repoRemote.');
     }
     return parsed;
+}
+
+/** Default CI gate timeout (seconds) when ci_gate omits timeout_s. */
+export const DEFAULT_CI_GATE_TIMEOUT_S = 3600;
+// A workflow file name ("ci.yml") or numeric workflow id -- interpolated into
+// a provider REST path, so restrictive by design.
+const CI_GATE_WORKFLOW_PATTERN = /^[A-Za-z0-9._-]+$/;
+
+/**
+ * Validates the optional ci_gate arg: { workflow: string, timeout_s?: positive
+ * integer (default 3600) }. Accepts the object, or its JSON string form (the
+ * CLI forwards --ci-gate verbatim). Absent -> undefined (gate not configured).
+ * @param {unknown} raw
+ * @returns {{ workflow: string, timeoutS: number }|undefined}
+ */
+export function validateCiGate(raw) {
+    if (raw === undefined || raw === null || raw === '') return undefined;
+    let value = raw;
+    if (typeof raw === 'string') {
+        try {
+            value = JSON.parse(raw);
+        } catch {
+            throw new Error(`[Arg Contract] Invalid ci_gate: not valid JSON (${JSON.stringify(raw).slice(0, 200)}). Expected {"workflow": "<workflow file name or id>", "timeout_s": <positive integer>}.`);
+        }
+    }
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        throw new Error('[Arg Contract] Invalid ci_gate: must be an object {"workflow": "<workflow file name or id>", "timeout_s": <positive integer, default 3600>}.');
+    }
+    const unknown = Object.keys(value).filter((k) => k !== 'workflow' && k !== 'timeout_s');
+    if (unknown.length > 0) {
+        throw new Error(`[Arg Contract] Invalid ci_gate: unknown key(s) ${unknown.join(', ')}. Known keys: workflow, timeout_s.`);
+    }
+    const workflow = value.workflow;
+    if (typeof workflow !== 'string' || workflow.length === 0 || !CI_GATE_WORKFLOW_PATTERN.test(workflow)) {
+        throw new Error(`[Arg Contract] Invalid ci_gate.workflow "${workflow}": required; must be a workflow file name or numeric id matching ${CI_GATE_WORKFLOW_PATTERN}.`);
+    }
+    const timeoutS = value.timeout_s === undefined ? DEFAULT_CI_GATE_TIMEOUT_S : value.timeout_s;
+    if (typeof timeoutS !== 'number' || !Number.isInteger(timeoutS) || timeoutS <= 0) {
+        throw new Error(`[Arg Contract] Invalid ci_gate.timeout_s "${timeoutS}": must be a positive integer (seconds).`);
+    }
+    return { workflow, timeoutS };
 }
 
 /**
@@ -301,6 +352,21 @@ export function validateArgs(args) {
                 );
             }
             normalizedRoleMap[key] = value;
+        }
+        // kb_maintainer is an accepted roleMap key but NOT a dispatched role:
+        // it names the member(s) that receive every KB write for their own
+        // repository (kb-maintainer.mjs). Its members must be sprint members,
+        // since selection probes them through the sprint's member access.
+        if (Object.prototype.hasOwnProperty.call(normalizedRoleMap, ROLE_KB_MAINTAINER)) {
+            const list = normalizedRoleMap[ROLE_KB_MAINTAINER];
+            if (!Array.isArray(list) || list.some((m) => typeof m !== 'string' || m.length === 0)) {
+                throw new Error(`[Arg Contract] Invalid roleMap.${ROLE_KB_MAINTAINER}: must be an array of non-empty member names.`);
+            }
+            const stray = list.filter((m) => !args.members.includes(m));
+            if (stray.length > 0) {
+                const quoted = stray.map((m) => '"' + m + '"').join(', ');
+                throw new Error(`[Arg Contract] Invalid roleMap.${ROLE_KB_MAINTAINER}: ${quoted} not in members.`);
+            }
         }
     }
 
@@ -440,6 +506,10 @@ export function validateArgs(args) {
     // --- expect_beads (optional) ------------------------------------------
     const expectBeads = validateExpectBeads(args.expect_beads);
 
+    // --- ci_gate: NOT WIRED (see the KNOWN_ARG_KEYS note; apra-fleet-dv8i) ---
+    // const ciGate = validateCiGate(args.ci_gate);
+    const ciGate = undefined;
+
     return {
         targetIssues,
         members: args.members,
@@ -462,5 +532,6 @@ export function validateArgs(args) {
         usageLimitMaxWaitS: args.usage_limit_max_wait_s,
         usageLimitMaxReprobes: args.usage_limit_max_reprobes,
         expectBeads,
+        ciGate,
     };
 }

@@ -43,6 +43,47 @@ Note: dispatches using an unpriced model id are not reflected above (see N10, fe
 
 Carried forward: a stale `planner-output.json` in a sandbox's built `dist` tripped the schema staleness guard in integration (not reproducible on the branch; filed as a bug). Secondary review findings are filed as open tasks.
 
+## [Unreleased] -- KB redesign: kb_maintainer branch placement and bible-commit safety
+
+Sprint goal: close the defects carried forward from the KB redesign. Final verdict: PASS.
+
+```
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $6.5699.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.0864 across 2 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 14 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+```
+
+- A selected kb_maintainer with no dispatched role is now put on the sprint branch (first ensure and every re-ensure) without being dispatched.
+- Bible commits refuse to run on any other branch: the engine checks the maintainer's branch before the first attempt, the retry reset and the cleanup reset; on mismatch or unreadable branch nothing is pulled, committed, pushed or reset, and the ids stay queued.
+- The bible-commit reset requires a clean tracked tree and only bible-file local commits; unrelated unpushed work on the maintainer is preserved.
+- `kb_invalidate {ids}` derives the owner tag via the shared member-owner helper, like the other KB write tools.
+- Design notes: docs/kb-member-view-and-maintainer.md.
+
+Carried forward: the reset guard hardcodes the `origin` remote.
+
+## [Unreleased] -- KB redesign: member bible view, kb_maintainer write routing, round bible commits
+
+Sprint goal: member sessions read the KB from the checkout's bible, all sprint KB writes go through one maintainer per repository, and each review round's confirmations are committed to the bible. The sprint verdict was FAIL on one defect (below); the rest passed review.
+
+```
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $41.9602.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.0818 across 3 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 38 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+```
+
+- MEMBER sessions read `kb_query`/`kb_session_prime`/`kb_list`/`kb_context`/`kb_stats` from an in-memory view of the checkout bible (local and remote), rebuilt on mtime/size change, loaded verbatim. MEMBER captures are tagged by member; INFERRED reads, `kb_promote` and the new `kb_invalidate {ids}` are own-scope; `kb_feedback` returns `E-MEMBER-VIEW-READ-ONLY`.
+- One `kb_maintainer` per repository is selected at sprint setup (explicit role, role-less member, then access fallback with availability probe). All KB writes are queued per repository, pulled before each batch, and held while the maintainer is busy or unreachable.
+- New `kb_bible_commit` merges confirmed ids into the bible entry by entry with base-branch provenance and a local commit; `kb_export` gained `baseBranch`/`baseCommit`. The engine commits each round (pull, commit, push, one retry) and no longer exports the bible itself. Declared in `memory-contract/v1` and `apra-fleet-client`.
+- Design notes: docs/kb-member-view-and-maintainer.md.
+
+The defects carried forward from this redesign (maintainer placement, reset data loss, owner-tag helper) were fixed in the entry above.
+
 ## [Unreleased] -- fleet-sprint: remote memberCall no longer dirties the member's git checkout
 
 Sprint goal: a remote `memberCall` left its args file untracked in the member's git checkout. The engine now git-excludes `.apra-call/` before the first send to a member and deletes the args file after every call (success, error, unparseable output, timeout, failed send); failures of either step are logged and never hide the call's result. New per-shell `ensureGitExcluded` and `removeFile` command primitives (POSIX and PowerShell) validate paths strictly. Tests run the commands for real, against a temp git repo and real bash and PowerShell.
@@ -79,6 +120,33 @@ Integ-test-runner spend: $0.1149 across 3 dispatch(es) this sprint (a subset of 
 Pricing source: all 33 priced dispatch(es) used real per-member rates (get_member_model_pricing).
 Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
 ```
+
+## [Unreleased] -- Supervisor sprint rows pull a once-per-publish run summary
+
+Sprint progress is now computed once by the sprint's own viewer and published; the supervisor
+dashboard and the live view render it instead of recomputing. The workflow viewer gains an
+optional per-namespace `summarize()` hook that runs only on state publish, and
+`GET /state?summary=1` serves the stored summary without invoking any hook. The beads extension
+summarizes progress (timestamped from the runner's snapshot fetch time). Supervisor rows pull the
+summary with a 2s timer, a 1MB cap, a last-good cache, a runId check, and explicit degradation
+states ("status unavailable", "no summary yet", unreachable with "as of"). Port resolution is
+shared between proxy and dashboard. A Windows CRT argv0 quoting test harness was also fixed.
+See `docs/sprint-run-summary.md`.
+
+```
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $16.5475.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.0848 across 2 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 16 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+```
+
+Carried forward: history-view runs without a summary key show "no summary yet"; the SSE handler
+does not dispatch the summary event before the state event; host-environment test failures
+(stale undici install, stale dist schema, symlink privilege) and the regression-pass failures
+remain open as backlog beads.
+
 
 ## [Unreleased] -- fleet-sprint: G-pull of a not-yet-pushed sprint branch is a no-op, not an auth failure
 

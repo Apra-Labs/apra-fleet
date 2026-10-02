@@ -55,23 +55,56 @@
           "additionalProperties": {}
         },
         "parsed": {
-          "type": "object",
-          "properties": {
-            "invalidated": {
-              "type": "number"
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "invalidated": {
+                  "type": "number"
+                },
+                "files": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              },
+              "required": [
+                "invalidated",
+                "files"
+              ],
+              "additionalProperties": false
             },
-            "files": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              }
+            {
+              "type": "object",
+              "properties": {
+                "discarded": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "not_found": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "already_discarded": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              },
+              "required": [
+                "discarded",
+                "not_found",
+                "already_discarded"
+              ],
+              "additionalProperties": false
             }
-          },
-          "required": [
-            "invalidated",
-            "files"
-          ],
-          "additionalProperties": false
+          ]
         }
       },
       "required": [

@@ -95,8 +95,9 @@ There is no full-page reload anywhere in this path.
 
 ## Performance: in-memory scope expansion
 
-Each Sprint Stack row's "claimed scope" (used for both the raw bead count and
-the progress bar) is the full parent-child subtree under that sprint's root
+Each Sprint Stack row's "claimed scope" (used for the raw bead count; the
+progress bar is pulled from the sprint's own published summary, see
+[sprint-run-summary.md](../sprint-run-summary.md)) is the full parent-child subtree under that sprint's root
 issue(s). Expanding that subtree with one subprocess call per discovered graph
 node makes a full dashboard render take tens of seconds once more than a few
 sprints (each with a non-trivial subtree) run concurrently. Instead, the

@@ -205,10 +205,11 @@ MCP tools that ship with the KB:
 | `kb_query` | Two-level FTS retrieval (L1: title+summary, L2: full content) |
 | `kb_list` | Audit-list entries by confidence/type/module/symbol (read-only, no use_count bump) |
 | `kb_context` | Batch file freshness check (single git call for N files) |
-| `kb_invalidate` | Mark files stale immediately (also called by the git hook) |
+| `kb_invalidate` | Mark files stale immediately (also called by the git hook), or discard own entries by `ids` |
 | `kb_promote` | Advance confidence: UNVERIFIED -> INFERRED -> CONFIRMED |
 | `kb_harvest` | Extract learnings from a session transcript (auto-fires after execute_prompt) |
 | `kb_export` | Write live CONFIRMED entries to `.fleet/kb-canonical.json` -- the git-shareable team bible |
+| `kb_bible_commit` | Merge confirmed entry ids into the bible and commit locally with base-branch provenance (used by the sprint kb_maintainer) |
 | `kb_setup` | Install git hook, write provider config, store remote token encrypted |
 
 `code_*` tools resolve the calling session's own folder, refuse with typed
@@ -473,6 +474,7 @@ third-party verticals.
 | Shared hub/dashboard API contract package | [packages/fleet-api-contract/README.md](packages/fleet-api-contract/README.md) |
 | Workflow engine internals (`agent()`/`parallel()`/`pipeline()`, journal, budget, pause/resume) | [packages/apra-fleet-workflow/docs/apra-fleet-workflow-architecture.md](packages/apra-fleet-workflow/docs/apra-fleet-workflow-architecture.md) |
 | Cooperative workflow pause/resume (engine, viewer, supervisor, fleet-sprint) | [docs/features/workflow-pause-resume.md](docs/features/workflow-pause-resume.md) |
+| Sprint run summary (`GET /state?summary=1`, published once per state, pulled by supervisor rows) | [docs/sprint-run-summary.md](docs/sprint-run-summary.md) |
 | Supervisor dashboard live-refresh (`/state` + `/events` SSE, tab-activation refresh, in-memory scope expansion) | [docs/features/supervisor-dashboard-live-refresh.md](docs/features/supervisor-dashboard-live-refresh.md) |
 | Writing and running workflow scripts | [packages/apra-fleet-workflow/docs/workflow-guide.md](packages/apra-fleet-workflow/docs/workflow-guide.md) |
 | Authoring a SEA-embedded `apra-fleet workflow` (manifest, entry contract, launcher env vars) | [docs/authoring-workflows.md](docs/authoring-workflows.md) |

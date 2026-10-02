@@ -1491,6 +1491,29 @@ const REVIEW_SCHEMA = {
         }
       }
     },
+    "kb_discards": {
+      "type": "array",
+      "description": "Promotion candidates this reviewer showed to be WRONG and is discarding (the entry drops out of every later read). Reviewer-only, with the same evidence bar as kb_promotions. An id may not appear in both kb_promotions and kb_discards -- the engine refuses both. The engine makes the discard calls.",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "reason"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The entry id, copied verbatim from the 'KNOWLEDGE BANK -- promotion candidates' block in your dispatch prompt. That block is the ONLY source of discardable ids -- do not call a kb_* tool to find one, and never invent one.",
+            "minLength": 1
+          },
+          "reason": {
+            "type": "string",
+            "description": "The evidence that the entry is wrong -- what you actually checked that contradicts its claim.",
+            "minLength": 20
+          }
+        }
+      }
+    },
     "kb_captures": {
       "type": "array",
       "description": "Durable knowledge this role verified during its run. The engine makes the kb_capture calls; the role only decides. Optional -- omit or send [] to capture nothing.",
@@ -2320,6 +2343,13 @@ function vetKbWork(role, result) {
       }
       promotions.push({ id: p.id, reason: p.reason.trim() });
     }
+  }
+
+  // kb_discards is applied only by the fleet-sprint engine (maintainer-routed
+  // kb_invalidate). This legacy workflow has no discard path, so refuse and log
+  // rather than silently dropping a reviewer's DISCARD.
+  if (result && Array.isArray(result.kb_discards) && result.kb_discards.length > 0) {
+    rejected.push(`${role}: kb_discards refused -- not supported by this workflow (${result.kb_discards.length} dropped)`);
   }
 
   return { captures, promotions, rejected };

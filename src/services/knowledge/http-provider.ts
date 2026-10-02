@@ -17,6 +17,7 @@ import type {
   AudnDecision,
   Confidence,
   ProviderStats,
+  DiscardResult,
 } from './types.js';
 
 const MAX_QUEUE_SIZE = 1000;
@@ -217,6 +218,10 @@ export class HttpKbProvider implements MemoryProvider {
       }
       throw err;
     }
+  }
+
+  async discard(_ids: string[], _opts?: { ownerTag?: string }): Promise<DiscardResult> {
+    throw new Error('kb_invalidate {ids} (id-level discard) is not supported by the HTTP KB provider');
   }
 
   async invalidate(files: string[]): Promise<{ invalidated: number }> {

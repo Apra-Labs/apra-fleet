@@ -4,12 +4,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createKbWorkClient } from '../fleet-sprint/runner.js';
+import { selfMaintainer } from './helpers/kb-maintainer-fakes.mjs';
 
 // The KB read tools default to CONFIRMED undisputed entries only. Every caller
 // that needs non-CONFIRMED entries must therefore pass an explicit confidence
 // list. The three prompt files are read verbatim (they ARE the caller: an LLM
 // follows them), and the engine's promotion listing is exercised through an
-// injected fake memberCall that captures the kb_list args.
+// injected fake memberCall that captures the kb_query args.
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const read = (rel) => fs.readFileSync(path.join(here, '..', rel), 'utf8');
@@ -36,19 +37,20 @@ describe('callers needing non-CONFIRMED KB entries pass an explicit confidence l
         assert.match(md, /flagged_only: true \}\)` is exempt/);
     });
 
-    test('kb.mjs promotion listing passes confidence as an array including INFERRED', async () => {
+    test('kb.mjs promotion-candidate read passes confidence as an array including INFERRED', async () => {
         const calls = [];
         const memberCall = async (member, name, args) => {
             calls.push({ name, args, member });
-            return { content: [{ type: 'text', text: JSON.stringify({ results: [], total: 0 }) }] };
+            return { content: [{ type: 'text', text: JSON.stringify({ l1_results: [] }) }] };
         };
-        const client = createKbWorkClient({ memberCall, log: () => {} });
-        await client.promotionCandidates({ id: 'id-reviewer', name: 'reviewer', type: 'local' });
+        const reviewer = { id: 'id-reviewer', name: 'reviewer', type: 'local' };
+        const client = createKbWorkClient({ memberCall, maintainers: selfMaintainer(reviewer), log: () => {} });
+        await client.promotionCandidates(reviewer);
 
-        const listCall = calls.find((c) => c.name === 'kb_list');
-        assert.ok(listCall, 'kb_list was never called');
-        assert.ok(Array.isArray(listCall.args.confidence), 'confidence must be an explicit array');
-        assert.ok(listCall.args.confidence.includes('INFERRED'), 'must include the tier it promotes');
-        assert.ok(!listCall.args.confidence.includes('CONFIRMED') || listCall.args.confidence.length > 1);
+        const queryCall = calls.find((c) => c.name === 'kb_query');
+        assert.ok(queryCall, 'kb_query was never called');
+        assert.ok(Array.isArray(queryCall.args.confidence), 'confidence must be an explicit array');
+        assert.ok(queryCall.args.confidence.includes('INFERRED'), 'must include the tier it promotes');
+        assert.ok(!queryCall.args.confidence.includes('CONFIRMED') || queryCall.args.confidence.length > 1);
     });
 });
