@@ -2,7 +2,7 @@
  * Tests for --force flag, busy-server prompt, and unknown flag rejection (#96).
  * Uses _setSeaOverride to simulate SEA mode so the process-detection guard fires.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import { execSync } from 'node:child_process';
@@ -23,6 +23,39 @@ vi.mock('../src/services/service-manager/index.js', () => ({
 }));
 
 const mockHome = '/mock/home';
+
+// install --force stops servers by PID (process.kill on POSIX, taskkill /PID on
+// Windows), never by process name. process.kill is ALWAYS stubbed here so no
+// test can signal a real process on the host (the mocked pids are made up).
+// Signal 0 (isPidAlive) reports only this test process (and `alivePids`) alive.
+let killSpy: MockInstance;
+let killHandler: (pid: number, sig: string) => void = () => {};
+/** Every non-zero signal sent through process.kill, as "<SIG>:<pid>". */
+let signalled: string[] = [];
+/** Extra pids isPidAlive() reports alive (e.g. a server.json pid). */
+let alivePids = new Set<number>();
+beforeEach(() => {
+  signalled = [];
+  alivePids = new Set<number>();
+  killHandler = () => {};
+  killSpy = vi.spyOn(process, 'kill').mockImplementation(((pid: number, sig?: string | number) => {
+    const s = String(sig ?? 'SIGTERM');
+    if (s === '0') {
+      if (pid === process.pid || alivePids.has(pid)) return true;
+      throw Object.assign(new Error('kill ESRCH'), { code: 'ESRCH' });
+    }
+    signalled.push(`${s}:${pid}`);
+    killHandler(pid, s);
+    return true;
+  }) as any);
+});
+afterEach(() => {
+  killSpy.mockRestore();
+});
+/** React to a signal the installer sends (e.g. mark the pid gone). */
+function onSignal(handler: (pid: number, sig: string) => void): void {
+  killHandler = handler;
+}
 
 function makeFsMock() {
   const fileState = new Map<string, string>();
@@ -164,7 +197,6 @@ describe('install --force (#96)', () => {
 
   it('server running, --force — kills server and completes install (Linux)', async () => {
     Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
-    const killCalls: string[] = [];
     let killed = false;
     vi.mocked(execSync).mockImplementation((cmd: any) => {
       const c = cmd.toString();
@@ -172,16 +204,18 @@ describe('install --force (#96)', () => {
         if (killed) throw Object.assign(new Error('no match'), { status: 1 });
         return '5678\n' as any;
       }
-      if (c === 'pkill -x apra-fleet') { killCalls.push(c); killed = true; return '' as any; }
       const exe = exeLookupResult(c);
       if (exe !== null) return exe as any;
       return '' as any;
     });
+    onSignal((pid, sig) => { if (pid === 5678 && sig === 'SIGTERM') killed = true; });
     vi.spyOn(console, 'log').mockImplementation(() => {});
     const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit'); });
 
     await expect(runInstall(['--skill', 'none', '--force'])).resolves.toBeUndefined();
-    expect(killCalls).toContain('pkill -x apra-fleet');
+    expect(signalled).toEqual(['SIGTERM:5678']);
+    const cmds = vi.mocked(execSync).mock.calls.map(c => c[0].toString());
+    expect(cmds.some(c => c.startsWith('pkill'))).toBe(false);
     expect(exitSpy).not.toHaveBeenCalled();
 
     exitSpy.mockRestore();
@@ -207,14 +241,14 @@ describe('install --force (#96)', () => {
     const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit'); });
 
     await expect(runInstall(['--skill', 'none', '--force'])).resolves.toBeUndefined();
-    expect(killCalls).toContain('taskkill /F /IM apra-fleet.exe');
+    expect(killCalls).toEqual(['taskkill /F /PID 5678']);
     expect(exitSpy).not.toHaveBeenCalled();
 
     exitSpy.mockRestore();
   });
 
   it('--force install success message includes "Restart Claude Code"', async () => {
-    mockServerRunning();
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
     let killed = false;
     vi.mocked(execSync).mockImplementation((cmd: any) => {
       const c = cmd.toString();
@@ -222,11 +256,11 @@ describe('install --force (#96)', () => {
         if (killed) throw Object.assign(new Error('no match'), { status: 1 });
         return '5678\n' as any;
       }
-      if (c === 'pkill -x apra-fleet') { killed = true; return '' as any; }
       const exe = exeLookupResult(c);
       if (exe !== null) return exe as any;
       return '' as any;
     });
+    onSignal(pid => { if (pid === 5678) killed = true; });
     const logLines: string[] = [];
     vi.spyOn(console, 'log').mockImplementation((...args) => { logLines.push(args.join(' ')); });
 
@@ -277,15 +311,12 @@ describe('install --force still-running after kill (apra-fleet-l7n.3.2)', () => 
   });
 
   it('does NOT print "Stopped running server." and surfaces a clear error when the process is still running after kill', async () => {
-    // isApraFleetRunning() (via pgrep) keeps reporting the server running even
-    // after killApraFleet()'s SIGTERM/SIGKILL escalation -- the process could
-    // not be stopped.
+    // pgrep keeps reporting the server running even after killApraFleet()'s
+    // SIGTERM/SIGKILL escalation (the signals are delivered but the process
+    // never exits) -- the process could not be stopped.
     vi.mocked(execSync).mockImplementation((cmd: any) => {
       const c = cmd.toString();
       if (c === 'pgrep -x apra-fleet') return '5678\n' as any;
-      // pkill (SIGTERM and SIGKILL escalation) "succeeds" as a command but
-      // never actually terminates the process in this scenario.
-      if (c === 'pkill -x apra-fleet' || c === 'pkill -9 -x apra-fleet') return '' as any;
       const exe = exeLookupResult(c);
       if (exe !== null) return exe as any;
       return '' as any;
@@ -301,7 +332,9 @@ describe('install --force still-running after kill (apra-fleet-l7n.3.2)', () => 
     expect(exitSpy).toHaveBeenCalledWith(1);
     const errText = errorSpy.mock.calls.map(c => c.join(' ')).join('\n');
     expect(errText).toContain('could not stop the running apra-fleet server');
+    expect(errText).toContain('kill 5678');
     expect(errText).toContain('pkill -x apra-fleet');
+    expect(signalled).toEqual(['SIGTERM:5678', 'SIGKILL:5678']);
 
     exitSpy.mockRestore();
     errorSpy.mockRestore();
@@ -309,13 +342,13 @@ describe('install --force still-running after kill (apra-fleet-l7n.3.2)', () => 
 
   it('complementary case: still prints "Stopped running server." when the process does stop', async () => {
     let killed = false;
+    onSignal(pid => { if (pid === 5678) killed = true; });
     vi.mocked(execSync).mockImplementation((cmd: any) => {
       const c = cmd.toString();
       if (c === 'pgrep -x apra-fleet') {
         if (killed) throw Object.assign(new Error('no match'), { status: 1 });
         return '5678\n' as any;
       }
-      if (c === 'pkill -x apra-fleet') { killed = true; return '' as any; }
       const exe = exeLookupResult(c);
       if (exe !== null) return exe as any;
       return '' as any;
@@ -372,18 +405,13 @@ describe('install --force ETXTBSY regression: survives first SIGTERM (apra-fleet
         seq.push('pgrep:running');
         return '5678\n' as any;
       }
-      if (c === 'pkill -x apra-fleet') {
-        seq.push('kill:term');
-        return '' as any;
-      }
-      if (c === 'pkill -9 -x apra-fleet') {
-        sigkillIssued = true;
-        seq.push('kill:sigkill');
-        return '' as any;
-      }
       const exe = exeLookupResult(c);
       if (exe !== null) return exe as any;
       return '' as any;
+    });
+    onSignal((pid, sig) => {
+      if (pid !== 5678) return;
+      if (sig === 'SIGKILL') { sigkillIssued = true; seq.push('kill:sigkill'); } else seq.push('kill:term');
     });
     vi.mocked(fs.copyFileSync).mockImplementation(() => { seq.push('copyFileSync'); });
     vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -457,20 +485,28 @@ describe('isApraFleetRunning / killApraFleet helpers (#96)', () => {
     expect(isApraFleetRunning()).toBe(false);
   });
 
-  it('killApraFleet calls pkill -x apra-fleet on Linux', () => {
+  it('killApraFleet signals exactly the given pids on Linux, never by name and never itself', () => {
     Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
     const calls: string[] = [];
     vi.mocked(execSync).mockImplementation((cmd: any) => { calls.push(cmd.toString()); return '' as any; });
-    killApraFleet();
-    expect(calls).toContain('pkill -x apra-fleet');
+    killApraFleet([5678, String(process.pid), '4321'], 'SIGKILL');
+    expect(signalled).toEqual(['SIGKILL:5678', 'SIGKILL:4321']);
+    expect(calls).toEqual([]);
   });
 
-  it('killApraFleet calls taskkill on Windows', () => {
+  it('killApraFleet uses taskkill /PID per pid on Windows, never /IM and never itself', () => {
     Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
     const calls: string[] = [];
     vi.mocked(execSync).mockImplementation((cmd: any) => { calls.push(cmd.toString()); return '' as any; });
-    killApraFleet();
-    expect(calls).toContain('taskkill /F /IM apra-fleet.exe');
+    killApraFleet([5678, process.pid]);
+    expect(calls).toEqual(['taskkill /F /PID 5678']);
+    expect(signalled).toEqual([]);
+  });
+
+  it('killApraFleet ignores a pid that already exited', () => {
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+    onSignal(() => { throw Object.assign(new Error('kill ESRCH'), { code: 'ESRCH' }); });
+    expect(() => killApraFleet([5678])).not.toThrow();
   });
 });
 
@@ -532,6 +568,7 @@ describe('install running-server guard is scoped to the install target (apra-fle
     const cmds = vi.mocked(execSync).mock.calls.map(c => c[0].toString());
     expect(cmds).not.toContain('pkill -x apra-fleet');
     expect(cmds).not.toContain('pkill -9 -x apra-fleet');
+    expect(signalled).toEqual([]);
 
     exitSpy.mockRestore();
     errorSpy.mockRestore();
@@ -612,11 +649,11 @@ describe('install running-server guard is scoped to the install target (apra-fle
 });
 
 // apra-fleet-3swo.29: regression coverage for the --force service-aware stop
-// fix (apra-fleet-3swo.22, commit 3216608d). killApraFleet() signals by
-// process NAME, which a launchd/systemd-supervised server just relaunches
-// under a new pid -- the fix stops the registered SERVICE first (graceful
-// exit, no relaunch) and only falls back to pkill/taskkill when nothing is
-// registered.
+// fix (apra-fleet-3swo.22, commit 3216608d). Signalling the server (now by
+// pid, apra-fleet-b4g.72) is what a launchd/systemd-supervised server just
+// relaunches under a new pid -- the fix stops the registered SERVICE first
+// (graceful exit, no relaunch) and only falls back to signalling the relevant
+// pids when nothing is registered.
 //
 // One-line revert used to confirm cases (a), (b) and (d) below fail without
 // the fix (case (c) keeps passing since it is the historical fallback path):
@@ -673,11 +710,11 @@ describe('install --force service-aware stop (apra-fleet-3swo.22)', () => {
         if (serviceStopped) throw Object.assign(new Error('no match'), { status: 1 });
         return '5678\n' as any;
       }
-      if (c === 'pkill -x apra-fleet' || c === 'pkill -9 -x apra-fleet') { callOrder.push(c); return '' as any; }
       const exe = exeLookupResult(c);
       if (exe !== null) return exe as any;
       return '' as any;
     });
+    onSignal((pid, sig) => { callOrder.push(`${sig}:${pid}`); });
     const stop = vi.fn().mockImplementation(async () => { callOrder.push('service:stop'); serviceStopped = true; });
     vi.mocked(getServiceManager).mockResolvedValue(makeFakeServiceManager({ isInstalled: vi.fn().mockResolvedValue(true), stop }));
 
@@ -732,7 +769,6 @@ describe('install --force service-aware stop (apra-fleet-3swo.22)', () => {
   });
 
   it('(c) no service registered -- falls back to killApraFleet unchanged, service manager stop/start never called', async () => {
-    const killCalls: string[] = [];
     let killed = false;
     vi.mocked(execSync).mockImplementation((cmd: any) => {
       const c = cmd.toString();
@@ -740,11 +776,11 @@ describe('install --force service-aware stop (apra-fleet-3swo.22)', () => {
         if (killed) throw Object.assign(new Error('no match'), { status: 1 });
         return '5678\n' as any;
       }
-      if (c === 'pkill -x apra-fleet') { killCalls.push(c); killed = true; return '' as any; }
       const exe = exeLookupResult(c);
       if (exe !== null) return exe as any;
       return '' as any;
     });
+    onSignal(pid => { if (pid === 5678) killed = true; });
     const fakeMgr = makeFakeServiceManager(); // isInstalled resolves false by default
     vi.mocked(getServiceManager).mockResolvedValue(fakeMgr);
     vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -756,7 +792,7 @@ describe('install --force service-aware stop (apra-fleet-3swo.22)', () => {
     // assertion about the guard path specifically.
     await expect(runInstall(['--skill', 'none', '--force', '--transport', 'stdio'])).resolves.toBeUndefined();
 
-    expect(killCalls).toContain('pkill -x apra-fleet');
+    expect(signalled).toEqual(['SIGTERM:5678']);
     expect(fakeMgr.stop).not.toHaveBeenCalled();
     expect(fakeMgr.start).not.toHaveBeenCalled();
     expect(exitSpy).not.toHaveBeenCalled();
@@ -766,11 +802,9 @@ describe('install --force service-aware stop (apra-fleet-3swo.22)', () => {
 
   it('(d) launchd relaunch: pid changes after stop -- reports RELAUNCH distinctly and exits 1 without further signalling', async () => {
     let stopped = false;
-    const pkillCalls: string[] = [];
     vi.mocked(execSync).mockImplementation((cmd: any) => {
       const c = cmd.toString();
       if (c === 'pgrep -x apra-fleet') return (stopped ? '9999\n' : '5678\n') as any;
-      if (c === 'pkill -x apra-fleet' || c === 'pkill -9 -x apra-fleet') { pkillCalls.push(c); return '' as any; }
       const exe = exeLookupResult(c);
       if (exe !== null) return exe as any;
       return '' as any;
@@ -790,11 +824,172 @@ describe('install --force service-aware stop (apra-fleet-3swo.22)', () => {
     expect(errText).toContain('5678');
     expect(errText).toContain('now 9999');
     expect(stop).toHaveBeenCalledTimes(1);
-    // Signalling by name is deliberately skipped once a pid change proves a
+    // Signalling is deliberately skipped once a pid change proves a
     // supervisor relaunch, not a refusal to die.
-    expect(pkillCalls).toEqual([]);
+    expect(signalled).toEqual([]);
 
     exitSpy.mockRestore();
     errorSpy.mockRestore();
+  });
+});
+
+// apra-fleet-b4g.72: install --force stops by PID only. The member upgrade runs
+// the installer as <home>/.apra-fleet/staging/apra-fleet -- a process NAMED
+// apra-fleet -- so the old name-based kill (pkill -x apra-fleet) terminated the
+// installer itself (exit 143), and also every unrelated apra-fleet server of
+// the same user. Only the pids relevant to this install may be signalled.
+describe('install --force stops only the relevant pids, never itself or unrelated servers', () => {
+  const RELEVANT = 5678;
+  const UNRELATED = 7777;
+  const stagingExe = `${mockHome}/.apra-fleet/staging/apra-fleet`;
+  const unrelatedExe = '/opt/other-prefix/bin/apra-fleet';
+  const originalDataDir = process.env.APRA_FLEET_DATA_DIR;
+
+  function exeFor(pid: number): string | null {
+    if (pid === RELEVANT) return runningExePath; // under BIN_DIR
+    if (pid === UNRELATED) return unrelatedExe;
+    if (pid === process.pid) return stagingExe;
+    return null;
+  }
+
+  /**
+   * A process table holding the installer itself (process.pid, named
+   * apra-fleet), the relevant server and an unrelated server of the same
+   * user. Signals remove a pid from `alive`; pgrep/tasklist and the
+   * executable lookups answer from it. A name-based kill throws.
+   */
+  function processTable(alive: Set<number>) {
+    vi.mocked(execSync).mockImplementation((cmd: any) => {
+      const c = cmd.toString();
+      if (c === 'pgrep -x apra-fleet') {
+        if (alive.size === 0) throw Object.assign(new Error('no match'), { status: 1 });
+        return [...alive].map(p => `${p}\n`).join('') as any;
+      }
+      if (c.startsWith('tasklist')) {
+        return [...alive].map(p => `"apra-fleet.exe","${p}","Console","1","14,000 K"\n`).join('') as any;
+      }
+      const proc = c.match(/^readlink -f \/proc\/(\d+)\/exe$/);
+      if (proc) return `${exeFor(Number(proc[1])) ?? ''}\n` as any;
+      if (c.startsWith('powershell')) {
+        return [...alive].map(p => `${p}|${exeFor(p) ?? ''}\n`).join('') as any;
+      }
+      const tk = c.match(/^taskkill \/F \/PID (\d+)$/);
+      if (tk) { alive.delete(Number(tk[1])); return '' as any; }
+      if (c.startsWith('pkill') || c.includes('/IM ')) throw new Error(`name-based kill issued: ${c}`);
+      return '' as any;
+    });
+    onSignal(pid => { alive.delete(pid); });
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(os.homedir).mockReturnValue(mockHome);
+    makeFsMock();
+    mockNoServiceRegistered();
+    _setSeaOverride(true);
+    _setManifestOverride({ version: '0.1.0', hooks: {}, scripts: {}, skills: {}, fleetSkills: {} });
+    delete process.env.APRA_FLEET_DATA_DIR;
+  });
+
+  afterEach(() => {
+    _setSeaOverride(null);
+    _setManifestOverride(null);
+    if (originalDataDir === undefined) delete process.env.APRA_FLEET_DATA_DIR;
+    else process.env.APRA_FLEET_DATA_DIR = originalDataDir;
+    Object.defineProperty(process, 'platform', { value: process.platform, configurable: true });
+  });
+
+  it('Linux: the installer named apra-fleet survives, the unrelated server is not signalled, the relevant pid is stopped', async () => {
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+    const alive = new Set([process.pid, RELEVANT, UNRELATED]);
+    processTable(alive);
+    const logLines: string[] = [];
+    vi.spyOn(console, 'log').mockImplementation((...args) => { logLines.push(args.join(' ')); });
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit'); });
+
+    await expect(runInstall(['--skill', 'none', '--force', '--transport', 'stdio'])).resolves.toBeUndefined();
+
+    expect(exitSpy).not.toHaveBeenCalled();
+    expect(signalled).toEqual([`SIGTERM:${RELEVANT}`]);
+    expect(alive.has(process.pid)).toBe(true);
+    expect(alive.has(UNRELATED)).toBe(true);
+    expect(logLines.join('\n')).toContain('Stopped running server.');
+    const cmds = vi.mocked(execSync).mock.calls.map(c => c[0].toString());
+    expect(cmds.some(c => c.startsWith('pkill'))).toBe(false);
+
+    exitSpy.mockRestore();
+  });
+
+  it('Linux, registered service (the member upgrade shape): an unrelated server still running neither blocks nor gets signalled', async () => {
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+    const alive = new Set([process.pid, RELEVANT, UNRELATED]);
+    processTable(alive);
+    const stop = vi.fn().mockImplementation(async () => { alive.delete(RELEVANT); });
+    vi.mocked(getServiceManager).mockResolvedValue({
+      register: vi.fn().mockResolvedValue('created'),
+      unregister: vi.fn().mockResolvedValue(undefined),
+      start: vi.fn().mockResolvedValue(undefined),
+      stop,
+      query: vi.fn().mockResolvedValue({ installed: true, running: true }),
+      isInstalled: vi.fn().mockResolvedValue(true),
+    });
+    const logLines: string[] = [];
+    vi.spyOn(console, 'log').mockImplementation((...args) => { logLines.push(args.join(' ')); });
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit'); });
+
+    await expect(runInstall(['--skill', 'none', '--force', '--transport', 'stdio'])).resolves.toBeUndefined();
+
+    expect(exitSpy).not.toHaveBeenCalled();
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect(signalled).toEqual([]);
+    expect(alive.has(process.pid)).toBe(true);
+    expect(alive.has(UNRELATED)).toBe(true);
+    const log = logLines.join('\n');
+    expect(log).toContain('Registered service detected');
+    expect(log).toContain('Stopped running server.');
+
+    exitSpy.mockRestore();
+  });
+
+  it('Windows: taskkill /PID for the relevant pid only -- never /IM, never the installer, never the unrelated server', async () => {
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    const alive = new Set([process.pid, RELEVANT, UNRELATED]);
+    processTable(alive);
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit'); });
+
+    await expect(runInstall(['--skill', 'none', '--force', '--transport', 'stdio'])).resolves.toBeUndefined();
+
+    expect(exitSpy).not.toHaveBeenCalled();
+    const kills = vi.mocked(execSync).mock.calls.map(c => c[0].toString()).filter(c => c.startsWith('taskkill'));
+    expect(kills).toEqual([`taskkill /F /PID ${RELEVANT}`]);
+    expect(alive.has(process.pid)).toBe(true);
+    expect(alive.has(UNRELATED)).toBe(true);
+
+    exitSpy.mockRestore();
+  });
+
+  it('a live server recorded in the targeted data dir is stopped by its pid even when it runs from outside the prefix', async () => {
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+    const DATA_DIR_PID = UNRELATED; // runs from unrelatedExe, outside the prefix
+    const alive = new Set([process.pid, DATA_DIR_PID]);
+    processTable(alive);
+    alivePids.add(DATA_DIR_PID);
+    onSignal(pid => { alive.delete(pid); alivePids.delete(pid); });
+    const prevRead = vi.mocked(fs.readFileSync).getMockImplementation()!;
+    vi.mocked(fs.readFileSync).mockImplementation((p: any, ...rest: any[]) => {
+      if (p.toString().includes('server.json')) return JSON.stringify({ pid: DATA_DIR_PID }) as any;
+      return prevRead(p, ...rest);
+    });
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit'); });
+
+    await expect(runInstall(['--skill', 'none', '--force', '--transport', 'stdio'])).resolves.toBeUndefined();
+
+    expect(exitSpy).not.toHaveBeenCalled();
+    expect(signalled).toEqual([`SIGTERM:${DATA_DIR_PID}`]);
+    expect(alive.has(process.pid)).toBe(true);
+
+    exitSpy.mockRestore();
   });
 });

@@ -28,14 +28,18 @@
  * "refuse" would reinstate the original bug precisely in the constrained
  * environments this fix exists for.
  *
- * isApraFleetRunning() itself is intentionally untouched: waitForApraFleetToStop()
- * and uninstall.ts depend on its OS-global semantics.
+ * isApraFleetRunning() itself stays OS-global (the guard's cheap first filter
+ * and uninstall.ts use it). Stopping, however, is scoped: install --force
+ * signals only the pids relevantServerPids() returns, by pid, never by process
+ * name -- a name-based kill also matches the installer itself when it is named
+ * apra-fleet (the member upgrade path, or an installed binary running install)
+ * and every unrelated apra-fleet server of the same user (apra-fleet-b4g.72).
  */
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { execSync } from 'node:child_process';
-import { isPidAlive } from '../utils/process-utils.js';
+import { isPidAlive, isApraFleetProcess } from '../utils/process-utils.js';
 
 export interface RunningApraFleetProcess {
   pid: number;
@@ -169,6 +173,37 @@ export function classifyRunningServer(installPrefixDir: string): RunningServerSc
   }
 
   return { relevant: false, reason: null, detail: describeProcesses(procs) };
+}
+
+function inPrefixPids(procs: RunningApraFleetProcess[], installPrefixDir: string): number[] {
+  return procs
+    .filter(p => p.pid !== process.pid && isUnderInstallPrefix(p.exePath, installPrefixDir))
+    .map(p => p.pid);
+}
+
+/**
+ * The pids install --force may stop for an install into `installPrefixDir`,
+ * re-derived on every call so a poll also sees a server a supervisor relaunched
+ * under a NEW pid (it re-records itself in server.json and runs from the prefix):
+ *
+ *   - the live pid recorded in the targeted data dir, when it is still an
+ *     apra-fleet process (pids are reused: a stale server.json pid that now
+ *     belongs to something else is never returned), and
+ *   - every apra-fleet process whose executable lives under the install prefix.
+ *
+ * This process is never included -- the installer may itself be named
+ * apra-fleet. Unrelated apra-fleet servers (other data dir, other prefix,
+ * unresolvable executable) are never included either.
+ */
+export function relevantServerPids(installPrefixDir: string): number[] {
+  const procs = getRunningApraFleetProcesses();
+  const pids = new Set<number>(inPrefixPids(procs, installPrefixDir));
+  const livePid = liveInstancePidForDataDir();
+  if (livePid !== null && livePid !== process.pid) {
+    const namedApraFleet = procs.some(p => p.pid === livePid);
+    if (namedApraFleet || isApraFleetProcess(livePid) === true) pids.add(livePid);
+  }
+  return [...pids].sort((a, b) => a - b);
 }
 
 // ---------------------------------------------------------------------------

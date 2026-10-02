@@ -670,7 +670,7 @@ export async function registerMember(input: RegisterMemberInput, opts: RegisterM
         tempAgent, getMemberFleetMcpDeps(), { install: (input.fleet_install ?? 'auto') !== 'skip' },
       );
       fleetMcpLine = status.state === 'available'
-        ? `available${status.version ? ` (apra-fleet ${status.version})` : ''}`
+        ? `available${status.version ? ` (apra-fleet ${status.version})` : ''}${status.installFailure && status.detail ? ` -- warning: ${status.detail}` : ''}`
         : `unavailable (${status.reason ?? 'unknown'})${status.detail ? ` -- ${status.detail}` : ''}`;
     } catch (e: any) {
       fleetMcpLine = `unavailable (probe-failed) -- ${e?.message ?? String(e)}`;

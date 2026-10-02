@@ -181,13 +181,20 @@ describe('runInstall --force service step never leaves the server stopped', () =
         if (stopped) throw Object.assign(new Error('no match'), { status: 1 });
         return '5678\n' as any;
       }
-      if (c === 'pkill -x apra-fleet') {
-        stopped = true;
-        return '' as any;
-      }
+      if (c.startsWith('pkill') || c.includes('/IM ')) throw new Error(`name-based kill issued: ${c}`);
       if (c.startsWith('readlink -f /proc/')) return `${runningExe}\n` as any;
       return '' as any;
     });
+    // install --force stops the manual run by its pid; process.kill is stubbed
+    // (restored by vi.restoreAllMocks in afterEach) so nothing real is signalled.
+    const signalled: string[] = [];
+    vi.spyOn(process, 'kill').mockImplementation(((pid: number, sig?: string | number) => {
+      const s = String(sig ?? 'SIGTERM');
+      if (s === '0') throw Object.assign(new Error('kill ESRCH'), { code: 'ESRCH' });
+      signalled.push(`${s}:${pid}`);
+      if (pid === 5678) stopped = true;
+      return true;
+    }) as any);
     const svc = fakeSvc({
       isInstalled: vi.fn().mockResolvedValue(false),
       register: vi.fn().mockRejectedValue(new Error('Access is denied')),
@@ -198,6 +205,7 @@ describe('runInstall --force service step never leaves the server stopped', () =
     const err = errLines.join('\n');
     expect(err).toContain('apra-fleet start');
     expect(err).not.toContain(serviceRestartCommand());
+    expect(signalled).toEqual(['SIGTERM:5678']);
   });
 
   it('reused task + start ok -> success summary notes reuse, no exit', async () => {

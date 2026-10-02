@@ -809,9 +809,15 @@ export const FLEET_MCP_FIX: Record<FleetMcpUnavailableReason | FleetMcpProviderR
  * The one-line fix to show for a fleetMcp status, or null when the member's KB
  * and code tools are usable (available and not flagged unverified).
  */
-export function fleetMcpFixLine(status: { state: string; reason?: string; unverified?: boolean } | null | undefined): string | null {
+export function fleetMcpFixLine(
+  status: { state: string; reason?: string; unverified?: boolean; installFailure?: { reason: string } } | null | undefined,
+): string | null {
   if (!status) return null;
-  if (status.state === 'available' && !status.unverified) return null;
+  if (status.state === 'available' && !status.unverified) {
+    // Usable on an older install after a failed upgrade: show the upgrade fix.
+    const f = status.installFailure ? (FLEET_MCP_FIX as Record<string, string>)[status.installFailure.reason] : undefined;
+    return f ?? null;
+  }
   const known = status.reason ? (FLEET_MCP_FIX as Record<string, string>)[status.reason] : undefined;
   return known ?? 'Run member_detail with refresh:true after fixing the cause named in the detail; KB/code tools are unverified on this member.';
 }
@@ -1080,6 +1086,21 @@ async function probeMemberFleetMcpInner(
 
 type Unavailable = (reason: FleetMcpUnavailableReason, detail?: string, extra?: Partial<FleetMcpStatus>) => FleetMcpStatus;
 
+/**
+ * Install failures the member probe never falls back from: the installer ran
+ * (or was refused) on the member, or the member could not be probed at all.
+ * Every other install failure happened before the member was touched, so an
+ * older install there is intact and stays in use (reported, never silent).
+ */
+const INSTALL_FAIL_CLOSED: ReadonlySet<string> = new Set([
+  'install-failed', 'install-unverified', 'full-install-running', 'probe-failed', 'home-unresolved',
+]);
+
+/** One line naming a failed upgrade and the older install still in use. */
+function installFailureNote(f: { reason: string; detail?: string }, version: string | undefined): string {
+  return `the apra-fleet upgrade on the member failed (${f.reason}${f.detail ? `: ${f.detail.replace(/\.\s*$/, '')}` : ''}); the older apra-fleet ${version ?? '(unknown version)'} install is in use`;
+}
+
 async function probeLocal(agent: Agent, deps: MemberFleetMcpDeps, unavailable: Unavailable, checkedAt: () => string): Promise<FleetMcpStatus> {
   let session: MemberSession;
   try {
@@ -1124,23 +1145,43 @@ async function probeRemote(
   // 1. Install (or, when not installing, just observe the version).
   let version: string | undefined;
   let installedNow = false;
+  // A requested upgrade that failed BEFORE anything on the member was touched,
+  // while the older install keeps serving: carried into the final status.
+  let installFailure: { reason: string; detail?: string } | undefined;
   if (install) {
     const r = await ensureMemberFleetInstall(agent, deps, { force: forceInstall });
     if (r.state === 'available') { version = r.version; if (r.installed) { ctx.installedNow = true; installedNow = true; } }
-    // A refused install over a running full (non-member) install is reported
-    // as such, never papered over by using that install: the running server
-    // belongs to a human full install, and self-registering the member into it
-    // would wire the member session to a server the fleet does not own.
-    else if (r.reason === 'full-install-running') return unavailable(r.reason, r.detail);
-    else if (r.version) version = r.version; // an older install is still there: try to use it
-    else return unavailable(r.reason, r.detail);
+    // Fail closed -- with the install's OWN reason and detail, never a later
+    // step's error (apra-fleet-b4g.73) -- when the installer ran or was
+    // refused on the member, the probe itself failed, there is no older
+    // install, or a provider change forced the install (the old install is
+    // configured for the old provider).
+    else if (!r.version || forceInstall || INSTALL_FAIL_CLOSED.has(r.reason)) {
+      const detail = r.version
+        ? `${(r.detail ?? r.reason).replace(/\.\s*$/, '')}; the member still has apra-fleet ${r.version}, which was not used`
+        : r.detail;
+      return unavailable(r.reason, detail, r.version ? { version: r.version } : {});
+    }
+    // Otherwise the upgrade failed before the member was touched (no arch, no
+    // source, download/checksum/transfer failure): the older install is
+    // intact, so keep the member usable on it -- still only through the 2a
+    // marker check below -- and report the failed upgrade in every outcome.
+    else {
+      version = r.version;
+      installFailure = { reason: r.reason, ...(r.detail ? { detail: r.detail } : {}) };
+    }
   } else {
     const p = await probeMemberFleetVersion(agent, binPath, deps);
     if (p.kind === 'probe-failed') return unavailable('probe-failed', p.detail);
     if (p.kind !== 'installed') return unavailable('install-unverified', p.kind === 'broken' ? p.detail : 'apra-fleet is not installed on the member');
     version = p.version;
   }
-  const withVersion = { version };
+  const withVersion = { version, ...(installFailure ? { installFailure } : {}) };
+  const upgradeNote = installFailure ? installFailureNote(installFailure, version) : undefined;
+  // Every later outcome keeps a failed upgrade visible: a later step's error
+  // must never hide it, and an available status still names it.
+  const fail: Unavailable = (reason, detail) =>
+    unavailable(reason, upgradeNote ? `${(detail ?? reason).replace(/\.\s*$/, '')}. Also: ${upgradeNote}` : detail, withVersion);
 
   // 2a. Self-register ONLY into a member install (marker present). An install
   // without the marker -- a human full install at the same <home>/.apra-fleet
@@ -1148,26 +1189,26 @@ async function probeRemote(
   // entry for this uuid there would let a later run mistake it for the fleet's
   // own. An install this probe just ran (--member) wrote the marker itself.
   if (!installedNow && !(await memberHasInstallMarker(agent, home, deps))) {
-    return unavailable('full-install-running', `the apra-fleet ${version} at ${binPath} has no member-install marker, so the member was not registered into it. ${TAKEOVER_HINT}`);
+    return fail('full-install-running', `the apra-fleet ${version} at ${binPath} has no member-install marker, so the member was not registered into it. ${TAKEOVER_HINT}`);
   }
 
   // 2b. Register the member on its own install under the orchestrator's id.
   const reg = await deps.exec(agent, buildSelfRegisterCommand(binPath, agent, targetOs, shell), MEMBER_CALL_TIMEOUT_MS);
   if (reg.code !== 0) {
     const out = `${reg.stdout}\n${reg.stderr}`;
-    if (/E-FOLDER-TAKEN/.test(out)) return unavailable('E-FOLDER-TAKEN', memberErrorDetail(out), withVersion);
+    if (/E-FOLDER-TAKEN/.test(out)) return fail('E-FOLDER-TAKEN', memberErrorDetail(out));
     if (/unknown or unexpected argument "--id"/i.test(out) || /unknown (?:option|command|argument)[^\n]*(?:--id|register-member)/i.test(out)) {
-      return unavailable('install-too-old', `the member's apra-fleet ${version} does not support register-member --id`, withVersion);
+      return fail('install-too-old', `the member's apra-fleet ${version} does not support register-member --id`);
     }
-    return unavailable('register-failed', `register-member exited ${reg.code}: ${memberErrorDetail(out)}`, withVersion);
+    return fail('register-failed', `register-member exited ${reg.code}: ${memberErrorDetail(out)}`);
   }
 
   // 3. The per-folder MCP entry compose_permissions writes must point at this member.
   const url = await readMemberMcpEntryUrl(agent, home, deps);
   if (!url || !url.endsWith(memberQuery(agent))) {
-    return unavailable('mcp-entry-missing', url
+    return fail('mcp-entry-missing', url
       ? `per-folder apra-fleet entry points at ${url}, not ${memberQuery(agent)}`
-      : 'no per-folder apra-fleet MCP entry for the work folder; run compose_permissions', withVersion);
+      : 'no per-folder apra-fleet MCP entry for the work folder; run compose_permissions');
   }
 
   // 4. A MEMBER session on the member answers version and lists kb_* / code_*.
@@ -1176,15 +1217,18 @@ async function probeRemote(
     await deps.exec(agent, buildMemberCallCommand(binPath, agent.id, 'version', argsPath, targetOs, shell), MEMBER_CALL_TIMEOUT_MS),
     'call version',
   );
-  if (!v.ok) return unavailable('member-session-failed', v.detail, withVersion);
+  if (!v.ok) return fail('member-session-failed', v.detail);
   const l = parseCallOutput(
     await deps.exec(agent, buildMemberCallCommand(binPath, agent.id, 'list-tools', argsPath, targetOs, shell), MEMBER_CALL_TIMEOUT_MS),
     'call --list-tools',
   );
-  if (!l.ok) return unavailable('member-session-failed', l.detail, withVersion);
+  if (!l.ok) return fail('member-session-failed', l.detail);
   const judged = judgeSession(v.value, l.value);
-  if (!judged.ok) return unavailable(judged.reason, judged.detail, withVersion);
-  return { state: 'available', version, checkedAt: checkedAt() };
+  if (!judged.ok) return fail(judged.reason, judged.detail);
+  return {
+    state: 'available', version, checkedAt: checkedAt(),
+    ...(installFailure ? { installFailure, detail: upgradeNote } : {}),
+  };
 }
 
 /**

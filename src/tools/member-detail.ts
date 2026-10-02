@@ -313,6 +313,7 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
 
   if (fleetMcp) {
     t += `  fleetMcp=${fleetMcp.state}${fleetMcp.reason ? ` (${fleetMcp.reason})` : ''}${fleetMcp.version ? ` | v${fleetMcp.version}` : ''}\n`;
+    if (fleetMcp.installFailure) t += `  fleetMcp upgrade failed (${fleetMcp.installFailure.reason}): ${fleetMcp.detail ?? fleetMcp.installFailure.detail ?? ''}\n`;
     if (fleetMcpFix) t += `  fleetMcp fix: ${fleetMcpFix}\n`;
   }
 

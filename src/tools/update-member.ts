@@ -373,7 +373,7 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
         forceInstall: providerChanged && input.fleet_install !== 'skip',
       });
       fleetMcpLine = status.state === 'available'
-        ? `available${status.version ? ` (apra-fleet ${status.version})` : ''}`
+        ? `available${status.version ? ` (apra-fleet ${status.version})` : ''}${status.installFailure && status.detail ? ` -- warning: ${status.detail}` : ''}`
         : `unavailable (${status.reason ?? 'unknown'})${status.detail ? ` -- ${status.detail}` : ''}`;
     } catch (e: any) {
       fleetMcpLine = `unavailable (probe-failed) -- ${e?.message ?? String(e)}`;

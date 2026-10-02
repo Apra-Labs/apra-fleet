@@ -102,6 +102,11 @@ export interface FleetMcpStatus {
    *  leaves this set); the member-install marker alone is (see
    *  memberHasInstallMarker), and the fleet never sends --force-stop-full-install. */
   fleetInstalledAt?: string;
+  /** A requested apra-fleet upgrade that failed before the member was touched
+   *  (no arch/source, download, checksum or transfer failure) while the older
+   *  install stayed in use. Present on available and unavailable statuses so a
+   *  later step can never hide it; `detail` names it too. */
+  installFailure?: { reason: string; detail?: string };
 }
 
 export interface GitHubAppConfig {
