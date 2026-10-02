@@ -460,6 +460,14 @@ export function isAuthDispatchError(err) {
 //                                 remote pid and aborted the in-flight dispatch
 //                                 (apra-fleet-3c9.1). Like the others, no test
 //                                 verdict was ever produced.
+//   - 'agent_never_started'     -- the member's session log never appeared at
+//                                 its authoritative path within the inactivity
+//                                 threshold; the process was killed before it
+//                                 ever ran the task.
+//   - 'max_total_time'          -- the dispatch ran out of max_total_s (measured
+//                                 from the call, setup included) and was
+//                                 stopped. Before this reason existed the same
+//                                 kill surfaced as 'dispatch_failed'.
 //
 // For an integ-test-runner dispatch, all of these mean "no test verdict was
 // ever produced" -- the run never reported pass or fail. Treating them as a
@@ -468,7 +476,7 @@ export function isAuthDispatchError(err) {
 // check on an infra fault. Callers use this classifier to (a) retry once via a
 // session resume and (b) failing that, record the cycle as INCONCLUSIVE rather
 // than a test FAIL -- exactly as the part-2 stale-evidence path already does.
-const INFRA_DISPATCH_REASONS = new Set(['empty_response', 'dispatch_failed', 'orphan_recovery_timeout', 'stalled', 'preflight_offline']);
+const INFRA_DISPATCH_REASONS = new Set(['empty_response', 'dispatch_failed', 'orphan_recovery_timeout', 'stalled', 'agent_never_started', 'max_total_time', 'preflight_offline']);
 
 /**
  * True when a dispatch error is an INFRASTRUCTURE failure (the member CLI never

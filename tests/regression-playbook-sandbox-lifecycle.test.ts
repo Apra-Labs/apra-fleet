@@ -31,6 +31,10 @@ import { reapSandboxDolt, ProbeToolMissingError as ReapToolMissingError } from '
 // touching a developer's live sandbox or supervisor.
 const REPO_ROOT = path.resolve(__dirname, '..');
 const SANDBOX_LOCK_CLI = path.join(REPO_ROOT, 'scripts', 'sandbox-lock.mjs');
+// The kill-port CLI gets a 5000ms retry deadline and always sleeps 1s between probes
+// (plus node startup and two lsof scans), so the default 5s test timeout had no
+// headroom: one slow lsof on a loaded runner failed it.
+const CLI_TEST_TIMEOUT_MS = 20_000;
 const KILL_PORT_CLI = path.join(REPO_ROOT, 'scripts', 'kill-port.mjs');
 const REAP_SANDBOX_DOLT_CLI = path.join(REPO_ROOT, 'scripts', 'reap-sandbox-dolt.mjs');
 const PLAYBOOK_PATH = path.join(REPO_ROOT, 'regression-test-playbook.md');
@@ -235,7 +239,7 @@ describe('regression-test-playbook.md sandbox lifecycle', () => {
       await waitForReap(listener.pid);
       expect(isProcessAlive(listener.pid)).toBe(false);
       expect(await isPortFree(listener.port)).toBe(true);
-    });
+    }, CLI_TEST_TIMEOUT_MS);
 
     it('clears the literal sandbox scratch port 18700 the playbook hardcodes, skipping if a real service already legitimately owns it', async (ctx) => {
       const alreadyBound = !(await isPortFree(18700));
@@ -254,7 +258,7 @@ describe('regression-test-playbook.md sandbox lifecycle', () => {
       await waitForReap(listener.pid);
       expect(isProcessAlive(listener.pid)).toBe(false);
       expect(await isPortFree(18700)).toBe(true);
-    });
+    }, CLI_TEST_TIMEOUT_MS);
 
     it('fails loud (ok:false) instead of silently proceeding when the port can never be freed within the deadline', async () => {
       // A CLI-level shim on PATH cannot reliably intercept kill-port.mjs's
@@ -368,7 +372,7 @@ describe('regression-test-playbook.md sandbox lifecycle', () => {
 
       await waitForReap(listener.pid);
       expect(await isPortFree(listener.port)).toBe(true);
-    });
+    }, CLI_TEST_TIMEOUT_MS);
   });
 
   // ---------------------------------------------------------------------

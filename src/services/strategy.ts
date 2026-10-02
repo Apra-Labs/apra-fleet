@@ -1,4 +1,4 @@
-import { spawn, execSync } from 'node:child_process';
+import { spawn, execSync, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -31,11 +31,44 @@ export function buildWindowsDeleteFilesScript(folder: string, relativePaths: str
   return wrapPowerShellEncoded(psScript);
 }
 
+/** Upper bound for the synchronous local tree-kill. It runs on the server's
+ *  event loop, so an unbounded call (a slow/hung PowerShell profile, a stuck
+ *  taskkill) would freeze every other request (GitHub #562). */
+export const KILL_TREE_TIMEOUT_MS = 10_000;
+
+/**
+ * Synchronously kill a LOCAL process tree, bounded by KILL_TREE_TIMEOUT_MS.
+ *
+ * Synchronous on purpose: callers run it BEFORE child.kill() because taskkill
+ * needs the wrapper's PID alive to recurse from it (an async exec loses that
+ * race and leaves descendants running).
+ *
+ * On a Windows host taskkill.exe is invoked directly via execFileSync -- no
+ * shell at all, so no PowerShell profile load and no cmd.exe/bash parsing of
+ * the kill string (that parsing was the apra-fleet-7dir.4 gitbash bug; the
+ * shell-free call sidesteps it for every Windows shell flavour). Elsewhere the
+ * member's own killPid string runs through the shell cleanExec resolved.
+ * Best-effort: errors, including the timeout, are swallowed.
+ */
+export function killLocalProcessTree(pid: number, posixKillCommand: string, shell?: string): void {
+  try {
+    if (process.platform === 'win32') {
+      execFileSync('taskkill.exe', ['/F', '/T', '/PID', String(pid)], {
+        stdio: 'ignore', windowsHide: true, timeout: KILL_TREE_TIMEOUT_MS,
+      });
+    } else {
+      execSync(posixKillCommand, {
+        stdio: 'ignore', windowsHide: true, timeout: KILL_TREE_TIMEOUT_MS, ...(shell ? { shell } : {}),
+      });
+    }
+  } catch { /* best-effort; process may already be dead, or the kill timed out */ }
+}
+
 export interface AgentStrategy {
   execCommand(command: string, timeoutMs?: number, maxTotalMs?: number, onPidCaptured?: (pid: number) => void, abortSignal?: AbortSignal): Promise<SSHExecResult>;
   transferFiles(localPaths: string[], destinationPath?: string, abortSignal?: AbortSignal): Promise<TransferResult>;
   receiveFiles(remotePaths: string[], localDestination: string, abortSignal?: AbortSignal): Promise<TransferResult>;
-  /** Delete files relative to the agent's workFolder. Best-effort — errors are silently ignored. */
+  /** Delete files relative to the agent's workFolder. Best-effort -- errors are silently ignored. */
   deleteFiles(relativePaths: string[]): Promise<void>;
   testConnection(): Promise<{ ok: boolean; latencyMs: number; error?: string }>;
   close(): void;
@@ -84,7 +117,7 @@ class RemoteStrategy implements AgentStrategy {
         const files = relativePaths.map(p => `"${escapeDoubleQuoted(p)}"`).join(' ');
         await this.execCommand(`cd "${escapeDoubleQuoted(folder)}" && rm -f ${files}`, 10000);
       }
-    } catch { /* ignore — best-effort cleanup */ }
+    } catch { /* ignore -- best-effort cleanup */ }
   }
 
   async testConnection(): Promise<{ ok: boolean; latencyMs: number; error?: string }> {
@@ -122,15 +155,7 @@ class LocalStrategy implements AgentStrategy {
         // gets around to running taskkill, child.kill('SIGKILL') has often
         // already terminated the wrapper, and taskkill can't traverse from
         // an already-dead PID, silently leaving descendants running.
-        try {
-          // Must run through the same shell cleanExec resolved (e.g. Git
-          // Bash's bash.exe for a gitbash member) -- execSync with no
-          // `shell` option falls back to cmd.exe on Windows, which cannot
-          // parse a gitbash-flavoured kill string like
-          // `taskkill //F //T //PID <n> >/dev/null 2>&1; true`
-          // (apra-fleet-7dir.4).
-          execSync(cmds.killPid(child.pid), shell ? { stdio: 'ignore', shell } : { stdio: 'ignore' });
-        } catch { /* best-effort; process may already be dead */ }
+        killLocalProcessTree(child.pid, cmds.killPid(child.pid), shell);
       }
 
       let settled = false;
@@ -144,7 +169,7 @@ class LocalStrategy implements AgentStrategy {
         fn();
       }
 
-      // Rolling inactivity timer — resets on each stdout/stderr data event
+      // Rolling inactivity timer -- resets on each stdout/stderr data event
       let inactivityTimer: ReturnType<typeof setTimeout>;
       function resetInactivityTimer() {
         clearTimeout(inactivityTimer);
@@ -157,7 +182,7 @@ class LocalStrategy implements AgentStrategy {
       }
       resetInactivityTimer();
 
-      // Hard ceiling — never reset regardless of activity
+      // Hard ceiling -- never reset regardless of activity
       let maxTotalTimer: ReturnType<typeof setTimeout> | undefined;
       if (maxTotalMs !== undefined) {
         maxTotalTimer = setTimeout(() => {
@@ -177,7 +202,7 @@ class LocalStrategy implements AgentStrategy {
       let stdoutSpillPath: string | null = null;
       let stderrSpillPath: string | null = null;
       // StringDecoder buffers a trailing incomplete multi-byte UTF-8 sequence
-      // across chunks instead of substituting U+FFFD for it — a naive
+      // across chunks instead of substituting U+FFFD for it -- a naive
       // per-chunk `.toString()` corrupts any multi-byte character that
       // happens to straddle a stream chunk boundary (apra-fleet-grq).
       const stdoutDecoder = new StringDecoder('utf8');
@@ -239,10 +264,10 @@ class LocalStrategy implements AgentStrategy {
         if (stdoutSpillStream) stdoutSpillStream.end();
         if (stderrSpillStream) stderrSpillStream.end();
         if (stdoutSpillPath) {
-          stdout = `[OUTPUT TRUNCATED — full stdout saved to ${stdoutSpillPath}]\n${stdout}`;
+          stdout = `[OUTPUT TRUNCATED -- full stdout saved to ${stdoutSpillPath}]\n${stdout}`;
         }
         if (stderrSpillPath) {
-          stderr = `[OUTPUT TRUNCATED — full stderr saved to ${stderrSpillPath}]\n${stderr}`;
+          stderr = `[OUTPUT TRUNCATED -- full stderr saved to ${stderrSpillPath}]\n${stderr}`;
         }
         settle(() => resolve({ stdout, stderr, code: code ?? 0 }));
       };

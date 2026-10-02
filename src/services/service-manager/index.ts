@@ -1,20 +1,26 @@
 import fs from 'node:fs';
 import { SERVER_INFO_PATH } from '../../paths.js';
 import type { ServiceManager, ServiceStatus } from './types.js';
-import { isPidAlive, postShutdown } from '../../utils/process-utils.js';
+import { isApraFleetProcess, isPidAlive, postShutdown } from '../../utils/process-utils.js';
 
 export type { ServiceManager, ServiceStatus };
 
-export async function gracefulStopByServerJson(fallbackKill?: (pid: number) => void): Promise<void> {
+/**
+ * Graceful stop via server.json: POST /shutdown, then force-kill a verified
+ * apra-fleet pid. Resolves false when the server was left running because its
+ * pid could not be verified as apra-fleet; true otherwise (stopped, or nothing
+ * to stop).
+ */
+export async function gracefulStopByServerJson(fallbackKill?: (pid: number) => void): Promise<boolean> {
   let info: { pid?: number; url?: string };
   try {
     info = JSON.parse(fs.readFileSync(SERVER_INFO_PATH, 'utf8'));
   } catch {
-    return;
+    return true;
   }
   const { pid, url } = info;
-  if (!pid || !url) return;
-  if (!isPidAlive(pid)) return;
+  if (!pid || !url) return true;
+  if (!isPidAlive(pid)) return true;
 
   await postShutdown(url);
 
@@ -24,6 +30,12 @@ export async function gracefulStopByServerJson(fallbackKill?: (pid: number) => v
   }
 
   if (isPidAlive(pid)) {
+    // GitHub #584 review: never force-kill a reused pid that is no longer an
+    // apra-fleet server; leave server.json for the operator to inspect.
+    if (isApraFleetProcess(pid) !== true) {
+      console.error(`Server pid ${pid} did not exit after /shutdown and could not be verified as an apra-fleet process -- not force-killing it.`);
+      return false;
+    }
     if (fallbackKill) {
       fallbackKill(pid);
     } else {
@@ -32,6 +44,7 @@ export async function gracefulStopByServerJson(fallbackKill?: (pid: number) => v
   }
 
   try { fs.unlinkSync(SERVER_INFO_PATH); } catch {}
+  return true;
 }
 
 class NoopServiceManager implements ServiceManager {

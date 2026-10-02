@@ -28,6 +28,29 @@ does not dispatch the summary event before the state event; host-environment tes
 (stale undici install, stale dist schema, symlink privilege) and the regression-pass failures
 remain open as backlog beads.
 
+## [Unreleased] -- Server lifecycle: no random-port fallback, unresponsive-server detection (#584)
+
+- **Behaviour change -- a busy configured port is now a hard error.** If port 7523 (or
+  your `APRA_FLEET_PORT`) is already in use, the server refuses to start with an error
+  naming the port, the pid recorded in `server.json` and `APRA_FLEET_PORT`, instead of
+  silently binding a random port no MCP client could reach. If another application owns
+  7523 on your machine, set `APRA_FLEET_PORT` to a free port and re-run
+  `apra-fleet install` so your MCP clients point at it. `apra-fleet start` and
+  `apra-fleet install` check the port up front and print the same message (exit 1).
+  Under a service manager the refusing server exits 0, so systemd/launchd do not
+  restart it in a loop; the reason is in the server log and `apra-fleet status`, and
+  the service stays down until the port is freed and it is started again. "Service
+  manager" means: the `APRA_FLEET_SERVICE=1` marker that new installs set in the
+  systemd unit, launchd plist and Windows task wrapper, or (for older installs)
+  systemd's `INVOCATION_ID` / launchd's `XPC_SERVICE_NAME`. Every other launch
+  (terminal, CI, nohup, containers, scripts) exits 1. Re-run `apra-fleet install` to
+  add the marker to an existing service definition.
+- The singleton probe is tri-state (running / unresponsive / gone). A live server whose
+  `/health` does not answer (e.g. a blocked event loop) is no longer declared stopped:
+  its `server.json` is kept, `start`/`run` refuse with the pid/port and an
+  `apra-fleet stop` hint, `status` shows `State: unresponsive`, and `stop` force-stops it.
+  `server.json` is removed only when the pid is dead or the recorded port refuses TCP.
+
 ## [Unreleased] -- fleet-sprint: G-pull of a not-yet-pushed sprint branch is a no-op, not an auth failure
 
 A G-pull fetch of a sprint branch that is not on origin yet (`fatal: couldn't find remote ref`)

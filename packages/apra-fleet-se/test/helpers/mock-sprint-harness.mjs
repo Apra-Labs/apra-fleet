@@ -2311,11 +2311,13 @@ export async function runDevelopLoopScenario(tag, {
 // created the whole DAG). In both cases this harness's own post-run bead-state
 // read still needs to reflect real state -- the same exclusion set runner.js's
 // own isNoMutationDispatchFailure makes.
-const AGENT_RAN_DISPATCH_REASONS = new Set(['max_turns_exhausted', 'watchdog_timeout']);
+// 'max_total_time' too, unless the server marked it dispatched:false (the
+// budget ran out during setup, before anything was sent) -- mirrors runner.js.
+const AGENT_RAN_DISPATCH_REASONS = new Set(['max_turns_exhausted', 'watchdog_timeout', 'max_total_time']);
 
 export function isNoMutationTerminalDispatchError(err) {
     if (!err) return false;
-    if (err instanceof AgentDispatchError && err.details && AGENT_RAN_DISPATCH_REASONS.has(err.details.reason)) {
+    if (err instanceof AgentDispatchError && err.details && AGENT_RAN_DISPATCH_REASONS.has(err.details.reason) && err.details.dispatched !== false) {
         return false;
     }
     return err instanceof AgentDispatchError || err instanceof FleetTransportError;

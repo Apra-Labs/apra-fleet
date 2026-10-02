@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import http from 'node:http';
+import net from 'node:net';
 import path from 'node:path';
 import os from 'node:os';
 import { isPidAlive } from '../utils/process-utils.js';
@@ -18,58 +19,245 @@ function getLockPath(): string {
 }
 
 const STALE_LOCK_AGE_MS = 60_000;
+const HEALTH_TIMEOUT_MS = 2000;
+// Windows retries a SYN to a closed loopback port for ~2s before reporting
+// ECONNREFUSED, so a shorter timeout would misread "refused" as "timeout".
+const TCP_PROBE_TIMEOUT_MS = 3000;
+
+/**
+ * Singleton probe is tri-state (GitHub #584):
+ *  - running:      pid alive and /health answered 200.
+ *  - unresponsive: pid alive and the recorded port still accepts TCP, but
+ *                  /health did not answer -- e.g. a server whose event loop is
+ *                  blocked. It is NOT dead: server.json is kept and launchers
+ *                  must refuse to start a second server on this data dir.
+ *  - gone:         no server.json, or its pid is dead, or the recorded port
+ *                  refuses TCP. Only this state unlinks server.json.
+ */
+export type InstanceState = 'running' | 'unresponsive' | 'gone';
 
 export interface RunningInstance {
   running: true;
+  state: 'running';
   url: string;
   pid: number;
   /** Version reported by the running server's server.json, or undefined if it predates this field. */
   version?: string;
 }
 
-export type InstanceCheckResult = RunningInstance | { running: false };
+export interface UnresponsiveInstance {
+  running: false;
+  state: 'unresponsive';
+  url: string;
+  pid: number;
+  port?: number;
+  version?: string;
+}
+
+export interface GoneInstance {
+  running: false;
+  state: 'gone';
+  /**
+   * Set when this probe found (and removed) a stale server.json -- a server
+   * that died without the clean shutdown that unlinks it (GitHub #585).
+   */
+  previous?: PreviousServer;
+}
+
+/** What a stale server.json and its pid's log say about how that server ended. */
+export interface PreviousServer {
+  pid: number;
+  startedAt?: string;
+  /** ts of the last line in logs/fleet-<pid>.log (or the file's mtime). */
+  lastLogAt?: string;
+  /** reason of the {"tag":"shutdown"} record in that log, if one was written. */
+  shutdownReason?: string;
+}
+
+export type InstanceCheckResult = RunningInstance | UnresponsiveInstance | GoneInstance;
 
 export interface StartupLock {
   acquired: boolean;
   release: () => void;
 }
 
-function checkHealthEndpoint(url: string): Promise<boolean> {
+// 'foreign': something answered HTTP with a non-200 -- a blocked fleet server
+// cannot answer at all, so the port belongs to someone else.
+type HealthResult = 'ok' | 'refused' | 'foreign' | 'failed';
+
+function checkHealthEndpoint(url: string): Promise<HealthResult> {
   const healthUrl = url.replace(/\/mcp$/, '/health');
   return new Promise((resolve) => {
-    const req = http.get(healthUrl, { timeout: 2000 }, (res) => {
+    let settled = false;
+    const finish = (r: HealthResult) => { if (!settled) { settled = true; resolve(r); } };
+    const req = http.get(healthUrl, { timeout: HEALTH_TIMEOUT_MS }, (res) => {
       res.resume(); // drain response body
-      resolve(res.statusCode === 200);
+      finish(res.statusCode === 200 ? 'ok' : 'foreign');
     });
-    req.on('error', () => resolve(false));
-    req.on('timeout', () => { req.destroy(); resolve(false); });
+    req.on('error', (err: NodeJS.ErrnoException) => finish(err.code === 'ECONNREFUSED' ? 'refused' : 'failed'));
+    req.on('timeout', () => { finish('failed'); req.destroy(); });
   });
+}
+
+export type TcpProbeResult = 'open' | 'refused' | 'timeout' | 'error';
+
+/**
+ * Plain TCP connect probe. A server whose event loop is blocked still accepts
+ * connections (the kernel completes the handshake into the listen backlog),
+ * so 'open' means "something is listening", independent of whether it answers.
+ */
+export function probeTcpPort(port: number, host = '127.0.0.1', timeoutMs = TCP_PROBE_TIMEOUT_MS): Promise<TcpProbeResult> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (r: TcpProbeResult) => {
+      if (settled) return;
+      settled = true;
+      try { sock.destroy(); } catch { /* ignore */ }
+      resolve(r);
+    };
+    const sock = net.connect({ port, host });
+    sock.setTimeout(timeoutMs);
+    sock.once('connect', () => finish('open'));
+    sock.once('timeout', () => finish('timeout'));
+    sock.once('error', (err: NodeJS.ErrnoException) => finish(err.code === 'ECONNREFUSED' ? 'refused' : 'error'));
+  });
+}
+
+/**
+ * True when <host>:<port> cannot be bound because it is already in use -- the
+ * exact failure the HTTP server would hit. A bind probe (not a connect probe):
+ * instant on every OS, where a refused connect takes ~2s on Windows.
+ */
+export function isPortInUse(port: number, host = '127.0.0.1'): Promise<boolean> {
+  return new Promise((resolve) => {
+    const srv = net.createServer();
+    srv.once('error', (err: NodeJS.ErrnoException) => resolve(err.code === 'EADDRINUSE'));
+    srv.listen(port, host, () => { srv.close(() => resolve(false)); });
+  });
+}
+
+function portFromUrl(url: string): number | undefined {
+  try {
+    const p = Number(new URL(url).port);
+    return Number.isFinite(p) && p > 0 ? p : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+const LOG_TAIL_BYTES = 64 * 1024;
+
+/** Inspect logs/fleet-<pid>.log for how a (dead) server ended. Never throws. */
+export function inspectPreviousServer(pid: number, startedAt?: string): PreviousServer {
+  const prev: PreviousServer = { pid, ...(startedAt ? { startedAt } : {}) };
+  const logFile = path.join(getFleetDir(), 'logs', `fleet-${pid}.log`);
+  let fd: number | undefined;
+  try {
+    const st = fs.statSync(logFile);
+    fd = fs.openSync(logFile, 'r');
+    const len = Math.min(st.size, LOG_TAIL_BYTES);
+    const buf = Buffer.alloc(len);
+    fs.readSync(fd, buf, 0, len, st.size - len);
+    const lines = buf.toString('utf8').split('\n').filter((l) => l.trim());
+    for (let i = lines.length - 1; i >= 0; i--) {
+      try {
+        const rec = JSON.parse(lines[i]) as { ts?: unknown; tag?: unknown; reason?: unknown };
+        if (prev.lastLogAt === undefined && typeof rec.ts === 'string') prev.lastLogAt = rec.ts;
+        if (rec.tag === 'shutdown' && typeof rec.reason === 'string') { prev.shutdownReason = rec.reason; break; }
+      } catch { /* partial first line of the tail window */ }
+    }
+    if (prev.lastLogAt === undefined) prev.lastLogAt = new Date(st.mtimeMs).toISOString();
+  } catch {
+    // no log for that pid
+  } finally {
+    if (fd !== undefined) { try { fs.closeSync(fd); } catch { /* ignore */ } }
+  }
+  return prev;
+}
+
+/**
+ * Operator-facing note about a previous server that left a stale server.json
+ * behind (a clean shutdown removes it), or null when there is nothing to say.
+ */
+export function describePreviousServer(prev: PreviousServer | undefined): string | null {
+  if (!prev) return null;
+  const started = prev.startedAt ?? 'unknown';
+  const last = prev.lastLogAt ?? 'no log';
+  if (!prev.shutdownReason) {
+    return `previous server pid ${prev.pid} (started ${started}, last log ${last}) exited without a shutdown record`;
+  }
+  return `previous server pid ${prev.pid} (started ${started}, last log ${last}) exited after shutdown reason "${prev.shutdownReason}" without removing server.json`;
 }
 
 export async function checkRunningInstance(): Promise<InstanceCheckResult> {
   const serverInfoPath = getServerInfoPath();
-  let info: { pid?: number; url?: string; version?: string };
+  let info: { pid?: number; url?: string; port?: number; version?: string; startedAt?: string };
   try {
     const raw = fs.readFileSync(serverInfoPath, 'utf8');
     info = JSON.parse(raw);
   } catch {
-    return { running: false };
+    return { running: false, state: 'gone' };
   }
 
-  if (!info.pid || !info.url) return { running: false };
+  if (!info.pid || !info.url) return { running: false, state: 'gone' };
 
   if (!isPidAlive(info.pid)) {
+    // Read how it ended BEFORE removing the evidence (GitHub #585).
+    const previous = inspectPreviousServer(info.pid, info.startedAt);
     try { fs.unlinkSync(serverInfoPath); } catch {}
-    return { running: false };
+    return { running: false, state: 'gone', previous };
   }
 
-  const healthy = await checkHealthEndpoint(info.url);
-  if (!healthy) {
-    try { fs.unlinkSync(serverInfoPath); } catch {}
-    return { running: false };
+  const health = await checkHealthEndpoint(info.url);
+  if (health === 'ok') {
+    return { running: true, state: 'running', url: info.url, pid: info.pid, version: info.version };
   }
 
-  return { running: true, url: info.url, pid: info.pid, version: info.version };
+  // Live pid but no /health answer. Only a refused TCP connect on the
+  // recorded port proves the server is gone (e.g. the pid was reused by an
+  // unrelated process); a timeout or an accepted connect means a live but
+  // unresponsive server, whose server.json must survive.
+  const port = typeof info.port === 'number' && info.port > 0 ? info.port : portFromUrl(info.url);
+  let host = '127.0.0.1';
+  try { host = new URL(info.url).hostname || host; } catch { /* keep loopback */ }
+  if (health === 'refused' || health === 'foreign' || (port !== undefined && (await probeTcpPort(port, host)) === 'refused')) {
+    const previous = inspectPreviousServer(info.pid, info.startedAt);
+    try { fs.unlinkSync(serverInfoPath); } catch {}
+    return { running: false, state: 'gone', previous };
+  }
+  return { running: false, state: 'unresponsive', url: info.url, pid: info.pid, port, version: info.version };
+}
+
+/** pid recorded in this data dir's server.json, if any (no liveness check, never deletes). */
+export function readServerInfoPid(): number | undefined {
+  try {
+    const info = JSON.parse(fs.readFileSync(getServerInfoPath(), 'utf8')) as { pid?: unknown };
+    return typeof info.pid === 'number' ? info.pid : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Operator-facing refusal for a live-but-unresponsive server. */
+export function unresponsiveInstanceMessage(inst: UnresponsiveInstance): string {
+  const portStr = inst.port !== undefined ? ` port ${inst.port}` : '';
+  return `apra-fleet server pid ${inst.pid}${portStr} (${inst.url}) is alive but not answering /health. `
+    + 'Refusing to start a second server on the same data dir. '
+    + 'Run "apra-fleet stop" to stop it, then start again.';
+}
+
+/**
+ * Operator-facing error for a configured port that is already taken. The
+ * server never falls back to a random port: configured MCP clients only know
+ * the configured port, so a silent fallback produces an unreachable server.
+ */
+export function portInUseMessage(port: number, holderPid?: number): string {
+  const holder = holderPid !== undefined
+    ? `server.json in this data dir records apra-fleet pid ${holderPid}`
+    : 'server.json in this data dir records no apra-fleet server (holder pid: none)';
+  return `Port ${port} is already in use; apra-fleet cannot start its server there (${holder}). `
+    + `Free port ${port} (if it is a hung apra-fleet server, run "apra-fleet stop"), `
+    + 'or set APRA_FLEET_PORT to a free port and re-run "apra-fleet install" so MCP clients point at it.';
 }
 
 export function claimStartupLock(): StartupLock {
