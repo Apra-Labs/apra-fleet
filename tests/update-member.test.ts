@@ -95,7 +95,7 @@ describe('updateMember', () => {
 
     // Changing agent2's host to 10.0.0.1 would collide with agent1
     const result = await updateMember({ member_id: agent2.id, host: '10.0.0.1' });
-    expect(result).toContain('Another member already uses folder "/srv/app" on host 10.0.0.1:22');
+    expect(result).toContain('already uses folder "/srv/app" on host 10.0.0.1:22');
   });
 
   it('rejects port change that creates a duplicate host+port+folder', async () => {
@@ -106,7 +106,7 @@ describe('updateMember', () => {
 
     // Changing agent2's port to 2222 would collide with agent1
     const result = await updateMember({ member_id: agent2.id, port: 2222 });
-    expect(result).toContain('Another member already uses folder "/srv/app" on host 10.0.0.1:2222');
+    expect(result).toContain('already uses folder "/srv/app" on host 10.0.0.1:2222');
   });
 
   it('allows host change when no collision exists', async () => {

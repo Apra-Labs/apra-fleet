@@ -28,6 +28,36 @@ in v0.5.
     child process spawns. A deprecated alias yields a `warnings[]` array in the response. The
     original map (alias intact) is passed to the child so the child's own run log also warns.
     A string `@file` roleMap is rejected with 400 over HTTP (file expansion is CLI-only).
+- **Supervisor launches hard-pin the backlog role.** `fleet-se serve` ensures its own LLM-less,
+  `unreservable` backlog member for its project folder at startup
+  (`src/supervisor/backlog-member.mjs`). `POST /api/sprints` then injects that member as
+  `backlog` when the request names no backlog role, accepts it when named (via either
+  spelling), rejects any other member with 400 on field `roleMap`, and answers 503 when the
+  backlog member is degraded or the fleet member list cannot be read. Launch-time
+  auto-selection (`selectBacklogMember`) therefore only applies to direct CLI/runner launches.
+- **Backlog member ensure semantics.** At startup the supervisor looks for an existing local
+  member by work folder (case-insensitive on Windows; MSYS-style paths and a trailing `.beads`
+  segment are accepted), regardless of tags. A match is adopted: it keeps its name, gains the
+  `backlog` tag (existing tags are preserved, since `update_member` replaces the whole list) and
+  is made `unreservable` if it is not. With no match, `backlog-<camelCaseFolder>` is registered
+  with `llm_provider: none`, `unreservable` and the `backlog` tag. An LLM member at that folder
+  is left alone and logged: it cannot be the backlog member (only an LLM-less member can be
+  `unreservable`), so the LLM-less one is adopted or registered next to it -- the registry
+  allows one LLM member and one LLM-less member per folder. If the fleet is unreachable the
+  supervisor starts in degraded
+  mode, answers launches with 503 and retries in the background until ready.
+- **Unreadable member list is a hidden signal.** `listFleetMembers` returns its usual
+  `{ members: [] }` shape when the fleet list cannot be read, and marks that case with a
+  non-enumerable symbol-keyed property carrying the reason. The pin reads it to answer 503
+  ("cannot verify backlog member"); existing callers never see it. Do not simplify the return
+  value to drop the flag, or the 503 path silently turns into an empty-roster 400.
+- **Overlap-guard caveat.** The member-overlap/reservation check runs on the roleMap before the
+  backlog member is injected, so the injected member is never checked. This is safe only
+  because the backlog member is `unreservable`; relaxing that requires moving injection ahead
+  of the check.
+- **Direct-launch selection order.** `selectBacklogMember` is the single selector used by the
+  CLI and the runner: explicit `backlog`, then the first member mapped to no role, then the
+  first doer, then the first member. It logs the chosen member and the reason.
 - **Member tags are labels only.** No code reads member tags, so the `orchestrator` tag alias is
   documentation only and can never produce a warning.
 - **Internal identifiers use `backlog`.** Role-sense identifiers (for example the former

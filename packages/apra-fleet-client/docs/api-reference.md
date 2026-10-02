@@ -396,7 +396,7 @@ Calls `register_member` -- adds a machine to the fleet.
 | Field | Type | Notes |
 |---|---|---|
 | `friendly_name` | `string` | Required. Human-friendly name for this member (1-64 chars, alphanumeric, dots, dashes, underscores only). |
-| `work_folder` | `string` | Required. Working directory on the target machine. For remote members, must be a fully-qualified/absolute path (e.g. `/home/bella/repo` or `C:\Users\bella\repo`) -- tilde and relative paths are rejected. |
+| `work_folder` | `string` | Required. Working directory on the target machine. For remote members, must be a fully-qualified/absolute path (e.g. `/home/bella/repo` or `C:\Users\bella\repo`) -- tilde and relative paths are rejected. A folder may hold at most one LLM member and one LLM-less (llm_provider none) member. |
 | `member_type` | `"local" \| "remote"?` | Member type (default: `"remote"`). |
 | `host` | `string?` | IP address or hostname of the remote machine. |
 | `port` | `number?` | SSH port (default: 22). |
@@ -440,7 +440,7 @@ error naming the key (the member is not updated) -- they are no longer silently 
 | `member_name` | `string?` | Friendly name of the member. |
 | `fleet_install` | `"auto" \| "skip"?` | `"auto"`: for a remote member, probe it and install/upgrade its own apra-fleet when missing or older than the orchestrator (build-aware: same-core different builds upgrade, newer cores never downgrade), self-register and verify, even when nothing else changed; the result includes the `fleetMcp` line (then `member_detail` with `refresh: true`). `"skip"`: no install. Omitted: install only on a provider change. |
 | `friendly_name` | `string?` | New friendly name. |
-| `work_folder` | `string?` | New working directory. For non-local (remote/relay) members, must be a fully-qualified/absolute path (e.g. `/home/bella/repo` or `C:\Users\bella\repo`) -- tilde and relative paths are rejected. A real change removes what `compose_permissions` wrote in the OLD folder (per-folder `apra-fleet` MCP entry, permission keys, `.git/info/exclude` lines) and re-runs `compose_permissions`, so the new folder gets its `?member=<uuid>` entry at once. |
+| `work_folder` | `string?` | New working directory. For non-local (remote/relay) members, must be a fully-qualified/absolute path (e.g. `/home/bella/repo` or `C:\Users\bella\repo`) -- tilde and relative paths are rejected. A folder may hold at most one LLM member and one LLM-less (llm_provider none) member. A real change removes what `compose_permissions` wrote in the OLD folder (per-folder `apra-fleet` MCP entry, permission keys, `.git/info/exclude` lines) and re-runs `compose_permissions`, so the new folder gets its `?member=<uuid>` entry at once. |
 | `host` | `string?` | New host (remote members only). |
 | `port` | `number?` | New SSH port (remote members only). |
 | `username` | `string?` | New SSH username (remote members only). |
