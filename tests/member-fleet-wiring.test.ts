@@ -6,15 +6,21 @@
  * registry state lives in the backed-up/restored test registry.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { backupAndResetRegistry, restoreRegistry, makeConfigAwareExec, makeTestAgent, makeTestLocalAgent, decodePowerShellEncodedCommand } from './test-helpers.js';
+import { REGISTRY_PATH, backupAndResetRegistry, restoreRegistry, makeConfigAwareExec, makeTestAgent, makeTestLocalAgent, decodePowerShellEncodedCommand } from './test-helpers.js';
 import { registerMember } from '../src/tools/register-member.js';
-import { updateMember } from '../src/tools/update-member.js';
+import { updateMember, updateMemberSchema } from '../src/tools/update-member.js';
 import { removeMember } from '../src/tools/remove-member.js';
 import { memberDetail } from '../src/tools/member-detail.js';
 import { fleetStatus } from '../src/tools/check-status.js';
 import { addAgent, getAgent, getAllAgents, recordFleetMcpStatus } from '../src/services/registry.js';
 import { __setMemberFleetMcpDeps, NO_INSTALL_SENTINEL, type MemberFleetMcpDeps, type MemberSession } from '../src/services/member-fleet-install.js';
 import type { SSHExecResult } from '../src/types.js';
+import fs from 'node:fs';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { registerAllTools } from '../src/services/tool-registry.js';
+
 
 const mockExecCommand = vi.fn<(cmd: string, timeout?: number) => Promise<SSHExecResult>>();
 const mockTestConnection = vi.fn();
@@ -374,6 +380,109 @@ describe('update_member', () => {
     const a = remoteMember();
     await updateMember({ member_id: a.id, category: 'doers' } as any);
     expect(w.log).toEqual([]);
+  });
+});
+
+// update_member fleet_install (regression guard: removing fleet_install from
+// updateMemberSchema, or registering update_member with a non-strict schema,
+// makes the "schema accepts" and "unknown key" cases below fail; both confirmed
+// locally by temporary revert).
+describe('update_member fleet_install', () => {
+  it('auto on a member with an older apra-fleet runs the installer with no other change and records fleetMcp', async () => {
+    for (const old of ['v0.4.3', 'v0.4.4_aaaaaa']) { // older core; same core, different build (executable source)
+      const w = newWorld({ installed: old });
+      __setMemberFleetMcpDeps(withRealRecord(fakeDeps(w)));
+      const a = remoteMember({ friendlyName: `up-${old}` });
+      const result = await updateMember({ member_id: a.id, fleet_install: 'auto' } as any);
+      expect(installCmds(w)).toHaveLength(1);
+      expect(result).toContain(`fleetMcp: available (apra-fleet ${VERSION})`);
+      expect(getAgent(a.id)!.fleetMcp).toMatchObject({ state: 'available', version: VERSION });
+    }
+  });
+
+  it('the strict MCP schema accepts fleet_install auto|skip and rejects other values', () => {
+    expect(updateMemberSchema.strict().safeParse({ member_id: 'x', fleet_install: 'auto' }).success).toBe(true);
+    expect(updateMemberSchema.strict().safeParse({ member_id: 'x', fleet_install: 'skip' }).success).toBe(true);
+    expect(updateMemberSchema.strict().safeParse({ member_id: 'x', fleet_install: 'force' }).success).toBe(false);
+  });
+
+  it('auto on an up-to-date member does not run the installer', async () => {
+    const w = newWorld();
+    __setMemberFleetMcpDeps(withRealRecord(fakeDeps(w)));
+    const a = remoteMember();
+    const result = await updateMember({ member_id: a.id, fleet_install: 'auto' } as any);
+    expect(installCmds(w)).toEqual([]);
+    expect(result).toContain('fleetMcp: available');
+  });
+
+  it('skip never runs the installer, even for an outdated member', async () => {
+    const w = newWorld({ installed: 'v0.4.3' });
+    __setMemberFleetMcpDeps(withRealRecord(fakeDeps(w)));
+    const a = remoteMember();
+    await updateMember({ member_id: a.id, fleet_install: 'skip' } as any);
+    expect(installCmds(w)).toEqual([]);
+  });
+
+  it('omitting fleet_install with no provider/name/folder change does no fleetMcp refresh at all', async () => {
+    const w = newWorld({ installed: 'v0.4.3' });
+    __setMemberFleetMcpDeps(withRealRecord(fakeDeps(w)));
+    const a = remoteMember();
+    await updateMember({ member_id: a.id, category: 'doers' } as any);
+    expect(w.log).toEqual([]);
+  });
+
+  it('an unknown input key through the MCP-registered tool is an error naming the key, registry unchanged', async () => {
+    const w = newWorld({ installed: 'v0.4.3' });
+    __setMemberFleetMcpDeps(withRealRecord(fakeDeps(w)));
+    const a = remoteMember();
+    const before = fs.readFileSync(REGISTRY_PATH, 'utf8');
+    const server = new McpServer({ name: 'um-test', version: '0.0.0' }, { capabilities: { logging: {} } });
+    await registerAllTools(server);
+    const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverSide);
+    const client = new Client({ name: 'um-client', version: '0.0.0' }, { capabilities: {} });
+    await client.connect(clientSide);
+    try {
+      let text = '';
+      try {
+        const r = await client.callTool({ name: 'update_member', arguments: { member_id: a.id, fleet_instal: 'auto' } });
+        expect(r.isError).toBe(true);
+        text = ((r.content as Array<{ text?: string }>) ?? []).map(c => c.text ?? '').join('\n');
+      } catch (e: any) {
+        text = String(e?.message ?? e);
+      }
+      expect(text).toContain('fleet_instal');
+      expect(fs.readFileSync(REGISTRY_PATH, 'utf8')).toBe(before);
+      expect(w.log).toEqual([]);
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+});
+
+describe('member_detail fleetMcp fix lines name the update path', () => {
+  it.each(['register-failed', 'install-too-old'] as const)('%s names update_member and fleet_install', async reason => {
+    const a = remoteMember({ friendlyName: `fix-${reason}`, workFolder: `${WORK}-${reason}`, fleetMcp: { state: 'unavailable', reason, detail: 'x', checkedAt: 'x' } });
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 3 });
+    const text = await memberDetail({ member_id: a.id, format: 'compact' } as any);
+    const fix = text.split('\n').find(l => l.includes('fleetMcp fix:'));
+    expect(fix).toContain('update_member');
+    expect(fix).toContain('fleet_install');
+  });
+});
+
+describe('CHANGELOG member-upgrade Upgrade lines', () => {
+  it('every Upgrade line that tells users to upgrade a member via update_member names fleet_install', () => {
+    const text = fs.readFileSync(new URL('../CHANGELOG.md', import.meta.url), 'utf8');
+    const start = text.indexOf('## [Unreleased]');
+    const unreleased = text.slice(start, text.indexOf('\n## ', start + 5));
+    const upgradeLines = unreleased.split('\n').filter(l => /Upgrade:/.test(l) && /update_member/.test(l) && /apra-fleet|member/.test(l));
+    expect(upgradeLines.length).toBeGreaterThan(0);
+    for (const l of upgradeLines) {
+      if (/code_intel_provider|re-compose|work folder/.test(l)) continue;
+      expect(l, l.slice(0, 80)).toContain('fleet_install');
+    }
   });
 });
 
