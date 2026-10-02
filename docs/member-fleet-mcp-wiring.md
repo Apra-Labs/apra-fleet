@@ -41,11 +41,28 @@ Compose edits files the user may own, so it never destroys them:
 ## Member-side install
 
 `register_member` and `update_member` ensure a remote member runs its own
-apra-fleet, at least as new as the orchestrator, installed in HTTP member mode
+apra-fleet (`update_member` installs or upgrades only on a provider change or when
+called with `fleet_install: "auto"`), at least as new as the orchestrator, installed in HTTP member mode
 (server and auto-start only). `remove_member` undoes the wiring.
 
 - Version probe on the member's own install; on PowerShell the exit code is read
   from `$LASTEXITCODE`.
+- Outdated rule (`isMemberOutdated`): an older version core is always outdated
+  and a newer core never is, so a member is never downgraded. At the same core, a
+  different build suffix (`v0.4.4_aaaaaa` vs `v0.4.4_bbbbbb`) counts as outdated
+  only when the install source is the orchestrator's own executable. A
+  release-asset source installs the release build of the core, so treating a
+  same-core member as outdated would reinstall on every registration and then
+  fail verification as `install-unverified`; there a same-core member is up to
+  date. The post-install verification uses the same rule. Versions without a
+  suffix keep equal = up to date.
+- `update_member` is registered with a strict input schema: an unknown or
+  misspelled key is rejected at the MCP layer with an error naming the key,
+  before the handler runs, and the member registry is left unchanged. `fleet_install`
+  is `auto` (install or upgrade even when nothing else changed, remote members
+  only) or `skip` (never install, even on a provider change); omitting it keeps
+  the provider-change-only default. The `fleetMcp fix:` lines name
+  `update_member {member_id, fleet_install: "auto"}` as the remedy.
 - Install source: copy the running executable (the orchestrator's
   single-executable binary) when the member has the same OS and arch;
   otherwise download the release asset for the orchestrator's version;
@@ -95,54 +112,53 @@ probes, so it stays cheap.
 - Any change to the member tools surface must update the client package and the
   memory-contract in the same change.
 
-## Member-install marker and pre-marker members
+## Member-install marker: the only ownership signal
 
 `install --member` writes a marker (`~/.apra-fleet/data/member-install.json`)
-recording that the running server was started by a member install; `--force`
-stops only a server that carries it.
+recording that the install is a member install; a full install clears it.
+`install --member --force` stops only a running server whose install carries
+the marker, and refuses any other with `E-FULL-INSTALL-RUNNING`.
 
-A remote member installed by a build that predates the marker (the pre-marker
-case) has none, so the fleet's install (`install --member --force`) is refused
-with `E-FULL-INSTALL-RUNNING`. The fleet then retries the install exactly once,
-pre-marker case only, with `--force-stop-full-install` appended, but only when
-one of two ownership signals shows the fleet owns that install (see
-`fleetPreviouslyInstalled` and `memberRegistryHoldsId` in
-`src/services/member-fleet-install.ts`):
+The fleet treats the marker as the ONLY sign that the apra-fleet at
+`<home>/.apra-fleet/bin` (the same path a human full install uses) is its own
+(`memberHasInstallMarker` in `src/services/member-fleet-install.ts`; an
+existence check, path built in JS from the probed home, `test -f` or
+PowerShell `Test-Path -LiteralPath ... -PathType Leaf` per the member's shell):
 
-1. `fleetInstalledAt` (fast path, no member command): the member's recorded
-   `fleetMcp` carries a timestamp stamped only when this fleet's own install
-   run succeeded and carried across later probes, including
-   `compose_permissions` writes. A refusal, `member_detail refresh`, or any
-   observation-only probe never sets it, and `fleetMcp.version` is not the
-   signal (a human full install reports a version at the same path). The
-   client `FleetMcpStatus` typedef lists the field.
-2. Member registry uuid signal (checked only after a refusal): the member's
-   OWN apra-fleet registry, `<home>/.apra-fleet/data/registry.json`, holds a
-   LOCAL-type entry whose `id` equals this member's fleet uuid. Only the fleet's
-   earlier self-registration (`register-member --type local --id <uuid>`)
-   creates that entry; a human full install does not hold the
-   orchestrator-assigned uuid. A REMOTE-type entry with the uuid does not count:
-   it is the orchestrator's own record of the member, which the read returns when
-   the "remote" member is the orchestrator's own host and user -- counting it
-   would send the override at the orchestrator itself.
-   The file is read directly (path built in JS from the probed home, POSIX or
-   PowerShell form per the member's shell, no shell expansion) rather than
-   through the installed binary, because a pre-marker build may predate CLI
-   subcommands. This is the signal that covers real pre-marker members, whose
-   older build never wrote `fleetInstalledAt`.
+- An existing install is upgraded (`install --member` run over it) only when
+  it carries the marker; an unmarked one is never installed over, even when
+  its server is not running (no refusal would fire then). A member with no
+  apra-fleet at all is installed normally.
+- Self-registration (`register-member --type local --id <uuid>`) runs only
+  into a marked install, or right after the fleet's own successful
+  `install --member` in the same probe. An unmarked install is never written
+  to, so the fleet cannot plant a registry entry in a human's install.
+- The fleet never sends `--force-stop-full-install`. A refused member install
+  leaves the running server alone.
+- Either case records `fleetMcp` `unavailable(full-install-running)` with a
+  detail naming the takeover command below.
 
-If the retry fails too, its own typed reason is recorded (the detail notes it
-was retried once with `--force-stop-full-install`).
+Why no other signal: an unmarked install is either a human full install or a
+member install made by a build older than the marker, and nothing on the member
+tells them apart. Builds before stage 6 self-registered into any up-to-date
+install, so a LOCAL registry entry for this member's uuid can sit in a human's
+install too; `fleetInstalledAt` stays set after a human runs a full install
+over a fleet install (which clears the marker). Counting either as ownership
+would stop the human server on a core bump, and since the stage 6 build-aware
+check, on every same-core orchestrator rebuild. `fleetInstalledAt` is still
+recorded (and carried across probes and `compose_permissions` writes) as an
+observation only.
 
-A member with neither signal gets no override: the install is refused once,
-recorded as `full-install-running`, and a human full install on that host is
-never stopped. A missing, empty, unreadable or unparseable member registry, or
-one that lists only other member ids, counts as no signal. For a member the
-fleet did not install (or whose registry entry was re-created under a new
-uuid, e.g. by `remove_member` + `register_member`), run once on the member
-(pre-marker manual override):
+One-time takeover: an owner who wants the fleet to manage an unmarked install
+(a pre-marker member install on a dogfood host, or a full install they give
+up) runs once on the member
 
     apra-fleet install --member --force --force-stop-full-install
+
+which stops its running server and writes the marker, then calls
+`update_member` `{member_id, fleet_install: "auto"}` and `member_detail` with
+`refresh: true`. No released build shipped member installs, so only dogfood
+hosts can hold an unmarked member install.
 
 ## Compose and member lifecycle invariants
 

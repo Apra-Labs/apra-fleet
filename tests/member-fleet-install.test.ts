@@ -32,6 +32,8 @@ interface FakeMember {
   /** Version the installer leaves behind when it runs. */
   installsVersion: string;
   installerExit?: number;
+  /** The member-install marker exists (default true: a fleet member install). */
+  marker?: boolean;
   execLog: string[];
   transfers: { localPaths: string[]; dest: string }[];
   downloads: string[];
@@ -59,6 +61,7 @@ function fakeDeps(member: FakeMember, opts: {
           : `apra-fleet ${member.version}\n  Mode:   sea\n  Binary: /x\n`);
       }
       if (text.includes('uname -m') || text.includes('PROCESSOR_ARCHITECTURE')) return ok(`${member.arch}\n`);
+      if (text.includes('member-install.json')) return member.marker === false ? { stdout: '', stderr: '', code: 1 } : ok('');
       if (text.includes(' install') || text.includes("'install'")) {
         const code = member.installerExit ?? 0;
         if (code === 0) member.version = member.installsVersion;
@@ -198,10 +201,12 @@ describe('up-to-date vs older installs', () => {
     expect(m.execLog.some(c => c.includes("'install'"))).toBe(false);
   });
 
-  it('a newer member install (or a dev build of the same version) is not reinstalled', async () => {
+  it('a newer member install (or a same-core build when only the release asset is reachable) is not reinstalled', async () => {
+    // Same-core build differences with an orchestrator-executable source are covered
+    // in member-fleet-install-build-suffix.test.ts.
     for (const v of ['v0.5.0', 'v0.4.4_abc123']) {
       const m = newMember({ version: v });
-      const r = await ensureMemberFleetInstall(makeTestAgent({ os: 'linux' }), fakeDeps(m, { orchestrator: LINUX_X64, executable: '/opt/fleet/apra-fleet' }));
+      const r = await ensureMemberFleetInstall(makeTestAgent({ os: 'linux' }), fakeDeps(m, { orchestrator: LINUX_X64, executable: null }));
       expect(r).toMatchObject({ state: 'available', installed: false, version: v });
     }
   });

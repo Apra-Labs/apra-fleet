@@ -6,7 +6,7 @@ import { assertNoRemovedKbScopeKeys } from './knowledge/kb-removed-scope-keys.js
 export type { ToolScope } from './tool-scope.js';
 
 /**
- * Wrap a session's McpServer so every server.tool(...) registration below goes
+ * Wrap a session's McpServer so every server.tool(...)/registerTool(...) registration below goes
  * through the scope gate: an out-of-scope tool is simply never registered
  * (deny by omission -- absent from tools/list, unknown when called). Every
  * other property is forwarded to the real server unchanged.
@@ -19,6 +19,12 @@ function scopeGatedServer(base: McpServer, scope: ToolScope): McpServer {
         return (name: string, ...rest: unknown[]) => {
           if (!isToolInScope(name, scope)) return undefined;
           return (target.tool as (...args: unknown[]) => unknown).call(target, name, ...rest);
+        };
+      }
+      if (prop === 'registerTool') {
+        return (name: string, ...rest: unknown[]) => {
+          if (!isToolInScope(name, scope)) return undefined;
+          return (target.registerTool as (...args: unknown[]) => unknown).call(target, name, ...rest);
         };
       }
       return Reflect.get(target, prop, receiver);
@@ -174,7 +180,21 @@ export async function registerAllTools(baseServer: McpServer, scope: ToolScope =
   server.tool('list_members', 'List all fleet members and their current status. Use format="json" for structured data. Use tags=["gpu"] to filter to members that have ALL specified tags (AND semantics); omit tags to return all members.', listMembersSchema.shape, wrapTool('list_members', (input) => listMembers(input as any)));
   server.tool('get_member_model_pricing', "Returns a member's cheap/standard/premium tier resolved to a concrete model and its per-1M-token price (prompt/completion), for real per-dispatch cost tracking instead of a tier-band estimate. A tier is null when its resolved model has no known price.", getMemberModelPricingSchema.shape, wrapTool('get_member_model_pricing', (input) => getMemberModelPricing(input as any)));
   server.tool('remove_member', 'Remove a member from the fleet.', removeMemberSchema.shape, wrapTool('remove_member', (input) => removeMember(input as any)));
-  server.tool('update_member', "Change a member's name, connection details, working directory, AI provider, tags, or other settings.", updateMemberSchema.shape, wrapTool('update_member', (input) => updateMember(input as any)));
+  // Registered with a STRICT object schema (registerTool, not .tool(<shape>)): the
+  // SDK wraps a raw shape in a non-strict object that silently strips unknown
+  // keys, so a typo such as fleet_instal would be dropped and the member updated
+  // without it. Strict makes the MCP call fail naming the unknown key instead.
+  // Minimal test doubles that only implement .tool() get the plain shape.
+  const updateMemberDescription = "Change a member's name, connection details, working directory, AI provider, tags, or other settings. Unknown input keys are rejected. Pass fleet_install: \"auto\" to upgrade the member's own apra-fleet when it is missing or older.";
+  const updateMemberHandler = wrapTool('update_member', (input) => updateMember(input as any));
+  if (typeof (server as { registerTool?: unknown }).registerTool === 'function') {
+    server.registerTool('update_member', {
+      description: updateMemberDescription,
+      inputSchema: updateMemberSchema.strict(),
+    }, updateMemberHandler as any);
+  } else {
+    server.tool('update_member', updateMemberDescription, updateMemberSchema.shape, updateMemberHandler);
+  }
   server.tool('dolt_push_mutex', 'Global cross-sprint dolt push mutex hosted on the fleet server, so sprints launched WITHOUT a supervisor still serialize their `bd dolt push` calls. "acquire" enqueues (FIFO) and returns {granted, ticket, token?}; "poll" re-checks a ticket without losing its queue position; "release"/"renew" are token-guarded; "cancel" drops a ticket; "status" snapshots holder + queue.', doltPushMutexSchema.shape, wrapTool('dolt_push_mutex', (input) => doltPushMutex(input as any)));
   server.tool('child_id_allocator', 'Global child-bead-id allocator hosted on the fleet server, so sprints launched WITHOUT a supervisor never mint the same child id under a shared parent. "allocate" reserves the next id under parent_id (lease + pid guarded); "confirm" commits it after a successful create; "release" returns an unused id to the free pool; "status" snapshots per-parent state.', childIdAllocatorSchema.shape, wrapTool('child_id_allocator', (input) => childIdAllocator(input as any)));
   server.tool('member_reservation', 'Reserve, release, or force-release exclusive ownership of a member for a sprint (server-side reservation; does not yet block dispatch). "reserve" claims the member for sprint_id; "release" clears it if sprint_id matches the current holder; "force_release" clears a wedged reservation regardless of owner.', memberReservationSchema.shape, wrapTool('member_reservation', (input) => memberReservation(input as any)));

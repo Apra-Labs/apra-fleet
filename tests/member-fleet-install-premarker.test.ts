@@ -1,16 +1,20 @@
 /**
- * Pre-marker member upgrade: a member installed by a build that predates the
- * member-install marker has a running server `install --member --force` alone
- * refuses (E-FULL-INSTALL-RUNNING). The fleet retries that install exactly
- * once with --force-stop-full-install, but ONLY when it can show it owns that
- * install:
- *   - fast path: a recorded fleetMcp.fleetInstalledAt (written only by builds
- *     that also write the marker, so it is absent on a REAL pre-marker member);
- *   - the member's OWN registry (<home>/.apra-fleet/data/registry.json) holds
- *     an entry whose id equals the agent id (created by the fleet's earlier
- *     `register-member --id <uuid>` self-registration), read only after a
- *     refusal.
- * A host with neither (a genuine human full install) is never overridden.
+ * Unmarked member installs: the member-install marker
+ * (<home>/.apra-fleet/data/member-install.json, written by `install --member`)
+ * is the SOLE fleet-ownership signal for the apra-fleet at
+ * <home>/.apra-fleet/bin.
+ *
+ * An install without it is a human full install or a member install made by a
+ * build older than the marker. The two cannot be told apart -- builds before
+ * this rule self-registered into ANY install, so a human full install may hold
+ * a LOCAL registry entry for this member's uuid -- so the fleet treats both as
+ * not its own:
+ *   - it never installs over an unmarked install (running server or not);
+ *   - it never self-registers (register-member) into an unmarked install;
+ *   - it never sends --force-stop-full-install, whatever fleetInstalledAt or
+ *     the member registry say, on a core bump or a same-core build rebuild;
+ *   - it records fleetMcp unavailable(full-install-running) naming the
+ *     one-time owner takeover command.
  *
  * Driven by a fake member transport; assertions read the actual command
  * strings sent to the member.
@@ -21,8 +25,9 @@ import type { Agent, FleetMcpStatus, SSHExecResult } from '../src/types.js';
 import {
   refreshMemberFleetMcp,
   ensureMemberFleetInstall,
-  fleetPreviouslyInstalled,
-  memberRegistryHoldsId,
+  memberHasInstallMarker,
+  memberInstallArgs,
+  MEMBER_TAKEOVER_COMMAND,
   NO_INSTALL_SENTINEL,
   type MemberFleetMcpDeps,
 } from '../src/services/member-fleet-install.js';
@@ -36,37 +41,39 @@ const WIN_HOME = 'C:\\Users\\bella';
 const WIN_WORK = 'C:\\Users\\bella\\repo';
 const AGENT_ID = 'a1b2c3d4-0000-4000-8000-00000000beef';
 
-/** What the member's own registry.json read returns. */
-type Registry =
-  | { kind: 'missing' }
-  | { kind: 'garbage' }
-  | { kind: 'unreadable' }
-  | { kind: 'ids'; ids: string[] }
-  | { kind: 'entries'; entries: Array<{ id: string; agentType?: string }> };
-
 interface Member {
   installed: string | null;
+  /** The member-install marker exists on the member. */
+  marker: boolean;
   /** True while a server without the member-install marker is running. */
   unmarkedServerRunning: boolean;
-  /** The member's own apra-fleet registry. */
-  registry: Registry;
-  /** When true the override run fails too (with a generic installer error). */
-  overrideFails?: boolean;
+  /** A LOCAL entry for AGENT_ID sits in the member's own registry.json (left by
+   *  an earlier build's self-registration into this install). */
+  poisonedRegistry: boolean;
   /** Every member command, decoded from -EncodedCommand when wrapped. */
   log: string[];
+  transfers: number;
   recorded: FleetMcpStatus[];
 }
 
 const isInstall = (c: string) => c.includes("'install' '--llm'");
-const isRegistryRead = (c: string) => c.includes('registry.json');
+const isMarkerCheck = (c: string) => c.includes('member-install.json');
 const installRuns = (m: Member) => m.log.filter(isInstall);
-const registryReads = (m: Member) => m.log.filter(isRegistryRead);
+const registerRuns = (m: Member) => m.log.filter(c => c.includes("'register-member'"));
+const overrides = (m: Member) => m.log.filter(c => c.includes(FORCE_STOP_FULL_INSTALL_FLAG));
 
+/** Default: a human full install (no marker, server running) whose registry
+ *  already holds a self-registered LOCAL entry for this member's uuid. */
 function newMember(over: Partial<Member> = {}): Member {
-  return { installed: OLD, unmarkedServerRunning: true, registry: { kind: 'ids', ids: [AGENT_ID] }, log: [], recorded: [], ...over };
+  return { installed: OLD, marker: false, unmarkedServerRunning: true, poisonedRegistry: true, log: [], transfers: 0, recorded: [], ...over };
 }
 
-function deps(m: Member, platform: { os: 'linux' | 'windows'; arch: string } = { os: 'linux', arch: 'x64' }): MemberFleetMcpDeps {
+function deps(
+  m: Member,
+  opts: { platform?: { os: 'linux' | 'windows'; arch: string }; orch?: string } = {},
+): MemberFleetMcpDeps {
+  const platform = opts.platform ?? { os: 'linux', arch: 'x64' };
+  const orch = opts.orch ?? ORCH;
   const ok = (stdout: string): SSHExecResult => ({ stdout, stderr: '', code: 0 });
   return {
     exec: async (agent: Agent, raw: string) => {
@@ -78,20 +85,14 @@ function deps(m: Member, platform: { os: 'linux' | 'windows'; arch: string } = {
           // the real install-guard refusal: exit 3 with the typed code on stderr
           return { stdout: '', stderr: `${FULL_INSTALL_RUNNING_CODE}: a running apra-fleet server was not started by a member install`, code: 3 };
         }
-        if (override && m.overrideFails) return { stdout: '', stderr: 'disk full', code: 1 };
         m.unmarkedServerRunning = false;
-        m.installed = ORCH;
+        m.marker = true;
+        m.installed = orch;
         return ok('installed');
       }
-      if (isRegistryRead(c)) {
-        switch (m.registry.kind) {
-          case 'missing': return ok(''); // readMemberFileCommand: a missing file is empty output, exit 0
-          case 'garbage': return ok('{not json');
-          case 'unreadable': return { stdout: '', stderr: 'Permission denied', code: 1 };
-          // A self-registration entry: the member registered itself as LOCAL.
-          case 'ids': return ok(JSON.stringify({ version: '1', agents: m.registry.ids.map(id => ({ id, friendlyName: 'bella', agentType: 'local' })) }));
-          case 'entries': return ok(JSON.stringify({ version: '1', agents: m.registry.entries.map(e => ({ friendlyName: 'bella', ...e })) }));
-        }
+      if (isMarkerCheck(c)) return m.marker ? ok('') : { stdout: '', stderr: '', code: 1 };
+      if (c.includes('registry.json')) {
+        return ok(JSON.stringify({ version: '1', agents: m.poisonedRegistry ? [{ id: agent.id, friendlyName: 'bella', agentType: 'local' }] : [] }));
       }
       if (c.includes("'register-member'")) return ok('Member registered successfully');
       if (c.includes("'call'") && c.includes("'--list-tools'")) {
@@ -102,16 +103,17 @@ function deps(m: Member, platform: { os: 'linux' | 'windows'; arch: string } = {
       if (c.includes('uname -m')) return ok('x86_64');
       if (c.includes('PROCESSOR_ARCHITECTURE')) return ok('AMD64');
       if (c.includes('CLAUDE_CONFIG_DIR')) return ok('');
-      if (c.includes('cat "') && c.includes('.claude.json')) {
-        return ok(JSON.stringify({ projects: { [WORK]: { mcpServers: { 'apra-fleet': { type: 'http', url: `http://localhost:7523/mcp?member=${agent.id}` } } } } }));
+      if (c.includes('.claude.json')) {
+        const work = platform.os === 'windows' ? WIN_WORK : WORK;
+        return ok(JSON.stringify({ projects: { [work]: { mcpServers: { 'apra-fleet': { type: 'http', url: `http://localhost:7523/mcp?member=${agent.id}` } } } } }));
       }
       return { stdout: '', stderr: `unexpected: ${c}`, code: 127 };
     },
-    transfer: async (_a, localPaths) => ({ success: localPaths, failed: [] }),
+    transfer: async (_a, localPaths) => { m.transfers++; return { success: localPaths, failed: [] }; },
     resolveHome: async () => (platform.os === 'windows' ? WIN_HOME : HOME),
     orchestratorPlatform: () => platform,
     orchestratorExecutable: () => (platform.os === 'windows' ? 'C:\\fleet\\apra-fleet.exe' : '/opt/fleet/apra-fleet'),
-    orchestratorVersion: () => ORCH,
+    orchestratorVersion: () => orch,
     downloadReleaseAsset: async () => { throw new Error('not expected'); },
     removeLocal: () => {},
     connectLocalMember: async () => { throw new Error('not expected'); },
@@ -128,12 +130,9 @@ function windowsMember(fleetMcp?: FleetMcpStatus): Agent {
   return makeTestAgent({ id: AGENT_ID, os: 'windows', shell: 'powershell5', llmProvider: 'claude', workFolder: WIN_WORK, friendlyName: 'bella', ...(fleetMcp ? { fleetMcp } : {}) });
 }
 
-/** A REALISTIC pre-marker member: its recorded fleetMcp carries an old version
- *  but NO fleetInstalledAt (older builds never wrote it). */
-const PRE_MARKER_STATUS: FleetMcpStatus = { state: 'available', version: OLD, checkedAt: '2026-09-01T00:00:00.000Z' };
-
-/** A member installed by a build that stamps fleetInstalledAt (fast path). */
-const STAMPED_STATUS: FleetMcpStatus = { ...PRE_MARKER_STATUS, fleetInstalledAt: '2026-09-01T00:00:00.000Z' };
+/** A member the fleet once installed (stamp present) -- and a human later ran a
+ *  full install over it, which cleared the marker. */
+const STAMPED_STATUS: FleetMcpStatus = { state: 'available', version: OLD, checkedAt: '2026-09-01T00:00:00.000Z', fleetInstalledAt: '2026-09-01T00:00:00.000Z' };
 
 function expectNoPosixExpansion(cmds: string[]): void {
   for (const c of cmds) {
@@ -143,193 +142,150 @@ function expectNoPosixExpansion(cmds: string[]): void {
   }
 }
 
-describe('pre-marker member upgrade', () => {
-  it('a pre-marker member with no fleetInstalledAt whose own registry lists its id is upgraded after exactly one override retry; fleetMcp ends available', async () => {
-    const m = newMember();
-    const agent = member(PRE_MARKER_STATUS);
-    expect(agent.fleetMcp?.fleetInstalledAt).toBeUndefined();
-    const s = await refreshMemberFleetMcp(agent, deps(m), { install: true });
-    expect(s).toMatchObject({ state: 'available', version: ORCH });
-    expect(m.recorded.at(-1)).toMatchObject({ state: 'available', version: ORCH });
-    const runs = installRuns(m);
-    expect(runs).toHaveLength(2);
-    expect(runs[0]).toContain("'--member'");
-    expect(runs[0]).toContain("'--force'");
-    expect(runs[0]).not.toContain(FORCE_STOP_FULL_INSTALL_FLAG);
-    expect(runs[1]).toContain(`'--force' '${FORCE_STOP_FULL_INSTALL_FLAG}'`);
-    expect(runs[1].replace(` '${FORCE_STOP_FULL_INSTALL_FLAG}'`, '')).toBe(runs[0]);
-    // the registry was read once, between the refusal and the retry, from the
-    // member's own data dir with a JS-resolved path
-    const reads = registryReads(m);
-    expect(reads).toHaveLength(1);
-    expect(reads[0]).toContain(`"${HOME}/.apra-fleet/data/registry.json"`);
-    expect(m.log.indexOf(reads[0])).toBeGreaterThan(m.log.indexOf(runs[0]));
-    expect(m.log.indexOf(reads[0])).toBeLessThan(m.log.indexOf(runs[1]));
-    expectNoPosixExpansion(m.log);
-  });
+function expectHumanInstallUntouched(m: Member, s: FleetMcpStatus): void {
+  expect(overrides(m)).toHaveLength(0);
+  expect(m.unmarkedServerRunning).toBe(true);
+  expect(m.marker).toBe(false);
+  expect(registerRuns(m)).toHaveLength(0);
+  expect(s).toMatchObject({ state: 'unavailable', reason: 'full-install-running' });
+  expect(s.detail).toContain(MEMBER_TAKEOVER_COMMAND);
+  expect(m.recorded.at(-1)).toMatchObject({ state: 'unavailable', reason: 'full-install-running' });
+}
 
-  it('a pre-marker member with NO recorded fleetMcp at all is upgraded from the registry signal alone', async () => {
-    const m = newMember();
-    const s = await refreshMemberFleetMcp(member(), deps(m), { install: true });
-    expect(s).toMatchObject({ state: 'available', version: ORCH });
-    expect(installRuns(m)).toHaveLength(2);
-  });
+describe('a human full install (no member-install marker) is never stopped', () => {
+  const cases: Array<[string, string, string]> = [
+    ['same-core build rebuild', 'v0.4.4_aaaaaa', 'v0.4.4_bbbbbb'],
+    ['core bump', OLD, ORCH],
+  ];
+  for (const [label, memberVersion, orch] of cases) {
+    for (const stamped of [false, true]) {
+      it(`${label}${stamped ? ', fleetInstalledAt stamped' : ''}, registry holds a self-registered LOCAL entry: no install, no override, server keeps running`, async () => {
+        const m = newMember({ installed: memberVersion });
+        const s = await refreshMemberFleetMcp(member(stamped ? STAMPED_STATUS : undefined), deps(m, { orch }), { install: true });
+        expect(installRuns(m)).toHaveLength(0);
+        expect(m.transfers).toBe(0);
+        expect(m.installed).toBe(memberVersion);
+        expectHumanInstallUntouched(m, s);
+      });
 
-  it('fast path: a stamped fleetInstalledAt is retried with the override without reading the member registry', async () => {
-    const m = newMember({ registry: { kind: 'missing' } });
-    const s = await refreshMemberFleetMcp(member(STAMPED_STATUS), deps(m), { install: true });
-    expect(s).toMatchObject({ state: 'available', version: ORCH });
-    const runs = installRuns(m);
-    expect(runs).toHaveLength(2);
-    expect(runs[1]).toContain(`'${FORCE_STOP_FULL_INSTALL_FLAG}'`);
-    expect(registryReads(m)).toHaveLength(0);
-  });
-
-  it('the member registry is not queried when the first install run succeeds', async () => {
-    const m = newMember({ unmarkedServerRunning: false });
-    const s = await refreshMemberFleetMcp(member(PRE_MARKER_STATUS), deps(m), { install: true });
-    expect(s).toMatchObject({ state: 'available', version: ORCH });
-    expect(installRuns(m)).toHaveLength(1);
-    expect(registryReads(m)).toHaveLength(0);
-    for (const c of m.log) expect(c).not.toContain(FORCE_STOP_FULL_INSTALL_FLAG);
-  });
-
-  describe('human full install is never overridden', () => {
-    const humanCases: Array<[string, Registry]> = [
-      ['a registry without this member id', { kind: 'ids', ids: [] }],
-      // A "remote" member on the orchestrator's own host and user: the file read
-      // returns the ORCHESTRATOR's registry, whose entry for this id is remote.
-      ['a registry holding this id only as a REMOTE entry (same-host member: the orchestrator\'s own registry)', { kind: 'entries', entries: [{ id: AGENT_ID, agentType: 'remote' }] }],
-      ['a registry listing only OTHER member ids', { kind: 'ids', ids: ['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222'] }],
-      ['a missing registry file', { kind: 'missing' }],
-      ['an unparseable registry file', { kind: 'garbage' }],
-      ['an unreadable registry file', { kind: 'unreadable' }],
-    ];
-    for (const [label, registry] of humanCases) {
-      it(`${label}: one installer run, no override, full-install-running, register-member not run, server left running`, async () => {
-        const m = newMember({ registry });
-        const s = await refreshMemberFleetMcp(member(PRE_MARKER_STATUS), deps(m), { install: true });
-        expect(installRuns(m)).toHaveLength(1);
-        expect(m.log.filter(c => c.includes(FORCE_STOP_FULL_INSTALL_FLAG))).toHaveLength(0);
-        expect(registryReads(m)).toHaveLength(1);
-        expect(m.unmarkedServerRunning).toBe(true);
-        // The refusal is recorded even though an older install is present: the
-        // fleet does not fall back to registering into a human's full install.
+      it(`${label}${stamped ? ', fleetInstalledAt stamped' : ''}, server NOT running: the unmarked install is not installed over`, async () => {
+        const m = newMember({ installed: memberVersion, unmarkedServerRunning: false });
+        const s = await refreshMemberFleetMcp(member(stamped ? STAMPED_STATUS : undefined), deps(m, { orch }), { install: true });
+        expect(installRuns(m)).toHaveLength(0);
+        expect(m.transfers).toBe(0);
+        expect(m.installed).toBe(memberVersion);
+        expect(m.marker).toBe(false);
+        expect(overrides(m)).toHaveLength(0);
+        expect(registerRuns(m)).toHaveLength(0);
         expect(s).toMatchObject({ state: 'unavailable', reason: 'full-install-running' });
-        expect(s.version).toBeUndefined();
-        expect(m.recorded.at(-1)).toMatchObject({ state: 'unavailable', reason: 'full-install-running' });
-        expect(m.log.some(c => c.includes("'register-member'"))).toBe(false);
-        expect(s.detail).toContain(`apra-fleet install --member --force ${FORCE_STOP_FULL_INSTALL_FLAG}`);
+        expect(s.detail).toContain(MEMBER_TAKEOVER_COMMAND);
       });
     }
+  }
 
-    it('with no install on the member and no ownership signal, the refusal is recorded as full-install-running', async () => {
-      const m = newMember({ installed: null, registry: { kind: 'missing' } });
-      const s = await refreshMemberFleetMcp(member(), deps(m), { install: true });
-      expect(s).toMatchObject({ state: 'unavailable', reason: 'full-install-running' });
-      expect(installRuns(m)).toHaveLength(1);
-      expect(m.log.filter(c => c.includes(FORCE_STOP_FULL_INSTALL_FLAG))).toHaveLength(0);
-    });
-
-    it('a second ensure, fed the status the first refusal recorded, still sends no override', async () => {
-      const m = newMember({ registry: { kind: 'ids', ids: ['11111111-1111-4111-8111-111111111111'] } });
-      await refreshMemberFleetMcp(member(), deps(m), { install: true });
-      const first = m.recorded.at(-1)!;
-      expect(first.fleetInstalledAt).toBeUndefined();
-      const s = await refreshMemberFleetMcp(member(first), deps(m), { install: true });
-      expect(s).toMatchObject({ state: 'unavailable', reason: 'full-install-running' });
-      expect(installRuns(m)).toHaveLength(2);
-      expect(m.log.filter(c => c.includes(FORCE_STOP_FULL_INSTALL_FLAG))).toHaveLength(0);
-      expect(m.unmarkedServerRunning).toBe(true);
-    });
-
-    it('a probe-only (install:false) observation followed by install:true sends no override', async () => {
-      const m = newMember({ registry: { kind: 'missing' } });
-      const observed = await refreshMemberFleetMcp(member(), deps(m), { install: false });
-      expect(observed.fleetInstalledAt).toBeUndefined();
-      const s = await refreshMemberFleetMcp(member(m.recorded.at(-1)), deps(m), { install: true });
-      expect(s).toMatchObject({ state: 'unavailable', reason: 'full-install-running' });
-      expect(installRuns(m)).toHaveLength(1);
-      expect(m.log.filter(c => c.includes(FORCE_STOP_FULL_INSTALL_FLAG))).toHaveLength(0);
-      expect(m.unmarkedServerRunning).toBe(true);
-    });
-  });
-
-  it('a windows/powershell pre-marker member gets a PowerShell-form registry read with no POSIX expansion, and is upgraded', async () => {
+  it('a second ensure fed the first recorded status still sends no override', async () => {
     const m = newMember();
-    const r = await ensureMemberFleetInstall(windowsMember(PRE_MARKER_STATUS), deps(m, { os: 'windows', arch: 'x64' }));
-    expect(r).toMatchObject({ state: 'available', version: ORCH, installed: true });
-    const reads = registryReads(m);
-    expect(reads).toHaveLength(1);
-    expect(reads[0]).toContain(`Test-Path -LiteralPath "${WIN_HOME}\\.apra-fleet\\data\\registry.json"`);
-    expect(reads[0]).toContain('Get-Content -Raw');
-    expect(reads[0]).not.toContain('cat ');
-    expect(reads[0]).not.toContain('test -e');
-    expect(reads[0]).not.toContain('$env:');
-    expectNoPosixExpansion(m.log);
-    expect(installRuns(m)).toHaveLength(2);
+    await refreshMemberFleetMcp(member(), deps(m), { install: true });
+    const s = await refreshMemberFleetMcp(member(m.recorded.at(-1)), deps(m), { install: true });
+    expect(installRuns(m)).toHaveLength(0);
+    expectHumanInstallUntouched(m, s);
   });
 
-  it('a windows/powershell member whose registry lacks its id is not overridden', async () => {
-    const m = newMember({ registry: { kind: 'ids', ids: ['11111111-1111-4111-8111-111111111111'] } });
-    const r = await ensureMemberFleetInstall(windowsMember(), deps(m, { os: 'windows', arch: 'x64' }));
+  it('backstop: no binary at the path but an unmarked server running -> the refused install is not retried with the override', async () => {
+    const m = newMember({ installed: null });
+    const s = await refreshMemberFleetMcp(member(STAMPED_STATUS), deps(m), { install: true });
+    expect(installRuns(m)).toHaveLength(1);
+    expectHumanInstallUntouched(m, s);
+  });
+
+  it('windows/powershell: same-core rebuild over an unmarked install sends no override', async () => {
+    const m = newMember({ installed: 'v0.4.4_aaaaaa' });
+    const r = await ensureMemberFleetInstall(windowsMember(STAMPED_STATUS), deps(m, { platform: { os: 'windows', arch: 'x64' }, orch: 'v0.4.4_bbbbbb' }));
     expect(r).toMatchObject({ state: 'unavailable', reason: 'full-install-running' });
-    expect(installRuns(m)).toHaveLength(1);
-    expect(m.log.filter(c => c.includes(FORCE_STOP_FULL_INSTALL_FLAG))).toHaveLength(0);
+    expect(installRuns(m)).toHaveLength(0);
+    expect(overrides(m)).toHaveLength(0);
+    expect(m.unmarkedServerRunning).toBe(true);
   });
 
-  it('a failing retry reports the second failure\'s typed reason', async () => {
-    const m = newMember({ installed: null, overrideFails: true });
-    const s = await refreshMemberFleetMcp(member(PRE_MARKER_STATUS), deps(m), { install: true });
-    expect(s).toMatchObject({ state: 'unavailable', reason: 'install-failed' });
-    expect(s.detail).toContain(`retried once with ${FORCE_STOP_FULL_INSTALL_FLAG}`);
-    expect(s.detail).toContain('disk full');
-    expect(installRuns(m)).toHaveLength(2);
+  it('the member install command never carries the override', () => {
+    for (const p of ['claude', 'gemini', 'codex', 'opencode'] as const) {
+      expect(memberInstallArgs(p)).not.toContain(FORCE_STOP_FULL_INSTALL_FLAG);
+    }
+  });
+});
+
+describe('self-registration happens only into a marked member install', () => {
+  it('up to date, no marker: no register-member is sent; records full-install-running', async () => {
+    const m = newMember({ installed: ORCH, poisonedRegistry: false });
+    const s = await refreshMemberFleetMcp(member(), deps(m), { install: true });
+    expect(installRuns(m)).toHaveLength(0);
+    expectHumanInstallUntouched(m, s);
+    expect(s.detail).toContain('no member-install marker');
   });
 
-  it('a plain install failure (not a refusal) is never retried and never reads the registry', async () => {
-    const m = newMember({ installed: null, unmarkedServerRunning: false });
-    const d = deps(m);
-    const exec = d.exec;
-    d.exec = async (a, c, t) => (isInstall(c) ? (m.log.push(c), { stdout: '', stderr: 'boom', code: 1 }) : exec(a, c, t));
-    const s = await refreshMemberFleetMcp(member(STAMPED_STATUS), d, { install: true });
-    expect(s).toMatchObject({ state: 'unavailable', reason: 'install-failed' });
-    expect(installRuns(m)).toHaveLength(1);
-    expect(registryReads(m)).toHaveLength(0);
+  it('observe-only (install:false), no marker: no register-member is sent', async () => {
+    const m = newMember({ installed: ORCH });
+    const s = await refreshMemberFleetMcp(member(), deps(m), { install: false });
+    expect(installRuns(m)).toHaveLength(0);
+    expectHumanInstallUntouched(m, s);
   });
 
-  it('a successful fleet install stamps fleetInstalledAt, and later probes carry it forward', async () => {
+  it('up to date WITH the marker: self-registers as before and ends available', async () => {
+    const m = newMember({ installed: ORCH, marker: true, unmarkedServerRunning: false });
+    const s = await refreshMemberFleetMcp(member(), deps(m), { install: true });
+    expect(s).toMatchObject({ state: 'available', version: ORCH });
+    expect(installRuns(m)).toHaveLength(0);
+    const regs = registerRuns(m);
+    expect(regs).toHaveLength(1);
+    expect(regs[0]).toContain(`'register-member' '--type' 'local' '--id' '${AGENT_ID}'`);
+    const check = m.log.find(isMarkerCheck)!;
+    expect(check).toBe(`test -f "${HOME}/.apra-fleet/data/member-install.json"`);
+    expect(m.log.indexOf(check)).toBeLessThan(m.log.indexOf(regs[0]));
+    expectNoPosixExpansion(m.log);
+  });
+
+  it('no install on the member: the fleet installs (writing the marker), self-registers, and stamps fleetInstalledAt', async () => {
     const m = newMember({ installed: null, unmarkedServerRunning: false });
     const s = await refreshMemberFleetMcp(member(), deps(m), { install: true });
-    expect(s.fleetInstalledAt).toBe('2026-10-02T12:00:00.000Z');
-    const again = await refreshMemberFleetMcp(member(s), deps(m), { install: false });
-    expect(again.fleetInstalledAt).toBe(s.fleetInstalledAt);
+    expect(s).toMatchObject({ state: 'available', version: ORCH, fleetInstalledAt: '2026-10-02T12:00:00.000Z' });
+    expect(installRuns(m)).toHaveLength(1);
+    expect(registerRuns(m)).toHaveLength(1);
+    expect(overrides(m)).toHaveLength(0);
   });
 
-  it('fleetPreviouslyInstalled reads only fleetInstalledAt, not a recorded version', () => {
-    expect(fleetPreviouslyInstalled(member(PRE_MARKER_STATUS))).toBe(false);
-    expect(fleetPreviouslyInstalled(member())).toBe(false);
-    expect(fleetPreviouslyInstalled(member({ state: 'unavailable', reason: 'probe-failed', checkedAt: 'x' }))).toBe(false);
-    expect(fleetPreviouslyInstalled(member(STAMPED_STATUS))).toBe(true);
+  it('after the owner takes it over (marker written, server marked), the next ensure upgrades and registers', async () => {
+    const m = newMember({ installed: 'v0.4.4_aaaaaa' });
+    await refreshMemberFleetMcp(member(), deps(m, { orch: 'v0.4.4_bbbbbb' }), { install: true });
+    expect(registerRuns(m)).toHaveLength(0);
+    // owner ran MEMBER_TAKEOVER_COMMAND on the member
+    m.marker = true;
+    m.unmarkedServerRunning = false;
+    const s = await refreshMemberFleetMcp(member(m.recorded.at(-1)), deps(m, { orch: 'v0.4.4_bbbbbb' }), { install: true });
+    expect(s).toMatchObject({ state: 'available', version: 'v0.4.4_bbbbbb' });
+    expect(registerRuns(m)).toHaveLength(1);
+    expect(overrides(m)).toHaveLength(0);
   });
 
-  it('memberRegistryHoldsId: true only for a registry entry with this id; never throws', async () => {
-    const holds = (registry: Registry) => memberRegistryHoldsId(member(), HOME, deps(newMember({ registry })));
-    expect(await holds({ kind: 'ids', ids: [AGENT_ID] })).toBe(true);
-    expect(await holds({ kind: 'ids', ids: ['other'] })).toBe(false);
-    expect(await holds({ kind: 'missing' })).toBe(false);
-    expect(await holds({ kind: 'garbage' })).toBe(false);
-    expect(await holds({ kind: 'unreadable' })).toBe(false);
-    const throwing = { exec: async () => { throw new Error('transport down'); } };
-    expect(await memberRegistryHoldsId(member(), HOME, throwing)).toBe(false);
-    const agentsNotArray = { exec: async () => ({ stdout: JSON.stringify({ agents: { id: AGENT_ID } }), stderr: '', code: 0 }) };
-    expect(await memberRegistryHoldsId(member(), HOME, agentsNotArray)).toBe(false);
+  it('windows/powershell: the marker check is a PowerShell literal-path probe with no POSIX expansion', async () => {
+    const m = newMember({ installed: ORCH, marker: true, unmarkedServerRunning: false });
+    await refreshMemberFleetMcp(windowsMember(), deps(m, { platform: { os: 'windows', arch: 'x64' } }), { install: true });
+    expect(registerRuns(m)).toHaveLength(1); // the marker was found, so it self-registered
+    const check = m.log.find(isMarkerCheck)!;
+    expect(check).toContain(`Test-Path -LiteralPath '${WIN_HOME}\\.apra-fleet\\data\\member-install.json' -PathType Leaf`);
+    expect(check).not.toContain('$env:');
+    expectNoPosixExpansion(m.log);
   });
 
-  it('memberRegistryHoldsId: a REMOTE-type entry with this id is NOT ownership (same-host member reads the orchestrator registry)', async () => {
-    const holds = (registry: Registry) => memberRegistryHoldsId(member(), HOME, deps(newMember({ registry })));
-    expect(await holds({ kind: 'entries', entries: [{ id: AGENT_ID, agentType: 'remote' }] })).toBe(false);
-    expect(await holds({ kind: 'entries', entries: [{ id: AGENT_ID }] })).toBe(false);
-    expect(await holds({ kind: 'entries', entries: [{ id: AGENT_ID, agentType: 'local' }] })).toBe(true);
+  it('memberHasInstallMarker: a non-zero check reads as absent; a transport error is a probe failure, not a full install', async () => {
+    expect(await memberHasInstallMarker(member(), HOME, { exec: async () => ({ stdout: '', stderr: '', code: 0 }) })).toBe(true);
+    expect(await memberHasInstallMarker(member(), HOME, { exec: async () => ({ stdout: '', stderr: 'denied', code: 1 }) })).toBe(false);
+    await expect(memberHasInstallMarker(member(), HOME, { exec: async () => { throw new Error('transport down'); } })).rejects.toThrow('transport down');
+    const m = newMember({ installed: ORCH, marker: true });
+    const d = deps(m);
+    const exec = d.exec;
+    d.exec = async (a, c, t) => (isMarkerCheck(c) ? Promise.reject(new Error('transport down')) : exec(a, c, t));
+    const s = await refreshMemberFleetMcp(member(), d, { install: true });
+    expect(s).toMatchObject({ state: 'unavailable', reason: 'probe-failed' });
+    expect(registerRuns(m)).toHaveLength(0);
   });
 });

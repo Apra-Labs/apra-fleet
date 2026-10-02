@@ -430,13 +430,15 @@ Calls `register_member` -- adds a machine to the fleet.
 #### `updateMember(options: UpdateMemberOptions)`
 
 Calls `update_member` -- changes a member's settings. Every field is optional
-and means "new value for this field". Identifies the target member via
+and means "new value for this field". Unknown input keys are rejected with an
+error naming the key (the member is not updated) -- they are no longer silently dropped. Identifies the target member via
 `member_id` or `member_name`.
 
 | Field | Type | Notes |
 |---|---|---|
 | `member_id` | `string?` | UUID of the member. |
 | `member_name` | `string?` | Friendly name of the member. |
+| `fleet_install` | `"auto" \| "skip"?` | `"auto"`: for a remote member, probe it and install/upgrade its own apra-fleet when missing or older than the orchestrator (build-aware: same-core different builds upgrade, newer cores never downgrade), self-register and verify, even when nothing else changed; the result includes the `fleetMcp` line (then `member_detail` with `refresh: true`). `"skip"`: no install. Omitted: install only on a provider change. |
 | `friendly_name` | `string?` | New friendly name. |
 | `work_folder` | `string?` | New working directory. For non-local (remote/relay) members, must be a fully-qualified/absolute path (e.g. `/home/bella/repo` or `C:\Users\bella\repo`) -- tilde and relative paths are rejected. A real change removes what `compose_permissions` wrote in the OLD folder (per-folder `apra-fleet` MCP entry, permission keys, `.git/info/exclude` lines) and re-runs `compose_permissions`, so the new folder gets its `?member=<uuid>` entry at once. |
 | `host` | `string?` | New host (remote members only). |
