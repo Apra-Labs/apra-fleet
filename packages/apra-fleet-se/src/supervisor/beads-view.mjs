@@ -364,3 +364,75 @@ export function createBeadsView(deps = {}) {
 
     return { snapshot, refresh, refreshIfStale, freshForLaunch, stop };
 }
+
+/** Launch-path busy-skip retries (a sprint child briefly holding the clone lock). */
+export const DEFAULT_LAUNCH_BUSY_RETRIES = 3;
+/** Pause between launch-path busy-skip retries. */
+export const DEFAULT_LAUNCH_BUSY_RETRY_DELAY_MS = 500;
+
+/**
+ * The launch overlap guard's `listAllBeads`: rows fetched by a forced fresh
+ * check made in THIS call (view.freshForLaunch()), never cached rows. A busy
+ * /lock skip is retried a small bounded number of times inside ONE wall-clock
+ * bound (`timeoutMs`); a timeout or any non-transient failure rejects
+ * immediately with BeadsViewUnavailableError (the launch path answers 503).
+ *
+ * @param {{ freshForLaunch: Function }} view
+ * @param {{ timeoutMs?: number, busyRetries?: number, retryDelayMs?: number,
+ *           now?: () => number, sleep?: (ms: number) => Promise<void> }} [opts]
+ * @returns {() => Promise<object[]>}
+ */
+export function createLaunchRowsFetcher(view, opts = {}) {
+    if (!view || typeof view.freshForLaunch !== 'function') throw new TypeError('createLaunchRowsFetcher requires a view with freshForLaunch()');
+    const timeoutMs = Number.isFinite(opts.timeoutMs) && opts.timeoutMs > 0 ? opts.timeoutMs : DEFAULT_FRESH_FOR_LAUNCH_TIMEOUT_MS;
+    const busyRetries = Number.isInteger(opts.busyRetries) && opts.busyRetries >= 0 ? opts.busyRetries : DEFAULT_LAUNCH_BUSY_RETRIES;
+    const retryDelayMs = Number.isFinite(opts.retryDelayMs) && opts.retryDelayMs >= 0 ? opts.retryDelayMs : DEFAULT_LAUNCH_BUSY_RETRY_DELAY_MS;
+    const now = opts.now ?? Date.now;
+    const sleep = opts.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+    return async function listAllBeadsFresh() {
+        const deadline = now() + timeoutMs;
+        let retriesLeft = busyRetries;
+        for (;;) {
+            const remaining = deadline - now();
+            if (remaining <= 0) {
+                throw new BeadsViewUnavailableError(`fresh beads check did not finish within ${timeoutMs}ms`, { kind: 'timeout' });
+            }
+            try {
+                return await view.freshForLaunch({ timeoutMs: remaining });
+            } catch (err) {
+                const transient = err instanceof BeadsViewUnavailableError && err.kind === 'skip';
+                if (!transient || retriesLeft <= 0) throw err;
+                retriesLeft -= 1;
+                if (retryDelayMs > 0) await sleep(Math.min(retryDelayMs, Math.max(0, deadline - now())));
+            }
+        }
+    };
+}
+
+/**
+ * A rows reader over the view's snapshot for the dashboard/backlog: never
+ * spawns or waits (kicks refreshIfStale(maxAgeMs) in the background first).
+ * With no rows yet (startup, first refresh failed) it throws -- callers take
+ * their existing degraded path -- unless `emptyWhenNoRows` is set, in which
+ * case it returns [] (the backlog panel: an empty table plus the dashboard's
+ * freshness notice, instead of a failed panel). `openOnly` drops closed beads, reproducing the default
+ * `bd list --json --limit 0` set (the view holds `--all` rows). Difference
+ * documented: `bd list`'s default also hides gate-type issues; this filter
+ * does not -- gates are an agent-synchronisation construct this tracker does
+ * not use.
+ *
+ * @param {{ snapshot: Function, refreshIfStale?: Function }} view
+ * @param {{ maxAgeMs?: number, openOnly?: boolean, emptyWhenNoRows?: boolean }} [opts]
+ * @returns {() => object[]}
+ */
+export function createSnapshotRowsReader(view, opts = {}) {
+    if (!view || typeof view.snapshot !== 'function') throw new TypeError('createSnapshotRowsReader requires a view with snapshot()');
+    const maxAgeMs = opts.maxAgeMs ?? DEFAULT_BEADS_VIEW_MAX_AGE_MS;
+    return function readCachedRows() {
+        if (typeof view.refreshIfStale === 'function') view.refreshIfStale(maxAgeMs);
+        const snap = view.snapshot();
+        if (!Array.isArray(snap.rows) && opts.emptyWhenNoRows) return [];
+        if (!Array.isArray(snap.rows)) throw new Error('beads view has no rows yet (startup or first refresh failed)');
+        return opts.openOnly ? snap.rows.filter((b) => !(b && b.status === 'closed')) : snap.rows;
+    };
+}
