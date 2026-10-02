@@ -5,6 +5,15 @@
 // through a session's handlers resolves that member's own KB, exactly as an
 // MCP member session (?member=<id>) would.
 //
+// A session declared `kind: 'full'` is the exception: it is a FULL session
+// (no member identity), so no member is registered for it and its handlers
+// are registered under the default FULL scope. A FULL session's (self) is the
+// fleet server's working folder (process.cwd(), src/services/knowledge/
+// kb-self.ts resolveSelfSession), so each of its handlers runs with the
+// process working directory switched to the session's repo for the duration
+// of the call and restored afterwards -- the in-process equivalent of a fleet
+// server started from that repo.
+//
 // Shared by the sqlite round-trip adapter (tests/memory-contract-roundtrip.test.ts)
 // and the fixture recorder (record-fixtures.mjs) so both build the identical
 // world. Like the harness, it imports nothing from src/ or dist/: the fleet
@@ -26,7 +35,7 @@ function git(cwd, args) {
  * @param {(key: string) => string} deps.remoteUrl   origin URL for a `remotes` key
  * @param {(agent: object) => void} deps.addAgent
  * @param {(id: string) => boolean} deps.removeAgent
- * @param {(server: object, scope?: object) => Promise<void>} deps.registerAllTools
+ * @param {(server: object, scope?: object) => Promise<void>} deps.registerAllTools  (no scope = FULL)
  * @param {(memberId: string, channelCapable: boolean) => object} deps.memberToolScope
  */
 export async function materializeSessionWorld(env, root, deps) {
@@ -55,6 +64,26 @@ export async function materializeSessionWorld(env, root, deps) {
   for (const [key, session] of Object.entries(env.sessions)) {
     const workFolder = session.repo ? repoPaths.get(session.repo) : path.join(root, session.dir);
     if (!workFolder) throw new Error(`session ${key} names unknown repo ${session.repo}`);
+    if (session.kind === 'full') {
+      const handlers = new Map();
+      const fakeServer = {
+        tool: (name, _description, _shape, handler) => {
+          handlers.set(name, async (input, extra) => {
+            const previous = process.cwd();
+            process.chdir(workFolder);
+            try {
+              return await handler(input, extra);
+            } finally {
+              process.chdir(previous);
+            }
+          });
+        },
+        server: { sendLoggingMessage: async () => {} },
+      };
+      await deps.registerAllTools(fakeServer);
+      sessionHandlers.set(key, handlers);
+      continue;
+    }
     const id = crypto.randomUUID();
     deps.addAgent({
       id,
@@ -83,7 +112,9 @@ export async function materializeSessionWorld(env, root, deps) {
   }
 
   // Live member label -> recorded member label, for message normalisation.
-  const memberLiterals = Object.values(env.sessions).map((s) => [s.member, `${s.member}-${runTag}`]);
+  const memberLiterals = Object.values(env.sessions)
+    .filter((s) => s.kind !== 'full')
+    .map((s) => [s.member, `${s.member}-${runTag}`]);
 
   return {
     repoPaths,

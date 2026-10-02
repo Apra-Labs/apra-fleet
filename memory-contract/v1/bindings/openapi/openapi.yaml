@@ -37,132 +37,132 @@
   },
   "x-error-catalog": [
     {
-      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/validation/codes/0",
+      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-QUERY-NO-SELECTOR",
       "title": "No query selector was supplied: none of query, tag or flagged_only is present, so there is nothing to search on.",
       "status": 400
     },
     {
-      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/validation/codes/1",
+      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-PATH-TRAVERSAL",
       "title": "A file list contains an absolute path or a parent-directory traversal.",
       "status": 400
     },
     {
-      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/validation/codes/2",
+      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-REPO-PATH-INVALID",
       "title": "The calling session's resolved folder is not a directory on this host (a remote member session), so a tool that writes into it refuses rather than writing anywhere else.",
       "status": 400
     },
     {
-      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/validation/codes/3",
+      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-BIBLE-NOT-FOUND",
       "title": "The resolved bible file does not exist.",
       "status": 400
     },
     {
-      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/validation/codes/4",
+      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-BIBLE-NOT-JSON",
       "title": "The bible file exists but is not valid JSON.",
       "status": 400
     },
     {
-      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/validation/codes/5",
+      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-BIBLE-WRONG-SHAPE",
       "title": "The bible parses as JSON but is neither an entry array nor the v2 envelope.",
       "status": 400
     },
     {
-      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/admission/codes/0",
+      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-NO-BASIS",
       "title": "The entry cites zero source files, so the freshness sweep can never stale it -- it is structurally unfalsifiable and is refused. Exempt: user-directive, which is not a claim about code.",
       "status": 422
     },
     {
-      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/admission/codes/1",
+      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-BASIS-MISSING-FILES",
       "title": "The cited source files do not resolve in this worktree. No exemption for harvest-sourced entries or for import mode.",
       "status": 422
     },
     {
-      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/admission/codes/2",
+      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-IMPORT-ENTRY-REJECTED",
       "title": "A single bible entry failed admission (E-NO-BASIS or E-BASIS-MISSING-FILES) and was skipped and counted; the import as a whole still succeeds.",
       "status": 422
     },
     {
-      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/authority/codes/0",
+      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-PROMOTE-REASON-REQUIRED",
       "title": "The promotion carries no non-trivial reason (absent, or shorter than MIN_PROMOTE_REASON_LENGTH). Writing above INFERRED must record its evidence.",
       "status": 403
     },
     {
-      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/authority/codes/1",
+      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-PROMOTE-BASIS-UNRESOLVED",
       "title": "The entry cites zero source files, or one or more cited files no longer resolve in this worktree. An unfalsifiable or stale basis cannot earn CONFIRMED.",
       "status": 403
     },
     {
-      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/authority/codes/2",
+      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-PROMOTE-SUPERSEDED",
       "title": "The target entry is already superseded, so it has no standing to earn a higher tier.",
       "status": 403
     },
     {
-      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/governance/codes/0",
+      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-PROMOTE-REFUSED-DIRECTIVE",
       "title": "Promotion of a user-directive entry is refused outright; a directive can only become active through the CLI-only consent step.",
       "status": 403
     },
     {
-      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/governance/codes/1",
+      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-RESOLVE-DIRECTIVE-PAIR",
       "title": "The contradiction pair involves an ACTIVE user-directive; directives are never auto-resolved. Writes NOTHING.",
       "status": 403
     },
     {
-      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/conflict/codes/0",
+      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-RESOLVE-NOT-A-PAIR",
       "title": "The two ids do not form a genuinely linked contradiction pair, so there is nothing to resolve. Writes NOTHING.",
       "status": 409
     },
     {
-      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/conflict/codes/1",
+      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-RESOLVE-ALREADY-SUPERSEDED",
       "title": "One or both entries in the pair are already superseded, so the resolution cannot be applied. Writes NOTHING.",
       "status": 409
     },
     {
-      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/not_found/codes/0",
+      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-ENTRY-NOT-FOUND",
       "title": "The named entry id has no row.",
       "status": 404
     },
     {
-      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/not_found/codes/1",
+      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-RESOLVE-MISSING-ENTRY",
       "title": "One or both ids of a contradiction pair do not exist. Writes NOTHING.",
       "status": 404
     },
     {
-      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/provider_internal/codes/0",
+      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-PROVIDER-UNINITIALIZED",
       "title": "A provider member was called before init(). A call-order defect, not a caller-input problem.",
       "status": 500
     },
     {
-      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/provider_internal/codes/1",
+      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-CODE-PROVIDER-UNCONFIGURED",
       "title": "The resolved code-intelligence provider key has no entry in the PROVIDERS map (codebase-memory, gitnexus, none), so no provider can be constructed for the call.",
       "status": 500
     },
     {
-      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/provider_internal/codes/2",
+      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-CODE-INDEX-NOT-READY",
       "title": "The active provider has no ready code index for the calling session's resolved (self) folder: no index exists yet, or one is still being built (gitnexus: <repo>/.gitnexus/meta.json absent while an analyze is running or has begun writing <repo>/.gitnexus/).",
       "status": 500
     },
     {
-      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/provider_internal/codes/3",
+      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-CODE-INTEL-DISABLED",
       "title": "Code intelligence is off for the calling session: the resolved provider is 'none' (NullProvider), so no code_* call (including code_reindex and code_status, which resolve the provider before spawning or reading anything) can be answered. Always an error result, never an ok payload that merely says 'disabled'.",
       "status": 500
     },
     {
-      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/provider_internal/codes/4",
+      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-SELF-NO-WORKFOLDER",
       "title": "The calling session's folder does not exist or is not a directory: a member session's registered work folder is missing or unset (or the member is not registered), or the fleet server's own working folder is gone.",
       "status": 500
     },
     {
-      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/provider_internal/codes/5",
+      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-SELF-NOT-A-REPO",
       "title": "The calling session's folder exists but is not a git repository, so no KB identity can be derived from it and no code index is resolved for it.",
       "status": 500
     },
     {
-      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/provider_internal/codes/6",
+      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-SELF-NO-REMOTE",
       "title": "The calling session's folder has no origin remote (or a remote member has no single known origin remote), so it has no KB identity. Never silently mapped to a directory-name or 'default' KB.",
       "status": 500
     },
     {
-      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/provider_internal/codes/7",
+      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-MEMBER-VIEW-READ-ONLY",
       "title": "kb_feedback was called in a MEMBER session. A member's reads come from the in-memory view of its own checkout bible, which is read-only; a downvote would flag an entry the member cannot see in the shared per-repo DB. Nothing is changed.",
       "status": 500
     }

@@ -31,13 +31,15 @@
       "consequence_for_this_file": "The three CLI-only activation error codes named in INVENTORY.md 5.2 are in excluded_from_closed_set, not in any group. They are the error vocabulary OF the activation operations, so publishing them would document that those operations exist.",
       "what_is_still_in_the_set": "The governance group DOES carry the server-side refusals of activation ATTEMPTS made through tool-reachable paths (E-PROMOTE-REFUSED-DIRECTIVE, E-RESOLVE-DIRECTIVE-PAIR). Those are answers this server really gives to requests it really accepts, and hiding them would misdescribe live behavior. The line is: refusals of attempts on existing routes are published; the error codes of the forbidden route itself are not. The quarantine of a directive CAPTURE is deliberately NOT in this group: that path does not refuse anything, it succeeds and stores a transformed entry, so it lives in non_error_outcomes as E-DIRECTIVE-QUARANTINE."
     },
-    "raising_methods_shape": "Each raising_methods element cites a methods.json method (method_id + member) plus the tool the path is reachable through, and a position: 'provider' (raised inside the provider member) or 'pre-provider' (raised at the tool boundary before that member is reached -- mirrors methods.json X-1's error_codes_note). Every code has at least one raising method: there are no orphan codes."
+    "raising_methods_shape": "Each raising_methods element cites a methods.json method (method_id + member) plus the tool the path is reachable through, and a position: 'provider' (raised inside the provider member) or 'pre-provider' (raised at the tool boundary before that member is reached -- mirrors methods.json X-1's error_codes_note). Every code has at least one raising method: there are no orphan codes.",
+    "ref_rule": "Every code in groups carries a $anchor equal to its code string, and every projection (bindings/mcp errors, the openapi x-error-catalog type URI) references a code as taxonomy.json#<CODE> -- by id, never by a positional JSON Pointer such as #/groups/<group>/codes/<index>. Codes may therefore be inserted, removed or reordered within or across groups without changing what any existing reference means. excluded_from_closed_set codes carry no $anchor (directive_activation_absence)."
   },
   "groups": {
     "validation": {
       "definition_ref": "_meta.group_definitions.validation",
       "codes": [
         {
+          "$anchor": "E-QUERY-NO-SELECTOR",
           "code": "E-QUERY-NO-SELECTOR",
           "meaning": "No query selector was supplied: none of query, tag or flagged_only is present, so there is nothing to search on.",
           "raising_methods": [
@@ -49,6 +51,7 @@
           "note": "kb_session_prime also reaches P-3 but cannot raise this: it builds its own selectors."
         },
         {
+          "$anchor": "E-PATH-TRAVERSAL",
           "code": "E-PATH-TRAVERSAL",
           "meaning": "A file list contains an absolute path or a parent-directory traversal.",
           "raising_methods": [
@@ -60,6 +63,7 @@
           "retryable": false
         },
         {
+          "$anchor": "E-REPO-PATH-INVALID",
           "code": "E-REPO-PATH-INVALID",
           "meaning": "The calling session's resolved folder is not a directory on this host (a remote member session), so a tool that writes into it refuses rather than writing anywhere else.",
           "raising_methods": [
@@ -73,6 +77,7 @@
           "group_decision": "VALIDATION, not provider_internal. Decided deliberately rather than left to fall through to a generic internal code. The throw happens BEFORE getKbProviders, so no provider exists yet and nothing about the provider has failed. Filing it under provider_internal would also imply the wrong retry posture -- an internal error invites a retry, while this one can only be fixed by calling from a session on the member's own host. Both tools that raise it write into the folder, which is why they refuse where the verbatim-passthrough read tools tolerate a missing anchor (_meta.anchor_policy_note)."
         },
         {
+          "$anchor": "E-BIBLE-NOT-FOUND",
           "code": "E-BIBLE-NOT-FOUND",
           "meaning": "The resolved bible file does not exist.",
           "raising_methods": [
@@ -84,6 +89,7 @@
           "note": "No methods.json entry cites this code: it is a tool-boundary throw on the kb_import route, reached before P-2 capture. INVENTORY.md 5.2 is the authority for it."
         },
         {
+          "$anchor": "E-BIBLE-NOT-JSON",
           "code": "E-BIBLE-NOT-JSON",
           "meaning": "The bible file exists but is not valid JSON.",
           "raising_methods": [
@@ -94,6 +100,7 @@
           "retryable": false
         },
         {
+          "$anchor": "E-BIBLE-WRONG-SHAPE",
           "code": "E-BIBLE-WRONG-SHAPE",
           "meaning": "The bible parses as JSON but is neither an entry array nor the v2 envelope.",
           "raising_methods": [
@@ -109,6 +116,7 @@
       "definition_ref": "_meta.group_definitions.admission",
       "codes": [
         {
+          "$anchor": "E-NO-BASIS",
           "code": "E-NO-BASIS",
           "meaning": "The entry cites zero source files, so the freshness sweep can never stale it -- it is structurally unfalsifiable and is refused. Exempt: user-directive, which is not a claim about code.",
           "raising_methods": [
@@ -122,6 +130,7 @@
           "note": "On the kb_import route this throw is caught per entry and counted -- see E-IMPORT-ENTRY-REJECTED."
         },
         {
+          "$anchor": "E-BASIS-MISSING-FILES",
           "code": "E-BASIS-MISSING-FILES",
           "meaning": "The cited source files do not resolve in this worktree. No exemption for harvest-sourced entries or for import mode.",
           "raising_methods": [
@@ -134,6 +143,7 @@
           "retryable": false
         },
         {
+          "$anchor": "E-IMPORT-ENTRY-REJECTED",
           "code": "E-IMPORT-ENTRY-REJECTED",
           "meaning": "A single bible entry failed admission (E-NO-BASIS or E-BASIS-MISSING-FILES) and was skipped and counted; the import as a whole still succeeds.",
           "raising_methods": [
@@ -151,6 +161,7 @@
       "definition_ref": "_meta.group_definitions.authority",
       "codes": [
         {
+          "$anchor": "E-PROMOTE-REASON-REQUIRED",
           "code": "E-PROMOTE-REASON-REQUIRED",
           "meaning": "The promotion carries no non-trivial reason (absent, or shorter than MIN_PROMOTE_REASON_LENGTH). Writing above INFERRED must record its evidence.",
           "raising_methods": [
@@ -162,6 +173,7 @@
           "see_also": ["Capture provenance and confidence clamp"]
         },
         {
+          "$anchor": "E-PROMOTE-BASIS-UNRESOLVED",
           "code": "E-PROMOTE-BASIS-UNRESOLVED",
           "meaning": "The entry cites zero source files, or one or more cited files no longer resolve in this worktree. An unfalsifiable or stale basis cannot earn CONFIRMED.",
           "raising_methods": [
@@ -173,6 +185,7 @@
           "see_also": ["Capture provenance and confidence clamp"]
         },
         {
+          "$anchor": "E-PROMOTE-SUPERSEDED",
           "code": "E-PROMOTE-SUPERSEDED",
           "meaning": "The target entry is already superseded, so it has no standing to earn a higher tier.",
           "raising_methods": [
@@ -191,6 +204,7 @@
       "absence_constraint_ref": "_meta.directive_activation_absence",
       "codes": [
         {
+          "$anchor": "E-PROMOTE-REFUSED-DIRECTIVE",
           "code": "E-PROMOTE-REFUSED-DIRECTIVE",
           "meaning": "Promotion of a user-directive entry is refused outright; a directive can only become active through the CLI-only consent step.",
           "raising_methods": [
@@ -202,6 +216,7 @@
           "see_also": ["Directive quarantine"]
         },
         {
+          "$anchor": "E-RESOLVE-DIRECTIVE-PAIR",
           "code": "E-RESOLVE-DIRECTIVE-PAIR",
           "meaning": "The contradiction pair involves an ACTIVE user-directive; directives are never auto-resolved. Writes NOTHING.",
           "raising_methods": [
@@ -213,6 +228,7 @@
           "see_also": ["Directive quarantine"]
         },
         {
+          "$anchor": "E-SUPERSEDE-CONSENT-MISSING",
           "code": "E-SUPERSEDE-CONSENT-MISSING",
           "meaning": "A supersedes request took no effect: it applies only if AUDN independently matches that candidate under the dedup gates (same type, symbol overlap, file overlap, target not an ACTIVE user-directive). Otherwise the named target is NOT retired and the request falls through to the ordinary paths.",
           "raising_methods": [
@@ -226,6 +242,7 @@
           "see_also": ["Superseding and AUDN matching"]
         },
         {
+          "$anchor": "E-ACTIVE-DIRECTIVE-SUPERSEDE-GUARD",
           "code": "E-ACTIVE-DIRECTIVE-SUPERSEDE-GUARD",
           "meaning": "An ACTIVE (CONFIRMED) user-directive candidate can never be superseded or updated by any capture() path; the AUDN loop skips past it.",
           "raising_methods": [
@@ -245,6 +262,7 @@
       "definition_ref": "_meta.group_definitions.conflict",
       "codes": [
         {
+          "$anchor": "E-RESOLVE-NOT-A-PAIR",
           "code": "E-RESOLVE-NOT-A-PAIR",
           "meaning": "The two ids do not form a genuinely linked contradiction pair, so there is nothing to resolve. Writes NOTHING.",
           "raising_methods": [
@@ -255,6 +273,7 @@
           "retryable": false
         },
         {
+          "$anchor": "E-RESOLVE-ALREADY-SUPERSEDED",
           "code": "E-RESOLVE-ALREADY-SUPERSEDED",
           "meaning": "One or both entries in the pair are already superseded, so the resolution cannot be applied. Writes NOTHING.",
           "raising_methods": [
@@ -270,6 +289,7 @@
       "definition_ref": "_meta.group_definitions.not_found",
       "codes": [
         {
+          "$anchor": "E-ENTRY-NOT-FOUND",
           "code": "E-ENTRY-NOT-FOUND",
           "meaning": "The named entry id has no row.",
           "raising_methods": [
@@ -281,6 +301,7 @@
           "retryable": false
         },
         {
+          "$anchor": "E-RESOLVE-MISSING-ENTRY",
           "code": "E-RESOLVE-MISSING-ENTRY",
           "meaning": "One or both ids of a contradiction pair do not exist. Writes NOTHING.",
           "raising_methods": [
@@ -297,6 +318,7 @@
       "definition_ref": "_meta.group_definitions.provider_internal",
       "codes": [
         {
+          "$anchor": "E-PROVIDER-UNINITIALIZED",
           "code": "E-PROVIDER-UNINITIALIZED",
           "meaning": "A provider member was called before init(). A call-order defect, not a caller-input problem.",
           "raising_methods": [
@@ -322,6 +344,7 @@
           "note": "methods.json also cites this code on P-6 getLinked and P-9 sync, which have no tool route (tools: []); every member reached through getDb can raise it. init() itself (P-1) has no throw site of its own -- its ABSENCE is what causes this code everywhere else."
         },
         {
+          "$anchor": "E-CODE-PROVIDER-UNCONFIGURED",
           "code": "E-CODE-PROVIDER-UNCONFIGURED",
           "meaning": "The resolved code-intelligence provider key has no entry in the PROVIDERS map (codebase-memory, gitnexus, none), so no provider can be constructed for the call.",
           "raising_methods": [
@@ -339,6 +362,7 @@
           "note": "getProvider() runs before the adapter's guarded entry point, so this throw is not converted into an offline result the way connect failures are (see non_error_outcomes N-CODE-PROVIDER-OFFLINE). The other code_* throws are the (self) resolution codes (E-SELF-NO-WORKFOLDER, E-SELF-NOT-A-REPO), E-CODE-INDEX-NOT-READY and E-CODE-INTEL-DISABLED."
         },
         {
+          "$anchor": "E-CODE-INDEX-NOT-READY",
           "code": "E-CODE-INDEX-NOT-READY",
           "meaning": "The active provider has no ready code index for the calling session's resolved (self) folder: no index exists yet, or one is still being built (gitnexus: <repo>/.gitnexus/meta.json absent while an analyze is running or has begun writing <repo>/.gitnexus/).",
           "raising_methods": [
@@ -357,6 +381,7 @@
           "note": "Thrown by the adapter's pre-flight before the child process is ever spawned, so it is never converted into an offline result. retryable stays false in the v1 sense (section 3.3): the missing case needs an index build, a new action; the building case resolves only when an external process the caller cannot observe finishes, which the remediation states as wait-then-retry guidance rather than a backoff class."
         },
         {
+          "$anchor": "E-CODE-INTEL-DISABLED",
           "code": "E-CODE-INTEL-DISABLED",
           "meaning": "Code intelligence is off for the calling session: the resolved provider is 'none' (NullProvider), so no code_* call (including code_reindex and code_status, which resolve the provider before spawning or reading anything) can be answered. Always an error result, never an ok payload that merely says 'disabled'.",
           "raising_methods": [
@@ -377,6 +402,7 @@
           "group_decision": "PROVIDER_INTERNAL: 'none' is a valid configured provider, not a request error and not a misconfiguration (that is E-CODE-PROVIDER-UNCONFIGURED). The session's configuration cannot serve the call, so it is refused as an error rather than answered with a payload a caller would read as success."
         },
         {
+          "$anchor": "E-SELF-NO-WORKFOLDER",
           "code": "E-SELF-NO-WORKFOLDER",
           "meaning": "The calling session's folder does not exist or is not a directory: a member session's registered work folder is missing or unset (or the member is not registered), or the fleet server's own working folder is gone.",
           "raising_methods": [
@@ -419,6 +445,7 @@
           "group_decision": "PROVIDER_INTERNAL, not validation: no request field is wrong -- kb_* and code_* requests carry no scope argument. The configuration the session resolves to (its member registration or the server's working folder) cannot serve the call at all. Thrown before getKbProviders on every kb_* route, and before getProvider on every code_* route (position pre-provider). The thrown message carries a one-line 'Remediation:' clause."
         },
         {
+          "$anchor": "E-SELF-NOT-A-REPO",
           "code": "E-SELF-NOT-A-REPO",
           "meaning": "The calling session's folder exists but is not a git repository, so no KB identity can be derived from it and no code index is resolved for it.",
           "raising_methods": [
@@ -461,6 +488,7 @@
           "group_decision": "PROVIDER_INTERNAL, not validation: no request field is wrong -- kb_* and code_* requests carry no scope argument. The configuration the session resolves to (its member registration or the server's working folder) cannot serve the call at all. Thrown before getKbProviders on every kb_* route, and before getProvider on every code_* route (position pre-provider). The thrown message carries a one-line 'Remediation:' clause."
         },
         {
+          "$anchor": "E-SELF-NO-REMOTE",
           "code": "E-SELF-NO-REMOTE",
           "meaning": "The calling session's folder has no origin remote (or a remote member has no single known origin remote), so it has no KB identity. Never silently mapped to a directory-name or 'default' KB.",
           "raising_methods": [
@@ -494,6 +522,7 @@
           "group_decision": "PROVIDER_INTERNAL, not validation: no request field is wrong -- kb_* requests carry no scope argument. The KB configuration the session resolves to (its member registration or the server's working folder) cannot serve the call at all. Thrown before getKbProviders, on every kb_* route (position pre-provider). The thrown message carries a one-line 'Remediation:' clause."
         },
         {
+          "$anchor": "E-MEMBER-VIEW-READ-ONLY",
           "code": "E-MEMBER-VIEW-READ-ONLY",
           "meaning": "kb_feedback was called in a MEMBER session. A member's reads come from the in-memory view of its own checkout bible, which is read-only; a downvote would flag an entry the member cannot see in the shared per-repo DB. Nothing is changed.",
           "raising_methods": [

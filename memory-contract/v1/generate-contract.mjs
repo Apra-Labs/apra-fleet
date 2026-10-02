@@ -335,7 +335,7 @@ function loadTaxonomy() {
 function loadProjectableCodes(taxonomy) {
   const codes = [];
   for (const [group, body] of Object.entries(taxonomy.groups)) {
-    body.codes.forEach((entry, index) => {
+    body.codes.forEach((entry) => {
       if (entry.surfaced !== 'thrown' && entry.surfaced !== 'response-field') {
         if (entry.surfaced !== 'silent') {
           throw new Error(
@@ -345,8 +345,14 @@ function loadProjectableCodes(taxonomy) {
         }
         return;
       }
+      if (entry.$anchor !== entry.code) {
+        throw new Error(
+          `${entry.code}: taxonomy.json entry has $anchor "${entry.$anchor}" -- every groups code must carry ` +
+            '$anchor equal to its code (taxonomy.json _meta.ref_rule), because projections reference codes by id',
+        );
+      }
       const tools = [...new Set(entry.raising_methods.map((m) => m.tool))];
-      codes.push({ code: entry.code, group, index, meaning: entry.meaning, tools });
+      codes.push({ code: entry.code, group, meaning: entry.meaning, tools });
     });
   }
   return codes;
@@ -380,14 +386,19 @@ function checkDirectiveActivationAbsence(taxonomy, bindingDocs, openApiDoc) {
 }
 
 /**
- * The taxonomy.json reference URI for one projectable code -- a JSON Pointer
- * (RFC 6901) fragment appended to TAXONOMY_ID_BASE. This is how both
- * projections point AT taxonomy.json's own entry instead of inlining the code
- * string a second time: the pointer identifies the entry structurally (by
- * group + array index), so neither projection re-types `entry.code` anywhere.
+ * The taxonomy.json reference URI for one projectable code -- a plain-name
+ * fragment (the code's own `$anchor` in taxonomy.json, which always equals its
+ * `code` string; see taxonomy.json `_meta.ref_rule`) appended to
+ * TAXONOMY_ID_BASE. This is how both projections point AT taxonomy.json's own
+ * entry. The reference is BY ID, never a positional JSON Pointer
+ * (#/groups/<group>/codes/<index>): a positional pointer silently changes
+ * meaning when a code is inserted mid-array, whereas an id reference keeps
+ * meaning the same code under any insertion, removal or reorder.
+ * loadProjectableCodes refuses an entry whose `$anchor` is missing or differs
+ * from its code, so the fragment always resolves.
  */
 function taxonomyCodeRef(entry) {
-  return `${TAXONOMY_ID_BASE}#/groups/${entry.group}/codes/${entry.index}`;
+  return `${TAXONOMY_ID_BASE}#${entry.code}`;
 }
 
 /**

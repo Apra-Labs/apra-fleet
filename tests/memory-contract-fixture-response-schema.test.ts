@@ -100,7 +100,7 @@ describe('memory-contract/v1 recorded response fixtures validate against their s
     // index is now a thrown E-CODE-INDEX-NOT-READY, never an ok response), plus the 2 code_reindex/code_status provider-not-supported outcomes,
     // minus kb_feedback/happy (a MEMBER-session kb_feedback is now the
     // E-MEMBER-VIEW-READ-ONLY refusal), plus kb_bible_commit/happy.
-    expect(keys.length).toBe(28);
+    expect(keys.length).toBe(29); // + kb_feedback/happy (FULL session)
     expect(failures).toEqual([]);
   });
 
@@ -127,7 +127,7 @@ describe('memory-contract/v1 recorded response fixtures validate against their s
       }
     }
 
-    expect(keys.length).toBe(28);
+    expect(keys.length).toBe(29); // + kb_feedback/happy (FULL session)
     expect(failures).toEqual([]);
   });
 

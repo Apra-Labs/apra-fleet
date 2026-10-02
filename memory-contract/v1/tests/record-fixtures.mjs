@@ -448,15 +448,18 @@ await recordHappy('kb_freshness_sweep', 'happy', {
 });
 
 // --- kb_feedback ------------------------------------------------------
-// Every recorded session is a MEMBER session, whose KB reads come from the
-// read-only checkout bible view: kb_feedback refuses with
-// E-MEMBER-VIEW-READ-ONLY before any KB is opened and changes nothing.
+// A MEMBER session's KB reads come from the read-only checkout bible view:
+// kb_feedback refuses with E-MEMBER-VIEW-READ-ONLY before any KB is opened and
+// changes nothing. The same request from the FULL (non-member) session FULL_A
+// -- whose server working folder is repo A, so it shares A's KB -- succeeds.
 if (idFoo) {
-  await recordRefusal('kb_feedback', 'refusal-member-view-read-only', {
+  const feedbackRequest = {
     id: idFoo,
     reason: 'On re-check, the summary overstated precision -- exampleFn is untyped-input tolerant, unlike the note implies.',
     role: 'reviewer',
-  }, 'E-MEMBER-VIEW-READ-ONLY');
+  };
+  await recordRefusal('kb_feedback', 'refusal-member-view-read-only', feedbackRequest, 'E-MEMBER-VIEW-READ-ONLY');
+  await withSession('FULL_A', () => recordHappy('kb_feedback', 'happy', feedbackRequest));
 }
 
 // --- kb_harvest -------------------------------------------------------
