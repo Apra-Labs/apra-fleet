@@ -18,7 +18,8 @@
  *      self-healing (deletes server.json only for a dead pid or a refused port;
  *      a live-but-unresponsive server keeps it). On success: attach over
  *      StreamableHttpTransport, spawn nothing.
- *   3. stdio self-spawn fallback -- the existing four command tiers
+ *   3. stdio self-spawn fallback (refused while an unresponsive HTTP singleton
+ *      still owns the data dir) -- the existing four command tiers
  *      (APRA_FLEET_SERVER_CMD, APRA_FLEET_SERVER_BIN, bundled sibling index.js,
  *      dev-monorepo dist/index.js), fed to StdioTransport.
  *
@@ -272,15 +273,22 @@ export async function resolveFleetServerConnection(deps = {}) {
         );
     }
 
+    // A live-but-unresponsive HTTP singleton still owns this data dir: a
+    // self-spawned stdio server beside it would split the fleet (GitHub #584).
+    if (instance && instance.state === 'unresponsive') {
+        throw new Error(
+            `The apra-fleet HTTP server (pid ${instance.pid} at ${instance.url}) is alive but not answering /health.\n` +
+                '  Refusing to self-spawn a second (stdio) server on the same data dir.\n' +
+                "  Run 'apra-fleet stop' and retry, or set APRA_FLEET_TRANSPORT=stdio to force a private stdio server.",
+        );
+    }
+
     // Step 3 -- stdio self-spawn fallback.
     const cmd = resolveFleetServerCommand(deps);
-    const unresponsive = instance && instance.state === 'unresponsive'
-        ? ` (HTTP singleton pid ${instance.pid} at ${instance.url} is alive but not answering /health)`
-        : '';
     return {
         mode: 'stdio',
         ...cmd,
-        reason: `no healthy fleet singleton found${unresponsive}; self-spawning stdio server via ${cmd.command} ${cmd.args.join(' ')}`,
+        reason: `no healthy fleet singleton found; self-spawning stdio server via ${cmd.command} ${cmd.args.join(' ')}`,
     };
 }
 

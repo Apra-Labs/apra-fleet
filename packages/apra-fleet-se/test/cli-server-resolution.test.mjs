@@ -58,6 +58,26 @@ describe('client checkRunningInstance tri-state', () => {
         assert.strictEqual(unlinked.length, 1);
     });
 
+    test('resolveFleetServerConnection refuses to self-spawn stdio beside an unresponsive HTTP server', async () => {
+        await assert.rejects(
+            resolveFleetServerConnection({
+                env: {},
+                dirname: 'anywhere',
+                exists: () => true,
+                checkRunningInstance: async () => ({ running: false, state: 'unresponsive', pid: 4242, url: 'http://127.0.0.1:7523/mcp', port: 7523 }),
+            }),
+            /alive but not answering \/health[\s\S]*apra-fleet stop/,
+        );
+        // An explicit stdio request is still honoured (no probe at all).
+        const forced = await resolveFleetServerConnection({
+            env: { APRA_FLEET_TRANSPORT: 'stdio' },
+            dirname: 'anywhere',
+            exists: (c) => c === path.join('anywhere', 'index.js'),
+            checkRunningInstance: async () => { throw new Error('must not probe'); },
+        });
+        assert.strictEqual(forced.mode, 'stdio');
+    });
+
     test('healthy -> running', async () => {
         const { unlinked, d } = deps({ health: async () => true });
         const r = await checkRunningInstance(d);
