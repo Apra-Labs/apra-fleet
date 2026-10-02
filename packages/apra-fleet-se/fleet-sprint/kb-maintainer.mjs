@@ -28,7 +28,7 @@
 // succeeds is the maintainer. Each skipped candidate is logged as a
 // replacement, naming the next eligible member and the probe error.
 //
-// A member mapped to roleMap.orchestrator is NEVER a maintainer under any rule
+// A member mapped to the backlog role (roleMap.backlog) is NEVER a maintainer under any rule
 // (explicit included): the orchestrator may be a shared member that cannot sit
 // on every sprint's branch. If it is the only member with a checkout of a
 // repository, that repository gets no maintainer and a loud WARNING is logged.
@@ -45,6 +45,7 @@
 // =============================================================================
 
 import { normalizeRemoteUrl } from './beads-identity.mjs';
+import { ROLE_BACKLOG, ROLE_BACKLOG_ALIAS } from './backlog-role.mjs';
 
 /** roleMap key naming explicit maintainers. Not a dispatched role. */
 export const ROLE_KB_MAINTAINER = 'kb_maintainer';
@@ -78,10 +79,19 @@ export function roleMappedMembers(roleMap) {
     return out;
 }
 
-/** Members named under roleMap.orchestrator. */
-export function orchestratorMembers(roleMap) {
-    const list = roleMap && typeof roleMap === 'object' ? roleMap.orchestrator : undefined;
-    return new Set(Array.isArray(list) ? list : []);
+/**
+ * Members named under the backlog role (roleMap.backlog, formerly
+ * the deprecated orchestrator alias -- see backlog-role.mjs). validateArgs folds the
+ * deprecated alias into roleMap.backlog and deletes it, so the canonical key
+ * must be read; the alias is still honoured for an un-normalized roleMap.
+ */
+export function backlogMembers(roleMap) {
+    const out = new Set();
+    if (!roleMap || typeof roleMap !== 'object') return out;
+    for (const key of [ROLE_BACKLOG, ROLE_BACKLOG_ALIAS]) {
+        if (Array.isArray(roleMap[key])) for (const m of roleMap[key]) out.add(m);
+    }
+    return out;
 }
 
 /**
@@ -90,7 +100,7 @@ export function orchestratorMembers(roleMap) {
  * @returns {Array<{ member: string, rule: string }>}
  */
 export function orderMaintainerCandidates({ repo, members, repoOf, roleMap }) {
-    const orch = orchestratorMembers(roleMap);
+    const orch = backlogMembers(roleMap);
     const inRepo = (m) => repoOf.get(m) === repo && !orch.has(m);
     const explicit = (roleMap && Array.isArray(roleMap[ROLE_KB_MAINTAINER])) ? roleMap[ROLE_KB_MAINTAINER] : [];
     const mapped = roleMappedMembers(roleMap);
@@ -112,8 +122,8 @@ export function orderMaintainerCandidates({ repo, members, repoOf, roleMap }) {
  * @param {{ repo: string, member: string|null, rule: string|null }} sel
  */
 export function formatSelectionLine(sel) {
-    if (!sel.member && sel.orchestratorOnly) {
-        return `${LOG_PREFIX} WARNING: repository ${sel.repo}: no maintainer selected -- the only member with a checkout of the repository is the orchestrator, which is never a maintainer; KB writes for it have no target this sprint`;
+    if (!sel.member && sel.backlogOnly) {
+        return `${LOG_PREFIX} WARNING: repository ${sel.repo}: no maintainer selected -- the only member with a checkout of the repository is the backlog member, which is never a maintainer; KB writes for it have no target this sprint`;
     }
     if (!sel.member) {
         return `${LOG_PREFIX} repository ${sel.repo}: no available maintainer (every eligible member failed its probe); KB writes for it have no target this sprint`;
@@ -193,17 +203,17 @@ export function createKbMaintainerSelector(opts = {}) {
             }
             return { repo, member, record: records.get(member), rule, replaced };
         }
-        const orch = orchestratorMembers(roleMap);
-        const orchestratorOnly = candidates.length === 0 && members.some((m) => repoOf.get(m) === repo && orch.has(m));
-        return { repo, member: null, record: null, rule: null, replaced, orchestratorOnly };
+        const orch = backlogMembers(roleMap);
+        const backlogOnly = candidates.length === 0 && members.some((m) => repoOf.get(m) === repo && orch.has(m));
+        return { repo, member: null, record: null, rule: null, replaced, backlogOnly };
     }
 
     function warnUnusableExplicit() {
         const explicit = (roleMap && Array.isArray(roleMap[ROLE_KB_MAINTAINER])) ? roleMap[ROLE_KB_MAINTAINER] : [];
-        const orch = orchestratorMembers(roleMap);
+        const orch = backlogMembers(roleMap);
         for (const m of explicit) {
             if (orch.has(m)) {
-                log(`${LOG_PREFIX} WARNING: roleMap.${ROLE_KB_MAINTAINER} names '${m}', which is the orchestrator member -- ignored (the orchestrator is never a maintainer)`);
+                log(`${LOG_PREFIX} WARNING: roleMap.${ROLE_KB_MAINTAINER} names '${m}', which is the backlog member -- ignored (the backlog member is never a maintainer)`);
             } else if (!members.includes(m)) {
                 log(`${LOG_PREFIX} WARNING: roleMap.${ROLE_KB_MAINTAINER} names '${m}', which is not a sprint member -- ignored`);
             } else if (!repoOf.has(m)) {

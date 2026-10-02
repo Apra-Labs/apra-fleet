@@ -81,8 +81,48 @@ export type SessionIdStrategy =
  */
 export type ExecTimeoutSource = 'inactivity_timeout' | 'total_ceiling';
 
-export function encodeClaudeProjectDir(workFolder: string): string {
-  return workFolder.replace(/[^a-zA-Z0-9]/g, '-');
+/** Claude Code caps an encoded project-dir name at this many characters. */
+export const CLAUDE_PROJECT_DIR_MAX_LEN = 200;
+
+/**
+ * The 32-bit string hash Claude Code appends to an over-long project-dir name
+ * (ported verbatim from the claude CLI bundle: h = ((h << 5) - h + charCode) | 0
+ * over UTF-16 code units).
+ */
+export function claudeProjectDirHash(s: string): number {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0;
+  return h;
+}
+
+/**
+ * Normalize a work folder to the cwd string Claude Code itself sees: no
+ * trailing separator (process.cwd() never has one, except at a root), and on
+ * Windows backslash separators (only the over-200 hash suffix depends on the
+ * separator; the visible encoding maps both to '-').
+ */
+export function claudeCwdForm(workFolder: string, windows: boolean): string {
+  let p = windows ? workFolder.replace(/\//g, '\\') : workFolder;
+  const stripped = p.replace(/[\\/]+$/, '');
+  // Keep a root as the CLI sees it: '/' on POSIX, 'C:\' on Windows.
+  if (stripped === '') p = windows ? p : '/';
+  else if (/^[A-Za-z]:$/.test(stripped)) p = `${stripped}\\`;
+  else p = stripped;
+  return p;
+}
+
+/**
+ * The ~/.claude/projects/<name> directory name Claude Code uses for a cwd:
+ * every non-alphanumeric char becomes '-', and a name longer than 200 chars is
+ * cut to 200 and suffixed with '-' + base36(|hash(cwd)|) -- the same rule as
+ * the claude CLI. `windows` selects the member's cwd form (defaults to this
+ * host's platform).
+ */
+export function encodeClaudeProjectDir(workFolder: string, windows: boolean = process.platform === 'win32'): string {
+  const cwd = claudeCwdForm(workFolder, windows);
+  const encoded = cwd.replace(/[^a-zA-Z0-9]/g, '-');
+  if (encoded.length <= CLAUDE_PROJECT_DIR_MAX_LEN) return encoded;
+  return `${encoded.slice(0, CLAUDE_PROJECT_DIR_MAX_LEN)}-${Math.abs(claudeProjectDirHash(cwd)).toString(36)}`;
 }
 
 /**

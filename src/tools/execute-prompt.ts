@@ -16,7 +16,7 @@ import { buildAuthEnvPrefix } from '../utils/auth-env.js';
 import { writeStatusline } from '../services/statusline.js';
 import { getModelOverride } from '../services/user-config.js';
 import { ensureCloudReady } from '../services/cloud/lifecycle.js';
-import { getStallDetector, resolveSessionLogPath } from '../services/stall/index.js';
+import { getStallDetector, resolveSessionLogPath, type StallReason } from '../services/stall/index.js';
 import { getCachedMemberPathContext } from '../services/member-home.js';
 import { provisionAgents, remoteAgentsDir, loadCanonicalAgentSet } from '../services/agent-provisioner.js';
 import { ensureNoProjectAgentShadows } from '../services/agent-shadow.js';
@@ -48,7 +48,7 @@ import { ensureAgyProject } from '../services/agy-project.js';
 
 export interface ExecutePromptStructured {
   isError?: boolean;
-  reason?: 'busy' | 'reserved' | 'dispatch_failed' | 'nonzero_exit' | 'max_turns_exhausted' | 'empty_response' | 'orphan_recovery_timeout' | 'workspace_not_trusted' | 'auth' | 'server' | 'overloaded' | 'insufficient_context_headroom' | 'budget_exhausted' | 'session_not_found' | 'fork_unsupported' | 'stalled' | 'preflight_offline' | 'preflight_auth_missing' | 'preflight_auth_expired' | 'usage_limit' | 'permission_denied';
+  reason?: 'busy' | 'reserved' | 'dispatch_failed' | 'nonzero_exit' | 'max_turns_exhausted' | 'empty_response' | 'orphan_recovery_timeout' | 'workspace_not_trusted' | 'auth' | 'server' | 'overloaded' | 'insufficient_context_headroom' | 'budget_exhausted' | 'session_not_found' | 'fork_unsupported' | 'stalled' | 'agent_never_started' | 'max_total_time' | 'preflight_offline' | 'preflight_auth_missing' | 'preflight_auth_expired' | 'usage_limit' | 'permission_denied';
   // The LLM's actual reply text on success. Callers that dispatch execute_prompt
   // via an MCP client only ever see structuredContent (the content array is
   // dropped when structuredContent is also present) -- this field exists so the
@@ -77,6 +77,10 @@ export interface ExecutePromptStructured {
    *  compose_permissions grants that would allow them, and a hint). Any
    *  partial reply is in `response`. */
   permissionDenied?: PermissionDenial;
+  /** false when nothing was dispatched to the member: a max_total_time
+   *  failure that ran out of budget during setup (cloud start, before the
+   *  first attempt). Absent on every other result. */
+  dispatched?: false;
   [key: string]: unknown;
 }
 
@@ -108,7 +112,7 @@ export const executePromptSchema = z.object({
     'MODE RESOLUTION (minting/wiring the forked session) is implemented separately.'
   ),
   timeout_s: z.number().default(300).describe('Inactivity timeout in seconds -- always drives the stall detector\'s per-dispatch baseline threshold, measured against the member\'s own session transcript activity (default: 300s / 5 minutes). Omitting it yields a 300s baseline, a deliberate change from the previously silent 150s stall-detector default. Per-provider, it ALSO arms the exec-level rolling timer against this dispatch\'s stdout/stderr channel for Codex and Copilot, which have no pollable transcript; Claude and AGY take that exec-channel ceiling from max_total_s instead; and OpenCode keeps BOTH signals armed at once (this exec-channel timer plus coarse log-directory-mtime polling, combined with OR semantics -- either advancing counts as not-stalled), since its transcript signal is directory-level only, not a per-turn file (see ProviderAdapter.execTimeoutSource()).'),
-  max_total_s: z.number().optional().describe('Hard ceiling in seconds -- the command is killed after this total elapsed time regardless of activity. If omitted, there is no total time limit.'),
+  max_total_s: z.number().optional().describe('Hard ceiling in seconds, measured from the moment the call is received (setup such as member readiness and preflight counts) -- the command is killed after this total elapsed time regardless of activity and the call returns reason max_total_time. If omitted, there is no total time limit.'),
   max_turns: z.number().min(1).max(500).optional().describe('Max turns for claude -p (default: 50)'),
   model: z.string().optional().describe('Model tier ("cheap", "standard", "premium") or a specific model ID for power users. Prefer tier names -- the server resolves them to the correct model per provider. If omitted, defaults to the standard tier. Applies to both new and resumed sessions.'),
   substitutions: z.record(z.string(), z.string()).optional().describe(
@@ -184,6 +188,41 @@ ${output}`;
 // timeout_s -- is deliberately NOT taken: that is the exact coupling this
 // removes, and for these providers timeout_s belongs to the StallDetector.
 const EXEC_TIMER_NEVER_BINDS_MS = 86_400_000;
+
+const FAILURE_STDERR_TAIL_CHARS = 2000;
+const FAILURE_STDERR_TAIL_LINES = 20;
+const FAILURE_EVENT_CHARS = 1000;
+
+/**
+ * GitHub #585: the diagnostic payload logged when execute_prompt's dispatch
+ * exits non-zero -- the TAIL of stderr (the end is where CLIs print the
+ * fatal error), capped by lines and characters, plus the last JSON
+ * result/error event on stdout, capped. Redaction happens in logLine.
+ */
+export function formatPromptFailureTail(result: Pick<SSHExecResult, 'code' | 'stdout' | 'stderr'>): string {
+  let stderrTail = (result.stderr ?? '').trimEnd();
+  const lines = stderrTail.split('\n');
+  if (lines.length > FAILURE_STDERR_TAIL_LINES) stderrTail = lines.slice(-FAILURE_STDERR_TAIL_LINES).join('\n');
+  if (stderrTail.length > FAILURE_STDERR_TAIL_CHARS) stderrTail = stderrTail.slice(-FAILURE_STDERR_TAIL_CHARS);
+
+  let lastEvent: string | undefined;
+  const outLines = (result.stdout ?? '').split('\n');
+  for (let i = outLines.length - 1; i >= 0 && lastEvent === undefined; i--) {
+    const line = outLines[i].trim();
+    if (!line.startsWith('{')) continue;
+    try {
+      const ev = JSON.parse(line) as { type?: unknown; is_error?: unknown; error?: unknown; subtype?: unknown };
+      if (ev.type === 'result' || ev.type === 'error' || ev.is_error === true || ev.error !== undefined) {
+        lastEvent = line.length > FAILURE_EVENT_CHARS ? line.slice(0, FAILURE_EVENT_CHARS) + '...[truncated]' : line;
+      }
+    } catch { /* not a JSON event line */ }
+  }
+  return JSON.stringify({ exit: result.code, stderrTail, ...(lastEvent !== undefined ? { lastEvent } : {}) });
+}
+
+/** GitHub #563: max_total_s time held back from every attempt for prompt-file
+ *  cleanup and the response (see cleanupReserveMs in executePrompt). */
+export const EXECUTE_PROMPT_CLEANUP_RESERVE_MS = 5000;
 
 const SERVER_RETRY_DELAY_MS = 5000;
 
@@ -538,6 +577,10 @@ async function executePromptInteractive(
 }
 
 export async function executePrompt(input: ExecutePromptInput, extra?: any): Promise<string | ExecutePromptResult> {
+  // GitHub #563: max_total_s is measured from HERE, handler entry -- cloud
+  // readiness, preflight and agent provisioning are all charged to it, since
+  // the client's own deadline (max_total_s + a fixed grace) starts at the call.
+  const handlerStartedAt = Date.now();
   if (hasSecretToken(input.prompt)) {
     return 'error: execute_prompt prompt contains {{secret.NAME}} token. Secrets must never be passed to LLM prompts. Use execute_command with {{secret.NAME}} instead.';
   }
@@ -606,7 +649,30 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   if (typeof agentOrError === 'string') return agentOrError;
   let agent: Agent;
   try {
-    agent = await ensureCloudReady(agentOrError as Agent); // auto-start if stopped
+    // GitHub #563 review: a cold cloud start can take minutes. Bound it by the
+    // max_total_s budget (minus the cleanup reserve) so a slow start returns
+    // the typed max_total_time error before the client's own deadline. The
+    // start itself keeps going in the background; the next call finds the
+    // instance running.
+    const cloudBudgetMs = input.max_total_s !== undefined
+      ? Math.max(0, input.max_total_s * 1000 - Math.min(EXECUTE_PROMPT_CLEANUP_RESERVE_MS, Math.floor(input.max_total_s * 100)) - (Date.now() - handlerStartedAt))
+      : undefined;
+    const ready = ensureCloudReady(agentOrError as Agent); // auto-start if stopped
+    if (cloudBudgetMs === undefined) {
+      agent = await ready;
+    } else {
+      let budgetTimer: ReturnType<typeof setTimeout> | undefined;
+      const outOfBudget = new Promise<null>((resolve) => { budgetTimer = setTimeout(() => resolve(null), cloudBudgetMs); });
+      const raced = await Promise.race([ready, outOfBudget]).finally(() => clearTimeout(budgetTimer));
+      if (raced === null) {
+        ready.catch(() => { /* background start; outcome surfaces on the next call */ });
+        return {
+          text: `[FAIL] execute_prompt on "${(agentOrError as Agent).friendlyName}" exceeded max_total_s (${input.max_total_s}s) while waiting for the cloud member to start -- the start continues in the background; retry shortly.`,
+          structuredContent: { isError: true, reason: 'max_total_time', dispatched: false },
+        };
+      }
+      agent = raced;
+    }
   } catch (err: any) {
     return `[FAIL] Failed to execute prompt on "${(agentOrError as Agent).friendlyName}": ${err.message}`;
   }
@@ -880,6 +946,9 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   await ensureAgentFilesProvisioned(agent);
   const stallDetector = getStallDetector();
   let clearedByStall = false;
+  // GitHub #562: which stall fired -- a frozen transcript, or a session log
+  // that never appeared at its authoritative path (the agent never started).
+  let stallReason: StallReason = 'stalled';
   // apra-fleet-3c9.1: a CONFIRMED stall must not only kill the remote pid but
   // also cancel the in-flight strategy.execCommand() promise. Before this, the
   // client kept waiting out its full deriveTimeoutMs deadline after the
@@ -906,7 +975,8 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     provisional: true,
     stallReported: false,
     thresholdMs: stallThresholdMs,
-    onStall: () => {
+    onStall: (reason) => {
+      stallReason = reason ?? 'stalled';
       // Stall detector already wrote 'unknown' to the statusline before calling here.
       // Our job: clear in-process state so the member can accept new calls.
       // clearedByStall prevents the eventually-resolving finally block from clobbering
@@ -1137,11 +1207,35 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       resolvedLogPath = null;
     }
   }
+  // GitHub #562: a path built from a local or probed home is authoritative --
+  // if it never appears, the agent never started. A username-convention guess
+  // is not, and a missing file there stays a warning.
+  // Known causes of a transcript landing somewhere else make the path a
+  // guess too: a relocated Claude config dir (CLAUDE_CONFIG_DIR, in this
+  // process for a local member or in the member's configured env vars), or a
+  // local POSIX work folder reached through a symlink (the CLI names the
+  // project dir after the physical cwd).
+  const claudeConfigRelocated = (agent.llmProvider ?? 'claude') === 'claude' && (
+    Object.keys(agent.encryptedEnvVars ?? {}).includes('CLAUDE_CONFIG_DIR')
+    || (agent.agentType === 'local' && !!process.env.CLAUDE_CONFIG_DIR)
+  );
+  let localCwdIsSymlinked = false;
+  if (agent.agentType === 'local' && process.platform !== 'win32') {
+    try {
+      const real = fs.realpathSync(resolvedWorkFolder);
+      localCwdIsSymlinked = real.replace(/\/+$/, '') !== path.resolve(resolvedWorkFolder).replace(/\/+$/, '');
+    } catch {
+      localCwdIsSymlinked = true; // cannot resolve -> not authoritative
+    }
+  }
+  const logPathAuthoritative = (memberPathCtx.source === 'local' || memberPathCtx.source === 'probe')
+    && !claudeConfigRelocated && !localCwdIsSymlinked;
   stallDetector.update(agent.id, {
     sessionId: activePreSpawnSid,
     logFilePath: resolvedLogPath,
     provisional: !resolvedLogPath,
     thresholdMs: stallThresholdMs,
+    logPathAuthoritative: !!resolvedLogPath && logPathAuthoritative,
   });
 
   const claudeCmd = authPrefix + cmds.buildAgentPromptCommand(provider, promptOpts);
@@ -1170,9 +1264,18 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   const durableMirrorSupported = getAgentOS(agent) !== 'windows'
     || (getAgentShell(agent) === 'gitbash' && agent.agentType !== 'local');
   const durablePath = durableMirrorSupported ? durableOutputPath(scope.getInv()) : undefined;
-  const dispatchStartedAt = Date.now();
+  // GitHub #563: the shared deadline is anchored at handler entry, not here --
+  // setup awaits above (cloud readiness, preflight, provisioning) count.
+  const dispatchStartedAt = handlerStartedAt;
 
   const maxTotalMs = input.max_total_s !== undefined ? input.max_total_s * 1000 : undefined;
+  // Time kept back from every attempt's budget for the finally-block prompt
+  // file cleanup and the response, so the whole call settles inside
+  // max_total_s and well within the client's max_total_s + grace window.
+  // Fixed 5s, capped at 10% of a very small max_total_s.
+  const cleanupReserveMs = maxTotalMs !== undefined
+    ? Math.min(EXECUTE_PROMPT_CLEANUP_RESERVE_MS, Math.floor(maxTotalMs / 10))
+    : 0;
   // apra-fleet-25yl.2.1: the exec-level ROLLING (inactivity) deadline handed to
   // strategy.execCommand() is no longer provider-blind. It used to be
   // `timeout_s` for everyone, which is a false kill for the batch-only
@@ -1219,7 +1322,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   // pre-existing behavior).
   function retryBudget(): { timeoutMs: number; maxTotalMs: number | undefined; exhausted: boolean } {
     if (maxTotalMs === undefined) return { timeoutMs, maxTotalMs: undefined, exhausted: false };
-    const remaining = Math.max(0, maxTotalMs - (Date.now() - dispatchStartedAt));
+    const remaining = Math.max(0, maxTotalMs - cleanupReserveMs - (Date.now() - dispatchStartedAt));
     return { timeoutMs: Math.min(timeoutMs, remaining), maxTotalMs: remaining, exhausted: remaining <= 0 };
   }
 
@@ -1352,6 +1455,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
         logFilePath: logPath,
         provisional: !logPath,
         thresholdMs: stallThresholdMs,
+        logPathAuthoritative: !!logPath && logPathAuthoritative,
       });
     }
   };
@@ -1371,6 +1475,24 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     ? AbortSignal.any([extra.signal, stallAbortController.signal])
     : stallAbortController.signal;
 
+  // GitHub #563 review: when the inactivity window is as long as the attempt's
+  // remaining max_total_s budget (timeout_s >= max_total_s -- every
+  // fleet-sprint dispatch, and Claude's total-ceiling mode), both timers come
+  // due together and the inactivity one, armed first, wins the tie. That
+  // kill IS the max_total_s ceiling, so it is classified as max_total_time.
+  let lastAttempt: { timeoutMs: number; maxTotalMs: number | undefined } | undefined;
+  const dispatchAttempt = (cmd: string, attemptTimeoutMs: number, attemptMaxTotalMs: number | undefined) => {
+    lastAttempt = { timeoutMs: attemptTimeoutMs, maxTotalMs: attemptMaxTotalMs };
+    return strategy.execCommand(cmd, attemptTimeoutMs, attemptMaxTotalMs, onPidCaptured, dispatchSignal);
+  };
+  const isMaxTotalKill = (err: unknown): boolean => {
+    const msg = (err as { message?: unknown })?.message;
+    if (maxTotalMs === undefined || typeof msg !== 'string') return false;
+    if (/exceeded max total time/i.test(msg)) return true;
+    return /of inactivity/i.test(msg) && lastAttempt?.maxTotalMs !== undefined
+      && lastAttempt.timeoutMs >= lastAttempt.maxTotalMs;
+  };
+
   // Mark agent as busy in statusline
   writeStatusline(new Map([[agent.id, 'busy']]));
 
@@ -1378,6 +1500,16 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   let _epError: string | undefined;
   let _epUsage: { input_tokens: number; output_tokens: number } | undefined;
   let _epOffline = false;
+  // GitHub #563: the typed result for a dispatch that ran out of max_total_s
+  // (measured from handler entry), so callers never see a raw transport timeout.
+  // dispatched=false: the budget ran out before anything was sent to the
+  // member, so callers can skip publishing work that cannot exist.
+  const maxTotalTimeResult = (dispatched = true): ExecutePromptResult => ({
+    text: dispatched
+      ? `[FAIL] execute_prompt on "${agent.friendlyName}" exceeded max_total_s (${input.max_total_s}s, measured from the call, including setup) -- the dispatch was stopped.`
+      : `[FAIL] execute_prompt on "${agent.friendlyName}" exceeded max_total_s (${input.max_total_s}s, measured from the call) during setup -- nothing was dispatched.`,
+    structuredContent: { isError: true, reason: 'max_total_time', ...(dispatched ? {} : { dispatched: false as const }) },
+  });
   // apra-fleet-6a7.1: gates the exit-0/empty-stdout workspace_not_trusted
   // self-heal-and-retry below to exactly one attempt per call, mirroring
   // runGitStep's authHealAttempted shape (fleet-sprint/runner.js:616) -- a
@@ -1423,8 +1555,17 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   claimGuardActive = false;
   try {
     let result;
+    // GitHub #563: the FIRST attempt is capped by the same shared budget as
+    // any retry (max_total_s since handler entry, minus the cleanup reserve),
+    // not handed a fresh full max_total_s after setup already spent some.
+    const firstBudget = retryBudget();
+    if (firstBudget.exhausted) {
+      _epExitCode = 'error';
+      _epError = 'max_total_s exhausted before dispatch';
+      return maxTotalTimeResult(false);
+    }
     try {
-      result = await strategy.execCommand(claudeCmd, timeoutMs, maxTotalMs, onPidCaptured, dispatchSignal);
+      result = await dispatchAttempt(claudeCmd, firstBudget.timeoutMs, firstBudget.maxTotalMs);
     } catch (dispatchErr: any) {
       // apra-fleet-02s.1: a genuine command-execution exception (e.g. an
       // inactivity timeout, or any other error strategy.execCommand throws)
@@ -1456,7 +1597,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       await tryKillPid(agent, strategy, cmds);
       const freshOpts = { ...promptOpts, sessionId: isCallerMinted ? uuid() : undefined, resuming: false, fork: undefined };
       const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
-      result = await strategy.execCommand(retryCmd, budget.timeoutMs, budget.maxTotalMs, onPidCaptured, dispatchSignal);
+      result = await dispatchAttempt(retryCmd, budget.timeoutMs, budget.maxTotalMs);
     }
     let parsed = provider.parseResponse(result, parseCtx);
     if (parsed.usage) _epUsage = parsed.usage;
@@ -1500,7 +1641,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
         await tryKillPid(agent, strategy, cmds);
         const freshOpts = { ...promptOpts, sessionId: isCallerMinted ? uuid() : undefined, resuming: false, fork: undefined };
         const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
-        result = await strategy.execCommand(retryCmd, staleBudget.timeoutMs, staleBudget.maxTotalMs, onPidCaptured, dispatchSignal);
+        result = await dispatchAttempt(retryCmd, staleBudget.timeoutMs, staleBudget.maxTotalMs);
         parsed = provider.parseResponse(result, parseCtx);
         if (parsed.usage) _epUsage = parsed.usage;
         const usageLimitResult = checkUsageLimit(result, parsed);
@@ -1521,7 +1662,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
         await new Promise(r => setTimeout(r, SERVER_RETRY_DELAY_MS));
         const freshOpts = { ...promptOpts, sessionId: isCallerMinted ? uuid() : undefined, resuming: false, fork: undefined };
         const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
-        result = await strategy.execCommand(retryCmd, overloadBudget.timeoutMs, overloadBudget.maxTotalMs, onPidCaptured, dispatchSignal);
+        result = await dispatchAttempt(retryCmd, overloadBudget.timeoutMs, overloadBudget.maxTotalMs);
         parsed = provider.parseResponse(result, parseCtx);
         if (parsed.usage) _epUsage = parsed.usage;
         const usageLimitResult = checkUsageLimit(result, parsed);
@@ -1553,6 +1694,10 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     }
 
     if (result.code !== 0) {
+      // GitHub #585: a failed dispatch used to log only exit=N. Log a capped
+      // stderr tail plus the last result/error event (logLine applies the
+      // usual secret redaction). Success paths log nothing extra.
+      logLine('prompt_failure_output', formatPromptFailureTail(result), { id: agent.id, friendlyName: agent.friendlyName }, scope.getInv());
       // apra-fleet-391: surface an auth failure as a STRUCTURED reason (not
       // just prose in `text`) so callers -- notably fleet-sprint's
       // isAuthDispatchError -- can key off it directly instead of regexing
@@ -1627,7 +1772,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
         // short-circuits every Windows member: it selects the POSIX
         // `kill -0` / `cat` probes over the PowerShell ones (apra-fleet-7dir.2.4).
         shell: getAgentShell(agent),
-        maxWaitMs: maxTotalMs !== undefined ? Math.max(maxTotalMs - (Date.now() - dispatchStartedAt), 0) : undefined,
+        maxWaitMs: maxTotalMs !== undefined ? retryBudget().maxTotalMs : undefined,
         scope,
       });
 
@@ -1677,7 +1822,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
           await tryKillPid(agent, strategy, cmds);
           const freshOpts = { ...promptOpts, sessionId: isCallerMinted ? uuid() : undefined, resuming: false, fork: undefined };
           const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
-          result = await strategy.execCommand(retryCmd, healBudget.timeoutMs, healBudget.maxTotalMs, onPidCaptured, dispatchSignal);
+          result = await dispatchAttempt(retryCmd, healBudget.timeoutMs, healBudget.maxTotalMs);
           parsed = provider.parseResponse(result, parseCtx);
           if (parsed.usage) _epUsage = parsed.usage;
           const usageLimitResult = checkUsageLimit(result, parsed);
@@ -1762,6 +1907,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
         logFilePath: postLogPath,
         provisional: !postLogPath,
         thresholdMs: stallThresholdMs,
+        logPathAuthoritative: !!postLogPath && logPathAuthoritative,
       });
     }
     clearStoredPid(agent.id);
@@ -1872,12 +2018,24 @@ session: ${parsed.sessionId}`;
     // NOT the MCP client). Surface it as a typed 'stalled' error so the dispatch
     // settles here -- well under the client hard timeout -- instead of being
     // mislabeled dispatch_failed or waiting out the full deadline.
+    if (stallAbortController.signal.aborted && !extra?.signal?.aborted && (stallReason as StallReason) === 'agent_never_started') {
+      _epError = 'dispatch aborted: agent never started (session log never appeared)';
+      return {
+        text: `[FAIL] execute_prompt on "${agent.friendlyName}" was aborted: the agent never started -- its session log never appeared at the expected path within the inactivity threshold (timeout_s). Its process was killed and the dispatch cancelled.`,
+        structuredContent: { isError: true, reason: 'agent_never_started' },
+      };
+    }
     if (stallAbortController.signal.aborted && !extra?.signal?.aborted) {
       _epError = 'dispatch aborted by confirmed stall';
       return {
         text: `[FAIL] execute_prompt on "${agent.friendlyName}" was aborted after a confirmed stall -- the remote turn made no progress for the stall threshold, its process was killed, and the in-flight dispatch was cancelled immediately rather than waiting out the client timeout.`,
         structuredContent: { isError: true, reason: 'stalled' },
       };
+    }
+    // GitHub #563: the shared max_total_s ceiling fired -- a typed error.
+    if (isMaxTotalKill(err)) {
+      _epError = err.message;
+      return maxTotalTimeResult();
     }
     // Only mark offline for genuine SSH/network connection failures, not for cancellations
     _epOffline = !!(err.message && /ssh|network|econnrefused|ehostunreach|connection timed out/i.test(err.message));

@@ -86,3 +86,42 @@ export function applyExtensionSummary(summary, extensions, namespace, data, publ
     const body = (result && typeof result === 'object' && !Array.isArray(result)) ? result : {};
     summary.extensions[namespace] = { publishedAt, ...body };
 }
+
+/**
+ * Returns a NEW state object in which every namespace present in
+ * `state.extensions` that lacks a `state.summary.extensions[ns]` entry, and
+ * whose registered extension defines summarize(), gets one computed via
+ * applyExtensionSummary(). Used when rendering a frozen (archived) state
+ * that was persisted before the run summary existed. `publishedAt` for a
+ * backfilled entry is the frozen state's endedAt, else updatedAt, else
+ * null. Existing entries are never overwritten and the input is never
+ * mutated. A throwing summarize() is logged and that namespace gets no
+ * entry.
+ * @param {object|null} state - a frozen run state
+ * @param {Array} extensions - dashboard extensions
+ * @param {{warn: Function}} [logger]
+ */
+export function backfillExtensionSummaries(state, extensions, logger = console) {
+    if (!state || typeof state !== 'object' || Array.isArray(state)) return state;
+    const data = state.extensions;
+    if (!data || typeof data !== 'object' || Array.isArray(data)) return state;
+    const existing = (state.summary && state.summary.extensions && typeof state.summary.extensions === 'object')
+        ? state.summary.extensions
+        : {};
+    const publishedAt = state.endedAt ?? state.updatedAt ?? null;
+    const scratch = { extensions: {} };
+    for (const ns of Object.keys(data)) {
+        if (Object.prototype.hasOwnProperty.call(existing, ns)) continue;
+        applyExtensionSummary(scratch, extensions, ns, data[ns], publishedAt, logger);
+    }
+    if (Object.keys(scratch.extensions).length === 0) return state;
+    let summary;
+    if (state.summary && typeof state.summary === 'object') {
+        summary = { ...state.summary, extensions: { ...existing, ...scratch.extensions } };
+    } else {
+        summary = createRunSummary(state.runId ?? null);
+        refreshSummaryCore(summary, state, null);
+        summary.extensions = scratch.extensions;
+    }
+    return { ...state, summary };
+}

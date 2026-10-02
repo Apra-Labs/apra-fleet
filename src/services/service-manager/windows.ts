@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { RegisterResult, ServiceManager, ServiceStatus } from './types.js';
-import { WINDOWS_TASK_NAME } from './types.js';
+import { WINDOWS_TASK_NAME, SERVICE_ENV_MARKER } from './types.js';
 import { gracefulStopByServerJson } from './index.js';
 import { BIN_DIR } from '../../cli/config.js';
 
@@ -11,8 +11,36 @@ const WRAPPER_PATH = path.join(BIN_DIR, 'apra-fleet-service.bat');
 /** Runs schtasks synchronously; throws on a non-zero exit. Injectable for tests. */
 export type SchtasksRunner = (args: string[]) => Buffer | string;
 
-const defaultSchtasksRunner: SchtasksRunner = (args) =>
-  execFileSync('schtasks', args, { timeout: 30_000, windowsHide: true });
+// GitHub #585: every schtasks/taskkill call pipes ALL stdio (stderr too) and
+// hides its console window. Inherited stderr printed schtasks' localized
+// "ERROR: The system cannot find the file specified." above apra-fleet status
+// whenever no task was registered.
+const QUIET = { stdio: 'pipe', windowsHide: true, timeout: 30_000 } as const;
+
+function quietExec(cmd: string, args: string[]): Buffer {
+  return execFileSync(cmd, args, QUIET);
+}
+
+const defaultSchtasksRunner: SchtasksRunner = (args) => quietExec('schtasks', args);
+
+/** Decode schtasks output (UTF-16 with BOM, or a single-byte codepage). */
+function decodeSchtasks(raw: Buffer | string): string {
+  const text = typeof raw === 'string' ? raw
+    : raw.toString(raw[0] === 0xff && raw[1] === 0xfe ? 'utf16le' : 'utf8');
+  return text.replace(/\u0000/g, '');
+}
+
+/**
+ * Whether a task's XML definition is enabled. Task Scheduler's
+ * <Settings><Enabled> defaults to true when absent; XML tag names are not
+ * localized (unlike the CSV/LIST status text).
+ */
+export function taskXmlEnabled(raw: Buffer | string): boolean {
+  const settings = /<Settings>([\s\S]*?)<\/Settings>/i.exec(decodeSchtasks(raw));
+  if (!settings) return true;
+  const m = /<Enabled>\s*(true|false)\s*<\/Enabled>/i.exec(settings[1]);
+  return m ? m[1].toLowerCase() === 'true' : true;
+}
 
 function normalizeTaskPath(p: string): string {
   return p.replace(/"/g, '').replace(/\//g, '\\').trim().toLowerCase();
@@ -45,7 +73,7 @@ export class WindowsServiceManager implements ServiceManager {
     // also launches the new binary.
     fs.mkdirSync(path.dirname(this.wrapperPath), { recursive: true });
     const quotedArgs = args.map(a => `"${a}"`).join(' ');
-    const lines = ['@echo off', `"${binaryPath}" ${quotedArgs} >> "${logPath}" 2>&1`];
+    const lines = ['@echo off', `set ${SERVICE_ENV_MARKER}=1`, `"${binaryPath}" ${quotedArgs} >> "${logPath}" 2>&1`];
     fs.writeFileSync(this.wrapperPath, lines.join('\r\n'), 'utf8');
     try {
       this.runSchtasks([
@@ -78,7 +106,7 @@ export class WindowsServiceManager implements ServiceManager {
 
   async unregister(): Promise<void> {
     try {
-      execFileSync('schtasks', ['/delete', '/tn', WINDOWS_TASK_NAME, '/f']);
+      quietExec('schtasks', ['/delete', '/tn', WINDOWS_TASK_NAME, '/f']);
     } catch {
       // Tolerate task-not-found
     }
@@ -100,28 +128,30 @@ export class WindowsServiceManager implements ServiceManager {
     // for the launched process -- detaching avoids that.
     const { spawn } = await import('node:child_process');
     const child = spawn('schtasks', ['/run', '/tn', WINDOWS_TASK_NAME], {
-      detached: true, stdio: 'ignore',
+      detached: true, stdio: 'ignore', windowsHide: true,
     });
     child.unref();
   }
 
-  async stop(): Promise<void> {
-    await gracefulStopByServerJson((pid) => {
-      try { execFileSync('taskkill', ['/F', '/PID', String(pid)]); } catch {}
+  async stop(): Promise<boolean> {
+    return gracefulStopByServerJson((pid) => {
+      try { quietExec('taskkill', ['/F', '/PID', String(pid)]); } catch {}
     });
   }
 
   async query(): Promise<ServiceStatus> {
     try {
-      const out = execFileSync(
-        'schtasks', ['/query', '/tn', WINDOWS_TASK_NAME, '/fo', 'csv', '/nh'],
-        { encoding: 'utf8' },
-      );
+      const out = decodeSchtasks(quietExec('schtasks', ['/query', '/tn', WINDOWS_TASK_NAME, '/fo', 'csv', '/nh']));
       // CSV line: "TaskName","Next Run Time","Status"
       const line = out.trim().split(/\r?\n/)[0] ?? '';
       const cols = line.split('","');
       const status = (cols[2] ?? '').replace(/"/g, '').trim();
-      return { installed: true, running: status === 'Running' };
+      // GitHub #585: report enabled, so status no longer shows every installed
+      // task as "installed (disabled)". If the XML query itself fails the task
+      // still exists (the CSV query just answered), so default to enabled.
+      let enabled = true;
+      try { enabled = taskXmlEnabled(quietExec('schtasks', ['/query', '/tn', WINDOWS_TASK_NAME, '/xml'])); } catch { /* keep default */ }
+      return { installed: true, running: status === 'Running', enabled };
     } catch {
       return { installed: false, running: false };
     }
@@ -129,7 +159,7 @@ export class WindowsServiceManager implements ServiceManager {
 
   async isInstalled(): Promise<boolean> {
     try {
-      execFileSync('schtasks', ['/query', '/tn', WINDOWS_TASK_NAME]);
+      quietExec('schtasks', ['/query', '/tn', WINDOWS_TASK_NAME]);
       return true;
     } catch {
       return false;

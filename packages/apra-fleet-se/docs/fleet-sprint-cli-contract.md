@@ -115,9 +115,9 @@ error, before any dispatch. Behavior:
 `expect_beads` (raw `--expect-beads` JSON, forwarded verbatim) is parsed by
 `validateArgs()` via `validateExpectBeads` -- bad JSON is rejected at
 validation, before any dispatch. Argv resolution order: `--expect-beads`
-flag, then env `FLEET_SPRINT_EXPECT_BEADS`, then unset (the orchestrator
+flag, then env `FLEET_SPRINT_EXPECT_BEADS`, then unset (the backlog
 member's own `bd where` becomes the expectation). Before any `bd` mutation,
-`verifyBeadsIdentity()` probes the orchestrator member then every other
+`verifyBeadsIdentity()` probes the backlog member then every other
 member (`bd where --json`, `bd config get sync.remote --json`, `git remote
 get-url origin`) and throws `BeadsIdentityError` (reason `MISMATCH`) -- text:
 `Beads identity check failed: member '<member>' resolves to a different beads

@@ -25,7 +25,11 @@ declare module '@apralabs/apra-fleet-client/server-resolution' {
 
   export function checkRunningInstance(
     deps?: unknown,
-  ): Promise<{ running: true; url: string; pid: number } | { running: false }>;
+  ): Promise<
+    | { running: true; state: 'running'; url: string; pid: number }
+    | { running: false; state: 'unresponsive'; url: string; pid: number; port?: number }
+    | { running: false; state: 'gone' }
+  >;
 
   export function resolveFleetServerCommand(
     deps?: FleetResolutionDeps,

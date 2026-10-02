@@ -475,10 +475,10 @@ test('falsification: a fixture with a bare doltPushAfter() call registered via t
     try {
         const fixture = sandbox.write('unbracketed-push-fixture.mjs', [
             "import { doltPushAfter } from './dolt-sync.mjs';",
-            'export async function run(orchestratorMember, opts) {',
+            'export async function run(backlogMember, opts) {',
             '    // bare call, no gitSync.pushBeadsAfter bracket -- exactly the hole',
             '    // apra-fleet-3swo.4.1 closed for the two named sites.',
-            '    await doltPushAfter(orchestratorMember, opts);',
+            '    await doltPushAfter(backlogMember, opts);',
             '}',
             '',
         ]);

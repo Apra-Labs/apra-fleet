@@ -212,6 +212,20 @@ test('orchestrator member is never selected nor listed as a candidate (every rul
     assert.ok(['dev', 'rev'].includes(selector.getKbMaintainer(REPO_A).member));
 });
 
+test('the normalized backlog role (roleMap.backlog, the orchestrator alias folded) is never a maintainer', async () => {
+    // validateArgs folds the deprecated roleMap.orchestrator into roleMap.backlog
+    // and deletes the alias; the exclusion must read the canonical key.
+    const roleMap = { backlog: ['orch'], doer: ['dev'], reviewer: ['rev'] };
+    const members = ['orch', 'dev', 'rev'];
+    const repoOf = new Map(members.map((m) => [m, A]));
+    const cands = orderMaintainerCandidates({ repo: A, members, repoOf, roleMap });
+    assert.ok(cands.length > 0);
+    assert.ok(cands.every((c) => c.member !== 'orch'));
+    const { selector } = makeSelector({ members, origins: { orch: REPO_A, dev: REPO_A, rev: REPO_A }, roleMap });
+    await selector.selectAll();
+    assert.ok(['dev', 'rev'].includes(selector.getKbMaintainer(REPO_A).member));
+});
+
 test('roleMap.kb_maintainer naming the orchestrator is ignored with a WARNING naming it', async () => {
     const { selector, logs } = makeSelector({
         members: ['orch', 'dev'],
@@ -220,7 +234,7 @@ test('roleMap.kb_maintainer naming the orchestrator is ignored with a WARNING na
     });
     await selector.selectAll();
     assert.equal(selector.getKbMaintainer(REPO_A).member, 'dev');
-    assert.ok(logs.some((l) => /WARNING/.test(l) && l.includes("'orch'") && /orchestrator/.test(l)));
+    assert.ok(logs.some((l) => /WARNING/.test(l) && l.includes("'orch'") && /backlog member/.test(l)));
 });
 
 test('orchestrator is the only checkout of a repository: no maintainer and a distinct WARNING', async () => {
@@ -233,7 +247,7 @@ test('orchestrator is the only checkout of a repository: no maintainer and a dis
     assert.equal(selector.maintainers().get(A).member, null);
     const line = logs.find((l) => l.includes(A) && /WARNING/.test(l));
     assert.ok(line, 'warning logged');
-    assert.match(line, /orchestrator/);
+    assert.match(line, /backlog member/);
     assert.doesNotMatch(line, /failed its probe/);
 });
 

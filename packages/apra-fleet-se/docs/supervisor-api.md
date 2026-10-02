@@ -28,6 +28,16 @@ short-circuits before anything downstream runs:
    Optional `phases` is validated too: only `{ "regression": "run" | "skip" }`
    is accepted (anything else -> `400`, field `phases`); `"skip"` forwards
    `--skip-regression` to the child.
+   Optional `roleMap` (object or JSON string) is resolved too. The
+   `roleMap.orchestrator` key is a DEPRECATED alias of `roleMap.backlog`:
+   using it still works, and the response carries a top-level
+   `warnings: string[]` (empty `[]` when no alias was used; one deprecation
+   message per alias use otherwise). The operator's original map (alias
+   intact) is forwarded to the child, so its run log warns too. A `roleMap`
+   holding BOTH keys with different members, any `roleMap` that fails to
+   resolve (bad JSON, bad shape), and a string `'@file'` reference (a
+   CLI-only form; never read from a request body) are all `400`, field
+   `roleMap`.
    Any failure -> `400` naming the field. Note the split has to happen first:
    `ISSUE_ID_PATTERN` has no comma in its charset, so an un-split `"a,b"`
    would be rejected.
@@ -42,7 +52,7 @@ short-circuits before anything downstream runs:
 3. **Member-overlap guard** (`defaultMemberOverlapGuard`) -- runs
    only if step 2 passed. Computes the full member UNION (the request's
    `members` PLUS every value in every `roleMap` role list, including the
-   `orchestrator` pseudo-role) and rejects with `409` (field `members`) if
+   `backlog` pseudo-role) and rejects with `409` (field `members`) if
    that union intersects ANY other active reservation, from either of two
    sources merged into one conflict set:
    - this supervisor's own ledger (`ledger.list()`);
@@ -271,7 +281,7 @@ carries the reason and the fix, e.g.:
 
 ```json
 "beads": null,
-"beadsWarning": "no beads database found walking up from /some/dir. Backlog and scope-overlap checks are disabled and sprints will verify against the orchestrator member's beads instead. To fix: restart fleet-se from inside the project folder, or pass --beads-dir <project-or-.beads-path>, then GET /api/health?refresh=1."
+"beadsWarning": "no beads database found walking up from /some/dir. Backlog and scope-overlap checks are disabled and sprints will verify against the backlog member's beads instead. To fix: restart fleet-se from inside the project folder, or pass --beads-dir <project-or-.beads-path>, then GET /api/health?refresh=1."
 ```
 
 (a nonexistent `--beads-dir` is still a startup error, not a warning).
@@ -283,7 +293,7 @@ a failed one updates `beadsWarning` to the current probe error. The same
 four fields are recorded as `beads` on each launched sprint's ledger entry
 (`null` while unknown) and the engine receives them as `--expect-beads`
 (omitted while unknown; the engine then verifies members against the
-orchestrator member's own identity), so a member whose own `bd where`
+backlog member's own identity), so a member whose own `bd where`
 disagrees is refused rather than dispatched at the wrong tracker. `dir` is
 display-only: it is a path on the supervisor's host.
 

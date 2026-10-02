@@ -90,7 +90,7 @@ export async function runDevelopPhase({
     cycle,
     validated,
     args,
-    orchestratorMember,
+    backlogMember,
     // Per-sprint resolved state (../sprint-state.mjs), the git/beads sync
     // brackets every doer dispatch and verification read goes through, and the
     // dashboard refresh each completed streak turn triggers.
@@ -390,7 +390,7 @@ export async function runDevelopPhase({
                 hasClaimedBeads = true;
                 if (!validated.assignee) return;
                 const { claimedBeadIds, skippedBeadIds } = await claimBeadsBatched({
-                    command, orchestratorMember, beadIds: actualBeadIds, log,
+                    command, backlogMember, beadIds: actualBeadIds, log,
                 });
                 if (claimedBeadIds.length === 0) {
                     // All beads in this streak are already claimed by
@@ -417,7 +417,7 @@ export async function runDevelopPhase({
             // (DoltSync.syncBefore) -- treat the whole call as one bracket.
             verifyStreakClosed: async (phase) => {
                 const unclosed = await gitSync.withOpenSyncBracket(() => verifyDoerStreakClosed({
-                    command, orchestratorMember, beadIds: actualBeadIds, log, args, sprintState,
+                    command, backlogMember, beadIds: actualBeadIds, log, args, sprintState,
                 }));
                 if (phase === 'preDispatch' && unclosed.length === 0) {
                     log(
@@ -623,7 +623,7 @@ export async function runDevelopPhase({
             // (apra-fleet-p2to.4.1) verifyDoerStreakClosed() D-pulls internally
             // (DoltSync.syncBefore) -- treat the whole call as one sync bracket.
             const unclosedIds = await gitSync.withOpenSyncBracket(() => verifyDoerStreakClosed({
-                command, orchestratorMember, beadIds: actualBeadIds, log, args, sprintState,
+                command, backlogMember, beadIds: actualBeadIds, log, args, sprintState,
             }));
             const closedIds = actualBeadIds.filter((id) => !unclosedIds.includes(id));
             log(`Doer streak attribution [${actualBeadIds.join(', ')}]: closed=[${closedIds.join(', ')}] failed=[${unclosedIds.join(', ')}] (dispatch error: ${dispatchError.message}).`);

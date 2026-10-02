@@ -405,21 +405,21 @@ export async function createChildBeadWithAllocatedId(opts) {
  * Returns the ids that are NOT closed after the D-pull-then-read. An empty
  * array means the streak genuinely closed everything it was assigned.
  *
- * @param {{ command: Function, orchestratorMember: string, beadIds: string[], log?: Function, args?: { callTool?: Function }, sprintState?: object }} opts
+ * @param {{ command: Function, backlogMember: string, beadIds: string[], log?: Function, args?: { callTool?: Function }, sprintState?: object }} opts
  * @returns {Promise<string[]>} the still-unclosed bead ids
  */
-export async function verifyDoerStreakClosed({ command, orchestratorMember, beadIds, log = () => {}, args, sprintState }) {
+export async function verifyDoerStreakClosed({ command, backlogMember, beadIds, log = () => {}, args, sprintState }) {
     // D-pull FIRST so the orchestrator's clone observes the doer's just-pushed
     // closes. Routed through the single dolt-sync module's purpose-based BEFORE
     // bracket (apra-fleet-417.2.1); behavior is identical to the previous
     // direct doltPullBefore() call.
-    // Thread the orchestrator member's REGISTERED shell into dolt-settle,
+    // Thread the backlog member's REGISTERED shell into dolt-settle,
     // guarded on args.callTool the same way the pre-dispatch bracket is
     // (apra-fleet-7dir.24).
-    const shell = await resolveSettleShell({ args, member: orchestratorMember, log, sprintState });
-    await DoltSync.syncBefore(orchestratorMember, { command, log, fatal: true, settle: buildSettleCallback(orchestratorMember, { command, log, shell }) });
+    const shell = await resolveSettleShell({ args, member: backlogMember, log, sprintState });
+    await DoltSync.syncBefore(backlogMember, { command, log, fatal: true, settle: buildSettleCallback(backlogMember, { command, log, shell }) });
     const label = `bd show ${beadIds.join(' ')} --json`;
-    const showRes = await command(label, { member_name: orchestratorMember, silent: true });
+    const showRes = await command(label, { member_name: backlogMember, silent: true });
     const showBeads = parseBdJson(showRes, label);
     const statusById = new Map(showBeads.map((b) => [b.id, b.status]));
     return beadIds.filter((id) => statusById.get(id) !== 'closed');
@@ -459,17 +459,17 @@ export async function verifyDoerStreakClosed({ command, orchestratorMember, bead
  * unclaimed, caller decides whether to skip the streak) rather than
  * crashing the sprint.
  *
- * @param {{ command: Function, orchestratorMember: string, beadIds: string[], log?: Function }} opts
+ * @param {{ command: Function, backlogMember: string, beadIds: string[], log?: Function }} opts
  * @returns {Promise<{ claimedBeadIds: string[], skippedBeadIds: string[] }>}
  */
-export async function claimBeadsBatched({ command, orchestratorMember, beadIds, log = () => {} }) {
+export async function claimBeadsBatched({ command, backlogMember, beadIds, log = () => {} }) {
     if (!Array.isArray(beadIds) || beadIds.length === 0) {
         return { claimedBeadIds: [], skippedBeadIds: [] };
     }
     const label = `bd update ${beadIds.join(' ')} --claim --json`;
     let raw;
     try {
-        raw = await command(label, { member_name: orchestratorMember, silent: true });
+        raw = await command(label, { member_name: backlogMember, silent: true });
     } catch (err) {
         // A dispatch/exec-level failure (member unreachable, transient
         // network fault) degrades gracefully -- every id in this batch

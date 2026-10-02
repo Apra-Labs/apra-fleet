@@ -44,6 +44,8 @@ import { fileURLToPath } from 'node:url';
 import { readJsonBody, sendJson } from './server.mjs';
 import { validateIssueId, validateBranchName } from '../../fleet-sprint/runner.js';
 import { resolveRoleMap } from '../../bin/cli.mjs';
+import { resolveBacklogRoleAlias } from '../../fleet-sprint/backlog-role.mjs';
+import { normalizeRole } from '../../fleet-sprint/contracts.mjs';
 import { isDeterministicTerminalReason } from './history.mjs';
 import { defaultHasTerminalState } from './watchdog.mjs';
 import { toBeadsSummary } from './beads-identity.mjs';
@@ -105,7 +107,7 @@ function normalizeMembers(value) {
  * The full member set a reservation covers: the union of --members and every
  * roleMap value. `exclude` (unreservable member names -- see
  * unreservableMemberNamesFromList() below) is subtracted from the union: a shared
- * orchestrator member is never part of a sprint's exclusive reservation, so it
+ * backlog member is never part of a sprint's exclusive reservation, so it
  * never reaches `beforeLaunch` or `ledger.claim`.
  */
 function memberUnion(members, roleMap, exclude) {
@@ -162,7 +164,7 @@ export function formatMemberConflict(conflicts) {
  * apra-fleet-eft.5.2 (extended by eft.26.2, Hole 2): the DEFAULT member-axis
  * overlap guard used as `beforeLaunch` when the caller does not inject its
  * own. All-or-nothing: ANY member in the incoming union (members + every
- * roleMap value, INCLUDING the orchestrator role UNLESS that member is
+ * roleMap value, INCLUDING the backlog role UNLESS that member is
  * flagged `unreservable` -- memberUnion() already folds roleMap values in and
  * subtracts unreservable names) that is also held by any OTHER active
  * reservation rejects
@@ -505,10 +507,42 @@ export function createSprintController(deps = {}) {
     // -- POST /api/sprints : validated, goal-forwarding launch ----------------
     async function launch(body = {}) {
         const { issue, issueIds, branch, base, members, skipRegression } = validateLaunchRequest(body);
+        // An '@file' roleMap is a CLI-only convenience: over HTTP it would make
+        // the supervisor read an arbitrary server-side path named by the request
+        // body, and the alias warning could not be computed from it. Reject it.
+        if (typeof body.roleMap === 'string' && body.roleMap.trim().startsWith('@')) {
+            throw new ApiError(400, "[Arg Contract] roleMap '@file' references are not accepted over HTTP; send the role map as a JSON object or JSON string", 'roleMap');
+        }
         const rawRoleMap = body.roleMap === undefined
             ? undefined
             : (typeof body.roleMap === 'string' ? body.roleMap : JSON.stringify(body.roleMap));
-        const roleMap = await roleMapResolver(rawRoleMap);
+        // Backlog-role alias: a conflicting deprecated-alias/backlog
+        // pair is a 400 on field 'roleMap' (before any child spawns); the
+        // deprecation warning for the alias is surfaced in the response. The
+        // operator's ORIGINAL (key-normalized, alias intact) map is what the
+        // child CLI receives, so its run log carries the warning too.
+        let aliasWarnings = [];
+        let forwardRoleMap;
+        if (rawRoleMap !== undefined) {
+            let parsedRaw;
+            try { parsedRaw = JSON.parse(rawRoleMap); } catch { parsedRaw = undefined; }
+            if (parsedRaw && typeof parsedRaw === 'object' && !Array.isArray(parsedRaw)) {
+                const normalizedRaw = {};
+                for (const [k, v] of Object.entries(parsedRaw)) normalizedRaw[normalizeRole(k)] = v;
+                try {
+                    aliasWarnings = resolveBacklogRoleAlias(normalizedRaw).warnings;
+                } catch (err) {
+                    throw new ApiError(400, `[Arg Contract] Invalid roleMap: ${err.message}`, 'roleMap');
+                }
+                forwardRoleMap = normalizedRaw;
+            }
+        }
+        let roleMap;
+        try {
+            roleMap = await roleMapResolver(rawRoleMap);
+        } catch (err) {
+            throw new ApiError(400, err.message, 'roleMap');
+        }
         // apra-fleet: ONE listMembers() read, shared with beforeLaunch below
         // (via ctx.membersList) -- both need to know which members are
         // currently flagged unreservable, and issuing two separate fetches
@@ -593,7 +627,7 @@ export function createSprintController(deps = {}) {
             maxCycles: body.maxCycles,
             allowMissingMembers: body.allowMissingMembers,
             requirementsFile: body.requirementsFile,
-            roleMap,
+            roleMap: forwardRoleMap ?? roleMap,
             budget: body.budget,
             runId: sprintId,
             skipRegression,
@@ -648,6 +682,7 @@ export function createSprintController(deps = {}) {
             members: union,
             goal: body.goal ?? null,
             buildVersionWarning,
+            warnings: aliasWarnings,
         };
     }
 

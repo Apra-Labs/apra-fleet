@@ -8,7 +8,7 @@ import { getRunningRunStatePath, getTerminalRunStatePath } from './run-state-pat
 import { buildListStatePayload, resolveStringRefs } from './lean-state.mjs';
 import { capCommandActivityMeta, getFullOutput } from './command-output-cap.mjs';
 import { buildRunTitle } from './run-title.mjs';
-import { createRunSummary, refreshSummaryCore, applyExtensionSummary } from './run-summary.mjs';
+import { createRunSummary, refreshSummaryCore, applyExtensionSummary, backfillExtensionSummaries } from './run-summary.mjs';
 
 // apra-fleet-eft.6.5: the SAME template serves both the live view and the
 // process-free History view -- `opts.history` (true) feeds a FROZEN state
@@ -22,7 +22,7 @@ import { createRunSummary, refreshSummaryCore, applyExtensionSummary } from './r
 const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
     const isHistory = !!opts.history;
     const frozenStateLiteral = isHistory
-        ? JSON.stringify(opts.state ?? null).replace(/</g, '\\u003c')
+        ? JSON.stringify(backfillExtensionSummaries(opts.state ?? null, dashboardExtensions) ?? null).replace(/</g, '\\u003c')
         : 'null';
     return `<!DOCTYPE html>
 <html lang="en">
@@ -488,6 +488,8 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
     source.onmessage = (e) => {
         const ev = JSON.parse(e.data);
         if (ev.type === 'state') {
+            // Summary first, then state (same order as renderState's hand-off).
+            document.dispatchEvent(new CustomEvent('workflow:summary:' + ev.payload.namespace, { detail: ev.payload.summary ?? null }));
             const extEvent = new CustomEvent('workflow:state:' + ev.payload.namespace, { detail: ev.payload.data });
             document.dispatchEvent(extEvent);
         }
@@ -1365,7 +1367,7 @@ export function createDashboardViewer(workflow, opts = {}) {
         // namespace (if it opts in with summarize()) is asked to summarize;
         // a throwing hook is logged and its previous summary kept.
         applyExtensionSummary(state.summary, dashboardExtensions, stateData.namespace, stateData.data, nowIso());
-        broadcast({ type: 'state', payload: stateData });
+        broadcast({ type: 'state', payload: { ...stateData, summary: state.summary.extensions[stateData.namespace] ?? null } });
     });
 
     // (apra-fleet-p2to.2.1) Generic pause lifecycle wiring, mirroring how

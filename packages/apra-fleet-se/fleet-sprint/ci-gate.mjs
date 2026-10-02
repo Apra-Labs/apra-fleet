@@ -303,10 +303,10 @@ export function createCiGate({ ciGate, branch, log = () => {}, resolveContext, g
  * trigger permission); a vcs_credential_exec transport. Every failure becomes
  * `{ error }` so the gate records FAILED-TO-RUN loudly instead of throwing.
  *
- * @param {{ fleetApi: object|null, command: Function, orchestratorMember: string, gitMember: string, log?: Function }} opts
+ * @param {{ fleetApi: object|null, command: Function, backlogMember: string, gitMember: string, log?: Function }} opts
  * @returns {() => Promise<object>}
  */
-export function createCiGateContextResolver({ fleetApi, command, orchestratorMember, gitMember, log = () => {} }) {
+export function createCiGateContextResolver({ fleetApi, command, backlogMember, gitMember, log = () => {} }) {
     return async function resolveCiGateContext() {
         const originRes = await command('git remote get-url origin', {
             member_name: gitMember, silent: true, failSoft: true, label: 'CI gate: resolve origin remote URL',
@@ -326,19 +326,19 @@ export function createCiGateContextResolver({ fleetApi, command, orchestratorMem
             return { providerLabel, error: `no fleet MCP client with vcs_credential_exec is available to run the CI gate for provider '${provider.name}'.` };
         }
         const label = vcsCredentialLabelForProvider(provider.name);
-        const credential = `the '${label}' push+pr VCS credential on member '${orchestratorMember}'`;
+        const credential = `the '${label}' push+pr VCS credential on member '${backlogMember}'`;
         let repo;
         try {
             ({ repo } = await provisionPrCapableAuthForMember({
-                fleetApi, command, member: orchestratorMember, log, logPrefix: LOG_PREFIX, remoteUrlOverride: originUrl,
+                fleetApi, command, member: backlogMember, log, logPrefix: LOG_PREFIX, remoteUrlOverride: originUrl,
             }));
         } catch (err) {
             return { providerLabel, error: `could not provision ${credential}: ${err && err.message ? err.message : err}` };
         }
         repo = repo || parseOwnerRepoFromRemoteUrl(originUrl);
-        const { os, shell } = await resolveMemberTarget({ fleetApi, member: orchestratorMember, log });
+        const { os, shell } = await resolveMemberTarget({ fleetApi, member: backlogMember, log });
         const transport = async (built) => {
-            const execRes = await fleetApi.vcsCredentialExec({ member_name: orchestratorMember, label, command: built.command });
+            const execRes = await fleetApi.vcsCredentialExec({ member_name: backlogMember, label, command: built.command });
             const handoff = (execRes && execRes.structuredContent) || {};
             if (!handoff.ok && handoff.reason !== 'dispatch_failed') {
                 throw new Error(`vcs_credential_exec could not use ${credential} (reason: ${handoff.reason || '(none)'}): ${resultText(execRes) || '(no detail)'}`);

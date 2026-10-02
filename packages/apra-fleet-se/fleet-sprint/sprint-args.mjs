@@ -8,6 +8,7 @@
 import { normalizeRole, validateCredentialStoreName } from './contracts.mjs';
 import { ROLE_KB_MAINTAINER } from './kb-maintainer.mjs';
 import { parseExpectedIdentity } from './beads-identity.mjs';
+import { resolveBacklogRoleAlias } from './backlog-role.mjs';
 
 // ---------------------------------------------------------------------------
 // CLI -> runner argument contract
@@ -34,7 +35,7 @@ const GOAL_PATTERN = /^P[1-3](\/P[1-3]){0,2}$/;
 
 const KNOWN_ARG_KEYS = new Set([
     'target_issues', 'target_issue', 'members', 'branch', 'base_branch',
-    'goal', 'max_cycles', 'requirementsFile', 'roleMap', 'budget',
+    'goal', 'max_cycles', 'requirementsFile', 'roleMap', 'roleMapWarnings', 'budget',
     // Per-dispatch time budget (timeout_s == max_total_s at every dispatch
     // site; integ ceiling = 2x), bounding the cost of a hung dispatch.
     'dispatch_timeout_s',
@@ -159,7 +160,7 @@ const KNOWN_ARG_KEYS = new Set([
     // `--expect-beads`, env fallback FLEET_SPRINT_EXPECT_BEADS, or an already
     // parsed record from a programmatic caller). Consumed by the
     // verifyBeadsIdentity precondition (beads-identity-check.mjs); absent, the
-    // orchestrator member's own probed identity becomes the expectation.
+    // backlog member's own probed identity becomes the expectation.
     'expect_beads',
 ]);
 
@@ -369,6 +370,26 @@ export function validateArgs(args) {
             }
         }
     }
+    // Backlog-role alias: the deprecated 'orchestrator' key is folded into
+    // 'backlog' here (downstream readers only ever see 'backlog'); a conflict
+    // is an arg-contract error. Warnings -- plus any the CLI already collected
+    // (args.roleMapWarnings, since the CLI rewrites the key before the runner
+    // sees it) -- are surfaced on the validated object for the runner to log.
+    const roleMapWarnings = [];
+    if (normalizedRoleMap !== undefined) {
+        try {
+            const resolved = resolveBacklogRoleAlias(normalizedRoleMap);
+            normalizedRoleMap = resolved.roleMap;
+            roleMapWarnings.push(...resolved.warnings);
+        } catch (err) {
+            throw new Error(`[Arg Contract] Invalid roleMap: ${err.message}`);
+        }
+    }
+    if (Array.isArray(args.roleMapWarnings)) {
+        for (const w of args.roleMapWarnings) {
+            if (typeof w === 'string' && !roleMapWarnings.includes(w)) roleMapWarnings.push(w);
+        }
+    }
 
     // --- budget (optional) -----------------------------------------------
     // A USD ceiling for this run's total estimated spend. When provided,
@@ -519,6 +540,7 @@ export function validateArgs(args) {
         maxCycles,
         requirementsFile: args.requirementsFile,
         roleMap: normalizedRoleMap,
+        roleMapWarnings,
         budget: args.budget,
         serviceUrl: args.serviceUrl,
         runId: args.run_id,

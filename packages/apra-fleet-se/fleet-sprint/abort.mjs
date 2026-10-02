@@ -460,7 +460,7 @@ export async function finalizeAbort({ error, branch, baseBranch, member, command
         logPrefix: '[Publish Abort PR]',
         // Already resolved just above (the origin-remote PR-capability gate)
         // via a real git-capable member -- skip re-deriving it a second time
-        // by shelling out to `member`, which may be orchestratorMember and
+        // by shelling out to `member`, which may be backlogMember and
         // have no git checkout of its own to read a remote from.
         remoteUrlOverride: originUrl,
         updateExisting: ({ body: oldBody }) => ({ title: prTitle, body: buildAbortBody(oldBody) }),

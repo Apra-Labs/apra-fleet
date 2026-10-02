@@ -180,6 +180,11 @@ describe('buildSprintArgv', () => {
         ]);
     });
 
+    test('forwards an operator-supplied deprecated orchestrator roleMap key verbatim so the child CLI run log can warn', () => {
+        const args = buildSprintArgv({ issue: 'i', members: 'm', branch: 'b', base: 'main', viewerPort: 8080, roleMap: { orchestrator: ['o'] } });
+        assert.equal(args[args.indexOf('--role-map') + 1], '{"orchestrator":["o"]}');
+    });
+
     test('omits optional flags entirely when not provided', () => {
         const args = buildSprintArgv({ issue: 'i', members: 'm', branch: 'b', base: 'main', viewerPort: 8080 });
         assert.deepEqual(args, ['--issue', 'i', '--members', 'm', '--branch', 'b', '--base', 'main', '--viewer-port', '8080']);
@@ -423,7 +428,7 @@ describe('createSpawner -- unit behavior (fake spawn)', () => {
     // deps.expectBeads may be a getter (bin/serve.mjs passes one that reads
     // the live beads-identity state): read at EACH spawn, so a supervisor
     // whose identity was unknown at startup omits --expect-beads (the
-    // engine then falls back to the orchestrator member's own identity) and
+    // engine then falls back to the backlog member's own identity) and
     // starts passing it once GET /api/health?refresh=1 recovered it.
     test('spawnSprint reads a deps.expectBeads getter per spawn: undefined omits --expect-beads, a later value adds it', async () => {
         const { spawnFn, calls } = makeFakeSpawn([226, 227]);

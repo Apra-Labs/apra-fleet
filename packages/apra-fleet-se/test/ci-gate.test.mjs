@@ -244,7 +244,7 @@ describe('(4) ci_gate arg validation, unsupported provider, unconfigured gate', 
         const resolve = createCiGateContextResolver({
             fleetApi: { vcsCredentialExec: async () => { vcsExecCalls += 1; return {}; } },
             command: async () => ({ ok: true, output: 'file:///srv/mirror.git\n' }),
-            orchestratorMember: 'orch', gitMember: 'git-m', log: () => {},
+            backlogMember: 'orch', gitMember: 'git-m', log: () => {},
         });
         const gate = createCiGate({ ciGate: GATE, branch: 'feat/x', log: (l) => logs.push(l), resolveContext: resolve, gateOptions: virtualClock() });
         const result = await gate.check({ label: 'Review C1' });

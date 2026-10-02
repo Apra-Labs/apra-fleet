@@ -858,7 +858,7 @@ test('verifyDoerStreakClosed: D-pulls BEFORE the bd show read, so a remote doer 
 
     const unclosed = await verifyDoerStreakClosed({
         command,
-        orchestratorMember: 'orchestrator',
+        backlogMember: 'orchestrator',
         beadIds: ['BD-1', 'BD-2'],
     });
 
@@ -885,7 +885,7 @@ test('verifyDoerStreakClosed: genuinely-unclosed beads are still reported after 
     });
     const unclosed = await verifyDoerStreakClosed({
         command,
-        orchestratorMember: 'orchestrator',
+        backlogMember: 'orchestrator',
         beadIds: ['BD-1', 'BD-2'],
     });
     assert.deepEqual(unclosed, ['BD-2'], 'a genuinely-open bead is correctly reported as unclosed');
@@ -894,7 +894,7 @@ test('verifyDoerStreakClosed: genuinely-unclosed beads are still reported after 
 test('verifyDoerStreakClosed: a diverged D-pull propagates the typed error (not swallowed into a false PASS)', async () => {
     const { command } = makeCommandMock({ 'bd dolt pull': [fail('merge conflict detected')] });
     await assert.rejects(
-        () => verifyDoerStreakClosed({ command, orchestratorMember: 'orchestrator', beadIds: ['BD-1'] }),
+        () => verifyDoerStreakClosed({ command, backlogMember: 'orchestrator', beadIds: ['BD-1'] }),
         DoltDivergedError,
     );
 });

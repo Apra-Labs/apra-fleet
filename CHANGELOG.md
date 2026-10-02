@@ -92,6 +92,23 @@ Budget ceiling: not set (no --budget flag) -- unlimited for this run.
 Tracked spend (priced dispatches only): $6.5699.
 Remaining budget: unknown/unbounded.
 Integ-test-runner spend: $0.0864 across 2 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+
+## [Unreleased] -- Beads role renamed to `backlog`; `orchestrator` kept as a deprecated alias
+
+The fleet-sprint role that names the member holding the beads clone is now `backlog`. The old
+`roleMap.orchestrator` spelling still works as a deprecated alias (removed in v0.5): a single
+alias module folds it into `backlog`, the CLI, runner and supervisor all resolve it, and every
+use emits a warning (CLI output, run log, and a `warnings[]` array in the `POST /api/sprints`
+response). Giving both keys with different member lists is a 400 on `roleMap` before any child
+spawns, and a string `@file` roleMap is now a 400 over HTTP. Internal role-sense identifiers,
+log/error strings, tool descriptions and client JSDoc were renamed, with a grep-guard test
+preventing regressions. See `docs/backlog-role.md`.
+
+```
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $6.9563.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.0493 across 1 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
 Pricing source: all 14 priced dispatch(es) used real per-member rates (get_member_model_pricing).
 Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
 ```
@@ -161,6 +178,31 @@ Pricing source: all 33 priced dispatch(es) used real per-member rates (get_membe
 Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
 ```
 
+The remaining role-sense "orchestrator member" wording in the docs (both `architecture.md` files,
+`cli-reference.md`, the fleet-sprint CLI contract, the sprint diagram, the `fleet-supervisor` skill
+and the supervisor OpenAPI spec) is renamed too. Carried forward: host-environment test failures
+and regression-pass failures remain open as backlog beads.
+
+## [Unreleased] -- History view backfills pre-summary runs; SSE state frame carries the summary
+
+Runs archived before the run summary existed now get their extension summaries computed when the
+History view reads them (`backfillExtensionSummaries`: pure, never overwrites an existing entry,
+a throwing `summarize()` is logged and skipped). The live SSE state frame now includes the
+namespace summary, and the client dispatches the summary event before the state event. See
+`docs/sprint-run-summary.md`.
+
+```
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $3.9114.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.0287 across 1 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 8 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+```
+
+Carried forward: host-environment test failures (stale undici install, stale dist schema, Windows
+symlink privilege) and the informational regression-pass failures remain open as backlog beads.
+
 ## [Unreleased] -- Supervisor sprint rows pull a once-per-publish run summary
 
 Sprint progress is now computed once by the sprint's own viewer and published; the supervisor
@@ -187,6 +229,28 @@ does not dispatch the summary event before the state event; host-environment tes
 (stale undici install, stale dist schema, symlink privilege) and the regression-pass failures
 remain open as backlog beads.
 
+## [Unreleased] -- Server lifecycle: no random-port fallback, unresponsive-server detection (#584)
+
+- **Behaviour change -- a busy configured port is now a hard error.** If port 7523 (or
+  your `APRA_FLEET_PORT`) is already in use, the server refuses to start with an error
+  naming the port, the pid recorded in `server.json` and `APRA_FLEET_PORT`, instead of
+  silently binding a random port no MCP client could reach. If another application owns
+  7523 on your machine, set `APRA_FLEET_PORT` to a free port and re-run
+  `apra-fleet install` so your MCP clients point at it. `apra-fleet start` and
+  `apra-fleet install` check the port up front and print the same message (exit 1).
+  Under a service manager the refusing server exits 0, so systemd/launchd do not
+  restart it in a loop; the reason is in the server log and `apra-fleet status`, and
+  the service stays down until the port is freed and it is started again. "Service
+  manager" means: the `APRA_FLEET_SERVICE=1` marker that new installs set in the
+  systemd unit, launchd plist and Windows task wrapper, or (for older installs)
+  systemd's `INVOCATION_ID` / launchd's `XPC_SERVICE_NAME`. Every other launch
+  (terminal, CI, nohup, containers, scripts) exits 1. Re-run `apra-fleet install` to
+  add the marker to an existing service definition.
+- The singleton probe is tri-state (running / unresponsive / gone). A live server whose
+  `/health` does not answer (e.g. a blocked event loop) is no longer declared stopped:
+  its `server.json` is kept, `start`/`run` refuse with the pid/port and an
+  `apra-fleet stop` hint, `status` shows `State: unresponsive`, and `stop` force-stops it.
+  `server.json` is removed only when the pid is dead or the recorded port refuses TCP.
 
 ## [Unreleased] -- fleet-sprint: G-pull of a not-yet-pushed sprint branch is a no-op, not an auth failure
 

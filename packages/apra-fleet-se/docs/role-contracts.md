@@ -54,7 +54,7 @@ apra-pm definitions and separate output schemas.
 `normalizeRole(role)` trims and lowercases any role string for comparison
 (fixing a historical "`Doer`/`doer`" casing-mismatch bug at the source);
 `validateRole(role)` additionally checks membership in `ROLES`.
-`'orchestrator'` is deliberately **not** in this enum -- it is an
+`'backlog'` (and its deprecated alias `'orchestrator'`) is deliberately **not** in this enum -- it is an
 application-level pseudo-role used only as a `roleMap` key (see
 `docs/architecture.md`), never dispatched as a fleet agent, and never
 schema-checked against an apra-pm package file.

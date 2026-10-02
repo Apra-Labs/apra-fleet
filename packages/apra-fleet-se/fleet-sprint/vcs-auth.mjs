@@ -273,7 +273,7 @@ async function provisionVcsAuthForMember({ fleetApi, command, member, log = () =
     // origin remote via a real git-capable member (e.g. Publish PR's
     // publishGitMember) passes it here instead of making THIS function shell
     // out its own 'git remote get-url origin' to `member` -- which matters
-    // when `member` is orchestratorMember and may be a git-less/shared member
+    // when `member` is backlogMember and may be a git-less/shared member
     // with no checkout to read a remote from at all. Skips the read entirely,
     // never the parse below.
     if (remoteUrlOverride) {
