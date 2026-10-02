@@ -3309,7 +3309,7 @@ export async function main(context) {
         if (isTypedAbortError(err)) {
             try {
                 // apra-fleet: finalizeAbort() runs `git fetch`/`git push` against
-                // this member's LOCAL checkout, which the orchestrator role no
+                // this member's LOCAL checkout, which the backlog role no
                 // longer has (it may be a shared/unreservable, git-less member --
                 // see docs/design-orchestrator-worktree-model-v2.md section 4.5).
                 // Resolve a git-capable DISPATCH member instead: the harvester's

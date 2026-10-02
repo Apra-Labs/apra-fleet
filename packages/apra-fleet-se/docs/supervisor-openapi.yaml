@@ -341,7 +341,13 @@ paths:
                   type: string
                   description: forwarded into the child's --requirements-file argv
                 roleMap:
-                  description: JSON object OR a JSON string / "@path" resolved via the shared resolveRoleMap() (same resolver bin/cli.mjs uses)
+                  description: >
+                    JSON object (or a JSON string of one) mapping role -> member[].
+                    The "@path" file form is rejected over HTTP (400, field roleMap);
+                    send the map inline. The backlog role key is "backlog";
+                    "orchestrator" is accepted as a deprecated alias and adds an
+                    entry to the 201 response's warnings[]. Giving both keys with
+                    different values -> 400 (field roleMap).
                   type: object
                   additionalProperties:
                     type: array
@@ -390,8 +396,15 @@ paths:
                   members:
                     type: array
                     items: { type: string }
-                    description: the full member UNION (members + every roleMap value, including the orchestrator role), not just the request's `members` field
+                    description: the full member UNION (members + every roleMap value, including the backlog role), not just the request's `members` field
                   goal: { type: string, nullable: true }
+                  warnings:
+                    type: array
+                    items: { type: string }
+                    description: >
+                      Non-fatal launch warnings, e.g. the roleMap used the
+                      deprecated "orchestrator" key instead of "backlog".
+                      Empty when there is nothing to warn about.
                   buildVersionWarning:
                     type: string
                     nullable: true
@@ -402,7 +415,11 @@ paths:
                       on-disk build right now. Advisory only -- never blocks
                       the launch.
         "400":
-          description: request-shape validation failed
+          description: >
+            request-shape validation failed, including (field roleMap) a
+            roleMap that gives both "backlog" and the deprecated
+            "orchestrator" key with different values, or the "@path" file
+            form
           content:
             application/json:
               schema: { $ref: "#/components/schemas/FieldError" }

@@ -748,7 +748,7 @@ async function main() {
     // hoisted out of this try block so the topology filter below (item 4) can
     // key on the actual unreservable flag, not on roleMap.backlog
     // membership (which would also match a real, git-having dispatch member
-    // that is ADDITIONALLY role-mapped as orchestrator, and wrongly skip its
+    // that is ADDITIONALLY role-mapped as backlog, and wrongly skip its
     // legitimate same-HEAD topology check).
     let unreservableNames = new Set();
     try {
@@ -845,13 +845,13 @@ async function main() {
     // hard-fails the launch (process.exit(1) just below). Deliberately keyed
     // on the `unreservable` FLAG, not on roleMap.backlog membership: a
     // real, git-having dispatch member that is ADDITIONALLY role-mapped as
-    // orchestrator (a supported topology, runner.js's branchEnsureMembers
+    // backlog (a supported topology, runner.js's branchEnsureMembers
     // dedupe comment) must still pass its legitimate same-HEAD check against
     // the other dispatch members -- filtering on roleMap.backlog alone
     // would silently skip that check instead of just skipping a git-less
     // member. This only matters when an operator also lists a shared member
     // in --members (redundant with roleMap.backlog, and not required);
-    // a normal launch that passes the shared orchestrator ONLY via
+    // a normal launch that passes the shared backlog member ONLY via
     // roleMap.backlog was never affected.
     const topologyMembersFiltered = validMembers.filter((m) => !unreservableNames.has(m));
     // Degrade back to the unfiltered list if excluding unreservable members

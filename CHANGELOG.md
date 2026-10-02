@@ -22,10 +22,10 @@ Pricing source: all 14 priced dispatch(es) used real per-member rates (get_membe
 Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
 ```
 
-Carried forward: the final review failed on documentation lag only -- role-sense "orchestrator
-member" wording remains in both `architecture.md` files, `cli-reference.md`, the fleet-sprint CLI
-contract, the sprint diagram and the `fleet-supervisor` skill. Host-environment test failures and
-regression-pass failures remain open as backlog beads.
+The remaining role-sense "orchestrator member" wording in the docs (both `architecture.md` files,
+`cli-reference.md`, the fleet-sprint CLI contract, the sprint diagram, the `fleet-supervisor` skill
+and the supervisor OpenAPI spec) is renamed too. Carried forward: host-environment test failures
+and regression-pass failures remain open as backlog beads.
 
 ## [Unreleased] -- Supervisor sprint rows pull a once-per-publish run summary
 

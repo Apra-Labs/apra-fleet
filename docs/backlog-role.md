@@ -46,10 +46,9 @@ in v0.5.
 - Removal in v0.5 means deleting the alias module's alias branch, its warning, and the
   allowlist entry together.
 
-## Known gap
+## Docs
 
-Several docs still use the role-sense phrase "orchestrator member" or "orchestrator/doer/reviewer
-pools": both `architecture.md` files, `packages/apra-fleet-se/docs/cli-reference.md`
-(`--expect-beads`), `docs/fleet-sprint-cli-contract.md`, `fleet-sprint-diagram.md`, and the
-LLM-facing `fleet-supervisor` skill. They are a documentation lag, not a behavioural one, and
-should be renamed in a follow-up.
+The role-sense wording is renamed in the docs as well (both `architecture.md` files,
+`cli-reference.md`, `fleet-sprint-cli-contract.md`, `fleet-sprint-diagram.md`, the
+`fleet-supervisor` skill and `supervisor-openapi.yaml`). Remaining uses of "orchestrator" in docs
+and prompts refer to the engine/PM process that drives a sprint, which is intentionally unchanged.
