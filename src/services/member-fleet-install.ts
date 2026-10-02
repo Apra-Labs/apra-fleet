@@ -521,23 +521,72 @@ async function probeMemberArch(agent: Agent, deps: MemberFleetInstallDeps): Prom
  * True when this fleet's registry shows it previously installed apra-fleet on
  * the member, so a running server there is the fleet's own member server.
  *
- * Exact signal: Agent.fleetMcp.fleetInstalledAt, stamped ONLY when this
- * fleet's own install run succeeded (ensureOnce returned installed:true) and
- * carried across later probes. fleetMcp.version is NOT the signal: it is just
- * what the member's install reports at <home>/.apra-fleet/bin, the same path a
- * human full install uses, and a refusal or observation-only probe records it
- * too. A member with no fleetInstalledAt has no such record.
+ * This is the FIRST of two ownership signals ensureOnce consults after a
+ * member install is refused as E-FULL-INSTALL-RUNNING:
+ *
+ *   1. (this function, no member exec) Agent.fleetMcp.fleetInstalledAt,
+ *      stamped ONLY when this fleet's own install run succeeded (ensureOnce
+ *      returned installed:true) and carried across later probes.
+ *      fleetMcp.version is NOT the signal: it is just what the member's
+ *      install reports at <home>/.apra-fleet/bin, the same path a human full
+ *      install uses, and a refusal or observation-only probe records it too.
+ *   2. (memberRegistryHoldsId, one member file read) the member's OWN
+ *      registry lists an entry whose id equals agent.id. Only this fleet's
+ *      self-registration (buildSelfRegisterCommand: register-member --id
+ *      <uuid>) creates that entry; a human full install will not hold the
+ *      orchestrator-assigned uuid. This covers real pre-marker members:
+ *      fleetInstalledAt is written only by builds that also write the
+ *      member-install marker, so signal 1 alone never fires for them.
  *
  * Used for members installed by a build that predates the member-install
  * marker (~/.apra-fleet/data/member-install.json): their running server has no
  * marker, so `install --member --force` refuses it as E-FULL-INSTALL-RUNNING
  * (src/cli/install-guard.ts memberForceMayStop). The fleet then retries once
- * with --force-stop-full-install. Without this record no override is ever
+ * with --force-stop-full-install. Without either signal no override is ever
  * sent, so a genuine human full install is still protected.
  */
 export function fleetPreviouslyInstalled(agent: Agent): boolean {
   const v = agent.fleetMcp?.fleetInstalledAt;
   return typeof v === 'string' && v.trim().length > 0;
+}
+
+/** The member's own apra-fleet registry: <home>/.apra-fleet/data/registry.json
+ *  (FLEET_DIR in src/paths.ts; shape {version, agents:[{id,...}]}, see
+ *  src/services/registry.ts loadRegistry). Built in JS from the probed home. */
+export function memberRegistryPath(home: string, agent: Agent): string {
+  const targetOs = getAgentOS(agent) as TargetOS;
+  return joinMemberPath(home, '.apra-fleet/data/registry.json', targetOs === 'windows', getAgentShell(agent));
+}
+
+/**
+ * Second pre-marker ownership signal (see fleetPreviouslyInstalled): true when
+ * the member's OWN apra-fleet registry holds an entry whose id equals
+ * agent.id -- the entry this fleet's earlier self-registration created.
+ *
+ * Mechanism: a direct read of the registry FILE (readMemberJson, OS/shell-safe
+ * and expansion-free), NOT a query through the member's installed binary. The
+ * pre-marker build running on the member may predate CLI subcommands such as
+ * `call` (src/cli/call.ts was added 2026-10-01), whereas the registry file
+ * location and shape have been stable since the ~/.apra-fleet/data migration,
+ * so a file read is build-independent.
+ *
+ * Any read/parse failure, a missing or empty registry, or a registry without
+ * that id reads as NOT owned (false). Never throws.
+ */
+export async function memberRegistryHoldsId(
+  agent: Agent,
+  home: string,
+  deps: Pick<MemberFleetInstallDeps, 'exec'>,
+): Promise<boolean> {
+  try {
+    const posix = isPosixShell(getAgentOS(agent) as TargetOS, getAgentShell(agent));
+    const reg = await readMemberJson((cmd, t) => deps.exec(agent, cmd, t ?? PROBE_TIMEOUT_MS), memberRegistryPath(home, agent), posix);
+    const agents = reg.agents;
+    if (!Array.isArray(agents)) return false;
+    return agents.some(a => !!a && typeof a === 'object' && (a as { id?: unknown }).id === agent.id);
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -625,8 +674,14 @@ async function ensureOnce(agent: Agent, deps: MemberFleetInstallDeps, force: boo
     let retried = false;
     // Pre-marker member: the server this fleet installed earlier has no
     // member-install marker, so --force alone is refused. Retry exactly once
-    // with the override -- only when the registry shows this fleet installed it.
-    if (run.code !== 0 && isRefused(run) && fleetPreviouslyInstalled(agent)) {
+    // with the override -- only when this fleet's registry stamp
+    // (fleetInstalledAt, fast path, no exec) or the member's own registry
+    // (an entry for agent.id; read only after a refusal) shows the fleet
+    // owns that install.
+    if (
+      run.code !== 0 && isRefused(run) &&
+      (fleetPreviouslyInstalled(agent) || await memberRegistryHoldsId(agent, home, deps))
+    ) {
       run = await runInstaller(true);
       retried = true;
     }

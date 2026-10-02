@@ -104,34 +104,41 @@ stops only a server that carries it.
 A remote member installed by a build that predates the marker (the pre-marker
 case) has none, so the fleet's install (`install --member --force`) is refused
 with `E-FULL-INSTALL-RUNNING`. The fleet then retries the install exactly once,
-pre-marker case only, with `--force-stop-full-install` appended, but only when its registry shows it
-installed apra-fleet on that member before: the member's recorded `fleetMcp`
-carries `fleetInstalledAt`, a timestamp stamped only when this fleet's own install run
-succeeded and carried across later probes. A refusal, `member_detail refresh`, or any
-observation-only probe never sets it, and `fleetMcp.version` is not the signal (a human
-full install reports a version at the same path). See `fleetPreviouslyInstalled` in
-`src/services/member-fleet-install.ts`. If the retry fails too, its own typed
-reason is recorded.
+pre-marker case only, with `--force-stop-full-install` appended, but only when
+one of two ownership signals shows the fleet owns that install (see
+`fleetPreviouslyInstalled` and `memberRegistryHoldsId` in
+`src/services/member-fleet-install.ts`):
 
-A member with no such record gets no override: the install is refused once,
+1. `fleetInstalledAt` (fast path, no member command): the member's recorded
+   `fleetMcp` carries a timestamp stamped only when this fleet's own install
+   run succeeded and carried across later probes, including
+   `compose_permissions` writes. A refusal, `member_detail refresh`, or any
+   observation-only probe never sets it, and `fleetMcp.version` is not the
+   signal (a human full install reports a version at the same path). The
+   client `FleetMcpStatus` typedef lists the field.
+2. Member registry uuid signal (checked only after a refusal): the member's
+   OWN apra-fleet registry, `<home>/.apra-fleet/data/registry.json`, holds an
+   entry whose `id` equals this member's fleet uuid. Only the fleet's earlier
+   self-registration (`register-member --type local --id <uuid>`) creates that
+   entry; a human full install does not hold the orchestrator-assigned uuid.
+   The file is read directly (path built in JS from the probed home, POSIX or
+   PowerShell form per the member's shell, no shell expansion) rather than
+   through the installed binary, because a pre-marker build may predate CLI
+   subcommands. This is the signal that covers real pre-marker members, whose
+   older build never wrote `fleetInstalledAt`.
+
+If the retry fails too, its own typed reason is recorded (the detail notes it
+was retried once with `--force-stop-full-install`).
+
+A member with neither signal gets no override: the install is refused once,
 recorded as `full-install-running`, and a human full install on that host is
-never stopped. For a member the fleet did not install (or whose registry entry
-was re-created, e.g. by `remove_member` + `register_member`), run once on the
-member (pre-marker manual override):
+never stopped. A missing, empty, unreadable or unparseable member registry, or
+one that lists only other member ids, counts as no signal. For a member the
+fleet did not install (or whose registry entry was re-created under a new
+uuid, e.g. by `remove_member` + `register_member`), run once on the member
+(pre-marker manual override):
 
     apra-fleet install --member --force --force-stop-full-install
-
-Known gap: `fleetInstalledAt` is new, so a member installed by a build that
-predates it carries no such record even though the fleet did install it. In
-practice every true pre-marker member needs the manual override above once; the
-automatic retry only helps members the fleet installed with a build that stamps
-the field. The intended closing fix is to treat a running server as
-member-owned when the member's OWN registry, queried through its installed
-binary, holds an entry with this member's uuid (older builds created that
-entry through `register-member --id`). Related caveat: `compose_permissions`
-rewrites or clears `fleetMcp` on a member-config error, which discards
-`fleetInstalledAt`; the stamp must be carried through those writes. The client
-typedef for `fleetMcp` status must also list `fleetInstalledAt`.
 
 ## Compose and member lifecycle invariants
 
