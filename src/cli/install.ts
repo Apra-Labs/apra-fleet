@@ -25,7 +25,7 @@ import { FLEET_DIR } from '../paths.js';
 import { extractWorkflowSubsystemAssets } from './workflow-assets.js';
 import { downloadAndExtractDolt, verifyDolt } from './dolt-install.js';
 import {
-  classifyRunningServer, getInstallDataDir, memberForceMayStop, fullInstallRefusalText,
+  classifyRunningServer, relevantServerPids, getInstallDataDir, memberForceMayStop, fullInstallRefusalText,
   writeMemberInstallMarker, clearMemberInstallMarker, FORCE_STOP_FULL_INSTALL_FLAG,
 } from './install-guard.js';
 import { convertClaudeAllowToAgyPermissions, formatAgyPermissionRules } from '../providers/agy.js';
@@ -798,17 +798,16 @@ function isCommandAvailable(cmd: string): boolean {
 }
 
 /**
- * PIDs of every non-installer apra-fleet process currently running, as strings.
+ * PIDs of every apra-fleet process currently running other than this one, as
+ * strings.
  *
- * OS-global on purpose -- isApraFleetRunning() is defined in terms of this, and
- * waitForApraFleetToStop()/uninstall.ts depend on that scope. The current
- * process is always excluded so a self-update (the installed apra-fleet binary
- * running `install`) never sees itself.
- *
- * Exposed separately from the boolean so the install --force guard can tell
- * "the SAME process is refusing to die" from "the supervisor relaunched it
- * under a NEW pid" -- those need different remedies and different error text
- * (see the service-aware stop note below).
+ * OS-global on purpose -- isApraFleetRunning() is defined in terms of this and
+ * is the install guard's cheap first filter and uninstall.ts's running check.
+ * It is NOT what install --force stops or watches: that is scoped to
+ * relevantServerPids() (install-guard.ts). The current process is always
+ * excluded: the installer may itself be named apra-fleet (the fleet's member
+ * upgrade runs <home>/.apra-fleet/staging/apra-fleet, and a self-update runs
+ * the installed binary).
  */
 export function apraFleetPids(): string[] {
   try {
@@ -822,8 +821,8 @@ export function apraFleetPids(): string[] {
         .map(match => match[1])
         .filter(pid => pid !== currentPid);
     } else {
-      // -x = exact name match; installer is apra-fleet-installer-* so won't match;
-      // exclude current PID to handle self-update (installed apra-fleet binary running install)
+      // -x = exact name match; the installer itself may be named apra-fleet,
+      // so the current PID is excluded.
       const out = execSync('pgrep -x apra-fleet', { encoding: 'utf-8', stdio: 'pipe' });
       return out.split('\n')
         .map(line => line.trim())
@@ -838,16 +837,40 @@ export function isApraFleetRunning(): boolean {
   return apraFleetPids().length > 0;
 }
 
-export function killApraFleet(signal: 'SIGTERM' | 'SIGKILL' = 'SIGTERM'): void {
-  if (process.platform === 'win32') {
-    // taskkill /F is already forceful -- no softer signal to escalate from,
-    // so SIGKILL escalation on Windows just reissues the same command.
-    execSync('taskkill /F /IM apra-fleet.exe', { stdio: 'ignore' });
-  } else {
-    // -x = exact name match
-    const cmd = signal === 'SIGKILL' ? 'pkill -9 -x apra-fleet' : 'pkill -x apra-fleet';
-    execSync(cmd, { stdio: 'ignore' });
+/**
+ * Signal the given apra-fleet pids -- by PID, never by process name. A
+ * name-based kill (pkill -x apra-fleet / taskkill /IM apra-fleet.exe) also
+ * matches the installer when it is named apra-fleet, which killed the fleet's
+ * member upgrade mid-install (exit 143), and every unrelated apra-fleet server
+ * of the same user (apra-fleet-b4g.72). This process is never signalled, even
+ * when passed in. A pid that already exited is ignored.
+ */
+export function killApraFleet(pids: ReadonlyArray<number | string>, signal: 'SIGTERM' | 'SIGKILL' = 'SIGTERM'): void {
+  for (const raw of pids) {
+    const pid = Number(raw);
+    if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) continue;
+    try {
+      if (process.platform === 'win32') {
+        // taskkill /F is already forceful -- no softer signal to escalate from,
+        // so SIGKILL escalation on Windows just reissues the same command.
+        execSync(`taskkill /F /PID ${pid}`, { stdio: 'ignore' });
+      } else {
+        process.kill(pid, signal);
+      }
+    } catch {
+      // Already gone (ESRCH / taskkill "not found"): nothing to stop.
+    }
   }
+}
+
+/** Manual stop advice: the pids still running, plus the by-name fallback. */
+function manualStopHint(pids: string[]): string {
+  const byName = process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pkill -x apra-fleet';
+  if (pids.length === 0) return byName;
+  const byPid = process.platform === 'win32'
+    ? pids.map(pid => `    taskkill /F /PID ${pid}`).join('\n')
+    : `    kill ${pids.join(' ')}`;
+  return `${byPid}\n  or, when no other apra-fleet server of yours must keep running:\n${byName}`;
 }
 
 // --- install --force termination polling: bounded wait + SIGKILL escalation ---
@@ -855,10 +878,10 @@ export function killApraFleet(signal: 'SIGTERM' | 'SIGKILL' = 'SIGTERM'): void {
 // killApraFleet() above only sends SIGTERM (or the already-forceful Windows
 // taskkill /F). A singleton that is mid-request can take longer than a flat
 // sleep to exit, which previously produced ETXTBSY on fs.copyFileSync (the
-// old apra-fleet binary was still open). waitForApraFleetToStop() polls
-// isApraFleetRunning() over a grace window instead of sleeping a fixed
-// duration, and escalates to SIGKILL if a non-installer apra-fleet process
-// is still alive once that window elapses.
+// old apra-fleet binary was still open). waitForApraFleetToStop() polls the
+// pids relevant to this install over a grace window instead of sleeping a
+// fixed duration, and escalates to SIGKILL against those still alive once
+// that window elapses.
 export interface InstallForceTiming {
   pollIntervalMs: number;
   graceMs: number;
@@ -881,36 +904,38 @@ function installForceTiming(): InstallForceTiming {
 }
 
 /**
- * Wait for any non-installer apra-fleet process to exit after killApraFleet()
- * sends SIGTERM. Polls isApraFleetRunning() over a grace window; if the
- * process is still alive once the window elapses, escalates to SIGKILL and
- * polls again over a second (shorter) window. Returns as soon as no
- * non-installer apra-fleet process is detected, or once both windows have
- * elapsed -- callers should not assume termination is guaranteed in the
- * latter case (see apra-fleet-l7n.3 for surfacing that failure to the
- * operator instead of asserting success).
+ * Wait for the relevant apra-fleet pids (`listPids`, re-evaluated on every
+ * poll; never this process) to exit after killApraFleet() sends SIGTERM. If
+ * any is still alive once the grace window elapses, escalates to SIGKILL
+ * against exactly those and polls again over a second (shorter) window.
+ * Returns as soon as none is detected, or once both windows have elapsed --
+ * callers should not assume termination is guaranteed in the latter case (see
+ * apra-fleet-l7n.3 for surfacing that failure to the operator instead of
+ * asserting success).
  */
-export async function waitForApraFleetToStop(): Promise<void> {
+export async function waitForApraFleetToStop(listPids: () => string[]): Promise<void> {
   const { pollIntervalMs, graceMs, killGraceMs } = installForceTiming();
 
   let deadline = Date.now() + graceMs;
-  while (isApraFleetRunning() && Date.now() < deadline) {
+  let pids = listPids();
+  while (pids.length > 0 && Date.now() < deadline) {
     await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+    pids = listPids();
   }
 
-  if (!isApraFleetRunning()) return;
+  if (pids.length === 0) return;
 
-  // Grace window elapsed and a non-installer apra-fleet process is still alive -- escalate.
-  killApraFleet('SIGKILL');
+  // Grace window elapsed and a relevant apra-fleet process is still alive -- escalate.
+  killApraFleet(pids, 'SIGKILL');
   deadline = Date.now() + killGraceMs;
-  while (isApraFleetRunning() && Date.now() < deadline) {
+  while (listPids().length > 0 && Date.now() < deadline) {
     await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
   }
 }
 
 // --- install --force service-aware stop ---
 //
-// killApraFleet() signals the server by process NAME. When the server is
+// killApraFleet() signals the server's pid directly. When the server is
 // registered with the platform service manager that is a race the installer
 // cannot win: the macOS LaunchAgent this installer writes declares
 // KeepAlive/SuccessfulExit=false (src/services/service-manager/macos.ts), so
@@ -967,13 +992,13 @@ function macosGuiUid(): string {
  * supervisor relaunch. Returns the pids still observed once the window closes
  * (empty when the service is down).
  */
-async function waitForServiceStop(): Promise<string[]> {
+async function waitForServiceStop(listPids: () => string[]): Promise<string[]> {
   const { pollIntervalMs, graceMs } = installForceTiming();
   const deadline = Date.now() + graceMs;
-  let pids = apraFleetPids();
+  let pids = listPids();
   while (pids.length > 0 && Date.now() < deadline) {
     await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
-    pids = apraFleetPids();
+    pids = listPids();
   }
   return pids;
 }
@@ -1229,8 +1254,8 @@ Nothing was installed.
 
   // --- Running-process guard (SEA + npm modes -- dev mode runs via node, not a managed binary) ---
   //
-  // isApraFleetRunning() is OS-global on purpose (waitForApraFleetToStop() and
-  // uninstall.ts depend on that). It is only the cheap first filter here:
+  // isApraFleetRunning() is OS-global on purpose (uninstall.ts depends on
+  // that). It is only the cheap first filter here:
   // classifyRunningServer() then decides whether the running server is actually
   // relevant to THIS install -- recorded live in the target data dir, or running
   // from the install prefix we are about to overwrite (ETXTBSY). An unrelated
@@ -1269,9 +1294,13 @@ ${killHint}
       console.error(fullInstallRefusalText(runningScope.detail));
       process.exit(3);
     }
+    // Only the pids relevant to THIS install are stopped or watched -- by pid,
+    // never by name, never this process (which may itself be named apra-fleet).
+    // Unrelated apra-fleet servers of the same user are left alone.
+    const relevantPids = (): string[] => relevantServerPids(BIN_DIR).map(String);
     // Snapshot BEFORE anything is stopped: a pid that is present afterwards but
     // absent here is a supervisor relaunch, not a process refusing to die.
-    const pidsBeforeStop = apraFleetPids();
+    const pidsBeforeStop = relevantPids();
     guardServiceMgr = await registeredServiceManager();
 
     if (guardServiceMgr) {
@@ -1283,22 +1312,22 @@ ${killHint}
       } catch (err) {
         console.warn(`    Service stop failed: ${(err as Error).message}`);
       }
-      const stillUp = await waitForServiceStop();
+      const stillUp = await waitForServiceStop(relevantPids);
       // Escalate ONLY when the very same pids are still there -- i.e. nothing
       // relaunched the server and there is no supervisor race to lose. If a NEW
-      // pid appeared, signalling by name is futile and is deliberately skipped
-      // so the relaunch is reported instead of retried forever.
+      // pid appeared, signalling is futile and is deliberately skipped so the
+      // relaunch is reported instead of retried forever.
       if (stillUp.length > 0 && stillUp.every(pid => pidsBeforeStop.includes(pid))) {
-        killApraFleet();
-        await waitForApraFleetToStop();
+        killApraFleet(stillUp);
+        await waitForApraFleetToStop(relevantPids);
       }
     } else {
-      // No service registered: historical path, unchanged.
-      killApraFleet();
-      await waitForApraFleetToStop();
+      // No service registered: signal the relevant pids directly.
+      killApraFleet(pidsBeforeStop);
+      await waitForApraFleetToStop(relevantPids);
     }
 
-    const pidsAfterStop = apraFleetPids();
+    const pidsAfterStop = relevantPids();
     if (pidsAfterStop.length > 0) {
       const relaunchedPids = pidsAfterStop.filter(pid => !pidsBeforeStop.includes(pid));
       if (relaunchedPids.length > 0) {
@@ -1306,7 +1335,7 @@ ${killHint}
 Error: the apra-fleet server was RELAUNCHED by its service supervisor while
 install --force was stopping it -- the observed pid changed between polls (was
 ${pidsBeforeStop.join(', ') || 'none'}, now ${pidsAfterStop.join(', ')}), so it did not merely refuse to die.
-Signalling the process by name cannot win that race. Stop the service itself,
+Signalling the process cannot win that race. Stop the service itself,
 then re-run the install:
     ${serviceStopCommand()}
 `);
@@ -1315,7 +1344,7 @@ then re-run the install:
       console.error(`
 Error: could not stop the running apra-fleet server (it is still running after
 SIGTERM and a SIGKILL escalation). Stop it manually before installing:
-${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pkill -x apra-fleet'}
+${manualStopHint(pidsAfterStop)}
 `);
       process.exit(1);
     }
