@@ -39,8 +39,6 @@ export function cancelScheduledExit(): void {
 }
 
 export async function shutdownServer(): Promise<string> {
-  // GitHub #585: one synchronous shutdown record before the deferred exit.
-  recordShutdown('shutdown_server');
   if (httpHandle) {
     // Close the transport BEFORE deleting the singleton pointer, not after --
     // a caller polling checkRunningInstance() (server.json gone => not
@@ -52,6 +50,10 @@ export async function shutdownServer(): Promise<string> {
     try { fs.unlinkSync(SERVER_INFO_PATH); } catch {}
   }
   closeAllConnections();
+  // GitHub #585: one synchronous shutdown record before the deferred exit --
+  // written only once close() succeeded, so a failed close (the process stays
+  // up) never leaves a false first reason behind.
+  recordShutdown('shutdown_server');
   scheduleProcessExit();
   return 'Server shutting down. Run /mcp to start a fresh instance.';
 }

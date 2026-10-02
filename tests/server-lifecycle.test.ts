@@ -133,6 +133,20 @@ describe('POST /shutdown', () => {
   });
 });
 
+describe('shutdown_server tool -- failed close', () => {
+  it('writes NO shutdown record when the transport close fails (the process stays up)', async () => {
+    const { shutdownServer, setHttpHandle, cancelScheduledExit } = await import('../src/tools/shutdown-server.js');
+    setHttpHandle({ close: () => Promise.reject(new Error('close failed')) } as any);
+    try {
+      await expect(shutdownServer()).rejects.toThrow('close failed');
+      expect(shutdownRecords()).toHaveLength(0);
+    } finally {
+      cancelScheduledExit();
+      setHttpHandle(null as any);
+    }
+  });
+});
+
 describe('shutdown_server tool', () => {
   it('records reason shutdown_server before scheduling the exit', async () => {
     const { shutdownServer, cancelScheduledExit } = await import('../src/tools/shutdown-server.js');
