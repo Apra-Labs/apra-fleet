@@ -2,6 +2,31 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- Beads role renamed to `backlog`; `orchestrator` kept as a deprecated alias
+
+The fleet-sprint role that names the member holding the beads clone is now `backlog`. The old
+`roleMap.orchestrator` spelling still works as a deprecated alias (removed in v0.5): a single
+alias module folds it into `backlog`, the CLI, runner and supervisor all resolve it, and every
+use emits a warning (CLI output, run log, and a `warnings[]` array in the `POST /api/sprints`
+response). Giving both keys with different member lists is a 400 on `roleMap` before any child
+spawns, and a string `@file` roleMap is now a 400 over HTTP. Internal role-sense identifiers,
+log/error strings, tool descriptions and client JSDoc were renamed, with a grep-guard test
+preventing regressions. See `docs/backlog-role.md`.
+
+```
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $6.9563.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.0493 across 1 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 14 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+```
+
+Carried forward: the final review failed on documentation lag only -- role-sense "orchestrator
+member" wording remains in both `architecture.md` files, `cli-reference.md`, the fleet-sprint CLI
+contract, the sprint diagram and the `fleet-supervisor` skill. Host-environment test failures and
+regression-pass failures remain open as backlog beads.
+
 ## [Unreleased] -- Supervisor sprint rows pull a once-per-publish run summary
 
 Sprint progress is now computed once by the sprint's own viewer and published; the supervisor
