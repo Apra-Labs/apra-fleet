@@ -7,12 +7,12 @@ import { existsSync, realpathSync } from 'node:fs';
 import { FleetWorkflow } from '@apralabs/apra-fleet-workflow';
 import { WorkflowEngine } from '@apralabs/apra-fleet-workflow/engine';
 import { createDashboardViewer } from '@apralabs/apra-fleet-workflow/viewer';
-import { StreamableHttpTransport } from '@apralabs/apra-fleet-client/transport';
 import { McpClient } from '@apralabs/apra-fleet-client/client';
 import { ApraFleet } from '@apralabs/apra-fleet-client';
 import {
     resolveFleetServerCommand as sharedResolveFleetServerCommand,
     resolveFleetServerConnection as sharedResolveFleetServerConnection,
+    createFleetHttpTransport,
     getServerInfoPath,
 } from '@apralabs/apra-fleet-client/server-resolution';
 import { beadsExtension } from '../fleet-sprint/viewer-extensions.mjs';
@@ -736,7 +736,10 @@ async function main() {
         process.exit(1);
         return;
     }
-    const transport = new StreamableHttpTransport(connection.url);
+    // Reconnecting HTTP transport: if the shared server dies mid-run it is
+    // re-probed (and auto-started when gone) before the next request; a request
+    // is retried once only when it provably never reached the server.
+    const transport = createFleetHttpTransport(connection, { dirname: __dirname, exists: existsSync });
     await transport.start();
     const mcpClient = new McpClient(transport);
 
