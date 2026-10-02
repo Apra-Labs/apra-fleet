@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type * as ChildProcessModule from 'node:child_process';
+import { mkdtempSync, symlinkSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, dirname, basename } from 'node:path';
 
 // The Windows branch of launchAuthTerminal opens the credential-entry console.
 // Its --prompt text embeds caller-supplied username/host values, so it must
@@ -64,25 +67,52 @@ describe('launchAuthTerminal -- Windows console launch quoting', () => {
     expect(call.opts.env!.APRA_FLEET_OOB_WINDOW_TITLE).toBe('Fleet Password Entry');
   });
 
+  // Runs the real verbatim CRT round-trip through `execPath` and asserts the
+  // hostile argument line survives unchanged.
+  async function assertCrtRoundTrip(execPath: string) {
+    const call = await launch();
+    const { quoteWindowsArgv } = await import('../src/utils/shell-escape.js');
+    const real = await vi.importActual<typeof ChildProcessModule>('node:child_process');
+    const code = 'process.stdout.write(JSON.stringify(process.argv.slice(1)))';
+    // Same verbatim command-line tail Start-Process hands to CreateProcess.
+    const out = real.spawnSync(
+      execPath,
+      ['-e', quoteWindowsArgv(code), call.opts.env!.APRA_FLEET_OOB_ARGS],
+      // windowsVerbatimArguments makes libuv write argv[0] unquoted, so an
+      // exec path containing a space (e.g. under Program Files) would be split
+      // by the child CRT. Quote argv0 explicitly.
+      { argv0: quoteWindowsArgv(execPath), windowsVerbatimArguments: true, windowsHide: true, encoding: 'utf8' },
+    );
+    expect(out.status).toBe(0);
+    const argv = JSON.parse(out.stdout) as string[];
+    const exe = call.opts.env!.APRA_FLEET_OOB_EXE;
+    expect(typeof exe).toBe('string');
+    // Dev mode: [index.js, secret, --set, <member>, --prompt, <prompt>]
+    expect(argv.slice(-5)).toEqual(['secret', '--set', HOSTILE_MEMBER, '--prompt', HOSTILE_PROMPT]);
+  }
+
   it.skipIf(realPlatform !== 'win32')(
     'the argument line round-trips through the real Windows CRT argv parser unchanged',
     async () => {
-      const call = await launch();
-      const { quoteWindowsArgv } = await import('../src/utils/shell-escape.js');
-      const real = await vi.importActual<typeof ChildProcessModule>('node:child_process');
-      const code = 'process.stdout.write(JSON.stringify(process.argv.slice(1)))';
-      // Same verbatim command-line tail Start-Process hands to CreateProcess.
-      const out = real.spawnSync(
-        process.execPath,
-        ['-e', quoteWindowsArgv(code), call.opts.env!.APRA_FLEET_OOB_ARGS],
-        { windowsVerbatimArguments: true, windowsHide: true, encoding: 'utf8' },
-      );
-      expect(out.status).toBe(0);
-      const argv = JSON.parse(out.stdout) as string[];
-      const exe = call.opts.env!.APRA_FLEET_OOB_EXE;
-      expect(typeof exe).toBe('string');
-      // Dev mode: [index.js, secret, --set, <member>, --prompt, <prompt>]
-      expect(argv.slice(-5)).toEqual(['secret', '--set', HOSTILE_MEMBER, '--prompt', HOSTILE_PROMPT]);
+      await assertCrtRoundTrip(process.execPath);
+    },
+  );
+
+  it.skipIf(realPlatform !== 'win32')(
+    'the round-trip holds when the node executable path contains a space',
+    async () => {
+      // A directory junction (no admin rights needed) guarantees a space in
+      // the exec path regardless of where node is installed on this host.
+      const base = mkdtempSync(join(tmpdir(), 'auth-quoting-'));
+      try {
+        const junction = join(base, 'node dir with space');
+        symlinkSync(dirname(process.execPath), junction, 'junction');
+        const execPath = join(junction, basename(process.execPath));
+        expect(execPath).toContain(' ');
+        await assertCrtRoundTrip(execPath);
+      } finally {
+        rmSync(base, { recursive: true, force: true });
+      }
     },
   );
 });

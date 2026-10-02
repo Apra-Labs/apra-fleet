@@ -840,9 +840,56 @@ function findBeadById(state, id) {
     return null;
 }
 
+/**
+ * Neutral placeholder for the live view's progress area when no beads
+ * summary has been published yet -- never a misleading 'Required: 0/N'.
+ * Rendered by renderBeadsPanel() (the caller), so renderProgressBarHtml()
+ * itself stays unchanged for its other consumers.
+ * @returns {string}
+ */
+export function renderProgressPlaceholderHtml() {
+    return (
+        '<div class="sprint-progress sprint-progress-pending" style="display: flex; align-items: center; gap: 8px; padding: 8px; font-size: 12px;">' +
+        '<div style="color: #a1a1aa; white-space: nowrap;">Required: no summary yet</div>' +
+        '</div>'
+    );
+}
+
+/**
+ * Turns a published beads summary entry (GET /state?summary=1's
+ * extensions.beads) into the progress-bar HTML, or the placeholder when the
+ * entry is absent or malformed. Pure; shared by the browser script below.
+ * @param {object|null} summary
+ * @returns {string}
+ */
+export function renderBeadsSummaryProgressHtml(summary) {
+    const ok = summary && typeof summary === 'object'
+        && typeof summary.closed === 'number' && Number.isFinite(summary.closed)
+        && typeof summary.required === 'number' && Number.isFinite(summary.required);
+    if (!ok) return renderProgressPlaceholderHtml();
+    return renderProgressBarHtml({ closed: summary.closed, required: summary.required, fraction: summary.fraction });
+}
+
 export const beadsExtension = {
     id: 'beads',
     title: 'Tasks',
+    // Core's once-per-publish summarize hook (viewer/index.mjs): runs
+    // server-side in the sprint child, only when the 'beads' namespace is
+    // published. Pure, no I/O. computed_at is when the runner FETCHED the
+    // beads (payload.fetchedAt), not render/publish time.
+    summarize(data) {
+        const d = data || {};
+        const progress = computeSprintProgress(d.sprintTasks || [], {
+            goalMax: d.goalMax,
+            decomposedParentIds: d.decomposedParentIds,
+        });
+        return {
+            closed: progress.closed,
+            required: progress.required,
+            fraction: progress.fraction,
+            computed_at: d.fetchedAt ?? null,
+        };
+    },
     // apra-fleet-eft.37.4 (M3): the beads extension's detailLookup hook,
     // called by core's generic GET /extensions/beads/detail/:itemId route
     // (packages/apra-fleet-workflow/src/viewer/index.mjs) against the LIVE,
@@ -863,8 +910,9 @@ export const beadsExtension = {
         ${renderBeadsHtml.toString()}
         ${renderResultExtrasHtml.toString()}
         ${renderBeadsIdentityHtml.toString()}
-        ${computeSprintProgress.toString()}
         ${renderProgressBarHtml.toString()}
+        ${renderProgressPlaceholderHtml.toString()}
+        ${renderBeadsSummaryProgressHtml.toString()}
 
         // apra-fleet-eft.37.3: mounts the auto-sprint verdict badge + PR
         // link into the header, next to core's generic (unstyled)
@@ -991,23 +1039,25 @@ export const beadsExtension = {
         // 'beadsIdentity' namespace (workflow:state:beadsIdentity); cached
         // here and rendered at the top of the Tasks panel on every rebuild.
         let lastBeadsIdentity = null;
+        // Latest published beads summary (null until the first one).
+        // workflow:summary:beads is dispatched just before
+        // workflow:state:beads on every render, so the state handler below
+        // always renders the current summary.
+        let lastBeadsSummary = null;
+
+        document.addEventListener('workflow:summary:beads', (e) => {
+            lastBeadsSummary = e.detail || null;
+        });
 
         function renderBeadsPanel() {
             const container = document.getElementById('extension-beads');
             if (!container) return;
-            // apra-fleet-x8r.1: the progress bar reflects THIS sprint's own
-            // scope (sprintTasks -- already the bdListScoped('') scope walk
-            // threaded through by runner.js/dashboard.mjs, never re-derived
-            // here), not the Backlog list alongside it.
-            // apra-fleet-x8r.4: goalMax/decomposedParentIds are runner.js-
-            // computed (updateDashboard()'s payload -- the SAME two axes its
-            // own completion gate filters on) and threaded through verbatim,
-            // never re-derived client-side.
-            const progress = computeSprintProgress(lastBeadsData.sprintTasks || [], {
-                goalMax: lastBeadsData.goalMax,
-                decomposedParentIds: lastBeadsData.decomposedParentIds,
-            });
-            const progressHtml = renderProgressBarHtml(progress);
+            // The progress bar renders the beads summary the child computed
+            // server-side once per publish (summarize() above, delivered by
+            // core's workflow:summary:beads event) -- the SAME object the
+            // supervisor reads from GET /state?summary=1 -- never a browser
+            // recompute of sprintTasks. No summary yet -> placeholder.
+            const progressHtml = renderBeadsSummaryProgressHtml(lastBeadsSummary);
             // apra-fleet-vk0a.2: pinned into the FIXED panel-header row (a
             // sibling of the 'Tasks' label, core's generic per-extension
             // header hook -- \`id="panel-header-\${ext.id}-extra"\`, see
