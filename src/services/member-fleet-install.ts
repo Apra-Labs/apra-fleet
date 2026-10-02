@@ -798,6 +798,29 @@ export function buildMemberCallCommand(
   });
 }
 
+/**
+ * Cap on member-side error text recorded in fleetMcp.detail. Large enough that
+ * the leading ERROR line plus its cause (e.g. compose_permissions' full
+ * searched-path list) always survive; only a runaway output is truncated.
+ */
+export const MEMBER_ERROR_DETAIL_MAX = 4000;
+
+/**
+ * The member-side error text to record in fleetMcp.detail. Keeps the HEAD of
+ * the output (the `ERROR: ...` line and its cause come first), never the tail:
+ * a tail slice drops the leading cause and leaves only the end of a long list.
+ */
+export function memberErrorDetail(out: string, max = MEMBER_ERROR_DETAIL_MAX): string {
+  let text = out.trim();
+  if (text.length <= max) return text;
+  // Over the cap: start at the first ERROR line when log noise precedes it,
+  // so the cap is spent on the error and its cause.
+  const errAt = text.search(/^.*\bERROR\b/m);
+  if (errAt > 0) text = text.slice(errAt);
+  if (text.length <= max) return text;
+  return `${text.slice(0, max)} ... [${text.length - max} more chars truncated]`;
+}
+
 /** Last parseable JSON object line in command output. */
 function lastJsonObject(text: string): Record<string, unknown> | null {
   const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
@@ -989,11 +1012,11 @@ async function probeRemote(
   const reg = await deps.exec(agent, buildSelfRegisterCommand(binPath, agent, targetOs, shell), MEMBER_CALL_TIMEOUT_MS);
   if (reg.code !== 0) {
     const out = `${reg.stdout}\n${reg.stderr}`;
-    if (/E-FOLDER-TAKEN/.test(out)) return unavailable('E-FOLDER-TAKEN', out.trim().slice(-300), withVersion);
+    if (/E-FOLDER-TAKEN/.test(out)) return unavailable('E-FOLDER-TAKEN', memberErrorDetail(out), withVersion);
     if (/unknown or unexpected argument "--id"/i.test(out) || /unknown (?:option|command|argument)[^\n]*(?:--id|register-member)/i.test(out)) {
       return unavailable('install-too-old', `the member's apra-fleet ${version} does not support register-member --id`, withVersion);
     }
-    return unavailable('register-failed', `register-member exited ${reg.code}: ${out.trim().slice(-300)}`, withVersion);
+    return unavailable('register-failed', `register-member exited ${reg.code}: ${memberErrorDetail(out)}`, withVersion);
   }
 
   // 3. The per-folder MCP entry compose_permissions writes must point at this member.

@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- KB redesign stage 5: member install fixes
+
+- Member self-registration no longer fails on a clean remote member: `register-member --id <uuid>` (the self-registration the orchestrator runs on the member's own install) skips `compose_permissions`, which needs fleet skill profiles a member install does not have; the orchestrating server composes the member's permissions and per-folder MCP entry itself. A failed self-registration now keeps the member's leading `ERROR:` line and cause in `fleetMcp.detail` (head kept, capped at 4000 characters) instead of only the last 300 characters. Upgrade: members recorded as `fleetMcp` `register-failed` recover by running `update_member` on them (the upgrade installs the fixed build) or `member_detail` with `refresh: true` once they run it.
+
 ## [Unreleased] -- KB redesign stage 4: review-finding hardening and delivery notes
 
 Sprint goal: close the remaining KB redesign review findings and finish the delivery notes. Verdict PASS: build, `npm test` and `contract:check` (26 tools) passed on the sprint member only; CI on all three OSes was not part of the verdict, and the windows-latest run then failed in `tests/compose-member-config-windows.test.ts` (fixed below).

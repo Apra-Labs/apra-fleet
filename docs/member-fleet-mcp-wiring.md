@@ -64,6 +64,18 @@ apra-fleet, at least as new as the orchestrator, installed in HTTP member mode
   is also given.
 - After install the member registers itself, and a MEMBER-session is opened to
   verify the tools are really reachable.
+- Self-registration design: the member-side `register-member --id <uuid>`
+  (the self-registration form) does NOT run `compose_permissions`. A member
+  install carries no fleet skill profiles (`install --member` installs no
+  skills), so a member-side compose would fail with "No complete profiles
+  directory". Permissions and the per-folder MCP entry are composed by the
+  orchestrating server instead: `register_member` composes before it installs
+  and runs the self-registration, and the MCP-entry check that follows reads
+  what that compose wrote. Running `register-member` without `--id` (a manual
+  shell registration) still composes.
+- A failed self-registration is recorded in `fleetMcp.detail` with the
+  member's error text from its start: the leading `ERROR:` line and its cause
+  are kept (capped at 4000 characters, truncating the end, never the head).
 - Every member-bound command is built in JavaScript for the member's OS/shell
   from a probed home directory; none relies on shell expansion.
 
