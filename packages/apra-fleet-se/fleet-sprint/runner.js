@@ -99,7 +99,7 @@ import {
 } from './vcs-auth.mjs';
 import { validateIssueId, validateBranchName, validateArgs } from './sprint-args.mjs';
 import { verifyBeadsIdentity, createBeadsIdentityProber } from './beads-identity-check.mjs';
-import { ROLE_BACKLOG } from './backlog-role.mjs';
+import { ROLE_BACKLOG, selectBacklogMember, formatBacklogSelection } from './backlog-role.mjs';
 import { createKbMaintainerSelector, createMemberDetailResolver, ROLE_KB_MAINTAINER } from './kb-maintainer.mjs';
 import { sweepTokenMemories } from './beads-memory-hygiene.mjs';
 import {
@@ -1616,17 +1616,13 @@ async function runSprintCycle(context) {
     // doc comment for why 'orchestrator' is an application-level pseudo-role
     // deliberately outside contracts.ROLES.
     //
-    // apra-fleet-TODO(orchestrator-hard-fail): an unmapped orchestrator
-    // silently falling back to unmappedRoleFallbackPool[0] is a known defect
-    // (docs/design-orchestrator-worktree-model-v2.md section 1/6.4) -- it has
-    // repeatedly caused the orchestrator to run against a stale/wrong-scope bd
-    // clone. Making this a hard launch-time failure is the intended fix, but
-    // it cannot land in isolation: it requires the supervisor to
-    // auto-inject roleMap.backlog on every launch first (section 6.2,
-    // not yet implemented) -- otherwise every existing caller that relies on
-    // the implicit fallback (including this file's own test harness) breaks.
-    // Land 6.2, update callers, THEN make this throw.
-    const backlogMember = getMemberForRole(ROLE_BACKLOG);
+    // An unmapped backlog does NOT fail the launch: the shared selector
+    // (backlog-role.mjs, also used by bin/cli.mjs) auto-selects a member and
+    // the choice is reported loudly below.
+    const backlogSelection = selectBacklogMember({ roleMap: validated.roleMap, members: physicalMembers });
+    const backlogMember = backlogSelection.member;
+    const backlogSelectionLine = formatBacklogSelection(backlogSelection);
+    if (backlogSelectionLine) log(backlogSelectionLine);
 
     // Deprecated-alias warnings (deprecated orchestrator key -> backlog),
     // collected by validateArgs() and/or forwarded by bin/cli.mjs.

@@ -43,3 +43,51 @@ export function resolveBacklogRoleAlias(normalizedRoleMap) {
     }
     return { roleMap, warnings: [BACKLOG_ALIAS_WARNING] };
 }
+
+/**
+ * The ONE backlog-member selector shared by every direct launch (runner.js and
+ * bin/cli.mjs). Never throws on an unmapped backlog: it auto-selects and says
+ * why, so the caller can report the choice loudly.
+ *
+ * Order (roleMap already key-normalized and alias-resolved):
+ *   1. roleMap.backlog non-empty -> its first entry (explicit).
+ *   2. the first member (members order) named in no roleMap value
+ *      (no roleMap -> the first member).
+ *   3. the first member mapped to doer.
+ *   4. the first member.
+ *
+ * @param {{ roleMap?: object, members: string[] }} input
+ * @returns {{ member: string|undefined, explicit: boolean, reason: string }}
+ */
+export function selectBacklogMember({ roleMap, members } = {}) {
+    const list = Array.isArray(members) ? members : [];
+    const explicitList = roleMap && Array.isArray(roleMap[ROLE_BACKLOG]) ? roleMap[ROLE_BACKLOG] : [];
+    if (explicitList.length > 0) {
+        return { member: explicitList[0], explicit: true, reason: 'roleMap.backlog' };
+    }
+    const mapped = new Set();
+    if (roleMap) {
+        for (const v of Object.values(roleMap)) {
+            if (Array.isArray(v)) for (const m of v) mapped.add(m);
+        }
+    }
+    if (!roleMap || mapped.size === 0) {
+        return { member: list[0], explicit: false, reason: 'no roleMap, first member' };
+    }
+    const generalist = list.find((m) => !mapped.has(m));
+    if (generalist !== undefined) {
+        return { member: generalist, explicit: false, reason: 'first member not mapped to any role' };
+    }
+    const doers = Array.isArray(roleMap.doer) ? roleMap.doer : [];
+    const doer = list.find((m) => doers.includes(m));
+    if (doer !== undefined) {
+        return { member: doer, explicit: false, reason: 'every member is role-mapped; first doer-mapped member' };
+    }
+    return { member: list[0], explicit: false, reason: 'every member is role-mapped and none is a doer; first member' };
+}
+
+/** The loud one-line report for an auto-selected backlog member (null when explicit). */
+export function formatBacklogSelection(sel) {
+    if (!sel || sel.explicit) return null;
+    return `backlog: ${sel.member} (auto-selected: ${sel.reason})`;
+}
