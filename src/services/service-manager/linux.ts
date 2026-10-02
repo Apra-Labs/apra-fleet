@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import type { RegisterOptions, ServiceDescriptor, ServiceId, ServiceManager, ServiceStatus } from './types.js';
-import { DEFAULT_SERVICE_ID, getServiceDescriptor } from './types.js';
+import { DEFAULT_SERVICE_ID, SERVICE_ENV_MARKER, getServiceDescriptor } from './types.js';
 import { gracefulStopByServerJson } from './index.js';
 
 const UNIT_DIR = path.join(os.homedir(), '.config', 'systemd', 'user');
@@ -50,6 +50,10 @@ export class LinuxServiceManager implements ServiceManager {
       `ExecStart="${binaryPath}" ${args.join(' ')}`,
       ...(options.workingDirectory ? [`WorkingDirectory=${options.workingDirectory}`] : []),
       `Restart=${this.descriptor.restartOnFailure ? 'on-failure' : 'no'}`,
+      // Lets the MCP server tell it runs under a restarting service manager
+      // (GitHub #584). Only the server reads it; the supervisor is Restart=no
+      // and must not leak the marker into the processes it spawns.
+      ...(this.descriptor.gracefulStopViaServerJson ? [`Environment=${SERVICE_ENV_MARKER}=1`] : []),
       `StandardOutput=append:${logPath}`,
       `StandardError=append:${logPath}`,
       '',
@@ -73,10 +77,10 @@ export class LinuxServiceManager implements ServiceManager {
       await gracefulStopByServerJson();
     }
     checkSystemd();
-    try { execFileSync('systemctl', ['--user', 'disable', this.unitName]); } catch {}
-    try { execFileSync('systemctl', ['--user', 'stop', this.unitName]); } catch {}
+    try { execFileSync('systemctl', ['--user', 'disable', this.unitName], { stdio: 'pipe' }); } catch {}
+    try { execFileSync('systemctl', ['--user', 'stop', this.unitName], { stdio: 'pipe' }); } catch {}
     try { fs.unlinkSync(this.unitPath); } catch {}
-    try { execFileSync('systemctl', ['--user', 'daemon-reload']); } catch {}
+    try { execFileSync('systemctl', ['--user', 'daemon-reload'], { stdio: 'pipe' }); } catch {}
   }
 
   async start(): Promise<void> {
@@ -84,15 +88,15 @@ export class LinuxServiceManager implements ServiceManager {
     execFileSync('systemctl', ['--user', 'start', this.unitName]);
   }
 
-  async stop(): Promise<void> {
+  async stop(): Promise<boolean> {
     checkSystemd();
     if (this.descriptor.gracefulStopViaServerJson) {
-      await gracefulStopByServerJson();
-      return;
+      return gracefulStopByServerJson();
     }
     // Services other than the MCP server never write server.json -- stop them
     // through systemd itself.
     execFileSync('systemctl', ['--user', 'stop', this.unitName]);
+    return true;
   }
 
   async query(): Promise<ServiceStatus> {
@@ -104,13 +108,13 @@ export class LinuxServiceManager implements ServiceManager {
     let enabled: boolean | undefined;
     try {
       const active = execFileSync(
-        'systemctl', ['--user', 'is-active', this.unitName], { encoding: 'utf8' },
+        'systemctl', ['--user', 'is-active', this.unitName], { encoding: 'utf8', stdio: 'pipe' },
       ).trim();
       running = active === 'active';
     } catch {}
     try {
       const enabledOut = execFileSync(
-        'systemctl', ['--user', 'is-enabled', this.unitName], { encoding: 'utf8' },
+        'systemctl', ['--user', 'is-enabled', this.unitName], { encoding: 'utf8', stdio: 'pipe' },
       ).trim();
       enabled = enabledOut === 'enabled';
     } catch {}

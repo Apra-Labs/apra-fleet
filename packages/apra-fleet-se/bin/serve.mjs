@@ -237,7 +237,7 @@ export function parseServeArgs(argv) {
  * for an unusable configured project folder (resolveProjectDir usable:false)
  * or a cwd that no longer exists / is not a directory. Deliberately NOT keyed
  * on the beads identity: having no local beads is a designed fallback
- * (sprints verify against the orchestrator member's beads).
+ * (sprints verify against the backlog member's beads).
  * @param {{ usable?: boolean }} project
  * @param {string} cwd
  * @param {{ existsSync: Function, statSync: Function }} [fsImpl]
@@ -318,7 +318,7 @@ export async function serveMain(argv = process.argv.slice(2)) {
     //     environment condition: a WARNING (with the fix), the identity stays
     //     "unknown" (health `beads: null` + `beadsWarning`, amber dashboard
     //     header, no --expect-beads handed to sprints -- the engine then
-    //     verifies members against the orchestrator's own beads), and GET
+    //     verifies members against the backlog member's own beads), and GET
     //     /api/health?refresh=1 can recover it without a restart.
     let project;
     try {
@@ -531,7 +531,7 @@ export async function serveMain(argv = process.argv.slice(2)) {
         // at each spawn (not captured at startup) so an identity recovered
         // by GET /api/health?refresh=1 reaches later sprints; while it is
         // unknown, --expect-beads is omitted and the engine falls back to
-        // the orchestrator member's own identity.
+        // the backlog member's own identity.
         cwd: repoRoot,
         expectBeads: () => {
             const id = beadsIdentity.get();

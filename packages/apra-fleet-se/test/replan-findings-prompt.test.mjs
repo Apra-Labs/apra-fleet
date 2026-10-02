@@ -35,7 +35,7 @@ function buildState({ perBeadFeedback, dispatchCtx, replanIds, replannedThisCycl
         validated: { goal: 'ship the fix', requirementsFile: undefined },
         targetIssues: ['epic-1'],
         requirementsContent: null,
-        orchestratorMember: 'member:orchestrator',
+        backlogMember: 'member:orchestrator',
         gitSync: { syncBeadsAfter: async () => {} },
         updateDashboard: async () => {},
         verifySetThisCycle: [],

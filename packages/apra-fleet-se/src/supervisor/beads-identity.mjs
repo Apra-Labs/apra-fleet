@@ -250,7 +250,7 @@ const FIX_TAIL = 'then GET /api/health?refresh=1.';
 // =============================================================================
 //
 // The fleet-sprint engine's own precondition compares a member's identity
-// against the orchestrator's on ../../fleet-sprint/beads-identity.mjs's
+// against the backlog member's on ../../fleet-sprint/beads-identity.mjs's
 // COMPARED_FIELDS and treats an INCOMPLETE identity as FATAL
 // (isCompleteIdentity() there is the same predicate `missingIdentityFields()`
 // below inverts -- the parity is asserted by a test, not restated by hand).
@@ -406,7 +406,7 @@ export const PROJECT_DIR_SOURCE = Object.freeze({
 export function formatStaleConfiguredProjectWarning(projectDir, configPath, opts = {}) {
     return `the configured project folder ${projectDir} does not exist or is not a directory ` +
         `(configured in ${configPath}). ` +
-        "Backlog and scope-overlap checks are disabled and sprints will verify against the orchestrator member's beads instead. " +
+        "Backlog and scope-overlap checks are disabled and sprints will verify against the backlog member's beads instead. " +
         'The cwd walk-up is deliberately NOT used as a fallback here, so this supervisor cannot silently adopt an unrelated tracker. ' +
         "To fix: point the setting at the project folder from the console's project setting " +
         '(or pass --beads-dir <project-or-.beads-path>), then RESTART the supervisor: ' + restartInstruction(opts.launchMode) + ' -- the setting is read ' +
@@ -538,7 +538,7 @@ export async function resolveProjectDir(opts = {}) {
 /** No `.beads` reachable by walking up from `cwd`. */
 export function formatNoBeadsWarning(cwd) {
     return `no beads database found walking up from ${cwd}. ` +
-        "Backlog and scope-overlap checks are disabled and sprints will verify against the orchestrator member's beads instead. " +
+        "Backlog and scope-overlap checks are disabled and sprints will verify against the backlog member's beads instead. " +
         `To fix: restart fleet-se from inside the project folder, or pass --beads-dir <project-or-.beads-path>, ${FIX_TAIL}`;
 }
 
@@ -546,7 +546,7 @@ export function formatNoBeadsWarning(cwd) {
 export function formatProbeFailedWarning(repoRoot, error) {
     const detail = error && error.message ? error.message : String(error);
     return `could not resolve the beads identity under ${repoRoot}: ${detail}. ` +
-        "Backlog and scope-overlap checks may fail and sprints will verify against the orchestrator member's beads instead. " +
+        "Backlog and scope-overlap checks may fail and sprints will verify against the backlog member's beads instead. " +
         `To fix: run 'bd where' in ${repoRoot} to see the error, ensure bd is on PATH and the project is initialised (bd init / sync.remote set), ${FIX_TAIL}`;
 }
 

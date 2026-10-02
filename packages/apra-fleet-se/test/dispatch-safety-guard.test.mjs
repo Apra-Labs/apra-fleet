@@ -87,7 +87,7 @@ const DISPATCH_ROLE_PATH = path.join(__dirname, '../fleet-sprint/dispatch-role.m
 // member_name (3.2): (1) runDoltStep()'s injected `command(cmd, { member_name:
 // member, silent: true, failSoft: true, label })` -- the single site every
 // D-pull/D-push bracket funnels through; (2) verifyDoerStreakClosed()'s
-// post-D-pull `command(label, { member_name: orchestratorMember, silent:
+// post-D-pull `command(label, { member_name: backlogMember, silent:
 // true })` verification read; and (3) the syncMemberAfter clean-state restore
 // `command('git rebase --abort', { member_name: member, ... })` /
 // `command('git status --porcelain', { member_name: member, ... })` pair
@@ -109,7 +109,7 @@ const DISPATCH_ROLE_PATH = path.join(__dirname, '../fleet-sprint/dispatch-role.m
 // happy path issues neither.
 // 28 -> 29 (apra-fleet-eft.9.7): per-bead work-claiming inside the D-pull/
 // D-push brackets gained one new `command(claimLabel, { member_name:
-// orchestratorMember, silent: true })` call site (the `bd update <id>
+// backlogMember, silent: true })` call site (the `bd update <id>
 // --claim` issued per bead before a doer streak dispatch), verified
 // compliant.
 // 29 -> 28 (apra-fleet-eft.8.12, git conflict ladder Tier 2): the Tier 1
@@ -130,7 +130,7 @@ const DISPATCH_ROLE_PATH = path.join(__dirname, '../fleet-sprint/dispatch-role.m
 // Verified compliant (explicit member_name).
 // 29 -> 30 (apra-fleet-eft.55.2, part-2 SHA freshness): getDeployedSha
 // gained one new `command('git rev-parse HEAD', { member_name:
-// orchestratorMember, silent: true, label: ..., failSoft: true })` call
+// backlogMember, silent: true, label: ..., failSoft: true })` call
 // site, used to resolve this cycle's deploy-verified SHA right after a
 // successful deploy, for the Integ Test dispatch/validation below. Verified
 // compliant (explicit member_name).
@@ -155,20 +155,20 @@ const DISPATCH_ROLE_PATH = path.join(__dirname, '../fleet-sprint/dispatch-role.m
 // classifying the sprint's git remote via isHostedGithubRemote() before
 // deciding whether to attempt `gh pr create`) and `bd close ${id}` (closing
 // the target issue directly on the non-hosted-remote path); both pass
-// member_name: orchestratorMember, verified compliant.
+// member_name: backlogMember, verified compliant.
 // 34 -> 36 (apra-fleet-eft.72.1): plan-cap exhaustion confined to specific
 // beads now defers those beads instead of aborting the whole run -- two new
 // command() call sites, `bd update ${id} --status=deferred` and
 // `bd note ${id} --file "${noteFile}"` (attaching the plan-reviewer's
 // finding), both inside the Plan phase's new deferral loop. This is a plain
 // orchestrator-side bd mutation, not a new agent() dispatch -- EXPECTED_AGENT_COUNT
-// below is unchanged. Both new sites pass member_name: orchestratorMember,
+// below is unchanged. Both new sites pass member_name: backlogMember,
 // verified compliant.
 // 36 -> 37 (apra-fleet-eft.73.1): the host-agnostic body transport centralizes
 // member-side body staging in stageCommandBodyMemberSide(), which adds exactly
 // ONE new command() call site -- the `node -e "..." "<base64>"` dispatch that
 // writes the body to a member-LOCAL temp file (member_name: member/
-// orchestratorMember, verified compliant). The three call sites that used to
+// backlogMember, verified compliant). The three call sites that used to
 // write the body on the orchestrator host (createChildBeadWithAllocatedId's
 // `bd create --body-file`, appendRejectedFindingToParentNotes' `bd note
 // --file`, and the plan-cap deferral `bd note --file`) each keep their SAME
@@ -188,7 +188,7 @@ const DISPATCH_ROLE_PATH = path.join(__dirname, '../fleet-sprint/dispatch-role.m
 // safe to reset over. Both new sites pass member_name: member, confirmed
 // present.
 // 41 -> 40 (integ/regression split): getDeployedSha()'s `command('git
-// rev-parse HEAD', { member_name: orchestratorMember, ... })` site was
+// rev-parse HEAD', { member_name: backlogMember, ... })` site was
 // REMOVED. It existed only to prove the Integ Test phase's part-2 (smoke
 // test) evidence was fresh; the smoke test moved to the once-per-sprint
 // Regression Test phase, which provisions its own sandbox and has no
@@ -200,7 +200,7 @@ const DISPATCH_ROLE_PATH = path.join(__dirname, '../fleet-sprint/dispatch-role.m
 // per target issue after a planner round when pendingRejectedNewTasks is
 // non-empty, to reconcile the pending resurface list against beads actually
 // created under the parent since the rejection (title-independent, matched
-// on description) -- member_name: orchestratorMember confirmed present.
+// on description) -- member_name: backlogMember confirmed present.
 // 42 -> 43 (apra-fleet-xuo.7.1): createChildBeadWithAllocatedId() gained a
 // `bd update <childId> --parent <parentId>` command() call site, dispatched
 // only on the explicit-allocated-id path immediately after the `bd create`
@@ -217,7 +217,7 @@ const DISPATCH_ROLE_PATH = path.join(__dirname, '../fleet-sprint/dispatch-role.m
 // mismatch it reports if this arithmetic is ever wrong).
 // 43 -> 45 (apra-fleet-jfo, 64dc595): the verify-route/phase-routing slice
 // added two command() sites (`bd show <bugId> --json` and its follow-up),
-// both member_name: orchestratorMember -- the constant was bumped without a
+// both member_name: backlogMember -- the constant was bumped without a
 // note at the time; recorded here for the audit trail.
 // apra-fleet-5d5.1: finalizeAbort()'s three direct `command()` call sites for
 // `git fetch origin`, `git rev-list --count`, and `git push -u origin` were
@@ -265,7 +265,7 @@ const DISPATCH_ROLE_PATH = path.join(__dirname, '../fleet-sprint/dispatch-role.m
 // 37 -> 38 (integration-branch merge): Final Review's reopenIds persist
 // block gained one new command() call site (`bd update <id> --status=open
 // --append-notes ...`), verified compliant with member_name (member_name:
-// orchestratorMember).
+// backlogMember).
 // 38 -> 39 (apra-fleet-647.1.4.1): finalizeAbort() gained ONE new command()
 // call site -- resolving 'git remote get-url origin' via VCSModule.capabilities()
 // before attempting the [ABORTED] PR, the same gate the Publish PR step
@@ -297,8 +297,8 @@ const DISPATCH_ROLE_PATH = path.join(__dirname, '../fleet-sprint/dispatch-role.m
 // bdListScoped()'s TWO command() call sites with them -- fetchAllBeadsShared()'s
 // `bd list --all --limit 0 --json` and bdListScoped()'s filtered
 // `bd list <flags> --limit 0`. Move-only: no call site was added, removed or
-// rewritten (both still pass `member_name: getOrchestratorMember()`, the
-// injected getter that resolves to the same orchestratorMember they used
+// rewritten (both still pass `member_name: getBacklogMember()`, the
+// injected getter that resolves to the same backlogMember they used
 // before). NOT left unguarded -- beads-scope.mjs is registered in
 // GUARDED_MODULES, so the aggregate checkModules(guardedModulePaths()) test
 // below scans both sites. Same precedent as the vcs-auth.mjs/abort.mjs
@@ -308,7 +308,7 @@ const DISPATCH_ROLE_PATH = path.join(__dirname, '../fleet-sprint/dispatch-role.m
 // `bd update <id> --status=open` reopen call sites with them -- the per-round
 // reviewer's, Final Review's (the --append-notes variant) and Re-Review's.
 // All three now share ONE applyGuardedReopens() site, which dispatches with
-// `member_name: member` (the orchestrator member each call site passes in),
+// `member_name: member` (the backlog member each call site passes in),
 // verified compliant. Not a member_name regression and not left unguarded --
 // beads-transitions.mjs is registered in GUARDED_MODULES, so the aggregate
 // checkModules(guardedModulePaths()) test below scans that shared site. Note
@@ -1429,7 +1429,7 @@ test('every command() call site in fatal-diagnostics.mjs passes member_name or m
 // beads-memory-hygiene.mjs -- the sprint-start token-usage memory sweep.
 //
 // Its command() baseline is TWO: the memory list and the per-key forget, both
-// run on the orchestrator member named explicitly. Its agent() baseline is
+// run on the backlog member named explicitly. Its agent() baseline is
 // ZERO: the sweep never dispatches a role.
 // =============================================================================
 const BEADS_MEMORY_HYGIENE_PATH = path.join(__dirname, '../fleet-sprint/beads-memory-hygiene.mjs');

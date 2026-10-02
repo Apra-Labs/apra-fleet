@@ -9,6 +9,7 @@ import {
     parseCliArgs,
     resolveMemberValidation,
     resolveRoleMap,
+    resolveRoleMapWithWarnings,
     buildRunnerArgs,
     checkIssuesExistOnMember,
     formatViewerListenError,
@@ -22,7 +23,7 @@ import { validateArgs } from '../fleet-sprint/runner.js';
 //
 // (a) strict flag parsing; (b) missing-member abort/allow-list; (c)
 // --requirements-file/--role-map reach the runner's validated args; (d) the
-// `bd show` issue precondition targets the orchestrator MEMBER via the fleet
+// `bd show` issue precondition targets the backlog MEMBER via the fleet
 // transport, not the local machine; (e) --viewer-port + a clean port-
 // collision error instead of an unhandled crash.
 
@@ -193,13 +194,13 @@ describe('resolveRoleMap + buildRunnerArgs -> runner.js validateArgs (c)', () =>
     // N15 (apra-fleet-unw2.11): resolveRoleMap() normalizes keys via
     // contracts.normalizeRole() -- this is where roleMap keys first enter
     // the system from a user-supplied --role-map value, so downstream
-    // consumers (this CLI's own orchestratorMember lookup, and
+    // consumers (this CLI's own backlogMember lookup, and
     // runner.js's validateArgs()) can rely on canonical lowercase keys.
     // -------------------------------------------------------------------
 
     test('normalizes mixed-case/whitespace-variant --role-map keys to canonical lowercase', async () => {
         const roleMap = await resolveRoleMap('{"  Doer  ":["m1"],"REVIEWER":["m2"],"Orchestrator":["m3"]}');
-        assert.deepStrictEqual(roleMap, { doer: ['m1'], reviewer: ['m2'], orchestrator: ['m3'] });
+        assert.deepStrictEqual(roleMap, { doer: ['m1'], reviewer: ['m2'], backlog: ['m3'] });
         // The normalized roleMap must reach validateArgs() unchanged (it's
         // already canonical) and must not throw.
         const args = buildRunnerArgs({
@@ -207,7 +208,30 @@ describe('resolveRoleMap + buildRunnerArgs -> runner.js validateArgs (c)', () =>
             goal: 'P1', maxCycles: 1, requirementsFile: undefined, roleMap,
         });
         const validated = validateArgs(args);
-        assert.deepStrictEqual(validated.roleMap, { doer: ['m1'], reviewer: ['m2'], orchestrator: ['m3'] });
+        assert.deepStrictEqual(validated.roleMap, { doer: ['m1'], reviewer: ['m2'], backlog: ['m3'] });
+    });
+
+    test('--role-map {"orchestrator":[...]} resolves to the backlog key (deprecated alias) and carries the warning', async () => {
+        const { roleMap, warnings } = await resolveRoleMapWithWarnings('{"orchestrator":["m"],"doer":["d"]}');
+        assert.deepStrictEqual(roleMap, { backlog: ['m'], doer: ['d'] });
+        assert.equal(warnings.length, 1);
+        assert.match(warnings[0], /v0.5/);
+        assert.deepStrictEqual(await resolveRoleMap('{"orchestrator":["m"]}'), { backlog: ['m'] });
+        const args = buildRunnerArgs({
+            targetIssues: ['bd-1'], members: ['m', 'd'], branch: 'b', baseBranch: 'main',
+            goal: 'P1', maxCycles: 1, requirementsFile: undefined, roleMap, roleMapWarnings: warnings,
+        });
+        const validated = validateArgs(args);
+        assert.deepStrictEqual(validated.roleMap, { backlog: ['m'], doer: ['d'] });
+        assert.deepStrictEqual(validated.roleMapWarnings, warnings);
+    });
+
+    test('--role-map with backlog and orchestrator holding different members is rejected (equal members are accepted)', async () => {
+        await assert.rejects(
+            () => resolveRoleMap('{"backlog":["a"],"orchestrator":["b"]}'),
+            /"backlog".*"orchestrator"/
+        );
+        assert.deepStrictEqual(await resolveRoleMap('{"backlog":["a"],"orchestrator":["a"]}'), { backlog: ['a'] });
     });
 
     test('rejects a --role-map whose keys collide once normalized', async () => {
@@ -219,7 +243,7 @@ describe('resolveRoleMap + buildRunnerArgs -> runner.js validateArgs (c)', () =>
 });
 
 // ---------------------------------------------------------------------------
-// (d) bd show precondition targets the orchestrator MEMBER via the fleet
+// (d) bd show precondition targets the backlog MEMBER via the fleet
 // transport, not the local machine
 // ---------------------------------------------------------------------------
 

@@ -75,7 +75,7 @@ export async function runReplanPhase({
     validated,
     targetIssues,
     requirementsContent,
-    orchestratorMember,
+    backlogMember,
     // The git/beads sync bracket the post-replan D-push goes through, plus the
     // dashboard refresh that follows it.
     gitSync,
@@ -225,6 +225,6 @@ export async function runReplanPhase({
     // and refresh the dashboard before re-evaluating the loop top.
     // Routed through the single dolt-sync module's AFTER bracket
     // (apra-fleet-417.2.1); behavior is identical.
-    await gitSync.syncBeadsAfter(orchestratorMember, { pushBeads: true });
+    await gitSync.syncBeadsAfter(backlogMember, { pushBeads: true });
     await updateDashboard();
 }

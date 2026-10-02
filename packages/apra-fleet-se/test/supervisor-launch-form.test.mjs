@@ -38,10 +38,11 @@ describe('launch-form -- GOAL_OPTIONS', () => {
 });
 
 describe('launch-form -- FORM_ROLE_OPTIONS', () => {
-    test('includes the canonical sprint roles plus the orchestrator pseudo-role', () => {
+    test('includes the canonical sprint roles plus the backlog pseudo-role (not the deprecated orchestrator alias)', () => {
         assert.ok(FORM_ROLE_OPTIONS.includes('doer'));
         assert.ok(FORM_ROLE_OPTIONS.includes('planner'));
-        assert.ok(FORM_ROLE_OPTIONS.includes('orchestrator'));
+        assert.ok(FORM_ROLE_OPTIONS.includes('backlog'));
+        assert.ok(!FORM_ROLE_OPTIONS.includes('orchestrator'));
     });
 });
 

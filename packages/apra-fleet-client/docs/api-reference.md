@@ -425,7 +425,7 @@ Calls `register_member` -- adds a machine to the fleet.
 | `category` | `string?` | Optional group label (max 64 chars). Used to group members in fleet status output. |
 | `tags` | `string[]?` | Optional list of free-form labels (max 10 tags, each max 64 chars). Used for filtering and grouping. |
 | `code_intel_provider` | `"codebase-memory" \| "gitnexus" \| "none"?` | Code-intelligence provider for this member. Omit for fleet-wide default. |
-| `unreservable` | `boolean?` | Mark this member as never exclusively reservable, so it can be shared by more than one sprint (e.g. fleet-sprint's shared "orchestrator" role). Default: `false`. |
+| `unreservable` | `boolean?` | Mark this member as never exclusively reservable, so it can be shared by more than one sprint (e.g. fleet-sprint's shared "backlog" role). Default: `false`. |
 | `shell` | `"gitbash" \| "pwsh7" \| "powershell5"?` | Override the probed Windows shell for this member. Windows members only -- ignored for non-Windows members. |
 | `owner` | `{package: string, ref: string}?` | Which package/consumer owns this member for its own bookkeeping (e.g. a fleet-sprint project binding it to a checkout). Not a project/repo/group field. |
 | `env` | `Record<string, string>?` | Free-form name -> value map for this member. Names must match the portable env-name pattern (letters, digits, underscore; cannot start with a digit); total size across all names+values is capped at 4096 characters. Exported into the processes execute_command and execute_prompt run on the member, including long_running tasks. Stored auth credentials win a name collision, so an entry here cannot shadow one. |

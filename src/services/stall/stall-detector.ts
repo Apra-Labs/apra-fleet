@@ -1,6 +1,6 @@
 import { updateAgent } from '../registry.js';
 import { logLine, logWarn, LogScope } from '../../utils/log-helpers.js';
-import { pollLogFile, pollDirectoryActivity } from './stall-poller.js';
+import { pollLogFile, pollDirectoryActivity, pollRecentProjectTranscript } from './stall-poller.js';
 import { toLocalISOString, fmtElapsed } from './time-utils.js';
 import { writeStatusline } from '../statusline.js';
 
@@ -162,9 +162,27 @@ export interface StallEntry {
    * once a real signal became available again.
    */
   noSignalReported?: boolean;
-  // Called once when stall is confirmed — clears busy state from outside the hung execCommand
-  onStall?: () => void;
+  /**
+   * GitHub #562: true when `logFilePath` was built from an AUTHORITATIVE home
+   * directory (local member, or a probed remote home) rather than a guessed
+   * one. Only then does "the session log never appeared within the threshold"
+   * prove the agent never started; for a guessed path it stays a warning.
+   */
+  logPathAuthoritative?: boolean;
+  /** Set once the session log has been seen to exist (mtime or content). */
+  logFileSeen?: boolean;
+  /** When the never-started second signal (a projects-root scan) last came
+   *  back unconfirmed; the next scan waits a full threshold after it. */
+  neverStartedCheckedAt?: number;
+  /** stall_never_started_unconfirmed is logged once per dispatch. */
+  neverStartedUnconfirmedLogged?: boolean;
+  // Called once when stall is confirmed -- clears busy state from outside the hung execCommand.
+  // `reason` distinguishes a frozen transcript ('stalled') from a session log
+  // that never appeared at an authoritative path ('agent_never_started').
+  onStall?: (reason?: StallReason) => void;
 }
+
+export type StallReason = 'stalled' | 'agent_never_started';
 
 export class StallDetector {
   readonly stallCheckList: Map<string, StallEntry> = new Map();
@@ -197,6 +215,18 @@ export class StallDetector {
 
   getEntry(memberId: string): StallEntry | undefined {
     return this.stallCheckList.get(memberId);
+  }
+
+  /**
+   * GitHub #585: a poll awaits a (possibly remote) probe; meanwhile the entry
+   * can be removed (dispatch finished) or replaced (a new dispatch, or an
+   * update() that swapped the object). Its result then describes something
+   * that no longer exists -- applying it warned "Cannot update non-existent
+   * entry" or merged stale state (even stallReported) into a NEW dispatch's
+   * entry. Callers drop the result when this returns true.
+   */
+  private isStale(memberId: string, entry: StallEntry): boolean {
+    return this.stallCheckList.get(memberId) !== entry;
   }
 
   start(): void {
@@ -333,6 +363,7 @@ export class StallDetector {
         if (entry.logFilePath) {
           try {
             const pollResult = await pollLogFile(memberId, entry.logFilePath);
+            if (this.isStale(memberId, entry)) continue;
             provisionalPendingToolTimeoutMs = pollResult.pendingToolTimeoutMs;
             if (pollResult.mtimeMs && pollResult.mtimeMs > entry.lastActivityAt) {
               entry.lastActivityAt = pollResult.mtimeMs;
@@ -348,6 +379,7 @@ export class StallDetector {
           // this entry out of the baseline-timeout kill below.
           try {
             const activity = await pollDirectoryActivity(memberId);
+            if (this.isStale(memberId, entry)) continue;
             signalAvailable = activity?.signalAvailable !== false;
             if (activity?.mtimeMs && activity.mtimeMs > entry.lastActivityAt) {
               entry.lastActivityAt = activity.mtimeMs;
@@ -406,7 +438,7 @@ export class StallDetector {
           }));
           writeStatusline(new Map([[memberId, 'unknown']]));
           this.update(memberId, { stallReported: true });
-          entry.onStall?.();
+          entry.onStall?.('stalled');
         } else if (!entry.stallReported) {
           writeStatusline(new Map([[memberId, `busy(${fmtElapsed(now - entry.lastActivityAt)})`]]));
         }
@@ -422,7 +454,8 @@ export class StallDetector {
         lastActivityAt: entry.lastActivityAt,
       }));
 
-      const { lastTimestamp, mtimeMs, error, pendingToolTimeoutMs } = await pollLogFile(memberId, entry.logFilePath);
+      const { lastTimestamp, mtimeMs, error, pendingToolTimeoutMs, contentSeen } = await pollLogFile(memberId, entry.logFilePath);
+      if (this.isStale(memberId, entry)) continue;
 
       // apra-fleet: a pending tool_use's own declared timeout, when present,
       // overrides the generic idle threshold for THIS tick's stall check --
@@ -454,6 +487,12 @@ export class StallDetector {
       // pollLogFile without it, so this is a pure superset of the prior
       // behavior -- it can only turn a would-be false stall into recognized
       // activity, never the reverse.
+      // A non-empty tail read also proves the file exists, even when the mtime
+      // probe failed and no timestamp parsed.
+      if (!entry.logFileSeen && ((mtimeMs !== undefined && mtimeMs !== null) || lastTimestamp !== null || contentSeen === true)) {
+        this.update(memberId, { logFileSeen: true });
+      }
+
       const mtimeAdvancedTo = (mtimeMs !== undefined && mtimeMs !== null && mtimeMs > entry.lastActivityAt)
         ? mtimeMs
         : null;
@@ -476,6 +515,56 @@ export class StallDetector {
         }
 
         if (mtimeMs === undefined || mtimeMs === null) {
+          // GitHub #562: at an AUTHORITATIVE path, a session log that has
+          // never appeared for the whole inactivity threshold means the agent
+          // never started -- kill with a distinct reason instead of logging
+          // stall_no_signal on every tick forever. A guessed path (or a file
+          // that existed earlier in this dispatch) keeps the old behavior.
+          //
+          // The path alone is not proof (the CLI's own project-dir naming,
+          // a symlinked cwd or a relocated config dir can put the transcript
+          // elsewhere), so a kill also needs a second, independent signal:
+          // no *.jsonl under the provider's projects root changed since the
+          // dispatch started. If that cannot be established, warn only --
+          // once per dispatch -- and rescan the root at most once per
+          // threshold rather than on every tick.
+          let neverStarted = false;
+          if (entry.logPathAuthoritative && !entry.logFileSeen && contentSeen !== true
+              && now - entry.lastActivityAt > stallThresholdMs && !entry.stallReported
+              && (entry.neverStartedCheckedAt === undefined || now - entry.neverStartedCheckedAt >= stallThresholdMs)) {
+            let recent: boolean | null = null;
+            try { recent = await pollRecentProjectTranscript(memberId, entry.lastActivityAt); } catch { recent = null; }
+            if (this.isStale(memberId, entry)) continue;
+            neverStarted = recent === false;
+            if (!neverStarted) {
+              const alreadyLogged = entry.neverStartedUnconfirmedLogged === true;
+              this.update(memberId, { neverStartedCheckedAt: now, neverStartedUnconfirmedLogged: true });
+              if (!alreadyLogged) logLine('stall_never_started_unconfirmed', JSON.stringify({
+                memberId,
+                memberName: entry.memberName,
+                logPath: entry.logFilePath,
+                recentTranscriptElsewhere: recent,
+                note: recent === true
+                  ? 'session log absent at its expected path but a transcript changed elsewhere under the projects root -- not killing'
+                  : 'session log absent but the second signal could not be established -- not killing',
+              }));
+            }
+          }
+          if (neverStarted) {
+            scope.warn(JSON.stringify({
+              event: 'agent_never_started',
+              memberId,
+              memberName: entry.memberName,
+              idleSecs: Math.floor((now - entry.lastActivityAt) / 1000),
+              logPath: entry.logFilePath,
+              thresholdMs: stallThresholdMs,
+              note: 'session log never appeared at its authoritative path within the inactivity threshold',
+            }));
+            writeStatusline(new Map([[memberId, 'unknown']]));
+            this.update(memberId, { stallReported: true });
+            entry.onStall?.('agent_never_started');
+            continue;
+          }
           // apra-fleet-qe83.2.2: the file genuinely has no OS mtime either --
           // it has not been created yet (or is otherwise unreadable). This IS
           // the absence of evidence, not evidence of a stall: do NOT count it
@@ -513,7 +602,7 @@ export class StallDetector {
         const ts = new Date(lastTimestamp).getTime();
         const contentAdvancedTo = (!isNaN(ts) && ts > entry.lastActivityAt) ? ts : null;
         if (contentAdvancedTo !== null || mtimeAdvancedTo !== null) {
-          // Activity advanced — update and reset counters, then reflect fresh elapsed in statusline
+          // Activity advanced -- update and reset counters, then reflect fresh elapsed in statusline
           const advancedTo = Math.max(contentAdvancedTo ?? 0, mtimeAdvancedTo ?? 0);
           this.update(memberId, {
             lastActivityAt: advancedTo,
@@ -529,7 +618,7 @@ export class StallDetector {
         }
       }
 
-      // No new activity per EITHER signal — increment idle cycle counter and
+      // No new activity per EITHER signal -- increment idle cycle counter and
       // check stall threshold. Requiring both the content scan and the
       // filesystem's own mtime to agree the transcript is frozen is what
       // makes this threshold check genuinely mtime-corroborated, not just a
@@ -555,7 +644,7 @@ export class StallDetector {
         }));
         writeStatusline(new Map([[memberId, 'unknown']]));
         this.update(memberId, { stallReported: true });
-        entry.onStall?.();
+        entry.onStall?.('stalled');
       } else if (!entry.stallReported) {
         // Show steadily increasing elapsed time so PM can gauge staleness
         writeStatusline(new Map([[memberId, `busy(${fmtElapsed(now - entry.lastActivityAt)})`]]));

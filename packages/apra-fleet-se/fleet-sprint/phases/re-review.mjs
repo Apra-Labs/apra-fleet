@@ -96,7 +96,7 @@ export async function runReReviewPhase({
     cycle,
     validated,
     targetIssues,
-    orchestratorMember,
+    backlogMember,
     // The git/beads sync bracket this phase's post-mutation D-push goes
     // through.
     gitSync,
@@ -161,7 +161,7 @@ export async function runReReviewPhase({
     await applyGuardedReopens({
         entries: reReviewVerdict.reopenIds,
         bdListScoped, goalMax, goal: validated.goal, log, command,
-        member: orchestratorMember,
+        member: backlogMember,
         logPrefix: 'Re-review reopenIds',
         buildReopenCommand: ({ id }) => ({
             cmd: `bd update ${id} --status=open`,
@@ -187,7 +187,7 @@ export async function runReReviewPhase({
             // degrades to the run log).
             try {
                 await appendRejectedFindingToParentNotes({
-                    command, member: orchestratorMember, parentId: targetIssues[0],
+                    command, member: backlogMember, parentId: targetIssues[0],
                     newTask, reason: validation.reason, cycle, log,
                 });
             } catch (noteErr) {
@@ -205,12 +205,12 @@ export async function runReReviewPhase({
         // site above -- concurrent sprints must never mint the same child
         // id under a shared parent.
         const persisted = await persistNewTaskBestEffort({
-            command, member: orchestratorMember, parentId: targetIssues[0],
+            command, member: backlogMember, parentId: targetIssues[0],
             newTask, cycle, log, stage: 're-review',
             createFn: async () => {
-                const floor = await computeChildFloor({ command, member: orchestratorMember, parentId: targetIssues[0], log });
+                const floor = await computeChildFloor({ command, member: backlogMember, parentId: targetIssues[0], log });
                 await createChildBeadWithAllocatedId({
-                    command, allocator: childIdAllocator, member: orchestratorMember,
+                    command, allocator: childIdAllocator, member: backlogMember,
                     title, description, priority, parentId: targetIssues[0],
                     sprintId: sprintMutexId, floor, log,
                     label: `Create follow-up task from re-review newTasks: ${title}`,
@@ -226,7 +226,7 @@ export async function runReReviewPhase({
 
     // D-push the orchestrator's applied re-review reopens/newTask
     // creates, same as the Develop/Review transition site above.
-    await gitSync.syncBeadsAfter(orchestratorMember, { pushBeads: true });
+    await gitSync.syncBeadsAfter(backlogMember, { pushBeads: true });
 
     return { lastReviewVerdict, reviewedThisCycle, pendingRejectedNewTasks };
 }

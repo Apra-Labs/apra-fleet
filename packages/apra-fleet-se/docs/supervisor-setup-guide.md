@@ -64,22 +64,22 @@ from the doer/reviewer pool, via a sprint's `roleMap`:
 {"deployer": ["deploy-member"], "integ-test-runner": ["deploy-member"], "doer": ["dev-member"]}
 ```
 
-## Step 3 -- Set up a dedicated, git-less orchestrator member
+## Step 3 -- Set up a dedicated, git-less backlog member
 
-fleet-sprint has an `orchestrator` pseudo-role (outside the normal
+fleet-sprint has a `backlog` pseudo-role (outside the normal
 doer/reviewer/etc. role roster) used for every beads/Dolt-sync dispatch the
 runner itself needs, plus raising the final PR via a REST VCS call --
 neither of which needs a working copy of the project's source. Pointing the
-orchestrator role at one of your regular dev members works, but ties up a
+backlog role at one of your regular dev members works, but ties up a
 real checkout for something that doesn't need one, and risks that member's
-own branch state interfering with orchestrator-level bd/dolt operations.
+own branch state interfering with backlog-level bd/dolt operations.
 
 The clean pattern is a **dedicated member whose folder holds only a beads
 clone, no source checkout at all**:
 
 ```bash
-mkdir /path/to/<project>-orchestrator
-cd /path/to/<project>-orchestrator
+mkdir /path/to/<project>-backlog
+cd /path/to/<project>-backlog
 git init
 git remote add origin <same git remote the target project's `sync.remote` uses>
 bd bootstrap --yes
@@ -97,11 +97,11 @@ project.
 Then register it:
 ```
 register_member(
-  friendly_name: "orchestrator",
+  friendly_name: "backlog",
   member_type: "local",   // or "remote" if it lives on another machine
-  work_folder: "/path/to/<project>-orchestrator",
+  work_folder: "/path/to/<project>-backlog",
   llm_provider: "none",   // plain command executor -- no agent dispatches happen on this member
-  tags: ["orchestrator", "beads-only"],
+  tags: ["backlog", "beads-only"],
   unreservable: true       // shared across concurrently-running sprints, never exclusively reserved
 )
 ```
@@ -112,14 +112,21 @@ LLM auth at all. `unreservable: true` lets multiple sprints share it
 concurrently without reservation conflicts (see
 `docs/design-orchestrator-worktree-model-v2.md` if that file is present in
 your checkout, or the "Multi-member topology" section of `architecture.md`,
-for why the orchestrator role is deliberately non-exclusive).
+for why the backlog role is deliberately non-exclusive).
 
 **Gotcha -- this is not auto-wired.** Registering a member with an
-`orchestrator` tag does *not* automatically make fleet-sprint use it: you
-must pass `roleMap: {"orchestrator": ["orchestrator"]}` explicitly on every
+`backlog` tag does *not* automatically make fleet-sprint use it: you
+must pass `roleMap: {"backlog": ["backlog"]}` explicitly on every
 sprint launch (Step 5). Omitting it is not an error -- the runner silently
-falls back to one of your regular dev members as the orchestrator, which
+falls back to one of your regular dev members as the backlog member, which
 defeats the point of this setup. Double-check your launch payload.
+
+**Deprecated alias.** `roleMap.orchestrator` and the `orchestrator` member
+tag are deprecated aliases of `roleMap.backlog` and the `backlog` tag. They
+are accepted in 0.4.4 and removed in v0.5. Using `roleMap.orchestrator`
+produces a deprecation warning in the launch response (`warnings` array) and
+in the run log; giving both keys with different values is rejected with a
+400. (The tag itself is only a label -- nothing reads it.)
 
 ## Step 4 -- Launch the supervisor
 
@@ -162,14 +169,14 @@ probe fails: `bd` not on PATH, project not initialised), the supervisor
 STILL STARTS but warns loudly and runs with its beads identity unknown:
 
 ```
-[supervisor] WARNING: no beads database found walking up from <cwd>. Backlog and scope-overlap checks are disabled and sprints will verify against the orchestrator member's beads instead. To fix: restart fleet-se from inside the project folder, or pass --beads-dir <project-or-.beads-path>, then GET /api/health?refresh=1.
+[supervisor] WARNING: no beads database found walking up from <cwd>. Backlog and scope-overlap checks are disabled and sprints will verify against the backlog member's beads instead. To fix: restart fleet-se from inside the project folder, or pass --beads-dir <project-or-.beads-path>, then GET /api/health?refresh=1.
 ```
 
 In that state `GET /api/health` returns `beads: null` plus `beadsWarning`
 (the same text), the dashboard header shows an amber `Beads: NOT RESOLVED
 -- ...` line in place of the identity line, launched sprints receive no
 `--expect-beads` (the engine then takes the expectation from the
-orchestrator member's own `bd where`), and the ledger records `beads: null`
+backlog member's own `bd where`), and the ledger records `beads: null`
 for them. Fix the environment and call `GET /api/health?refresh=1` to
 recover the identity without a restart, or restart from the right folder /
 with `--beads-dir`.
@@ -195,10 +202,10 @@ curl -s -X POST http://localhost:8787/api/sprints \
     "branch": "<new-or-existing-branch>",
     "base": "<base-branch>",
     "members": ["dev-member"],
-    "roleMap": {"orchestrator": ["orchestrator"]}
+    "roleMap": {"backlog": ["backlog"]}
   }'
 ```
-Remember the `roleMap.orchestrator` line from Step 3's gotcha -- it is what
+Remember the `roleMap.backlog` line from Step 3's gotcha -- it is what
 actually routes bd/dolt/PR-raise dispatches to your beads-only member
 instead of a dev checkout. Everything else about launching, checking
 status, and killing a sprint is exactly what `docs/supervisor-api.md`
@@ -210,7 +217,7 @@ describes.
 |---|---|---|
 | Dev member checkout(s) | Full git clone of the target project | `doer`/`reviewer`/`planner`/`plan-reviewer` dispatches -- actual code changes |
 | Deploy member checkout (optional) | Full git clone, independent of dev members | `deployer`/`integ-test-runner`/`regression-test-runner` dispatches |
-| Orchestrator folder | `.git/` (Dolt refs only) + `.beads/` -- no source at all | bd/dolt sync brackets, PR-raise REST calls |
+| Backlog folder | `.git/` (Dolt refs only) + `.beads/` -- no source at all | bd/dolt sync brackets, PR-raise REST calls |
 | Supervisor process folder | The copied `apra-fleet-se` source, or the installer-staged `~/.apra-fleet/workflows/fleet-sprint` | Running the supervisor itself -- `apra-fleet supervisor` (or the registered `fleet-supervisor` service) for an installed binary, `node bin/serve.mjs` in a source checkout. Either way a process launch location, not a registered member |
 
 The last row is worth calling out: the supervisor *process* needs the real
@@ -219,6 +226,6 @@ compiled binary -- see the "Design decision" section of
 `docs/windows-shell-selection.md` if present in your checkout, or
 `architecture.md`, for why), but that folder does not need to be, and
 usually should not be, the same folder as any registered member's
-`work_folder`. Keep the process launch location and the orchestrator
+`work_folder`. Keep the process launch location and the backlog
 member's beads-only folder conceptually separate even if it's convenient to
 put them side by side on disk.

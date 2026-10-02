@@ -233,10 +233,10 @@ describe('apra-fleet-3swo.4.2: falsification -- the scan detects a reverted (bar
                 fixturePath,
                 [
                     "import { doltPushAfter } from './dolt-sync.mjs';",
-                    'export async function finalReviewFindings(dPushNeeded, orchestratorMember) {',
+                    'export async function finalReviewFindings(dPushNeeded, backlogMember) {',
                     '    if (dPushNeeded) {',
                     '        // reverted: bare call, no gitSync.pushBeadsAfter bracket',
-                    '        await doltPushAfter(orchestratorMember, { pushBeads: true });',
+                    '        await doltPushAfter(backlogMember, { pushBeads: true });',
                     '    }',
                     '}',
                     '',
@@ -299,12 +299,12 @@ describe('apra-fleet-3swo.4.2: falsification -- the scan detects a reverted (bar
         const cleanSrc = fs.readFileSync(guardedModulePath('phases/final-review.mjs'), 'utf8');
         assert.deepEqual(findUnbracketedPushViolations(cleanSrc, 'final-review.mjs'), [], 'sanity: the real, unmutated source must be clean');
 
-        const sanctioned = 'await gitSync.pushBeadsAfter(orchestratorMember, { pushBeads: true });';
+        const sanctioned = 'await gitSync.pushBeadsAfter(backlogMember, { pushBeads: true });';
         assert.ok(cleanSrc.includes(sanctioned), 'the Final Review D-push call text must still match this pin -- re-anchor if it drifted');
 
         const mutated = cleanSrc.replace(
             sanctioned,
-            'await DoltSync.syncAfter(orchestratorMember, { command, pushBeads: true, log, mutex: doltPushMutex, sprintId: sprintMutexId });',
+            'await DoltSync.syncAfter(backlogMember, { command, pushBeads: true, log, mutex: doltPushMutex, sprintId: sprintMutexId });',
         );
         assert.notEqual(mutated, cleanSrc, 'the replacement must actually have changed the source');
 

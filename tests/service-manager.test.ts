@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 
 // vi.hoisted so these refs are available inside vi.mock factory closures
 const { mockGracefulStop } = vi.hoisted(() => ({
-  mockGracefulStop: vi.fn<(fallback?: (pid: number) => void) => Promise<void>>().mockResolvedValue(undefined),
+  mockGracefulStop: vi.fn<(fallback?: (pid: number) => void) => Promise<boolean | void>>().mockResolvedValue(true),
 }));
 
 vi.mock('node:child_process');
@@ -47,6 +47,7 @@ describe('WindowsServiceManager', () => {
       const call = vi.mocked(fs.writeFileSync).mock.calls[0];
       expect(call[1]).toContain('/bin/apra-fleet.exe');
       expect(call[1]).toContain('"--transport" "http"');
+      expect(call[1]).toContain('set APRA_FLEET_SERVICE=1'); // service-launch marker
     });
 
     it('calls schtasks /create with onlogon trigger and limited run-level', async () => {
@@ -62,7 +63,7 @@ describe('WindowsServiceManager', () => {
     it('deletes the scheduled task and removes the wrapper bat', async () => {
       const mgr = new WindowsServiceManager();
       await mgr.unregister();
-      expect(execFileSync).toHaveBeenCalledWith('schtasks', ['/delete', '/tn', 'ApraFleet', '/f']);
+      expect(execFileSync).toHaveBeenCalledWith('schtasks', ['/delete', '/tn', 'ApraFleet', '/f'], expect.objectContaining({ stdio: 'pipe', windowsHide: true }));
       expect(fs.unlinkSync).toHaveBeenCalledWith(expect.stringContaining('apra-fleet-service.bat'));
     });
 
@@ -80,7 +81,7 @@ describe('WindowsServiceManager', () => {
       vi.mocked(spawn).mockReturnValueOnce(mockChild as any);
       const mgr = new WindowsServiceManager();
       await mgr.start();
-      expect(spawn).toHaveBeenCalledWith('schtasks', ['/run', '/tn', 'ApraFleet'], { detached: true, stdio: 'ignore' });
+      expect(spawn).toHaveBeenCalledWith('schtasks', ['/run', '/tn', 'ApraFleet'], { detached: true, stdio: 'ignore', windowsHide: true });
       expect(mockChild.unref).toHaveBeenCalled();
     });
   });
@@ -92,13 +93,18 @@ describe('WindowsServiceManager', () => {
       expect(mockGracefulStop).toHaveBeenCalledWith(expect.any(Function));
     });
 
+    it('returns false when the graceful stop refused to force-kill', async () => {
+      mockGracefulStop.mockResolvedValueOnce(false);
+      expect(await new WindowsServiceManager().stop()).toBe(false);
+    });
+
     it('fallback invokes taskkill /F /PID', async () => {
       let capturedFallback: ((pid: number) => void) | undefined;
       mockGracefulStop.mockImplementationOnce(async (fn) => { capturedFallback = fn; });
       const mgr = new WindowsServiceManager();
       await mgr.stop();
       capturedFallback!(4242);
-      expect(execFileSync).toHaveBeenCalledWith('taskkill', ['/F', '/PID', '4242']);
+      expect(execFileSync).toHaveBeenCalledWith('taskkill', ['/F', '/PID', '4242'], expect.objectContaining({ stdio: 'pipe', windowsHide: true }));
     });
   });
 
@@ -244,6 +250,35 @@ describe('WindowsServiceManager', () => {
         expect(await new WindowsServiceManager().query())
           .toEqual({ installed: false, running: false });
       });
+    });
+
+    // GitHub #585: an installed, enabled task must report enabled (status
+    // showed every installed task as "installed (disabled)").
+    it('reports enabled=true for a task whose XML has <Settings><Enabled>true', async () => {
+      vi.mocked(execFileSync).mockImplementation(((_cmd: string, args: string[]) => args.includes('/xml')
+        ? '<Task><Settings><Enabled>true</Enabled></Settings><Actions><Exec><Command>x</Command></Exec></Actions></Task>'
+        : '"ApraFleet","N/A","Ready"\r\n') as any);
+      expect(await new WindowsServiceManager().query()).toEqual({ installed: true, running: false, enabled: true });
+    });
+
+    it('reports enabled=false for a task whose (UTF-16) XML has <Settings><Enabled>false', async () => {
+      vi.mocked(execFileSync).mockImplementation(((_cmd: string, args: string[]) => args.includes('/xml')
+        ? Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from('<Task><Settings><Enabled>false</Enabled></Settings></Task>', 'utf16le')])
+        : '"ApraFleet","N/A","Disabled"\r\n') as any);
+      expect(await new WindowsServiceManager().query()).toEqual({ installed: true, running: false, enabled: false });
+    });
+
+    // GitHub #585: no schtasks/taskkill stderr may reach the console above status.
+    it('every schtasks probe pipes stdio and hides its window', async () => {
+      vi.mocked(execFileSync).mockImplementation(() => { throw new Error('ERROR: The system cannot find the file specified.'); });
+      const mgr = new WindowsServiceManager();
+      await mgr.query();
+      await mgr.isInstalled();
+      await mgr.unregister();
+      expect(vi.mocked(execFileSync).mock.calls.length).toBeGreaterThanOrEqual(3);
+      for (const call of vi.mocked(execFileSync).mock.calls) {
+        expect(call[2]).toMatchObject({ stdio: 'pipe', windowsHide: true });
+      }
     });
   });
 
@@ -395,7 +430,7 @@ describe('WindowsServiceManager -- fleet-supervisor stop terminates the process 
       if (cmd === 'schtasks') throw new Error('ERROR: The system cannot find the file specified.');
       return '' as any;
     });
-    await expect(supervisor().stop()).resolves.toBeUndefined();
+    await expect(supervisor().stop()).resolves.toBe(true);
     expect(execFileSync).not.toHaveBeenCalledWith('taskkill', expect.anything());
   });
 
@@ -409,7 +444,7 @@ describe('WindowsServiceManager -- fleet-supervisor stop terminates the process 
       }
       return '' as any;
     });
-    await expect(supervisor().stop()).resolves.toBeUndefined();
+    await expect(supervisor().stop()).resolves.toBe(true);
   });
 
   // -- loud failures: a survivor must never read as "stopped" ------------
@@ -452,7 +487,7 @@ describe('WindowsServiceManager -- fleet-supervisor stop terminates the process 
 
     // Still the plain, non-tree taskkill /F /PID <pid> -- no /T added.
     capturedFallback!(4242);
-    expect(execFileSync).toHaveBeenCalledWith('taskkill', ['/F', '/PID', '4242']);
+    expect(execFileSync).toHaveBeenCalledWith('taskkill', ['/F', '/PID', '4242'], expect.objectContaining({ stdio: 'pipe', windowsHide: true }));
     expect(callIndex((cmd, args) => cmd === 'taskkill' && args.includes('/T'))).toBe(-1);
   });
 });
@@ -512,7 +547,7 @@ describe('WindowsServiceManager -- fleet-supervisor unregister terminates the pr
       'taskkill', ['/F', '/T', '/PID', String(WRAPPER_PID)],
     );
     expect(execFileSync).toHaveBeenCalledWith(
-      'schtasks', ['/delete', '/tn', 'ApraFleetSupervisor', '/f'],
+      'schtasks', ['/delete', '/tn', 'ApraFleetSupervisor', '/f'], expect.objectContaining({ stdio: 'pipe', windowsHide: true }),
     );
   });
 
@@ -552,7 +587,7 @@ describe('WindowsServiceManager -- fleet-supervisor unregister terminates the pr
     });
     await expect(supervisor().unregister()).resolves.toBeUndefined();
     expect(execFileSync).toHaveBeenCalledWith(
-      'schtasks', ['/delete', '/tn', 'ApraFleetSupervisor', '/f'],
+      'schtasks', ['/delete', '/tn', 'ApraFleetSupervisor', '/f'], expect.objectContaining({ stdio: 'pipe', windowsHide: true }),
     );
   });
 
@@ -564,7 +599,7 @@ describe('WindowsServiceManager -- fleet-supervisor unregister terminates the pr
     });
     await expect(supervisor().unregister()).resolves.toBeUndefined();
     expect(execFileSync).toHaveBeenCalledWith(
-      'schtasks', ['/delete', '/tn', 'ApraFleetSupervisor', '/f'],
+      'schtasks', ['/delete', '/tn', 'ApraFleetSupervisor', '/f'], expect.objectContaining({ stdio: 'pipe', windowsHide: true }),
     );
   });
 
@@ -573,7 +608,7 @@ describe('WindowsServiceManager -- fleet-supervisor unregister terminates the pr
     await new WindowsServiceManager().unregister();
     expect(execFileSync).not.toHaveBeenCalledWith('powershell', expect.anything());
     expect(callIndex((cmd, args) => cmd === 'taskkill' && args.includes('/T'))).toBe(-1);
-    expect(execFileSync).toHaveBeenCalledWith('schtasks', ['/delete', '/tn', 'ApraFleet', '/f']);
+    expect(execFileSync).toHaveBeenCalledWith('schtasks', ['/delete', '/tn', 'ApraFleet', '/f'], expect.objectContaining({ stdio: 'pipe', windowsHide: true }));
     expect(fs.unlinkSync).toHaveBeenCalledWith(expect.stringContaining('apra-fleet-service.bat'));
   });
 });
@@ -633,6 +668,7 @@ describe('LinuxServiceManager', () => {
       // cannot silently produce a broken unit.
       expect(content).toContain('ExecStart="/usr/local/bin/apra-fleet" --transport http');
       expect(content).toContain('Restart=on-failure');
+      expect(content).toContain('Environment=APRA_FLEET_SERVICE=1'); // service-launch marker
       expect(content).toContain('WantedBy=default.target');
     });
 
@@ -657,8 +693,8 @@ describe('LinuxServiceManager', () => {
     it('gracefully stops then disables and removes the unit file', async () => {
       await new LinuxServiceManager().unregister();
       expect(mockGracefulStop).toHaveBeenCalled();
-      expect(execFileSync).toHaveBeenCalledWith('systemctl', ['--user', 'disable', 'apra-fleet']);
-      expect(execFileSync).toHaveBeenCalledWith('systemctl', ['--user', 'daemon-reload']);
+      expect(execFileSync).toHaveBeenCalledWith('systemctl', ['--user', 'disable', 'apra-fleet'], expect.objectContaining({ stdio: 'pipe' }));
+      expect(execFileSync).toHaveBeenCalledWith('systemctl', ['--user', 'daemon-reload'], expect.objectContaining({ stdio: 'pipe' }));
     });
 
     it('is idempotent when unit is not installed', async () => {
@@ -678,6 +714,11 @@ describe('LinuxServiceManager', () => {
     it('calls gracefulStopByServerJson', async () => {
       await new LinuxServiceManager().stop();
       expect(mockGracefulStop).toHaveBeenCalled();
+    });
+
+    it('returns false when the graceful stop refused to force-kill', async () => {
+      mockGracefulStop.mockResolvedValueOnce(false);
+      expect(await new LinuxServiceManager().stop()).toBe(false);
     });
   });
 
@@ -707,6 +748,16 @@ describe('LinuxServiceManager', () => {
         return '' as any;
       });
       expect(await new LinuxServiceManager().query()).toEqual({ installed: true, running: false, enabled: false });
+    });
+
+    // GitHub #585 review: systemctl probe errors must not print above status.
+    it('systemctl probes pipe stdio', async () => {
+      vi.mocked(fs.existsSync).mockReturnValue(true);
+      vi.mocked(execFileSync).mockImplementation(() => { throw new Error('Failed to connect to bus'); });
+      await new LinuxServiceManager().query();
+      const probes = vi.mocked(execFileSync).mock.calls.filter((c) => c[0] === 'systemctl');
+      expect(probes.length).toBe(2);
+      for (const call of probes) expect(call[2]).toMatchObject({ stdio: 'pipe' });
     });
   });
 
@@ -789,6 +840,9 @@ describe('LinuxServiceManager -- fleet-supervisor service', () => {
     expect(content).toContain(`StandardOutput=append:${LOG}`);
     expect(content).toContain(`StandardError=append:${LOG}`);
     expect(content).toContain('WantedBy=default.target');
+    // The #584 service-launch marker is the MCP server's only: the supervisor
+    // must not leak it into the processes it spawns.
+    expect(content).not.toContain('APRA_FLEET_SERVICE');
   });
 
   it('omits WorkingDirectory when none is supplied', async () => {
@@ -816,7 +870,7 @@ describe('LinuxServiceManager -- fleet-supervisor service', () => {
     });
     expect(await supervisor().query()).toEqual({ installed: true, running: true, enabled: true });
     expect(execFileSync).toHaveBeenCalledWith(
-      'systemctl', ['--user', 'is-active', 'fleet-supervisor'], { encoding: 'utf8' },
+      'systemctl', ['--user', 'is-active', 'fleet-supervisor'], { encoding: 'utf8', stdio: 'pipe' },
     );
     expect(await supervisor().isInstalled()).toBe(true);
   });
@@ -830,8 +884,8 @@ describe('LinuxServiceManager -- fleet-supervisor service', () => {
   it('unregisters without the MCP server server.json handshake', async () => {
     await supervisor().unregister();
     expect(mockGracefulStop).not.toHaveBeenCalled();
-    expect(execFileSync).toHaveBeenCalledWith('systemctl', ['--user', 'disable', 'fleet-supervisor']);
-    expect(execFileSync).toHaveBeenCalledWith('systemctl', ['--user', 'stop', 'fleet-supervisor']);
+    expect(execFileSync).toHaveBeenCalledWith('systemctl', ['--user', 'disable', 'fleet-supervisor'], expect.objectContaining({ stdio: 'pipe' }));
+    expect(execFileSync).toHaveBeenCalledWith('systemctl', ['--user', 'stop', 'fleet-supervisor'], expect.objectContaining({ stdio: 'pipe' }));
     expect(fs.unlinkSync).toHaveBeenCalledWith(
       expect.stringContaining('fleet-supervisor.service'),
     );
@@ -869,6 +923,7 @@ describe('service identity is distinct per platform', () => {
     });
     const [wrapperPath, content] = vi.mocked(fs.writeFileSync).mock.calls[0];
     expect(String(wrapperPath)).toContain('apra-fleet-supervisor-service.bat');
+    expect(String(content)).not.toContain('APRA_FLEET_SERVICE'); // #584 marker is the MCP server's only
     expect(String(content)).toContain('cd /d "C:\\wf"');
     expect(execFileSync).toHaveBeenCalledWith('schtasks', expect.arrayContaining([
       '/create', '/tn', 'ApraFleetSupervisor',
@@ -890,6 +945,7 @@ describe('service identity is distinct per platform', () => {
     expect(String(content)).toContain('<key>WorkingDirectory</key>');
     expect(String(content)).toContain('<string>/wf</string>');
     expect(String(content)).not.toContain('<key>KeepAlive</key>');
+    expect(String(content)).not.toContain('APRA_FLEET_SERVICE'); // #584 marker is the MCP server's only
   });
 });
 
@@ -921,6 +977,7 @@ describe('MacOSServiceManager', () => {
       expect(content).toContain('<true/>'); // RunAtLoad
       expect(content).toContain('<key>SuccessfulExit</key>');
       expect(content).toContain('<false/>'); // KeepAlive.SuccessfulExit
+      expect(content).toContain('<key>APRA_FLEET_SERVICE</key>'); // service-launch marker
     });
 
     it('bootouts before bootstrap to be idempotent', async () => {
@@ -966,6 +1023,11 @@ describe('MacOSServiceManager', () => {
       await new MacOSServiceManager().stop();
       expect(mockGracefulStop).toHaveBeenCalled();
     });
+
+    it('returns false when the graceful stop refused to force-kill', async () => {
+      mockGracefulStop.mockResolvedValueOnce(false);
+      expect(await new MacOSServiceManager().stop()).toBe(false);
+    });
   });
 
   describe('query', () => {
@@ -977,19 +1039,45 @@ describe('MacOSServiceManager', () => {
     it('extracts pid from launchctl print output', async () => {
       vi.mocked(fs.existsSync).mockReturnValue(true);
       vi.mocked(execFileSync).mockReturnValue('com.apra-fleet.server {\n\tpid = 1234\n\tstate = running\n}\n' as any);
-      expect(await new MacOSServiceManager().query()).toEqual({ installed: true, running: true, pid: 1234 });
+      expect(await new MacOSServiceManager().query()).toEqual({ installed: true, running: true, pid: 1234, enabled: true });
     });
 
     it('returns running=false when launchctl print fails (not loaded)', async () => {
       vi.mocked(fs.existsSync).mockReturnValue(true);
       vi.mocked(execFileSync).mockImplementation(() => { throw new Error('Could not find specified service'); });
-      expect(await new MacOSServiceManager().query()).toEqual({ installed: true, running: false });
+      expect(await new MacOSServiceManager().query()).toEqual({ installed: true, running: false, enabled: true });
     });
 
     it('returns running=false when launchctl print shows no pid', async () => {
       vi.mocked(fs.existsSync).mockReturnValue(true);
       vi.mocked(execFileSync).mockReturnValue('com.apra-fleet.server {\n\tstate = stopped\n}\n' as any);
-      expect(await new MacOSServiceManager().query()).toEqual({ installed: true, running: false, pid: undefined });
+      expect(await new MacOSServiceManager().query()).toEqual({ installed: true, running: false, pid: undefined, enabled: true });
+    });
+
+    // GitHub #585: installed + enabled shows (enabled); a disabled label shows disabled.
+    it('reports enabled=false when launchctl print-disabled lists the label as disabled', async () => {
+      vi.mocked(fs.existsSync).mockReturnValue(true);
+      vi.mocked(execFileSync).mockImplementation(((_cmd: string, args: string[]) => args[0] === 'print-disabled'
+        ? 'disabled services = {\n\t"com.apra-fleet.server" => disabled\n\t"com.other" => enabled\n}\n'
+        : 'com.apra-fleet.server {\n\tpid = 7\n}\n') as any);
+      expect(await new MacOSServiceManager().query()).toEqual({ installed: true, running: true, pid: 7, enabled: false });
+    });
+
+    it('reports enabled=true when print-disabled lists the label as enabled (older "=> false" form too)', async () => {
+      vi.mocked(fs.existsSync).mockReturnValue(true);
+      vi.mocked(execFileSync).mockImplementation(((_cmd: string, args: string[]) => args[0] === 'print-disabled'
+        ? 'disabled services = {\n\t"com.apra-fleet.server" => false\n}\n'
+        : 'com.apra-fleet.server {\n\tpid = 7\n}\n') as any);
+      expect(await new MacOSServiceManager().query()).toEqual({ installed: true, running: true, pid: 7, enabled: true });
+    });
+
+    it('launchctl probes pipe stdio', async () => {
+      vi.mocked(fs.existsSync).mockReturnValue(true);
+      vi.mocked(execFileSync).mockImplementation(() => { throw new Error('Could not find specified service'); });
+      await new MacOSServiceManager().query();
+      for (const call of vi.mocked(execFileSync).mock.calls) {
+        expect(call[2]).toMatchObject({ stdio: 'pipe' });
+      }
     });
   });
 

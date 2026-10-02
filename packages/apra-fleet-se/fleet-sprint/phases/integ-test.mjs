@@ -90,7 +90,7 @@ export async function runIntegTestPhase({
     // Sprint identity/config.
     cycle,
     targetIssues,
-    orchestratorMember,
+    backlogMember,
     sprintSelfIdLine,
     // The per-sprint budget meter -- read for this phase's own spend delta.
     budget,
@@ -322,7 +322,7 @@ export async function runIntegTestPhase({
     if (Array.isArray(integResult.bugsFiled) && integResult.bugsFiled.length > 0 && verifySetForIntegTest.length > 0) {
         for (const bugId of integResult.bugsFiled) {
             try {
-                const bugShowRaw = await command(`bd show ${bugId} --json`, { member_name: orchestratorMember, silent: true });
+                const bugShowRaw = await command(`bd show ${bugId} --json`, { member_name: backlogMember, silent: true });
                 const bugBeads = parseBdJson(bugShowRaw, `bd show ${bugId} --json`);
                 const parentId = Array.isArray(bugBeads) ? bugBeads[0]?.parent : bugBeads?.parent;
                 if (!parentId || !verifySetIdSet.has(parentId)) continue;
@@ -332,7 +332,7 @@ export async function runIntegTestPhase({
                     log(`Verify-route bounce cap: ${parentId} has failed verification ${gapCount} time(s) this sprint (limit ${VERIFY_GAP_LIMIT}) -- deferring rather than bouncing again.`);
                     await command(
                         `bd update ${parentId} --status=deferred --append-notes "Deferred by the verify-route bounce cap: failed integration-test verification ${gapCount} times this sprint (limit ${VERIFY_GAP_LIMIT}). Latest gap: ${bugId}."`,
-                        { member_name: orchestratorMember, silent: true }
+                        { member_name: backlogMember, silent: true }
                     );
                 } else {
                     log(`Verify-route bounce: ${parentId} failed verification (gap bug ${bugId} filed), attempt ${gapCount}/${VERIFY_GAP_LIMIT} -- will re-route to plan/develop once ${bugId} closes.`);

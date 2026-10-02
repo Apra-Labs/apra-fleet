@@ -9,6 +9,7 @@ import {
     validateIssueId,
     validateBranchName,
 } from '../fleet-sprint/runner.js';
+import { resolveRoleMapWithWarnings, buildRunnerArgs } from '../bin/cli.mjs';
 import { defaultMockCallTool } from './helpers/mock-sprint-harness.mjs';
 
 // Unit + mock-level tests for apra-fleet-unw.14: the CLI->runner argument
@@ -144,20 +145,37 @@ describe('validateArgs', () => {
         });
     });
 
-    test('accepts the "orchestrator" pseudo-role as a roleMap key (not a member of ROLES) without throwing', () => {
+    test('accepts the "backlog" pseudo-role as a roleMap key (not a member of ROLES) without throwing', () => {
         const result = validateArgs({
             ...VALID_ARGS,
-            roleMap: { orchestrator: ['member-a'], doer: ['member-b'] },
+            roleMap: { backlog: ['member-a'], doer: ['member-b'] },
         });
-        assert.deepStrictEqual(result.roleMap, { orchestrator: ['member-a'], doer: ['member-b'] });
+        assert.deepStrictEqual(result.roleMap, { backlog: ['member-a'], doer: ['member-b'] });
     });
 
-    test('normalizes a mixed-case "Orchestrator" roleMap key to lowercase "orchestrator"', () => {
+    test('validateArgs: backlog key -> no warnings; orchestrator alias -> backlog key + one v0.5 warning; conflict -> [Arg Contract] naming both keys', () => {
+        const ok = validateArgs({ ...VALID_ARGS, roleMap: { backlog: ['m1'] } });
+        assert.deepStrictEqual(ok.roleMap, { backlog: ['m1'] });
+        assert.deepStrictEqual(ok.roleMapWarnings, []);
+        const aliased = validateArgs({ ...VALID_ARGS, roleMap: { orchestrator: ['m1'] } });
+        assert.deepStrictEqual(aliased.roleMap, { backlog: ['m1'] });
+        assert.ok(!('orchestrator' in aliased.roleMap));
+        assert.equal(aliased.roleMapWarnings.length, 1);
+        assert.match(aliased.roleMapWarnings[0], /v0.5/);
+        const equal = validateArgs({ ...VALID_ARGS, roleMap: { backlog: ['a'], orchestrator: ['a'] } });
+        assert.equal(equal.roleMapWarnings.length, 1);
+        assert.throws(
+            () => validateArgs({ ...VALID_ARGS, roleMap: { backlog: ['a'], orchestrator: ['b'] } }),
+            (e) => /\[Arg Contract\]/.test(e.message) && /"backlog"/.test(e.message) && /"orchestrator"/.test(e.message),
+        );
+    });
+
+    test('normalizes a mixed-case "Orchestrator" roleMap key to the canonical "backlog" key (deprecated alias)', () => {
         const result = validateArgs({
             ...VALID_ARGS,
             roleMap: { Orchestrator: ['member-a'] },
         });
-        assert.deepStrictEqual(result.roleMap, { orchestrator: ['member-a'] });
+        assert.deepStrictEqual(result.roleMap, { backlog: ['member-a'] });
     });
 
     test('rejects roleMap keys that collide once normalized', () => {
@@ -727,7 +745,7 @@ describe('runner.js mock-level execution', () => {
             // canonical lowercase 'orchestrator' key and route every
             // orchestrator-side BOOKKEEPING `bd` command (bd list/show/
             // update -- the orchestrator's own reads/writes, dispatched via
-            // `orchestratorMember`) to 'member-x'. (git fetch/checkout
+            // `backlogMember`) to 'member-x'. (git fetch/checkout
             // commands go to the UNION of orchestrator/doer/reviewer pools --
             // see runner.js's branchEnsureMembers/N4 -- so this asserts on
             // the `bd `-prefixed commands specifically.)
@@ -739,7 +757,7 @@ describe('runner.js mock-level execution', () => {
             // -- they correctly sync THAT agent's own member (here 'local',
             // since 'planner' etc. have no roleMap entry of their own and
             // fall back to the first physical member), never
-            // `orchestratorMember`. Verified live: every non-dolt `bd `
+            // `backlogMember`. Verified live: every non-dolt `bd `
             // command in this scenario dispatches to 'member-x' as expected;
             // only `bd dolt pull`/`bd dolt push` legitimately go to 'local'.
             roleMap: { '  Orchestrator  ': ['member-x'] },
@@ -762,6 +780,44 @@ describe('runner.js mock-level execution', () => {
         }
     });
 
+    // Deprecation warning for the roleMap.orchestrator alias reaches the RUN LOG.
+    // The CLI (and therefore the supervisor, whose spawner launches bin/cli.mjs)
+    // rewrites the key before the runner sees it, so the runner learns about
+    // the alias through args.roleMapWarnings -- exercised here end to end
+    // through resolveRoleMapWithWarnings -> buildRunnerArgs -> runner log.
+    async function runAndCaptureRoleMapLog(runnerArgs) {
+        const spy = buildSpyFleetApi();
+        const workflow = new FleetWorkflow(spy);
+        const logs = [];
+        workflow.on('log', (e) => logs.push(e.msg));
+        const engine = new WorkflowEngine(workflow);
+        const result = await engine.executeFile(RUNNER_SCRIPT_PATH, {
+            target_issue: 'bd-1', members: ['local', 'member-y'], branch: 'auto-sprint/rolemap-alias-log',
+            base_branch: 'main', max_cycles: 1, ...runnerArgs,
+        }, true);
+        return { result, logs: logs.filter((l) => String(l).startsWith('[role-map] WARNING: ')) };
+    }
+
+    test('CLI path: --role-map {orchestrator} -> resolveRoleMapWithWarnings -> buildRunnerArgs -> runner logs the deprecation warning', async () => {
+        const { roleMap, warnings } = await resolveRoleMapWithWarnings('{"orchestrator":["member-y"]}');
+        const cliArgs = buildRunnerArgs({
+            targetIssues: ['bd-1'], members: ['local', 'member-y'], branch: 'b', baseBranch: 'main',
+            goal: 'P1', maxCycles: 1, requirementsFile: undefined, roleMap, roleMapWarnings: warnings,
+        });
+        assert.deepStrictEqual(cliArgs.roleMap, { backlog: ['member-y'] });
+        const { result, logs } = await runAndCaptureRoleMapLog({ roleMap: cliArgs.roleMap, roleMapWarnings: cliArgs.roleMapWarnings });
+        assert.strictEqual(result.status, 'success');
+        assert.strictEqual(logs.length, 1, JSON.stringify(logs));
+        assert.match(logs[0], /v0.5/);
+    });
+
+    test('backlog key alone logs no deprecation warning; direct alias use (bypassing the CLI) logs one', async () => {
+        const none = await runAndCaptureRoleMapLog({ roleMap: { backlog: ['member-y'] } });
+        assert.strictEqual(none.logs.length, 0);
+        const direct = await runAndCaptureRoleMapLog({ roleMap: { orchestrator: ['member-y'] } });
+        assert.strictEqual(direct.logs.length, 1);
+    });
+
     test('roleMap: { orchestrator: [...] } (lowercase) is honored for orchestrator-side bd dispatch, with no ROLES/schema validation involved', async () => {
         const spy = buildSpyFleetApi();
         const workflow = new FleetWorkflow(spy);
@@ -773,7 +829,7 @@ describe('runner.js mock-level execution', () => {
             branch: 'auto-sprint/rolemap-orchestrator-test',
             base_branch: 'main',
             max_cycles: 1,
-            roleMap: { orchestrator: ['member-y'] },
+            roleMap: { backlog: ['member-y'] },
         }, true);
 
         assert.strictEqual(result.status, 'success');
@@ -782,7 +838,7 @@ describe('runner.js mock-level execution', () => {
         // in the mixed-case roleMap test above: those are per-member
         // beads-sync brackets around each dispatched agent's own call, not
         // orchestrator bookkeeping, and correctly use that agent's own
-        // member rather than `orchestratorMember`.
+        // member rather than `backlogMember`.
         // `bd config get sync.remote` excluded like `bd dolt *` -- part of
         // the per-member D-push bracket (Issue 31 pre-gate), see above.
         // `bd where` (per-member beads identity probe) excluded, see above.

@@ -47,7 +47,7 @@ allowed.
 | `--max-cycles <n>` | `-c` | no | positive integer | `5` | Hard ceiling on plan/develop/review cycles. |
 | `--allow-missing-members` | | no | boolean flag | off | Without this flag, ANY `--members` entry not registered with the fleet aborts the sprint before it starts. With it, missing members are dropped with a warning and the sprint proceeds with whatever members remain (at least one valid member is still required). |
 | `--requirements-file <path>` | | no | string | -- | Path to a file whose content is read once, up front, and threaded verbatim into every Plan-phase planner prompt this sprint. A missing/unreadable file only logs a warning; the sprint continues without it. |
-| `--role-map <json\|@file>` | | no | JSON object or `@path/to/file.json` | -- | Maps role name -> array of member names, e.g. `'{"doer":["m1","m2"]}'`. Overrides the default member-pool resolution for that role (see `docs/architecture.md`). Also accepts the application-level pseudo-role key `orchestrator` (which member issues the sprint's own `bd`/`git` commands). Keys are normalized (trimmed + lowercased) on load; two keys that normalize to the same value are rejected as ambiguous. |
+| `--role-map <json\|@file>` | | no | JSON object or `@path/to/file.json` | -- | Maps role name -> array of member names, e.g. `'{"doer":["m1","m2"]}'`. Overrides the default member-pool resolution for that role (see `docs/architecture.md`). Also accepts the application-level pseudo-role key `backlog` (which member issues the sprint's own `bd`/`git` commands). `orchestrator` is a deprecated alias of `backlog`: accepted in 0.4.4 (with a deprecation warning in the run log) and removed in v0.5; giving both keys with different values is an arg-contract error. Keys are normalized (trimmed + lowercased) on load; two keys that normalize to the same value are rejected as ambiguous. |
 | `--viewer-port <port>` | | no | integer 1-65535 | `8080` | Port for the local dashboard viewer HTTP server. |
 | `--budget <usd>` | | no | non-negative finite number | unset (unlimited) | USD ceiling for this run's total *estimated* spend. When set, `agent()` dispatches abort the run with a budget-exceeded error once tracked spend reaches the ceiling. Omitted means unlimited -- identical to not having this flag at all. See the budget-tracking caveats in `docs/architecture.md`. |
 | `--dispatch-timeout-s <s>` | | no | integer >= 60 | `9000` (applied by the runner) | Per-dispatch time budget in seconds, used as both the inactivity timeout and the hard elapsed-time ceiling on every agent dispatch. The integ-test dispatch ceiling is 2x this value and the regression-test ceiling is 3x. Omitting the flag leaves it unset at the CLI; `runner.js` then applies its own `9000` default. |
@@ -57,7 +57,7 @@ allowed.
 | `--sync` | | no | boolean flag | off | Selects `synced` topology mode (orchestrator-bracketed git + Dolt sync brackets) instead of the default shared-workspace/`legacy` mode. See `docs/architecture.md` "Multi-member topology". |
 | `--service-url <url>` | | no | string | -- | Base HTTP URL of the supervisor that launched this sprint. Forwarded as `serviceUrl`, which switches the dolt-push mutex and the child-id allocator over to their HTTP clients. Set by the supervisor's spawner; not normally passed by hand. |
 | `--run-id <id>` | | no | string | `--branch`'s value | Identifier used for this run's state/viewer keying. Defaults to the branch name when omitted. |
-| `--expect-beads <json>` | | no | JSON string | -- | Beads identity (`{"beadsDir","prefix","syncRemote","repoRemote"}`) every member must resolve to. Set by the supervisor's spawner; falls back to env `FLEET_SPRINT_EXPECT_BEADS` when omitted, and to the orchestrator member's own `bd where` when neither is set. A mismatched member aborts the sprint before any `bd` mutation; an unprobeable member/field is a logged warning (with the fix) and is not compared. |
+| `--expect-beads <json>` | | no | JSON string | -- | Beads identity (`{"beadsDir","prefix","syncRemote","repoRemote"}`) every member must resolve to. Set by the supervisor's spawner; falls back to env `FLEET_SPRINT_EXPECT_BEADS` when omitted, and to the backlog member's own `bd where` when neither is set. A mismatched member aborts the sprint before any `bd` mutation; an unprobeable member/field is a logged warning (with the fix) and is not compared. |
 | `--help` | `-h` | no | boolean flag | -- | Prints usage text and exits 0. |
 
 All four of `--issue`, `--members`, `--branch`, `--base` are required; if any
@@ -96,7 +96,7 @@ differs) raises `BeadsIdentityError` and aborts; a probe that fails or
 resolves nothing is a `[beads-identity] WARNING: ...` line naming the member,
 the field, the probe, the error and the fix -- that field is simply not
 compared and the sprint proceeds. The banner's own pre-flight probe of the
-orchestrator member prints `Warning: ...` (with the fix) on failure instead of
+backlog member prints `Warning: ...` (with the fix) on failure instead of
 exiting.
 
 ### Exit codes
@@ -146,9 +146,9 @@ In order, `main()` in `bin/cli.mjs` performs:
    passed (in which case missing members are dropped with a warning). If
    *no* valid members remain, the sprint aborts regardless.
 9. **Target-issue existence check** -- runs `bd show <id>` for every
-   `--issue` id, on the **orchestrator member** specifically (not the local
-   machine -- see `checkIssuesExistOnMember()`). The orchestrator member is
-   `roleMap.orchestrator[0]` if configured, else the first valid `--members`
+   `--issue` id, on the **backlog member** specifically (not the local
+   machine -- see `checkIssuesExistOnMember()`). The backlog member is
+   `roleMap.backlog[0]` if configured, else the first valid `--members`
    entry.
 10. **Multi-member topology check** -- `checkMemberTopology()` (see
     `docs/architecture.md` "Multi-member topology") compares `git rev-parse

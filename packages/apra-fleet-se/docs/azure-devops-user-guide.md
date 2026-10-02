@@ -116,7 +116,7 @@ credential directly:
 
 ## Keeping it simple
 
-You don't need a separate "orchestrator" member, a beads-only companion
+You don't need a separate "backlog" member, a beads-only companion
 folder, or any of the multi-member topology machinery described elsewhere
 in these docs to get started. That's for larger, ongoing setups running
 many concurrent sprints. One member with `push+pr` access to your Azure

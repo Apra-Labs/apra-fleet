@@ -573,7 +573,7 @@ Wave 0 (main), fleet-win1:
   "goal": "P1",
   "maxCycles": 3,
   "roleMap": {
-    "orchestrator": ["supervisor"],
+    "backlog": ["supervisor"],
     "planner": ["fleet-win1"], "plan-reviewer": ["fleet-win1"],
     "doer": ["fleet-win1"], "reviewer": ["fleet-win1"],
     "deployer": ["fleet-win1"], "integ-test-runner": ["fleet-win1"],
@@ -594,7 +594,7 @@ W0-a, fleet-lin1:
   "goal": "P1/P2",
   "maxCycles": 5,
   "roleMap": {
-    "orchestrator": ["supervisor"],
+    "backlog": ["supervisor"],
     "planner": ["fleet-lin1"], "plan-reviewer": ["fleet-lin1"],
     "doer": ["fleet-lin1"], "reviewer": ["fleet-lin1"],
     "deployer": ["fleet-lin1"], "integ-test-runner": ["fleet-lin1"],
@@ -615,7 +615,7 @@ W0-b, fleet-win1 (launch after S0 is merged and the production server redeployed
   "goal": "P1/P2",
   "maxCycles": 5,
   "roleMap": {
-    "orchestrator": ["supervisor"],
+    "backlog": ["supervisor"],
     "planner": ["fleet-win1"], "plan-reviewer": ["fleet-win1"],
     "doer": ["fleet-win1"], "reviewer": ["fleet-win1"],
     "deployer": ["fleet-win1"], "integ-test-runner": ["fleet-win1"],
@@ -636,7 +636,7 @@ W0-c, fleet-mac1:
   "goal": "P1/P2",
   "maxCycles": 5,
   "roleMap": {
-    "orchestrator": ["supervisor"],
+    "backlog": ["supervisor"],
     "planner": ["fleet-mac1"], "plan-reviewer": ["fleet-mac1"],
     "doer": ["fleet-mac1"], "reviewer": ["fleet-mac1"],
     "deployer": ["fleet-mac1"], "integ-test-runner": ["fleet-mac1"],

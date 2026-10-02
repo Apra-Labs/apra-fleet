@@ -13,7 +13,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const scriptPath = path.join(__dirname, '../fleet-sprint/runner.js');
 
 // apra-fleet flat-leaf-scope: a distinct diagnosability regression. The
-// orchestrator member's own bd clone is entirely stale/uninitialized for
+// backlog member's own bd clone is entirely stale/uninitialized for
 // these 5 fresh ids -- simulating the real-world shape: they were created
 // on a DIFFERENT clone that was never `bd dolt push`ed to the shared remote,
 // or an always-on multi-sprint supervisor's persistent member has not synced
@@ -34,7 +34,7 @@ test('flat multi-id target scope: targets invisible to the orchestrator clone ge
 
         // These 5 ids are never actually created in tempDir's bd database at
         // all -- standing in for "created/mutated on a clone this
-        // orchestrator member has never synced with". A syntactically valid
+        // backlog member has never synced with". A syntactically valid
         // fabricated id is enough: bdListScoped's scopeIds seed is
         // unconditional (seeded straight from targetIssues, regardless of
         // whether fetchAllBeadsShared() ever saw them -- see runner.js), so
@@ -84,7 +84,7 @@ test('flat multi-id target scope: targets invisible to the orchestrator clone ge
 
             assert.ok(error, 'expected pre-sprint validation to throw when every target id is invisible to this clone');
             assert.ok(
-                error.message.includes('are not visible to the orchestrator member'),
+                error.message.includes('are not visible to the backlog member'),
                 `expected the new distinguishing diagnostic, got: ${error.message}`
             );
             for (const id of ids) {

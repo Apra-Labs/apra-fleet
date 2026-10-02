@@ -377,6 +377,26 @@ describe('agent(): usage_limit relay pass-through onto AgentDispatchError.detail
         );
     });
 
+    test('a setup-time max_total_time forwards dispatched:false; a running-dispatch one carries no dispatched field', async () => {
+        for (const [structured, expected] of [
+            [{ isError: true, reason: 'max_total_time', dispatched: false }, false],
+            [{ isError: true, reason: 'max_total_time' }, undefined],
+        ]) {
+            const wf = new FleetWorkflow(createMockFleetApi({
+                executePromptImpl: async () => ({ content: [{ text: 'exceeded max_total_s' }], structuredContent: structured }),
+            }));
+            await assert.rejects(
+                () => wf.agent('do the thing', { member_name: KNOWN_MEMBER }),
+                (err) => {
+                    assert.ok(err instanceof AgentDispatchError);
+                    assert.strictEqual(err.details.reason, 'max_total_time');
+                    assert.strictEqual(err.details.dispatched, expected);
+                    return true;
+                }
+            );
+        }
+    });
+
     test('a non-usage_limit dispatch failure carries neither usageLimit nor sessionId (no fabrication)', async () => {
         const wf = new FleetWorkflow(createMockFleetApi({
             executePromptImpl: async () => ({

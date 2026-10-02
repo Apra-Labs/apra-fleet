@@ -255,6 +255,22 @@ Usage:
   process.exit(1);
 }
 
+/**
+ * Exit code for "refusing to start because another/foreign server holds the
+ * port or data dir" (GitHub #584). Under a service manager (systemd
+ * Restart=on-failure, launchd KeepAlive SuccessfulExit=false) a non-zero exit
+ * restarts the server every few seconds -- each attempt a new fleet-<pid>.log
+ * that `apra-fleet watch` then follows -- while the cause persists. Only a
+ * launch by such a service manager (launchedByServiceManager: the
+ * APRA_FLEET_SERVICE marker, systemd INVOCATION_ID, launchd XPC_SERVICE_NAME)
+ * exits 0, like the already-running case. Every other launch (terminal, CI,
+ * nohup, containers, scripts) exits 1 so the refusal stays visible.
+ */
+async function refusalExitCode(): Promise<number> {
+  const { launchedByServiceManager } = await import('./services/service-manager/types.js');
+  return launchedByServiceManager() ? 0 : 1;
+}
+
 function resolveTransport(args: string[]): 'http' | 'stdio' | 'invalid' {
   if (args.length === 0) return 'http';
   if (args[0] === '--stdio') return 'stdio';
@@ -340,9 +356,22 @@ async function startStdioServer() {
   purgeExpiredCredentials();
   void checkForUpdate();
 
+  // GitHub #562: leave a trace when the event loop freezes.
+  const { startEventLoopWatchdog } = await import('./services/event-loop-watchdog.js');
+  const { getActiveLogFile } = await import('./utils/log-helpers.js');
+  const watchdog = startEventLoopWatchdog({ logFile: getActiveLogFile() });
+
   const { cleanupAuthSocket } = await import('./services/auth-socket.js');
-  process.on('SIGINT', () => { cleanupAuthSocket().then(() => { closeAllConnections(); stallDetector.stop(); process.exit(0); }); });
-  process.on('SIGTERM', () => { cleanupAuthSocket().then(() => { closeAllConnections(); stallDetector.stop(); process.exit(0); }); });
+  // GitHub #585: every exit path (SIGINT/SIGTERM/SIGHUP/SIGBREAK, crashes)
+  // writes one synchronous shutdown record before the process exits.
+  const { installShutdownHandlers } = await import('./services/server-lifecycle.js');
+  let stdioStopping = false;
+  installShutdownHandlers(() => {
+    if (stdioStopping) return;
+    stdioStopping = true;
+    void watchdog.stop();
+    cleanupAuthSocket().then(() => { closeAllConnections(); stallDetector.stop(); process.exit(0); });
+  });
 }
 
 async function startHttpServer() {
@@ -352,8 +381,11 @@ async function startHttpServer() {
   loadOnboardingState(getAgentsForStartup().length);
   resetSessionFlags();
 
-  const { checkRunningInstance, claimStartupLock } = await import('./services/singleton.js');
-  const { createHttpTransport } = await import('./services/http-transport.js');
+  const {
+    checkRunningInstance, claimStartupLock, unresponsiveInstanceMessage, portInUseMessage, readServerInfoPid,
+    describePreviousServer,
+  } = await import('./services/singleton.js');
+  const { createHttpTransport, PortInUseError } = await import('./services/http-transport.js');
   const { registerAllTools } = await import('./services/tool-registry.js');
   const { FLEET_DIR, SERVER_INFO_PATH } = await import('./paths.js');
   const { closeAllConnections } = await import('./services/ssh.js');
@@ -371,6 +403,16 @@ async function startHttpServer() {
     logLine('startup', `apra-fleet already running at ${instance.url} pid=${instance.pid} -- exiting`);
     process.exit(0);
   }
+  if (instance.state === 'gone') {
+    const previousNote = describePreviousServer(instance.previous);
+    if (previousNote) logLine('startup', `${previousNote}; removed its stale server.json`);
+  }
+  if (instance.state === 'unresponsive') {
+    // A live server with a blocked event loop is not dead: starting a second
+    // one would split the fleet (GitHub #584). Refuse; the operator stops it.
+    logError('startup', unresponsiveInstanceMessage(instance));
+    process.exit(await refusalExitCode());
+  }
 
   // Atomic startup lock to prevent concurrent double-start race
   const lock = claimStartupLock();
@@ -379,7 +421,17 @@ async function startHttpServer() {
     process.exit(0);
   }
 
-  const handle = await createHttpTransport({ registerTools: registerAllTools });
+  let handle: Awaited<ReturnType<typeof createHttpTransport>>;
+  try {
+    handle = await createHttpTransport({ registerTools: registerAllTools });
+  } catch (err) {
+    lock.release();
+    if (err instanceof PortInUseError) {
+      logError('startup', portInUseMessage(err.port, readServerInfoPid()));
+      process.exit(await refusalExitCode());
+    }
+    throw err;
+  }
 
   // Write server.json so other processes can detect this instance
   fs.mkdirSync(FLEET_DIR, { recursive: true });
@@ -416,9 +468,15 @@ async function startHttpServer() {
   purgeExpiredCredentials();
   void checkForUpdate();
 
+  // GitHub #562: leave a trace when the event loop freezes.
+  const { startEventLoopWatchdog } = await import('./services/event-loop-watchdog.js');
+  const { getActiveLogFile } = await import('./utils/log-helpers.js');
+  const watchdog = startEventLoopWatchdog({ logFile: getActiveLogFile() });
+
   async function shutdown() {
     try { lock.release(); } catch {}
     try { fs.unlinkSync(SERVER_INFO_PATH); } catch {}
+    try { await watchdog.stop(); } catch {}
     try { await handle.close(); } catch {}
     try { await cleanupAuthSocket(); } catch {}
     try { closeAllConnections(); } catch {}
@@ -426,6 +484,14 @@ async function startHttpServer() {
     process.exit(0);
   }
 
-  process.on('SIGINT', () => void shutdown());
-  process.on('SIGTERM', () => void shutdown());
+  // GitHub #585: every exit path (SIGINT/SIGTERM/SIGHUP/SIGBREAK, POST
+  // /shutdown, shutdown_server, crashes) writes one synchronous shutdown
+  // record to fleet-<pid>.log before the process exits.
+  const { installShutdownHandlers } = await import('./services/server-lifecycle.js');
+  let stopping = false;
+  installShutdownHandlers(() => {
+    if (stopping) return;
+    stopping = true;
+    void shutdown();
+  });
 }

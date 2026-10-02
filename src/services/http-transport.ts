@@ -12,6 +12,7 @@ import { serverVersion } from '../version.js';
 import { logLine } from '../utils/log-helpers.js';
 import { handleConsoleRequest } from '../console/server.js';
 import { markConsoleHosted } from './secret-entry.js';
+import { recordShutdown } from './server-lifecycle.js';
 
 interface Session {
   server: McpServer;
@@ -30,6 +31,15 @@ export interface HttpTransportOptions {
    *  production case) lets src/console/static.ts resolve the real
    *  packages/apra-fleet-shell-ui/dist path itself. */
   shellDistDir?: string;
+}
+
+/** Thrown by createHttpTransport when the configured (non-zero) port is already bound. */
+export class PortInUseError extends Error {
+  readonly code = 'EADDRINUSE';
+  constructor(readonly port: number, readonly host: string) {
+    super(`port ${port} on ${host} is already in use`);
+    this.name = 'PortInUseError';
+  }
 }
 
 export interface HttpTransportHandle {
@@ -204,6 +214,8 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
         return;
       }
       const body = JSON.stringify({ status: 'shutting-down' });
+      // GitHub #585: name the real cause before re-entering the SIGINT path.
+      recordShutdown('http_shutdown');
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(body);
       setTimeout(() => {
@@ -448,7 +460,7 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
     eventCleanups.push(() => fleetEvents.off(eventType, handler));
   }
 
-  // Start listening: try preferred port, fall back to OS-assigned port.
+  // Start listening on the preferred port (no fallback, see below).
   // Bind host is configurable (APRA_FLEET_HOST, default 127.0.0.1) --
   // apra-fleet-fnz.4/us9.6. Binding beyond loopback is an explicit,
   // logged opt-in: several unauthenticated code paths in this file (the
@@ -459,15 +471,20 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
   if (bindHost !== '127.0.0.1') {
     logLine('session', nonLoopbackBindWarning(bindHost));
   }
+  // A busy configured port is a hard error (GitHub #584): there is no
+  // fallback to an OS-assigned port, because every configured MCP client only
+  // knows the configured port -- a silently re-homed server is unreachable and
+  // splits the fleet in two on one data dir. An explicit port 0 (callers that
+  // ask for an ephemeral port) is unaffected.
   let port: number;
   try {
     port = await listenOnPort(httpServer, targetPort, bindHost);
   } catch (err: unknown) {
+    for (const cleanup of eventCleanups) cleanup();
     if ((err as NodeJS.ErrnoException).code === 'EADDRINUSE') {
-      port = await listenOnPort(httpServer, 0, bindHost);
-    } else {
-      throw err;
+      throw new PortInUseError(targetPort, bindHost);
     }
+    throw err;
   }
 
   // Same-machine callers (register_member's own local MCP connection) always

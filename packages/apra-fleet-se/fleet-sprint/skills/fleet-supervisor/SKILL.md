@@ -88,7 +88,7 @@ starts, but logs `[supervisor] WARNING: no beads database found walking up
 from <cwd> ... To fix: ...`, reports `beads: null` plus `beadsWarning` on
 `/api/health`, shows an amber `Beads: NOT RESOLVED -- ...` header on the
 dashboard, and launches sprints WITHOUT `--expect-beads` (they then verify
-members against the orchestrator member's own beads). Treat that as
+members against the backlog member's own beads). Treat that as
 "restart from the right folder / with `--beads-dir`", or fix the
 environment and hit `GET /api/health?refresh=1` to recover without a
 restart. `--port <n>` overrides the default (8787). Self-logs to

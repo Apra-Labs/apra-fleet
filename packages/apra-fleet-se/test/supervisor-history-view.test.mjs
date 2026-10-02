@@ -17,6 +17,11 @@ import {
     summarizeFinishedRun,
     createFinishedRunsIndex,
 } from '../src/supervisor/history-view.mjs';
+import {
+    beadsExtension,
+    renderBeadsSummaryProgressHtml,
+    renderProgressPlaceholderHtml,
+} from '../fleet-sprint/viewer-extensions.mjs';
 import { createSupervisor } from '../src/supervisor/server.mjs';
 import { createLiveProxy, registerLiveRoutes } from '../src/supervisor/proxy.mjs';
 import { MOUNT_PATH_HEADER } from '../src/supervisor/mount-prefix.mjs';
@@ -411,5 +416,80 @@ describe('apra-fleet-i9ag.16.8: createFinishedRunsIndex surfaces a file-backed r
         assert.equal(row.hasTerminalState, true);
         assert.equal(row.verdict, 'ABORTED');
         assert.equal(row.reason, 'uncaughtException: claude: command not found');
+    });
+});
+
+// Archived runs written before the run summary existed carry no 'summary'
+// key; the History view must backfill the beads progress from the persisted
+// extension data so the bar renders instead of 'no summary yet'.
+describe('history-view -- pre-summary archived run backfills beads progress', () => {
+    const task = (id, status) => ({ id, status, issue_type: 'task', title: id, priority: 2 });
+    const preSummary = () => ({
+        workflowName: 'old sprint',
+        status: 'success',
+        endedAt: '2026-07-18T01:00:00.000Z',
+        updatedAt: '2026-07-18T00:59:00.000Z',
+        stats: { activitiesCount: 0, totalTokens: 0, totalCost: 0 },
+        tree: [],
+        extensions: {
+            beads: {
+                fetchedAt: '2026-07-18T00:58:00.000Z',
+                sprintTasks: [task('t1', 'closed'), task('t2', 'closed'), task('t3', 'open')],
+            },
+        },
+    });
+    const embeddedState = (html) => {
+        const m = html.match(/\n    renderState\((.*)\);/);
+        assert.ok(m, 'history html must embed the frozen state');
+        return JSON.parse(m[1]);
+    };
+
+    test('backfills summary.extensions.beads and renders the bar, not the placeholder', () => {
+        const state = preSummary();
+        const before = JSON.stringify(state);
+        const expected = beadsExtension.summarize(state.extensions.beads);
+        const embedded = embeddedState(renderHistoryPageHtml(state, [beadsExtension]));
+        const entry = embedded.summary.extensions.beads;
+        assert.strictEqual(entry.closed, expected.closed);
+        assert.strictEqual(entry.required, expected.required);
+        assert.strictEqual(entry.publishedAt, state.endedAt);
+        assert.notStrictEqual(renderBeadsSummaryProgressHtml(entry), renderProgressPlaceholderHtml());
+        assert.strictEqual(JSON.stringify(state), before, 'input fixture must not be mutated');
+    });
+
+    test('an existing summary entry is not overwritten', () => {
+        const state = preSummary();
+        state.summary = { extensions: { beads: { publishedAt: 'p', closed: 7, required: 9, fraction: 7 / 9 } } };
+        const before = JSON.stringify(state);
+        const embedded = embeddedState(renderHistoryPageHtml(state, [beadsExtension]));
+        assert.deepStrictEqual(embedded.summary.extensions.beads, state.summary.extensions.beads);
+        assert.strictEqual(JSON.stringify(state), before);
+    });
+
+    test('the History HTTP route backfills the same way', async () => {
+        const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'apra-fleet-history-presummary-'));
+        let sup;
+        try {
+            await fs.mkdir(path.join(dir, 'old_runs'), { recursive: true });
+            const state = preSummary();
+            await fs.writeFile(path.join(dir, 'old_runs', 'pre-1.json'), JSON.stringify(state));
+            const view = createHistoryView({
+                env: { APRA_FLEET_DATA_DIR: dir },
+                dashboardExtensions: [beadsExtension],
+            });
+            sup = createSupervisor({ port: 0 });
+            registerHistoryViewRoutes(sup, view);
+            await sup.start();
+            const res = await getText(sup.server.address().port, '/sprints/pre-1/history');
+            assert.strictEqual(res.status, 200);
+            const entry = embeddedState(res.body).summary.extensions.beads;
+            const expected = beadsExtension.summarize(state.extensions.beads);
+            assert.strictEqual(entry.closed, expected.closed);
+            assert.strictEqual(entry.required, expected.required);
+            assert.strictEqual(entry.publishedAt, state.endedAt);
+        } finally {
+            if (sup) await sup.stop('test');
+            await fs.rm(dir, { recursive: true, force: true });
+        }
     });
 });
