@@ -198,10 +198,12 @@ describe('up-to-date vs older installs', () => {
     expect(m.execLog.some(c => c.includes("'install'"))).toBe(false);
   });
 
-  it('a newer member install (or a dev build of the same version) is not reinstalled', async () => {
+  it('a newer member install (or a same-core build when only the release asset is reachable) is not reinstalled', async () => {
+    // Same-core build differences with an orchestrator-executable source are covered
+    // in member-fleet-install-build-suffix.test.ts.
     for (const v of ['v0.5.0', 'v0.4.4_abc123']) {
       const m = newMember({ version: v });
-      const r = await ensureMemberFleetInstall(makeTestAgent({ os: 'linux' }), fakeDeps(m, { orchestrator: LINUX_X64, executable: '/opt/fleet/apra-fleet' }));
+      const r = await ensureMemberFleetInstall(makeTestAgent({ os: 'linux' }), fakeDeps(m, { orchestrator: LINUX_X64, executable: null }));
       expect(r).toMatchObject({ state: 'available', installed: false, version: v });
     }
   });

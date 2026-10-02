@@ -255,6 +255,35 @@ export function isOlderThan(memberVersion: string, orchestratorVersion: string):
   return isNewer(orchestratorVersion, memberVersion);
 }
 
+/** The `_build` suffix of a version ("v0.4.4_abc" -> "abc"), or "" when none. */
+function buildSuffixOf(version: string): string {
+  const i = version.indexOf('_');
+  return i < 0 ? '' : version.slice(i + 1);
+}
+
+/**
+ * Build-aware outdated check for the member install (exported for tests).
+ * Rule: a member core OLDER than the orchestrator's is always outdated; a
+ * NEWER core never is (never downgrade, whatever the suffixes). At the SAME
+ * core, a differing build suffix counts as outdated only when
+ * `canSupplyOrchestratorBuild` -- i.e. the install source is the
+ * orchestrator's own executable. A release-asset source installs the
+ * release build of the core (releaseTagFor strips the suffix), so a same-core
+ * build difference there is "up to date" (else it would reinstall on every
+ * registration and report install-unverified). Mixed suffix/no-suffix at the
+ * same core follows the same rule; identical versions are never outdated.
+ * isNewer/parseVersion (shared with the CLI self-update check) are untouched.
+ */
+export function isMemberOutdated(
+  memberVersion: string,
+  orchestratorVersion: string,
+  canSupplyOrchestratorBuild: boolean,
+): boolean {
+  if (isOlderThan(memberVersion, orchestratorVersion)) return true;
+  if (isNewer(memberVersion, orchestratorVersion)) return false;
+  return canSupplyOrchestratorBuild && buildSuffixOf(memberVersion) !== buildSuffixOf(orchestratorVersion);
+}
+
 /** Release asset names published by .github/workflows/ci.yml, by platform. */
 const RELEASE_ASSETS: Record<string, string> = {
   'linux/x64': 'apra-fleet-installer-linux-x64',
@@ -632,12 +661,19 @@ async function ensureOnce(agent: Agent, deps: MemberFleetInstallDeps, force: boo
   if (before.kind === 'probe-failed') {
     return { state: 'unavailable', reason: 'probe-failed', detail: before.detail };
   }
-  if (!force && before.kind === 'installed' && !isOlderThan(before.version, orchestratorVersion)) {
+  // Pre-gate: only a strictly older core is outdated for certain; a same-core
+  // build difference is decided below once the install source is known.
+  if (!force && before.kind === 'installed' && !isMemberOutdated(before.version, orchestratorVersion, true)) {
     return { state: 'available', version: before.version, installed: false, binPath };
   }
   const priorVersion = before.kind === 'installed' ? before.version : undefined;
+  const coreOutdated = before.kind !== 'installed' || isOlderThan(before.version, orchestratorVersion);
 
   const arch = await probeMemberArch(agent, deps);
+  if (!arch && !force && !coreOutdated && before.kind === 'installed') {
+    // Build-only difference and no way to tell the source: leave it alone.
+    return { state: 'available', version: before.version, installed: false, binPath };
+  }
   if (!arch) {
     return { state: 'unavailable', reason: 'arch-unknown', detail: 'the member CPU architecture could not be probed', version: priorVersion };
   }
@@ -648,7 +684,18 @@ async function ensureOnce(agent: Agent, deps: MemberFleetInstallDeps, force: boo
     orchestratorVersion,
   );
   if (source.kind === 'unavailable') {
+    if (!force && !coreOutdated && before.kind === 'installed') {
+      // Build-only difference and the orchestrator cannot supply its build.
+      return { state: 'available', version: before.version, installed: false, binPath };
+    }
     return { state: 'unavailable', reason: source.reason, detail: source.detail, version: priorVersion };
+  }
+  if (
+    !force && !coreOutdated && before.kind === 'installed' &&
+    !isMemberOutdated(before.version, orchestratorVersion, source.kind === 'orchestrator-executable')
+  ) {
+    // Same core, release-asset source: same core = up to date.
+    return { state: 'available', version: before.version, installed: false, binPath };
   }
 
   let localPath: string;
@@ -713,7 +760,7 @@ async function ensureOnce(agent: Agent, deps: MemberFleetInstallDeps, force: boo
   }
 
   const after = await probeMemberFleetVersion(agent, binPath, deps);
-  if (after.kind !== 'installed' || isOlderThan(after.version, orchestratorVersion)) {
+  if (after.kind !== 'installed' || isMemberOutdated(after.version, orchestratorVersion, source.kind === 'orchestrator-executable')) {
     const seen = after.kind === 'installed' ? `reports ${after.version}` : after.kind === 'probe-failed' ? after.detail : after.kind;
     return {
       state: 'unavailable',
