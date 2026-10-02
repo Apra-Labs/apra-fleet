@@ -47,7 +47,13 @@ function buildCallTool({ down = [], executeCommand } = {}) {
     const base = defaultMockCallTool({ executeCommand });
     const kbStatsProbes = [];
     const byId = new Map();
+    // kb_maintainer selection runs before the sprint-init member probe, which
+    // reads kb_stats on EVERY member for its CONFIRMED count. The probe's
+    // first member_detail refresh:true marks the end of selection, so only
+    // the selection's availability probes are recorded.
+    let selectionDone = false;
     const callTool = async (name, args) => {
+        if (name === 'member_detail' && args && args.refresh === true) selectionDone = true;
         if (name === 'member_detail') {
             const id = memberUuid(args.member_name);
             byId.set(id, args.member_name);
@@ -62,7 +68,7 @@ function buildCallTool({ down = [], executeCommand } = {}) {
             const member = m && byId.get(m[1]);
             const tool = m && m[2];
             if (tool === 'kb_stats') {
-                kbStatsProbes.push(member);
+                if (!selectionDone) kbStatsProbes.push(member);
                 if (down.includes(member)) {
                     return { content: [{ type: 'text', text: JSON.stringify({ error: { code: 'E-CONNECT', message: `member ${member} unreachable` } }) }] };
                 }

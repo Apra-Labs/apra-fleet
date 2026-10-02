@@ -58,6 +58,7 @@ import { resultText, toolErrorText } from './mcp-result.mjs';
 import { resolveMemberTarget, resolveMemberOs, clearMemberOsCache } from './member-target.mjs';
 import { createMemberCall, buildRemoteCallCommand, MemberCallError, MEMBER_CALL_ARGS_DIR } from './member-call.mjs';
 import { createDispatchAccounting } from './dispatch-accounting.mjs';
+import { createMemberInitProbe, MEMBER_INIT_LOG_PREFIX, MEMBER_INIT_STATE_NAMESPACE } from './member-init-probe.mjs';
 import { createSprintState, sprintScopedFleetApi, resolveSettleShellWith } from './sprint-state.mjs';
 // apra-fleet-3swo.6.10: the per-member git/dolt sync brackets, moved verbatim
 // out of this file into ./member-sync.mjs (see that module's header for the
@@ -1371,6 +1372,51 @@ async function runSprintCycle(context) {
     });
     await kbMaintainers.selectAll();
     context.kbMaintainers = kbMaintainers;
+
+    // Per-member sprint-init probe (member-init-probe.mjs): once per member,
+    // after kb_maintainer selection and before KB priming and the first
+    // dispatch -- start-if-down (remote), the MEMBER tools/list check plus a
+    // recorded fleetMcp refresh, the CONFIRMED count and the code index first
+    // tick. Every kb_*/code_* call goes through the same memberCall the KB work
+    // uses; the orchestrator callTool only reads member_detail. Never blocks:
+    // a probe that throws leaves every member unverified and the sprint goes
+    // on. Records land in sprint state (sprintState.memberInit), on the
+    // context (context.memberInit + context.isMemberVerified, read by the
+    // KNOWLEDGE BANK injection) and in the published viewer state.
+    // context.memberInitProbe is the test seam.
+    const kbListTools = canMemberCall
+        ? (member) => {
+            memberCaller ??= createMemberCall({ fleetApi: sprintScopedFleetApi({ callTool: args.callTool, log }), log });
+            if (typeof memberCaller.listTools !== 'function') throw new Error('member session channel has no listTools');
+            return memberCaller.listTools(member);
+        }
+        : undefined;
+    const memberInitProbe = context.memberInitProbe ?? createMemberInitProbe({
+        members: physicalMembers,
+        callTool: (args && typeof args.callTool === 'function') ? args.callTool : undefined,
+        memberCall: kbMemberCall,
+        listTools: kbListTools,
+        fleetApi: sprintState.fleetApi,
+        kbMaintainers: () => context.kbMaintainers,
+        log,
+    });
+    let memberInitRecords = [];
+    try {
+        const probed = await memberInitProbe.probeAll();
+        memberInitRecords = Array.isArray(probed) ? probed : [];
+    } catch (err) {
+        log(`${MEMBER_INIT_LOG_PREFIX} WARN probe failed (non-fatal; every member is treated as unverified): ${err && err.message ? err.message : err}`);
+    }
+    sprintState.memberInit.splice(0, sprintState.memberInit.length, ...memberInitRecords);
+    context.memberInit = sprintState.memberInit;
+    context.isMemberVerified = (memberName) => sprintState.memberInit.some((r) => r && r.member === memberName && r.verified === true);
+    if (typeof publishState === 'function') {
+        try {
+            publishState(MEMBER_INIT_STATE_NAMESPACE, { members: sprintState.memberInit.slice() });
+        } catch (err) {
+            log(`${MEMBER_INIT_LOG_PREFIX} could not publish the init records (non-fatal): ${err && err.message ? err.message : err}`);
+        }
+    }
 
     const kbPriming = context.kbPriming ?? createKbPrimingClient({
         callTool: (args && typeof args.callTool === 'function') ? args.callTool : undefined,
