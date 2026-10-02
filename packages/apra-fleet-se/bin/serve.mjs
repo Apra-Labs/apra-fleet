@@ -49,7 +49,8 @@ import { createBacklog, registerBacklogRoutes } from '../src/supervisor/backlog.
 import { createDashboard, registerDashboardRoutes } from '../src/supervisor/dashboard.mjs';
 import { createSprintController, registerSprintRoutes, defaultMemberOverlapGuard, ApiError } from '../src/supervisor/api.mjs';
 import { createScopeGuard, formatScopeConflict } from '../src/supervisor/scope-overlap.mjs';
-import { listFleetMembers, executeFleetCommand } from '../src/supervisor/fleet-members.mjs';
+import { listFleetMembers, executeFleetCommand, registerFleetMember, updateFleetMember } from '../src/supervisor/fleet-members.mjs';
+import { ensureBacklogMember, BacklogMemberRefusedError } from '../src/supervisor/backlog-member.mjs';
 import { createDoltOrphanSweep, normalizeMsysPathForPlatform } from '../src/supervisor/dolt-orphan-sweep.mjs';
 import { resolveFleetServerConnection } from './cli.mjs';
 import {
@@ -136,7 +137,28 @@ export function parseServeArgs(argv) {
     }
 }
 
-export async function serveMain(argv = process.argv.slice(2)) {
+/**
+ * The production ensureBacklogMember wiring: every fleet call uses the same
+ * short-lived-connection helpers as listFleetMembers (the supervisor holds no
+ * standing fleet transport). serveMain's `deps.ensureBacklogMember` replaces
+ * this whole function, so tests never need a live fleet server.
+ * @param {{ beadsDir: string|null }} opts
+ */
+export function defaultEnsureBacklogMember({ beadsDir }) {
+    const resolveConnection = resolveFleetServerConnection;
+    return ensureBacklogMember({
+        beadsDir,
+        listMembers: () => listFleetMembers({ resolveConnection }),
+        registerMember: (options) => registerFleetMember({ options, resolveConnection }),
+        updateMember: (options) => updateFleetMember({ options, resolveConnection }),
+    });
+}
+
+/**
+ * @param {string[]} [argv]
+ * @param {{ ensureBacklogMember?: (opts: { beadsDir: string|null }) => Promise<{ get: Function, stop?: Function }> }} [deps]
+ */
+export async function serveMain(argv = process.argv.slice(2), deps = {}) {
     const { values } = parseServeArgs(argv);
 
     if (values.help) {
@@ -209,6 +231,32 @@ export async function serveMain(argv = process.argv.slice(2)) {
         console.log(`[supervisor] ${formatBeadsIdentity(beadsIdentityRecord, { label: 'supervisor' })}`);
     } else {
         console.warn(`[supervisor] WARNING: ${beadsWarning}`);
+    }
+
+    // The supervisor's OWN backlog member (src/supervisor/backlog-member.mjs):
+    // an LLM-less, unreservable local member whose work folder is repoRoot.
+    // Ensured BEFORE any seam is built or the port is bound, so a
+    // refuse-to-start condition (an LLM member already owns repoRoot, a name
+    // clash) exits 1 without serving anything. Fleet unreachable is NOT a
+    // refusal: the supervisor starts degraded (launches answer 503 with the
+    // reason) and the handle retries in the background until ready. No
+    // .beads discovered -> degraded with a reason naming --beads-dir.
+    const ensureBacklog = deps.ensureBacklogMember ?? defaultEnsureBacklogMember;
+    let backlogMember;
+    try {
+        backlogMember = await ensureBacklog({ beadsDir: discovered ? repoRoot : null });
+    } catch (err) {
+        if (err instanceof BacklogMemberRefusedError) {
+            console.error(`Error: refusing to start: ${err.message}`);
+            selfLog.stop();
+            return { exitCode: 1 };
+        }
+        throw err;
+    }
+    {
+        const st = backlogMember.get();
+        if (st.status === 'ready') console.log(`[supervisor] backlog member: '${st.member.name}' (ready)`);
+        else console.warn(`[supervisor] WARNING: backlog member degraded -- ${st.reason}`);
     }
 
     // The durable reservation ledger (eft.5.1) and its terminal-event history
@@ -378,7 +426,7 @@ export async function serveMain(argv = process.argv.slice(2)) {
         ownerDataDirPrefix: sweepOwnerDataDir,
     });
 
-    const supervisor = createSupervisor({ port, ledger, spawner, watchdog, dashboard, idAllocator, doltMutex, doltOrphanSweep, beadsIdentity });
+    const supervisor = createSupervisor({ port, ledger, spawner, watchdog, dashboard, idAllocator, doltMutex, doltOrphanSweep, beadsIdentity, backlogMember });
     registerIdAllocatorRoutes(supervisor, idAllocator, { readJsonBody, sendJson });
     registerDoltMutexRoutes(supervisor, doltMutex, { readJsonBody, sendJson });
 
@@ -426,6 +474,7 @@ export async function serveMain(argv = process.argv.slice(2)) {
         getBacklog: async () => ({ tree: await backlog.buildTree() }),
         beforeLaunch,
         beadsIdentity,
+        backlogMember,
     });
     registerSprintRoutes(supervisor, sprintController);
 
@@ -491,6 +540,7 @@ export async function serveMain(argv = process.argv.slice(2)) {
     // Keep the process alive until an explicit shutdown resolves. Awaiting this
     // is what makes `fleet-se serve` "always-on" -- nothing else drives exit.
     await supervisor.shutdownRequested;
+    if (typeof backlogMember.stop === 'function') backlogMember.stop();
     return { exitCode: 0 };
 }
 
