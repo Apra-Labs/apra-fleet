@@ -115,7 +115,7 @@ afterAll(async () => {
 });
 
 describe('kb (self): two MEMBER sessions on one server each operate on their own member folder', () => {
-  it('kb_query and kb_stats resolve each member\'s own KB with no scope argument; a capture by A is invisible to B', async () => {
+  it('kb_query and kb_list resolve each member\'s own KB with no scope argument; a capture by A is invisible to B', async () => {
     const alpha = await connect(members.alpha);
     const beta = await connect(members.beta);
 
@@ -130,10 +130,12 @@ describe('kb (self): two MEMBER sessions on one server each operate on their own
     const betaHits = await callJson(beta, 'kb_query', { query: 'widget tenant', confidence: ALL_TIERS });
     expect(betaHits.l1_results.map((e: { id: string }) => e.id)).not.toContain(captured.id);
 
-    const alphaStats = await callJson(alpha, 'kb_stats');
-    const betaStats = await callJson(beta, 'kb_stats');
-    expect(alphaStats.totals.total).toBe(1);
-    expect(betaStats.totals.total).toBe(0);
+    // An explicit all-tier read is answered from each member's per-repo KB
+    // (kb_stats in a member session reports the checkout bible view instead).
+    const alphaList = await callJson(alpha, 'kb_list', { confidence: ALL_TIERS });
+    const betaList = await callJson(beta, 'kb_list', { confidence: ALL_TIERS });
+    expect(alphaList.total).toBe(1);
+    expect(betaList.total).toBe(0);
   });
 
   it('the KB each member session opens is identified by that member folder\'s origin remote', async () => {
@@ -203,7 +205,7 @@ describe('kb (self): a FULL session resolves the server working folder', () => {
 describe('kb (self): no kb_* tool input schema declares a scope parameter', () => {
   it('every kb_* tool listed over HTTP declares none of repo, repo_path, repo_remote_url', async () => {
     const tools = (await (await connect()).listTools()).tools.filter(t => t.name.startsWith('kb_'));
-    expect(tools.length).toBe(16);
+    expect(tools.length).toBe(17);
     const offenders = tools.flatMap(t =>
       SCOPE_FIELDS.filter(f => Object.prototype.hasOwnProperty.call((t.inputSchema as { properties?: object }).properties ?? {}, f))
         .map(f => `${t.name}.${f}`));
@@ -212,9 +214,9 @@ describe('kb (self): no kb_* tool input schema declares a scope parameter', () =
 
   it('a scope argument sent anyway is ignored: the member session still decides the KB', async () => {
     const beta = await connect(members.beta);
-    const out = await callJson(beta, 'kb_stats', { repo_path: folders.alpha, repo_remote_url: remoteFor('alpha') });
+    const out = await callJson(beta, 'kb_list', { confidence: ALL_TIERS, repo_path: folders.alpha, repo_remote_url: remoteFor('alpha') });
     // Alpha's KB holds an entry; beta's does not. The stray arguments did not
     // redirect the call to alpha.
-    expect(out.totals.total).toBe(0);
+    expect(out.total).toBe(0);
   });
 });

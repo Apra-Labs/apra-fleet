@@ -70,6 +70,10 @@ export const GUARDED_MODULES = [
     'git-sync.mjs',
     'coordination.mjs',
     'kb.mjs',
+    // Per-repository kb_maintainer selection. Issues no fleet call itself
+    // (every member access is injected by runner.js), registered so a future
+    // direct call added here is scanned from the start.
+    'kb-maintainer.mjs',
     'beads-scope.mjs',
     'beads-transitions.mjs',
     'role-policies.mjs',
@@ -386,6 +390,9 @@ export const GUARDED_MODULES = [
     // command() sites (the memory list and the per-key forget), no agent(),
     // and its push goes through an injected bracketed callback.
     'beads-memory-hygiene.mjs',
+    // The engine CI gate: ONE member_name-bearing command() site (the
+    // origin-remote read on the git-capable member), no agent(), no push.
+    'ci-gate.mjs',
     'vcs-module.mjs',
     'viewer-extensions.mjs',
     'vcs-providers/azure-devops.mjs',

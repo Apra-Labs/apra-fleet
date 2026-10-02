@@ -164,6 +164,14 @@ For each feature create two classes of tasks:
   (architecture, docs, UX judgment).
 - Priority: same as its feature
 
+**No CI-status criteria in the plan**: never write an acceptance criterion that
+depends on a CI run ("CI is green", "the CI workflow passes on every OS") on any
+task, feature or bug you create. Doers and reviewers do not trigger, wait for, or
+judge CI; such a criterion cannot be closed inside the sprint and stalls it. State
+what can be checked locally instead (build, lint, the tests a doer can run itself).
+If a scope bead carries a CI-status criterion, plan the locally checkable work for
+it and leave the CI part out of every task.
+
 **Model tier** (required on every task, both impl and test): set the model tier as beads
 metadata at creation time, not in `--notes`:
 ```bash

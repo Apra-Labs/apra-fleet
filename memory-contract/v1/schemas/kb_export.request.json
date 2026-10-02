@@ -16,6 +16,16 @@
             "global"
           ],
           "description": "project (default, unchanged): export the project KB to .fleet/kb-canonical.json. global: export the GLOBAL KB to .fleet/kb-canonical-global.json in the calling session's own repo (in practice the apra-fleet platform repo, committed there so the installer can distribute it -- D8)."
+        },
+        "baseBranch": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The target base branch (the branch the entries merge into). Written to provenance.branch. Omitted: the export folder HEAD branch."
+        },
+        "baseCommit": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The base commit the entries were verified against. Written to provenance.commit. Omitted: the export folder HEAD commit."
         }
       },
       "additionalProperties": false

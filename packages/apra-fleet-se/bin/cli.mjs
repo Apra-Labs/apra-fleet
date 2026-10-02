@@ -179,6 +179,10 @@ export function buildOptionsSpec() {
         // body's phases.regression:"skip"). Never silent: logged, and reported in
         // the sprint analysis and the PR body.
         'skip-regression': { type: 'boolean' },
+        // --ci-gate is DELIBERATELY NOT WIRED (2026-10-01): the runner's
+        // ci_gate arg is disabled until the CI-as-quality-resource epic
+        // (apra-fleet-dv8i) designs the flow -- see fleet-sprint/sprint-args.mjs.
+        // 'ci-gate': { type: 'string' },
         help: { type: 'boolean', short: 'h' },
     };
 }
@@ -330,7 +334,7 @@ export async function resolveRoleMap(rawValue, deps = {}) {
  * }} opts
  * @returns {object}
  */
-export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goal, maxCycles, requirementsFile, roleMap, budget, dispatchTimeoutS, usageLimitMaxWaitS, usageLimitMaxReprobes, serviceUrl, runId, expectBeads, skipRegression }) {
+export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goal, maxCycles, requirementsFile, roleMap, budget, dispatchTimeoutS, usageLimitMaxWaitS, usageLimitMaxReprobes, serviceUrl, runId, expectBeads, skipRegression, ciGate }) {
     const args = {
         target_issues: targetIssues,
         members,
@@ -364,6 +368,8 @@ export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goa
     // The raw --expect-beads JSON, forwarded verbatim; runner.js's
     // validateArgs() parses it (validateExpectBeads) and rejects bad JSON.
     if (expectBeads !== undefined) args.expect_beads = expectBeads;
+    // --ci-gate is not wired (apra-fleet-dv8i); ci_gate is never forwarded.
+    // if (ciGate !== undefined) args.ci_gate = ciGate;
     return args;
 }
 
@@ -1040,6 +1046,7 @@ async function main() {
                 runId: effectiveRunId,
                 expectBeads,
                 skipRegression: Boolean(values['skip-regression']),
+                // ciGate: values['ci-gate'],  -- not wired (apra-fleet-dv8i)
             }),
             // apra-fleet-eft.75.1: wires this already-connected mcpClient
             // through to runner.js's createMemberSessionGuard (see its doc

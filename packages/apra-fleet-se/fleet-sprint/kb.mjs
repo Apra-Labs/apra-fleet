@@ -1,6 +1,6 @@
 // KB (Knowledge Bank) work for fleet-sprint: the per-dispatch relevance-ranked read (kb_query), the vetting
 // and forwarding of a role's kb_captures/kb_promotions payload (kb_capture/
-// kb_promote), the canonical-bible publish (kb_export), the once-per-sprint
+// kb_promote), the per-round bible commit (kb_bible_commit), the once-per-sprint
 // priming client (kb_session_prime/kb_import) and the prompt-construction
 // helpers that hand a role's primed knowledge and promotion candidates to
 // its dispatch prompt -- extracted move-only out of runner.js
@@ -166,7 +166,45 @@ export function vetKbWork(role, result) {
         }
     }
 
-    return { captures, promotions, refused };
+    // kb_discards: the reviewer's DISCARD judgement on a promotion candidate.
+    // Same role gate and evidence bar as kb_promotions -- a discard removes an
+    // entry from every read, so it is no less consequential than a promotion.
+    const discards = [];
+    const rawDiscards = (result && Array.isArray(result.kb_discards)) ? result.kb_discards : [];
+    if (rawDiscards.length > 0 && !KB_PROMOTER_ROLES.has(role)) {
+        refused.push(`${role}: kb_discards refused -- discard is reviewer-only`);
+    } else {
+        for (const d of rawDiscards) {
+            if (!d || typeof d.id !== 'string' || d.id.length === 0) {
+                refused.push(`${role}: discard missing id`);
+                continue;
+            }
+            if (typeof d.reason !== 'string' || d.reason.trim().length < KB_MIN_PROMOTE_REASON) {
+                refused.push(`${role}: discard ${d.id} has no recorded evidence`);
+                continue;
+            }
+            discards.push({ id: d.id, reason: d.reason.trim() });
+        }
+    }
+
+    // One output may not both CONFIRM and DISCARD the same entry: the two
+    // judgements contradict each other, so neither is executed and both sides
+    // are logged.
+    const discardIds = new Set(discards.map((d) => d.id));
+    const conflicted = new Set(promotions.filter((p) => discardIds.has(p.id)).map((p) => p.id));
+    for (const p of promotions) {
+        if (conflicted.has(p.id)) refused.push(`${role}: promotion ${p.id} refused -- the same output also discards it (promote reason: ${p.reason})`);
+    }
+    for (const d of discards) {
+        if (conflicted.has(d.id)) refused.push(`${role}: discard ${d.id} refused -- the same output also promotes it (discard reason: ${d.reason})`);
+    }
+
+    return {
+        captures,
+        promotions: promotions.filter((p) => !conflicted.has(p.id)),
+        discards: discards.filter((d) => !conflicted.has(d.id)),
+        refused,
+    };
 }
 
 /** Max promotion candidates offered to one reviewer, so the prompt stays bounded. */
@@ -177,9 +215,112 @@ function memberLabel(member) {
     return (member && (member.name || member.id)) || 'unknown member';
 }
 
+/** The committed bible, relative to the maintainer's checkout root. */
+const BIBLE_FILE = '.fleet/kb-canonical.json';
+
+/**
+ * memberCall error codes that mean the TOOL refused the call (the member was
+ * reached and answered). Every other coded error -- a connect failure, a
+ * send_files failure, an unparseable remote reply -- means the member could
+ * not be reached, so the write stays queued for a later attempt.
+ */
+const KB_TOOL_REJECTION_CODES = Object.freeze(new Set(['E-TOOL', 'E-USAGE', 'E-ARGS-FILE', 'E-CALL']));
+
+/** True when a thrown memberCall error means the member was unreachable. */
+function isUnreachableError(err) {
+    return !!(err && typeof err.code === 'string' && err.code.length > 0 && !KB_TOOL_REJECTION_CODES.has(err.code));
+}
+
+/** The member name a kb work call names (a member record or a bare name). */
+function memberNameOf(member) {
+    if (typeof member === 'string') return member;
+    return (member && typeof member.name === 'string') ? member.name : null;
+}
+
+/**
+ * Every KB write for a repository goes through that repository's
+ * kb_maintainer (kb-maintainer.mjs), in the maintainer's MEMBER session --
+ * never through the member whose dispatch produced it, and never through the
+ * orchestrator's own session.
+ *
+ *   - apply() vets a role's kb_captures / kb_promotions, then QUEUES them per
+ *     repository and flushes that repository's queue.
+ *   - A flush runs the existing G-pull (opts.gPull -> git-sync's bracketed
+ *     syncMemberBefore) on the maintainer BEFORE the batch, so the
+ *     maintainer's checkout holds the files a capture cites and the KB's
+ *     basis check passes. A G-pull failure means the maintainer is
+ *     unreachable: the batch stays queued and a WARN is logged.
+ *   - A maintainer that is mid-dispatch (it is usually also a doer) is BUSY:
+ *     its repository's writes stay queued and are applied between its
+ *     dispatches, never during one. runner.js reports the dispatch lifecycle
+ *     through dispatchStarted()/dispatchEnded(); the end of a dispatch
+ *     flushes whatever queued up behind it.
+ *   - A capture from a member whose work folder is not a repository has no
+ *     maintainer and is dropped with a WARN.
+ *   - A write the maintainer cannot be reached for mid-batch is put back at
+ *     the head of the queue: nothing is lost and nothing is silently dropped.
+ *
+ * The bible commit (commitRound): every promotion the maintainer applied is
+ * remembered per repository as a CONFIRMATION awaiting the bible. After each
+ * review round (reviewer, final reviewer, harvester) the engine calls
+ * commitRound(), which per repository with confirmations runs, on the
+ * maintainer: G-pull, kb_bible_commit {ids, baseBranch, baseCommit}, G-push.
+ * baseBranch is the sprint's TARGET BASE branch and baseCommit the base
+ * commit the entries were verified against (opts.bibleBase resolves both on
+ * the maintainer). A rejected G-push is retried exactly once: abort any
+ * in-progress rebase, G-pull onto the new remote tip, kb_bible_commit again
+ * with the same ids (it merges at entry level, so the concurrent change's
+ * entries survive with no manual merge) and G-push again. A second failure
+ * keeps the ids queued for the next round with a WARN. When kb_bible_commit
+ * commits nothing (committed:false) the ids leave the queue only once origin
+ * is shown to hold the bible (opts.bibleUnpushed): an earlier round's bible
+ * commit still unpushed on the maintainer is G-pushed (same retry and reset
+ * guards), and an undecidable check keeps the ids queued with a WARN. After
+ * seal() (a FAIL verdict or an aborted sprint) nothing further is committed.
+ *
+ * @param {{
+ *   memberCall?: (member: object, name: string, args: object) => Promise<any>,
+ *   maintainers?: object|(() => object),
+ *   gPull?: (memberName: string, options?: { resetToRemoteTip?: boolean }) => Promise<any>,
+ *   gPush?: (memberName: string) => Promise<any>,
+ *   abortRebase?: (memberName: string) => Promise<any>,
+ *   bibleBase?: (memberName: string) => Promise<{ baseBranch: string, baseCommit: string }|null>,
+ *   canResetCheckout?: (memberName: string, bibleFile: string) => Promise<{ safe: boolean, reason?: string }>,
+ *   checkedOutBranch?: (memberName: string) => Promise<{ branch: string|null, sprintBranch: string|null }>,
+ *   bibleUnpushed?: (memberName: string, bibleFile: string) => Promise<{ unpushed: boolean|null, reason?: string }>,
+ *   sprintStartMs?: number|(() => number),
+ *   log?: Function,
+ * }} opts
+ */
 export function createKbWorkClient(opts = {}) {
-    const { memberCall, log = () => {} } = opts;
+    const { memberCall, gPull, gPush, abortRebase, bibleBase, canResetCheckout, checkedOutBranch, bibleUnpushed, log = () => {} } = opts;
+    /** The sprint's start time (ms since epoch) from the sprint state, or null when unknown. */
+    const sprintStartMs = () => {
+        const v = typeof opts.sprintStartMs === 'function' ? opts.sprintStartMs() : opts.sprintStartMs;
+        return (typeof v === 'number' && Number.isFinite(v)) ? v : null;
+    };
     const active = typeof memberCall === 'function';
+
+    /** The kb_maintainer selector (createKbMaintainerSelector), or null. */
+    function selector() {
+        const m = typeof opts.maintainers === 'function' ? opts.maintainers() : opts.maintainers;
+        return (m && typeof m.maintainerForMember === 'function') ? m : null;
+    }
+
+    /** repo -> queued writes, oldest first: { kind, role, payload }. */
+    const queues = new Map();
+    /** repo -> tail of the serialized flush chain for that repository. */
+    const flushChains = new Map();
+    /** member name -> open dispatch count (nested brackets count once each). */
+    const busy = new Map();
+    /** member name -> the write currently in flight to it, if any. */
+    const inFlight = new Map();
+    /** repo -> ids the maintainer CONFIRMED that are not yet in a pushed bible commit (insertion order). */
+    const confirmations = new Map();
+    /** Why the bible commit was sealed (a FAIL verdict, an abort), or null while open. */
+    let sealedReason = null;
+
+    const isBusy = (memberName) => (busy.get(memberName) || 0) > 0;
 
     /** Best-effort JSON out of an MCP result (string, content-block, or plain object). */
     function parseResult(result) {
@@ -190,7 +331,493 @@ export function createKbWorkClient(opts = {}) {
         return (result && typeof result === 'object') ? result : null;
     }
 
+    /**
+     * The maintainer selection ({repo, member, record}) KB writes produced by
+     * `memberName` go to, or null. A member whose own work folder is not a
+     * repository has none.
+     */
+    function maintainerFor(memberName) {
+        const sel = selector();
+        if (!sel || !memberName) return null;
+        const m = sel.maintainerForMember(memberName);
+        return (m && m.member && m.record) ? m : null;
+    }
+
+    /**
+     * The maintainer a REVIEWER's candidates come from and its CONFIRM/DISCARD
+     * judgements go to: the reviewer's own repository's maintainer, or -- for
+     * a reviewer whose work folder is not a checkout -- the sprint's only
+     * maintainer when exactly one repository has one.
+     */
+    function reviewMaintainerFor(memberName) {
+        if (!memberName) return null;
+        const own = maintainerFor(memberName);
+        if (own) return own;
+        const sel = selector();
+        if (!sel || typeof sel.maintainers !== 'function' || typeof sel.getKbMaintainer !== 'function') return null;
+        const repos = [...sel.maintainers()].filter(([, m]) => m && m.member).map(([repo]) => repo);
+        if (repos.length !== 1) return null;
+        const m = sel.getKbMaintainer(repos[0]);
+        return (m && m.member && m.record) ? m : null;
+    }
+
+    const zeroCounts = () => ({ captured: 0, promoted: 0, discarded: 0 });
+
+    const OPS = {
+        capture: {
+            tool: 'kb_capture',
+            args: (p) => ({ ...p }),
+            subject: (p) => `"${p.title}"`,
+            counter: 'captured',
+        },
+        promote: {
+            tool: 'kb_promote',
+            args: (p) => ({ id: p.id, reason: p.reason }),
+            subject: (p) => p.id,
+            counter: 'promoted',
+        },
+        discard: {
+            tool: 'kb_invalidate',
+            args: (p) => ({ ids: [p.id] }),
+            subject: (p) => p.id,
+            counter: 'discarded',
+            // kb_invalidate {ids} answers {discarded, not_found,
+            // already_discarded}. Every candidate is maintainer-tagged by
+            // construction, so a not-found means the entry is gone: logged,
+            // non-fatal, and not counted as a discard.
+            accept: (p, res) => {
+                const parsed = parseResult(res);
+                if (parsed && Array.isArray(parsed.not_found) && parsed.not_found.includes(p.id)) {
+                    log(`[kb-work] kb_invalidate: entry ${p.id} not found on the maintainer -- already gone (non-fatal)`);
+                    return false;
+                }
+                if (parsed && Array.isArray(parsed.already_discarded) && parsed.already_discarded.includes(p.id)) {
+                    log(`[kb-work] kb_invalidate: entry ${p.id} was already discarded (non-fatal)`);
+                    return false;
+                }
+                return true;
+            },
+        },
+    };
+
+    /**
+     * Apply one repository's queue in the maintainer's session. Never throws.
+     * @returns {Promise<{captured: number, promoted: number, discarded: number}>}
+     */
+    async function flushRepo(repo) {
+        const counts = zeroCounts();
+        const queue = queues.get(repo);
+        if (!queue || queue.length === 0) return counts;
+        const sel = selector();
+        const target = sel && typeof sel.getKbMaintainer === 'function' ? sel.getKbMaintainer(repo) : null;
+        if (!target || !target.record) {
+            log(`[kb-work] WARN: repository ${repo} has no kb_maintainer -- ${queue.length} KB write(s) stay queued`);
+            return counts;
+        }
+        const maintainer = target.member;
+        if (isBusy(maintainer)) {
+            log(`[kb-work] maintainer '${maintainer}' is mid-dispatch -- ${queue.length} KB write(s) for ${repo} stay queued until its dispatch ends`);
+            return counts;
+        }
+        // G-pull BEFORE every batch: the maintainer's checkout must hold the
+        // files the queued captures cite before kb_capture's basis check runs.
+        if (typeof gPull === 'function') {
+            // Register the pull in inFlight so dispatchStarted() waits it out
+            // instead of running its own G-pull concurrently on the same checkout.
+            const pull = Promise.resolve().then(() => gPull(maintainer));
+            inFlight.set(maintainer, pull.then(() => {}, () => {}));
+            try {
+                await pull;
+            } catch (err) {
+                log(`[kb-work] WARN: G-pull on maintainer '${maintainer}' failed (${err && err.message ? err.message : String(err)}) -- maintainer unreachable; ${queue.length} KB write(s) for ${repo} stay queued`);
+                return counts;
+            } finally {
+                inFlight.delete(maintainer);
+            }
+        }
+        const batch = queue.splice(0, queue.length);
+        for (let i = 0; i < batch.length; i++) {
+            const op = batch[i];
+            if (isBusy(maintainer)) {
+                // A dispatch started on the maintainer while this batch ran:
+                // no write may land during it.
+                queue.unshift(...batch.slice(i));
+                log(`[kb-work] maintainer '${maintainer}' started a dispatch -- ${batch.length - i} KB write(s) for ${repo} stay queued until it ends`);
+                break;
+            }
+            const spec = OPS[op.kind];
+            const call = memberCall(target.record, spec.tool, spec.args(op.payload));
+            inFlight.set(maintainer, call.then(() => {}, () => {}));
+            let res;
+            try {
+                res = await call;
+            } catch (err) {
+                if (isUnreachableError(err)) {
+                    queue.unshift(...batch.slice(i));
+                    log(`[kb-work] WARN: maintainer '${maintainer}' unreachable during ${spec.tool} for ${spec.subject(op.payload)} (${err.message}) -- ${batch.length - i} KB write(s) for ${repo} stay queued`);
+                    break;
+                }
+                log(`[kb-work] ${spec.tool} failed for ${spec.subject(op.payload)} (non-fatal): ${err && err.message ? err.message : String(err)}`);
+                continue;
+            } finally {
+                inFlight.delete(maintainer);
+            }
+            // apra-fleet-23c: an MCP client RESOLVES with {isError:true} on a
+            // tool-level failure rather than throwing, so a non-throwing call
+            // is not by itself a success.
+            if (isToolError(res)) {
+                log(`[kb-work] ${spec.tool} rejected for ${spec.subject(op.payload)} (non-fatal): ${toolErrorText(res)}`);
+                continue;
+            }
+            if (typeof spec.accept === 'function' && !spec.accept(op.payload, res)) continue;
+            counts[spec.counter]++;
+            if (op.kind === 'promote') {
+                if (!confirmations.has(repo)) confirmations.set(repo, new Set());
+                confirmations.get(repo).add(op.payload.id);
+            }
+        }
+        if (counts.captured || counts.promoted || counts.discarded) {
+            log(`[kb-work] maintainer '${maintainer}' (${repo}): captured ${counts.captured}, promoted ${counts.promoted}, discarded ${counts.discarded}`);
+        }
+        return counts;
+    }
+
+    /**
+     * Serialize every maintainer operation per repository (queue flushes and
+     * bible commits) so two never interleave on one checkout.
+     */
+    function serialize(repo, fn) {
+        const prev = flushChains.get(repo) || Promise.resolve();
+        const next = prev.then(fn, fn);
+        flushChains.set(repo, next.then(() => {}, () => {}));
+        return next;
+    }
+
+    function flush(repo) {
+        return serialize(repo, () => flushRepo(repo));
+    }
+
+    const errText = (err) => (err && err.message ? err.message : String(err));
+
+    /**
+     * One kb_bible_commit attempt on the maintainer: G-pull, resolve the
+     * base, kb_bible_commit, then G-push when a commit was made. Returns
+     * { ok: true, result } or { ok: false, stage, error } -- never throws.
+     * `resetToRemoteTip` is the retry's G-pull: after a rejected push the
+     * maintainer holds a local bible commit the remote tip does not, so a
+     * fast-forward pull would fail by construction; kb_bible_commit re-merges
+     * the same ids at entry level on top of the new tip instead.
+     */
+    async function bibleAttempt(target, ids, { resetToRemoteTip = false } = {}) {
+        const maintainer = target.member;
+        try {
+            await gPull(maintainer, resetToRemoteTip ? { resetToRemoteTip: true } : {});
+        } catch (err) {
+            return { ok: false, stage: 'G-pull', error: errText(err) };
+        }
+        let base;
+        try {
+            base = await bibleBase(maintainer);
+        } catch (err) {
+            return { ok: false, stage: 'base resolution', error: errText(err) };
+        }
+        if (!base || typeof base.baseBranch !== 'string' || !base.baseBranch || typeof base.baseCommit !== 'string' || !base.baseCommit) {
+            return { ok: false, stage: 'base resolution', error: 'the base branch or base commit could not be resolved on the maintainer' };
+        }
+        let res;
+        try {
+            res = await memberCall(target.record, 'kb_bible_commit', { ids, baseBranch: base.baseBranch, baseCommit: base.baseCommit });
+        } catch (err) {
+            return { ok: false, stage: 'kb_bible_commit', error: errText(err) };
+        }
+        if (isToolError(res)) return { ok: false, stage: 'kb_bible_commit', error: toolErrorText(res) };
+        const result = parseResult(res) || {};
+        // Nothing committed (every id skipped, or the entry set unchanged).
+        // That alone does not mean the entries are published: an earlier
+        // round's bible commit may still sit unpushed on the maintainer (its
+        // G-push was rejected and the reset onto the remote tip was refused to
+        // protect unrelated local work). Only origin decides: when it already
+        // holds the checkout's bible there is nothing to push; when a local
+        // commit holds it, push that commit; otherwise (or when it cannot be
+        // established) the ids stay queued.
+        if (result.committed === false) {
+            const where = await bibleOnOrigin(maintainer);
+            if (where.unpushed === false) return { ok: true, result, pushed: false };
+            if (where.unpushed !== true) return { ok: false, stage: 'publication check', error: where.reason || 'whether origin holds the bible could not be established' };
+            log(`[kb-work] kb_bible_commit made no new commit on maintainer '${maintainer}', but an earlier bible commit is not on origin yet -- pushing it`);
+        }
+        try {
+            await gPush(maintainer);
+        } catch (err) {
+            return { ok: false, stage: 'G-push', error: errText(err) };
+        }
+        return { ok: true, result, pushed: true };
+    }
+
+    /**
+     * Whether origin's sprint branch already holds the maintainer checkout's
+     * bible, through the injected bibleUnpushed probe. Resolves
+     * { unpushed: false } when it does, { unpushed: true } when a local-only
+     * commit holds the bible, or { unpushed: null, reason } when that cannot
+     * be established (no probe wired, a git failure, a bible change that is
+     * not committed) -- never assumes published. Never throws.
+     */
+    async function bibleOnOrigin(maintainer) {
+        if (typeof bibleUnpushed !== 'function') return { unpushed: null, reason: 'no publication check is wired for the bible commit' };
+        let r;
+        try { r = await bibleUnpushed(maintainer, BIBLE_FILE); } catch (err) { return { unpushed: null, reason: errText(err) }; }
+        if (r && (r.unpushed === true || r.unpushed === false)) return { unpushed: r.unpushed };
+        return { unpushed: null, reason: (r && r.reason) || 'the publication check returned no answer' };
+    }
+
+    /**
+     * True when a hard reset onto the remote tip would drop nothing but the
+     * bible commit. When it would drop anything else (or that cannot be
+     * established), logs a WARN and returns false -- the caller keeps the ids
+     * queued and does not reset. Without an injected guard the reset is allowed.
+     */
+    async function resetIsSafe(maintainer, repo) {
+        if (typeof canResetCheckout !== 'function') return true;
+        let verdict;
+        try { verdict = await canResetCheckout(maintainer, BIBLE_FILE); } catch (err) { verdict = { safe: false, reason: errText(err) }; }
+        if (verdict && verdict.safe) return true;
+        log(`[kb-work] WARN: not resetting maintainer '${maintainer}' (${repo}) onto the remote tip: ${(verdict && verdict.reason) || 'unknown'} -- unrelated local work was preserved; the bible confirmations stay queued for the next round`);
+        return false;
+    }
+
+    /**
+     * True when the maintainer's checked-out branch is the sprint branch.
+     * Checked before the first G-pull of a bible commit and before every
+     * reset onto the remote tip, so no pull, reset --hard, commit or push
+     * ever runs on any other branch. When the branch differs (or cannot be
+     * read), logs a WARN naming the maintainer and both branches and returns
+     * false -- the caller keeps the ids queued. Without an injected guard
+     * the check passes.
+     */
+    async function onSprintBranch(maintainer, repo, count) {
+        if (typeof checkedOutBranch !== 'function') return true;
+        let found = null;
+        let sprintBranch = null;
+        let readError = null;
+        try {
+            const r = await checkedOutBranch(maintainer);
+            found = r && typeof r.branch === 'string' && r.branch ? r.branch : null;
+            sprintBranch = r && typeof r.sprintBranch === 'string' && r.sprintBranch ? r.sprintBranch : null;
+        } catch (err) {
+            readError = errText(err);
+        }
+        if (found && sprintBranch && found === sprintBranch) return true;
+        const foundText = found ? `'${found}'` : `an unreadable branch${readError ? ` (${readError})` : ''}`;
+        log(`[kb-work] WARN: maintainer '${maintainer}' (${repo}) has ${foundText} checked out, not the sprint branch '${sprintBranch || 'unknown'}' -- no bible commit, push or reset is made there; ${count} confirmation(s) stay queued for the next round`);
+        return false;
+    }
+
+    /**
+     * Commit one repository's pending confirmations to the bible on its
+     * maintainer. Never throws; ids that do not reach a pushed commit stay
+     * pending for the next round.
+     * @returns {Promise<{ committed: number, pending: number }>}
+     */
+    async function commitRepo(repo) {
+        const pending = confirmations.get(repo);
+        if (!pending || pending.size === 0) return { committed: 0, pending: 0 };
+        const ids = [...pending];
+        if (sealedReason) return { committed: 0, pending: ids.length };
+        const sel = selector();
+        const target = sel && typeof sel.getKbMaintainer === 'function' ? sel.getKbMaintainer(repo) : null;
+        if (!target || !target.record) {
+            log(`[kb-work] WARN: repository ${repo} has no kb_maintainer -- ${ids.length} confirmation(s) stay queued for the bible`);
+            return { committed: 0, pending: ids.length };
+        }
+        const maintainer = target.member;
+        if (typeof gPull !== 'function' || typeof gPush !== 'function' || typeof bibleBase !== 'function') {
+            log(`[kb-work] WARN: no git sync wired for the bible commit -- ${ids.length} confirmation(s) for ${repo} stay queued`);
+            return { committed: 0, pending: ids.length };
+        }
+        if (isBusy(maintainer)) {
+            log(`[kb-work] maintainer '${maintainer}' is mid-dispatch -- ${ids.length} confirmation(s) for ${repo} stay queued for the next round's bible commit`);
+            return { committed: 0, pending: ids.length };
+        }
+        let release;
+        inFlight.set(maintainer, new Promise((r) => { release = r; }));
+        try {
+            if (!(await onSprintBranch(maintainer, repo, ids.length))) return { committed: 0, pending: ids.length };
+            let outcome = await bibleAttempt(target, ids);
+            if (!outcome.ok && outcome.stage === 'G-push') {
+                log(`[kb-work] G-push of the bible commit on maintainer '${maintainer}' (${repo}) was rejected (${outcome.error}) -- retrying once: rebase --abort, G-pull, kb_bible_commit, G-push`);
+                if (typeof abortRebase === 'function') {
+                    try { await abortRebase(maintainer); } catch (err) { log(`[kb-work] rebase --abort on maintainer '${maintainer}' failed (non-fatal): ${errText(err)}`); }
+                }
+                // The reset throws away the maintainer's local-only commits and
+                // uncommitted changes; it is usually also a doer, so only reset
+                // when that is the bible commit alone.
+                if (!(await onSprintBranch(maintainer, repo, ids.length))) return { committed: 0, pending: ids.length };
+                if (!(await resetIsSafe(maintainer, repo))) return { committed: 0, pending: ids.length };
+                outcome = await bibleAttempt(target, ids, { resetToRemoteTip: true });
+                if (!outcome.ok && (outcome.stage === 'G-push' || outcome.stage === 'kb_bible_commit')) {
+                    // Leave the checkout on the remote tip: an unpushed bible
+                    // commit would make the maintainer's next fast-forward
+                    // G-pull fail. The ids stay queued and are re-merged by
+                    // the next round's kb_bible_commit.
+                    if (typeof abortRebase === 'function') {
+                        try { await abortRebase(maintainer); } catch { /* best-effort */ }
+                    }
+                    try { if ((await onSprintBranch(maintainer, repo, ids.length)) && (await resetIsSafe(maintainer, repo))) await gPull(maintainer, { resetToRemoteTip: true }); } catch (err) {
+                        log(`[kb-work] WARN: could not reset maintainer '${maintainer}' onto the remote tip after the failed bible commit: ${errText(err)}`);
+                    }
+                }
+            }
+            if (!outcome.ok) {
+                log(`[kb-work] WARN: bible commit for ${repo} on maintainer '${maintainer}' failed at ${outcome.stage} (${outcome.error}) -- ${ids.length} confirmation(s) stay queued for the next round`);
+                return { committed: 0, pending: ids.length };
+            }
+            const skipped = Array.isArray(outcome.result.skipped) ? outcome.result.skipped : [];
+            for (const id of ids) pending.delete(id);
+            if (pending.size === 0) confirmations.delete(repo);
+            const merged = Array.isArray(outcome.result.merged) ? outcome.result.merged.length : ids.length - skipped.length;
+            if (skipped.length > 0) {
+                log(`[kb-work] kb_bible_commit skipped ${skipped.length} id(s) for ${repo} (not CONFIRMED in the maintainer's KB): ${skipped.map((x) => (x && x.id) || String(x)).join(', ')}`);
+            }
+            log(`[kb-work] bible commit for ${repo} on maintainer '${maintainer}': ${merged} confirmation(s) ${outcome.pushed ? 'committed and pushed' : 'already in the bible -- nothing to push'}`);
+            return { committed: outcome.pushed ? merged : 0, pending: pending.size };
+        } finally {
+            inFlight.delete(maintainer);
+            release();
+        }
+    }
+
+    function enqueue(repo, kind, role, payload) {
+        if (!queues.has(repo)) queues.set(repo, []);
+        queues.get(repo).push({ kind, role, payload });
+    }
+
+    /** Repositories whose maintainer is `memberName`. */
+    function reposMaintainedBy(memberName) {
+        const sel = selector();
+        if (!sel || typeof sel.maintainers !== 'function') return [];
+        const out = [];
+        for (const [repo, m] of sel.maintainers()) if (m && m.member === memberName) out.push(repo);
+        return out;
+    }
+
     return {
+        /**
+         * Dispatch lifecycle: a dispatch is starting on `memberName`. Marks it
+         * busy (no queued KB write starts on it from here on) and waits out a
+         * write already in flight to it. Never throws.
+         */
+        async dispatchStarted(memberName) {
+            if (!memberName) return;
+            busy.set(memberName, (busy.get(memberName) || 0) + 1);
+            const pending = inFlight.get(memberName);
+            if (pending) await pending;
+        },
+        /**
+         * Dispatch lifecycle: a dispatch on `memberName` ended. When it was the
+         * last open one, apply the writes that queued up behind it for every
+         * repository it maintains. Never throws.
+         */
+        async dispatchEnded(memberName) {
+            if (!memberName) return;
+            const n = (busy.get(memberName) || 0) - 1;
+            if (n > 0) { busy.set(memberName, n); return; }
+            busy.delete(memberName);
+            for (const repo of reposMaintainedBy(memberName)) {
+                try { await flush(repo); } catch (err) { log(`[kb-work] flush for ${repo} failed (non-fatal): ${err.message}`); }
+            }
+        },
+        /** Try every repository's queue (e.g. before the final review's bible commit). Never throws. */
+        async flushAll() {
+            const counts = zeroCounts();
+            for (const repo of [...queues.keys()]) {
+                const c = await flush(repo);
+                for (const k of Object.keys(counts)) counts[k] += c[k];
+            }
+            return counts;
+        },
+        /** Number of KB writes still queued (all repositories, or one). */
+        pendingCount(repo) {
+            if (repo) return (queues.get(repo) || []).length;
+            let n = 0;
+            for (const q of queues.values()) n += q.length;
+            return n;
+        },
+        /** Log a WARN for every repository that still has queued writes or confirmations. */
+        warnPending() {
+            for (const [repo, q] of queues) {
+                if (q.length > 0) log(`[kb-work] WARN: ${q.length} KB write(s) for ${repo} are still queued (maintainer busy or unreachable) -- not applied`);
+            }
+            for (const [repo, ids] of confirmations) {
+                if (ids.size > 0) log(`[kb-work] WARN: ${ids.size} confirmation(s) for ${repo} are not in a pushed bible commit${sealedReason ? ` (bible commits sealed: ${sealedReason})` : ''}`);
+            }
+        },
+        /**
+         * The review-round bible commit: apply whatever is still queued, then
+         * for every repository with confirmations, on its maintainer: G-pull,
+         * kb_bible_commit, G-push (see the client header for the retry). A
+         * round with no confirmations makes no call at all. A no-op once
+         * sealed. Never throws.
+         * @param {string} [label] the round, for the log
+         * @returns {Promise<{ committed: number, pending: number }>}
+         */
+        async commitRound(label = 'review round') {
+            const out = { committed: 0, pending: 0 };
+            if (!active) return out;
+            if (sealedReason) {
+                let n = 0;
+                for (const ids of confirmations.values()) n += ids.size;
+                if (n > 0) log(`[kb-work] ${label}: bible commits are sealed (${sealedReason}) -- ${n} confirmation(s) not committed`);
+                return { committed: 0, pending: n };
+            }
+            for (const repo of [...queues.keys()]) {
+                if (queues.get(repo).length > 0) await flush(repo);
+            }
+            for (const repo of [...confirmations.keys()]) {
+                const r = await serialize(repo, () => commitRepo(repo));
+                out.committed += r.committed;
+                out.pending += r.pending;
+            }
+            return out;
+        },
+        /**
+         * Stop every further bible commit: a FAIL verdict or an aborted
+         * sprint commits nothing more, and the confirmation queue is not
+         * flushed. Idempotent; the first reason wins.
+         */
+        seal(reason) {
+            if (sealedReason) return;
+            sealedReason = String(reason || 'sealed');
+            let n = 0;
+            for (const ids of confirmations.values()) n += ids.size;
+            log(`[kb-work] bible commits sealed (${sealedReason})${n > 0 ? ` -- ${n} confirmation(s) will not be committed` : ''}`);
+        },
+        /** Confirmations not yet in a pushed bible commit (all repositories, or one). */
+        pendingConfirmations(repo) {
+            if (repo) return [...(confirmations.get(repo) || [])];
+            const out = [];
+            for (const ids of confirmations.values()) out.push(...ids);
+            return out;
+        },
+        /**
+         * Per repository, the confirmations not yet in a pushed bible commit,
+         * for the persisted sprint analysis: [{ repo, count }] (repositories
+         * with none are left out), plus why bible commits were sealed, if
+         * they were.
+         * @returns {{ repos: Array<{ repo: string, count: number }>, sealedReason: string|null }}
+         */
+        unpublishedBible() {
+            const repos = [];
+            for (const [repo, ids] of confirmations) if (ids.size > 0) repos.push({ repo, count: ids.size });
+            return { repos, sealedReason };
+        },
+        /**
+         * The maintainer member record a reviewer's KB reads and judgements
+         * go to (its repository's maintainer, or the sprint's only one), or null.
+         */
+        maintainerRecordFor(member) {
+            const m = reviewMaintainerFor(memberNameOf(member));
+            return m ? m.record : null;
+        },
         /**
          * apra-fleet-0ef: the INFERRED entries this reviewer may promote.
          *
@@ -208,24 +835,46 @@ export function createKbWorkClient(opts = {}) {
          * "nothing to promote", never fail the review dispatch.
          */
         async promotionCandidates(member) {
-            // Without a resolved member there is no session to scope kb_list
-            // to; refuse rather than read some other KB (the apra-fleet-tm7
-            // repo-blindness class).
-            if (!active || !member) return [];
+            // The candidates live in the reviewer's repository MAINTAINER's KB
+            // (every KB write is routed there), tagged member:<maintainer uuid>
+            // by its MEMBER session. Without a maintainer there is no session
+            // to read them from; refuse rather than read some other KB (the
+            // apra-fleet-tm7 repo-blindness class).
+            const target = active ? reviewMaintainerFor(memberNameOf(member)) : null;
+            if (!target) return [];
+            // Writes still queued for this repository (a capture from this
+            // very round) get their chance to land before the read.
+            if (queues.has(target.repo)) await flush(target.repo);
             try {
-                const parsed = parseResult(await memberCall(member, 'kb_list', {
+                const res = await memberCall(target.record, 'kb_query', {
+                    tag: `member:${target.record.id}`,
                     confidence: ['INFERRED'],
                     limit: KB_MAX_PROMOTION_CANDIDATES,
-                }));
-                const results = parsed && Array.isArray(parsed.results) ? parsed.results : [];
+                });
+                if (isToolError(res)) {
+                    log(`[kb-work] kb_query for promotion candidates rejected on maintainer '${target.member}' (non-fatal): ${toolErrorText(res)}`);
+                    return [];
+                }
+                const parsed = parseResult(res);
+                const results = parsed && Array.isArray(parsed.l1_results) ? parsed.l1_results
+                    : (parsed && Array.isArray(parsed.results) ? parsed.results : []);
+                // The sprint window: only entries captured during THIS sprint
+                // are this sprint's to judge. An entry whose created_at cannot
+                // be read cannot be shown to be in the window.
+                const since = sprintStartMs();
+                const inWindow = (e) => {
+                    if (since === null) return true;
+                    const t = typeof e.created_at === 'string' ? Date.parse(e.created_at) : NaN;
+                    return Number.isFinite(t) && t >= since;
+                };
                 return results
                     // promote() refuses type='user-directive' outright (activation
                     // is human-terminal, CLI-only), so offering one as a candidate
                     // can only produce a guaranteed refusal.
-                    .filter((e) => e && typeof e.id === 'string' && e.type !== 'user-directive')
+                    .filter((e) => e && typeof e.id === 'string' && e.type !== 'user-directive' && inWindow(e))
                     .slice(0, KB_MAX_PROMOTION_CANDIDATES);
             } catch (err) {
-                log(`[kb-work] could not list promotion candidates for ${memberLabel(member)} (non-fatal): ${err.message}`);
+                log(`[kb-work] could not read promotion candidates from maintainer '${target.member}' (non-fatal): ${err.message}`);
                 return [];
             }
         },
@@ -305,99 +954,75 @@ export function createKbWorkClient(opts = {}) {
                 return [];
             }
         },
+        /**
+         * Vet a role's KB work and route it to the producing member's
+         * repository maintainer: queued per repository, then applied in the
+         * maintainer's MEMBER session after a G-pull (see the client header).
+         * `member` names the member whose dispatch produced `result` (a member
+         * record or a bare name); it decides WHICH repository, never which
+         * session -- no write is ever sent to it unless it is the maintainer.
+         *
+         * @returns {Promise<{captured: number, promoted: number, discarded: number, refused: number}>}
+         *   counts of the writes applied by this call's flush (writes left
+         *   queued for a busy or unreachable maintainer are not counted).
+         */
         async apply(role, member, result) {
-            const { captures, promotions, refused } = vetKbWork(role, result);
+            const { captures, promotions, discards, refused } = vetKbWork(role, result);
 
             for (const r of refused) log(`[kb-work] refused -- ${r}`);
             // Log every promotion with its stated evidence BEFORE attempting it.
             // This log is the audit trail the bible never had.
             for (const p of promotions) log(`[kb-work] promote ${p.id} (${role}): ${p.reason}`);
+            for (const d of discards) log(`[kb-work] discard ${d.id} (${role}): ${d.reason}`);
 
-            // Without a resolved member there is no session whose KB the capture
-            // belongs to -- the tm7 defect. Refuse rather than guess.
-            if (!active || !member) {
-                if ((captures.length || promotions.length) && !member) {
-                    log(`[kb-work] no member resolved for ${role} -- ${captures.length} capture(s) and ${promotions.length} promotion(s) dropped`);
-                }
-                return { captured: 0, promoted: 0, refused: refused.length };
+            const done = (counts) => ({ ...counts, refused: refused.length });
+            if (captures.length === 0 && promotions.length === 0 && discards.length === 0) return done(zeroCounts());
+            const dropped = `${captures.length} capture(s), ${promotions.length} promotion(s) and ${discards.length} discard(s) dropped`;
+
+            const producer = memberNameOf(member);
+            // Without a resolved member there is no repository the writes
+            // belong to -- the tm7 defect. Refuse rather than guess.
+            if (!active || !producer) {
+                log(`[kb-work] WARN: no member resolved for ${role} -- ${dropped}`);
+                return done(zeroCounts());
             }
-
-            let captured = 0;
-            let promoted = 0;
-            for (const c of captures) {
-                try {
-                    const res = await memberCall(member, 'kb_capture', { ...c });
-                    // apra-fleet-23c: an MCP client RESOLVES with {isError:true} on a
-                    // tool-level failure rather than throwing, so counting every
-                    // non-throwing call as a success reported captures that never
-                    // persisted ("captured 3" against a KB that stayed empty).
-                    if (isToolError(res)) {
-                        log(`[kb-work] kb_capture rejected for "${c.title}" (non-fatal): ${toolErrorText(res)}`);
-                        continue;
+            const sel = selector();
+            const nonRepo = !!(sel && typeof sel.isNonRepoMember === 'function' && sel.isNonRepoMember(producer));
+            // A capture belongs to the PRODUCER's repository: a member whose
+            // work folder is not a repository has none, so its captures are
+            // dropped. Review judgements (CONFIRM/DISCARD) act on candidates
+            // read from the reviewer's maintainer (reviewMaintainerFor), so
+            // they follow the same resolution as the candidate read.
+            let target = null;
+            if (captures.length > 0) {
+                if (nonRepo) {
+                    log(`[kb-work] WARN: member '${producer}' (${role}): work folder is not a repository -- ${captures.length} capture(s) dropped`);
+                } else {
+                    target = maintainerFor(producer);
+                    if (target) {
+                        for (const c of captures) enqueue(target.repo, 'capture', role, c);
+                    } else {
+                        log(`[kb-work] WARN: no kb_maintainer for member '${producer}' (${role}) -- ${captures.length} capture(s) dropped`);
                     }
-                    captured++;
-                } catch (err) {
-                    log(`[kb-work] kb_capture failed for "${c.title}" (non-fatal): ${err.message}`);
                 }
             }
-            for (const p of promotions) {
-                try {
-                    // apra-fleet-0ef: the promotion MUST run as the same member
-                    // as the capture above. Resolving it in any other session
-                    // targets a different project's KB, where the id does not
-                    // exist, so every promotion would fail "Entry not found"
-                    // (the apra-fleet-tm7 repo-blindness class).
-                    const res = await memberCall(member, 'kb_promote', { id: p.id, reason: p.reason });
-                    if (isToolError(res)) {
-                        log(`[kb-work] kb_promote rejected for ${p.id} (non-fatal): ${toolErrorText(res)}`);
-                        continue;
-                    }
-                    promoted++;
-                } catch (err) {
-                    log(`[kb-work] kb_promote failed for ${p.id} (non-fatal): ${err.message}`);
+            const repos = new Set(target ? [target.repo] : []);
+            if (promotions.length > 0 || discards.length > 0) {
+                const review = reviewMaintainerFor(producer);
+                if (review) {
+                    for (const p of promotions) enqueue(review.repo, 'promote', role, p);
+                    for (const d of discards) enqueue(review.repo, 'discard', role, d);
+                    repos.add(review.repo);
+                } else {
+                    log(`[kb-work] WARN: no kb_maintainer for member '${producer}' (${role}) -- ${promotions.length} promotion(s) and ${discards.length} discard(s) dropped`);
                 }
             }
-            if (captured || promoted) log(`[kb-work] ${role}: captured ${captured}, promoted ${promoted}`);
-            return { captured, promoted, refused: refused.length };
-        },
-
-        /**
-         * KB audit 2026-08-11: publish this repo's CONFIRMED set to its
-         * canonical bible (<repo>/.fleet/kb-canonical.json).
-         *
-         * Nothing in the pipeline had ever called kb_export, so a bible existed
-         * only where an operator had run the tool by hand -- 1 of 17 repos on
-         * the audited machine. Promotion therefore ended at the local sqlite
-         * store: a teammate, a fresh clone, or a member on another host saw
-         * none of it, and kb_session_prime's cold-seed (which reads exactly
-         * this file) had nothing to fall back on. Promotion is the sprint's
-         * work; publishing it is the step that makes the work leave the
-         * machine.
-         *
-         * Called once, AFTER the final review's promotions have been applied,
-         * so the bible reflects everything this sprint confirmed. Best-effort
-         * like every other KB call here: a sprint must never fail over an
-         * export, and the tool itself is a no-op when the entry set is
-         * unchanged. Committing/pushing the file stays a separate, opt-in
-         * decision (kb_export's own autoCommit config) -- this does not widen
-         * the engine's git authority.
-         */
-        async exportBible(member) {
-            // Same repo-blindness guard as every other call here: without a
-            // member there is no session whose repo the bible belongs to.
-            if (!active || !member) return false;
-            try {
-                const res = await memberCall(member, 'kb_export', {});
-                if (isToolError(res)) {
-                    log(`[kb-work] kb_export rejected for ${memberLabel(member)} (non-fatal): ${toolErrorText(res)}`);
-                    return false;
-                }
-                log(`[kb-work] exported the canonical bible for ${memberLabel(member)}`);
-                return true;
-            } catch (err) {
-                log(`[kb-work] kb_export failed for ${memberLabel(member)} (non-fatal): ${err.message}`);
-                return false;
+            const counts = zeroCounts();
+            for (const repo of repos) {
+                const c = await flush(repo);
+                for (const k of Object.keys(counts)) counts[k] += c[k];
             }
+            return done(counts);
         },
     };
 }
@@ -533,7 +1158,7 @@ export function createKbPrimingClient(opts = {}) {
                     // sprint start that staled 16 of 17 CONFIRMED entries purely
                     // because the repo had moved on since capture, and the
                     // damage cascaded: retrieval fell to one matchable entry,
-                    // kb_export attempted a 17 -> 9 bible truncation, and
+                    // the whole-bible publish attempted a 17 -> 9 truncation, and
                     // kb_list (stale=0) returned an EMPTY promotion candidate
                     // list -- reinstating apra-fleet-0ef, "kb_promote can never
                     // fire". This import exists to WARM the KB, never to audit
@@ -693,9 +1318,10 @@ export function kbPromotionBlock(kbCandidates) {
     return [
         'KNOWLEDGE BANK -- promotion candidates. These entries were captured during this '
         + 'sprint and sit at INFERRED. You are the only role that can promote them to '
-        + 'CONFIRMED. Do NOT call any kb_* tool yourself: return your decisions in the '
-        + '`kb_promotions` field of your structured output as [{id, reason}] and the '
-        + 'orchestrator executes them.\n'
+        + 'CONFIRMED, or discard them. Do NOT call any kb_* tool yourself: return your '
+        + 'decisions in your structured output and the orchestrator executes them -- '
+        + '`kb_promotions` as [{id, reason}] for entries to CONFIRM, `kb_discards` as '
+        + '[{id, reason}] for entries to DISCARD.\n'
         + 'Promote ONLY entries whose claim you independently verified during THIS review '
         + '-- by reading the diff, running the tests, or checking the cited files yourself. '
         + 'The `reason` must state that evidence (at least 20 characters, e.g. "verified '
@@ -704,7 +1330,12 @@ export function kbPromotionBlock(kbCandidates) {
         + 'resting state, and a wrong CONFIRMED entry is worse than no entry. Never '
         + 'blanket-promote, and never promote by module, tag or timestamp. Promoting '
         + 'nothing is a valid outcome; return [] in that case.\n'
-        + wrapUntrustedBlock('kb_list --confidence INFERRED', JSON.stringify(
+        + 'Discard ONLY entries you showed to be WRONG during this review, with the same '
+        + 'evidence bar: the `reason` states what you checked that contradicts the claim. '
+        + 'A discarded entry drops out of every later read. An entry you cannot confirm '
+        + 'is not thereby wrong -- leave it INFERRED. Never list the same id in both '
+        + 'fields; the orchestrator refuses both.\n'
+        + wrapUntrustedBlock('kb_query --tag member:<maintainer> --confidence INFERRED', JSON.stringify(
             kbCandidates.map((e) => ({
                 id: e.id,
                 title: e.title,

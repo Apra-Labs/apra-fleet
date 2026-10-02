@@ -95,7 +95,9 @@ describe('memory-contract/v1 recorded response fixtures validate against their s
 
     // Non-vacuous: the 32-fixture population the original ajv sweep measured
     // (48 committed fixtures total, 16 carry `error` instead), plus
-    // kb_query/happy-confirmed-only (trust filters).
+    // kb_query/happy-confirmed-only (trust filters), minus kb_feedback/happy
+    // (a MEMBER-session kb_feedback is now the E-MEMBER-VIEW-READ-ONLY refusal),
+    // plus kb_bible_commit/happy.
     expect(keys.length).toBe(33);
     expect(failures).toEqual([]);
   });

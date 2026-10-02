@@ -1,8 +1,8 @@
 import { z } from 'zod';
 import fs from 'node:fs';
 import path from 'node:path';
-import { getKbProviders } from '../services/knowledge/kb-providers.js';
-import { resolveKbAnchor, type KbAnchor } from '../services/knowledge/kb-self.js';
+import { getSelfReadKb, type KbAnchor } from '../services/knowledge/kb-self.js';
+import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
 import { validateFilePaths } from '../services/knowledge/path-validation.js';
 import { getProvider } from './code-intelligence.js';
 import type { KBEntry } from '../services/knowledge/types.js';
@@ -173,8 +173,13 @@ export async function kbSessionPrime(input: KbSessionPrimeInput, anchor?: KbAnch
   // verbatim even though this host cannot see it -- SqliteProvider.
   // anchorIsMissing() then declines to produce a freshness verdict rather
   // than re-hashing against an unrelated tree.
-  const resolved = resolveKbAnchor(anchor);
-  const providers = await getKbProviders(resolved.folder, resolved.remoteUrl);
+  // A MEMBER session primes from its checkout bible view unless it explicitly
+  // asks for INFERRED/UNVERIFIED (kb-self.ts getSelfReadKb).
+  // That explicit request is answered from the per-repo DB with only the
+  // caller's own captures (ownerTag): every block below honours it, and the
+  // bible cold-seeds are skipped (bible entries are nobody's own capture).
+  const { providers, anchor: resolved, ownerTag } = await getSelfReadKb(anchor, input.confidence);
+  if (ownerTag !== undefined) requireSqliteProject(providers.project, 'kb_session_prime');
 
   // Default-trusted reads: CONFIRMED + undisputed unless the caller lists tiers.
   const confidence = input.confidence?.length ? input.confidence : (['CONFIRMED'] as NonNullable<KbSessionPrimeInput['confidence']>);
@@ -183,6 +188,7 @@ export async function kbSessionPrime(input: KbSessionPrimeInput, anchor?: KbAnch
   const result = await providers.project.prime({
     confidence,
     exclude_disputed,
+    owner_tag: ownerTag,
     session_files: input.session_files,
     hint_symbols: input.hint_symbols,
     hint_modules: input.hint_modules,
@@ -205,6 +211,7 @@ export async function kbSessionPrime(input: KbSessionPrimeInput, anchor?: KbAnch
         include_stale: false,
         confidence,
         exclude_disputed,
+        owner_tag: ownerTag,
       });
       const globalEntries = globalResult.results
         .filter(e => e.type === 'knowledge')
@@ -262,6 +269,7 @@ export async function kbSessionPrime(input: KbSessionPrimeInput, anchor?: KbAnch
           include_stale: false,
           confidence,
           exclude_disputed,
+          owner_tag: ownerTag,
         });
 
         // Merge below direct hits: skip ids already present (direct + global),
@@ -292,7 +300,7 @@ export async function kbSessionPrime(input: KbSessionPrimeInput, anchor?: KbAnch
   // live-KB hit gathered above. Non-fatal: the entire block is a hard skip --
   // missing file, unreadable/malformed JSON, or a bad shape leaves `result`
   // exactly as built above (same contract as the neighbor block).
-  if ((result.top_entries ?? []).length < COLD_KB_MAX) {
+  if (ownerTag === undefined && (result.top_entries ?? []).length < COLD_KB_MAX) {
     try {
       const repoRoot = localDirOrNull(resolved.folder);
       const canonicalPath = repoRoot ? path.join(repoRoot, '.fleet', 'kb-canonical.json') : null;
@@ -359,7 +367,7 @@ export async function kbSessionPrime(input: KbSessionPrimeInput, anchor?: KbAnch
   // project-bible block: missing file, unreadable/malformed JSON, or a bad
   // shape leaves `result` exactly as built above -- warm sessions (>=
   // COLD_KB_MAX) never reach this block at all.
-  if ((result.top_entries ?? []).length < COLD_KB_MAX) {
+  if (ownerTag === undefined && (result.top_entries ?? []).length < COLD_KB_MAX) {
     try {
       const globalBiblePath = path.join(FLEET_DIR, 'knowledge', 'global', 'kb-canonical-global.json');
       if (fs.existsSync(globalBiblePath)) {

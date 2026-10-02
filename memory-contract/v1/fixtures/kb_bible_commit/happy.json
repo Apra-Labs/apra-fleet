@@ -1,0 +1,20 @@
+{
+  "tool": "kb_bible_commit",
+  "case": "happy",
+  "kind": "happy",
+  "request": {
+    "ids": [
+      "5dfe9670-72fc-4231-b4f4-a0cd99137775"
+    ],
+    "baseBranch": "main",
+    "baseCommit": "0123456789abcdef0123456789abcdef01234567"
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"path\":\"<SCRATCH_REPO_A>/.fleet/kb-canonical.json\",\"merged\":[\"5dfe9670-72fc-4231-b4f4-a0cd99137775\"],\"skipped\":[],\"entry_count\":1,\"committed\":false}"
+      }
+    ]
+  }
+}

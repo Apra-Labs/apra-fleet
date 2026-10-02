@@ -103,11 +103,23 @@ export type KBEntryInput = Omit<KBEntry, 'id' | 'stale' | 'created_at' | 'supers
 export interface CaptureOpts {
   importMode?: boolean;
   preferredId?: string;
+  // Member bible view only (member-bible-view.ts): load the entry VERBATIM --
+  // skip AUDN dedupe/update/contradiction entirely, so an already-reviewed
+  // bible is reproduced as-is (every entry under its bible id, its bible
+  // confidence, never flagged/disputed by a sibling entry). Honoured only
+  // together with importMode and preferredId; the directive gate and the basis
+  // check still run. Never use it for a live per-repo DB: there AUDN is the
+  // point.
+  verbatim?: boolean;
 }
 
 export interface EntryTrustFilter {
   confidence?: Confidence[];
   exclude_disputed?: boolean;
+  // MEMBER own-scope (kb-self.ts memberOwnerTag): only entries whose tags carry
+  // this exact value (member:<uuid>). Internal only -- set by the tool handlers
+  // from the session identity, never from a deserialized route.
+  owner_tag?: string;
 }
 
 export interface QueryOptions {
@@ -142,6 +154,8 @@ export interface QueryOptions {
   // to list exactly the disputed entries.
   confidence?: Confidence[];
   exclude_disputed?: boolean;
+  // MEMBER own-scope tag filter (see EntryTrustFilter.owner_tag). Internal only.
+  owner_tag?: string;
   l1_only?: boolean;
   limit?: number;
   ids?: string[];
@@ -171,6 +185,8 @@ export interface PrimeOptions {
   // this layer (the kb_session_prime tool applies the CONFIRMED-undisputed default).
   confidence?: Confidence[];
   exclude_disputed?: boolean;
+  // MEMBER own-scope tag filter (see EntryTrustFilter.owner_tag). Internal only.
+  owner_tag?: string;
 }
 
 export interface PrimedContext {
@@ -244,12 +260,22 @@ export interface ProviderConfig {
   dbPath?: string;
 }
 
+export interface DiscardResult {
+  discarded: string[];
+  not_found: string[];
+  already_discarded: string[];
+}
+
 export interface MemoryProvider {
   init(): Promise<void>;
   capture(input: KBEntryInput): Promise<{ id: string; audn_decision: AudnDecision }>;
   query(opts: QueryOptions): Promise<KBResult>;
   context(files: string[], confidence?: Confidence[], excludeDisputed?: boolean): Promise<FileContextResult[]>;
   invalidate(files: string[]): Promise<{ invalidated: number }>;
+  // Id-level DISCARD: sets superseded_at (and stale) so the entry drops from every
+  // read path; the row is kept. ownerTag restricts the call to entries carrying
+  // that tag (MEMBER own-scope); any other id is reported as not_found.
+  discard(ids: string[], opts?: { ownerTag?: string }): Promise<DiscardResult>;
   getLinked(id: string): Promise<KBEntry[]>;
   prime(opts: PrimeOptions): Promise<PrimedContext>;
   promote(id: string, reason?: string): Promise<{ id: string; confidence_before: Confidence; confidence_after: Confidence }>;

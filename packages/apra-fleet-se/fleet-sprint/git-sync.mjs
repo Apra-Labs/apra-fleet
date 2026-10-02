@@ -490,7 +490,15 @@ export async function withGitSync(ctx, member, pushCode, dispatchFn, { pushBeads
 export function createGitSync(deps = {}) {
     const brackets = deps.brackets ?? createSyncBrackets({ setPauseGuard: deps.setPauseGuard });
     const ctx = { ...deps, brackets };
-    const { command, log, branch, doltPushMutex, sprintId, onAuthFailure, resolveMemberProvider, syncMemberAfter } = ctx;
+    const { command, log, branch, doltPushMutex, sprintId, onAuthFailure, resolveMemberProvider, syncMemberBefore, syncMemberAfter } = ctx;
+    /**
+     * A standalone bracketed G-push through runner.js's syncMemberAfter().
+     * This is what closes the Publish-PR git-push hole: that site used to
+     * call syncMemberAfter() bare, outside any bracket.
+     */
+    const pushGitAfter = (memberName, options = {}) => brackets.withOpenSyncBracket(
+        () => syncMemberAfter(memberName, { command, log, branch, onAuthFailure, resolveMemberProvider, ...options }),
+    );
     return {
         brackets,
         /** Current number of open sync brackets -- read-only observability. */
@@ -545,12 +553,149 @@ export function createGitSync(deps = {}) {
             () => DoltSync.syncAfter(memberName, { command, log, mutex: doltPushMutex, sprintId, ...options }),
         ),
         /**
-         * A standalone bracketed G-push through runner.js's syncMemberAfter().
-         * This is what closes the Publish-PR git-push hole: that site used to
-         * call syncMemberAfter() bare, outside any bracket.
+         * A standalone bracketed G-pull through runner.js's syncMemberBefore()
+         * -- the same pull every dispatch bracket opens with, for a caller
+         * that must freshen a member's checkout outside a dispatch (the KB
+         * write queue G-pulls the kb_maintainer before each batch).
          */
-        pushGitAfter: (memberName, options = {}) => brackets.withOpenSyncBracket(
-            () => syncMemberAfter(memberName, { command, log, branch, onAuthFailure, resolveMemberProvider, ...options }),
+        pullGitBefore: (memberName, options = {}) => brackets.withOpenSyncBracket(
+            () => syncMemberBefore(memberName, { command, log, branch, onAuthFailure, resolveMemberProvider, ...options }),
         ),
+        /** The standalone bracketed G-push (see pushGitAfter above). */
+        pushGitAfter,
+        /**
+         * The KB bible commit's G-push on the repository's kb_maintainer
+         * (kb.mjs commitRound): the same bracketed syncMemberAfter() as
+         * pushGitAfter(), under its own name so the sprint branch's
+         * Publish-PR push stays the only pushGitAfter() caller.
+         */
+        pushBibleCommit: (memberName) => pushGitAfter(memberName),
+        /**
+         * A bracketed `git rebase --abort` on a member, for a caller retrying
+         * after a rejected G-push (the KB bible commit). There is no portable
+         * probe for "a rebase is in progress" across member shells, so the
+         * abort itself is the probe: it fails harmlessly (failSoft) when no
+         * rebase is in progress. Resolves true when a rebase was aborted.
+         */
+        abortRebase: (memberName) => brackets.withOpenSyncBracket(async () => {
+            const res = await command('git rebase --abort', {
+                member_name: memberName, silent: true, failSoft: true,
+                label: `rebase --abort before the bible-commit retry on '${memberName}'`,
+            });
+            const aborted = !!(res && res.ok);
+            if (aborted) log(`[Sync] aborted an in-progress rebase on member '${memberName}' before retrying its bible commit.`);
+            return aborted;
+        }),
+        /**
+         * Whether a hard reset onto the remote tip would discard ONLY a local
+         * bible commit on this member's checkout: every local-only commit
+         * (origin/<branch>..HEAD) touches nothing but `bibleFile` and the
+         * working tree has no uncommitted tracked change. The kb_maintainer is
+         * usually also a doer, so unrelated unpushed work or edits must never
+         * be thrown away by the bible-commit retry. Git strings are built in JS
+         * (no shell expansion) so a PowerShell member works. Resolves
+         * { safe: true } or { safe: false, reason }; any git failure is unsafe.
+         */
+        canResetBibleCheckout: async (memberName, bibleFile) => {
+            const remoteTip = `origin/${branch}`;
+            const status = await command('git status --porcelain --untracked-files=no', {
+                member_name: memberName, silent: true, failSoft: true,
+                label: `check the working tree before the bible-commit reset on '${memberName}'`,
+            });
+            if (!status || !status.ok) return { safe: false, reason: 'could not read the working tree status' };
+            if (typeof status.output === 'string' && status.output.trim().length > 0) {
+                return { safe: false, reason: 'the working tree has uncommitted changes' };
+            }
+            const log_ = await command(`git log -m --name-only --pretty=format: ${remoteTip}..HEAD`, {
+                member_name: memberName, silent: true, failSoft: true,
+                label: `list local-only commits before the bible-commit reset on '${memberName}'`,
+            });
+            if (!log_ || !log_.ok) return { safe: false, reason: `could not list local-only commits against ${remoteTip}` };
+            const files = String(log_.output || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+            const other = files.filter((f) => f !== bibleFile);
+            if (other.length > 0) return { safe: false, reason: `unpushed local commits touch ${[...new Set(other)].slice(0, 3).join(', ')}` };
+            const count = await command(`git rev-list --count ${remoteTip}..HEAD`, {
+                member_name: memberName, silent: true, failSoft: true,
+                label: `count local-only commits before the bible-commit reset on '${memberName}'`,
+            });
+            const n = count && count.ok ? parseInt(String(count.output || '').trim(), 10) : NaN;
+            if (!Number.isFinite(n)) return { safe: false, reason: 'could not count local-only commits' };
+            if (n > 0 && files.length === 0) return { safe: false, reason: 'unpushed local commits touch no recognizable file' };
+            return { safe: true };
+        },
+        /**
+         * Whether origin's sprint branch holds the member checkout's bible --
+         * asked when kb_bible_commit committed nothing, so a bible commit an
+         * earlier round could not push is not mistaken for a published one.
+         * Resolves { unpushed: true } when a local-only commit
+         * (origin/<branch>..HEAD) touches `bibleFile`, { unpushed: false }
+         * when no uncommitted bible change exists and the bible at HEAD equals
+         * origin's, and { unpushed: null, reason } otherwise (an uncommitted
+         * bible change, a HEAD whose bible differs from origin's with no
+         * local-only commit holding it, any git failure). Git strings are
+         * built in JS (no shell expansion) so a PowerShell member works.
+         */
+        bibleUnpushed: async (memberName, bibleFile) => {
+            if (typeof branch !== 'string' || branch.length === 0) return { unpushed: null, reason: 'no sprint branch is bound' };
+            const remoteTip = `origin/${branch}`;
+            const status = await command(`git status --porcelain --untracked-files=all -- ${bibleFile}`, {
+                member_name: memberName, silent: true, failSoft: true,
+                label: `check for an uncommitted bible change on '${memberName}'`,
+            });
+            if (!status || !status.ok) return { unpushed: null, reason: 'could not read the working tree status of the bible' };
+            if (typeof status.output === 'string' && status.output.trim().length > 0) {
+                return { unpushed: null, reason: `${bibleFile} has an uncommitted change that no commit holds` };
+            }
+            const local = await command(`git log -m --name-only --pretty=format: ${remoteTip}..HEAD`, {
+                member_name: memberName, silent: true, failSoft: true,
+                label: `list local-only commits for the bible publication check on '${memberName}'`,
+            });
+            if (!local || !local.ok) return { unpushed: null, reason: `could not list local-only commits against ${remoteTip}` };
+            const files = String(local.output || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+            if (files.includes(bibleFile)) return { unpushed: true };
+            const diff = await command(`git diff --name-only ${remoteTip} HEAD -- ${bibleFile}`, {
+                member_name: memberName, silent: true, failSoft: true,
+                label: `compare the bible with ${remoteTip} on '${memberName}'`,
+            });
+            if (!diff || !diff.ok) return { unpushed: null, reason: `could not compare ${bibleFile} with ${remoteTip}` };
+            if (typeof diff.output === 'string' && diff.output.trim().length > 0) {
+                return { unpushed: null, reason: `${bibleFile} at HEAD differs from ${remoteTip} and no local-only commit holds it` };
+            }
+            return { unpushed: false };
+        },
+        /**
+         * The branch a member currently has checked out, next to the sprint
+         * branch it is expected to be on -- the KB bible commit's guard, so
+         * no G-pull, reset, commit or push ever runs on a maintainer that sits
+         * on some other branch. The git string is built in JS (no shell
+         * expansion) so a PowerShell member works. `branch` is null when it
+         * cannot be read; a detached HEAD reads as 'HEAD'.
+         * Resolves { branch: string|null, sprintBranch: string|null }.
+         */
+        checkedOutBranch: async (memberName) => {
+            const res = await command('git rev-parse --abbrev-ref HEAD', {
+                member_name: memberName, silent: true, failSoft: true,
+                label: `read the checked-out branch before the bible commit on '${memberName}'`,
+            });
+            const found = res && res.ok && typeof res.output === 'string' ? res.output.trim().split(/\r?\n/).pop().trim() : '';
+            return { branch: found || null, sprintBranch: typeof branch === 'string' && branch ? branch : null };
+        },
+        /**
+         * The base a KB bible commit records as provenance, resolved on the
+         * member's checkout: the sprint's TARGET BASE branch, and the commit
+         * the sprint branch forked from it (`git merge-base HEAD
+         * origin/<baseBranch>`) -- the base the confirmed entries were
+         * verified against. Resolves null when either cannot be determined.
+         */
+        resolveBibleBase: async (memberName) => {
+            const baseBranch = ctx.baseBranch;
+            if (typeof baseBranch !== 'string' || baseBranch.length === 0) return null;
+            const res = await command(`git merge-base HEAD origin/${baseBranch}`, {
+                member_name: memberName, silent: true, failSoft: true,
+                label: `resolve the base commit for the bible commit on '${memberName}'`,
+            });
+            const sha = res && res.ok && typeof res.output === 'string' ? res.output.trim().split(/\s+/)[0] : '';
+            return /^[0-9a-f]{7,64}$/i.test(sha) ? { baseBranch, baseCommit: sha } : null;
+        },
     };
 }

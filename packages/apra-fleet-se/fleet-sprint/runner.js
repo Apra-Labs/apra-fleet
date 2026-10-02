@@ -95,7 +95,9 @@ import {
     createLlmAuthSelfHealCallback,
 } from './vcs-auth.mjs';
 import { validateIssueId, validateBranchName, validateArgs } from './sprint-args.mjs';
-import { verifyBeadsIdentity } from './beads-identity-check.mjs';
+import { createCiGate, createCiGateContextResolver } from './ci-gate.mjs';
+import { verifyBeadsIdentity, createBeadsIdentityProber } from './beads-identity-check.mjs';
+import { createKbMaintainerSelector, createMemberDetailResolver, ROLE_KB_MAINTAINER } from './kb-maintainer.mjs';
 import { sweepTokenMemories } from './beads-memory-hygiene.mjs';
 import {
     buildPlannerPrompt, buildPlanReviewerPrompt, buildStreakAssignmentPrompt, buildDoerPrompt,
@@ -378,7 +380,7 @@ export {
     createMemberReservationClient,
 };
 // Re-exported so importers of the KB work helpers (kb_query,
-// kb_capture/kb_promote vetting+forwarding, kb_export) from runner.js keep
+// kb_capture/kb_promote vetting+forwarding, the bible commit) from runner.js keep
 // working; kb.mjs is the single source of truth for their implementation
 // (apra-fleet-3swo.4.4).
 export {
@@ -497,6 +499,38 @@ function resolveDispatchInactivityTimeoutS(dispatchTimeoutS) {
     return Math.min(1800, dispatchTimeoutS);
 }
 export { resolveDispatchInactivityTimeoutS };
+
+// The members the sprint-branch ensure (and every per-cycle re-ensure) runs
+// on: every member of a dispatched git-touching role, plus every selected
+// kb_maintainer -- it G-pulls, bible-commits and G-pushes the sprint branch
+// even when it holds no dispatched role (selection prefers such a member).
+// De-duplicated, roles first. A selector without maintainers() (an injected
+// stub) or a repository with no selected maintainer contributes nothing.
+// Exported so tests drive the production list, not a re-derivation of it.
+// orchestratorMembers (roleMap.orchestrator): such a member is never added
+// through the maintainer path (defence in depth); a dispatch role still
+// includes it.
+function computeBranchEnsureMembers(getMembersForRole, kbMaintainers, orchestratorMembers) {
+    const orchestrators = new Set(orchestratorMembers || []);
+    const maintainerMembers = [];
+    if (kbMaintainers && typeof kbMaintainers.maintainers === 'function') {
+        for (const sel of kbMaintainers.maintainers().values()) {
+            if (sel && typeof sel.member === 'string' && sel.member && !orchestrators.has(sel.member)) maintainerMembers.push(sel.member);
+        }
+    }
+    return [...new Set([
+        ...getMembersForRole(ROLE_DOER),
+        ...getMembersForRole(ROLE_REVIEWER),
+        ...getMembersForRole('planner'),
+        ...getMembersForRole('plan-reviewer'),
+        ...getMembersForRole('deployer'),
+        ...getMembersForRole('integ-test-runner'),
+        ...getMembersForRole('regression-test-runner'),
+        ...getMembersForRole('harvester'),
+        ...maintainerMembers,
+    ])];
+}
+export { computeBranchEnsureMembers };
 
 // ---------------------------------------------------------------------------
 // Canonical role-name constants for the Develop/Review loop
@@ -941,12 +975,32 @@ async function runSprintCycle(context) {
             });
             if (block) finalPrompt = prompt + '\n\n' + block;
         }
-        try {
-            return await agentRaw(finalPrompt, { sprint_id: sprintMutexId, ...opts });
-        } finally {
-            if (opts.member_name) DoltSync.noteMemberDispatchCompleted(opts.member_name);
-        }
+        return withKbDispatchLifecycle(opts.member_name, async () => {
+            try {
+                return await agentRaw(finalPrompt, { sprint_id: sprintMutexId, ...opts });
+            } finally {
+                if (opts.member_name) DoltSync.noteMemberDispatchCompleted(opts.member_name);
+            }
+        });
     };
+
+    // KB write queue dispatch lifecycle (kb.mjs createKbWorkClient): bound
+    // once kbWork exists below. A member is BUSY for the whole of every
+    // dispatch -- the agent() call here and, through the withGitSync alias,
+    // its entire sync bracket -- so a KB write for a repository it maintains
+    // is never applied during one; the end of its last open dispatch applies
+    // what queued up behind it. The hooks never throw (kbWork logs and keeps
+    // writes queued instead), so they cannot replace a dispatch's own result.
+    let kbDispatchHooks = null;
+    async function withKbDispatchLifecycle(memberName, fn) {
+        const hooks = memberName ? kbDispatchHooks : null;
+        if (hooks) await hooks.started(memberName);
+        try {
+            return await fn();
+        } finally {
+            if (hooks) await hooks.ended(memberName);
+        }
+    }
 
     // The global dolt push mutex client. Every D-push below serializes through
     // it so two sprints never push at the same time. Four sources, in
@@ -1285,6 +1339,29 @@ async function runSprintCycle(context) {
             return memberCaller.memberCall(member, tool, toolArgs);
         }
         : undefined;
+    // One beads-identity prober per run, shared by kb_maintainer selection
+    // (which reads each member's origin remote from it) and the beads identity
+    // precondition below: each member's probes run once, never twice.
+    const beadsIdentityProber = createBeadsIdentityProber({ command });
+
+    // kb_maintainer selection: one member per repository receives every KB
+    // write for that repository (kb-maintainer.mjs). Computed once here --
+    // after members are resolved, before any KB priming -- logged one line
+    // per repository, and stored on the sprint context (context.kbMaintainers,
+    // also the test seam) for the write-routing step and later phases. Only
+    // members member_detail resolves to an id are probed, so a sprint without
+    // member access issues no extra command.
+    const kbMaintainers = context.kbMaintainers ?? createKbMaintainerSelector({
+        members: physicalMembers,
+        roleMap: validated.roleMap,
+        resolveMember: (kbMemberCall && args && typeof args.callTool === 'function') ? createMemberDetailResolver(args.callTool) : undefined,
+        probeOrigin: async (member) => (await beadsIdentityProber.probe(member)).identity.repoRemote,
+        probeMember: kbMemberCall ? (record) => kbMemberCall(record, 'kb_stats', {}) : undefined,
+        log,
+    });
+    await kbMaintainers.selectAll();
+    context.kbMaintainers = kbMaintainers;
+
     const kbPriming = context.kbPriming ?? createKbPrimingClient({
         callTool: (args && typeof args.callTool === 'function') ? args.callTool : undefined,
         memberCall: kbMemberCall,
@@ -1297,12 +1374,50 @@ async function runSprintCycle(context) {
     // below is now asked for kb_captures (and the reviewer for kb_promotions).
     // This is the consumer: without it those fields would be gathered and
     // silently dropped. Unlike apra-pm's workflow script, this engine can call
-    // tools itself, so the kb_capture/kb_promote calls are made directly -- as
-    // the member whose work produced them (kbMember below).
+    // tools itself, so the kb_capture/kb_promote calls are made directly.
+    //
+    // Every KB WRITE is routed through the producing member's repository
+    // kb_maintainer (kbMaintainers above), never the producing member itself
+    // and never the orchestrator's own session: queued per repository, G-pulled
+    // on the maintainer before each batch (gitSync.pullGitBefore -- the same
+    // syncMemberBefore every dispatch bracket opens with), and held while the
+    // maintainer is mid-dispatch (dispatchStarted/dispatchEnded below).
+    // gitSync is bound further down; the G-pull closure resolves it lazily,
+    // and no KB write can be applied before the first dispatch completes.
     const kbWork = context.kbWork ?? createKbWorkClient({
         memberCall: kbMemberCall,
+        maintainers: () => context.kbMaintainers,
+        gPull: (maintainerName, options) => gitSync.pullGitBefore(maintainerName, options),
+        // The review-round bible commit (kbWork.commitRound): G-push, the
+        // retry's rebase --abort, and the base branch/commit recorded as the
+        // bible's provenance -- all on the maintainer, all bracketed.
+        gPush: (maintainerName) => gitSync.pushBibleCommit(maintainerName),
+        abortRebase: (maintainerName) => gitSync.abortRebase(maintainerName),
+        bibleBase: (maintainerName) => gitSync.resolveBibleBase(maintainerName),
+        canResetCheckout: (maintainerName, bibleFile) => gitSync.canResetBibleCheckout(maintainerName, bibleFile),
+        // The bible-commit branch guard: no G-pull, reset, commit or push on a
+        // maintainer whose checkout is not the sprint branch.
+        checkedOutBranch: (maintainerName) => gitSync.checkedOutBranch(maintainerName),
+        // After a kb_bible_commit that committed nothing: does origin hold the
+        // bible, or is an earlier round's bible commit still unpushed?
+        bibleUnpushed: (maintainerName, bibleFile) => gitSync.bibleUnpushed(maintainerName, bibleFile),
+        // Promotion candidates are limited to entries created since the
+        // sprint started -- the sprint state's one start stamp.
+        sprintStartMs: () => sprintState.startedAtMs,
         log,
     });
+    // Stored on the sprint context (like kbMaintainers) so the terminal-abort
+    // handler can seal the bible commit: an aborted sprint commits nothing
+    // further to the bible.
+    context.kbWork = kbWork;
+    // Dispatch lifecycle for the KB write queue: a member is busy from the
+    // moment its dispatch bracket opens until it closes, and writes queued for
+    // a repository it maintains are applied when it goes idle. Both hooks are
+    // optional on an injected kbWork stub.
+    kbDispatchHooks = {
+        started: (memberName) => (typeof kbWork.dispatchStarted === 'function' ? kbWork.dispatchStarted(memberName) : undefined),
+        ended: (memberName) => (typeof kbWork.dispatchEnded === 'function' ? kbWork.dispatchEnded(memberName) : undefined),
+    };
     // The member record kb work for a member name runs as. context.kbPriming is
     // an injection seam; a stub without memberOf degrades to "no member", which
     // every kbWork method treats as a best-effort no-op.
@@ -1323,7 +1438,11 @@ async function runSprintCycle(context) {
     // whenever roleMap is absent entirely (every member is a generalist).
     const roleMapSpecialists = new Set();
     if (validated.roleMap) {
-        for (const list of Object.values(validated.roleMap)) {
+        for (const [role, list] of Object.entries(validated.roleMap)) {
+            // kb_maintainer is not a dispatched role: naming a member as its
+            // repository's KB maintainer must not take it out of the
+            // generalist pool for unmapped roles.
+            if (role === ROLE_KB_MAINTAINER) continue;
             if (Array.isArray(list)) for (const m of list) roleMapSpecialists.add(m);
         }
     }
@@ -1391,6 +1510,29 @@ async function runSprintCycle(context) {
     // Land 6.2, update callers, THEN make this throw.
     const orchestratorMember = getMemberForRole(ROLE_ORCHESTRATOR);
 
+    // Engine CI gate (ci-gate.mjs): the ORCHESTRATOR triggers/awaits the
+    // configured CI workflow on the sprint branch head before each reviewer
+    // dispatch and hands the result to the reviewer, so CI-green is an
+    // engine-verified fact rather than a doer criterion. Unconfigured
+    // (no ci_gate arg): exactly one 'CI gate not configured' log line here and
+    // no CI calls at all. `context.resolveCiGateContext` is the test seam
+    // (stubbed provider transport); production reads the origin remote on the
+    // git-capable harvester member and runs the requests through the
+    // orchestrator's push+pr credential via vcs_credential_exec.
+    const ciGate = createCiGate({
+        ciGate: validated.ciGate,
+        branch: validated.branch,
+        log,
+        resolveContext: context.resolveCiGateContext ?? createCiGateContextResolver({
+            fleetApi: sprintState.fleetApi,
+            command,
+            orchestratorMember,
+            gitMember: getMemberForRole('harvester'),
+            log,
+        }),
+        gateOptions: context.ciGateOptions ?? {},
+    });
+
     // Beads identity precondition: prove which .beads every member's bd
     // resolves to BEFORE the first mutating bd command (the earliest bd
     // dispatch is the beads-health gate further down). Probes the
@@ -1412,6 +1554,7 @@ async function runSprintCycle(context) {
         orchestratorMember,
         members: physicalMembers,
         expected: validated.expectBeads ?? null,
+        prober: beadsIdentityProber,
     });
 
     // Self-heals deploy.md's declared Permissions onto the deployer /
@@ -1449,7 +1592,12 @@ async function runSprintCycle(context) {
     });
     // Local alias so this file's dispatch brackets keep their existing shape:
     // withGitSync member, pushCode, dispatch thunk, options.
-    const withGitSync = (member, pushCode, dispatchFn, options) => gitSync.withGitSync(member, pushCode, dispatchFn, options);
+    // The KB write queue sees the whole bracket (G-pull, dispatch, G-push) as
+    // the member being busy -- see kbDispatchHooks.
+    const withGitSync = (member, pushCode, dispatchFn, options) => withKbDispatchLifecycle(
+        member,
+        () => gitSync.withGitSync(member, pushCode, dispatchFn, options),
+    );
 
     // --- usage-limit pause/resume controller (apra-fleet-hzeb.4.2) -----------
     // The budgets the controller reads: role-policies.mjs's frozen defaults,
@@ -1530,7 +1678,10 @@ async function runSprintCycle(context) {
             // one implementation serves the harvester, the doer, the per-round
             // reviewer and the final review alike.
             'kb-apply': async ({ policy, value, member }) => {
-                await kbWork.apply(policy.agentType, kbMember(member), value);
+                // `member` is the member the engine dispatched: it names the
+                // repository the writes belong to, and kbWork routes them to
+                // that repository's kb_maintainer.
+                await kbWork.apply(policy.agentType, member, value);
             },
             // deploy.md's active-sprints gate stops for a FOREIGN reservation,
             // so a deployer prompt that does not state this sprint's OWN
@@ -1653,10 +1804,10 @@ async function runSprintCycle(context) {
     // just within one call.
     const staleInProgressReclaimCounts = new Map();
     const STALE_IN_PROGRESS_RECLAIM_LIMIT = 2;
-    // Stamped once, on the FIRST call to reclaimStaleInProgress (the
-    // pre-sprint one) -- runSprintCycle's `context` carries no injected clock,
-    // so this is a plain Date.now(), same as the other direct call sites
-    // already in this file. Declared here (not at the capture site) so its
+    // Read once, on the FIRST call to reclaimStaleInProgress (the pre-sprint
+    // one), from the sprint state's start stamp (createSprintState) -- the
+    // same instant the KB promotion-candidate window starts at, so the sprint
+    // has one start time, not two. Declared here (not at the capture site) so its
     // TDZ covers every call to reclaimStaleInProgress, including the
     // pre-sprint one.
     let sprintLaunchTime = null;
@@ -1695,7 +1846,7 @@ async function runSprintCycle(context) {
      * @returns {Promise<{ reclaimedIds: string[], cappedIds: string[] }>}
      */
     async function reclaimStaleInProgress({ notDoneBeads, reasonTag }) {
-        if (sprintLaunchTime === null) sprintLaunchTime = Date.now();
+        if (sprintLaunchTime === null) sprintLaunchTime = sprintState.startedAtMs;
         const notDoneIds = new Set(notDoneBeads.map((b) => b.id));
         const unmetBlockers = (bead) => (bead.dependencies || [])
             .filter((d) => d.type === 'blocks' && notDoneIds.has(d.depends_on_id))
@@ -1745,11 +1896,12 @@ async function runSprintCycle(context) {
         // and hand them to it in the prompt. The reviewer has no MCP kb_* tools
         // of its own, so without this it can never name an entry id and
         // `kb_promotions` comes back empty every round -- which is exactly why
-        // kb_promote had never once fired. Read AS the reviewer member (same
-        // session kbWork.apply uses to route the writes), and best-effort: a
+        // kb_promote had never once fired. Read from the reviewer's
+        // repository kb_maintainer -- the session every KB write is routed to,
+        // so the one holding this sprint's captures -- and best-effort: a
         // cold KB must not fail the review.
         const reviewerKbMember = kbMember(reviewerPool[0]);
-        const kbCandidates = await kbWork.promotionCandidates(reviewerKbMember);
+        const kbCandidates = await kbWork.promotionCandidates(reviewerPool[0]);
         if (kbCandidates.length > 0) {
             log(`[kb-work] offering ${kbCandidates.length} INFERRED entr(ies) to the reviewer for promotion.`);
         }
@@ -1789,6 +1941,11 @@ async function runSprintCycle(context) {
         //     on it rather than a nudge -- a verdict that contradicts itself
         //     cannot be repaired in place. Once the budget is spent the caller
         //     gets a ReviewerContractViolationError, never a fabricated verdict.
+        // Engine CI gate: run (or reuse, for an unchanged head) BEFORE the
+        // reviewer is dispatched, so the reviewer judges an engine-verified CI
+        // result instead of asking the doer to trigger CI. null when the gate
+        // is not configured -- the prompt is then unchanged.
+        const ciGateResult = await ciGate.check({ label: `Review C${cycle}` });
         const reviewOutcome = await dispatchRole(dispatchCtx, 'reviewer', {
             prompt: buildReviewerPrompt({
                 beadIds,
@@ -1798,6 +1955,7 @@ async function runSprintCycle(context) {
                 goal: validated.goal,
                 kbCandidates,
                 kbKnowledge: reviewerKnowledge,
+                ciGate: ciGateResult,
             }),
             // Restate the review scope: a resumed dispatch replaces the
             // delivered prompt artifact, so the scope must be repeated inline.
@@ -1846,6 +2004,11 @@ async function runSprintCycle(context) {
         // A degraded round counts toward the bounded stall-abort budget like
         // every other role's dispatch failure -- it is NOT a reviewer contract
         // violation, which is what the dispatchFailed marker records.
+        // The round's confirmations go to the bible on each repository's
+        // kb_maintainer: G-pull, kb_bible_commit, G-push. Covers both callers
+        // (the per-round review and the scope-wide re-review); a round with
+        // no confirmations makes no call. Never throws.
+        if (typeof kbWork.commitRound === 'function') await kbWork.commitRound(`review C${cycle}`);
         return reviewOutcome.value;
     }
 
@@ -1889,16 +2052,7 @@ async function runSprintCycle(context) {
     // explicitly role-maps a dispatch member (doer/reviewer/planner/etc.) as
     // orchestrator too, that member is still included below via its dispatch
     // role, so the ensure-everywhere guarantee is unaffected for that case.
-    const branchEnsureMembers = [...new Set([
-        ...getMembersForRole(ROLE_DOER),
-        ...getMembersForRole(ROLE_REVIEWER),
-        ...getMembersForRole('planner'),
-        ...getMembersForRole('plan-reviewer'),
-        ...getMembersForRole('deployer'),
-        ...getMembersForRole('integ-test-runner'),
-        ...getMembersForRole('regression-test-runner'),
-        ...getMembersForRole('harvester'),
-    ])];
+    const branchEnsureMembers = computeBranchEnsureMembers(getMembersForRole, context.kbMaintainers, orchestratorRoleMapMembers);
 
     // Read the requirementsFile (if any) once, up front, so its content can
     // be threaded into every Plan-phase planner prompt.
@@ -3184,6 +3338,7 @@ async function runSprintCycle(context) {
         deployFailures, integFailures, rejectedNewTasks,
         integTestRunnerSpend, integTestRunnerDispatchCount,
         finalVerdictResult, finalClosedCount, finalOpenAtGoalCount, finalDeferredAtGoalIds, regressionResult, regressionSkippedBy,
+        kbWork,
         computeBranchSlug, buildAnalysisText, buildCostAnalysis,
     });
 
@@ -3299,6 +3454,11 @@ export async function main(context) {
     try {
         return await runSprintCycle(runContext);
     } catch (err) {
+        // An aborted sprint commits nothing further to the KB bible: its
+        // queued confirmations are not flushed.
+        if (runContext.kbWork && typeof runContext.kbWork.seal === 'function') {
+            runContext.kbWork.seal(`sprint aborted: ${err && err.message ? err.message : String(err)}`);
+        }
         if (!isTerminalSprintFailure(err)) {
             throw err;
         }

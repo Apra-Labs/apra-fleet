@@ -205,10 +205,11 @@ MCP tools that ship with the KB:
 | `kb_query` | Two-level FTS retrieval (L1: title+summary, L2: full content) |
 | `kb_list` | Audit-list entries by confidence/type/module/symbol (read-only, no use_count bump) |
 | `kb_context` | Batch file freshness check (single git call for N files) |
-| `kb_invalidate` | Mark files stale immediately (also called by the git hook) |
+| `kb_invalidate` | Mark files stale immediately (also called by the git hook), or discard own entries by `ids` |
 | `kb_promote` | Advance confidence: UNVERIFIED -> INFERRED -> CONFIRMED |
 | `kb_harvest` | Extract learnings from a session transcript (auto-fires after execute_prompt) |
 | `kb_export` | Write live CONFIRMED entries to `.fleet/kb-canonical.json` -- the git-shareable team bible |
+| `kb_bible_commit` | Merge confirmed entry ids into the bible and commit locally with base-branch provenance (used by the sprint kb_maintainer) |
 | `kb_setup` | Install git hook, write provider config, store remote token encrypted |
 
 `kb_setup --remote <url> --token <key>` takes effect immediately: the next

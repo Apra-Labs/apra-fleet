@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { getSelfKbProviders, type KbAnchor } from '../services/knowledge/kb-self.js';
+import { getSelfReadKb, type KbAnchor } from '../services/knowledge/kb-self.js';
 import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
 
 // T3.3 (F8a, D8): kb_list -- a read-only audit view over the CONFIRMED (or any
@@ -23,7 +23,10 @@ const DEFAULT_CONFIDENCE: Array<'CONFIRMED' | 'INFERRED' | 'UNVERIFIED'> = ['CON
 export type KbListInput = z.infer<typeof kbListSchema>;
 
 export async function kbList(input: KbListInput, anchor?: KbAnchor): Promise<string> {
-  const providers = await getSelfKbProviders(anchor);
+  // MEMBER session -> the checkout bible view (kb-self.ts getSelfReadKb).
+  // An explicit INFERRED/UNVERIFIED request goes to the per-repo DB, own
+  // captures only (ownerTag).
+  const { providers, ownerTag } = await getSelfReadKb(anchor, input.confidence);
   const sqliteProvider = requireSqliteProject(providers.project, 'kb_list');
 
   const entries = await sqliteProvider.list({
@@ -34,6 +37,7 @@ export async function kbList(input: KbListInput, anchor?: KbAnchor): Promise<str
     module: input.module,
     symbol: input.symbol,
     tag: input.tag,
+    owner_tag: ownerTag,
     limit: input.limit,
   });
 
