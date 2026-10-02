@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { makeTestAgent, makeTestLocalAgent, backupAndResetRegistry, restoreRegistry, resultText } from './test-helpers.js';
+import { encryptPassword } from '../src/utils/crypto.js';
 import { addAgent, getAgent } from '../src/services/registry.js';
 import { executePrompt, inFlightAgents, provisionedRemoteAgents } from '../src/tools/execute-prompt.js';
 import { getStallDetector } from '../src/services/stall/index.js';
@@ -2720,6 +2721,56 @@ describe('executePrompt -- preflight reason code mapping', () => {
       expect(mockPreflightCheck).not.toHaveBeenCalled();
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  // GitHub #562 review: only a path free of known mismatch causes may license
+  // an agent_never_started kill.
+  it('marks a plain local work folder authoritative, but not when CLAUDE_CONFIG_DIR relocates the transcripts', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-authoritative-test-'));
+    const { getStallDetector } = await import('../src/services/stall/index.js');
+    const updateSpy = vi.spyOn(getStallDetector(), 'update');
+    try {
+      mockExecCommand.mockResolvedValue({ stdout: '{"is_error": false, "result": "done"}', stderr: '', code: 0 });
+      const plain = makeTestLocalAgent({ friendlyName: 'auth-plain', workFolder: fs.realpathSync(tmpDir) });
+      addAgent(plain);
+      await executePrompt({ member_id: plain.id, prompt: 'task', resume: false, timeout_s: 5 });
+      const plainCalls = updateSpy.mock.calls.filter((c) => c[0] === plain.id && 'logPathAuthoritative' in c[1]);
+      expect(plainCalls.length).toBeGreaterThan(0);
+      expect(plainCalls[0][1].logPathAuthoritative).toBe(true);
+
+      const relocated = makeTestLocalAgent({
+        friendlyName: 'auth-relocated', workFolder: fs.realpathSync(tmpDir), encryptedEnvVars: { CLAUDE_CONFIG_DIR: encryptPassword(path.join(tmpDir, 'cfg')) },
+      });
+      addAgent(relocated);
+      await executePrompt({ member_id: relocated.id, prompt: 'task', resume: false, timeout_s: 5 });
+      const relocatedCalls = updateSpy.mock.calls.filter((c) => c[0] === relocated.id && 'logPathAuthoritative' in c[1]);
+      expect(relocatedCalls.length).toBeGreaterThan(0);
+      expect(relocatedCalls.every((c) => c[1].logPathAuthoritative === false)).toBe(true);
+    } finally {
+      updateSpy.mockRestore();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')('a local work folder reached through a symlink is not authoritative (the CLI names the physical cwd)', async () => {
+    const realDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-real-'));
+    const link = path.join(os.tmpdir(), `fleet-link-${Date.now()}`);
+    fs.symlinkSync(realDir, link);
+    const { getStallDetector } = await import('../src/services/stall/index.js');
+    const updateSpy = vi.spyOn(getStallDetector(), 'update');
+    try {
+      mockExecCommand.mockResolvedValue({ stdout: '{"is_error": false, "result": "done"}', stderr: '', code: 0 });
+      const member = makeTestLocalAgent({ friendlyName: 'auth-symlink', workFolder: link });
+      addAgent(member);
+      await executePrompt({ member_id: member.id, prompt: 'task', resume: false, timeout_s: 5 });
+      const calls = updateSpy.mock.calls.filter((c) => c[0] === member.id && 'logPathAuthoritative' in c[1]);
+      expect(calls.length).toBeGreaterThan(0);
+      expect(calls.every((c) => c[1].logPathAuthoritative === false)).toBe(true);
+    } finally {
+      updateSpy.mockRestore();
+      fs.rmSync(link, { force: true });
+      fs.rmSync(realDir, { recursive: true, force: true });
     }
   });
 

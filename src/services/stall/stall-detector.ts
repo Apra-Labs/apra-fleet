@@ -1,6 +1,6 @@
 import { updateAgent } from '../registry.js';
 import { logLine, logWarn, LogScope } from '../../utils/log-helpers.js';
-import { pollLogFile, pollDirectoryActivity } from './stall-poller.js';
+import { pollLogFile, pollDirectoryActivity, pollRecentProjectTranscript } from './stall-poller.js';
 import { toLocalISOString, fmtElapsed } from './time-utils.js';
 import { writeStatusline } from '../statusline.js';
 
@@ -449,7 +449,7 @@ export class StallDetector {
         lastActivityAt: entry.lastActivityAt,
       }));
 
-      const { lastTimestamp, mtimeMs, error, pendingToolTimeoutMs } = await pollLogFile(memberId, entry.logFilePath);
+      const { lastTimestamp, mtimeMs, error, pendingToolTimeoutMs, contentSeen } = await pollLogFile(memberId, entry.logFilePath);
       if (this.isStale(memberId, entry)) continue;
 
       // apra-fleet: a pending tool_use's own declared timeout, when present,
@@ -482,7 +482,9 @@ export class StallDetector {
       // pollLogFile without it, so this is a pure superset of the prior
       // behavior -- it can only turn a would-be false stall into recognized
       // activity, never the reverse.
-      if (!entry.logFileSeen && ((mtimeMs !== undefined && mtimeMs !== null) || lastTimestamp !== null)) {
+      // A non-empty tail read also proves the file exists, even when the mtime
+      // probe failed and no timestamp parsed.
+      if (!entry.logFileSeen && ((mtimeMs !== undefined && mtimeMs !== null) || lastTimestamp !== null || contentSeen === true)) {
         this.update(memberId, { logFileSeen: true });
       }
 
@@ -513,8 +515,32 @@ export class StallDetector {
           // never started -- kill with a distinct reason instead of logging
           // stall_no_signal on every tick forever. A guessed path (or a file
           // that existed earlier in this dispatch) keeps the old behavior.
-          if (entry.logPathAuthoritative && !entry.logFileSeen
+          //
+          // The path alone is not proof (the CLI's own project-dir naming,
+          // a symlinked cwd or a relocated config dir can put the transcript
+          // elsewhere), so a kill also needs a second, independent signal:
+          // no *.jsonl under the provider's projects root changed since the
+          // dispatch started. If that cannot be established, warn only.
+          let neverStarted = false;
+          if (entry.logPathAuthoritative && !entry.logFileSeen && contentSeen !== true
               && now - entry.lastActivityAt > stallThresholdMs && !entry.stallReported) {
+            let recent: boolean | null = null;
+            try { recent = await pollRecentProjectTranscript(memberId, entry.lastActivityAt); } catch { recent = null; }
+            if (this.isStale(memberId, entry)) continue;
+            neverStarted = recent === false;
+            if (!neverStarted) {
+              logLine('stall_never_started_unconfirmed', JSON.stringify({
+                memberId,
+                memberName: entry.memberName,
+                logPath: entry.logFilePath,
+                recentTranscriptElsewhere: recent,
+                note: recent === true
+                  ? 'session log absent at its expected path but a transcript changed elsewhere under the projects root -- not killing'
+                  : 'session log absent but the second signal could not be established -- not killing',
+              }));
+            }
+          }
+          if (neverStarted) {
             scope.warn(JSON.stringify({
               event: 'agent_never_started',
               memberId,

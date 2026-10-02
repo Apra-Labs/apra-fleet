@@ -18,6 +18,34 @@ describe('encodeClaudeProjectDir', () => {
       .toBe('-home-ecs-user-repos-ApraPipes');
   });
 
+  // GitHub #562 review: names over 200 chars are cut and suffixed with
+  // base36(|hash(cwd)|) by the claude CLI. Expected values computed with the
+  // CLI bundle's own QZ/Vx functions (claude 2.1.287), copied verbatim.
+  const SEG = 'very-long-directory-name-segment/';
+  const WSEG = 'very_long_directory_name_segment\\';
+  it('over-200 POSIX name matches the CLI (200-char cut + base36 hash)', () => {
+    const cwd = '/home/fleet/' + SEG.repeat(7) + 'repo';
+    expect(encodeClaudeProjectDir(cwd, false)).toBe(
+      '-home-fleet-very-long-directory-name-segment-very-long-directory-name-segment-very-long-directory-name-segment-very-long-directory-name-segment-very-long-directory-name-segment-very-long-directory-nam-5y80us',
+    );
+  });
+
+  it('over-200 Windows name hashes the backslash cwd form, even when stored with forward slashes', () => {
+    const cwd = 'C:\\Users\\fleet\\' + WSEG.repeat(7) + 'repo';
+    const expected = 'C--Users-fleet-very-long-directory-name-segment-very-long-directory-name-segment-very-long-directory-name-segment-very-long-directory-name-segment-very-long-directory-name-segment-very-long-directory--knqmjg';
+    expect(encodeClaudeProjectDir(cwd, true)).toBe(expected);
+    expect(encodeClaudeProjectDir(cwd.replace(/\\/g, '/'), true)).toBe(expected);
+    expect(encodeClaudeProjectDir(cwd + '\\', true)).toBe(expected);
+  });
+
+  it('strips trailing separators like the CLI cwd (C:/repo/ -> C--repo, /a/b/ -> -a-b)', () => {
+    expect(encodeClaudeProjectDir('C:/repo/', true)).toBe('C--repo');
+    expect(encodeClaudeProjectDir('C:\\repo\\\\', true)).toBe('C--repo');
+    expect(encodeClaudeProjectDir('/home/u/repo/', false)).toBe('-home-u-repo');
+    expect(encodeClaudeProjectDir('/', false)).toBe('-');
+    expect(encodeClaudeProjectDir('C:\\', true)).toBe('C--');
+  });
+
   it('regression: does not leave underscores un-encoded', () => {
     // The old regex /[\/\\:]/ kept underscores, so watch/stall looked in the
     // wrong dir for any path containing '_'. Guard against that returning.

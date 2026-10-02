@@ -51,7 +51,7 @@ vi.mock('../src/utils/agent-helpers.js', () => ({
   isPosixShell: (os: string, shell?: string) => os !== 'windows' || shell === 'gitbash',
 }));
 
-import { pollLogFile, pollDirectoryActivity } from '../src/services/stall/stall-poller.js';
+import { pollLogFile, pollDirectoryActivity, pollRecentProjectTranscript } from '../src/services/stall/stall-poller.js';
 import { getProvider } from '../src/providers/index.js';
 import { clearMemberHomeDirCache } from '../src/services/member-home.js';
 
@@ -528,6 +528,35 @@ describe('pollLogFile', () => {
 
       const result = await pollLogFile('member-1', '/brain/session-1/logs/transcript.jsonl');
       expect(result.lastTimestamp).toBe('2026-08-05T05:02:30.000Z');
+    });
+  });
+
+  // GitHub #562 review: the second signal behind agent_never_started.
+  describe('pollRecentProjectTranscript', () => {
+    it('true when a recent transcript exists anywhere under the projects root', async () => {
+      mockGetAgent.mockReturnValue(makeAgent());
+      mockExecCommand.mockResolvedValue({ stdout: '/home/x/.claude/projects/-other/abc.jsonl\nFLEET_ROOT_OK\n', stderr: '', code: 0 });
+      expect(await pollRecentProjectTranscript('member-1', Date.now() - 120_000)).toBe(true);
+      const cmd = mockExecCommand.mock.calls[0][0];
+      expect(cmd).toContain('.claude');
+      expect(cmd).toContain('-mmin -');
+      expect(cmd).not.toMatch(/-home-user-project/); // the ROOT, not this member's own project dir
+    });
+
+    it('false when the root exists and holds no recent transcript', async () => {
+      mockGetAgent.mockReturnValue(makeAgent());
+      mockExecCommand.mockResolvedValue({ stdout: 'FLEET_ROOT_OK\n', stderr: '', code: 0 });
+      expect(await pollRecentProjectTranscript('member-1', Date.now() - 120_000)).toBe(false);
+    });
+
+    it('null (unknown) when the root is missing, the probe fails, or the provider has no log dir', async () => {
+      mockGetAgent.mockReturnValue(makeAgent());
+      mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
+      expect(await pollRecentProjectTranscript('member-1', Date.now())).toBeNull();
+      mockExecCommand.mockRejectedValue(new Error('ssh down'));
+      expect(await pollRecentProjectTranscript('member-1', Date.now())).toBeNull();
+      mockGetAgent.mockReturnValue(makeAgent({ llmProvider: 'none' }));
+      expect(await pollRecentProjectTranscript('member-1', Date.now())).toBeNull();
     });
   });
 

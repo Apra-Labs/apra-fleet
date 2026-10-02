@@ -1183,7 +1183,26 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   // GitHub #562: a path built from a local or probed home is authoritative --
   // if it never appears, the agent never started. A username-convention guess
   // is not, and a missing file there stays a warning.
-  const logPathAuthoritative = memberPathCtx.source === 'local' || memberPathCtx.source === 'probe';
+  // Known causes of a transcript landing somewhere else make the path a
+  // guess too: a relocated Claude config dir (CLAUDE_CONFIG_DIR, in this
+  // process for a local member or in the member's configured env vars), or a
+  // local POSIX work folder reached through a symlink (the CLI names the
+  // project dir after the physical cwd).
+  const claudeConfigRelocated = (agent.llmProvider ?? 'claude') === 'claude' && (
+    Object.keys(agent.encryptedEnvVars ?? {}).includes('CLAUDE_CONFIG_DIR')
+    || (agent.agentType === 'local' && !!process.env.CLAUDE_CONFIG_DIR)
+  );
+  let localCwdIsSymlinked = false;
+  if (agent.agentType === 'local' && process.platform !== 'win32') {
+    try {
+      const real = fs.realpathSync(resolvedWorkFolder);
+      localCwdIsSymlinked = real.replace(/\/+$/, '') !== path.resolve(resolvedWorkFolder).replace(/\/+$/, '');
+    } catch {
+      localCwdIsSymlinked = true; // cannot resolve -> not authoritative
+    }
+  }
+  const logPathAuthoritative = (memberPathCtx.source === 'local' || memberPathCtx.source === 'probe')
+    && !claudeConfigRelocated && !localCwdIsSymlinked;
   stallDetector.update(agent.id, {
     sessionId: activePreSpawnSid,
     logFilePath: resolvedLogPath,

@@ -39,6 +39,47 @@ export interface PollResult {
    * only -- see extractPendingToolTimeoutMs.
    */
   pendingToolTimeoutMs?: number | null;
+  /** True when the tail read returned any content at all -- the file exists,
+   *  even if no timestamp parsed and the mtime probe failed. */
+  contentSeen?: boolean;
+}
+
+/**
+ * GitHub #562 review: the second, independent signal required before a
+ * dispatch is declared agent_never_started. Looks for ANY *.jsonl transcript
+ * modified since `sinceMs` under the provider's projects root (the parent of
+ * this member's session-log directory) -- if the CLI did start but wrote its
+ * transcript under a differently-encoded project dir (CLI-side path rules,
+ * a symlinked cwd, a relocated config dir), it shows up here.
+ *  - true:  a recent transcript exists -> the agent started somewhere; do not kill.
+ *  - false: the projects root exists and holds no recent transcript.
+ *  - null:  unknown (provider without a log dir, unresolved home, missing
+ *           root, probe failure) -> callers must not kill.
+ */
+export async function pollRecentProjectTranscript(memberId: string, sinceMs: number): Promise<boolean | null> {
+  const agent = getAgent(memberId);
+  if (!agent) return null;
+  const adapter = getProvider(agent.llmProvider ?? 'claude');
+  const os = getAgentOS(agent);
+  const posix = isPosixShell(os, getAgentShell(agent));
+  try {
+    const { homeDir, targetOs, source } = await getMemberPathContext(agent);
+    if (source !== 'local' && source !== 'probe') return null;
+    const logDir = adapter.resolveSessionLogDir(agent.workFolder, homeDir, targetOs);
+    if (!logDir) return null;
+    const root = logDir.replace(/[\\/]+$/, '').replace(/[\\/][^\\/]*$/, '');
+    if (!root) return null;
+    const minutes = Math.max(1, Math.ceil((Date.now() - sinceMs) / 60_000) + 1);
+    const cmd = posix
+      ? `if [ -d "${escapeDoubleQuoted(root)}" ]; then find "${escapeDoubleQuoted(root)}" -maxdepth 2 -name '*.jsonl' -mmin -${minutes} 2>/dev/null | head -n 1; echo FLEET_ROOT_OK; fi`
+      : wrapStallPowerShell(`if (Test-Path -Path '${psQuote(root)}') { Get-ChildItem -Path '${psQuote(root)}' -Filter *.jsonl -Recurse -Depth 1 -File -ErrorAction SilentlyContinue | Where-Object LastWriteTimeUtc -gt ([DateTime]::UtcNow.AddMinutes(-${minutes})) | Select-Object -First 1 -ExpandProperty FullName; 'FLEET_ROOT_OK' }`);
+    const result = await getStrategy(agent).execCommand(cmd, 10_000);
+    const lines = result.stdout.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    if (!lines.includes('FLEET_ROOT_OK')) return null;
+    return lines.some((l) => l !== 'FLEET_ROOT_OK');
+  } catch {
+    return null;
+  }
 }
 
 export interface DirectoryActivity {
@@ -260,7 +301,7 @@ export async function pollLogFile(memberId: string, logFilePath: string): Promis
       ? extractAgyTimestamp(memberId, lines, result.stdout)
       : extractClaudeTimestamp(memberId, lines, result.stdout);
     const pendingToolTimeoutMs = extractPendingToolTimeoutMs(provider, lines);
-    return { ...extracted, mtimeMs, pendingToolTimeoutMs };
+    return { ...extracted, mtimeMs, pendingToolTimeoutMs, contentSeen: result.stdout.trim().length > 0 };
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     return { lastTimestamp: null, error: msg };

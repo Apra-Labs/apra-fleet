@@ -1,11 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const {
-  mockPollLogFile, mockPollDirectoryActivity, mockUpdateAgent, mockLogLine, mockLogWarn,
+  mockPollLogFile, mockPollDirectoryActivity, mockPollRecent, mockUpdateAgent, mockLogLine, mockLogWarn,
   mockScopeWarn, mockScopeOk, mockWriteStatusline,
 } = vi.hoisted(() => ({
   mockPollLogFile: vi.fn(),
   mockPollDirectoryActivity: vi.fn(),
+  mockPollRecent: vi.fn(),
   mockUpdateAgent: vi.fn(),
   mockLogLine: vi.fn(),
   mockLogWarn: vi.fn(),
@@ -17,6 +18,7 @@ const {
 vi.mock('../src/services/stall/stall-poller.js', () => ({
   pollLogFile: mockPollLogFile,
   pollDirectoryActivity: mockPollDirectoryActivity,
+  pollRecentProjectTranscript: mockPollRecent,
 }));
 
 vi.mock('../src/services/registry.js', () => ({
@@ -69,6 +71,7 @@ describe('StallDetector', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockPollRecent.mockResolvedValue(null);
     vi.useFakeTimers();
     detector = new StallDetector();
     delete process.env['STALL_POLL_INTERVAL_MS'];
@@ -399,8 +402,9 @@ describe('StallDetector', () => {
   // an agent that never started -- killed with a distinct reason once the
   // inactivity threshold passes. A guessed path keeps the warn-only behavior.
   describe('_poll -- session log never appears (agent_never_started)', () => {
-    it('authoritative path, no file past the threshold -> onStall("agent_never_started") once', async () => {
+    it('authoritative path, no file past the threshold, no transcript anywhere -> onStall("agent_never_started") once', async () => {
       process.env['STALL_THRESHOLD_MS'] = '5000';
+      mockPollRecent.mockResolvedValue(false);
       const onStall = vi.fn();
       detector.add('member-1', makeEntry({ lastActivityAt: Date.now() - 10_000, logPathAuthoritative: true, onStall }));
       mockPollLogFile.mockResolvedValue({ lastTimestamp: null, mtimeMs: null });
@@ -413,6 +417,47 @@ describe('StallDetector', () => {
       expect(detector.getEntry('member-1')?.stallReported).toBe(true);
       const warned = mockScopeWarn.mock.calls.map((c: string[]) => JSON.parse(c[0]));
       expect(warned.some((w: { event: string }) => w.event === 'agent_never_started')).toBe(true);
+    });
+
+    // Mismatched-path cases (CLI-side naming, symlinked cwd, relocated config
+    // dir): the second signal sees a fresh transcript elsewhere -> never killed.
+    it('authoritative path with no file BUT a recent transcript elsewhere under the projects root -> no kill', async () => {
+      process.env['STALL_THRESHOLD_MS'] = '5000';
+      mockPollRecent.mockResolvedValue(true);
+      const onStall = vi.fn();
+      detector.add('member-1', makeEntry({ lastActivityAt: Date.now() - 10_000, logPathAuthoritative: true, onStall }));
+      mockPollLogFile.mockResolvedValue({ lastTimestamp: null, mtimeMs: null });
+
+      await detector._poll();
+
+      expect(onStall).not.toHaveBeenCalled();
+      expect(detector.getEntry('member-1')?.stallReported).toBe(false);
+      expect(mockLogLine.mock.calls.filter((c: string[]) => c[0] === 'stall_never_started_unconfirmed')).toHaveLength(1);
+    });
+
+    it('authoritative path with no file and an UNKNOWN second signal -> warn only, no kill', async () => {
+      process.env['STALL_THRESHOLD_MS'] = '5000';
+      mockPollRecent.mockResolvedValue(null);
+      const onStall = vi.fn();
+      detector.add('member-1', makeEntry({ lastActivityAt: Date.now() - 10_000, logPathAuthoritative: true, onStall }));
+      mockPollLogFile.mockResolvedValue({ lastTimestamp: null, mtimeMs: null });
+
+      await detector._poll();
+
+      expect(onStall).not.toHaveBeenCalled();
+    });
+
+    it('a non-empty tail read counts as the file existing even when the mtime probe fails -> no kill', async () => {
+      process.env['STALL_THRESHOLD_MS'] = '5000';
+      mockPollRecent.mockResolvedValue(false);
+      const onStall = vi.fn();
+      detector.add('member-1', makeEntry({ lastActivityAt: Date.now() - 10_000, logPathAuthoritative: true, onStall }));
+      mockPollLogFile.mockResolvedValue({ lastTimestamp: null, mtimeMs: null, contentSeen: true });
+
+      await detector._poll();
+
+      expect(onStall).not.toHaveBeenCalledWith('agent_never_started');
+      expect(detector.getEntry('member-1')?.logFileSeen).toBe(true);
     });
 
     it('authoritative path, no file but still within the threshold -> no kill, warn-only', async () => {
