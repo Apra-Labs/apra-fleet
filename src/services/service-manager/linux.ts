@@ -50,10 +50,10 @@ export class LinuxServiceManager implements ServiceManager {
   async unregister(): Promise<void> {
     await gracefulStopByServerJson();
     checkSystemd();
-    try { execFileSync('systemctl', ['--user', 'disable', SERVICE_NAME]); } catch {}
-    try { execFileSync('systemctl', ['--user', 'stop', SERVICE_NAME]); } catch {}
+    try { execFileSync('systemctl', ['--user', 'disable', SERVICE_NAME], { stdio: 'pipe' }); } catch {}
+    try { execFileSync('systemctl', ['--user', 'stop', SERVICE_NAME], { stdio: 'pipe' }); } catch {}
     try { fs.unlinkSync(UNIT_PATH); } catch {}
-    try { execFileSync('systemctl', ['--user', 'daemon-reload']); } catch {}
+    try { execFileSync('systemctl', ['--user', 'daemon-reload'], { stdio: 'pipe' }); } catch {}
   }
 
   async start(): Promise<void> {
@@ -75,13 +75,13 @@ export class LinuxServiceManager implements ServiceManager {
     let enabled: boolean | undefined;
     try {
       const active = execFileSync(
-        'systemctl', ['--user', 'is-active', SERVICE_NAME], { encoding: 'utf8' },
+        'systemctl', ['--user', 'is-active', SERVICE_NAME], { encoding: 'utf8', stdio: 'pipe' },
       ).trim();
       running = active === 'active';
     } catch {}
     try {
       const enabledOut = execFileSync(
-        'systemctl', ['--user', 'is-enabled', SERVICE_NAME], { encoding: 'utf8' },
+        'systemctl', ['--user', 'is-enabled', SERVICE_NAME], { encoding: 'utf8', stdio: 'pipe' },
       ).trim();
       enabled = enabledOut === 'enabled';
     } catch {}

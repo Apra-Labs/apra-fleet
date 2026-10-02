@@ -241,8 +241,8 @@ describe('LinuxServiceManager', () => {
     it('gracefully stops then disables and removes the unit file', async () => {
       await new LinuxServiceManager().unregister();
       expect(mockGracefulStop).toHaveBeenCalled();
-      expect(execFileSync).toHaveBeenCalledWith('systemctl', ['--user', 'disable', 'apra-fleet']);
-      expect(execFileSync).toHaveBeenCalledWith('systemctl', ['--user', 'daemon-reload']);
+      expect(execFileSync).toHaveBeenCalledWith('systemctl', ['--user', 'disable', 'apra-fleet'], expect.objectContaining({ stdio: 'pipe' }));
+      expect(execFileSync).toHaveBeenCalledWith('systemctl', ['--user', 'daemon-reload'], expect.objectContaining({ stdio: 'pipe' }));
     });
 
     it('is idempotent when unit is not installed', async () => {
@@ -291,6 +291,16 @@ describe('LinuxServiceManager', () => {
         return '' as any;
       });
       expect(await new LinuxServiceManager().query()).toEqual({ installed: true, running: false, enabled: false });
+    });
+
+    // GitHub #585 review: systemctl probe errors must not print above status.
+    it('systemctl probes pipe stdio', async () => {
+      vi.mocked(fs.existsSync).mockReturnValue(true);
+      vi.mocked(execFileSync).mockImplementation(() => { throw new Error('Failed to connect to bus'); });
+      await new LinuxServiceManager().query();
+      const probes = vi.mocked(execFileSync).mock.calls.filter((c) => c[0] === 'systemctl');
+      expect(probes.length).toBe(2);
+      for (const call of probes) expect(call[2]).toMatchObject({ stdio: 'pipe' });
     });
   });
 
