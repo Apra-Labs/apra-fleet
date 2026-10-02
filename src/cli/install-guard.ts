@@ -170,3 +170,69 @@ export function classifyRunningServer(installPrefixDir: string): RunningServerSc
 
   return { relevant: false, reason: null, detail: describeProcesses(procs) };
 }
+
+// ---------------------------------------------------------------------------
+// Member-install ownership marker (apra-fleet-b4g.69.4)
+//
+// `install --member --force` is what fleet runs on a REMOTE member to upgrade
+// it. --force stops the running server first, which is right for the member
+// server a previous member install left behind but wrong for a human's own
+// full-install server on a shared box. A member install therefore records a
+// marker in the data dir it targets; a later `--member --force` stops a running
+// server only when that marker is present. Without it the server was not
+// started by a member install, and stopping it needs an explicit override.
+// A non-member (full) install clears the marker, so it never inherits ownership.
+// ---------------------------------------------------------------------------
+
+/** Name of the explicit override that lets a member install stop a full-install server. */
+export const FORCE_STOP_FULL_INSTALL_FLAG = '--force-stop-full-install';
+
+/** Machine-readable code printed on the refusal (the fleet-side install maps it to a typed status). */
+export const FULL_INSTALL_RUNNING_CODE = 'E-FULL-INSTALL-RUNNING';
+
+export function memberInstallMarkerPath(): string {
+  return path.join(getInstallDataDir(), 'member-install.json');
+}
+
+export function hasMemberInstallMarker(): boolean {
+  try {
+    return fs.existsSync(memberInstallMarkerPath());
+  } catch {
+    return false;
+  }
+}
+
+export function writeMemberInstallMarker(version: string): void {
+  try {
+    fs.mkdirSync(getInstallDataDir(), { recursive: true });
+    fs.writeFileSync(memberInstallMarkerPath(), JSON.stringify({ version, installedAt: new Date().toISOString() }) + '\n');
+  } catch {
+    // Best effort: a missing marker only makes the next forced member install refuse loudly.
+  }
+}
+
+export function clearMemberInstallMarker(): void {
+  try { fs.rmSync(memberInstallMarkerPath(), { force: true }); } catch { /* best effort */ }
+}
+
+/**
+ * Whether a `--member --force` install may stop the relevant running server.
+ * Allowed when the server is a member install's own (marker present) or the
+ * caller passed the explicit override; not applicable to a non-member install.
+ */
+export function memberForceMayStop(opts: { memberMode: boolean; overridden: boolean }): boolean {
+  if (!opts.memberMode) return true;
+  return opts.overridden || hasMemberInstallMarker();
+}
+
+/** The refusal text: names the running server and the override. */
+export function fullInstallRefusalText(serverDetail: string): string {
+  return `
+Error: ${FULL_INSTALL_RUNNING_CODE}: a running apra-fleet server was not started by a member install, so a member install will not stop it.
+  Running server: ${serverDetail}
+
+  This looks like a full install (for example a person's own server on a shared machine).
+  To stop it anyway and install the member server over it, re-run with:
+    apra-fleet install --member --force ${FORCE_STOP_FULL_INSTALL_FLAG}
+`;
+}

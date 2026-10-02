@@ -24,7 +24,10 @@ import { transformAgentForOpenCode, transformAgentForAgy, transformAgentForClaud
 import { FLEET_DIR } from '../paths.js';
 import { extractWorkflowSubsystemAssets } from './workflow-assets.js';
 import { downloadAndExtractDolt, verifyDolt } from './dolt-install.js';
-import { classifyRunningServer, getInstallDataDir } from './install-guard.js';
+import {
+  classifyRunningServer, getInstallDataDir, memberForceMayStop, fullInstallRefusalText,
+  writeMemberInstallMarker, clearMemberInstallMarker, FORCE_STOP_FULL_INSTALL_FLAG,
+} from './install-guard.js';
 import { convertClaudeAllowToAgyPermissions, formatAgyPermissionRules } from '../providers/agy.js';
 
 // --- Dolt CLI install step: injectable deps + explicit gate ---
@@ -1055,7 +1058,12 @@ Options:
                           ~/.apra-fleet/node_modules (workflow runtime), /schemas (agent role
                           schemas), and /workflows/{fleet-sprint,hello-world} (built-in workflows).
                           fleet-se requires Node.js 22.16+ and npm.
-  --force                 Stop a running apra-fleet server before installing (SEA mode only).`);
+  --force                 Stop a running apra-fleet server before installing (SEA mode only).
+                          With --member, only a server a previous member install left behind
+                          is stopped; anything else is refused (E-FULL-INSTALL-RUNNING).
+  --force-stop-full-install
+                          With --member --force: also stop a running server that was not started
+                          by a member install (e.g. a full install on a shared machine).`);
     process.exit(0);
     return;
   }
@@ -1137,6 +1145,7 @@ Options:
 
   // Parse --force flag
   const force = args.includes('--force');
+  const forceStopFullInstall = args.includes(FORCE_STOP_FULL_INSTALL_FLAG);
 
   // Parse --transport flag (default: http)
   type TransportMode = 'http' | 'stdio';
@@ -1172,7 +1181,7 @@ Options:
   }
 
   const knownFlagPrefixes = ['--llm=', '--skill=', '--transport=', '--workflows='];
-  const knownFlagExact = new Set(['--member', '--llm', '--skill', '--no-skill', '--workflows', '--force', '--transport', '--help', '-h']);
+  const knownFlagExact = new Set(['--member', '--llm', '--skill', '--no-skill', '--workflows', '--force', FORCE_STOP_FULL_INSTALL_FLAG, '--transport', '--help', '-h']);
   for (const a of args) {
     if (knownFlagExact.has(a)) continue;
     if (knownFlagPrefixes.some(p => a.startsWith(p))) continue;
@@ -1253,6 +1262,12 @@ Error: apra-fleet is currently running. Stop the server before installing.
 ${killHint}
 `);
       process.exit(1);
+    }
+    // A member install (fleet's remote upgrade path) never stops a server it
+    // did not start unless explicitly told to: nothing has been stopped yet.
+    if (!memberForceMayStop({ memberMode, overridden: forceStopFullInstall })) {
+      console.error(fullInstallRefusalText(runningScope.detail));
+      process.exit(3);
     }
     // Snapshot BEFORE anything is stopped: a pid that is present afterwards but
     // absent here is a supervisor relaunch, not a process refusing to die.
@@ -1882,6 +1897,7 @@ ${restartHint}
   }
 
   // --- Done ---
+  if (memberMode) writeMemberInstallMarker(serverVersion); else clearMemberInstallMarker();
   let beadsVersion = 'installed';
   try {
     const versionOut = execFileSync('bd', ['--version'], { stdio: 'pipe', encoding: 'utf-8', shell: true });
