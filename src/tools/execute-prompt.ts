@@ -645,7 +645,30 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   if (typeof agentOrError === 'string') return agentOrError;
   let agent: Agent;
   try {
-    agent = await ensureCloudReady(agentOrError as Agent); // auto-start if stopped
+    // GitHub #563 review: a cold cloud start can take minutes. Bound it by the
+    // max_total_s budget (minus the cleanup reserve) so a slow start returns
+    // the typed max_total_time error before the client's own deadline. The
+    // start itself keeps going in the background; the next call finds the
+    // instance running.
+    const cloudBudgetMs = input.max_total_s !== undefined
+      ? Math.max(0, input.max_total_s * 1000 - Math.min(EXECUTE_PROMPT_CLEANUP_RESERVE_MS, Math.floor(input.max_total_s * 100)) - (Date.now() - handlerStartedAt))
+      : undefined;
+    const ready = ensureCloudReady(agentOrError as Agent); // auto-start if stopped
+    if (cloudBudgetMs === undefined) {
+      agent = await ready;
+    } else {
+      let budgetTimer: ReturnType<typeof setTimeout> | undefined;
+      const outOfBudget = new Promise<null>((resolve) => { budgetTimer = setTimeout(() => resolve(null), cloudBudgetMs); });
+      const raced = await Promise.race([ready, outOfBudget]).finally(() => clearTimeout(budgetTimer));
+      if (raced === null) {
+        ready.catch(() => { /* background start; outcome surfaces on the next call */ });
+        return {
+          text: `[FAIL] execute_prompt on "${(agentOrError as Agent).friendlyName}" exceeded max_total_s (${input.max_total_s}s) while waiting for the cloud member to start -- the start continues in the background; retry shortly.`,
+          structuredContent: { isError: true, reason: 'max_total_time' },
+        };
+      }
+      agent = raced;
+    }
   } catch (err: any) {
     return `[FAIL] Failed to execute prompt on "${(agentOrError as Agent).friendlyName}": ${err.message}`;
   }
@@ -1448,6 +1471,24 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     ? AbortSignal.any([extra.signal, stallAbortController.signal])
     : stallAbortController.signal;
 
+  // GitHub #563 review: when the inactivity window is as long as the attempt's
+  // remaining max_total_s budget (timeout_s >= max_total_s -- every
+  // fleet-sprint dispatch, and Claude's total-ceiling mode), both timers come
+  // due together and the inactivity one, armed first, wins the tie. That
+  // kill IS the max_total_s ceiling, so it is classified as max_total_time.
+  let lastAttempt: { timeoutMs: number; maxTotalMs: number | undefined } | undefined;
+  const dispatchAttempt = (cmd: string, attemptTimeoutMs: number, attemptMaxTotalMs: number | undefined) => {
+    lastAttempt = { timeoutMs: attemptTimeoutMs, maxTotalMs: attemptMaxTotalMs };
+    return strategy.execCommand(cmd, attemptTimeoutMs, attemptMaxTotalMs, onPidCaptured, dispatchSignal);
+  };
+  const isMaxTotalKill = (err: unknown): boolean => {
+    const msg = (err as { message?: unknown })?.message;
+    if (maxTotalMs === undefined || typeof msg !== 'string') return false;
+    if (/exceeded max total time/i.test(msg)) return true;
+    return /of inactivity/i.test(msg) && lastAttempt?.maxTotalMs !== undefined
+      && lastAttempt.timeoutMs >= lastAttempt.maxTotalMs;
+  };
+
   // Mark agent as busy in statusline
   writeStatusline(new Map([[agent.id, 'busy']]));
 
@@ -1516,7 +1557,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       return maxTotalTimeResult();
     }
     try {
-      result = await strategy.execCommand(claudeCmd, firstBudget.timeoutMs, firstBudget.maxTotalMs, onPidCaptured, dispatchSignal);
+      result = await dispatchAttempt(claudeCmd, firstBudget.timeoutMs, firstBudget.maxTotalMs);
     } catch (dispatchErr: any) {
       // apra-fleet-02s.1: a genuine command-execution exception (e.g. an
       // inactivity timeout, or any other error strategy.execCommand throws)
@@ -1548,7 +1589,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       await tryKillPid(agent, strategy, cmds);
       const freshOpts = { ...promptOpts, sessionId: isCallerMinted ? uuid() : undefined, resuming: false, fork: undefined };
       const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
-      result = await strategy.execCommand(retryCmd, budget.timeoutMs, budget.maxTotalMs, onPidCaptured, dispatchSignal);
+      result = await dispatchAttempt(retryCmd, budget.timeoutMs, budget.maxTotalMs);
     }
     let parsed = provider.parseResponse(result, parseCtx);
     if (parsed.usage) _epUsage = parsed.usage;
@@ -1592,7 +1633,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
         await tryKillPid(agent, strategy, cmds);
         const freshOpts = { ...promptOpts, sessionId: isCallerMinted ? uuid() : undefined, resuming: false, fork: undefined };
         const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
-        result = await strategy.execCommand(retryCmd, staleBudget.timeoutMs, staleBudget.maxTotalMs, onPidCaptured, dispatchSignal);
+        result = await dispatchAttempt(retryCmd, staleBudget.timeoutMs, staleBudget.maxTotalMs);
         parsed = provider.parseResponse(result, parseCtx);
         if (parsed.usage) _epUsage = parsed.usage;
         const usageLimitResult = checkUsageLimit(result, parsed);
@@ -1613,7 +1654,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
         await new Promise(r => setTimeout(r, SERVER_RETRY_DELAY_MS));
         const freshOpts = { ...promptOpts, sessionId: isCallerMinted ? uuid() : undefined, resuming: false, fork: undefined };
         const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
-        result = await strategy.execCommand(retryCmd, overloadBudget.timeoutMs, overloadBudget.maxTotalMs, onPidCaptured, dispatchSignal);
+        result = await dispatchAttempt(retryCmd, overloadBudget.timeoutMs, overloadBudget.maxTotalMs);
         parsed = provider.parseResponse(result, parseCtx);
         if (parsed.usage) _epUsage = parsed.usage;
         const usageLimitResult = checkUsageLimit(result, parsed);
@@ -1773,7 +1814,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
           await tryKillPid(agent, strategy, cmds);
           const freshOpts = { ...promptOpts, sessionId: isCallerMinted ? uuid() : undefined, resuming: false, fork: undefined };
           const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
-          result = await strategy.execCommand(retryCmd, healBudget.timeoutMs, healBudget.maxTotalMs, onPidCaptured, dispatchSignal);
+          result = await dispatchAttempt(retryCmd, healBudget.timeoutMs, healBudget.maxTotalMs);
           parsed = provider.parseResponse(result, parseCtx);
           if (parsed.usage) _epUsage = parsed.usage;
           const usageLimitResult = checkUsageLimit(result, parsed);
@@ -1984,7 +2025,7 @@ session: ${parsed.sessionId}`;
       };
     }
     // GitHub #563: the shared max_total_s ceiling fired -- a typed error.
-    if (maxTotalMs !== undefined && typeof err?.message === 'string' && /exceeded max total time/i.test(err.message)) {
+    if (isMaxTotalKill(err)) {
       _epError = err.message;
       return maxTotalTimeResult();
     }
