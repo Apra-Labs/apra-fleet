@@ -16,7 +16,7 @@ import { buildAuthEnvPrefix } from '../utils/auth-env.js';
 import { writeStatusline } from '../services/statusline.js';
 import { getModelOverride } from '../services/user-config.js';
 import { ensureCloudReady } from '../services/cloud/lifecycle.js';
-import { getStallDetector, resolveSessionLogPath } from '../services/stall/index.js';
+import { getStallDetector, resolveSessionLogPath, type StallReason } from '../services/stall/index.js';
 import { getCachedMemberPathContext } from '../services/member-home.js';
 import { provisionAgents, remoteAgentsDir, loadCanonicalAgentSet } from '../services/agent-provisioner.js';
 import { ensureNoProjectAgentShadows } from '../services/agent-shadow.js';
@@ -48,7 +48,7 @@ import { ensureAgyProject } from '../services/agy-project.js';
 
 export interface ExecutePromptStructured {
   isError?: boolean;
-  reason?: 'busy' | 'reserved' | 'dispatch_failed' | 'nonzero_exit' | 'max_turns_exhausted' | 'empty_response' | 'orphan_recovery_timeout' | 'workspace_not_trusted' | 'auth' | 'server' | 'overloaded' | 'insufficient_context_headroom' | 'budget_exhausted' | 'session_not_found' | 'fork_unsupported' | 'stalled' | 'preflight_offline' | 'preflight_auth_missing' | 'preflight_auth_expired' | 'usage_limit' | 'permission_denied';
+  reason?: 'busy' | 'reserved' | 'dispatch_failed' | 'nonzero_exit' | 'max_turns_exhausted' | 'empty_response' | 'orphan_recovery_timeout' | 'workspace_not_trusted' | 'auth' | 'server' | 'overloaded' | 'insufficient_context_headroom' | 'budget_exhausted' | 'session_not_found' | 'fork_unsupported' | 'stalled' | 'agent_never_started' | 'preflight_offline' | 'preflight_auth_missing' | 'preflight_auth_expired' | 'usage_limit' | 'permission_denied';
   // The LLM's actual reply text on success. Callers that dispatch execute_prompt
   // via an MCP client only ever see structuredContent (the content array is
   // dropped when structuredContent is also present) -- this field exists so the
@@ -880,6 +880,9 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   await ensureAgentFilesProvisioned(agent);
   const stallDetector = getStallDetector();
   let clearedByStall = false;
+  // GitHub #562: which stall fired -- a frozen transcript, or a session log
+  // that never appeared at its authoritative path (the agent never started).
+  let stallReason: StallReason = 'stalled';
   // apra-fleet-3c9.1: a CONFIRMED stall must not only kill the remote pid but
   // also cancel the in-flight strategy.execCommand() promise. Before this, the
   // client kept waiting out its full deriveTimeoutMs deadline after the
@@ -906,7 +909,8 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     provisional: true,
     stallReported: false,
     thresholdMs: stallThresholdMs,
-    onStall: () => {
+    onStall: (reason) => {
+      stallReason = reason ?? 'stalled';
       // Stall detector already wrote 'unknown' to the statusline before calling here.
       // Our job: clear in-process state so the member can accept new calls.
       // clearedByStall prevents the eventually-resolving finally block from clobbering
@@ -1137,11 +1141,16 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       resolvedLogPath = null;
     }
   }
+  // GitHub #562: a path built from a local or probed home is authoritative --
+  // if it never appears, the agent never started. A username-convention guess
+  // is not, and a missing file there stays a warning.
+  const logPathAuthoritative = memberPathCtx.source === 'local' || memberPathCtx.source === 'probe';
   stallDetector.update(agent.id, {
     sessionId: activePreSpawnSid,
     logFilePath: resolvedLogPath,
     provisional: !resolvedLogPath,
     thresholdMs: stallThresholdMs,
+    logPathAuthoritative: !!resolvedLogPath && logPathAuthoritative,
   });
 
   const claudeCmd = authPrefix + cmds.buildAgentPromptCommand(provider, promptOpts);
@@ -1352,6 +1361,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
         logFilePath: logPath,
         provisional: !logPath,
         thresholdMs: stallThresholdMs,
+        logPathAuthoritative: !!logPath && logPathAuthoritative,
       });
     }
   };
@@ -1762,6 +1772,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
         logFilePath: postLogPath,
         provisional: !postLogPath,
         thresholdMs: stallThresholdMs,
+        logPathAuthoritative: !!postLogPath && logPathAuthoritative,
       });
     }
     clearStoredPid(agent.id);
@@ -1872,6 +1883,13 @@ session: ${parsed.sessionId}`;
     // NOT the MCP client). Surface it as a typed 'stalled' error so the dispatch
     // settles here -- well under the client hard timeout -- instead of being
     // mislabeled dispatch_failed or waiting out the full deadline.
+    if (stallAbortController.signal.aborted && !extra?.signal?.aborted && (stallReason as StallReason) === 'agent_never_started') {
+      _epError = 'dispatch aborted: agent never started (session log never appeared)';
+      return {
+        text: `[FAIL] execute_prompt on "${agent.friendlyName}" was aborted: the agent never started -- its session log never appeared at the expected path within the inactivity threshold (timeout_s). Its process was killed and the dispatch cancelled.`,
+        structuredContent: { isError: true, reason: 'agent_never_started' },
+      };
+    }
     if (stallAbortController.signal.aborted && !extra?.signal?.aborted) {
       _epError = 'dispatch aborted by confirmed stall';
       return {

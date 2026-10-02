@@ -395,6 +395,75 @@ describe('StallDetector', () => {
     });
   });
 
+  // GitHub #562: a session log that never appears at an AUTHORITATIVE path is
+  // an agent that never started -- killed with a distinct reason once the
+  // inactivity threshold passes. A guessed path keeps the warn-only behavior.
+  describe('_poll — session log never appears (agent_never_started)', () => {
+    it('authoritative path, no file past the threshold -> onStall("agent_never_started") once', async () => {
+      process.env['STALL_THRESHOLD_MS'] = '5000';
+      const onStall = vi.fn();
+      detector.add('member-1', makeEntry({ lastActivityAt: Date.now() - 10_000, logPathAuthoritative: true, onStall }));
+      mockPollLogFile.mockResolvedValue({ lastTimestamp: null, mtimeMs: null });
+
+      await detector._poll();
+      await detector._poll();
+
+      expect(onStall).toHaveBeenCalledTimes(1);
+      expect(onStall).toHaveBeenCalledWith('agent_never_started');
+      expect(detector.getEntry('member-1')?.stallReported).toBe(true);
+      const warned = mockScopeWarn.mock.calls.map((c: string[]) => JSON.parse(c[0]));
+      expect(warned.some((w: { event: string }) => w.event === 'agent_never_started')).toBe(true);
+    });
+
+    it('authoritative path, no file but still within the threshold -> no kill, warn-only', async () => {
+      process.env['STALL_THRESHOLD_MS'] = '5000';
+      const onStall = vi.fn();
+      detector.add('member-1', makeEntry({ lastActivityAt: Date.now() - 1_000, logPathAuthoritative: true, onStall }));
+      mockPollLogFile.mockResolvedValue({ lastTimestamp: null, mtimeMs: null });
+
+      await detector._poll();
+
+      expect(onStall).not.toHaveBeenCalled();
+      expect(mockLogLine.mock.calls.filter((c: string[]) => c[0] === 'stall_no_signal')).toHaveLength(1);
+    });
+
+    it('guessed (non-authoritative) path, no file past the threshold -> warns only, never kills', async () => {
+      process.env['STALL_THRESHOLD_MS'] = '5000';
+      const onStall = vi.fn();
+      detector.add('member-1', makeEntry({ lastActivityAt: Date.now() - 10_000, logPathAuthoritative: false, onStall }));
+      mockPollLogFile.mockResolvedValue({ lastTimestamp: null, mtimeMs: null });
+
+      await detector._poll();
+
+      expect(onStall).not.toHaveBeenCalled();
+      expect(detector.getEntry('member-1')?.stallReported).toBe(false);
+      expect(mockLogLine.mock.calls.filter((c: string[]) => c[0] === 'stall_no_signal')).toHaveLength(1);
+    });
+
+    it('authoritative path whose file was seen earlier is not reported as never started', async () => {
+      process.env['STALL_THRESHOLD_MS'] = '5000';
+      const onStall = vi.fn();
+      detector.add('member-1', makeEntry({ lastActivityAt: Date.now() - 10_000, logPathAuthoritative: true, logFileSeen: true, onStall }));
+      mockPollLogFile.mockResolvedValue({ lastTimestamp: null, mtimeMs: null });
+
+      await detector._poll();
+
+      expect(onStall).not.toHaveBeenCalled();
+    });
+
+    it('a frozen-transcript stall reports the plain "stalled" reason', async () => {
+      process.env['STALL_THRESHOLD_MS'] = '5000';
+      const onStall = vi.fn();
+      const stale = Date.now() - 10_000;
+      detector.add('member-1', makeEntry({ lastActivityAt: stale, logPathAuthoritative: true, onStall }));
+      mockPollLogFile.mockResolvedValue({ lastTimestamp: new Date(stale).toISOString(), mtimeMs: stale });
+
+      await detector._poll();
+
+      expect(onStall).toHaveBeenCalledWith('stalled');
+    });
+  });
+
   describe('_poll — read failure (no false stall)', () => {
     it('increments consecutiveReadFailures on error, does not count as stall cycle', async () => {
       process.env['STALL_THRESHOLD_MS'] = '5000';

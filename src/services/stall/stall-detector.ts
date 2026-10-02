@@ -162,9 +162,22 @@ export interface StallEntry {
    * once a real signal became available again.
    */
   noSignalReported?: boolean;
-  // Called once when stall is confirmed — clears busy state from outside the hung execCommand
-  onStall?: () => void;
+  /**
+   * GitHub #562: true when `logFilePath` was built from an AUTHORITATIVE home
+   * directory (local member, or a probed remote home) rather than a guessed
+   * one. Only then does "the session log never appeared within the threshold"
+   * prove the agent never started; for a guessed path it stays a warning.
+   */
+  logPathAuthoritative?: boolean;
+  /** Set once the session log has been seen to exist (mtime or content). */
+  logFileSeen?: boolean;
+  // Called once when stall is confirmed — clears busy state from outside the hung execCommand.
+  // `reason` distinguishes a frozen transcript ('stalled') from a session log
+  // that never appeared at an authoritative path ('agent_never_started').
+  onStall?: (reason?: StallReason) => void;
 }
+
+export type StallReason = 'stalled' | 'agent_never_started';
 
 export class StallDetector {
   readonly stallCheckList: Map<string, StallEntry> = new Map();
@@ -406,7 +419,7 @@ export class StallDetector {
           }));
           writeStatusline(new Map([[memberId, 'unknown']]));
           this.update(memberId, { stallReported: true });
-          entry.onStall?.();
+          entry.onStall?.('stalled');
         } else if (!entry.stallReported) {
           writeStatusline(new Map([[memberId, `busy(${fmtElapsed(now - entry.lastActivityAt)})`]]));
         }
@@ -454,6 +467,10 @@ export class StallDetector {
       // pollLogFile without it, so this is a pure superset of the prior
       // behavior -- it can only turn a would-be false stall into recognized
       // activity, never the reverse.
+      if (!entry.logFileSeen && ((mtimeMs !== undefined && mtimeMs !== null) || lastTimestamp !== null)) {
+        this.update(memberId, { logFileSeen: true });
+      }
+
       const mtimeAdvancedTo = (mtimeMs !== undefined && mtimeMs !== null && mtimeMs > entry.lastActivityAt)
         ? mtimeMs
         : null;
@@ -476,6 +493,27 @@ export class StallDetector {
         }
 
         if (mtimeMs === undefined || mtimeMs === null) {
+          // GitHub #562: at an AUTHORITATIVE path, a session log that has
+          // never appeared for the whole inactivity threshold means the agent
+          // never started -- kill with a distinct reason instead of logging
+          // stall_no_signal on every tick forever. A guessed path (or a file
+          // that existed earlier in this dispatch) keeps the old behavior.
+          if (entry.logPathAuthoritative && !entry.logFileSeen
+              && now - entry.lastActivityAt > stallThresholdMs && !entry.stallReported) {
+            scope.warn(JSON.stringify({
+              event: 'agent_never_started',
+              memberId,
+              memberName: entry.memberName,
+              idleSecs: Math.floor((now - entry.lastActivityAt) / 1000),
+              logPath: entry.logFilePath,
+              thresholdMs: stallThresholdMs,
+              note: 'session log never appeared at its authoritative path within the inactivity threshold',
+            }));
+            writeStatusline(new Map([[memberId, 'unknown']]));
+            this.update(memberId, { stallReported: true });
+            entry.onStall?.('agent_never_started');
+            continue;
+          }
           // apra-fleet-qe83.2.2: the file genuinely has no OS mtime either --
           // it has not been created yet (or is otherwise unreadable). This IS
           // the absence of evidence, not evidence of a stall: do NOT count it
@@ -555,7 +593,7 @@ export class StallDetector {
         }));
         writeStatusline(new Map([[memberId, 'unknown']]));
         this.update(memberId, { stallReported: true });
-        entry.onStall?.();
+        entry.onStall?.('stalled');
       } else if (!entry.stallReported) {
         // Show steadily increasing elapsed time so PM can gauge staleness
         writeStatusline(new Map([[memberId, `busy(${fmtElapsed(now - entry.lastActivityAt)})`]]));

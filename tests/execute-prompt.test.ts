@@ -1205,6 +1205,35 @@ describe('confirmed stall aborts the in-flight dispatch (apra-fleet-3c9.2)', () 
     expect(getStallDetector().stallCheckList.has(memberId)).toBe(false);
   });
 
+  // GitHub #562: the stall detector's agent_never_started kill surfaces as its
+  // own typed reason, distinct from a frozen-transcript 'stalled'.
+  it('an agent_never_started stall returns the distinct typed reason', async () => {
+    const member = makeTestAgent({ friendlyName: 'never-started' });
+    memberId = member.id;
+    addAgent(member);
+
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockImplementationOnce((_cmd: string, _t?: number, _m?: number, _p?: (pid: number) => void, signal?: AbortSignal) =>
+        new Promise<SSHExecResult>((_resolve, reject) => {
+          signal?.addEventListener('abort', () => reject(new Error('Command aborted by client')), { once: true });
+        }))
+      .mockResolvedValue({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
+
+    const promise = executePrompt({ member_id: memberId, prompt: 'hi', resume: false, timeout_s: 5, max_total_s: 3600 });
+    await vi.advanceTimersByTimeAsync(0);
+
+    const entry = getStallDetector().getEntry(memberId);
+    expect(entry).toBeDefined();
+    entry?.onStall?.('agent_never_started');
+    await vi.advanceTimersByTimeAsync(0);
+
+    const result = await promise;
+    expect(result.structuredContent).toMatchObject({ isError: true, reason: 'agent_never_started' });
+    expect(resultText(result)).toContain('never started');
+    expect(inFlightAgents.has(memberId)).toBe(false);
+  });
+
   it('does not abort a live (non-stalled) dispatch -- onStall never fires, and the dispatch completes normally', async () => {
     const member = makeTestAgent({ friendlyName: 'no-stall-live-dispatch' });
     memberId = member.id;

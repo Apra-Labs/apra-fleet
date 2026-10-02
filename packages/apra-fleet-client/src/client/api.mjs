@@ -89,7 +89,10 @@
  * @property {boolean} [isError] - true on any failure path; absent/false on success.
  * @property {string} [reason] - Machine-readable failure/status classification, e.g.
  *   'busy' | 'nonzero_exit' | 'max_turns_exhausted' | 'empty_response' | 'overloaded' |
- *   'usage_limit' | 'workspace_not_trusted' | 'session_not_found' | 'permission_denied' | ...
+ *   'usage_limit' | 'workspace_not_trusted' | 'session_not_found' | 'permission_denied' |
+ *   'stalled' (transcript froze past the stall threshold) |
+ *   'agent_never_started' (session log never appeared at its authoritative path within
+ *   timeout_s; the process was killed) | ...
  * @property {PermissionDenied} [permissionDenied] - Present when `reason === 'permission_denied'`:
  *   the member CLI refused tool calls for lack of a grant (AGY headless mode auto-denies them
  *   and exits 0, which used to surface as 'empty_response'). Pass `suggestedGrants` to
