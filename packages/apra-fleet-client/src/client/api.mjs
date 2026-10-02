@@ -107,6 +107,11 @@
  *   paths. Read `usageLimit.resumeAt`/`resumeAtSource` to schedule a resume rather than
  *   re-parsing the failure text; `packages/apra-fleet-workflow` forwards this unchanged onto
  *   `AgentDispatchError.details.usageLimit`.
+ * @property {false} [dispatched] - false when nothing was sent to the member: a
+ *   'max_total_time' failure whose budget ran out during setup (cloud start, before the first
+ *   attempt). No agent ran, so there is no partial work to publish. Absent on every other
+ *   result (including a 'max_total_time' that stopped a running dispatch);
+ *   `packages/apra-fleet-workflow` forwards it onto `AgentDispatchError.details.dispatched`.
  * @property {string} [response] - The LLM's actual reply text on success.
  * @property {string} [sessionId] - The session id this dispatch landed on, when known --
  *   present on success AND on a 'usage_limit'/'max_turns_exhausted' failure so the SAME

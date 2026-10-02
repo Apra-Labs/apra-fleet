@@ -79,6 +79,8 @@ describe('execute_prompt max_total_s with real timers', () => {
     const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 3, max_total_s: 3 });
     const elapsed = Date.now() - start;
     expect((result as any).structuredContent).toMatchObject({ isError: true, reason: 'max_total_time' });
+    // The agent ran: not marked as a setup-time (nothing dispatched) failure.
+    expect((result as any).structuredContent.dispatched).toBeUndefined();
     expect(elapsed).toBeLessThan(3000 + 30_000);
   }, 30_000);
 
@@ -96,7 +98,8 @@ describe('execute_prompt max_total_s with real timers', () => {
     addAgent(member);
     const start = Date.now();
     const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 2, max_total_s: 2 });
-    expect((result as any).structuredContent).toMatchObject({ isError: true, reason: 'max_total_time' });
+    // Nothing was dispatched: callers must not publish post-dispatch work.
+    expect((result as any).structuredContent).toMatchObject({ isError: true, reason: 'max_total_time', dispatched: false });
     expect(Date.now() - start).toBeLessThan(2000 + 1000);
   }, 20_000);
 });

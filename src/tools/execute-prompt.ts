@@ -77,6 +77,10 @@ export interface ExecutePromptStructured {
    *  compose_permissions grants that would allow them, and a hint). Any
    *  partial reply is in `response`. */
   permissionDenied?: PermissionDenial;
+  /** false when nothing was dispatched to the member: a max_total_time
+   *  failure that ran out of budget during setup (cloud start, before the
+   *  first attempt). Absent on every other result. */
+  dispatched?: false;
   [key: string]: unknown;
 }
 
@@ -664,7 +668,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
         ready.catch(() => { /* background start; outcome surfaces on the next call */ });
         return {
           text: `[FAIL] execute_prompt on "${(agentOrError as Agent).friendlyName}" exceeded max_total_s (${input.max_total_s}s) while waiting for the cloud member to start -- the start continues in the background; retry shortly.`,
-          structuredContent: { isError: true, reason: 'max_total_time' },
+          structuredContent: { isError: true, reason: 'max_total_time', dispatched: false },
         };
       }
       agent = raced;
@@ -1498,9 +1502,13 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   let _epOffline = false;
   // GitHub #563: the typed result for a dispatch that ran out of max_total_s
   // (measured from handler entry), so callers never see a raw transport timeout.
-  const maxTotalTimeResult = (): ExecutePromptResult => ({
-    text: `[FAIL] execute_prompt on "${agent.friendlyName}" exceeded max_total_s (${input.max_total_s}s, measured from the call, including setup) -- the dispatch was stopped.`,
-    structuredContent: { isError: true, reason: 'max_total_time' },
+  // dispatched=false: the budget ran out before anything was sent to the
+  // member, so callers can skip publishing work that cannot exist.
+  const maxTotalTimeResult = (dispatched = true): ExecutePromptResult => ({
+    text: dispatched
+      ? `[FAIL] execute_prompt on "${agent.friendlyName}" exceeded max_total_s (${input.max_total_s}s, measured from the call, including setup) -- the dispatch was stopped.`
+      : `[FAIL] execute_prompt on "${agent.friendlyName}" exceeded max_total_s (${input.max_total_s}s, measured from the call) during setup -- nothing was dispatched.`,
+    structuredContent: { isError: true, reason: 'max_total_time', ...(dispatched ? {} : { dispatched: false as const }) },
   });
   // apra-fleet-6a7.1: gates the exit-0/empty-stdout workspace_not_trusted
   // self-heal-and-retry below to exactly one attempt per call, mirroring
@@ -1554,7 +1562,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     if (firstBudget.exhausted) {
       _epExitCode = 'error';
       _epError = 'max_total_s exhausted before dispatch';
-      return maxTotalTimeResult();
+      return maxTotalTimeResult(false);
     }
     try {
       result = await dispatchAttempt(claudeCmd, firstBudget.timeoutMs, firstBudget.maxTotalMs);

@@ -1394,6 +1394,31 @@ describe('shared retry deadline budget (apra-fleet-y8q.1)', () => {
     expect(mockExecCommand).toHaveBeenCalledTimes(4);
   });
 
+  // GitHub #563 review: setup that eats the whole budget returns max_total_time
+  // marked dispatched:false -- nothing reached the member, so fleet-sprint
+  // skips its post-dispatch sync for it.
+  it('setup exhausts max_total_s -> max_total_time with dispatched:false, no attempt is run', async () => {
+    const member = makeTestAgent({ friendlyName: 'setup-eats-budget' });
+    memberId = member.id;
+    addAgent(member);
+    vi.mocked(preflightCheck).mockImplementationOnce(async () => {
+      vi.setSystemTime(new Date(Date.now() + 120_000)); // longer than max_total_s
+      return { ok: true, connectivity: true, authValid: true, latencyMs: 120_000 } as any;
+    });
+    const attempts: string[] = [];
+    mockExecCommand.mockImplementation(async (cmd: string, _t?: number, maxTotal?: number) => {
+      if (maxTotal !== undefined) attempts.push(cmd);
+      return { stdout: '', stderr: '', code: 0 };
+    });
+
+    const result = await executePrompt({ member_id: memberId, prompt: 'hi', resume: false, timeout_s: 1000, max_total_s: 100 });
+    mockExecCommand.mockReset();
+
+    expect(result.structuredContent).toMatchObject({ isError: true, reason: 'max_total_time', dispatched: false });
+    expect(resultText(result)).toContain('nothing was dispatched');
+    expect(attempts).toEqual([]);
+  });
+
   // GitHub #563: max_total_s is anchored at handler entry, so slow setup
   // (preflight here) is charged to it, and the FIRST attempt gets only what
   // remains minus the cleanup reserve. A long attempt then ends with the typed
@@ -1428,6 +1453,7 @@ describe('shared retry deadline budget (apra-fleet-y8q.1)', () => {
     mockExecCommand.mockReset();
 
     expect(result.structuredContent).toMatchObject({ isError: true, reason: 'max_total_time' });
+    expect((result.structuredContent as any).dispatched).toBeUndefined(); // the attempt ran
     // First attempt: 100s - 40s setup - 5s cleanup reserve = 55s, not a fresh 100s.
     expect(firstAttemptMaxTotalMs).toBeDefined();
     expect(firstAttemptMaxTotalMs!).toBeLessThanOrEqual(55_000);
