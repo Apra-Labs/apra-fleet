@@ -309,6 +309,8 @@ export function createKbWorkClient(opts = {}) {
 
     /** repo -> queued writes, oldest first: { kind, role, payload }. */
     const queues = new Map();
+    /** repo -> Set of candidate ids the latest promotionCandidates() call offered. */
+    const offeredCandidates = new Map();
     /** repo -> tail of the serialized flush chain for that repository. */
     const flushChains = new Map();
     /** member name -> open dispatch count (nested brackets count once each). */
@@ -842,6 +844,9 @@ export function createKbWorkClient(opts = {}) {
             // apra-fleet-tm7 repo-blindness class).
             const target = active ? reviewMaintainerFor(memberNameOf(member)) : null;
             if (!target) return [];
+            // Replace (never accumulate) this review scope's offered set up
+            // front, so a failed read leaves nothing offered from a prior round.
+            offeredCandidates.set(target.repo, new Set());
             // Writes still queued for this repository (a capture from this
             // very round) get their chance to land before the read.
             if (queues.has(target.repo)) await flush(target.repo);
@@ -867,12 +872,14 @@ export function createKbWorkClient(opts = {}) {
                     const t = typeof e.created_at === 'string' ? Date.parse(e.created_at) : NaN;
                     return Number.isFinite(t) && t >= since;
                 };
-                return results
+                const offered = results
                     // promote() refuses type='user-directive' outright (activation
                     // is human-terminal, CLI-only), so offering one as a candidate
                     // can only produce a guaranteed refusal.
                     .filter((e) => e && typeof e.id === 'string' && e.type !== 'user-directive' && inWindow(e))
                     .slice(0, KB_MAX_PROMOTION_CANDIDATES);
+                offeredCandidates.set(target.repo, new Set(offered.map((e) => e.id)));
+                return offered;
             } catch (err) {
                 log(`[kb-work] could not read promotion candidates from maintainer '${target.member}' (non-fatal): ${err.message}`);
                 return [];
@@ -975,7 +982,8 @@ export function createKbWorkClient(opts = {}) {
             for (const p of promotions) log(`[kb-work] promote ${p.id} (${role}): ${p.reason}`);
             for (const d of discards) log(`[kb-work] discard ${d.id} (${role}): ${d.reason}`);
 
-            const done = (counts) => ({ ...counts, refused: refused.length });
+            let extraRefused = 0;
+            const done = (counts) => ({ ...counts, refused: refused.length + extraRefused });
             if (captures.length === 0 && promotions.length === 0 && discards.length === 0) return done(zeroCounts());
             const dropped = `${captures.length} capture(s), ${promotions.length} promotion(s) and ${discards.length} discard(s) dropped`;
 
@@ -1010,8 +1018,17 @@ export function createKbWorkClient(opts = {}) {
             if (promotions.length > 0 || discards.length > 0) {
                 const review = reviewMaintainerFor(producer);
                 if (review) {
-                    for (const p of promotions) enqueue(review.repo, 'promote', role, p);
-                    for (const d of discards) enqueue(review.repo, 'discard', role, d);
+                    // Only ids offered in this dispatch's candidate block may be
+                    // judged; anything else is refused before any kb_* call.
+                    const offered = offeredCandidates.get(review.repo) || new Set();
+                    const inBlock = (kind, x) => {
+                        if (offered.has(x.id)) return true;
+                        log(`[kb-work] refused -- ${role}: ${kind} ${x.id} not in this dispatch's candidate block`);
+                        extraRefused += 1;
+                        return false;
+                    };
+                    for (const p of promotions) if (inBlock('promotion', p)) enqueue(review.repo, 'promote', role, p);
+                    for (const d of discards) if (inBlock('discard', d)) enqueue(review.repo, 'discard', role, d);
                     repos.add(review.repo);
                 } else {
                     log(`[kb-work] WARN: no kb_maintainer for member '${producer}' (${role}) -- ${promotions.length} promotion(s) and ${discards.length} discard(s) dropped`);
