@@ -9,6 +9,7 @@ import {
     validateIssueId,
     validateBranchName,
 } from '../fleet-sprint/runner.js';
+import { resolveRoleMapWithWarnings, buildRunnerArgs } from '../bin/cli.mjs';
 import { defaultMockCallTool } from './helpers/mock-sprint-harness.mjs';
 
 // Unit + mock-level tests for apra-fleet-unw.14: the CLI->runner argument
@@ -150,6 +151,23 @@ describe('validateArgs', () => {
             roleMap: { backlog: ['member-a'], doer: ['member-b'] },
         });
         assert.deepStrictEqual(result.roleMap, { backlog: ['member-a'], doer: ['member-b'] });
+    });
+
+    test('validateArgs: backlog key -> no warnings; orchestrator alias -> backlog key + one v0.5 warning; conflict -> [Arg Contract] naming both keys', () => {
+        const ok = validateArgs({ ...VALID_ARGS, roleMap: { backlog: ['m1'] } });
+        assert.deepStrictEqual(ok.roleMap, { backlog: ['m1'] });
+        assert.deepStrictEqual(ok.roleMapWarnings, []);
+        const aliased = validateArgs({ ...VALID_ARGS, roleMap: { orchestrator: ['m1'] } });
+        assert.deepStrictEqual(aliased.roleMap, { backlog: ['m1'] });
+        assert.ok(!('orchestrator' in aliased.roleMap));
+        assert.equal(aliased.roleMapWarnings.length, 1);
+        assert.match(aliased.roleMapWarnings[0], /v0.5/);
+        const equal = validateArgs({ ...VALID_ARGS, roleMap: { backlog: ['a'], orchestrator: ['a'] } });
+        assert.equal(equal.roleMapWarnings.length, 1);
+        assert.throws(
+            () => validateArgs({ ...VALID_ARGS, roleMap: { backlog: ['a'], orchestrator: ['b'] } }),
+            (e) => /[Arg Contract]/.test(e.message) && /"backlog"/.test(e.message) && /"orchestrator"/.test(e.message),
+        );
     });
 
     test('normalizes a mixed-case "Orchestrator" roleMap key to the canonical "backlog" key (deprecated alias)', () => {
@@ -760,6 +778,44 @@ describe('runner.js mock-level execution', () => {
         for (const { command, member_name } of bdDispatches) {
             assert.strictEqual(member_name, 'member-x', `expected command "${command}" to dispatch to 'member-x', got '${member_name}'`);
         }
+    });
+
+    // Deprecation warning for the roleMap.orchestrator alias reaches the RUN LOG.
+    // The CLI (and therefore the supervisor, whose spawner launches bin/cli.mjs)
+    // rewrites the key before the runner sees it, so the runner learns about
+    // the alias through args.roleMapWarnings -- exercised here end to end
+    // through resolveRoleMapWithWarnings -> buildRunnerArgs -> runner log.
+    async function runAndCaptureRoleMapLog(runnerArgs) {
+        const spy = buildSpyFleetApi();
+        const workflow = new FleetWorkflow(spy);
+        const logs = [];
+        workflow.on('log', (e) => logs.push(e.msg));
+        const engine = new WorkflowEngine(workflow);
+        const result = await engine.executeFile(RUNNER_SCRIPT_PATH, {
+            target_issue: 'bd-1', members: ['local', 'member-y'], branch: 'auto-sprint/rolemap-alias-log',
+            base_branch: 'main', max_cycles: 1, ...runnerArgs,
+        }, true);
+        return { result, logs: logs.filter((l) => String(l).startsWith('[role-map] WARNING: ')) };
+    }
+
+    test('CLI path: --role-map {orchestrator} -> resolveRoleMapWithWarnings -> buildRunnerArgs -> runner logs the deprecation warning', async () => {
+        const { roleMap, warnings } = await resolveRoleMapWithWarnings('{"orchestrator":["member-y"]}');
+        const cliArgs = buildRunnerArgs({
+            targetIssues: ['bd-1'], members: ['local', 'member-y'], branch: 'b', baseBranch: 'main',
+            goal: 'P1', maxCycles: 1, requirementsFile: undefined, roleMap, roleMapWarnings: warnings,
+        });
+        assert.deepStrictEqual(cliArgs.roleMap, { backlog: ['member-y'] });
+        const { result, logs } = await runAndCaptureRoleMapLog({ roleMap: cliArgs.roleMap, roleMapWarnings: cliArgs.roleMapWarnings });
+        assert.strictEqual(result.status, 'success');
+        assert.strictEqual(logs.length, 1, JSON.stringify(logs));
+        assert.match(logs[0], /v0.5/);
+    });
+
+    test('backlog key alone logs no deprecation warning; direct alias use (bypassing the CLI) logs one', async () => {
+        const none = await runAndCaptureRoleMapLog({ roleMap: { backlog: ['member-y'] } });
+        assert.strictEqual(none.logs.length, 0);
+        const direct = await runAndCaptureRoleMapLog({ roleMap: { orchestrator: ['member-y'] } });
+        assert.strictEqual(direct.logs.length, 1);
     });
 
     test('roleMap: { orchestrator: [...] } (lowercase) is honored for orchestrator-side bd dispatch, with no ROLES/schema validation involved', async () => {

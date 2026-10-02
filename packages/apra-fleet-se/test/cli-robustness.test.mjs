@@ -9,6 +9,7 @@ import {
     parseCliArgs,
     resolveMemberValidation,
     resolveRoleMap,
+    resolveRoleMapWithWarnings,
     buildRunnerArgs,
     checkIssuesExistOnMember,
     formatViewerListenError,
@@ -208,6 +209,29 @@ describe('resolveRoleMap + buildRunnerArgs -> runner.js validateArgs (c)', () =>
         });
         const validated = validateArgs(args);
         assert.deepStrictEqual(validated.roleMap, { doer: ['m1'], reviewer: ['m2'], backlog: ['m3'] });
+    });
+
+    test('--role-map {"orchestrator":[...]} resolves to the backlog key (deprecated alias) and carries the warning', async () => {
+        const { roleMap, warnings } = await resolveRoleMapWithWarnings('{"orchestrator":["m"],"doer":["d"]}');
+        assert.deepStrictEqual(roleMap, { backlog: ['m'], doer: ['d'] });
+        assert.equal(warnings.length, 1);
+        assert.match(warnings[0], /v0.5/);
+        assert.deepStrictEqual(await resolveRoleMap('{"orchestrator":["m"]}'), { backlog: ['m'] });
+        const args = buildRunnerArgs({
+            targetIssues: ['bd-1'], members: ['m', 'd'], branch: 'b', baseBranch: 'main',
+            goal: 'P1', maxCycles: 1, requirementsFile: undefined, roleMap, roleMapWarnings: warnings,
+        });
+        const validated = validateArgs(args);
+        assert.deepStrictEqual(validated.roleMap, { backlog: ['m'], doer: ['d'] });
+        assert.deepStrictEqual(validated.roleMapWarnings, warnings);
+    });
+
+    test('--role-map with backlog and orchestrator holding different members is rejected (equal members are accepted)', async () => {
+        await assert.rejects(
+            () => resolveRoleMap('{"backlog":["a"],"orchestrator":["b"]}'),
+            /"backlog".*"orchestrator"/
+        );
+        assert.deepStrictEqual(await resolveRoleMap('{"backlog":["a"],"orchestrator":["a"]}'), { backlog: ['a'] });
     });
 
     test('rejects a --role-map whose keys collide once normalized', async () => {

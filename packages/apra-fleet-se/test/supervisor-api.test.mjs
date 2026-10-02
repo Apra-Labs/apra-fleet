@@ -462,6 +462,65 @@ describe('api -- apra-fleet-eft.5.2 member-axis overlap check (default beforeLau
         await fsp.rm(dir, { recursive: true, force: true });
     });
 
+    test('roleMap.backlog launches with no deprecation warning and forwards the backlog key', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const captured = [];
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner(captured),
+            listMembers: () => ({ members: [] }), getBacklog: () => ({}),
+        });
+        const r = await controller.launch({
+            issue: 'PROJ-2', members: ['dave'], branch: 'feat/y', base: 'main',
+            roleMap: { backlog: ['supervisor'] },
+        });
+        assert.equal(captured.length, 1);
+        assert.deepEqual(r.warnings, []);
+        const rm = JSON.parse(captured[0].args[captured[0].args.indexOf('--role-map') + 1]);
+        assert.deepEqual(rm, { backlog: ['supervisor'] });
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('roleMap.orchestrator (deprecated alias) launches, response warns, and the child argv keeps the alias key so its run log warns too', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const captured = [];
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner(captured),
+            listMembers: () => ({ members: [] }), getBacklog: () => ({}),
+        });
+        const r = await controller.launch({
+            issue: 'PROJ-2', members: ['dave'], branch: 'feat/y', base: 'main',
+            roleMap: { Orchestrator: ['supervisor'] },
+        });
+        assert.equal(captured.length, 1);
+        assert.equal(r.warnings.length, 1);
+        assert.match(r.warnings[0], /roleMap.orchestrator/);
+        assert.match(r.warnings[0], /v0.5/);
+        const rm = JSON.parse(captured[0].args[captured[0].args.indexOf('--role-map') + 1]);
+        assert.deepEqual(rm, { orchestrator: ['supervisor'] });
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('roleMap with both backlog and orchestrator holding different members => 400 naming roleMap, no child spawned', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const captured = [];
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner(captured),
+            listMembers: () => ({ members: [] }), getBacklog: () => ({}),
+        });
+        await assert.rejects(
+            () => controller.launch({
+                issue: 'PROJ-2', members: ['dave'], branch: 'feat/y', base: 'main',
+                roleMap: { backlog: ['a'], orchestrator: ['b'] },
+            }),
+            (err) => err instanceof ApiError && err.status === 400 && err.field === 'roleMap',
+        );
+        assert.equal(captured.length, 0);
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
     test('a rejected launch leaves the ledger byte-identical (no partial claim)', async () => {
         const dir = await tmpDir();
         const { ledger, history } = await stores(dir);

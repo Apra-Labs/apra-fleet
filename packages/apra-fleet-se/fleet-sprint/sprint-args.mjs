@@ -34,7 +34,7 @@ const GOAL_PATTERN = /^P[1-3](\/P[1-3]){0,2}$/;
 
 const KNOWN_ARG_KEYS = new Set([
     'target_issues', 'target_issue', 'members', 'branch', 'base_branch',
-    'goal', 'max_cycles', 'requirementsFile', 'roleMap', 'budget',
+    'goal', 'max_cycles', 'requirementsFile', 'roleMap', 'roleMapWarnings', 'budget',
     // Per-dispatch time budget (timeout_s == max_total_s at every dispatch
     // site; integ ceiling = 2x), bounding the cost of a hung dispatch.
     'dispatch_timeout_s',

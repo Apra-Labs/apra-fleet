@@ -510,7 +510,7 @@ export function createSprintController(deps = {}) {
         const rawRoleMap = body.roleMap === undefined
             ? undefined
             : (typeof body.roleMap === 'string' ? body.roleMap : JSON.stringify(body.roleMap));
-        // Backlog-role alias: a conflicting roleMap.orchestrator/roleMap.backlog
+        // Backlog-role alias: a conflicting deprecated-alias/backlog
         // pair is a 400 on field 'roleMap' (before any child spawns); the
         // deprecation warning for the alias is surfaced in the response. The
         // operator's ORIGINAL (key-normalized, alias intact) map is what the

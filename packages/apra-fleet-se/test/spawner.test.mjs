@@ -180,6 +180,11 @@ describe('buildSprintArgv', () => {
         ]);
     });
 
+    test('forwards an operator-supplied deprecated orchestrator roleMap key verbatim so the child CLI run log can warn', () => {
+        const args = buildSprintArgv({ issue: 'i', members: 'm', branch: 'b', base: 'main', viewerPort: 8080, roleMap: { orchestrator: ['o'] } });
+        assert.equal(args[args.indexOf('--role-map') + 1], '{"orchestrator":["o"]}');
+    });
+
     test('omits optional flags entirely when not provided', () => {
         const args = buildSprintArgv({ issue: 'i', members: 'm', branch: 'b', base: 'main', viewerPort: 8080 });
         assert.deepEqual(args, ['--issue', 'i', '--members', 'm', '--branch', 'b', '--base', 'main', '--viewer-port', '8080']);

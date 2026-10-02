@@ -1369,13 +1369,13 @@ async function runSprintCycle(context) {
     // repeatedly caused the orchestrator to run against a stale/wrong-scope bd
     // clone. Making this a hard launch-time failure is the intended fix, but
     // it cannot land in isolation: it requires the supervisor to
-    // auto-inject roleMap.orchestrator on every launch first (section 6.2,
+    // auto-inject roleMap.backlog on every launch first (section 6.2,
     // not yet implemented) -- otherwise every existing caller that relies on
     // the implicit fallback (including this file's own test harness) breaks.
     // Land 6.2, update callers, THEN make this throw.
     const backlogMember = getMemberForRole(ROLE_BACKLOG);
 
-    // Deprecated-alias warnings (roleMap.orchestrator -> roleMap.backlog),
+    // Deprecated-alias warnings (deprecated orchestrator key -> backlog),
     // collected by validateArgs() and/or forwarded by bin/cli.mjs.
     for (const w of (validated.roleMapWarnings || [])) log(`[role-map] WARNING: ${w}`);
 
@@ -3315,7 +3315,7 @@ export async function main(context) {
                 // Resolve a git-capable DISPATCH member instead: the harvester's
                 // member (the last code-writing role, so its clone pushed most
                 // recently), falling back to the first doer, never
-                // roleMap.orchestrator and never a bare validatedForLock.members[0]
+                // roleMap.backlog and never a bare validatedForLock.members[0]
                 // pick (that silent pick is the original bug this closes).
                 const roleMap = validatedForLock.roleMap;
                 const harvesterMembers = (roleMap && Array.isArray(roleMap['harvester'])) ? roleMap['harvester'] : [];

@@ -746,7 +746,7 @@ async function main() {
     let validMembers = [];
     // apra-fleet: names flagged unreservable in the SAME list_members read --
     // hoisted out of this try block so the topology filter below (item 4) can
-    // key on the actual unreservable flag, not on roleMap.orchestrator
+    // key on the actual unreservable flag, not on roleMap.backlog
     // membership (which would also match a real, git-having dispatch member
     // that is ADDITIONALLY role-mapped as orchestrator, and wrongly skip its
     // legitimate same-HEAD topology check).
@@ -847,12 +847,12 @@ async function main() {
     // real, git-having dispatch member that is ADDITIONALLY role-mapped as
     // orchestrator (a supported topology, runner.js's branchEnsureMembers
     // dedupe comment) must still pass its legitimate same-HEAD check against
-    // the other dispatch members -- filtering on roleMap.orchestrator alone
+    // the other dispatch members -- filtering on roleMap.backlog alone
     // would silently skip that check instead of just skipping a git-less
     // member. This only matters when an operator also lists a shared member
-    // in --members (redundant with roleMap.orchestrator, and not required);
+    // in --members (redundant with roleMap.backlog, and not required);
     // a normal launch that passes the shared orchestrator ONLY via
-    // roleMap.orchestrator was never affected.
+    // roleMap.backlog was never affected.
     const topologyMembersFiltered = validMembers.filter((m) => !unreservableNames.has(m));
     // Degrade back to the unfiltered list if excluding unreservable members
     // would empty it out entirely -- checkMemberTopology refuses to start on
