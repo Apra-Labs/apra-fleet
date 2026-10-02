@@ -27,6 +27,26 @@ The remaining role-sense "orchestrator member" wording in the docs (both `archit
 and the supervisor OpenAPI spec) is renamed too. Carried forward: host-environment test failures
 and regression-pass failures remain open as backlog beads.
 
+## [Unreleased] -- History view backfills pre-summary runs; SSE state frame carries the summary
+
+Runs archived before the run summary existed now get their extension summaries computed when the
+History view reads them (`backfillExtensionSummaries`: pure, never overwrites an existing entry,
+a throwing `summarize()` is logged and skipped). The live SSE state frame now includes the
+namespace summary, and the client dispatches the summary event before the state event. See
+`docs/sprint-run-summary.md`.
+
+```
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $3.9114.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.0287 across 1 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 8 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+```
+
+Carried forward: host-environment test failures (stale undici install, stale dist schema, Windows
+symlink privilege) and the informational regression-pass failures remain open as backlog beads.
+
 ## [Unreleased] -- Supervisor sprint rows pull a once-per-publish run summary
 
 Sprint progress is now computed once by the sprint's own viewer and published; the supervisor
