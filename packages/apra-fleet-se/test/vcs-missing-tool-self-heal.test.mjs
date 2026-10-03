@@ -9,9 +9,10 @@ import {
     invalidateSyncRemoteCache,
     clearLastSyncedTip,
     clearTipProbeFailures,
+    NEUTRAL_KIND_MAP,
 } from '../fleet-sprint/dolt-sync.mjs';
 import { classifyGitFailure, runGitStep } from '../fleet-sprint/git-topology.mjs';
-import { createVcsAuthSelfHealCallback, selfHealMemoryKey } from '../fleet-sprint/vcs-auth.mjs';
+import { createVcsAuthSelfHealCallback, selfHealMemoryKey, FUTILE_HEAL_TTL_MS } from '../fleet-sprint/vcs-auth.mjs';
 import { DoltSyncError } from '../fleet-sprint/errors.mjs';
 
 // GitHub #616: (a) a missing binary is its own failure kind, checked before
@@ -263,7 +264,7 @@ describe('createVcsAuthSelfHealCallback -- honest logs and no repeated futile he
         // Same failure on a later D-pull, different pid: same normalised key.
         await assert.rejects(
             () => heal({ ...info, label: 'D-pull 2', error: 'Error 1105: lock held by pid 777' }),
-            /skipping self-heal for member 'm'.*already failed to recover this same failure earlier in this run \(D-pull 1\)/,
+            /skipping self-heal for member 'm'.*already failed to recover this same unclassified failure earlier in this run \(D-pull 1\)/,
         );
         assert.equal(counter.provisions, 1, 'no second provision_vcs_auth call');
 
@@ -297,5 +298,57 @@ describe('createVcsAuthSelfHealCallback -- honest logs and no repeated futile he
         assert.equal(selfHealMemoryKey('a', 'lock 12 at deadbeef01'), selfHealMemoryKey('a', 'lock 99 at 0123abcdef'));
         assert.notEqual(selfHealMemoryKey('a', 'x'), selfHealMemoryKey('b', 'x'));
         assert.notEqual(selfHealMemoryKey('a', 'lock held'), selfHealMemoryKey('a', 'auth failed'));
+    });
+
+    // Review follow-ups (GitHub #616).
+    test('a genuine AUTH heal is never suppressed, even after an auth heal did not recover', async () => {
+        const counter = { provisions: 0 };
+        const heal = createVcsAuthSelfHealCallback({ callTool: fakeCallTool(counter), command: remoteCommand, log: () => {} });
+        const info = { member: 'm', label: 'D-pull 1', error: 'fatal: Authentication failed', source: 'dolt', failureKind: 'auth' };
+        await heal(info);
+        await heal.recordHealOutcome({ ...info, recovered: false });
+        await heal({ ...info, label: 'D-pull 2' });
+        assert.equal(counter.provisions, 2);
+    });
+
+    test('a remembered futile unclassified heal expires after the TTL', async () => {
+        const counter = { provisions: 0 };
+        let t = 1_000_000;
+        const heal = createVcsAuthSelfHealCallback({ callTool: fakeCallTool(counter), command: remoteCommand, log: () => {}, now: () => t });
+        const info = { member: 'm', label: 'D-pull 1', error: 'Error: weird', source: 'dolt', failureKind: 'unknown' };
+        await heal(info);
+        await heal.recordHealOutcome({ ...info, recovered: false });
+        t += FUTILE_HEAL_TTL_MS - 1;
+        await assert.rejects(() => heal(info), /skipping self-heal/);
+        t += 1;
+        await heal(info);
+        assert.equal(counter.provisions, 2);
+        assert.equal(FUTILE_HEAL_TTL_MS, 30 * 60 * 1000);
+    });
+
+    test('selfHealMemoryKey keys on the decisive lines, not a shared long prefix', () => {
+        const banner = `${'warning: some very long shell profile banner line that repeats on every command\n'.repeat(12)}`;
+        assert.notEqual(
+            selfHealMemoryKey('a', `${banner}fatal: unable to access 'https://h/': Could not resolve host`),
+            selfHealMemoryKey('a', `${banner}fatal: Authentication failed`),
+        );
+        // hint/warning lines alone do not change the key
+        assert.equal(
+            selfHealMemoryKey('a', 'hint: try again\nerror: database is locked'),
+            selfHealMemoryKey('a', 'warning: noise\nerror: database is locked'),
+        );
+    });
+
+    test('selfHealMemoryKey keeps distinct exit codes distinct', () => {
+        assert.notEqual(selfHealMemoryKey('a', '[Command Failed] Exit code 1: boom'), selfHealMemoryKey('a', '[Command Failed] Exit code 2: boom'));
+        assert.equal(selfHealMemoryKey('a', 'exit status 3 at pid 10'), selfHealMemoryKey('a', 'exit status 3 at pid 99'));
+    });
+
+    test('every verdict classifyDoltFailure can return has an explicit neutral degraded kind', () => {
+        for (const k of Object.values(K)) {
+            const verdict = toDoltVerdict(k);
+            assert.ok(Object.prototype.hasOwnProperty.call(NEUTRAL_KIND_MAP, verdict), `NEUTRAL_KIND_MAP lacks '${verdict}'`);
+        }
+        assert.equal(NEUTRAL_KIND_MAP['missing-tool'], 'unknown');
     });
 });

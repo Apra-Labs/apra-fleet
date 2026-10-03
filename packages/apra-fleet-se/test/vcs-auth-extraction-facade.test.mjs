@@ -109,6 +109,7 @@ const MOVED_PRIVATE_SYMBOLS = [
     // GitHub #616: the self-heal callback's futile-heal memory key. Added
     // after the extraction; vcs-auth.mjs-only, never exported by runner.js.
     'selfHealMemoryKey',
+    'FUTILE_HEAL_TTL_MS',
 ];
 
 const declaresTopLevel = (src, name) =>
@@ -154,7 +155,7 @@ describe('(1) the runner.js facade re-exports every symbol the vcs-auth extracti
         });
     }
 
-    test('every moved symbol is accounted for: the two lists cover all 27 top-level declarations in vcs-auth.mjs', () => {
+    test('every moved symbol is accounted for: the two lists cover all 28 top-level declarations in vcs-auth.mjs', () => {
         const declared = [...VCS_AUTH_SRC.matchAll(/^(?:export )?(?:async )?(?:function|const) ([A-Za-z_][A-Za-z0-9_]*)/gm)]
             .map((m) => m[1]);
         const enumerated = new Set([...MOVED_PUBLIC_SYMBOLS, ...MOVED_PRIVATE_SYMBOLS]);

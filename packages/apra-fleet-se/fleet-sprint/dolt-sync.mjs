@@ -1954,16 +1954,20 @@ export function classifySyncError(err) {
 // doltPushAfter), so it always maps to 'conflict-unresolvable' here, never
 // 'conflict-resolvable' (that state exists only transiently, mid-reconcile,
 // and is never itself reported as a degraded terminal outcome).
-const NEUTRAL_KIND_MAP = {
+export const NEUTRAL_KIND_MAP = Object.freeze({
     diverged: 'conflict-unresolvable',
     auth: 'auth',
     transient: 'transient',
     'no-remote': 'no-store',
     'empty-remote': 'no-store',
     'remote-unreachable': 'store-unreachable',
+    // A missing bd/dolt binary on the member (GitHub #616). The ADR taxonomy
+    // has no environment-fault kind, and 'store-unreachable' would misreport a
+    // reachable store, so it maps to 'unknown' -- explicitly, not by fallback.
+    'missing-tool': 'unknown',
     unknown: 'unknown',
     error: 'unknown',
-};
+});
 
 /**
  * Map an adapter-flavored outcome `kind` (classifySyncError's return value) to

@@ -1019,21 +1019,36 @@ export function createMemberVcsProviderResolver(opts = {}) {
  * @returns {((info: { member: string, label: string, cmd?: string, error: string, source?: 'git'|'dolt', failureKind?: string }) => Promise<void>) & { recordHealOutcome: (info: { member: string, label: string, error: string, recovered: boolean }) => Promise<void> }}
  */
 export function createVcsAuthSelfHealCallback(opts = {}) {
-    const { callTool, command, log = () => {}, azdevopsPatSecretName } = opts;
+    const { callTool, command, log = () => {}, azdevopsPatSecretName, now = () => Date.now(), futileHealTtlMs = FUTILE_HEAL_TTL_MS } = opts;
     const fleetApi = new ApraFleet({ callTool });
-    // GitHub #616: heals that already ran and did NOT recover, keyed by member +
-    // normalised error. Lives as long as this callback, i.e. the sprint run, so
-    // the same futile re-provisioning is not repeated on every D-pull.
-    /** @type {Map<string, string>} key -> label of the step whose heal failed */
+    // GitHub #616: last-resort heals of UNCLASSIFIED failures that ran and did
+    // NOT recover, keyed by member + normalised error, so the same futile
+    // re-provisioning is not repeated on every D-pull. Only 'unknown' failures
+    // are remembered -- a genuine auth failure is always healed -- and each
+    // entry expires after futileHealTtlMs, so a later, different cause behind
+    // the same text still gets a heal.
+    /** @type {Map<string, { label: string, at: number }>} */
     const futileHeals = new Map();
 
+    function rememberedFutileHeal(key) {
+        const entry = futileHeals.get(key);
+        if (!entry) return null;
+        if (now() - entry.at >= futileHealTtlMs) {
+            futileHeals.delete(key);
+            return null;
+        }
+        return entry;
+    }
+
     async function onAuthFailure({ member, label, error, source, failureKind }) {
-        const key = selfHealMemoryKey(member, error);
-        if (futileHeals.has(key)) {
-            throw new Error(
-                `skipping self-heal for member '${member}' (${label}): re-provisioning credentials already failed to recover ` +
-                `this same failure earlier in this run (${futileHeals.get(key)}); fix the cause on the member instead.`,
-            );
+        if (failureKind === 'unknown') {
+            const entry = rememberedFutileHeal(selfHealMemoryKey(member, error));
+            if (entry) {
+                throw new Error(
+                    `skipping self-heal for member '${member}' (${label}): re-provisioning credentials already failed to recover ` +
+                    `this same unclassified failure earlier in this run (${entry.label}); fix the cause on the member instead.`,
+                );
+            }
         }
         const isAuth = failureKind === undefined || failureKind === 'auth';
         log(isAuth
@@ -1076,34 +1091,41 @@ export function createVcsAuthSelfHealCallback(opts = {}) {
     /**
      * Called by runGitStep/runDoltStep after the post-heal retry; a heal that
      * did not recover is remembered so it is not attempted again this run.
-     * @param {{ member: string, label: string, error: string, recovered: boolean }} info
+     * @param {{ member: string, label: string, error: string, recovered: boolean, failureKind?: string }} info
      */
-    onAuthFailure.recordHealOutcome = async function recordHealOutcome({ member, label, error, recovered }) {
-        if (recovered) return;
-        const key = selfHealMemoryKey(member, error);
-        if (!futileHeals.has(key)) futileHeals.set(key, label);
+    onAuthFailure.recordHealOutcome = async function recordHealOutcome({ member, label, error, recovered, failureKind }) {
+        if (recovered || failureKind !== 'unknown') return;
+        futileHeals.set(selfHealMemoryKey(member, error), { label, at: now() });
     };
 
     return onAuthFailure;
 }
 
+/** How long a futile unclassified self-heal is remembered (30 minutes). */
+export const FUTILE_HEAL_TTL_MS = 30 * 60 * 1000;
+
 /**
- * Key for remembering a futile self-heal: the member plus its error text with
- * the run-varying parts (numbers, hex ids, whitespace runs) normalised away,
- * so the same failure on a later D-pull maps to the same key.
+ * Key for remembering a futile self-heal: the member plus the failure's
+ * DISTINGUISHING text. Warning/hint lines (shell-profile noise, git hints) are
+ * dropped and the fatal/error lines kept (else the TAIL of what remains), so
+ * two failures sharing a long common prefix never collapse into one key. The
+ * run-varying parts (pids, counts, hex ids, whitespace runs) are normalised
+ * away, but the number after "exit code"/"exit status" is kept, so distinct
+ * exit codes stay distinct.
  * @param {string} member
  * @param {string} error
  * @returns {string}
  */
 export function selfHealMemoryKey(member, error) {
-    const normalised = String(error || '')
-        .toLowerCase()
-        .replace(/\b[0-9a-f]{7,}\b/g, '<hex>')
-        .replace(/\d+/g, '<n>')
-        .replace(/\s+/g, ' ')
-        .trim()
-        .slice(0, 500);
-    return `${member}|${normalised}`;
+    const lines = String(error || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean)
+        .filter((l) => !/^(?:remote:\s*)?(?:warning|hint)\b/i.test(l));
+    const decisive = lines.filter((l) => /\b(?:fatal|error)\b/i.test(l));
+    let text = (decisive.length > 0 ? decisive : lines).join(' ');
+    text = text.replace(/(\bexit (?:code|status)\s*:?\s*)(\d+)|\b[0-9a-f]{7,}\b|\d+/gi,
+        (m, prefix, code) => (prefix ? `${prefix}${code}` : (/^\d+$/.test(m) ? '<n>' : '<hex>')));
+    text = text.toLowerCase().replace(/\s+/g, ' ').trim();
+    if (text.length > 500) text = text.slice(-500);
+    return `${member}|${text}`;
 }
 
 // How far ahead of a credential's known expiry the preflight treats it as
