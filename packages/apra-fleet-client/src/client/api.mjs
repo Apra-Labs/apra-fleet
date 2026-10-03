@@ -697,6 +697,55 @@ export function permissionDenialOf(result) {
     };
 }
 
+/**
+ * Anchored text shapes of a fleet tool failure that reached the caller WITHOUT
+ * a structured error flag (an older server, or a plain-string tool result).
+ * Each pattern matches only at the START of the result text, so a genuine
+ * LLM reply that merely mentions "connection refused" mid-body never matches
+ * (a successful execute_prompt reply is display-wrapped or carried in
+ * structuredContent.response, never bare).
+ */
+const FLEET_TOOL_FAILURE_TEXT_RES = Object.freeze([
+    /^\s*(?:\[FAIL\]\s*)?Failed to execute (?:command|prompt) on "/,
+    /^\s*\(SSH\)\s/,
+    /^\s*(?:Error:\s*)?(?:connect\s+)?(?:ECONNREFUSED|ECONNRESET|EHOSTUNREACH|ENETUNREACH|ETIMEDOUT|EPIPE)\b/,
+    /^\s*(?:Error:\s*)?(?:Timed out while waiting for handshake|Connection lost before handshake|All configured authentication methods failed|Not connected)\b/,
+]);
+
+/**
+ * Typed read of a fleet TOOL/TRANSPORT failure on a raw callTool() result --
+ * as opposed to a successful tool call whose payload is the member's (or the
+ * LLM's) answer. Returns null for a successful result.
+ *
+ * Signals, strongest first:
+ *   - 'isError': the MCP-level `result.isError === true` flag. This is what the
+ *     MCP server returns when a tool handler THROWS (e.g. an SSH channel that
+ *     could not be opened): `{ content: [{ text: err.message }], isError: true }`
+ *     with no structuredContent, so the text is the bare transport error.
+ *   - 'text': fallback for a result carrying no structured flag and no
+ *     `structuredContent.response`, whose text starts with a recognisable
+ *     fleet failure shape (FLEET_TOOL_FAILURE_TEXT_RES).
+ *
+ * A result whose `structuredContent.isError` is set is NOT reported here:
+ * that is the tool's own classified failure (it carries a `reason`), which
+ * callers already read directly.
+ *
+ * @param {{ isError?: boolean, content?: { text?: string }[], structuredContent?: Record<string, any> } | null | undefined} result
+ * @returns {{ source: 'isError' | 'text', text: string } | null}
+ */
+export function fleetToolFailureOf(result) {
+    if (!result || typeof result !== 'object') return null;
+    const sc = result.structuredContent;
+    if (sc && sc.isError) return null;
+    const text = Array.isArray(result.content)
+        ? result.content.map((c) => (c && typeof c.text === 'string' ? c.text : '')).filter(Boolean).join('\n')
+        : '';
+    if (result.isError === true) return { source: 'isError', text };
+    if (sc && typeof sc.response === 'string') return null;
+    if (FLEET_TOOL_FAILURE_TEXT_RES.some((re) => re.test(text))) return { source: 'text', text };
+    return null;
+}
+
 export class ApraFleet {
     /**
      * @param {{ callTool: (name: string, args: Record<string, any>, opts?: { timeoutMs?: number, signal?: AbortSignal }) => Promise<any> }} mcpClient

@@ -5,6 +5,7 @@ import { AsyncLocalStorage } from 'async_hooks';
 import { calculateCost } from './pricing.mjs';
 import { WorkflowError, MemberNotFoundError, AgentOutputError, AgentDispatchError, CommandError, FleetTransportError, BudgetExceededError, CancelledError } from './errors.mjs';
 import { hashText, computeActivityKey } from './journal.mjs';
+import { fleetToolFailureOf } from '@apralabs/apra-fleet-client';
 
 export { WorkflowError, MemberNotFoundError, AgentOutputError, AgentDispatchError, CommandError, FleetTransportError, BudgetExceededError, CancelledError } from './errors.mjs';
 
@@ -1293,6 +1294,28 @@ export class FleetWorkflow extends EventEmitter {
                     // dispatched:false (nothing was sent to the member) is kept so a
                     // caller can tell a setup-time failure from one where the agent ran.
                     throw new AgentDispatchError(`[Workflow Error] Agent dispatch failed (${structured.reason || 'unknown'}): ${text}`, { details: { text, reason: structured.reason, member: opts.member_name || opts.member_id, ...(structured.usageLimit ? { usageLimit: structured.usageLimit } : {}), ...(structured.permissionDenied ? { permissionDenied: structured.permissionDenied } : {}), ...(structured.sessionId ? { sessionId: structured.sessionId } : {}), ...(structured.dispatched === false ? { dispatched: false } : {}) } });
+                }
+
+                // A fleet TOOL/TRANSPORT failure that carries no
+                // structuredContent classification: the MCP server turns a
+                // tool handler that THREW (e.g. an SSH channel that could not
+                // be opened) into `{content:[{text: err.message}], isError:
+                // true}`, so the text is the bare transport error, never the
+                // LLM's answer. Classify it as a dispatch failure HERE, before
+                // any schema extraction, so it is never fed to the bounded
+                // schema-repair loop (which can only re-ask the model and
+                // cannot fix a broken channel). The caller's own retry ladder
+                // decides whether to re-dispatch. Structured `result.isError`
+                // first; an anchored text shape only as a fallback (see
+                // fleetToolFailureOf in the fleet client).
+                const toolFailure = fleetToolFailureOf(result);
+                if (toolFailure) {
+                    const memberLabel = opts.member_name || opts.member_id;
+                    const text = toolFailure.text || 'no error text reported';
+                    const transportMsg = `transport failure dispatching to member '${memberLabel}': ${text}`;
+                    console.error(`[Agent API Error]`, transportMsg);
+                    this.emit('activity:end', { ...activityMeta, error: transportMsg, duration, usage: result.usage, cost, success: false });
+                    throw new AgentDispatchError(`[Workflow Error] Agent dispatch failed (transport_failure): ${transportMsg}`, { details: { text, reason: 'transport_failure', signal: toolFailure.source, member: memberLabel } });
                 }
 
                 // apra-fleet-eft.78.3: surface the resumable session id
