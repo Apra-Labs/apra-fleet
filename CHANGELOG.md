@@ -37,6 +37,19 @@ sprint-state test that slices `runner.js` with an LF-only pattern (fails on CRLF
 `kb_session_prime` test timeout, and the regression-pass failures already tracked by earlier
 carry-over issues.
 
+## [Unreleased] -- remove_member no longer deletes a user-supplied SSH key (data loss fix)
+
+`remove_member` deleted the local key pair at the member's `keyPath` (and removed its public key
+from the member's `~/.ssh/authorized_keys`) whenever no other member shared it, even when the key
+was the user's own `register_member key_path` -- earlier builds could delete a personal key such as
+`~/.ssh/id_ed25519`. Both steps now run only for fleet-generated keys (those under the fleet keys
+dir written by `setup_ssh_key`); the shared-key guard still applies. Behaviour change: removing a
+member registered with a user-supplied key leaves the key files and its `authorized_keys` entry in
+place -- revoking that access is the user's choice.
+
+Upgrade: no migration needed; the decision is made by key location, so members registered before
+this fix are covered. If an earlier build already deleted your key, restore it from backup.
+
 ## [Unreleased] -- Beads role renamed to `backlog`; `orchestrator` kept as a deprecated alias
 
 The fleet-sprint role that names the member holding the beads clone is now `backlog`. The old
