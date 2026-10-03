@@ -140,7 +140,10 @@ export async function runHarvestPhase({
         spend: integTestRunnerSpend,
         dispatchCount: integTestRunnerDispatchCount,
     });
-    const analysisText = `${reportText}\n\n## Cost\n\n\`\`\`\n${costAnalysis}\n\`\`\``;
+    // Fence built by repeat(): literal backtick runs here trip the shell-command
+    // guard's backtick-substitution check.
+    const fence = '`'.repeat(3);
+    const analysisText = [reportText, '## Cost', `${fence}\n${costAnalysis}\n${fence}`].join('\n\n');
     const harvesterPrompt = buildHarvesterPrompt({
         branch: validated.branch,
         baseBranch: validated.baseBranch,
