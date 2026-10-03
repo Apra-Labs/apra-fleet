@@ -178,6 +178,24 @@ export class SeWindowsCommands {
   }
 
   /**
+   * PowerShell twin of SePosixCommands.ensureFile: create the file (and its
+   * parent directory) when absent; an existing file is never truncated.
+   * Only literal paths, no member environment reads.
+   * Caller: beads-identity-check.mjs member beads set-up.
+   * @param {string} relPath validated
+   * @returns {string}
+   */
+  ensureFile(relPath) {
+    const p = assertSafeRelativePath(relPath, 'file path');
+    const slash = p.lastIndexOf('/');
+    const dir = slash > 0 ? p.slice(0, slash) : '';
+    const parts = [];
+    if (dir) parts.push(`if (-not (Test-Path -LiteralPath '${dir}')) { New-Item -ItemType Directory -Force -Path '${dir}' | Out-Null }`);
+    parts.push(`if (-not (Test-Path -LiteralPath '${p}')) { New-Item -ItemType File -Path '${p}' | Out-Null }`);
+    return this.wrapForMember(parts.join('; '));
+  }
+
+  /**
    * This member's OWN shell already IS PowerShell, so a script destined for
    * it needs no envelope at all -- returning it unchanged is what keeps
    * every non-gitbash Windows member's dispatched script byte-identical to

@@ -197,6 +197,22 @@ export class SePosixCommands {
   }
 
   /**
+   * Create a work-folder-relative file (and its parent directory) when it is
+   * absent; an existing file is never truncated or modified. Idempotent.
+   * Caller: beads-identity-check.mjs member beads set-up (an empty
+   * .beads/config.yaml so `bd config set` has a workspace to write to).
+   * @param {string} relPath validated
+   * @returns {string}
+   */
+  ensureFile(relPath) {
+    const p = assertSafeRelativePath(relPath, 'file path');
+    const slash = p.lastIndexOf('/');
+    const dir = slash > 0 ? p.slice(0, slash) : '';
+    const create = `{ [ -e '${p}' ] || : > '${p}'; }`;
+    return this.wrapForMember(dir ? `mkdir -p -- '${dir}' && ${create}` : create);
+  }
+
+  /**
    * A POSIX member has no PowerShell -- there is nothing this method could
    * correctly return (returning the script unchanged would hand a bash
    * interpreter raw PowerShell text and fail confusingly; inventing a bash

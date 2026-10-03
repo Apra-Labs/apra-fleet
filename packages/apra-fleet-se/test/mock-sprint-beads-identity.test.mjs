@@ -113,16 +113,29 @@ test('mock sprint: beads-reading member with no beads DB and no expected beads r
 // Answers the identity probes for a member whose beads DB appears only once
 // `bd bootstrap --yes` ran on it; `bd config get sync.remote` reports the
 // expected remote for the backlog member and, after `bd config set`, for m2.
+// Mirrors bd 1.3: `bd config set` fails until .beads/config.yaml exists (the
+// engine creates it with a per-shell command first).
+function isEnsureWorkspaceCommand(cmd) {
+    const m = /^powershell -EncodedCommand ([A-Za-z0-9+/=]+)$/.exec(cmd);
+    const text = m ? Buffer.from(m[1], 'base64').toString('utf16le') : cmd;
+    return text.includes('.beads/config.yaml') && !/^bd\b/.test(text);
+}
+
 function noDbMemberOnCommand({ remote, setupLog, bootstrapResult }) {
-    const st = { sync: '', hasDb: false };
+    const st = { sync: '', hasDb: false, ws: false };
     return async ({ command, member_name: member }) => {
         const cmd = String(command || '').trim();
         if (member === 'orch' && /^bd config get sync\.remote( --json)?$/.test(cmd)) {
             return mockCmdResult(0, JSON.stringify({ key: 'sync.remote', value: remote }), '');
         }
         if (member !== 'm2') return undefined;
+        if (isEnsureWorkspaceCommand(cmd)) { setupLog.push('ensure-workspace'); st.ws = true; return mockCmdResult(0, '', ''); }
         if (/^bd (config set|bootstrap|dolt pull)\b/.test(cmd)) setupLog.push(cmd);
-        if (cmd === `bd config set sync.remote ${remote}`) { st.sync = remote; return mockCmdResult(0, '', ''); }
+        if (cmd === `bd config set sync.remote ${remote}`) {
+            if (!st.ws) return mockCmdResult(1, '', "Error: setting config: no .beads/config.yaml found (run 'bd init' first)");
+            st.sync = remote;
+            return mockCmdResult(0, '', '');
+        }
         if (cmd === 'bd bootstrap --dry-run --json') {
             return mockCmdResult(0, JSON.stringify({ action: 'sync', has_existing: false, sync_remote: st.sync }), '');
         }
@@ -155,7 +168,7 @@ test('mock sprint: beads-reading member with no beads DB -> set up from the expe
         });
         check(r.error === null, `expected the sprint to proceed, got error: ${r.error && (r.error.constructor.name + ': ' + r.error.message)}`);
         check(r.result && r.result.status === 'success', `expected a successful run, got ${JSON.stringify(r.result)}`);
-        check(JSON.stringify(setupLog.slice(0, 3)) === JSON.stringify([`bd config set sync.remote ${remote}`, 'bd bootstrap --dry-run --json', 'bd bootstrap --yes']),
+        check(JSON.stringify(setupLog.slice(0, 4)) === JSON.stringify(['ensure-workspace', `bd config set sync.remote ${remote}`, 'bd bootstrap --dry-run --json', 'bd bootstrap --yes']),
             `expected the set-up commands on m2, got: ${JSON.stringify(setupLog)}`);
         // Issued through the runner's command() wrapper, before any dispatch or mutating bd.
         const bootIdx = r.commandLog.indexOf('bd bootstrap --yes');

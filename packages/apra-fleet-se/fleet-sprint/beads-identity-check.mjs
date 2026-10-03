@@ -50,6 +50,7 @@ import {
     compareIdentity,
     formatBeadsIdentity,
     normalizeRemoteUrl,
+    hasBeadsDatabase,
 } from './beads-identity.mjs';
 import { BeadsIdentityError, BEADS_IDENTITY_FAILURE_REASONS } from './errors.mjs';
 
@@ -211,29 +212,38 @@ export function assertBdPresent(member, probed) {
 // with bd installed but no beads database -- or with a database whose
 // sync.remote is unset, so no D-pull ever freshens it -- answers "not found"
 // for every sprint issue. So before any dispatch the preflight sets the
-// member up from the sprint's EXPECTED beads remote:
+// member up from the sprint's EXPECTED beads remote (verified against bd
+// 1.3 on POSIX and PowerShell):
 //
-//   no database:   bd config set sync.remote <expected>
+//   no database:   <ensure .beads/config.yaml exists>  (bd config set refuses to
+//                                                   write without a workspace;
+//                                                   per-shell command built by
+//                                                   the caller, never truncates)
+//                  bd config set sync.remote <expected>
 //                  bd bootstrap --dry-run --json   (must plan a clone FROM <expected>;
 //                                                   any other plan -- JSONL import,
 //                                                   fresh database -- would yield a
 //                                                   database with an unrelated history)
-//                  bd bootstrap --yes              (clones; never deletes data)
+//                  bd bootstrap --yes              (clones and wires the dolt remote
+//                                                   'origin'; never deletes data)
 //   database but
 //   no sync.remote: bd config set sync.remote <expected>
-//                  bd bootstrap --yes              (validates; wires the dolt remote)
+//                  bd dolt remote list --json      (bootstrap does NOT wire 'origin' on an
+//                                                   existing database; an 'origin' pointing
+//                                                   elsewhere is refused, never rewired)
+//                  bd dolt remote add origin <expected>   (only when 'origin' is absent)
 //                  bd dolt pull                    (proves the existing database is a
 //                                                   clone of <expected> and brings it current)
 //
 // Every step goes through the injected command() with the member named, so
 // the runner's command() wrapper (DoltSync.noteMemberCommand) sees the
-// `bd config set` / `bd bootstrap` and drops that member's sync.remote memo.
-// The member's VCS credential is ensured first (the clone may need auth).
-// The command strings are plain `bd ...` with the remote passed as one bare
-// word: execute_command establishes the cwd per member OS/shell, and the
-// remote is refused unless it is made only of characters every supported
-// shell (POSIX, PowerShell, cmd) passes through verbatim -- no quoting, no
-// shell expansion.
+// `bd config set` / `bd bootstrap` / `bd dolt remote` and drops that member's
+// sync.remote memo. The member's VCS credential is ensured first (the clone
+// may need auth). The bd command strings are plain `bd ...` with the remote
+// passed as one bare word: execute_command establishes the cwd per member
+// OS/shell, and the remote is refused unless it is made only of characters
+// every supported shell (POSIX, PowerShell, cmd) passes through verbatim --
+// no quoting, no shell expansion.
 //
 // Older-schema remote: bd may auto-apply pending schema migrations to a
 // freshly cloned database and leave them uncommitted in the working set, and
@@ -262,10 +272,16 @@ export const BEADS_READING_ROLES = Object.freeze([
 export const BEADS_SETUP_TIMEOUT_S = 600;
 const SETUP_LABEL = 'beads-setup';
 
+// The work-folder-relative file whose presence makes the folder a beads
+// workspace `bd config set` can write to.
+export const BEADS_WORKSPACE_CONFIG_FILE = '.beads/config.yaml';
+
 export const BEADS_SETUP_COMMANDS = Object.freeze({
     setSyncRemote: (url) => `bd config set sync.remote ${url}`,
     plan: 'bd bootstrap --dry-run --json',
     bootstrap: 'bd bootstrap --yes',
+    remoteList: 'bd dolt remote list --json',
+    addOrigin: (url) => `bd dolt remote add origin ${url}`,
     pull: 'bd dolt pull',
 });
 
@@ -282,8 +298,8 @@ export function hasSchemaMigrationReport(text) {
 }
 
 function setupFix(url) {
-    return `in that member's workFolder run 'bd config set sync.remote ${url || '<beads remote>'}' then 'bd bootstrap --yes' ` +
-        "(the member needs a VCS credential that can read that remote), check 'bd where' reports the project, then rerun the sprint";
+    return `in that member's workFolder create an empty '${BEADS_WORKSPACE_CONFIG_FILE}' if there is none, run 'bd config set sync.remote ${url || '<beads remote>'}' ` +
+        "then 'bd bootstrap --yes' (the member needs a VCS credential that can read that remote), check 'bd where' reports the project, then rerun the sprint";
 }
 
 const SCHEMA_FIX =
@@ -298,9 +314,9 @@ function setupFailed(member, cause, fix, details) {
     );
 }
 
-function parseFirstJson(text) {
+function parseFirstJson(text, open = '{') {
     const t = String(text || '');
-    const start = t.indexOf('{');
+    const start = t.indexOf(open);
     if (start < 0) return null;
     try {
         return JSON.parse(t.slice(start));
@@ -316,10 +332,13 @@ function parseFirstJson(text) {
  * fresh identity probe).
  *
  * @param {{ command: Function, member: string, url: string, hasDb: boolean,
+ *   ensureWorkspaceCommand?: (member: string, relPath: string) => (string|Promise<string>),
  *   ensureVcsAuth?: (member: string) => Promise<void>, log?: Function, timeoutS?: number }} opts
+ *   `ensureWorkspaceCommand` returns the member-shell command that creates
+ *   `relPath` when absent (never truncating it); required when !hasDb.
  * @returns {Promise<string[]>} the commands issued, in order
  */
-export async function setupMemberBeads({ command, member, url, hasDb, ensureVcsAuth, log = () => {}, timeoutS = BEADS_SETUP_TIMEOUT_S }) {
+export async function setupMemberBeads({ command, member, url, hasDb, ensureWorkspaceCommand, ensureVcsAuth, log = () => {}, timeoutS = BEADS_SETUP_TIMEOUT_S }) {
     if (!SHELL_SAFE_REMOTE_RE.test(url)) {
         throw setupFailed(member,
             `needs its beads set up from the expected beads remote '${url}', which contains characters that cannot be passed verbatim to every member shell`,
@@ -355,6 +374,25 @@ export async function setupMemberBeads({ command, member, url, hasDb, ensureVcsA
         }
     }
 
+    if (!hasDb) {
+        let wsCmd = '';
+        try {
+            wsCmd = typeof ensureWorkspaceCommand === 'function' ? String(await ensureWorkspaceCommand(member, BEADS_WORKSPACE_CONFIG_FILE) || '') : '';
+        } catch (err) {
+            wsCmd = '';
+            log(`[beads-identity] could not build the workspace command for member '${member}': ${err && err.message ? err.message : err}`);
+        }
+        if (!wsCmd) {
+            throw setupFailed(member, `has no beads database and no command could be built for its shell to create '${BEADS_WORKSPACE_CONFIG_FILE}'`,
+                setupFix(url), { step: 'workspace', url });
+        }
+        const ws = await run(wsCmd);
+        if (!ws.ok) {
+            throw setupFailed(member, `could not create '${BEADS_WORKSPACE_CONFIG_FILE}' in its workFolder (${summarizeRaw(ws.error || ws.output)})`,
+                setupFix(url), { step: 'workspace', url });
+        }
+    }
+
     const setCmd = BEADS_SETUP_COMMANDS.setSyncRemote(url);
     const set = await run(setCmd);
     if (!set.ok) {
@@ -376,25 +414,46 @@ export async function setupMemberBeads({ command, member, url, hasDb, ensureVcsA
                 `make sure '${url}' holds the project's beads data and the member's VCS credential can read it, then ${setupFix(url)}`,
                 { step: 'plan', url, plan: planObj });
         }
-    }
 
-    const boot = await run(BEADS_SETUP_COMMANDS.bootstrap);
-    assertNoMigration(BEADS_SETUP_COMMANDS.bootstrap, boot);
-    if (!boot.ok) {
-        throw setupFailed(member, `could not bootstrap its beads from '${url}' ('${BEADS_SETUP_COMMANDS.bootstrap}' -> ${summarizeRaw(boot.error || boot.output)})`, setupFix(url), { step: 'bootstrap', url });
-    }
-
-    if (hasDb) {
-        const pull = await run(BEADS_SETUP_COMMANDS.pull);
-        assertNoMigration(BEADS_SETUP_COMMANDS.pull, pull);
-        if (!pull.ok) {
-            throw setupFailed(member,
-                `has an existing beads database that cannot pull from the expected beads remote '${url}' ('${BEADS_SETUP_COMMANDS.pull}' -> ${summarizeRaw(pull.error || pull.output)}); ` +
-                'it is most likely not a clone of that remote',
-                "move that member's existing beads database aside (it is never deleted automatically) so the next sprint clones it from the remote, " +
-                `or ${setupFix(url)}`,
-                { step: 'pull', url });
+        const boot = await run(BEADS_SETUP_COMMANDS.bootstrap);
+        assertNoMigration(BEADS_SETUP_COMMANDS.bootstrap, boot);
+        if (!boot.ok) {
+            throw setupFailed(member, `could not bootstrap its beads from '${url}' ('${BEADS_SETUP_COMMANDS.bootstrap}' -> ${summarizeRaw(boot.error || boot.output)})`, setupFix(url), { step: 'bootstrap', url });
         }
+        return issued;
+    }
+
+    // An existing database: make sure its dolt 'origin' is the expected
+    // remote (adding it when absent, refusing a different one), then pull.
+    const list = await run(BEADS_SETUP_COMMANDS.remoteList);
+    const remotes = list.ok ? parseFirstJson(list.output, '[') : null;
+    if (!Array.isArray(remotes)) {
+        throw setupFailed(member, `could not list its beads dolt remotes ('${BEADS_SETUP_COMMANDS.remoteList}' -> ${summarizeRaw(list.error || list.output)})`,
+            setupFix(url), { step: 'remote-list', url });
+    }
+    const origin = remotes.find((r) => r && r.name === 'origin');
+    if (origin && normalizeRemoteUrl(String(origin.url || '')) !== normalizeRemoteUrl(url)) {
+        throw setupFailed(member,
+            `has an existing beads database whose dolt remote 'origin' is '${origin.url}', not the expected beads remote '${url}'; it is not rewired automatically`,
+            `check which beads project that member's database belongs to; if it is this project, run 'bd dolt remote add origin ${url}' in its workFolder, otherwise move that database aside, then rerun the sprint`,
+            { step: 'remote-list', url, origin: origin.url });
+    }
+    if (!origin) {
+        const addCmd = BEADS_SETUP_COMMANDS.addOrigin(url);
+        const add = await run(addCmd);
+        if (!add.ok) {
+            throw setupFailed(member, `could not add the dolt remote 'origin' ('${addCmd}' -> ${summarizeRaw(add.error || add.output)})`, setupFix(url), { step: 'remote-add', url });
+        }
+    }
+    const pull = await run(BEADS_SETUP_COMMANDS.pull);
+    assertNoMigration(BEADS_SETUP_COMMANDS.pull, pull);
+    if (!pull.ok) {
+        throw setupFailed(member,
+            `has an existing beads database that cannot pull from the expected beads remote '${url}' ('${BEADS_SETUP_COMMANDS.pull}' -> ${summarizeRaw(pull.error || pull.output)}); ` +
+            'it is most likely not a clone of that remote',
+            "move that member's existing beads database aside (it is never deleted automatically) so the next sprint clones it from the remote, " +
+            `or ${setupFix(url)}`,
+            { step: 'pull', url });
     }
     return issued;
 }
@@ -423,11 +482,14 @@ function assertMatches(member, expected, actual, cmp) {
  *   backlogMember: string, members: string[],
  *   expected?: object|null, prober?: object, timeoutS?: number,
  *   setupMembers?: string[], ensureVcsAuth?: (member: string) => Promise<void>,
+ *   ensureWorkspaceCommand?: (member: string, relPath: string) => (string|Promise<string>),
  *   setupTimeoutS?: number,
  * }} opts
  *   `setupMembers` names the beads-reading members the preflight may set
  *   up (omitted: every member); `ensureVcsAuth` refreshes a member's VCS
- *   credential before its set-up.
+ *   credential before its set-up; `ensureWorkspaceCommand` builds the
+ *   member-shell command that creates a file when absent (see
+ *   setupMemberBeads).
  * @returns {Promise<{
  *   expected: object|null, expectedFrom: 'args'|'backlog'|'none',
  *   members: Record<string, object>, warnings: string[], setUp: string[],
@@ -436,7 +498,7 @@ function assertMatches(member, expected, actual, cmp) {
  *   `unresolved: string[]` (the compared fields it could not report). A
  *   member with no beads database at all has NO entry -- only a warning.
  */
-export async function verifyBeadsIdentity({ command, log = () => {}, publishState, backlogMember, members, expected = null, prober, timeoutS, setupMembers, ensureVcsAuth, setupTimeoutS }) {
+export async function verifyBeadsIdentity({ command, log = () => {}, publishState, backlogMember, members, expected = null, prober, timeoutS, setupMembers, ensureWorkspaceCommand, ensureVcsAuth, setupTimeoutS }) {
     if (typeof backlogMember !== 'string' || !backlogMember) {
         throw new TypeError('verifyBeadsIdentity: backlogMember must be a non-empty string');
     }
@@ -515,16 +577,24 @@ export async function verifyBeadsIdentity({ command, log = () => {}, publishStat
     async function ensureSetUp(member, probed) {
         if (setupSet && !setupSet.has(member)) return probed;
         const url = String((expectedIdentity && expectedIdentity.syncRemote) || '').trim();
-        const hasDb = !!probed.identity.beadsDir;
+        const hasDb = hasBeadsDatabase(probed.identity);
         if (hasDb && (String(probed.identity.syncRemote || '').trim() || !url)) return probed;
+        // A member that already resolves to a DIFFERENT project (prefix,
+        // sync.remote or origin that resolved and differs) is a MISMATCH,
+        // exactly as before: nothing is written to it.
+        if (expectedIdentity) {
+            assertMatches(member, expectedIdentity, probed.identity, compareIdentity(expectedIdentity, probed.identity, { skipUnresolved: true }));
+        }
         if (!url) {
+            const state = probed.identity.beadsDir
+                ? `has a beads workspace but no beads database (${probed.identity.beadsDir})`
+                : `reports no beads database in its workFolder ('${BEADS_IDENTITY_PROBES.where}' -> ${probeDetail(probed, 'where')})`;
             throw setupFailed(member,
-                `reports no beads database in its workFolder ('${BEADS_IDENTITY_PROBES.where}' -> ${probeDetail(probed, 'where')}) ` +
-                'and the sprint has no expected beads remote to set one up from',
+                `${state} and the sprint has no expected beads remote to set one up from`,
                 `launch via the supervisor so --expect-beads carries the beads sync remote (or set sync.remote on the backlog member), or ${setupFix('')}`,
                 { step: 'no-remote' });
         }
-        await setupMemberBeads({ command, member, url, hasDb, ensureVcsAuth, log, timeoutS: setupTimeoutS });
+        await setupMemberBeads({ command, member, url, hasDb, ensureWorkspaceCommand, ensureVcsAuth, log, timeoutS: setupTimeoutS });
         p.forget(member);
         const again = await p.probe(member);
         assertBdPresent(member, again);
@@ -533,7 +603,7 @@ export async function verifyBeadsIdentity({ command, log = () => {}, publishStat
             throw setupFailed(member, `had its beads set up from '${url}', but bd reports a schema migration against that remote (${summarizeRaw(reprobeText)})`,
                 SCHEMA_FIX, { step: 'verify', url, cause: 'schema-migration' });
         }
-        if (!again.identity.beadsDir) {
+        if (!hasBeadsDatabase(again.identity)) {
             throw setupFailed(member, `still reports no beads database after its set-up from '${url}' ('${BEADS_IDENTITY_PROBES.where}' -> ${probeDetail(again, 'where')})`,
                 setupFix(url), { step: 'verify', url });
         }

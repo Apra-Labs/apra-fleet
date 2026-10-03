@@ -1663,6 +1663,16 @@ async function runSprintCycle(context) {
         prober: beadsIdentityProber,
         setupMembers: beadsSetupMembers,
         ensureVcsAuth: ensureVcsAuthFresh,
+        // Built per member OS/shell (member_detail via resolveMemberTarget,
+        // which degrades to POSIX and logs when the member cannot be resolved).
+        ensureWorkspaceCommand: async (member, relPath) => {
+            const target = await resolveMemberTarget({
+                fleetApi: (args && typeof args.callTool === 'function') ? sprintScopedFleetApi({ callTool: args.callTool, log }) : undefined,
+                member,
+                log,
+            });
+            return getSeCommands(target).ensureFile(relPath);
+        },
     });
 
     // Self-heals deploy.md's declared Permissions onto the deployer /

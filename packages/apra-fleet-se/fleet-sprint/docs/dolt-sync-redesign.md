@@ -1574,7 +1574,8 @@ process per sprint). Two properties matter:
   `bd bootstrap` the orchestrator issues on that member; the auth self-heal
   firing inside `runDoltStep`; and `repair()`. The beads preflight's member
   set-up (beads-identity-check.mjs `setupMemberBeads`: `bd config set
-  sync.remote <expected>` + `bd bootstrap` on a beads-reading member with no
+  sync.remote <expected>` + `bd bootstrap`, or `bd dolt remote add origin` +
+  `bd dolt pull` on an existing database, for a beads-reading member with no
   database or no sync.remote) is such an orchestrator-issued command and goes
   through that wrapper, so it hits this seam before the first D-pull.
 - **The per-dispatch seam is SOFT (round 4).** A dispatched agent runs its
