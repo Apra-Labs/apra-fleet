@@ -1,4 +1,4 @@
-import { Client, type ConnectConfig } from 'ssh2';
+import { Client, type ClientChannel, type ConnectConfig } from 'ssh2';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -24,9 +24,18 @@ interface PoolEntry {
   // directly, so a long-running exec could otherwise sit through an idle-timer
   // fire with no other signal that the connection is still genuinely in use.
   activeChannels: number;
+  // Set when a channel open on this connection was refused (sshd session
+  // limit). A retired entry is out of the pool -- new work gets a fresh
+  // connection -- and its client is ended once its last in-flight channel
+  // releases (see retireEntry/openPooledChannel below).
+  retired?: boolean;
 }
 
 const pool = new Map<string, PoolEntry>();
+// In-flight connects per pool key, so concurrent callers share one new
+// connection instead of each opening one (only the last would be pooled; the
+// others would be orphaned and never idle-reaped).
+const connecting = new Map<string, Promise<Client>>();
 const IDLE_TIMEOUT = 5 * 60 * 1000; // 5 minutes
 
 function poolKey(agent: Agent): string {
@@ -98,11 +107,13 @@ function connectClient(config: ConnectConfig, key: string): Promise<Client> {
       timer.unref();
       pool.set(key, { client, lastUsed: Date.now(), timer, activeChannels: 0 });
 
+      // Guarded by identity: once this client has been retired and replaced,
+      // its late close/error must not drop or reap the replacement entry.
       client.on('close', () => {
-        pool.delete(key);
+        if (pool.get(key)?.client === client) pool.delete(key);
       });
       client.on('error', () => {
-        cleanupEntry(key);
+        if (pool.get(key)?.client === client) cleanupEntry(key);
       });
 
       resolve(client);
@@ -125,7 +136,122 @@ export async function getConnection(agent: Agent): Promise<Client> {
     return entry.client;
   }
 
-  return connectClient(getSSHConfig(agent), key);
+  const inFlight = connecting.get(key);
+  if (inFlight) return inFlight;
+  const p = connectClient(getSSHConfig(agent), key);
+  connecting.set(key, p);
+  const clear = () => { if (connecting.get(key) === p) connecting.delete(key); };
+  p.then(clear, clear);
+  return p;
+}
+
+/** True for ssh2's "(SSH) Channel open failure: ..." -- sshd refused a new channel. */
+export function isChannelOpenFailure(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err ?? '');
+  return /Channel open failure/i.test(msg);
+}
+
+/**
+ * Transport error for a refused channel open, naming the member and the
+ * likely cause. ssh2's raw text ("open failed") says nothing actionable.
+ */
+export function channelOpenFailureError(agent: Agent, err: unknown): Error {
+  const raw = err instanceof Error ? err.message : String(err);
+  const e = new Error(
+    `SSH transport error on member "${agent.friendlyName}" (${agent.username}@${agent.host}:${agent.port}): ` +
+    `the member's sshd refused to open a new session channel (${raw}), also on a fresh connection. ` +
+    `Likely cause: its per-connection session limit (sshd MaxSessions, default 10) is exhausted by ` +
+    `concurrent or leaked SSH sessions (e.g. stale sftp-server processes). Close the stale sessions on ` +
+    `the member (or restart its sshd) or raise MaxSessions, then retry.`,
+  );
+  (e as Error & { cause?: unknown }).cause = err;
+  return e;
+}
+
+/**
+ * Take a pool entry out of service after a refused channel open: new work
+ * gets a fresh connection, while channels still running on this one finish
+ * undisturbed. Its client is ended now if idle, else on its last release.
+ */
+function retireEntry(key: string, entry: PoolEntry | undefined): void {
+  if (!entry) return;
+  entry.retired = true;
+  clearTimeout(entry.timer);
+  if (pool.get(key) === entry) pool.delete(key);
+  if (entry.activeChannels === 0) { try { entry.client.end(); } catch {} }
+}
+
+export interface ChannelLease<T> {
+  channel: T;
+  client: Client;
+  warning?: string;
+  /** Idempotent: drops this channel from its connection's active count. */
+  release: () => void;
+}
+
+async function leaseConnection(agent: Agent) {
+  const { client, warning } = await connectWithTOFU(agent);
+  const key = poolKey(agent);
+  resetIdleTimer(key);
+  // Bind the lease to THIS connection's entry (not a later pool lookup by
+  // key), so a release after a reconnect never decrements the replacement.
+  const found = pool.get(key);
+  const entry = found && found.client === client ? found : undefined;
+  if (entry) entry.activeChannels += 1;
+  let released = false;
+  const release = (): void => {
+    if (released) return;
+    released = true;
+    if (!entry) return;
+    entry.activeChannels = Math.max(0, entry.activeChannels - 1);
+    if (entry.retired && entry.activeChannels === 0) { try { entry.client.end(); } catch {} }
+  };
+  return { client, warning, release, key, entry };
+}
+
+/**
+ * Open one channel (exec or sftp) on the member's pooled connection, counted
+ * in the entry's activeChannels until release(). The caller owns the channel
+ * and MUST close it and call release() on every path (success, error,
+ * timeout, abort) -- an unclosed channel holds one of the member sshd's
+ * per-connection sessions (MaxSessions) forever.
+ *
+ * A "Channel open failure" means nothing started on the far side, so it is
+ * safe to retry: the connection is retired and the open is retried ONCE on a
+ * fresh connection (MaxSessions is per connection). A second refusal
+ * surfaces as channelOpenFailureError.
+ */
+export async function openPooledChannel<T>(
+  agent: Agent,
+  open: (client: Client) => Promise<T>,
+): Promise<ChannelLease<T>> {
+  const first = await leaseConnection(agent);
+  try {
+    const channel = await open(first.client);
+    return { channel, client: first.client, warning: first.warning, release: first.release };
+  } catch (err) {
+    first.release();
+    if (!isChannelOpenFailure(err)) throw err;
+    retireEntry(first.key, first.entry);
+  }
+  const second = await leaseConnection(agent);
+  try {
+    const channel = await open(second.client);
+    return { channel, client: second.client, warning: first.warning ?? second.warning, release: second.release };
+  } catch (err) {
+    second.release();
+    if (isChannelOpenFailure(err)) throw channelOpenFailureError(agent, err);
+    throw err;
+  }
+}
+
+function openExec(client: Client, command: string): Promise<ClientChannel> {
+  return new Promise<ClientChannel>((resolve, reject) => {
+    client.exec(command, (err, stream) => {
+      if (err) reject(err);
+      else resolve(stream);
+    });
+  });
 }
 
 /**
@@ -155,25 +281,21 @@ export async function execCommand(
   onPidCaptured?: (pid: number) => void,
   abortSignal?: AbortSignal,
 ): Promise<SSHExecResult> {
-  const { client, warning } = await connectWithTOFU(agent);
-  const key = poolKey(agent);
-  resetIdleTimer(key);
+  // Connect (and TOFU-heal a changed host key) before the command timers
+  // start -- connection setup has its own readyTimeout.
+  const { warning } = await connectWithTOFU(agent);
 
-  // apra-fleet-9zz.1: mark this call as an active channel on the pool entry
-  // BEFORE issuing client.exec() -- covers both the in-flight exec request
-  // and the channel it opens -- so cleanupEntry's idle-timer reap can see it
-  // and never end the connection out from under it (see cleanupEntry above).
-  // connectWithTOFU/connectClient always populates the pool entry before
-  // returning (pool.set() runs before the 'ready' promise resolves), so this
-  // entry is guaranteed to exist here.
-  const poolEntry = pool.get(key);
-  if (poolEntry) poolEntry.activeChannels += 1;
-  let channelReleased = false;
-  function releaseChannel(): void {
-    if (channelReleased) return;
-    channelReleased = true;
-    const entry = pool.get(key);
-    if (entry) entry.activeChannels = Math.max(0, entry.activeChannels - 1);
+  // apra-fleet-9zz.1: the channel is counted as active on its pool entry from
+  // BEFORE the exec request until settle (openPooledChannel/releaseChannel),
+  // so cleanupEntry's idle-timer reap never ends the connection out from
+  // under it. The channel itself is closed on every non-'close' settle path
+  // (timeout, abort, error, late open) -- a channel left open holds one of
+  // the member sshd's per-connection sessions (MaxSessions) forever.
+  let client: Client | undefined;
+  let activeStream: ClientChannel | undefined;
+  let releaseChannel: () => void = () => {};
+  function closeStream(): void {
+    if (activeStream) { try { activeStream.close(); } catch { /* best-effort */ } }
   }
 
   // Remote PID captured from the FLEET_PID marker (see execute-command.ts's
@@ -185,16 +307,21 @@ export async function execCommand(
   // path, using the marker PID instead of a local handle.
   let capturedPid: number | undefined;
   function killRemoteTree() {
-    if (capturedPid === undefined) return;
+    if (capturedPid === undefined || !client) return;
     try {
       const killCmd = getOsCommands(getAgentOS(agent), getAgentShell(agent)).killPid(capturedPid);
       // Best-effort, fire-and-forget on a FRESH channel -- the timed-out
       // command's own channel may itself be wedged and must not be relied
-      // on to carry the kill.
+      // on to carry the kill. stdin EOF + a safety close so this channel
+      // can never outlive the kill command.
       client.exec(killCmd, (err, killStream) => {
         if (err) return;
+        try { killStream.end(); } catch { /* best-effort */ }
         killStream.on('data', () => {});
         killStream.stderr?.on('data', () => {});
+        const killTimer = setTimeout(() => { try { killStream.close(); } catch { /* best-effort */ } }, 30000);
+        killTimer.unref();
+        killStream.on('close', () => clearTimeout(killTimer));
       });
     } catch { /* best-effort; connection may already be gone */ }
   }
@@ -218,6 +345,7 @@ export async function execCommand(
       clearTimeout(inactivityTimer);
       inactivityTimer = setTimeout(() => {
         killRemoteTree();
+        closeStream();
         settle(() => reject(new Error(`Command timed out after ${timeoutMs}ms of inactivity`)));
       }, timeoutMs);
       inactivityTimer.unref();
@@ -229,16 +357,24 @@ export async function execCommand(
     if (maxTotalMs !== undefined) {
       maxTotalTimer = setTimeout(() => {
         killRemoteTree();
+        closeStream();
         settle(() => reject(new Error(`Command exceeded max total time of ${maxTotalMs}ms`)));
       }, maxTotalMs);
       maxTotalTimer.unref();
     }
 
-    client.exec(command, (err, stream) => {
-      if (err) {
-        settle(() => reject(err));
+    openPooledChannel(agent, (c) => openExec(c, command)).then((lease) => {
+      const stream = lease.channel;
+      if (settled) {
+        // A timer settled this call before the channel opened: nobody will
+        // ever read it, so close it now instead of leaking the session.
+        try { stream.close(); } catch { /* best-effort */ }
+        lease.release();
         return;
       }
+      client = lease.client;
+      activeStream = stream;
+      releaseChannel = lease.release;
 
       // Close stdin so commands that read from it (e.g. claude -p) get EOF
       stream.end();
@@ -364,6 +500,7 @@ export async function execCommand(
         clearStoredPid(agent.id);
         if (stdoutSpillStream) stdoutSpillStream.end();
         if (stderrSpillStream) stderrSpillStream.end();
+        try { stream.close(); } catch { /* best-effort */ }
         settle(() => reject(err));
       });
 
@@ -376,6 +513,8 @@ export async function execCommand(
         if (abortSignal.aborted) onAbort();
         else abortSignal.addEventListener('abort', onAbort, { once: true });
       }
+    }, (err: unknown) => {
+      settle(() => reject(err));
     });
   });
 }
