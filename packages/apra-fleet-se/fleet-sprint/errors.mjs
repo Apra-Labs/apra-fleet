@@ -907,9 +907,11 @@ export const BEADS_IDENTITY_FAILURE_REASONS = Object.freeze({
  * mutating bd command when a member's probed identity (`bd where` / `bd
  * config get sync.remote` / `git remote get-url origin`) DIFFERS from the
  * expected one (the supervisor's expectation, or the backlog member's
- * own identity) on a field that resolved on both sides. A probe that fails
- * or cannot be parsed is a logged warning, never this error: only a proven
- * mismatch is a data-corruption risk worth refusing the sprint for.
+ * own identity) on a field that resolved on both sides (reason MISMATCH), or
+ * when a member cannot run bd at all -- a bd probe failed because bd is not
+ * installed or not on PATH (reason MISSING_TOOL), so every later bd command
+ * there would fail too. Any other probe that fails or cannot be parsed is a
+ * logged warning, never this error.
  *
  * A WorkflowError so main()'s terminal record names the reason, but
  * deliberately NOT a typed abort: nothing has been dispatched or mutated, so
