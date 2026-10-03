@@ -888,6 +888,9 @@ export class PreSprintValidationError extends WorkflowError {
 
 export const BEADS_IDENTITY_FAILURE_REASONS = Object.freeze({
     MISMATCH: 'MISMATCH',
+    // The member's shell cannot find the bd CLI at all: every bd a role or
+    // the engine runs there would fail mid-sprint, so refuse up front.
+    BD_MISSING: 'BD_MISSING',
 });
 
 /**
@@ -897,7 +900,8 @@ export const BEADS_IDENTITY_FAILURE_REASONS = Object.freeze({
  * expected one (the supervisor's expectation, or the backlog member's
  * own identity) on a field that resolved on both sides. A probe that fails
  * or cannot be parsed is a logged warning, never this error: only a proven
- * mismatch is a data-corruption risk worth refusing the sprint for.
+ * mismatch is a data-corruption risk worth refusing the sprint for. The one
+ * other refusal is BD_MISSING: the probe proved the member has no bd CLI.
  *
  * A WorkflowError so main()'s terminal record names the reason, but
  * deliberately NOT a typed abort: nothing has been dispatched or mutated, so

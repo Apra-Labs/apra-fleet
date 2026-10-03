@@ -28,7 +28,7 @@ import { seedWorkspaceTrust } from '../utils/workspace-trust.js';
 import { composePermissions } from './compose-permissions.js';
 import { isFullyQualifiedPath, workFolderNotAbsoluteError } from '../utils/work-folder-validation.js';
 import { getMemberHomeDir } from '../services/member-home.js';
-import { refreshMemberFleetMcp, getMemberFleetMcpDeps } from '../services/member-fleet-install.js';
+import { beadsStatusNote, refreshMemberFleetMcp, getMemberFleetMcpDeps } from '../services/member-fleet-install.js';
 import { ensureAgyProject } from '../services/agy-project.js';
 import { detectVcsProviderFromRemoteUrl } from '../utils/vcs-provider-detect.js';
 
@@ -672,6 +672,7 @@ export async function registerMember(input: RegisterMemberInput, opts: RegisterM
       fleetMcpLine = status.state === 'available'
         ? `available${status.version ? ` (apra-fleet ${status.version})` : ''}${status.installFailure && status.detail ? ` -- warning: ${status.detail}` : ''}`
         : `unavailable (${status.reason ?? 'unknown'})${status.detail ? ` -- ${status.detail}` : ''}`;
+      fleetMcpLine += beadsStatusNote(status);
     } catch (e: any) {
       fleetMcpLine = `unavailable (probe-failed) -- ${e?.message ?? String(e)}`;
     }

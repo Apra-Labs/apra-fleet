@@ -17,7 +17,7 @@ import { recheckProjectAgentShadows, invalidateProjectAgentShadowCache } from '.
 import { getStrategy } from '../services/strategy.js';
 import { seedWorkspaceTrust } from '../utils/workspace-trust.js';
 import { ensureAgyProject } from '../services/agy-project.js';
-import { refreshMemberFleetMcp, getMemberFleetMcpDeps } from '../services/member-fleet-install.js';
+import { beadsStatusNote, refreshMemberFleetMcp, getMemberFleetMcpDeps } from '../services/member-fleet-install.js';
 import { composePermissions, removeComposedMemberConfig } from './compose-permissions.js';
 import { isFullyQualifiedPath, workFolderNotAbsoluteError } from '../utils/work-folder-validation.js';
 
@@ -375,6 +375,7 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
       fleetMcpLine = status.state === 'available'
         ? `available${status.version ? ` (apra-fleet ${status.version})` : ''}${status.installFailure && status.detail ? ` -- warning: ${status.detail}` : ''}`
         : `unavailable (${status.reason ?? 'unknown'})${status.detail ? ` -- ${status.detail}` : ''}`;
+      fleetMcpLine += beadsStatusNote(status);
     } catch (e: any) {
       fleetMcpLine = `unavailable (probe-failed) -- ${e?.message ?? String(e)}`;
     }

@@ -64,6 +64,8 @@ interface World {
   downloads: string[];
   lastId: string;
   probes: number;
+  /** bd is absent on the member (neither on PATH nor in the fleet bin dir). */
+  bdMissing?: boolean;
 }
 
 function newWorld(over: Partial<World> = {}): World {
@@ -91,6 +93,7 @@ function fakeDeps(world: World, local?: () => Promise<MemberSession>, home = HOM
         if (world.register === 'folder-taken') return { stdout: '', stderr: 'E-FOLDER-TAKEN: folder registered to another member', code: 1 };
         return ok('registered');
       }
+      if (c.includes('command -v bd')) return ok(world.bdMissing ? `${NO_INSTALL_SENTINEL}\n` : 'bd version 1.3.0\n');
       if (c.includes("'remove-member'")) return ok('removed');
       if (c.includes("'call'") && c.includes("'--list-tools'")) return ok(JSON.stringify({ tools: world.listTools.map(name => ({ name })) }));
       if (c.includes("'call'") && c.includes("'version'")) return ok(JSON.stringify({ content: [{ type: 'text', text: `apra-fleet ${world.installed}` }] }));
@@ -318,6 +321,23 @@ describe('member_detail refresh', () => {
     expect(w.probes).toBe(1);
     expect(r.fleetMcp).toMatchObject({ state: 'available', version: VERSION });
     expect(installCmds(w)).toEqual([]); // refresh never installs
+  });
+
+  it('refresh:true on a member without bd records it on the registry and shows it in json and text', async () => {
+    const w = newWorld({ bdMissing: true });
+    __setMemberFleetMcpDeps(withRealRecord(fakeDeps(w)));
+    const a = remoteMember();
+    const r = JSON.parse(await memberDetail({ member_id: a.id, format: 'json', refresh: true }));
+    expect(r.fleetMcp).toMatchObject({ state: 'available', beads: { state: 'missing' } });
+    expect(getAgent(a.id)!.fleetMcp!.beads).toMatchObject({ state: 'missing', fix: expect.stringContaining('fleet_install') });
+    const text = await memberDetail({ member_id: a.id });
+    expect(text).toContain('bd=missing: bd is not on the member PATH');
+    expect(text).toContain('bd fix: ');
+    // Once bd is installed, the next refresh clears it.
+    w.bdMissing = false;
+    const again = JSON.parse(await memberDetail({ member_id: a.id, format: 'json', refresh: true }));
+    expect(again.fleetMcp.beads).toBeUndefined();
+    expect(getAgent(a.id)!.fleetMcp!.beads).toBeUndefined();
   });
 
   it('without refresh returns the recorded status and never probes', async () => {

@@ -107,6 +107,11 @@ export interface FleetMcpStatus {
    *  install stayed in use. Present on available and unavailable statuses so a
    *  later step can never hide it; `detail` names it too. */
   installFailure?: { reason: string; detail?: string };
+  /** Present only when the beads CLI (bd) is NOT usable on a remote member
+   *  (neither on its PATH nor in <home>/.apra-fleet/bin): sprint roles there
+   *  cannot run bd. Independent of `state` (the KB/code tools may still work);
+   *  absent when bd works or could not be probed. */
+  beads?: { state: 'missing' | 'broken'; detail: string; fix: string };
 }
 
 export interface GitHubAppConfig {
