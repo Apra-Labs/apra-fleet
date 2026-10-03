@@ -85,7 +85,7 @@ describe('WindowsServiceManager', () => {
       vi.mocked(spawn).mockReturnValueOnce(mockChild as any);
       const mgr = new WindowsServiceManager();
       await mgr.start();
-      expect(spawn).toHaveBeenCalledWith('schtasks', ['/run', '/tn', 'ApraFleet'], { detached: true, stdio: 'ignore', windowsHide: true });
+      expect(spawn).toHaveBeenCalledWith('schtasks', ['/run', '/tn', 'ApraFleet'], expect.objectContaining({ detached: true, stdio: 'ignore', windowsHide: true }));
       expect(mockChild.unref).toHaveBeenCalled();
     });
   });
@@ -145,7 +145,7 @@ describe('WindowsServiceManager', () => {
         ? Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from('<Task><Settings><Enabled>false</Enabled></Settings></Task>', 'utf16le')])
         : '"ApraFleet","N/A","Disabled"\r\n') as any);
       expect(await new WindowsServiceManager().query()).toEqual({
-        installed: true, running: false, enabled: false, detail: expect.stringContaining('stopped by user'),
+        installed: true, running: false, enabled: false, detail: expect.stringContaining('disabled'),
       });
     });
 

@@ -10,7 +10,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import { execSync } from 'node:child_process';
 import { WindowsServiceManager, taskXmlCommand } from '../src/services/service-manager/windows.js';
-import { runInstall, serviceRestartCommand, _setSeaOverride, _setManifestOverride } from '../src/cli/install.js';
+import { runInstall, serviceRestartCommand, serviceStopCommand, _setSeaOverride, _setManifestOverride, _setServiceHealthWaitOverride } from '../src/cli/install.js';
 import { getServiceManager } from '../src/services/service-manager/index.js';
 import type { ServiceManager } from '../src/services/service-manager/types.js';
 
@@ -157,6 +157,7 @@ describe('runInstall --force service step never leaves the server stopped', () =
     vi.mocked(fs.writeFileSync).mockImplementation(() => {});
     _setSeaOverride(true);
     _setManifestOverride({ version: '0.1.0', hooks: {}, scripts: {}, skills: {}, fleetSkills: {} });
+    _setServiceHealthWaitOverride(async () => true);
     Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
     serviceStopped = false;
     vi.mocked(execSync).mockImplementation((cmd: any) => {
@@ -179,6 +180,7 @@ describe('runInstall --force service step never leaves the server stopped', () =
   afterEach(() => {
     _setSeaOverride(null);
     _setManifestOverride(null);
+    _setServiceHealthWaitOverride(null);
     Object.defineProperty(process, 'platform', { value: process.platform, configurable: true });
     vi.restoreAllMocks();
   });
@@ -250,5 +252,18 @@ describe('runInstall --force service step never leaves the server stopped', () =
     await runInstall(['--skill', 'none', '--force', '--transport', 'http']);
     expect(process.exit).not.toHaveBeenCalled();
     expect(logLines.join('\n')).toContain('installed successfully');
+  });
+});
+
+describe('Windows service hint commands', () => {
+  it('stop hint is apra-fleet stop (disables the task AND records the stop), restart is apra-fleet start', () => {
+    const saved = process.platform;
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    try {
+      expect(serviceStopCommand()).toBe('apra-fleet stop');
+      expect(serviceRestartCommand()).toBe('apra-fleet start');
+    } finally {
+      Object.defineProperty(process, 'platform', { value: saved, configurable: true });
+    }
   });
 });

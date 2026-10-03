@@ -29,7 +29,7 @@ vi.mock('../src/services/service-start-guard.js', () => ({
 
 import {
   WindowsServiceManager, buildTaskXml, resolveTaskUserId, localStartBoundary, repeatMinutesFrom,
-  RUN_KEY, RUN_VALUE, buildWrapperBat, buildLauncherJs, launcherPathFor, launcherArguments, wscriptPath,
+  RUN_KEY, RUN_VALUE, buildWrapperBat, buildLauncherJs, launcherPathFor, launcherArguments, wscriptPath, asciiJsString,
 } from '../src/services/service-manager/windows.js';
 import { spawnSync } from 'node:child_process';
 import { formatServiceLabel } from '../src/cli/status.js';
@@ -122,16 +122,24 @@ describe('WindowsServiceManager lifecycle', () => {
   let runKey: boolean;
   let createXml: Buffer | null;
   let createFails: boolean;
+  let wsh: boolean;
+  let stoppedByUser: boolean;
+  let verbatim: boolean[];
 
   function mgr(env: Record<string, string | undefined> = USER_ENV) {
     return new WindowsServiceManager(schtasks as any, wrapper, {
-      runReg: reg as any, env, now: () => NOW, spawnDetached: (c, a) => { spawned.push([c, a]); order.push(`spawn ${c} ${a.join(' ')}`); },
+      runReg: reg as any, env, now: () => NOW,
+      spawnDetached: (c, a, v) => { spawned.push([c, a]); verbatim.push(!!v); order.push(`spawn ${c} ${a.join(' ')}`); },
+      probeWsh: () => wsh, stoppedByUser: () => stoppedByUser,
     });
   }
 
   beforeEach(() => {
     vi.clearAllMocks();
     order.length = 0;
+    wsh = true;
+    stoppedByUser = true;
+    verbatim = [];
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-wintask-'));
     wrapper = path.join(dir, 'apra-fleet-service.bat');
     spawned = [];
@@ -238,8 +246,41 @@ describe('WindowsServiceManager lifecycle', () => {
     expect(formatServiceLabel({ installed: true, running: true, enabled: true })).toBe('installed (enabled)');
   });
 
+  it('a disabled task without the stopped-by-user marker is not labelled "stopped by user"', async () => {
+    stoppedByUser = false;
+    schtasks.mockImplementation((args: string[]) => (args.includes('/xml')
+      ? '<Task><Settings><Enabled>false</Enabled></Settings></Task>'
+      : '"\\ApraFleet","N/A","Disabled"\r\n'));
+    const label = formatServiceLabel(await mgr().query());
+    expect(label).not.toContain('stopped by user');
+    expect(label).toBe("installed (disabled -- task disabled outside apra-fleet -- 'apra-fleet start' re-enables it)");
+  });
+
+  it('Windows Script Host unavailable -> the task runs the .bat directly (visible) and install is warned', async () => {
+    wsh = false;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await mgr().register('x.exe', [], 'l');
+    const xml = createXml!.subarray(2).toString('utf16le');
+    expect(xml).toContain(`<Command>${wrapper}</Command>`);
+    expect(xml).not.toContain('<Arguments>');
+    expect(warn.mock.calls.join(' ')).toMatch(/Windows Script Host is unavailable.*visible console window/);
+    warn.mockRestore();
+  });
+
   describe('HKCU Run last-resort fallback', () => {
     beforeEach(() => { taskExists = false; createFails = true; });
+
+    it('without a launcher (WSH unavailable) start runs cmd with the wrapper quoted verbatim, so & in the path is safe', async () => {
+      wsh = false;
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      await mgr().register('x.exe', [], 'l');
+      expect(reg).toHaveBeenCalledWith(['add', RUN_KEY, '/v', RUN_VALUE, '/t', 'REG_SZ', '/d', `"${wrapper}"`, '/f']);
+      fs.unlinkSync(launcherPathFor(wrapper));
+      await mgr().start();
+      expect(spawned).toEqual([['cmd.exe', ['/d', '/s', '/c', `""${wrapper}""`]]]);
+      expect(verbatim).toEqual([true]);
+      warn.mockRestore();
+    });
 
     it('XML create denied and no task to reuse -> per-user Run entry for the wrapper, result run-key', async () => {
       expect(await mgr().register('x.exe', [], 'l')).toBe('run-key');
@@ -256,7 +297,8 @@ describe('WindowsServiceManager lifecycle', () => {
       expect(st).toMatchObject({ installed: true, enabled: true });
       expect(formatServiceLabel(st)).toMatch(/HKCU Run -- no automatic restart/);
       await m.start();
-      expect(spawned).toEqual([['cmd.exe', ['/d', '/c', wrapper]]]);
+      // Same hidden launcher as the Run entry (a cmd /c of the raw path broke on &).
+      expect(spawned).toEqual([['C:\\Windows\\System32\\wscript.exe', ['//B', '//Nologo', '//E:JScript', launcherPathFor(wrapper)]]]);
       await m.unregister();
       expect(runKey).toBe(false);
       expect(await m.isInstalled()).toBe(false);
@@ -278,6 +320,7 @@ describe('service wrapper and hidden launcher', () => {
     const lines = bat.split('\r\n');
     expect(lines).toEqual([
       '@echo off',
+      'chcp 65001>nul',
       'set APRA_FLEET_SERVICE=1',
       'if not exist "C:\\Users\\a\\.apra-fleet\\data\\" mkdir "C:\\Users\\a\\.apra-fleet\\data"',
       '"C:\\b\\apra-fleet.exe" "--transport" "http" >> "C:\\Users\\a\\.apra-fleet\\data\\fleet.log" 2>&1',
@@ -314,6 +357,37 @@ describe('service wrapper and hidden launcher', () => {
   // hidden, the server inherits the service marker, a deleted log dir is
   // re-created, and the server's exit code reaches the caller (Task
   // Scheduler's Last Result). Paths contain spaces, & and an apostrophe.
+  it('the launcher is pure ASCII: non-ASCII path chars are \\u-escaped (WSH reads .js in the ANSI code page)', () => {
+    const p = 'C:\\Users\\Jos\u00e9 \u4e2d\\bin\\apra-fleet-service.bat';
+    const js = buildLauncherJs(p);
+    expect(/^[\x00-\x7f]*$/.test(js)).toBe(true);
+    expect(js).toContain('Jos\\u00e9 \\u4e2d');
+    expect(asciiJsString('a\u00e9"b')).toBe('"a\\u00e9\\"b"');
+    // Evaluating the literal gives the original path back.
+    expect(JSON.parse(asciiJsString(p))).toBe(p);
+  });
+
+  // The same run from a profile path with non-ASCII characters (created via
+  // \u escapes so this file stays ASCII): both the launcher and the UTF-8
+  // .bat must resolve the path.
+  it.runIf(process.platform === 'win32')('real wscript from a non-ASCII path (Jos\\u00e9, \\u4e2d): runs, exit code and log dir intact', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet Jos\u00e9 \u4e2d '));
+    try {
+      const script = path.join(dir, 'server.js');
+      fs.writeFileSync(script, "process.stdout.write('marker=' + process.env.APRA_FLEET_SERVICE); process.exit(7);");
+      const wrapper = path.join(dir, 'bin', 'apra-fleet-service.bat');
+      const log = path.join(dir, 'data \u00e9', 'fleet.log');
+      fs.mkdirSync(path.dirname(wrapper), { recursive: true });
+      fs.writeFileSync(wrapper, buildWrapperBat(process.execPath, [script], log), 'utf8');
+      fs.writeFileSync(launcherPathFor(wrapper), buildLauncherJs(wrapper), 'utf8');
+      const r = spawnSync(wscriptPath(process.env), ['//B', '//Nologo', '//E:JScript', launcherPathFor(wrapper)], { encoding: 'utf8', timeout: 60_000 });
+      expect(r.status).toBe(7);
+      expect(fs.readFileSync(log, 'utf8')).toContain('marker=1');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }, 90_000);
+
   it.runIf(process.platform === 'win32')('real wscript: hidden run propagates the exit code, marker and log dir', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fleet wsh & o'k "));
     try {
