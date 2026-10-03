@@ -147,6 +147,11 @@ Last Result. JScript was chosen over a .vbs (VBScript is being deprecated) and o
 `conhost --headless` (undocumented). The .bat sets `APRA_FLEET_SERVICE=1`, re-creates the log dir
 if it was deleted (otherwise the `>>` redirect fails before the server starts), and appends the
 server's output to `fleet.log`. The HKCU Run fallback uses the same launcher.
+Non-ASCII profile paths: the launcher is pure ASCII (non-ASCII path characters are `\uXXXX`
+escapes, since WSH reads a .js in the ANSI code page) and the UTF-8 .bat switches cmd to UTF-8
+(`chcp 65001`) before using any path. If Windows Script Host is disabled (probed at install), the
+task runs the .bat directly instead -- the server then has a visible console window, and install
+says so. Install reports "registered and running" only after the server answers /health.
 
 If the XML create fails and an existing `ApraFleet` task already runs our wrapper, it is reused.
 Only when there is no reusable task does install fall back to a per-user
@@ -158,14 +163,19 @@ wrapper at logon: autostart without automatic restart. Install and status say so
 - `apra-fleet stop` disables the task first (`schtasks /change /disable`) so the repeating trigger
   cannot undo a deliberate stop. The stop sticks, including across logon, until `apra-fleet start`
   (or install) re-enables it. `uninstall` deletes the task.
-- `apra-fleet status` shows `installed (enabled)` or
-  `installed (disabled -- stopped by user -- 'apra-fleet start' re-enables it)`.
-- macOS/Linux: `stop` (graceful `/shutdown`, exit 0) is not undone by `SuccessfulExit=false` /
-  `Restart=on-failure`. Unlike Windows, the server still starts at the next login/boot after a stop.
-- On every OS `apra-fleet stop` also writes `<data dir>/stopped-by-user.json` (time, command, user).
-  `apra-fleet start`, `apra-fleet install` and any successful server start clear it. While it is
-  present no client auto-starts the server (see below), and `apra-fleet status` shows
+- `apra-fleet status` shows `installed (enabled)`, or for a disabled task
+  `installed (disabled -- stopped by user -- 'apra-fleet start' re-enables it)` (only when the
+  stopped-by-user marker below exists; otherwise `task disabled outside apra-fleet`).
+- On every OS `apra-fleet stop` writes `<data dir>/stopped-by-user.json` (time, command, user)
+  and the stop sticks across logon and boot until `apra-fleet start` or `apra-fleet install`
+  (the only two things that clear it): any service-manager launch (macOS LaunchAgent RunAtLoad,
+  the enabled systemd user unit at boot, the Windows HKCU Run fallback, a task that could not be
+  disabled) exits 0 without starting while the marker exists, and launchd `SuccessfulExit=false` /
+  systemd `Restart=on-failure` do not restart an exit 0. No client auto-starts the server either
+  (see below), and `apra-fleet status` shows
   `State: stopped (stopped by <user> at <time> via 'apra-fleet stop' -- run 'apra-fleet start')`.
+  A port-only override (`APRA_FLEET_PORT` without `APRA_FLEET_DATA_DIR`) records the stop only
+  after confirming the server it stops is on its own port.
 
 ### Start back-off
 
@@ -188,8 +198,16 @@ returns 503 with it; a sprint child prints it on stderr). See
 
 ### Upgrading
 
-Re-run `apra-fleet install` to get the new task definition. An existing onlogon task keeps working
-(logon start only, no revive) until then.
+- Windows: re-run `apra-fleet install` to get the new task definition (hidden launcher, revive
+  trigger). An existing onlogon task keeps working (logon start only, no revive) until then.
+- Scripts and workflows that relied on the client's private stdio self-spawn now start the SHARED
+  HTTP server, which keeps running after they exit. Set `APRA_FLEET_TRANSPORT=stdio` to keep the
+  old private, per-process server.
+- `apra-fleet stop` now persists across logon and boot on every OS and blocks client auto-start
+  until `apra-fleet start` (or `apra-fleet install`).
+- The client only auto-starts an apra-fleet of its own version; after an upgrade that left an
+  older registered binary, it fails with `AUTOSTART_VERSION_SKEW` -- run `apra-fleet install`.
+- The install summary reports "registered and running" only once the server answers /health.
 
 ## Supported user-facing interfaces
 
