@@ -47,7 +47,7 @@ import { resolveSettleShell } from './runner.js';
  * compute to 0, and the allocator would re-mint already-used ids (`.1`/`.2`,
  * ...) -- the trigger for the id-collision bug (apra-fleet-btj9).
  * `--all` ("Show all issues including closed") is `bd list`'s documented
- * spelling for this, per `bd list --help` on installed bd 1.1.0 -- `--status
+ * spelling for this, per `bd list --help` -- `--status
  * all` is undocumented there (it is a documented value for `bd search`'s `-s`
  * flag, not `bd list`'s).
  *
@@ -104,7 +104,7 @@ export async function computeChildFloor({ command, member, parentId, log = () =>
  *
  *   - 'absent': the thrown error's payload positively matches bd's documented
  *     no-such-issue shape (`{"error": "no issues found matching the provided
- *     IDs", ...}`, verified against installed bd 1.1.0). This is the ordinary,
+ *     IDs", ...}`). This is the ordinary,
  *     expected outcome of probing a genuinely free id.
  *   - 'unknown': anything else -- unparseable output, a differently-shaped
  *     error payload, a transport/dispatch fault. The caller MUST fail closed
@@ -141,13 +141,12 @@ export function classifyBdShowProbeError(probeErr) {
  * The probe-and-refuse half of the explicit-id collision guard, extracted
  * (apra-fleet-btj9.7) out of createChildBeadWithAllocatedId's inline block so
  * it is a single reusable, exported seam rather than logic private to that one
- * function. Current bd refuses a `bd create --id <id>` whose id is already
- * held by a bead (open OR closed), so this probe is no longer what prevents
- * an overwrite; it stays as an early, explicit check that names the occupying
- * bead's status before any create is dispatched (older bd releases did
- * overwrite on a duplicate --id). It probes for an existing bead at
- * `childId` and throws rather than let the caller dispatch a create that
- * cannot succeed:
+ * function. bd refuses a `bd create --id <id>` whose id is already held by a
+ * bead (open OR closed); this probe is an early, explicit check that names
+ * the occupying bead's status before any create is dispatched. It probes for
+ * an existing bead at `childId` and throws (tagging the error's
+ * `probeOutcome`) rather than let the caller dispatch a create that cannot
+ * succeed:
  *
  *   - ABSENT (the common, expected case): resolves normally, no throw.
  *   - PRESENT: throws, naming the existing bead's status.
@@ -172,8 +171,7 @@ export async function assertChildIdFree({ command, member, childId, parentId }) 
         const list = Array.isArray(beads) ? beads : (beads ? [beads] : []);
         existing = list.find((b) => b && b.id === childId) || null;
     } catch (probeErr) {
-        // VERIFIED against installed bd 1.1.0 (8e4e59d3): `bd show
-        // <missing-id> --json` does NOT yield `[]` -- it exits non-zero and
+        // `bd show <missing-id> --json` does NOT yield `[]` -- it exits non-zero and
         // prints `{"error": "no issues found matching the provided IDs",
         // "schema_version": 1}`. So the free-id case (the common, expected
         // outcome of this probe) always lands here, indistinguishable at
@@ -197,19 +195,22 @@ export async function assertChildIdFree({ command, member, childId, parentId }) 
             // UNKNOWN: the probe itself could not be evaluated (unparseable
             // or unrecognized error payload, e.g. a transient dispatch
             // fault). FAIL CLOSED rather than assume the id is free.
-            throw new Error(
+            const err = new Error(
                 `[id-allocator] refusing to create child bead at id '${childId}': the collision probe could not be ` +
-                `evaluated (${probeErr.message}) -- treating as UNKNOWN, not a confirmed-free id. Released the reservation ` +
-                'rather than creating at an id that may be occupied.',
+                `evaluated (${probeErr.message}) -- treating as UNKNOWN, not a confirmed-free id; not creating at an id ` +
+                'that may be occupied.',
             );
+            err.probeOutcome = 'unknown';
+            throw err;
         }
     }
     if (existing) {
-        throw new Error(
+        const err = new Error(
             `[id-allocator] refusing to create child bead at id '${childId}': a bead with that id already exists ` +
-            `(status: ${existing.status ?? 'unknown'}); a 'bd create --id' on that id cannot succeed. ` +
-            'Released the reservation rather than dispatching the create.',
+            `(status: ${existing.status ?? 'unknown'}); a 'bd create --id' on that id cannot succeed.`,
         );
+        err.probeOutcome = 'present';
+        throw err;
     }
 }
 
@@ -223,8 +224,10 @@ export async function assertChildIdFree({ command, member, childId, parentId }) 
  *   1. allocate() reserves the next distinct child id under the shared parent.
  *   1a. Explicit-id path only: probe (`bd show <childId> --json`) that no bead
  *      already holds that id (bd itself refuses a duplicate --id; the probe
- *      just names the occupant before dispatching). A collision releases the
- *      reservation and throws.
+ *      just names the occupant before dispatching). An occupied id -- or one the
+ *      probe cannot evaluate -- is CONSUMED (confirm()ed, never re-pooled: a
+ *      re-pooled occupied id is re-minted every round, GitHub #615) and the
+ *      sequence retries with a freshly allocated id.
  *   2. `bd create` runs with `--id <childId>` (or, under the null client where
  *      childId is null, lets bd derive the id from `--parent`).
  *   3. confirm() as soon as `bd create` lands (the id is now durably used --
@@ -274,18 +277,67 @@ export async function createChildBeadWithAllocatedId(opts) {
     for (let attempt = 1; ; attempt += 1) {
         const outcome = await createChildBeadAttempt(opts, shared, attempt, attempts);
         if (outcome.created) return outcome.result;
-        // The create was DISPATCHED and failed: its id stays consumed (see
-        // createChildBeadAttempt). Retry with a freshly allocated id while
-        // attempts remain; the null-allocator path (bd-derived id) never
-        // retries, since a fresh "allocation" there is the same request.
+        // The attempt's id is consumed (occupied, unprobeable, or its create
+        // was dispatched and failed -- see createChildBeadAttempt). A failed
+        // create may still have LANDED behind the error (a transport fault
+        // after bd wrote the row): if the id now holds a bead with this very
+        // title, adopt it rather than create a duplicate under a fresh id.
+        if (outcome.phase === 'create' && outcome.childId) {
+            const adopted = await adoptLandedChild(opts, outcome.childId);
+            if (adopted) return adopted;
+        }
+        // Retry with a freshly allocated id while attempts remain; the
+        // null-allocator path (bd-derived id) never retries, since a fresh
+        // "allocation" there is the same request.
         consumedIds.push(outcome.childId);
         if (outcome.childId && attempt < attempts) continue;
-        if (attempt === 1) throw outcome.error;
-        throw new Error(
-            `[id-allocator] bd create under parent '${opts.parentId}' failed on all ${attempt} attempts ` +
+        if (attempt === 1) {
+            if (outcome.childId) outcome.error.consumedIds = [...consumedIds];
+            throw outcome.error;
+        }
+        const err = new Error(
+            `[id-allocator] creating a child under parent '${opts.parentId}' failed on all ${attempt} attempts ` +
             `(consumed ids, never re-pooled: ${consumedIds.join(', ')}); last error: ${outcome.error.message}`,
         );
+        err.consumedIds = [...consumedIds];
+        throw err;
     }
+}
+
+/**
+ * After a dispatched `bd create --id <childId>` reported failure: if the bead
+ * nevertheless exists at that id with the same title, the create landed --
+ * link it under the parent and return it, so the retry does not mint a
+ * duplicate. Any probe failure means "not landed" (retry as normal).
+ * @returns {Promise<{ childId: string }|null>}
+ */
+async function adoptLandedChild(opts, childId) {
+    const { command, member, title, parentId, log = () => {} } = opts;
+    const probeLabel = `bd show ${childId} --json`;
+    let existing = null;
+    try {
+        const raw = await command(probeLabel, { member_name: member, silent: true });
+        const beads = parseBdJson(raw, probeLabel);
+        const list = Array.isArray(beads) ? beads : (beads ? [beads] : []);
+        existing = list.find((b) => b && b.id === childId) || null;
+    } catch {
+        return null;
+    }
+    if (!existing || existing.title !== title) return null;
+    log(`[id-allocator] bd create for '${childId}' reported failure but the bead landed with this title; adopting it instead of creating a duplicate`);
+    try {
+        await command(
+            `bd update ${childId} --parent ${parentId}`,
+            { member_name: member, silent: true, label: `Link follow-up task ${childId} under ${parentId}` }
+        );
+    } catch (err) {
+        throw new Error(
+            `[id-allocator] child bead '${childId}' was created but is UNLINKED under parent '${parentId}': ` +
+            `the follow-up 'bd update ${childId} --parent ${parentId}' failed (${err.message}). The id is ` +
+            'genuinely in use -- re-link it manually rather than retrying newTask under this parent.',
+        );
+    }
+    return { childId };
 }
 
 /**
@@ -297,8 +349,9 @@ export const CHILD_CREATE_MAX_ATTEMPTS = 3;
 /**
  * One allocate -> probe -> stage -> create -> confirm/link attempt.
  * Resolves `{ created: true, result }` on success or `{ created: false,
- * childId, error }` when the `bd create` dispatch itself failed (the caller
- * may retry). Every other failure throws.
+ * childId, error, phase }` when the id proved unusable (phase 'probe') or the
+ * `bd create` dispatch failed (phase 'create'); the caller may retry. Every
+ * other failure throws.
  */
 async function createChildBeadAttempt(opts, shared, attempt, attempts) {
     const { command, allocator, member, title, description, priority, parentId, sprintId, floor, label, log = () => {} } = opts;
@@ -321,15 +374,26 @@ async function createChildBeadAttempt(opts, shared, attempt, attempts) {
     // prior run, a stale persisted high-water, or a manually-created bead can
     // leave one occupied. So on the explicit-id path only, probe for an existing
     // bead at that id FIRST via the shared assertChildIdFree() seam (apra-fleet-
-    // btj9.7) and REFUSE (release the reservation, throw loudly) before
-    // dispatching. The null-allocator path (`bd create --parent`) lets bd mint a
+    // btj9.7). A PRESENT or UNKNOWN probe consumes the id (never re-pooled --
+    // computeChildFloor can miss unlinked children or fall back to floor 0, so
+    // a released occupied id would be re-minted every round) and the caller
+    // retries with a fresh id; a gap in the sequence costs nothing. The null-allocator path (`bd create --parent`) lets bd mint a
     // fresh id natively and never collides, so it needs no probe.
     if (grant.childId) {
         try {
             await assertChildIdFree({ command, member, childId: grant.childId, parentId });
         } catch (probeErr) {
-            await allocator.release(grant.token);
-            throw probeErr;
+            try {
+                await allocator.confirm(grant.token);
+            } catch (confirmErr) {
+                log(`[id-allocator] could not mark '${grant.childId}' consumed after its collision probe (${confirmErr.message}); its lease will lapse instead`);
+            }
+            const willRetry = attempt < attempts;
+            log(
+                `[id-allocator] '${grant.childId}' is not usable (probe: ${probeErr.probeOutcome || 'unknown'}, attempt ${attempt}/${attempts}); ` +
+                `id consumed (never re-pooled)${willRetry ? '; retrying with a freshly allocated id' : ''}: ${probeErr.message}`,
+            );
+            return { created: false, childId: grant.childId, error: probeErr, phase: 'probe' };
         }
     }
     // `bd create` refuses `--id` together with `--parent`: carry EITHER the
@@ -386,7 +450,7 @@ async function createChildBeadAttempt(opts, shared, attempt, attempts) {
             `${grant.childId ? 'id stays consumed (never re-pooled)' : 'no allocator id involved'}` +
             `${willRetry ? '; retrying with a freshly allocated id' : ''}: ${err.message}`,
         );
-        return { created: false, childId: grant.childId ?? null, error: err };
+        return { created: false, childId: grant.childId ?? null, error: err, phase: 'create' };
     }
     // The create landed locally -- durably commit the id BEFORE the D-push, so a
     // crash after this point can never reclaim an id that now genuinely exists.
@@ -499,8 +563,8 @@ export async function verifyDoerStreakClosed({ command, backlogMember, beadIds, 
  * every id in `beadIds` with ONE `bd update <id...> --claim --json`
  * invocation instead of one `bd update <id> --claim` call per bead.
  *
- * RESEARCH FINDING this batching relies on (verified against real `bd`
- * 1.1.0, both by reading `bd update --help`'s `Usage: bd update [id...]`
+ * RESEARCH FINDING this batching relies on (verified against real `bd`,
+ * both by reading `bd update --help`'s `Usage: bd update [id...]`
  * and by exercising a scratch sandbox DB): `bd update` DOES accept a
  * variadic id list, and `--claim --json` on a MULTI-id invocation returns a
  * JSON array containing ONLY the issues that were successfully claimed --

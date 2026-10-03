@@ -4,7 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import { createChildBeadWithAllocatedId } from '../fleet-sprint/runner.js';
+import { createChildBeadWithAllocatedId, persistNewTaskBestEffort } from '../fleet-sprint/runner.js';
 import { CHILD_CREATE_MAX_ATTEMPTS } from '../fleet-sprint/beads-children.mjs';
 import { createIdAllocator } from '../src/supervisor/id-allocator.mjs';
 
@@ -133,5 +133,111 @@ describe('createChildBeadWithAllocatedId -- dispatched create failures consume t
             (err) => err.message === 'simulated transport fault creating par-1.1',
         );
         assert.deepEqual(alloc.status().parents['par-1'].free, []);
+    });
+});
+
+// A bd store whose `bd show` reflects real contents, so the pre-create probe
+// SEES an occupant. `landThenError` makes the create write the row and then
+// report a transport failure (the ambiguous landed-but-errored case).
+function makeStoreCommand({ beads = [], landThenError = new Set() } = {}) {
+    const store = new Map(beads.map((b) => [b.id, b]));
+    const calls = [];
+    const command = async (cmd) => {
+        calls.push(cmd);
+        if (/^node -e "/.test(cmd)) return STAGED_PATH;
+        const show = cmd.match(/^bd show (\S+) --json$/);
+        if (show) {
+            const b = store.get(show[1]);
+            if (!b) throw new Error('Exit code 1: {"error": "no issues found matching the provided IDs", "schema_version": 1}');
+            return JSON.stringify([b]);
+        }
+        const create = cmd.match(/^bd create "([^"]*)" .* --id (\S+) --silent$/);
+        if (create) {
+            const [, title, id] = create;
+            if (store.has(id)) throw new Error(`Exit code 1: Error: issue ${id} already exists`);
+            store.set(id, { id, title, status: 'open' });
+            if (landThenError.has(id)) throw new Error(`simulated transport fault after creating ${id}`);
+            return '';
+        }
+        if (/^bd update \S+ --parent \S+$/.test(cmd)) return '';
+        throw new Error(`unexpected command: ${cmd}`);
+    };
+    return { command, calls, store };
+}
+
+describe('createChildBeadWithAllocatedId -- review follow-ups (GitHub #615)', () => {
+    test('a probe-PRESENT id is consumed, never re-pooled: three newTasks never all get refused at the same id', async () => {
+        // An unlinked child the floor read misses (floor 0) occupies par-1.1.
+        const { command } = makeStoreCommand({ beads: [{ id: 'par-1.1', title: 'Unlinked earlier child', status: 'open' }] });
+        const ids = [];
+        for (const title of ['Task A', 'Task B', 'Task C']) {
+            const res = await createChildBeadWithAllocatedId(baseOpts(command, [], { title, floor: 0 }));
+            ids.push(res.childId);
+        }
+        assert.deepEqual(ids, ['par-1.2', 'par-1.3', 'par-1.4']);
+        const st = alloc.status().parents['par-1'];
+        assert.deepEqual(st.free, [], 'the occupied par-1.1 must never be back in the pool');
+        assert.equal(st.reserved.length, 0);
+    });
+
+    test('an UNKNOWN (unprobeable) id is consumed rather than released', async () => {
+        let first = true;
+        const { command: inner } = makeStoreCommand();
+        const command = async (cmd, o) => {
+            if (first && cmd === 'bd show par-1.1 --json') { first = false; throw new Error('transport blip'); }
+            return inner(cmd, o);
+        };
+        const res = await createChildBeadWithAllocatedId(baseOpts(command, []));
+        assert.equal(res.childId, 'par-1.2');
+        assert.deepEqual(alloc.status().parents['par-1'].free, []);
+    });
+
+    test('a create that LANDED but reported failure is adopted (linked), not duplicated under a fresh id', async () => {
+        const { command, calls, store } = makeStoreCommand({ landThenError: new Set(['par-1.1']) });
+        const logs = [];
+        const res = await createChildBeadWithAllocatedId(baseOpts(command, logs, { title: 'Only Once' }));
+        assert.equal(res.childId, 'par-1.1');
+        assert.deepEqual([...store.keys()], ['par-1.1'], 'no duplicate child created');
+        assert.equal(calls.filter((c) => c.startsWith('bd create ')).length, 1);
+        assert.ok(calls.includes('bd update par-1.1 --parent par-1'), 'the adopted child is linked to the parent');
+        assert.ok(logs.some((l) => l.includes('adopting it instead of creating a duplicate')), JSON.stringify(logs));
+    });
+
+    test('an id that holds a DIFFERENT title after a failed create is not adopted; the retry uses a fresh id', async () => {
+        const { command, store } = makeStoreCommand();
+        // A concurrent writer takes par-1.1 between the probe and the create.
+        const racing = async (cmd, o) => {
+            if (cmd.startsWith('bd create ') && cmd.includes('--id par-1.1 ')) {
+                store.set('par-1.1', { id: 'par-1.1', title: 'Someone else', status: 'open' });
+            }
+            return command(cmd, o);
+        };
+        const res = await createChildBeadWithAllocatedId(baseOpts(racing, [], { title: 'Mine' }));
+        assert.equal(res.childId, 'par-1.2');
+        assert.equal(store.get('par-1.1').title, 'Someone else');
+    });
+
+    test('the final error carries the consumed ids for the notes fallback', async () => {
+        const { command } = makeCommand({ createAlwaysFails: true });
+        await assert.rejects(
+            () => createChildBeadWithAllocatedId(baseOpts(command, [])),
+            (err) => { assert.deepEqual(err.consumedIds, ['par-1.1', 'par-1.2', 'par-1.3']); return true; },
+        );
+    });
+
+    test('persistNewTaskBestEffort names the consumed ids in its fallback log and notes reason', async () => {
+        const logs = [];
+        const commands = [];
+        const err = new Error('creating a child failed on all 3 attempts');
+        err.consumedIds = ['par-1.1', 'par-1.2', 'par-1.3'];
+        const ok = await persistNewTaskBestEffort({
+            createFn: async () => { throw err; },
+            command: async (cmd) => { commands.push(cmd); return STAGED_PATH; },
+            member: 'local', parentId: 'par-1', cycle: 1, stage: 'develop-review',
+            newTask: { title: 'T', description: 'D', priority: 'P2' },
+            log: (m) => logs.push(m),
+        });
+        assert.equal(ok, false);
+        assert.ok(logs.some((l) => l.includes('[consumed child ids: par-1.1, par-1.2, par-1.3]')), JSON.stringify(logs));
     });
 });
