@@ -50,11 +50,12 @@ import { fileURLToPath } from 'node:url';
 import { StdioTransport } from './transport.mjs';
 import { McpClient } from './client.mjs';
 import { ApraFleet } from './api.mjs';
-import { autoStartFleetServer } from './auto-start.mjs';
+import { autoStartFleetServer, readStoppedByUser, stoppedByUserError } from './auto-start.mjs';
 import { ReconnectingHttpTransport } from './reconnecting-transport.mjs';
 
 export {
     autoStartFleetServer, resolveFleetStartCommand, lastServerLog, FleetAutoStartError,
+    readStoppedByUser, stoppedByUserError, STOPPED_BY_USER_FILE,
     AUTOSTART_MAX_STARTS, AUTOSTART_WINDOW_MS, AUTOSTART_TIMEOUT_MS,
 } from './auto-start.mjs';
 export { ReconnectingHttpTransport, isNeverDeliveredError } from './reconnecting-transport.mjs';
@@ -308,6 +309,11 @@ export async function resolveFleetServerConnection(deps = {}) {
 
     // Step 3 -- the shared server is gone: start it the way 'apra-fleet start'
     // does and attach over HTTP.
+    // A server the user stopped with 'apra-fleet stop' stays stopped: fail
+    // with the actionable error instead of starting it (also on a mid-run
+    // reconnect, which re-runs this resolution).
+    const stopped = readStoppedByUser(getFleetDataDir(env));
+    if (stopped) throw stoppedByUserError(stopped);
     const autoStart = deps.autoStartFleetServer || autoStartFleetServer;
     const started = await autoStart({ ...deps, env, checkRunningInstance: probe });
     return {

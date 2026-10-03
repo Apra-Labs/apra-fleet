@@ -260,3 +260,51 @@ describe('resolveFleetServerConnection step 3 and the transport overrides', () =
         assert.strictEqual(calls, 0);
     });
 });
+
+describe("a deliberate 'apra-fleet stop' is never undone by a client", () => {
+    let dataDir;
+    let env;
+    const gone = async () => ({ running: false, state: 'gone' });
+    const mark = () => fs.writeFileSync(path.join(dataDir, 'stopped-by-user.json'),
+        JSON.stringify({ stoppedAt: '2026-10-03T10:00:00.000Z', by: 'apra-fleet stop', user: 'alice', host: 'h', pid: 1 }));
+    beforeEach(() => {
+        dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-stopped-'));
+        env = { APRA_FLEET_DATA_DIR: dataDir };
+    });
+    afterEach(() => { fs.rmSync(dataDir, { recursive: true, force: true }); });
+
+    test('marked + gone -> no start, actionable SERVER_STOPPED_BY_USER error', async () => {
+        mark();
+        let starts = 0;
+        await assert.rejects(
+            resolveFleetServerConnection({ env, checkRunningInstance: gone, autoStartFleetServer: async () => { starts++; return { url: URL_, pid: 1 }; } }),
+            (err) => err.code === 'SERVER_STOPPED_BY_USER'
+                && /apra-fleet was stopped by the user at 2026-10-03T10:00:00\.000Z/.test(err.message)
+                && /run 'apra-fleet start'/.test(err.message),
+        );
+        assert.strictEqual(starts, 0);
+    });
+
+    test('unmarked + gone -> still auto-starts', async () => {
+        let starts = 0;
+        const r = await resolveFleetServerConnection({ env, checkRunningInstance: gone, autoStartFleetServer: async () => { starts++; return { url: URL_, pid: 1 }; } });
+        assert.strictEqual(starts, 1);
+        assert.strictEqual(r.mode, 'http');
+    });
+
+    test('marked but a server IS running (started by the user) -> attach as usual', async () => {
+        mark();
+        const r = await resolveFleetServerConnection({ env, checkRunningInstance: async () => ({ running: true, state: 'running', url: URL_, pid: 9 }) });
+        assert.strictEqual(r.url, URL_);
+    });
+
+    test('autoStartFleetServer itself refuses while marked (no start command run)', async () => {
+        mark();
+        const w = world();
+        await assert.rejects(
+            autoStartFleetServer({ env, checkRunningInstance: w.probe, runStart: w.runStart, startCommand: { command: 'x', args: ['start'] } }),
+            (err) => err.code === 'SERVER_STOPPED_BY_USER',
+        );
+        assert.strictEqual(w.starts.length, 0);
+    });
+});

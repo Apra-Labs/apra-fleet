@@ -168,3 +168,33 @@ describe('ReconnectingHttpTransport', () => {
         t.stop();
     });
 });
+
+describe('reconnect after a deliberate stop', () => {
+    afterEach(async () => { while (cleanups.length) await cleanups.pop()(); });
+
+    test("mid-run: server stopped with 'apra-fleet stop' -> the next request fails with the stop message, no auto-start", async () => {
+        const fsMod = (await import('node:fs')).default;
+        const osMod = (await import('node:os')).default;
+        const pathMod = (await import('node:path')).default;
+        const { createFleetHttpTransport } = await import('../src/client/server-resolution.mjs');
+        const dataDir = fsMod.mkdtempSync(pathMod.join(osMod.tmpdir(), 'fleet-reconnect-stopped-'));
+        cleanups.push(async () => fsMod.rmSync(dataDir, { recursive: true, force: true }));
+        const a = await fakeServer('A');
+        let autoStarts = 0;
+        const t = createFleetHttpTransport({ url: a.url }, {
+            env: { APRA_FLEET_DATA_DIR: dataDir },
+            checkRunningInstance: async () => ({ running: false, state: 'gone' }),
+            autoStartFleetServer: async () => { autoStarts++; return { url: a.url, pid: 1 }; },
+        });
+        cleanups.push(async () => { try { t.stop(); } catch { /* ignore */ } });
+        await t.start();
+        const client = new McpClient(t);
+        assert.deepStrictEqual(await client.request('tools/list', {}, { timeoutMs: 5000 }), { from: 'A' });
+        // The user runs 'apra-fleet stop': marker written, server goes away.
+        fsMod.writeFileSync(pathMod.join(dataDir, 'stopped-by-user.json'),
+            JSON.stringify({ stoppedAt: '2026-10-03T10:00:00.000Z', by: 'apra-fleet stop', user: 'alice' }));
+        await a.kill();
+        await assert.rejects(client.request('tools/list', {}, { timeoutMs: 20000 }), /stopped by the user .*run 'apra-fleet start'/);
+        assert.strictEqual(autoStarts, 0);
+    });
+});

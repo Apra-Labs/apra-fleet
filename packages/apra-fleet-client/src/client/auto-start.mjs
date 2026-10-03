@@ -33,11 +33,37 @@ const POLL_MS = 500;
 
 export const AUTOSTART_LEDGER_FILE = 'client-autostart.json';
 export const AUTOSTART_LOCK_FILE = 'client-autostart.lock';
+/** Written by `apra-fleet stop` (src/services/stopped-marker.ts); keep the name and fields in sync. */
+export const STOPPED_BY_USER_FILE = 'stopped-by-user.json';
+
+/**
+ * The "stopped by user" marker in a data dir, or null. While present the
+ * client never starts the server (the user stopped it deliberately).
+ * @param {string} dataDir
+ * @returns {{stoppedAt: string, by?: string, user?: string}|null}
+ */
+export function readStoppedByUser(dataDir) {
+    try {
+        const m = JSON.parse(fs.readFileSync(path.join(dataDir, STOPPED_BY_USER_FILE), 'utf8'));
+        return m && typeof m.stoppedAt === 'string' ? m : null;
+    } catch {
+        return null;
+    }
+}
+
+/** The actionable refusal for a server the user stopped. code SERVER_STOPPED_BY_USER. */
+export function stoppedByUserError(marker) {
+    return new FleetAutoStartError(
+        `apra-fleet was stopped by the user at ${marker.stoppedAt}${marker.user ? ` (${marker.user}, via '${marker.by || 'apra-fleet stop'}')` : ''}; ` +
+            "run 'apra-fleet start' to start it again. Clients do not restart a server that was stopped on purpose.",
+        { code: 'SERVER_STOPPED_BY_USER', details: marker },
+    );
+}
 
 /**
  * Typed failure of a client auto-start. code: AUTOSTART_LIMIT | AUTOSTART_TIMEOUT |
  * AUTOSTART_NO_BINARY | AUTOSTART_VERSION_SKEW | AUTOSTART_VERSION_UNKNOWN |
- * AUTOSTART_TEST_UNINJECTED | SERVER_UNRESPONSIVE
+ * AUTOSTART_TEST_UNINJECTED | SERVER_UNRESPONSIVE | SERVER_STOPPED_BY_USER
  */
 export class FleetAutoStartError extends Error {
     constructor(message, { code, details } = {}) {
@@ -283,6 +309,9 @@ export async function autoStartFleetServer(deps) {
     const windowMs = deps.windowMs ?? AUTOSTART_WINDOW_MS;
 
     const dataDir = dataDirOf(env);
+    // Never undo a deliberate 'apra-fleet stop'.
+    const stopped = readStoppedByUser(dataDir);
+    if (stopped) throw stoppedByUserError(stopped);
     fs.mkdirSync(dataDir, { recursive: true });
     const lockFile = path.join(dataDir, AUTOSTART_LOCK_FILE);
     const ledgerFile = path.join(dataDir, AUTOSTART_LEDGER_FILE);
