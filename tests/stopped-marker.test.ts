@@ -74,6 +74,38 @@ describe('stopped-by-user marker', () => {
     expect(out.join('\n')).toMatch(/State:\s+stopped \(stopped by .+ at 2026-10-03T10:00:00\.000Z via 'apra-fleet stop' -- run 'apra-fleet start'\)/);
   });
 
+  it('a start launched by a client auto-start (APRA_FLEET_AUTOSTART=1) refuses and KEEPS a racing stop', async () => {
+    writeStoppedMarker('apra-fleet stop');
+    mockCheckRunning.mockResolvedValue(GONE);
+    const errs: string[] = [];
+    vi.spyOn(console, 'error').mockImplementation((...a) => { errs.push(a.join(' ')); });
+    const exit = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => { throw new Error(`exit ${code}`); }) as never);
+    process.env.APRA_FLEET_AUTOSTART = '1';
+    try {
+      await expect(runStart([])).rejects.toThrow('exit 1');
+    } finally {
+      delete process.env.APRA_FLEET_AUTOSTART;
+    }
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(fs.existsSync(STOPPED_MARKER_PATH)).toBe(true);
+    expect(errs.join('\n')).toMatch(/stopped by the user .*not auto-starting/);
+  });
+
+  it('a port-only override never records a stop in the shared data dir when the server there is not its own', async () => {
+    const saved = { dir: process.env.APRA_FLEET_DATA_DIR, port: process.env.APRA_FLEET_PORT };
+    delete process.env.APRA_FLEET_DATA_DIR; // port-only: shares the default data dir
+    process.env.APRA_FLEET_PORT = '9999';
+    mockCheckRunning.mockResolvedValue(RUNNING); // production server on 7999, not 9999
+    try {
+      await runStop([]);
+    } finally {
+      if (saved.dir === undefined) delete process.env.APRA_FLEET_DATA_DIR; else process.env.APRA_FLEET_DATA_DIR = saved.dir;
+      if (saved.port === undefined) delete process.env.APRA_FLEET_PORT; else process.env.APRA_FLEET_PORT = saved.port;
+    }
+    expect(out.join('\n')).toMatch(/not stopping it/);
+    expect(fs.existsSync(STOPPED_MARKER_PATH)).toBe(false);
+  });
+
   it('status without a marker is plain "stopped"', async () => {
     mockCheckRunning.mockResolvedValue(GONE);
     await runStatus([]);

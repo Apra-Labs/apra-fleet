@@ -1,7 +1,9 @@
 /**
  * "Stopped by user" marker (GitHub #585 recovery). `apra-fleet stop` writes
- * <data dir>/stopped-by-user.json; `apra-fleet start`, `apra-fleet install`
- * and any successful server start clear it. While it is present, clients
+ * <data dir>/stopped-by-user.json; ONLY `apra-fleet start` and `apra-fleet
+ * install` clear it. While it is present a service-manager launch (launchd
+ * RunAtLoad, systemd at boot, the Windows HKCU Run fallback or task) exits 0
+ * without starting (src/index.ts startHttpServer), and clients
  * (packages/apra-fleet-client auto-start, including a reconnecting
  * long-lived client) do NOT start the server: they fail with an actionable
  * error instead, so a deliberate stop is never silently undone. The client

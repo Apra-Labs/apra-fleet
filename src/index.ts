@@ -362,6 +362,19 @@ async function startHttpServer() {
   const { launchedByServiceManager } = await import('./services/service-manager/types.js');
   const startGuard = launchedByServiceManager() ? await import('./services/service-start-guard.js') : null;
   if (startGuard) {
+    // A deliberate `apra-fleet stop` must stick across logon/boot on every OS:
+    // launchd RunAtLoad, an enabled systemd unit, the Windows HKCU Run
+    // fallback, or an old task that could not be disabled all launch us here.
+    // Exit 0 (launchd SuccessfulExit=false / systemd Restart=on-failure do not
+    // restart it) and KEEP the marker -- only `apra-fleet start`/install clear it.
+    const { readStoppedMarker, describeStoppedMarker } = await import('./services/stopped-marker.js');
+    const stopped = readStoppedMarker();
+    if (stopped) {
+      if (startGuard.shouldLogServiceNotice('stopped-by-user')) {
+        console.log(`${new Date().toISOString()} apra-fleet service launch skipped: ${describeStoppedMarker(stopped)}`);
+      }
+      process.exit(0);
+    }
     const skip = startGuard.serviceStartBackoff();
     if (skip) {
       console.log(`${new Date().toISOString()} ${skip}`);
@@ -398,8 +411,11 @@ async function startHttpServer() {
     const msg = `apra-fleet already running at ${instance.url} pid=${instance.pid} -- exiting`;
     if (startGuard) {
       // Service launches (a revive-trigger tick) go to the service log only,
-      // not a fresh fleet-<pid>.log per tick.
-      console.log(`${new Date().toISOString()} ${msg}`);
+      // not a fresh fleet-<pid>.log per tick, and at most once an hour (a
+      // server running outside the task would otherwise log ~288 lines/day).
+      if (startGuard.shouldLogServiceNotice('already-running')) {
+        console.log(`${new Date().toISOString()} ${msg}`);
+      }
       startGuard.clearServiceStartFailures();
     } else {
       logLine('startup', msg);
@@ -451,12 +467,11 @@ async function startHttpServer() {
 
   // Release startup lock now that server.json is written (server.json is the long-lived detection mechanism)
   lock.release();
-  // A running server is no longer "stopped by user" (e.g. started at the
-  // next login by launchd/systemd): drop a stale marker so status agrees.
-  {
-    const { clearStoppedMarker } = await import('./services/stopped-marker.js');
-    clearStoppedMarker();
-  }
+  // The stopped-by-user marker is NOT cleared here: only an explicit
+  // `apra-fleet start` / `apra-fleet install` ends a deliberate stop. (A
+  // service launch never gets this far while it exists; a manual `run`
+  // leaves it, so if this server later dies clients still do not
+  // auto-start -- the conservative side.)
   startGuard?.clearServiceStartFailures();
 
   // Make HTTP handle available to shutdown_server tool

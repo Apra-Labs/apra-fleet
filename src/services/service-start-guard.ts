@@ -61,3 +61,27 @@ export function recordServiceStartAttempt(file = SERVICE_START_STATE_PATH, now =
 export function clearServiceStartFailures(file = SERVICE_START_STATE_PATH): void {
   try { fs.unlinkSync(file); } catch { /* absent */ }
 }
+
+export const SERVICE_NOTICE_STATE_PATH = path.join(FLEET_DIR, 'service-notices.json');
+export const SERVICE_NOTICE_INTERVAL_MS = 60 * 60 * 1000;
+
+/**
+ * Rate limit for routine service-launch notices ("already running", "stopped
+ * by user -- not starting"): the Windows task's revive trigger fires every 5
+ * minutes, which would otherwise append ~288 identical lines a day to the
+ * service log. True at most once per interval per kind.
+ */
+export function shouldLogServiceNotice(
+  kind: string, file = SERVICE_NOTICE_STATE_PATH, now = Date.now(), intervalMs = SERVICE_NOTICE_INTERVAL_MS,
+): boolean {
+  let state: Record<string, number> = {};
+  try { state = JSON.parse(fs.readFileSync(file, 'utf8')) ?? {}; } catch { /* absent or corrupt */ }
+  const last = state[kind];
+  if (typeof last === 'number' && now - last < intervalMs) return false;
+  state[kind] = now;
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify(state));
+  } catch { /* best-effort */ }
+  return true;
+}

@@ -10,7 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import {
-  serviceStartBackoff, recordServiceStartAttempt, clearServiceStartFailures,
+  serviceStartBackoff, recordServiceStartAttempt, clearServiceStartFailures, shouldLogServiceNotice,
   MAX_CONSECUTIVE_FAILURES, BACKOFF_MS,
 } from '../src/services/service-start-guard.js';
 
@@ -95,4 +95,43 @@ describe('built server honours the backoff under the service marker', () => {
     const logs = fs.existsSync(path.join(dataDir, 'logs')) ? fs.readdirSync(path.join(dataDir, 'logs')) : [];
     expect(logs).toEqual([]);
   }, 40_000);
+});
+
+describe('service-launch notices are rate limited', () => {
+  it('logs a kind at most once per interval', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-notice-'));
+    try {
+      const file = path.join(dir, 'service-notices.json');
+      expect(shouldLogServiceNotice('already-running', file, 1_000, 3_600_000)).toBe(true);
+      expect(shouldLogServiceNotice('already-running', file, 2_000, 3_600_000)).toBe(false);
+      expect(shouldLogServiceNotice('stopped-by-user', file, 2_000, 3_600_000)).toBe(true);
+      expect(shouldLogServiceNotice('already-running', file, 1_000 + 3_600_000, 3_600_000)).toBe(true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// A deliberate `apra-fleet stop` must stick across logon/boot on every OS:
+// launchd RunAtLoad, an enabled systemd unit, the Windows HKCU Run fallback
+// and an undisableable old task all launch the server with the service marker.
+describe('built server: service launch after apra-fleet stop', () => {
+  let dataDir: string;
+  beforeEach(() => {
+    expect(fs.existsSync(DIST_INDEX), 'dist/ missing -- run npm run build first').toBe(true);
+    dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-stopped-srv-'));
+    fs.writeFileSync(path.join(dataDir, 'stopped-by-user.json'),
+      JSON.stringify({ stoppedAt: '2026-10-03T10:00:00.000Z', by: 'apra-fleet stop', user: 'alice', host: 'h', pid: 1 }));
+  });
+  afterEach(() => { fs.rmSync(dataDir, { recursive: true, force: true }); });
+
+  for (const marker of [{ APRA_FLEET_SERVICE: '1' }, { INVOCATION_ID: 'abc123' }]) {
+    it(`${Object.keys(marker)[0]} launch: exit 0, one notice, marker kept, no server`, async () => {
+      const { code, stdout } = await runServer({ APRA_FLEET_DATA_DIR: dataDir, APRA_FLEET_PORT: '1', ...marker });
+      expect(code).toBe(0);
+      expect(stdout).toMatch(/service launch skipped: stopped by alice at 2026-10-03T10:00:00\.000Z/);
+      expect(fs.existsSync(path.join(dataDir, 'stopped-by-user.json'))).toBe(true);
+      expect(fs.existsSync(path.join(dataDir, 'server.json'))).toBe(false);
+    }, 40_000);
+  }
 });

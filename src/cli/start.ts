@@ -11,7 +11,7 @@ import { getServiceManager } from '../services/service-manager/index.js';
 import { LOG_FILE_PATH, FLEET_DIR, DEFAULT_PORT, DEFAULT_HOST, isNonDefaultInstance } from '../paths.js';
 import { BIN_DIR } from './config.js';
 import { serverVersion } from '../version.js';
-import { clearStoppedMarker } from '../services/stopped-marker.js';
+import { clearStoppedMarker, readStoppedMarker } from '../services/stopped-marker.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -57,8 +57,19 @@ function directSpawn(): void {
 }
 
 export async function runStart(_args: string[]): Promise<void> {
-  // An explicit start ends a user stop: clients may auto-start again.
-  clearStoppedMarker();
+  // An explicit start ends a user stop: clients may auto-start again. A start
+  // launched BY a client auto-start (APRA_FLEET_AUTOSTART=1) must never erase
+  // a stop that raced it -- it refuses instead.
+  if (process.env.APRA_FLEET_AUTOSTART === '1') {
+    const stopped = readStoppedMarker();
+    if (stopped) {
+      console.error(`apra-fleet was stopped by the user at ${stopped.stoppedAt} via '${stopped.by}'; not auto-starting it. Run 'apra-fleet start'.`);
+      process.exit(1);
+      return;
+    }
+  } else {
+    clearStoppedMarker();
+  }
   const instance = await checkRunningInstance();
   if (instance.running) {
     if (instance.version && instance.version !== serverVersion) {
