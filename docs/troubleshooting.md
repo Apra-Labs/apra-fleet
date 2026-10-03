@@ -32,7 +32,13 @@ Normal for a new member. `register_member` still succeeds; run
 Before provisioning: for the default OAuth flow, log in locally first (`/login`
 in a Claude Code session, or `claude auth login`) -- `provision_llm_auth` copies
 your credentials to the member. For the API-key flow, pass the key as the
-`api_key` parameter. The tool checks token expiry before deploying; an expired
+`api_key` parameter; a Claude Code OAuth token from `claude setup-token`
+(`sk-ant-oat...`) also goes in `api_key` and is set as `CLAUDE_CODE_OAUTH_TOKEN`
+(an `sk-ant-api...` key as `ANTHROPIC_API_KEY`). Without `api_key`, a credential
+already stored for the member is re-deployed rather than overwritten by your
+login (this is what cloud start and sprint self-heal do); pass
+`force_oauth_copy: true` to copy your local login instead and clear the stored
+credential. The tool checks token expiry before deploying; an expired
 access token with a live refresh token still deploys, and the member's CLI
 refreshes on first use.
 

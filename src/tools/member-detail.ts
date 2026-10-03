@@ -166,11 +166,14 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
   }
 
   let apiKeyExists = false;
-  if (provider.authEnvVar) {
+  // Every credential kind counts (e.g. CLAUDE_CODE_OAUTH_TOKEN as well as ANTHROPIC_API_KEY).
+  const authVars = provider.authEnvVarNames?.() ?? (provider.authEnvVar ? [provider.authEnvVar] : []);
+  for (const envVar of authVars) {
     try {
-      const apiKeyResult = await strategy.execCommand(cmds.apiKeyCheck(provider.authEnvVar), 10000);
+      const apiKeyResult = await strategy.execCommand(cmds.apiKeyCheck(envVar), 10000);
       if (apiKeyResult.stdout.trim().length > 5) {
         apiKeyExists = true;
+        break;
       }
     } catch { /* ignore */ }
   }

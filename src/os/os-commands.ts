@@ -79,6 +79,8 @@ export interface OsCommands {
    */
   credentialFileInstall(stagedPath: string, destPath: string): string;
   credentialFileRemove(destPath: string): string;
+  /** Rename destPath to destPath+suffix when it exists (reversible removal); prints "moved" when it did. */
+  credentialFileMoveAside(destPath: string, suffix: string): string;
   apiKeyCheck(envVarName?: string): string;
   /**
    * Persisting an env var on the member is two-step so the VALUE never sits

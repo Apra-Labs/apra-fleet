@@ -5,7 +5,7 @@ import path from 'node:path';
 import { parseClaudeOAuthSecret, extractBearerTokenFromSecret, resolveAmbientClaudeCredential, runAuth } from '../src/cli/auth.js';
 import { checkCleanEnvCredentialsFile, checkMemberEnvVarProvisioned, defaultRegistryPath } from '../scripts/check-toy-doer-credentials.mjs';
 import { addAgent, getAllAgents } from '../src/services/registry.js';
-import { decryptPassword } from '../src/utils/crypto.js';
+import { decryptPassword, encryptPassword } from '../src/utils/crypto.js';
 import { credentialSet } from '../src/services/credential-store.js';
 import { backupAndResetRegistry, restoreRegistry, makeTestLocalAgent } from './test-helpers.js';
 
@@ -379,6 +379,19 @@ describe('handleOAuth --member env-var provisioning (apra-fleet-eft.48.8)', () =
     expect(stored).toBeTruthy();
     expect(stored).not.toBe('sk-test-member-envvar-token'); // never plaintext
     expect(decryptPassword(stored!)).toBe('sk-test-member-envvar-token');
+  });
+
+  it('drops a stored ANTHROPIC_API_KEY (it would outrank the OAuth token) and keeps unrelated vars', async () => {
+    const member = makeTestLocalAgent({
+      friendlyName: 'toy-doer-stale-key',
+      encryptedEnvVars: { ANTHROPIC_API_KEY: encryptPassword('sk-ant-api03-FAKE'), CLAUDE_CONFIG_DIR: encryptPassword('/cfg') },
+    });
+    addAgent(member);
+
+    await runAuth(['--oauth', '--member', 'toy-doer-stale-key', 'sk-ant-oat01-FAKE']);
+
+    const updated = getAllAgents().find(a => a.friendlyName === 'toy-doer-stale-key');
+    expect(Object.keys(updated!.encryptedEnvVars!).sort()).toEqual(['CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CONFIG_DIR']);
   });
 
   it('extracts only the bare accessToken when the resolved secret is a full claudeAiOauth JSON object (apra-fleet-vak.1)', async () => {

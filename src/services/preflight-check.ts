@@ -188,6 +188,7 @@ export async function preflightCheck(
     authEnvVarSet.add(provider.authEnvVarForToken('sk-ant-probe'));
     authEnvVarSet.add(provider.authEnvVarForToken('non-sk-ant-probe'));
   }
+  for (const name of provider.authEnvVarNames?.() ?? []) authEnvVarSet.add(name);
   // R3 regression fix: providers with no env-var-based auth (e.g. OpenCode,
   // whose authEnvVar/authEnvVarForToken always return '') would otherwise
   // populate authEnvVars with ''. getOsCommands(...).apiKeyCheck('') builds a

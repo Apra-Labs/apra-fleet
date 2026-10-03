@@ -351,6 +351,18 @@ describe('undeliverable stored credentials', () => {
     });
   }
 
+  it('automatic re-deploy (no api_key) of an undeliverable stored credential says it is still stored and how to clear it', async () => {
+    const member = makeTestAgent({ friendlyName: 'ud-redeploy', os: 'linux', agentType: 'relay', relayMemberId: 'hub-m', encryptedEnvVars: storedEnv({ CLAUDE_CODE_OAUTH_TOKEN: FAKE_OAUTH }) });
+    addAgent(member);
+    const r = await provisionAuth({ member_id: member.id });
+    expect(r.structuredContent.reason).toBe('secret_delivery_unavailable');
+    expect(r.text).toContain('is still in its config');
+    expect(r.text).toContain('clear_stored_credentials');
+    expect(r.text).not.toContain('Re-deployed');
+    expect(getAgent(member.id)?.encryptedEnvVars?.CLAUDE_CODE_OAUTH_TOKEN).toBeDefined();
+    expect(execCalls).toEqual([]);
+  });
+
   it('clear_stored_credentials cannot be combined with api_key', async () => {
     const member = makeTestAgent({ friendlyName: 'ud-clr-bad', os: 'linux', encryptedEnvVars: storedEnv({ ANTHROPIC_API_KEY: FAKE_KEY }) });
     addAgent(member);

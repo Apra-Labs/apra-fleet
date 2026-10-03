@@ -305,6 +305,12 @@ $merged | ConvertTo-Json -Depth 99 | Set-Content -Path $p -NoNewline;
     return `Remove-Item "${escapeWindowsArg(destPath)}" -Force -ErrorAction SilentlyContinue`;
   }
 
+  credentialFileMoveAside(destPath: string, suffix: string): string {
+    if (!/^[A-Za-z0-9._-]+$/.test(suffix)) throw new Error('Invalid backup suffix: ' + suffix);
+    const p = escapeWindowsArg(destPath);
+    return `if (Test-Path "${p}") { Move-Item -Path "${p}" -Destination "${p}${suffix}" -Force; echo "moved" }`;
+  }
+
   apiKeyCheck(envVarName?: string): string {
     const varName = envVarName ?? 'ANTHROPIC_API_KEY';
     if (!/^[A-Z_][A-Z0-9_]*$/i.test(varName)) throw new Error('Invalid env var name: ' + varName);

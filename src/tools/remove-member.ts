@@ -152,9 +152,12 @@ export async function removeMember(input: RemoveMemberInput): Promise<string> {
           await strategy.execCommand(cmds.credentialFileRemove(file.remotePath), 10000).catch(() => {});
         }
 
-        // Remove the provider's API key env var from shell profiles
-        for (const cmd of cmds.unsetEnv(provider.authEnvVar)) {
-          await strategy.execCommand(cmd, 10000).catch(() => {});
+        // Remove the provider's auth env vars (every credential kind) from shell profiles
+        const authVars = new Set([provider.authEnvVar, ...(provider.authEnvVarNames?.() ?? [])].filter(Boolean));
+        for (const envVar of authVars) {
+          for (const cmd of cmds.unsetEnv(envVar)) {
+            await strategy.execCommand(cmd, 10000).catch(() => {});
+          }
         }
 
         // VCS auth revoke: remove git credential helper if a VCS provider is configured.

@@ -322,6 +322,34 @@ describe('createVcsAuthSelfHealCallback / createLlmAuthSelfHealCallback branch o
         await onAuthFailure({ member: 'fleet-mac', label: 'G-push', error: 'auth failure' });
     });
 
+    test('createLlmAuthSelfHealCallback: calls provision_llm_auth with only the member name (never api_key or force_oauth_copy, so a stored member credential is re-deployed, not replaced)', async () => {
+        const calls = [];
+        const callTool = async (name, args) => {
+            calls.push({ name, args });
+            return { content: [{ text: '[OK] done' }], structuredContent: { ok: true, reason: 'ok' } };
+        };
+        const onLlmAuthFailure = createLlmAuthSelfHealCallback({ callTool, log: () => {} });
+        await onLlmAuthFailure({ member: 'fleet-mac', label: 'doer', error: 'authentication failed' });
+        const provision = calls.filter(c => c.name === 'provision_llm_auth');
+        assert.equal(provision.length, 1);
+        assert.deepStrictEqual(provision[0].args, { member_name: 'fleet-mac' });
+    });
+
+    test('createLlmAuthSelfHealCallback: deployed_unverified logs the auth test error and the force_oauth_copy hint, then retries once', async () => {
+        const callTool = async () => ({
+            content: [{ text: '[OK] OAuth token provisioned on "m"\n  Auth test: FAILED -- Invalid bearer token sk-ant-[REDACTED]\n' }],
+            structuredContent: { ok: true, reason: 'deployed_unverified' },
+        });
+        const logs = [];
+        const onLlmAuthFailure = createLlmAuthSelfHealCallback({ callTool, log: (m) => logs.push(m) });
+        const retry = await onLlmAuthFailure({ member: 'fleet-mac', label: 'doer', error: 'authentication failed' });
+        assert.equal(retry, true);
+        const last = logs[logs.length - 1];
+        assert.match(last, /could not verify them: Auth test: FAILED -- Invalid bearer token/);
+        assert.match(last, /force_oauth_copy: true/);
+        assert.doesNotMatch(last, /succeeded/);
+    });
+
     test('createLlmAuthSelfHealCallback: a [FAIL] prose result with structuredContent.ok === false returns false (no retry)', async () => {
         const callTool = async (name) => {
             if (name === 'provision_llm_auth') {
