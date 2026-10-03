@@ -87,6 +87,31 @@ Environment:
 `.trim();
 
 /**
+ * The production dashboard + backlog wiring: both read the cached beads view's
+ * snapshot (never spawn bd) and kick a non-blocking background refresh when the
+ * cache is stale. The dashboard keeps every row (--all); the backlog keeps
+ * today's default `bd list` set (closed beads excluded). Exported so the wiring
+ * itself is testable (test/supervisor-dashboard-beads-cache.test.mjs): dropping
+ * either `listAllBeads` injection here silently falls back to the seam's default
+ * bd fetcher (dashboard.mjs / backlog.mjs), one bd list per render or SSE tick.
+ *
+ * @param {{ ledger: object, watchdog: object, beadsIdentity?: object, beadsView: object, resolvePort?: Function }} deps
+ */
+export function createBeadsBackedViews({ ledger, watchdog, beadsIdentity, beadsView, resolvePort, ...extra }) {
+    const dashboardRows = createSnapshotRowsReader(beadsView);
+    const backlogRows = createSnapshotRowsReader(beadsView, { openOnly: true, emptyWhenNoRows: true });
+    const backlog = createBacklog({ ledger, watchdog, listAllBeads: backlogRows });
+    const dashboard = createDashboard({
+        ledger, watchdog, backlog, beadsIdentity,
+        listAllBeads: dashboardRows,
+        beadsView,
+        resolvePort,
+        ...extra,
+    });
+    return { backlog, dashboard };
+}
+
+/**
  * The production launch overlap guard: createScopeGuard() whose one bulk fetch
  * per checkLaunch() is the cached view's forced fresh check (tip check +
  * re-list, busy-skip retried inside one wall-clock bound), made in that very
@@ -312,8 +337,6 @@ export async function serveMain(argv = process.argv.slice(2), deps = {}) {
     // kick a non-blocking background refresh when the cache is stale. The
     // dashboard keeps every row (--all); the backlog keeps today's default
     // `bd list` set (closed beads excluded).
-    const dashboardRows = createSnapshotRowsReader(beadsView);
-    const backlogRows = createSnapshotRowsReader(beadsView, { openOnly: true, emptyWhenNoRows: true });
     // apra-fleet-f34.1: pass this supervisor's OWN listening address so every
     // spawned sprint child's cli.mjs receives --service-url and threads it
     // into runner.js's HTTP-backed dolt-mutex/id-allocator clients (see
@@ -427,7 +450,6 @@ export async function serveMain(argv = process.argv.slice(2), deps = {}) {
     // Backlog section (below) AND as GET /api/backlog's real listing (see the
     // sprint controller wiring below), so there is exactly one "what does the
     // tracker minus claimed scope look like right now" implementation.
-    const backlog = createBacklog({ ledger, watchdog, listAllBeads: backlogRows });
 
     // eft.6.1/6.3: the single-page operator dashboard -- Sprint Stack, then
     // Backlog, then the Launch Sprint form (launch-form.mjs attaches itself
@@ -435,10 +457,8 @@ export async function serveMain(argv = process.argv.slice(2), deps = {}) {
     // above for why no separate launch-form seam is constructed here).
     // Sprint rows pull each child's own GET /state?summary=1; the port comes
     // from the shared ledger childPid -> spawner live-port resolver.
-    const dashboard = createDashboard({
-        ledger, watchdog, backlog, beadsIdentity,
-        listAllBeads: dashboardRows,
-        beadsView,
+    const { backlog, dashboard } = createBeadsBackedViews({
+        ledger, watchdog, beadsIdentity, beadsView,
         resolvePort: createChildPortResolver({ ledger, spawner }),
     });
 

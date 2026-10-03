@@ -5,12 +5,13 @@
 // Real createBeadsView + real doltPullBefore over a fake member command, real
 // createDashboard/createBacklog and registerDashboardRoutes (fake route table).
 //
-// Reverting bin/serve.mjs's dashboard injection (`listAllBeads: dashboardRows`)
-// to the default bulk fetcher makes the no-fetch-per-tick assertion fail: the
-// "10 renders" test below drives the SAME createSnapshotRowsReader the wiring
-// uses; with the default bdListAllBeadsWithClosed in its place every render
-// would spawn `bd list --all` and the injected fetcher's call count (asserted
-// to stay at 1) would not be the only listing source.
+// The dashboard and backlog are built through bin/serve.mjs's exported
+// createBeadsBackedViews() -- the very function serveMain calls -- not rebuilt
+// here. Reverting either injection inside it (`listAllBeads: dashboardRows` or
+// `listAllBeads: backlogRows`) to the seam default (dashboard.mjs
+// bdListAllBeadsWithClosed / backlog.mjs bdListAllBeadsRaw) makes the "wiring
+// reads the cache" test below fail: the view-only bead id never reaches the
+// render and the view's snapshot() is never consulted.
 
 import { describe, test, beforeEach, afterEach, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -18,9 +19,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { createBeadsView, createSnapshotRowsReader } from '../src/supervisor/beads-view.mjs';
-import { createDashboard, registerDashboardRoutes } from '../src/supervisor/dashboard.mjs';
+import { createBeadsView } from '../src/supervisor/beads-view.mjs';
+import { registerDashboardRoutes } from '../src/supervisor/dashboard.mjs';
 import { createBacklog } from '../src/supervisor/backlog.mjs';
+import { createBeadsBackedViews } from '../bin/serve.mjs';
 import { createLedger } from '../src/supervisor/ledger.mjs';
 import { clearLastSyncedTip, clearTipProbeFailures, invalidateSyncRemoteCache } from '../fleet-sprint/dolt-sync.mjs';
 
@@ -76,10 +78,14 @@ async function setup({ rows = ALL_ROWS, backlogMember, viewOpts = {} } = {}) {
         ...viewOpts,
     });
     const watchdog = { classifySprint: async () => ({ status: 'running' }) };
-    const backlog = createBacklog({ ledger, watchdog, listAllBeads: createSnapshotRowsReader(view, { openOnly: true, emptyWhenNoRows: true }) });
-    const dashboard = createDashboard({
-        ledger, watchdog, backlog, beadsView: view,
-        listAllBeads: createSnapshotRowsReader(view),
+    const probe = { snapshots: 0, refreshChecks: 0 };
+    const countingView = {
+        ...view,
+        snapshot: () => { probe.snapshots += 1; return view.snapshot(); },
+        refreshIfStale: (...a) => { probe.refreshChecks += 1; return view.refreshIfStale(...a); },
+    };
+    const { backlog, dashboard } = createBeadsBackedViews({
+        ledger, watchdog, beadsView: countingView,
         resolvePort: () => undefined,
         driftCheck: () => null,
         logger: QUIET,
@@ -91,10 +97,22 @@ async function setup({ rows = ALL_ROWS, backlogMember, viewOpts = {} } = {}) {
         await routes[`GET ${p}`]({}, res);
         return { status: res.head.s, text: res.body.toString('utf-8') };
     }
-    return { ledger, mem, list, clock, view, dashboard, backlog, get };
+    return { ledger, mem, list, clock, view, probe, dashboard, backlog, get };
 }
 
 describe('dashboard serves the cached beads view: no bulk fetch per render', () => {
+    test('serve.mjs wiring reads the cache: view-only rows reach /state and the backlog tree, via snapshot()', async () => {
+        const t = await setup({ rows: [bead('VIEW-ONLY-1'), bead('VIEW-ONLY-2', 'closed')] });
+        await t.view.refresh();
+        const before = t.probe.snapshots;
+        const page = await t.get('/');
+        assert.equal(page.status, 200);
+        assert.ok(t.probe.snapshots > before, 'dashboard render consulted the view snapshot');
+        assert.ok(t.probe.refreshChecks > 0, 'stale refresh kicked through the view');
+        assert.match(page.text, /VIEW-ONLY-1/, 'backlog rows came from the cache, not a default bd fetch');
+        assert.doesNotMatch(page.text, /VIEW-ONLY-2/, 'closed bead excluded from the backlog');
+    });
+
     test('10 GET /state renders inside the stale window cause 0 listAllBeads / pull calls beyond the view\'s own refresh', async () => {
         const t = await setup();
         await t.view.refresh();
