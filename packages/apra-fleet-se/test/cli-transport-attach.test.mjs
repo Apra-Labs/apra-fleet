@@ -26,9 +26,11 @@ describe('cli.mjs no longer constructs a StdioTransport (apra-fleet-eft.7.1)', (
         assert.doesNotMatch(cliSource, /new\s+StdioTransport\s*\(/);
     });
 
-    test('the module imports StreamableHttpTransport and attaches over HTTP', () => {
-        assert.match(cliSource, /import\s*\{[^}]*\bStreamableHttpTransport\b[^}]*\}\s*from\s*['"]@apralabs\/apra-fleet-client\/transport['"]/);
-        assert.match(cliSource, /new\s+StreamableHttpTransport\s*\(/);
+    // GitHub #585 recovery: the HTTP attach goes through the reconnecting
+    // transport, so a server that dies mid-run is re-probed/auto-started.
+    test('the module attaches over HTTP through the shared reconnecting transport', () => {
+        assert.match(cliSource, /import\s*\{[^}]*\bcreateFleetHttpTransport\b[^}]*\}\s*from\s*['"]@apralabs\/apra-fleet-client\/server-resolution['"]/);
+        assert.match(cliSource, /createFleetHttpTransport\s*\(\s*connection\b/);
     });
 
     test("main()'s precondition block resolves the connection and rejects non-http modes before touching any transport", () => {
@@ -48,18 +50,34 @@ describe('resolveFleetServerConnection (cli.mjs re-export)', () => {
         assert.match(result.reason, /attached to HTTP singleton/);
     });
 
-    test('reports a non-http mode (never a silent private server) when no singleton is reachable and no override is set', async () => {
+    // GitHub #585 recovery: a GONE singleton is started (shared, user-level)
+    // and attached over HTTP -- never a private stdio server.
+    test('gone singleton + no override -> the shared HTTP server is started and attached (never a private stdio server)', async () => {
+        let autoStarts = 0;
         const result = await resolveFleetServerConnection({
             env: {},
             dirname: 'anywhere',
             exists: (candidate) => candidate === path.join('anywhere', 'index.js'),
-            checkRunningInstance: async () => ({ running: false }),
+            checkRunningInstance: async () => ({ running: false, state: 'gone' }),
+            autoStartFleetServer: async () => { autoStarts++; return { running: true, url: 'http://127.0.0.1:9451/mcp', pid: 77, started: true }; },
         });
-        // The shared resolver's own fallback tier still returns a *descriptor*
-        // here (mode 'stdio') -- it is main()'s job (asserted above via source
-        // inspection) to treat any non-'http' mode as a hard failure rather
-        // than ever constructing a transport from it.
-        assert.notStrictEqual(result.mode, 'http');
+        assert.strictEqual(autoStarts, 1);
+        assert.strictEqual(result.mode, 'http');
+        assert.strictEqual(result.url, 'http://127.0.0.1:9451/mcp');
+        assert.match(result.reason, /started it and attached/);
+    });
+
+    test('gone singleton + auto-start failure -> the error propagates (no stdio fallback)', async () => {
+        await assert.rejects(
+            () => resolveFleetServerConnection({
+                env: {},
+                dirname: 'anywhere',
+                exists: () => true,
+                checkRunningInstance: async () => ({ running: false, state: 'gone' }),
+                autoStartFleetServer: async () => { throw new Error('auto-start limit reached; see fleet-1.log'); },
+            }),
+            /auto-start limit reached/,
+        );
     });
 
     test('APRA_FLEET_TRANSPORT=http with no reachable singleton throws an explicit, actionable error (no silent stdio fallback)', async () => {

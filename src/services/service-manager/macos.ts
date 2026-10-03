@@ -5,6 +5,7 @@ import os from 'node:os';
 import type { ServiceManager, ServiceStatus } from './types.js';
 import { MACOS_PLIST_LABEL, SERVICE_ENV_MARKER } from './types.js';
 import { gracefulStopByServerJson } from './index.js';
+import { clearServiceStartFailures } from '../service-start-guard.js';
 
 const PLIST_DIR = path.join(os.homedir(), 'Library', 'LaunchAgents');
 const PLIST_PATH = path.join(PLIST_DIR, `${MACOS_PLIST_LABEL}.plist`);
@@ -90,6 +91,8 @@ export class MacOSServiceManager implements ServiceManager {
   }
 
   async start(): Promise<void> {
+    // An explicit start is never skipped by the failed-start backoff.
+    clearServiceStartFailures();
     execFileSync('launchctl', ['kickstart', `${domain()}/${MACOS_PLIST_LABEL}`]);
   }
 

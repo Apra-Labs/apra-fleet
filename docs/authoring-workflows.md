@@ -111,15 +111,16 @@ resolution order the launcher itself performs before your entry runs
 (`docs/adr-workflow-server-resolution.md`, binding on `src/cli/workflow.ts`):
 
 1. **Forced-transport override** -- `APRA_FLEET_TRANSPORT=stdio` skips
-   straight to stdio self-spawn; `APRA_FLEET_TRANSPORT=http` requires a
+   straight to a private stdio server; `APRA_FLEET_TRANSPORT=http` requires a
    healthy HTTP singleton or fails loudly (no silent stdio fallback).
 2. **HTTP singleton probe (the default)** -- attach to the already-running
    `apra-fleet` OS-service singleton (`checkRunningInstance()` against
    `~/.apra-fleet/data/server.json`, a pid-alive check plus a `/health`
    GET) via `StreamableHttpTransport`. Nothing is spawned.
-3. **stdio self-spawn fallback** -- only if no healthy HTTP singleton was
-   found, spawn a private server using `APRA_FLEET_SERVER_BIN`/`_CMD` (or
-   the bundled/dev-layout fallback), then connect with `StdioTransport`.
+3. **Start the shared HTTP server** -- if the singleton is verifiably gone,
+   run `apra-fleet start` (detached; waits for `/health`) and attach over
+   HTTP. A private stdio server is only used for the explicit stdio path
+   (`APRA_FLEET_TRANSPORT=stdio` or `APRA_FLEET_SERVER_CMD`/`_BIN`).
 
 This logic lives in exactly one place -- `@apralabs/apra-fleet-client`'s
 `server-resolution` subpath export -- and both `apra-fleet workflow` and

@@ -19,15 +19,45 @@ export function launchedByServiceManager(env: Record<string, string | undefined>
     || env.XPC_SERVICE_NAME === MACOS_PLIST_LABEL;
 }
 
+/** Env var set by a client auto-start on the `apra-fleet start` it spawns (cli/start.ts). */
+export const AUTOSTART_ENV_MARKER = 'APRA_FLEET_AUTOSTART';
+
+export interface LaunchMarkers {
+  /** APRA_FLEET_SERVICE=1: launched by one of OUR service templates (task wrapper, plist, unit). */
+  service: boolean;
+  /** Any service-manager hint, including systemd/launchd vars that also leak to hand-run shells. */
+  managed: boolean;
+}
+
+/**
+ * Read the launch markers ONCE at server start and remove ours from the
+ * environment, so nothing the server spawns (local agents, execute_command,
+ * a later `apra-fleet start`) inherits APRA_FLEET_SERVICE / APRA_FLEET_AUTOSTART
+ * and is mistaken for a service or auto-start launch. INVOCATION_ID and
+ * XPC_SERVICE_NAME are not ours to remove.
+ */
+export function consumeLaunchMarkers(env: Record<string, string | undefined> = process.env): LaunchMarkers {
+  const markers = { service: env[SERVICE_ENV_MARKER] === '1', managed: launchedByServiceManager(env) };
+  delete env[SERVICE_ENV_MARKER];
+  delete env[AUTOSTART_ENV_MARKER];
+  return markers;
+}
+
 export interface ServiceStatus {
   installed: boolean;
   running: boolean;
   pid?: number;
   enabled?: boolean;
+  /** Extra human-readable state for apra-fleet status (e.g. why it is disabled). */
+  detail?: string;
 }
 
-/** 'reused': the platform kept an existing registration it could not recreate (Windows). */
-export type RegisterResult = 'created' | 'reused';
+/**
+ * 'reused': the platform kept an existing registration it could not recreate (Windows).
+ * 'run-key': last-resort Windows fallback -- a per-user HKCU Run entry (logon
+ * autostart only, nothing restarts a server that dies mid-session).
+ */
+export type RegisterResult = 'created' | 'reused' | 'run-key';
 
 export interface ServiceManager {
   register(binaryPath: string, args: string[], logPath: string): Promise<RegisterResult | void>;

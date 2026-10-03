@@ -4,6 +4,14 @@ import { checkRunningInstance, describePreviousServer } from '../services/single
 import { getServiceManager } from '../services/service-manager/index.js';
 import type { ServiceStatus } from '../services/service-manager/types.js';
 import { SERVER_INFO_PATH } from '../paths.js';
+import { readStoppedMarker, describeStoppedMarker } from '../services/stopped-marker.js';
+import { serverVersion } from '../version.js';
+
+function versionCore(v: string | undefined): string | null {
+  // Capped like the client's versionCore: v comes from a server's /health reply.
+  const m = /(\d{1,9}\.\d{1,9}\.\d{1,9})/.exec((v ?? '').slice(0, 64));
+  return m ? m[1] : null;
+}
 
 interface HealthResponse {
   version?: string;
@@ -50,6 +58,13 @@ function readServerInfo(): { pid?: number; port?: number; url?: string } {
   }
 }
 
+/** "installed (enabled)", "installed (disabled -- stopped by user ...)", "not installed". */
+export function formatServiceLabel(svcStatus: ServiceStatus): string {
+  if (!svcStatus.installed) return 'not installed';
+  const state = svcStatus.enabled ? 'enabled' : 'disabled';
+  return svcStatus.detail ? `installed (${state} -- ${svcStatus.detail})` : `installed (${state})`;
+}
+
 export async function runStatus(_args: string[]): Promise<void> {
   const instance = await checkRunningInstance();
   // GitHub #585: a stale server.json means the previous server died uncleanly.
@@ -58,14 +73,7 @@ export async function runStatus(_args: string[]): Promise<void> {
   const svcMgr = await getServiceManager();
   const svcStatus: ServiceStatus = await svcMgr.query().catch(() => ({ installed: false, running: false }));
 
-  let serviceLabel: string;
-  if (!svcStatus.installed) {
-    serviceLabel = 'not installed';
-  } else if (svcStatus.enabled) {
-    serviceLabel = 'installed (enabled)';
-  } else {
-    serviceLabel = 'installed (disabled)';
-  }
+  const serviceLabel = formatServiceLabel(svcStatus);
 
   if (instance.state === 'unresponsive') {
     console.log('apra-fleet status');
@@ -79,8 +87,9 @@ export async function runStatus(_args: string[]): Promise<void> {
   }
 
   if (!instance.running) {
+    const marker = readStoppedMarker();
     console.log('apra-fleet status');
-    console.log(`  State:    stopped`);
+    console.log(`  State:    ${marker ? `stopped (${describeStoppedMarker(marker)})` : 'stopped'}`);
     console.log(`  Service:  ${serviceLabel}`);
     return;
   }
@@ -88,8 +97,11 @@ export async function runStatus(_args: string[]): Promise<void> {
   const info = readServerInfo();
   const health = await getHealth(instance.url);
 
+  const marker = readStoppedMarker();
   console.log('apra-fleet status');
-  console.log(`  State:    running`);
+  // A server running while the stop marker exists (e.g. a manual run): clients
+  // will not auto-start it again if it dies until `apra-fleet start`.
+  console.log(`  State:    running${marker ? " (stop marker set -- run 'apra-fleet start' to clear)" : ''}`);
   if (info.pid) console.log(`  PID:      ${info.pid}`);
   if (info.port) console.log(`  Port:     ${info.port}`);
   console.log(`  URL:      ${instance.url}`);
@@ -97,4 +109,9 @@ export async function runStatus(_args: string[]): Promise<void> {
   if (health?.uptime !== undefined) console.log(`  Uptime:   ${formatUptime(health.uptime)}`);
   if (health?.sessions !== undefined) console.log(`  Sessions: ${health.sessions}`);
   console.log(`  Service:  ${serviceLabel}`);
+  const runningCore = versionCore(health?.version);
+  const ownCore = versionCore(serverVersion);
+  if (runningCore && ownCore && runningCore !== ownCore) {
+    console.log(`  Warning:  the running server is ${health!.version} but this apra-fleet is ${serverVersion} -- stop it ('apra-fleet stop'), then run 'apra-fleet install' and 'apra-fleet start'.`);
+  }
 }
