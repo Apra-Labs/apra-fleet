@@ -16,6 +16,28 @@ folder; an unregistered uuid gets 403).
 | OpenCode | `<workFolder>/opencode.json`, which is added to `.git/info/exclude` so it never dirties the checkout |
 | agy | no entry (no per-project MCP support); the member is reported `unverified` and gets the injected KB block instead |
 
+### Role agents must grant the member tools
+
+Sprint roles are dispatched as `claude --agent <role>` (execute_prompt `agent`).
+A role file's `tools:` frontmatter is an allowlist for that whole session, so
+a list without `mcp__` entries hides the member's `kb_*` / `code_*` tools even
+though the entry above is connected (a plain `claude -p` in the folder sees
+them; the role session does not). The Claude transform
+(`transformAgentForClaude`, used by `apra-fleet install` and by member
+provisioning) appends every member `kb_*` / `code_*` tool as an exact
+`mcp__apra-fleet__<tool>` name to each restrictive list. Exact names, not the
+server-level `mcp__apra-fleet` pattern: a role run as a local subagent of an
+orchestrator session talks to the full fleet server and must still reach only
+`kb_*` / `code_*`. On a member the server serves only the member allowlist and
+the deny rules still apply. agy and opencode transforms are unchanged (no
+per-tool MCP allowlist there); codex has no role files.
+
+The fleetMcp probe checks this path: for a claude member it re-provisions stale
+remote role files (as execute_prompt does once per server run) and requires
+the member's copies to match the canonical set; for a local member it reads
+the installed role files in the orchestrator's home. A failure is
+`role-agents-hide-member-tools`.
+
 Deny rules for Claude and agy are derived from the complement of the shared
 member allowlist (`MEMBER_DENIED_TOOLS`), so the allowlist stays the single
 source of truth. Legacy `apra-fleet-member` entries and `{disabled:true}`

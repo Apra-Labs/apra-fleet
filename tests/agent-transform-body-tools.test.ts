@@ -179,7 +179,10 @@ describe('the Claude path is not regressed by the conditional mechanism', () => 
     '%s keeps its if-branch prose byte-for-byte, markers aside',
     (_role, content) => {
       const output = transformAgentForClaude(content, 'role.md');
-      expect(output).toBe(claudeExpectation(content));
+      // The only frontmatter change is the tools allowlist gaining the member
+      // MCP grants (role-agent-member-tools.test.ts covers that line).
+      const withoutTools = (t: string) => t.replace(/^tools:.*$/m, 'tools: <list>');
+      expect(withoutTools(output)).toBe(withoutTools(claudeExpectation(content)));
     }
   );
 

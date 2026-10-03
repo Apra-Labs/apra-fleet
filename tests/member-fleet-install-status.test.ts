@@ -150,6 +150,40 @@ describe('remote member: install, self-register, verify MEMBER session', () => {
     expect(world.execLog.some(c => c.includes(`'call' '--member' '${agent.id}' '--list-tools'`))).toBe(true);
   });
 
+  // The member session listing the tools does not prove a dispatched role sees
+  // them: roles run as `claude --agent <role>`, whose tools list filters the
+  // session. The probe checks that path last and reports it loudly.
+  it('role files that filter out the member tools -> unavailable(role-agents-hide-member-tools), version kept', async () => {
+    const agent = remoteClaude();
+    const world = newWorld();
+    world.claudeJson = entryFor(agent);
+    const checked: string[] = [];
+    const s = await probeMemberFleetMcp(agent, {
+      ...deps(world),
+      roleAgents: async a => { checked.push(a.id); return { ok: false, detail: 'member role files differ from the canonical set: doer.md' }; },
+    });
+    expect(s).toMatchObject({ state: 'unavailable', reason: 'role-agents-hide-member-tools', version: VERSION });
+    expect(s.detail).toContain('doer.md');
+    expect(checked).toEqual([agent.id]);
+  });
+
+  it('role files that grant the member tools -> available', async () => {
+    const agent = remoteClaude();
+    const world = newWorld();
+    world.claudeJson = entryFor(agent);
+    const s = await probeMemberFleetMcp(agent, { ...deps(world), roleAgents: async () => ({ ok: true }) });
+    expect(s).toMatchObject({ state: 'available', version: VERSION });
+  });
+
+  it('the role check runs only once the member session is verified (not on an earlier failure)', async () => {
+    const agent = remoteClaude();
+    const world = newWorld({ claudeJson: { projects: {} } });
+    let called = false;
+    const s = await probeMemberFleetMcp(agent, { ...deps(world), roleAgents: async () => { called = true; return { ok: true }; } });
+    expect(s).toMatchObject({ state: 'unavailable', reason: 'mcp-entry-missing' });
+    expect(called).toBe(false);
+  });
+
   it('a session that lists no kb_*/code_* tools is unavailable(member-tools-missing)', async () => {
     const agent = remoteClaude();
     const world = newWorld({ listTools: ['version', 'report_status'] });

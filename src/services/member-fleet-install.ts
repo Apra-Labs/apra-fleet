@@ -751,6 +751,10 @@ export type FleetMcpUnavailableReason =
   /** The per-folder apra-fleet MCP entry compose_permissions writes is absent
    *  or does not point at ?member=<uuid>. */
   | 'mcp-entry-missing'
+  /** claude: the role files a `--agent <role>` dispatch loads have a tools
+   *  allowlist without the member kb_* / code_* tools, so dispatched roles
+   *  never see them even though the member session lists them. */
+  | 'role-agents-hide-member-tools'
   /** agy has no per-project MCP config fleet can point at the member session. */
   | 'no-per-project-mcp'
   /** The member's LLM provider has no MCP entry fleet configures. */
@@ -794,6 +798,7 @@ export const FLEET_MCP_FIX: Record<FleetMcpUnavailableReason | FleetMcpProviderR
   'E-FOLDER-TAKEN': 'The member install has this work folder registered under another id; unregister it there, then member_detail with refresh:true.',
   'register-failed': 'Run update_member {member_id, fleet_install: "auto"} to upgrade apra-fleet on the member and re-register it (read fleetMcp detail for the error), then member_detail with refresh:true.',
   'mcp-entry-missing': 'Re-run compose_permissions for the member so its per-folder apra-fleet MCP entry points at ?member=<uuid>, then member_detail with refresh:true.',
+  'role-agents-hide-member-tools': 'Remote member: run update_member for it (re-provisions its role agent files); local member: re-run apra-fleet install on the orchestrator so ~/.claude/agents grants the kb_*/code_* tools. Then member_detail with refresh:true.',
   'no-per-project-mcp': 'agy has no per-project MCP config; its roles get injected knowledge only. Use another provider for KB/code tools.',
   'provider-unsupported': 'This LLM provider has no MCP entry fleet configures; its roles get injected knowledge only.',
   'member-config-unreadable': 'Fix permissions on the member config file named in the detail, then re-run compose_permissions.',
@@ -838,6 +843,9 @@ export interface MemberFleetMcpDeps extends MemberFleetInstallDeps {
   now(): Date;
   /** Persist the observation on the member registry entry. */
   record(memberId: string, status: FleetMcpStatus): void;
+  /** Do the role files a `claude --agent <role>` dispatch loads grant the
+   *  member kb_* / code_* tools? Optional: absent means not checked. */
+  roleAgents?(agent: Agent): Promise<{ ok: true } | { ok: false; detail: string }>;
 }
 
 
@@ -862,6 +870,10 @@ export function defaultMemberFleetMcpDeps(): MemberFleetMcpDeps {
     },
     now: () => new Date(),
     record: (memberId, status) => { recordFleetMcpStatus(memberId, status); },
+    roleAgents: async (agent: Agent) => {
+      const m = await import('./agent-provisioner.js');
+      return m.checkRoleAgentMemberTools(agent);
+    },
   };
 }
 
@@ -1146,8 +1158,20 @@ async function probeMemberFleetMcpInner(
       return unavailable('provider-unsupported', `fleet writes no per-folder apra-fleet MCP entry for provider "${provider}"`, { unverified: true });
     }
 
-    if (agent.agentType === 'local') return await probeLocal(agent, deps, unavailable, checkedAt);
-    return await probeRemote(agent, deps, opts.install !== false, unavailable, checkedAt, opts.forceInstall === true, ctx);
+    const status = agent.agentType === 'local'
+      ? await probeLocal(agent, deps, unavailable, checkedAt)
+      : await probeRemote(agent, deps, opts.install !== false, unavailable, checkedAt, opts.forceInstall === true, ctx);
+    // The member session listing kb_*/code_* proves the server, not what a
+    // dispatched role sees: roles run as `claude --agent <role>`, whose tools
+    // list filters the session. Verify that path too.
+    if (status.state === 'available' && provider === 'claude' && deps.roleAgents) {
+      const roles = await deps.roleAgents(agent);
+      if (!roles.ok) {
+        const { state: _s, checkedAt: _c, detail: prior, ...keep } = status;
+        return unavailable('role-agents-hide-member-tools', prior ? `${roles.detail}. Also: ${prior}` : roles.detail, keep);
+      }
+    }
+    return status;
   } catch (err: unknown) {
     return unavailable('probe-failed', `probe threw: ${err instanceof Error ? err.message : String(err)}`);
   }
