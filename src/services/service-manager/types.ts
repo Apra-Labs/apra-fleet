@@ -19,6 +19,30 @@ export function launchedByServiceManager(env: Record<string, string | undefined>
     || env.XPC_SERVICE_NAME === MACOS_PLIST_LABEL;
 }
 
+/** Env var set by a client auto-start on the `apra-fleet start` it spawns (cli/start.ts). */
+export const AUTOSTART_ENV_MARKER = 'APRA_FLEET_AUTOSTART';
+
+export interface LaunchMarkers {
+  /** APRA_FLEET_SERVICE=1: launched by one of OUR service templates (task wrapper, plist, unit). */
+  service: boolean;
+  /** Any service-manager hint, including systemd/launchd vars that also leak to hand-run shells. */
+  managed: boolean;
+}
+
+/**
+ * Read the launch markers ONCE at server start and remove ours from the
+ * environment, so nothing the server spawns (local agents, execute_command,
+ * a later `apra-fleet start`) inherits APRA_FLEET_SERVICE / APRA_FLEET_AUTOSTART
+ * and is mistaken for a service or auto-start launch. INVOCATION_ID and
+ * XPC_SERVICE_NAME are not ours to remove.
+ */
+export function consumeLaunchMarkers(env: Record<string, string | undefined> = process.env): LaunchMarkers {
+  const markers = { service: env[SERVICE_ENV_MARKER] === '1', managed: launchedByServiceManager(env) };
+  delete env[SERVICE_ENV_MARKER];
+  delete env[AUTOSTART_ENV_MARKER];
+  return markers;
+}
+
 export interface ServiceStatus {
   installed: boolean;
   running: boolean;

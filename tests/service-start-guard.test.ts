@@ -9,6 +9,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import net from 'node:net';
+import { consumeLaunchMarkers } from '../src/services/service-manager/types.js';
 import {
   serviceStartBackoff, recordServiceStartAttempt, clearServiceStartFailures, shouldLogServiceNotice,
   MAX_CONSECUTIVE_FAILURES, BACKOFF_MS,
@@ -125,7 +127,7 @@ describe('built server: service launch after apra-fleet stop', () => {
   });
   afterEach(() => { fs.rmSync(dataDir, { recursive: true, force: true }); });
 
-  for (const marker of [{ APRA_FLEET_SERVICE: '1' }, { INVOCATION_ID: 'abc123' }]) {
+  for (const marker of [{ APRA_FLEET_SERVICE: '1' }]) {
     it(`${Object.keys(marker)[0]} launch: exit 0, one notice, marker kept, no server`, async () => {
       const { code, stdout } = await runServer({ APRA_FLEET_DATA_DIR: dataDir, APRA_FLEET_PORT: '1', ...marker });
       expect(code).toBe(0);
@@ -134,4 +136,61 @@ describe('built server: service launch after apra-fleet stop', () => {
       expect(fs.existsSync(path.join(dataDir, 'server.json'))).toBe(false);
     }, 40_000);
   }
+
+  // INVOCATION_ID / XPC_SERVICE_NAME leak into hand-run shells (systemd-run
+  // --shell, tmux under a user unit): a hand-run `apra-fleet run` there must
+  // START, not exit 0 silently.
+  for (const leaked of [{ INVOCATION_ID: 'abc123' }, { XPC_SERVICE_NAME: 'com.example.term' }]) {
+    it(`hand-run with only ${Object.keys(leaked)[0]} set starts the server despite the marker (marker kept)`, async () => {
+      const port = await freePort();
+      const { ready, stdout } = await runServerUntilReady({
+        APRA_FLEET_DATA_DIR: dataDir, APRA_FLEET_PORT: String(port), HOME: dataDir, USERPROFILE: dataDir, ...leaked,
+      }, path.join(dataDir, 'server.json'));
+      expect(stdout).not.toMatch(/service launch skipped/);
+      expect(ready).toBe(true);
+      expect(fs.existsSync(path.join(dataDir, 'stopped-by-user.json'))).toBe(true);
+    }, 60_000);
+  }
+});
+
+function freePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const srv = net.createServer();
+    srv.once('error', reject);
+    srv.listen(0, '127.0.0.1', () => {
+      const { port } = srv.address() as net.AddressInfo;
+      srv.close(() => resolve(port));
+    });
+  });
+}
+
+function runServerUntilReady(env: Record<string, string>, readyFile: string): Promise<{ ready: boolean; stdout: string }> {
+  const base = { ...process.env };
+  delete base.APRA_FLEET_SERVICE;
+  delete base.INVOCATION_ID;
+  delete base.XPC_SERVICE_NAME;
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [DIST_INDEX, 'run'], {
+      env: { ...base, ...env }, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
+    });
+    let stdout = '';
+    let ready = false;
+    child.stdout!.on('data', (d) => { stdout += d; });
+    const started = Date.now();
+    const poll = setInterval(() => {
+      if (fs.existsSync(readyFile)) ready = true;
+      if (ready || Date.now() - started > 40_000) { clearInterval(poll); child.kill('SIGKILL'); }
+    }, 200);
+    child.once('exit', () => { clearInterval(poll); resolve({ ready, stdout }); });
+  });
+}
+
+describe('consumeLaunchMarkers', () => {
+  it('reports our marker strictly, any service-manager hint loosely, and strips ours so children never inherit them', () => {
+    const env: Record<string, string | undefined> = { APRA_FLEET_SERVICE: '1', APRA_FLEET_AUTOSTART: '1', INVOCATION_ID: 'x', OTHER: 'y' };
+    expect(consumeLaunchMarkers(env)).toEqual({ service: true, managed: true });
+    expect(env).toEqual({ INVOCATION_ID: 'x', OTHER: 'y' });
+    expect(consumeLaunchMarkers({ INVOCATION_ID: 'x' })).toEqual({ service: false, managed: true });
+    expect(consumeLaunchMarkers({})).toEqual({ service: false, managed: false });
+  });
 });

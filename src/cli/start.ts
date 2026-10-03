@@ -47,7 +47,12 @@ function directSpawn(): void {
   }
   fs.mkdirSync(FLEET_DIR, { recursive: true });
   const logFd = fs.openSync(LOG_FILE_PATH, 'a');
+  // Never hand launch markers to the long-running server.
+  const env = { ...process.env };
+  delete env.APRA_FLEET_AUTOSTART;
+  delete env.APRA_FLEET_SERVICE;
   const child = spawn(cmd, spawnArgs, {
+    env,
     detached: true,
     stdio: ['ignore', logFd, logFd],
   });
@@ -60,7 +65,12 @@ export async function runStart(_args: string[]): Promise<void> {
   // An explicit start ends a user stop: clients may auto-start again. A start
   // launched BY a client auto-start (APRA_FLEET_AUTOSTART=1) must never erase
   // a stop that raced it -- it refuses instead.
-  if (process.env.APRA_FLEET_AUTOSTART === '1') {
+  // Read the auto-start flag once and drop it, so the server spawned below
+  // (and everything it spawns) never inherits it -- a later `apra-fleet start`
+  // from one of those processes must clear a stop normally.
+  const autoStarted = process.env.APRA_FLEET_AUTOSTART === '1';
+  delete process.env.APRA_FLEET_AUTOSTART;
+  if (autoStarted) {
     const stopped = readStoppedMarker();
     if (stopped) {
       console.error(`apra-fleet was stopped by the user at ${stopped.stoppedAt} via '${stopped.by}'; not auto-starting it. Run 'apra-fleet start'.`);

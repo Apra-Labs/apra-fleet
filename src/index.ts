@@ -247,9 +247,19 @@ Usage:
  * exits 0, like the already-running case. Every other launch (terminal, CI,
  * nohup, containers, scripts) exits 1 so the refusal stays visible.
  */
+// Captured once by startHttpServer (which also strips our markers from the
+// env so children never inherit them). Still "any service-manager hint":
+// installs predating the APRA_FLEET_SERVICE marker rely on systemd/launchd
+// vars, and for a refusal the only cost of a false positive (a hand-run shell
+// under systemd) is exit code 0 instead of 1 -- the refusal is still printed.
+let serviceManagedLaunch: boolean | null = null;
+
 async function refusalExitCode(): Promise<number> {
-  const { launchedByServiceManager } = await import('./services/service-manager/types.js');
-  return launchedByServiceManager() ? 0 : 1;
+  if (serviceManagedLaunch === null) {
+    const { launchedByServiceManager } = await import('./services/service-manager/types.js');
+    serviceManagedLaunch = launchedByServiceManager();
+  }
+  return serviceManagedLaunch ? 0 : 1;
 }
 
 function resolveTransport(args: string[]): 'http' | 'stdio' | 'invalid' {
@@ -359,8 +369,15 @@ async function startHttpServer() {
   // GitHub #585 recovery: a service launch (logon, the Windows task's repeating
   // revive trigger) that keeps failing backs off instead of retrying -- and
   // writing a new fleet-<pid>.log -- every interval. See service-start-guard.ts.
-  const { launchedByServiceManager } = await import('./services/service-manager/types.js');
-  const startGuard = launchedByServiceManager() ? await import('./services/service-start-guard.js') : null;
+  const { consumeLaunchMarkers } = await import('./services/service-manager/types.js');
+  const launch = consumeLaunchMarkers();
+  serviceManagedLaunch = launch.managed;
+  // The stopped-by-user skip and the start backoff decide whether to start at
+  // all, so they apply ONLY to our own service templates (APRA_FLEET_SERVICE=1,
+  // set by the task wrapper, the plist and the unit) -- never to a hand-run
+  // `apra-fleet run` in a shell that merely inherited INVOCATION_ID or
+  // XPC_SERVICE_NAME (systemd-run --shell, tmux from a user unit, CI runners).
+  const startGuard = launch.service ? await import('./services/service-start-guard.js') : null;
   if (startGuard) {
     // A deliberate `apra-fleet stop` must stick across logon/boot on every OS:
     // launchd RunAtLoad, an enabled systemd unit, the Windows HKCU Run
@@ -370,9 +387,9 @@ async function startHttpServer() {
     const { readStoppedMarker, describeStoppedMarker } = await import('./services/stopped-marker.js');
     const stopped = readStoppedMarker();
     if (stopped) {
-      if (startGuard.shouldLogServiceNotice('stopped-by-user')) {
-        console.log(`${new Date().toISOString()} apra-fleet service launch skipped: ${describeStoppedMarker(stopped)}`);
-      }
+      const line = `${new Date().toISOString()} apra-fleet service launch skipped: ${describeStoppedMarker(stopped)}`;
+      if (process.stdout.isTTY) console.error(line); // someone is watching: always say why
+      else if (startGuard.shouldLogServiceNotice('stopped-by-user')) console.log(line);
       process.exit(0);
     }
     const skip = startGuard.serviceStartBackoff();
