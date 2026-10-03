@@ -266,6 +266,7 @@ export function buildCommentCommand(params) {
 //   TRANSIENT              | true      | network / server / lock blip             | retry, bounded
 //   NO_REMOTE              | false     | no remote configured; nothing to sync    | none; benign no-op
 //   UNSUPPORTED_OPERATION  | false     | action not implemented for this provider | fix the call/config
+//   MISSING_TOOL           | false     | the binary is not installed / not on PATH| install it / fix PATH
 //   UNKNOWN                | false     | unrecognized -- must surface, not guess  | operator triage
 //
 // `retryable` is true ONLY for TRANSIENT, and means "safe to re-run the same
@@ -296,6 +297,65 @@ export function buildCommentCommand(params) {
 // possibly help" apart from every other AUTH_DENIED, WITHOUT re-reading
 // stderr at the call site.
 
+// MISSING TOOL (GitHub #616). Provider-agnostic shell/spawn wording for "the
+// binary does not exist on this member", checked BEFORE the permission-scope
+// rules and every provider rule: it is a property of the member's
+// environment, not of any VCS host, and no provider text can outrank it (a
+// shell that cannot find `bd` never reached the remote at all). Each rule
+// captures the binary name where the wording carries one, so the caller can
+// name it. Windows (PowerShell, cmd.exe) and POSIX (bash, dash/sh) wordings
+// are all covered, plus exit code 127 and Node's spawn ENOENT.
+const MISSING_TOOL_RULES = Object.freeze([
+    // PowerShell: "bd : The term 'bd' is not recognized as the name of a cmdlet, function, ..."
+    /The term '([^']+)' is not recognized as the name of a cmdlet/i,
+    /is not recognized as (?:the )?name of a cmdlet/i,
+    // cmd.exe: "'bd' is not recognized as an internal or external command,"
+    /'([^']+)' is not recognized as an internal or external command/i,
+    /is not recognized as an internal or external command/i,
+    // bash/zsh: "bash: bd: command not found", "bash: line 1: bd: command not found", "zsh: command not found: bd"
+    // (zsh's "command not found: X" first, so its "zsh:" prefix is not read as the tool)
+    /command not found: ([^\s'"]+)/i,
+    /([^\s:'"]+): command not found/i,
+    // dash/sh: "sh: 1: bd: not found"
+    /(?:^|\n|\s)(?:\/bin\/)?(?:sh|dash|bash): (?:line )?\d+: ([^\s:'"]+): not found/i,
+    // Node child_process: "spawn bd ENOENT"
+    /spawn ([^\s'"]+) ENOENT/,
+    // The shell's own "not found" exit status, as the fleet transport reports it.
+    /\bexit (?:code|status) 127\b/i,
+]);
+
+/**
+ * Detects a missing-binary failure. Returns `{ tool }` (tool = the binary name
+ * when the wording names one, else null) or null when the text is not a
+ * missing-tool failure.
+ * @param {string} raw
+ * @param {number|null|undefined} exitCode
+ * @returns {{ tool: string|null }|null}
+ */
+function detectMissingTool(raw, exitCode) {
+    let matched = exitCode === 127;
+    let tool = null;
+    for (const re of MISSING_TOOL_RULES) {
+        const m = re.exec(raw);
+        if (!m) continue;
+        matched = true;
+        if (m[1]) { tool = m[1]; break; }
+    }
+    return matched ? { tool } : null;
+}
+
+/**
+ * The binary a command string invokes (its first whitespace-separated token,
+ * quotes stripped) -- the fallback name for a MISSING_TOOL failure whose
+ * wording names no binary (e.g. a bare exit code 127).
+ * @param {string} cmd
+ * @returns {string}
+ */
+export function commandBinary(cmd) {
+    const first = String(cmd || '').trim().split(/\s+/)[0] || '';
+    return first.replace(/^["']|["']$/g, '') || '(unknown command)';
+}
+
 const KIND_PRECEDENCE = Object.freeze([
     VCS_FAILURE_KINDS.DIVERGED,
     VCS_FAILURE_KINDS.AUTH_EXPIRED,
@@ -322,10 +382,11 @@ const KIND_PRECEDENCE = Object.freeze([
  * self-healed, so a mis-fallback degrades to "surface it", not to a guess.
  *
  * @param {string} rawStderr - the raw stderr/stdout of the failed command
- * @param {{ provider?: string }} [opts] - provider selects the rule chain;
+ * @param {{ provider?: string, exitCode?: number|null }} [opts] - provider selects the rule chain (exitCode 127 alone classifies MISSING_TOOL);
  *   defaults to DEFAULT_VCS_PROVIDER ('github'), which reproduces runner.js's
  *   full auth pattern set exactly.
- * @returns {{ kind: string, providerCode: string|null, retryable: boolean, permissionScope: boolean, operatorReferral: string|null, raw: string }}
+ * @returns {{ kind: string, providerCode: string|null, retryable: boolean, permissionScope: boolean, operatorReferral: string|null, missingTool: string|null, raw: string }}
+ *   `missingTool` is the binary name a MISSING_TOOL failure names (null when the wording names none, and for every other kind).
  *   `kind` is the ONLY field control flow may branch on, with ONE declared
  *   exception: `permissionScope` (see below), which is a REFINEMENT of
  *   AUTH_DENIED, not a parallel vocabulary. `providerCode` is the
@@ -344,6 +405,16 @@ export function classifyFailure(rawStderr, opts = {}) {
     const raw = String(rawStderr == null ? '' : rawStderr);
     const providerName = (opts && opts.provider) || DEFAULT_VCS_PROVIDER;
     const chain = resolveVcsProviderChain(providerName);
+
+    // MISSING TOOL first, ahead of permission-scope and provider rules (see
+    // MISSING_TOOL_RULES above).
+    const missing = detectMissingTool(raw, opts && opts.exitCode);
+    if (missing) {
+        return {
+            kind: VCS_FAILURE_KINDS.MISSING_TOOL, providerCode: null, retryable: false,
+            permissionScope: false, operatorReferral: null, missingTool: missing.tool, raw,
+        };
+    }
 
     // PERMISSION-SCOPE RULES ARE CHECKED FIRST, ahead of KIND_PRECEDENCE.
     //
@@ -408,7 +479,7 @@ export function classifyFailure(rawStderr, opts = {}) {
         }
     }
 
-    return { kind, providerCode, retryable: VCS_RETRYABLE_KINDS.has(kind), permissionScope, operatorReferral, raw };
+    return { kind, providerCode, retryable: VCS_RETRYABLE_KINDS.has(kind), permissionScope, operatorReferral, missingTool: null, raw };
 }
 
 /**
@@ -422,7 +493,7 @@ export function classifyFailure(rawStderr, opts = {}) {
  * preserving parity, not inventing behavior.
  *
  * @param {string} kind - a VCS_FAILURE_KINDS member
- * @returns {'diverged'|'auth'|'transient'|'unknown'}
+ * @returns {'diverged'|'auth'|'transient'|'missing-tool'|'unknown'}
  */
 export function toGitVerdict(kind) {
     switch (kind) {
@@ -430,6 +501,7 @@ export function toGitVerdict(kind) {
         case VCS_FAILURE_KINDS.AUTH_EXPIRED:
         case VCS_FAILURE_KINDS.AUTH_DENIED: return 'auth';
         case VCS_FAILURE_KINDS.TRANSIENT: return 'transient';
+        case VCS_FAILURE_KINDS.MISSING_TOOL: return 'missing-tool';
         default: return 'unknown';
     }
 }
@@ -448,7 +520,7 @@ export function toGitVerdict(kind) {
  * dolt auth literal, including the publickey-refusal one; see dolt.mjs).
  *
  * @param {string} kind - a VCS_FAILURE_KINDS member
- * @returns {'no-remote'|'empty-remote'|'remote-unreachable'|'auth'|'diverged'|'transient'|'unknown'}
+ * @returns {'no-remote'|'empty-remote'|'remote-unreachable'|'auth'|'diverged'|'transient'|'missing-tool'|'unknown'}
  */
 export function toDoltVerdict(kind) {
     switch (kind) {
@@ -459,6 +531,7 @@ export function toDoltVerdict(kind) {
         case VCS_FAILURE_KINDS.AUTH_EXPIRED:
         case VCS_FAILURE_KINDS.AUTH_DENIED: return 'auth';
         case VCS_FAILURE_KINDS.TRANSIENT: return 'transient';
+        case VCS_FAILURE_KINDS.MISSING_TOOL: return 'missing-tool';
         default: return 'unknown';
     }
 }

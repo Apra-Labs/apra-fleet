@@ -1016,14 +1016,29 @@ export function createMemberVcsProviderResolver(opts = {}) {
  * transport-agnostic and unit-testable without a live fleet server.
  *
  * @param {{ callTool: (name: string, args: object) => Promise<any>, command: Function, log?: Function }} opts
- * @returns {(info: { member: string, label: string, cmd?: string, error: string, kind: 'git'|'dolt' }) => Promise<void>}
+ * @returns {((info: { member: string, label: string, cmd?: string, error: string, source?: 'git'|'dolt', failureKind?: string }) => Promise<void>) & { recordHealOutcome: (info: { member: string, label: string, error: string, recovered: boolean }) => Promise<void> }}
  */
 export function createVcsAuthSelfHealCallback(opts = {}) {
     const { callTool, command, log = () => {}, azdevopsPatSecretName } = opts;
     const fleetApi = new ApraFleet({ callTool });
+    // GitHub #616: heals that already ran and did NOT recover, keyed by member +
+    // normalised error. Lives as long as this callback, i.e. the sprint run, so
+    // the same futile re-provisioning is not repeated on every D-pull.
+    /** @type {Map<string, string>} key -> label of the step whose heal failed */
+    const futileHeals = new Map();
 
-    return async function onAuthFailure({ member, label, error }) {
-        log(`[Sync] self-heal: auth failure detected for member '${member}' (${label}); calling provision_vcs_auth to re-provision credentials: ${error}`);
+    async function onAuthFailure({ member, label, error, source, failureKind }) {
+        const key = selfHealMemoryKey(member, error);
+        if (futileHeals.has(key)) {
+            throw new Error(
+                `skipping self-heal for member '${member}' (${label}): re-provisioning credentials already failed to recover ` +
+                `this same failure earlier in this run (${futileHeals.get(key)}); fix the cause on the member instead.`,
+            );
+        }
+        const isAuth = failureKind === undefined || failureKind === 'auth';
+        log(isAuth
+            ? `[Sync] self-heal: auth failure detected for member '${member}' (${label}${source ? `, ${source}` : ''}); calling provision_vcs_auth to re-provision credentials: ${error}`
+            : `[Sync] self-heal: unclassified failure for member '${member}' (${label}${source ? `, ${source}` : ''}); re-provisioning credentials as a last resort via provision_vcs_auth: ${error}`);
 
         // apra-fleet-5co8.4.2: some providers (e.g. Azure DevOps PATs) can
         // never be fixed by this reactive re-provisioning call alone -- it
@@ -1055,8 +1070,40 @@ export function createVcsAuthSelfHealCallback(opts = {}) {
 
         await provisionVcsAuthForMember({ fleetApi, command, member, log, logPrefix: '[Sync] self-heal', azdevopsPatSecretName, resolvedProvider: resolved });
 
-        log(`[Sync] self-heal: provision_vcs_auth succeeded for member '${member}' (${label}); the failed command will be retried once.`);
+        log(`[Sync] self-heal: credentials re-provisioned for member '${member}' (${label}); the failed command will be retried once.`);
+    }
+
+    /**
+     * Called by runGitStep/runDoltStep after the post-heal retry; a heal that
+     * did not recover is remembered so it is not attempted again this run.
+     * @param {{ member: string, label: string, error: string, recovered: boolean }} info
+     */
+    onAuthFailure.recordHealOutcome = async function recordHealOutcome({ member, label, error, recovered }) {
+        if (recovered) return;
+        const key = selfHealMemoryKey(member, error);
+        if (!futileHeals.has(key)) futileHeals.set(key, label);
     };
+
+    return onAuthFailure;
+}
+
+/**
+ * Key for remembering a futile self-heal: the member plus its error text with
+ * the run-varying parts (numbers, hex ids, whitespace runs) normalised away,
+ * so the same failure on a later D-pull maps to the same key.
+ * @param {string} member
+ * @param {string} error
+ * @returns {string}
+ */
+export function selfHealMemoryKey(member, error) {
+    const normalised = String(error || '')
+        .toLowerCase()
+        .replace(/\b[0-9a-f]{7,}\b/g, '<hex>')
+        .replace(/\d+/g, '<n>')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 500);
+    return `${member}|${normalised}`;
 }
 
 // How far ahead of a credential's known expiry the preflight treats it as

@@ -369,11 +369,11 @@ describe('VCSModule.classifyFailure -- purity (AC3)', () => {
     // present -- false/null for every non-permission-scope classification --
     // so a caller never has to distinguish "absent" from "not a scope
     // refusal".
-    test('the return shape is exactly { kind, providerCode, retryable, permissionScope, operatorReferral, raw }', () => {
+    test('the return shape is exactly { kind, providerCode, retryable, permissionScope, operatorReferral, missingTool, raw }', () => {
         const result = classifyFailure('fatal: Authentication failed');
         assert.deepStrictEqual(
             Object.keys(result).sort(),
-            ['kind', 'operatorReferral', 'permissionScope', 'providerCode', 'raw', 'retryable'],
+            ['kind', 'missingTool', 'operatorReferral', 'permissionScope', 'providerCode', 'raw', 'retryable'],
         );
         assert.strictEqual(result.raw, 'fatal: Authentication failed');
         assert.strictEqual(result.permissionScope, false, 'a plain credential failure is not a permission-scope refusal');

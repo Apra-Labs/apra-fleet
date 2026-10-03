@@ -283,7 +283,7 @@ export function isTypedAbortError(err) {
  *   member: string,
  *   command: (cmd: string, opts: object) => Promise<any>,
  *   log?: (msg: string) => void,
- *   onAuthFailure?: (info: { member: string, label: string, cmd?: string, error: string, kind: 'git'|'dolt' }) => Promise<void>,
+ *   onAuthFailure?: (info: { member: string, label: string, cmd?: string, error: string, source: 'git'|'dolt', failureKind: string }) => Promise<void>,
  *   callTool?: (name: string, args: object) => Promise<any>,
  * }} opts
  * @returns {Promise<{ prUrl: string|null, reason: string, pushed: boolean, commitCount: number }>}

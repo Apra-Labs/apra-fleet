@@ -37,7 +37,7 @@
 // classifyGitFailure() delegates to VCSModule -- the ONE place VCS stderr is
 // parsed (vcs-module.mjs's own header comment). These two names were imported
 // by runner.js for exactly this call before the move.
-import { classifyFailure, toGitVerdict } from './vcs-module.mjs';
+import { classifyFailure, toGitVerdict, commandBinary } from './vcs-module.mjs';
 import { VCS_FAILURE_KINDS } from './errors.mjs';
 
 // ---------------------------------------------------------------------------
@@ -371,15 +371,20 @@ export function classifyGitFailure(output, provider) {
  * No existing AUTH_DENIED producer changes verdict or self-heal treatment;
  * only a provider that OPTS IN via `permissionScope` does.
  *
- * @returns {Promise<{ ok: boolean, output: string, error: string|null, kind?: 'diverged'|'auth'|'transient'|'unknown', permissionScope?: boolean }>}
+ * @returns {Promise<{ ok: boolean, output: string, error: string|null, kind?: 'diverged'|'auth'|'transient'|'missing-tool'|'unknown', permissionScope?: boolean, missingTool?: string }>}
  */
 export async function runGitStep({ command, member, cmd, label, log, maxTransientRetries, onAuthFailure, provider }) {
     let attempt = 0;
     let authHealAttempted = false;
+    /** The info the self-heal was invoked with, reported back on a failed retry. */
+    let healTrigger = null;
     // eslint-disable-next-line no-constant-condition
     while (true) {
         const res = await command(cmd, { member_name: member, silent: true, failSoft: true, label });
-        if (res && res.ok) return res;
+        if (res && res.ok) {
+            if (authHealAttempted) log(`[Sync] self-heal recovered: ${label} succeeded for member '${member}' on the retry after re-provisioning credentials.`);
+            return res;
+        }
         const error = res ? res.error : 'unknown command failure';
         // ONE classification per attempt, read both ways: the neutral kind
         // (for the permission-scope gate) and this module's legacy verdict
@@ -388,6 +393,13 @@ export async function runGitStep({ command, member, cmd, label, log, maxTransien
         // can never disagree -- see that function's own doc comment.
         const classified = classifyFailure(error, provider ? { provider } : undefined);
         const kind = toGitVerdict(classified.kind);
+        if (kind === 'missing-tool') {
+            // GitHub #616: a missing binary is never retried and never sent to
+            // the credential self-heal -- neither can install it.
+            const tool = classified.missingTool || commandBinary(cmd);
+            log(`[Sync] ${label} FAILED (missing-tool): '${tool}' was not found on member '${member}' -- install it on that member or put it on that member's PATH. Not retrying and not re-provisioning credentials. Raw: ${error}`);
+            return { ok: false, output: res ? res.output : '', error, kind, missingTool: tool };
+        }
         if (classified.kind === VCS_FAILURE_KINDS.AUTH_DENIED && classified.permissionScope) {
             const referral =
                 `[Sync] permission-scope git failure for member '${member}' (${label}): the command "${cmd}" was refused because the ` +
@@ -417,14 +429,24 @@ export async function runGitStep({ command, member, cmd, label, log, maxTransien
         if ((kind === 'auth' || kind === 'unknown') && typeof onAuthFailure === 'function' && !authHealAttempted) {
             authHealAttempted = true;
             log(`[Sync] ${kind} git failure for member '${member}' (${label}); invoking self-heal (provision_vcs_auth) once before a single bounded retry: ${error}`);
+            healTrigger = { member, label, cmd, error, source: 'git', failureKind: kind };
             try {
-                await onAuthFailure({ member, label, cmd, error, kind: 'git' });
+                await onAuthFailure(healTrigger);
             } catch (healErr) {
                 log(`[Sync] self-heal for member '${member}' (${label}) failed; not retrying further: ${healErr.message}`);
                 return { ok: false, output: res ? res.output : '', error, kind };
             }
             log(`[Sync] self-heal for member '${member}' (${label}) completed; retrying the failed git command once.`);
             continue;
+        }
+        if (authHealAttempted) {
+            log(`[Sync] self-heal did not recover: ${label} still failed for member '${member}' after re-provisioning credentials.`);
+            // Let the self-heal remember this futile heal for the rest of the
+            // run, so the next step failing the same way is not re-healed.
+            if (typeof onAuthFailure.recordHealOutcome === 'function') {
+                try { await onAuthFailure.recordHealOutcome({ ...healTrigger, recovered: false }); }
+                catch (recordErr) { log(`[Sync] could not record the failed self-heal for member '${member}': ${recordErr.message}`); }
+            }
         }
         return { ok: false, output: res ? res.output : '', error, kind };
     }

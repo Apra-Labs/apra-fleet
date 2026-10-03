@@ -50,6 +50,15 @@ import { WorkflowError } from '@apralabs/apra-fleet-workflow';
 //   UNSUPPORTED_OPERATION The requested action is not implemented for this
 //                         provider. A programming/config error; retrying and
 //                         re-authenticating are both pointless.
+//   MISSING_TOOL          The command's binary (bd, dolt, git, ...) could not
+//                         be found on the member at all: PowerShell's "is not
+//                         recognized as the name of a cmdlet", cmd.exe's "is
+//                         not recognized as an internal or external command",
+//                         POSIX "command not found" / ": not found", exit code
+//                         127, spawn ENOENT. Checked BEFORE every provider
+//                         rule (GitHub #616). Never retried and never routed
+//                         to the credential self-heal -- re-provisioning
+//                         cannot install a binary or fix a PATH.
 //   UNKNOWN               Explicitly unrecognized. Never retried, never
 //                         self-healed -- an unmatched stderr must surface, not
 //                         be guessed at.
@@ -68,6 +77,7 @@ export const VCS_FAILURE_KINDS = Object.freeze({
     EMPTY_REMOTE: 'EMPTY_REMOTE',
     REMOTE_UNREACHABLE: 'REMOTE_UNREACHABLE',
     UNSUPPORTED_OPERATION: 'UNSUPPORTED_OPERATION',
+    MISSING_TOOL: 'MISSING_TOOL',
     UNKNOWN: 'UNKNOWN',
 });
 
