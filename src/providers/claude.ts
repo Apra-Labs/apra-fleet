@@ -551,8 +551,8 @@ export class ClaudeProvider implements ProviderAdapter {
       }
       if (url !== null) {
         const current = servers[MEMBER_MCP_SERVER_NAME];
-        if (!isClaudeMemberMcpEntry(current, url)) {
-          servers[MEMBER_MCP_SERVER_NAME] = claudeMemberMcpEntry(url);
+        if (!isRecord(current) || current.type !== 'http' || current.url !== url || Object.keys(current).length !== 2) {
+          servers[MEMBER_MCP_SERVER_NAME] = { type: 'http', url };
           changed = true;
         }
       } else if (MEMBER_MCP_SERVER_NAME in servers) {
@@ -990,26 +990,6 @@ export async function deliverWorkspaceTrustFile(
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
-}
-
-/**
- * The member's LOCAL-scope apra-fleet MCP entry. `alwaysLoad: true` is what
- * makes a headless `claude -p` dispatch see the member's kb_* / code_* tools:
- * without it a configured server connects in the BACKGROUND (tool search is on
- * by default) and the first request is built before it has connected, so the
- * dispatched session starts with no apra-fleet tools at all even though
- * `claude mcp list` reports the server Connected. With it, startup waits for
- * the server (capped at the CLI's connect timeout) and its tools are in context
- * from the first request. The member session only serves the member allowlist,
- * so loading every tool up front costs a handful of definitions, no more.
- */
-export function claudeMemberMcpEntry(url: string): Record<string, unknown> {
-  return { type: 'http', url, alwaysLoad: true };
-}
-
-/** True when `v` is exactly the entry claudeMemberMcpEntry(url) writes. */
-export function isClaudeMemberMcpEntry(v: unknown, url: string): boolean {
-  return isRecord(v) && v.type === 'http' && v.url === url && v.alwaysLoad === true && Object.keys(v).length === 3;
 }
 
 /** Wraps an exec fn so a nonzero exit throws instead of passing silently. */

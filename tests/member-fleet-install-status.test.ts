@@ -53,7 +53,7 @@ interface World {
 }
 
 function entryFor(agent: Agent): Record<string, unknown> {
-  return { projects: { [WORK]: { mcpServers: { 'apra-fleet': { type: 'http', url: `http://localhost:7523/mcp?member=${agent.id}`, alwaysLoad: true } } } } };
+  return { projects: { [WORK]: { mcpServers: { 'apra-fleet': { type: 'http', url: `http://localhost:7523/mcp?member=${agent.id}` } } } } };
 }
 
 function text(cmd: string): string {
@@ -172,30 +172,6 @@ describe('remote member: install, self-register, verify MEMBER session', () => {
     const world = newWorld({ claudeJson: entryFor(other) });
     const s = await probeMemberFleetMcp(agent, deps(world));
     expect(s).toMatchObject({ state: 'unavailable', reason: 'mcp-entry-missing' });
-  });
-
-  // The member session listing kb_*/code_* proves the server; it does not prove
-  // a dispatched `claude -p` session sees them. A deferred (no alwaysLoad) entry
-  // connects in the background, after the first request is built -- the exact
-  // "mcp list says Connected, the dispatched session has no tools" failure.
-  it('a deferred per-folder entry (no alwaysLoad) -> unavailable(mcp-entry-deferred), loudly, before any member call', async () => {
-    const agent = remoteClaude();
-    const world = newWorld({
-      claudeJson: { projects: { [WORK]: { mcpServers: { 'apra-fleet': { type: 'http', url: `http://localhost:7523/mcp?member=${agent.id}` } } } } },
-    });
-    const s = await probeMemberFleetMcp(agent, deps(world));
-    expect(s).toMatchObject({ state: 'unavailable', reason: 'mcp-entry-deferred', version: VERSION });
-    expect(s.detail).toMatch(/alwaysLoad/);
-    expect(world.execLog.some(c => c.includes("'call'"))).toBe(false);
-  });
-
-  it('alwaysLoad present but not true (false) is still deferred', async () => {
-    const agent = remoteClaude();
-    const world = newWorld({
-      claudeJson: { projects: { [WORK]: { mcpServers: { 'apra-fleet': { type: 'http', url: `http://localhost:7523/mcp?member=${agent.id}`, alwaysLoad: false } } } } },
-    });
-    const s = await probeMemberFleetMcp(agent, deps(world));
-    expect(s).toMatchObject({ state: 'unavailable', reason: 'mcp-entry-deferred' });
   });
 
   it('--id rejected -> unavailable(install-too-old)', async () => {

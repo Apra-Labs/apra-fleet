@@ -187,7 +187,7 @@ function assertCommonInvariants(wf: string, provider: 'claude' | 'agy' | 'openco
 function assertClaudeConfigured(wf: string, member: Agent): void {
   const cfgs = allConfigs(wf);
   const entry = cfgs.claudeJson.projects[wf].mcpServers['apra-fleet'];
-  expect(entry).toEqual({ type: 'http', url: expect.stringMatching(memberUrlRe(member.id)), alwaysLoad: true });
+  expect(entry).toEqual({ type: 'http', url: expect.stringMatching(memberUrlRe(member.id)) });
   expect(cfgs.claudeJson.projects[wf].mcpServers.deepwiki).toEqual(DEEPWIKI);
   expect(cfgs.claudeSettings.permissions.deny).toEqual(COMPLEMENT.map(t => `mcp__apra-fleet__${t}`));
   expect(excludeLines(wf)).toContain('/.claude/settings.local.json');

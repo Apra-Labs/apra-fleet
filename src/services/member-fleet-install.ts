@@ -751,9 +751,6 @@ export type FleetMcpUnavailableReason =
   /** The per-folder apra-fleet MCP entry compose_permissions writes is absent
    *  or does not point at ?member=<uuid>. */
   | 'mcp-entry-missing'
-  /** The claude per-folder apra-fleet entry is present but not alwaysLoad, so a
-   *  headless dispatch starts before the server connects and sees no tools. */
-  | 'mcp-entry-deferred'
   /** agy has no per-project MCP config fleet can point at the member session. */
   | 'no-per-project-mcp'
   /** The member's LLM provider has no MCP entry fleet configures. */
@@ -797,7 +794,6 @@ export const FLEET_MCP_FIX: Record<FleetMcpUnavailableReason | FleetMcpProviderR
   'E-FOLDER-TAKEN': 'The member install has this work folder registered under another id; unregister it there, then member_detail with refresh:true.',
   'register-failed': 'Run update_member {member_id, fleet_install: "auto"} to upgrade apra-fleet on the member and re-register it (read fleetMcp detail for the error), then member_detail with refresh:true.',
   'mcp-entry-missing': 'Re-run compose_permissions for the member so its per-folder apra-fleet MCP entry points at ?member=<uuid>, then member_detail with refresh:true.',
-  'mcp-entry-deferred': 'Re-run compose_permissions for the member so its per-folder apra-fleet MCP entry is written with alwaysLoad (dispatched sessions otherwise start without the tools), then member_detail with refresh:true.',
   'no-per-project-mcp': 'agy has no per-project MCP config; its roles get injected knowledge only. Use another provider for KB/code tools.',
   'provider-unsupported': 'This LLM provider has no MCP entry fleet configures; its roles get injected knowledge only.',
   'member-config-unreadable': 'Fix permissions on the member config file named in the detail, then re-run compose_permissions.',
@@ -998,26 +994,13 @@ function parseCallOutput(r: SSHExecResult, what: string): { ok: true; value: Rec
   return { ok: true, value: parsed };
 }
 
-/** The member's per-folder apra-fleet MCP entry as its provider CLI reads it. */
-export interface MemberMcpEntryInfo {
-  url: string;
-  /** claude only: the entry loads at session start (alwaysLoad). Always true
-   *  for opencode, which has no deferred MCP loading. */
-  loadsAtStart: boolean;
-}
-
 /**
- * The member's per-folder apra-fleet MCP entry written by compose_permissions,
- * or null when there is none. claude: the config file the CLI reads
- * (<config dir>/.claude.json, CLAUDE_CONFIG_DIR as the member shell sees it),
- * projects[<work folder>].mcpServers['apra-fleet'] -- the key compose writes.
- * The CLI keys local scope by the repository root, which equals the work
- * folder for a clone root but not for a work folder nested inside a larger
- * repository; that case is not verified here.
- * opencode: <workFolder>/opencode.json mcp['apra-fleet'] (no deferred MCP
- * loading is known for opencode, so it counts as loading at start).
+ * The URL of the member's per-folder apra-fleet MCP entry written by
+ * compose_permissions, or null when there is none. claude:
+ * <config dir>/.claude.json projects[<folder>].mcpServers['apra-fleet'].url;
+ * opencode: <workFolder>/opencode.json mcp['apra-fleet'].url.
  */
-export async function readMemberMcpEntry(agent: Agent, home: string, deps: Pick<MemberFleetInstallDeps, 'exec'>): Promise<MemberMcpEntryInfo | null> {
+export async function readMemberMcpEntryUrl(agent: Agent, home: string, deps: Pick<MemberFleetInstallDeps, 'exec'>): Promise<string | null> {
   const targetOs = getAgentOS(agent) as TargetOS;
   const shell = getAgentShell(agent);
   const isWindows = targetOs === 'windows';
@@ -1032,12 +1015,12 @@ export async function readMemberMcpEntry(agent: Agent, home: string, deps: Pick<
       const config = await readMemberJson(exec, file, posix);
       const key = agent.workFolder.replace(/\\/g, '/').replace(/\/+$/, '');
       const entry = rec(rec(rec(rec(config.projects)?.[key])?.mcpServers)?.[MEMBER_MCP_SERVER_NAME]);
-      return typeof entry?.url === 'string' ? { url: entry.url, loadsAtStart: entry.alwaysLoad === true } : null;
+      return typeof entry?.url === 'string' ? entry.url : null;
     }
     const file = joinMemberPath(agent.workFolder, OPENCODE_PROJECT_CONFIG, isWindows, shell);
     const config = await readMemberJson(exec, file, posix);
     const entry = rec(rec(config.mcp)?.[MEMBER_MCP_SERVER_NAME]);
-    return typeof entry?.url === 'string' ? { url: entry.url, loadsAtStart: true } : null;
+    return typeof entry?.url === 'string' ? entry.url : null;
   } catch {
     return null;
   }
@@ -1289,18 +1272,12 @@ async function probeRemote(
     return fail('register-failed', `register-member exited ${reg.code}: ${memberErrorDetail(out)}`);
   }
 
-  // 3. The per-folder MCP entry compose_permissions writes must point at this
-  // member, and (claude) load at session start: a deferred entry connects in
-  // the background, so a headless dispatch builds its first request without
-  // the member's tools even though the server itself is healthy.
-  const entry = await readMemberMcpEntry(agent, home, deps);
-  if (!entry || !entry.url.endsWith(memberQuery(agent))) {
-    return fail('mcp-entry-missing', entry
-      ? `per-folder apra-fleet entry points at ${entry.url}, not ${memberQuery(agent)}`
+  // 3. The per-folder MCP entry compose_permissions writes must point at this member.
+  const url = await readMemberMcpEntryUrl(agent, home, deps);
+  if (!url || !url.endsWith(memberQuery(agent))) {
+    return fail('mcp-entry-missing', url
+      ? `per-folder apra-fleet entry points at ${url}, not ${memberQuery(agent)}`
       : 'no per-folder apra-fleet MCP entry for the work folder; run compose_permissions');
-  }
-  if (!entry.loadsAtStart) {
-    return fail('mcp-entry-deferred', 'per-folder apra-fleet entry has no alwaysLoad, so a dispatched claude -p session starts before the server connects and lists none of its tools; run compose_permissions');
   }
 
   // 4. A MEMBER session on the member answers version and lists kb_* / code_*.
