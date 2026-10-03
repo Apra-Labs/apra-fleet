@@ -12,6 +12,9 @@ import { waitPortFree } from '../scripts/kill-port.mjs';
 // a stray listener from a prior interrupted run, or fails loud naming port
 // 3001 and the toy dev server -- so this can never again leak into a
 // following Deploy phase as `listen EADDRINUSE :::3001` (apra-fleet-cgc5).
+// apra-fleet-7f39: the playbook no longer runs the toy sprint in-sprint, so
+// its 3001 guard and the playbook-text pins are gone; the kill-port.mjs
+// behaviour tests below stay until that script is retired.
 //
 // Scope note (mirrors tests/regression-playbook-sandbox-lifecycle.test.ts's
 // precedent for the sibling uof6.7 bead and the doer contract's
@@ -23,7 +26,6 @@ import { waitPortFree } from '../scripts/kill-port.mjs';
 // smoke test, out of scope for a doer session.
 const REPO_ROOT = path.resolve(__dirname, '..');
 const KILL_PORT_CLI = path.join(REPO_ROOT, 'scripts', 'kill-port.mjs');
-const PLAYBOOK_PATH = path.join(REPO_ROOT, 'regression-test-playbook.md');
 
 function isProcessAlive(pid: number): boolean {
   try {
@@ -166,35 +168,6 @@ describe('regression-test-playbook.md Setup toy dev-server port 3001 guard', () 
     expect(result.ok).toBe(false);
     expect(result.message).toMatch(/toy app dev-server port 3001/);
     expect(result.message).toMatch(/still bound/);
-  });
-
-  it('regression-test-playbook.md Setup actually invokes kill-port.mjs for port 3001 before "node dist/index.js start" -- reverting this line is what the prior test proves would leave 3001 unguarded', () => {
-    const text = fs.readFileSync(PLAYBOOK_PATH, 'utf-8');
-    // Split on the actual '## Setup'/'## Reset' HEADINGS (a whole line, not
-    // a backticked mention in prose elsewhere in the file).
-    const setupSection = text.split(/^## Setup$/m)[1]?.split(/^## Reset$/m)[0] ?? '';
-    expect(setupSection).toMatch(/kill-port\.mjs["'\s]+3001\s+"toy app dev-server port 3001"/);
-    // The 3001 guard must run before the server (and thus the toy app) is
-    // started, matching the 18700 guard's ordering.
-    const guardMatch = /^node "<repo-root>\/scripts\/kill-port\.mjs" 3001 "toy app dev-server port 3001"/m.exec(
-      setupSection,
-    );
-    // Match the actual command line (start of line, no leading '#' comment
-    // prefix), not an earlier prose mention of the same string in a comment
-    // explaining the guard's ordering.
-    const startMatch = /^node dist\/index\.js start$/m.exec(setupSection);
-    expect(guardMatch).not.toBeNull();
-    expect(startMatch).not.toBeNull();
-    expect(guardMatch!.index).toBeLessThan(startMatch!.index);
-  });
-
-  it('Teardown honours its documented 3001 branch: no separate reap runs, and the file explains why that is safe (rm -rf makes the dev server unreachable, and the next Setup guard closes the port)', () => {
-    const text = fs.readFileSync(PLAYBOOK_PATH, 'utf-8');
-    const teardownSection = text.split(/^## Teardown$/m)[1] ?? '';
-    expect(teardownSection).toMatch(
-      /No separate guard reaps the toy app's dev-server port \(3001\)/,
-    );
-    expect(teardownSection).toMatch(/next '## Setup'\/'## Reset' to clear/);
   });
 
   it('no leftover artifacts outside the test sandbox: driving the 3001 guard never touches real HOME/.apra-fleet (directory listing + mtimes unchanged)', async () => {

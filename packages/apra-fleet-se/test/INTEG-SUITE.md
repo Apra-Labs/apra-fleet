@@ -1,7 +1,8 @@
 # Real-bd unit-suite check (apra-fleet-se)
 
-When to run: part 1 of every full integration pass (see
-`integ-test-playbook.md`). Runs from the repo checkout; needs no sandbox. The runner forces real bd (`APRA_FLEET_BD_MOCK=off`) -- never
+When to run: nightly in CI (`.github/workflows/regression-nightly.yml`,
+also on bd pin changes), or by hand when validating bd CLI compatibility.
+Runs from the repo checkout; needs no sandbox. The runner forces real bd (`APRA_FLEET_BD_MOCK=off`) -- never
 substitute a bare `npm test`, which would test the mock. Expect ~7 min wall
 clock for the full suite. Script internals, flag contract, and design
 rationale: header of `scripts/run-integ-suites.mjs`.
@@ -11,7 +12,9 @@ Procedure (all commands from the repo root):
 1. `node scripts/run-integ-suites.mjs --status`
    Exit 3 = a run is already live: skip to step 3. Exit 2 = crashed or
    stale state: read the message; if it says resume, go to step 2; if the
-   status file is corrupt/stale, fail loud and file a bug bead.
+   status file is corrupt/stale, fail loud and file a bug bead. If it says
+   the results were recorded at another HEAD (or the file has no headSha),
+   they are not this commit's results: run `--fresh`, then step 2.
 2. `node scripts/run-integ-suites.mjs --start`
    Returns immediately; starts (or resumes) one detached background run of
    all pending files. State persists in `integ-suite-status.json` at the
@@ -29,6 +32,10 @@ Procedure (all commands from the repo root):
    with the captured detail (file, failing test names, first error) before
    anything else. `--fresh` starts a new measured pass -- NEVER use it to
    erase a recorded failure.
+   `node scripts/check-integ-suite-budget.mjs --quarantine` splits failures
+   into new vs quarantined (`tests/regression/quarantine.json`, each entry
+   with an open tracking issue and an expiry of at most 30 days; an expired
+   entry counts as new). Only new failures need a new bug bead.
 7. Any single file over ~5 minutes (`durationMs` in the status file) is the
    long pole of the concurrent run: file a bug bead to split it. Run
    `node scripts/check-integ-suite-budget.mjs` after

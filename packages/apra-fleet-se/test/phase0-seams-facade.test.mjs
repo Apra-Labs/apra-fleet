@@ -151,7 +151,9 @@ describe('Phase 0 seams: mcp-result + member-target preserve runner behaviour an
             // findWorkspaceNodeModules doc comment above). rmSync on
             // sandboxDir at cleanup only unlinks this symlink, never
             // recurses into the real node_modules it points at.
-            fs.symlinkSync(findWorkspaceNodeModules(packageRoot), path.join(sandboxDir, 'node_modules'), 'dir');
+            // junction on win32: needs no symlink privilege (plain 'dir' symlinks EPERM
+            // without Developer Mode/admin); rmSync unlinks it without recursing.
+            fs.symlinkSync(findWorkspaceNodeModules(packageRoot), path.join(sandboxDir, 'node_modules'), process.platform === 'win32' ? 'junction' : 'dir');
             const sandboxRunnerPath = path.join(sandboxFleetSprint, 'runner.js');
             const originalContent = fs.readFileSync(sandboxRunnerPath, 'utf-8');
 

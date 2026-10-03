@@ -495,16 +495,15 @@ describe('member_detail fleetMcp fix lines name the update path', () => {
   });
 });
 
-describe('CHANGELOG member-upgrade Upgrade lines', () => {
-  it('every Upgrade line that tells users to upgrade a member via update_member names fleet_install', () => {
-    const text = fs.readFileSync(new URL('../CHANGELOG.md', import.meta.url), 'utf8');
-    const start = text.indexOf('## [Unreleased]');
-    const unreleased = text.slice(start, text.indexOf('\n## ', start + 5));
-    const upgradeLines = unreleased.split('\n').filter(l => /Upgrade:/.test(l) && /update_member/.test(l) && /apra-fleet|member/.test(l));
-    expect(upgradeLines.length).toBeGreaterThan(0);
-    for (const l of upgradeLines) {
-      if (/code_intel_provider|re-compose|work folder/.test(l)) continue;
-      expect(l, l.slice(0, 80)).toContain('fleet_install');
+describe('member-upgrade guidance in docs/member-fleet-mcp-wiring.md', () => {
+  it('every paragraph that tells users to upgrade a member via update_member names fleet_install "auto"', () => {
+    const text = fs.readFileSync(new URL('../docs/member-fleet-mcp-wiring.md', import.meta.url), 'utf8');
+    // Paragraphs and list items: lines wrap, so match on the joined block.
+    const blocks = text.split(/\n\s*\n|\n(?=- )/).map(b => b.replace(/\s+/g, ' '));
+    const upgradeBlocks = blocks.filter(b => /update_member/.test(b) && /upgrad/i.test(b));
+    expect(upgradeBlocks.length).toBeGreaterThan(0);
+    for (const b of upgradeBlocks) {
+      expect(b, b.slice(0, 80)).toMatch(/fleet_install: "auto"/);
     }
   });
 });
