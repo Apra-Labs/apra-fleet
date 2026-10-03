@@ -231,6 +231,20 @@ describe('child_id_allocator tool', () => {
     expect(reused.seq).toBe(a.seq);
   });
 
+  // GitHub #615: the floor must prune pooled ids <= floor even when it does
+  // not raise the high-water, or an occupied released id is re-minted forever.
+  it('prunes a released id at or below the floor even when the floor does not raise the high-water', async () => {
+    const a = await allocCall({ action: 'allocate', parent_id: 'apra-fleet-s' });
+    const b = await allocCall({ action: 'allocate', parent_id: 'apra-fleet-s' });
+    expect(await allocCall({ action: 'confirm', token: b.token })).toEqual({ confirmed: true });
+    expect(await allocCall({ action: 'release', token: a.token })).toEqual({ released: true });
+    // floor 2 == highWater 2.
+    const next = await allocCall({ action: 'allocate', parent_id: 'apra-fleet-s', floor: 2 });
+    expect(next.childId).toBe('apra-fleet-s.3');
+    const status = await allocCall({ action: 'status' });
+    expect(status.parents['apra-fleet-s'].free).toEqual([]);
+  });
+
   it('validates required arguments per action', async () => {
     expect((await allocCall({ action: 'allocate' })).error).toMatch(/parent_id is required/);
     expect((await allocCall({ action: 'confirm' })).error).toMatch(/token is required/);
