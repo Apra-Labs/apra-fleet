@@ -369,8 +369,10 @@ async function provisionEnvVarForMember(provider: string, token: string, memberN
     const { encryptPassword } = await import('../utils/crypto.js');
     const { updateAgent } = await import('../services/registry.js');
     const bearerToken = extractBearerTokenFromSecret(token);
+    // Drop a stored API key: it would outrank the OAuth token at dispatch.
+    const { ANTHROPIC_API_KEY: _staleApiKey, ...otherVars } = agentOrError.encryptedEnvVars ?? {};
     const updated = updateAgent(agentOrError.id, {
-      encryptedEnvVars: { ...agentOrError.encryptedEnvVars, [envVarName]: encryptPassword(bearerToken) },
+      encryptedEnvVars: { ...otherVars, [envVarName]: encryptPassword(bearerToken) },
     });
     if (!updated) {
       console.error(`✗ Failed to update member "${memberName}" -- not found in registry.`);

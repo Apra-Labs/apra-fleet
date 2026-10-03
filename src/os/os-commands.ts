@@ -73,6 +73,8 @@ export interface OsCommands {
   credentialFileCheck(destPath: string): string;
   credentialFileWrite(content: string, destPath: string): string;
   credentialFileRemove(destPath: string): string;
+  /** Rename destPath to destPath+suffix when it exists (reversible removal); prints "moved" when it did. */
+  credentialFileMoveAside(destPath: string, suffix: string): string;
   apiKeyCheck(envVarName?: string): string;
   setEnv(name: string, value: string): string[];
   unsetEnv(name: string): string[];

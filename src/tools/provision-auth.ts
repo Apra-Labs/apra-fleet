@@ -16,7 +16,7 @@ import { collectOobApiKey } from '../services/auth-socket.js';
 import { logLine, logWarn } from '../utils/log-helpers.js';
 import { findSecretTokens, legacyTokenWarning } from '../services/secret-token.js';
 import { invalidatePreflightCache } from '../services/preflight-check.js';
-import type { Agent } from '../types.js';
+import type { Agent, SSHExecResult } from '../types.js';
 import type { ProviderAdapter } from '../providers/index.js';
 
 export const provisionAuthSchema = z.object({
@@ -167,13 +167,70 @@ function extractCredentialExpiresAt(json: string): string | null {
   }
 }
 
+/** Post-provision auth test bounds: inactivity timeout and hard wall-clock cap. */
+export const AUTH_TEST_IDLE_TIMEOUT_MS = 60_000;
+export const AUTH_TEST_MAX_TOTAL_MS = 90_000;
+const AUTH_ERROR_DETAIL_MAX_CHARS = 300;
+
+/** Suffix a superseded credential file is renamed to (never deleted). */
+export const SUPERSEDED_CREDENTIAL_SUFFIX = '.fleet-superseded';
+
+/** Outcome of a post-provision auth test; `detail` is the CLI's own error text on failure. */
+export interface AuthCheck {
+  ok: boolean;
+  detail: string | null;
+}
+
+/**
+ * Make CLI error text safe and short enough for a tool result: strip the
+ * provisioned secret (a shell error can echo the command line that carries it)
+ * and anything shaped like an Anthropic credential, force ASCII, collapse
+ * whitespace and truncate.
+ */
+export function sanitizeAuthErrorDetail(text: string, secret?: string): string {
+  let out = text;
+  if (secret && secret.length >= 4) out = out.split(secret).join('[REDACTED]');
+  out = out.replace(/sk-ant-[A-Za-z0-9_-]+/g, 'sk-ant-[REDACTED]');
+  out = out.replace(/[^\x20-\x7E]+/g, ' ').replace(/\s+/g, ' ').trim();
+  if (out.length > AUTH_ERROR_DETAIL_MAX_CHARS) out = `${out.slice(0, AUTH_ERROR_DETAIL_MAX_CHARS)}...`;
+  return out;
+}
+
+/**
+ * Turn a `claude -p --output-format json` run into an AuthCheck. A run can
+ * exit 0 yet report `is_error: true` (e.g. an invalid key), so both are
+ * checked; on failure the CLI's own message (JSON `result`, else stderr,
+ * else stdout) becomes the detail.
+ */
+export function interpretClaudeAuthResult(result: SSHExecResult, secret?: string): AuthCheck {
+  const stdout = result.stdout ?? '';
+  const stderr = result.stderr ?? '';
+  let jsonError: string | null = null;
+  let isError = false;
+  const jsonLine = stdout.split(/\r?\n/).map(l => l.trim()).filter(l => l.startsWith('{')).pop();
+  if (jsonLine) {
+    try {
+      const parsed = JSON.parse(jsonLine);
+      if (parsed && (parsed.is_error === true || (typeof parsed.subtype === 'string' && parsed.subtype.startsWith('error')))) {
+        isError = true;
+        jsonError = typeof parsed.result === 'string' && parsed.result.trim() ? parsed.result : String(parsed.subtype ?? 'error');
+      }
+    } catch { /* not JSON -- fall back to the raw streams */ }
+  }
+  if (result.code === 0 && !isError) return { ok: true, detail: null };
+  const raw = jsonError ?? (stderr.trim() || stdout.trim() || `CLI exited with code ${result.code}`);
+  return { ok: false, detail: sanitizeAuthErrorDetail(raw, secret) };
+}
+
 /**
  * Real auth check via `claude -p "hello"` -- makes an actual API call.
  * This is the only reliable validation for both OAuth and API key auth,
  * since `claude auth status` doesn't actually validate API keys.
  * Claude-only: other providers use a version check for verification.
+ * Bounded by AUTH_TEST_IDLE_TIMEOUT_MS / AUTH_TEST_MAX_TOTAL_MS so a CLI that
+ * stalls on a bad credential can never hang the tool.
  */
-async function verifyWithClaudePrompt(agent: Agent, envPrefix?: string): Promise<boolean> {
+async function verifyWithClaudePrompt(agent: Agent, envPrefix?: string, secret?: string): Promise<AuthCheck> {
   const cmds = getOsCommands(getAgentOS(agent), getAgentShell(agent));
   const provider = getProvider('claude');
   const strategy = getStrategy(agent);
@@ -181,10 +238,10 @@ async function verifyWithClaudePrompt(agent: Agent, envPrefix?: string): Promise
   const prefix = envPrefix ? `${envPrefix} ` : '';
   const cmd = `cd "${escapedFolder}" && ${prefix}${cmds.agentCommand(provider, '-p "hello" --output-format json --max-turns 1')}`;
   try {
-    const result = await strategy.execCommand(cmd, 60000);
-    return result.code === 0;
-  } catch {
-    return false;
+    const result = await strategy.execCommand(cmd, AUTH_TEST_IDLE_TIMEOUT_MS, AUTH_TEST_MAX_TOTAL_MS);
+    return interpretClaudeAuthResult(result, secret);
+  } catch (err: any) {
+    return { ok: false, detail: sanitizeAuthErrorDetail(String(err?.message ?? err), secret) };
   }
 }
 
@@ -192,17 +249,33 @@ async function verifyWithClaudePrompt(agent: Agent, envPrefix?: string): Promise
  * Version-based CLI check with optional env prefix.
  * Used to verify non-Claude providers after API key provisioning.
  */
-async function verifyWithVersion(agent: Agent, provider: ProviderAdapter, envPrefix?: string): Promise<boolean> {
+async function verifyWithVersion(agent: Agent, provider: ProviderAdapter, envPrefix?: string, secret?: string): Promise<AuthCheck> {
   const cmds = getOsCommands(getAgentOS(agent), getAgentShell(agent));
   const strategy = getStrategy(agent);
   const prefix = envPrefix ? `${envPrefix} ` : '';
   const cmd = `${prefix}${cmds.agentVersion(provider)}`;
   try {
-    const result = await strategy.execCommand(cmd, 30000);
-    return result.code === 0;
-  } catch {
-    return false;
+    const result = await strategy.execCommand(cmd, 30000, AUTH_TEST_MAX_TOTAL_MS);
+    if (result.code === 0) return { ok: true, detail: null };
+    const raw = (result.stderr ?? '').trim() || (result.stdout ?? '').trim() || `CLI exited with code ${result.code}`;
+    return { ok: false, detail: sanitizeAuthErrorDetail(raw, secret) };
+  } catch (err: any) {
+    return { ok: false, detail: sanitizeAuthErrorDetail(String(err?.message ?? err), secret) };
   }
+}
+
+/**
+ * Drop the named auth env vars from the member's stored encryptedEnvVars
+ * (dispatch exports every stored var), keeping every unrelated entry, then
+ * merge `extra` in.
+ */
+function storeAuthEnvVars(agent: Agent, drop: string[], extra?: Record<string, string>): void {
+  const current = agent.encryptedEnvVars ?? {};
+  const kept = Object.fromEntries(Object.entries(current).filter(([k]) => !drop.includes(k)));
+  const next = { ...kept, ...(extra ?? {}) };
+  const changed = Object.keys(current).length !== Object.keys(next).length
+    || Object.entries(next).some(([k, v]) => current[k] !== v);
+  if (changed) updateAgent(agent.id, { encryptedEnvVars: next });
 }
 
 // ---------------------------------------------------------------------------
@@ -282,11 +355,16 @@ async function provisionOAuthCopy(agent: Agent, provider: ProviderAdapter): Prom
       await strategy.execCommand(cmd, 15000).catch(() => {});
     }
   }
+  // Also drop the provider's env-token credentials from the stored member
+  // config: dispatch exports them, and an env token outranks the copied file.
+  const envKinds = provider.authEnvVarNames?.() ?? [];
+  if (envKinds.length > 0) storeAuthEnvVars(agent, envKinds);
 
   // 4. Verify auth
-  const authWorks = provider.name === 'claude'
+  const authCheck = provider.name === 'claude'
     ? await verifyWithClaudePrompt(agent)
     : await verifyWithVersion(agent, provider);
+  const authWorks = authCheck.ok;
 
   touchAgent(agent.id);
 
@@ -302,7 +380,8 @@ async function provisionOAuthCopy(agent: Agent, provider: ProviderAdapter): Prom
 
   return authResult(`[WARN] ${provider.name} OAuth credentials deployed to "${agent.friendlyName}" but could not verify auth.
 `
-    + `  Credential files were written -- try running a prompt to confirm.${suffix}`,
+    + `  Credential files were written -- try running a prompt to confirm.${suffix}`
+    + (authCheck.detail ? `\n  Auth test error: ${authCheck.detail}` : ''),
     { ...who, reason: 'deployed_unverified', credentialLabel: 'oauth', expiresAt, verified: false });
 }
 
@@ -314,25 +393,47 @@ async function provisionOAuthCopy(agent: Agent, provider: ProviderAdapter): Prom
 async function provisionApiKey(agent: Agent, apiKey: string, provider: ProviderAdapter): Promise<ProvisionAuthResult> {
   const cmds = getOsCommands(getAgentOS(agent), getAgentShell(agent));
   const strategy = getStrategy(agent);
+  // Credential kind decides the env var (e.g. a Claude Code OAuth token goes
+  // to CLAUDE_CODE_OAUTH_TOKEN, an API key to ANTHROPIC_API_KEY).
   const envVarName = provider.authEnvVarForToken(apiKey);
+  const kindWarning = provider.authTokenKindWarning?.(apiKey) ?? null;
+  const otherKinds = (provider.authEnvVarNames?.() ?? []).filter(n => n !== envVarName);
   const commands = cmds.setEnv(envVarName, apiKey);
 
   const errors: string[] = [];
-  for (const cmd of commands) {
+  const run = async (cmd: string): Promise<void> => {
     try {
       const result = await strategy.execCommand(cmd, 15000);
       if (result.code !== 0 && result.stderr) {
-        errors.push(`Command "${cmd.substring(0, 40)}..." stderr: ${result.stderr}`);
+        errors.push(sanitizeAuthErrorDetail(`Command "${cmd.substring(0, 40)}..." stderr: ${result.stderr}`, apiKey));
       }
     } catch (err: any) {
-      errors.push(`Command failed: ${err.message}`);
+      errors.push(sanitizeAuthErrorDetail(`Command failed: ${err.message}`, apiKey));
+    }
+  };
+
+  // Clear the other credential kind first so the CLI cannot pick it up.
+  for (const other of otherKinds) {
+    for (const cmd of cmds.unsetEnv(other)) await run(cmd);
+  }
+  for (const cmd of commands) await run(cmd);
+
+  // Store the encrypted credential in the member's registry entry, dropping any
+  // stored credential of the other kind (dispatch exports every stored var).
+  storeAuthEnvVars(agent, otherKinds, { [envVarName]: encryptPassword(apiKey) });
+
+  // An env token supersedes a copied login file; move a stale one aside
+  // (renamed, never deleted) so it cannot shadow or confuse the new credential.
+  const movedAside: string[] = [];
+  for (const file of provider.credentialFilesSupersededByEnvToken?.() ?? []) {
+    try {
+      const r = await strategy.execCommand(cmds.credentialFileMoveAside(file, SUPERSEDED_CREDENTIAL_SUFFIX), 15000);
+      if (r.code === 0 && r.stdout.includes('moved')) movedAside.push(file);
+      else if (r.code !== 0 && r.stderr) errors.push(sanitizeAuthErrorDetail(`Could not move aside ${file}: ${r.stderr}`, apiKey));
+    } catch (err: any) {
+      errors.push(sanitizeAuthErrorDetail(`Could not move aside ${file}: ${err.message}`, apiKey));
     }
   }
-
-  // Store encrypted API key in the agent's registry entry
-  updateAgent(agent.id, {
-    encryptedEnvVars: { ...agent.encryptedEnvVars, [envVarName]: encryptPassword(apiKey) },
-  });
 
   // Verify the key was persisted in a new shell
   let verified = false;
@@ -345,18 +446,20 @@ async function provisionApiKey(agent: Agent, apiKey: string, provider: ProviderA
 
   // Verify with a real CLI call
   const envPrefix = cmds.envPrefix(envVarName, apiKey);
-  const authWorks = provider.name === 'claude'
-    ? await verifyWithClaudePrompt(agent, envPrefix)
-    : await verifyWithVersion(agent, provider, envPrefix);
+  const authCheck = provider.name === 'claude'
+    ? await verifyWithClaudePrompt(agent, envPrefix, apiKey)
+    : await verifyWithVersion(agent, provider, envPrefix, apiKey);
+  const authWorks = authCheck.ok;
 
   touchAgent(agent.id);
 
+  const kindLabel = /OAUTH/i.test(envVarName) ? 'OAuth token' : 'API key';
   let result = '';
   if (errors.length === 0) {
-    result += `[OK] API key provisioned on "${agent.friendlyName}"
+    result += `[OK] ${kindLabel} provisioned on "${agent.friendlyName}"
 `;
   } else {
-    result += `[WARN] API key provisioned with some issues on "${agent.friendlyName}":
+    result += `[WARN] ${kindLabel} provisioned with some issues on "${agent.friendlyName}":
 `;
     for (const e of errors) {
       result += `  - ${e}
@@ -369,7 +472,21 @@ async function provisionApiKey(agent: Agent, apiKey: string, provider: ProviderA
 `;
   result += `  Verification: ${verified ? 'Key visible in new shell' : 'Key will be available after re-login'}
 `;
-  result += `  Auth test: ${authWorks ? `${provider.name} CLI authenticated successfully` : 'Could not verify -- may need to re-login'}
+  if (otherKinds.length > 0) {
+    result += `  Cleared: ${otherKinds.join(', ')} removed from shell profiles and member config (other credential kind)
+`;
+  }
+  for (const file of movedAside) {
+    result += `  Superseded: ${file} moved to ${file}${SUPERSEDED_CREDENTIAL_SUFFIX} (the env credential now applies)
+`;
+  }
+  if (kindWarning) {
+    result += `  [WARN] ${kindWarning}
+`;
+  }
+  result += `  Auth test: ${authWorks
+    ? `${provider.name} CLI authenticated successfully`
+    : `FAILED -- ${authCheck.detail ?? 'no error text from the CLI'}`}
 `;
 
   // credentialLabel is the env var the key was deployed under (e.g.
@@ -380,7 +497,7 @@ async function provisionApiKey(agent: Agent, apiKey: string, provider: ProviderA
     provider: provider.name,
     memberId: agent.id,
     memberName: agent.friendlyName,
-    reason: errors.length === 0 ? 'ok' : 'deployed_with_errors',
+    reason: errors.length > 0 ? 'deployed_with_errors' : authWorks ? 'ok' : 'deployed_unverified',
     credentialLabel: envVarName,
     expiresAt: null,
     verified: authWorks,

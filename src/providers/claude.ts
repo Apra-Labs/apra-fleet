@@ -66,6 +66,11 @@ const CLAUDE_RESET_AT_RE = /resets\s+(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)\
 // Best-effort relative shape, e.g. "resets in 45 minutes" / "resets in 2 hours".
 const CLAUDE_RESET_IN_RE = /resets\s+in\s+(\d+)\s*(minute|hour)s?/i;
 
+// Credential-kind prefixes (provision_llm_auth api_key routing).
+const CLAUDE_OAUTH_TOKEN_PREFIX = 'sk-ant-oat';
+const CLAUDE_API_KEY_PREFIX = 'sk-ant-api';
+const CLAUDE_AUTH_ENV_VARS = ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN'] as const;
+
 // apra-fleet-hzeb.1.2: the wall-clock fields of `instant` as observed in
 // `timeZone`, via Intl (no external dependency). `hourCycle: 'h23'` yields
 // 00-23; a few engines still emit '24' for midnight, so normalize it.
@@ -596,12 +601,37 @@ export class ClaudeProvider implements ProviderAdapter {
     return null;
   }
 
+  // Both Claude auth env vars outrank the copied ~/.claude/.credentials.json,
+  // so an OAuth-file copy must clear them or a stale key keeps winning.
   oauthEnvVarsToUnset(): string[] {
-    return [];
+    return [...CLAUDE_AUTH_ENV_VARS];
   }
 
+  // Kind is decided by prefix: sk-ant-oat... is a Claude Code OAuth token
+  // (`claude setup-token`) and belongs in CLAUDE_CODE_OAUTH_TOKEN; sk-ant-api...
+  // is an Anthropic API key (ANTHROPIC_API_KEY). Any other sk-ant- shape keeps
+  // the legacy API-key routing and any non-sk-ant token the legacy OAuth
+  // routing -- authTokenKindWarning flags both as guesses. Pure: preflight
+  // probes this with fake tokens.
   authEnvVarForToken(token: string): string {
-    return token.startsWith('sk-ant-') ? 'ANTHROPIC_API_KEY' : 'CLAUDE_CODE_OAUTH_TOKEN';
+    const t = token.trim();
+    if (t.startsWith(CLAUDE_OAUTH_TOKEN_PREFIX)) return 'CLAUDE_CODE_OAUTH_TOKEN';
+    if (t.startsWith('sk-ant-')) return 'ANTHROPIC_API_KEY';
+    return 'CLAUDE_CODE_OAUTH_TOKEN';
+  }
+
+  authEnvVarNames(): string[] {
+    return [...CLAUDE_AUTH_ENV_VARS];
+  }
+
+  authTokenKindWarning(token: string): string | null {
+    const t = token.trim();
+    if (t.startsWith(CLAUDE_OAUTH_TOKEN_PREFIX) || t.startsWith(CLAUDE_API_KEY_PREFIX)) return null;
+    return `Unrecognised Claude credential prefix -- expected ${CLAUDE_OAUTH_TOKEN_PREFIX}... (Claude Code OAuth token from \`claude setup-token\`, set as CLAUDE_CODE_OAUTH_TOKEN) or ${CLAUDE_API_KEY_PREFIX}... (Anthropic API key, set as ANTHROPIC_API_KEY). Deployed as ${this.authEnvVarForToken(t)}; check the value if auth fails.`;
+  }
+
+  credentialFilesSupersededByEnvToken(): string[] {
+    return ['~/.claude/.credentials.json'];
   }
 
 

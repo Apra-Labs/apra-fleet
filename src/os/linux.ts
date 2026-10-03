@@ -224,6 +224,12 @@ export class LinuxCommands implements OsCommands {
     return `rm -f "${shellPath(expandHome(destPath))}"`;
   }
 
+  credentialFileMoveAside(destPath: string, suffix: string): string {
+    if (!/^[A-Za-z0-9._-]+$/.test(suffix)) throw new Error('Invalid backup suffix: ' + suffix);
+    const p = shellPath(expandHome(destPath));
+    return `if [ -f "${p}" ]; then mv -f "${p}" "${p}${suffix}" && echo moved; fi`;
+  }
+
   apiKeyCheck(envVarName?: string): string {
     const varName = envVarName ?? 'ANTHROPIC_API_KEY';
     if (!/^[A-Z_][A-Z0-9_]*$/i.test(varName)) throw new Error('Invalid env var name: ' + varName);
