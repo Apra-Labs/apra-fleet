@@ -420,6 +420,29 @@ origin`) ever resolve outside the sandbox root or reference
 node "<repo-root>/scripts/check-sandbox-sync-remote.mjs" "$HOME/toy-repo"
 ```
 
+### Seed the supervisor's backlog clone
+
+The supervisor owns its own backlog member: an LLM-less, unreservable local
+member whose work folder is the project folder it runs against
+(`packages/apra-fleet-se/src/supervisor/backlog-member.mjs`). `toy-doer` (an
+LLM member, Test scenario step 1) owns `$HOME/toy-repo`; the supervisor could
+register an LLM-less backlog member next to it there, but to keep the doer's
+checkout separate from backlog bd operations it runs against a SEPARATE clone
+of the same project, `$HOME/toy-backlog`: same git
+origin (the sandbox mirror) and same beads `sync.remote` (the sandbox Dolt
+remote), so its beads identity matches `toy-doer`'s. It lives under the
+sandbox root, so Teardown's `rm -rf "$SANDBOX"` removes it.
+
+```bash
+BACKLOG_REPO="$HOME/toy-backlog"
+rm -rf "$BACKLOG_REPO"
+git clone -q "file://$GIT_MIRROR" "$BACKLOG_REPO"
+mkdir -p "$BACKLOG_REPO/.beads"
+cp "$TOY_REPO/.beads/config.yaml" "$BACKLOG_REPO/.beads/config.yaml"
+(cd "$BACKLOG_REPO" && bd bootstrap --yes) || exit 1
+node "<repo-root>/scripts/check-sandbox-sync-remote.mjs" "$BACKLOG_REPO"
+```
+
 ### Boot the fleet-sprint supervisor
 
 The toy sprint runs THROUGH a real supervisor instance
@@ -521,7 +544,7 @@ for the boot itself, but only if the port is free to bind on first try.
 node "<repo-root>/scripts/kill-port.mjs" "$SUPERVISOR_PORT" "supervisor port $SUPERVISOR_PORT" 5000 || exit 1
 
 node "<repo-root>/packages/apra-fleet-se/bin/serve.mjs" --port "$SUPERVISOR_PORT" \
-  > "$HOME/supervisor.log" 2>&1 &
+  --beads-dir "$HOME/toy-backlog" > "$HOME/supervisor.log" 2>&1 &
 SUPERVISOR_PID=$!
 SUPERVISOR_STARTED_AT=$(date +%s)
 # Marker files live NEXT TO the sandbox (mirrors "$SANDBOX.lock"'s placement
@@ -651,9 +674,18 @@ git fetch origin
 git reset --hard origin/main
 git clean -fdx
 node "<repo-root>/scripts/sandbox-seed-beads.mjs" --sandbox-root "$HOME" --toy-repo "$HOME/toy-repo" --mode reset
+# The supervisor's backlog clone (see '## Setup' -> 'Seed the supervisor's
+# backlog clone') is reset and re-seeded the same way, so both clones keep
+# one beads identity. Its backlog member (registered by the first boot)
+# persists in the fleet registry and is re-adopted on this reboot.
+cd "$HOME/toy-backlog"
+git fetch origin
+git reset --hard origin/main
+git clean -fdx
+node "<repo-root>/scripts/sandbox-seed-beads.mjs" --sandbox-root "$HOME" --toy-repo "$HOME/toy-backlog" --mode reset
 
 node "<repo-root>/packages/apra-fleet-se/bin/serve.mjs" --port "$SUPERVISOR_PORT" \
-  > "$HOME/supervisor.log" 2>&1 &
+  --beads-dir "$HOME/toy-backlog" > "$HOME/supervisor.log" 2>&1 &
 SUPERVISOR_PID=$!
 SUPERVISOR_STARTED_AT=$(date +%s)
 echo "$SUPERVISOR_PID" > "$SANDBOX.supervisor.pid"
