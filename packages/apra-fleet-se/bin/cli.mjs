@@ -720,7 +720,17 @@ async function main() {
     // fail fast with a typed error naming the missing connection config --
     // silently self-spawning a private stdio server here would defeat the
     // whole point of sharing one fleet-server connection across N children.
-    const connection = await resolveFleetServerConnection();
+    let connection;
+    try {
+        connection = await resolveFleetServerConnection();
+    } catch (err) {
+        // e.g. the server was stopped with 'apra-fleet stop', or auto-start
+        // refused/failed: print the actionable message on stderr (the
+        // supervisor surfaces a launch's stderr tail), not a stack trace.
+        console.error(`Error: ${err && err.message ? err.message : err}`);
+        process.exit(1);
+        return;
+    }
     if (connection.mode !== 'http') {
         const err = new FleetServerUnreachableError(
             'No reachable apra-fleet HTTP singleton was found. cli.mjs no longer ' +
