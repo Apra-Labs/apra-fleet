@@ -1665,14 +1665,11 @@ async function runSprintCycle(context) {
         ensureVcsAuth: ensureVcsAuthFresh,
         // Built per member OS/shell (member_detail via resolveMemberTarget,
         // which degrades to POSIX and logs when the member cannot be resolved).
-        ensureWorkspaceCommand: async (member, relPath) => {
-            const target = await resolveMemberTarget({
-                fleetApi: (args && typeof args.callTool === 'function') ? sprintScopedFleetApi({ callTool: args.callTool, log }) : undefined,
-                member,
-                log,
-            });
-            return getSeCommands(target).ensureFile(relPath);
-        },
+        memberShell: async (member) => getSeCommands(await resolveMemberTarget({
+            fleetApi: (args && typeof args.callTool === 'function') ? sprintScopedFleetApi({ callTool: args.callTool, log }) : undefined,
+            member,
+            log,
+        })),
     });
 
     // Self-heals deploy.md's declared Permissions onto the deployer /

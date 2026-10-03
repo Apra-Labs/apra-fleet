@@ -88,3 +88,53 @@ describe('ensureFile on real shells', () => {
         });
     });
 });
+
+// ensureLine: make one line a whole line of a file, creating it when absent,
+// touching nothing else; idempotent.
+const LOCAL = '.beads/config.local.yaml';
+const LINE = 'sync.remote: "git+https://example.com/org/repo.git"';
+
+describe('ensureLine', () => {
+    test('shape: POSIX grep -qxF guarded append; PowerShell -notcontains guarded Add-Content; no env reads', () => {
+        const p = posix.ensureLine(LOCAL, LINE);
+        assert.ok(p.startsWith(`mkdir -p -- '.beads' && { [ -e '${LOCAL}' ] || : > '${LOCAL}'; } && { grep -qxF -- '${LINE}' '${LOCAL}' || {`), p);
+        assert.equal(gitbash.ensureLine(LOCAL, LINE), p);
+        const script = decodePs(powershell.ensureLine(LOCAL, LINE));
+        assert.ok(script.includes(`-notcontains '${LINE}'`) && script.includes(`Add-Content -LiteralPath '${LOCAL}' -NoNewline`), script);
+        for (const bad of ['$env:', '$HOME', '~/', String.fromCharCode(96)]) assert.ok(!script.includes(bad), `${bad} in ${script}`);
+    });
+
+    test('refuses unsafe lines', () => {
+        for (const bad of ["a'b", 'a$b', 'a\\b', 'a\nb', `a${String.fromCharCode(96)}b`, '']) {
+            assert.throws(() => posix.ensureLine(LOCAL, bad));
+            assert.throws(() => powershell.ensureLine(LOCAL, bad));
+        }
+    });
+
+    const runLine = (run) => {
+        const dir = mkTmp();
+        run(dir);
+        const target = path.join(dir, '.beads', 'config.local.yaml');
+        assert.equal(fs.readFileSync(target, 'utf8'), `${LINE}\n`);
+        run(dir);
+        assert.equal(fs.readFileSync(target, 'utf8'), `${LINE}\n`, 'idempotent');
+        fs.writeFileSync(target, 'other: 1');
+        run(dir);
+        assert.equal(fs.readFileSync(target, 'utf8'), `other: 1\n${LINE}\n`, 'appends after existing content, keeping it');
+    };
+
+    test('bash', { skip: !hasExe('bash', ['-c', 'true']) && 'no bash on this host' }, () => {
+        runLine((dir) => {
+            const r = spawnSync('bash', ['-c', posix.ensureLine(LOCAL, LINE)], { cwd: dir, encoding: 'utf8' });
+            assert.equal(r.status, 0, r.stderr);
+        });
+    });
+
+    test('Windows PowerShell', { skip: process.platform !== 'win32' && 'not a Windows host' }, () => {
+        runLine((dir) => {
+            const [exe, flag, b64] = powershell.ensureLine(LOCAL, LINE).split(' ');
+            const r = spawnSync(exe, ['-NoProfile', flag, b64], { cwd: dir, encoding: 'utf8' });
+            assert.equal(r.status, 0, r.stderr);
+        });
+    });
+});

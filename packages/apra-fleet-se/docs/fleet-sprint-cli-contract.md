@@ -142,14 +142,21 @@ supplied) that reports no beads database, or a database with no
 `sync.remote` while the expectation names one, is set up BEFORE any dispatch
 from the expected `syncRemote`, all through `command()`. A member already
 resolving to a different project (prefix/sync.remote/origin resolved and
-different) is a `MISMATCH` first, with nothing written. Otherwise: VCS
-credential ensured; no DB: a per-shell command creating `.beads/config.yaml`
-when absent (bd refuses `config set` without it), `bd config set sync.remote
-<url>`, `bd bootstrap --dry-run --json` (must plan a clone from `<url>`), `bd
-bootstrap --yes`; DB without sync.remote: `bd config set sync.remote <url>`,
-`bd dolt remote list --json`, `bd dolt remote add origin <url>` only when
-origin is absent (a different origin is refused), `bd dolt pull`. The member
-is then re-probed and must match. Any failure -- including no expected
+different) is a `MISMATCH` first, with nothing written. "Has a database"
+means `bd where` reports a `database_path` (a committed config.yaml with
+issue-prefix yields a prefix but no database). Otherwise: `git ls-files`
+snapshot of modified/untracked beads paths; VCS credential ensured;
+per-shell commands creating `.beads/config.yaml` when absent (bd refuses
+`config set` without it) and recording `sync.remote: "<url>"` in the
+untracked `.beads/config.local.yaml`; `bd config set sync.remote <url>`; no
+DB: `bd bootstrap --dry-run --json` (must plan a clone from `<url>`), `bd
+bootstrap --yes`; DB without sync.remote: `bd dolt remote list --json`, `bd
+dolt remote add origin <url>` only when origin is absent (a different
+origin is refused), `bd dolt pull`. Finally (success or failure) every
+tracked beads file the set-up changed is restored (`git checkout --`) and
+every new untracked beads path is added to git info/exclude, so the
+member's `git status` is clean and a doer's `git add -A` stages nothing
+from the set-up. The member is then re-probed and must match. Any failure -- including no expected
 remote, a non-clone bootstrap plan, a remote not passable verbatim to every
 shell, or bd reporting a schema migration against an older-schema remote -- throws
 `BeadsIdentityError` reason `BEADS_SETUP_FAILED`

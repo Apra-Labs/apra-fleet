@@ -121,6 +121,14 @@ function isEnsureWorkspaceCommand(cmd) {
     return text.includes('.beads/config.yaml') && !/^bd\b/.test(text);
 }
 
+// The engine's per-shell write of the sync remote into the untracked
+// .beads/config.local.yaml layer.
+function isEnsureLocalConfigCommand(cmd) {
+    const m = /^powershell -EncodedCommand ([A-Za-z0-9+/=]+)$/.exec(cmd);
+    const text = m ? Buffer.from(m[1], 'base64').toString('utf16le') : cmd;
+    return text.includes('.beads/config.local.yaml') && !/^bd\b/.test(text);
+}
+
 function noDbMemberOnCommand({ remote, setupLog, bootstrapResult }) {
     const st = { sync: '', hasDb: false, ws: false };
     return async ({ command, member_name: member }) => {
@@ -130,6 +138,7 @@ function noDbMemberOnCommand({ remote, setupLog, bootstrapResult }) {
         }
         if (member !== 'm2') return undefined;
         if (isEnsureWorkspaceCommand(cmd)) { setupLog.push('ensure-workspace'); st.ws = true; return mockCmdResult(0, '', ''); }
+        if (isEnsureLocalConfigCommand(cmd)) { setupLog.push('ensure-local-sync-remote'); return mockCmdResult(0, '', ''); }
         if (/^bd (config set|bootstrap|dolt pull)\b/.test(cmd)) setupLog.push(cmd);
         if (cmd === `bd config set sync.remote ${remote}`) {
             if (!st.ws) return mockCmdResult(1, '', "Error: setting config: no .beads/config.yaml found (run 'bd init' first)");
@@ -168,7 +177,7 @@ test('mock sprint: beads-reading member with no beads DB -> set up from the expe
         });
         check(r.error === null, `expected the sprint to proceed, got error: ${r.error && (r.error.constructor.name + ': ' + r.error.message)}`);
         check(r.result && r.result.status === 'success', `expected a successful run, got ${JSON.stringify(r.result)}`);
-        check(JSON.stringify(setupLog.slice(0, 4)) === JSON.stringify(['ensure-workspace', `bd config set sync.remote ${remote}`, 'bd bootstrap --dry-run --json', 'bd bootstrap --yes']),
+        check(JSON.stringify(setupLog.slice(0, 5)) === JSON.stringify(['ensure-workspace', 'ensure-local-sync-remote', `bd config set sync.remote ${remote}`, 'bd bootstrap --dry-run --json', 'bd bootstrap --yes']),
             `expected the set-up commands on m2, got: ${JSON.stringify(setupLog)}`);
         // Issued through the runner's command() wrapper, before any dispatch or mutating bd.
         const bootIdx = r.commandLog.indexOf('bd bootstrap --yes');

@@ -43,6 +43,20 @@ export function assertSafeRelativePath(relPath, what = 'path') {
 }
 
 /**
+ * A single file line safe to embed single-quoted in POSIX and PowerShell:
+ * no single quote, backslash, $, backtick or newline.
+ * @param {string} line
+ * @returns {string}
+ */
+export function assertSafeFileLine(line) {
+  const l = String(line ?? '');
+  if (!/^[A-Za-z0-9 ._~:/@+="-]+$/.test(l)) {
+    throw new Error(`Refusing to build a member command for unsafe file line '${line}' (allowed: letters, digits, space and . _ ~ : / @ + = " -).`);
+  }
+  return l;
+}
+
+/**
  * POSIX command primitives. Also the base class the Git-for-Windows bash
  * implementation extends -- a gitbash member receives bash strings, so the
  * whole surface below is correct for it apart from genuinely Windows-native
@@ -210,6 +224,28 @@ export class SePosixCommands {
     const dir = slash > 0 ? p.slice(0, slash) : '';
     const create = `{ [ -e '${p}' ] || : > '${p}'; }`;
     return this.wrapForMember(dir ? `mkdir -p -- '${dir}' && ${create}` : create);
+  }
+
+  /**
+   * Idempotently make `line` a whole line of a work-folder-relative file,
+   * creating the file (and its parent directory) when absent; nothing else in
+   * the file is touched. Same append shape as ensureGitExcluded.
+   * Caller: beads-identity-check.mjs member beads set-up (sync.remote in the
+   * untracked .beads/config.local.yaml layer).
+   * @param {string} relPath validated
+   * @param {string} line validated: letters, digits, space and . _ ~ : / @ + = " -
+   * @returns {string}
+   */
+  ensureLine(relPath, line) {
+    const p = assertSafeRelativePath(relPath, 'file path');
+    const l = assertSafeFileLine(line);
+    const slash = p.lastIndexOf('/');
+    const dir = slash > 0 ? p.slice(0, slash) : '';
+    const script = `${dir ? `mkdir -p -- '${dir}' && ` : ''}{ [ -e '${p}' ] || : > '${p}'; } && `
+      + `{ grep -qxF -- '${l}' '${p}' || { `
+      + `if [ -s '${p}' ] && [ -n "$(tail -c 1 '${p}')" ]; then printf '\\n' >> '${p}'; fi; `
+      + `printf '%s\\n' '${l}' >> '${p}'; }; }`;
+    return this.wrapForMember(script);
   }
 
   /**

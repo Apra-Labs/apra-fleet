@@ -11,7 +11,7 @@
 // core's src/os/windows.ts wrapPowerShellEncoded(), not a reuse of it: this
 // package cannot import core.
 
-import { assertSafeRelativePath } from './se-posix.mjs';
+import { assertSafeRelativePath, assertSafeFileLine } from './se-posix.mjs';
 
 /**
  * PowerShell command primitives for a Windows member.
@@ -192,6 +192,32 @@ export class SeWindowsCommands {
     const parts = [];
     if (dir) parts.push(`if (-not (Test-Path -LiteralPath '${dir}')) { New-Item -ItemType Directory -Force -Path '${dir}' | Out-Null }`);
     parts.push(`if (-not (Test-Path -LiteralPath '${p}')) { New-Item -ItemType File -Path '${p}' | Out-Null }`);
+    return this.wrapForMember(parts.join('; '));
+  }
+
+  /**
+   * PowerShell twin of SePosixCommands.ensureLine: make `line` a whole line
+   * of the file (created with its parent directory when absent), appended
+   * with an explicit LF and -NoNewline like ensureGitExcluded; nothing else
+   * in the file is touched. Only script-local variables, no environment reads.
+   * Caller: beads-identity-check.mjs member beads set-up.
+   * @param {string} relPath validated
+   * @param {string} line validated
+   * @returns {string}
+   */
+  ensureLine(relPath, line) {
+    const p = assertSafeRelativePath(relPath, 'file path');
+    const l = assertSafeFileLine(line);
+    const slash = p.lastIndexOf('/');
+    const dir = slash > 0 ? p.slice(0, slash) : '';
+    const parts = [];
+    if (dir) parts.push(`if (-not (Test-Path -LiteralPath '${dir}')) { New-Item -ItemType Directory -Force -Path '${dir}' | Out-Null }`);
+    parts.push(
+      `$raw = ''; if (Test-Path -LiteralPath '${p}') { $raw = [string](Get-Content -LiteralPath '${p}' -Raw) }; `
+      + `if (@($raw -split '\\r?\\n') -notcontains '${l}') { `
+      + `$lf = [string][char]10; $prefix = ''; if ($raw.Length -gt 0 -and -not $raw.EndsWith($lf)) { $prefix = $lf }; `
+      + `Add-Content -LiteralPath '${p}' -NoNewline -Value ($prefix + '${l}' + $lf) }`,
+    );
     return this.wrapForMember(parts.join('; '));
   }
 

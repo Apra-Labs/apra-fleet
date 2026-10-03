@@ -124,11 +124,12 @@ export function parseBeadsIdentity({ where, syncRemote, repoRemote }) {
 }
 
 // Whether the identity describes an actual beads DATABASE. `bd where` also
-// answers a path (with no prefix and no database_path) for a workspace that
-// has only a .beads/config.yaml -- a directory bd recognizes but no database
-// behind it -- so the path alone does not prove a database exists.
+// answers a path -- and, when the tracked .beads/config.yaml carries an
+// issue-prefix, a prefix too -- for a workspace with NO database behind it
+// (a fresh clone of a repo that commits its beads config). Only
+// database_path proves a database exists.
 export function hasBeadsDatabase(id) {
-    return !!(id && (id.databasePath || id.prefix));
+    return !!(id && id.databasePath);
 }
 
 export function isCompleteIdentity(id) {

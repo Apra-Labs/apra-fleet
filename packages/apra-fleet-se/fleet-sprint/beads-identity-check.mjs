@@ -215,25 +215,44 @@ export function assertBdPresent(member, probed) {
 // member up from the sprint's EXPECTED beads remote (verified against bd
 // 1.3 on POSIX and PowerShell):
 //
-//   no database:   <ensure .beads/config.yaml exists>  (bd config set refuses to
-//                                                   write without a workspace;
-//                                                   per-shell command built by
-//                                                   the caller, never truncates)
+//   both cases:    git ls-files (modified / untracked beads paths, BEFORE any write)
+//                  <ensure .beads/config.yaml exists>   (bd config set refuses to write
+//                                                   without a workspace; per-shell,
+//                                                   never truncates)
+//                  <ensure line 'sync.remote: "<expected>"' in .beads/config.local.yaml>
+//                                                  (bd's untracked local layer: the
+//                                                   durable record, see "target repo")
 //                  bd config set sync.remote <expected>
-//                  bd bootstrap --dry-run --json   (must plan a clone FROM <expected>;
+//   no database:   bd bootstrap --dry-run --json   (must plan a clone FROM <expected>;
 //                                                   any other plan -- JSONL import,
 //                                                   fresh database -- would yield a
 //                                                   database with an unrelated history)
 //                  bd bootstrap --yes              (clones and wires the dolt remote
 //                                                   'origin'; never deletes data)
 //   database but
-//   no sync.remote: bd config set sync.remote <expected>
-//                  bd dolt remote list --json      (bootstrap does NOT wire 'origin' on an
+//   no sync.remote: bd dolt remote list --json     (bootstrap does NOT wire 'origin' on an
 //                                                   existing database; an 'origin' pointing
 //                                                   elsewhere is refused, never rewired)
 //                  bd dolt remote add origin <expected>   (only when 'origin' is absent)
 //                  bd dolt pull                    (proves the existing database is a
 //                                                   clone of <expected> and brings it current)
+//   finally (success or failure):
+//                  git checkout -- <each tracked beads file the set-up changed>
+//                  <git info/exclude each beads path the set-up left untracked>
+//
+// Target repo: the member's work folder is a clone of the sprint's TARGET
+// repository, and a doer's `git add -A` there must never carry the set-up
+// into the target PR. bd rewrites tracked beads files during set-up (it
+// reflows config.yaml and adds a sync block that would switch sync on for
+// every user of the repo, appends to .gitignore, rewrites metadata.json) and
+// leaves untracked ones (.beads.gate.lock at the root, config.local.yaml, a
+// whole .beads/ when the repo tracks only issues.jsonl). So the tracked files
+// it changed are restored from git -- bd keeps working: it reads sync.remote
+// from config.local.yaml and the database is untouched -- and the new
+// untracked paths go into the member's git info/exclude. Verified with real
+// bd 1.3 on a fresh clone of a repo that commits its beads config: `git
+// status --porcelain` is empty afterwards, `git add -A` stages nothing, and
+// a later checkout/merge of an upstream change to config.yaml still works.
 //
 // Every step goes through the injected command() with the member named, so
 // the runner's command() wrapper (DoltSync.noteMemberCommand) sees the
@@ -275,6 +294,11 @@ const SETUP_LABEL = 'beads-setup';
 // The work-folder-relative file whose presence makes the folder a beads
 // workspace `bd config set` can write to.
 export const BEADS_WORKSPACE_CONFIG_FILE = '.beads/config.yaml';
+// bd's untracked, machine-local config layer (read over config.yaml). The
+// sync remote is recorded HERE, because bd rewrites the (often tracked)
+// config.yaml during set-up and the preflight restores that file afterwards.
+export const BEADS_LOCAL_CONFIG_FILE = '.beads/config.local.yaml';
+export const beadsLocalSyncRemoteLine = (url) => `sync.remote: "${url}"`;
 
 export const BEADS_SETUP_COMMANDS = Object.freeze({
     setSyncRemote: (url) => `bd config set sync.remote ${url}`,
@@ -289,9 +313,16 @@ export const BEADS_SETUP_COMMANDS = Object.freeze({
 // (no $, %, backtick, quotes, spaces, ;, &, |, commas, parens, backslashes).
 const SHELL_SAFE_REMOTE_RE = /^[A-Za-z0-9][A-Za-z0-9._~:/@+=-]*$/;
 
-// bd's report that it migrated a database's schema locally (or that the
-// remote is behind the local bd's schema).
-const SCHEMA_MIGRATION_RE = /auto-applying\b[^\n]*\bschema migrations?|schema migrations?[^\n]*\bbd dolt push\b|remote[^\n]*\b(?:behind|older)\b[^\n]*\bschema|schema[^\n]*\bremote[^\n]*\b(?:behind|older)\b/i;
+// bd's report that it migrated a database's schema locally, or that the
+// remote is behind the local bd's schema. Matched against bd's own format
+// strings (bd 1.3 source):
+//   "Smart gate (%s): auto-applying %d pending deterministic schema %s to a
+//    remote-backed database (...). Run `bd dolt push` after."
+//   "The database cloned from %s needs %d schema %s (v%d -> v%d)." ...
+//   "Re-running `%s` will NOT fix this -- the remote itself is behind."
+// (the first reproduced verbatim by a live sprint; neither reproducible here
+// without an older-schema remote).
+const SCHEMA_MIGRATION_RE = /auto-applying\b[^\n]*\bschema migrations?|schema migrations?[^\n]*\bbd dolt push\b|\bneeds \d+ schema migrations?\b|remote itself is behind|remote[^\n]*\b(?:behind|older)\b[^\n]*\bschema|schema[^\n]*\bremote[^\n]*\b(?:behind|older)\b/i;
 
 export function hasSchemaMigrationReport(text) {
     return SCHEMA_MIGRATION_RE.test(String(text || ''));
@@ -325,20 +356,50 @@ function parseFirstJson(text, open = '{') {
     }
 }
 
+// Paths the set-up can create or rewrite in the member's work tree, relative
+// to it: `.beads/...` (bd reflows a tracked config.yaml, appends to a tracked
+// .gitignore, rewrites metadata.json) and the `.beads.gate.lock` bd leaves at
+// the work-folder root. Only lines of git output matching this are acted on.
+const BEADS_TREE_PATH_RE = /^\.beads(?:\/[A-Za-z0-9._/-]*)?$|^\.beads\.gate\.lock$/;
+
+export const BEADS_TREE_COMMANDS = Object.freeze({
+    // Tracked beads files with work-tree changes.
+    modified: 'git ls-files -m -- .beads',
+    // Untracked, not ignored; a wholly untracked directory collapses to one entry.
+    untracked: 'git ls-files --others --exclude-standard --directory -- .beads .beads.gate.lock',
+    restore: (relPath) => `git checkout -- ${relPath}`,
+});
+
+function beadsTreePaths(text) {
+    return String(text || '').split(/\r?\n/).map((l) => l.trim()).filter((l) => BEADS_TREE_PATH_RE.test(l) && !l.split('/').includes('..'));
+}
+
 /**
  * Sets up one member's beads from `url` (see the section comment). Throws
  * BeadsIdentityError(BEADS_SETUP_FAILED) on any step that fails; resolves
  * when every step succeeded. Verifying the result is the caller's job (a
  * fresh identity probe).
  *
+ * The target repository must never receive the set-up's side effects through
+ * a later commit on the member (a doer's `git add -A`): bd rewrites tracked
+ * beads files (config.yaml gains the sync remote, .gitignore and
+ * metadata.json change) and adds untracked ones. So the beads paths that are
+ * modified/untracked are recorded BEFORE the first write, and afterwards --
+ * on success AND on failure, since a failed set-up may already have written
+ * -- every tracked file the set-up changed is restored (`git checkout --`;
+ * the sync remote survives in the untracked config.local.yaml) and every new
+ * untracked path is added to the member's git info/exclude
+ * (memberShell().ensureGitExcluded). The member's work tree then reports
+ * clean and `git add -A` stages nothing from the set-up.
+ *
  * @param {{ command: Function, member: string, url: string, hasDb: boolean,
- *   ensureWorkspaceCommand?: (member: string, relPath: string) => (string|Promise<string>),
+ *   memberShell?: (member: string) => Promise<{ ensureFile: (relPath: string) => string, ensureLine: (relPath: string, line: string) => string, ensureGitExcluded: (entry: string) => string }>,
  *   ensureVcsAuth?: (member: string) => Promise<void>, log?: Function, timeoutS?: number }} opts
- *   `ensureWorkspaceCommand` returns the member-shell command that creates
- *   `relPath` when absent (never truncating it); required when !hasDb.
+ *   `memberShell` returns the member's OS/shell command builder (the SE
+ *   command primitives); required.
  * @returns {Promise<string[]>} the commands issued, in order
  */
-export async function setupMemberBeads({ command, member, url, hasDb, ensureWorkspaceCommand, ensureVcsAuth, log = () => {}, timeoutS = BEADS_SETUP_TIMEOUT_S }) {
+export async function setupMemberBeads({ command, member, url, hasDb, memberShell, ensureVcsAuth, log = () => {}, timeoutS = BEADS_SETUP_TIMEOUT_S }) {
     if (!SHELL_SAFE_REMOTE_RE.test(url)) {
         throw setupFailed(member,
             `needs its beads set up from the expected beads remote '${url}', which contains characters that cannot be passed verbatim to every member shell`,
@@ -365,6 +426,30 @@ export async function setupMemberBeads({ command, member, url, hasDb, ensureWork
         }
     };
 
+    let shell = null;
+    try {
+        shell = typeof memberShell === 'function' ? await memberShell(member) : null;
+    } catch (err) {
+        log(`[beads-identity] could not resolve the shell of member '${member}': ${err && err.message ? err.message : err}`);
+    }
+    if (!shell || typeof shell.ensureFile !== 'function' || typeof shell.ensureLine !== 'function' || typeof shell.ensureGitExcluded !== 'function') {
+        throw setupFailed(member, 'needs its beads set up, but no command could be built for its shell', setupFix(url), { step: 'shell', url });
+    }
+
+    // What git already reports for the beads paths, before any write.
+    const listTree = async () => {
+        const modified = await run(BEADS_TREE_COMMANDS.modified);
+        const untracked = await run(BEADS_TREE_COMMANDS.untracked);
+        if (!modified.ok || !untracked.ok) {
+            const bad = !modified.ok ? modified : untracked;
+            throw setupFailed(member,
+                `needs its beads set up, but its workFolder's git state cannot be read to keep the set-up out of commits (${summarizeRaw(bad.error || bad.output)})`,
+                `make sure the member's workFolder is a git clone with git on PATH, or ${setupFix(url)}`, { step: 'tree', url });
+        }
+        return { modified: new Set(beadsTreePaths(modified.output)), untracked: new Set(beadsTreePaths(untracked.output)) };
+    };
+    const before = await listTree();
+
     log(`[beads-identity] member '${member}' ${hasDb ? 'has a beads database with no sync.remote' : 'has no beads database in its workFolder'}; setting it up from the expected beads remote ${url}.`);
     if (typeof ensureVcsAuth === 'function') {
         try {
@@ -374,87 +459,126 @@ export async function setupMemberBeads({ command, member, url, hasDb, ensureWork
         }
     }
 
-    if (!hasDb) {
-        let wsCmd = '';
-        try {
-            wsCmd = typeof ensureWorkspaceCommand === 'function' ? String(await ensureWorkspaceCommand(member, BEADS_WORKSPACE_CONFIG_FILE) || '') : '';
-        } catch (err) {
-            wsCmd = '';
-            log(`[beads-identity] could not build the workspace command for member '${member}': ${err && err.message ? err.message : err}`);
-        }
-        if (!wsCmd) {
-            throw setupFailed(member, `has no beads database and no command could be built for its shell to create '${BEADS_WORKSPACE_CONFIG_FILE}'`,
-                setupFix(url), { step: 'workspace', url });
-        }
-        const ws = await run(wsCmd);
-        if (!ws.ok) {
-            throw setupFailed(member, `could not create '${BEADS_WORKSPACE_CONFIG_FILE}' in its workFolder (${summarizeRaw(ws.error || ws.output)})`,
-                setupFix(url), { step: 'workspace', url });
-        }
-    }
+    const apply = async () => {
+        const runShell = async (build, what) => {
+            let cmd = '';
+            try {
+                cmd = String(build() || '');
+            } catch (err) {
+                log(`[beads-identity] could not build the command to ${what} for member '${member}': ${err && err.message ? err.message : err}`);
+            }
+            const r = cmd ? await run(cmd) : { ok: false, error: 'no command for this shell' };
+            if (!r.ok) {
+                throw setupFailed(member, `could not ${what} in its workFolder (${summarizeRaw(r.error || r.output)})`, setupFix(url), { step: 'workspace', url });
+            }
+        };
+        // bd refuses `config set` without a workspace config file.
+        await runShell(() => shell.ensureFile(BEADS_WORKSPACE_CONFIG_FILE), `create '${BEADS_WORKSPACE_CONFIG_FILE}'`);
+        // The durable record of the sync remote, in the untracked local layer.
+        await runShell(() => shell.ensureLine(BEADS_LOCAL_CONFIG_FILE, beadsLocalSyncRemoteLine(url)), `record the sync remote in '${BEADS_LOCAL_CONFIG_FILE}'`);
 
-    const setCmd = BEADS_SETUP_COMMANDS.setSyncRemote(url);
-    const set = await run(setCmd);
-    if (!set.ok) {
-        throw setupFailed(member, `could not set its sync.remote ('${setCmd}' -> ${summarizeRaw(set.error || set.output)})`, setupFix(url), { step: 'set-sync-remote', url });
-    }
+        const setCmd = BEADS_SETUP_COMMANDS.setSyncRemote(url);
+        const set = await run(setCmd);
+        if (!set.ok) {
+            throw setupFailed(member, `could not set its sync.remote ('${setCmd}' -> ${summarizeRaw(set.error || set.output)})`, setupFix(url), { step: 'set-sync-remote', url });
+        }
 
-    if (!hasDb) {
-        const plan = await run(BEADS_SETUP_COMMANDS.plan);
-        const planObj = plan.ok ? parseFirstJson(plan.output) : null;
-        const planned = planObj && typeof planObj.action === 'string' ? planObj.action : '';
-        const plannedRemote = planObj && typeof planObj.sync_remote === 'string' ? planObj.sync_remote : '';
-        if (!plan.ok || planned !== 'sync' || normalizeRemoteUrl(plannedRemote) !== normalizeRemoteUrl(url)) {
-            const why = !plan.ok
-                ? summarizeRaw(plan.error || plan.output)
-                : `planned action '${planned || '(none)'}'${planObj && planObj.reason ? ` (${summarizeRaw(planObj.reason)})` : ''}${plannedRemote ? ` from '${plannedRemote}'` : ''}`;
+        if (!hasDb) {
+            const plan = await run(BEADS_SETUP_COMMANDS.plan);
+            const planObj = plan.ok ? parseFirstJson(plan.output) : null;
+            const planned = planObj && typeof planObj.action === 'string' ? planObj.action : '';
+            const plannedRemote = planObj && typeof planObj.sync_remote === 'string' ? planObj.sync_remote : '';
+            if (!plan.ok || planned !== 'sync' || normalizeRemoteUrl(plannedRemote) !== normalizeRemoteUrl(url)) {
+                const why = !plan.ok
+                    ? summarizeRaw(plan.error || plan.output)
+                    : `planned action '${planned || '(none)'}'${planObj && planObj.reason ? ` (${summarizeRaw(planObj.reason)})` : ''}${plannedRemote ? ` from '${plannedRemote}'` : ''}`;
+                throw setupFailed(member,
+                    `has no beads database and 'bd bootstrap' would not clone it from the expected beads remote '${url}' ('${BEADS_SETUP_COMMANDS.plan}' -> ${why}); ` +
+                    'any other bootstrap would create a database with an unrelated history',
+                    `make sure '${url}' holds the project's beads data and the member's VCS credential can read it, then ${setupFix(url)}`,
+                    { step: 'plan', url, plan: planObj });
+            }
+
+            const boot = await run(BEADS_SETUP_COMMANDS.bootstrap);
+            assertNoMigration(BEADS_SETUP_COMMANDS.bootstrap, boot);
+            if (!boot.ok) {
+                throw setupFailed(member, `could not bootstrap its beads from '${url}' ('${BEADS_SETUP_COMMANDS.bootstrap}' -> ${summarizeRaw(boot.error || boot.output)})`, setupFix(url), { step: 'bootstrap', url });
+            }
+            return issued;
+        }
+
+        // An existing database: make sure its dolt 'origin' is the expected
+        // remote (adding it when absent, refusing a different one), then pull.
+        const list = await run(BEADS_SETUP_COMMANDS.remoteList);
+        const remotes = list.ok ? parseFirstJson(list.output, '[') : null;
+        if (!Array.isArray(remotes)) {
+            throw setupFailed(member, `could not list its beads dolt remotes ('${BEADS_SETUP_COMMANDS.remoteList}' -> ${summarizeRaw(list.error || list.output)})`,
+                setupFix(url), { step: 'remote-list', url });
+        }
+        const origin = remotes.find((r) => r && r.name === 'origin');
+        if (origin && normalizeRemoteUrl(String(origin.url || '')) !== normalizeRemoteUrl(url)) {
             throw setupFailed(member,
-                `has no beads database and 'bd bootstrap' would not clone it from the expected beads remote '${url}' ('${BEADS_SETUP_COMMANDS.plan}' -> ${why}); ` +
-                'any other bootstrap would create a database with an unrelated history',
-                `make sure '${url}' holds the project's beads data and the member's VCS credential can read it, then ${setupFix(url)}`,
-                { step: 'plan', url, plan: planObj });
+                `has an existing beads database whose dolt remote 'origin' is '${origin.url}', not the expected beads remote '${url}'; it is not rewired automatically`,
+                `check which beads project that member's database belongs to; if it is this project, run 'bd dolt remote add origin ${url}' in its workFolder, otherwise move that database aside, then rerun the sprint`,
+                { step: 'remote-list', url, origin: origin.url });
         }
+        if (!origin) {
+            const addCmd = BEADS_SETUP_COMMANDS.addOrigin(url);
+            const add = await run(addCmd);
+            if (!add.ok) {
+                throw setupFailed(member, `could not add the dolt remote 'origin' ('${addCmd}' -> ${summarizeRaw(add.error || add.output)})`, setupFix(url), { step: 'remote-add', url });
+            }
+        }
+        const pull = await run(BEADS_SETUP_COMMANDS.pull);
+        assertNoMigration(BEADS_SETUP_COMMANDS.pull, pull);
+        if (!pull.ok) {
+            throw setupFailed(member,
+                `has an existing beads database that cannot pull from the expected beads remote '${url}' ('${BEADS_SETUP_COMMANDS.pull}' -> ${summarizeRaw(pull.error || pull.output)}); ` +
+                'it is most likely not a clone of that remote',
+                "move that member's existing beads database aside (it is never deleted automatically) so the next sprint clones it from the remote, " +
+                `or ${setupFix(url)}`,
+                { step: 'pull', url });
+        }
+    };
 
-        const boot = await run(BEADS_SETUP_COMMANDS.bootstrap);
-        assertNoMigration(BEADS_SETUP_COMMANDS.bootstrap, boot);
-        if (!boot.ok) {
-            throw setupFailed(member, `could not bootstrap its beads from '${url}' ('${BEADS_SETUP_COMMANDS.bootstrap}' -> ${summarizeRaw(boot.error || boot.output)})`, setupFix(url), { step: 'bootstrap', url });
+    // Keep the set-up's work-tree changes out of every later commit on the
+    // member -- after success AND failure (a failed set-up may have written).
+    const protect = async () => {
+        const after = await listTree();
+        const changed = [...after.modified].filter((p) => !before.modified.has(p));
+        const added = [...after.untracked].filter((p) => !before.untracked.has(p));
+        for (const p of changed) {
+            const r = await run(BEADS_TREE_COMMANDS.restore(p));
+            if (!r.ok) {
+                throw setupFailed(member, `could not restore tracked '${p}' after its beads set-up rewrote it (${summarizeRaw(r.error || r.output)})`,
+                    `in that member's workFolder run 'git checkout -- ${p}', then rerun the sprint`, { step: 'protect', url });
+            }
         }
-        return issued;
-    }
+        for (const p of added) {
+            const r = await run(shell.ensureGitExcluded(p));
+            if (!r.ok) {
+                throw setupFailed(member, `could not keep its set-up's untracked '${p}' out of commits (${summarizeRaw(r.error || r.output)})`,
+                    `add '${p}' to that member's git info/exclude, then rerun the sprint`, { step: 'protect', url });
+            }
+        }
+        if (changed.length || added.length) {
+            log(`[beads-identity] member '${member}': kept the beads set-up out of commits (restored: ${changed.join(', ') || 'none'}; excluded: ${added.join(', ') || 'none'}).`);
+        }
+    };
 
-    // An existing database: make sure its dolt 'origin' is the expected
-    // remote (adding it when absent, refusing a different one), then pull.
-    const list = await run(BEADS_SETUP_COMMANDS.remoteList);
-    const remotes = list.ok ? parseFirstJson(list.output, '[') : null;
-    if (!Array.isArray(remotes)) {
-        throw setupFailed(member, `could not list its beads dolt remotes ('${BEADS_SETUP_COMMANDS.remoteList}' -> ${summarizeRaw(list.error || list.output)})`,
-            setupFix(url), { step: 'remote-list', url });
+    let failure = null;
+    try {
+        await apply();
+    } catch (err) {
+        failure = err;
     }
-    const origin = remotes.find((r) => r && r.name === 'origin');
-    if (origin && normalizeRemoteUrl(String(origin.url || '')) !== normalizeRemoteUrl(url)) {
-        throw setupFailed(member,
-            `has an existing beads database whose dolt remote 'origin' is '${origin.url}', not the expected beads remote '${url}'; it is not rewired automatically`,
-            `check which beads project that member's database belongs to; if it is this project, run 'bd dolt remote add origin ${url}' in its workFolder, otherwise move that database aside, then rerun the sprint`,
-            { step: 'remote-list', url, origin: origin.url });
+    try {
+        await protect();
+    } catch (err) {
+        if (!failure) failure = err;
+        else log(`[beads-identity] member '${member}': ${err && err.message ? err.message : err}`);
     }
-    if (!origin) {
-        const addCmd = BEADS_SETUP_COMMANDS.addOrigin(url);
-        const add = await run(addCmd);
-        if (!add.ok) {
-            throw setupFailed(member, `could not add the dolt remote 'origin' ('${addCmd}' -> ${summarizeRaw(add.error || add.output)})`, setupFix(url), { step: 'remote-add', url });
-        }
-    }
-    const pull = await run(BEADS_SETUP_COMMANDS.pull);
-    assertNoMigration(BEADS_SETUP_COMMANDS.pull, pull);
-    if (!pull.ok) {
-        throw setupFailed(member,
-            `has an existing beads database that cannot pull from the expected beads remote '${url}' ('${BEADS_SETUP_COMMANDS.pull}' -> ${summarizeRaw(pull.error || pull.output)}); ` +
-            'it is most likely not a clone of that remote',
-            "move that member's existing beads database aside (it is never deleted automatically) so the next sprint clones it from the remote, " +
-            `or ${setupFix(url)}`,
-            { step: 'pull', url });
-    }
+    if (failure) throw failure;
     return issued;
 }
 
@@ -482,14 +606,13 @@ function assertMatches(member, expected, actual, cmp) {
  *   backlogMember: string, members: string[],
  *   expected?: object|null, prober?: object, timeoutS?: number,
  *   setupMembers?: string[], ensureVcsAuth?: (member: string) => Promise<void>,
- *   ensureWorkspaceCommand?: (member: string, relPath: string) => (string|Promise<string>),
+ *   memberShell?: (member: string) => Promise<object>,
  *   setupTimeoutS?: number,
  * }} opts
  *   `setupMembers` names the beads-reading members the preflight may set
  *   up (omitted: every member); `ensureVcsAuth` refreshes a member's VCS
- *   credential before its set-up; `ensureWorkspaceCommand` builds the
- *   member-shell command that creates a file when absent (see
- *   setupMemberBeads).
+ *   credential before its set-up; `memberShell` resolves the member's
+ *   OS/shell command primitives (see setupMemberBeads).
  * @returns {Promise<{
  *   expected: object|null, expectedFrom: 'args'|'backlog'|'none',
  *   members: Record<string, object>, warnings: string[], setUp: string[],
@@ -498,7 +621,7 @@ function assertMatches(member, expected, actual, cmp) {
  *   `unresolved: string[]` (the compared fields it could not report). A
  *   member with no beads database at all has NO entry -- only a warning.
  */
-export async function verifyBeadsIdentity({ command, log = () => {}, publishState, backlogMember, members, expected = null, prober, timeoutS, setupMembers, ensureWorkspaceCommand, ensureVcsAuth, setupTimeoutS }) {
+export async function verifyBeadsIdentity({ command, log = () => {}, publishState, backlogMember, members, expected = null, prober, timeoutS, setupMembers, memberShell, ensureVcsAuth, setupTimeoutS }) {
     if (typeof backlogMember !== 'string' || !backlogMember) {
         throw new TypeError('verifyBeadsIdentity: backlogMember must be a non-empty string');
     }
@@ -594,7 +717,7 @@ export async function verifyBeadsIdentity({ command, log = () => {}, publishStat
                 `launch via the supervisor so --expect-beads carries the beads sync remote (or set sync.remote on the backlog member), or ${setupFix('')}`,
                 { step: 'no-remote' });
         }
-        await setupMemberBeads({ command, member, url, hasDb, ensureWorkspaceCommand, ensureVcsAuth, log, timeoutS: setupTimeoutS });
+        await setupMemberBeads({ command, member, url, hasDb, memberShell, ensureVcsAuth, log, timeoutS: setupTimeoutS });
         p.forget(member);
         const again = await p.probe(member);
         assertBdPresent(member, again);
