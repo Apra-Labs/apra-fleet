@@ -245,7 +245,7 @@ test('the phase-order expectation is non-vacuous: it covers every sliced phase a
     );
     assert.ok(
         EXPECTED_PHASE_SEQUENCE.indexOf('Harvest C1') < EXPECTED_PHASE_SEQUENCE.indexOf('Publish PR C1'),
-        'Harvest must run before Publish PR -- the harvester\'s docs/changelog commits are published by its own ' +
+        'Harvest must run before Publish PR -- the harvester\'s docs commits are published by its own ' +
         'policy bracket before Publish PR pushes the branch and raises the PR'
     );
 

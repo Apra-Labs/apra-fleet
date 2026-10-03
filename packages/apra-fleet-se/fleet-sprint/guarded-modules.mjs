@@ -209,7 +209,7 @@ export const GUARDED_MODULES = [
     // guard's `files` output against guardedModuleBasenames().
     //
     // harvest.mjs took NO member_name-bearing command() call site out of
-    // runner.js -- the docs/changelog/sprint-analysis commits are made by the
+    // runner.js -- the docs/sprint-analysis commits are made by the
     // DISPATCHED harvester inside its own repo and published by the 'harvester'
     // policy row's pushCode/pushBeads bracket -- but it took ONE dispatchRole()
     // site (the harvester ladder), which is what dispatch-safety-guard and the

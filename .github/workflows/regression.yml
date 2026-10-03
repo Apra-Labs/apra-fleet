@@ -1,0 +1,200 @@
+name: Regression - install/upgrade proof
+
+# Fresh-install harness (tests/integration/fresh-install) on disposable hosted
+# VMs: builds this commit's installers, then runs passes A (no Node), B
+# (Node), U (upgrade from the latest release via install --force) and U2
+# (upgrade along the 'apra-fleet update' path) through the host driver, one
+# fresh VM per OS x pass. A stale upgrade-baseline pin is INCONCLUSIVE (red).
+on:
+  push:
+    branches-ignore: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Keyed by the tested commit so a push run and a re-run dedupe; on
+# pull_request github.sha is the synthetic merge commit, so use the head sha.
+concurrency:
+  group: regression-${{ github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: false
+
+# Fork-safe: read-only token, no secrets anywhere in this workflow.
+permissions:
+  contents: read
+
+jobs:
+  # Same-repo branches are covered by the push trigger; pull_request runs only
+  # for fork PRs, and tests the PR head commit, never the merge commit.
+  build-installer:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            binary: apra-fleet-installer-linux-x64
+          - os: macos-latest
+            binary: apra-fleet-installer-darwin-arm64
+          # windows-2022 (VS 17), not windows-latest (VS 18): node-gyp can't
+          # detect VS 18. Same pin as ci.yml build-binary.
+          - os: windows-2022
+            binary: apra-fleet-installer-win-x64.exe
+    runs-on: ${{ matrix.os }}
+    # Build steps mirror ci.yml build-binary (same actions and versions).
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+
+      - name: Setup Node.js 22.x
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22.x
+          cache: npm
+
+      - name: Configure Windows build tools
+        if: runner.os == 'Windows'
+        run: Add-Content $env:GITHUB_ENV "npm_config_msvs_version=2022"
+        shell: pwsh
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install rcedit (Windows only)
+        if: runner.os == 'Windows'
+        run: npm install -g rcedit
+
+      - name: Build SEA bundle
+        run: node scripts/build-sea.mjs
+
+      - name: Generate SEA config
+        run: node scripts/gen-sea-config.mjs
+
+      - name: Strip node.exe signature before SEA injection (Windows only)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $nodePath = (Get-Command node).Source
+          Write-Host "Node path: $nodePath"
+          $st = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter signtool.exe |
+            Where-Object { $_.FullName -match "x64" } |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1 -ExpandProperty FullName
+          Write-Host "signtool: $st"
+          & $st remove /s $nodePath
+
+      - name: Package SEA binary
+        run: node scripts/package-sea.mjs
+
+      - name: Smoke test - version
+        run: ./dist/${{ matrix.binary }} --version
+        shell: bash
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v7
+        with:
+          name: regression-${{ matrix.binary }}
+          path: dist/${{ matrix.binary }}
+          retention-days: 7
+
+  fresh-install:
+    name: fresh-install (${{ matrix.os }}, pass ${{ matrix.pass }})
+    needs: build-installer
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-2022, macos-latest]
+        pass: [A, B, U, U2]
+        include:
+          - os: ubuntu-latest
+            binary: apra-fleet-installer-linux-x64
+          - os: macos-latest
+            binary: apra-fleet-installer-darwin-arm64
+          - os: windows-2022
+            binary: apra-fleet-installer-win-x64.exe
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      # Runs the harness itself; the host driver drops this Node (and every
+      # other PATH dir holding node/npm) from the box's environment.
+      - name: Setup Node.js 22.x
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22.x
+
+      - name: Download installer
+        uses: actions/download-artifact@v4
+        with:
+          name: regression-${{ matrix.binary }}
+          path: candidate
+
+      - name: Make installer executable
+        if: runner.os != 'Windows'
+        run: chmod +x "candidate/${{ matrix.binary }}"
+
+      # A real desktop Linux user has a systemd --user manager from their login
+      # session; the runner account has none. Lingering starts one, so the
+      # installer's service path is exercised instead of skipped.
+      - name: Start a systemd user manager for the runner account (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo loginctl enable-linger "$(id -un)"
+          RT="/run/user/$(id -u)"
+          for i in $(seq 1 30); do [ -S "$RT/bus" ] && break; sleep 1; done
+          ls -la "$RT" || true
+          echo "XDG_RUNTIME_DIR=$RT" >> "$GITHUB_ENV"
+          echo "DBUS_SESSION_BUS_ADDRESS=unix:path=$RT/bus" >> "$GITHUB_ENV"
+          XDG_RUNTIME_DIR="$RT" systemctl --user show-environment | head -5
+
+      # Hosted Windows images preinstall Node.js system-wide. Remove it so the
+      # VM is Node-free like a fresh user machine, and the pinned Node MSI the
+      # passes install is not blocked by a newer preinstalled one.
+      - name: Remove the preinstalled system Node.js (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $keys = 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*', 'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
+          $apps = Get-ItemProperty $keys -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -like 'Node.js*' }
+          foreach ($a in $apps) {
+            Write-Host "uninstalling $($a.DisplayName) $($a.DisplayVersion) $($a.PSChildName)"
+            $p = Start-Process msiexec.exe -ArgumentList '/x', $a.PSChildName, '/qn', '/norestart' -Wait -PassThru
+            Write-Host "msiexec /x exit $($p.ExitCode)"
+          }
+          $dir = Join-Path $env:ProgramFiles 'nodejs'
+          if (Test-Path $dir) { Write-Host "removing leftover $dir"; Remove-Item -Recurse -Force $dir }
+          $mp = [Environment]::GetEnvironmentVariable('Path', 'Machine') -split ';' | Where-Object { $_ -and -not (Test-Path (Join-Path $_ 'node.exe')) -and $_.TrimEnd('\') -ne $dir }
+          [Environment]::SetEnvironmentVariable('Path', ($mp -join ';'), 'Machine')
+          Write-Host "Machine PATH now: $($mp -join ';')"
+
+      - name: Run pass ${{ matrix.pass }} through the host driver
+        shell: bash
+        run: >-
+          node tests/integration/fresh-install/run.mjs
+          --driver host --i-am-disposable
+          --binary "candidate/${{ matrix.binary }}"
+          --passes ${{ matrix.pass }}
+          --out "${{ runner.temp }}/fi-out"
+          --cache "${{ runner.temp }}/fi-cache"
+
+      - name: Report summary
+        if: always()
+        shell: bash
+        run: |
+          f="${{ runner.temp }}/fi-out/report.md"
+          if [ -f "$f" ]; then cat "$f" >> "$GITHUB_STEP_SUMMARY"; else echo "no report.md produced" >> "$GITHUB_STEP_SUMMARY"; fi
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: fresh-install-${{ matrix.os }}-${{ matrix.pass }}
+          path: ${{ runner.temp }}/fi-out
+          retention-days: 14
+          if-no-files-found: warn

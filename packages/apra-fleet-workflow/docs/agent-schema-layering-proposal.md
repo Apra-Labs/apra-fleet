@@ -395,6 +395,10 @@ catching a missing `costAnalysis` that way burns a full dispatch merely to
 receive a structured "FAILED, you forgot X" reply that a plain object-key
 check produces for free, locally, before any network call.
 
+(Later note: `costAnalysis` was since removed from the harvester's inputs --
+the engine renders the cost block in the PR body and the sprint-analysis
+document instead of the harvester writing a CHANGELOG entry.)
+
 ### 6.3 Role-owned input schemas, caller-side pre-flight gate
 
 Section 4's design, extended symmetrically:

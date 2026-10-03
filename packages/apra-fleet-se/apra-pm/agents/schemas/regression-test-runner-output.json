@@ -41,6 +41,27 @@
       "type": "string",
       "description": "One paragraph describing what was tested, what passed, what failed, and reiterating that the result is informational."
     },
+    "verdict": {
+      "type": "string",
+      "enum": ["PASS", "FAIL", "INCONCLUSIVE"],
+      "description": "Optional. Present only when the playbook names a machine-written verdict file: copied from it verbatim, never authored by the runner. When present, passed must equal (verdict == \"PASS\"). INCONCLUSIVE means the pass could not prove anything either way; it is not a failure."
+    },
+    "testedSha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$",
+      "description": "Optional. The full commit sha the verdict file says was tested, copied verbatim from it."
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "verdictRef": { "type": "string", "description": "Where the verdict file lives (path or URL)." },
+        "runUrl": { "type": "string", "description": "URL of the run that produced the verdict file." },
+        "newFailures": { "type": "array", "items": { "type": "string" }, "description": "New failure fingerprints, copied from the verdict file." },
+        "inventoryMissing": { "type": "array", "items": { "type": "string" }, "description": "Required coverage items the run did not cover, copied from the verdict file." }
+      },
+      "description": "Optional. Pointers to and key lists from the machine-written verdict file, copied verbatim from it."
+    },
     "smokeEvidence": {
       "type": "object",
       "additionalProperties": true,

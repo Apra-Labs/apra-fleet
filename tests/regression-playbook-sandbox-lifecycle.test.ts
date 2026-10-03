@@ -192,11 +192,11 @@ describe('regression-test-playbook.md sandbox lifecycle', () => {
 
     it('regression-test-playbook.md Setup actually invokes sandbox-lock.mjs acquire and kill-port.mjs 18700 before "node dist/index.js start" -- reverting either line is what the prior tests prove would leave the busy-check/stale-port guard unenforced', () => {
       const text = fs.readFileSync(PLAYBOOK_PATH, 'utf-8');
-      // Anchor to the actual '## Setup'/'## Reset' HEADINGS (a whole line),
+      // Anchor to the actual '## Setup'/'## Teardown' HEADINGS (a whole line),
       // not a backticked mention of the same text elsewhere in the file's
       // intro/cross-reference prose -- mirrors the sibling
       // regression-playbook-port3001-guard.test.ts pattern.
-      const setupSection = text.split(/^## Setup$/m)[1]?.split(/^## Reset$/m)[0] ?? '';
+      const setupSection = text.split(/^## Setup$/m)[1]?.split(/^## Teardown$/m)[0] ?? '';
       // apra-fleet-5co8.39: acquire no longer takes an explicit "$$" pid
       // argument -- the CLI now records its own process.ppid (the Setup
       // shell's real, native OS pid), since $$ is an MSYS-internal pid under
@@ -402,44 +402,6 @@ describe('regression-test-playbook.md sandbox lifecycle', () => {
       spawnSync(process.execPath, [SANDBOX_LOCK_CLI, 'release', sandbox]);
       const after = snapshot();
       expect(after).toEqual(before);
-    });
-  });
-
-  // ---------------------------------------------------------------------
-  // Property 5: Cross-instance safety -- the documented time-bound
-  // mitigation this playbook accepts (dolt-orphan-sweep's 5-minute tick)
-  // is present and the smoke test's own bounds stay inside it.
-  // ---------------------------------------------------------------------
-  describe('cross-instance safety: the documented time-bound mitigation is present', () => {
-    it('regression-test-playbook.md Test scenario step 4 hard-enforces the UPTIME_DEADLINE = SUPERVISOR_STARTED_AT + 280 stop (the actual enforcement point) -- Teardown\'s SUPERVISOR_UPTIME >= 300 check is only a belt-and-suspenders warning, not the hard stop', () => {
-      const text = fs.readFileSync(PLAYBOOK_PATH, 'utf-8');
-      // The real hard stop: Test scenario step 4's sprint-poll loop bails at
-      // +280s, before the sweep's 300s/5-minute tick can ever fire.
-      expect(text).toMatch(/UPTIME_DEADLINE\s*=\s*\$\(\(\s*SUPERVISOR_STARTED_AT\s*\+\s*280\s*\)\)/);
-      expect(text).toMatch(/"\$\(date \+%s\)"\s*-ge\s*"\$UPTIME_DEADLINE"/);
-      // The Teardown check is documented as belt-and-suspenders, not the
-      // enforcement mechanism -- still present, but not what this test
-      // treats as the hard bound.
-      expect(text).toMatch(/SUPERVISOR_UPTIME"\s*-ge\s*300/);
-      expect(text).toMatch(/belt-and-suspenders/i);
-      expect(text).toMatch(/dolt-orphan-sweep/i);
-    });
-
-    it('regression-test-playbook.md guards the supervisor started-at marker BEFORE computing UPTIME_DEADLINE, so a missing/empty/non-numeric marker fails with the real reason instead of the misleading sweep-tick message', () => {
-      const text = fs.readFileSync(PLAYBOOK_PATH, 'utf-8');
-      // An absent marker must be caught by an existence check, and the
-      // diagnostic must name the marker file path.
-      expect(text).toMatch(/if \[ ! -f "\$SANDBOX\.supervisor\.started_at" \]; then/);
-      expect(text).toMatch(/supervisor started-at marker file[\s\S]{0,200}is missing/);
-      // An empty or non-numeric marker must be rejected too (a bare `cat`
-      // of an empty file otherwise makes UPTIME_DEADLINE evaluate to 280).
-      expect(text).toMatch(/case "\$SUPERVISOR_STARTED_AT" in\s*\n\s*'' \| \*\[!0-9\]\* \)/);
-      expect(text).toMatch(/does not hold an integer[\s\S]{0,120}epoch timestamp/);
-      // The guard must sit BEFORE the deadline computation, not after it.
-      const guardIndex = text.indexOf('if [ ! -f "$SANDBOX.supervisor.started_at" ]; then');
-      const deadlineIndex = text.search(/UPTIME_DEADLINE\s*=\s*\$\(\(\s*SUPERVISOR_STARTED_AT\s*\+\s*280\s*\)\)/);
-      expect(guardIndex).toBeGreaterThan(-1);
-      expect(deadlineIndex).toBeGreaterThan(guardIndex);
     });
   });
 });

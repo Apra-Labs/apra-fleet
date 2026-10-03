@@ -221,6 +221,26 @@ describe('verdict schemas', () => {
         assert.strictEqual(validateVerdict('regressionReport', bad).valid, false);
     });
 
+    test('regressionReport accepts the optional verdict fields and rejects a bad enum or sha', () => {
+        const base = { passed: false, bugsFiled: [], summary: 'x' };
+        const withVerdict = {
+            ...base,
+            verdict: 'INCONCLUSIVE',
+            testedSha: 'a'.repeat(40),
+            evidence: { verdictRef: 'out/verdict.json', runUrl: 'https://ci.example/run/1', newFailures: [], inventoryMissing: ['INV-1'], extra: 1 },
+        };
+        assert.strictEqual(validateVerdict('regressionReport', withVerdict).valid, true);
+        assert.strictEqual(validateVerdict('regressionReport', base).valid, true, 'verdict fields stay optional');
+        for (const bad of [
+            { ...withVerdict, verdict: 'PASSED' },
+            { ...withVerdict, testedSha: 'abc1234' },
+            { ...withVerdict, testedSha: 'A'.repeat(40) },
+            { ...withVerdict, evidence: { newFailures: 'x' } },
+        ]) {
+            assert.strictEqual(validateVerdict('regressionReport', bad).valid, false, JSON.stringify(bad));
+        }
+    });
+
     test('validateVerdict throws on an unknown schema name', () => {
         assert.throws(() => validateVerdict('notARealSchema', {}), /Unknown verdict schema/);
     });

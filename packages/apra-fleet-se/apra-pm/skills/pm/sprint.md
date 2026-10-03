@@ -14,7 +14,7 @@ setup -> requirements -> design ->
     Develop (doer-review loop: bd ready -> claim -> close, to a clean APPROVED)
     Test    (deploy + integration tests, if deploy.md + playbook present)
     goal check -> exit | next cycle
-Harvest (CI watch -> final review -> docs/CHANGELOG -> complete -> PR)
+Harvest (CI watch -> final review -> docs -> complete -> PR)
 ```
 
 State lives in **beads** (all task state -- the plan, what is open/in-progress/closed,
@@ -182,7 +182,7 @@ calling the sprint done.**
 MANDATORY CHECKLIST -- verify each before exiting:
   [ ] 1. CI watch dispatched
   [ ] 2. Final reviewer dispatched + APPROVED
-  [ ] 3. Harvester dispatched (docs/ or CHANGELOG in branch diff)
+  [ ] 3. Harvester dispatched (docs/ in branch diff)
   [ ] 4. Cost analysis committed (or skipped if no Node.js)
   [ ] 5. Sprint root + delivered issues closed
   [ ] 6. bd export committed to branch (.beads/*.jsonl updated)
@@ -200,12 +200,12 @@ MANDATORY CHECKLIST -- verify each before exiting:
    and flag the user. `APPROVED` -> continue.
 3. **Documentation harvest** -- dispatch `harvester` to extract long-term knowledge
    from requirements.md, design.md, and the beads task tree (`bd list --tree
-   <sprint-id>`, `bd show <id>`) into `docs/` and update `CHANGELOG`.
+   <sprint-id>`, `bd show <id>`) into `docs/` and update README.
    Structure inside `docs/` is content-driven (e.g. `docs/architecture.md`,
    `docs/features/<name>.md`). Extract: architecture decisions, feature design, key
    trade-offs, API contracts. Do NOT extract: task lists, code-line references, debug
-   notes, implementation steps. The harvester commits the `docs/` and `CHANGELOG`
-   output to the branch.
+   notes, implementation steps. The harvester commits the `docs/` output to the
+   branch.
 4. **Cost analysis and calibration update** (if Node.js available) -- run
    `computeSprintAnalysis`, `buildSprintSummary`, and `computeUpdatedCalibration`
    from `<skillDir>/cost.js` (the extracted module installed alongside this skill on

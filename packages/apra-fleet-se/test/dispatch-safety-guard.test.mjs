@@ -353,7 +353,7 @@ const DISPATCH_ROLE_PATH = path.join(__dirname, '../fleet-sprint/dispatch-role.m
 // below scans them, and each gets its own explicit baseline count below.
 // 15 -> 13 (apra-fleet-3swo.6.9): the LAST two phase() boundaries, Harvest and
 // Publish PR, were sliced out of runSprintCycle, completing the slice. Harvest
-// took NO command() site (its docs/changelog/sprint-analysis commits are made
+// took NO command() site (its docs/sprint-analysis commits are made
 // by the DISPATCHED harvester inside its own repo, and its pushes are the
 // 'harvester' policy row's pushCode/pushBeads bracket) and Publish PR took
 // exactly TWO -- the `git remote get-url origin` PR-capability probe on the
@@ -976,7 +976,7 @@ test('every command() call site in phases/regression-test.mjs passes member_name
 // them these two get DIFFERENT baselines, and the difference is the point.
 //
 // phases/harvest.mjs is a zero baseline: it issues no command() at all. The
-// docs/CHANGELOG/sprint-analysis commits it exists to produce are made by the
+// docs/sprint-analysis commits it exists to produce are made by the
 // DISPATCHED harvester inside its own repo, and they reach the remote through
 // the 'harvester' policy row's pushCode/pushBeads bracket -- never through an
 // orchestrator-side command() here. A command() appearing in this module would

@@ -831,14 +831,14 @@ export async function setupMinimal(tempDirSuffix, taskSpecs, runCmdFn = runCmd) 
  */
 // apra-fleet-unw2.22 (N12 follow-up): the harvester contract check must
 // genuinely validate that runner.js supplied real, non-trivial CONTENT for
-// analysisText/costAnalysis -- not merely that the prompt contains the
+// analysisText -- not merely that the prompt contains the
 // static instructional label text buildHarvesterPrompt() always emits
 // regardless of the underlying value. It previously used
 // `/analysisText \(pre-computed by the orchestrator/.test(p)` etc., which
 // is proven to still pass even when runner.js's buildAnalysisText()/
 // buildCostAnalysis() silently return an empty string (see this bead's
 // description). This helper extracts the actual fenced VALUE for
-// analysisText/costAnalysis (the fence chars are a variable-length run of
+// analysisText (the fence chars are a variable-length run of
 // backticks per buildHarvesterPrompt's collision-safe `fence()`, so the
 // regex captures whatever fence length was actually used) and requires it
 // to be non-trivially long once trimmed.
@@ -864,11 +864,6 @@ export function checkHarvesterContract(prompt) {
     const analysisTextMatch = /analysisText \(pre-computed by the orchestrator[^\n]*\):\n(`{3,})\n([\s\S]*?)\n\1/.exec(prompt);
     if (!analysisTextMatch || analysisTextMatch[2].trim().length < MIN_NONTRIVIAL_LEN) {
         missing.push('analysisText');
-    }
-
-    const costAnalysisMatch = /costAnalysis \(pre-computed by the orchestrator[^\n]*\):\n(`{3,})\n([\s\S]*?)\n\1/.exec(prompt);
-    if (!costAnalysisMatch || costAnalysisMatch[2].trim().length < MIN_NONTRIVIAL_LEN) {
-        missing.push('costAnalysis');
     }
 
     if (!/Branch:\s*\S+\s*\(base:\s*\S+\)/.test(prompt)) {
@@ -1791,8 +1786,7 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
             //     apra-fleet-unw2.10, N12: contract enforcement) ---
             //
             // The vendored harvester-input.json requires
-            // analysisArtifactFile/analysisText/costAnalysis/base-branch/
-            // branch (see agents/harvester.md's own "Missing-input
+            // analysisArtifactFile/analysisText/base-branch/branch (see agents/harvester.md's own "Missing-input
             // behavior": a contract-obeying harvester returns FAILED, never
             // fabricates a substitute, if any of these is absent from its
             // dispatch). This mock now enforces that for real -- it is NOT
