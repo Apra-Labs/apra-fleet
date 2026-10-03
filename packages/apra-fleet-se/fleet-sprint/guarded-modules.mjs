@@ -388,9 +388,10 @@ export const GUARDED_MODULES = [
     'explicit-id-create-guard.mjs',
     // The beads identity contract (pure parse/compare helpers, no command()
     // or agent() site -- zero baseline) and the precondition that runs its
-    // three read-only probes: beads-identity-check.mjs carries ONE
-    // member_name-bearing command() call site (the probe loop), which is
-    // exactly what dispatch-safety-guard must keep scanning.
+    // three read-only probes: beads-identity-check.mjs carries TWO
+    // member_name-bearing command() call sites (the probe loop and the
+    // member beads set-up runner; its beads pull goes through DoltSync),
+    // which is exactly what dispatch-safety-guard must keep scanning.
     'beads-identity.mjs',
     'beads-identity-check.mjs',
     // The sprint-start token-usage memory sweep: TWO member_name-bearing

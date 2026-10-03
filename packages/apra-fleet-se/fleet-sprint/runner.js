@@ -1663,6 +1663,9 @@ async function runSprintCycle(context) {
         prober: beadsIdentityProber,
         setupMembers: beadsSetupMembers,
         ensureVcsAuth: ensureVcsAuthFresh,
+        // The set-up's beads pull goes through DoltSync with the same
+        // reactive VCS-auth self-heal every D-pull bracket gets.
+        onAuthFailure,
         // Built per member OS/shell (member_detail via resolveMemberTarget,
         // which degrades to POSIX and logs when the member cannot be resolved).
         memberShell: async (member) => getSeCommands(await resolveMemberTarget({

@@ -53,6 +53,7 @@ import {
     hasBeadsDatabase,
 } from './beads-identity.mjs';
 import { BeadsIdentityError, BEADS_IDENTITY_FAILURE_REASONS } from './errors.mjs';
+import { syncBefore as doltSyncBefore } from './dolt-sync.mjs';
 
 // Short: three cheap local reads per member. A member that cannot answer
 // `bd where` inside a minute is not a member this sprint should mutate.
@@ -234,7 +235,7 @@ export function assertBdPresent(member, probed) {
 //                                                   existing database; an 'origin' pointing
 //                                                   elsewhere is refused, never rewired)
 //                  bd dolt remote add origin <expected>   (only when 'origin' is absent)
-//                  bd dolt pull                    (proves the existing database is a
+//                  pull via DoltSync.syncBefore    (proves the existing database is a
 //                                                   clone of <expected> and brings it current)
 //   finally (success or failure):
 //                  git checkout -- <each tracked beads file the set-up changed>
@@ -306,7 +307,9 @@ export const BEADS_SETUP_COMMANDS = Object.freeze({
     bootstrap: 'bd bootstrap --yes',
     remoteList: 'bd dolt remote list --json',
     addOrigin: (url) => `bd dolt remote add origin ${url}`,
-    pull: 'bd dolt pull',
+    // The pull itself is NOT a command here: every dolt pull/push goes
+    // through ./dolt-sync.mjs (DoltSync.syncBefore), which also brings its
+    // transient-retry ladder and the reactive VCS-auth self-heal.
 });
 
 // Characters a bare word keeps verbatim in POSIX shells, PowerShell and cmd
@@ -335,7 +338,7 @@ function setupFix(url) {
 
 const SCHEMA_FIX =
     "the shared beads remote is at an older bd schema than the member's bd. Publish the migration once, from the backlog member: " +
-    "run 'bd dolt push' in its workFolder (with a VCS credential that can push the beads remote), then rerun the sprint";
+    'push its beads database to the beads remote from its workFolder (with a VCS credential that can push that remote), then rerun the sprint';
 
 function setupFailed(member, cause, fix, details) {
     return new BeadsIdentityError(
@@ -368,6 +371,8 @@ export const BEADS_TREE_COMMANDS = Object.freeze({
     // Untracked, not ignored; a wholly untracked directory collapses to one entry.
     untracked: 'git ls-files --others --exclude-standard --directory -- .beads .beads.gate.lock',
     restore: (relPath) => `git checkout -- ${relPath}`,
+    // The work folder's path below the repository root ('' at the root).
+    prefix: 'git rev-parse --show-prefix',
 });
 
 function beadsTreePaths(text) {
@@ -394,12 +399,15 @@ function beadsTreePaths(text) {
  *
  * @param {{ command: Function, member: string, url: string, hasDb: boolean,
  *   memberShell?: (member: string) => Promise<{ ensureFile: (relPath: string) => string, ensureLine: (relPath: string, line: string) => string, ensureGitExcluded: (entry: string) => string }>,
- *   ensureVcsAuth?: (member: string) => Promise<void>, log?: Function, timeoutS?: number }} opts
+ *   ensureVcsAuth?: (member: string) => Promise<void>, onAuthFailure?: Function,
+ *   pullBeads?: Function, log?: Function, timeoutS?: number }} opts
  *   `memberShell` returns the member's OS/shell command builder (the SE
- *   command primitives); required.
+ *   command primitives); required. `onAuthFailure` is DoltSync's reactive
+ *   VCS-auth self-heal for the pull; `pullBeads` replaces
+ *   DoltSync.syncBefore (test seam).
  * @returns {Promise<string[]>} the commands issued, in order
  */
-export async function setupMemberBeads({ command, member, url, hasDb, memberShell, ensureVcsAuth, log = () => {}, timeoutS = BEADS_SETUP_TIMEOUT_S }) {
+export async function setupMemberBeads({ command, member, url, hasDb, memberShell, ensureVcsAuth, onAuthFailure, pullBeads, log = () => {}, timeoutS = BEADS_SETUP_TIMEOUT_S }) {
     if (!SHELL_SAFE_REMOTE_RE.test(url)) {
         throw setupFailed(member,
             `needs its beads set up from the expected beads remote '${url}', which contains characters that cannot be passed verbatim to every member shell`,
@@ -449,6 +457,19 @@ export async function setupMemberBeads({ command, member, url, hasDb, memberShel
         return { modified: new Set(beadsTreePaths(modified.output)), untracked: new Set(beadsTreePaths(untracked.output)) };
     };
     const before = await listTree();
+    if (before.modified.size) {
+        log(`${BEADS_IDENTITY_WARNING_PREFIX}member '${member}' already has local changes to ${[...before.modified].join(', ')}; ` +
+            'the beads set-up may add to them and will not restore them -- review those files before anything on that member is committed.');
+    }
+    // info/exclude patterns are relative to the repository root, git ls-files
+    // paths to the work folder: a work folder below the root needs its prefix.
+    const prefixRes = await run(BEADS_TREE_COMMANDS.prefix);
+    const rootPrefix = prefixRes.ok ? String(prefixRes.output || '').split(/\r?\n/).map((l) => l.trim()).find((l) => /^[A-Za-z0-9._/-]*\/$/.test(l) && !l.split('/').includes('..')) || '' : null;
+    if (rootPrefix === null) {
+        throw setupFailed(member,
+            `needs its beads set up, but its workFolder's position in its git clone cannot be read (${summarizeRaw(prefixRes.error || prefixRes.output)})`,
+            `make sure the member's workFolder is a git clone with git on PATH, or ${setupFix(url)}`, { step: 'tree', url });
+    }
 
     log(`[beads-identity] member '${member}' ${hasDb ? 'has a beads database with no sync.remote' : 'has no beads database in its workFolder'}; setting it up from the expected beads remote ${url}.`);
     if (typeof ensureVcsAuth === 'function') {
@@ -491,7 +512,9 @@ export async function setupMemberBeads({ command, member, url, hasDb, memberShel
             if (!plan.ok || planned !== 'sync' || normalizeRemoteUrl(plannedRemote) !== normalizeRemoteUrl(url)) {
                 const why = !plan.ok
                     ? summarizeRaw(plan.error || plan.output)
-                    : `planned action '${planned || '(none)'}'${planObj && planObj.reason ? ` (${summarizeRaw(planObj.reason)})` : ''}${plannedRemote ? ` from '${plannedRemote}'` : ''}`;
+                    : "planned action '" + (planned || '(none)') + "'"
+                        + (planObj && planObj.reason ? ' (' + summarizeRaw(planObj.reason) + ')' : '')
+                        + (plannedRemote ? " from '" + plannedRemote + "'" : '');
                 throw setupFailed(member,
                     `has no beads database and 'bd bootstrap' would not clone it from the expected beads remote '${url}' ('${BEADS_SETUP_COMMANDS.plan}' -> ${why}); ` +
                     'any other bootstrap would create a database with an unrelated history',
@@ -529,11 +552,32 @@ export async function setupMemberBeads({ command, member, url, hasDb, memberShel
                 throw setupFailed(member, `could not add the dolt remote 'origin' ('${addCmd}' -> ${summarizeRaw(add.error || add.output)})`, setupFix(url), { step: 'remote-add', url });
             }
         }
-        const pull = await run(BEADS_SETUP_COMMANDS.pull);
-        assertNoMigration(BEADS_SETUP_COMMANDS.pull, pull);
-        if (!pull.ok) {
+        // The pull goes through DoltSync (the single dolt pull/push surface):
+        // its retry ladder and reactive VCS-auth self-heal apply. The
+        // remote was configured just above, so its pre-gate is answered
+        // directly, and the tip fingerprint is skipped -- this first pull
+        // must be real.
+        let pulled = null;
+        let pullError = '';
+        try {
+            pulled = await (pullBeads || doltSyncBefore)(member, {
+                // DoltSync names the member on every command it issues.
+                command,
+                log,
+                fatal: true,
+                onAuthFailure,
+                checkSyncRemoteConfigured: async () => true,
+                remoteTipFingerprint: false,
+            });
+        } catch (err) {
+            pullError = [err && err.message, err && err.doltOutput].filter(Boolean).join('\n') || String(err);
+        }
+        if (pullError) assertNoMigration('beads pull', { output: '', error: pullError });
+        const pullOk = !pullError && pulled && pulled.ok !== false && !pulled.skipped && !pulled.degraded;
+        if (!pullOk) {
+            const why = pullError || `pull did not run (${summarizeRaw(JSON.stringify(pulled))})`;
             throw setupFailed(member,
-                `has an existing beads database that cannot pull from the expected beads remote '${url}' ('${BEADS_SETUP_COMMANDS.pull}' -> ${summarizeRaw(pull.error || pull.output)}); ` +
+                `has an existing beads database that cannot pull from the expected beads remote '${url}' (${summarizeRaw(why)}); ` +
                 'it is most likely not a clone of that remote',
                 "move that member's existing beads database aside (it is never deleted automatically) so the next sprint clones it from the remote, " +
                 `or ${setupFix(url)}`,
@@ -555,10 +599,11 @@ export async function setupMemberBeads({ command, member, url, hasDb, memberShel
             }
         }
         for (const p of added) {
-            const r = await run(shell.ensureGitExcluded(p));
+            const entry = `${rootPrefix}${p}`;
+            const r = await run(shell.ensureGitExcluded(entry));
             if (!r.ok) {
                 throw setupFailed(member, `could not keep its set-up's untracked '${p}' out of commits (${summarizeRaw(r.error || r.output)})`,
-                    `add '${p}' to that member's git info/exclude, then rerun the sprint`, { step: 'protect', url });
+                    `add '${entry}' to that member's git info/exclude, then rerun the sprint`, { step: 'protect', url });
             }
         }
         if (changed.length || added.length) {
@@ -607,6 +652,7 @@ function assertMatches(member, expected, actual, cmp) {
  *   expected?: object|null, prober?: object, timeoutS?: number,
  *   setupMembers?: string[], ensureVcsAuth?: (member: string) => Promise<void>,
  *   memberShell?: (member: string) => Promise<object>,
+ *   onAuthFailure?: Function, pullBeads?: Function,
  *   setupTimeoutS?: number,
  * }} opts
  *   `setupMembers` names the beads-reading members the preflight may set
@@ -621,7 +667,7 @@ function assertMatches(member, expected, actual, cmp) {
  *   `unresolved: string[]` (the compared fields it could not report). A
  *   member with no beads database at all has NO entry -- only a warning.
  */
-export async function verifyBeadsIdentity({ command, log = () => {}, publishState, backlogMember, members, expected = null, prober, timeoutS, setupMembers, memberShell, ensureVcsAuth, setupTimeoutS }) {
+export async function verifyBeadsIdentity({ command, log = () => {}, publishState, backlogMember, members, expected = null, prober, timeoutS, setupMembers, memberShell, ensureVcsAuth, onAuthFailure, pullBeads, setupTimeoutS }) {
     if (typeof backlogMember !== 'string' || !backlogMember) {
         throw new TypeError('verifyBeadsIdentity: backlogMember must be a non-empty string');
     }
@@ -717,7 +763,7 @@ export async function verifyBeadsIdentity({ command, log = () => {}, publishStat
                 `launch via the supervisor so --expect-beads carries the beads sync remote (or set sync.remote on the backlog member), or ${setupFix('')}`,
                 { step: 'no-remote' });
         }
-        await setupMemberBeads({ command, member, url, hasDb, memberShell, ensureVcsAuth, log, timeoutS: setupTimeoutS });
+        await setupMemberBeads({ command, member, url, hasDb, memberShell, ensureVcsAuth, onAuthFailure, pullBeads, log, timeoutS: setupTimeoutS });
         p.forget(member);
         const again = await p.probe(member);
         assertBdPresent(member, again);

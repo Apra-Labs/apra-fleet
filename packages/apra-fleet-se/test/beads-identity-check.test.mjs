@@ -343,6 +343,9 @@ describe('createBeadsIdentityProber', () => {
 // =============================================================================
 
 const SET_CMD = BEADS_SETUP_COMMANDS.setSyncRemote(REMOTE);
+// Issued by DoltSync (the single dolt pull/push surface), not by the set-up module.
+const DOLT_PULL = 'bd dolt pull';
+const PREFIX = BEADS_TREE_COMMANDS.prefix;
 const ADD_ORIGIN = BEADS_SETUP_COMMANDS.addOrigin(REMOTE);
 const ENSURE_WS = `ensure-file ${BEADS_WORKSPACE_CONFIG_FILE}`;
 const ENSURE_LOCAL = `ensure-line ${BEADS_LOCAL_CONFIG_FILE} ${beadsLocalSyncRemoteLine(REMOTE)}`;
@@ -393,9 +396,10 @@ function statefulMember({ ws = 'none', sync = '', prefix = 'proj', origin = null
             ? JSON.stringify(state.origin ? [{ name: 'origin', url: state.origin }] : [])
             : { fail: 'Error: no beads database found' }),
         [ADD_ORIGIN]: () => { state.origin = REMOTE; return `Added remote "origin" -> ${REMOTE}`; },
-        [BEADS_SETUP_COMMANDS.pull]: () => (state.origin ? 'Pull complete.' : { fail: 'Error: fetch from origin/main: Error 1105: no remote' }),
+        [DOLT_PULL]: () => (state.origin ? 'Pull complete.' : { fail: 'Error: fetch from origin/main: Error 1105: no remote' }),
         [BEADS_TREE_COMMANDS.modified]: () => [...state.modified].join('\n'),
         [BEADS_TREE_COMMANDS.untracked]: () => [...state.untracked].join('\n'),
+        [PREFIX]: () => (state.rootPrefix || ''),
     };
     const answer = (cmd) => {
         if (cmd === BEADS_IDENTITY_PROBES.where) {
@@ -454,7 +458,7 @@ describe('verifyBeadsIdentity: member beads set-up', () => {
         const published = [];
         const res = await verify(h, { log: (l) => logs.push(l), publishState: (ns, d) => published.push(d) });
         assert.deepEqual(setupCalls(h.calls), [
-            ...TREE, ENSURE_WS, ENSURE_LOCAL, SET_CMD, BEADS_SETUP_COMMANDS.plan, BEADS_SETUP_COMMANDS.bootstrap,
+            ...TREE, PREFIX, ENSURE_WS, ENSURE_LOCAL, SET_CMD, BEADS_SETUP_COMMANDS.plan, BEADS_SETUP_COMMANDS.bootstrap,
             ...TREE, 'exclude .beads/', 'exclude .beads.gate.lock',
         ]);
         for (const c of h.calls.filter((x) => x.opts.label === 'beads-setup')) {
@@ -482,7 +486,7 @@ describe('verifyBeadsIdentity: member beads set-up', () => {
         const h = setupHarness(m1);
         const res = await verify(h);
         const cmds = setupCalls(h.calls);
-        assert.deepEqual(cmds.slice(0, 7), [...TREE, ENSURE_WS, ENSURE_LOCAL, SET_CMD, BEADS_SETUP_COMMANDS.plan, BEADS_SETUP_COMMANDS.bootstrap]);
+        assert.deepEqual(cmds.slice(0, 8), [...TREE, PREFIX, ENSURE_WS, ENSURE_LOCAL, SET_CMD, BEADS_SETUP_COMMANDS.plan, BEADS_SETUP_COMMANDS.bootstrap]);
         assert.ok(!cmds.includes(BEADS_SETUP_COMMANDS.remoteList), 'must not take the existing-database path');
         for (const p of ['.beads/config.yaml', '.beads/.gitignore', '.beads/metadata.json']) {
             assert.ok(cmds.includes(BEADS_TREE_COMMANDS.restore(p)), `restores ${p}: ${JSON.stringify(cmds)}`);
@@ -528,7 +532,11 @@ describe('verifyBeadsIdentity: member beads set-up', () => {
         const m1 = statefulMember({ ws: 'db' });
         const h = setupHarness(m1);
         const res = await verify(h);
-        assert.deepEqual(setupCalls(h.calls).slice(0, 8), [...TREE, ENSURE_WS, ENSURE_LOCAL, SET_CMD, BEADS_SETUP_COMMANDS.remoteList, ADD_ORIGIN, BEADS_SETUP_COMMANDS.pull]);
+        assert.deepEqual(setupCalls(h.calls).slice(0, 8), [...TREE, PREFIX, ENSURE_WS, ENSURE_LOCAL, SET_CMD, BEADS_SETUP_COMMANDS.remoteList, ADD_ORIGIN]);
+        // The pull runs through DoltSync (its own label), on the member, after the origin is wired.
+        const all = h.calls.map((c) => c.cmd);
+        assert.ok(all.indexOf(DOLT_PULL) > all.indexOf(ADD_ORIGIN), JSON.stringify(all));
+        assert.equal(h.calls.find((c) => c.cmd === DOLT_PULL).opts.member_name, 'm1');
         assert.ok(h.invalidated.some((i) => i.cmd === ADD_ORIGIN), 'the dolt remote add is seen by the memo seam');
         assert.equal(res.members.m1.syncRemote, REMOTE);
         assert.deepEqual(res.setUp, ['m1']);
@@ -538,8 +546,8 @@ describe('verifyBeadsIdentity: member beads set-up', () => {
         const m1 = statefulMember({ ws: 'db', origin: 'git+' + REMOTE });
         const h = setupHarness(m1);
         await verify(h);
-        const cmds = setupCalls(h.calls);
-        assert.ok(cmds.includes(BEADS_SETUP_COMMANDS.pull) && !cmds.includes(ADD_ORIGIN), JSON.stringify(cmds));
+        const cmds = h.calls.map((c) => c.cmd);
+        assert.ok(cmds.includes(DOLT_PULL) && !cmds.includes(ADD_ORIGIN), JSON.stringify(cmds));
     });
 
     test('DB present, no sync.remote, origin pointing elsewhere: refused, never rewired, no pull', async () => {
@@ -547,7 +555,7 @@ describe('verifyBeadsIdentity: member beads set-up', () => {
         const h = setupHarness(m1);
         await assert.rejects(verify(h), (err) => err.reason === BEADS_IDENTITY_FAILURE_REASONS.BEADS_SETUP_FAILED
             && /dolt remote 'origin' is 'https:\/\/example\.com\/org\/other\.git', not the expected beads remote/.test(err.message));
-        assert.ok(!h.calls.some((c) => c.cmd === ADD_ORIGIN || c.cmd === BEADS_SETUP_COMMANDS.pull));
+        assert.ok(!h.calls.some((c) => c.cmd === ADD_ORIGIN || c.cmd === DOLT_PULL));
     });
 
     test('an expectation derived from the backlog member also drives the set-up of the other members', async () => {
@@ -625,7 +633,7 @@ describe('verifyBeadsIdentity: member beads set-up', () => {
         // bd's own format strings (smart gate auto-migrate; remote behind on clone).
         ['bootstrap auto-applies schema migrations (bd smart gate)',
             { [BEADS_SETUP_COMMANDS.bootstrap]: (st) => { st.ws = 'db'; return 'Smart gate (on): auto-applying 13 pending deterministic schema migrations to a remote-backed database (v41, remote at same version -- safe first-mover). Run `bd dolt push` after.'; } },
-            /bd reports a schema migration against that remote.*To fix: the shared beads remote is at an older bd schema.*run 'bd dolt push' in its workFolder/],
+            /bd reports a schema migration against that remote.*To fix: the shared beads remote is at an older bd schema.*push its beads database to the beads remote/],
         ['bootstrap refuses a remote behind the local schema',
             { [BEADS_SETUP_COMMANDS.bootstrap]: () => ({ fail: 'The database cloned from x needs 13 schema migrations (v28 -> v41).\n  bd will not migrate it automatically\n  Re-running `bd bootstrap` will NOT fix this -- the remote itself is behind.' }) },
             /bd reports a schema migration against that remote.*To fix: the shared beads remote is at an older bd schema/],
@@ -662,9 +670,11 @@ describe('verifyBeadsIdentity: member beads set-up', () => {
     });
 
     test('DB present without sync.remote that cannot pull from the expected remote: BEADS_SETUP_FAILED with the move-aside fix', async () => {
-        const m1 = statefulMember({ ws: 'db', handlers: { [BEADS_SETUP_COMMANDS.pull]: () => ({ fail: 'Error: no common ancestor' }) } });
+        const m1 = statefulMember({ ws: 'db' });
         const h = setupHarness(m1);
-        await assert.rejects(verify(h), (err) => err.reason === BEADS_IDENTITY_FAILURE_REASONS.BEADS_SETUP_FAILED
+        // DoltSync's own error (fatal: true) is what the set-up sees.
+        const pullBeads = async () => { throw Object.assign(new Error('[Dolt] D-pull failed'), { doltOutput: 'Error: no common ancestor' }); };
+        await assert.rejects(verify(h, { pullBeads }), (err) => err.reason === BEADS_IDENTITY_FAILURE_REASONS.BEADS_SETUP_FAILED
             && /cannot pull from the expected beads remote .*no common ancestor/.test(err.message)
             && /move that member's existing beads database aside/.test(err.message));
     });
@@ -707,5 +717,56 @@ describe('verifyBeadsIdentity: member beads set-up', () => {
         for (const r of ['planner', 'plan-reviewer', 'doer', 'reviewer', 'integ-test-runner', 'regression-test-runner', 'harvester']) {
             assert.ok(BEADS_READING_ROLES.includes(r), r);
         }
+    });
+});
+
+describe('verifyBeadsIdentity: member beads set-up -- pull routing, user changes, sub-folder', () => {
+    test('the existing-DB pull is DoltSync.syncBefore, fatal, with the auth self-heal and no tip fingerprint', async () => {
+        const m1 = statefulMember({ ws: 'db' });
+        const h = setupHarness(m1);
+        const seen = [];
+        const onAuthFailure = async () => true;
+        const pullBeads = async (member, opts) => { seen.push({ member, opts }); return { ok: true, member }; };
+        await verify(h, { pullBeads, onAuthFailure });
+        assert.equal(seen.length, 1);
+        assert.equal(seen[0].member, 'm1');
+        assert.equal(seen[0].opts.fatal, true);
+        assert.equal(seen[0].opts.onAuthFailure, onAuthFailure);
+        assert.equal(seen[0].opts.remoteTipFingerprint, false);
+        assert.equal(await seen[0].opts.checkSyncRemoteConfigured(), true);
+    });
+
+    test('a DoltSync pull that reports skipped (no dolt remote) is a set-up failure, not a success', async () => {
+        const m1 = statefulMember({ ws: 'db' });
+        const h = setupHarness(m1);
+        const pullBeads = async (member) => ({ ok: true, member, skipped: true, reason: 'no-remote' });
+        await assert.rejects(verify(h, { pullBeads }), (err) => err.reason === BEADS_IDENTITY_FAILURE_REASONS.BEADS_SETUP_FAILED && /pull did not run/.test(err.message));
+    });
+
+    test('beads files the user already changed: a WARNING that the set-up cannot restore them', async () => {
+        const m1 = statefulMember({ ws: 'config', committedConfig: true, configPrefix: true, preModified: ['.beads/config.yaml'] });
+        const h = setupHarness(m1);
+        const logs = [];
+        await verify(h, { log: (l) => logs.push(l) });
+        const warn = logs.find((l) => l.startsWith(BEADS_IDENTITY_WARNING_PREFIX) && l.includes('already has local changes to .beads/config.yaml'));
+        assert.ok(warn, JSON.stringify(logs));
+        assert.match(warn, /will not restore them/);
+    });
+
+    test('a work folder below the repository root excludes its untracked paths with the root-relative prefix', async () => {
+        const m1 = statefulMember({ ws: 'config', committedConfig: true, configPrefix: true });
+        m1.state.rootPrefix = 'sub/dir/';
+        const h = setupHarness(m1);
+        await verify(h);
+        const cmds = setupCalls(h.calls);
+        assert.ok(cmds.includes('exclude sub/dir/.beads.gate.lock') && cmds.includes(`exclude sub/dir/${BEADS_LOCAL_CONFIG_FILE}`), JSON.stringify(cmds));
+        assert.ok(!cmds.includes('exclude .beads.gate.lock'));
+    });
+
+    test('a work folder whose git position cannot be read fails typed before any write', async () => {
+        const m1 = statefulMember({ handlers: { [PREFIX]: () => ({ fail: 'fatal: not a git repository' }) } });
+        const h = setupHarness(m1);
+        await assert.rejects(verify(h), (err) => err.reason === BEADS_IDENTITY_FAILURE_REASONS.BEADS_SETUP_FAILED && /position in its git clone cannot be read/.test(err.message));
+        assert.ok(!setupCalls(h.calls).includes(ENSURE_WS));
     });
 });

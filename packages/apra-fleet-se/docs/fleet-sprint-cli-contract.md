@@ -152,7 +152,10 @@ untracked `.beads/config.local.yaml`; `bd config set sync.remote <url>`; no
 DB: `bd bootstrap --dry-run --json` (must plan a clone from `<url>`), `bd
 bootstrap --yes`; DB without sync.remote: `bd dolt remote list --json`, `bd
 dolt remote add origin <url>` only when origin is absent (a different
-origin is refused), `bd dolt pull`. Finally (success or failure) every
+origin is refused), then a pull through `DoltSync.syncBefore` (fatal, with
+the reactive VCS-auth self-heal). A beads file the user had already
+modified gets a warning (the set-up cannot restore it); a work folder below
+the repository root gets root-relative exclude entries. Finally (success or failure) every
 tracked beads file the set-up changed is restored (`git checkout --`) and
 every new untracked beads path is added to git info/exclude, so the
 member's `git status` is clean and a doer's `git add -A` stages nothing
