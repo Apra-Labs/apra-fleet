@@ -28,7 +28,10 @@
 //                   available); provider agy (no-per-project-mcp); the
 //                   refreshed fleetMcp is unavailable or flagged unverified
 //                   (e.g. mcp-entry-missing: the per-folder MCP entry is
-//                   absent or does not end with ?member=<uuid>).
+//                   absent or does not end with ?member=<uuid>;
+//                   role-agents-hide-member-tools: the role files a
+//                   dispatched --agent <role> session loads filter the
+//                   member tools out).
 //   4. count     -- kb_stats AS the member: totals.by_confidence.CONFIRMED.
 //   5. code      -- code_reindex AS the member, then code_status polled until
 //                   the first tick or the bound (30 s by default) elapses.
@@ -84,6 +87,7 @@ export const MEMBER_INIT_FIXES = Object.freeze({
     'member-tools-missing': "the member session does not list kb_* and code_* tools: update the member's fleet install, then rerun the sprint",
     'fleet-mcp-refresh-failed': 'member_detail refresh:true failed for the member; fix the reported error and re-probe',
     'mcp-entry-missing': 'run compose_permissions for the member so its per-folder fleet MCP entry ends with ?member=<uuid>, then re-probe with member_detail refresh:true',
+    'role-agents-hide-member-tools': "the role agent files the member's CLI loads (--agent <role>) do not grant the kb_* and code_* tools: run update_member for a remote member, or re-install apra-fleet on the orchestrator for a local one, then re-probe with member_detail refresh:true",
     'no-per-tool-deny': 'opencode cannot deny individual tools, so this member is never verified; use a claude member for verified knowledge-bank access',
     'no-per-project-mcp': 'agy has no per-project MCP config, so this member is never verified; use a claude member for verified knowledge-bank access',
     'fleet-mcp-unavailable': "fix the cause of the member's unavailable fleetMcp status, then re-probe with member_detail refresh:true",

@@ -176,6 +176,17 @@ test('an MCP entry lacking ?member=<uuid> (server reports mcp-entry-missing poin
     assert.match(rec.problems.find((p) => p.reason === 'mcp-entry-missing').detail, /not \?member=/);
 });
 
+test('role files hiding the member tools from --agent sessions (role-agents-hide-member-tools) -> unverified with its own fix, although the member session lists kb_* and code_*', async () => {
+    const f = fakeFleet({ fleetMcp: { state: 'unavailable', reason: 'role-agents-hide-member-tools', detail: 'member role files differ from the canonical set: doer.md', checkedAt: 'x' } });
+    const [rec] = await f.make(['m1']).probeAll();
+    assert.equal(rec.kbTools, true);
+    assert.equal(rec.codeTools, true);
+    assert.equal(rec.verified, false);
+    assert.equal(rec.reason, 'role-agents-hide-member-tools');
+    assert.match(rec.fix, /--agent <role>/);
+    assert.match(formatMemberInitLine(rec), /WARN member 'm1': unverified -- reason: role-agents-hide-member-tools/);
+});
+
 test('opencode -> unverified no-per-tool-deny although its member session lists the tools and its entry carries ?member=<uuid>', async () => {
     // The server records opencode as available (its opencode.json entry ends with ?member=<uuid>).
     const f = fakeFleet({ provider: 'opencode', fleetMcp: { state: 'available', checkedAt: 'x' } });

@@ -54,6 +54,9 @@
  * by hand on both sides.
  */
 
+import { MEMBER_ALLOWED_TOOLS, MEMBER_TOOL_PREFIXES } from '../services/member-tool-allowlist.js';
+import { MEMBER_MCP_SERVER_NAME } from '../services/member-config-io.js';
+
 interface PermissionMap {
   edit: 'allow' | 'deny';
   write: 'allow' | 'deny';
@@ -358,7 +361,48 @@ export function transformAgentForOpenCode(content: string, _filename: string): s
  */
 export function transformAgentForClaude(content: string, filename: string): string {
   const declared = readFrontmatterTools(content);
-  return resolveConditionalBody(content, toolAvailability(declared, null), filename);
+  const resolved = resolveConditionalBody(content, toolAvailability(declared, null), filename);
+  return grantMemberMcpTools(resolved, declared);
+}
+
+/**
+ * The fleet's member-session tools, in Claude's MCP tool-name form
+ * (mcp__apra-fleet__kb_query, ...): every registered kb_* / code_* tool of the
+ * member allowlist. Derived, never hand-listed, so a new kb_/code_ tool is
+ * granted as soon as it is registered.
+ */
+export function memberMcpToolGrants(): string[] {
+  return MEMBER_ALLOWED_TOOLS
+    .filter(t => MEMBER_TOOL_PREFIXES.some(p => t.startsWith(p)))
+    .map(t => `mcp__${MEMBER_MCP_SERVER_NAME}__${t}`);
+}
+
+/**
+ * A role dispatched on a member runs as `claude --agent <role>`, and an agent's
+ * `tools:` frontmatter is an ALLOWLIST for the whole session: a list with no
+ * mcp__ entries hides every MCP tool, so the role never sees the member's
+ * kb_* / code_* tools even though its apra-fleet server is connected. Append
+ * the member tool grants to every restrictive list (exact names, not the
+ * server-level `mcp__apra-fleet` pattern: a role run as a local subagent of an
+ * orchestrator session talks to that session's FULL fleet server, and must
+ * still only reach kb_* / code_*). A file with no tools list, or a wildcard
+ * one, already inherits every tool and is left as is. On a member the server
+ * itself serves only the member allowlist and the composed deny rules still
+ * apply, so the grant widens nothing beyond that.
+ */
+function grantMemberMcpTools(content: string, declared: string[] | null): string {
+  if (declared === null || isWildcardTools(declared)) return content;
+  const fmMatch = content.match(/^---\s*\n([\s\S]*?)\n---\s*\n/);
+  if (!fmMatch) return content;
+  const missing = memberMcpToolGrants().filter(t => !declared.includes(t));
+  if (missing.length === 0) return content;
+  const lines = fmMatch[1].split('\n');
+  const idx = lines.findIndex(l => /^tools:\s*(.+)/.test(l));
+  if (idx === -1) return content;
+  lines[idx] = `tools: [${[...declared, ...missing].join(', ')}]`;
+  const start = fmMatch[0].indexOf(fmMatch[1]);
+  const newFm = fmMatch[0].slice(0, start) + lines.join('\n') + fmMatch[0].slice(start + fmMatch[1].length);
+  return newFm + content.slice(fmMatch[0].length);
 }
 
 /** Source (Claude-format) frontmatter tools, or null when the file declares none. */
