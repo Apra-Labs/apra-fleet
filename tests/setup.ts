@@ -1,6 +1,12 @@
 import path from 'node:path';
 import os from 'node:os';
 import { inject, vi } from 'vitest';
+// @ts-expect-error -- plain .mjs helper shared with the node --test runners
+import { assertNotRealProfile } from '../scripts/test-sandbox.mjs';
+
+// Fail fast if this worker would resolve the real user profile (fleet.key,
+// ~/.apra-fleet/bin, ~/.apra-fleet/data): see scripts/test-sandbox.mjs.
+assertNotRealProfile();
 
 // Global mock: preflightCheck always passes in tests.
 // The real preflightCheck hits strategy.testConnection + execCommand on every

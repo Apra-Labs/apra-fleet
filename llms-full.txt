@@ -3399,6 +3399,12 @@ For watch mode during development:
 npm run test:watch
 ```
 
+Every suite runs in a per-run sandbox (`scripts/test-sandbox.mjs`): HOME, USERPROFILE,
+APPDATA/LOCALAPPDATA, XDG dirs and `APRA_FLEET_DATA_DIR` point at a temp dir, and a guard
+preloaded into every node process refuses to run if the real profile would be used. Run package
+suites through their `npm test` scripts (or `node scripts/with-test-sandbox.mjs <cmd>`), never a bare
+`node --test`, so tests can never touch your real `~/.apra-fleet` (fleet.key, server.json, bin/).
+
 ## Branch Naming
 
 | Type | Pattern | Example |
