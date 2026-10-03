@@ -85,7 +85,9 @@ function nodeCommand() {
 
 /** "v0.4.3_95435e" / "0.4.4" -> "0.4.3" / "0.4.4" (null when absent). */
 export function versionCore(v) {
-    const m = /(\d+\.\d+\.\d+)/.exec(String(v || ''));
+    // Capped: the input comes from a server's /health reply, and an unanchored
+    // digit pattern over a long digit run backtracks quadratically.
+    const m = /(\d{1,9}\.\d{1,9}\.\d{1,9})/.exec(String(v || '').slice(0, 64));
     return m ? m[1] : null;
 }
 

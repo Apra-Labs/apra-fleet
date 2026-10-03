@@ -8,7 +8,8 @@ import { readStoppedMarker, describeStoppedMarker } from '../services/stopped-ma
 import { serverVersion } from '../version.js';
 
 function versionCore(v: string | undefined): string | null {
-  const m = /(\d+\.\d+\.\d+)/.exec(v ?? '');
+  // Capped like the client's versionCore: v comes from a server's /health reply.
+  const m = /(\d{1,9}\.\d{1,9}\.\d{1,9})/.exec((v ?? '').slice(0, 64));
   return m ? m[1] : null;
 }
 
