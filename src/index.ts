@@ -451,6 +451,12 @@ async function startHttpServer() {
 
   // Release startup lock now that server.json is written (server.json is the long-lived detection mechanism)
   lock.release();
+  // A running server is no longer "stopped by user" (e.g. started at the
+  // next login by launchd/systemd): drop a stale marker so status agrees.
+  {
+    const { clearStoppedMarker } = await import('./services/stopped-marker.js');
+    clearStoppedMarker();
+  }
   startGuard?.clearServiceStartFailures();
 
   // Make HTTP handle available to shutdown_server tool

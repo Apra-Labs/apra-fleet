@@ -5,8 +5,12 @@ import { checkRunningInstance } from '../services/singleton.js';
 import { SERVER_INFO_PATH, FLEET_DIR, isNonDefaultInstance } from '../paths.js';
 import { getServiceManager } from '../services/service-manager/index.js';
 import { isApraFleetProcess, isPidAlive, postShutdown } from '../utils/process-utils.js';
+import { writeStoppedMarker } from '../services/stopped-marker.js';
 
 export async function runStop(_args: string[]): Promise<void> {
+  // Record the deliberate stop FIRST, so no client auto-starts the server
+  // while (or after) it goes down; 'apra-fleet start' / install clear it.
+  writeStoppedMarker('apra-fleet stop');
   // A sandboxed instance (non-default port or data dir) must never touch the
   // machine-global service registration -- symmetric with runStart(). It
   // stops only its own server via its data dir's server.json.

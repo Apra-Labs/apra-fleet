@@ -1,0 +1,82 @@
+/**
+ * "Stopped by user" marker (GitHub #585 recovery, owner decision option B):
+ * `apra-fleet stop` records a deliberate stop in the data dir so clients
+ * never auto-start the server again; `apra-fleet start` clears it and
+ * `apra-fleet status` shows it. Real fs on the per-run test data dir; the
+ * singleton probe and service manager are faked (no server, no OS service).
+ */
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import fs from 'node:fs';
+
+const { mockCheckRunning } = vi.hoisted(() => ({ mockCheckRunning: vi.fn() }));
+vi.mock('../src/services/singleton.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/services/singleton.js')>()),
+  checkRunningInstance: mockCheckRunning,
+  isPortInUse: vi.fn().mockResolvedValue(false),
+  readServerInfoPid: () => undefined,
+}));
+vi.mock('../src/services/service-manager/index.js', () => ({
+  getServiceManager: vi.fn().mockResolvedValue({
+    isInstalled: vi.fn().mockResolvedValue(false),
+    query: vi.fn().mockResolvedValue({ installed: false, running: false }),
+  }),
+}));
+
+import { runStop } from '../src/cli/stop.js';
+import { runStart } from '../src/cli/start.js';
+import { runStatus } from '../src/cli/status.js';
+import {
+  STOPPED_MARKER_PATH, readStoppedMarker, writeStoppedMarker, clearStoppedMarker, STOPPED_BY_USER_FILE,
+} from '../src/services/stopped-marker.js';
+import { FLEET_DIR } from '../src/paths.js';
+
+const RUNNING = { running: true as const, state: 'running' as const, url: 'http://127.0.0.1:7999/mcp', pid: 1234 };
+const GONE = { running: false as const, state: 'gone' as const };
+
+describe('stopped-by-user marker', () => {
+  let out: string[];
+  beforeEach(() => {
+    clearStoppedMarker();
+    out = [];
+    vi.spyOn(console, 'log').mockImplementation((...a) => { out.push(a.join(' ')); });
+  });
+  afterEach(() => {
+    clearStoppedMarker();
+    vi.restoreAllMocks();
+  });
+
+  it('lives in the resolved data dir under the name the client reads', () => {
+    expect(STOPPED_MARKER_PATH.startsWith(FLEET_DIR)).toBe(true);
+    expect(STOPPED_BY_USER_FILE).toBe('stopped-by-user.json');
+  });
+
+  it('apra-fleet stop writes the marker (time, command, user)', async () => {
+    mockCheckRunning.mockResolvedValue(GONE);
+    await runStop([]);
+    const m = readStoppedMarker();
+    expect(m).not.toBeNull();
+    expect(m!.by).toBe('apra-fleet stop');
+    expect(Date.parse(m!.stoppedAt)).not.toBeNaN();
+    expect(m!.user).toBeTruthy();
+  });
+
+  it('apra-fleet start clears it', async () => {
+    writeStoppedMarker('apra-fleet stop');
+    mockCheckRunning.mockResolvedValue(RUNNING); // already running -> start returns early
+    await runStart([]);
+    expect(fs.existsSync(STOPPED_MARKER_PATH)).toBe(false);
+  });
+
+  it('status shows the stopped-by-user state', async () => {
+    writeStoppedMarker('apra-fleet stop', STOPPED_MARKER_PATH, new Date('2026-10-03T10:00:00Z'));
+    mockCheckRunning.mockResolvedValue(GONE);
+    await runStatus([]);
+    expect(out.join('\n')).toMatch(/State:\s+stopped \(stopped by .+ at 2026-10-03T10:00:00\.000Z via 'apra-fleet stop' -- run 'apra-fleet start'\)/);
+  });
+
+  it('status without a marker is plain "stopped"', async () => {
+    mockCheckRunning.mockResolvedValue(GONE);
+    await runStatus([]);
+    expect(out.join('\n')).toMatch(/State:\s+stopped$/m);
+  });
+});

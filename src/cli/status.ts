@@ -4,6 +4,7 @@ import { checkRunningInstance, describePreviousServer } from '../services/single
 import { getServiceManager } from '../services/service-manager/index.js';
 import type { ServiceStatus } from '../services/service-manager/types.js';
 import { SERVER_INFO_PATH } from '../paths.js';
+import { readStoppedMarker, describeStoppedMarker } from '../services/stopped-marker.js';
 
 interface HealthResponse {
   version?: string;
@@ -79,8 +80,9 @@ export async function runStatus(_args: string[]): Promise<void> {
   }
 
   if (!instance.running) {
+    const marker = readStoppedMarker();
     console.log('apra-fleet status');
-    console.log(`  State:    stopped`);
+    console.log(`  State:    ${marker ? `stopped (${describeStoppedMarker(marker)})` : 'stopped'}`);
     console.log(`  Service:  ${serviceLabel}`);
     return;
   }

@@ -1285,6 +1285,11 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
   }
 
   console.log(`\nInstalling Apra Fleet ${serverVersion} for ${paths.name}...\n`);
+  // Installing is an explicit (re)start intent: end a previous 'apra-fleet stop'.
+  {
+    const { clearStoppedMarker } = await import('../services/stopped-marker.js');
+    clearStoppedMarker();
+  }
 
   // --- Step 1: Copy binary ---
   let binaryPath = '';

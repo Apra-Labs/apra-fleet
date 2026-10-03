@@ -11,6 +11,7 @@ import { getServiceManager } from '../services/service-manager/index.js';
 import { LOG_FILE_PATH, FLEET_DIR, DEFAULT_PORT, DEFAULT_HOST, isNonDefaultInstance } from '../paths.js';
 import { BIN_DIR } from './config.js';
 import { serverVersion } from '../version.js';
+import { clearStoppedMarker } from '../services/stopped-marker.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -56,6 +57,8 @@ function directSpawn(): void {
 }
 
 export async function runStart(_args: string[]): Promise<void> {
+  // An explicit start ends a user stop: clients may auto-start again.
+  clearStoppedMarker();
   const instance = await checkRunningInstance();
   if (instance.running) {
     if (instance.version && instance.version !== serverVersion) {
