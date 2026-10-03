@@ -547,6 +547,30 @@ export interface ProviderAdapter {
   /** Returns the correct environment variable name for the given API key/token. */
   authEnvVarForToken(token: string): string;
 
+  /**
+   * Every env var name this provider's CLI reads a credential from. They are
+   * mutually exclusive: provisioning one clears the others (shell profiles and
+   * the member's stored encryptedEnvVars) so the CLI cannot pick a stale
+   * credential of the other kind. Optional -- providers with a single auth env
+   * var need not implement it.
+   */
+  authEnvVarNames?(): string[];
+
+  /**
+   * A warning when the token's shape is not one this provider recognises
+   * (the env var chosen for it is then a guess), or null when recognised.
+   * Must be pure -- preflight probes authEnvVarForToken with fake tokens.
+   * Never echoes the token itself.
+   */
+  authTokenKindWarning?(token: string): string | null;
+
+  /**
+   * Remote credential files an env-var token supersedes. When an env token is
+   * provisioned these are moved aside (renamed, never deleted) so a stale
+   * copied login cannot shadow or confuse the provisioned credential.
+   */
+  credentialFilesSupersededByEnvToken?(token: string): string[];
+
 
   // Windows / PowerShell prompt building helpers
   /** On Windows, wrap the command for execution (e.g. via .NET ProcessStartInfo or direct shell). */
