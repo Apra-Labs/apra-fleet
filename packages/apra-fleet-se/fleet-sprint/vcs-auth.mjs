@@ -1353,6 +1353,15 @@ export function createLlmAuthSelfHealCallback(opts = {}) {
             return false;
         }
 
+        if (outcome.reason === 'deployed_unverified') {
+            // Credentials were deployed but the server's post-deploy auth test
+            // did not confirm them: surface its error line and the explicit
+            // switch, then still retry once (the test can be stricter than a real dispatch).
+            const authLine = (text.split('\n').find((l) => /Auth test/i.test(l)) || '').trim();
+            log(`[Dispatch] self-heal: provision_llm_auth deployed credentials for member '${member}' (${label}) but could not verify them${authLine ? `: ${authLine}` : ''}. If the member's stored credential is stale, re-run provision_llm_auth with a fresh api_key, or with force_oauth_copy: true to use your local login. Retrying the failed dispatch once.`);
+            return true;
+        }
+
         log(`[Dispatch] self-heal: provision_llm_auth succeeded for member '${member}' (${label}); the failed dispatch will be retried once.`);
         return true;
     };

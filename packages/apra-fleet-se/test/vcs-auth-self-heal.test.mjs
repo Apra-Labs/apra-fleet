@@ -335,6 +335,21 @@ describe('createVcsAuthSelfHealCallback / createLlmAuthSelfHealCallback branch o
         assert.deepStrictEqual(provision[0].args, { member_name: 'fleet-mac' });
     });
 
+    test('createLlmAuthSelfHealCallback: deployed_unverified logs the auth test error and the force_oauth_copy hint, then retries once', async () => {
+        const callTool = async () => ({
+            content: [{ text: '[OK] OAuth token provisioned on "m"\n  Auth test: FAILED -- Invalid bearer token sk-ant-[REDACTED]\n' }],
+            structuredContent: { ok: true, reason: 'deployed_unverified' },
+        });
+        const logs = [];
+        const onLlmAuthFailure = createLlmAuthSelfHealCallback({ callTool, log: (m) => logs.push(m) });
+        const retry = await onLlmAuthFailure({ member: 'fleet-mac', label: 'doer', error: 'authentication failed' });
+        assert.equal(retry, true);
+        const last = logs[logs.length - 1];
+        assert.match(last, /could not verify them: Auth test: FAILED -- Invalid bearer token/);
+        assert.match(last, /force_oauth_copy: true/);
+        assert.doesNotMatch(last, /succeeded/);
+    });
+
     test('createLlmAuthSelfHealCallback: a [FAIL] prose result with structuredContent.ok === false returns false (no retry)', async () => {
         const callTool = async (name) => {
             if (name === 'provision_llm_auth') {
