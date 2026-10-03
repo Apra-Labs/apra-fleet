@@ -16,6 +16,7 @@ import { collectOobApiKey } from '../services/auth-socket.js';
 import { logLine, logWarn } from '../utils/log-helpers.js';
 import { findSecretTokens, legacyTokenWarning } from '../services/secret-token.js';
 import { invalidatePreflightCache } from '../services/preflight-check.js';
+import { stageEnvVars, writeMemberSecretFile, removeMemberSecretFile } from '../services/member-secret-env.js';
 import type { Agent } from '../types.js';
 import type { ProviderAdapter } from '../providers/index.js';
 
@@ -173,18 +174,36 @@ function extractCredentialExpiresAt(json: string): string | null {
  * since `claude auth status` doesn't actually validate API keys.
  * Claude-only: other providers use a version check for verification.
  */
-async function verifyWithClaudePrompt(agent: Agent, envPrefix?: string): Promise<boolean> {
+async function verifyWithClaudePrompt(agent: Agent, env?: Record<string, string>): Promise<boolean> {
   const cmds = getOsCommands(getAgentOS(agent), getAgentShell(agent));
   const provider = getProvider('claude');
   const strategy = getStrategy(agent);
   const escapedFolder = escapeDoubleQuoted(agent.workFolder);
-  const prefix = envPrefix ? `${envPrefix} ` : '';
-  const cmd = `cd "${escapedFolder}" && ${prefix}${cmds.agentCommand(provider, '-p "hello" --output-format json --max-turns 1')}`;
+  return runWithStagedEnv(agent, env, (prefix) =>
+    strategy.execCommand(`${prefix}cd "${escapedFolder}" && ${cmds.agentCommand(provider, '-p "hello" --output-format json --max-turns 1')}`, 60000));
+}
+
+/**
+ * Run one verification command with `env` delivered through a staged
+ * owner-only file (never inline on the command line). Returns exit==0.
+ */
+async function runWithStagedEnv(
+  agent: Agent,
+  env: Record<string, string> | undefined,
+  run: (prefix: string) => Promise<{ code: number }>,
+): Promise<boolean> {
+  let stagedPath: string | null = null;
+  let ok = false;
   try {
-    const result = await strategy.execCommand(cmd, 60000);
-    return result.code === 0;
+    const staged = await stageEnvVars(agent, env ?? {});
+    stagedPath = staged.path;
+    ok = (await run(staged.prefix)).code === 0;
+    return ok;
   } catch {
     return false;
+  } finally {
+    // The prefix deletes the file once loaded; a failed run may not have.
+    if (stagedPath && !ok) await removeMemberSecretFile(agent, stagedPath);
   }
 }
 
@@ -192,17 +211,10 @@ async function verifyWithClaudePrompt(agent: Agent, envPrefix?: string): Promise
  * Version-based CLI check with optional env prefix.
  * Used to verify non-Claude providers after API key provisioning.
  */
-async function verifyWithVersion(agent: Agent, provider: ProviderAdapter, envPrefix?: string): Promise<boolean> {
+async function verifyWithVersion(agent: Agent, provider: ProviderAdapter, env?: Record<string, string>): Promise<boolean> {
   const cmds = getOsCommands(getAgentOS(agent), getAgentShell(agent));
   const strategy = getStrategy(agent);
-  const prefix = envPrefix ? `${envPrefix} ` : '';
-  const cmd = `${prefix}${cmds.agentVersion(provider)}`;
-  try {
-    const result = await strategy.execCommand(cmd, 30000);
-    return result.code === 0;
-  } catch {
-    return false;
-  }
+  return runWithStagedEnv(agent, env, (prefix) => strategy.execCommand(`${prefix}${cmds.agentVersion(provider)}`, 30000));
 }
 
 // ---------------------------------------------------------------------------
@@ -315,18 +327,23 @@ async function provisionApiKey(agent: Agent, apiKey: string, provider: ProviderA
   const cmds = getOsCommands(getAgentOS(agent), getAgentShell(agent));
   const strategy = getStrategy(agent);
   const envVarName = provider.authEnvVarForToken(apiKey);
-  const commands = cmds.setEnv(envVarName, apiKey);
 
+  // Persist into the member's profile / user env. The value travels in an
+  // owner-only file (SFTP / fs); the command that applies it and deletes the
+  // file carries only the path -- never the key (it would sit in the member
+  // shell's argv, readable via ps). Error text never echoes a command.
   const errors: string[] = [];
-  for (const cmd of commands) {
-    try {
-      const result = await strategy.execCommand(cmd, 15000);
-      if (result.code !== 0 && result.stderr) {
-        errors.push(`Command "${cmd.substring(0, 40)}..." stderr: ${result.stderr}`);
-      }
-    } catch (err: any) {
-      errors.push(`Command failed: ${err.message}`);
-    }
+  let persistFile: string | null = null;
+  let persisted = false;
+  try {
+    persistFile = await writeMemberSecretFile(agent, cmds.persistEnvFileContent(envVarName, apiKey), 'persist');
+    const result = await strategy.execCommand(cmds.persistEnvFromFile(envVarName, persistFile), 15000);
+    persisted = result.code === 0;
+    if (!persisted) errors.push(`Persisting ${envVarName} failed (exit ${result.code})${result.stderr ? `: ${result.stderr}` : ''}`);
+  } catch (err: any) {
+    errors.push(`Persisting ${envVarName} failed: ${err.message}`);
+  } finally {
+    if (persistFile && !persisted) await removeMemberSecretFile(agent, persistFile);
   }
 
   // Store encrypted API key in the agent's registry entry
@@ -344,10 +361,10 @@ async function provisionApiKey(agent: Agent, apiKey: string, provider: ProviderA
   }
 
   // Verify with a real CLI call
-  const envPrefix = cmds.envPrefix(envVarName, apiKey);
+  const verifyEnv = { [envVarName]: apiKey };
   const authWorks = provider.name === 'claude'
-    ? await verifyWithClaudePrompt(agent, envPrefix)
-    : await verifyWithVersion(agent, provider, envPrefix);
+    ? await verifyWithClaudePrompt(agent, verifyEnv)
+    : await verifyWithVersion(agent, provider, verifyEnv);
 
   touchAgent(agent.id);
 

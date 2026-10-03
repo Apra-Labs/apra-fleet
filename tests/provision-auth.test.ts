@@ -20,6 +20,8 @@ vi.mock('../src/services/strategy.js', () => ({
     execCommand: mockExecCommand,
     testConnection: mockTestConnection,
     transferFiles: vi.fn(),
+    writeSecretFile: vi.fn(async (name: string) => `/home/testuser/${name}`),
+    removeSecretFile: vi.fn(async () => {}),
     close: vi.fn(),
   }),
 }));
@@ -95,6 +97,8 @@ describe('provisionAuth', () => {
 
     const cmds = mockExecCommand.mock.calls.map(c => c[0]);
     expect(cmds.some(c => c.includes('ANTHROPIC_API_KEY'))).toBe(true);
+    // The key travels in a staged file, never in a command line.
+    expect(cmds.some(c => c.includes('sk-ant-api03-TESTKEY'))).toBe(false);
   });
 
   it('deploys master credentials when no api_key and creds exist', async () => {

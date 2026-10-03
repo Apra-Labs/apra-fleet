@@ -305,20 +305,21 @@ $merged | ConvertTo-Json -Depth 99 | Set-Content -Path $p -NoNewline;
     return `if ($env:${varName}) { $env:${varName}.Substring(0,10) } else { echo "" }`;
   }
 
-  setEnv(name: string, value: string): string[] {
+  // base64 so the file is parsed, never executed (no quoting exposure).
+  persistEnvFileContent(name: string, value: string): string {
     if (!/^[A-Z_][A-Z0-9_]*$/i.test(name)) throw new Error('Invalid env var name: ' + name);
-    const escaped = escapePowerShellArgInner(value);
-    return [`[Environment]::SetEnvironmentVariable('${name}', '${escaped}', 'User')`];
+    return Buffer.from(value, 'utf-8').toString('base64');
+  }
+
+  persistEnvFromFile(name: string, filePath: string): string {
+    if (!/^[A-Z_][A-Z0-9_]*$/i.test(name)) throw new Error('Invalid env var name: ' + name);
+    const q = `'${escapePowerShellArgInner(filePath)}'`;
+    return `$f = ${q}; try { $v = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String(([IO.File]::ReadAllText($f)).Trim())); [Environment]::SetEnvironmentVariable('${name}', $v, 'User') } catch { [Console]::Error.WriteLine('apra-fleet: could not apply the staged env file'); exit 1 } finally { Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue }`;
   }
 
   unsetEnv(name: string): string[] {
     if (!/^[A-Z_][A-Z0-9_]*$/i.test(name)) throw new Error('Invalid env var name: ' + name);
     return [`[Environment]::SetEnvironmentVariable('${name}', $null, 'User')`];
-  }
-
-  envPrefix(name: string, value: string): string {
-    const escaped = escapePowerShellArgInner(value);
-    return `$env:${name}='${escaped}';`;
   }
 
   // --- Git credential helper ---

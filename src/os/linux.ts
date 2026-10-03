@@ -230,14 +230,23 @@ export class LinuxCommands implements OsCommands {
     return `bash -l -c 'echo "\${${varName}:0:10}"'`;
   }
 
-  setEnv(name: string, value: string): string[] {
+  /** Shell profiles that receive a persisted env var (unsetEnv cleans the same set). */
+  protected envProfileFiles(): string[] {
+    return ['~/.bashrc', '~/.profile'];
+  }
+
+  // The profile line keeps the historical `export NAME="..."` shape so
+  // unsetEnv's sed (and members provisioned by earlier releases) match it.
+  persistEnvFileContent(name: string, value: string): string {
     if (!/^[A-Z_][A-Z0-9_]*$/i.test(name)) throw new Error('Invalid env var name: ' + name);
-    const escaped = escapeDoubleQuoted(value);
-    return [
-      `echo 'export ${name}="${escaped}"' >> ~/.bashrc`,
-      `echo 'export ${name}="${escaped}"' >> ~/.profile`,
-      `export ${name}="${escaped}"`,
-    ];
+    return `export ${name}="${escapeDoubleQuoted(value)}"\n`;
+  }
+
+  persistEnvFromFile(name: string, filePath: string): string {
+    if (!/^[A-Z_][A-Z0-9_]*$/i.test(name)) throw new Error('Invalid env var name: ' + name);
+    const q = escapeShellArg(filePath);
+    const appends = this.envProfileFiles().map(f => `cat ${q} >> ${f}`).join(' && ');
+    return `{ ${appends}; }; _fleet_rc=$?; rm -f ${q}; exit $_fleet_rc`;
   }
 
   unsetEnv(name: string): string[] {
@@ -247,10 +256,6 @@ export class LinuxCommands implements OsCommands {
       `sed -i '/export ${name}=/d' ~/.profile 2>/dev/null || true`,
       `unset ${name}`,
     ];
-  }
-
-  envPrefix(name: string, value: string): string {
-    return `${name}="${escapeDoubleQuoted(value)}"`;
   }
 
   // --- Git credential helper ---

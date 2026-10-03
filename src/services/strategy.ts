@@ -15,6 +15,7 @@ import { completesOnProcessExit, exitDrainMs } from './exit-drain.js';
 const MAX_OUTPUT_BYTES = 10 * 1024 * 1024; // 10 MB
 import { execCommand as sshExecCommand, testConnection as sshTestConnection, closeConnection as sshCloseConnection } from './ssh.js';
 import { uploadFiles, downloadFiles } from './file-transfer.js';
+import { writeSecretFileInHome, removeSecretFile as sftpRemoveSecretFile } from './sftp.js';
 import { RelayStrategy } from './relay-strategy.js';
 
 /** Build the wrapped `powershell -EncodedCommand ...` string RemoteStrategy.
@@ -70,6 +71,16 @@ export interface AgentStrategy {
   receiveFiles(remotePaths: string[], localDestination: string, abortSignal?: AbortSignal): Promise<TransferResult>;
   /** Delete files relative to the agent's workFolder. Best-effort -- errors are silently ignored. */
   deleteFiles(relativePaths: string[]): Promise<void>;
+  /**
+   * Write a secret-bearing file (owner-only) on the member WITHOUT any
+   * command line carrying its content -- SFTP for remote members, fs for
+   * local ones. `fileName` must not contain any part of the secret. Returns
+   * the absolute path in the form the member's shell accepts. Strategies with
+   * no such channel (relay) throw.
+   */
+  writeSecretFile(fileName: string, content: string): Promise<string>;
+  /** Best-effort removal of a file written by writeSecretFile. */
+  removeSecretFile(filePath: string): Promise<void>;
   testConnection(): Promise<{ ok: boolean; latencyMs: number; error?: string }>;
   close(): void;
 }
@@ -118,6 +129,14 @@ class RemoteStrategy implements AgentStrategy {
         await this.execCommand(`cd "${escapeDoubleQuoted(folder)}" && rm -f ${files}`, 10000);
       }
     } catch { /* ignore -- best-effort cleanup */ }
+  }
+
+  async writeSecretFile(fileName: string, content: string): Promise<string> {
+    return writeSecretFileInHome(this.agent, fileName, content);
+  }
+
+  async removeSecretFile(filePath: string): Promise<void> {
+    await sftpRemoveSecretFile(this.agent, filePath);
   }
 
   async testConnection(): Promise<{ ok: boolean; latencyMs: number; error?: string }> {
@@ -408,6 +427,21 @@ class LocalStrategy implements AgentStrategy {
     for (const rel of relativePaths) {
       try { fs.unlinkSync(path.resolve(this.agent.workFolder, rel)); } catch { /* ignore */ }
     }
+  }
+
+  async writeSecretFile(fileName: string, content: string): Promise<string> {
+    if (!/^[A-Za-z0-9._-]+$/.test(fileName)) throw new Error(`Unsafe secret file name: ${fileName}`);
+    // 'wx' = O_CREAT|O_EXCL: never follows a pre-planted file/symlink in a
+    // shared tmp dir; 0600 keeps other local users out (Windows: %TEMP% is
+    // per-user).
+    const p = path.join(os.tmpdir(), fileName);
+    fs.writeFileSync(p, content, { encoding: 'utf-8', mode: 0o600, flag: 'wx' });
+    // Git Bash on a Windows host wants forward slashes.
+    return process.platform === 'win32' && getAgentShell(this.agent) === 'gitbash' ? p.replace(/\\/g, '/') : p;
+  }
+
+  async removeSecretFile(filePath: string): Promise<void> {
+    try { fs.rmSync(filePath, { force: true }); } catch { /* best-effort */ }
   }
 
   async testConnection(): Promise<{ ok: boolean; latencyMs: number; error?: string }> {

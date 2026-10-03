@@ -12,7 +12,7 @@ import { getAgentOS, getAgentShell, touchAgent, getStoredPid, isPosixShellMember
 import { updateAgent } from '../services/registry.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { isRetryable, authErrorAdvice, workspaceNotTrustedAdvice, type PromptErrorCategory } from '../utils/prompt-errors.js';
-import { buildAuthEnvPrefix } from '../utils/auth-env.js';
+import { stageAuthEnv } from '../services/member-secret-env.js';
 import { writeStatusline } from '../services/statusline.js';
 import { getModelOverride } from '../services/user-config.js';
 import { ensureCloudReady } from '../services/cloud/lifecycle.js';
@@ -302,12 +302,15 @@ async function deletePromptFile(agent: Agent, strategy: AgentStrategy, promptFil
   const remoteDir = path.dirname(promptFilePath);
 
   // apra-fleet-7dir.5.4: gitbash members take the POSIX branch, matching
-  // writePromptFile above -- and only that branch deletes `extraPaths` (the
-  // durable stdout mirror), which lives at a POSIX /tmp path PowerShell would
-  // resolve to a different directory entirely.
+  // writePromptFile above -- the durable stdout mirror in `extraPaths` lives
+  // at a POSIX /tmp path PowerShell would resolve to a different directory
+  // entirely.
   if (!isPosixShellMember(agent)) {
     const escapedFolder = escapeWindowsArg(remoteDir);
-    const psScript = `Set-Location "${escapedFolder}"; Remove-Item "${promptFileName}" -Force -ErrorAction SilentlyContinue`;
+    // extraPaths here are only staged credential files (absolute member
+    // paths); PowerShell members have no durable stdout mirror.
+    const extras = extraPaths.map(p => `; Remove-Item -LiteralPath '${escapePowerShellArgInner(p)}' -Force -ErrorAction SilentlyContinue`).join('');
+    const psScript = `Set-Location "${escapedFolder}"; Remove-Item "${promptFileName}" -Force -ErrorAction SilentlyContinue${extras}`;
     const encoded = Buffer.from(psScript, 'utf16le').toString('base64');
     await strategy.execCommand(`powershell -EncodedCommand ${encoded}`).catch(() => { /* ignore */ });
   } else {
@@ -1009,8 +1012,6 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   const cmds = getOsCommands(getAgentOS(agent), getAgentShell(agent));
   const provider = getProvider(agent.llmProvider);
 
-  const authPrefix = buildAuthEnvPrefix(agent, getAgentOS(agent));
-
   const tiers = provider.modelTiers();
   let resolvedModel = input.model || 'standard';
   let resolvedTier: 'cheap' | 'standard' | 'premium' | undefined;
@@ -1238,7 +1239,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     logPathAuthoritative: !!resolvedLogPath && logPathAuthoritative,
   });
 
-  const claudeCmd = authPrefix + cmds.buildAgentPromptCommand(provider, promptOpts);
+  const claudeCmd = cmds.buildAgentPromptCommand(provider, promptOpts);
 
   // apra-fleet-6z8.1: the per-invocation durable stdout mirror the unix prompt
   // wrapper tees to (see durableOutputPath / buildAgentPromptCommand). A
@@ -1481,9 +1482,18 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   // due together and the inactivity one, armed first, wins the tie. That
   // kill IS the max_total_s ceiling, so it is classified as max_total_time.
   let lastAttempt: { timeoutMs: number; maxTotalMs: number | undefined } | undefined;
-  const dispatchAttempt = (cmd: string, attemptTimeoutMs: number, attemptMaxTotalMs: number | undefined) => {
+  // Stored auth env vars reach the CLI through a per-attempt owner-only file
+  // the command loads and deletes (stageAuthEnv) -- never as inline values in
+  // the command line, which would sit in the member shell's argv (readable
+  // via ps) for the whole dispatch. Each attempt stages its own file because
+  // the prefix deletes it once loaded; any file a failed attempt left behind
+  // is removed with the prompt file at the end.
+  const stagedEnvPaths: string[] = [];
+  const dispatchAttempt = async (cmd: string, attemptTimeoutMs: number, attemptMaxTotalMs: number | undefined) => {
     lastAttempt = { timeoutMs: attemptTimeoutMs, maxTotalMs: attemptMaxTotalMs };
-    return strategy.execCommand(cmd, attemptTimeoutMs, attemptMaxTotalMs, onPidCaptured, dispatchSignal);
+    const staged = await stageAuthEnv(agent);
+    if (staged.path) stagedEnvPaths.push(staged.path);
+    return strategy.execCommand(staged.prefix + cmd, attemptTimeoutMs, attemptMaxTotalMs, onPidCaptured, dispatchSignal);
   };
   const isMaxTotalKill = (err: unknown): boolean => {
     const msg = (err as { message?: unknown })?.message;
@@ -1596,7 +1606,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       scope.info(`[${resolvedModel}] retrying -- dispatch exception: ${dispatchErr.message}`);
       await tryKillPid(agent, strategy, cmds);
       const freshOpts = { ...promptOpts, sessionId: isCallerMinted ? uuid() : undefined, resuming: false, fork: undefined };
-      const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
+      const retryCmd = cmds.buildAgentPromptCommand(provider, freshOpts);
       result = await dispatchAttempt(retryCmd, budget.timeoutMs, budget.maxTotalMs);
     }
     let parsed = provider.parseResponse(result, parseCtx);
@@ -1640,7 +1650,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
         scope.info(`[${resolvedModel}] retrying -- stale session`);
         await tryKillPid(agent, strategy, cmds);
         const freshOpts = { ...promptOpts, sessionId: isCallerMinted ? uuid() : undefined, resuming: false, fork: undefined };
-        const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
+        const retryCmd = cmds.buildAgentPromptCommand(provider, freshOpts);
         result = await dispatchAttempt(retryCmd, staleBudget.timeoutMs, staleBudget.maxTotalMs);
         parsed = provider.parseResponse(result, parseCtx);
         if (parsed.usage) _epUsage = parsed.usage;
@@ -1661,7 +1671,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
         await tryKillPid(agent, strategy, cmds);
         await new Promise(r => setTimeout(r, SERVER_RETRY_DELAY_MS));
         const freshOpts = { ...promptOpts, sessionId: isCallerMinted ? uuid() : undefined, resuming: false, fork: undefined };
-        const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
+        const retryCmd = cmds.buildAgentPromptCommand(provider, freshOpts);
         result = await dispatchAttempt(retryCmd, overloadBudget.timeoutMs, overloadBudget.maxTotalMs);
         parsed = provider.parseResponse(result, parseCtx);
         if (parsed.usage) _epUsage = parsed.usage;
@@ -1821,7 +1831,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
         if (!healBudget.exhausted) {
           await tryKillPid(agent, strategy, cmds);
           const freshOpts = { ...promptOpts, sessionId: isCallerMinted ? uuid() : undefined, resuming: false, fork: undefined };
-          const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
+          const retryCmd = cmds.buildAgentPromptCommand(provider, freshOpts);
           result = await dispatchAttempt(retryCmd, healBudget.timeoutMs, healBudget.maxTotalMs);
           parsed = provider.parseResponse(result, parseCtx);
           if (parsed.usage) _epUsage = parsed.usage;
@@ -2057,7 +2067,7 @@ session: ${parsed.sessionId}`;
       inFlightAgents.delete(agent.id);
     }
     stallDetector.remove(agent.id);
-    await deletePromptFile(agent, strategy, promptFilePath, durablePath ? [durablePath] : []);
+    await deletePromptFile(agent, strategy, promptFilePath, [...(durablePath ? [durablePath] : []), ...stagedEnvPaths]);
   }
   } catch (err) {
     if (claimGuardActive) {

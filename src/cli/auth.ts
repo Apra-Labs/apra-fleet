@@ -278,7 +278,7 @@ async function handleOAuth(args: string[]): Promise<void> {
   // member's registry.json encryptedEnvVars.CLAUDE_CODE_OAUTH_TOKEN instead
   // of writing a credentials file. This is the PRIMARY, cross-platform
   // smoke-test path (register_member/update_member's own persisted field --
-  // see src/utils/auth-env.ts#buildAuthEnvPrefix and src/os/*.ts#getCleanEnv):
+  // see src/services/member-secret-env.ts#stageAuthEnv and src/os/*.ts#getCleanEnv):
   // LocalStrategy's clean-env dispatch (env -i ... bash -l -c ...) exports
   // this env var directly into the child shell for every dispatch, which the
   // real Claude CLI accepts without needing a synthesized credentials-file
