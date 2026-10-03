@@ -32,6 +32,8 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const BOX_DIR = path.join(HERE, 'box');
 const ALL_PASSES = ['A', 'B', 'U', 'U2'];
 const DEFAULT_REPO = 'Apra-Labs/apra-fleet';
+// Passes that install the pinned Node.js (A and U2 run without Node).
+const passNeedsNode = p => p === 'B' || p === 'U';
 
 function usage(msg) {
   if (msg) console.error(`Error: ${msg}\n`);
@@ -105,7 +107,7 @@ async function fetchPinned(url, dest, want) {
 /** Prepare cached, checksum-verified inputs. Returns paths relative to the cache dir. */
 async function prepareCache(o, pins, notes) {
   const out = {};
-  const needNode = o.passList.some(p => p !== 'A');
+  const needNode = o.passList.some(passNeedsNode);
   const needBase = o.passList.some(p => p === 'U' || p === 'U2');
   if (needNode) {
     const n = pins.node[o.platform];
@@ -131,7 +133,7 @@ function runWindowsSandboxPass(o, pass, inputs, outDir) {
     '-Pass', pass, '-BoxDir', BOX_DIR, '-CandPath', path.resolve(o.binary), '-CacheDir', o.cache, '-OutDir', outDir,
     '-TimeoutMin', String(o.timeoutMin)];
   if (needBase) args.push('-BaseRel', inputs.baseRel.replace(/\//g, '\\'));
-  if (pass !== 'A') args.push('-NodeRel', inputs.nodeRel.replace(/\//g, '\\'), '-NodeSha', inputs.nodeSha);
+  if (passNeedsNode(pass)) args.push('-NodeRel', inputs.nodeRel.replace(/\//g, '\\'), '-NodeSha', inputs.nodeSha);
   const r = sh('powershell.exe', args, (o.timeoutMin + 10) * 60000);
   fs.writeFileSync(path.join(path.dirname(outDir), `driver-${pass}.log`), r.out);
   const err = /DRIVER-ERROR: (.*)/.exec(r.out);
@@ -201,7 +203,7 @@ async function main() {
         const passBase = pass === 'U' || pass === 'U2';
         const common = {
           pass, boxDir: BOX_DIR, candPath: path.resolve(o.binary), cacheDir: o.cache, outDir,
-          baseRel: passBase ? inputs.baseRel : '', nodeRel: pass !== 'A' ? inputs.nodeRel : '', nodeSha: inputs.nodeSha ?? '',
+          baseRel: passBase ? inputs.baseRel : '', nodeRel: passNeedsNode(pass) ? inputs.nodeRel : '', nodeSha: inputs.nodeSha ?? '',
           timeoutMin: o.timeoutMin, log,
         };
         let r;

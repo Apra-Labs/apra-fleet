@@ -9,7 +9,7 @@
 #
 # Usage: pass.sh <A|B|U|U2>
 # Env:   CAND (candidate installer), BASE (baseline installer, U/U2),
-#        NODE_TGZ + NODE_SHA (pinned Node tarball, B/U/U2), OUT (results dir)
+#        NODE_TGZ + NODE_SHA (pinned Node tarball, B/U), OUT (results dir)
 set -u
 PASS="${1:?pass id required}"
 OUT="${OUT:-/fi/out}"
@@ -194,28 +194,28 @@ U)
   run U17 update-check "$AF" update --check; rec U17 "apra-fleet update --check" "$RC" "$(key "$LOG" 'up to date' 'Update' 'Error')"
   ;;
 U2)
+  # Since v0.4.3 a no-Node user holds a core-only install (--workflows none).
   prep_bin "$BASE" "$HOME/base"; prep_bin "$CAND" "$HOME/cand"
   run V01 base-version "$HOME/base" --version; rec V01 "base --version" "$RC" "$(head -n1 "$LOG")" "$(ver_of "$LOG")"
-  run V02 base-install "$HOME/base" install; INSTALL_LOG=$LOG
-  rec V02 "base install (no node)" "$RC" "$(key "$LOG" 'installed successfully' 'systemd' '^Error')"
+  run V02 base-install "$HOME/base" install --workflows none; INSTALL_LOG=$LOG
+  rec V02 "base install --workflows none (no node)" "$RC" "$(key "$LOG" 'installed successfully' 'systemd' '^Error')"
   health_step V03
   seed V04
   members_have_dummy; m=$?; secret_has_dummy; s=$?
   rec V04 "register-member fi-dummy + secret --set fi_dummy_secret" "$((SEED_MEMBER_RC + SEED_SECRET_RC + m + s))" "member=$([ $m = 0 ] && echo yes || echo no) secret=$([ $s = 0 ] && echo yes || echo no)"
   run V05 update "$AF" update; rec V05 "apra-fleet update (baseline)" "$RC" "$(key "$LOG" 'up to date' 'Updating' 'Error')"
   sleep 5
-  update_argv
-  run V06 update-argv-nonode "$HOME/cand" "${UPDATE_ARGS[@]}"
-  rec V06 "cand ${UPDATE_ARGS[*]} (no node)" "$RC" "$(key "$LOG" 'fleet-se requires' '^Error')"
+  run V06 install-force-nonode "$HOME/cand" install --force
+  rec V06 "cand install --force (no node)" "$RC" "$(key "$LOG" 'fleet-se requires' '^Error')"
   MANUAL_NOTE=""; http GET /health; rec V07 "GET /health" "$CODE" "$(head -c 200 "$BODY")" "$(ver_of "$BODY")"
-  install_node V08
-  run V09 update-argv "$HOME/cand" "${UPDATE_ARGS[@]}"; INSTALL_LOG=$LOG
-  rec V09 "cand ${UPDATE_ARGS[*]}" "$RC" "$(key "$LOG" 'installed successfully' 'NOT running' 'systemd' '^Error')"
-  health_step V10
+  update_argv
+  run V08 update-argv-nonode "$HOME/cand" "${UPDATE_ARGS[@]}"; INSTALL_LOG=$LOG
+  rec V08 "cand ${UPDATE_ARGS[*]} (no node)" "$RC" "$(key "$LOG" 'installed successfully' 'NOT running' 'systemd' '^Error')" "--workflows ${UPDATE_ARGS[6]}"
+  health_step V09
   members_have_dummy; m=$?; secret_has_dummy; s=$?
-  rec V11 "registry.json fi-dummy + secret --list fi_dummy_secret" "$((m + s))" "member=$([ $m = 0 ] && echo yes || echo no) secret=$([ $s = 0 ] && echo yes || echo no)"
-  svc_step V12 apra-fleet
-  run V13 status "$AF" status; rec V13 "apra-fleet status" "$RC" "$(key "$LOG" 'State:')"
+  rec V10 "registry.json fi-dummy + secret --list fi_dummy_secret" "$((m + s))" "member=$([ $m = 0 ] && echo yes || echo no) secret=$([ $s = 0 ] && echo yes || echo no)"
+  svc_step V11 apra-fleet
+  run V12 status "$AF" status; rec V12 "apra-fleet status" "$RC" "$(key "$LOG" 'State:')"
   ;;
 *) log "unknown pass $PASS"; exit 2 ;;
 esac

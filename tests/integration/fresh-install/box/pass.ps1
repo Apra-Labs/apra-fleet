@@ -198,7 +198,8 @@ try {
     }
     'U2' {
       Run V01 base-version $BaseExe @('--version'); Rec V01 'base --version' $RC (Key $LOG @('apra-fleet v')) (VerOf $LOG)
-      Run V02 base-install $BaseExe @('install'); Rec V02 'base install (no node)' $RC (Key $LOG @('installed successfully', '^Error'))
+      # Since v0.4.3 a no-Node user holds a core-only install (--workflows none).
+      Run V02 base-install $BaseExe @('install', '--workflows', 'none'); Rec V02 'base install --workflows none (no node)' $RC (Key $LOG @('installed successfully', '^Error'))
       HealthStep V03
       Seed V04
       $m = MemberHasDummy; $s = SecretHasDummy
@@ -206,16 +207,15 @@ try {
       Rec V04 'register-member fi-dummy + secret --set fi_dummy_secret' $rc "member=$(YesNo $m) secret=$(YesNo $s) (register rc=$SeedMemberRC, secret rc=$SeedSecretRC)"
       Run V05 update $AF @('update'); Rec V05 'apra-fleet update (baseline)' $RC (Key $LOG @('up to date', 'Updating', 'Error'))
       Start-Sleep 5
-      $argv = UpdateArgv
-      Run V06 update-argv-nonode $CandExe $argv; Rec V06 "cand $($argv -join ' ') (no node)" $RC (Key $LOG @('fleet-se requires', '^Error'))
+      Run V06 install-force-nonode $CandExe @('install', '--force'); Rec V06 'cand install --force (no node)' $RC (Key $LOG @('fleet-se requires', '^Error'))
       Http GET /health; Rec V07 'GET /health' $CODE (Head $BODY) (VerOf $BODY)
-      InstallNode V08
-      Run V09 update-argv $CandExe $argv; Rec V09 "cand $($argv -join ' ')" $RC (Key $LOG @('installed successfully', 'NOT running', '^Error'))
-      HealthStep V10
+      $argv = UpdateArgv
+      Run V08 update-argv-nonode $CandExe $argv; Rec V08 "cand $($argv -join ' ') (no node)" $RC (Key $LOG @('installed successfully', 'NOT running', '^Error')) "--workflows $($argv[-1])"
+      HealthStep V09
       $m = MemberHasDummy; $s = SecretHasDummy
-      Rec V11 'registry.json fi-dummy + secret --list fi_dummy_secret' ([int](-not $m) + [int](-not $s)) "member=$(YesNo $m) secret=$(YesNo $s)"
-      TaskStep V12 ApraFleet
-      Run V13 status $AF @('status'); Rec V13 'apra-fleet status' $RC (Key $LOG @('State:'))
+      Rec V10 'registry.json fi-dummy + secret --list fi_dummy_secret' ([int](-not $m) + [int](-not $s)) "member=$(YesNo $m) secret=$(YesNo $s)"
+      TaskStep V11 ApraFleet
+      Run V12 status $AF @('status'); Rec V12 'apra-fleet status' $RC (Key $LOG @('State:'))
     }
     default { Log "unknown pass $Pass" }
   }

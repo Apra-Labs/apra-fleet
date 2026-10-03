@@ -62,23 +62,23 @@
       ]
     },
     "U2": {
-      "title": "Upgrade along the apra-fleet update path (baseline without Node, then with Node)",
+      "title": "Upgrade a core-only (no Node) install along the apra-fleet update path",
+      "_comment": "Since v0.4.3 a no-Node user can only hold a core-only install (--workflows none); the default install refuses without Node. This pass upgrades that user: the default installer still refuses and leaves the baseline running, and the update argv (install-config workflowsMode) upgrades core-only without Node.",
       "steps": [
         { "id": "V01", "title": "baseline --version", "expect": { "exit": 0, "observed": "^${baselineVersion}$" } },
-        { "id": "V02", "title": "baseline install (no Node)", "expect": { "exit": 0, "keyline": "installed successfully" },
+        { "id": "V02", "title": "baseline install --workflows none (no Node)", "expect": { "exit": 0, "keyline": "installed successfully" },
           "envLimited": [ { "platforms": ["linux"], "drivers": ["docker"], "keyline": "systemd", "note": "no systemd user manager in the container" } ] },
         { "id": "V03", "title": "baseline server up on baseline version", "expect": { "exit": 200, "observed": "^${baselineVersion}$" } },
         { "id": "V04", "title": "seed dummy member + secret", "expect": { "exit": 0 } },
         { "id": "V05", "title": "baseline apra-fleet update (targets GitHub latest; cannot target a local binary)", "severity": "advisory", "expect": { "exit": 0 } },
-        { "id": "V06", "title": "update argv replayed with candidate, no Node: refused naming prerequisite", "severity": "advisory", "expect": { "exit": "nonzero", "keyline": "fleet-se requires Node\\.js 22\\.16\\+ and npm" } },
-        { "id": "V07", "title": "refused update left baseline server running", "expect": { "exit": 200, "observed": "^${baselineVersion}$" } },
-        { "id": "V08", "title": "install pinned Node.js (checksum verified)", "expect": { "exit": 0, "observed": "^v22\\." } },
-        { "id": "V09", "title": "update argv replayed with candidate (Node present)", "expect": { "exit": 0, "keyline": "installed successfully" },
-          "envLimited": [ { "platforms": ["linux"], "drivers": ["docker"], "keyline": "systemd|NOT running", "note": "no systemd: --force stopped the hand-started server and could not register a service (loud exit 1 by design)" } ] },
-        { "id": "V10", "title": "server back on candidate version", "expect": { "exit": 200, "observed": "^${expectVersion}$" } },
-        { "id": "V11", "title": "dummy member + secret survived", "expect": { "exit": 0 } },
-        { "id": "V12", "title": "server service running after upgrade", "expect": { "exit": 0, "keyline": "Running|active" } },
-        { "id": "V13", "title": "apra-fleet status after upgrade", "expect": { "exit": 0, "keyline": "running" } }
+        { "id": "V06", "title": "candidate default install --force, no Node: refused naming prerequisite", "severity": "advisory", "expect": { "exit": "nonzero", "keyline": "fleet-se requires Node\\.js 22\\.16\\+ and npm" } },
+        { "id": "V07", "title": "refused install left baseline server running", "expect": { "exit": 200, "observed": "^${baselineVersion}$" } },
+        { "id": "V08", "title": "update argv replayed with candidate, no Node: core-only upgrade succeeds", "expect": { "exit": 0, "keyline": "installed successfully", "observed": "^--workflows none$" },
+          "envLimited": [ { "platforms": ["linux"], "drivers": ["docker"], "keyline": "systemd|NOT running", "observed": "^--workflows none$", "note": "no systemd: --force stopped the hand-started server and could not register a service (loud exit 1 by design)" } ] },
+        { "id": "V09", "title": "server back on candidate version", "expect": { "exit": 200, "observed": "^${expectVersion}$" } },
+        { "id": "V10", "title": "dummy member + secret survived", "expect": { "exit": 0 } },
+        { "id": "V11", "title": "server service running after upgrade", "expect": { "exit": 0, "keyline": "Running|active" } },
+        { "id": "V12", "title": "apra-fleet status after upgrade", "expect": { "exit": 0, "keyline": "running" } }
       ]
     }
   }
