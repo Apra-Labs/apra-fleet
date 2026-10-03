@@ -1,6 +1,6 @@
 ---
 name: harvester
-description: Extracts durable sprint knowledge into docs/, updates README/CHANGELOG (including pre-computed cost analysis block), defers low-priority issues, and returns OK.
+description: Extracts durable sprint knowledge into docs/, updates README, defers low-priority issues, and returns OK.
 tools: [Read, Edit, Write, Bash, Grep, Glob, ToolSearch]
 ---
 
@@ -20,14 +20,12 @@ Your dispatch prompt must supply:
 - `analysisArtifactFile` (required) -- relative path (under the repo) to write the sprint
   analysis artifact to, e.g. `sprint-logs/<branch>-<startedAt>.md`.
 - `analysisText` (required) -- the exact, pre-formatted analysis content to write verbatim.
-- `costAnalysis` (required) -- the exact, pre-computed cost analysis block to insert
-  verbatim into the CHANGELOG entry.
 - `base-branch` (required) -- for `git log`/`git diff` in Step 2.
 - `branch` (required) -- the sprint branch being harvested.
 
-**Missing-input behavior**: if `analysisArtifactFile`, `analysisText`, or `costAnalysis` is
-not supplied, do NOT fabricate, reformat, or recompute a substitute -- these are
-pre-computed by the orchestrator in JavaScript and must be inserted byte-for-byte. Stop
+**Missing-input behavior**: if `analysisArtifactFile` or `analysisText` is not supplied,
+do NOT fabricate, reformat, or recompute a substitute -- these are pre-computed by the
+orchestrator in JavaScript and must be written byte-for-byte. Stop
 and return `status: "FAILED"` with `notes` naming exactly which input was missing. Same for
 a missing `base-branch`/`branch`: do not guess which branch to diff.
 
@@ -101,7 +99,7 @@ Create or update files under `docs/` to capture long-term knowledge.
 - Code-line references ("see line 42 of foo.ts")
 - Debug notes, investigation findings, workaround details
 
-**Forbidden in every harvested document** (docs/, README.md, CHANGELOG.md, anywhere you
+**Forbidden in every harvested document** (docs/, README.md, anywhere you
 write): bead ids, git commit/revision hashes, branch names, and dates -- ephemeral
 references that rot as beads close, commits rebase, and branches merge. If you catch
 yourself writing "in BD-14 we added..." or "as of commit a1b2c3d...", rewrite the
@@ -110,13 +108,11 @@ commit produced it.
 
 Commit the docs/ changes with a descriptive message.
 
-## Step 4 -- Update README.md and CHANGELOG.md
+## Step 4 -- Update README.md
 
 - Update `README.md` to reflect new features, changed behaviour, or removed capabilities
-- Prepend a new entry to `CHANGELOG.md` (create it if it does not exist) summarising
-  what was implemented, the sprint goal, and any items carried forward
-- Your task context includes a `costAnalysis` block. Insert it verbatim into the CHANGELOG
-  entry, after the summary paragraph, exactly as provided -- do not reformat or recompute it
+- Do NOT write a CHANGELOG entry: the sprint summary and cost go in the PR body, which the
+  orchestrator writes
 
 Commit these changes.
 
@@ -159,7 +155,7 @@ placeholder):
 ```json
 {
   "status": "OK",
-  "notes": "Wrote sprint analysis artifact, extracted durable docs, updated README/CHANGELOG, confirmed 2 P3 issues remain open as backlog, pushed branch.",
+  "notes": "Wrote sprint analysis artifact, extracted durable docs, updated README, confirmed 2 P3 issues remain open as backlog, pushed branch.",
   "kb_captures": []
 }
 ```
@@ -180,7 +176,6 @@ or as prose if you are answering a human directly.
 - NEVER remove project files that predate the sprint
 - NEVER remove or modify files under `sprint-logs/` -- these are durable cost and audit logs
 - NEVER create PLAN.md, progress.json, or requirements.md
-- NEVER reformat or recompute the costAnalysis block -- insert it verbatim
 - NEVER close any beads issue, at any priority, for any reason (see Step 5)
 - Durable knowledge only in docs/ -- a reader a year from now should find it illuminating
 - NEVER write a bead id, commit hash, branch name, or date into any harvested document

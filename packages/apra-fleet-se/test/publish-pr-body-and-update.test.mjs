@@ -142,6 +142,25 @@ describe('sprint PR body (markdown)', () => {
         assert.equal(parseRunHistory(previous).length, RUN_HISTORY_MAX_ENTRIES, 'history is capped');
         assert.ok(previous.endsWith('-->'), 'the history block is never cut off by the provider-level cap');
     });
+
+    test('the engine cost block renders as a fenced Cost section after Details, before the human-review line', () => {
+        const cost = 'Budget ceiling: not set.\nTracked spend (priced dispatches only): $1.2500.';
+        const body = sampleBody({ costAnalysis: cost });
+        assert.ok(body.includes(`### Cost\n\n\`\`\`\n${cost}\n\`\`\`\n`), body);
+        assert.ok(body.indexOf('### Details') < body.indexOf('### Cost'));
+        assert.ok(body.indexOf('### Cost') < body.indexOf('Do NOT auto-merge'));
+    });
+
+    test('the cost block is sanitized and its fence cannot be closed from inside', () => {
+        const body = sampleBody({ costAnalysis: 'spend {{vcs_token}}\n```\n<b>x</b>' });
+        assert.ok(!/\{\{/.test(body) && !body.includes('<b>'), body);
+        assert.ok(body.includes('### Cost\n\n````\n'), 'fence is longer than any backtick run inside');
+    });
+
+    test('no cost block (the abort path) renders no Cost section -- body is unchanged', () => {
+        assert.ok(!sampleBody().includes('### Cost'));
+        assert.equal(sampleBody({ costAnalysis: '' }), EXPECTED_BODY);
+    });
 });
 
 describe('run history marker round-trip', () => {
@@ -329,7 +348,7 @@ const remoteCommand = async (cmd) => (cmd === 'git remote get-url origin'
     ? { ok: true, output: 'https://github.com/acme/widgets.git', error: null }
     : { ok: true, output: '', error: null });
 
-async function publish({ gh, verdict, notes, runId, member }) {
+async function publish({ gh, verdict, notes, runId, member, costAnalysis }) {
     const logs = [];
     const result = await runPublishPrPhase({
         phase: () => {},
@@ -343,6 +362,7 @@ async function publish({ gh, verdict, notes, runId, member }) {
         gitSync: { pushGitAfter: async () => {}, syncBeadsAfter: async () => {} },
         getMemberForRole: () => member,
         finalVerdictResult: { verdict, notes },
+        costAnalysis,
     });
     return { result, logs };
 }
@@ -360,6 +380,12 @@ describe('Publish PR: a relaunch rewrites the existing PR for the new verdict', 
         assert.ok(!gh.pr.body.includes('bead 1 open'), 'the old run\'s notes are replaced, not appended');
         assert.deepEqual(parseRunHistory(gh.pr.body).map((e) => `${e.run}:${e.verdict}`), ['run-2:PASS', 'run-1:FAIL']);
         assert.ok(logs.some((m) => m.includes('already exists') && m.includes('updated its title and body') && m.includes('(PASS)')), JSON.stringify(logs));
+    });
+
+    test('the Harvest cost block reaches the created PR body', async () => {
+        const gh = fakeGitHub();
+        await publish({ gh, verdict: 'PASS', notes: 'ok', runId: 'run-c', member: 'pub-cost', costAnalysis: 'Tracked spend (priced dispatches only): $2.5000.' });
+        assert.ok(gh.pr.body.includes('### Cost\n\n```\nTracked spend (priced dispatches only): $2.5000.\n```'), gh.pr.body);
     });
 
     test('PASS -> FAIL: the stale PASS title is replaced too', async () => {

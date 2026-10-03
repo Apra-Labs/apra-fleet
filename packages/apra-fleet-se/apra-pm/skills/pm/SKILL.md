@@ -59,7 +59,7 @@ order; a fourth phase runs once at sprint close.
   files bugs for failures). Skip the whole phase if either file is absent.
 - **Harvest** -- runs once after the cycle loop exits (goal met or cycle ceiling
   hit): poll CI via `ci-watcher`, run a final reviewer pass, then `harvester`
-  extracts durable knowledge into `docs/` and `CHANGELOG`, and raise the PR.
+  extracts durable knowledge into `docs/` and README, and raise the PR.
 
 At the end of each cycle, check the **goal**: the sprint is done when no open
 beads issue in the sprint-root subtree sits at or above the goal priority (default
@@ -128,7 +128,7 @@ Dispatch these only when their condition holds:
   not configured / pending). [Fleet mode] PM may run `gh` CLI directly instead of
   dispatching (R13).
 - `harvester` -- in Harvest, at sprint close, to extract durable knowledge into
-  `docs/` and update `CHANGELOG`.
+  `docs/` and update README.
 
 ## Tracks and parallelism
 
@@ -352,7 +352,7 @@ per cycle:  Plan (planner writes beads tasks -> plan-reviewer loop) -> Develop
             (doer-review loop: bd ready -> claim -> close, to a clean APPROVED)
             -> Test (deploy + integ tests, if applicable)
             -> goal check -> next cycle | exit
-at close:   Harvest (CI watch -> final review -> docs/CHANGELOG -> PR)
+at close:   Harvest (CI watch -> final review -> docs -> PR)
 ```
 
 For small, low-risk work (1-3 tasks, no phasing) use the lightweight path instead

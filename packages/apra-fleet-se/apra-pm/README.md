@@ -38,7 +38,7 @@ Finalization (once): regression-test-runner runs regression-test-playbook.md --
                      failures carry over as [regression][carry-over] beads, they
                      never gate this sprint's verdict
 CI check (haiku, non-blocking): polls after PR is created; annotates PR when not green
-Harvest (once): harvester writes sprint analysis, updates docs/CHANGELOG, raises PR
+Harvest (once): harvester writes sprint analysis, updates docs/README; engine raises PR
 ```
 
 ### Cost estimation and calibration
@@ -49,7 +49,7 @@ buckets and the model each task was assigned. All arithmetic is pure JavaScript;
 no agent does any calculation.
 
 At sprint end, actual token spend (from the durable sprint log) is compared against
-the quote and written to CHANGELOG. The harvester then updates
+the quote and rendered in the PR body and sprint analysis. The harvester then updates
 `sprint-logs/calibration.json` with rolling-average actuals, so each successive
 sprint produces tighter estimates. The calibration loop targets +-50% accuracy;
 500%+ deviation triggers a calibration failure flag.
