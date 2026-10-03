@@ -64,6 +64,35 @@ in v0.5.
   `orchestratorMember` variables, log and error strings, and the beads-identity `expectedFrom`
   value) were renamed. Engine-sense uses of "orchestrator" remain legitimate.
 
+## Supervisor beads view (cached, tip-checked)
+
+The supervisor reads the beads backlog through one shared cached view
+(`src/supervisor/beads-view.mjs`) instead of running `bd list` per request.
+
+- **Refresh runs on the backlog member**, whose work folder is the repo root, with `bd list`
+  using the repo root as cwd. It reuses the engine's remote-tip fingerprint (`doltPullBefore`):
+  when the remote tip is unchanged there is no pull and no re-list, but the freshness timestamp
+  is still advanced.
+- **One refresh at a time.** Concurrent callers share the in-flight refresh (N concurrent calls
+  cause one pull). A lock or busy error skips the round with no transient retries.
+- **No stale rows reported as fresh.** If a pull succeeds but the following list is skipped or
+  fails, a re-list stays owed and is retried on the next refresh.
+- **Fail closed.** The command adapter treats an `execute_command` reply with no exit code as a
+  failure.
+- **Two consumers, two guarantees.**
+  - *Launch guard*: `POST /api/sprints` always forces a fresh check and re-lists inside the same
+    call, retrying busy skips within one deadline. Any failure (pull error, list error, degraded
+    member, timeout, busy exhaustion) answers 503 with the reason and never reserves members or
+    spawns a sprint. The cache is never trusted for the overlap decision.
+  - *Dashboard and backlog views*: read the cached snapshot only and kick a non-blocking refresh
+    when older than 15 seconds. `GET /state` carries `beadsFreshness`; the page shows "Beads as
+    of", a visible error notice, and a separate busy note. Polling `/state` never adds `bd list`
+    calls.
+- **No invalidate-on-mutation hook.** The supervisor itself performs no bead mutations.
+- **Known limitation.** The dashboard can lag behind beads that sprint children change in the
+  shared clone without pushing, because the tip check only sees the remote. The launch path is
+  unaffected since it always re-lists.
+
 ## Invariants
 
 - `test/backlog-role-no-orchestrator-identifiers.test.mjs` scans `fleet-sprint/`, `bin/` and

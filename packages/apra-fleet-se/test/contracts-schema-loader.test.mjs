@@ -52,7 +52,6 @@ describe('loadSchemaFileFrom (loader primitive)', () => {
         assert.deepStrictEqual(harvesterInput.required, [
             'analysisArtifactFile',
             'analysisText',
-            'costAnalysis',
             'base-branch',
             'branch',
         ]);
@@ -155,7 +154,7 @@ describe('SCHEMAS / validateRoleInput resolved against a fixture packages/apra-f
             const result = wired.validateRoleInput('harvester', {
                 'base-branch': 'main',
                 branch: 'feat/x',
-                // analysisArtifactFile, analysisText, costAnalysis all missing
+                // analysisArtifactFile, analysisText both missing
             });
             assert.strictEqual(result.valid, false);
             assert.ok(Array.isArray(result.errors) && result.errors.length > 0);
@@ -165,7 +164,6 @@ describe('SCHEMAS / validateRoleInput resolved against a fixture packages/apra-f
             const result = wired.validateRoleInput('harvester', {
                 analysisArtifactFile: 'sprint-logs/feat-x.md',
                 analysisText: 'Sprint analysis...',
-                costAnalysis: '$1.23 total',
                 'base-branch': 'main',
                 branch: 'feat/x',
             });

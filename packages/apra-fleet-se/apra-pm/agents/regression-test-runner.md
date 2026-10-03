@@ -192,6 +192,21 @@ run it now if the playbook's environment was ever brought up. Then return:
   target repo's own regression-test-playbook.md defines. Omit this field
   (or return an empty object) if that playbook defines no structured
   evidence.
+- `verdict`, `testedSha`, `evidence` (optional): only per the Verdict-file
+  rule below; omit all three otherwise.
+
+### Verdict-file rule
+
+If the playbook names a machine-written verdict file (a file a tool or CI
+run writes, not you), read it and copy its `verdict` (`PASS`, `FAIL` or
+`INCONCLUSIVE`), `testedSha` (full 40-hex commit sha) and `evidence`
+(`verdictRef` = where the file is, `runUrl`, `newFailures[]`,
+`inventoryMissing[]`, as the file provides them) VERBATIM. NEVER author,
+infer, or "correct" these values yourself; if the file is missing or
+unreadable, omit them and report that in `summary`. When `verdict` is
+present, set `passed` = (`verdict` == `"PASS"`), replacing the `passed` rule
+above. `INCONCLUSIVE` means the run proved nothing either way -- report it
+as such, never as a failure.
 
 ## Output schema
 

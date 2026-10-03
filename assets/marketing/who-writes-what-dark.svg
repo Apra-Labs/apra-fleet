@@ -167,7 +167,7 @@
     <circle cx="678" cy="618" r="11" fill="#F59E0B" fill-opacity="0.15" stroke="#F59E0B" stroke-width="1"/>
     <text x="678" y="618" dominant-baseline="central" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="800" fill="#FBBF24">G</text>
     <text x="700" y="614" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="15.5" font-weight="800" fill="#F8FAFC">Harvest + PR</text>
-    <text x="700" y="632" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="600" fill="#94A3B8">docs, changelog, pull request</text>
+    <text x="700" y="632" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="600" fill="#94A3B8">docs, analysis, pull request</text>
   </g>
 
   <!-- Connectors: left artifacts -> right phases (left to right); right-side landing points
