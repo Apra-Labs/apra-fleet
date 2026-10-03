@@ -27,6 +27,15 @@ backlog member's retry (recurrence of an earlier fix); a smoke-test sprint whose
 failed with the member missing a VCS provider; and the regression-pass failures already tracked by
 earlier carry-over issues.
 
+## [Unreleased] -- Regression phase no longer assumes apra-fleet's playbook structure
+
+The fleet-sprint regression phase, the `regression-test-runner` role prompt and the sprint report
+used to dictate apra-fleet's own two-part pass (a real-bd suite plus a sandboxed toy-sprint smoke
+test) to every target. They now run every part the target's `regression-test-playbook.md` defines.
+The runner output schema (v3) adds `sections` (one `{name, passed}` per playbook part) and makes
+`suitePassed`/`smokePassed` optional deprecated fields, still accepted from older runners. The
+generic-boundary guard gained an `apra-fleet-regression-structure` pattern for this leak class.
+
 ## [Unreleased] -- Supervisor owns and hard-pins its backlog member
 
 `fleet-se serve` now ensures its own LLM-less, `unreservable` backlog member for its project
@@ -52,6 +61,19 @@ Carried forward as open P3 backlog: the overlap guard not seeing the injected ba
 sprint-state test that slices `runner.js` with an LF-only pattern (fails on CRLF checkouts), a
 `kb_session_prime` test timeout, and the regression-pass failures already tracked by earlier
 carry-over issues.
+
+## [Unreleased] -- remove_member no longer deletes a user-supplied SSH key (data loss fix)
+
+`remove_member` deleted the local key pair at the member's `keyPath` (and removed its public key
+from the member's `~/.ssh/authorized_keys`) whenever no other member shared it, even when the key
+was the user's own `register_member key_path` -- earlier builds could delete a personal key such as
+`~/.ssh/id_ed25519`. Both steps now run only for fleet-generated keys (those under the fleet keys
+dir written by `setup_ssh_key`); the shared-key guard still applies. Behaviour change: removing a
+member registered with a user-supplied key leaves the key files and its `authorized_keys` entry in
+place -- revoking that access is the user's choice.
+
+Upgrade: no migration needed; the decision is made by key location, so members registered before
+this fix are covered. If an earlier build already deleted your key, restore it from backup.
 
 ## [Unreleased] -- Beads role renamed to `backlog`; `orchestrator` kept as a deprecated alias
 

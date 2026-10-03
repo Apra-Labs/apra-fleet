@@ -1754,10 +1754,9 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
                     content: [{
                         text: JSON.stringify({
                             passed: true,
-                            suitePassed: true,
-                            smokePassed: true,
+                            sections: [{ name: 'Mock suite', passed: true }],
                             bugsFiled: [],
-                            summary: 'Mock regression pass: full suite and sandbox smoke test both green.',
+                            summary: 'Mock regression pass: every playbook part green.',
                         })
                     }]
                 };

@@ -1,9 +1,9 @@
 {
   "version": 2,
   "provenance": {
-    "commit": "411725e911f2e9ecf12a712a3a0daf37b11cdd97",
-    "branch": "feat/supervisor-beads-freshness",
-    "entry_count": 396
+    "commit": "a993f497d35892ff89039edb94be940fd1fb0b5e",
+    "branch": "main",
+    "entry_count": 266
   },
   "entries": [
     {
@@ -58,24 +58,6 @@
       "updated_at": "2026-09-25T22:26:42.298Z"
     },
     {
-      "id": "042725ba-8674-4554-b42b-afe7905e6dbc",
-      "type": "knowledge",
-      "title": "Supervisor/console theme tokens live in one shared module, not per-page copies",
-      "summary": "Dashboard CSS custom properties and base rules are exported from packages/apra-fleet-se/src/supervisor/theme.mjs and imported by every console-embedded page (dashboard.mjs, project-page.mjs); a page that skips this import renders unstyled (black-on-dark) instead of themed.",
-      "symbols": [
-        "THEME_CSS",
-        "DASHBOARD_CSS"
-      ],
-      "source_files": [
-        "packages/apra-fleet-se/src/supervisor/theme.mjs",
-        "packages/apra-fleet-se/src/supervisor/dashboard.mjs",
-        "packages/apra-fleet-se/src/registration/project-page.mjs",
-        "packages/apra-fleet-se/docs/architecture.md"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:25.591Z"
-    },
-    {
       "id": "05986a5d-757f-4d3d-b8e2-6c267e84e799",
       "type": "knowledge",
       "title": "bd create --id silently overwrites an occupied id; only a probe-before-create seam prevents it",
@@ -124,21 +106,6 @@
       "updated_at": "2026-09-29T06:13:12.767Z"
     },
     {
-      "id": "06ed302b-a534-43f3-821f-7a56e93b3dd3",
-      "type": "learning",
-      "title": "cpSync on this Windows/NTFS setup preserves source mtimes regardless of the documented preserveTimestamps default",
-      "summary": "Node's fs.cpSync docs imply preserveTimestamps:false (the default) gives copied files a fresh 'now' mtime, but on this repo's Windows/NTFS environment the copied file's Modify time was observed identical to the source's original mtime even though Birth time was fresh -- so mtime-based before/after drift checks for a copy operation are unreliable here; use a content hash (e.g. per-file md5sum concatenated and re-hashed) instead.",
-      "symbols": [
-        "vendorDir"
-      ],
-      "source_files": [
-        "scripts/dist-pm.mjs",
-        "tests/dist-pm-vendoring.test.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-26T15:57:48.690Z"
-    },
-    {
       "id": "07003cb6-580b-41de-be4a-8827d7dcf240",
       "type": "learning",
       "title": "A dispatch-pin falsification edit must reuse an existing anchor, or siteFor fails first and masks the real check",
@@ -157,44 +124,6 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:25.997Z"
-    },
-    {
-      "id": "0746e31d-a3e4-4c73-b304-a56fe465eb8b",
-      "type": "learning",
-      "title": "Run-level HOME isolation breaks real git status against this checkout with 'dubious ownership'",
-      "summary": "Isolating HOME/USERPROFILE at the packages/apra-fleet-se node --test run level (via --import) breaks any test that shells out to a REAL `git status`/`git config` against the actual repo checkout, because the isolated temp HOME has no ~/.gitconfig and this checkout is owned by BUILTIN/Administrators while the current user is not -- git >= 2.36 refuses with 'detected dubious ownership'.",
-      "symbols": [
-        "applyIsolatedHome"
-      ],
-      "source_files": [
-        "packages/apra-fleet-se/test/isolated-home-setup.mjs",
-        "packages/apra-fleet-se/test/phase0-seams-facade.test.mjs",
-        "packages/apra-fleet-se/test/phase1-leaf-facade-completeness.test.mjs",
-        "packages/apra-fleet-se/test/phase3-dispatch-engine-completeness.test.mjs",
-        "packages/apra-fleet-se/test/phase4-move-only-completeness.test.mjs",
-        "packages/apra-fleet-se/test/vcs-auth-extraction-facade.test.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-27T02:53:31.023Z"
-    },
-    {
-      "id": "076d83e4-73cf-4b68-8bfe-3a93ce39e1d0",
-      "type": "learning",
-      "title": "Supervisor service registration args are pinned in three separate root test files",
-      "summary": "Changing the args registerSupervisorService passes to mgr.register must update tests/supervisor-service.test.ts, tests/install-supervisor-service.test.ts and tests/supervisor-unit-shape.test.ts together.",
-      "symbols": [
-        "registerSupervisorService",
-        "SUPERVISOR_MANAGED_SERVICE_FLAG",
-        "SUPERVISOR_SUBCOMMAND"
-      ],
-      "source_files": [
-        "src/services/supervisor-service.ts",
-        "tests/supervisor-service.test.ts",
-        "tests/install-supervisor-service.test.ts",
-        "tests/supervisor-unit-shape.test.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T02:17:50.175Z"
     },
     {
       "id": "07dbc271-b464-4afe-8760-87456e491691",
@@ -331,29 +260,6 @@
       "updated_at": "2026-09-25T22:26:39.791Z"
     },
     {
-      "id": "0a687749-2e16-47c1-bd27-1b77359f4c6c",
-      "type": "knowledge",
-      "title": "HttpKbProvider strict mode gates every local-only delegation except touch and stats",
-      "summary": "In strict mode getLinked, relatedClaims and promote are gated behind a reachability probe, so the only deliberate exemptions on HttpKbProvider are touch (fire-and-forget telemetry) and stats (must stay inspectable).",
-      "symbols": [
-        "HttpKbProvider",
-        "ensureReachable",
-        "strictFailure",
-        "markDegraded",
-        "readKbConfigFromDisk",
-        "MemoryProvider"
-      ],
-      "source_files": [
-        "src/services/knowledge/http-provider.ts",
-        "src/services/knowledge/kb-config.ts",
-        "src/services/knowledge/types.ts",
-        "src/tools/kb-query.ts",
-        "tests/knowledge/http-provider.test.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:53.978Z"
-    },
-    {
       "id": "0b6a7734-3224-4b5e-b407-6353af651e29",
       "type": "learning",
       "title": "Generic-boundary guard scans fleet-sprint runtime strings, so error messages must not cite apra-fleet source paths",
@@ -452,22 +358,6 @@
       "updated_at": "2026-09-25T22:26:26.590Z"
     },
     {
-      "id": "0f153b6b-6f6f-4c35-9fd0-6ea68512bd37",
-      "type": "learning",
-      "title": "tests/setup.ts isolates only APRA_FLEET_DATA_DIR; fleet.key follows os.homedir()",
-      "summary": "The root vitest setup gives each run a temp APRA_FLEET_DATA_DIR, but jwt.ts resolves fleet.key from os.homedir(), which on win32 reads USERPROFILE and ignores HOME, so tests must override USERPROFILE too.",
-      "symbols": [
-        "getOrCreateKey"
-      ],
-      "source_files": [
-        "tests/setup.ts",
-        "src/services/jwt.ts",
-        "tests/console-server.test.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-26T19:04:33.987Z"
-    },
-    {
       "id": "0f432ed4-a1fa-4185-8a5f-d7d62fe8cc5d",
       "type": "knowledge",
       "title": "Same-slug callers now open two SqliteProvider handles on one kb.sqlite",
@@ -528,27 +418,6 @@
       "updated_at": "2026-09-29T06:13:12.379Z"
     },
     {
-      "id": "1072f3d8-2855-49af-b4b5-065858aba541",
-      "type": "knowledge",
-      "title": "Console routes extend by appending to the route table and validate with the tool schema",
-      "summary": "New console endpoints are added by appending to src/console/routes/fleet.ts's route table (or a sibling module plus one ROUTE_MODULES line in src/console/server.ts), and every POST body is validated with the tool's own zod schema -- so changing a tool schema changes the console contract and obliges a same-change packages/apra-fleet-client update.",
-      "symbols": [
-        "postRoute",
-        "ROUTE_MODULES",
-        "Health",
-        "fetchFleetStatus",
-        "fetchWorkflowPackages"
-      ],
-      "source_files": [
-        "src/console/routes/fleet.ts",
-        "src/console/server.ts",
-        "packages/apra-fleet-shell-ui/src/pages/Health.tsx",
-        "packages/apra-fleet-shell-ui/src/api/health.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:26.922Z"
-    },
-    {
       "id": "107afe50-ec60-4e99-b6b7-09c549658518",
       "type": "knowledge",
       "title": "A missing-anchor freshness regression surfaces first as kb_list dropping entries, not as a stale-flag assertion",
@@ -583,19 +452,6 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:42.531Z"
-    },
-    {
-      "id": "11618c4d-4bca-4ad1-801b-cadb02bd09f4",
-      "type": "learning",
-      "title": "sprint-state source-slice test fails on CRLF checkouts (core.autocrlf=true)",
-      "summary": "sprint-state.test.mjs slices resolveSettleShell's body with indexOf('\\n}\\n'), so a Windows checkout with core.autocrlf=true (runner.js has CRLF) fails with 'failed to slice resolveSettleShell's body'. That is a local environment issue, not a regression.",
-      "symbols": [],
-      "source_files": [
-        "packages/apra-fleet-se/test/sprint-state.test.mjs",
-        "packages/apra-fleet-se/fleet-sprint/runner.js"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-10-03T01:04:52.122Z"
     },
     {
       "id": "11cfda55-7d77-4e5d-bd7a-8f928091a1c9",
@@ -659,40 +515,6 @@
       "updated_at": "2026-09-25T22:26:26.938Z"
     },
     {
-      "id": "13709d6d-88b0-4703-8e05-eec0ad0cf2d8",
-      "type": "knowledge",
-      "title": "The bd npm pin has one owner: src/cli/beads-pin.ts",
-      "summary": "BEADS_VERSION/BEADS_PACKAGE live in the dependency-free src/cli/beads-pin.ts; install.ts imports rather than restates the pin, apra-pm/install.mjs keeps a copy held equal by a test, and ci.yml keeps an unguarded literal.",
-      "symbols": [
-        "BEADS_VERSION",
-        "BEADS_PACKAGE"
-      ],
-      "source_files": [
-        "src/cli/beads-pin.ts",
-        "src/cli/install.ts",
-        "tests/apra-pm-beads-pin.test.ts",
-        "packages/apra-fleet-se/apra-pm/install.mjs",
-        ".github/workflows/ci.yml"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:26.485Z"
-    },
-    {
-      "id": "1399df2b-095f-491e-9e4c-d6db6e550e95",
-      "type": "learning",
-      "title": "SEA smoke test fails locally on any stale dist binary but is skipped on CI",
-      "summary": "tests/sea-http-verify.test.ts is skipIf(!binaryExists), yet it throws a staleness error when an old dist/apra-fleet-installer binary exists, so a local root npm test fails until npm run build:binary is rerun.",
-      "symbols": [
-        "resolveSeaBinaryStaleness"
-      ],
-      "source_files": [
-        "tests/sea-http-verify.test.ts",
-        "tests/helpers/sea-binary-staleness.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T02:17:50.161Z"
-    },
-    {
       "id": "1412a686-48d2-4f64-8626-70ace05d271a",
       "type": "learning",
       "title": "A guard module added to GUARDED_MODULES must never write 'agent(' or 'command(' inside a backtick template literal on a non-comment line",
@@ -709,78 +531,6 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:26.996Z"
-    },
-    {
-      "id": "14df4253-8e1c-4f71-ab1a-d7532968d846",
-      "type": "knowledge",
-      "title": "Per-package lockfiles are gitignored one segment under packages/",
-      "summary": "packages/*/package-lock.json is ignored because those directories are root workspace members, while the two-segment apra-pm lockfile stays tracked deliberately.",
-      "symbols": [],
-      "source_files": [
-        ".gitignore",
-        "package.json",
-        "scripts/run-all-tests.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:23.417Z"
-    },
-    {
-      "id": "15de38c4-256b-4d8c-8b0a-c7dddd41672d",
-      "type": "knowledge",
-      "title": "A vcs_token or secure.NAME placeholder survives single quotes but breaks inside double quotes",
-      "summary": "Both placeholder substitutions inject an ALREADY-quoted value, so a placeholder inside the caller's single quotes still composes correctly by POSIX quote-concatenation, while the same placeholder inside double quotes leaks literal quote characters into the argument and causes a false 401.",
-      "symbols": [],
-      "source_files": [
-        "src/tools/vcs-credential-exec.ts",
-        "src/tools/execute-command.ts",
-        "src/utils/shell-escape.ts",
-        "packages/apra-fleet-se/fleet-sprint/vcs-providers/shell-helpers.mjs",
-        "packages/apra-fleet-se/fleet-sprint/vcs-providers/github.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-25T22:26:27.053Z"
-    },
-    {
-      "id": "16b99b32-b336-4970-a5e1-6921ae48be44",
-      "type": "knowledge",
-      "title": "Supervisor header running-counter derives from the same array as the sprint stack, but a render throw can still desync it",
-      "summary": "Both first paint and the client poll() compute the header's running-sprint count from the same sprints array the stack renders, but poll() renders the stack before writing the counter inside one try/catch, so a render throw leaves them momentarily out of sync.",
-      "symbols": [
-        "renderIndexPageHtml",
-        "renderSprintStackFromState",
-        "poll",
-        "schedulePoll"
-      ],
-      "source_files": [
-        "packages/apra-fleet-se/src/supervisor/dashboard.mjs",
-        "packages/apra-fleet-se/test/supervisor-dashboard-live-refresh.test.mjs",
-        "packages/apra-fleet-se/docs/architecture.md"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:25.181Z"
-    },
-    {
-      "id": "1745325c-796f-487c-82ae-abe932443c16",
-      "type": "knowledge",
-      "title": "long_running deliberately excludes auth env while the sync path includes it",
-      "summary": "The env divergence between execute_command's sync and long_running paths is intentional and security-motivated: the wrapper script persists as a file on the member, so credentials must never be baked into it.",
-      "symbols": [
-        "executeCommand",
-        "TaskConfig",
-        "buildEnvAssignments",
-        "buildEnvPrefix",
-        "generateTaskWrapper",
-        "generateTaskWrapperWindows"
-      ],
-      "source_files": [
-        "src/tools/execute-command.ts",
-        "src/services/cloud/task-wrapper.ts",
-        "src/utils/env-prefix.ts",
-        "tests/execute-command-long-running-windows.test.ts",
-        "tests/task-wrapper.test.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:28.264Z"
     },
     {
       "id": "17ca87de-7a6b-484a-83d2-c5c8c2710189",
@@ -841,29 +591,10 @@
       "updated_at": "2026-09-25T22:26:42.589Z"
     },
     {
-      "id": "1985663e-56a2-425c-9d11-7454a82c4f68",
-      "type": "knowledge",
-      "title": "Clearing a registry field relies on the JSON disk round trip, not on updateAgent deleting the key",
-      "summary": "updateAgent(id, {field: undefined}) creates an own key with value undefined in memory; the key only becomes absent because saveRegistry's JSON.stringify drops it and loadRegistry re-reads from disk uncached. Any in-memory registry cache would silently turn 'cleared' into present-but-undefined.",
-      "symbols": [
-        "updateAgent",
-        "saveRegistry",
-        "loadRegistry"
-      ],
-      "source_files": [
-        "src/services/registry.ts",
-        "src/tools/member-owner.ts",
-        "src/tools/update-member.ts",
-        "tests/integration/member-owner-integration.test.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:27.717Z"
-    },
-    {
       "id": "1a2d6411-0756-4bdf-aba6-a03f9b825105",
       "type": "knowledge",
       "title": "The 3-bead golden guard's false-stall signature is [3,3,3]/high-water-4, not the single-bead [1,1,1]/high-water-2",
-      "summary": "Mutating away the 66u.4 close loop in build3BeadFleetApi() does fire a real StalledSprintError, but with a different arithmetic shape than the single-bead file, so pattern-matching on [1,1,1] will miss the 3-bead regression.",
+      "summary": "Mutating away the verify-closure close loop in build3BeadFleetApi() does fire a real StalledSprintError, but with a different arithmetic shape than the single-bead file, so pattern-matching on [1,1,1] will miss the 3-bead regression.",
       "symbols": [
         "build3BeadFleetApi",
         "buildTranscriptFleetApi",
@@ -878,7 +609,7 @@
         "packages/apra-fleet-se/test/66u-stall-progress-credit.test.mjs"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-25T22:26:27.254Z"
+      "updated_at": "2026-09-30T23:07:12.100Z"
     },
     {
       "id": "1afa8dcf-0674-4664-9764-26f831cf7b6c",
@@ -918,47 +649,6 @@
       "updated_at": "2026-09-25T22:26:27.578Z"
     },
     {
-      "id": "1c33b942-ebde-4409-a9c1-70e3401c87bd",
-      "type": "knowledge",
-      "title": "A field added to list_members or member_detail json fails CI unless the client typedef moves too",
-      "summary": "client-server-typedef-parity.test.mjs parses the tools' json object literals and asserts field-for-field parity with the api.mjs typedefs, mechanically enforcing the CLAUDE.md client-sync rule.",
-      "symbols": [
-        "ListedMember",
-        "MemberDetailResult",
-        "memberDetailResultFields",
-        "assertFieldParity",
-        "listMembers",
-        "memberDetail"
-      ],
-      "source_files": [
-        "packages/apra-fleet-client/test/client-server-typedef-parity.test.mjs",
-        "packages/apra-fleet-client/src/client/api.mjs",
-        "src/tools/list-members.ts",
-        "src/tools/member-detail.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:23.105Z"
-    },
-    {
-      "id": "1c40559a-d468-4da4-b986-c92e91a18f0a",
-      "type": "knowledge",
-      "title": "GUARDED_MODULES literal-['runner.js']-baseline KB entry is stale; guard tests derive dynamically",
-      "summary": "A KB entry claims four guard test files deepStrictEqual GUARDED_MODULES against a hardcoded ['runner.js'] array, but on the current tree GUARDED_MODULES already lists 9+ non-runner modules and every guard test (dispatch-safety-guard, dolt-literal-guard, guarded-modules-coverage, full-db-fetch-tripwire, pause-guard-push-holes) asserts against guardedModuleBasenames()/GUARDED_MODULES read dynamically, not a literal array.",
-      "symbols": [
-        "GUARDED_MODULES",
-        "guardedModuleBasenames"
-      ],
-      "source_files": [
-        "packages/apra-fleet-se/fleet-sprint/guarded-modules.mjs",
-        "packages/apra-fleet-se/test/dispatch-safety-guard.test.mjs",
-        "packages/apra-fleet-se/test/dolt-literal-guard.test.mjs",
-        "packages/apra-fleet-se/test/guarded-modules-coverage.test.mjs",
-        "packages/apra-fleet-se/test/pause-guard-push-holes.test.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-25T22:26:27.648Z"
-    },
-    {
       "id": "1c4d6528-ced2-49d3-a737-84705e230f40",
       "type": "learning",
       "title": "A nested `node --test` child inside the apra-fleet-se suite must cap its own --test-concurrency",
@@ -993,44 +683,6 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:27.856Z"
-    },
-    {
-      "id": "1e2ca966-7917-4b00-8ca0-f039aef9efe7",
-      "type": "knowledge",
-      "title": "Dashboard/backlog cache wiring lives in exported createBeadsBackedViews",
-      "summary": "bin/serve.mjs createBeadsBackedViews builds the snapshot readers and passes them to createBacklog/createDashboard; the beads-cache test goes through it, so reverting either injection fails the test.",
-      "symbols": [
-        "createBeadsBackedViews",
-        "createSnapshotRowsReader"
-      ],
-      "source_files": [
-        "packages/apra-fleet-se/bin/serve.mjs",
-        "packages/apra-fleet-se/test/supervisor-dashboard-beads-cache.test.mjs",
-        "packages/apra-fleet-se/src/supervisor/beads-view.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-10-03T01:04:52.119Z"
-    },
-    {
-      "id": "1ea14113-07ef-4119-9140-55a14c5ecd1a",
-      "type": "knowledge",
-      "title": "member_git_status builds one ordered probe list; originSlug is host/path, not the KB scope slug",
-      "summary": "src/services/git-status-probe.ts exports the probe sequence as a single ordered {name, command} list shared by the tool and its tests, and originSlugFromUrl normalises a remote to lowercase host/path -- deliberately different from resolveProjectSlug in src/services/knowledge/project-slug.ts.",
-      "symbols": [
-        "buildGitStatusProbes",
-        "isInsideWorkTree",
-        "originSlugFromUrl",
-        "resolveProjectSlug",
-        "TARGET_FILE_CONTRACT"
-      ],
-      "source_files": [
-        "src/services/git-status-probe.ts",
-        "src/tools/member-git-status.ts",
-        "src/services/knowledge/project-slug.ts",
-        "packages/apra-fleet-se/scripts/check-generic-boundary.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:27.298Z"
     },
     {
       "id": "202cd324-f6d9-42d0-b0a2-a4aa8e1741ef",
@@ -1108,15 +760,17 @@
       "summary": "runDevelopLoopScenario sets APRA_FLEET_MOCK_INSTANT_RETRY_BACKOFF=1 for the scenario and restores it in its finally, so any retry-ladder timing derivation must drop the backoff term and must sample the flag from inside the run.",
       "symbols": [
         "runDevelopLoopScenario",
+        "instantRetryBackoff",
         "mockInstantRetryBackoff"
       ],
       "source_files": [
         "packages/apra-fleet-se/test/helpers/mock-sprint-harness.mjs",
         "packages/apra-fleet-se/fleet-sprint/dispatch-role.mjs",
+        "packages/apra-fleet-se/fleet-sprint/git-sync.mjs",
         "packages/apra-fleet-se/test/slow/mock-sprint-planner-dispatch-stalled-session.test.mjs"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-25T22:26:41.394Z"
+      "updated_at": "2026-09-30T23:07:12.100Z"
     },
     {
       "id": "21547d39-10a6-4133-b497-d0f82aee5e2a",
@@ -1233,41 +887,13 @@
       "type": "knowledge",
       "title": "sprint-logs/ must never carry a blanket directory ignore -- .gitignore says so inline",
       "summary": "A directory-level rule such as '/sprint-logs/' shadows everything beneath it, un-ignore patterns included, and silently breaks the sprint cost ledger because auto-sprint.js stages it with an unguarded `git add sprint-logs/`. Merged main keeps only scoped rules and records the prohibition as a comment in .gitignore itself, so the lesson survives without depending on the KB.",
-      "symbols": [
-        "redactHomeFromTranscriptDir"
-      ],
+      "symbols": [],
       "source_files": [
         ".gitignore",
         "packages/apra-fleet-se/apra-pm/.claude/workflows/auto-sprint.js"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-25T22:26:28.333Z"
-    },
-    {
-      "id": "23058562-ac60-49d7-bc2d-44628d43bc15",
-      "type": "knowledge",
-      "title": "memory-contract drift enforcement is three layered checks, each catching what the others cannot",
-      "summary": "contract:check compares generated artifacts to each other, the fixture sweep validates recorded payloads, and the live conformance lane validates real handler responses with per-tool coverage accounting; only the third catches an undeclared response field on an unrecorded path.",
-      "symbols": [
-        "createResponseConformanceRecorder",
-        "formatConformanceReport",
-        "validateToolResponse",
-        "schemaDeclaresParsedBody",
-        "LIVE_SERVICE_SKIPS",
-        "runRoundTrip",
-        "decodeEnvelope",
-        "formatResponseErrors"
-      ],
-      "source_files": [
-        "memory-contract/v1/tests/response-conformance.mjs",
-        "memory-contract/v1/tests/roundtrip-harness.mjs",
-        "tests/memory-contract-roundtrip.test.ts",
-        "tests/memory-contract-response-conformance-drift.test.ts",
-        "tests/memory-contract-fixture-response-schema.test.ts",
-        "scripts/run-all-tests.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:23.603Z"
+      "updated_at": "2026-09-30T23:07:12.100Z"
     },
     {
       "id": "235f41a5-5295-4a50-8246-1501ee2b6fba",
@@ -1304,25 +930,6 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:13.625Z"
-    },
-    {
-      "id": "263dcd64-e941-4736-84ca-95dbfd04019e",
-      "type": "knowledge",
-      "title": "A config-declared workflow package with a bad scheme still reaches the /ext proxy resolver",
-      "summary": "Registration-time baseUrl validation cannot keep a config-declared non-http(s) package out of src/console/proxy.ts, because the proxy resolves ids through the same list() that must keep the bad entry visible; the proxy-side scheme guard is load-bearing.",
-      "symbols": [
-        "validateWorkflowPackageBaseUrlScheme",
-        "defaultResolveBaseUrl",
-        "WorkflowPackageView",
-        "refreshHealth"
-      ],
-      "source_files": [
-        "src/services/workflow-packages.ts",
-        "src/console/proxy.ts",
-        "src/console/routes/workflow-packages.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:27.904Z"
     },
     {
       "id": "26b8c94b-20c8-4d6e-8862-8e65bc512ba6",
@@ -1434,24 +1041,6 @@
       "updated_at": "2026-09-25T22:26:28.625Z"
     },
     {
-      "id": "2d357631-bd5d-4b09-b2a5-db200187b34b",
-      "type": "knowledge",
-      "title": "Supervisor data dirs are set in-process by the launcher, not by the service unit",
-      "summary": "FLEET_SE_DATA_DIR and APRA_FLEET_SE_SCHEMAS_DIR are defaulted inside src/cli/supervisor.ts because an OS service has no shell env, which is why no Environment= plumbing exists in the unit.",
-      "symbols": [
-        "applySupervisorEnvDefaults",
-        "defaultDataDir",
-        "SUPERVISOR_DATA_DIR"
-      ],
-      "source_files": [
-        "src/cli/supervisor.ts",
-        "packages/apra-fleet-se/src/supervisor/ledger.mjs",
-        "src/services/service-manager/linux.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:26.672Z"
-    },
-    {
       "id": "2d4ffb90-4bd2-4b84-a143-c2b84dc4cb21",
       "type": "knowledge",
       "title": "The supervisor's dolt-orphan-sweep arms on a 5-minute interval with no immediate first pass",
@@ -1486,25 +1075,6 @@
       "updated_at": "2026-09-25T22:26:33.666Z"
     },
     {
-      "id": "2eb1ef61-ae4e-419c-9d64-1d3c0a93c460",
-      "type": "knowledge",
-      "title": "Upstream package credential derivation is byte-pinned and must not move",
-      "summary": "deriveUpstreamCredential lives in the client package and its output is pinned by fixed vectors because changing it rotates every registered workflow package credential.",
-      "symbols": [
-        "deriveUpstreamCredential",
-        "UPSTREAM_CREDENTIAL_LABEL",
-        "probeOne"
-      ],
-      "source_files": [
-        "packages/apra-fleet-client/src/auth/local-token.mjs",
-        "src/console/proxy.ts",
-        "src/services/workflow-packages.ts",
-        "packages/apra-fleet-client/test/local-token.test.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:23.853Z"
-    },
-    {
       "id": "2eecfb71-ff41-4639-bf98-16d39de7ff4f",
       "type": "knowledge",
       "title": "The planner retry ladder's pessimistic backoff sum is 50s, not the full 110s ladder",
@@ -1520,45 +1090,6 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:40.282Z"
-    },
-    {
-      "id": "2f6b6294-9ffd-4db1-bf1b-40882d08b725",
-      "type": "learning",
-      "title": "A wildcard HTTP bind lets another process silently steal loopback traffic",
-      "summary": "An intermittent wrong-status HTTP failure under concurrent test load traced to a wildcard server.listen(port) bind, not to route registration, state leakage or timing. Fix is an explicit loopback bind at the listener.",
-      "symbols": [
-        "createDashboardViewer",
-        "isPortAvailable",
-        "allocateFreePort"
-      ],
-      "source_files": [
-        "packages/apra-fleet-workflow/src/viewer/index.mjs",
-        "packages/apra-fleet-workflow/test/apra-fleet-workflow-viewer-bind-exclusivity.test.mjs",
-        "packages/apra-fleet-se/src/supervisor/spawner.mjs",
-        "packages/apra-fleet-se/src/supervisor/server.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:26.185Z"
-    },
-    {
-      "id": "2f892a88-c132-4c5d-9bd0-1d28ede1d7dc",
-      "type": "learning",
-      "title": "bin/serve.mjs exports its projects-store fallback helpers for direct unit-testability",
-      "summary": "The /api/projects* 503 fallback and the NodeSqliteUnavailableError discrimination are exported from bin/serve.mjs so a test can drive them deterministically without breaking node:sqlite on the test runtime.",
-      "symbols": [
-        "registerProjectsStoreUnavailableRoutes",
-        "openProjectStoreOrDegrade",
-        "composeBeforeLaunch",
-        "openStore",
-        "loadNodeSqlite"
-      ],
-      "source_files": [
-        "packages/apra-fleet-se/bin/serve.mjs",
-        "packages/apra-fleet-se/test/serve-mount.test.mjs",
-        "packages/apra-fleet-se/src/projects/store/db.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:24.072Z"
     },
     {
       "id": "2ffc0a85-7607-49d0-9e9a-f3ca9b8cfbb4",
@@ -1594,26 +1125,6 @@
       "updated_at": "2026-09-25T22:26:28.921Z"
     },
     {
-      "id": "3179fab8-bc8e-4333-b5d7-45dcb0f98fa6",
-      "type": "knowledge",
-      "title": "Supervisor bearer token is the fleet JWT signing key and is handed out by GET /",
-      "summary": "resolveServiceToken() prefers ~/.apra-fleet/fleet.key -- the same HMAC key jwt.ts signs member JWTs with -- and the supervisor dashboard's GET / returns it as the se_token Set-Cookie on an unauthenticated request.",
-      "symbols": [
-        "resolveServiceToken",
-        "registerDashboardRoutes",
-        "getOrCreateKey",
-        "TOKEN_COOKIE_NAME"
-      ],
-      "source_files": [
-        "packages/apra-fleet-se/src/supervisor/auth.mjs",
-        "packages/apra-fleet-se/src/supervisor/dashboard.mjs",
-        "src/services/jwt.ts",
-        "packages/apra-fleet-se/test/auth-token-source.test.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:24.726Z"
-    },
-    {
       "id": "321d9d10-a56e-4427-81c1-8eb3922b59ec",
       "type": "knowledge",
       "title": "sandbox-lock.mjs has no read-only ownership query, so ordering around release is load-bearing",
@@ -1644,18 +1155,6 @@
       "updated_at": "2026-09-29T06:13:14.441Z"
     },
     {
-      "id": "33cca1e7-6430-4f0a-b812-aa9ecd3e93b5",
-      "type": "knowledge",
-      "title": "Windows sandbox node_modules links must use a directory junction, not a symlink",
-      "summary": "fs.symlinkSync(target, path, 'dir') throws EPERM on Windows accounts without Developer Mode or admin privilege; the shared linkNodeModulesSync helper requests 'junction' on win32 instead, which needs no privilege and resolves identically for bare-specifier imports.",
-      "symbols": [],
-      "source_files": [
-        "packages/apra-fleet-se/test/helpers/node-modules-link.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:08:27.886Z"
-    },
-    {
       "id": "34bf80ee-e36c-4f2a-86e6-1735bec3047c",
       "type": "knowledge",
       "title": "retryBudget() computes remaining max_total_s BEFORE the SERVER_RETRY_DELAY_MS pause, not after",
@@ -1670,24 +1169,6 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:40.358Z"
-    },
-    {
-      "id": "34eb2f7f-77b4-4413-bca6-c661daabda66",
-      "type": "learning",
-      "title": "Pre-dispatch steps in the regression phase bypass the regression-test-runner catch-all degrade",
-      "summary": "Anything the regression phase awaits BEFORE dispatchRole (for example ensureDeployPermissions) is outside the regression-test-runner row's catch-all degrade. A throw there escapes to runner.js's top-level handler and marks an already-decided sprint ABORTED.",
-      "symbols": [
-        "runRegressionTestPhase",
-        "errorClassNames",
-        "policyFor"
-      ],
-      "source_files": [
-        "packages/apra-fleet-se/fleet-sprint/phases/regression-test.mjs",
-        "packages/apra-fleet-se/fleet-sprint/role-policies.mjs",
-        "packages/apra-fleet-se/fleet-sprint/dispatch-role.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:08:05.766Z"
     },
     {
       "id": "35220d1e-9718-4b4c-bc7c-222bf7671048",
@@ -1775,25 +1256,6 @@
       "updated_at": "2026-09-25T22:26:29.306Z"
     },
     {
-      "id": "39296641-2a38-41ec-9e43-f97cac26f018",
-      "type": "knowledge",
-      "title": "The supervisor auth route guard trailing slash is load-bearing",
-      "summary": "requiresAuth uses /^\\/sprints\\/[^/]+\\/live\\// so POST to the live view itself is unguarded and only its sub-routes are; the basic acceptance table does not discriminate that slash, so extra rows pin it.",
-      "symbols": [
-        "requiresAuth",
-        "isAuthorized",
-        "readCookie",
-        "normalizePath"
-      ],
-      "source_files": [
-        "packages/apra-fleet-se/src/supervisor/auth.mjs",
-        "packages/apra-fleet-client/src/auth/local-token.mjs",
-        "packages/apra-fleet-se/test/supervisor-auth.test.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:24.944Z"
-    },
-    {
       "id": "3a7ed082-f56d-4a58-9dad-a1a234c19ff7",
       "type": "learning",
       "title": "Recording one mock-sprint test file rewrites every scenario fixture in that file",
@@ -1879,25 +1341,6 @@
       "updated_at": "2026-09-29T06:13:12.690Z"
     },
     {
-      "id": "3cf4be31-c20f-4106-9054-668cf278b073",
-      "type": "knowledge",
-      "title": "scripts/dist-pm.mjs vendors only when run as entrypoint; DIST_PM_DIST_DIR redirects its destination",
-      "summary": "dist-pm.mjs exports vendorDir/injectGraphSemantics/isNonEmptyDir and runs runDistPm() only when process.argv[1] realpath-matches the module file; DIST_PM_DIST_DIR overrides the dist root while sources stay under the real repo packages/ tree.",
-      "symbols": [
-        "vendorDir",
-        "runDistPm",
-        "sameFile",
-        "injectGraphSemantics"
-      ],
-      "source_files": [
-        "scripts/dist-pm.mjs",
-        "tests/dist-pm-vendoring.test.ts",
-        "package.json"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-27T02:53:31.021Z"
-    },
-    {
       "id": "3cfa0e00-4e56-406a-8e19-61c192b54f43",
       "type": "knowledge",
       "title": "The engine-derived retry.attempts check in role-policies-table is self-referential",
@@ -1914,23 +1357,6 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:32.411Z"
-    },
-    {
-      "id": "3e63b1dc-478e-4edb-8bc4-89e93925b09c",
-      "type": "knowledge",
-      "title": "sandbox-deploy smoke arms its /ui probe automatically when the shell dist exists",
-      "summary": "The sandbox-deploy smoke step skips its /ui check when packages/apra-fleet-shell-ui/dist/index.html is absent and hard-requires GET /ui/ to return 200 text/html when it is present, so merely building the shell UI changes whether that gate runs.",
-      "symbols": [
-        "smoke",
-        "SandboxDeployError"
-      ],
-      "source_files": [
-        "scripts/sandbox-deploy.mjs",
-        "tests/sandbox-deploy.test.ts",
-        "packages/apra-fleet-shell-ui/vite.config.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:26.306Z"
     },
     {
       "id": "4049e06d-337b-48f6-9cf8-e384ba0b34e5",
@@ -1951,48 +1377,6 @@
       "updated_at": "2026-09-29T06:13:11.114Z"
     },
     {
-      "id": "405b5b6b-65ad-44a8-b68b-27cdb011b02f",
-      "type": "knowledge",
-      "title": "ui-kit Wizard's submit button cannot be gated, so every caller can double-submit",
-      "summary": "WizardProps exposes no submitting/disabled input and the Next/Submit button is always enabled, so a caller cannot prevent a second click from firing onSubmit twice -- AddMemberWizard can register two members.",
-      "symbols": [
-        "Wizard",
-        "WizardProps",
-        "AddMemberWizard",
-        "handleNext"
-      ],
-      "source_files": [
-        "packages/apra-fleet-ui-kit/src/Wizard.tsx",
-        "packages/apra-fleet-shell-ui/src/pages/members/AddMemberWizard.tsx",
-        "packages/apra-fleet-shell-ui/src/pages/members/MemberDrawer.tsx"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:26.138Z"
-    },
-    {
-      "id": "40f626e7-f53b-4d9c-bf7c-18901837af68",
-      "type": "knowledge",
-      "title": "Console /ext mount path reaches packages via a proxy-computed, spoof-stripped header",
-      "summary": "src/console/proxy.ts stamps x-apra-fleet-mount-path on every /ext hop and drops any client-supplied copy; the supervisor re-validates it fail-closed before interpolating it into hrefs and inline JS literals.",
-      "symbols": [
-        "MOUNT_PATH_HEADER",
-        "DROPPED_REQUEST_HEADERS",
-        "sanitizeMountPrefix",
-        "resolveMountPrefix",
-        "mountHref",
-        "handleExtProxyRequest"
-      ],
-      "source_files": [
-        "src/console/proxy.ts",
-        "packages/apra-fleet-se/src/supervisor/mount-prefix.mjs",
-        "packages/apra-fleet-se/src/supervisor/dashboard.mjs",
-        "packages/apra-fleet-se/test/supervisor-mount-prefix.test.mjs",
-        "tests/console-proxy.test.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:26.797Z"
-    },
-    {
       "id": "41e88d84-a9de-4d5b-aafa-1ee96089a6f9",
       "type": "learning",
       "title": "The mock-sprint harness epic stays open at P2, making not-vacuously-strict assertions vacuous",
@@ -2009,25 +1393,6 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:29.493Z"
-    },
-    {
-      "id": "4209e2e4-c1f5-4b73-a55b-ad799d1f4918",
-      "type": "knowledge",
-      "title": "handleConsoleRequest is total, and its false-return check must stay outside the try",
-      "summary": "One outer try/catch makes the console dispatcher unable to reject, but the non-console-path check is deliberately outside it and the catch is written so it cannot throw.",
-      "symbols": [
-        "handleConsoleRequest",
-        "normalizePath",
-        "isConsolePath",
-        "jsonError"
-      ],
-      "source_files": [
-        "src/console/server.ts",
-        "src/services/http-transport.ts",
-        "tests/console-server.test.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:27.172Z"
     },
     {
       "id": "42b3553b-f8bb-4d90-8d8c-9ebbd17bb37d",
@@ -2087,23 +1452,6 @@
       "updated_at": "2026-09-25T22:26:29.674Z"
     },
     {
-      "id": "44bc5cba-d633-4e06-bb0d-7e86ce083a7d",
-      "type": "knowledge",
-      "title": "Coordination HTTP clients silently authenticate from an ambient FLEET_SE_SERVICE_TOKEN env var",
-      "summary": "createHttpDoltPushMutexClient and createHttpChildIdAllocatorClient fall back to process.env.FLEET_SE_SERVICE_TOKEN when opts.token is absent, so an ambient env var can make a client that was never wired with a token appear authenticated.",
-      "symbols": [
-        "createHttpDoltPushMutexClient",
-        "createHttpChildIdAllocatorClient"
-      ],
-      "source_files": [
-        "packages/apra-fleet-se/fleet-sprint/coordination.mjs",
-        "packages/apra-fleet-se/src/supervisor/spawner.mjs",
-        "packages/apra-fleet-se/bin/serve.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:24.182Z"
-    },
-    {
       "id": "44cfb13c-397c-4b93-88b3-5731cb417c65",
       "type": "knowledge",
       "title": "beads-scope wrapCommand only invalidates on a command that RETURNS, not one that throws",
@@ -2121,43 +1469,6 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:29.732Z"
-    },
-    {
-      "id": "45a2d7ea-0274-43e0-b7e9-a3c5d441796f",
-      "type": "knowledge",
-      "title": "Fleet tool handlers signal failure three different ways; only two are machine-readable",
-      "summary": "Across the console-facing fleet tools, failure arrives as structuredContent.isError (execute_command preflight), structuredContent.ok === false (provision_llm_auth / provision_vcs_auth), or an ordinary prose string; the top-level MCP {content, isError} shape appears only in src/tools/code-intelligence-*.ts.",
-      "symbols": [
-        "isToolFailure",
-        "ExecuteCommandStructured",
-        "ProvisionAuthResult"
-      ],
-      "source_files": [
-        "src/tools/execute-command.ts",
-        "src/tools/provision-auth.ts",
-        "src/tools/provision-vcs-auth.ts",
-        "src/tools/credential-store-delete.ts",
-        "src/tools/code-intelligence-gitnexus.ts",
-        "src/console/routes/fleet.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:28.201Z"
-    },
-    {
-      "id": "45cf1ee9-c465-46e2-9992-2ebdd32684c6",
-      "type": "knowledge",
-      "title": "fs.rmSync recursive on Windows unlinks a directory junction without deleting its target",
-      "summary": "On this Windows host, lstat reports a 'junction' link as a symbolic link, and fs.rmSync(dir, {recursive:true}) removes the junction itself while the target's contents survive. That makes junctioned node_modules sandboxes safe to clean up.",
-      "symbols": [
-        "linkNodeModulesSync"
-      ],
-      "source_files": [
-        "packages/apra-fleet-se/test/helpers/node-modules-link.mjs",
-        "packages/apra-fleet-se/test/phase0-seams-facade.test.mjs",
-        "packages/apra-fleet-se/test/phase1-leaf-facade-completeness.test.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:08:25.943Z"
     },
     {
       "id": "45d5d161-53e7-4b40-8d2f-ce2282615ca2",
@@ -2246,23 +1557,10 @@
       "updated_at": "2026-09-29T06:13:16.108Z"
     },
     {
-      "id": "483f8ab3-9378-4f93-9182-ebf968ccf90b",
-      "type": "knowledge",
-      "title": "listFleetMembers flags an unreadable member list with a hidden non-enumerable property",
-      "summary": "When the fleet member list cannot be read, listFleetMembers still returns { members: [] } and marks it with a non-enumerable symbol-keyed reason that the backlog pin reads to return 503.",
-      "symbols": [],
-      "source_files": [
-        "packages/apra-fleet-se/src/supervisor/fleet-members.mjs",
-        "packages/apra-fleet-se/src/supervisor/api.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-10-03T01:35:02.790Z"
-    },
-    {
       "id": "4877b2e5-80f4-4759-b8f9-92742ff9adca",
       "type": "knowledge",
       "title": "raiseVcsPrForMember degrades every auth failure, including pre-PR provisioning, instead of throwing",
-      "summary": "As of the 5co8.15 fix, raiseVcsPrForMember catches a provisionPrCapableAuthForMember failure and returns authFailure:true rather than throwing, so both callers (Publish PR and finalizeAbort) skip the PR and let the sprint keep its computed verdict.",
+      "summary": "raiseVcsPrForMember (vcs-auth.mjs) catches a provisionPrCapableAuthForMember failure and returns authFailure:true rather than throwing, so both callers (Publish PR in phases/publish-pr.mjs and finalizeAbort in abort.mjs) skip the PR and let the sprint keep its computed verdict; the provider authRemedy hint (azure-devops.mjs AUTH_REMEDY_HINT) is appended to the logged message.",
       "symbols": [
         "raiseVcsPrForMember",
         "provisionPrCapableAuthForMember",
@@ -2270,12 +1568,14 @@
         "finalizeAbort"
       ],
       "source_files": [
-        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/fleet-sprint/vcs-auth.mjs",
+        "packages/apra-fleet-se/fleet-sprint/phases/publish-pr.mjs",
+        "packages/apra-fleet-se/fleet-sprint/abort.mjs",
         "packages/apra-fleet-se/fleet-sprint/vcs-providers/azure-devops.mjs",
         "packages/apra-fleet-se/test/mock-sprint-azure-devops-vcs-preflight.test.mjs"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-25T22:26:30.035Z"
+      "updated_at": "2026-09-30T23:07:12.100Z"
     },
     {
       "id": "4ab868ea-bb49-459a-b21e-f2b906d3cb58",
@@ -2313,45 +1613,6 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:14.734Z"
-    },
-    {
-      "id": "4bec755a-206e-4e93-adee-f1e7555821b0",
-      "type": "knowledge",
-      "title": "The POSIX env prefix cannot be nested inside an already single-quoted wrapper",
-      "summary": "buildEnvPrefix's POSIX form emits export NAME='value' with '\\'' escaping, which cannot be embedded inside an outer single-quoted string such as bash -l -c '...'; callers that nest must use a double-quoted escaper instead.",
-      "symbols": [
-        "buildEnvPrefix",
-        "escapeDoubleQuotedForExport",
-        "escapeShellArgInner"
-      ],
-      "source_files": [
-        "src/utils/env-prefix.ts",
-        "scripts/check-toy-doer-credentials.mjs",
-        "src/services/ssh.ts",
-        "tests/env-prefix.test.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:28.872Z"
-    },
-    {
-      "id": "4bf11072-a110-4799-a546-9a12b9f719a7",
-      "type": "knowledge",
-      "title": "shell-ui jsdom tests can import root src/ only under the bounded runner",
-      "summary": "packages/apra-fleet-shell-ui test files that import root src/tools/* rely on the root vitest config's global setup, which applies when run via npm test but not under the package's own vitest run, and those test files are never type-checked.",
-      "symbols": [
-        "projects",
-        "globalSetup",
-        "setupFiles"
-      ],
-      "source_files": [
-        "packages/apra-fleet-shell-ui/vitest.config.ts",
-        "packages/apra-fleet-shell-ui/tsconfig.json",
-        "packages/apra-fleet-shell-ui/package.json",
-        "packages/apra-fleet-shell-ui/test/members-vcs-body.test.tsx",
-        "vitest.config.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:26.075Z"
     },
     {
       "id": "4d04faed-7125-4399-a716-2c934ea446d9",
@@ -2641,49 +1902,32 @@
       "updated_at": "2026-09-29T06:13:14.812Z"
     },
     {
-      "id": "547327b0-acc3-436d-9bb7-d1744340d969",
-      "type": "knowledge",
-      "title": "update_member env has replace semantics, so BEADS_DIR writes must merge",
-      "summary": "update_member's env field replaces the member's whole env map rather than patching it, so any caller writing one key must first read the current map via list_members and merge, or it silently drops every other operator-set key.",
-      "symbols": [
-        "updateMember",
-        "updateMemberSchema",
-        "bindMember",
-        "unbindMember",
-        "writeEnv",
-        "stringEnv",
-        "BEADS_DIR_ENV"
-      ],
-      "source_files": [
-        "src/tools/update-member.ts",
-        "packages/apra-fleet-se/src/projects/projects.mjs",
-        "src/tools/list-members.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:28.465Z"
-    },
-    {
       "id": "548ee816-e390-4dd9-a3fb-3ea713e36cdb",
       "type": "learning",
       "title": "StallDetector's adaptive probe floor is the loop's own tick interval, not an independent constant",
       "summary": "The per-entry adaptive probe cadence in stall-detector.ts's _poll() floors probeIntervalMs at the SAME resolved value start()'s setInterval uses (STALL_POLL_INTERVAL_MS ?? DEFAULT_POLL_INTERVAL_MS), not at a separate DEFAULT_STALL_PROBE_FLOOR_MS constant, which was deleted along with its STALL_PROBE_FLOOR_MS env var.",
       "symbols": [
-        "StallDetector._poll",
-        "StallDetector.start"
+        "_poll",
+        "start",
+        "DEFAULT_POLL_INTERVAL_MS"
       ],
       "source_files": [
         "src/services/stall/stall-detector.ts",
         "tests/stall-detector.test.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:16:05.371Z"
+      "updated_at": "2026-09-30T23:07:12.100Z"
     },
     {
       "id": "5870e689-e4a9-433d-bf9c-bb5ea5a0067a",
       "type": "knowledge",
-      "title": "execute_prompt now wires detectUsageLimit into the dispatch path (usage_limit relay landed)",
-      "summary": "execute_prompt calls provider.detectUsageLimit after every parseResponse and relays reason:'usage_limit'; earlier 'detection is inert / relay does not exist' KB entries are stale.",
-      "symbols": [],
+      "title": "execute_prompt checks detectUsageLimit after every parseResponse and fails with reason 'usage_limit'",
+      "summary": "execute-prompt.ts's checkUsageLimit runs provider.detectUsageLimit after all five parseResponse calls (initial dispatch, stale-session retry, overloaded retry, orphan recovery, trust-heal retry), regardless of exit code. On a signal it records the session and returns isError with reason 'usage_limit', a usageLimit block (resumeAt/resumeAtSource/message) and sessionId; it never burns the stale-session or overloaded retries. The workflow layer forwards usageLimit and sessionId onto AgentDispatchError.details unchanged.",
+      "symbols": [
+        "checkUsageLimit",
+        "detectUsageLimit",
+        "AgentDispatchError"
+      ],
       "source_files": [
         "src/tools/execute-prompt.ts",
         "packages/apra-fleet-workflow/src/workflow/index.mjs",
@@ -2771,23 +2015,6 @@
       "updated_at": "2026-09-25T22:26:30.685Z"
     },
     {
-      "id": "5b5282b3-e3fe-4a13-bde6-7e7bd78b9a82",
-      "type": "knowledge",
-      "title": "member_git_status treats a non-git folder as a normal answer because execCommand resolves non-zero exits as data",
-      "summary": "git rev-parse --is-inside-work-tree exits 128 on a non-git folder; because the member execution strategy resolves {stdout, stderr, code} rather than rejecting on non-zero exit, that failure reaches isInsideWorkTree() as data, yielding outcome no_checkout with checkout: null and no error.",
-      "symbols": [
-        "isInsideWorkTree",
-        "memberGitStatus"
-      ],
-      "source_files": [
-        "src/services/git-status-probe.ts",
-        "src/tools/member-git-status.ts",
-        "tests/integration/member-git-status-integration.test.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:27.422Z"
-    },
-    {
       "id": "5b8dec9a-f054-4867-8422-a7cb3e008952",
       "type": "learning",
       "title": "dist-pm does not prune orphaned dist/agents schemas, so the dist staleness guard can fail in a way dist-pm cannot fix",
@@ -2804,26 +2031,6 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:11.708Z"
-    },
-    {
-      "id": "5b9c01be-35e1-4885-a67e-9b77aff230e0",
-      "type": "knowledge",
-      "title": "readLocalToken re-reads fleet.key every call and never mints it",
-      "summary": "Token resolution is synchronous and uncached with fleet.key always preferred, so re-calling it observes a key appearing -- but it only ever mints the private/token fallback.",
-      "symbols": [
-        "readLocalToken",
-        "resolveServiceToken",
-        "loadOrCreateToken",
-        "getOrCreateKey"
-      ],
-      "source_files": [
-        "packages/apra-fleet-client/src/auth/local-token.mjs",
-        "packages/apra-fleet-se/src/supervisor/auth.mjs",
-        "src/services/jwt.ts",
-        "src/console/server.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:53.914Z"
     },
     {
       "id": "5bd2bf04-67d0-4289-95b3-679e3e13fe45",
@@ -2861,7 +2068,6 @@
       "title": "vcs-auth.mjs's facade pin fails on ADDED top-level symbols, not just removed ones",
       "summary": "vcs-auth-extraction-facade.test.mjs asserts its two MOVED_*_SYMBOLS lists and vcs-auth.mjs's top-level declarations agree symbol-for-symbol, so introducing a new top-level helper turns the gate red exactly like deleting one does.",
       "symbols": [
-        "provisionExpiresAt",
         "MOVED_PUBLIC_SYMBOLS",
         "MOVED_PRIVATE_SYMBOLS"
       ],
@@ -2872,7 +2078,7 @@
         "packages/apra-fleet-se/test/phase1-leaf-facade-completeness.test.mjs"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-25T22:26:31.032Z"
+      "updated_at": "2026-09-30T23:07:12.100Z"
     },
     {
       "id": "617f5b30-3d64-444b-83dd-85d06525060f",
@@ -2991,71 +2197,10 @@
       "updated_at": "2026-09-25T22:26:31.598Z"
     },
     {
-      "id": "67d1f136-05f4-4c3c-8322-3784e11c7ba0",
-      "type": "knowledge",
-      "title": "supervisor.sqlite repositories surface write rejections as StoreValidationError",
-      "summary": "projects.mjs defines StoreValidationError with {field, reason} entries and member-git.mjs re-exports it, translating the SQLite FK failure into the same shape so route code has one error contract.",
-      "symbols": [
-        "StoreValidationError",
-        "createProject",
-        "updateProject",
-        "deleteProject",
-        "upsertMemberGit"
-      ],
-      "source_files": [
-        "packages/apra-fleet-se/src/projects/store/projects.mjs",
-        "packages/apra-fleet-se/src/projects/store/member-git.mjs",
-        "packages/apra-fleet-se/src/projects/store/migrations/001-projects.mjs",
-        "packages/apra-fleet-se/src/projects/store/db.mjs",
-        "packages/apra-fleet-se/test/projects-store.test.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:24.415Z"
-    },
-    {
-      "id": "68b1f885-b5e5-4c93-974e-e00b3c303fd9",
-      "type": "knowledge",
-      "title": "A WHATWG-valid URL is not a valid node http.request target and throws synchronously",
-      "summary": "new URL() accepts schemes node:http rejects, including the scheme-less 'localhost:9000' typo, and http.request throws ERR_INVALID_PROTOCOL synchronously rather than emitting an error event; the console proxy and workflow-package registry therefore check the protocol explicitly.",
-      "symbols": [
-        "handleExtProxyRequest",
-        "handleConsoleRequest"
-      ],
-      "source_files": [
-        "src/console/proxy.ts",
-        "src/console/server.ts",
-        "src/services/http-transport.ts",
-        "src/services/workflow-packages.ts",
-        "src/console/routes/workflow-packages.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:26.734Z"
-    },
-    {
-      "id": "68e94fb3-048c-4221-8e1a-ecc1651bc80f",
-      "type": "knowledge",
-      "title": "SEA binary --version embeds a git short-hash usable as a build-freshness fingerprint",
-      "summary": "scripts/build-sea.mjs bakes BUILD_VERSION as 'v<version>_<6-char git short hash of HEAD at build time>' via esbuild define, and src/index.ts prints it verbatim on `apra-fleet --version` before any MCP imports -- this is the only reliable way to learn what commit a packaged dist binary was actually built from.",
-      "symbols": [
-        "resolveVersion",
-        "resolveSeaBinaryStaleness",
-        "parseBuildHash"
-      ],
-      "source_files": [
-        "scripts/build-sea.mjs",
-        "src/version.ts",
-        "src/index.ts",
-        "tests/helpers/sea-binary-staleness.ts",
-        "scripts/gen-sea-config.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-26T20:31:32.880Z"
-    },
-    {
       "id": "69336d0b-82d8-43c6-b7e3-49540ca4e9a7",
       "type": "knowledge",
       "title": "shell-command-guard false-positives on nested templates and on any dollar-word in prose strings",
-      "summary": "The guard flags constructs in ANY JS string, not just member-bound command strings, and segmentLine() mis-tracks nested template literals -- so registering existing fleet-sprint siblings in GUARDED_MODULES fails on non-violations today.",
+      "summary": "The guard flags constructs in ANY JS string, not just member-bound command strings (a dollar-word in prose trips it), and segmentLine() is single-line and mis-tracks nested template literals. Registering a fleet-sprint sibling in GUARDED_MODULES therefore needs per-line \"shell-guard-allow: <reason>\" comments on the false positives (as contracts.mjs and vcs-module.mjs do); modules that cannot be scanned clean go in GUARD_REGISTRATION_EXEMPT.",
       "symbols": [],
       "source_files": [
         "packages/apra-fleet-se/fleet-sprint/shell-command-guard.mjs",
@@ -3064,7 +2209,7 @@
         "packages/apra-fleet-se/fleet-sprint/contracts.mjs"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-25T22:26:31.658Z"
+      "updated_at": "2026-09-30T23:07:12.100Z"
     },
     {
       "id": "6afb626d-aaa5-4554-9ea2-970ae0f7401a",
@@ -3079,24 +2224,6 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:31.716Z"
-    },
-    {
-      "id": "6b022f96-60b8-43de-917e-445931acb1ef",
-      "type": "learning",
-      "title": "Lazily compute os.homedir()/HOME-derived paths, never as a module-load constant, or test isolation silently fails",
-      "summary": "A path built once from os.homedir() at module import time freezes whatever HOME was at first import; a test that sets process.env.HOME afterward keeps reading/writing the real file with no error.",
-      "symbols": [
-        "getOrCreateKey",
-        "fleetKeyPath",
-        "FLEET_DIR"
-      ],
-      "source_files": [
-        "src/services/jwt.ts",
-        "tests/console-auth.test.ts",
-        "src/paths.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:27.559Z"
     },
     {
       "id": "6b538682-67b1-4cf2-ab81-ae27d8d2bf8e",
@@ -3116,26 +2243,6 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:31.774Z"
-    },
-    {
-      "id": "6b99ffba-30c4-41d0-b4da-e1fb6969b91f",
-      "type": "knowledge",
-      "title": "Console guard safety rests on one shared normalizePath used by both guard and dispatcher",
-      "summary": "handleConsoleRequest derives the guarded path and the dispatched path from a single normalizePath() call, which is what makes path-shape auth bypasses structurally impossible there.",
-      "symbols": [
-        "handleConsoleRequest",
-        "normalizePath",
-        "isConsolePath",
-        "requiresConsoleGuard",
-        "isConsoleAuthorized"
-      ],
-      "source_files": [
-        "src/console/server.ts",
-        "packages/apra-fleet-client/src/auth/local-token.mjs",
-        "tests/console-auth.test.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:26.985Z"
     },
     {
       "id": "6bfc8a4f-90be-4f6d-8ddb-492017ec0c1d",
@@ -3179,24 +2286,6 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:31.944Z"
-    },
-    {
-      "id": "6ddf6c90-b60a-4bdc-bc69-9c99b3e51aee",
-      "type": "knowledge",
-      "title": "Supervisor token file protection is platform-asymmetric and says so via aclVerified",
-      "summary": "loadOrCreateToken returns aclVerified true only on POSIX where mode 0600 was actually proved by statSync; on Windows it returns false rather than asserting a synthesised mode, and exports TOKEN_ACL_UNVERIFIED_WARNING for callers to surface.",
-      "symbols": [
-        "loadOrCreateToken",
-        "tokenFilePath",
-        "TOKEN_ACL_UNVERIFIED_WARNING"
-      ],
-      "source_files": [
-        "packages/apra-fleet-client/src/auth/local-token.mjs",
-        "packages/apra-fleet-se/src/supervisor/auth.mjs",
-        "packages/apra-fleet-se/test/supervisor-auth.test.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:53.962Z"
     },
     {
       "id": "7094ade4-8300-4b71-a5b4-5271683b5661",
@@ -3311,23 +2400,6 @@
       "updated_at": "2026-09-29T06:13:14.543Z"
     },
     {
-      "id": "729ab619-8179-495a-a63b-dd09f010429e",
-      "type": "learning",
-      "title": "A symlinked installed tree makes serve.mjs isMainModule always false in tests",
-      "summary": "Node resolves ESM import.meta.url through realpath, so any test that stages the installed tree as a symlink cannot exercise the isMainModule self-boot guard at all.",
-      "symbols": [
-        "isMainModule",
-        "serveMain"
-      ],
-      "source_files": [
-        "tests/supervisor-subcommand-e2e.test.ts",
-        "tests/supervisor-subcommand.test.ts",
-        "packages/apra-fleet-se/bin/serve.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:29.395Z"
-    },
-    {
       "id": "7386a70c-cb1f-4a28-8efa-694468916516",
       "type": "knowledge",
       "title": "renderDegradeNote throws on a missing template, so degrade.classes and degrade.noteTemplates must move together",
@@ -3340,28 +2412,6 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:32.115Z"
-    },
-    {
-      "id": "746bfc50-5cbe-4b5e-975d-956cbfb02992",
-      "type": "knowledge",
-      "title": "buildEnvAssignments is shell-agnostic by design -- os/shell in its opts are inert",
-      "summary": "buildEnvAssignments(agent, opts) ignores opts.os/opts.shell and returns unescaped pairs; only buildEnvPrefix consumes them, which is what lets one taskEnv feed both long_running wrapper generators.",
-      "symbols": [
-        "buildEnvPrefix",
-        "buildEnvAssignments",
-        "generateTaskWrapper",
-        "generateTaskWrapperWindows",
-        "TaskConfig",
-        "ENV_NAME_PATTERN"
-      ],
-      "source_files": [
-        "src/utils/env-prefix.ts",
-        "src/services/cloud/task-wrapper.ts",
-        "src/tools/execute-command.ts",
-        "tests/env-prefix.test.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:28.936Z"
     },
     {
       "id": "749f0f0d-ff2e-48ec-8482-9e2155ca3f36",
@@ -3396,27 +2446,6 @@
       "updated_at": "2026-09-25T22:26:32.473Z"
     },
     {
-      "id": "75e6d4cd-3bf5-4d3a-a3d9-b3f24e39501f",
-      "type": "knowledge",
-      "title": "Local HTTP auth: share the token mechanism across surfaces, never the route policy",
-      "summary": "packages/apra-fleet-client's local-token helper centralises token resolution, credential check and path normalisation for both the supervisor and the console, but each caller keeps its own guarded-path table and cookie name.",
-      "symbols": [
-        "readLocalToken",
-        "isAuthorized",
-        "normalizePath",
-        "requiresAuth",
-        "requiresConsoleGuard",
-        "TOKEN_COOKIE_NAME"
-      ],
-      "source_files": [
-        "packages/apra-fleet-client/src/auth/local-token.mjs",
-        "packages/apra-fleet-se/src/supervisor/auth.mjs",
-        "src/console/server.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:23.791Z"
-    },
-    {
       "id": "76754ef3-5ff3-4fb4-a7cf-d74504f5013b",
       "type": "knowledge",
       "title": "A supervisor readiness probe must check GET /api/health pid identity, not just that the port answers",
@@ -3430,60 +2459,6 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:12.487Z"
-    },
-    {
-      "id": "7679a9af-c4a7-4f92-bfe1-0907b6c0fdef",
-      "type": "learning",
-      "title": "Loopback-bind assertions must accept a firewall TIMEOUT, not only ECONNREFUSED",
-      "summary": "Connecting to a Windows host's own non-internal IPv4 on a port bound only to 127.0.0.1 can surface as a socket timeout rather than ECONNREFUSED, because the local firewall drops the self-directed SYN instead of answering RST.",
-      "symbols": [],
-      "source_files": [
-        "packages/apra-fleet-se/test/mvp-a7-bind-auth.test.mjs",
-        "packages/apra-fleet-se/src/supervisor/server.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:25.732Z"
-    },
-    {
-      "id": "76cd790a-28b3-4925-9225-4980e2780410",
-      "type": "knowledge",
-      "title": "Installer side-effect steps use a paired inject-plus-NODE_ENV-test gate",
-      "summary": "src/cli/install.ts guards every step that spawns or downloads with both an injectable deps object and a NODE_ENV=test opt-out keyed to a dedicated APRA_FLEET_ENABLE_* env var; new steps must follow both halves or they break unrelated suites.",
-      "symbols": [
-        "doltStepEnabled",
-        "fleetSePrereqCheckEnabled",
-        "_setDoltStepDeps",
-        "runInstall"
-      ],
-      "source_files": [
-        "src/cli/install.ts",
-        "tests/install-dolt.test.ts",
-        "tests/install-fleet-se-prereq.test.ts",
-        "tests/setup.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:16.374Z"
-    },
-    {
-      "id": "7721687c-dfc7-4133-8d3d-77e5506d7ebd",
-      "type": "knowledge",
-      "title": "Supervisor router has no multi-segment wildcard, so /ui coverage is per-path",
-      "summary": "createSupervisor's route() matches each :param against exactly one path segment, so /ui/:rest cannot serve any path deeper than one sub-segment and /ui coverage must be enumerated per path.",
-      "symbols": [
-        "compilePattern",
-        "route",
-        "registerUiRoutes",
-        "resolveScreen",
-        "extSrc"
-      ],
-      "source_files": [
-        "packages/apra-fleet-se/src/supervisor/server.mjs",
-        "packages/apra-fleet-se/src/registration/ui-placeholder.mjs",
-        "packages/apra-fleet-se/bin/serve.mjs",
-        "packages/apra-fleet-shell-ui/src/api/workflow-packages.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:25.355Z"
     },
     {
       "id": "774ec22a-e9a1-448a-bd46-b5b0fd7b17ef",
@@ -3541,27 +2516,6 @@
       "updated_at": "2026-09-25T22:26:32.715Z"
     },
     {
-      "id": "7e814656-f9b7-41de-9e79-a6780d29ff1f",
-      "type": "learning",
-      "title": "Supervisor ledger stores member friendly names, not registry ids",
-      "summary": "The apra-fleet server consults holds with the registry UUID while the supervisor ledger records friendly names, so a direct string match between the two silently fails open.",
-      "symbols": [
-        "registerHoldsRoute",
-        "reservationHoldReasons",
-        "memberUnion",
-        "memberHeldCheck",
-        "consultHolds"
-      ],
-      "source_files": [
-        "packages/apra-fleet-se/src/registration/holds.mjs",
-        "packages/apra-fleet-se/src/supervisor/api.mjs",
-        "packages/apra-fleet-se/src/supervisor/ledger.mjs",
-        "src/tools/member-owner.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:24.541Z"
-    },
-    {
       "id": "7f7c5b11-5779-4c0b-8265-d21a7f0e1d6d",
       "type": "knowledge",
       "title": "plan-reviewer findings: empty array means plan-wide, absent means pre-contract",
@@ -3581,25 +2535,6 @@
       "updated_at": "2026-09-25T22:26:26.702Z"
     },
     {
-      "id": "7f97d8aa-b120-4c33-9be3-14444f8382f9",
-      "type": "learning",
-      "title": "sandbox-deploy read-only token tests must force the real fleet.key absent",
-      "summary": "tryLoadToken() in scripts/sandbox-deploy.mjs never overrides home, so a no-mint assertion is vacuous on any machine with a real ~/.apra-fleet/fleet.key unless that one read is mocked to ENOENT.",
-      "symbols": [
-        "tryLoadToken",
-        "resolveServiceToken",
-        "readLocalToken",
-        "withRealFleetKeyForcedAbsent"
-      ],
-      "source_files": [
-        "tests/sandbox-deploy.test.ts",
-        "scripts/sandbox-deploy.mjs",
-        "packages/apra-fleet-se/src/supervisor/auth.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:29.278Z"
-    },
-    {
       "id": "7fe61086-2df7-44bf-9d40-a16d6081c1f5",
       "type": "learning",
       "title": "Setup shell's $$ is unsafe to record for liveness checks under Git Bash on Windows",
@@ -3617,50 +2552,10 @@
       "updated_at": "2026-09-25T22:26:32.922Z"
     },
     {
-      "id": "8119e5f0-9942-4201-a93b-382be9db16c1",
-      "type": "knowledge",
-      "title": "A supervisor test built without token/dataDir silently disables auth and passes vacuously",
-      "summary": "createSupervisor leaves token null when neither deps.token nor deps.dataDir is given, and the per-request guard is conditioned on that token, so guarded-route tests on such a supervisor prove nothing about auth.",
-      "symbols": [
-        "createSupervisor",
-        "requiresAuth",
-        "isAuthorized",
-        "startTestSupervisor",
-        "createTestSupervisor"
-      ],
-      "source_files": [
-        "packages/apra-fleet-se/src/supervisor/server.mjs",
-        "packages/apra-fleet-se/test/helpers/supervisor-harness.mjs",
-        "packages/apra-fleet-se/test/supervisor-api.test.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:25.302Z"
-    },
-    {
-      "id": "820995b9-b6d7-4ad2-ae72-a2887e156e4b",
-      "type": "knowledge",
-      "title": "Reaping a reservation must return the post-write agent, and refusals must run before it",
-      "summary": "reapIfDead() writes through updateAgent, so callers reading the pre-reap Agent object still see the cleared holder; and any refusal branch placed after reaping makes a 'refused, wrote nothing' call mutate the member.",
-      "symbols": [
-        "reapIfDead",
-        "getReservation",
-        "memberReservation",
-        "listMembers"
-      ],
-      "source_files": [
-        "src/tools/member-reservation.ts",
-        "src/tools/list-members.ts",
-        "tests/member-reservation.test.ts",
-        "tests/list-members.test.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:28.403Z"
-    },
-    {
       "id": "837dd6ce-bf64-40e8-a9f3-8a85745e0354",
       "type": "learning",
       "title": "bd-replay record mode bypasses the real-mode caches, so recordings are 1:1 with issued calls",
-      "summary": "runCmd applies the dolt-sync/sync.remote/read caches only when bdMode() === 'real'; record mode sends every non-dolt-sync bd call to recordBd, and recordBd rewrites the whole fixture with writeFileSync rather than appending.",
+      "summary": "runCmd applies the dolt-sync/sync.remote/read caches only when bdMode() === 'real'; record mode sends every bd call other than dolt-sync and the synthesized ones (bd where, bd memories --json, bd forget) to recordBd, and recordBd rewrites the whole fixture with writeFileSync rather than appending.",
       "symbols": [
         "runCmd",
         "recordBd",
@@ -3672,7 +2567,7 @@
         "packages/apra-fleet-se/test/fixtures/bd-recordings/apra-fleet-mock-sprint-plannerstalledsession.jsonl"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-25T22:26:41.838Z"
+      "updated_at": "2026-09-30T23:07:12.100Z"
     },
     {
       "id": "83a67c82-c682-407f-9fd5-0ef2b86b16d9",
@@ -3749,28 +2644,6 @@
       "updated_at": "2026-09-29T06:08:33.761Z"
     },
     {
-      "id": "87481a5f-48da-4a01-bb6a-9ec243fb1fcf",
-      "type": "knowledge",
-      "title": "Supervisor project folder is a JSON bootstrap file, not a project-store row, because it resolves before any store opens",
-      "summary": "supervisor.config.json (owned solely by project-config.mjs) is a separate, simpler state layer from the node:sqlite project store -- it must resolve at the top of serve.mjs startup, before the sqlite store (Node 22.13.0+, can fail to open) is known to be available.",
-      "symbols": [
-        "resolveProjectDir",
-        "readSupervisorConfig",
-        "writeSupervisorConfig",
-        "registerProjectFolderRoutes",
-        "PROJECT_DIR_SOURCE"
-      ],
-      "source_files": [
-        "packages/apra-fleet-se/src/supervisor/project-config.mjs",
-        "packages/apra-fleet-se/src/supervisor/beads-identity.mjs",
-        "packages/apra-fleet-se/src/supervisor/project-route.mjs",
-        "packages/apra-fleet-se/src/projects/store/db.mjs",
-        "packages/apra-fleet-se/docs/project-model.md"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:25.244Z"
-    },
-    {
       "id": "882a88e4-cfcf-4389-ae8d-e86bfaec1b38",
       "type": "learning",
       "title": "provisionOutcome's prose fallback in vcs-auth.mjs is live and deliberately pinned",
@@ -3788,24 +2661,6 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:33.483Z"
-    },
-    {
-      "id": "88702594-ec6f-4143-9425-649a90286639",
-      "type": "knowledge",
-      "title": "The generic-boundary scanner narrows fleet-sprint/skills markdown to the bead-id rule only",
-      "summary": "ENGINE_FILE_SET lists fleet-sprint/skills/**.md with ids restricted to ['bead-id-in-llm-text'], so apra-fleet-specific content (its binary name, localhost:8787, packages/apra-fleet-se paths) is legitimate there -- but a bead id still fails the build.",
-      "symbols": [
-        "ENGINE_FILE_SET",
-        "SIGNAL_PATTERNS",
-        "ALLOWED_EXCEPTIONS"
-      ],
-      "source_files": [
-        "packages/apra-fleet-se/scripts/check-generic-boundary.mjs",
-        "packages/apra-fleet-se/fleet-sprint/skills/fleet-supervisor/SKILL.md",
-        "docs/generic-engine-boundary.md"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:24.229Z"
     },
     {
       "id": "88f7fc4e-32ed-41b5-8cad-c59dc81a9ab9",
@@ -3842,24 +2697,6 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:33.545Z"
-    },
-    {
-      "id": "89a07428-0f71-419e-b34c-de727867ef77",
-      "type": "learning",
-      "title": "doltPullBefore records the new remote tip before the caller's follow-up list runs",
-      "summary": "Because setLastSyncedTip runs as soon as a pull succeeds, a caller that skips its re-list whenever the tip is unchanged must track a 'list owed' flag, or a failed list after a successful pull leaves old rows reported as fresh.",
-      "symbols": [
-        "createBeadsView",
-        "doltPullBefore",
-        "setLastSyncedTip"
-      ],
-      "source_files": [
-        "packages/apra-fleet-se/src/supervisor/beads-view.mjs",
-        "packages/apra-fleet-se/fleet-sprint/dolt-sync.mjs",
-        "packages/apra-fleet-se/test/supervisor-beads-view.test.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-10-03T00:41:06.814Z"
     },
     {
       "id": "89c4ba0e-344e-4955-a1cb-355c9bd90d5e",
@@ -3954,27 +2791,10 @@
       "updated_at": "2026-09-25T22:26:27.914Z"
     },
     {
-      "id": "8fca9215-26ed-47e0-8f67-272dcc474bbe",
-      "type": "knowledge",
-      "title": "shell-ui typecheck requires apra-fleet-ui-kit to be built first",
-      "summary": "packages/apra-fleet-shell-ui consumes the ui-kit through a file: dependency whose types point at ./dist, so any build wiring must compile apra-fleet-ui-kit before typechecking or building the shell.",
-      "symbols": [
-        "Members"
-      ],
-      "source_files": [
-        "packages/apra-fleet-shell-ui/package.json",
-        "packages/apra-fleet-ui-kit/package.json",
-        "packages/apra-fleet-shell-ui/src/pages/Members.tsx",
-        "package.json"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:25.839Z"
-    },
-    {
       "id": "8fdf21fa-e64c-43d2-a22a-edfd21bd6791",
       "type": "knowledge",
-      "title": "Four distinct git-credential-helper file shapes exist across member OS/shell combinations",
-      "summary": "The deployed credential helper differs by member OS AND shell: POSIX writes an extensionless $HOME script, windows-powershell writes $env:USERPROFILE\\...bat, and windows-gitbash writes a .bat but is invoked through bash -- so any read-side builder needs all three forms plus the PowerShell call operator.",
+      "title": "Three distinct git-credential-helper file shapes exist across member OS/shell combinations",
+      "summary": "The deployed credential helper differs by member OS AND shell: POSIX (linux/macos) writes an extensionless $HOME script, windows-powershell writes $env:USERPROFILE\\...bat, and windows-gitbash writes a .bat under $HOME but is invoked through bash -- so any read-side builder needs all three forms plus the PowerShell call operator.",
       "symbols": [
         "gitCredentialHelperWrite",
         "gitCredentialHelperRead",
@@ -3989,26 +2809,7 @@
         "packages/apra-fleet-se/fleet-sprint/se-windows-gitbash.mjs"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-25T22:26:33.728Z"
-    },
-    {
-      "id": "904de09b-2d18-436b-a3d9-fb6d707a0f69",
-      "type": "knowledge",
-      "title": "loadOrCreateToken torn-write recovery has a knowingly accepted divergence window",
-      "summary": "The supervisor token mint deliberately keeps one race open -- a blank token file plus a peer mid-wx-write -- because closing it with write-temp-then-rename would forfeit atomic create-with-mode-0600.",
-      "symbols": [
-        "loadOrCreateToken",
-        "readExistingToken",
-        "TOKEN_FILE_EMPTY",
-        "enforcePosixTokenMode"
-      ],
-      "source_files": [
-        "packages/apra-fleet-client/src/auth/local-token.mjs",
-        "packages/apra-fleet-se/src/supervisor/auth.mjs",
-        "packages/apra-fleet-se/test/supervisor-auth.test.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:25.008Z"
+      "updated_at": "2026-09-30T23:07:12.100Z"
     },
     {
       "id": "919a3f50-dcb3-4ee9-91d1-767fd503a3b8",
@@ -4032,69 +2833,6 @@
       "updated_at": "2026-09-25T22:26:33.791Z"
     },
     {
-      "id": "91f37b25-87ea-4859-9811-2949fa8a4823",
-      "type": "learning",
-      "title": "bin/serve.mjs opens one projects-store handle and shares it across every route module",
-      "summary": "registerOwnerRefsRoute and registerProjectRoutes both take the openStore()-shaped {db, path, version, applied, close} handle as their 'store' dependency, not the raw db, and serve.mjs opens exactly one such handle for all of them.",
-      "symbols": [
-        "openStore",
-        "openProjectStoreOrDegrade",
-        "registerOwnerRefsRoute",
-        "registerProjectRoutes",
-        "NodeSqliteUnavailableError"
-      ],
-      "source_files": [
-        "packages/apra-fleet-se/bin/serve.mjs",
-        "packages/apra-fleet-se/src/registration/owner-refs.mjs",
-        "packages/apra-fleet-se/src/projects/routes/projects.mjs",
-        "packages/apra-fleet-se/src/projects/store/db.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:53.945Z"
-    },
-    {
-      "id": "9257660c-6cf3-4084-a06f-0e9365cf594d",
-      "type": "learning",
-      "title": "Mocked-fetch UI tests cannot catch a console-route zod contract mismatch",
-      "summary": "A shell-ui action button that posts only member_id passes its mocked-fetch test but 400s at runtime for every /api/fleet/ tool whose zod schema has a required non-member field.",
-      "symbols": [
-        "postRoute",
-        "provisionVcsAuth",
-        "revokeVcsAuth",
-        "provisionVcsAuthSchema",
-        "revokeVcsAuthSchema",
-        "sendError"
-      ],
-      "source_files": [
-        "packages/apra-fleet-shell-ui/test/members-vcs-body.test.tsx",
-        "packages/apra-fleet-shell-ui/src/api/members.ts",
-        "packages/apra-fleet-shell-ui/src/pages/members/MemberDrawer.tsx",
-        "src/console/routes/fleet.ts",
-        "src/tools/provision-vcs-auth.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:26.012Z"
-    },
-    {
-      "id": "92667864-dca4-47ad-8b8c-5a135e2d0592",
-      "type": "knowledge",
-      "title": "Neither supervisor-harness export serves a test needing a real listener plus post-construction routes",
-      "summary": "startTestSupervisor returns no supervisor handle so routes cannot be registered after it starts, and createTestSupervisor returns a handle but never starts a listener -- a test needing both must build its own supervisor.",
-      "symbols": [
-        "startTestSupervisor",
-        "createTestSupervisor",
-        "buildAuthedSupervisor",
-        "createSupervisor"
-      ],
-      "source_files": [
-        "packages/apra-fleet-se/test/helpers/supervisor-harness.mjs",
-        "packages/apra-fleet-se/test/mvp-a7-clients-auth.test.mjs",
-        "packages/apra-fleet-se/src/supervisor/server.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:25.668Z"
-    },
-    {
       "id": "938673e1-6edb-4265-9876-6170efb33898",
       "type": "runbook",
       "title": "Falsify a fleet-sprint or root-repo test without ever mutating the tracked tree",
@@ -4114,29 +2852,6 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:33.853Z"
-    },
-    {
-      "id": "943bf745-9e06-4928-b785-6bac1606835a",
-      "type": "knowledge",
-      "title": "memberHeldCheck is the single combined member-held gate for member_owner and remove_member",
-      "summary": "One exported helper merges the sync reservedBy check with the async workflow-package holds consult, with a deliberately asymmetric fail-closed rule keyed on the owning package(s).",
-      "symbols": [
-        "memberHeldCheck",
-        "memberHeldRefusal",
-        "FLEET_RESERVATION_PACKAGE",
-        "MemberHeldByEntry",
-        "removeMember",
-        "memberOwner"
-      ],
-      "source_files": [
-        "src/tools/member-owner.ts",
-        "src/tools/remove-member.ts",
-        "src/tools/update-member.ts",
-        "src/services/workflow-packages.ts",
-        "tests/member-owner-holds.test.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:28.343Z"
     },
     {
       "id": "94673dc6-5636-4937-a401-04a24899a132",
@@ -4173,19 +2888,6 @@
       "updated_at": "2026-09-25T22:26:33.916Z"
     },
     {
-      "id": "94b2a6e6-b718-4524-89ce-0a20eb29d6f4",
-      "type": "knowledge",
-      "title": "compose_permissions reports a refusal as text, not a thrown error, so the fleet-sprint provisioner must judge success from call status",
-      "summary": "The pre-dispatch runbook-permissions provisioner cannot rely on a try/catch to detect a denied grant, because compose_permissions returns a refusal (e.g. its never-auto-grant denylist) as a normal text response rather than throwing.",
-      "symbols": [],
-      "source_files": [
-        "packages/apra-fleet-se/fleet-sprint/member-provisioning.mjs",
-        "packages/apra-fleet-se/fleet-sprint/errors.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:08:09.848Z"
-    },
-    {
       "id": "962688bf-cee4-4461-bc3b-10b87eaf56c4",
       "type": "knowledge",
       "title": "Supervisor shutdownRequested resolves only after full teardown",
@@ -4205,7 +2907,7 @@
       "id": "96a63862-eb7a-43f3-8352-4cd686412d43",
       "type": "knowledge",
       "title": "gitRepos is an access list; only a single URL-shaped entry is a usable origin",
-      "summary": "agent.gitRepos is declared string[] and holds bare \"Owner/Repo\" access identifiers, not clone URLs. knownRepoRemoteUrl (now in src/services/member-remote-url.ts, re-exported from execute-prompt.ts) returns a URL only when gitRepos has EXACTLY one entry AND that entry is scheme-qualified; anything else yields undefined rather than a guessed URL.",
+      "summary": "agent.gitRepos is declared optional string[] and usually holds bare \"Owner/Repo\" access identifiers, not clone URLs. knownRepoRemoteUrl (in src/services/member-remote-url.ts, re-exported from execute-prompt.ts) returns a URL only when gitRepos has EXACTLY one entry AND it is URL-shaped (contains \"://\" or starts with \"git@\"); anything else yields undefined rather than a guessed URL.",
       "symbols": [
         "knownRepoRemoteUrl",
         "Agent",
@@ -4217,32 +2919,13 @@
         "src/tools/execute-prompt.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-25T22:26:34.370Z"
-    },
-    {
-      "id": "980d95b4-ce97-441f-9a87-f17568b0c3a9",
-      "type": "knowledge",
-      "title": "Sandbox supervisor shares the real ~/.apra-fleet/fleet.key with production",
-      "summary": "scripts/sandbox-deploy.mjs supervisors authenticate with the operator real ~/.apra-fleet/fleet.key when it exists (rooted at os.homedir(), not the sandbox root or APRA_FLEET_DATA_DIR); there is no sandbox-local fleet key.",
-      "symbols": [
-        "resolveServiceToken",
-        "readLocalToken",
-        "fleetKeyPath"
-      ],
-      "source_files": [
-        "packages/apra-fleet-se/src/supervisor/auth.mjs",
-        "packages/apra-fleet-client/src/auth/local-token.mjs",
-        "scripts/sandbox-deploy.mjs",
-        "src/services/jwt.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:24.665Z"
+      "updated_at": "2026-09-30T23:07:12.100Z"
     },
     {
       "id": "98a218b1-9f93-44e4-b823-6ca0584fb0f2",
       "type": "knowledge",
-      "title": "Streaks are anonymous bead arrays by the time they reach the doer dispatch, so the sync bracket deliberately carries no streak identity",
-      "summary": "groupStreaksFromLaneMetadata discards metadata.streak after grouping, selectStreaks never has a lane id, and harvester has no streak -- so streak identity is unavailable on 2 of 3 pushCode:true paths, and there is no per-streak branch to key exclusivity on.",
+      "title": "Streaks are anonymous bead arrays by the time they reach the doer dispatch, so the sync bracket carries no streak identity",
+      "summary": "groupStreaksFromLaneMetadata discards metadata.streak after grouping, selectStreaks never has a lane id, and the harvester has no streak -- so streak identity is unavailable on 2 of 3 pushCode:true paths, and there is no per-streak branch to key exclusivity on. Doer streak turns are serialized by globalDoerTurn in phases/develop.mjs.",
       "symbols": [
         "CODE_WRITE_BRACKET_KEY",
         "withOpenSyncBracket",
@@ -4256,11 +2939,12 @@
       "source_files": [
         "packages/apra-fleet-se/fleet-sprint/git-sync.mjs",
         "packages/apra-fleet-se/fleet-sprint/worklists.mjs",
+        "packages/apra-fleet-se/fleet-sprint/phases/develop.mjs",
         "packages/apra-fleet-se/fleet-sprint/runner.js",
         "packages/apra-fleet-se/test/sync-bracket-mutual-exclusion.test.mjs"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-25T22:26:27.503Z"
+      "updated_at": "2026-09-30T23:07:12.100Z"
     },
     {
       "id": "98dd92b2-2606-4baa-8d60-fd3cd3dc78a0",
@@ -4282,81 +2966,6 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:32.234Z"
-    },
-    {
-      "id": "99a90316-6d9d-495d-b0f6-e2377a21bd63",
-      "type": "knowledge",
-      "title": "Measured root npm test split: vitest about 325s over 327 files, then the se suite about 94s",
-      "summary": "A full root npm test on this tree measured vitest at 324.75s (321 passed, 6 skipped, 327 files) and the apra-fleet-se workspace suite at 94s (3427 pass, 0 fail), with the npm-pack packaging test at 28s -- not the 8-12 minutes an older entry records.",
-      "symbols": [],
-      "source_files": [
-        "scripts/run-all-tests.mjs",
-        "package.json",
-        "packages/apra-fleet-se/package.json"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-25T22:26:34.428Z"
-    },
-    {
-      "id": "99dbf6fb-5251-4b29-8849-c8df77d114a4",
-      "type": "knowledge",
-      "title": "fleet.key is the member-JWT HMAC secret, so no console credential may be forwarded verbatim to a workflow package",
-      "summary": "getOrCreateKey() returns the HS256 signing secret used by jwt.ts sign and verify, so forwarding the raw fleet key upstream grants JWT minting; the console cookie and the /ext upstream credential are both derived digests, never the key.",
-      "symbols": [
-        "getOrCreateKey",
-        "deriveConsoleCookieToken",
-        "CONSOLE_COOKIE_LABEL",
-        "isConsoleAuthorized",
-        "deriveUpstreamCredential",
-        "sign",
-        "verify"
-      ],
-      "source_files": [
-        "src/services/jwt.ts",
-        "src/console/server.ts",
-        "src/console/proxy.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:27.613Z"
-    },
-    {
-      "id": "9b6a3b63-5b02-4f1f-827e-e7bef31362af",
-      "type": "knowledge",
-      "title": "long_running task wrappers carry member.env only, never decrypted auth credentials",
-      "summary": "execute_command long_running writes env assignments into the persisted run.sh/run.ps1 with include {auth: false, member: true}, so decrypted credentials never land on the member disk; the synchronous path deliberately still carries auth env in its transient prefix.",
-      "symbols": [
-        "buildEnvAssignments",
-        "generateTaskWrapperWindows"
-      ],
-      "source_files": [
-        "src/services/cloud/task-wrapper.ts",
-        "src/tools/execute-command.ts",
-        "tests/execute-command-long-running-windows.test.ts",
-        "tests/task-wrapper.test.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:27.236Z"
-    },
-    {
-      "id": "9bff9876-e7b3-4e8d-a8fb-5bb0321dd713",
-      "type": "knowledge",
-      "title": "resolveServiceToken() has a read-only mode (createIfMissing: false) that passive probes must use",
-      "summary": "Passing createIfMissing: false to resolveServiceToken makes a token check truly read-only, returning null instead of minting a private/token file as a side effect of a mere probe.",
-      "symbols": [
-        "resolveServiceToken",
-        "readLocalToken",
-        "readPrivateTokenOnly",
-        "productionSeDataDir"
-      ],
-      "source_files": [
-        "packages/apra-fleet-se/src/supervisor/auth.mjs",
-        "packages/apra-fleet-client/src/auth/local-token.mjs",
-        "scripts/check-foreign-sprints.mjs",
-        "scripts/sandbox-deploy.mjs",
-        "packages/apra-fleet-se/docs/architecture.md"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:25.072Z"
     },
     {
       "id": "9d3e4d50-c047-4b98-becc-2fff7b8e27fa",
@@ -4452,27 +3061,6 @@
       "updated_at": "2026-09-29T06:13:15.172Z"
     },
     {
-      "id": "a01e977b-94b6-4663-8553-b22d07f8be66",
-      "type": "knowledge",
-      "title": "OS service manager is parameterized by ServiceId for two independent named services",
-      "summary": "src/services/service-manager/* uses a ServiceId-keyed descriptor table ('mcp-server', 'fleet-supervisor'), each with its own unit/plist/task name, restart policy and stop mechanism, so the two services can be registered, started, stopped or removed independently.",
-      "symbols": [
-        "ServiceId",
-        "ServiceDescriptor",
-        "SERVICE_DESCRIPTORS",
-        "WindowsServiceManager",
-        "getServiceDescriptor"
-      ],
-      "source_files": [
-        "src/services/service-manager/types.ts",
-        "src/services/service-manager/windows.ts",
-        "src/services/service-manager/macos.ts",
-        "src/services/service-manager/linux.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:27.780Z"
-    },
-    {
       "id": "a05ff689-9610-4624-ac2f-301d91e83846",
       "type": "knowledge",
       "title": "exec-bd helpers resolve bd through the npm Windows shim; shell:true paths remain on Windows",
@@ -4512,21 +3100,6 @@
       "updated_at": "2026-09-25T22:26:34.788Z"
     },
     {
-      "id": "a14dd5d0-646d-483a-ab82-9c5d10aec76f",
-      "type": "knowledge",
-      "title": "id-allocator.mjs's defaultDataDir() ignores FLEET_SE_DATA_DIR, uses os.homedir()/.apra-fleet/supervisor",
-      "summary": "Unlike spawner.mjs/history.mjs/ledger.mjs (which all check FLEET_SE_DATA_DIR before falling back to os.homedir()/.apra-fleet-se), packages/apra-fleet-se/src/supervisor/id-allocator.mjs's own defaultDataDir() only ever reads os.homedir() and joins '.apra-fleet/supervisor' -- it has no FLEET_SE_DATA_DIR override at all.",
-      "symbols": [
-        "defaultDataDir"
-      ],
-      "source_files": [
-        "packages/apra-fleet-se/src/supervisor/id-allocator.mjs",
-        "tests/helpers/isolated-home.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-27T00:42:43.447Z"
-    },
-    {
       "id": "a26226fc-8c81-47c7-bf1a-c975a8b123d8",
       "type": "learning",
       "title": "An escaped backtick in any GUARDED_MODULES file trips the shell-command guard, even inside an Error message",
@@ -4545,33 +3118,13 @@
       "updated_at": "2026-09-29T06:13:11.427Z"
     },
     {
-      "id": "a2ec0b6d-f056-4bd8-869a-ff0a8a80499b",
-      "type": "knowledge",
-      "title": "createDashboard and createBacklog silently fall back to spawning bd list when listAllBeads is not injected",
-      "summary": "Both supervisor seams default their listAllBeads to a real bd bulk fetch, so dropping the cached-view injection in serve.mjs brings back one bd list per render or SSE tick with no error. Only a test of serve.mjs's own wiring catches that.",
-      "symbols": [
-        "createDashboard",
-        "createBacklog",
-        "bdListAllBeadsWithClosed",
-        "bdListAllBeadsRaw",
-        "createSnapshotRowsReader"
-      ],
-      "source_files": [
-        "packages/apra-fleet-se/src/supervisor/dashboard.mjs",
-        "packages/apra-fleet-se/src/supervisor/backlog.mjs",
-        "packages/apra-fleet-se/bin/serve.mjs",
-        "packages/apra-fleet-se/src/supervisor/beads-view.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-10-03T00:41:06.812Z"
-    },
-    {
       "id": "a3fdac5d-31b6-4b87-9456-10d813aa095b",
       "type": "knowledge",
-      "title": "Only roles with a kb-apply post-result step have their kb_captures recorded",
-      "summary": "A dispatched role's kb_captures output is applied only if its role-policies.mjs row lists 'kb-apply' in postResult; planner, plan-reviewer, the scoped-replan roles, deployer, integ-test-runner and regression-test-runner have none, yet the injected KNOWLEDGE BANK block tells them the orchestrator will record their kb_captures.",
+      "title": "Only roles with a kb-apply post-result step have their kb_captures recorded; the KB block no longer promises it to others",
+      "summary": "A dispatched role kb_captures output is applied only if its role-policies.mjs row lists kb-apply in postResult; planner, plan-reviewer, scoped-replan roles, deployer, integ-test-runner and regression-test-runner have none. The agent() wrapper now passes captureChannel=agentTypeAppliesKbCaptures(agentType) to kbKnowledgeBlock, so those roles are told to note findings in their own report instead of being promised the orchestrator records kb_captures; a persona shared across rows counts as no channel unless every row has kb-apply.",
       "symbols": [
         "kbKnowledgeBlock",
+        "agentTypeAppliesKbCaptures",
         "composePermissionConfig",
         "POST_RESULT_STEPS",
         "ROLE_POLICIES"
@@ -4579,17 +3132,18 @@
       "source_files": [
         "packages/apra-fleet-se/fleet-sprint/role-policies.mjs",
         "packages/apra-fleet-se/fleet-sprint/kb.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
         "src/providers/claude.ts",
         "packages/apra-fleet-se/apra-pm/agents/planner.md"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:12.190Z"
+      "updated_at": "2026-09-30T23:07:12.100Z"
     },
     {
       "id": "a4663ebf-bce1-440a-a776-1ba2d1c30497",
       "type": "knowledge",
-      "title": "openSyncBracketCount is a pure aggregate counter; cross-owner bracket overlap is legitimate and relied upon, not a bug",
-      "summary": "git-sync.mjs's sync-bracket counter has no owner/nesting awareness by design -- runner.js's globalDoerTurn FIFO gate (not the bracket counter) is what keeps code-writing (pushCode:true) dispatches from ever overlapping, and D-push overlap across members is independently safe via the injected dolt push mutex.",
+      "title": "openSyncBracketCount is a pure aggregate counter; cross-owner bracket overlap is legitimate except the opt-in code-write key",
+      "summary": "git-sync.mjs createSyncBrackets counts open brackets with no owner awareness; overlap across members is legitimate by default (D-push is serialized by the dolt push mutex). Only brackets passing exclusiveKey (CODE_WRITE_BRACKET_KEY, used by pushCode:true withGitSync) are tracked on a per-key stack and throw ConcurrentSyncBracketError on a crossing close. What keeps code-writing dispatches from overlapping is the globalDoerTurn FIFO gate in phases/develop.mjs; the exclusive key is a backstop for it being broken.",
       "symbols": [
         "createSyncBrackets",
         "withOpenSyncBracket",
@@ -4600,12 +3154,12 @@
       ],
       "source_files": [
         "packages/apra-fleet-se/fleet-sprint/git-sync.mjs",
-        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/fleet-sprint/phases/develop.mjs",
         "packages/apra-fleet-se/test/git-sync-brackets.test.mjs",
         "packages/apra-fleet-se/test/sync-bracket-mutual-exclusion.test.mjs"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-25T22:26:35.602Z"
+      "updated_at": "2026-09-30T23:07:12.100Z"
     },
     {
       "id": "a6438761-57f2-4011-a158-833afd6fbbe5",
@@ -4685,29 +3239,6 @@
       "updated_at": "2026-10-01T21:41:49.142Z"
     },
     {
-      "id": "a7e01c0c-0a8d-4ed1-bd42-f437d6cdb75a",
-      "type": "knowledge",
-      "title": "Supervisor reads fleet.key but never mints it; install and the server mint it",
-      "summary": "resolveServiceToken() uses <home>/.apra-fleet/fleet.key only if it already exists when the supervisor boots, else falls back to private/token for the process lifetime; fleet.key is minted by apra-fleet install and lazily by server-runtime code, not by apra-fleet start.",
-      "symbols": [
-        "resolveServiceToken",
-        "readLocalToken",
-        "getOrCreateKey",
-        "loadOrCreateToken"
-      ],
-      "source_files": [
-        "packages/apra-fleet-se/src/supervisor/auth.mjs",
-        "packages/apra-fleet-client/src/auth/local-token.mjs",
-        "src/services/jwt.ts",
-        "src/cli/install.ts",
-        "src/cli/start.ts",
-        "packages/apra-fleet-se/bin/serve.mjs",
-        "scripts/sandbox-deploy.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:24.852Z"
-    },
-    {
       "id": "a8b20071-c096-4ad4-8ce5-7defb5db33be",
       "type": "knowledge",
       "title": "guarded-modules-coverage's isAccountedFor() must compare full relative paths, not basenames, to avoid a nested-module collision",
@@ -4783,25 +3314,6 @@
       "updated_at": "2026-09-29T06:13:15.483Z"
     },
     {
-      "id": "aab8ae3c-5c50-4aae-9723-e215c81d49cf",
-      "type": "knowledge",
-      "title": "tests/setup.ts pre-loads src/paths.ts, so per-file data-dir overrides need vi.resetModules",
-      "summary": "Any test file that sets APRA_FLEET_DATA_DIR at module scope must call vi.resetModules() before dynamically importing FLEET_DIR consumers.",
-      "symbols": [
-        "FLEET_DIR",
-        "vi.resetModules"
-      ],
-      "source_files": [
-        "tests/setup.ts",
-        "src/paths.ts",
-        "tests/statusline.test.ts",
-        "tests/join.test.ts",
-        "tests/cloud-sync.test.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:29.340Z"
-    },
-    {
       "id": "aac032f2-2932-469f-bb60-e33368c9682a",
       "type": "knowledge",
       "title": "wrapTool already accepts { text, structuredContent }, so adding a structured MCP response needs no tool-registry change",
@@ -4818,32 +3330,6 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:37.402Z"
-    },
-    {
-      "id": "ab555137-d83e-490d-aad9-ff02f1d5f51c",
-      "type": "learning",
-      "title": "sandbox-deploy.mjs getJson/postJson swallow 401 into null/false -- supervisor auth changes must thread a token through every out-of-package caller",
-      "summary": "getJson's `if (!res.ok) return null` and postJson's `return res.ok` make an unauthenticated 401 from the bearer-guarded supervisor indistinguishable from an unreachable server, so a supervisor-side auth change silently breaks scripts/sandbox-deploy.mjs's up/verify/teardown and its production-untouched check unless every call site sends the token.",
-      "symbols": [
-        "getJson",
-        "postJson",
-        "tryLoadToken",
-        "snapshotProduction",
-        "checkProductionUnchanged",
-        "resolveServiceToken",
-        "sendUnauthorized"
-      ],
-      "source_files": [
-        "scripts/sandbox-deploy.mjs",
-        "tests/sandbox-deploy.test.ts",
-        "scripts/check-foreign-sprints.mjs",
-        "packages/apra-fleet-se/src/supervisor/auth.mjs",
-        "packages/apra-fleet-se/src/supervisor/server.mjs",
-        "packages/apra-fleet-se/bin/serve.mjs",
-        "packages/apra-fleet-se/src/supervisor/ledger.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:53.967Z"
     },
     {
       "id": "acd2585c-ba7e-4580-a33a-809bd77eb8f5",
@@ -4920,25 +3406,6 @@
       "updated_at": "2026-09-25T22:26:29.106Z"
     },
     {
-      "id": "b22eea12-c064-4f8a-8a12-d2041fc0f5be",
-      "type": "knowledge",
-      "title": "createSupervisor's auth guard is fail-open when no token is configured",
-      "summary": "server.mjs only enforces the bearer guard when deps.token or deps.dataDir was supplied; with neither, token stays null and requiresAuth/isAuthorized are never consulted, silently serving the whole /api surface unauthenticated.",
-      "symbols": [
-        "createSupervisor",
-        "handleRequest",
-        "requiresAuth",
-        "isAuthorized"
-      ],
-      "source_files": [
-        "packages/apra-fleet-se/src/supervisor/server.mjs",
-        "packages/apra-fleet-se/bin/serve.mjs",
-        "packages/apra-fleet-se/test/mvp-a7-bind-auth.test.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:25.483Z"
-    },
-    {
       "id": "b3879aa4-7d81-4dff-843c-ced977cf7993",
       "type": "learning",
       "title": "Node ESM circular imports between runner.js and its extracted fleet-sprint siblings are safe when confined to function bodies",
@@ -4959,26 +3426,6 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:35.852Z"
-    },
-    {
-      "id": "b4fcda42-99b3-471b-a7e4-0c0ac8878149",
-      "type": "knowledge",
-      "title": "Workflow-package version gate must strip the v prefix and _hash suffix from serverVersion",
-      "summary": "serverVersion is not bare semver (e.g. v0.5.0_ab12cd in a dev checkout), and this repo has no semver dependency, so the range check is a hand-rolled fail-closed subset.",
-      "symbols": [
-        "normalizeServerVersion",
-        "satisfiesVersionRange",
-        "SUPPORTED_RANGE_SYNTAX",
-        "serverVersion"
-      ],
-      "source_files": [
-        "src/services/workflow-packages.ts",
-        "src/version.ts",
-        "src/console/routes/workflow-packages.ts",
-        "tests/console-workflow-packages.test.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:28.015Z"
     },
     {
       "id": "b5f7d0d2-59e6-444d-b8fd-c83a3f604f84",
@@ -5017,7 +3464,7 @@
       "id": "b65ddcb4-6f74-4b5f-9877-502a38938e47",
       "type": "learning",
       "title": "The default VCS credential label's derivation is unfalsifiable by value, only by source shape",
-      "summary": "Re-hardcoding vcs-auth.mjs's DEFAULT_VCS_CREDENTIAL_LABEL to the literal 'github' left the entire 2601-test suite green, because DEFAULT_VCS_PROVIDER is itself 'github'; only a source-level assertion on the assignment can gate it.",
+      "summary": "Re-hardcoding vcs-auth.mjs's DEFAULT_VCS_CREDENTIAL_LABEL to the literal 'github' left the whole test suite green, because DEFAULT_VCS_PROVIDER is itself 'github'; only a source-level assertion on the assignment (phase2-flagged-behaviour-gating.test.mjs) can gate it.",
       "symbols": [
         "DEFAULT_VCS_CREDENTIAL_LABEL",
         "DEFAULT_VCS_PROVIDER",
@@ -5030,7 +3477,7 @@
         "packages/apra-fleet-se/test/phase2-flagged-behaviour-gating.test.mjs"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-25T22:26:36.209Z"
+      "updated_at": "2026-09-30T23:07:12.100Z"
     },
     {
       "id": "b6bb92cf-b27c-4341-8ec2-a9800b0bc338",
@@ -5051,75 +3498,6 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:36.279Z"
-    },
-    {
-      "id": "b6eb8ab7-7510-4e47-8ed9-a4904f14f62e",
-      "type": "learning",
-      "title": "npm test cannot build packages/apra-fleet-ui-kit, so shell-ui tests fail on a clean clone",
-      "summary": "Root pretest runs only build:contract; apra-fleet-ui-kit is a tsc-built workspace whose dist/ nothing in the npm test chain produces, so shell-ui's vitest project fails import resolution on any clone that has not built ui-kit by hand.",
-      "symbols": [],
-      "source_files": [
-        "package.json",
-        "packages/apra-fleet-ui-kit/package.json",
-        "packages/apra-fleet-shell-ui/test/app.test.tsx",
-        "packages/apra-fleet-shell-ui/src/pages/Members.tsx",
-        "scripts/run-all-tests.mjs",
-        "vitest.config.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:23.665Z"
-    },
-    {
-      "id": "b75859e5-ec54-4272-89fc-a75f00170b95",
-      "type": "learning",
-      "title": "vitest injects __dirname, so typeof __dirname dual-path code takes the CJS branch in tests",
-      "summary": "Under vitest, modules like src/console/static.ts see a defined __dirname, so resolveDefaultShellDistDir() takes the CJS/SEA branch in-process; plain node -e (CJS eval) also defines __dirname/require globals. Only a real ES-module child exercises the ESM branch.",
-      "symbols": [
-        "resolveDefaultShellDistDir",
-        "defaultSeaGetAsset"
-      ],
-      "source_files": [
-        "src/console/static.ts",
-        "tests/console-static.test.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:08:32.094Z"
-    },
-    {
-      "id": "b77c7742-50b8-4de3-bf6c-2caf868fe802",
-      "type": "knowledge",
-      "title": "originSlugFromUrl is a deliberately separate identity function from resolveProjectSlug's KB slugify -- do not merge them",
-      "summary": "member_git_status's origin-slug normaliser produces a human-readable host/path identity (e.g. github.com/apra-labs/apra-fleet) for grouping members by repo; resolveProjectSlug's slugify produces an unrelated, filesystem-safe KB scope key. They serve different consumers and are kept separate on purpose.",
-      "symbols": [
-        "originSlugFromUrl",
-        "resolveProjectSlug"
-      ],
-      "source_files": [
-        "src/services/git-status-probe.ts",
-        "src/services/knowledge/project-slug.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:27.360Z"
-    },
-    {
-      "id": "b7aff9d5-97f9-40fb-ac93-ea1b4bbb1a5a",
-      "type": "knowledge",
-      "title": "The supervisor pins its own api-guard token at startup and never re-reads it",
-      "summary": "bin/serve.mjs resolves the credential guarding its own HTTP surface exactly once at boot, so a supervisor started before fleet.key exists rejects fleet-key bearers for its whole life.",
-      "symbols": [
-        "serveMain",
-        "createSupervisor",
-        "isAuthorized",
-        "resolveServiceToken"
-      ],
-      "source_files": [
-        "packages/apra-fleet-se/bin/serve.mjs",
-        "packages/apra-fleet-se/src/supervisor/auth.mjs",
-        "packages/apra-fleet-se/src/supervisor/server.mjs",
-        "packages/apra-fleet-se/test/registration-convergence.test.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:24.009Z"
     },
     {
       "id": "b7fc09bb-cf5b-40bb-a965-9ab9852c7cdf",
@@ -5244,27 +3622,6 @@
       "updated_at": "2026-09-25T22:26:34.848Z"
     },
     {
-      "id": "be16196c-588c-48db-abe5-46dbd45e3935",
-      "type": "knowledge",
-      "title": "Console cookie and per-package upstream credential use the same HMAC key but different labels, deliberately",
-      "summary": "Both the console's browser cookie and the /ext proxy's per-package upstream credential are HMAC-SHA256(fleetKey, label) with the SAME fleet key but DIFFERENT fixed labels, so one credential can never be replayed as the other.",
-      "symbols": [
-        "CONSOLE_COOKIE_LABEL",
-        "UPSTREAM_CREDENTIAL_LABEL",
-        "deriveUpstreamCredential",
-        "forwardCredential"
-      ],
-      "source_files": [
-        "src/console/server.ts",
-        "src/console/proxy.ts",
-        "packages/apra-fleet-client/src/auth/local-token.mjs",
-        "src/services/jwt.ts",
-        "docs/console-architecture.md"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:23.480Z"
-    },
-    {
       "id": "beb4faf7-40fa-4484-9cf5-b287df8f47d2",
       "type": "knowledge",
       "title": "resolveProjectSlug prefers an explicit git remote URL over shelling git against repo_path",
@@ -5296,40 +3653,6 @@
       "updated_at": "2026-09-25T22:26:42.831Z"
     },
     {
-      "id": "c0af257a-2205-4730-9553-1952e80e47d0",
-      "type": "learning",
-      "title": "apra-fleet-se's spawner.test.mjs orphan-survival/SIGKILL tests flake only under full node --test concurrency",
-      "summary": "test/spawner.test.mjs's real detached-child-process tests (orphan survival, SIGKILL cleanup) failed twice in one full `npm test` run (test-concurrency=8, ~700+ files) with 'sanity check: our own cleanup kill worked' and a cascading subtest failure, but passed 30/30 in isolation and again 0/0-fail on a second full-suite run -- a resource-contention flake tied to concurrent process spawning under load, not a functional regression.",
-      "symbols": [],
-      "source_files": [
-        "packages/apra-fleet-se/test/spawner.test.mjs",
-        "packages/apra-fleet-se/package.json"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-25T22:26:36.656Z"
-    },
-    {
-      "id": "c0c02663-6cee-4342-b556-924fbf78d252",
-      "type": "knowledge",
-      "title": "Supervisor guard accepts the derived se credential on the bearer header only",
-      "summary": "isAuthorized falls back to comparing the bearer header against deriveUpstreamCredential(token, PACKAGE_ID), deliberately excluding the cookie path.",
-      "symbols": [
-        "isAuthorized",
-        "deriveUpstreamCredential",
-        "PACKAGE_ID",
-        "resolveServiceToken",
-        "requiresAuth"
-      ],
-      "source_files": [
-        "packages/apra-fleet-se/src/supervisor/auth.mjs",
-        "packages/apra-fleet-se/src/registration/manifest.mjs",
-        "packages/apra-fleet-se/src/registration/register.mjs",
-        "packages/apra-fleet-se/bin/serve.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:24.787Z"
-    },
-    {
       "id": "c0c940f9-8e0a-4772-89e6-f0961e094adc",
       "type": "learning",
       "title": "dolt-sync.mjs sync.remote/tip memoization is process-lifetime, so multi-scenario tests must reset it between runs",
@@ -5348,47 +3671,6 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:11.756Z"
-    },
-    {
-      "id": "c160be69-3baa-43e7-90a5-c4a47029f50f",
-      "type": "knowledge",
-      "title": "apra-fleet-se stale temp-home sweep uses an owner-pid liveness marker before its age gate",
-      "summary": "test/isolated-home-setup.mjs writes .owner-pid into each apra-fleet-se-test-run-* home. scripts/stale-temp-home-sweep.mjs never deletes a dir whose owner pid is alive, and applies the timeoutMs age gate only to dirs with a missing marker or a dead owner.",
-      "symbols": [
-        "sweepStaleTempHomes",
-        "hasLiveOwner",
-        "isPidAlive"
-      ],
-      "source_files": [
-        "packages/apra-fleet-se/scripts/stale-temp-home-sweep.mjs",
-        "packages/apra-fleet-se/test/isolated-home-setup.mjs",
-        "packages/apra-fleet-se/scripts/run-tests.mjs",
-        "packages/apra-fleet-se/test/stale-temp-home-sweep.test.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-27T02:08:12.899Z"
-    },
-    {
-      "id": "c208bf72-89b3-43ce-8bd3-21045b8842bb",
-      "type": "knowledge",
-      "title": "fleet-se prerequisite summary is computed server-side and rides the fleet_status payload",
-      "summary": "The console Health page cannot probe fleet-se prerequisites itself; the summary rides the existing /api/fleet/status payload as an optional fleetSePrereqs string rather than a separate console route.",
-      "symbols": [
-        "detectFleetSePrereqs",
-        "summarizeFleetSePrereqs",
-        "safeFleetSePrereqsSummary",
-        "fleetStatus",
-        "FLEET_SE_PREREQ_FIX_LINE"
-      ],
-      "source_files": [
-        "src/cli/fleet-se-prereqs.ts",
-        "src/tools/check-status.ts",
-        "src/cli/status.ts",
-        "packages/apra-fleet-shell-ui/src/api/health.ts",
-        "packages/apra-fleet-shell-ui/src/pages/Health.tsx"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:26.547Z"
     },
     {
       "id": "c2899616-0cb1-41e8-b229-76e291a0cd81",
@@ -5449,42 +3731,6 @@
       "updated_at": "2026-09-29T06:13:14.111Z"
     },
     {
-      "id": "c3759d44-b36e-4f9b-a736-befe83bfb769",
-      "type": "knowledge",
-      "title": "tests/cli-verbs.test.ts automocks node:child_process, so src/cli probes that shell out report absent there",
-      "summary": "vi.mock('node:child_process') with no factory in tests/cli-verbs.test.ts stubs execFileSync to return undefined, so detectFleetSePrereqs deterministically reports node and npm as NOT INSTALLED in that file regardless of the host.",
-      "symbols": [
-        "detectFleetSePrereqs",
-        "defaultExec",
-        "parseVersionString",
-        "runStatus"
-      ],
-      "source_files": [
-        "tests/cli-verbs.test.ts",
-        "src/cli/fleet-se-prereqs.ts",
-        "src/cli/status.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:29.108Z"
-    },
-    {
-      "id": "c69d7550-4811-48ef-ad10-1861cb94d45e",
-      "type": "knowledge",
-      "title": "fleetStatus sets fleetSePrereqs at two separate json call sites; an empty registry only exercises one",
-      "summary": "fleetStatus builds its json payload in two places (empty-registry early return and the normal members path), each with its own guarded fleetSePrereqs assignment, so a test that resets the registry to empty covers only the first.",
-      "symbols": [
-        "fleetStatus",
-        "safeFleetSePrereqsSummary"
-      ],
-      "source_files": [
-        "src/tools/check-status.ts",
-        "tests/fleet-status-branch.test.ts",
-        "packages/apra-fleet-shell-ui/src/pages/Health.tsx"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:28.076Z"
-    },
-    {
       "id": "c73a563f-06ee-4dff-8d4b-afa31d5de9f7",
       "type": "knowledge",
       "title": "vcs_credential_exec has two token placeholders with opposite quoting contracts, and mixing them up surfaces as a false 401",
@@ -5534,46 +3780,6 @@
       "updated_at": "2026-09-25T22:26:36.962Z"
     },
     {
-      "id": "c9d96863-8c72-4f39-8791-ee901bb92ba5",
-      "type": "knowledge",
-      "title": "Editing the toString-embedded dashboard live script has three hard constraints",
-      "summary": "The supervisor dashboard client script is shipped as inline text via .toString() on each helper, which imposes declaration-order and no-window constraints enforced by an existing guard test.",
-      "symbols": [
-        "sprintStackLiveScript",
-        "runLiveRefreshScript",
-        "escapeHtml",
-        "schedulePoll"
-      ],
-      "source_files": [
-        "packages/apra-fleet-se/src/supervisor/dashboard.mjs",
-        "packages/apra-fleet-se/test/supervisor-dashboard-live-refresh.test.mjs",
-        "packages/apra-fleet-se/test/supervisor-project-page.test.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:25.129Z"
-    },
-    {
-      "id": "cbfedd77-e8e4-4a0a-8e99-b25b0af1a309",
-      "type": "knowledge",
-      "title": "Supervisor OS service boots via the installed binary's own subcommand, not a resolved node path",
-      "summary": "The fleet-supervisor OS service runs '<BIN_DIR>/apra-fleet supervisor' instead of '<node> <serve.mjs>'; the node-path-resolution helper it replaced is gone, so supervisor-registration code must not reintroduce a dependency on an external node executable.",
-      "symbols": [
-        "registerSupervisorService",
-        "SUPERVISOR_SUBCOMMAND",
-        "runSupervisor",
-        "serveMain",
-        "isMainModule"
-      ],
-      "source_files": [
-        "src/services/supervisor-service.ts",
-        "src/cli/supervisor.ts",
-        "src/cli/install.ts",
-        "packages/apra-fleet-se/bin/serve.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:27.843Z"
-    },
-    {
       "id": "cc085797-4b47-455d-9357-fbbb267281ed",
       "type": "knowledge",
       "title": "runSprintCycle now hosts zero inline phase bodies, and that is mechanically pinned rather than described",
@@ -5594,24 +3800,6 @@
       "updated_at": "2026-09-25T22:26:33.227Z"
     },
     {
-      "id": "cd8998d6-b317-4fa6-9d82-abb865b6a2cc",
-      "type": "knowledge",
-      "title": "The service token reaches a runner only through spawner env injection, never through argv or a file read",
-      "summary": "coordination.mjs's clients resolve the token as opts.token ?? process.env.FLEET_SE_SERVICE_TOKEN, and only spawner.mjs sets that env var, so a runner started outside the supervisor's spawner has no credential for the guarded coordination routes.",
-      "symbols": [
-        "createSpawner",
-        "createHttpDoltPushMutexClient",
-        "createHttpChildIdAllocatorClient"
-      ],
-      "source_files": [
-        "packages/apra-fleet-se/src/supervisor/spawner.mjs",
-        "packages/apra-fleet-se/fleet-sprint/coordination.mjs",
-        "packages/apra-fleet-se/test/f34-concurrent-launch-engagement-integration.test.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:25.529Z"
-    },
-    {
       "id": "cdb38747-c24d-47f0-8e38-2d62f13eeb61",
       "type": "knowledge",
       "title": "Usage-limit pause budget resets per re-dispatch, not per role",
@@ -5629,28 +3817,10 @@
       "updated_at": "2026-09-29T06:13:15.856Z"
     },
     {
-      "id": "cdb7cdb6-87ad-402f-8b88-311b80cb25f3",
-      "type": "learning",
-      "title": "Vitest toHaveBeenCalledWith matches argument arity, so short .not expectations pass vacuously",
-      "summary": "A .not.toHaveBeenCalledWith with fewer args than the real call can never fail, silently turning a mocked-command isolation assertion into a no-op.",
-      "symbols": [
-        "WindowsServiceManager.unregister",
-        "findWrapperProcessIds",
-        "callIndex",
-        "calledCommands"
-      ],
-      "source_files": [
-        "tests/service-manager.test.ts",
-        "src/services/service-manager/windows.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:23.168Z"
-    },
-    {
       "id": "ce77f60f-7377-46e2-94f4-348c7b04c8f0",
       "type": "knowledge",
-      "title": "The sync-bracket guarantee is now mechanically scanned by a fifth guard, not just a convention",
-      "summary": "As of e9e585c4 a fifth guard scans every guarded module for bare sync primitives, superseding the earlier claim that nothing enforced the bracket rule.",
+      "title": "The sync-bracket guarantee is mechanically scanned by a fifth guard, not just a convention",
+      "summary": "A fifth guard (unbracketed-push-guard.mjs) scans every guarded module for bare sync primitives outside git-sync.mjs, superseding the earlier claim that nothing enforced the bracket rule.",
       "symbols": [
         "checkUnbracketedPushModules",
         "unbracketedPushModulePaths",
@@ -5664,7 +3834,7 @@
         "packages/apra-fleet-se/test/guarded-modules-coverage.test.mjs"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-25T22:26:37.214Z"
+      "updated_at": "2026-09-30T23:07:12.100Z"
     },
     {
       "id": "ce93654a-b7a2-4ccf-a9e2-2c166d11e6aa",
@@ -5719,24 +3889,6 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:40.205Z"
-    },
-    {
-      "id": "d3ad814e-fb43-40c1-ace6-74a21d9fa806",
-      "type": "learning",
-      "title": "Console route tests must spread importOriginal when vi.mock-ing src/tools modules",
-      "summary": "src/console/routes/fleet.ts validates every request body against the TOOL's own exported zod schema, so a bare vi.mock factory that only stubs the handler replaces those schemas with undefined and turns every validation case into a TypeError.",
-      "symbols": [
-        "handleConsoleRequest",
-        "readBody",
-        "fleetRoutes"
-      ],
-      "source_files": [
-        "tests/console-routes-fleet.test.ts",
-        "src/console/routes/fleet.ts",
-        "src/console/server.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:29.170Z"
     },
     {
       "id": "d3e704fd-d1ee-49d5-aca9-c9eea9c03cb4",
@@ -5820,20 +3972,6 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:53.852Z"
-    },
-    {
-      "id": "d737143b-15cc-40cd-9863-d87d6bb08b93",
-      "type": "learning",
-      "title": "Source-slicing tests in apra-fleet-se fail on Windows checkouts with core.autocrlf=true",
-      "summary": "Tests that read runner.js and slice function bodies on a newline-brace-newline literal fail locally when git checks out CRLF; the committed blob is LF, so it is environmental, not a regression.",
-      "symbols": [],
-      "source_files": [
-        "packages/apra-fleet-se/test/sprint-state.test.mjs",
-        "packages/apra-fleet-se/fleet-sprint/runner.js",
-        "packages/apra-fleet-se/test/phase0-seams-facade.test.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-10-02T15:14:12.754Z"
     },
     {
       "id": "d75f28a9-bb69-4fd8-bf81-1ad9bd17d51b",
@@ -5933,46 +4071,6 @@
       "updated_at": "2026-09-29T06:13:02.418Z"
     },
     {
-      "id": "da687e42-a5b7-4e50-a29d-128382b51673",
-      "type": "learning",
-      "title": "gen-sea-config.mjs's SEA asset keys must equal the manifest key for sections read via getAsset(), not the disk-relative path",
-      "summary": "Unlike the extracted-to-disk sections (workflowRuntime, agentSchemas, builtinWorkflows, ...), the ui/ section's SEA 'assets' entries are keyed by the ui/-prefixed manifest key (e.g. 'ui/index.html'), because src/console/static.ts's seaSource() calls getAsset(UI_ASSET_PREFIX + requestPath) directly at request time.",
-      "symbols": [
-        "seaSource",
-        "resolveUiAsset",
-        "UI_ASSET_PREFIX"
-      ],
-      "source_files": [
-        "scripts/gen-sea-config.mjs",
-        "src/console/static.ts",
-        "src/cli/install.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:26.250Z"
-    },
-    {
-      "id": "daaf8ce6-21a9-417f-b68b-105595dc334a",
-      "type": "knowledge",
-      "title": "Workflow-package registration must target the fleet server ORIGIN, not server.json url",
-      "summary": "server.json's url is the MCP endpoint ('<origin>/mcp'), so handing it to createRegistration() makes the supervisor POST to a path the server 404s -- a retryable status, so registration silently retries forever.",
-      "symbols": [
-        "createRegistration",
-        "startRegistrationConvergence",
-        "serveMain",
-        "consoleOrigin",
-        "resolveFleetServerConnection"
-      ],
-      "source_files": [
-        "packages/apra-fleet-se/src/registration/register.mjs",
-        "packages/apra-fleet-se/bin/serve.mjs",
-        "packages/apra-fleet-se/test/i9ag34-sprints-console-hop-e2e.test.mjs",
-        "src/index.ts",
-        "src/console/routes/workflow-packages.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:23.962Z"
-    },
-    {
       "id": "db30ec72-c3a7-4a1d-a11b-3d8dd42875bb",
       "type": "knowledge",
       "title": "bdListScoped gives fresh STATUS but never fresh SCOPE -- scope always comes from the cached snapshot",
@@ -6026,43 +4124,24 @@
       "updated_at": "2026-09-25T22:26:38.135Z"
     },
     {
-      "id": "dd5ef8cb-e3bb-4cc2-a834-244ff492c2f6",
-      "type": "knowledge",
-      "title": "Workflow-package manifest paths are re-validated on registry read, not just on write",
-      "summary": "parseWorkflowPackageManifest runs both in the register route and in readPackages, so a hand-edited registry file cannot surface a path the route would reject.",
-      "symbols": [
-        "parseWorkflowPackageManifest",
-        "validateManifestPath",
-        "readPackages",
-        "register",
-        "DEFAULT_HEALTH_PATH"
-      ],
-      "source_files": [
-        "src/services/workflow-packages.ts",
-        "src/console/routes/workflow-packages.ts",
-        "tests/console-workflow-packages.test.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:27.966Z"
-    },
-    {
       "id": "dd912ec8-958c-49d0-9926-636ee3a17f95",
       "type": "knowledge",
       "title": "The pushCode:true dispatch set is four sites (doer + harvester, each with its resume), not two",
-      "summary": "Both the doer's main dispatch and its max_turns resume, and both the harvester's main dispatch and its resume, pass pushCode:true to withGitSync; every other role dispatch is read-side.",
+      "summary": "Exactly four dispatch policies carry pushCode:true (doer and its resume, harvester and its resume); every other role dispatch is read-side. The flag lives in role-policies.mjs (doer :835, harvester :1262, read by dispatch-role.mjs into withGitSync) and is pinned by dispatch-sync-bracket-coverage.test.mjs.",
       "symbols": [
         "withGitSync",
-        "dispatchDoer",
-        "dispatchDoerResume",
-        "harvesterDispatchOpts"
+        "bracketed",
+        "pushesCode",
+        "allDispatchPolicies"
       ],
       "source_files": [
-        "packages/apra-fleet-se/fleet-sprint/runner.js",
-        "packages/apra-fleet-se/test/execution-role-dispatch-pins.test.mjs",
-        "packages/apra-fleet-se/test/dispatch-sync-bracket-coverage.test.mjs"
+        "packages/apra-fleet-se/fleet-sprint/role-policies.mjs",
+        "packages/apra-fleet-se/fleet-sprint/dispatch-role.mjs",
+        "packages/apra-fleet-se/test/dispatch-sync-bracket-coverage.test.mjs",
+        "packages/apra-fleet-se/test/execution-role-dispatch-pins.test.mjs"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-25T22:26:35.096Z"
+      "updated_at": "2026-09-30T23:07:12.100Z"
     },
     {
       "id": "ddc0692c-edc3-4883-a409-d6a958b9c71f",
@@ -6097,43 +4176,6 @@
       "updated_at": "2026-09-25T22:26:37.685Z"
     },
     {
-      "id": "de55830b-4d03-4d91-a58b-83089d4b6cc3",
-      "type": "learning",
-      "title": "npm install -g exiting 0 does not mean the binary is runnable",
-      "summary": "The installer must re-probe bd after a successful npm global install, because npm's global bin dir is routinely off PATH under nvm/volta and on Windows.",
-      "symbols": [
-        "probeBdVersion",
-        "runInstall"
-      ],
-      "source_files": [
-        "src/cli/install.ts",
-        "tests/install-fleet-se-prereqs.test.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:26.616Z"
-    },
-    {
-      "id": "de6d8263-d3e6-4113-b3f8-d715728a5de9",
-      "type": "knowledge",
-      "title": "Console route modules inherit the auth guard via the derived API namespace",
-      "summary": "Adding a route module under an /api/<ns>/... path automatically brings it under requiresConsoleGuard, because API_NAMESPACES is derived from the registered route paths rather than hand-maintained.",
-      "symbols": [
-        "apiNamespace",
-        "computeApiNamespaces",
-        "requiresConsoleGuard",
-        "isApiPath",
-        "deriveConsoleCookieToken",
-        "handleConsoleRequest"
-      ],
-      "source_files": [
-        "src/console/server.ts",
-        "src/console/routes/secret-entry.ts",
-        "tests/console-secret-entry.test.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:27.047Z"
-    },
-    {
       "id": "deeaaf96-ce12-4249-834c-f7562dda6013",
       "type": "knowledge",
       "title": "Naming a test file mock-sprint-* enrolls it in phase3's nested run and real-bd budget",
@@ -6149,21 +4191,6 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:53.820Z"
-    },
-    {
-      "id": "df4bbcbe-325a-4cef-b218-8511f67e3c32",
-      "type": "learning",
-      "title": "fs.rmSync recursive on a dir containing a Windows junction unlinks the junction, not its target",
-      "summary": "On node 22.19 / Windows, rmSync(parent, {recursive:true, force:true}) removes a directory junction inside parent without deleting the files in the junction target, so junction-based test fixtures pointing at real install dirs (e.g. dirname(process.execPath)) are safe to clean up this way.",
-      "symbols": [
-        "assertCrtRoundTrip"
-      ],
-      "source_files": [
-        "tests/auth-terminal-windows-quoting.test.ts",
-        "packages/apra-fleet-se/test/phase0-seams-facade.test.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-10-01T23:08:16.926Z"
     },
     {
       "id": "df75818c-3208-4bb9-aa99-b65a866ff0a8",
@@ -6220,25 +4247,6 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:15.545Z"
-    },
-    {
-      "id": "dff2f5be-8fef-437f-b3fd-0b5b499425d4",
-      "type": "learning",
-      "title": "Validate, do not merely POSIX-quote, request data bound for a member command",
-      "summary": "Request-supplied values interpolated into member-bound command strings must be screened at the edge and then quoted for the TARGET member's shell, because the centralized shell-escape helpers are POSIX-only and the member may run PowerShell.",
-      "symbols": [
-        "escapeShellArg",
-        "probeBeadsRemote",
-        "shellMetaCharError",
-        "quoteArg"
-      ],
-      "source_files": [
-        "src/utils/shell-escape.ts",
-        "packages/apra-fleet-se/src/projects/routes/projects.mjs",
-        "src/tools/execute-command.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:28.997Z"
     },
     {
       "id": "e078ec0e-b747-4274-a82b-4155c342928b",
@@ -6320,25 +4328,6 @@
       "updated_at": "2026-09-29T06:13:11.365Z"
     },
     {
-      "id": "e1f7f60f-f7ea-4163-9166-4616c5a03fa1",
-      "type": "knowledge",
-      "title": "POST /api/fleet/credential-store-update answers 200 for a credential that does not exist",
-      "summary": "credential_store_update reports a missing credential as prose, and the console route discards the tool result and echoes the request input, so the UI sees fabricated success metadata instead of the not-found error.",
-      "symbols": [
-        "credentialStoreUpdate",
-        "credentialStoreDelete",
-        "isToolFailure",
-        "fleetRoutes"
-      ],
-      "source_files": [
-        "src/tools/credential-store-update.ts",
-        "src/tools/credential-store-delete.ts",
-        "src/console/routes/fleet.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:28.139Z"
-    },
-    {
       "id": "e20a6800-90df-47e2-b2de-60d1cca70697",
       "type": "knowledge",
       "title": "killPidTree bounded wait is only non-hanging because isPidAlive treats a zombie as not-alive",
@@ -6357,53 +4346,6 @@
       "updated_at": "2026-09-29T06:13:13.437Z"
     },
     {
-      "id": "e29e8773-412d-4d09-bc2e-5ee4bb75d197",
-      "type": "knowledge",
-      "title": "unattended has different read and write value shapes across list_members and update_member",
-      "summary": "list_members/member_detail emit unattended as false | 'auto' | 'dangerous' (boolean-or-string), while update_member's schema is an enum of the STRINGS 'false' | 'auto' | 'dangerous'; the shell-ui models these as two distinct types.",
-      "symbols": [
-        "FleetMemberFields",
-        "UpdateMemberBody",
-        "updateMemberSchema"
-      ],
-      "source_files": [
-        "packages/apra-fleet-shell-ui/src/api/members.ts",
-        "src/tools/list-members.ts",
-        "src/tools/member-detail.ts",
-        "src/tools/update-member.ts",
-        "docs/console-architecture.md"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:25.892Z"
-    },
-    {
-      "id": "e3301ea2-aac3-4c17-a5a8-958be809a7bd",
-      "type": "knowledge",
-      "title": "Never interpolate an absolute Windows path into a JS string literal in a test-generated inline script",
-      "summary": "os.tmpdir() paths on Windows use backslashes, which are consumed as escape sequences when embedded in a JS string literal inside a generated node -e script, silently corrupting the path so the script writes to the wrong location.",
-      "symbols": [],
-      "source_files": [
-        "tests/ci-build-ui-step.test.ts",
-        "docs/cross-shell-command-construction.md"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:29.061Z"
-    },
-    {
-      "id": "e334d4d3-e6a0-4708-a595-8bb5f9206d1b",
-      "type": "knowledge",
-      "title": "fleet-integrator merge gate splits read-only status from the one mutating action per loop",
-      "summary": "The integration-branch merge gate keeps PR-decision computation in a pure, read-only, fixture-testable script and confines every mutating GitHub action (merge, repair prompt, report) to the agent loop that consumes its JSON output, one action per PR per iteration.",
-      "symbols": [],
-      "source_files": [
-        "packages/apra-fleet-se/scripts/integration-gate-status.mjs",
-        "packages/apra-fleet-se/fleet-sprint/skills/fleet-integrator/SKILL.md",
-        "packages/apra-fleet-se/docs/architecture.md"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:24.291Z"
-    },
-    {
       "id": "e387e211-f7aa-420e-b0f0-f2bcc7aa529f",
       "type": "knowledge",
       "title": "createChildBeadWithAllocatedId has four distinct post-probe failure outcomes and never releases after a landed create",
@@ -6420,23 +4362,6 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:11.619Z"
-    },
-    {
-      "id": "e61e7193-182c-47cf-bce4-8c71d3d45177",
-      "type": "knowledge",
-      "title": "update_member must keep owner in its zod schema and refuse it explicitly -- omitting the key would silently drop it",
-      "summary": "updateMemberSchema declares owner and then rejects it when existing.reservedBy is set; leaving owner out of the schema would make zod strip the key and return a success message while discarding the caller's intent.",
-      "symbols": [
-        "updateMember",
-        "updateMemberSchema"
-      ],
-      "source_files": [
-        "src/tools/update-member.ts",
-        "tests/update-member.test.ts",
-        "tests/integration/member-owner-env-fields.test.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:28.526Z"
     },
     {
       "id": "e687ffa8-8697-4f7f-9418-ba7f3efd6c2b",
@@ -6490,60 +4415,6 @@
       "updated_at": "2026-09-25T22:26:38.335Z"
     },
     {
-      "id": "e72df4be-5016-4b24-8624-1885f68be36d",
-      "type": "learning",
-      "title": "windowsVerbatimArguments makes libuv write argv[0] unquoted",
-      "summary": "With spawnSync/spawn windowsVerbatimArguments:true, argv[0] is written into the command line unquoted, so an exec path with spaces is split by the child CRT; pass argv0 already quoted.",
-      "symbols": [],
-      "source_files": [
-        "tests/auth-terminal-windows-quoting.test.ts",
-        "src/utils/shell-escape.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-10-01T22:50:05.835Z"
-    },
-    {
-      "id": "e732f8a6-71e9-4b2e-8b4f-26828ddfd3d1",
-      "type": "knowledge",
-      "title": "The /ext credential gate depends on the console cookie being SameSite=Strict",
-      "summary": "GET /ext/* stays unguarded and only withholds the derived upstream credential from unauthenticated callers, so the cross-origin protection rests entirely on the console cookie not being sent cross-site.",
-      "symbols": [
-        "handleConsoleRequest",
-        "handleExtProxyRequest",
-        "isConsoleAuthorized",
-        "cookieFor",
-        "DROPPED_REQUEST_HEADERS"
-      ],
-      "source_files": [
-        "src/console/server.ts",
-        "src/console/proxy.ts",
-        "packages/apra-fleet-client/src/auth/local-token.mjs",
-        "tests/console-auth.test.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:27.110Z"
-    },
-    {
-      "id": "e7a11a76-63ad-4b3a-90f4-0c4b926b3687",
-      "type": "learning",
-      "title": "Dirty-diff form baselines that move with a live prop need a per-field touched gate",
-      "summary": "A form that diffs current values against a baseline re-derived from a live-refreshing prop will flag untouched fields as dirty and silently revert concurrent changes; the console member drawer prevents this with explicit per-field touched flags.",
-      "symbols": [
-        "buildUpdateBody",
-        "initialEditState",
-        "MemberDrawer",
-        "Members"
-      ],
-      "source_files": [
-        "packages/apra-fleet-shell-ui/src/pages/members/MemberDrawer.tsx",
-        "packages/apra-fleet-shell-ui/src/pages/Members.tsx",
-        "packages/apra-fleet-shell-ui/test/member-edit.test.tsx",
-        "docs/console-architecture.md"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:25.949Z"
-    },
-    {
       "id": "e7d3e8e5-0564-4f16-8318-f5e81c436302",
       "type": "knowledge",
       "title": "Viewer summary core fields refresh via broadcast(), so a new lifecycle handler must broadcast or call refreshSummary",
@@ -6559,45 +4430,6 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-10-01T22:08:20.219Z"
-    },
-    {
-      "id": "e80dadb1-b3ca-43f7-b644-693b1382f61d",
-      "type": "knowledge",
-      "title": "launchd bootout unloads the job, so kickstart cannot restart it",
-      "summary": "On macOS, stopping a service with launchctl bootout removes it from the domain, so a later launchctl kickstart fails and the service stays down.",
-      "symbols": [
-        "MacOSServiceManager.stop",
-        "MacOSServiceManager.start",
-        "MacOSServiceManager.query",
-        "stopSupervisorServiceIfInstalled",
-        "startSupervisorServiceIfInstalled"
-      ],
-      "source_files": [
-        "src/services/service-manager/macos.ts",
-        "src/cli/stop.ts",
-        "src/cli/start.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:23.355Z"
-    },
-    {
-      "id": "e87d6b37-0f60-4045-98e1-c2336b60c3c9",
-      "type": "knowledge",
-      "title": "reservedBy is the string mirror of Agent.reservation and member-reservation.ts is its only writer",
-      "summary": "Readers outside member-reservation.ts and list-members.ts still read the reservedBy string, so the two fields must always be written and cleared in the same updateAgent call; any site that clears one alone would make getReservation report a phantom holder.",
-      "symbols": [
-        "getReservation",
-        "reapIfDead",
-        "memberReservation"
-      ],
-      "source_files": [
-        "src/types.ts",
-        "src/tools/member-reservation.ts",
-        "src/tools/list-members.ts",
-        "src/tools/execute-prompt.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:28.687Z"
     },
     {
       "id": "ea3bc985-569c-4eed-846d-1785c17be33f",
@@ -6620,46 +4452,6 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:11.239Z"
-    },
-    {
-      "id": "eb19a252-3928-47d3-b103-bfebd0d66929",
-      "type": "knowledge",
-      "title": "registerProjectRoutes keeps a narrow constructor and checks client methods per request",
-      "summary": "The /api/projects route module requires only client.executeCommand at construction; bind/overview endpoints check their extra client methods per request and answer 501 client-missing-method, so a partially capable client never breaks the CRUD surface.",
-      "symbols": [
-        "registerProjectRoutes",
-        "registerGitRoutes",
-        "missingClientMethod",
-        "guardClient"
-      ],
-      "source_files": [
-        "packages/apra-fleet-se/src/projects/routes/projects.mjs",
-        "packages/apra-fleet-se/src/projects/routes/git.mjs",
-        "packages/apra-fleet-se/test/projects-routes.test.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:24.353Z"
-    },
-    {
-      "id": "ecb3733f-bfc8-4372-b2b9-a2f66c28e856",
-      "type": "knowledge",
-      "title": "Console fleet routes return tool refusal strings as HTTP 200",
-      "summary": "Fleet tools that return a plain string surface refusals as HTTP 200 {text}, so UI callers cannot use fetch rejection to detect failure.",
-      "symbols": [
-        "isToolFailure",
-        "sendToolResult",
-        "runUpdateMember",
-        "updateMember",
-        "composePermissions"
-      ],
-      "source_files": [
-        "src/console/routes/fleet.ts",
-        "src/console/local-api.ts",
-        "src/tools/update-member.ts",
-        "src/tools/compose-permissions.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:26.858Z"
     },
     {
       "id": "ed61e074-f92b-4ad4-b0da-a0e36cbc240d",
@@ -6713,23 +4505,6 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:15.934Z"
-    },
-    {
-      "id": "ee1f4914-c0bb-4b8c-8a14-49920025aa0d",
-      "type": "knowledge",
-      "title": "Exports-map subpaths must be proven from a sibling package",
-      "summary": "A package.json exports-map subpath is only genuinely verified by a bare-specifier import from another workspace package; relative imports inside the owning package's own tests cannot catch an exports-map typo or omission.",
-      "symbols": [
-        "normalizeBead",
-        "buildBacklogTree"
-      ],
-      "source_files": [
-        "packages/apra-fleet-client/package.json",
-        "packages/apra-fleet-workflow/test/apra-fleet-client-beads-normalize-subpath.test.mjs",
-        "packages/apra-fleet-client/test/beads-normalize.test.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:23.730Z"
     },
     {
       "id": "ee61d08c-1bd1-471b-97c4-23afc08470c3",
@@ -6803,24 +4578,6 @@
       "updated_at": "2026-09-29T06:08:07.865Z"
     },
     {
-      "id": "f0aca0eb-00b1-4a58-8bd2-4eab3d7afa44",
-      "type": "knowledge",
-      "title": "Console cookie on GET /ui is issued only to loopback socket peers, fail closed",
-      "summary": "handleConsoleRequest sets the apra_console_token cookie only when isLoopbackRemoteAddress(req.socket.remoteAddress) is true; a fake request with no socket gets no cookie, so tests needing the cookie must set socket.remoteAddress.",
-      "symbols": [
-        "isLoopbackRemoteAddress",
-        "handleConsoleRequest",
-        "nonLoopbackBindWarning"
-      ],
-      "source_files": [
-        "src/console/server.ts",
-        "src/services/http-transport.ts",
-        "tests/console-server.test.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-27T02:53:31.025Z"
-    },
-    {
       "id": "f2e8ae2b-e3a5-4c51-820a-423478a7f23c",
       "type": "knowledge",
       "title": "Migrating a per-file callTool mock onto the shared vcs_credential_exec simulator silently replaces that file's own token literal",
@@ -6856,22 +4613,6 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-10-02T23:26:04.340Z"
-    },
-    {
-      "id": "f49b96d6-c9d6-4e6f-a453-839047913627",
-      "type": "learning",
-      "title": "Vitest runs afterEach even when beforeEach throws",
-      "summary": "A fail-closed guard placed only in beforeEach still lets afterEach cleanup run against the unsafe state it was meant to block.",
-      "symbols": [
-        "restoreFile",
-        "backupFile"
-      ],
-      "source_files": [
-        "tests/console-workflow-packages.test.ts",
-        "vitest.config.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:29.225Z"
     },
     {
       "id": "f5fd18a6-c552-4dc8-bd9d-3bed5bef3e89",
@@ -6914,22 +4655,6 @@
       "updated_at": "2026-09-29T06:13:14.498Z"
     },
     {
-      "id": "f6f82c58-cdf1-40fb-aa50-38f593db673c",
-      "type": "knowledge",
-      "title": "Member env-injection design: auth credentials must win name collisions with the plaintext env map",
-      "summary": "src/utils/env-prefix.ts merges a member's plaintext env map with its decrypted auth credentials, and deliberately lets auth values overwrite a same-named plaintext entry so update-rights-only callers cannot use the env map to blank or redirect a stored credential.",
-      "symbols": [
-        "buildEnvAssignments",
-        "buildEnvPrefix"
-      ],
-      "source_files": [
-        "src/utils/env-prefix.ts",
-        "src/tools/update-member.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:28.809Z"
-    },
-    {
       "id": "f8604414-0bbf-4850-88bd-6a67e5539341",
       "type": "knowledge",
       "title": "The ctx.steps hook bodies are the one part of a migrated ladder no dispatch-pin test executes",
@@ -6943,63 +4668,6 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:39.150Z"
-    },
-    {
-      "id": "f87d8ee8-d722-440f-838f-48135a6f56c7",
-      "type": "knowledge",
-      "title": "Self-registering HTTP clients need a convergence loop, not a one-shot retry, when dependencies can appear in either order",
-      "summary": "The fleet-sprint supervisor's workflow-package registration re-resolves token, connection and origin on every pass of a capped-backoff loop instead of skipping once at startup, so a fresh install converges without a restart.",
-      "symbols": [
-        "startRegistrationConvergence",
-        "createRegistration",
-        "DEFAULT_CONVERGE_BACKOFF"
-      ],
-      "source_files": [
-        "packages/apra-fleet-se/src/registration/register.mjs",
-        "packages/apra-fleet-se/bin/serve.mjs",
-        "docs/console-architecture.md"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:23.547Z"
-    },
-    {
-      "id": "f9bd3149-de6d-481b-8062-9e2346671b52",
-      "type": "knowledge",
-      "title": "listFleetMembers flags fleet-unavailable via a non-enumerable symbol, not a result field",
-      "summary": "listFleetMembers keeps returning exactly { members: [] } on failure; whether the fleet was unreachable is read with fleetMembersUnavailableReason(result) through a non-enumerable Symbol.for marker. A plain extra key would break deepEqual in test/fleet-members.test.mjs.",
-      "symbols": [
-        "listFleetMembers",
-        "markFleetMembersUnavailable",
-        "fleetMembersUnavailableReason"
-      ],
-      "source_files": [
-        "packages/apra-fleet-se/src/supervisor/fleet-members.mjs",
-        "packages/apra-fleet-se/src/supervisor/api.mjs",
-        "packages/apra-fleet-se/src/supervisor/backlog-member.mjs",
-        "packages/apra-fleet-se/test/fleet-members.test.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-10-02T14:56:21.678Z"
-    },
-    {
-      "id": "fa7bf99f-413d-4140-a708-53be4c24c971",
-      "type": "learning",
-      "title": "execute_command never sets isError on a non-zero exit; its text carries an Exit code prefix",
-      "summary": "executeFleetCommand used to return {ok:true, output:'Exit code: N\\n...'} for any command that ran, so a caller adapting it to dolt-sync's command() contract must derive ok from the exit code and use clean stdout, or failed pulls read as success and JSON probes never parse.",
-      "symbols": [
-        "executeFleetCommand",
-        "normalizeFleetCommandResult",
-        "createBeadsViewCommand",
-        "commandResultToSoftGit"
-      ],
-      "source_files": [
-        "src/tools/execute-command.ts",
-        "packages/apra-fleet-se/src/supervisor/fleet-members.mjs",
-        "packages/apra-fleet-se/src/supervisor/beads-view.mjs",
-        "packages/apra-fleet-se/fleet-sprint/git-topology.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-10-02T23:19:56.681Z"
     },
     {
       "id": "fab4f020-c98c-4494-a3f8-d809cc5fa3ab",
@@ -7024,58 +4692,6 @@
       "updated_at": "2026-09-29T06:13:14.250Z"
     },
     {
-      "id": "fc4f7390-e183-420b-b518-5d9fe2bd56c2",
-      "type": "knowledge",
-      "title": "SEA binary bundles workspace packages, so staleness inputs must include them",
-      "summary": "scripts/build-sea.mjs bundles src/index.ts with esbuild bundle:true and only cpu-features external, so imported workspace packages (fleet-api-contract, apra-fleet-client) are baked into the SEA binary and any freshness check must include their sources.",
-      "symbols": [
-        "SEA_RELEVANT_GIT_PATHS",
-        "resolveSeaBinaryStaleness"
-      ],
-      "source_files": [
-        "scripts/build-sea.mjs",
-        "tests/helpers/sea-binary-staleness.ts",
-        "package.json"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-27T02:53:31.017Z"
-    },
-    {
-      "id": "fce00d9f-86f3-41c7-a076-87d9da974cdd",
-      "type": "learning",
-      "title": "A synchronously resolving sleep seam in an unterminating async loop starves the timer queue",
-      "summary": "Injecting a no-op async sleep into a retry loop that never terminates hot-spins on microtasks forever, so any setTimeout-based bound in the test never fires.",
-      "symbols": [
-        "startRegistrationConvergence"
-      ],
-      "source_files": [
-        "packages/apra-fleet-se/src/registration/register.mjs",
-        "packages/apra-fleet-se/test/registration.test.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:24.602Z"
-    },
-    {
-      "id": "fd1fe9ce-2069-4845-bb2b-6c15367cf20a",
-      "type": "learning",
-      "title": "Real bin/serve.mjs subprocess tests need concurrency-scaled budgets and a retried first probe on windows-latest",
-      "summary": "On the hosted windows-latest runner the first HTTP request to a freshly-listening bin/serve.mjs child can take well over 5 s under test concurrency (observed 9.6-11 s for supervisor-guard-e2e). Fixed per-request timeouts flake there; use scaledTimeout() with concurrency passed explicitly and retry the first loopback probe.",
-      "symbols": [
-        "scaledTimeout",
-        "TEST_CONCURRENCY",
-        "requestWithRetry",
-        "describeRequestFailure"
-      ],
-      "source_files": [
-        "packages/apra-fleet-se/test/supervisor-guard-e2e.test.mjs",
-        "packages/apra-fleet-se/test/helpers/scaled-timeout.mjs",
-        "packages/apra-fleet-se/test/helpers/test-concurrency.mjs",
-        "packages/apra-fleet-se/test/serve-wiring-integration.test.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:25.787Z"
-    },
-    {
       "id": "fd51b285-3514-4f10-95b9-087df82f0bbd",
       "type": "knowledge",
       "title": "Only scripts/run-tests.mjs makes scaledTimeout() non-inert in the apra-fleet-se suite",
@@ -7093,26 +4709,6 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:31.424Z"
-    },
-    {
-      "id": "fdd03618-3227-4f4d-967b-6aceac1509f2",
-      "type": "knowledge",
-      "title": "compose_permissions denylist patterns match a normalized form where only the FIRST colon becomes a space",
-      "summary": "normalizePermission() does replace(':', ' ') without a global flag, so host:port only collapses to 'host port' when no earlier colon appears in the payload -- a real evasion for space-bearing patterns.",
-      "symbols": [
-        "normalizePermission",
-        "isNeverAutoGrant",
-        "matchesDenyPattern",
-        "NEVER_AUTO_GRANT_PATTERNS",
-        "NEVER_AUTO_GRANT_EXCEPTIONS"
-      ],
-      "source_files": [
-        "src/tools/compose-permissions.ts",
-        "tests/compose-permissions-denylist.test.ts",
-        "deploy.md"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:23.230Z"
     },
     {
       "id": "fdfb2cc4-124b-4938-be27-145f925c0bdc",
@@ -7134,19 +4730,6 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:10.941Z"
-    },
-    {
-      "id": "fe882247-42aa-4012-be36-2bdf19f7e327",
-      "type": "knowledge",
-      "title": "Shared isolated-home test helper must run before any module that reads home eagerly, e.g. src/paths.ts's FLEET_DIR",
-      "summary": "applyIsolatedHome() (tests/helpers/isolated-home.mjs) sets HOME/USERPROFILE/HOMEDRIVE+HOMEPATH/APRA_FLEET_DATA_DIR/FLEET_SE_DATA_DIR and realpaths the temp home, but it is a no-op for any module already imported once, since src/paths.ts's FLEET_DIR is an eager top-level const.",
-      "symbols": [],
-      "source_files": [
-        "tests/helpers/isolated-home.mjs",
-        "src/paths.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:08:30.238Z"
     },
     {
       "id": "ff02b32b-5d77-4af5-ad6b-0d7288e2476f",
