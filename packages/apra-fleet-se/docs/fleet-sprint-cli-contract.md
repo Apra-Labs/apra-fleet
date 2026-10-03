@@ -128,11 +128,43 @@ NOT fatal: it logs `[beads-identity] WARNING: member '<m>' could not report
 <field> ('<probe>' -> <error>); not compared. To fix: ...` (or `... reports
 no beads database in its workFolder ...` when `bd where` itself fails, in
 which case that member has no identity entry at all), leaves that field out
-of the comparison, and the sprint proceeds. When no expectation was supplied
+of the comparison, and the sprint proceeds (except a beads-reading member
+with no database -- see member beads set-up below). When no expectation was supplied
 and the orchestrator's own probe resolved nothing, one warning says no
 cross-member check happens this sprint and how to restore it. The published
 `beadsIdentity` state carries `warnings: string[]` plus a per-member
-`unresolved: string[]`.
+`unresolved: string[]`, and `setUp: string[]` (members set up below).
+
+Member beads set-up: a member a beads-reading role is mapped to (planner,
+plan-reviewer, doer, reviewer, integ/regression test runners, harvester --
+not deployer/ci-watcher; plus the backlog member when `--expect-beads` is
+supplied) that reports no beads database, or a database with no
+`sync.remote` while the expectation names one, is set up BEFORE any dispatch
+from the expected `syncRemote`, all through `command()`. A member already
+resolving to a different project (prefix/sync.remote/origin resolved and
+different) is a `MISMATCH` first, with nothing written. "Has a database"
+means `bd where` reports a `database_path` (a committed config.yaml with
+issue-prefix yields a prefix but no database). Otherwise: `git ls-files`
+snapshot of modified/untracked beads paths; VCS credential ensured;
+per-shell commands creating `.beads/config.yaml` when absent (bd refuses
+`config set` without it) and recording `sync.remote: "<url>"` in the
+untracked `.beads/config.local.yaml`; `bd config set sync.remote <url>`; no
+DB: `bd bootstrap --dry-run --json` (must plan a clone from `<url>`), `bd
+bootstrap --yes`; DB without sync.remote: `bd dolt remote list --json`, `bd
+dolt remote add origin <url>` only when origin is absent (a different
+origin is refused), then a pull through `DoltSync.syncBefore` (fatal, with
+the reactive VCS-auth self-heal). A beads file the user had already
+modified gets a warning (the set-up cannot restore it); a work folder below
+the repository root gets root-relative exclude entries. Finally (success or failure) every
+tracked beads file the set-up changed is restored (`git checkout --`) and
+every new untracked beads path is added to git info/exclude, so the
+member's `git status` is clean and a doer's `git add -A` stages nothing
+from the set-up. The member is then re-probed and must match. Any failure -- including no expected
+remote, a non-clone bootstrap plan, a remote not passable verbatim to every
+shell, or bd reporting a schema migration against an older-schema remote -- throws
+`BeadsIdentityError` reason `BEADS_SETUP_FAILED`
+(`Beads preflight failed: member '<m>' <cause>. ... To fix: <fix>.`) with zero
+dispatches. An existing matching database is never touched.
 
 An unknown key throws `[Arg Contract] Unknown arg(s): <keys>. Known args: <allowlist>.` immediately -- this is the fastest way to discover whether a given engine feature (e.g. `assignee`, `doer_worklist_mode`) is wired to a CLI flag yet: if `bin/cli.mjs` never sets it, it stays at its default forever for CLI-launched sprints.
 
