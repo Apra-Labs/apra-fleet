@@ -16,6 +16,7 @@ import { collectOobApiKey } from '../services/auth-socket.js';
 import { logLine, logWarn } from '../utils/log-helpers.js';
 import { findSecretTokens, legacyTokenWarning } from '../services/secret-token.js';
 import { invalidatePreflightCache } from '../services/preflight-check.js';
+import { stageEnvVars, writeMemberSecretFile, removeMemberSecretFile, SecretDeliveryError } from '../services/member-secret-env.js';
 import type { Agent, SSHExecResult } from '../types.js';
 import type { ProviderAdapter } from '../providers/index.js';
 
@@ -26,6 +27,11 @@ export const provisionAuthSchema = z.object({
   ),
   force_oauth_copy: z.boolean().optional().describe(
     `Only without api_key: copy your local OAuth session even when the member has a stored env credential, and clear that credential (ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN) so the copied login applies. Default false.`
+  ),
+  clear_stored_credentials: z.boolean().optional().describe(
+    'Remove ALL credential env vars stored for this member in the fleet registry (what every dispatch delivers to it), and do nothing else. '
+    + 'Registry only: works for relay, offline and local members, and never contacts the member (values already written to its shell profile or user environment stay). '
+    + 'Use it when a dispatch fails with reason secret_delivery_unavailable and the credential is provided on that machine itself. Cannot be combined with api_key or force_oauth_copy.'
   ),
 });
 
@@ -69,7 +75,14 @@ export type ProvisionAuthReason =
   /** Reading/copying a local credential file threw. */
   | 'oauth_copy_failed'
   /** Out-of-band API-key collection was cancelled or returned no key. */
-  | 'oob_cancelled';
+  | 'oob_cancelled'
+  /** The member has no channel that delivers a key without a command line
+   *  (relay member, or SFTP unavailable); nothing was stored. */
+  | 'secret_delivery_unavailable'
+  /** clear_stored_credentials: the member's stored credential env vars were removed. ok=true. */
+  | 'stored_credentials_cleared'
+  /** clear_stored_credentials was combined with api_key or force_oauth_copy. */
+  | 'invalid_arguments';
 
 interface ProvisionAuthFields {
   /** True when credentials were deployed (verified or not). */
@@ -113,7 +126,7 @@ export interface ProvisionAuthResult {
   structuredContent: ProvisionAuthStructured;
 }
 
-const OK_REASONS: ProvisionAuthReason[] = ['ok', 'deployed_unverified', 'deployed_with_errors', 'skipped_local_member'];
+const OK_REASONS: ProvisionAuthReason[] = ['ok', 'deployed_unverified', 'deployed_with_errors', 'skipped_local_member', 'stored_credentials_cleared'];
 
 /**
  * Resolve a provider's display name for the structured payload without ever
@@ -233,38 +246,59 @@ export function interpretClaudeAuthResult(result: SSHExecResult, secret?: string
  * Bounded by AUTH_TEST_IDLE_TIMEOUT_MS / AUTH_TEST_MAX_TOTAL_MS so a CLI that
  * stalls on a bad credential can never hang the tool.
  */
-async function verifyWithClaudePrompt(agent: Agent, envPrefix?: string, secret?: string): Promise<AuthCheck> {
+async function verifyWithClaudePrompt(agent: Agent, env?: Record<string, string>, secret?: string): Promise<AuthCheck> {
   const cmds = getOsCommands(getAgentOS(agent), getAgentShell(agent));
   const provider = getProvider('claude');
   const strategy = getStrategy(agent);
   const escapedFolder = escapeDoubleQuoted(agent.workFolder);
-  const prefix = envPrefix ? `${envPrefix} ` : '';
-  const cmd = `cd "${escapedFolder}" && ${prefix}${cmds.agentCommand(provider, '-p "hello" --output-format json --max-turns 1')}`;
+  return runWithStagedEnv(agent, env, secret,
+    (prefix) => strategy.execCommand(`${prefix}cd "${escapedFolder}" && ${cmds.agentCommand(provider, '-p "hello" --output-format json --max-turns 1')}`, AUTH_TEST_IDLE_TIMEOUT_MS, AUTH_TEST_MAX_TOTAL_MS),
+    (result) => interpretClaudeAuthResult(result, secret));
+}
+
+/**
+ * Run one verification command with `env` delivered through a staged
+ * owner-only file (never inline on the command line) and interpret the FULL
+ * exec result (an exit-0 run can still be an auth failure). A delivery or
+ * exec failure becomes a sanitized failed AuthCheck.
+ */
+async function runWithStagedEnv(
+  agent: Agent,
+  env: Record<string, string> | undefined,
+  secret: string | undefined,
+  run: (prefix: string) => Promise<SSHExecResult>,
+  interpret: (result: SSHExecResult) => AuthCheck,
+): Promise<AuthCheck> {
+  let stagedPath: string | null = null;
+  let consumed = false;
   try {
-    const result = await strategy.execCommand(cmd, AUTH_TEST_IDLE_TIMEOUT_MS, AUTH_TEST_MAX_TOTAL_MS);
-    return interpretClaudeAuthResult(result, secret);
+    const staged = await stageEnvVars(agent, env ?? {});
+    stagedPath = staged.path;
+    const result = await run(staged.prefix);
+    consumed = result.code === 0;
+    return interpret(result);
   } catch (err: any) {
     return { ok: false, detail: sanitizeAuthErrorDetail(String(err?.message ?? err), secret) };
+  } finally {
+    // The prefix deletes the file once loaded; a failed run may not have.
+    if (stagedPath && !consumed) await removeMemberSecretFile(agent, stagedPath);
   }
 }
 
 /**
- * Version-based CLI check with optional env prefix.
+ * Version-based CLI check with optional staged env.
  * Used to verify non-Claude providers after API key provisioning.
  */
-async function verifyWithVersion(agent: Agent, provider: ProviderAdapter, envPrefix?: string, secret?: string): Promise<AuthCheck> {
+async function verifyWithVersion(agent: Agent, provider: ProviderAdapter, env?: Record<string, string>, secret?: string): Promise<AuthCheck> {
   const cmds = getOsCommands(getAgentOS(agent), getAgentShell(agent));
   const strategy = getStrategy(agent);
-  const prefix = envPrefix ? `${envPrefix} ` : '';
-  const cmd = `${prefix}${cmds.agentVersion(provider)}`;
-  try {
-    const result = await strategy.execCommand(cmd, 30000, AUTH_TEST_MAX_TOTAL_MS);
-    if (result.code === 0) return { ok: true, detail: null };
-    const raw = (result.stderr ?? '').trim() || (result.stdout ?? '').trim() || `CLI exited with code ${result.code}`;
-    return { ok: false, detail: sanitizeAuthErrorDetail(raw, secret) };
-  } catch (err: any) {
-    return { ok: false, detail: sanitizeAuthErrorDetail(String(err?.message ?? err), secret) };
-  }
+  return runWithStagedEnv(agent, env, secret,
+    (prefix) => strategy.execCommand(`${prefix}${cmds.agentVersion(provider)}`, 30000, AUTH_TEST_MAX_TOTAL_MS),
+    (result) => {
+      if (result.code === 0) return { ok: true, detail: null };
+      const raw = (result.stderr ?? '').trim() || (result.stdout ?? '').trim() || `CLI exited with code ${result.code}`;
+      return { ok: false, detail: sanitizeAuthErrorDetail(raw, secret) };
+    });
 }
 
 /**
@@ -317,7 +351,12 @@ async function provisionOAuthCopy(agent: Agent, provider: ProviderAdapter, clear
                 { ...who, reason: 'oauth_token_expired_no_refresh', expiresAt });
             }
         }
-        const result = await strategy.execCommand(cmds.credentialFileWrite(content, file.remotePath), 10000);
+        // Content (OAuth access + refresh token) travels over SFTP/fs into an
+        // owner-only staged file; the install command carries only paths.
+        const staged = await writeMemberSecretFile(agent, content, 'cred');
+        const result = await strategy.execCommand(cmds.credentialFileInstall(staged, file.remotePath), 10000)
+          .catch(async (err) => { await removeMemberSecretFile(agent, staged); throw err; });
+        if (result.code !== 0) await removeMemberSecretFile(agent, staged);
         if (result.code !== 0 && result.stderr) {
           return authResult(`[FAIL] Failed to write ${file.remotePath} on "${agent.friendlyName}": ${result.stderr}`,
             { ...who, reason: 'oauth_credential_write_failed', expiresAt });
@@ -327,6 +366,9 @@ async function provisionOAuthCopy(agent: Agent, provider: ProviderAdapter, clear
           { ...who, reason: 'oauth_credential_file_missing' });
       }
     } catch (err: any) {
+      if (err instanceof SecretDeliveryError) {
+        return authResult(`[FAIL] ${err.message}`, { ...who, reason: 'secret_delivery_unavailable', expiresAt });
+      }
       return authResult(`[FAIL] Failed to copy ${file.localPath} to "${agent.friendlyName}": ${err.message}`,
         { ...who, reason: 'oauth_copy_failed', expiresAt });
     }
@@ -406,31 +448,57 @@ async function provisionApiKey(agent: Agent, apiKey: string, provider: ProviderA
   const envVarName = provider.authEnvVarForToken(apiKey);
   const kindWarning = provider.authTokenKindWarning?.(apiKey) ?? null;
   const otherKinds = (provider.authEnvVarNames?.() ?? []).filter(n => n !== envVarName);
-  const commands = cmds.setEnv(envVarName, apiKey);
 
+  // Persist into the member's profile / user env. The value travels in an
+  // owner-only file (SFTP / fs); the command that applies it and deletes the
+  // file carries only the path -- never the key (it would sit in the member
+  // shell's argv, readable via ps). Error text never echoes a command.
   const errors: string[] = [];
+  let persistFile: string | null = null;
+  let persisted = false;
+  // 1. Stage / refuse. No safe delivery channel (relay member, SFTP
+  // unavailable): refuse BEFORE changing anything -- a stored key every later
+  // dispatch cannot deliver would break the member instead of failing here.
+  try {
+    persistFile = await writeMemberSecretFile(agent, cmds.persistEnvFileContent(envVarName, apiKey), 'persist');
+  } catch (err: any) {
+    if (!(err instanceof SecretDeliveryError)) throw err;
+    return authResult(`[FAIL] ${err.message}\n  This call changed nothing on the member or in its stored config.`, {
+      provider: provider.name, memberId: agent.id, memberName: agent.friendlyName,
+      reason: 'secret_delivery_unavailable', credentialLabel: envVarName,
+    });
+  }
+
   const run = async (cmd: string): Promise<void> => {
     try {
       const result = await strategy.execCommand(cmd, 15000);
-      if (result.code !== 0 && result.stderr) {
-        errors.push(sanitizeAuthErrorDetail(`Command "${cmd.substring(0, 40)}..." stderr: ${result.stderr}`, apiKey));
-      }
+      if (result.code !== 0 && result.stderr) errors.push(sanitizeAuthErrorDetail(`stderr: ${result.stderr}`, apiKey));
     } catch (err: any) {
       errors.push(sanitizeAuthErrorDetail(`Command failed: ${err.message}`, apiKey));
     }
   };
 
-  // Clear the other credential kind first so the CLI cannot pick it up.
+  // 2. Clear the other credential kind first so the CLI cannot pick it up.
   for (const other of otherKinds) {
     for (const cmd of cmds.unsetEnv(other)) await run(cmd);
   }
-  for (const cmd of commands) await run(cmd);
 
-  // Store the encrypted credential in the member's registry entry, dropping any
-  // stored credential of the other kind (dispatch exports every stored var).
+  // 3. Persist (path-only command; the staged file is deleted by it).
+  try {
+    const result = await strategy.execCommand(cmds.persistEnvFromFile(envVarName, persistFile), 15000);
+    persisted = result.code === 0;
+    if (!persisted) errors.push(sanitizeAuthErrorDetail(`Persisting ${envVarName} failed (exit ${result.code})${result.stderr ? `: ${result.stderr}` : ''}`, apiKey));
+  } catch (err: any) {
+    errors.push(sanitizeAuthErrorDetail(`Persisting ${envVarName} failed: ${err.message}`, apiKey));
+  } finally {
+    if (!persisted) await removeMemberSecretFile(agent, persistFile);
+  }
+
+  // 4. Store the encrypted credential in the member's registry entry, dropping any
+  // stored credential of the other kind (dispatch delivers every stored var).
   storeAuthEnvVars(agent, otherKinds, { [envVarName]: encryptPassword(apiKey) });
 
-  // An env token supersedes a copied login file; move a stale one aside
+  // 5. An env token supersedes a copied login file; move a stale one aside
   // (renamed, never deleted) so it cannot shadow or confuse the new credential.
   // Timestamped suffix so a later switch never overwrites an earlier backup.
   const backupSuffix = `${SUPERSEDED_CREDENTIAL_SUFFIX}-${new Date().toISOString().replace(/[^0-9]/g, '').slice(0, 14)}`;
@@ -454,11 +522,11 @@ async function provisionApiKey(agent: Agent, apiKey: string, provider: ProviderA
     // May still work after re-login
   }
 
-  // Verify with a real CLI call
-  const envPrefix = cmds.envPrefix(envVarName, apiKey);
+  // 6. Verify with a real CLI call, the key delivered through a staged file.
+  const verifyEnv = { [envVarName]: apiKey };
   const authCheck = provider.name === 'claude'
-    ? await verifyWithClaudePrompt(agent, envPrefix, apiKey)
-    : await verifyWithVersion(agent, provider, envPrefix, apiKey);
+    ? await verifyWithClaudePrompt(agent, verifyEnv, apiKey)
+    : await verifyWithVersion(agent, provider, verifyEnv, apiKey);
   const authWorks = authCheck.ok;
 
   touchAgent(agent.id);
@@ -529,6 +597,26 @@ export async function provisionAuth(input: ProvisionAuthInput): Promise<Provisio
   }
   const agent = agentOrError as Agent;
   const who = { memberId: agent.id, memberName: agent.friendlyName };
+
+  // Registry-only recovery path: never contacts the member, so it works for
+  // relay, offline and local members alike (the supported way out of
+  // secret_delivery_unavailable).
+  if (input.clear_stored_credentials) {
+    if (input.api_key || input.force_oauth_copy) {
+      return authResult('[FAIL] clear_stored_credentials cannot be combined with api_key or force_oauth_copy.',
+        { ...who, reason: 'invalid_arguments', provider: safeProviderName(agent.llmProvider) });
+    }
+    const names = Object.keys(agent.encryptedEnvVars ?? {});
+    updateAgent(agent.id, { encryptedEnvVars: undefined });
+    invalidatePreflightCache(agent.id);
+    logLine('provision_llm_auth', `cleared ${names.length} stored credential env var(s): ${names.join(', ') || '(none)'}`, agent);
+    return authResult(names.length > 0
+      ? `[OK] Cleared ${names.length} stored credential env var(s) for "${agent.friendlyName}": ${names.join(', ')}.\n`
+        + '  Dispatches no longer deliver them; provide the credential in that machine\'s own environment (or re-run provision_llm_auth). '
+        + 'Values already written to the member\'s shell profile / user environment were not touched.'
+      : `[OK] "${agent.friendlyName}" has no stored credential env vars -- nothing to clear.`,
+    { ...who, reason: 'stored_credentials_cleared', provider: safeProviderName(agent.llmProvider), credentialLabel: names.join(',') || null });
+  }
 
   if (agent.agentType === 'local') {
     return authResult(`[SKIP] Skipping "${agent.friendlyName}" -- local members use this machine's credentials directly.`,
@@ -608,7 +696,9 @@ export async function provisionAuth(input: ProvisionAuthInput): Promise<Provisio
       }
       if (storedValue) {
         const redeployed = await provisionApiKey(agent, storedValue, provider);
-        redeployed.text += `\n  Re-deployed the member's stored ${storedName} (no api_key given). Pass force_oauth_copy: true to replace it with your local login.\n`;
+        redeployed.text += redeployed.structuredContent.reason === 'secret_delivery_unavailable'
+          ? `\n  The member's stored ${storedName} (re-deploy attempted, no api_key given) is still in its config and cannot be delivered; clear it with clear_stored_credentials: true, or pass force_oauth_copy: true to replace it with your local login.\n`
+          : `\n  Re-deployed the member's stored ${storedName} (no api_key given). Pass force_oauth_copy: true to replace it with your local login.\n`;
         return onSuccess(redeployed);
       }
     }

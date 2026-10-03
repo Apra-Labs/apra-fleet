@@ -4,7 +4,7 @@ import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
 import { getAgentOS, getAgentShell, isPosixShell, touchAgent } from '../utils/agent-helpers.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
-import { buildAuthEnvPrefix } from '../utils/auth-env.js';
+import { stageAuthEnv, removeMemberSecretFile, SecretDeliveryError, type StagedAuthEnv } from '../services/member-secret-env.js';
 import { writeStatusline } from '../services/statusline.js';
 import { ensureCloudReady } from '../services/cloud/lifecycle.js';
 import { generateTaskWrapper, generateTaskWrapperWindows } from '../services/cloud/task-wrapper.js';
@@ -137,6 +137,8 @@ export interface ExecuteCommandStructured {
   stderr: string;
   isError?: boolean;
   reason?: string;
+  /** The member's stored credential env vars could not be delivered safely, so the command ran without them. */
+  storedEnvNotDelivered?: 'secret_delivery_unavailable';
   [key: string]: unknown;
 }
 
@@ -327,7 +329,8 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
       // Create task dir, decode + write wrapper script, chmod, launch with nohup
       launchCmd = cmds.wrapInWorkFolder(
         folder,
-        `mkdir -p ~/.fleet-tasks/${taskId} && ` +
+        // umask 077: run.sh embeds the resolved command (credentials included).
+        `umask 077 && mkdir -p ~/.fleet-tasks/${taskId} && ` +
         `printf '%s' '${scriptB64}' | base64 -d > ~/.fleet-tasks/${taskId}/run.sh && ` +
         `chmod +x ~/.fleet-tasks/${taskId}/run.sh && ` +
         `nohup bash ~/.fleet-tasks/${taskId}/run.sh > /dev/null 2>&1 & echo $!`,
@@ -353,19 +356,38 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
   }
 
   // -- Regular (synchronous) command path --
-  const authPrefix = buildAuthEnvPrefix(agent, getAgentOS(agent));
   // wrapPidCapture lets a timed-out ssh.ts/strategy.ts execCommand recover a
   // PID to tree-kill (apra-fleet-kwx precedent) -- without it, a command with
   // no PID protocol of its own (unlike a provider launch) leaves the remote
   // process running forever past the timeout, since ssh has no local child
   // handle to fall back on the way LocalStrategy does.
-  const wrapped = authPrefix + cmds.wrapPidCapture(cmds.wrapInWorkFolder(folder, resolvedCommand));
+  const wrapped = cmds.wrapPidCapture(cmds.wrapInWorkFolder(folder, resolvedCommand));
 
   // Mark agent as busy in statusline
   writeStatusline(new Map([[agent.id, 'busy']]));
 
+  // Stored auth env vars travel in an owner-only file the command loads and
+  // deletes -- never as inline values on the member's command line.
+  let stagedEnvPath: string | null = null;
+  let stagedEnvConsumed = false;
+  let storedEnvNotDelivered = false;
   try {
-    const result = await strategy.execCommand(wrapped, input.timeout_s * 1000, undefined, onPidCaptured);
+    // The stored env vars are AMBIENT for execute_command (the command did not
+    // ask for them, unlike {{secret.NAME}}), so a member that cannot receive
+    // them safely (relay, SFTP disabled) still runs the command -- without
+    // them, never inline -- and the result says so with the remedy.
+    let staged: StagedAuthEnv = { prefix: '', path: null };
+    try {
+      staged = await stageAuthEnv(agent);
+    } catch (err) {
+      if (!(err instanceof SecretDeliveryError)) throw err;
+      storedEnvNotDelivered = true;
+      legacyWarnings.push(`[WARN] Ran WITHOUT the member's stored credential env vars: ${err.message}`);
+      logWarn('execute_command', 'stored env vars not delivered (secret_delivery_unavailable)', agent);
+    }
+    stagedEnvPath = staged.path;
+    const result = await strategy.execCommand(staged.prefix + wrapped, input.timeout_s * 1000, undefined, onPidCaptured);
+    stagedEnvConsumed = result.code === 0;
     touchAgent(agent.id); // T7: idle manager resets its timer via touchAgent
 
     const parts: string[] = [];
@@ -402,12 +424,16 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
     const legacySuffix = legacyWarnings.length > 0 ? `\n${legacyWarnings.join('\n')}` : '';
     return {
       text: (result.code === 0 ? `Exit code: 0\n${output}` : `Exit code: ${result.code}\n${output}`) + legacySuffix,
-      structuredContent: { exitCode: result.code, stdout: redactedStdout, stderr: redactedStderr },
+      structuredContent: { exitCode: result.code, stdout: redactedStdout, stderr: redactedStderr, ...(storedEnvNotDelivered ? { storedEnvNotDelivered: 'secret_delivery_unavailable' as const } : {}) },
     };
   } catch (err: any) {
     writeStatusline(new Map([[agent.id, 'offline']]));
     scope.abort(err.message);
     return `Failed to execute command on "${agent.friendlyName}": ${err.message}`;
+  } finally {
+    // The prefix deletes the file once loaded; a failed/aborted run may not
+    // have reached it.
+    if (stagedEnvPath && !stagedEnvConsumed) await removeMemberSecretFile(agent, stagedEnvPath);
   }
 } finally { extra?.signal?.removeEventListener('abort', abortHandler); }
 }

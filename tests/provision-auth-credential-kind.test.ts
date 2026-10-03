@@ -30,9 +30,17 @@ vi.mock('../src/services/strategy.js', () => ({
     execCommand: mockExecCommand,
     testConnection: mockTestConnection,
     transferFiles: vi.fn(),
+    // Secret values travel in staged files, never in a command line.
+    writeSecretFile: vi.fn(async (name: string, content: string) => {
+      const p = `/home/testuser/${name}`;
+      stagedFiles.push({ path: p, content });
+      return p;
+    }),
+    removeSecretFile: vi.fn(async () => {}),
     close: vi.fn(),
   }),
 }));
+const stagedFiles: Array<{ path: string; content: string }> = [];
 
 const mockExistsSync = vi.fn();
 const mockReadFileSync = vi.fn();
@@ -148,6 +156,7 @@ describe('provisionAuth credential kinds', () => {
   beforeEach(() => {
     backupAndResetRegistry();
     vi.clearAllMocks();
+    stagedFiles.length = 0;
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
   });
 
@@ -177,8 +186,12 @@ describe('provisionAuth credential kinds', () => {
     const cmds = cmdsSent();
     expect(cmds).toContain(`sed -i '/export ANTHROPIC_API_KEY=/d' ~/.bashrc 2>/dev/null || true`);
     expect(cmds).toContain(`sed -i '/export ANTHROPIC_API_KEY=/d' ~/.profile 2>/dev/null || true`);
-    expect(cmds.some(c => c.startsWith(`echo 'export CLAUDE_CODE_OAUTH_TOKEN=`))).toBe(true);
-    expect(cmds.some(c => c.startsWith(`echo 'export ANTHROPIC_API_KEY=`))).toBe(false);
+    // Persisted via a staged profile line and a path-only command, never inline.
+    const persist = stagedFiles.find(f => f.path.includes('.apra-fleet-persist-'))!;
+    expect(persist.content).toBe(`export CLAUDE_CODE_OAUTH_TOKEN="${FAKE_OAUTH}"\n`);
+    expect(cmds.some(c => c.includes(`cat '${persist.path}' >> ~/.bashrc`))).toBe(true);
+    expect(stagedFiles.some(f => f.content.includes('export ANTHROPIC_API_KEY='))).toBe(false);
+    expect(cmds.some(c => c.includes(FAKE_OAUTH))).toBe(false);
     // Stale file moved before the auth test, so the test exercises the env token alone.
     const mvIdx = cmds.findIndex(c => c.includes('mv -f'));
     const testIdx = cmds.findIndex(isAuthTest);
@@ -205,7 +218,10 @@ describe('provisionAuth credential kinds', () => {
     expect(structuredContent.credentialLabel).toBe('ANTHROPIC_API_KEY');
     const cmds = cmdsSent();
     expect(cmds).toContain(`[Environment]::SetEnvironmentVariable('CLAUDE_CODE_OAUTH_TOKEN', $null, 'User')`);
-    expect(cmds.some(c => c.startsWith(`[Environment]::SetEnvironmentVariable('ANTHROPIC_API_KEY', '`))).toBe(true);
+    const persist = stagedFiles.find(f => f.path.includes('.apra-fleet-persist-'))!;
+    expect(persist.content).toBe(Buffer.from(FAKE_API).toString('base64'));
+    expect(cmds.some(c => c.includes("SetEnvironmentVariable('ANTHROPIC_API_KEY', $v, 'User')") && c.includes(persist.path))).toBe(true);
+    expect(cmds.some(c => c.includes(FAKE_API))).toBe(false);
     // A real API key leaves the /login file alone (may be a human's own login).
     expect(cmds.some(c => c.includes('Move-Item'))).toBe(false);
     expect(Object.keys(getAgent(member.id)!.encryptedEnvVars!)).toEqual(['ANTHROPIC_API_KEY']);

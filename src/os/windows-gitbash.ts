@@ -187,6 +187,11 @@ export class WindowsGitBashCommands extends LinuxCommands {
     return `${super.credentialFileWrite(content, destPath)} && icacls "$(cygpath -w "${this.quotedPath(destPath)}")" /inheritance:r /grant:r "$USERNAME:F" >/dev/null`;
   }
 
+  override credentialFileInstall(stagedPath: string, destPath: string): string {
+    // Same NTFS ACL follow-up as credentialFileWrite above.
+    return `${super.credentialFileInstall(stagedPath, destPath)} && icacls "$(cygpath -w "${this.quotedPath(destPath)}")" /inheritance:r /grant:r "$USERNAME:F" >/dev/null`;
+  }
+
   // --- Git credential helper ---
 
   override gitCredentialHelperWrite(host: string, username: string, token: string, label?: string, scopeUrl?: string): string {
