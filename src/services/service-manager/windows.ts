@@ -356,6 +356,9 @@ export class WindowsServiceManager implements ServiceManager {
     // console window) and say so.
     const hidden = this.probeWsh(this.env, path.dirname(this.wrapperPath));
     if (!hidden) {
+      // No launcher at all, so start() (Run-entry mode) and anything else that
+      // prefers the launcher fall back to the .bat the registration uses.
+      try { fs.unlinkSync(launcherPath); } catch { /* absent */ }
       console.warn(
         '    Windows Script Host is unavailable, so the server cannot be launched hidden: it will run in a ' +
         'visible console window. Do not close that window (closing it stops the server).',

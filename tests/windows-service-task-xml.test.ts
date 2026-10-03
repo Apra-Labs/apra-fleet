@@ -275,10 +275,24 @@ describe('WindowsServiceManager lifecycle', () => {
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
       await mgr().register('x.exe', [], 'l');
       expect(reg).toHaveBeenCalledWith(['add', RUN_KEY, '/v', RUN_VALUE, '/t', 'REG_SZ', '/d', `"${wrapper}"`, '/f']);
-      fs.unlinkSync(launcherPathFor(wrapper));
+      // register() itself must leave no launcher behind, or start() would use wscript.
+      expect(fs.existsSync(launcherPathFor(wrapper))).toBe(false);
       await mgr().start();
       expect(spawned).toEqual([['cmd.exe', ['/d', '/s', '/c', `""${wrapper}""`]]]);
       expect(verbatim).toEqual([true]);
+      warn.mockRestore();
+    });
+
+    it('a launcher left by an earlier install is removed when WSH is now unavailable, so start runs the .bat', async () => {
+      await mgr().register('x.exe', [], 'l'); // WSH available: launcher written
+      expect(fs.existsSync(launcherPathFor(wrapper))).toBe(true);
+      wsh = false;
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      await mgr().register('x.exe', [], 'l');
+      expect(fs.existsSync(launcherPathFor(wrapper))).toBe(false);
+      spawned.length = 0; verbatim.length = 0;
+      await mgr().start();
+      expect(spawned).toEqual([['cmd.exe', ['/d', '/s', '/c', `""${wrapper}""`]]]);
       warn.mockRestore();
     });
 
