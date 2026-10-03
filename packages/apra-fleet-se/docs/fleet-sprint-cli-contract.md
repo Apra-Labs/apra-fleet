@@ -72,7 +72,7 @@ Required:
 - `target_issues` (non-empty string array) OR legacy `target_issue` (string) -- at least one of the two; `target_issues` is preferred. Each entry validated with `validateIssueId`.
 - `members` (non-empty string array, every entry a non-empty string).
 - `branch` (string, `validateBranchName`).
-- `base_branch` (string, `validateBranchName`).
+- `base_branch` (string, `validateBranchName`). Must differ from `branch` (`validateBranchPair`; `refs/heads/` and `origin/` prefixes are ignored when comparing).
 
 Optional (defaults applied inside `validateArgs()`):
 - `goal` -- default `'P1/P2'`; must match `GOAL_PATTERN`.

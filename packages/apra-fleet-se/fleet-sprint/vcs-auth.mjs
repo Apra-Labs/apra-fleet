@@ -1231,7 +1231,11 @@ export function createWorkflowsPermissionPreflightCallback(opts = {}) {
 
     return async function warnIfWorkflowsPermissionMissing(member, branch, baseBranch) {
         try {
-            if (!branch || !baseBranch || branch === baseBranch) return;
+            // branch === baseBranch is rejected at launch (sprint-args.mjs
+            // validateBranchPair), so it is no longer tolerated as a silent no-op
+            // here: a same-named pair falls through to the ahead-count check,
+            // which still returns early when nothing is ahead of origin.
+            if (!branch || !baseBranch) return;
             if (silentMembers.has(member)) return;
 
             const { provider, authMode } = await resolveProvider(member, { fleetApi });

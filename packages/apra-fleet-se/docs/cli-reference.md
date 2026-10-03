@@ -41,7 +41,7 @@ allowed.
 |---|---|---|---|---|---|
 | `--issue <ids>` | `-i` | yes | comma-separated string | -- | Target beads issue id(s) that scope the sprint (e.g. `epic-1,epic-2`). Split on commas, trimmed, and forwarded to the runner as `target_issues`. Scope is the full descendant subtree of every id, resolved in memory by `bdListScoped()` -- see `docs/fleet-sprint-cli-contract.md`. |
 | `--members <ids>` | `-m` | yes | comma-separated string | -- | Fleet member id(s)/name(s) available to the sprint. Members are the pool doers/reviewer round-robin across (see `docs/architecture.md` "Role -> member resolution"). |
-| `--branch <name>` | `-b` | yes | string | -- | Sprint branch to develop on. Created from `--base` if it does not already exist. |
+| `--branch <name>` | `-b` | yes | string | -- | Sprint branch to develop on. Created from `--base` if it does not already exist. Must differ from `--base` (prefixes `refs/heads/`/`origin/` are ignored when comparing). |
 | `--base <name>` | `-B` | yes | string | -- | Base branch the sprint branch is created from, and the branch the eventual PR targets. |
 | `--goal <goal>` | `-g` | no | string | `P1/P2` | Priority-tier goal constraint. Must match `P1`, `P1/P2`, or `P1/P2/P3` (pattern `^P[1-3](/P[1-3]){0,2}$`). Determines the exit condition -- see `docs/architecture.md`. |
 | `--max-cycles <n>` | `-c` | no | positive integer | `5` | Hard ceiling on plan/develop/review cycles. |
@@ -117,7 +117,8 @@ In order, `main()` in `bin/cli.mjs` performs:
 1. **Required-flag check** -- see above.
 2. **Issue id / branch name shape validation** -- every `--issue` id is
    checked against `validateIssueId` and both `--branch`/`--base` against
-   `validateBranchName` (both imported from `fleet-sprint/runner.js`, the same
+   `validateBranchName`, and the pair against `validateBranchPair` (branch
+   must differ from base) (all imported from `fleet-sprint/runner.js`, the same
    validators the runner itself re-applies -- single source of truth, and
    defense-in-depth if the runner is ever invoked directly, bypassing the
    CLI). Issue ids must match `^[A-Za-z0-9._-]+$`; branch names must match
