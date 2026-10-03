@@ -24,7 +24,13 @@ member's tools, even though `claude mcp list` (which connects synchronously)
 reports it Connected. `alwaysLoad` makes startup wait for the server (capped at
 the CLI connect timeout) and puts its tools in context from the first request.
 The fleetMcp probe reports an entry without it as `mcp-entry-deferred`; compose
-rewrites it.
+rewrites it. `alwaysLoad` was added in Claude Code 2.1.121; an older CLI does
+not honour it. The CLI keys local scope by the repository root, so a work
+folder nested inside a larger repository is not covered by this entry.
+OpenCode is treated as loading its entry at start (no deferred MCP loading is
+known for it; it stays unverified for `no-per-tool-deny` anyway). Codex and agy
+get no member MCP entry: their dispatched sessions have no `kb_*` / `code_*`
+tools and receive the injected KB block only.
 
 Deny rules for Claude and agy are derived from the complement of the shared
 member allowlist (`MEMBER_DENIED_TOOLS`), so the allowlist stays the single

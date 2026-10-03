@@ -1008,10 +1008,14 @@ export interface MemberMcpEntryInfo {
 
 /**
  * The member's per-folder apra-fleet MCP entry written by compose_permissions,
- * read from the SAME file and key the provider CLI resolves, or null when there
- * is none. claude: <config dir>/.claude.json (CLAUDE_CONFIG_DIR as the member
- * shell sees it) projects[<folder>].mcpServers['apra-fleet'];
- * opencode: <workFolder>/opencode.json mcp['apra-fleet'].
+ * or null when there is none. claude: the config file the CLI reads
+ * (<config dir>/.claude.json, CLAUDE_CONFIG_DIR as the member shell sees it),
+ * projects[<work folder>].mcpServers['apra-fleet'] -- the key compose writes.
+ * The CLI keys local scope by the repository root, which equals the work
+ * folder for a clone root but not for a work folder nested inside a larger
+ * repository; that case is not verified here.
+ * opencode: <workFolder>/opencode.json mcp['apra-fleet'] (no deferred MCP
+ * loading is known for opencode, so it counts as loading at start).
  */
 export async function readMemberMcpEntry(agent: Agent, home: string, deps: Pick<MemberFleetInstallDeps, 'exec'>): Promise<MemberMcpEntryInfo | null> {
   const targetOs = getAgentOS(agent) as TargetOS;
