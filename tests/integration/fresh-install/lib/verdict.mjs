@@ -68,7 +68,7 @@ export function stepsFor(checklist, pass, platform) {
  * Evaluate one step against its record (or undefined when the box never
  * reported it). Returns { status, reason }.
  */
-export function evaluateStep(step, rec, { platform, vars = {} } = {}) {
+export function evaluateStep(step, rec, { platform, driver, vars = {} } = {}) {
   const severity = step.severity ?? 'required';
   const failStatus = severity === 'required' ? STATUS.FAIL : STATUS.WARN;
   if (!rec) return { status: failStatus, reason: 'no result recorded (box script did not reach this step)' };
@@ -78,7 +78,9 @@ export function evaluateStep(step, rec, { platform, vars = {} } = {}) {
   }
   if (ruleMatches(step.expect ?? {}, rec, vars)) return { status: STATUS.PASS, reason: '' };
   for (const env of step.envLimited ?? []) {
-    if ((!env.platforms || env.platforms.includes(platform)) && ruleMatches(env, rec, vars)) {
+    if ((!env.platforms || env.platforms.includes(platform))
+      && (!env.drivers || !driver || env.drivers.includes(driver))
+      && ruleMatches(env, rec, vars)) {
       return { status: STATUS.ENV, reason: env.note ?? 'environment limit' };
     }
   }
@@ -110,12 +112,12 @@ export function parseResults(text) {
  * record per id wins. `driverError` (string) marks a pass whose sandbox or
  * container never produced results.
  */
-export function evaluatePass({ checklist, pass, platform, records = [], vars = {}, informational = false, driverError = null }) {
+export function evaluatePass({ checklist, pass, platform, driver, records = [], vars = {}, informational = false, driverError = null }) {
   const byId = new Map();
   for (const r of records) if (!r.pass || r.pass === pass) byId.set(r.id, r);
   const steps = stepsFor(checklist, pass, platform).map(step => {
     const rec = byId.get(step.id);
-    const { status, reason } = evaluateStep(step, rec, { platform, vars });
+    const { status, reason } = evaluateStep(step, rec, { platform, driver, vars });
     return {
       id: step.id,
       title: step.title,
@@ -155,6 +157,19 @@ export function summarize(passResults) {
   return { exitCode: blocking.length ? 1 : 0, blocking };
 }
 
+/**
+ * Run-level verdict: FAIL (exit 1) if a non-informational pass failed, else
+ * INCONCLUSIVE (exit 3) if anything stops the run from proving what it
+ * claims (e.g. a stale upgrade-baseline pin), else PASS (exit 0).
+ */
+export function finalVerdict(passResults, inconclusiveReasons = []) {
+  const s = summarize(passResults);
+  const inconclusive = inconclusiveReasons.map(asciiOnly);
+  if (s.exitCode) return { verdict: 'FAIL', exitCode: 1, blocking: s.blocking, inconclusive };
+  if (inconclusive.length) return { verdict: 'INCONCLUSIVE', exitCode: 3, blocking: [], inconclusive };
+  return { verdict: 'PASS', exitCode: 0, blocking: [], inconclusive };
+}
+
 function mdCell(s) {
   return asciiOnly(s).replace(/\|/g, '\\|').replace(/\s+/g, ' ').trim().slice(0, 240);
 }
@@ -167,7 +182,10 @@ export function renderMarkdown(report) {
   if (report.vars?.expectVersion) L.push(`- Expected version: ${mdCell(report.vars.expectVersion)}`);
   if (report.vars?.baselineVersion) L.push(`- Baseline: ${mdCell(report.vars.baselineVersion)}`);
   L.push(`- Started: ${mdCell(report.startedAt)}  Finished: ${mdCell(report.finishedAt)}`);
-  L.push(`- Overall: ${report.summary.exitCode === 0 ? 'PASS' : 'FAIL'}${report.summary.blocking.length ? ` (blocking: ${report.summary.blocking.join(', ')})` : ''}`);
+  const overall = report.summary.verdict ?? (report.summary.exitCode === 0 ? 'PASS' : 'FAIL');
+  L.push(`- Overall: ${overall}${report.summary.blocking.length ? ` (blocking: ${report.summary.blocking.join(', ')})` : ''}`);
+  for (const r of report.summary.inconclusive ?? []) L.push(`- Inconclusive: ${mdCell(r)}`);
+  if (report.driver) L.push(`- Driver: ${mdCell(report.driver)}`);
   L.push('');
   for (const p of report.passes) {
     L.push(`## ${p.platform} / pass ${p.pass}: ${mdCell(p.title)} -- ${p.verdict}${p.informational ? ' (informational)' : ''}`);
