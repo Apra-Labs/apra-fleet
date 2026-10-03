@@ -162,6 +162,10 @@ wrapper at logon: autostart without automatic restart. Install and status say so
   `installed (disabled -- stopped by user -- 'apra-fleet start' re-enables it)`.
 - macOS/Linux: `stop` (graceful `/shutdown`, exit 0) is not undone by `SuccessfulExit=false` /
   `Restart=on-failure`. Unlike Windows, the server still starts at the next login/boot after a stop.
+- On every OS `apra-fleet stop` also writes `<data dir>/stopped-by-user.json` (time, command, user).
+  `apra-fleet start`, `apra-fleet install` and any successful server start clear it. While it is
+  present no client auto-starts the server (see below), and `apra-fleet status` shows
+  `State: stopped (stopped by <user> at <time> via 'apra-fleet stop' -- run 'apra-fleet start')`.
 
 ### Start back-off
 
@@ -176,7 +180,11 @@ Workflow/fleet-sprint clients (not Claude Code or other MCP hosts, which connect
 the service) start the shared HTTP server themselves when it is verifiably gone: they run
 `apra-fleet start`, wait for `/health` (default 45s, `APRA_FLEET_AUTOSTART_TIMEOUT_MS`) and attach
 over HTTP. They only start an apra-fleet of their own version and refuse on a version skew (run
-`apra-fleet install`). See `packages/apra-fleet-client/docs/api-reference.md`.
+`apra-fleet install`). After a deliberate `apra-fleet stop` they do not start it: they fail with
+"apra-fleet was stopped by the user at <time> ...; run 'apra-fleet start'" -- also on a mid-run
+reconnect. A fleet-sprint launched then fails fast with that message (supervisor `POST /api/sprints`
+returns 503 with it; a sprint child prints it on stderr). See
+`packages/apra-fleet-client/docs/api-reference.md`.
 
 ### Upgrading
 

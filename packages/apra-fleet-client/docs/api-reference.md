@@ -604,7 +604,11 @@ Resolution order:
    (`AUTOSTART_VERSION_UNKNOWN` when its own version is unknown); an older
    server can lack guards the client relies on. Inside the test sandbox
    (`APRA_TEST_SANDBOX_ROOT`) an uninjected lookup fails with
-   `AUTOSTART_TEST_UNINJECTED`. Other codes: `AUTOSTART_TIMEOUT`,
+   `AUTOSTART_TEST_UNINJECTED`. A server stopped on purpose (`apra-fleet stop`
+   wrote `<data dir>/stopped-by-user.json`, see `readStoppedByUser()`) is never
+   started: `SERVER_STOPPED_BY_USER` with "apra-fleet was stopped by the user
+   at <time> ...; run 'apra-fleet start'" (resolution and the reconnecting
+   transport alike; a running server is still attached). Other codes: `AUTOSTART_TIMEOUT`,
    `AUTOSTART_NO_BINARY`, `SERVER_UNRESPONSIVE`. An unresponsive server gets
    the actionable error and no start. This replaces the old private stdio
    self-spawn fallback; stdio is now only the explicit
