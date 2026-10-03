@@ -382,6 +382,9 @@ async function provisionEnvVarForMember(provider: string, token: string, memberN
     console.log(`✓ ${envVarName} provisioned for member "${updated.friendlyName}"`);
     console.log(`  Stored encrypted in registry.json's encryptedEnvVars (never plaintext).`);
     console.log(`  LocalStrategy's clean-env dispatch injects it into every dispatch's child shell.`);
+    if (_staleApiKey) {
+      console.log(`  Cleared the member's stored ANTHROPIC_API_KEY (it would take precedence over ${envVarName}).`);
+    }
   } catch (err: any) {
     console.error(`✗ Failed to provision member env var: ${err.message}`);
     process.exit(1);

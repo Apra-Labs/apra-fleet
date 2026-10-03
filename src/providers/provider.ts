@@ -569,7 +569,7 @@ export interface ProviderAdapter {
    * provisioned these are moved aside (renamed, never deleted) so a stale
    * copied login cannot shadow or confuse the provisioned credential.
    */
-  credentialFilesSupersededByEnvToken?(): string[];
+  credentialFilesSupersededByEnvToken?(token: string): string[];
 
 
   // Windows / PowerShell prompt building helpers

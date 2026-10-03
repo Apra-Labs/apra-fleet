@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- provision_llm_auth credential kinds
+
+- `provision_llm_auth` `api_key` now routes by prefix: a Claude Code OAuth token (`sk-ant-oat...`, from `claude setup-token`) goes to `CLAUDE_CODE_OAUTH_TOKEN`, an Anthropic API key (`sk-ant-api...`) to `ANTHROPIC_API_KEY`; other shapes keep the old routing with a warning. Provisioning one kind clears the other from shell profiles and member config; an OAuth token also renames a stale `~/.claude/.credentials.json` to `.credentials.json.fleet-superseded-<timestamp>`. The auth test is bounded (60s idle, 90s total) and reports the CLI's error text, redacted; a failed test returns reason `deployed_unverified` (still `ok: true`).
+- Without `api_key`, a credential already stored for the member is re-deployed instead of copying your local login over it (this is what cloud start and sprint self-heal do, so an operator-provisioned token is kept). New `force_oauth_copy: true` copies your local login anyway and clears the stored env credential, reported as `Cleared:`.
+- Upgrade: a member whose OAuth token was stored under `ANTHROPIC_API_KEY` by an earlier build stays broken until `provision_llm_auth` is re-run for it (with the token, or with no `api_key` to re-deploy and re-file the stored one).
+
 ## [Unreleased] -- KB redesign stage 6: update_member fleet_install and build-aware upgrade
 
 Sprint goal: let `update_member` upgrade a remote member's own apra-fleet on request, reject unknown input, and make the member version check build-aware. Both are delivered. Build and `npm test` passed (one unrelated timer-granularity flake in the client timeout test passed on rerun). Carried forward: that flaky test, and untested paths (`fleet_install: "skip"` with a provider change; build-only difference when arch is unknown or no install source exists).

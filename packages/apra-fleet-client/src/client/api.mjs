@@ -352,9 +352,14 @@
  * @typedef {Object} ProvisionLlmAuthOptions
  * @property {string} [member_id] - UUID of the member
  * @property {string} [member_name] - Friendly name of the member
- * @property {string} [api_key] - AI provider API key. If omitted, the local OAuth
- *   session is copied to the member instead. Supports {{secret.NAME}} token --
- *   resolved from the credential store server-side before use.
+ * @property {string} [api_key] - AI provider API key or Claude Code OAuth token
+ *   (sk-ant-oat..., from `claude setup-token`; routed to CLAUDE_CODE_OAUTH_TOKEN). If
+ *   omitted, a credential already stored for the member is re-deployed, else the local
+ *   OAuth session is copied to the member. Supports {{secret.NAME}} token -- resolved
+ *   from the credential store server-side before use.
+ * @property {boolean} [force_oauth_copy] - Only without api_key: copy the local OAuth
+ *   session even when the member has a stored env credential, and clear that credential
+ *   (ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN) so the copied login applies.
  */
 
 /**

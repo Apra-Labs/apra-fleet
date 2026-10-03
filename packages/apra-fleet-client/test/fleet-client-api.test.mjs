@@ -212,7 +212,7 @@ describe('ApraFleet', () => {
         };
 
         const fleet = new ApraFleet(mockClient);
-        const options = { member_name: 'alice' };
+        const options = { member_name: 'alice', force_oauth_copy: true };
         const result = await fleet.provisionLlmAuth(options);
 
         assert.strictEqual(calledName, 'provision_llm_auth');

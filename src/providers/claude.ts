@@ -601,10 +601,12 @@ export class ClaudeProvider implements ProviderAdapter {
     return null;
   }
 
-  // Both Claude auth env vars outrank the copied ~/.claude/.credentials.json,
-  // so an OAuth-file copy must clear them or a stale key keeps winning.
+  // A plain OAuth-file copy leaves Claude env credentials alone: it also runs
+  // automatically (cloud start, sprint self-heal) and must never erase an
+  // operator-provisioned token. Clearing them is the explicit
+  // force_oauth_copy path in provision_llm_auth (via authEnvVarNames).
   oauthEnvVarsToUnset(): string[] {
-    return [...CLAUDE_AUTH_ENV_VARS];
+    return [];
   }
 
   // Kind is decided by prefix: sk-ant-oat... is a Claude Code OAuth token
@@ -630,8 +632,11 @@ export class ClaudeProvider implements ProviderAdapter {
     return `Unrecognised Claude credential prefix -- expected ${CLAUDE_OAUTH_TOKEN_PREFIX}... (Claude Code OAuth token from \`claude setup-token\`, set as CLAUDE_CODE_OAUTH_TOKEN) or ${CLAUDE_API_KEY_PREFIX}... (Anthropic API key, set as ANTHROPIC_API_KEY). Deployed as ${this.authEnvVarForToken(t)}; check the value if auth fails.`;
   }
 
-  credentialFilesSupersededByEnvToken(): string[] {
-    return ['~/.claude/.credentials.json'];
+  // Only an OAuth token replaces the /login file. A real API key leaves it in
+  // place: on a shared member it may be a human's own login, and either env
+  // var outranks the file anyway.
+  credentialFilesSupersededByEnvToken(token: string): string[] {
+    return token.trim().startsWith(CLAUDE_OAUTH_TOKEN_PREFIX) ? ['~/.claude/.credentials.json'] : [];
   }
 
 

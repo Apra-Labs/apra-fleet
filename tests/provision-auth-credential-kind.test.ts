@@ -82,9 +82,14 @@ describe('claude credential-kind detection', () => {
     expect(/^[\x20-\x7E]*$/.test(w)).toBe(true);
   });
 
-  it('lists both kinds as mutually exclusive and unsets both on OAuth-file copy', () => {
+  it('lists both kinds as mutually exclusive; a plain OAuth-file copy unsets neither', () => {
     expect(claude.authEnvVarNames?.()).toEqual(['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN']);
-    expect(claude.oauthEnvVarsToUnset()).toEqual(['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN']);
+    expect(claude.oauthEnvVarsToUnset()).toEqual([]);
+  });
+
+  it('only an OAuth token supersedes the /login credentials file', () => {
+    expect(claude.credentialFilesSupersededByEnvToken?.(FAKE_OAUTH)).toEqual(['~/.claude/.credentials.json']);
+    expect(claude.credentialFilesSupersededByEnvToken?.(FAKE_API)).toEqual([]);
   });
 
   it('leaves other providers unaffected', () => {
@@ -164,7 +169,9 @@ describe('provisionAuth credential kinds', () => {
     expect(structuredContent.reason).toBe('ok');
     expect(text).toContain('OAuth token provisioned');
     expect(text).toContain('Cleared: ANTHROPIC_API_KEY');
-    expect(text).toContain('.credentials.json.fleet-superseded');
+    expect(text).toMatch(/\.credentials\.json\.fleet-superseded-\d{14} /);
+    // Timestamped backup suffix: never overwrites an earlier backup.
+    expect(cmdsSent().some(c => /mv -f .*\.fleet-superseded-\d{14}"/.test(c))).toBe(true);
     expect(text).not.toContain('FAKE');
 
     const cmds = cmdsSent();
@@ -199,7 +206,8 @@ describe('provisionAuth credential kinds', () => {
     const cmds = cmdsSent();
     expect(cmds).toContain(`[Environment]::SetEnvironmentVariable('CLAUDE_CODE_OAUTH_TOKEN', $null, 'User')`);
     expect(cmds.some(c => c.startsWith(`[Environment]::SetEnvironmentVariable('ANTHROPIC_API_KEY', '`))).toBe(true);
-    expect(cmds.some(c => c.includes('Move-Item') && c.includes('.credentials.json'))).toBe(true);
+    // A real API key leaves the /login file alone (may be a human's own login).
+    expect(cmds.some(c => c.includes('Move-Item'))).toBe(false);
     expect(Object.keys(getAgent(member.id)!.encryptedEnvVars!)).toEqual(['ANTHROPIC_API_KEY']);
   });
 
@@ -246,9 +254,68 @@ describe('provisionAuth credential kinds', () => {
     expect(text).not.toContain('opaque-FAKE');
   });
 
-  it('OAuth-file copy clears both env kinds from profiles and member config', async () => {
+  // Automatic callers (cloud start: {member_id}; sprint self-heal: {member_name})
+  // pass no api_key and no force flag. They must re-deploy the operator's
+  // stored credential, never copy this machine's login over it or erase it.
+  for (const [label, stored, expectedVar] of [
+    ['stored OAuth token', { CLAUDE_CODE_OAUTH_TOKEN: FAKE_OAUTH }, 'CLAUDE_CODE_OAUTH_TOKEN'],
+    ['stored API key', { ANTHROPIC_API_KEY: FAKE_API }, 'ANTHROPIC_API_KEY'],
+  ] as const) {
+    for (const by of ['member_id', 'member_name'] as const) {
+      it(`no api_key (by ${by}) re-deploys a ${label} and keeps it`, async () => {
+        const name = `auto-${expectedVar}-${by}`.toLowerCase().replace(/_/g, '-');
+        const encrypted = Object.fromEntries(Object.entries(stored).map(([k, v]) => [k, encryptPassword(v)]));
+        const member = makeTestAgent({ friendlyName: name, encryptedEnvVars: { ...encrypted, CLAUDE_CONFIG_DIR: encryptPassword('/cfg') } });
+        addAgent(member);
+        mockExistsSync.mockReturnValue(true);
+        mockReadFileSync.mockReturnValue('{"claudeAiOauth":{"accessToken":"sk-ant-oat01-LOCALFAKE"}}');
+        mockExecCommand.mockResolvedValue(ok());
+
+        const { text, structuredContent } = await provisionAuth(by === 'member_id' ? { member_id: member.id } : { member_name: name });
+
+        expect(structuredContent.ok).toBe(true);
+        expect(structuredContent.credentialLabel).toBe(expectedVar);
+        expect(text).toContain(`Re-deployed the member's stored ${expectedVar}`);
+        expect(text).not.toContain('FAKE');
+        const cmds = cmdsSent();
+        // The local login file is never copied over the operator's credential.
+        expect(cmds.some(c => c.includes('LOCALFAKE'))).toBe(false);
+        expect(cmds).not.toContain(`unset ${expectedVar}`);
+        const after = getAgent(member.id)!.encryptedEnvVars!;
+        expect(Object.keys(after).sort()).toEqual([expectedVar, 'CLAUDE_CONFIG_DIR'].sort());
+        expect(decryptPassword(after[expectedVar])).toBe(stored[expectedVar as keyof typeof stored]);
+      });
+    }
+  }
+
+  it('no api_key re-deploy migrates an OAuth token misfiled under ANTHROPIC_API_KEY', async () => {
+    const member = makeTestAgent({ friendlyName: 'misfiled-oat', encryptedEnvVars: { ANTHROPIC_API_KEY: encryptPassword(FAKE_OAUTH) } });
+    addAgent(member);
+    mockExecCommand.mockResolvedValue(ok());
+
+    const { structuredContent } = await provisionAuth({ member_id: member.id });
+    expect(structuredContent.credentialLabel).toBe('CLAUDE_CODE_OAUTH_TOKEN');
+    expect(Object.keys(getAgent(member.id)!.encryptedEnvVars!)).toEqual(['CLAUDE_CODE_OAUTH_TOKEN']);
+  });
+
+  it('a plain OAuth-file copy (nothing stored) clears no env credentials', async () => {
+    const member = makeTestAgent({ friendlyName: 'oauth-copy-plain', encryptedEnvVars: { CLAUDE_CONFIG_DIR: encryptPassword('/cfg') } });
+    addAgent(member);
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue('{"claudeAiOauth":{"accessToken":"sk-ant-oat01-FAKE"}}');
+    mockExecCommand.mockResolvedValue(ok());
+
+    const { text, structuredContent } = await provisionAuth({ member_id: member.id });
+    expect(structuredContent.credentialLabel).toBe('oauth');
+    const cmds = cmdsSent();
+    expect(cmds.some(c => c.includes('ANTHROPIC_API_KEY') || c.includes('CLAUDE_CODE_OAUTH_TOKEN'))).toBe(false);
+    expect(text).not.toContain('Cleared:');
+    expect(Object.keys(getAgent(member.id)!.encryptedEnvVars!)).toEqual(['CLAUDE_CONFIG_DIR']);
+  });
+
+  it('force_oauth_copy copies the local login and clears (and reports) stored env credentials', async () => {
     const member = makeTestAgent({
-      friendlyName: 'oauth-copy',
+      friendlyName: 'oauth-copy-force',
       encryptedEnvVars: { ANTHROPIC_API_KEY: encryptPassword(FAKE_API), CLAUDE_CONFIG_DIR: encryptPassword('/cfg') },
     });
     addAgent(member);
@@ -256,8 +323,9 @@ describe('provisionAuth credential kinds', () => {
     mockReadFileSync.mockReturnValue('{"claudeAiOauth":{"accessToken":"sk-ant-oat01-FAKE"}}');
     mockExecCommand.mockResolvedValue(ok());
 
-    const { structuredContent } = await provisionAuth({ member_id: member.id });
+    const { text, structuredContent } = await provisionAuth({ member_id: member.id, force_oauth_copy: true });
     expect(structuredContent.credentialLabel).toBe('oauth');
+    expect(text).toContain('Cleared: ANTHROPIC_API_KEY, CLAUDE_CODE_OAUTH_TOKEN');
     const cmds = cmdsSent();
     expect(cmds).toContain('unset ANTHROPIC_API_KEY');
     expect(cmds).toContain('unset CLAUDE_CODE_OAUTH_TOKEN');

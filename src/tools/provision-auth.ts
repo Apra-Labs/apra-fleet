@@ -22,7 +22,10 @@ import type { ProviderAdapter } from '../providers/index.js';
 export const provisionAuthSchema = z.object({
   ...memberIdentifier,
   api_key: z.string().optional().describe(
-    `Your AI provider API key. If omitted, your local OAuth session is copied to the member instead. Supports {{secret.NAME}} token -- value is resolved from the credential store before use.`
+    `Your AI provider API key or Claude Code OAuth token (sk-ant-oat..., from \`claude setup-token\`). If omitted, a credential already stored for the member is re-deployed, else your local OAuth session is copied to the member. Supports {{secret.NAME}} token -- value is resolved from the credential store before use.`
+  ),
+  force_oauth_copy: z.boolean().optional().describe(
+    `Only without api_key: copy your local OAuth session even when the member has a stored env credential, and clear that credential (ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN) so the copied login applies. Default false.`
   ),
 });
 
@@ -281,7 +284,7 @@ function storeAuthEnvVars(agent: Agent, drop: string[], extra?: Record<string, s
 // ---------------------------------------------------------------------------
 // Flow A: Copy OAuth credentials using the provider interface
 // ---------------------------------------------------------------------------
-async function provisionOAuthCopy(agent: Agent, provider: ProviderAdapter): Promise<ProvisionAuthResult> {
+async function provisionOAuthCopy(agent: Agent, provider: ProviderAdapter, clearEnvCredentials = false): Promise<ProvisionAuthResult> {
   const cmds = getOsCommands(getAgentOS(agent), getAgentShell(agent));
   const strategy = getStrategy(agent);
   // Identity fields every return path below shares. `credentialLabel: 'oauth'`
@@ -346,8 +349,12 @@ async function provisionOAuthCopy(agent: Agent, provider: ProviderAdapter): Prom
     }
   }
 
-  // 3. Unset env vars
-  const varsToUnset = provider.oauthEnvVarsToUnset() ?? [];
+  // 3. Unset env vars. Env credentials (e.g. CLAUDE_CODE_OAUTH_TOKEN /
+  // ANTHROPIC_API_KEY) are cleared ONLY on an explicit force_oauth_copy:
+  // this flow also runs automatically (cloud start, sprint self-heal) and must
+  // never erase an operator-provisioned credential.
+  const envKinds = clearEnvCredentials ? (provider.authEnvVarNames?.() ?? []) : [];
+  const varsToUnset = [...new Set([...(provider.oauthEnvVarsToUnset() ?? []), ...envKinds])];
   for (const envVar of varsToUnset) {
     const unsetCmds = cmds.unsetEnv(envVar);
     for (const cmd of unsetCmds) {
@@ -355,10 +362,11 @@ async function provisionOAuthCopy(agent: Agent, provider: ProviderAdapter): Prom
       await strategy.execCommand(cmd, 15000).catch(() => {});
     }
   }
-  // Also drop the provider's env-token credentials from the stored member
-  // config: dispatch exports them, and an env token outranks the copied file.
-  const envKinds = provider.authEnvVarNames?.() ?? [];
+  // Also drop them from the stored member config (dispatch exports it).
   if (envKinds.length > 0) storeAuthEnvVars(agent, envKinds);
+  const clearedNote = envKinds.length > 0
+    ? `\n  Cleared: ${envKinds.join(', ')} removed from shell profiles and member config (force_oauth_copy)`
+    : '';
 
   // 4. Verify auth
   const authCheck = provider.name === 'claude'
@@ -374,13 +382,13 @@ async function provisionOAuthCopy(agent: Agent, provider: ProviderAdapter): Prom
   if (authWorks) {
     return authResult(`[OK] OAuth credentials for ${provider.name} deployed to "${agent.friendlyName}"
 `
-      + `  Auth: verified with a successful ${provider.name} API call.${suffix}`,
+      + `  Auth: verified with a successful ${provider.name} API call.${suffix}${clearedNote}`,
       { ...who, reason: 'ok', credentialLabel: 'oauth', expiresAt, verified: true });
   }
 
   return authResult(`[WARN] ${provider.name} OAuth credentials deployed to "${agent.friendlyName}" but could not verify auth.
 `
-    + `  Credential files were written -- try running a prompt to confirm.${suffix}`
+    + `  Credential files were written -- try running a prompt to confirm.${suffix}${clearedNote}`
     + (authCheck.detail ? `\n  Auth test error: ${authCheck.detail}` : ''),
     { ...who, reason: 'deployed_unverified', credentialLabel: 'oauth', expiresAt, verified: false });
 }
@@ -424,10 +432,12 @@ async function provisionApiKey(agent: Agent, apiKey: string, provider: ProviderA
 
   // An env token supersedes a copied login file; move a stale one aside
   // (renamed, never deleted) so it cannot shadow or confuse the new credential.
+  // Timestamped suffix so a later switch never overwrites an earlier backup.
+  const backupSuffix = `${SUPERSEDED_CREDENTIAL_SUFFIX}-${new Date().toISOString().replace(/[^0-9]/g, '').slice(0, 14)}`;
   const movedAside: string[] = [];
-  for (const file of provider.credentialFilesSupersededByEnvToken?.() ?? []) {
+  for (const file of provider.credentialFilesSupersededByEnvToken?.(apiKey) ?? []) {
     try {
-      const r = await strategy.execCommand(cmds.credentialFileMoveAside(file, SUPERSEDED_CREDENTIAL_SUFFIX), 15000);
+      const r = await strategy.execCommand(cmds.credentialFileMoveAside(file, backupSuffix), 15000);
       if (r.code === 0 && r.stdout.includes('moved')) movedAside.push(file);
       else if (r.code !== 0 && r.stderr) errors.push(sanitizeAuthErrorDetail(`Could not move aside ${file}: ${r.stderr}`, apiKey));
     } catch (err: any) {
@@ -477,7 +487,7 @@ async function provisionApiKey(agent: Agent, apiKey: string, provider: ProviderA
 `;
   }
   for (const file of movedAside) {
-    result += `  Superseded: ${file} moved to ${file}${SUPERSEDED_CREDENTIAL_SUFFIX} (the env credential now applies)
+    result += `  Superseded: ${file} moved to ${file}${backupSuffix} (the env credential now applies)
 `;
   }
   if (kindWarning) {
@@ -581,9 +591,34 @@ export async function provisionAuth(input: ProvisionAuthInput): Promise<Provisio
     return onSuccess(apiKeyResult);
   }
 
+  // No api_key: if the member holds a stored env credential (the operator's
+  // chosen one, e.g. a CLAUDE_CODE_OAUTH_TOKEN), re-deploy THAT instead of
+  // copying this machine's login over it. This path also runs automatically
+  // (cloud start, sprint self-heal), so it must never replace or erase the
+  // operator's credential; force_oauth_copy is the explicit way to switch.
+  let storedNote = '';
+  if (!input.force_oauth_copy) {
+    const storedName = (provider.authEnvVarNames?.() ?? []).find(n => agent.encryptedEnvVars?.[n]);
+    if (storedName) {
+      let storedValue: string | null = null;
+      try {
+        storedValue = decryptPassword(agent.encryptedEnvVars![storedName]);
+      } catch {
+        storedNote = `\n  [WARN] Stored ${storedName} could not be decrypted; copied the local login instead (the stored value was left in place).`;
+      }
+      if (storedValue) {
+        const redeployed = await provisionApiKey(agent, storedValue, provider);
+        redeployed.text += `\n  Re-deployed the member's stored ${storedName} (no api_key given). Pass force_oauth_copy: true to replace it with your local login.\n`;
+        return onSuccess(redeployed);
+      }
+    }
+  }
+
   // Flow A: OAuth credentials copy
   if (provider.oauthCredentialFiles()?.length) {
-    return onSuccess(await provisionOAuthCopy(agent, provider));
+    const copied = await provisionOAuthCopy(agent, provider, input.force_oauth_copy === true);
+    copied.text += storedNote;
+    return onSuccess(copied);
   }
 
   // Fallback: OOB key collection for non-OAuth or non-copyable providers
