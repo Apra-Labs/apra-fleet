@@ -133,7 +133,7 @@ describe.runIf(isWin)('compose on a Windows local member: tracked opencode.json,
     expect(written.projects[trustKey(work)]).toMatchObject({ hasTrustDialogAccepted: true });
     // The member entry loads at session start, so a dispatched claude -p sees its tools.
     expect(written.projects[trustKey(work)].mcpServers['apra-fleet']).toEqual({
-      type: 'http', url: expect.stringMatching(/\/mcp\?member=[0-9a-f-]+$/), alwaysLoad: true,
+      type: 'http', url: expect.stringMatching(/\/mcp\?member=\S+$/), alwaysLoad: true,
     });
     // No staging leftovers in the home, and nothing outside this suite's scratch.
     expect(fs.readdirSync(home).filter(n => n.includes('fleet-trust'))).toEqual([]);

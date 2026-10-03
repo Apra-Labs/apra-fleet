@@ -727,24 +727,23 @@ describe('composePermissions -- legacy fleet MCP entries pruned from settings.lo
     const member = makeTestAgent({ friendlyName: 'claude-doer', llmProvider: 'claude', os: 'linux' });
     addAgent(member);
     const url = `http://localhost:7523/mcp?member=${member.id}`;
-    installFsMock({
-      '/home/testuser/.claude.json': JSON.stringify({
-        projects: { '/home/testuser/project': {
-          hasTrustDialogAccepted: true,
-          mcpServers: { 'apra-fleet': { type: 'http', url }, deepwiki: { type: 'http', url: 'https://mcp.deepwiki.com/mcp' } },
-        } },
-      }),
+    const existing = JSON.stringify({
+      projects: { '/home/testuser/project': {
+        hasTrustDialogAccepted: true,
+        mcpServers: { 'apra-fleet': { type: 'http', url }, deepwiki: { type: 'http', url: 'https://mcp.deepwiki.com/mcp' } },
+      } },
     });
+    // Seed every spelling the readers use (quoted and unquoted path).
+    installFsMock({ '/home/testuser/.claude.json': existing, '"/home/testuser/.claude.json"': existing });
 
     const result = await composePermissions({ member_id: member.id, role: 'doer' });
     expect(result).toContain('Permissions composed');
 
     const allCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
-    const trustWrite = allCmds.find(cmd => cmd.includes("'FLEET_TRUST_EOF'") && cmd.includes('/home/testuser/.claude.json'))!;
-    expect(trustWrite).toBeDefined();
-    const body = JSON.parse(trustWrite.split("'FLEET_TRUST_EOF'
-")[1].split('
-FLEET_TRUST_EOF')[0]);
+    const trustWrites = allCmds.filter(cmd => cmd.includes("'FLEET_TRUST_EOF'") && cmd.includes('/home/testuser/.claude.json'));
+    expect(trustWrites.length).toBeGreaterThan(0);
+    const trustWrite = trustWrites[trustWrites.length - 1];
+    const body = JSON.parse(trustWrite.split("'FLEET_TRUST_EOF'\n")[1].split('\nFLEET_TRUST_EOF')[0]);
     const servers = body.projects['/home/testuser/project'].mcpServers;
     expect(servers['apra-fleet']).toEqual({ type: 'http', url, alwaysLoad: true });
     expect(servers.deepwiki).toEqual({ type: 'http', url: 'https://mcp.deepwiki.com/mcp' });

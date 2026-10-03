@@ -176,6 +176,19 @@ test('an MCP entry lacking ?member=<uuid> (server reports mcp-entry-missing poin
     assert.match(rec.problems.find((p) => p.reason === 'mcp-entry-missing').detail, /not \?member=/);
 });
 
+test('a deferred per-folder entry (mcp-entry-deferred) -> unverified with its own fix, although the member session lists kb_* and code_*', async () => {
+    // The member session proves the server, not that a dispatched provider CLI
+    // session sees the tools: a deferred entry connects after the first request.
+    const f = fakeFleet({ fleetMcp: { state: 'unavailable', reason: 'mcp-entry-deferred', detail: 'per-folder apra-fleet entry has no alwaysLoad', checkedAt: 'x' } });
+    const [rec] = await f.make(['m1']).probeAll();
+    assert.equal(rec.kbTools, true);
+    assert.equal(rec.codeTools, true);
+    assert.equal(rec.verified, false);
+    assert.equal(rec.reason, 'mcp-entry-deferred');
+    assert.match(rec.fix, /alwaysLoad/);
+    assert.match(formatMemberInitLine(rec), /WARN member 'm1': unverified -- reason: mcp-entry-deferred/);
+});
+
 test('opencode -> unverified no-per-tool-deny although its member session lists the tools and its entry carries ?member=<uuid>', async () => {
     // The server records opencode as available (its opencode.json entry ends with ?member=<uuid>).
     const f = fakeFleet({ provider: 'opencode', fleetMcp: { state: 'available', checkedAt: 'x' } });
