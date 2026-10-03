@@ -468,6 +468,12 @@ export function isAuthDispatchError(err) {
 //                                 from the call, setup included) and was
 //                                 stopped. Before this reason existed the same
 //                                 kill surfaced as 'dispatch_failed'.
+//   - 'transport_failure'       -- the fleet tool call itself failed at the
+//                                 transport (e.g. the SSH channel to the member
+//                                 could not be opened) and the server reported
+//                                 it as a bare tool error, not a classified
+//                                 execute_prompt result (agent() in the
+//                                 workflow engine). No result envelope exists.
 //
 // For an integ-test-runner dispatch, all of these mean "no test verdict was
 // ever produced" -- the run never reported pass or fail. Treating them as a
@@ -476,7 +482,7 @@ export function isAuthDispatchError(err) {
 // check on an infra fault. Callers use this classifier to (a) retry once via a
 // session resume and (b) failing that, record the cycle as INCONCLUSIVE rather
 // than a test FAIL -- exactly as the part-2 stale-evidence path already does.
-const INFRA_DISPATCH_REASONS = new Set(['empty_response', 'dispatch_failed', 'orphan_recovery_timeout', 'stalled', 'agent_never_started', 'max_total_time', 'preflight_offline']);
+const INFRA_DISPATCH_REASONS = new Set(['empty_response', 'dispatch_failed', 'orphan_recovery_timeout', 'stalled', 'agent_never_started', 'max_total_time', 'preflight_offline', 'transport_failure']);
 
 /**
  * True when a dispatch error is an INFRASTRUCTURE failure (the member CLI never
