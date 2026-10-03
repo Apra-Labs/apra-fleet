@@ -326,7 +326,9 @@ describe('(1) runner.js re-exports every symbol it exported before the Phase 1 l
                 if (parent === dir) throw new Error(`could not locate a node_modules/@apralabs directory above ${SE_DIR}`);
                 dir = parent;
             }
-            fs.symlinkSync(hoisted, path.join(sandboxDir, 'node_modules'), 'dir');
+            // junction on win32: needs no symlink privilege (plain 'dir' symlinks EPERM
+            // without Developer Mode/admin); rmSync unlinks it without recursing.
+            fs.symlinkSync(hoisted, path.join(sandboxDir, 'node_modules'), process.platform === 'win32' ? 'junction' : 'dir');
 
             const sandboxRunnerPath = path.join(sandboxFleetSprint, 'runner.js');
             const originalContent = fs.readFileSync(sandboxRunnerPath, 'utf-8');

@@ -3,7 +3,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { BUDGET_MS, checkBudget, loadResults } from '../scripts/check-integ-suite-budget.mjs';
+import {
+  BUDGET_MS, checkBudget, loadResults, classifyFailures, validateQuarantine, loadQuarantine, DEFAULT_QUARANTINE_FILE,
+} from '../scripts/check-integ-suite-budget.mjs';
 
 // Tests for apra-fleet-eft.17.2: verify scripts/check-integ-suite-budget.mjs
 // correctly flags real-bd suite files whose recorded durationMs (from
@@ -169,5 +171,88 @@ describe('CLI (scripts/check-integ-suite-budget.mjs)', () => {
       exitCode = e.status;
     }
     expect(exitCode).toBe(2);
+  });
+});
+
+describe('quarantine (new vs quarantined failures)', () => {
+  const entry = (over: Record<string, unknown> = {}) => ({
+    fingerprint: 'flaky.test.mjs',
+    bead: 'x-1',
+    reason: 'load timeout',
+    addedAt: '2026-10-01',
+    expires: '2026-10-31',
+    ...over,
+  });
+  const results = {
+    'flaky.test.mjs': { passed: false, durationMs: 1 },
+    'fresh-break.test.mjs': { passed: false, durationMs: 1 },
+    'ok.test.mjs': { passed: true, durationMs: 1 },
+  };
+  const now = new Date('2026-10-15T00:00:00Z');
+
+  it('quarantines a matching live entry and reports anything else as new', () => {
+    const r = classifyFailures(results, [entry()], now, 'linux');
+    expect(r.quarantined.map((q) => q.file)).toEqual(['flaky.test.mjs']);
+    expect(r.newFailures).toEqual([{ file: 'fresh-break.test.mjs' }]);
+  });
+
+  it('counts a failure under an EXPIRED entry as new, carrying the expired entry', () => {
+    const r = classifyFailures(results, [entry()], new Date('2026-11-01T00:00:01Z'), 'linux');
+    expect(r.quarantined).toEqual([]);
+    expect(r.newFailures.find((f) => f.file === 'flaky.test.mjs')?.expired?.expires).toBe('2026-10-31');
+  });
+
+  it('is still quarantined during the whole expires day', () => {
+    const r = classifyFailures(results, [entry()], new Date('2026-10-31T23:00:00Z'), 'linux');
+    expect(r.quarantined.map((q) => q.file)).toEqual(['flaky.test.mjs']);
+  });
+
+  it('honours os: an entry for another platform does not quarantine', () => {
+    expect(classifyFailures(results, [entry({ os: 'win32' })], now, 'linux').quarantined).toEqual([]);
+    expect(classifyFailures(results, [entry({ os: 'win32' })], now, 'win32').quarantined).toHaveLength(1);
+  });
+
+  it('rejects an expiry more than 30 days after addedAt, missing fields, bad dates and duplicates', () => {
+    expect(() => validateQuarantine({ entries: [entry({ expires: '2026-11-05' })] })).toThrow(/days after addedAt/);
+    expect(() => validateQuarantine({ entries: [entry({ bead: '' })] })).toThrow(/bead/);
+    expect(() => validateQuarantine({ entries: [entry({ addedAt: '10/01/2026' })] })).toThrow(/YYYY-MM-DD/);
+    expect(() => validateQuarantine({ entries: [entry(), entry()] })).toThrow(/duplicate/);
+    expect(() => validateQuarantine({})).toThrow(/entries/);
+  });
+
+  // Structure only -- never asserts the entries are unexpired, so this test
+  // does not go red on its own when a quarantine lapses (the checker does).
+  it('the committed tests/regression/quarantine.json is valid', () => {
+    const entries = loadQuarantine(DEFAULT_QUARANTINE_FILE);
+    expect(entries.length).toBeGreaterThan(0);
+  });
+
+  it('CLI --quarantine exits 1 on a new failure and 0 when every failure is quarantined', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'integ-quarantine-cli-'));
+    try {
+      const scriptPath = path.join(__dirname, '..', 'scripts', 'check-integ-suite-budget.mjs');
+      const statusFile = path.join(tmp, 'status.json');
+      const qFile = path.join(tmp, 'q.json');
+      const today = new Date().toISOString().slice(0, 10);
+      const later = new Date(Date.now() + 10 * 86400000).toISOString().slice(0, 10);
+      fs.writeFileSync(qFile, JSON.stringify({ entries: [entry({ addedAt: today, expires: later })] }));
+      fs.writeFileSync(statusFile, JSON.stringify({ results: { 'flaky.test.mjs': { passed: false, durationMs: 1 } } }));
+      const out = execFileSync('node', [scriptPath, statusFile, `--quarantine=${qFile}`], { encoding: 'utf8' });
+      expect(out).toContain('new=0 quarantined=1');
+
+      fs.writeFileSync(statusFile, JSON.stringify({ results }));
+      let code = 0;
+      let stdout = '';
+      try {
+        execFileSync('node', [scriptPath, statusFile, `--quarantine=${qFile}`], { encoding: 'utf8' });
+      } catch (e: any) {
+        code = e.status;
+        stdout = e.stdout;
+      }
+      expect(code).toBe(1);
+      expect(stdout).toContain('NEW fresh-break.test.mjs');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });
