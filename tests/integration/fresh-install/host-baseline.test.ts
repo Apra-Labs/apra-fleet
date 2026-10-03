@@ -115,7 +115,7 @@ describe('fresh-install upgrade baseline', () => {
     expect(await resolveLatestRelease('o/r', api as never)).toEqual({ tag: 'v0.4.3', source: 'api' });
     expect(calls).toEqual(['https://api.github.com/repos/o/r/releases/latest']);
 
-    const limited = async (url: string) => url.includes('api.github.com')
+    const limited = async (url: string) => new URL(url).hostname === 'api.github.com'
       ? { ok: false, status: 403 }
       : { ok: false, status: 302, headers: new Headers({ location: 'https://github.com/o/r/releases/tag/v0.4.4' }) };
     expect(await resolveLatestRelease('o/r', limited as never)).toEqual({ tag: 'v0.4.4', source: 'redirect' });
