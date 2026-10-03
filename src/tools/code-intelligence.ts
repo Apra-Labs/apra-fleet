@@ -209,7 +209,8 @@ export const codeStatusSchema = z.object({});
 
 /**
  * code_reindex: (re)build the calling session's own code index. Starts
- * `npx gitnexus analyze` detached, captures its output to
+ * `npx gitnexus analyze --index-only` detached (never writes AGENTS.md,
+ * CLAUDE.md or skills into the repo), captures its output to
  * <data>/code-index/<slug>/analyze.log, and returns after the first tick
  * (lock held + process alive + a log line, or 'Already up to date'). A missing
  * npx/gitnexus is a typed not-started reason, never 'started'.

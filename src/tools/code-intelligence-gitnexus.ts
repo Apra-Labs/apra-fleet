@@ -18,7 +18,7 @@ let connectionPromise: Promise<Client> | null = null;
 // unhandled throw or a silent empty result -- mirrors the F3.1 error shape.
 const OFFLINE_MESSAGE =
   "Code intelligence is offline: the gitnexus service could not be reached. " +
-  "Start or reinstall it by running 'npx gitnexus analyze' in the repo " +
+  "Start or reinstall it by running 'npx gitnexus analyze --index-only' in the repo " +
   "(or /pm index), then retry.";
 
 function offlineResult(detail?: string): { content: Array<{ type: 'text'; text: string }>; isError: true } {

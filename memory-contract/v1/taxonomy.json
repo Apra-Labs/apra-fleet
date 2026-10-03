@@ -411,7 +411,7 @@
           "source": "src/tools/code-intelligence-readiness.ts (codeIndexReadiness -- the one readiness check, assertCodeIndexReady, indexNotReadyError), called from callGitNexus (code-intelligence-gitnexus.ts) and callCodebaseMemory (code-intelligence-codebase-memory.ts)",
           "surfaced": "thrown",
           "retryable": false,
-          "remediation": "Run 'npx gitnexus analyze' in the repo (or /pm index), or wait for the running analyze to finish, then retry.",
+          "remediation": "Run 'npx gitnexus analyze --index-only' in the repo (or /pm index), or wait for the running analyze to finish, then retry.",
           "note": "Thrown by the adapter's pre-flight before the child process is ever spawned, so it is never converted into an offline result. retryable stays false in the v1 sense (section 3.3): the missing case needs an index build, a new action; the building case resolves only when an external process the caller cannot observe finishes, which the remediation states as wait-then-retry guidance rather than a backoff class."
         },
         {

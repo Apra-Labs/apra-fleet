@@ -11,10 +11,12 @@ code_graph, code_impact, code_query, and code_context tools.
    the repo path.
 3. Run via `execute_command` (wrap in background Agent per fleet rules):
    ```
-   npx gitnexus analyze --embeddings
+   npx gitnexus analyze --index-only --embeddings
    ```
    - `run_from`: project repo root
    - `timeout_s`: 300 (indexing large repos can take a minute)
+   - `--index-only` keeps the repo work tree clean: without it gitnexus
+     writes an AGENTS.md/CLAUDE.md block and skills folders into the repo.
 4. Report the result: nodes indexed, edges, flows (gitnexus prints this on
    completion). If gitnexus is not installed, it will be fetched automatically
    via npx.
@@ -42,7 +44,7 @@ code_graph, code_impact, code_query, and code_context tools.
 
 - **Automatically inside `/pm init`** -- runs as the final step of project initialization.
   The worktree must exist before indexing (gitnexus needs files on disk to analyze).
-- **Automatically at VERIFY checkpoints** -- checkpoints re-run npx gitnexus analyze to keep
+- **Automatically at VERIFY checkpoints** -- checkpoints re-run npx gitnexus analyze --index-only to keep
   mid-sprint symbols visible to later phases (incremental via fileHashes in .gitnexus/meta.json,
   takes seconds).
 - After a large merge or rebase that changes many files

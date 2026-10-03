@@ -22,6 +22,6 @@ export function freshnessNote(
   if (lastCommit === head) return null;
   const shortLastCommit = lastCommit.slice(0, 8);
   const shortHead = head.slice(0, 8);
-  const base = `[code-intelligence] index is behind repo HEAD (indexed ${shortLastCommit} vs HEAD ${shortHead}). Results may miss recent changes; run 'npx gitnexus analyze' to refresh.`;
+  const base = `[code-intelligence] index is behind repo HEAD (indexed ${shortLastCommit} vs HEAD ${shortHead}). Results may miss recent changes; run 'npx gitnexus analyze --index-only' to refresh.`;
   return reindexScheduled ? `${base} A background re-index has been started.` : base;
 }
