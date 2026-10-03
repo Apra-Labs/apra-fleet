@@ -111,7 +111,7 @@ describe('E-CODE-INDEX-NOT-READY', () => {
     const out = await call(await connectAs('missing'), 'code_query', { query: 'foo' });
     expect(out.isError).toBe(true);
     expect(out.text).toContain(`E-CODE-INDEX-NOT-READY: No gitnexus code index found for '${folders.missing}'.`);
-    expect(out.text).toContain("Remediation: Run 'npx gitnexus analyze' in the repo");
+    expect(out.text).toContain("Remediation: Run 'npx gitnexus analyze --index-only' in the repo");
     expect(remediationCount(out.text)).toBe(1);
   });
 

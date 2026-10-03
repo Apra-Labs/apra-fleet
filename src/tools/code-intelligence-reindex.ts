@@ -4,16 +4,17 @@
 // code-intelligence-freshness.ts precedent: code-intelligence.ts re-exports
 // GitNexusProvider from gitnexus.ts, so anything gitnexus.ts needs at module
 // load time must live outside code-intelligence.ts).
-import { spawn, type ChildProcess } from 'child_process';
+import { execFileSync, spawn, type ChildProcess } from 'child_process';
 import {
   closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, statSync, writeFileSync,
 } from 'fs';
 import { homedir } from 'os';
-import { delimiter, join } from 'path';
+import { delimiter, dirname, isAbsolute, join } from 'path';
 import { logWarn, logError } from '../utils/log-helpers.js';
 import { FLEET_DIR } from '../paths.js';
 import { resolveProjectSlug } from '../services/knowledge/project-slug.js';
 import { isPidAlive, readGitNexusIndexState } from './code-index-state.js';
+import { excludeLineFor } from '../services/member-config-io.js';
 
 interface ReindexEntry {
   runningChild?: ChildProcess;
@@ -165,12 +166,54 @@ function resultFromExit(dir: string, repo: string, code: number | null): Analyze
   return idx.metaPresent && idx.lastCommit !== '' && !idx.incrementalInProgress ? 'indexed' : 'incomplete';
 }
 
+// The exact argv every fleet-initiated analyze runs. `--index-only` is
+// gitnexus's pure index mode: it builds the index under .gitnexus/ but skips
+// every AI-context write into the work tree (the AGENTS.md / CLAUDE.md block
+// and the .claude/skills + .agents/skills folders). Without it, indexing a
+// member's TARGET repo dirties tracked files a doer would then commit. An
+// older gitnexus that does not know the flag fails loudly (analyze-failed with
+// its "unknown option" line), never silently falls back to a writing run.
+export const GITNEXUS_ANALYZE_ARGS: readonly string[] = ['gitnexus', 'analyze', '--index-only'];
+
+// Work-tree paths an index-only analyze still creates inside the repo. They
+// go into the repo's git exclude file (local, untracked) -- never .gitignore.
+export const GITNEXUS_REPO_ARTIFACTS: readonly string[] = ['.gitnexus/'];
+
+/**
+ * Adds each repo-relative path to `repoPath`'s git exclude file, resolved by
+ * git itself (`git rev-parse --git-path info/exclude`) so a linked worktree
+ * (where .git is a file) uses its common dir's exclude. Synchronous, never
+ * throws: a failure is logged and the caller carries on. Returns true when the
+ * exclude file holds every entry afterwards.
+ */
+export function ensureLocalGitExcluded(repoPath: string, relPaths: readonly string[]): boolean {
+  try {
+    const out = execFileSync('git', ['rev-parse', '--git-path', 'info/exclude'], {
+      cwd: repoPath, encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim().split(/\r?\n/)[0]?.trim() ?? '';
+    if (!out) return false;
+    const excludePath = isAbsolute(out) ? out : join(repoPath, out);
+    let current = '';
+    try { current = readFileSync(excludePath, 'utf8').replace(/\r\n/g, '\n'); } catch { /* absent: create it */ }
+    const have = new Set(current.split('\n').map((l) => l.trim()));
+    const missing = [...new Set(relPaths.map(excludeLineFor))].filter((l) => !have.has(l));
+    if (missing.length === 0) return true;
+    const base = current.replace(/\n+$/, '');
+    mkdirSync(dirname(excludePath), { recursive: true });
+    writeFileSync(excludePath, (base ? `${base}\n` : '') + missing.join('\n') + '\n');
+    return true;
+  } catch (err) {
+    logWarn('code-intelligence-reindex', `could not add ${relPaths.join(', ')} to the git exclude file of ${repoPath}: ${err instanceof Error ? err.message : String(err)}`);
+    return false;
+  }
+}
+
 export type SpawnAnalyzeOutcome =
   | { started: true; child: ChildProcess; dir: string }
   | { started: false; reason: NotStartedReason; detail?: string };
 
 /**
- * Synchronously start `npx gitnexus analyze` detached in `repoPath`, with
+ * Synchronously start `npx gitnexus analyze --index-only` detached in `repoPath`, with
  * stdout+stderr going straight to analyze.log (a file descriptor, so the run
  * outlives this server) and status.json kept current until exit. Never
  * throws. Does NOT apply config/cooldown -- callers decide whether to start.
@@ -197,9 +240,12 @@ export function spawnAnalyze(repoPath: string): SpawnAnalyzeOutcome {
     return { started: false, reason: 'spawn-failed', detail };
   }
 
+  // Keep the index dir out of `git status` before analyze creates it.
+  ensureLocalGitExcluded(repoPath, GITNEXUS_REPO_ARTIFACTS);
+
   let child: ChildProcess;
   try {
-    child = spawn('npx', ['gitnexus', 'analyze'], {
+    child = spawn('npx', [...GITNEXUS_ANALYZE_ARGS], {
       cwd: repoPath,
       detached: true,
       stdio: ['ignore', fd, fd],

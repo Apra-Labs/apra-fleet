@@ -15,7 +15,7 @@ describe('freshnessNote()', () => {
       'bbbbbbbb111122223333444455556666777788',
     );
     expect(note).toBe(
-      "[code-intelligence] index is behind repo HEAD (indexed aaaaaaaa vs HEAD bbbbbbbb). Results may miss recent changes; run 'npx gitnexus analyze' to refresh.",
+      "[code-intelligence] index is behind repo HEAD (indexed aaaaaaaa vs HEAD bbbbbbbb). Results may miss recent changes; run 'npx gitnexus analyze --index-only' to refresh.",
     );
   });
 
@@ -34,7 +34,7 @@ describe('freshnessNote()', () => {
   it('does not crash on short SHAs (< 8 chars) and includes them verbatim', () => {
     expect(() => freshnessNote('abc', 'xyz')).not.toThrow();
     expect(freshnessNote('abc', 'xyz')).toBe(
-      "[code-intelligence] index is behind repo HEAD (indexed abc vs HEAD xyz). Results may miss recent changes; run 'npx gitnexus analyze' to refresh.",
+      "[code-intelligence] index is behind repo HEAD (indexed abc vs HEAD xyz). Results may miss recent changes; run 'npx gitnexus analyze --index-only' to refresh.",
     );
   });
 
@@ -55,21 +55,21 @@ describe('freshnessNote() reindexScheduled suffix', () => {
   it('omits the suffix when reindexScheduled is false', () => {
     expect(freshnessNote(lastCommit, head, false)).toBe(
       "[code-intelligence] index is behind repo HEAD (indexed aaaaaaaa vs HEAD bbbbbbbb). " +
-        "Results may miss recent changes; run 'npx gitnexus analyze' to refresh.",
+        "Results may miss recent changes; run 'npx gitnexus analyze --index-only' to refresh.",
     );
   });
 
   it('omits the suffix when reindexScheduled is omitted (default false)', () => {
     expect(freshnessNote(lastCommit, head)).toBe(
       "[code-intelligence] index is behind repo HEAD (indexed aaaaaaaa vs HEAD bbbbbbbb). " +
-        "Results may miss recent changes; run 'npx gitnexus analyze' to refresh.",
+        "Results may miss recent changes; run 'npx gitnexus analyze --index-only' to refresh.",
     );
   });
 
   it('appends the exact suffix (with leading space) when reindexScheduled is true', () => {
     expect(freshnessNote(lastCommit, head, true)).toBe(
       "[code-intelligence] index is behind repo HEAD (indexed aaaaaaaa vs HEAD bbbbbbbb). " +
-        "Results may miss recent changes; run 'npx gitnexus analyze' to refresh." +
+        "Results may miss recent changes; run 'npx gitnexus analyze --index-only' to refresh." +
         " A background re-index has been started.",
     );
   });

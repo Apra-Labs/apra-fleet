@@ -10,12 +10,16 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // stable across resets.
 // ---------------------------------------------------------------------------
 const mockSpawn = vi.hoisted(() => vi.fn());
+// git rev-parse for the exclude file: '' = no repo, so the exclude step is a
+// quiet no-op here (tests/code-index-no-repo-writes.test.ts covers it for real).
+const mockExecFileSync = vi.hoisted(() => vi.fn(() => ''));
 const mockReadFileSync = vi.hoisted(() => vi.fn());
 const mockLogWarn = vi.hoisted(() => vi.fn());
 const mockLogError = vi.hoisted(() => vi.fn());
 
 vi.mock('child_process', () => ({
   spawn: mockSpawn,
+  execFileSync: mockExecFileSync,
 }));
 
 // Only the config read is faked; the shared analyze runner's own fs use
@@ -129,7 +133,7 @@ describe('maybeScheduleReindex()', () => {
     configAbsent();
   });
 
-  it('spawns npx gitnexus analyze with the expected args when no reindex is running', async () => {
+  it('spawns npx gitnexus analyze --index-only (no AGENTS.md/CLAUDE.md/skills writes) when no reindex is running', async () => {
     const fakeChild = makeFakeChild();
     mockSpawn.mockReturnValue(fakeChild);
     const { maybeScheduleReindex } = await import('../src/tools/code-intelligence-reindex.js');
@@ -140,7 +144,7 @@ describe('maybeScheduleReindex()', () => {
     expect(mockSpawn).toHaveBeenCalledTimes(1);
     const [cmd, args, options] = mockSpawn.mock.calls[0] as [string, string[], Record<string, unknown>];
     expect(cmd).toBe('npx');
-    expect(args).toEqual(['gitnexus', 'analyze']);
+    expect(args).toEqual(['gitnexus', 'analyze', '--index-only']);
     expect(options.cwd).toBe('/repo/path');
     expect(options.detached).toBe(true);
     expect(options.stdio).toEqual(['ignore', expect.any(Number), expect.any(Number)]);

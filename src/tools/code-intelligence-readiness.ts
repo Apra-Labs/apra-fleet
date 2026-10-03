@@ -102,13 +102,13 @@ export function indexNotReadyError(
     return new CodeIntelError(
       'E-CODE-INDEX-NOT-READY',
       `The gitnexus code index${where} is still being built.`,
-      `Wait for the running 'npx gitnexus analyze' to finish, then retry (re-run it in the repo if none is running).`,
+      `Wait for the running 'npx gitnexus analyze --index-only' to finish, then retry (re-run it in the repo if none is running).`,
     );
   }
   return new CodeIntelError(
     'E-CODE-INDEX-NOT-READY',
     `No gitnexus code index found${where}.`,
-    `Run 'npx gitnexus analyze' in the repo (or /pm index), then retry.`,
+    `Run 'npx gitnexus analyze --index-only' in the repo (or /pm index), then retry.`,
   );
 }
 

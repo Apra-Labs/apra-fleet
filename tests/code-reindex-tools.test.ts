@@ -17,9 +17,10 @@ const sandbox = vi.hoisted(() => {
   return { root, data, bin: path.join(root, 'bin') };
 });
 
+const providerRef = vi.hoisted(() => ({ name: 'gitnexus' }));
 vi.mock('../src/services/registry.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../src/services/registry.js')>();
-  return { ...actual, getAgent: () => ({ codeIntelProvider: 'gitnexus' }) };
+  return { ...actual, getAgent: () => ({ codeIntelProvider: providerRef.name }) };
 });
 
 import fs from 'node:fs';
@@ -42,8 +43,22 @@ let repo: string;
 let head: string;
 let n = 0;
 
+// Like the real gitnexus, a run WITHOUT --index-only injects AI-context files
+// into the work tree (an AGENTS.md / CLAUDE.md block plus skills folders).
+// The fake writes no .gitnexus/.gitignore, so the fleet's own git exclude
+// entry is what keeps .gitnexus/ out of git status.
 const FAKE_NPX = `#!/bin/sh
 mkdir -p .gitnexus
+case " $* " in
+  *" --index-only "*) ;;
+  *)
+    printf '<!-- gitnexus:start -->\\n# GitNexus\\n<!-- gitnexus:end -->\\n' >> AGENTS.md
+    printf '<!-- gitnexus:start -->\\n# GitNexus\\n<!-- gitnexus:end -->\\n' >> CLAUDE.md
+    mkdir -p .agents/skills/gitnexus-cli .claude/skills/gitnexus
+    echo skill > .agents/skills/gitnexus-cli/SKILL.md
+    echo skill > .claude/skills/gitnexus/SKILL.md
+    ;;
+esac
 case "$FAKE_MODE" in
   index)
     echo "Analyzing repository"
@@ -66,6 +81,19 @@ function newRepo(): string {
   execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'init'], { cwd: dir });
   head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' }).trim();
   return dir;
+}
+
+/** Commits tracked AGENTS.md + CLAUDE.md, as a target repo with agent docs has. */
+function seedAgentDocs(dir: string): void {
+  fs.writeFileSync(path.join(dir, 'AGENTS.md'), '# Target agents\n');
+  fs.writeFileSync(path.join(dir, 'CLAUDE.md'), '# Target claude\n');
+  execFileSync('git', ['add', 'AGENTS.md', 'CLAUDE.md'], { cwd: dir });
+  execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'docs'], { cwd: dir });
+  head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' }).trim();
+}
+
+function porcelain(dir: string): string {
+  return execFileSync('git', ['status', '--porcelain', '--untracked-files=all'], { cwd: dir, encoding: 'utf8' });
 }
 
 function logOf(dir: string): string {
@@ -180,6 +208,45 @@ describe.skipIf(isWin)('code_reindex / code_status with a fake gitnexus', () => 
     const second = await handleCodeReindex({}, { repo, memberId: 'm' });
     expect(second.outcome).toBe('already-running');
     await waitFor(() => (codeStatus(repo).analyze?.phase === 'done' ? true : undefined));
+  });
+
+  it('a code index build leaves the target work tree unchanged (index-only, .gitnexus/ excluded)', async () => {
+    seedAgentDocs(repo);
+    const before = porcelain(repo);
+    expect(before).toBe('');
+    process.env.FAKE_MODE = 'index';
+    const r = await handleCodeReindex({}, { repo, memberId: 'm' });
+    if (r.outcome === 'started' && r.pid) pids.add(r.pid);
+    const done = await waitFor(() => (codeStatus(repo).analyze?.phase === 'done' ? codeStatus(repo) : undefined));
+    expect(done.analyze?.result).toBe('indexed');
+    expect(fs.existsSync(path.join(repo, '.gitnexus', 'meta.json'))).toBe(true);
+    expect(porcelain(repo)).toBe(before);
+    expect(fs.existsSync(path.join(repo, '.agents'))).toBe(false);
+    expect(fs.readFileSync(path.join(repo, 'AGENTS.md'), 'utf8')).not.toContain('gitnexus:start');
+    const excl = execFileSync('git', ['rev-parse', '--git-path', 'info/exclude'], { cwd: repo, encoding: 'utf8' }).trim();
+    const lines = fs.readFileSync(path.resolve(repo, excl), 'utf8').split('\n');
+    expect(lines.filter((l) => l === '/.gitnexus/')).toHaveLength(1);
+  });
+
+  it('negative control: the fake dirties the repo when run without --index-only', () => {
+    seedAgentDocs(repo);
+    execFileSync(path.join(sandbox.bin, 'npx'), ['gitnexus', 'analyze'], { cwd: repo, env: { ...process.env, FAKE_MODE: 'uptodate' } });
+    const dirty = porcelain(repo);
+    expect(dirty).toContain('AGENTS.md');
+    expect(dirty).toContain('CLAUDE.md');
+    expect(dirty).toContain('.agents/');
+  });
+
+  it('codebase-memory: code_reindex starts nothing and the work tree stays unchanged', async () => {
+    seedAgentDocs(repo);
+    const before = porcelain(repo);
+    providerRef.name = 'codebase-memory';
+    try {
+      const r = await handleCodeReindex({}, { repo, memberId: 'm' });
+      expect(r).toMatchObject({ outcome: 'not-started', reason: 'provider-not-supported', provider: 'codebase-memory' });
+    } finally { providerRef.name = 'gitnexus'; }
+    expect(porcelain(repo)).toBe(before);
+    expect(fs.existsSync(path.join(repo, '.gitnexus'))).toBe(false);
   });
 
   it('a remote member folder is a typed not-started', async () => {
