@@ -26,9 +26,12 @@ describe('File-transfer cross-OS matrix', () => {
     mockFastPut = vi.fn((_local: string, _remote: string, cb: Function) => cb(null));
     mockFastGet = vi.fn((_remote: string, _local: string, cb: Function) => cb(null));
 
-    vi.mocked(sshModule.getConnection).mockResolvedValue({
-      sftp: (cb: Function) => cb(null, { mkdir: mockMkdir, fastPut: mockFastPut, fastGet: mockFastGet }),
-    } as any);
+    const fakeClient = {
+      sftp: (cb: Function) => cb(null, { mkdir: mockMkdir, fastPut: mockFastPut, fastGet: mockFastGet, end: vi.fn() }),
+    } as any;
+    vi.mocked(sshModule.openPooledChannel).mockImplementation((async (_agent: unknown, open: (c: any) => Promise<unknown>) => ({
+      channel: await open(fakeClient), client: fakeClient, release: vi.fn(),
+    })) as any);
   });
 
   afterEach(() => vi.restoreAllMocks());
