@@ -1,7 +1,8 @@
 # Real-bd unit-suite check (apra-fleet-se)
 
-When to run: part 1 of every full integration pass (see
-`integ-test-playbook.md`). Runs from the repo checkout; needs no sandbox. The runner forces real bd (`APRA_FLEET_BD_MOCK=off`) -- never
+When to run: nightly in CI (`.github/workflows/regression-nightly.yml`,
+also on bd pin changes), or by hand when validating bd CLI compatibility.
+Runs from the repo checkout; needs no sandbox. The runner forces real bd (`APRA_FLEET_BD_MOCK=off`) -- never
 substitute a bare `npm test`, which would test the mock. Expect ~7 min wall
 clock for the full suite. Script internals, flag contract, and design
 rationale: header of `scripts/run-integ-suites.mjs`.
