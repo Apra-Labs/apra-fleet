@@ -262,7 +262,7 @@
  * A member's own apra-fleet MCP observation (src/types.ts FleetMcpStatus).
  * @typedef {Object} FleetMcpStatus
  * @property {"available" | "unavailable"} state
- * @property {string} [reason] - Machine-readable cause when unavailable (e.g. install-too-old, E-FOLDER-TAKEN, mcp-entry-missing, no-per-project-mcp)
+ * @property {string} [reason] - Machine-readable cause when unavailable (e.g. install-too-old, E-FOLDER-TAKEN, mcp-entry-missing, mcp-entry-deferred, no-per-project-mcp)
  * @property {string} [version] - apra-fleet version the member's own install reports
  * @property {string} checkedAt - ISO 8601 time of the probe
  * @property {string} [detail] - Human-readable diagnostic

@@ -105,7 +105,7 @@ function deps(
       if (c.includes('CLAUDE_CONFIG_DIR')) return ok('');
       if (c.includes('.claude.json')) {
         const work = platform.os === 'windows' ? WIN_WORK : WORK;
-        return ok(JSON.stringify({ projects: { [work]: { mcpServers: { 'apra-fleet': { type: 'http', url: `http://localhost:7523/mcp?member=${agent.id}` } } } } }));
+        return ok(JSON.stringify({ projects: { [work]: { mcpServers: { 'apra-fleet': { type: 'http', url: `http://localhost:7523/mcp?member=${agent.id}`, alwaysLoad: true } } } } }));
       }
       return { stdout: '', stderr: `unexpected: ${c}`, code: 127 };
     },

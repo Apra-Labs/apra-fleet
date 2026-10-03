@@ -712,12 +712,42 @@ describe('composePermissions -- legacy fleet MCP entries pruned from settings.lo
     const trustWrite = allCmds.find(cmd => cmd.includes("'FLEET_TRUST_EOF'") && cmd.includes('/home/testuser/.claude.json'))!;
     expect(trustWrite).toBeDefined();
     const body = JSON.parse(trustWrite.split("'FLEET_TRUST_EOF'\n")[1].split('\nFLEET_TRUST_EOF')[0]);
+    // alwaysLoad: a headless claude -p dispatch must not start before this
+    // server connects, or the session runs without the member's tools.
     expect(body.projects['/home/testuser/project'].mcpServers['apra-fleet']).toEqual({
       type: 'http',
       url: `http://localhost:7523/mcp?member=${member.id}`,
+      alwaysLoad: true,
     });
     // Never a tracked project .mcp.json.
     expect(allCmds.some(cmd => cmd.includes('cat >') && cmd.includes('.mcp.json'))).toBe(false);
+  });
+
+  it('upgrades a pre-existing deferred apra-fleet entry (no alwaysLoad) in place, keeping other servers', async () => {
+    const member = makeTestAgent({ friendlyName: 'claude-doer', llmProvider: 'claude', os: 'linux' });
+    addAgent(member);
+    const url = `http://localhost:7523/mcp?member=${member.id}`;
+    installFsMock({
+      '/home/testuser/.claude.json': JSON.stringify({
+        projects: { '/home/testuser/project': {
+          hasTrustDialogAccepted: true,
+          mcpServers: { 'apra-fleet': { type: 'http', url }, deepwiki: { type: 'http', url: 'https://mcp.deepwiki.com/mcp' } },
+        } },
+      }),
+    });
+
+    const result = await composePermissions({ member_id: member.id, role: 'doer' });
+    expect(result).toContain('Permissions composed');
+
+    const allCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
+    const trustWrite = allCmds.find(cmd => cmd.includes("'FLEET_TRUST_EOF'") && cmd.includes('/home/testuser/.claude.json'))!;
+    expect(trustWrite).toBeDefined();
+    const body = JSON.parse(trustWrite.split("'FLEET_TRUST_EOF'
+")[1].split('
+FLEET_TRUST_EOF')[0]);
+    const servers = body.projects['/home/testuser/project'].mcpServers;
+    expect(servers['apra-fleet']).toEqual({ type: 'http', url, alwaysLoad: true });
+    expect(servers.deepwiki).toEqual({ type: 'http', url: 'https://mcp.deepwiki.com/mcp' });
   });
 });
 

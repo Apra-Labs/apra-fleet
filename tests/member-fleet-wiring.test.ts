@@ -103,7 +103,7 @@ function fakeDeps(world: World, local?: () => Promise<MemberSession>, home = HOM
       if (c.includes('CLAUDE_CONFIG_DIR')) return ok('');
       if (c.includes('cat "') && c.includes('.claude.json')) {
         return ok(world.entry
-          ? JSON.stringify({ projects: { [WORK]: { mcpServers: { 'apra-fleet': { type: 'http', url: `http://localhost:7523/mcp?member=${agent.id}` } } } } })
+          ? JSON.stringify({ projects: { [WORK]: { mcpServers: { 'apra-fleet': { type: 'http', url: `http://localhost:7523/mcp?member=${agent.id}`, alwaysLoad: true } } } } })
           : '');
       }
       return { stdout: '', stderr: `unexpected: ${c}`, code: 127 };

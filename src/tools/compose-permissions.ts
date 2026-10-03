@@ -657,6 +657,7 @@ const COMPOSE_OWNED_FLEET_MCP_REASONS = new Set([
   'opencode-config-tracked',
   'opencode-config-unparseable',
   'mcp-entry-missing',
+  'mcp-entry-deferred',
 ]);
 
 /** Plain-words cause for a MemberConfigError reason (compose output). */
