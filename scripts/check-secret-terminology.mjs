@@ -22,7 +22,6 @@
  *     {{secure.NAME}} to document/implement the legacy spelling)
  *   - the mirrored block in packages/apra-fleet-se/fleet-sprint/contracts.mjs
  *   - tests/** and packages/**\/test/** (legacy-resolution test fixtures)
- *   - CHANGELOG.md (historical record)
  *   - docs/**\/adr-*.md (historical decision records)
  *   - any line containing the word "deprecated" or "legacy" (that IS the
  *     sanctioned mention of the legacy spelling)
@@ -68,7 +67,6 @@ export const PATTERNS = [
 export const ALLOWLIST = [
     'src/services/secret-token.ts',
     'packages/apra-fleet-se/fleet-sprint/contracts.mjs',
-    'CHANGELOG.md',
     /^tests\//,
     /\/test\//,
     /^packages\/.*\/test\//,

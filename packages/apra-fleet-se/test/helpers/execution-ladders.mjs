@@ -353,7 +353,7 @@ export const EXECUTION_ENGINE_DISPATCHES = [
         timeoutS: 'DISPATCH_INACTIVITY_TIMEOUT_S',
         maxTotalS: 'DISPATCH_TIMEOUT_S',
         bracketed: true,
-        // Writes docs/changelog/sprint-analysis commits AND defers low-priority
+        // Writes docs/sprint-analysis commits AND defers low-priority
         // beads, so it is one of only four dispatches that G-push, and it
         // D-pushes too.
         pushCode: true,

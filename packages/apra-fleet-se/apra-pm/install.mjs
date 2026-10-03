@@ -562,7 +562,7 @@ Agents:
                      informational only, files parent-less
                      [regression][carry-over] bugs
   ci-watcher         polls CI for the sprint HEAD SHA
-  harvester          extracts durable knowledge, updates docs/README/CHANGELOG
+  harvester          extracts durable knowledge, updates docs/README
   backlog-groomer    personal backlog triage: ready/urgent work, sprint sets,
                      duplicates, quality gaps -- scoped to one operator's assignee
 

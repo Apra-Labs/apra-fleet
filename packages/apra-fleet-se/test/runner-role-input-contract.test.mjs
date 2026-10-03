@@ -43,8 +43,8 @@ import { fileURLToPath } from 'node:url';
 // to make it pass -- it is meant to go green only when runner.js is fixed.
 //
 // harvester: wired for real in apra-fleet-unw2.10 (N12) -- runner.js's
-// buildHarvesterPrompt now consumes all five vendored-required inputs
-// (analysisArtifactFile/analysisText/costAnalysis/base-branch/branch), each
+// buildHarvesterPrompt now consumes all four vendored-required inputs
+// (analysisArtifactFile/analysisText/base-branch/branch), each
 // assembled from real per-run state (closedCountHistory, deploy/integ
 // failures, the final verdict, the live budget object). This assertion is
 // EXPECTED GREEN.
@@ -98,7 +98,6 @@ const PARAM_TO_SCHEMA_KEY = Object.freeze({
     expectedHeadSha: 'expectedHeadSha',
     analysisArtifactFile: 'analysisArtifactFile',
     analysisText: 'analysisText',
-    costAnalysis: 'costAnalysis',
 });
 
 // apra-pm PR#29 bumped doer-input/reviewer-input to @2, both adding a
@@ -124,7 +123,6 @@ const PLACEHOLDER = Object.freeze({
     expectedHeadSha: '0123456789abcdef0123456789abcdef01234567',
     analysisArtifactFile: 'docs/sprint-logs/unw2.md',
     analysisText: 'Sprint analysis text.',
-    costAnalysis: '$0.00 (estimate)',
     assignedBeadIds: ['apra-fleet-abc'],
     beadIds: ['apra-fleet-abc'],
     featureIds: ['apra-fleet-def'],
@@ -332,20 +330,20 @@ describe('runner role-input contract tripwire (N13; guards N1)', () => {
     // -- harvester -------------------------------------------------------
     // KNOWN contract violation today: buildHarvesterPrompt consumes only
     // { branch, baseBranch, targetIssues } and explicitly instructs the
-    // harvester to treat analysisText/costAnalysis as UNAVAILABLE, omitting
-    // all of analysisArtifactFile/analysisText/costAnalysis that
+    // harvester to treat analysisText as UNAVAILABLE, omitting
+    // all of analysisArtifactFile/analysisText that
     // harvester-input.json marks required. Wired for real (and flipped green)
     // in apra-fleet-unw2.10 (N12). Included but SKIPPED so it does not go red
     // here; the assertion body documents the failure it WILL guard once wired.
     describe('harvester', () => {
-        test('buildHarvesterPrompt supplies all five required harvester inputs (N12)', () => {
+        test('buildHarvesterPrompt supplies all four required harvester inputs (N12)', () => {
             const ctx = contextFromBuilder('buildHarvesterPrompt');
             assert.ok(ctx !== null, 'buildHarvesterPrompt not found in prompts.mjs');
             const result = validateRoleInput('harvester', ctx);
             assert.strictEqual(
                 result.valid,
                 true,
-                'harvester dispatch must supply analysisArtifactFile/analysisText/costAnalysis/'
+                'harvester dispatch must supply analysisArtifactFile/analysisText/'
                     + `base-branch/branch (N12); it omits at least one. errors=${JSON.stringify(result.errors)}`,
             );
         });

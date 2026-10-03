@@ -22,7 +22,7 @@
 //   5. planner-created-tasks  a "plan:" commit exists in the branch history
 //   6. beads-closed           P1 issues were closed (from any durable source)
 //   7. beads-sprint-closed    P1 closures evidenced in committed branch .beads/*.jsonl
-//   8. harvester-ran          a harvest artifact (docs/, CHANGELOG, .analysis.md) is in
+//   8. harvester-ran          a harvest artifact (docs/, .analysis.md) is in
 //                             the net diff
 //
 // evaluateGates() is pure (takes gathered facts, returns verdicts) so it is unit
@@ -85,10 +85,10 @@ export function evaluateGates(d) {
       : `only ${sprintClosed.length}/${expected} P1 closures found in committed .beads/*.jsonl (sprint must commit beads state via bd export)`);
 
   const hasHarvestArtifact = (d.finalFiles || []).some(f =>
-    /^docs\//i.test(f) || /changelog/i.test(baseName(f)) || /\.analysis\.md$/i.test(f));
+    /^docs\//i.test(f) || /\.analysis\.md$/i.test(f));
   add('harvester-ran', hasHarvestArtifact,
     hasHarvestArtifact
-      ? 'harvest artifact found in net diff (docs/, CHANGELOG, or .analysis.md)'
+      ? 'harvest artifact found in net diff (docs/ or .analysis.md)'
       : 'no harvest artifact in net diff -- harvester may not have run');
 
   // Suites that drive the /auto-sprint workflow (s10) additionally assert the
