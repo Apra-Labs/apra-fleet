@@ -128,11 +128,28 @@ NOT fatal: it logs `[beads-identity] WARNING: member '<m>' could not report
 <field> ('<probe>' -> <error>); not compared. To fix: ...` (or `... reports
 no beads database in its workFolder ...` when `bd where` itself fails, in
 which case that member has no identity entry at all), leaves that field out
-of the comparison, and the sprint proceeds. When no expectation was supplied
+of the comparison, and the sprint proceeds (except a beads-reading member
+with no database -- see member beads set-up below). When no expectation was supplied
 and the orchestrator's own probe resolved nothing, one warning says no
 cross-member check happens this sprint and how to restore it. The published
 `beadsIdentity` state carries `warnings: string[]` plus a per-member
-`unresolved: string[]`.
+`unresolved: string[]`, and `setUp: string[]` (members set up below).
+
+Member beads set-up: a member a beads-reading role is mapped to (planner,
+plan-reviewer, doer, reviewer, integ/regression test runners, harvester --
+not deployer/ci-watcher; plus the backlog member when `--expect-beads` is
+supplied) that reports no beads database, or a database with no
+`sync.remote` while the expectation names one, is set up BEFORE any dispatch
+from the expected `syncRemote`: VCS credential ensured, then `bd config set
+sync.remote <url>`, `bd bootstrap --dry-run --json` (must plan a clone from
+`<url>`), `bd bootstrap --yes` (no DB) or `bd bootstrap --yes` + `bd dolt
+pull` (DB without sync.remote), all through `command()`; the member is then
+re-probed and must match. Any failure -- including no expected remote, a
+non-clone bootstrap plan, a remote not passable verbatim to every shell, or
+bd reporting a schema migration against an older-schema remote -- throws
+`BeadsIdentityError` reason `BEADS_SETUP_FAILED`
+(`Beads preflight failed: member '<m>' <cause>. ... To fix: <fix>.`) with zero
+dispatches. An existing matching database is never touched.
 
 An unknown key throws `[Arg Contract] Unknown arg(s): <keys>. Known args: <allowlist>.` immediately -- this is the fastest way to discover whether a given engine feature (e.g. `assignee`, `doer_worklist_mode`) is wired to a CLI flag yet: if `bin/cli.mjs` never sets it, it stays at its default forever for CLI-launched sprints.
 

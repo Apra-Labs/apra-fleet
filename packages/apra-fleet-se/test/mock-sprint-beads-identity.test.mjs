@@ -1,7 +1,16 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { runDevelopLoopScenario, withScenarioMarkers } from './helpers/mock-sprint-harness.mjs';
+import { runDevelopLoopScenario, withScenarioMarkers, mockCmdResult } from './helpers/mock-sprint-harness.mjs';
 import { BeadsIdentityError } from '../fleet-sprint/errors.mjs';
+import { noteMemberCommand } from '../fleet-sprint/dolt-sync.mjs';
+
+// DoltSync memoizes each member's sync.remote answer for the process
+// lifetime. The set-up scenarios answer it as CONFIGURED, so drop both
+// members' memos afterwards (through the same seam a real `bd config set`
+// hits) or the next scenario in this file inherits them.
+function forgetScenarioSyncState() {
+    for (const m of ['orch', 'm2']) noteMemberCommand(m, 'bd config set sync.remote');
+}
 
 const check = (cond, msg) => assert.ok(cond, msg);
 
@@ -80,7 +89,11 @@ test('mock sprint: one member with a different repoRemote -> sprint aborts befor
     });
 });
 
-test('mock sprint: bd where failing on a member -> a WARNING naming that member and the fix; the sprint PROCEEDS with no identity entry for it', async () => {
+// A beads-reading member with no beads database used to be a WARNING
+// followed by dispatches whose `bd show <root>` found nothing. It is now set
+// up from the expected beads remote before any dispatch, or the sprint
+// stops at preflight with BEADS_SETUP_FAILED.
+test('mock sprint: beads-reading member with no beads DB and no expected beads remote -> BEADS_SETUP_FAILED at preflight, zero dispatches', async () => {
     await withScenarioMarkers('beadsid-nowhere', async () => {
         const r = await runDevelopLoopScenario('beadsid-nowhere', {
             members: ['orch', 'm2'],
@@ -88,20 +101,93 @@ test('mock sprint: bd where failing on a member -> a WARNING naming that member 
             reviewerHandler: approvedReviewer,
             beadsIdentity: { m2: { where: { fail: 'Error: no beads database found. Hint: run bd init' } } },
         });
-        check(r.error === null, `expected the sprint to proceed past the beads identity check, got error: ${r.error && (r.error.constructor.name + ': ' + r.error.message)}`);
+        check(r.error instanceof BeadsIdentityError, `expected a BeadsIdentityError abort, got: ${r.error && (r.error.constructor.name + ': ' + r.error.message)}`);
+        check(r.error.reason === 'BEADS_SETUP_FAILED' && r.error.member === 'm2', `expected BEADS_SETUP_FAILED on m2, got reason=${r.error.reason} member=${r.error.member}`);
+        check(/member 'm2' reports no beads database in its workFolder \('bd where --json' -> .*no beads database found/.test(r.error.message), `expected member + cause, got: ${r.error.message}`);
+        check(/no expected beads remote to set one up from/.test(r.error.message) && /To fix: /.test(r.error.message), `expected cause + fix, got: ${r.error.message}`);
+        check(r.dispatched.length === 0, `expected no agent dispatch, got ${r.dispatched.length}`);
+        check(r.commandLog.filter((c) => MUTATING_BD.test(c)).length === 0, 'expected NO mutating bd command');
+    });
+});
+
+// Answers the identity probes for a member whose beads DB appears only once
+// `bd bootstrap --yes` ran on it; `bd config get sync.remote` reports the
+// expected remote for the backlog member and, after `bd config set`, for m2.
+function noDbMemberOnCommand({ remote, setupLog, bootstrapResult }) {
+    const st = { sync: '', hasDb: false };
+    return async ({ command, member_name: member }) => {
+        const cmd = String(command || '').trim();
+        if (member === 'orch' && /^bd config get sync\.remote( --json)?$/.test(cmd)) {
+            return mockCmdResult(0, JSON.stringify({ key: 'sync.remote', value: remote }), '');
+        }
+        if (member !== 'm2') return undefined;
+        if (/^bd (config set|bootstrap|dolt pull)\b/.test(cmd)) setupLog.push(cmd);
+        if (cmd === `bd config set sync.remote ${remote}`) { st.sync = remote; return mockCmdResult(0, '', ''); }
+        if (cmd === 'bd bootstrap --dry-run --json') {
+            return mockCmdResult(0, JSON.stringify({ action: 'sync', has_existing: false, sync_remote: st.sync }), '');
+        }
+        if (cmd === 'bd bootstrap --yes') {
+            if (bootstrapResult) return bootstrapResult();
+            st.hasDb = true;
+            return mockCmdResult(0, 'Bootstrapped.', '');
+        }
+        if (/^bd where( --json)?$/.test(cmd) && !st.hasDb) {
+            return mockCmdResult(1, '', JSON.stringify({ error: 'no_beads_directory', message: 'No active beads workspace found.' }));
+        }
+        if (/^bd config get sync\.remote( --json)?$/.test(cmd)) {
+            return mockCmdResult(0, JSON.stringify({ key: 'sync.remote', value: st.sync }), '');
+        }
+        return undefined;
+    };
+}
+
+test('mock sprint: beads-reading member with no beads DB -> set up from the expected beads remote before any dispatch, re-verified, sprint proceeds', async (t) => {
+    t.after(forgetScenarioSyncState);
+    await withScenarioMarkers('beadsid-setup', async () => {
+        const remote = 'https://github.com/mock-org/mock-repo.git';
+        const setupLog = [];
+        const r = await runDevelopLoopScenario('beadsid-setup', {
+            members: ['orch', 'm2'],
+            taskSpecs: [{ title: 'Task: member beads set-up' }],
+            reviewerHandler: approvedReviewer,
+            expectBeads: JSON.stringify({ beadsDir: '', prefix: 'mock', syncRemote: remote, repoRemote: remote }),
+            onCommand: noDbMemberOnCommand({ remote, setupLog }),
+        });
+        check(r.error === null, `expected the sprint to proceed, got error: ${r.error && (r.error.constructor.name + ': ' + r.error.message)}`);
         check(r.result && r.result.status === 'success', `expected a successful run, got ${JSON.stringify(r.result)}`);
-        const warn = r.logs.find((l) => l.startsWith('[beads-identity] WARNING: ') && l.includes("member 'm2' reports no beads database in its workFolder"));
-        check(warn, `expected a no-database warning for m2 in the log, got: ${JSON.stringify(r.logs.filter((l) => l.includes('beads')))}`);
-        check(/'bd where --json' -> .*no beads database found\. Hint: run bd init/.test(warn), `expected the probe and raw error in the warning, got: ${warn}`);
-        check(/To fix: run 'bd where' in the member's workFolder; ensure bd is installed there and the folder contains the project's \.beads/.test(warn), `expected the fix in the warning, got: ${warn}`);
-        // The orchestrator still passed; m2 is never reported ok and has no identity entry.
-        check(r.logs.some((l) => l.startsWith('beads ok: orch ')), 'expected the orchestrator "beads ok:" line');
-        check(!r.logs.some((l) => l.startsWith('beads ok: m2 ')), 'm2 must not be reported ok');
+        check(JSON.stringify(setupLog.slice(0, 3)) === JSON.stringify([`bd config set sync.remote ${remote}`, 'bd bootstrap --dry-run --json', 'bd bootstrap --yes']),
+            `expected the set-up commands on m2, got: ${JSON.stringify(setupLog)}`);
+        // Issued through the runner's command() wrapper, before any dispatch or mutating bd.
+        const bootIdx = r.commandLog.indexOf('bd bootstrap --yes');
+        check(bootIdx >= 0, 'bootstrap must go through the command() path');
+        const firstMutating = r.commandLog.findIndex((c) => MUTATING_BD.test(c));
+        check(firstMutating === -1 || firstMutating > bootIdx, 'set-up must precede every mutating bd command');
+        check(r.logs.some((l) => l.includes("member 'm2' has no beads database in its workFolder; setting it up from the expected beads remote")), 'expected the set-up log line');
+        check(r.logs.some((l) => l.startsWith('beads ok: m2 ')), 'expected m2 re-verified ok');
         const published = r.states.find((s) => s.namespace === 'beadsIdentity' || (s.payload && s.payload.namespace === 'beadsIdentity'));
-        check(published, 'expected a beadsIdentity state publish');
-        const data = published.data || (published.payload && published.payload.data);
-        check(data.members.orch && !data.members.m2, `expected an orch entry and no m2 entry, got: ${JSON.stringify(Object.keys(data.members))}`);
-        check(Array.isArray(data.warnings) && data.warnings.some((w) => w.includes("member 'm2' reports no beads database")), `expected the warning in the published state, got: ${JSON.stringify(data.warnings)}`);
+        const data = published && (published.data || (published.payload && published.payload.data));
+        check(data && Array.isArray(data.setUp) && data.setUp.includes('m2'), `expected m2 in the published setUp list, got: ${JSON.stringify(data && data.setUp)}`);
+        check(r.dispatched.length > 0, 'the sprint dispatched after the set-up');
+    });
+});
+
+test('mock sprint: beads set-up failure on a member -> typed BEADS_SETUP_FAILED at preflight, zero dispatches', async (t) => {
+    t.after(forgetScenarioSyncState);
+    await withScenarioMarkers('beadsid-setup-fail', async () => {
+        const remote = 'https://github.com/mock-org/mock-repo.git';
+        const setupLog = [];
+        const r = await runDevelopLoopScenario('beadsid-setup-fail', {
+            members: ['orch', 'm2'],
+            taskSpecs: [{ title: 'Task: member beads set-up failure' }],
+            reviewerHandler: approvedReviewer,
+            expectBeads: JSON.stringify({ beadsDir: '', prefix: 'mock', syncRemote: remote, repoRemote: remote }),
+            onCommand: noDbMemberOnCommand({ remote, setupLog, bootstrapResult: () => mockCmdResult(1, '', 'fatal: Authentication failed') }),
+        });
+        check(r.error instanceof BeadsIdentityError, `expected a BeadsIdentityError abort, got: ${r.error && (r.error.constructor.name + ': ' + r.error.message)}`);
+        check(r.error.reason === 'BEADS_SETUP_FAILED' && r.error.member === 'm2', `expected BEADS_SETUP_FAILED on m2, got reason=${r.error.reason} member=${r.error.member}`);
+        check(/could not bootstrap its beads from 'https:\/\/github\.com\/mock-org\/mock-repo\.git'.*Authentication failed/.test(r.error.message), `expected cause in message: ${r.error.message}`);
+        check(r.dispatched.length === 0, `expected no agent dispatch, got ${r.dispatched.length}`);
+        check(r.commandLog.filter((c) => MUTATING_BD.test(c)).length === 0, 'expected NO mutating bd command');
     });
 });
 

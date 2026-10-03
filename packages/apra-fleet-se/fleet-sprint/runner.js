@@ -98,7 +98,7 @@ import {
     createLlmAuthSelfHealCallback,
 } from './vcs-auth.mjs';
 import { validateIssueId, validateBranchName, validateArgs } from './sprint-args.mjs';
-import { verifyBeadsIdentity, createBeadsIdentityProber } from './beads-identity-check.mjs';
+import { verifyBeadsIdentity, createBeadsIdentityProber, BEADS_READING_ROLES } from './beads-identity-check.mjs';
 import { ROLE_BACKLOG, selectBacklogMember, formatBacklogSelection } from './backlog-role.mjs';
 import { createKbMaintainerSelector, createMemberDetailResolver, ROLE_KB_MAINTAINER } from './kb-maintainer.mjs';
 import { sweepTokenMemories } from './beads-memory-hygiene.mjs';
@@ -1642,6 +1642,17 @@ async function runSprintCycle(context) {
     // the two spots issues a command(). `context.verifyBeadsIdentity` is the
     // test-harness seam (same shape as the other injected preconditions);
     // there is deliberately no CLI flag to skip it.
+    //
+    // A member that a beads-reading role is dispatched to and that has no
+    // beads database (or no sync.remote while the expectation names one) is
+    // set up HERE, before any dispatch, from the expected beads remote -- its
+    // VCS credential ensured first -- and re-verified; failing that, the
+    // sprint stops with BEADS_SETUP_FAILED. The set-up commands go through
+    // command() above, so noteMemberCommand() sees them.
+    const beadsSetupMembers = [...new Set([
+        backlogMember,
+        ...BEADS_READING_ROLES.flatMap((role) => getMembersForRole(role) || []),
+    ])];
     await (context.verifyBeadsIdentity ?? verifyBeadsIdentity)({
         command,
         log,
@@ -1650,6 +1661,8 @@ async function runSprintCycle(context) {
         members: physicalMembers,
         expected: validated.expectBeads ?? null,
         prober: beadsIdentityProber,
+        setupMembers: beadsSetupMembers,
+        ensureVcsAuth: ensureVcsAuthFresh,
     });
 
     // Self-heals deploy.md's declared Permissions onto the deployer /

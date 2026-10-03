@@ -1572,7 +1572,11 @@ process per sprint). Two properties matter:
   together): `noteMemberCommand()`, called from the runner's central
   `command()` wrapper for any `bd config set` / `bd dolt remote` / `bd init` /
   `bd bootstrap` the orchestrator issues on that member; the auth self-heal
-  firing inside `runDoltStep`; and `repair()`.
+  firing inside `runDoltStep`; and `repair()`. The beads preflight's member
+  set-up (beads-identity-check.mjs `setupMemberBeads`: `bd config set
+  sync.remote <expected>` + `bd bootstrap` on a beads-reading member with no
+  database or no sync.remote) is such an orchestrator-issued command and goes
+  through that wrapper, so it hits this seam before the first D-pull.
 - **The per-dispatch seam is SOFT (round 4).** A dispatched agent runs its
   `bd` commands in its own session on the member, never through the
   `command()` wrapper, so `noteMemberCommand()` cannot see them; the runner's

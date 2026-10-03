@@ -897,6 +897,11 @@ export const BEADS_IDENTITY_FAILURE_REASONS = Object.freeze({
     // The member's shell cannot find the bd CLI at all: every bd a role or
     // the engine runs there would fail mid-sprint, so refuse up front.
     BD_MISSING: 'BD_MISSING',
+    // A beads-reading member had no usable beads database (or no
+    // sync.remote) and the preflight could not set one up from the sprint's
+    // expected beads remote -- dispatching would hand the role a database
+    // that does not hold the sprint's issues, so refuse up front.
+    BEADS_SETUP_FAILED: 'BEADS_SETUP_FAILED',
 });
 
 /**
@@ -907,7 +912,9 @@ export const BEADS_IDENTITY_FAILURE_REASONS = Object.freeze({
  * own identity) on a field that resolved on both sides. A probe that fails
  * or cannot be parsed is a logged warning, never this error: only a proven
  * mismatch is a data-corruption risk worth refusing the sprint for. The one
- * other refusal is BD_MISSING: the probe proved the member has no bd CLI.
+ * other refusals are BD_MISSING (the probe proved the member has no bd CLI)
+ * and BEADS_SETUP_FAILED (a beads-reading member had no database / no
+ * sync.remote and setting it up from the expected remote failed).
  *
  * A WorkflowError so main()'s terminal record names the reason, but
  * deliberately NOT a typed abort: nothing has been dispatched or mutated, so
