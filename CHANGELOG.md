@@ -2,40 +2,6 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased] -- Supervisor serves beads from a cached, tip-checked view
-
-The supervisor now reads the beads backlog through one shared cached view that refreshes via the
-backlog member only when the remote Dolt tip changes (single in-flight refresh, busy/lock rounds
-skipped, a failed list after a pull stays owed). `POST /api/sprints` always forces a fresh re-list
-for its overlap guard and answers 503 with the reason when beads cannot be verified, never
-reserving or spawning. The dashboard and backlog views read the cached snapshot without blocking,
-and `GET /state` carries `beadsFreshness` so the page shows "Beads as of", errors and a busy
-note. See `docs/backlog-role.md`.
-
-```
-Budget ceiling: not set (no --budget flag) -- unlimited for this run.
-Tracked spend (priced dispatches only): $19.3212.
-Remaining budget: unknown/unbounded.
-Integ-test-runner spend: $0.0836 across 2 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
-Pricing source: all 20 priced dispatch(es) used real per-member rates (get_member_model_pricing).
-Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
-```
-
-Carried forward as open backlog: dashboard lag behind unpushed bead changes made by sprint
-children in the shared clone; a supervisor booting with an empty registry answering 503 until the
-backlog member's retry (recurrence of an earlier fix); a smoke-test sprint whose develop round
-failed with the member missing a VCS provider; and the regression-pass failures already tracked by
-earlier carry-over issues.
-
-## [Unreleased] -- Regression phase no longer assumes apra-fleet's playbook structure
-
-The fleet-sprint regression phase, the `regression-test-runner` role prompt and the sprint report
-used to dictate apra-fleet's own two-part pass (a real-bd suite plus a sandboxed toy-sprint smoke
-test) to every target. They now run every part the target's `regression-test-playbook.md` defines.
-The runner output schema (v3) adds `sections` (one `{name, passed}` per playbook part) and makes
-`suitePassed`/`smokePassed` optional deprecated fields, still accepted from older runners. The
-generic-boundary guard gained an `apra-fleet-regression-structure` pattern for this leak class.
-
 ## [Unreleased] -- KB redesign stage 6: update_member fleet_install and build-aware upgrade
 
 Sprint goal: let `update_member` upgrade a remote member's own apra-fleet on request, reject unknown input, and make the member version check build-aware. Both are delivered. Build and `npm test` passed (one unrelated timer-granularity flake in the client timeout test passed on rerun). Carried forward: that flaky test, and untested paths (`fleet_install: "skip"` with a provider change; build-only difference when arch is unknown or no install source exists).
@@ -175,6 +141,40 @@ Note: dispatches using an unpriced model id are not reflected above (see N10, fe
 - Design notes: docs/kb-member-view-and-maintainer.md.
 
 Carried forward: the reset guard hardcodes the `origin` remote.
+
+## [Unreleased] -- Supervisor serves beads from a cached, tip-checked view
+
+The supervisor now reads the beads backlog through one shared cached view that refreshes via the
+backlog member only when the remote Dolt tip changes (single in-flight refresh, busy/lock rounds
+skipped, a failed list after a pull stays owed). `POST /api/sprints` always forces a fresh re-list
+for its overlap guard and answers 503 with the reason when beads cannot be verified, never
+reserving or spawning. The dashboard and backlog views read the cached snapshot without blocking,
+and `GET /state` carries `beadsFreshness` so the page shows "Beads as of", errors and a busy
+note. See `docs/backlog-role.md`.
+
+```
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $19.3212.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.0836 across 2 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 20 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+```
+
+Carried forward as open backlog: dashboard lag behind unpushed bead changes made by sprint
+children in the shared clone; a supervisor booting with an empty registry answering 503 until the
+backlog member's retry (recurrence of an earlier fix); a smoke-test sprint whose develop round
+failed with the member missing a VCS provider; and the regression-pass failures already tracked by
+earlier carry-over issues.
+
+## [Unreleased] -- Regression phase no longer assumes apra-fleet's playbook structure
+
+The fleet-sprint regression phase, the `regression-test-runner` role prompt and the sprint report
+used to dictate apra-fleet's own two-part pass (a real-bd suite plus a sandboxed toy-sprint smoke
+test) to every target. They now run every part the target's `regression-test-playbook.md` defines.
+The runner output schema (v3) adds `sections` (one `{name, passed}` per playbook part) and makes
+`suitePassed`/`smokePassed` optional deprecated fields, still accepted from older runners. The
+generic-boundary guard gained an `apra-fleet-regression-structure` pattern for this leak class.
 
 ## [Unreleased] -- Supervisor owns and hard-pins its backlog member
 
