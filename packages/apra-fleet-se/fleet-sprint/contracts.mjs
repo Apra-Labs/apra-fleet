@@ -636,6 +636,20 @@ const FALLBACK_regressionReport = {
         smokePassed: { type: 'boolean' },
         bugsFiled: { type: 'array', items: { type: 'string' } },
         summary: { type: 'string' },
+        // Optional verdict fields, copied verbatim from a machine-written
+        // verdict file when the target playbook names one.
+        verdict: { type: 'string', enum: ['PASS', 'FAIL', 'INCONCLUSIVE'] },
+        testedSha: { type: 'string', pattern: '^[0-9a-f]{40}$' },
+        evidence: {
+            type: 'object',
+            additionalProperties: true,
+            properties: {
+                verdictRef: { type: 'string' },
+                runUrl: { type: 'string' },
+                newFailures: { type: 'array', items: { type: 'string' } },
+                inventoryMissing: { type: 'array', items: { type: 'string' } },
+            },
+        },
         smokeEvidence: {
             type: 'object',
             additionalProperties: true,

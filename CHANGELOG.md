@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- Regression result carries a machine verdict (PASS/FAIL/INCONCLUSIVE)
+
+The `regression-test-runner` output schema gains optional `verdict` (`PASS`/`FAIL`/`INCONCLUSIVE`),
+`testedSha` (40-hex) and `evidence` (`verdictRef`, `runUrl`, `newFailures[]`, `inventoryMissing[]`),
+copied verbatim from a machine-written verdict file when the target playbook names one (never
+authored by the runner). The sprint report prints `Regression: <VERDICT> @ <sha12>` (plus evidence counts and run URL) and the phase log
+follows the verdict, so INCONCLUSIVE no longer reads as FAILED. Nothing new is required; results
+without a verdict render as before.
+
 ## [Unreleased] -- Regression phase no longer assumes apra-fleet's playbook structure
 
 The fleet-sprint regression phase, the `regression-test-runner` role prompt and the sprint report

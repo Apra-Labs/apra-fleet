@@ -83,6 +83,42 @@ export function formatRegressionParts(r) {
     return parts.length ? ` (${parts.join(', ')})` : '';
 }
 
+const REGRESSION_VERDICTS = ['PASS', 'FAIL', 'INCONCLUSIVE'];
+
+/**
+ * The regression verdict, or null when the runner reported none. A verdict
+ * is copied verbatim from a machine-written verdict file (see
+ * agents/regression-test-runner.md), so it outranks the boolean `passed`:
+ * INCONCLUSIVE must never be rendered as a failure.
+ * @param {object} r regression-test-runner result
+ * @returns {'PASS'|'FAIL'|'INCONCLUSIVE'|null}
+ */
+export function regressionVerdictOf(r) {
+    return r && REGRESSION_VERDICTS.includes(r.verdict) ? r.verdict : null;
+}
+
+/**
+ * One-line headline for a regression result: "Regression: <VERDICT> @ <sha12>
+ * (parts) [evidence counts] <runUrl>" when a verdict is present, else the legacy
+ * "Regression pass: PASSED|FAILED (parts)". No trailing period.
+ * @param {object} r regression-test-runner result
+ * @returns {string}
+ */
+export function formatRegressionHeadline(r) {
+    const verdict = regressionVerdictOf(r);
+    if (verdict) {
+        const sha = typeof r.testedSha === 'string' && r.testedSha ? ` @ ${r.testedSha.slice(0, 12)}` : '';
+        const ev = r.evidence && typeof r.evidence === 'object' ? r.evidence : {};
+        const counts = [];
+        if (Array.isArray(ev.newFailures)) counts.push(`${ev.newFailures.length} new failure(s)`);
+        if (Array.isArray(ev.inventoryMissing)) counts.push(`${ev.inventoryMissing.length} inventory missing`);
+        const evText = counts.length ? ` [${counts.join(', ')}]` : '';
+        const url = typeof ev.runUrl === 'string' && ev.runUrl ? ` ${ev.runUrl}` : '';
+        return `Regression: ${verdict}${sha}${formatRegressionParts(r)}${evText}${url}`;
+    }
+    return `Regression pass: ${r.passed === true ? 'PASSED' : 'FAILED'}${formatRegressionParts(r)}`;
+}
+
 /**
  * Assembles the `analysisText` block for the Harvester dispatch from this
  * run's in-memory tracking state: cycle-by-cycle closed-bead progress,
@@ -117,8 +153,7 @@ export function buildAnalysisText({
         : regressionResult === null
         ? ['Regression pass: not run this sprint (no regression-test-playbook.md, or the probe failed).']
         : [
-            `Regression pass: ${regressionResult.passed === true ? 'PASSED' : 'FAILED'}`
-            + `${formatRegressionParts(regressionResult)}.`,
+            `${formatRegressionHeadline(regressionResult)}.`,
             `Carry-over beads filed: ${(regressionResult.bugsFiled || []).join(', ') || 'none'}.`,
             `Summary: ${regressionResult.summary || '(none reported)'}`,
             'Informational only -- this pass ran after the final verdict and did not gate it; any bead '
