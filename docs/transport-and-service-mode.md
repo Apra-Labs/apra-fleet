@@ -215,7 +215,8 @@ returns 503 with it; a sprint child prints it on stderr). See
   older registered binary, it fails with `AUTOSTART_VERSION_SKEW`. If the service already started
   the mismatched server it stays up (and other clients attach to it): `apra-fleet stop`, then
   `apra-fleet install` and `apra-fleet start`. `apra-fleet status` warns when the running server's
-  version differs from the installed apra-fleet.
+  version differs from the installed apra-fleet. That warning compares only x.y.z (builds with the
+  same core, e.g. a dev build, do not warn); the client auto-start check compares the full version.
 - The install summary reports "registered and running" only once the server answers /health
   (wait 30s by default; `APRA_FLEET_INSTALL_HEALTH_TIMEOUT_MS` overrides it, `0` skips the
   check).

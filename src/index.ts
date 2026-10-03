@@ -388,7 +388,9 @@ async function startHttpServer() {
     const stopped = readStoppedMarker();
     if (stopped) {
       const line = `${new Date().toISOString()} apra-fleet service launch skipped: ${describeStoppedMarker(stopped)}`;
-      if (process.stdout.isTTY) console.error(line); // someone is watching: always say why
+      // Someone is watching (a console, or stderr on a mintty/Git Bash tty
+      // while stdout is piped): always say why.
+      if (process.stdout.isTTY || process.stderr.isTTY) console.error(line);
       else if (startGuard.shouldLogServiceNotice('stopped-by-user')) console.log(line);
       process.exit(0);
     }

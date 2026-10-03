@@ -10,7 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import net from 'node:net';
-import { consumeLaunchMarkers } from '../src/services/service-manager/types.js';
+import { consumeLaunchMarkers, MACOS_PLIST_LABEL } from '../src/services/service-manager/types.js';
 import {
   serviceStartBackoff, recordServiceStartAttempt, clearServiceStartFailures, shouldLogServiceNotice,
   MAX_CONSECUTIVE_FAILURES, BACKOFF_MS,
@@ -140,7 +140,7 @@ describe('built server: service launch after apra-fleet stop', () => {
   // INVOCATION_ID / XPC_SERVICE_NAME leak into hand-run shells (systemd-run
   // --shell, tmux under a user unit): a hand-run `apra-fleet run` there must
   // START, not exit 0 silently.
-  for (const leaked of [{ INVOCATION_ID: 'abc123' }, { XPC_SERVICE_NAME: 'com.example.term' }]) {
+  for (const leaked of [{ INVOCATION_ID: 'abc123' }, { XPC_SERVICE_NAME: MACOS_PLIST_LABEL }]) {
     it(`hand-run with only ${Object.keys(leaked)[0]} set starts the server despite the marker (marker kept)`, async () => {
       const port = await freePort();
       const { ready, stdout } = await runServerUntilReady({
@@ -191,6 +191,8 @@ describe('consumeLaunchMarkers', () => {
     expect(consumeLaunchMarkers(env)).toEqual({ service: true, managed: true });
     expect(env).toEqual({ INVOCATION_ID: 'x', OTHER: 'y' });
     expect(consumeLaunchMarkers({ INVOCATION_ID: 'x' })).toEqual({ service: false, managed: true });
+    // A child of the launchd-run server inherits our label: managed, never "service".
+    expect(consumeLaunchMarkers({ XPC_SERVICE_NAME: MACOS_PLIST_LABEL })).toEqual({ service: false, managed: true });
     expect(consumeLaunchMarkers({})).toEqual({ service: false, managed: false });
   });
 });
