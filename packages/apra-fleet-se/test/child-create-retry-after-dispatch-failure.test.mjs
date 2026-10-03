@@ -139,12 +139,19 @@ describe('createChildBeadWithAllocatedId -- dispatched create failures consume t
 // A bd store whose `bd show` reflects real contents, so the pre-create probe
 // SEES an occupant. `landThenError` makes the create write the row and then
 // report a transport failure (the ambiguous landed-but-errored case).
-function makeStoreCommand({ beads = [], landThenError = new Set() } = {}) {
+// `storedDescription(staged)` lets a test model bd storing the body with its
+// own whitespace (or a different body altogether).
+function makeStoreCommand({ beads = [], landThenError = new Set(), storedDescription = (d) => d } = {}) {
     const store = new Map(beads.map((b) => [b.id, b]));
     const calls = [];
+    let staged = '';
     const command = async (cmd) => {
         calls.push(cmd);
-        if (/^node -e "/.test(cmd)) return STAGED_PATH;
+        if (/^node -e "/.test(cmd)) {
+            const m = cmd.match(/"([A-Za-z0-9+/=]*)"\s*$/);
+            staged = m ? Buffer.from(m[1], 'base64').toString('utf-8') : '';
+            return STAGED_PATH;
+        }
         const show = cmd.match(/^bd show (\S+) --json$/);
         if (show) {
             const b = store.get(show[1]);
@@ -155,7 +162,7 @@ function makeStoreCommand({ beads = [], landThenError = new Set() } = {}) {
         if (create) {
             const [, title, id] = create;
             if (store.has(id)) throw new Error(`Exit code 1: Error: issue ${id} already exists`);
-            store.set(id, { id, title, status: 'open' });
+            store.set(id, { id, title, description: storedDescription(staged), status: 'open' });
             if (landThenError.has(id)) throw new Error(`simulated transport fault after creating ${id}`);
             return '';
         }
@@ -201,6 +208,30 @@ describe('createChildBeadWithAllocatedId -- review follow-ups (GitHub #615)', ()
         assert.equal(calls.filter((c) => c.startsWith('bd create ')).length, 1);
         assert.ok(calls.includes('bd update par-1.1 --parent par-1'), 'the adopted child is linked to the parent');
         assert.ok(logs.some((l) => l.includes('adopting it instead of creating a duplicate')), JSON.stringify(logs));
+    });
+
+    test('bd\'s own whitespace (CRLF, trailing spaces) does not defeat adoption', async () => {
+        const { command, store } = makeStoreCommand({
+            landThenError: new Set(['par-1.1']),
+            storedDescription: (d) => `${d.replace(/\n/g, '  \r\n')}\r\n\r\n`,
+        });
+        const res = await createChildBeadWithAllocatedId(baseOpts(command, [], { title: 'Ws', description: 'line one\nline two' }));
+        assert.equal(res.childId, 'par-1.1');
+        assert.deepEqual([...store.keys()], ['par-1.1']);
+    });
+
+    test('same title but a DIFFERENT description after a failed create is not adopted; the id stays consumed and a fresh id is used', async () => {
+        const { command, store } = makeStoreCommand({
+            landThenError: new Set(['par-1.1']),
+            // What landed at par-1.1 is some other finding that shares the title.
+            storedDescription: () => 'a different finding body',
+        });
+        const logs = [];
+        const res = await createChildBeadWithAllocatedId(baseOpts(command, logs, { title: 'Same Title', description: 'my body' }));
+        assert.equal(res.childId, 'par-1.2');
+        assert.deepEqual([...store.keys()].sort(), ['par-1.1', 'par-1.2']);
+        assert.deepEqual(alloc.status().parents['par-1'].free, [], 'the refused id stays consumed');
+        assert.ok(logs.some((l) => l.includes("'par-1.1' holds a bead with this title but a different description; not adopting it")), JSON.stringify(logs));
     });
 
     test('an id that holds a DIFFERENT title after a failed create is not adopted; the retry uses a fresh id', async () => {

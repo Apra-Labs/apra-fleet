@@ -305,8 +305,24 @@ export async function createChildBeadWithAllocatedId(opts) {
 }
 
 /**
+ * A description as compared for adoption: line endings unified, trailing
+ * whitespace per line and surrounding blank space dropped, so bd's own
+ * whitespace handling of the staged body never defeats the match.
+ * @param {unknown} text
+ * @returns {string}
+ */
+function normalizeBodyForCompare(text) {
+    return String(text ?? '')
+        .replace(/\r\n?/g, '\n')
+        .split('\n')
+        .map((l) => l.replace(/[ \t]+$/, ''))
+        .join('\n')
+        .trim();
+}
+
+/**
  * After a dispatched `bd create --id <childId>` reported failure: if the bead
- * nevertheless exists at that id with the same title, the create landed --
+ * nevertheless exists at that id with the same title AND description, the create landed --
  * link it under the parent and return it, so the retry does not mint a
  * duplicate. Any probe failure means "not landed" (retry as normal).
  * @returns {Promise<{ childId: string }|null>}
@@ -324,7 +340,13 @@ async function adoptLandedChild(opts, childId) {
         return null;
     }
     if (!existing || existing.title !== title) return null;
-    log(`[id-allocator] bd create for '${childId}' reported failure but the bead landed with this title; adopting it instead of creating a duplicate`);
+    // Title alone is not proof it is OUR create (a reviewer can repeat a
+    // title across findings): the body must match too.
+    if (normalizeBodyForCompare(existing.description) !== normalizeBodyForCompare(opts.description)) {
+        log(`[id-allocator] '${childId}' holds a bead with this title but a different description; not adopting it -- the id stays consumed and a fresh id is tried`);
+        return null;
+    }
+    log(`[id-allocator] bd create for '${childId}' reported failure but the bead landed with this title and description; adopting it instead of creating a duplicate`);
     try {
         await command(
             `bd update ${childId} --parent ${parentId}`,
