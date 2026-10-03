@@ -28,6 +28,7 @@ function world({ upAfterMs = 150, startsServer = true } = {}) {
         if (startsServer) setTimeout(() => { w.up = true; }, upAfterMs);
         return { done: Promise.resolve({ code: 0, output: 'Server starting...' }) };
     };
+    w.healthVersion = async () => null;
     return w;
 }
 
@@ -43,13 +44,13 @@ describe('autoStartFleetServer', () => {
     test('gone -> runs `start` once with the resolved command, waits for /health, records the start', async () => {
         const w = world();
         const r = await autoStartFleetServer({
-            env, checkRunningInstance: w.probe, runStart: w.runStart,
+            env, checkRunningInstance: w.probe, runStart: w.runStart, healthVersion: w.healthVersion,
             startCommand: { command: '/opt/apra-fleet', args: ['start'] }, timeoutMs: 5000,
         });
         assert.deepStrictEqual([r.running, r.url, r.started], [true, URL_, true]);
         assert.strictEqual(w.starts.length, 1);
         assert.deepStrictEqual(w.starts[0].args, ['start']);
-        assert.strictEqual(w.starts[0].env, env);
+        assert.deepStrictEqual(w.starts[0].env, { ...env, APRA_FLEET_AUTOSTART: '1' }, 'the started start knows it is an auto-start');
         const ledger = JSON.parse(fs.readFileSync(path.join(dataDir, 'client-autostart.json'), 'utf8'));
         assert.strictEqual(ledger.starts.length, 1);
         assert.strictEqual(fs.existsSync(path.join(dataDir, 'client-autostart.lock')), false, 'lock released');
@@ -57,7 +58,7 @@ describe('autoStartFleetServer', () => {
 
     test('two concurrent clients on a gone server start exactly one server', async () => {
         const w = world({ upAfterMs: 700 });
-        const deps = { env, checkRunningInstance: w.probe, runStart: w.runStart, startCommand: { command: 'x', args: ['start'] }, timeoutMs: 8000 };
+        const deps = { env, checkRunningInstance: w.probe, runStart: w.runStart, healthVersion: w.healthVersion, startCommand: { command: 'x', args: ['start'] }, timeoutMs: 8000 };
         const [a, b] = await Promise.all([autoStartFleetServer(deps), autoStartFleetServer(deps)]);
         assert.strictEqual(w.starts.length, 1, 'exactly one `start` ran');
         assert.strictEqual(a.url, URL_);
@@ -69,7 +70,7 @@ describe('autoStartFleetServer', () => {
         const w = world();
         await assert.rejects(
             autoStartFleetServer({
-                env, runStart: w.runStart, startCommand: { command: 'x', args: ['start'] },
+                env, runStart: w.runStart, healthVersion: w.healthVersion, startCommand: { command: 'x', args: ['start'] },
                 checkRunningInstance: async () => ({ running: false, state: 'unresponsive', pid: 9, url: URL_ }),
             }),
             (err) => err instanceof FleetAutoStartError && err.code === 'SERVER_UNRESPONSIVE' && /apra-fleet stop/.test(err.message),
@@ -90,7 +91,7 @@ describe('autoStartFleetServer', () => {
         }));
         const w = world();
         await assert.rejects(
-            autoStartFleetServer({ env, checkRunningInstance: w.probe, runStart: w.runStart, startCommand: { command: 'x', args: ['start'] } }),
+            autoStartFleetServer({ env, checkRunningInstance: w.probe, runStart: w.runStart, healthVersion: w.healthVersion, startCommand: { command: 'x', args: ['start'] } }),
             (err) => {
                 assert.strictEqual(err.code, 'AUTOSTART_LIMIT');
                 assert.ok(err.message.includes(path.join(logs, 'fleet-200.log')), err.message);
@@ -104,14 +105,14 @@ describe('autoStartFleetServer', () => {
         const old = Date.now() - 60 * 60 * 1000;
         fs.writeFileSync(path.join(dataDir, 'client-autostart.json'), JSON.stringify({ starts: [old, old, old, old] }));
         const w = world();
-        const r = await autoStartFleetServer({ env, checkRunningInstance: w.probe, runStart: w.runStart, startCommand: { command: 'x', args: ['start'] }, timeoutMs: 5000 });
+        const r = await autoStartFleetServer({ env, checkRunningInstance: w.probe, runStart: w.runStart, healthVersion: w.healthVersion, startCommand: { command: 'x', args: ['start'] }, timeoutMs: 5000 });
         assert.strictEqual(r.started, true);
     });
 
     test('server never answers -> AUTOSTART_TIMEOUT naming the log and the start output', async () => {
         const w = world({ startsServer: false });
         await assert.rejects(
-            autoStartFleetServer({ env, checkRunningInstance: w.probe, runStart: w.runStart, startCommand: { command: 'x', args: ['start'] }, timeoutMs: 1200 }),
+            autoStartFleetServer({ env, checkRunningInstance: w.probe, runStart: w.runStart, healthVersion: w.healthVersion, startCommand: { command: 'x', args: ['start'] }, timeoutMs: 1200 }),
             (err) => err.code === 'AUTOSTART_TIMEOUT' && err.message.includes(path.join(dataDir, 'fleet.log')) && /Server starting/.test(err.message),
         );
         assert.strictEqual(fs.existsSync(path.join(dataDir, 'client-autostart.lock')), false);
@@ -120,7 +121,7 @@ describe('autoStartFleetServer', () => {
     test('a stale lock left by a dead client is broken', async () => {
         fs.writeFileSync(path.join(dataDir, 'client-autostart.lock'), JSON.stringify({ pid: 2 ** 30, at: Date.now() }));
         const w = world();
-        const r = await autoStartFleetServer({ env, checkRunningInstance: w.probe, runStart: w.runStart, startCommand: { command: 'x', args: ['start'] }, timeoutMs: 5000 });
+        const r = await autoStartFleetServer({ env, checkRunningInstance: w.probe, runStart: w.runStart, healthVersion: w.healthVersion, startCommand: { command: 'x', args: ['start'] }, timeoutMs: 5000 });
         assert.strictEqual(r.started, true);
         assert.strictEqual(w.starts.length, 1);
     });
@@ -302,7 +303,59 @@ describe("a deliberate 'apra-fleet stop' is never undone by a client", () => {
         mark();
         const w = world();
         await assert.rejects(
-            autoStartFleetServer({ env, checkRunningInstance: w.probe, runStart: w.runStart, startCommand: { command: 'x', args: ['start'] } }),
+            autoStartFleetServer({ env, checkRunningInstance: w.probe, runStart: w.runStart, healthVersion: w.healthVersion, startCommand: { command: 'x', args: ['start'] } }),
+            (err) => err.code === 'SERVER_STOPPED_BY_USER',
+        );
+        assert.strictEqual(w.starts.length, 0);
+    });
+});
+
+describe('auto-start: version of the server that came up, and a stop racing the start', () => {
+    let dataDir;
+    let env;
+    beforeEach(() => {
+        dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-autostart-s12-'));
+        env = { APRA_FLEET_DATA_DIR: dataDir };
+    });
+    afterEach(() => { fs.rmSync(dataDir, { recursive: true, force: true }); });
+
+    test('the started server reports another version (service ran an older binary) -> AUTOSTART_VERSION_SKEW', async () => {
+        const w = world();
+        await assert.rejects(
+            autoStartFleetServer({
+                env, checkRunningInstance: w.probe, runStart: w.runStart, startCommand: { command: 'x', args: ['start'] },
+                timeoutMs: 5000, expectedVersion: 'v0.4.4_abc', healthVersion: async () => 'v0.4.3_95435e',
+            }),
+            (err) => err.code === 'AUTOSTART_VERSION_SKEW' && err.message.includes('v0.4.3_95435e')
+                && err.message.includes('v0.4.4_abc') && /apra-fleet install/.test(err.message),
+        );
+    });
+
+    test('the started server reports the matching version -> attached', async () => {
+        const w = world();
+        const r = await autoStartFleetServer({
+            env, checkRunningInstance: w.probe, runStart: w.runStart, startCommand: { command: 'x', args: ['start'] },
+            timeoutMs: 5000, expectedVersion: 'v0.4.4_abc', healthVersion: async () => 'v0.4.4_def',
+        });
+        assert.strictEqual(r.started, true);
+    });
+
+    test("a stop that lands while waiting for another client's lock is honoured under the lock (no start)", async () => {
+        const lock = path.join(dataDir, 'client-autostart.lock');
+        fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, at: Date.now() })); // another live client holds it
+        const w = world();
+        let probes = 0;
+        const probe = async () => {
+            probes++;
+            if (probes === 1) {
+                // The user runs 'apra-fleet stop' and the other client gives up.
+                fs.writeFileSync(path.join(dataDir, 'stopped-by-user.json'), JSON.stringify({ stoppedAt: '2026-10-03T12:00:00.000Z', by: 'apra-fleet stop' }));
+                fs.unlinkSync(lock);
+            }
+            return { running: false, state: 'gone' };
+        };
+        await assert.rejects(
+            autoStartFleetServer({ env, checkRunningInstance: probe, runStart: w.runStart, healthVersion: w.healthVersion, startCommand: { command: 'x', args: ['start'] }, timeoutMs: 5000 }),
             (err) => err.code === 'SERVER_STOPPED_BY_USER',
         );
         assert.strictEqual(w.starts.length, 0);

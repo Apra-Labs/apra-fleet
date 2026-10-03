@@ -608,7 +608,12 @@ Resolution order:
    wrote `<data dir>/stopped-by-user.json`, see `readStoppedByUser()`) is never
    started: `SERVER_STOPPED_BY_USER` with "apra-fleet was stopped by the user
    at <time> ...; run 'apra-fleet start'" (resolution and the reconnecting
-   transport alike; a running server is still attached). Other codes: `AUTOSTART_TIMEOUT`,
+   transport alike; a running server is still attached). The marker is
+   re-checked under the start lock, and the spawned `apra-fleet start` runs
+   with `APRA_FLEET_AUTOSTART=1` so it refuses (instead of clearing the
+   marker) if a stop raced it. With a registered service, `start` runs the
+   service's binary, so after /health the server's reported version is
+   compared again (`AUTOSTART_VERSION_SKEW` on a mismatch). Other codes: `AUTOSTART_TIMEOUT`,
    `AUTOSTART_NO_BINARY`, `SERVER_UNRESPONSIVE`. An unresponsive server gets
    the actionable error and no start. This replaces the old private stdio
    self-spawn fallback; stdio is now only the explicit

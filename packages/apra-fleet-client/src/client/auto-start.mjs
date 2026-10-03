@@ -19,6 +19,7 @@
  * All filesystem/process/clock access is injectable for tests.
  */
 import fs from 'node:fs';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn, execFileSync } from 'node:child_process';
@@ -272,6 +273,40 @@ function lockIsStale(file, now, maxAgeMs) {
     }
 }
 
+/**
+ * After an auto-start: the server that answered must be this client's
+ * apra-fleet version. Unknown on either side -> no verdict (a server too old to
+ * report a version is still caught by the start-candidate check).
+ */
+async function assertServerVersion(inst, deps) {
+    const expected = versionCore(clientServerVersion(deps));
+    const reported = await (deps.healthVersion || defaultHealthVersion)(inst.url);
+    const got = versionCore(reported);
+    if (expected && got && expected !== got) {
+        throw new FleetAutoStartError(
+            `Started the apra-fleet HTTP server, but it reports version ${reported} while this client belongs to ` +
+                `apra-fleet ${clientServerVersion(deps)} (the registered service runs a different apra-fleet build). ` +
+                "Run 'apra-fleet install' to install the matching version, then 'apra-fleet start'.",
+            { code: 'AUTOSTART_VERSION_SKEW', details: { expected: clientServerVersion(deps), found: reported, url: inst.url, pid: inst.pid } },
+        );
+    }
+}
+
+/** The version a running server reports on GET /health, or null. */
+function defaultHealthVersion(url) {
+    return new Promise((resolve) => {
+        const req = http.get(url.replace(/\/mcp$/, '/health'), { timeout: 3000 }, (res) => {
+            let body = '';
+            res.on('data', (d) => { if (body.length < 8192) body += d; });
+            res.on('end', () => {
+                try { resolve(JSON.parse(body).version || null); } catch { resolve(null); }
+            });
+        });
+        req.on('error', () => resolve(null));
+        req.on('timeout', () => { req.destroy(); resolve(null); });
+    });
+}
+
 /** Runs `start`, collecting a bounded amount of its output. */
 function defaultRunStart(command, args, env) {
     let output = '';
@@ -344,6 +379,9 @@ export async function autoStartFleetServer(deps) {
 
     let child = null; // the 'start' process (it exits on its own after launching the server)
     try {
+        // Re-check under the lock: a 'apra-fleet stop' may have raced us.
+        const stoppedNow = readStoppedByUser(dataDir);
+        if (stoppedNow) throw stoppedByUserError(stoppedNow);
         const first = await probe({ env });
         if (first && first.running) return { ...first, started: false };
         if (first && first.state === 'unresponsive') throw unresponsive(first);
@@ -363,14 +401,21 @@ export async function autoStartFleetServer(deps) {
         } catch { /* best-effort */ }
 
         const cmd = deps.startCommand || resolveFleetStartCommand(deps);
-        child = runStart(cmd.command, cmd.args, env);
+        // APRA_FLEET_AUTOSTART=1: the started `apra-fleet start` refuses (instead
+        // of clearing the marker) if a user stop lands in the meantime.
+        child = runStart(cmd.command, cmd.args, { ...env, APRA_FLEET_AUTOSTART: '1' });
         let startResult = null;
         child.done.then((r) => { startResult = r; });
 
         while (now() < deadline) {
             await sleep(POLL_MS);
             const inst = await probe({ env });
-            if (inst && inst.running) return { ...inst, started: true };
+            if (inst && inst.running) {
+                // With a service installed, `apra-fleet start` runs whatever binary the
+                // task/plist/unit points at -- verify what actually came up.
+                await assertServerVersion(inst, deps);
+                return { ...inst, started: true };
+            }
         }
         if (!startResult && child.kill) child.kill(); // never the server: 'start' detached it
         const log = lastServerLog(dataDir);
