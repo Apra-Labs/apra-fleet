@@ -2,6 +2,31 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- Supervisor serves beads from a cached, tip-checked view
+
+The supervisor now reads the beads backlog through one shared cached view that refreshes via the
+backlog member only when the remote Dolt tip changes (single in-flight refresh, busy/lock rounds
+skipped, a failed list after a pull stays owed). `POST /api/sprints` always forces a fresh re-list
+for its overlap guard and answers 503 with the reason when beads cannot be verified, never
+reserving or spawning. The dashboard and backlog views read the cached snapshot without blocking,
+and `GET /state` carries `beadsFreshness` so the page shows "Beads as of", errors and a busy
+note. See `docs/backlog-role.md`.
+
+```
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $19.3212.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.0836 across 2 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 20 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+```
+
+Carried forward as open backlog: dashboard lag behind unpushed bead changes made by sprint
+children in the shared clone; a supervisor booting with an empty registry answering 503 until the
+backlog member's retry (recurrence of an earlier fix); a smoke-test sprint whose develop round
+failed with the member missing a VCS provider; and the regression-pass failures already tracked by
+earlier carry-over issues.
+
 ## [Unreleased] -- Supervisor owns and hard-pins its backlog member
 
 `fleet-se serve` now ensures its own LLM-less, `unreservable` backlog member for its project
