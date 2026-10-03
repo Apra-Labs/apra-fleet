@@ -206,9 +206,11 @@ export function validateBranchName(name, label) {
 
 // Strip the ref prefixes a caller may legitimately pass for the same branch
 // (refs/heads/<b>, origin/<b>, refs/remotes/origin/<b>) so "main",
-// "origin/main" and "refs/heads/main" all compare equal.
+// "origin/main" and "refs/heads/main" all compare equal. Compared
+// case-insensitively: a pair differing only in case is never a legitimate
+// sprint (case-insensitive filesystems and hosts treat them as one branch).
 function normalizeBranchForCompare(name) {
-    let n = String(name);
+    let n = String(name).toLowerCase();
     for (const prefix of ['refs/remotes/origin/', 'refs/heads/', 'origin/']) {
         if (n.startsWith(prefix)) { n = n.slice(prefix.length); break; }
     }

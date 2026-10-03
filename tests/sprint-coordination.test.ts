@@ -5,7 +5,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 
 import { doltPushMutex } from '../src/tools/dolt-push-mutex.js';
-import { childIdAllocator } from '../src/tools/child-id-allocator.js';
+import { childIdAllocator, childIdAllocatorSchema } from '../src/tools/child-id-allocator.js';
 import {
   createDoltMutex,
   createIdAllocator,
@@ -243,6 +243,12 @@ describe('child_id_allocator tool', () => {
     expect(next.childId).toBe('apra-fleet-s.3');
     const status = await allocCall({ action: 'status' });
     expect(status.parents['apra-fleet-s'].free).toEqual([]);
+  });
+
+  it('describes floor as the highest existing child seq (what callers pass), not a count', () => {
+    const desc = (childIdAllocatorSchema.shape.floor as any).description as string;
+    expect(desc).toMatch(/Highest EXISTING child seq/);
+    expect(desc).not.toMatch(/Count of children/);
   });
 
   it('validates required arguments per action', async () => {

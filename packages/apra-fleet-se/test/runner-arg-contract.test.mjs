@@ -231,6 +231,11 @@ describe('validateArgs', () => {
         }
     });
 
+    test('validateBranchPair compares case-insensitively (an equal-ignoring-case pair is never legitimate)', () => {
+        assert.throws(() => validateBranchPair('Main', 'main'), /must differ from base_branch/);
+        assert.throws(() => validateBranchPair('ORIGIN/Feat/X', 'refs/heads/feat/x'), /must differ from base_branch/);
+    });
+
     test('validateBranchPair accepts distinct branches (a prefix match is not equality)', () => {
         assert.doesNotThrow(() => validateBranchPair('auto-sprint/main', 'main'));
         assert.doesNotThrow(() => validateBranchPair('main-2', 'main'));
