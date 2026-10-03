@@ -24,7 +24,7 @@ export const meta = {
 //                        suite + toy-sprint smoke test, sandbox setup/reset/teardown);
 //                        informational only, files parent-less [regression][carry-over] bugs
 //   ci-watcher        -- polls CI; creates beads task if not configured
-//   harvester         -- docs, CHANGELOG, token summary, PR
+//   harvester         -- docs, token summary, PR
 //
 // Beads owns all work items and is the exit signal.
 // JS workflow owns all routing. No LLM ever decides whether to continue.
@@ -3843,7 +3843,7 @@ if (!approved(finalReview)) {
 // Placed deliberately AFTER the final-review verdict is decided (and after its early
 // return) and BEFORE harvest: the verdict is already computed, so a regression result
 // structurally CANNOT perturb the sprint's PASS/FAIL, and running it before harvest lets
-// the harvester mention it in the CHANGELOG. This is the ONLY dispatch of this role in a
+// the harvester mention it in the sprint docs. This is the ONLY dispatch of this role in a
 // sprint -- the per-cycle Test phase does feature closure only.
 //
 // SOFT FAIL, ALWAYS: a null / failed / schema-invalid / thrown result is logged and
@@ -3940,10 +3940,6 @@ const harvestResult = await dispatch(
   `to "${repo}/${analysisArtifactFile}" and commit it before doing anything else.\n\n` +
   `analysisText (write this verbatim to ${analysisArtifactFile}):\n` +
   sprintSummary.summaryText + `\n\n` +
-  `costAnalysis (insert this block verbatim into CHANGELOG.md after the summary paragraph):\n` +
-  `${sprintAnalysis.analysisText}\n` +
-  `Final review notes to include in CHANGELOG:\n` +
-  `${(finalReview && finalReview.notes) || '(none)'}\n\n` +
   `Regression pass (once-per-sprint, informational -- does not gate this sprint):\n` +
   `${regressionSummaryLine}\n\n` +
   `Return status "OK" if successful, "FAILED" with notes otherwise.`,
@@ -4078,7 +4074,8 @@ const harvestPr = await dispatch(
   `  - Sprint goal: ${goal} -- ${goalMet ? 'MET' : 'NOT MET (partial delivery)'}\n` +
   `  - Cycles run: ${cycleCount}\n` +
   `  - Open items carried forward (if any): bd list --status=open and summarise\n` +
-  `  - Final review notes: ${(finalReview && finalReview.notes) || '(none)'}\n\n` +
+  `  - Final review notes: ${(finalReview && finalReview.notes) || '(none)'}\n` +
+  `  - Cost analysis (verbatim, in a fenced code block):\n${sprintAnalysis.analysisText}\n\n` +
   `After creating the PR, return its number as prNumber (integer).`,
   { model: MODEL_SONNET, label: 'harvest-pr', phase: 'Harvest',
     schema: { type: 'object', required: ['prNumber'], properties: { prNumber: { type: 'number' }, prUrl: { type: 'string' } } } }

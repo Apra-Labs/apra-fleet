@@ -785,6 +785,14 @@ const SPRINT_STACK_LIVE_SCRIPT = `
     ${formatSummaryAge.toString()}
     ${renderSprintProgressHtml.toString()}
     ${renderSprintSection.toString()}
+    ${renderBeadsFreshnessHtml.toString()}
+
+    // Re-renders the "Beads as of" line from GET /state's beadsFreshness.
+    function renderBeadsFreshnessFromState(f) {
+        var el = document.getElementById('beads-freshness');
+        if (!el || !f) return;
+        el.outerHTML = renderBeadsFreshnessHtml(f);
+    }
 
     // Re-renders #sprint-stack's rows from a GET /state 'sprints' array,
     // in place, by data-sprint-id -- see this const's doc comment above.
@@ -844,6 +852,7 @@ const SPRINT_STACK_LIVE_SCRIPT = `
             var res = await fetch('/state?_t=' + Date.now(), { cache: 'no-store' });
             var data = await res.json();
             renderSprintStackFromState(data.sprints);
+            renderBeadsFreshnessFromState(data.beadsFreshness);
         } catch (e) {
             console.error('Poll Error:', e);
         }
@@ -912,6 +921,43 @@ export function renderBeadsHeaderHtml(beads, warning) {
 }
 
 /**
+ * Normalize the cached beads view's snapshot into the wire/render freshness
+ * shape. ASCII only. `lastSkip` (a busy/lock round, rows kept) is carried
+ * separately from `lastError` (a real failure).
+ * @param {object|null} snap - beads-view snapshot()
+ * @returns {{ asOf: string|null, lastError: {message:string, at:string}|null, lastSkip: {reason:string, at:string}|null }|null}
+ */
+export function toBeadsFreshness(snap) {
+    if (!snap || typeof snap !== 'object') return null;
+    const iso = (t) => (typeof t === 'number' && Number.isFinite(t) ? new Date(t).toISOString() : null);
+    return {
+        asOf: iso(snap.asOf),
+        lastError: snap.lastError ? { message: String(snap.lastError.message ?? ''), at: iso(snap.lastError.at) } : null,
+        lastSkip: snap.lastSkip ? { reason: String(snap.lastSkip.reason ?? ''), at: iso(snap.lastSkip.at) } : null,
+    };
+}
+
+/**
+ * Renders the "Beads as of <time>" line plus a visible failure notice when the
+ * view's last refresh failed. A busy-skip renders as a muted note, NOT as an
+ * error. Returns '' when no freshness is supplied.
+ * @param {ReturnType<typeof toBeadsFreshness>} f
+ * @returns {string}
+ */
+export function renderBeadsFreshnessHtml(f) {
+    if (!f) return '';
+    const asOf = f.asOf ? 'Beads as of ' + escapeHtml(f.asOf) : 'Beads as of (not yet synced)';
+    let html = '<div id="beads-freshness" class="beads-freshness" style="font-size: 12px; color: #a1a1aa; padding: 4px 16px;">' + asOf;
+    if (f.lastSkip && !f.lastError) {
+        html += ' <span class="beads-refresh-busy" style="color:#a1a1aa;">(refresh deferred: ' + escapeHtml(f.lastSkip.reason) + '; will retry)</span>';
+    }
+    if (f.lastError) {
+        html += '<div class="beads-refresh-error" style="color: #ef4444;"><strong>Beads refresh failed:</strong> ' + escapeHtml(f.lastError.message) + '</div>';
+    }
+    return html + '</div>\n';
+}
+
+/**
  * Renders the full index page (`GET /` document): a header, then a Sprints
  * tab (Sprint Stack alone) and a separate Backlog tab (eft.6.2's cross-sprint
  * free-set view, followed by the Launch Sprint form -- launching starts from
@@ -954,6 +1000,7 @@ export function renderIndexPageHtml(views, backlogHtml, launchFormHtml, opts = {
         '<a href="/supervisor/log" target="_blank" rel="noopener" style="font-size: 12px;">Supervisor log</a></div>' +
         '</div>\n' +
         renderBeadsHeaderHtml(opts && opts.beads, opts && opts.beadsWarning) +
+        renderBeadsFreshnessHtml(opts && opts.beadsFreshness) +
         '<div class="main-content"><div class="content-area">' +
         '<div class="tab-bar" id="tab-bar">' +
         '<button class="tab-btn active" onclick="switchTab(\'sprints\')">Sprints</button>' +
@@ -1022,11 +1069,12 @@ export function renderIndexPageHtml(views, backlogHtml, launchFormHtml, opts = {
  * @param {SprintView[]} [views]
  * @returns {{ generatedAt: string, runningCount: number, sprints: Array<object> }}
  */
-export function buildStatePayload(views) {
+export function buildStatePayload(views, opts = {}) {
     const list = Array.isArray(views) ? views : [];
     return {
         generatedAt: new Date().toISOString(),
         runningCount: list.length,
+        beadsFreshness: (opts && opts.beadsFreshness) ?? null,
         sprints: list.map((v) => ({
             sprintId: v.sprintId,
             branch: v.branch ?? null,
@@ -1202,6 +1250,7 @@ export function classifyChildSummary(response, sprintId) {
  *   summaryTimeoutMs?: number, // per-row summary pull budget; defaults to DEFAULT_SUMMARY_TIMEOUT_MS
 
  *   listAllBeads?: () => Promise<Array<{ id: string, status: string }>>,
+ *   beadsView?: { snapshot: () => object }, // cached beads view; supplies the freshness shown on the page and in GET /state
  *   getSprintMeta?: (sprintId: string) => Promise<{ branch?: string, goal?: string, roles?: Record<string,string> }>|{ branch?: string, goal?: string, roles?: Record<string,string> },
  *   driftCheck?: (branch: string|null, base: string|null) => Promise<number|null>|number|null,
  *   backlog?: { renderHtml: () => Promise<string>|string },
@@ -1271,6 +1320,19 @@ export function createDashboard(deps = {}) {
     // final page section without owning its full-tracker/claim computation. When
     // absent, renderIndexPageHtml() falls back to an explicit empty state.
     const backlog = deps.backlog ?? null;
+    // Optional cached beads view (beads-view.mjs): only its snapshot() is read
+    // here, for the "Beads as of" line / failure notice. Rows reach this seam
+    // through the injected `listAllBeads` (the snapshot reader), never bd.
+    const beadsView = deps.beadsView && typeof deps.beadsView.snapshot === 'function' ? deps.beadsView : null;
+    function beadsFreshness() {
+        if (!beadsView) return null;
+        try {
+            return toBeadsFreshness(beadsView.snapshot());
+        } catch (err) {
+            logError('[dashboard] beads view snapshot failed:', err);
+            return null;
+        }
+    }
 
     // Per-row progress comes from the child's own published summary (GET
     // /state?summary=1), pulled on every buildSprintViews(). resolvePort
@@ -1467,6 +1529,7 @@ export function createDashboard(deps = {}) {
             }
         },
         buildSprintViews,
+        beadsFreshness,
         /**
          * (apra-fleet-siqi.1.1) Subscribe to the periodic "state may have
          * changed, go poll /state" signal GET /events (registerDashboardRoutes
@@ -1520,7 +1583,7 @@ export function createDashboard(deps = {}) {
                     logError('[dashboard] beads identity read failed:', err);
                 }
             }
-            return renderIndexPageHtml(await buildSprintViews(), backlogHtml, undefined, { beads, beadsWarning });
+            return renderIndexPageHtml(await buildSprintViews(), backlogHtml, undefined, { beads, beadsWarning, beadsFreshness: beadsFreshness() });
         },
     };
 }
@@ -1554,7 +1617,7 @@ export function registerDashboardRoutes(supervisor, dashboard) {
     // GET / embeds into HTML_TEMPLATE.
     supervisor.route('GET', '/state', async (req, res) => {
         const views = await dashboard.buildSprintViews();
-        const body = Buffer.from(JSON.stringify(buildStatePayload(views)), 'utf-8');
+        const body = Buffer.from(JSON.stringify(buildStatePayload(views, { beadsFreshness: typeof dashboard.beadsFreshness === 'function' ? dashboard.beadsFreshness() : null })), 'utf-8');
         res.writeHead(200, {
             'content-type': 'application/json; charset=utf-8',
             'content-length': body.length,

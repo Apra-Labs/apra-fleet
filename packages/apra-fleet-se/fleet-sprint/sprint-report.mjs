@@ -11,8 +11,9 @@
 //     builder (module-private -- it is the body builder buildCostAnalysis
 //     and the PR text path share, so it moves with them rather than staying
 //     behind).
-//   - buildCostAnalysis: the Harvester dispatch's `costAnalysis` block
-//     builder, reporting budget/spend honestly from the live `budget` object.
+//   - buildCostAnalysis: the sprint cost block (appended to analysisText and
+//     rendered in the PR body), reporting budget/spend honestly from the live
+//     `budget` object.
 //   - computeBranchSlug: the collision-resistant filesystem slug for
 //     `docs/sprint-analysis-<slug>.md`.
 //
@@ -204,11 +205,11 @@ export function buildAnalysisText({
 }
 
 /**
- * Builds the `costAnalysis` block for the Harvester dispatch from the live
- * `budget` object. Reports only what is known: an unset ceiling, an absent
- * spent() and an unpriced-model spend gap are each stated as such rather than
- * backfilled with a fabricated number, since harvester.md inserts this block
- * verbatim and never recomputes it. The remaining budget is derived from
+ * Builds the sprint cost block (appended to the analysis document and rendered
+ * in the PR body) from the live `budget` object. Reports only what is known:
+ * an unset ceiling, an absent spent() and an unpriced-model spend gap are each
+ * stated as such rather than backfilled with a fabricated number, since the
+ * block is published verbatim and never recomputed. The remaining budget is derived from
  * `total` and `spent()`, not read from the budget object.
  * @param {{ total: number|null, spent?: () => number, pricingSummary?: () => { real: number, fallback: number } }} budget
  * @param {{ spend?: number, dispatchCount?: number }} [integTestRunnerStats] -- apra-fleet-nwh.1:

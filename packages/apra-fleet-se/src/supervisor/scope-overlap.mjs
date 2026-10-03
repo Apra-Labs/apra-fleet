@@ -143,11 +143,16 @@ export async function expandScope(roots, listChildren) {
  * silently falls out of both the request's and an active sprint's live scope.
  * @returns {Promise<object[]>} raw `bd list` rows, unnormalized
  */
-export async function bdListAllBeadsWithClosed() {
+export async function bdListAllBeadsWithClosed(options = {}) {
     // Routed through the shared execBdAsync() helper (apra-fleet-xuo.2), same
     // as bdListChildren() below and backlog.mjs's fetchAllBeadsRaw() -- no
     // shell metacharacter risk, consistent cross-platform `bd` resolution.
-    const { stdout } = await execBdAsync(['list', '--all', '--limit', '0', '--json']);
+    // `options.cwd` (optional) pins WHICH .beads is listed; omitted, bd
+    // resolves from process.cwd() exactly as before. The supervisor's cached
+    // beads view passes its repoRoot so the list provably reads the same
+    // clone its backlog member pulls.
+    const execOptions = options && typeof options.cwd === 'string' && options.cwd.length > 0 ? { cwd: options.cwd } : {};
+    const { stdout } = await execBdAsync(['list', '--all', '--limit', '0', '--json'], execOptions);
     const text = stdout && stdout.trim() ? stdout : '[]';
     let rows;
     try {
