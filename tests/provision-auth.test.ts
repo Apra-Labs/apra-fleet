@@ -117,6 +117,9 @@ describe('provisionAuth', () => {
     // Should write credentials file, not set env vars
     const cmds = mockExecCommand.mock.calls.map(c => c[0]);
     expect(cmds.some(c => c.includes('.credentials.json'))).toBe(true);
+    // The token travels in a staged file moved into place -- never in a command line.
+    expect(cmds.some(c => c.includes('sk-ant-oat01-test'))).toBe(false);
+    expect(cmds.some(c => /mv -f '\/home\/testuser\/\.apra-fleet-cred-[0-9a-f-]+' "\$HOME\/\.claude\/\.credentials\.json"/.test(c))).toBe(true);
   });
 
   it('reports error when no master credentials and no api_key', async () => {

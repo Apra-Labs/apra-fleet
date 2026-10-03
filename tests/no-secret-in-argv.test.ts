@@ -14,7 +14,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
 import { encryptPassword } from '../src/utils/crypto.js';
-import { addAgent } from '../src/services/registry.js';
+import { addAgent, getAgent } from '../src/services/registry.js';
 import { executePrompt, provisionedRemoteAgents } from '../src/tools/execute-prompt.js';
 import { executeCommand } from '../src/tools/execute-command.js';
 import { provisionAuth } from '../src/tools/provision-auth.js';
@@ -63,6 +63,7 @@ vi.mock('../src/services/strategy.js', () => ({
       testConnection: vi.fn(async () => ({ ok: true, latencyMs: 1 })),
       transferFiles: vi.fn(),
       writeSecretFile: vi.fn(async (name: string, content: string) => {
+        if (agent.agentType === 'relay') throw new Error('relay: no safe delivery channel');
         const p = `${homeFor(agent)}/${name}`;
         secretFiles.push({ path: p, content });
         return p;
@@ -259,10 +260,37 @@ describe('provision_llm_auth api_key never puts the key on a command line', () =
   }
 });
 
+describe('agy project provisioning never embeds the stored key in its script', () => {
+  for (const { label, over, posix } of SHELLS) {
+    it(`${label}: the key reaches agy via the staged env file, not the node script text`, async () => {
+      const { provisionAgyProject } = await vi.importActual<typeof import('../src/services/agy-project.js')>('../src/services/agy-project.js');
+      const member = makeTestAgent({ friendlyName: `agy-${label}`, llmProvider: 'agy', ...over, encryptedEnvVars: storedEnv({ ANTIGRAVITY_API_KEY: FAKE_KEY }) });
+      const sent: string[] = [];
+      const exec = async (cmd: string) => { sent.push(cmd); execCalls.push(cmd); return { stdout: 'not-json', stderr: '', code: 1 }; };
+      await provisionAgyProject(member, exec, { file: 'agy', args: [] }).catch(() => {});
+      expectNoSecretInArgv([FAKE_KEY]);
+      expect(sent).toHaveLength(1);
+      const p = secretFiles[0].path;
+      expect(sent[0].startsWith(posix ? `. '${p}' && rm -f '${p}' && ` : `$__fleetEnv = '${p}'`)).toBe(true);
+      expect(removedFiles).toEqual([p]); // failed run: leftover removed
+    });
+  }
+});
+
 describe('relay members', () => {
   it('fail loudly instead of falling back to an inline value', async () => {
     const relay = new RelayStrategy({ friendlyName: 'relay-m', agentType: 'relay' } as Agent);
     await expect(relay.writeSecretFile('.apra-fleet-env-x', 'x')).rejects.toThrow(/relay/);
+  });
+
+  it('provision_llm_auth refuses before storing a key it could never deliver', async () => {
+    const member = makeTestAgent({ friendlyName: 'pa-relay', agentType: 'relay', relayMemberId: 'hub-m' });
+    addAgent(member);
+    const { structuredContent } = await provisionAuth({ member_id: member.id, api_key: FAKE_KEY });
+    expect(structuredContent.reason).toBe('secret_delivery_unavailable');
+    expect(structuredContent.ok).toBe(false);
+    expect(getAgent(member.id)?.encryptedEnvVars?.ANTHROPIC_API_KEY).toBeUndefined();
+    expect(execCalls.some(c => c.includes(FAKE_KEY))).toBe(false);
   });
 });
 

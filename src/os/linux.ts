@@ -220,6 +220,12 @@ export class LinuxCommands implements OsCommands {
     return `mkdir -p "$(dirname "${shellPath(p)}")" && printf '%s' "${escaped}" > "${shellPath(p)}" && chmod 600 "${shellPath(p)}"`;
   }
 
+  credentialFileInstall(stagedPath: string, destPath: string): string {
+    const p = shellPath(expandHome(destPath));
+    const s = escapeShellArg(stagedPath);
+    return `mkdir -p "$(dirname "${p}")" && mv -f ${s} "${p}" && chmod 600 "${p}"`;
+  }
+
   credentialFileRemove(destPath: string): string {
     return `rm -f "${shellPath(expandHome(destPath))}"`;
   }

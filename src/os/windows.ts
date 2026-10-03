@@ -295,6 +295,12 @@ $merged | ConvertTo-Json -Depth 99 | Set-Content -Path $p -NoNewline;
     return wrapPowerShellEncoded(psScript);
   }
 
+  credentialFileInstall(stagedPath: string, destPath: string): string {
+    // Move-Item keeps the staged file's ACL (created under the user profile).
+    const psScript = `$s='${escapePowerShellArgInner(stagedPath)}'; $p="${escapeWindowsArg(destPath)}"; New-Item -Path (Split-Path -Path $p -Parent) -ItemType Directory -Force | Out-Null; Move-Item -LiteralPath $s -Destination $p -Force`;
+    return wrapPowerShellEncoded(psScript);
+  }
+
   credentialFileRemove(destPath: string): string {
     return `Remove-Item "${escapeWindowsArg(destPath)}" -Force -ErrorAction SilentlyContinue`;
   }

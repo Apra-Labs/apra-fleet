@@ -404,7 +404,9 @@
  *   "secret_variable_denied" | "secret_variable_expired" | "oauth_not_supported" |
  *   "oauth_token_expired_no_refresh" | "oauth_credential_file_missing" |
  *   "oauth_credential_write_failed" | "oauth_settings_merge_failed" | "oauth_copy_failed" |
- *   "oob_cancelled"} reason - Machine-readable outcome code. Branch on this, never on the text.
+ *   "oob_cancelled" | "secret_delivery_unavailable"} reason - Machine-readable outcome code.
+ *   Branch on this, never on the text. secret_delivery_unavailable: the member has no channel
+ *   that delivers the key without a command line (relay member, SFTP unavailable); nothing stored.
  * @property {string|null} provider - The resolved ProviderAdapter's own name (claude, codex,
  *   copilot, agy, opencode or none -- there is no gemini adapter), null when unresolved.
  * @property {string|null} credentialLabel - What was deployed, never the secret: the env var

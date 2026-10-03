@@ -71,7 +71,13 @@ export interface OsCommands {
 
   // --- Auth ---
   credentialFileCheck(destPath: string): string;
+  /** @deprecated carries `content` in the command line -- use credentialFileInstall. */
   credentialFileWrite(content: string, destPath: string): string;
+  /**
+   * Move a credential file already staged on the member (strategy.writeSecretFile,
+   * owner-only) to `destPath`, owner-only. Carries only paths, never content.
+   */
+  credentialFileInstall(stagedPath: string, destPath: string): string;
   credentialFileRemove(destPath: string): string;
   apiKeyCheck(envVarName?: string): string;
   /**

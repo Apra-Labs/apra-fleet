@@ -67,7 +67,10 @@ export type ProvisionAuthReason =
   /** Reading/copying a local credential file threw. */
   | 'oauth_copy_failed'
   /** Out-of-band API-key collection was cancelled or returned no key. */
-  | 'oob_cancelled';
+  | 'oob_cancelled'
+  /** The member has no channel that delivers a key without a command line
+   *  (relay member, or SFTP unavailable); nothing was stored. */
+  | 'secret_delivery_unavailable';
 
 interface ProvisionAuthFields {
   /** True when credentials were deployed (verified or not). */
@@ -253,7 +256,12 @@ async function provisionOAuthCopy(agent: Agent, provider: ProviderAdapter): Prom
                 { ...who, reason: 'oauth_token_expired_no_refresh', expiresAt });
             }
         }
-        const result = await strategy.execCommand(cmds.credentialFileWrite(content, file.remotePath), 10000);
+        // Content (OAuth access + refresh token) travels over SFTP/fs into an
+        // owner-only staged file; the install command carries only paths.
+        const staged = await writeMemberSecretFile(agent, content, 'cred');
+        const result = await strategy.execCommand(cmds.credentialFileInstall(staged, file.remotePath), 10000)
+          .catch(async (err) => { await removeMemberSecretFile(agent, staged); throw err; });
+        if (result.code !== 0) await removeMemberSecretFile(agent, staged);
         if (result.code !== 0 && result.stderr) {
           return authResult(`[FAIL] Failed to write ${file.remotePath} on "${agent.friendlyName}": ${result.stderr}`,
             { ...who, reason: 'oauth_credential_write_failed', expiresAt });
@@ -335,8 +343,18 @@ async function provisionApiKey(agent: Agent, apiKey: string, provider: ProviderA
   const errors: string[] = [];
   let persistFile: string | null = null;
   let persisted = false;
+  // No safe delivery channel (relay member, SFTP unavailable): refuse BEFORE
+  // storing anything -- a stored key every later dispatch cannot deliver
+  // would break the member instead of failing here, loudly.
   try {
     persistFile = await writeMemberSecretFile(agent, cmds.persistEnvFileContent(envVarName, apiKey), 'persist');
+  } catch (err: any) {
+    return authResult(`[FAIL] Cannot deliver the API key to "${agent.friendlyName}" without exposing it on a command line: ${err.message}\n  Nothing was stored.`, {
+      provider: provider.name, memberId: agent.id, memberName: agent.friendlyName,
+      reason: 'secret_delivery_unavailable', credentialLabel: envVarName,
+    });
+  }
+  try {
     const result = await strategy.execCommand(cmds.persistEnvFromFile(envVarName, persistFile), 15000);
     persisted = result.code === 0;
     if (!persisted) errors.push(`Persisting ${envVarName} failed (exit ${result.code})${result.stderr ? `: ${result.stderr}` : ''}`);
