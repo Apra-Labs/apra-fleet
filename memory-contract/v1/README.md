@@ -27,9 +27,9 @@ When a source schema changes:
 The v1 contract evolves according to these rules:
 
 - **Additive extensions** (new tools, new optional request fields, new response keys, new provider methods) = **MINOR version bump** (e.g., v1.0 -> v1.1)
-- **Breaking changes** (tool removal, required field removal, response key removal, provider method signature change) = **MAJOR version bump with a changelog entry** (e.g., v1.x -> v2.0, documented in CHANGELOG.md)
+- **Breaking changes** (tool removal, required field removal, response key removal, provider method signature change) = **MAJOR version bump with a migration note** (e.g., v1.x -> v2.0, documented in the GitHub release notes / PR description)
 
-Rationale: additive changes are backward compatible and allow consumers to upgrade in place. Breaking changes require explicit changelog entries so all stakeholders see the migration cost upfront.
+Rationale: additive changes are backward compatible and allow consumers to upgrade in place. Breaking changes require explicit migration notes so all stakeholders see the migration cost upfront.
 
 ## $id URI Base Decision
 

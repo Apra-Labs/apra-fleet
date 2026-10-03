@@ -665,7 +665,7 @@
     <li><strong>Evaluate.</strong> The engine looks at real issue-tracker state and decides: done, or run another cycle (up to a ceiling you set, default 5).</li>
   </ol>
 
-  <p>When the loop ends, a finalization pass runs: a reviewer renders an evidence-based <strong>PASS or FAIL verdict</strong> for the whole sprint, a "harvester" writes durable documentation and a changelog entry (including a cost breakdown), an optional once-per-sprint regression pass runs your regression playbook, and the engine pushes the branch and <strong>opens a pull request</strong> whose title and body state the verdict plainly. It never merges the PR &mdash; that is always a human decision.</p>
+  <p>When the loop ends, a finalization pass runs: a reviewer renders an evidence-based <strong>PASS or FAIL verdict</strong> for the whole sprint, a "harvester" writes durable documentation and the sprint analysis, an optional once-per-sprint regression pass runs your regression playbook, and the engine pushes the branch and <strong>opens a pull request</strong> whose title and body state the verdict plainly, with a cost breakdown. It never merges the PR &mdash; that is always a human decision.</p>
 
   <figure>
     <div class="frame">
@@ -838,7 +838,7 @@
   <g transform="translate(1040, 470)">
     <rect x="0" y="0" width="205" height="88" rx="10" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1.5" filter="url(#plShadowLight)"/>
     <text x="102.5" y="38" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="15.5" font-weight="800" fill="#0F172A" text-anchor="middle">Harvest</text>
-    <text x="102.5" y="60" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="13.5" font-weight="600" fill="#64748B" text-anchor="middle">docs + changelog + cost</text>
+    <text x="102.5" y="60" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="13.5" font-weight="600" fill="#64748B" text-anchor="middle">docs + PR + cost</text>
   </g>
 
   <line x1="1142.5" y1="558" x2="1142.5" y2="572" stroke="#D97706" stroke-width="2"/>
@@ -1019,7 +1019,7 @@
   <g transform="translate(1040, 470)">
     <rect x="0" y="0" width="205" height="88" rx="10" fill="url(#plPanelDark)" stroke="#334155" stroke-width="1.5"/>
     <text x="102.5" y="38" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="15.5" font-weight="800" fill="#F8FAFC" text-anchor="middle">Harvest</text>
-    <text x="102.5" y="60" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="13.5" font-weight="600" fill="#94A3B8" text-anchor="middle">docs + changelog + cost</text>
+    <text x="102.5" y="60" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="13.5" font-weight="600" fill="#94A3B8" text-anchor="middle">docs + PR + cost</text>
   </g>
 
   <line x1="1142.5" y1="558" x2="1142.5" y2="572" stroke="#F59E0B" stroke-width="2"/>
@@ -1244,7 +1244,7 @@
     <circle cx="738" cy="618" r="11" fill="#FEF3C7" stroke="#F59E0B" stroke-width="1"/>
     <text x="738" y="618" dominant-baseline="central" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="800" fill="#B45309">G</text>
     <text x="760" y="614" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="15.5" font-weight="800" fill="#0F172A">Harvest + PR</text>
-    <text x="760" y="632" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="600" fill="#64748B">docs, changelog, pull request</text>
+    <text x="760" y="632" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="600" fill="#64748B">docs, analysis, pull request</text>
   </g>
 
   <!-- Connectors: left artifacts -> right phases (left to right) -->
@@ -1454,7 +1454,7 @@
     <circle cx="738" cy="618" r="11" fill="#F59E0B" fill-opacity="0.15" stroke="#F59E0B" stroke-width="1"/>
     <text x="738" y="618" dominant-baseline="central" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="800" fill="#FBBF24">G</text>
     <text x="760" y="614" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="15.5" font-weight="800" fill="#F8FAFC">Harvest + PR</text>
-    <text x="760" y="632" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="600" fill="#94A3B8">docs, changelog, pull request</text>
+    <text x="760" y="632" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="600" fill="#94A3B8">docs, analysis, pull request</text>
   </g>
 
   <!-- Connectors: left artifacts -> right phases (left to right) -->
@@ -1600,7 +1600,7 @@ cd ~/.apra-fleet/bin &amp;&amp; apra-fleet start  <span class="cm"># start the f
 
   <p>Clicking into a live sprint gives the per-sprint dashboard: phases and agent dispatches streaming in as they happen, <strong>token and dollar cost totals</strong> accruing live, a Stop button, a live rendering of the beads work graph (which tasks exist, which are in progress, which closed) and &mdash; at the end &mdash; a <strong>verdict badge</strong> (PASS in green, FAIL in red) with a direct <strong>link to the opened PR</strong>. Every sprint's raw output is also captured to a per-sprint log file linked from the dashboard, so even a run that crashes before reporting anything structured leaves a traceable trail.</p>
 
-  <p>A non-engineer can get real signal from a glance: how many sprints are running, whether any health badge is red, what the spend is so far, and &mdash; once finished &mdash; PASS or FAIL and a PR link. The deliverable a human ultimately reviews is that PR: reviewed commits, a verdict stated plainly in the PR title/body, an updated changelog with a cost breakdown, and a written sprint analysis document committed under <code>sprint-logs/</code> on the branch.</p>
+  <p>A non-engineer can get real signal from a glance: how many sprints are running, whether any health badge is red, what the spend is so far, and &mdash; once finished &mdash; PASS or FAIL and a PR link. The deliverable a human ultimately reviews is that PR: reviewed commits, a verdict and cost breakdown stated plainly in the PR title/body, and a written sprint analysis document (including the same cost block) committed under <code>docs/</code> on the branch.</p>
 </section>
 
 <!-- ===================== SECTION 5 ===================== -->
@@ -1664,7 +1664,7 @@ cd ~/.apra-fleet/bin &amp;&amp; apra-fleet start  <span class="cm"># start the f
           <td>Watching it occasionally, and acting on a red badge or a FAIL verdict</td>
         </tr>
         <tr>
-          <td>Cost governance: per-task model tiers, optional USD budget ceiling, cost block written into the changelog</td>
+          <td>Cost governance: per-task model tiers, optional USD budget ceiling, cost block rendered in the PR body</td>
           <td>Setting the budget; paying the bill</td>
         </tr>
         <tr>

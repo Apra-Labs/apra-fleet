@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
-# Fresh-install harness: in-container pass script (Linux dialect).
-# Runs as a normal user with HOME set; no systemd. Records one JSON line per
+# Fresh-install harness: in-box pass script (POSIX dialect: Linux and macOS).
+# Runs as a normal user with HOME set: in an ubuntu:24.04 container (docker
+# driver, no systemd) or directly on a disposable CI VM (host driver; systemd
+# --user on Linux, launchd on macOS). Portable to BSD userland (macOS bash 3.2,
+# BSD sed/grep/tar, no sha256sum/setsid). Records one JSON line per
 # checklist step to $OUT/results.jsonl and never aborts on a failed step --
 # verdicts are applied on the host (lib/verdict.mjs + checklist.json).
 #
 # Usage: pass.sh <A|B|U|U2>
 # Env:   CAND (candidate installer), BASE (baseline installer, U/U2),
-#        NODE_TGZ + NODE_SHA (pinned Node tarball, B/U/U2), OUT (results dir)
+#        NODE_TGZ + NODE_SHA (pinned Node tarball, B/U), OUT (results dir)
 set -u
 PASS="${1:?pass id required}"
 OUT="${OUT:-/fi/out}"
@@ -16,9 +19,11 @@ AF="$HOME/.apra-fleet/bin/apra-fleet"
 PORT=7523
 BASEURL="http://127.0.0.1:$PORT"
 MANUAL_NOTE=""
+IS_MAC=""; [ "$(uname -s)" = Darwin ] && IS_MAC=1
 
 log() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*" >> "$OUT/box.log"; }
-js() { printf '%s' "$1" | LC_ALL=C tr -cd '\11\40-\176' | sed 's/\\/\\\\/g; s/"/\\"/g; s/\t/ /g'; }
+js() { printf '%s' "$1" | LC_ALL=C tr -cd '\11\40-\176' | LC_ALL=C tr '\11' ' ' | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+sha256_of() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi; }
 # rec <id> <cmd> <exit> <keyline> [observed] [na]
 rec() {
   local na=""
@@ -44,7 +49,7 @@ run() {
   RC=$?
   printf '\n=== EXIT CODE: %s ===\n' "$RC" >> "$LOG"
 }
-ver_of() { grep -o -m1 'v[0-9]\+\.[0-9]\+\.[0-9]\+_[0-9a-f]\+' "$1" 2>/dev/null | head -n1; }
+ver_of() { grep -E -o -m1 'v[0-9]+\.[0-9]+\.[0-9]+_[0-9a-f]+' "$1" 2>/dev/null | head -n1; }
 # http <method> <path> [extra curl args...] : sets CODE and BODY (file)
 http() {
   local m="$1" p="$2"; shift 2
@@ -55,22 +60,34 @@ http() {
 health_ok() { curl -s -o /dev/null --max-time 3 "$BASEURL/health" 2>/dev/null; }
 wait_health() { local i=0; while [ "$i" -lt "$1" ]; do health_ok && return 0; sleep 2; i=$((i+2)); done; return 1; }
 has_systemd() { command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; }
+# The platform has a service manager the product registers with (launchd is always there on macOS).
+has_svc_mgr() { [ -n "$IS_MAC" ] || has_systemd; }
 start_by_hand() {
   # No systemd in the container: start the installed server the way a
   # systemd-less user would. setsid detaches it from this script.
-  setsid "$AF" run > "$HOME/fi-run.log" 2>&1 < /dev/null &
+  if command -v setsid >/dev/null 2>&1; then setsid "$AF" run > "$HOME/fi-run.log" 2>&1 < /dev/null &
+  else nohup "$AF" run > "$HOME/fi-run.log" 2>&1 < /dev/null & fi
   echo $! > "$HOME/fi-run.pid"
   MANUAL_NOTE=" (started by hand: no systemd)"
 }
-# health_step <id> : wait for /health, start by hand if the platform has no service manager
+# health_step <id> : wait for /health; start by hand only where the platform has no
+# service manager (never on macOS or a systemd host: there the service must start it)
 health_step() {
   MANUAL_NOTE=""
-  if ! wait_health 20 && ! has_systemd; then start_by_hand; wait_health 60; fi
+  if has_svc_mgr; then wait_health 90
+  elif ! wait_health 20; then start_by_hand; wait_health 60; fi
   http GET /health
   rec "$1" "GET /health" "$CODE" "$(head -c 200 "$BODY")$MANUAL_NOTE" "$(ver_of "$BODY")"
 }
 svc_step() {
   local id="$1" unit="$2"
+  if [ -n "$IS_MAC" ]; then
+    local label s rc
+    case "$unit" in apra-fleet) label=com.apra-fleet.server ;; *) label="com.apra-fleet.${unit#apra-fleet-}" ;; esac
+    s=$(launchctl print "gui/$(id -u)/$label" 2>&1); rc=$?
+    rec "$id" "launchctl print gui/$(id -u)/$label" "$rc" "$(printf '%s\n' "$s" | grep -E -m1 '^[[:space:]]*state = ' | sed 's/^[[:space:]]*//')"
+    return
+  fi
   if ! has_systemd; then
     rec "$id" "systemctl --user is-active $unit" "" "" "" "no systemd user manager in this container; install reported: $(key "${INSTALL_LOG:-/dev/null}" 'systemd' 'Service')"
     return
@@ -80,7 +97,7 @@ svc_step() {
 prep_bin() { install -m 0755 "$1" "$2"; }
 install_node() {
   local id="$1" dir="$HOME/node"
-  local got; got=$(sha256sum "$NODE_TGZ" | cut -d' ' -f1)
+  local got; got=$(sha256_of "$NODE_TGZ")
   if [ "$got" != "$NODE_SHA" ]; then rec "$id" "verify $NODE_TGZ" 1 "sha256 mismatch: $got"; return; fi
   mkdir -p "$dir" && tar -xzf "$NODE_TGZ" -C "$dir" --strip-components=1
   export PATH="$dir/bin:$PATH"
@@ -88,7 +105,7 @@ install_node() {
 }
 members_have_dummy() { grep -q 'fi-dummy' "$HOME/.apra-fleet/data/registry.json" 2>/dev/null; }
 secret_has_dummy() { "$AF" secret --list 2>&1 | grep -q 'fi_dummy_secret'; }
-fleetkey_hash() { if [ -f "$HOME/.apra-fleet/fleet.key" ]; then sha256sum "$HOME/.apra-fleet/fleet.key" | cut -c1-16; else echo absent; fi; }
+fleetkey_hash() { if [ -f "$HOME/.apra-fleet/fleet.key" ]; then sha256_of "$HOME/.apra-fleet/fleet.key" | cut -c1-16; else echo absent; fi; }
 seed() {
   mkdir -p "$HOME/fi-work"
   run "$1" register-member "$AF" register-member --name fi-dummy --type local --path "$HOME/fi-work" --llm none
@@ -167,7 +184,7 @@ U)
   rec U09 "cand install --force" "$RC" "$(key "$LOG" 'installed successfully' 'NOT running' 'systemd' '^Error')"
   health_step U10
   run U11 installed-version "$AF" --version; rec U11 "~/.apra-fleet/bin/apra-fleet --version" "$RC" "$(head -n1 "$LOG")" "$(ver_of "$LOG")"
-  members_have_dummy; rec U12 "grep fi-dummy registry.json" "$?" "$(grep -o -m1 '"friendlyName": *"fi-dummy"\|fi-dummy' "$HOME/.apra-fleet/data/registry.json" 2>/dev/null || echo 'fi-dummy missing')"
+  members_have_dummy; rec U12 "grep fi-dummy registry.json" "$?" "$(grep -o -m1 'fi-dummy' "$HOME/.apra-fleet/data/registry.json" 2>/dev/null || echo 'fi-dummy missing')"
   secret_has_dummy; rec U13 "apra-fleet secret --list | grep fi_dummy_secret" "$?" "$("$AF" secret --list 2>&1 | grep -m1 fi_dummy_secret || echo 'fi_dummy_secret missing')"
   KEY_AFTER=$(fleetkey_hash)
   if [ "$KEY_BEFORE" = "$KEY_AFTER" ] || [ "$KEY_BEFORE" = absent ]; then kr=0; else kr=1; fi
@@ -177,28 +194,28 @@ U)
   run U17 update-check "$AF" update --check; rec U17 "apra-fleet update --check" "$RC" "$(key "$LOG" 'up to date' 'Update' 'Error')"
   ;;
 U2)
+  # Since v0.4.3 a no-Node user holds a core-only install (--workflows none).
   prep_bin "$BASE" "$HOME/base"; prep_bin "$CAND" "$HOME/cand"
   run V01 base-version "$HOME/base" --version; rec V01 "base --version" "$RC" "$(head -n1 "$LOG")" "$(ver_of "$LOG")"
-  run V02 base-install "$HOME/base" install; INSTALL_LOG=$LOG
-  rec V02 "base install (no node)" "$RC" "$(key "$LOG" 'installed successfully' 'systemd' '^Error')"
+  run V02 base-install "$HOME/base" install --workflows none; INSTALL_LOG=$LOG
+  rec V02 "base install --workflows none (no node)" "$RC" "$(key "$LOG" 'installed successfully' 'systemd' '^Error')"
   health_step V03
   seed V04
   members_have_dummy; m=$?; secret_has_dummy; s=$?
   rec V04 "register-member fi-dummy + secret --set fi_dummy_secret" "$((SEED_MEMBER_RC + SEED_SECRET_RC + m + s))" "member=$([ $m = 0 ] && echo yes || echo no) secret=$([ $s = 0 ] && echo yes || echo no)"
   run V05 update "$AF" update; rec V05 "apra-fleet update (baseline)" "$RC" "$(key "$LOG" 'up to date' 'Updating' 'Error')"
   sleep 5
-  update_argv
-  run V06 update-argv-nonode "$HOME/cand" "${UPDATE_ARGS[@]}"
-  rec V06 "cand ${UPDATE_ARGS[*]} (no node)" "$RC" "$(key "$LOG" 'fleet-se requires' '^Error')"
+  run V06 install-force-nonode "$HOME/cand" install --force
+  rec V06 "cand install --force (no node)" "$RC" "$(key "$LOG" 'fleet-se requires' '^Error')"
   MANUAL_NOTE=""; http GET /health; rec V07 "GET /health" "$CODE" "$(head -c 200 "$BODY")" "$(ver_of "$BODY")"
-  install_node V08
-  run V09 update-argv "$HOME/cand" "${UPDATE_ARGS[@]}"; INSTALL_LOG=$LOG
-  rec V09 "cand ${UPDATE_ARGS[*]}" "$RC" "$(key "$LOG" 'installed successfully' 'NOT running' 'systemd' '^Error')"
-  health_step V10
+  update_argv
+  run V08 update-argv-nonode "$HOME/cand" "${UPDATE_ARGS[@]}"; INSTALL_LOG=$LOG
+  rec V08 "cand ${UPDATE_ARGS[*]} (no node)" "$RC" "$(key "$LOG" 'installed successfully' 'NOT running' 'systemd' '^Error')" "--workflows ${UPDATE_ARGS[7]}"
+  health_step V09
   members_have_dummy; m=$?; secret_has_dummy; s=$?
-  rec V11 "registry.json fi-dummy + secret --list fi_dummy_secret" "$((m + s))" "member=$([ $m = 0 ] && echo yes || echo no) secret=$([ $s = 0 ] && echo yes || echo no)"
-  svc_step V12 apra-fleet
-  run V13 status "$AF" status; rec V13 "apra-fleet status" "$RC" "$(key "$LOG" 'State:')"
+  rec V10 "registry.json fi-dummy + secret --list fi_dummy_secret" "$((m + s))" "member=$([ $m = 0 ] && echo yes || echo no) secret=$([ $s = 0 ] && echo yes || echo no)"
+  svc_step V11 apra-fleet
+  run V12 status "$AF" status; rec V12 "apra-fleet status" "$RC" "$(key "$LOG" 'State:')"
   ;;
 *) log "unknown pass $PASS"; exit 2 ;;
 esac

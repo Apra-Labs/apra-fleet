@@ -70,7 +70,7 @@
 // =============================================================================
 
 import { dispatchRole, TURN_BASES } from '../dispatch-role.mjs';
-import { formatRegressionParts } from '../sprint-report.mjs';
+import { formatRegressionParts, formatRegressionHeadline, regressionVerdictOf } from '../sprint-report.mjs';
 
 /**
  * Runs the once-per-sprint Regression Test phase. Informational: its result
@@ -163,8 +163,12 @@ export async function runRegressionTestPhase({
     });
     regressionResult = regressionOutcome.value;
     // No duplicate log() dump -- see dispatchReview() for why. Only an
-    // explicit passed:true is treated as a green regression pass.
-    if (regressionResult.passed !== true) {
+    // explicit passed:true is treated as a green regression pass. A verdict
+    // copied from a verdict file outranks it, so INCONCLUSIVE never reads as
+    // a failure.
+    if (regressionVerdictOf(regressionResult)) {
+        log(`${formatRegressionHeadline(regressionResult)} (carry-over beads: ${(regressionResult.bugsFiled || []).join(', ') || 'none'}): ${regressionResult.summary}`);
+    } else if (regressionResult.passed !== true) {
         log(`Regression pass reported FAILURES (carry-over beads: ${(regressionResult.bugsFiled || []).join(', ') || 'none'}): ${regressionResult.summary}`);
     } else {
         log(`Regression pass PASSED${formatRegressionParts(regressionResult)}.`);

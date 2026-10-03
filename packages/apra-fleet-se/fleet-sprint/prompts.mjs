@@ -585,28 +585,26 @@ export function buildFinalVerdictPrompt({ targetIssues, branch, baseBranch, goal
 }
 
 /**
- * Builds the self-contained Harvester dispatch prompt, wiring the five inputs
- * harvester.md requires -- analysisArtifactFile, analysisText, costAnalysis,
- * baseBranch and branch -- with real, runner-computed values. The vendored
- * input schema is deliberately not loosened to accommodate missing values;
- * supplying them is the caller's job.
- * @param {{ branch: string, baseBranch: string, targetIssues: string[], analysisArtifactFile: string, analysisText: string, costAnalysis: string }} opts
+ * Builds the self-contained Harvester dispatch prompt, wiring the four inputs
+ * harvester.md requires -- analysisArtifactFile, analysisText, baseBranch and
+ * branch -- with real, runner-computed values. The vendored input schema is
+ * deliberately not loosened to accommodate missing values; supplying them is
+ * the caller's job.
+ * @param {{ branch: string, baseBranch: string, targetIssues: string[], analysisArtifactFile: string, analysisText: string }} opts
  * @returns {string}
  */
-export function buildHarvesterPrompt({ branch, baseBranch, targetIssues, analysisArtifactFile, analysisText, costAnalysis }) {
-    // analysisText/costAnalysis are orchestrator-computed, not another agent's
-    // output, so wrapUntrustedBlock does not apply. Each still gets its own
-    // fence sized past the longest backtick run in that block, so a literal
-    // fence line inside the content cannot terminate it early.
+export function buildHarvesterPrompt({ branch, baseBranch, targetIssues, analysisArtifactFile, analysisText }) {
+    // analysisText is orchestrator-computed, not another agent's output, so
+    // wrapUntrustedBlock does not apply. It still gets a fence sized past the
+    // longest backtick run in it, so a literal fence line inside the content
+    // (the cost block is itself fenced) cannot terminate it early.
     const fence = (content) => '`'.repeat(Math.max(3, (content.match(/`+/g) || []).reduce((m, r) => Math.max(m, r.length), 0) + 1));
     const analysisFence = fence(analysisText);
-    const costFence = fence(costAnalysis);
     return [
         `Harvest durable knowledge for sprint scope issue id(s): ${targetIssues.join(', ')}.`,
         `Branch: ${branch} (base: ${baseBranch}).`,
-        'Update docs/, README/CHANGELOG (including a cost-analysis block), and defer low-priority issues, per your agent contract.',
+        'Update docs/ and README, and defer low-priority issues, per your agent contract.',
         `analysisArtifactFile: ${analysisArtifactFile}`,
         `analysisText (pre-computed by the orchestrator -- write verbatim to analysisArtifactFile, per Step 1 of your contract):\n${analysisFence}\n${analysisText}\n${analysisFence}`,
-        `costAnalysis (pre-computed by the orchestrator -- insert verbatim into the CHANGELOG entry, per Step 4 of your contract):\n${costFence}\n${costAnalysis}\n${costFence}`,
     ].join('\n\n');
 }
