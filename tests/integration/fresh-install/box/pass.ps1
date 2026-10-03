@@ -8,14 +8,15 @@ param(
   [string]$Base = '',
   [string]$NodeMsi = '',
   [string]$NodeSha = '',
-  [string]$Out = 'C:\fi\out'
+  [string]$Out = 'C:\fi\out',
+  [string]$Work = 'C:\fi\work'
 )
 $ErrorActionPreference = 'Continue'
 $ProgressPreference = 'SilentlyContinue'
 $Logs = Join-Path $Out 'logs'; $Shots = Join-Path $Out 'shots'
 New-Item -ItemType Directory -Force $Logs, $Shots | Out-Null
 $Res = Join-Path $Out 'results.jsonl'
-$Work = 'C:\fi\work'; New-Item -ItemType Directory -Force $Work | Out-Null
+New-Item -ItemType Directory -Force $Work | Out-Null
 $FleetHome = Join-Path $env:USERPROFILE '.apra-fleet'
 $AF = Join-Path $FleetHome 'bin\apra-fleet.exe'
 $BaseUrl = 'http://127.0.0.1:7523'
@@ -89,7 +90,7 @@ function Shot($name, $url) {
   if (-not $edge) { return }
   $png = Join-Path $Shots "$Pass-$name.png"
   try {
-    $p = Start-Process -FilePath $edge -PassThru -ArgumentList '--headless=new', '--disable-gpu', '--no-first-run', '--user-data-dir=C:\fi\work\edgeprof', '--virtual-time-budget=5000', '--window-size=1280,800', "--screenshot=$png", $url
+    $p = Start-Process -FilePath $edge -PassThru -ArgumentList '--headless=new', '--disable-gpu', '--no-first-run', "--user-data-dir=$(Join-Path $Work 'edgeprof')", '--virtual-time-budget=5000', '--window-size=1280,800', "--screenshot=$png", $url
     if (-not $p.WaitForExit(60000)) { try { $p.Kill() } catch {} }
   } catch { Log "screenshot $name failed: $_" }
 }
@@ -221,6 +222,8 @@ try {
 } catch {
   Log "UNHANDLED: $($_.Exception.Message) at $($_.InvocationInfo.PositionMessage)"
 } finally {
+  # Evidence for service failures (Last Run Time / Last Result / Logon Mode).
+  try { Run 'diag' 'schtasks-verbose' 'schtasks.exe' @('/query', '/tn', 'ApraFleet', '/v', '/fo', 'list') } catch {}
   Get-ChildItem (Join-Path $FleetHome 'data') -Filter *.log -ErrorAction SilentlyContinue | ForEach-Object { Copy-Item $_.FullName (Join-Path $Logs $_.Name) -ErrorAction SilentlyContinue }
   Log "pass $Pass done"
   [IO.File]::WriteAllText((Join-Path $Out 'done.txt'), (Get-Date -Format o), $Utf8)
