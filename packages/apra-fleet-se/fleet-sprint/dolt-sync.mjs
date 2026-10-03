@@ -700,7 +700,7 @@ async function runDoltStep({ command, member, cmd, label, log, maxTransientRetri
         const error = res ? res.error : 'unknown command failure';
         // Same verdict classifyDoltFailure() returns, read once here so a
         // missing-tool failure can also name the binary.
-        const classified = classifyFailure(error, { provider: 'dolt' });
+        const classified = classifyFailure(error, { provider: 'dolt', tool: commandBinary(cmd) });
         const kind = toDoltVerdict(classified.kind);
         if (kind === 'missing-tool') {
             // GitHub #616: a missing binary is never retried and never sent to

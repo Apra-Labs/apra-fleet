@@ -297,51 +297,75 @@ export function buildCommentCommand(params) {
 // possibly help" apart from every other AUTH_DENIED, WITHOUT re-reading
 // stderr at the call site.
 
-// MISSING TOOL (GitHub #616). Provider-agnostic shell/spawn wording for "the
-// binary does not exist on this member", checked BEFORE the permission-scope
-// rules and every provider rule: it is a property of the member's
-// environment, not of any VCS host, and no provider text can outrank it (a
-// shell that cannot find `bd` never reached the remote at all). Each rule
-// captures the binary name where the wording carries one, so the caller can
-// name it. Windows (PowerShell, cmd.exe) and POSIX (bash, dash/sh) wordings
-// are all covered, plus exit code 127 and Node's spawn ENOENT.
-const MISSING_TOOL_RULES = Object.freeze([
+// MISSING TOOL (GitHub #616). Provider-agnostic shell/spawn wording for "a
+// binary could not be found on this member". It is decided BEFORE the
+// permission-scope and provider rules, but ONLY when the binary the wording
+// names is the binary the failing step itself ran (`opts.tool`, see
+// commandBinary). A member's shell profile routinely prints unrelated "not
+// found" noise (`.bashrc: line 12: pyenv: command not found`, PowerShell
+// "conda : The term 'conda' is not recognized ...", a git hook's `npx: command
+// not found`, a server-side `git-receive-pack: command not found`) ahead of
+// the real failure; that noise must never outrank the real classification
+// (a diverged pull, an auth refusal, a lock). Unnamed signals (exit code 127,
+// the generic "is not recognized" tails) count only when the step's binary is
+// known and the text names no other binary. Without step context the named
+// binary must be one of the sync tools (DEFAULT_MISSING_TOOL_TARGETS).
+// Windows (PowerShell, cmd.exe) and POSIX (bash, zsh, dash/sh) wordings are
+// covered, plus exit code 127 and Node's spawn ENOENT.
+const MISSING_TOOL_NAMED_RULES = Object.freeze([
     // PowerShell: "bd : The term 'bd' is not recognized as the name of a cmdlet, function, ..."
     /The term '([^']+)' is not recognized as the name of a cmdlet/i,
-    /is not recognized as (?:the )?name of a cmdlet/i,
     // cmd.exe: "'bd' is not recognized as an internal or external command,"
     /'([^']+)' is not recognized as an internal or external command/i,
-    /is not recognized as an internal or external command/i,
-    // bash/zsh: "bash: bd: command not found", "bash: line 1: bd: command not found", "zsh: command not found: bd"
-    // (zsh's "command not found: X" first, so its "zsh:" prefix is not read as the tool)
+    // zsh: "zsh: command not found: bd" (checked before the bash form so the
+    // "zsh:" prefix is never read as the tool)
     /command not found: ([^\s'"]+)/i,
+    // bash: "bash: bd: command not found", "bash: line 1: bd: command not found"
     /([^\s:'"]+): command not found/i,
     // dash/sh: "sh: 1: bd: not found"
     /(?:^|\n|\s)(?:\/bin\/)?(?:sh|dash|bash): (?:line )?\d+: ([^\s:'"]+): not found/i,
     // Node child_process: "spawn bd ENOENT"
     /spawn ([^\s'"]+) ENOENT/,
+]);
+const MISSING_TOOL_UNNAMED_RULES = Object.freeze([
+    /is not recognized as (?:the )?name of a cmdlet/i,
+    /is not recognized as an internal or external command/i,
     // The shell's own "not found" exit status, as the fleet transport reports it.
     /\bexit (?:code|status) 127\b/i,
 ]);
 
+/** The sync binaries a context-free classification may report as missing. */
+const DEFAULT_MISSING_TOOL_TARGETS = Object.freeze(['bd', 'dolt', 'git']);
+
+/** Bare, lower-case binary name: no directory, no Windows executable suffix. */
+function normalizeToolName(name) {
+    const base = String(name || '').trim().replace(/^["']|["']$/g, '').split(/[\\/]/).pop() || '';
+    return base.replace(/\.(exe|cmd|bat|ps1)$/i, '').toLowerCase();
+}
+
 /**
- * Detects a missing-binary failure. Returns `{ tool }` (tool = the binary name
- * when the wording names one, else null) or null when the text is not a
- * missing-tool failure.
+ * Detects a missing-binary failure OF THE STEP'S OWN BINARY. Returns
+ * `{ tool }` or null (not a missing-tool failure for this step -- the
+ * normal classification rules decide).
  * @param {string} raw
- * @param {number|null|undefined} exitCode
- * @returns {{ tool: string|null }|null}
+ * @param {{ exitCode?: number|null, tool?: string|null }} [ctx]
+ * @returns {{ tool: string }|null}
  */
-function detectMissingTool(raw, exitCode) {
-    let matched = exitCode === 127;
-    let tool = null;
-    for (const re of MISSING_TOOL_RULES) {
-        const m = re.exec(raw);
-        if (!m) continue;
-        matched = true;
-        if (m[1]) { tool = m[1]; break; }
+function detectMissingTool(raw, ctx = {}) {
+    const stepTool = ctx.tool ? normalizeToolName(ctx.tool) : '';
+    const targets = stepTool ? [stepTool] : DEFAULT_MISSING_TOOL_TARGETS;
+    const named = [];
+    for (const rule of MISSING_TOOL_NAMED_RULES) {
+        // A fresh global copy per call keeps the module-level rules stateless.
+        for (const m of raw.matchAll(new RegExp(rule.source, `${rule.flags}g`))) {
+            if (m[1]) named.push(normalizeToolName(m[1]));
+        }
     }
-    return matched ? { tool } : null;
+    const hit = named.find((n) => targets.includes(n));
+    if (hit) return { tool: hit };
+    const unnamed = ctx.exitCode === 127 || MISSING_TOOL_UNNAMED_RULES.some((re) => re.test(raw));
+    if (stepTool && unnamed && named.length === 0) return { tool: stepTool };
+    return null;
 }
 
 /**
@@ -382,7 +406,7 @@ const KIND_PRECEDENCE = Object.freeze([
  * self-healed, so a mis-fallback degrades to "surface it", not to a guess.
  *
  * @param {string} rawStderr - the raw stderr/stdout of the failed command
- * @param {{ provider?: string, exitCode?: number|null }} [opts] - provider selects the rule chain (exitCode 127 alone classifies MISSING_TOOL);
+ * @param {{ provider?: string, exitCode?: number|null, tool?: string|null }} [opts] - provider selects the rule chain; tool is the binary the failing step ran (see detectMissingTool -- MISSING_TOOL is only reported for that binary);
  *   defaults to DEFAULT_VCS_PROVIDER ('github'), which reproduces runner.js's
  *   full auth pattern set exactly.
  * @returns {{ kind: string, providerCode: string|null, retryable: boolean, permissionScope: boolean, operatorReferral: string|null, missingTool: string|null, raw: string }}
@@ -408,7 +432,7 @@ export function classifyFailure(rawStderr, opts = {}) {
 
     // MISSING TOOL first, ahead of permission-scope and provider rules (see
     // MISSING_TOOL_RULES above).
-    const missing = detectMissingTool(raw, opts && opts.exitCode);
+    const missing = detectMissingTool(raw, { exitCode: opts && opts.exitCode, tool: opts && opts.tool });
     if (missing) {
         return {
             kind: VCS_FAILURE_KINDS.MISSING_TOOL, providerCode: null, retryable: false,

@@ -31,39 +31,86 @@ const SH_MISSING_BD = 'sh: 1: bd: not found';
 const EXIT_127 = '[Command Failed] Exit code 127: ';
 const SPAWN_ENOENT = 'spawn git ENOENT';
 
+// [name, text, the step's binary, expected missingTool]
 const CASES = [
-    ['PowerShell', PWSH_MISSING_BD, 'bd'],
-    ['cmd.exe', CMD_MISSING_BD, 'bd'],
-    ['bash', BASH_MISSING_BD, 'bd'],
-    ['zsh', ZSH_MISSING_DOLT, 'dolt'],
-    ['dash/sh', SH_MISSING_BD, 'bd'],
-    ['exit code 127', EXIT_127, null],
-    ['spawn ENOENT', SPAWN_ENOENT, 'git'],
+    ['PowerShell', PWSH_MISSING_BD, 'bd', 'bd'],
+    ['cmd.exe', CMD_MISSING_BD, 'bd', 'bd'],
+    ['bash', BASH_MISSING_BD, 'bd', 'bd'],
+    ['zsh', ZSH_MISSING_DOLT, 'dolt', 'dolt'],
+    ['dash/sh', SH_MISSING_BD, 'bd', 'bd'],
+    ['exit code 127', EXIT_127, 'bd', 'bd'],
+    ['spawn ENOENT', SPAWN_ENOENT, 'git', 'git'],
 ];
 
 describe('classifyFailure -- MISSING_TOOL', () => {
-    for (const [name, text, tool] of CASES) {
-        test(`${name} wording classifies MISSING_TOOL (tool ${tool ?? 'unnamed'}), not retryable, for every provider`, () => {
+    for (const [name, text, tool, expected] of CASES) {
+        test(`${name} wording for the step's own binary (${tool}) classifies MISSING_TOOL, not retryable, for every provider`, () => {
             for (const provider of [undefined, 'dolt', 'github', 'azure-devops']) {
-                const r = classifyFailure(text, provider ? { provider } : undefined);
+                const r = classifyFailure(text, provider ? { provider, tool } : { tool });
                 assert.equal(r.kind, K.MISSING_TOOL, `${name} / ${provider ?? 'default'}`);
                 assert.equal(r.retryable, false);
-                assert.equal(r.missingTool, tool);
+                assert.equal(r.missingTool, expected);
             }
-            assert.equal(classifyDoltFailure(text), 'missing-tool');
-            assert.equal(classifyGitFailure(text), 'missing-tool');
         });
     }
 
-    test('it is checked BEFORE provider rules: an auth word in the same text does not win', () => {
-        const mixed = `${BASH_MISSING_BD}\nfatal: Authentication failed`;
-        assert.equal(classifyFailure(mixed).kind, K.MISSING_TOOL);
-        assert.equal(classifyFailure(mixed, { provider: 'dolt' }).kind, K.MISSING_TOOL);
+    test('the reporter\'s verbatim PowerShell text classifies MISSING_TOOL with and without step context', () => {
+        assert.equal(classifyFailure(PWSH_MISSING_BD, { provider: 'dolt', tool: 'bd' }).kind, K.MISSING_TOOL);
+        assert.equal(classifyDoltFailure(PWSH_MISSING_BD), 'missing-tool');
+        assert.equal(classifyGitFailure(PWSH_MISSING_BD), 'missing-tool');
     });
 
-    test('exitCode 127 alone classifies MISSING_TOOL', () => {
-        assert.equal(classifyFailure('', { exitCode: 127 }).kind, K.MISSING_TOOL);
-        assert.equal(classifyFailure('', { exitCode: 1 }).kind, K.UNKNOWN);
+    test('a step binary given as a path or with a Windows suffix still matches', () => {
+        assert.equal(classifyFailure("The term 'C:\\tools\\bd.exe' is not recognized as the name of a cmdlet", { tool: 'bd' }).kind, K.MISSING_TOOL);
+        assert.equal(classifyFailure(BASH_MISSING_BD, { tool: '/usr/local/bin/bd' }).kind, K.MISSING_TOOL);
+    });
+
+    test('a not-found for a DIFFERENT binary than the step ran is not MISSING_TOOL', () => {
+        assert.notEqual(classifyFailure(BASH_MISSING_BD, { tool: 'git' }).kind, K.MISSING_TOOL);
+        assert.notEqual(classifyFailure(ZSH_MISSING_DOLT, { tool: 'bd' }).kind, K.MISSING_TOOL);
+    });
+
+    test('exit code 127 counts only with step context, and never when the text names another binary', () => {
+        assert.equal(classifyFailure('', { exitCode: 127, tool: 'bd' }).kind, K.MISSING_TOOL);
+        assert.equal(classifyFailure('', { exitCode: 127 }).kind, K.UNKNOWN);
+        assert.equal(classifyFailure('', { exitCode: 1, tool: 'bd' }).kind, K.UNKNOWN);
+        assert.equal(classifyFailure(`/home/u/.bashrc: line 4: pyenv: command not found\n${EXIT_127}`, { tool: 'bd' }).kind, K.UNKNOWN);
+    });
+});
+
+// Review finding on #616: shell-profile / hook / server-side "not found" noise
+// printed ahead of the real failure must not outrank the real classification.
+describe('classifyFailure -- not-found noise for other binaries does not win', () => {
+    const NOISE = [
+        ['bash rc + DNS failure -> TRANSIENT', "/home/u/.bashrc: line 12: pyenv: command not found\nfatal: unable to access 'https://github.com/a/b.git/': Could not resolve host: github.com", 'git', undefined, K.TRANSIENT],
+        ['zsh rc + auth -> AUTH_EXPIRED', '/Users/u/.zshenv:3: command not found: pyenv\nfatal: Authentication failed for \'https://github.com/a/b.git/\'', 'git', undefined, K.AUTH_EXPIRED],
+        ['PowerShell profile + auth prompt -> AUTH_EXPIRED', "conda : The term 'conda' is not recognized as the name of a cmdlet, function, script file, or operable program.\nfatal: could not read Username for 'https://github.com': terminal prompts disabled", 'git', undefined, K.AUTH_EXPIRED],
+        ['bash rc + dolt lock -> TRANSIENT', '/home/u/.bashrc: line 3: nvm: command not found\nerror: database is locked', 'bd', 'dolt', K.TRANSIENT],
+    ];
+    for (const [name, text, tool, provider, expected] of NOISE) {
+        test(name, () => {
+            const r = classifyFailure(text, provider ? { provider, tool } : { tool });
+            assert.equal(r.kind, expected);
+            assert.equal(r.missingTool, null);
+        });
+    }
+
+    test('a git hook\'s "npx: command not found" during git push is not a missing tool for the member', () => {
+        const text = '.husky/pre-push: line 4: npx: command not found\nerror: failed to push some refs to \'https://github.com/a/b.git\'';
+        assert.notEqual(classifyFailure(text, { tool: 'git' }).kind, K.MISSING_TOOL);
+        assert.notEqual(classifyGitFailure(text), 'missing-tool');
+    });
+
+    test('a server-side "git-receive-pack: command not found" is not a missing tool for the member', () => {
+        const text = 'bash: git-receive-pack: command not found\nfatal: Could not read from remote repository.';
+        assert.notEqual(classifyFailure(text, { tool: 'git' }).kind, K.MISSING_TOOL);
+        assert.notEqual(classifyGitFailure(text), 'missing-tool');
+    });
+
+    test('a diverged D-pull behind rc noise still throws the divergence, not missing-tool', async () => {
+        const diverged = '/home/u/.bashrc: line 3: nvm: command not found\nerror: failed to push some refs to origin/main\nhint: Updates were rejected because the remote contains work that you do not have locally.';
+        assert.equal(classifyDoltFailure(diverged), 'diverged');
+        assert.equal(toDoltVerdict(classifyFailure(diverged, { provider: 'dolt', tool: 'bd' }).kind), 'diverged');
     });
 
     test('the verdict adapters map it to missing-tool; ordinary texts are unchanged', () => {

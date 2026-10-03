@@ -390,15 +390,17 @@ export async function runGitStep({ command, member, cmd, label, log, maxTransien
         // (for the permission-scope gate) and this module's legacy verdict
         // (for the transient/auth routing below). classifyGitFailure() is
         // exactly toGitVerdict(classifyFailure(...).kind), so the two readings
-        // can never disagree -- see that function's own doc comment.
-        const classified = classifyFailure(error, provider ? { provider } : undefined);
+        // can never disagree -- see that function's own doc comment. The step's
+        // own binary is passed so a missing-tool verdict is only ever about it,
+        // never about shell-profile noise naming some other binary.
+        const classified = classifyFailure(error, provider ? { provider, tool: commandBinary(cmd) } : { tool: commandBinary(cmd) });
         const kind = toGitVerdict(classified.kind);
         if (kind === 'missing-tool') {
             // GitHub #616: a missing binary is never retried and never sent to
             // the credential self-heal -- neither can install it.
             const tool = classified.missingTool || commandBinary(cmd);
             log(`[Sync] ${label} FAILED (missing-tool): '${tool}' was not found on member '${member}' -- install it on that member or put it on that member's PATH. Not retrying and not re-provisioning credentials. Raw: ${error}`);
-            return { ok: false, output: res ? res.output : '', error, kind, missingTool: tool };
+            return { ok: false, output: res ? res.output : '', error, kind, missingTool: tool, selfHealed: false };
         }
         if (classified.kind === VCS_FAILURE_KINDS.AUTH_DENIED && classified.permissionScope) {
             const referral =
