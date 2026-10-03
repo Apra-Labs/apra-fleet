@@ -1227,7 +1227,7 @@ const regressionTestRunner = policy('regression-test-runner', {
         classifiesUnrecognisedErrors: true,
         // A REPORT shape, like the deployer's: the answer is `passed` and the
         // failure text goes in `summary`.
-        synthesized: { passed: false, suitePassed: false, smokePassed: false, bugsFiled: [] },
+        synthesized: { passed: false, sections: [], bugsFiled: [] },
         verdictField: 'passed',
         notesField: 'summary',
         paths: 4,

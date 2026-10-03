@@ -1,23 +1,36 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "apra-pm/regression-test-runner-output@1",
-  "version": 2,
+  "version": 3,
   "title": "regression-test-runner output",
-  "description": "Canonical machine-readable output contract for the regression-test-runner role. See agents/regression-test-runner.md Step 4 for the prose contract this mirrors. This result is informational: it never gates the current sprint's PASS/FAIL verdict -- failures carry over to a future sprint as parent-less [regression][carry-over] beads.",
+  "description": "Canonical machine-readable output contract for the regression-test-runner role. See agents/regression-test-runner.md Step 4 for the prose contract this mirrors. This result is informational: it never gates the current sprint's PASS/FAIL verdict -- failures carry over to a future sprint as parent-less [regression][carry-over] beads. The target repo's regression-test-playbook.md defines what the pass consists of; this contract does not assume any particular structure.",
   "type": "object",
-  "required": ["passed", "suitePassed", "smokePassed", "bugsFiled", "summary"],
+  "required": ["passed", "bugsFiled", "summary"],
   "properties": {
     "passed": {
       "type": "boolean",
-      "description": "True only if BOTH suitePassed and smokePassed are true AND no carry-over bug was filed this run."
+      "description": "True only if every part of the pass the playbook defines passed AND no carry-over bug was filed this run."
+    },
+    "sections": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "passed"],
+        "properties": {
+          "name": { "type": "string", "description": "The part's name exactly as the playbook names it." },
+          "passed": { "type": "boolean" },
+          "detail": { "type": "string", "description": "Optional one-line result detail (counts, failing step)." }
+        }
+      },
+      "description": "Per-part results, one entry per part the playbook defines (a playbook with a single part yields one entry). Omit only if the pass stopped before running any part."
     },
     "suitePassed": {
       "type": "boolean",
-      "description": "Result of playbook Part 1 -- the real-bd functional suite."
+      "description": "Deprecated legacy field from the earlier two-part contract; still accepted, never required. Report per-part results in sections instead."
     },
     "smokePassed": {
       "type": "boolean",
-      "description": "Result of playbook Part 2 -- the sandbox smoke test."
+      "description": "Deprecated legacy field from the earlier two-part contract; still accepted, never required. Report per-part results in sections instead."
     },
     "bugsFiled": {
       "type": "array",
@@ -31,7 +44,7 @@
     "smokeEvidence": {
       "type": "object",
       "additionalProperties": true,
-      "description": "Optional structured evidence from Part 2 (the target repo's own smoke test), so the result is machine-checkable instead of self-reported prose. This schema does not define its shape -- the target repo's regression-test-playbook.md (Part 2 / smoke test section) does. Omit if that playbook defines no structured evidence."
+      "description": "Optional structured evidence, so the result is machine-checkable instead of self-reported prose. This schema does not define its shape -- the target repo's regression-test-playbook.md does (the field name is kept for compatibility). Omit if that playbook defines no structured evidence."
     }
   }
 }

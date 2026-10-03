@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- Regression phase no longer assumes apra-fleet's playbook structure
+
+The fleet-sprint regression phase, the `regression-test-runner` role prompt and the sprint report
+used to dictate apra-fleet's own two-part pass (a real-bd suite plus a sandboxed toy-sprint smoke
+test) to every target. They now run every part the target's `regression-test-playbook.md` defines.
+The runner output schema (v3) adds `sections` (one `{name, passed}` per playbook part) and makes
+`suitePassed`/`smokePassed` optional deprecated fields, still accepted from older runners. The
+generic-boundary guard gained an `apra-fleet-regression-structure` pattern for this leak class.
+
 ## [Unreleased] -- Supervisor owns and hard-pins its backlog member
 
 `fleet-se serve` now ensures its own LLM-less, `unreservable` backlog member for its project
