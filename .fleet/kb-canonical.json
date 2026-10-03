@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "a993f497d35892ff89039edb94be940fd1fb0b5e",
     "branch": "main",
-    "entry_count": 263
+    "entry_count": 266
   },
   "entries": [
     {
@@ -1955,6 +1955,22 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:30.510Z"
+    },
+    {
+      "id": "59499fc5-c202-4cd5-a01e-df99a29d9521",
+      "type": "learning",
+      "title": "node:test cancels a test waiting only on an unref'd timer",
+      "summary": "A test whose only pending work is an unref'd setTimeout (such as beads-view freshForLaunch's timeout) is cancelled with 'Promise resolution is still pending but the event loop has already resolved'; inject a referenced timer through the setTimeout/clearTimeout deps.",
+      "symbols": [
+        "createBeadsView",
+        "freshForLaunch"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/src/supervisor/beads-view.mjs",
+        "packages/apra-fleet-se/test/supervisor-beads-view.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-03T01:35:02.780Z"
     },
     {
       "id": "59d17152-f1c3-483e-8b26-63487e5694eb",
@@ -4348,6 +4364,24 @@
       "updated_at": "2026-09-29T06:13:11.619Z"
     },
     {
+      "id": "e687ffa8-8697-4f7f-9418-ba7f3efd6c2b",
+      "type": "knowledge",
+      "title": "Supervisor ledger setScopeFreshness before start() overwrites the on-disk ledger",
+      "summary": "createLedger's transact() persists the current in-memory document; before ledger.start() has loaded the file that document is empty, so any setScopeFreshness call before supervisor.start() would write an empty reservations map over the real ledger.",
+      "symbols": [
+        "createLedger",
+        "setScopeFreshness",
+        "serveMain"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/src/supervisor/ledger.mjs",
+        "packages/apra-fleet-se/bin/serve.mjs",
+        "packages/apra-fleet-se/src/supervisor/beads-view.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-02T23:19:56.679Z"
+    },
+    {
       "id": "e6df1a2a-9088-4e71-8f9a-86be4cb5b4f7",
       "type": "knowledge",
       "title": "A fleet-sprint sandbox copy under os.tmpdir needs a node_modules symlink, and rmSync will not follow it",
@@ -4562,6 +4596,23 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:53.807Z"
+    },
+    {
+      "id": "f34ed294-df0a-43fc-a138-fa5f773bcaa3",
+      "type": "knowledge",
+      "title": "doltPullBefore records the remote tip before the caller re-lists, so a failed post-pull list is not retried",
+      "summary": "doltPullBefore records the new remote tip as soon as the pull succeeds. A caller that skips its re-list on remote-unchanged must also track whether its own last list succeeded; otherwise a list failure after a successful pull leaves stale data marked fresh.",
+      "symbols": [
+        "doltPullBefore",
+        "setLastSyncedTip",
+        "createBeadsView"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/dolt-sync.mjs",
+        "packages/apra-fleet-se/src/supervisor/beads-view.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-02T23:26:04.340Z"
     },
     {
       "id": "f5fd18a6-c552-4dc8-bd9d-3bed5bef3e89",

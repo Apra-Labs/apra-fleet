@@ -51,6 +51,7 @@ import { createSprintController, registerSprintRoutes, defaultMemberOverlapGuard
 import { createScopeGuard, formatScopeConflict } from '../src/supervisor/scope-overlap.mjs';
 import { listFleetMembers, executeFleetCommand, registerFleetMember, updateFleetMember } from '../src/supervisor/fleet-members.mjs';
 import { ensureBacklogMember, BacklogMemberRefusedError } from '../src/supervisor/backlog-member.mjs';
+import { BeadsViewUnavailableError, createBeadsView, createBeadsViewCommand, createLaunchRowsFetcher, createSnapshotRowsReader } from '../src/supervisor/beads-view.mjs';
 import { createDoltOrphanSweep, normalizeMsysPathForPlatform } from '../src/supervisor/dolt-orphan-sweep.mjs';
 import { resolveFleetServerConnection } from './cli.mjs';
 import {
@@ -86,6 +87,46 @@ Environment:
 `.trim();
 
 /**
+ * The production dashboard + backlog wiring: both read the cached beads view's
+ * snapshot (never spawn bd) and kick a non-blocking background refresh when the
+ * cache is stale. The dashboard keeps every row (--all); the backlog keeps
+ * today's default `bd list` set (closed beads excluded). Exported so the wiring
+ * itself is testable (test/supervisor-dashboard-beads-cache.test.mjs): dropping
+ * either `listAllBeads` injection here silently falls back to the seam's default
+ * bd fetcher (dashboard.mjs / backlog.mjs), one bd list per render or SSE tick.
+ *
+ * @param {{ ledger: object, watchdog: object, beadsIdentity?: object, beadsView: object, resolvePort?: Function }} deps
+ */
+export function createBeadsBackedViews({ ledger, watchdog, beadsIdentity, beadsView, resolvePort, ...extra }) {
+    const dashboardRows = createSnapshotRowsReader(beadsView);
+    const backlogRows = createSnapshotRowsReader(beadsView, { openOnly: true, emptyWhenNoRows: true });
+    const backlog = createBacklog({ ledger, watchdog, listAllBeads: backlogRows });
+    const dashboard = createDashboard({
+        ledger, watchdog, backlog, beadsIdentity,
+        listAllBeads: dashboardRows,
+        beadsView,
+        resolvePort,
+        ...extra,
+    });
+    return { backlog, dashboard };
+}
+
+/**
+ * The production launch overlap guard: createScopeGuard() whose one bulk fetch
+ * per checkLaunch() is the cached view's forced fresh check (tip check +
+ * re-list, busy-skip retried inside one wall-clock bound), made in that very
+ * call -- the guard NEVER decides on cached rows. Exported so the wiring itself
+ * is testable; reverting it to createScopeGuard({ ledger }) (the default
+ * `bd list` fetcher) makes the poisoned-cache assertions in
+ * test/supervisor-launch-fresh-beads.test.mjs fail.
+ *
+ * @param {{ ledger: object, beadsView: { freshForLaunch: Function }, launchFetchOpts?: object }} deps
+ */
+export function createLaunchScopeGuard({ ledger, beadsView, launchFetchOpts }) {
+    return createScopeGuard({ ledger, listAllBeads: createLaunchRowsFetcher(beadsView, launchFetchOpts) });
+}
+
+/**
  * apra-fleet-k06.1: compose BOTH launch-time overlap guards api.mjs's own
  * header comment (eft.5.2/eft.5.3) already describes as meant to run
  * together, as a standalone/exported factory so the composition itself --
@@ -113,7 +154,19 @@ Environment:
 export function composeBeforeLaunch({ memberOverlapGuard, scopeGuard }) {
     return async ({ members, issueRoots }) => {
         await memberOverlapGuard({ members, issueRoots });
-        const scopeResult = await scopeGuard.checkLaunch(issueRoots);
+        let scopeResult;
+        try {
+            scopeResult = await scopeGuard.checkLaunch(issueRoots);
+        } catch (err) {
+            // The forced fresh beads check failed (timeout, pull/list error,
+            // busy that outlasted its retries, degraded backlog member): the
+            // overlap guard cannot decide, so the launch is refused with 503
+            // naming the reason -- never a 409 (no conflict) or a 500.
+            if (err instanceof BeadsViewUnavailableError) {
+                throw new ApiError(503, `cannot verify issue-scope overlap: ${err.reason}`, 'issue');
+            }
+            throw err;
+        }
         if (!scopeResult.ok) {
             throw new ApiError(409, formatScopeConflict(scopeResult.conflicts), 'issue');
         }
@@ -156,7 +209,7 @@ export function defaultEnsureBacklogMember({ beadsDir }) {
 
 /**
  * @param {string[]} [argv]
- * @param {{ ensureBacklogMember?: (opts: { beadsDir: string|null }) => Promise<{ get: Function, stop?: Function }> }} [deps]
+ * @param {{ ensureBacklogMember?: (opts: { beadsDir: string|null }) => Promise<{ get: Function, stop?: Function }>, createBeadsView?: (deps: object) => { refreshIfStale: Function, stop: Function } }} [deps]
  */
 export async function serveMain(argv = process.argv.slice(2), deps = {}) {
     const { values } = parseServeArgs(argv);
@@ -265,6 +318,25 @@ export async function serveMain(argv = process.argv.slice(2), deps = {}) {
     // collaborators so a restarted supervisor reconciles against on-disk state.
     const ledger = createLedger();
     const history = createHistory();
+
+    // The supervisor's cached beads view (src/supervisor/beads-view.mjs):
+    // raw `bd list --all` rows for repoRoot, refreshed through the backlog
+    // member's tip-checked D-pull. Constructed here, but its first refresh is
+    // only kicked AFTER supervisor.start() below has loaded the ledger from
+    // disk -- a scope-freshness write before that load would persist an
+    // empty ledger over the real one. A degraded/null backlog member is not
+    // fatal: the view records lastError with the reason instead of throwing.
+    const buildBeadsView = deps.createBeadsView ?? createBeadsView;
+    const beadsView = buildBeadsView({
+        backlogMember,
+        ledger,
+        repoRoot,
+        command: createBeadsViewCommand({ executeFleetCommand, resolveConnection: resolveFleetServerConnection }),
+    });
+    // Dashboard and backlog read the view's cached rows (never spawn bd) and
+    // kick a non-blocking background refresh when the cache is stale. The
+    // dashboard keeps every row (--all); the backlog keeps today's default
+    // `bd list` set (closed beads excluded).
     // apra-fleet-f34.1: pass this supervisor's OWN listening address so every
     // spawned sprint child's cli.mjs receives --service-url and threads it
     // into runner.js's HTTP-backed dolt-mutex/id-allocator clients (see
@@ -378,7 +450,6 @@ export async function serveMain(argv = process.argv.slice(2), deps = {}) {
     // Backlog section (below) AND as GET /api/backlog's real listing (see the
     // sprint controller wiring below), so there is exactly one "what does the
     // tracker minus claimed scope look like right now" implementation.
-    const backlog = createBacklog({ ledger, watchdog });
 
     // eft.6.1/6.3: the single-page operator dashboard -- Sprint Stack, then
     // Backlog, then the Launch Sprint form (launch-form.mjs attaches itself
@@ -386,8 +457,8 @@ export async function serveMain(argv = process.argv.slice(2), deps = {}) {
     // above for why no separate launch-form seam is constructed here).
     // Sprint rows pull each child's own GET /state?summary=1; the port comes
     // from the shared ledger childPid -> spawner live-port resolver.
-    const dashboard = createDashboard({
-        ledger, watchdog, backlog, beadsIdentity,
+    const { backlog, dashboard } = createBeadsBackedViews({
+        ledger, watchdog, beadsIdentity, beadsView,
         resolvePort: createChildPortResolver({ ledger, spawner }),
     });
 
@@ -464,7 +535,7 @@ export async function serveMain(argv = process.argv.slice(2), deps = {}) {
     // error shape) -- extracted as its own export so the composition is
     // directly unit-testable without booting this whole process.
     const memberOverlapGuard = defaultMemberOverlapGuard(ledger, listMembersForLaunch);
-    const scopeGuard = createScopeGuard({ ledger });
+    const scopeGuard = createLaunchScopeGuard({ ledger, beadsView });
     const beforeLaunch = composeBeforeLaunch({ memberOverlapGuard, scopeGuard });
 
     const sprintController = createSprintController({
@@ -538,9 +609,14 @@ export async function serveMain(argv = process.argv.slice(2), deps = {}) {
     await history.start();
     await readopter.readopt();
 
+    // One non-blocking startup refresh of the cached beads view (never
+    // awaited, never rejects -- failures land in the view's lastError).
+    beadsView.refreshIfStale();
+
     // Keep the process alive until an explicit shutdown resolves. Awaiting this
     // is what makes `fleet-se serve` "always-on" -- nothing else drives exit.
     await supervisor.shutdownRequested;
+    beadsView.stop();
     if (typeof backlogMember.stop === 'function') backlogMember.stop();
     return { exitCode: 0 };
 }

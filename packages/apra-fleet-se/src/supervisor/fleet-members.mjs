@@ -166,6 +166,24 @@ export async function executeFleetCommand(opts = {}) {
         if (res && res.isError) {
             return { ok: false, error: String(text ?? 'unknown error') };
         }
+        // The fleet server's execute_command does NOT set isError on a
+        // non-zero exit; it reports the real exit code (and clean, unprefixed
+        // stdout/stderr) in structuredContent instead, while `text` is the
+        // display form `Exit code: N\n<output>`. Surface those fields
+        // ADDITIVELY (only when the server sent them) so a caller that needs
+        // exit-code truth -- the beads view's dolt command adapter
+        // (beads-view.mjs) -- can read it, while `ok`/`output` keep their
+        // existing meaning for the orphan sweep.
+        const sc = res && res.structuredContent;
+        if (sc && typeof sc.exitCode === 'number') {
+            return {
+                ok: true,
+                output: String(text ?? ''),
+                exitCode: sc.exitCode,
+                stdout: typeof sc.stdout === 'string' ? sc.stdout : '',
+                stderr: typeof sc.stderr === 'string' ? sc.stderr : '',
+            };
+        }
         return { ok: true, output: String(text ?? '') };
     } catch (err) {
         logError(`[fleet-members] execute_command failed on member '${member}':`, err);

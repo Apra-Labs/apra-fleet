@@ -1149,7 +1149,7 @@ describe('execution-role dispatch: returnable verdicts', () => {
         assert.deepStrictEqual(finalVerdict.properties.verdict.enum, ['PASS', 'FAIL']);
         assert.deepStrictEqual(finalVerdict.required, ['verdict', 'notes']);
         assert.strictEqual(regressionReport.properties.passed.type, 'boolean');
-        assert.deepStrictEqual(regressionReport.required, ['passed', 'suitePassed', 'smokePassed', 'bugsFiled', 'summary']);
+        assert.deepStrictEqual(regressionReport.required, ['passed', 'bugsFiled', 'summary']);
         assert.deepStrictEqual(harvesterReport.properties.status.enum, ['OK', 'FAILED']);
         assert.deepStrictEqual(harvesterReport.required, ['status', 'notes']);
     });

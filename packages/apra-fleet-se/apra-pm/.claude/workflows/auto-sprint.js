@@ -1850,27 +1850,49 @@ const REGRESSION_RUN_SCHEMA = {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "apra-pm/regression-test-runner-output@1",
   "title": "regression-test-runner output",
-  "description": "Canonical machine-readable output contract for the regression-test-runner role. See agents/regression-test-runner.md Step 4 for the prose contract this mirrors. This result is informational: it never gates the current sprint's PASS/FAIL verdict -- failures carry over to a future sprint as parent-less [regression][carry-over] beads.",
+  "description": "Canonical machine-readable output contract for the regression-test-runner role. See agents/regression-test-runner.md Step 4 for the prose contract this mirrors. This result is informational: it never gates the current sprint's PASS/FAIL verdict -- failures carry over to a future sprint as parent-less [regression][carry-over] beads. The target repo's regression-test-playbook.md defines what the pass consists of; this contract does not assume any particular structure.",
   "type": "object",
   "required": [
     "passed",
-    "suitePassed",
-    "smokePassed",
     "bugsFiled",
     "summary"
   ],
   "properties": {
     "passed": {
       "type": "boolean",
-      "description": "True only if BOTH suitePassed and smokePassed are true AND no carry-over bug was filed this run."
+      "description": "True only if every part of the pass the playbook defines passed AND no carry-over bug was filed this run."
+    },
+    "sections": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "passed"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The part's name exactly as the playbook names it."
+          },
+          "passed": {
+            "type": "boolean"
+          },
+          "detail": {
+            "type": "string",
+            "description": "Optional one-line result detail (counts, failing step)."
+          }
+        }
+      },
+      "description": "Per-part results, one entry per part the playbook defines (a playbook with a single part yields one entry). Omit only if the pass stopped before running any part."
     },
     "suitePassed": {
       "type": "boolean",
-      "description": "Result of playbook Part 1 -- the real-bd functional suite."
+      "description": "Deprecated legacy field from the earlier two-part contract; still accepted, never required. Report per-part results in sections instead."
     },
     "smokePassed": {
       "type": "boolean",
-      "description": "Result of playbook Part 2 -- the sandbox smoke test."
+      "description": "Deprecated legacy field from the earlier two-part contract; still accepted, never required. Report per-part results in sections instead."
     },
     "bugsFiled": {
       "type": "array",
@@ -1886,7 +1908,7 @@ const REGRESSION_RUN_SCHEMA = {
     "smokeEvidence": {
       "type": "object",
       "additionalProperties": true,
-      "description": "Optional structured evidence from Part 2 (the target repo's own smoke test), so the result is machine-checkable instead of self-reported prose. This schema does not define its shape -- the target repo's regression-test-playbook.md (Part 2 / smoke test section) does. Omit if that playbook defines no structured evidence."
+      "description": "Optional structured evidence, so the result is machine-checkable instead of self-reported prose. This schema does not define its shape -- the target repo's regression-test-playbook.md does (the field name is kept for compatibility). Omit if that playbook defines no structured evidence."
     }
   }
 };
@@ -3826,12 +3848,10 @@ if (regressionTestEnabled) {
       `Repo: ${repo}\nBranch: ${branch}\nCycles completed: ${cycleCount}\n` +
       `Sprint goals: ${rootSummary}\n\n` +
       `Follow your runbook (agents/regression-test-runner.md) and regression-test-playbook.md.\n` +
-      `This is the ONCE-PER-SPRINT regression pass. Run BOTH parts:\n` +
-      `  Part 1: the full functional suite against the real bd CLI, at branch HEAD.\n` +
-      `  Part 2: the toy-sprint smoke test -- bring the sandbox up with the playbook's\n` +
-      `          ## Setup section, run its ## Test scenario, and ALWAYS run the playbook's\n` +
-      `          ## Teardown before returning, pass or fail.\n\n` +
-      `File EVERY failure from either part as a STANDALONE bead: "bd create" with NO\n` +
+      `This is the ONCE-PER-SPRINT regression pass. Run every part the playbook defines,\n` +
+      `in its order, at branch HEAD; if it defines a ## Teardown, ALWAYS run it before\n` +
+      `returning, pass or fail.\n\n` +
+      `File EVERY failure from any part as a STANDALONE bead: "bd create" with NO\n` +
       `--parent flag, and do NOT "bd dep add" it to sprint root ${rootIds[0]}, to any\n` +
       `feature, or to any other bead in this sprint. Title each one\n` +
       `"[regression][carry-over] <short description>". The parent-less shape is the point:\n` +
@@ -3841,9 +3861,9 @@ if (regressionTestEnabled) {
       `carry-over bug rather than filing a second one for the same failure.\n\n` +
       `This sprint's verdict is ALREADY DECIDED (final review: APPROVED). Your result is\n` +
       `INFORMATIONAL and does not gate it -- do not present it as a gate.\n\n` +
-      `Return the full contract: passed (boolean), suitePassed (boolean), smokePassed\n` +
-      `(boolean), bugsFiled (array of the parent-less carry-over bead ids, [] if none),\n` +
-      `summary (one paragraph).`,
+      `Return the full contract: passed (boolean), sections (one {name, passed} per part\n` +
+      `the playbook defines, named as the playbook names it), bugsFiled (array of the\n` +
+      `parent-less carry-over bead ids, [] if none), summary (one paragraph).`,
       { model: MODEL_SONNET, label: 'regression-test-runner', phase: 'Harvest',
         schema: REGRESSION_RUN_SCHEMA, agentType: 'regression-test-runner' }
     );
@@ -3854,10 +3874,13 @@ if (regressionTestEnabled) {
   }
   if (regressionResult && typeof regressionResult.passed === 'boolean') {
     const _bugs = Array.isArray(regressionResult.bugsFiled) ? regressionResult.bugsFiled : [];
-    log(`Regression: suitePassed=${regressionResult.suitePassed}, smokePassed=${regressionResult.smokePassed}, passed=${regressionResult.passed}, carry-over bugs filed: ${_bugs.length}${_bugs.length ? ` [${_bugs.join(', ')}]` : ''}`);
+    const _parts = Array.isArray(regressionResult.sections) && regressionResult.sections.length
+      ? ` (${regressionResult.sections.map(s => `${s.name}: ${s.passed === true ? 'pass' : 'fail'}`).join(', ')})`
+      : '';
+    log(`Regression: passed=${regressionResult.passed}${_parts}, carry-over bugs filed: ${_bugs.length}${_bugs.length ? ` [${_bugs.join(', ')}]` : ''}`);
     log(`Regression summary: ${regressionResult.summary}`);
     regressionSummaryLine =
-      `passed=${regressionResult.passed} (suite=${regressionResult.suitePassed}, smoke=${regressionResult.smokePassed})` +
+      `passed=${regressionResult.passed}${_parts}` +
       `${_bugs.length ? `; carry-over beads filed: ${_bugs.join(', ')}` : '; no carry-over beads filed'}`;
   } else {
     log('Regression pass returned no usable result -- ignored (informational only; the sprint is unaffected)');
