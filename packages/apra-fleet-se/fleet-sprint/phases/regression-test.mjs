@@ -70,6 +70,7 @@
 // =============================================================================
 
 import { dispatchRole, TURN_BASES } from '../dispatch-role.mjs';
+import { formatRegressionParts } from '../sprint-report.mjs';
 
 /**
  * Runs the once-per-sprint Regression Test phase. Informational: its result
@@ -100,14 +101,14 @@ export async function runRegressionTestPhase({
     phase(`Regression Test C${finalCycleLabel}`);
     await ensureUnattendedAuto(getMemberForRole('regression-test-runner'));
     await ensureDeployPermissions(getMemberForRole('regression-test-runner'));
-    // The real functional suite alone spends roughly one turn per liveness
-    // poll for the better part of an hour, and this single dispatch carries
-    // both it and the sandbox smoke sprint -- hence the large turn budget
-    // and the wider hard ceiling.
+    // What the pass consists of is the target playbook's to define; the
+    // engine assumes no structure. A target's pass can poll a long-running
+    // suite for most of an hour (~one turn per liveness poll) -- hence the
+    // large turn budget and the wider hard ceiling.
     const regressionPrompt =
-        `Run the full regression pass using regression-test-playbook.md at the repo root: part 1 ` +
-        `(the real functional suite) and part 2 (the sandbox smoke test), then ALWAYS run the ` +
-        `playbook's Teardown before returning, pass or fail. ` +
+        `Run the full regression pass exactly as regression-test-playbook.md at the repo root ` +
+        `defines it -- every part it lists, in its order -- and if the playbook defines a Teardown, ` +
+        `ALWAYS run it before returning, pass or fail. ` +
         `File every failure you find as a STANDALONE bead: run bd create WITHOUT any --parent flag ` +
         `and do NOT bd dep add it to any sprint bead, titled "[regression][carry-over] <description>". ` +
         `Search bd for "[carry-over]" first and update an existing bead rather than filing a duplicate. ` +
@@ -155,7 +156,7 @@ export async function runRegressionTestPhase({
         // dispatch's scope/filing rules -- a bare "continue" would lose the
         // parent-less filing rule, which is the whole point of this phase.
         resumePrompt:
-            'Continue the regression pass exactly where you left off in this same session -- do not restart the playbook or rebuild the sandbox if it is already up. Finish the remaining work, run Teardown, and return your final report now. ' +
+            'Continue the regression pass exactly where you left off in this same session -- do not restart the playbook or rebuild any environment it already brought up. Finish the remaining work, run the playbook\'s Teardown if it defines one, and return your final report now. ' +
             'Your original instructions, restated so a resumed dispatch never loses them: ' + regressionPrompt,
         roleLabel: 'Regression Test Runner',
         resumeLabel: `Regression Test (resume, max_turns=${TURN_BASES.REGRESSION_TEST_MAX_TURNS * 2})`,
@@ -166,7 +167,7 @@ export async function runRegressionTestPhase({
     if (regressionResult.passed !== true) {
         log(`Regression pass reported FAILURES (carry-over beads: ${(regressionResult.bugsFiled || []).join(', ') || 'none'}): ${regressionResult.summary}`);
     } else {
-        log(`Regression pass PASSED (suite: ${regressionResult.suitePassed}, smoke: ${regressionResult.smokePassed}).`);
+        log(`Regression pass PASSED${formatRegressionParts(regressionResult)}.`);
     }
     await updateDashboard();
 

@@ -558,9 +558,9 @@ Agents:
                      closes it on pass, files [integ] bugs on failure
   regression-test-runner
                      once per sprint (after final review, before harvest): runs
-                     regression-test-playbook.md -- the real-bd suite plus the
-                     toy-sprint smoke test in its own sandbox; informational only,
-                     files parent-less [regression][carry-over] bugs
+                     every part of the target's regression-test-playbook.md;
+                     informational only, files parent-less
+                     [regression][carry-over] bugs
   ci-watcher         polls CI for the sprint HEAD SHA
   harvester          extracts durable knowledge, updates docs/README/CHANGELOG
   backlog-groomer    personal backlog triage: ready/urgent work, sprint sets,

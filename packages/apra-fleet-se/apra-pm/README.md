@@ -30,9 +30,8 @@ while (open issues above goal threshold > 0 AND cycles < max):
   Develop    -- doer works bd-ready tasks on the model the planner assigned;
                reviewer approves or reopens (reviewer model >= sonnet)
   Deploy     -- deployer follows deploy.md (deploy + smoke test)
-  Test Run   -- integ-test-runner runs integ-test-playbook.md end to end
-               (real functional suite, then sandbox up -> smoke sprint ->
-               teardown); closes passing features, files bugs for failures
+  Test Run   -- integ-test-runner runs integ-test-playbook.md for this
+               cycle's features; closes passing features, files bugs for failures
   Exit check -- beads query: are open issues above threshold? same set as last cycle?
 
 Finalization (once): regression-test-runner runs regression-test-playbook.md --

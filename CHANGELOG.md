@@ -2,6 +2,40 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- Supervisor serves beads from a cached, tip-checked view
+
+The supervisor now reads the beads backlog through one shared cached view that refreshes via the
+backlog member only when the remote Dolt tip changes (single in-flight refresh, busy/lock rounds
+skipped, a failed list after a pull stays owed). `POST /api/sprints` always forces a fresh re-list
+for its overlap guard and answers 503 with the reason when beads cannot be verified, never
+reserving or spawning. The dashboard and backlog views read the cached snapshot without blocking,
+and `GET /state` carries `beadsFreshness` so the page shows "Beads as of", errors and a busy
+note. See `docs/backlog-role.md`.
+
+```
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $19.3212.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.0836 across 2 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 20 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+```
+
+Carried forward as open backlog: dashboard lag behind unpushed bead changes made by sprint
+children in the shared clone; a supervisor booting with an empty registry answering 503 until the
+backlog member's retry (recurrence of an earlier fix); a smoke-test sprint whose develop round
+failed with the member missing a VCS provider; and the regression-pass failures already tracked by
+earlier carry-over issues.
+
+## [Unreleased] -- Regression phase no longer assumes apra-fleet's playbook structure
+
+The fleet-sprint regression phase, the `regression-test-runner` role prompt and the sprint report
+used to dictate apra-fleet's own two-part pass (a real-bd suite plus a sandboxed toy-sprint smoke
+test) to every target. They now run every part the target's `regression-test-playbook.md` defines.
+The runner output schema (v3) adds `sections` (one `{name, passed}` per playbook part) and makes
+`suitePassed`/`smokePassed` optional deprecated fields, still accepted from older runners. The
+generic-boundary guard gained an `apra-fleet-regression-structure` pattern for this leak class.
+
 ## [Unreleased] -- KB redesign stage 6: update_member fleet_install and build-aware upgrade
 
 Sprint goal: let `update_member` upgrade a remote member's own apra-fleet on request, reject unknown input, and make the member version check build-aware. Both are delivered. Build and `npm test` passed (one unrelated timer-granularity flake in the client timeout test passed on rerun). Carried forward: that flaky test, and untested paths (`fleet_install: "skip"` with a provider change; build-only difference when arch is unknown or no install source exists).
@@ -130,6 +164,17 @@ Budget ceiling: not set (no --budget flag) -- unlimited for this run.
 Tracked spend (priced dispatches only): $6.5699.
 Remaining budget: unknown/unbounded.
 Integ-test-runner spend: $0.0864 across 2 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 14 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+```
+
+- A selected kb_maintainer with no dispatched role is now put on the sprint branch (first ensure and every re-ensure) without being dispatched.
+- Bible commits refuse to run on any other branch: the engine checks the maintainer's branch before the first attempt, the retry reset and the cleanup reset; on mismatch or unreadable branch nothing is pulled, committed, pushed or reset, and the ids stay queued.
+- The bible-commit reset requires a clean tracked tree and only bible-file local commits; unrelated unpushed work on the maintainer is preserved.
+- `kb_invalidate {ids}` derives the owner tag via the shared member-owner helper, like the other KB write tools.
+- Design notes: docs/kb-member-view-and-maintainer.md.
+
+Carried forward: the reset guard hardcodes the `origin` remote.
 
 ## [Unreleased] -- Supervisor owns and hard-pins its backlog member
 
@@ -156,6 +201,19 @@ Carried forward as open P3 backlog: the overlap guard not seeing the injected ba
 sprint-state test that slices `runner.js` with an LF-only pattern (fails on CRLF checkouts), a
 `kb_session_prime` test timeout, and the regression-pass failures already tracked by earlier
 carry-over issues.
+
+## [Unreleased] -- remove_member no longer deletes a user-supplied SSH key (data loss fix)
+
+`remove_member` deleted the local key pair at the member's `keyPath` (and removed its public key
+from the member's `~/.ssh/authorized_keys`) whenever no other member shared it, even when the key
+was the user's own `register_member key_path` -- earlier builds could delete a personal key such as
+`~/.ssh/id_ed25519`. Both steps now run only for fleet-generated keys (those under the fleet keys
+dir written by `setup_ssh_key`); the shared-key guard still applies. Behaviour change: removing a
+member registered with a user-supplied key leaves the key files and its `authorized_keys` entry in
+place -- revoking that access is the user's choice.
+
+Upgrade: no migration needed; the decision is made by key location, so members registered before
+this fix are covered. If an earlier build already deleted your key, restore it from backup.
 
 ## [Unreleased] -- Beads role renamed to `backlog`; `orchestrator` kept as a deprecated alias
 
