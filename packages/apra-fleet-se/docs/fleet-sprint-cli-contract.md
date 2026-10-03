@@ -89,8 +89,10 @@ get-url origin`) and throws `BeadsIdentityError` (reason `MISMATCH`) -- text:
 `Beads identity check failed: member '<member>' resolves to a different beads
 database than expected (...) -- <field>: expected '<x>', actual '<y>'.
 Refusing to mutate beads on it.` -- on the first field that resolved on BOTH
-sides and differs. No bypass flag. A probe that fails or resolves nothing is
-NOT fatal: it logs `[beads-identity] WARNING: member '<m>' could not report
+sides and differs. It also throws (reason `MISSING_TOOL`) when a `bd` probe
+fails because `bd` itself is not installed or not on PATH on a member,
+naming the member and the fix. No bypass flag. Any other probe that fails or
+resolves nothing is NOT fatal: it logs `[beads-identity] WARNING: member '<m>' could not report
 <field> ('<probe>' -> <error>); not compared. To fix: ...` (or `... reports
 no beads database in its workFolder ...` when `bd where` itself fails, in
 which case that member has no identity entry at all), leaves that field out

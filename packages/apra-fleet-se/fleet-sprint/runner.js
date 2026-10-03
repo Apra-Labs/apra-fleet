@@ -1383,7 +1383,7 @@ async function runSprintCycle(context) {
     // absent that, the orchestrator's own identity). A probe that fails or
     // resolves nothing is a logged `[beads-identity] WARNING:` (with the
     // fix) and that field is left out of the comparison -- only a proven
-    // mismatch is fatal.
+    // mismatch, or bd itself missing on a member, is fatal.
     // Sits here rather than next to wrapCommand() above because the
     // backlog member is only resolved at this point; nothing between
     // the two spots issues a command(). `context.verifyBeadsIdentity` is the

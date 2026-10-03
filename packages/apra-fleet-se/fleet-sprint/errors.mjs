@@ -898,6 +898,8 @@ export class PreSprintValidationError extends WorkflowError {
 
 export const BEADS_IDENTITY_FAILURE_REASONS = Object.freeze({
     MISMATCH: 'MISMATCH',
+    // The member cannot run bd at all (not installed / not on PATH).
+    MISSING_TOOL: 'MISSING_TOOL',
 });
 
 /**
