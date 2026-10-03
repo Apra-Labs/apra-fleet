@@ -7,11 +7,12 @@
 //
 // The dashboard and backlog are built through bin/serve.mjs's exported
 // createBeadsBackedViews() -- the very function serveMain calls -- not rebuilt
-// here. Reverting either injection inside it (`listAllBeads: dashboardRows` or
-// `listAllBeads: backlogRows`) to the seam default (dashboard.mjs
-// bdListAllBeadsWithClosed / backlog.mjs bdListAllBeadsRaw) makes the "wiring
-// reads the cache" test below fail: the view-only bead id never reaches the
-// render and the view's snapshot() is never consulted.
+// here. The "wiring reads the cache" test uses bead ids that exist only in the
+// injected view. Reverting `listAllBeads: dashboardRows` (dashboard.mjs would
+// default to bdListAllBeadsWithClosed) fails its /state beadCount assertion
+// (root-only count 1, not 2); reverting `listAllBeads: backlogRows`
+// (backlog.mjs defaults to bdListAllBeadsRaw) fails its backlog VIEW-ONLY-3
+// assertion. Neither depends on bd being installed or on timing.
 
 import { describe, test, beforeEach, afterEach, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -58,12 +59,12 @@ function fakeCommand(state) {
     };
 }
 
-async function setup({ rows = ALL_ROWS, backlogMember, viewOpts = {} } = {}) {
+async function setup({ rows = ALL_ROWS, roots = ['E-1'], backlogMember, viewOpts = {} } = {}) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dash-cache-'));
     tmpDirs.push(dir);
     const ledger = createLedger({ filePath: path.join(dir, 'ledger.json') });
     await ledger.start();
-    await ledger.claim('S-1', { issueRoots: ['E-1'], members: ['zed'], childPid: null });
+    await ledger.claim('S-1', { issueRoots: roots, members: ['zed'], childPid: null });
     const mem = { pulls: 0 };
     const list = { calls: 0 };
     const clock = { now: T0 };
@@ -102,14 +103,19 @@ async function setup({ rows = ALL_ROWS, backlogMember, viewOpts = {} } = {}) {
 
 describe('dashboard serves the cached beads view: no bulk fetch per render', () => {
     test('serve.mjs wiring reads the cache: view-only rows reach /state and the backlog tree, via snapshot()', async () => {
-        const t = await setup({ rows: [bead('VIEW-ONLY-1'), bead('VIEW-ONLY-2', 'closed')] });
+        const t = await setup({
+            roots: ['VIEW-ONLY-1'],
+            rows: [bead('VIEW-ONLY-1'), bead('VIEW-ONLY-1.1', 'open', 'VIEW-ONLY-1'), bead('VIEW-ONLY-2', 'closed'), bead('VIEW-ONLY-3')],
+        });
         await t.view.refresh();
         const before = t.probe.snapshots;
         const page = await t.get('/');
         assert.equal(page.status, 200);
         assert.ok(t.probe.snapshots > before, 'dashboard render consulted the view snapshot');
         assert.ok(t.probe.refreshChecks > 0, 'stale refresh kicked through the view');
-        assert.match(page.text, /VIEW-ONLY-1/, 'backlog rows came from the cache, not a default bd fetch');
+        assert.match(page.text, /VIEW-ONLY-3/, 'backlog rows came from the cache, not a default bd fetch');
+        const state = JSON.parse((await t.get('/state')).text);
+        assert.equal(state.sprints[0].beadCount, 2, 'dashboard claimed-scope count came from cached rows (root + child exist only in the view)');
         assert.doesNotMatch(page.text, /VIEW-ONLY-2/, 'closed bead excluded from the backlog');
     });
 
