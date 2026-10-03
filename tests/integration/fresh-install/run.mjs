@@ -241,6 +241,17 @@ async function main() {
   fs.writeFileSync(path.join(o.out, 'report.json'), JSON.stringify(report, null, 2) + '\n');
   fs.writeFileSync(path.join(o.out, 'report.md'), renderMarkdown(report) + '\n');
   for (const p of passes) log(`${p.platform}/${p.pass}: ${p.verdict}${p.informational ? ' (informational)' : ''} ${JSON.stringify(p.counts)}`);
+  // GitHub annotations: failing steps are readable on the check run without downloading artifacts.
+  if (process.env.GITHUB_ACTIONS === 'true') {
+    const esc = s => String(s).replace(/%/g, '%25').replace(/\r/g, '').replace(/\n/g, '%0A');
+    for (const p of passes) {
+      if (p.driverError) console.log(`::error title=${o.platform}/${p.pass} driver error::${esc(p.driverError)}`);
+      for (const s of p.steps.filter(x => x.status === 'FAIL')) {
+        console.log(`::error title=${o.platform}/${p.pass} ${s.id} FAIL::${esc(`${s.title}: exit=${s.exit} key=${s.keyline.slice(0, 200)} observed=${s.observed} -- ${s.reason}`)}`);
+      }
+    }
+    for (const r of summary.inconclusive) console.log(`::warning title=${o.platform} INCONCLUSIVE::${esc(r)}`);
+  }
   log(`overall: ${summary.verdict}${summary.inconclusive.length ? ` (${summary.inconclusive.join('; ')})` : ''}`);
   log(`report: ${path.join(o.out, 'report.md')}`);
   process.exit(summary.exitCode);

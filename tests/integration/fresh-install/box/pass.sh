@@ -210,7 +210,7 @@ U2)
   MANUAL_NOTE=""; http GET /health; rec V07 "GET /health" "$CODE" "$(head -c 200 "$BODY")" "$(ver_of "$BODY")"
   update_argv
   run V08 update-argv-nonode "$HOME/cand" "${UPDATE_ARGS[@]}"; INSTALL_LOG=$LOG
-  rec V08 "cand ${UPDATE_ARGS[*]} (no node)" "$RC" "$(key "$LOG" 'installed successfully' 'NOT running' 'systemd' '^Error')" "--workflows ${UPDATE_ARGS[6]}"
+  rec V08 "cand ${UPDATE_ARGS[*]} (no node)" "$RC" "$(key "$LOG" 'installed successfully' 'NOT running' 'systemd' '^Error')" "--workflows ${UPDATE_ARGS[7]}"
   health_step V09
   members_have_dummy; m=$?; secret_has_dummy; s=$?
   rec V10 "registry.json fi-dummy + secret --list fi_dummy_secret" "$((m + s))" "member=$([ $m = 0 ] && echo yes || echo no) secret=$([ $s = 0 ] && echo yes || echo no)"
