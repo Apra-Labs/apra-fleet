@@ -5,6 +5,12 @@ import { getServiceManager } from '../services/service-manager/index.js';
 import type { ServiceStatus } from '../services/service-manager/types.js';
 import { SERVER_INFO_PATH } from '../paths.js';
 import { readStoppedMarker, describeStoppedMarker } from '../services/stopped-marker.js';
+import { serverVersion } from '../version.js';
+
+function versionCore(v: string | undefined): string | null {
+  const m = /(\d+\.\d+\.\d+)/.exec(v ?? '');
+  return m ? m[1] : null;
+}
 
 interface HealthResponse {
   version?: string;
@@ -90,8 +96,11 @@ export async function runStatus(_args: string[]): Promise<void> {
   const info = readServerInfo();
   const health = await getHealth(instance.url);
 
+  const marker = readStoppedMarker();
   console.log('apra-fleet status');
-  console.log(`  State:    running`);
+  // A server running while the stop marker exists (e.g. a manual run): clients
+  // will not auto-start it again if it dies until `apra-fleet start`.
+  console.log(`  State:    running${marker ? " (stop marker set -- run 'apra-fleet start' to clear)" : ''}`);
   if (info.pid) console.log(`  PID:      ${info.pid}`);
   if (info.port) console.log(`  Port:     ${info.port}`);
   console.log(`  URL:      ${instance.url}`);
@@ -99,4 +108,9 @@ export async function runStatus(_args: string[]): Promise<void> {
   if (health?.uptime !== undefined) console.log(`  Uptime:   ${formatUptime(health.uptime)}`);
   if (health?.sessions !== undefined) console.log(`  Sessions: ${health.sessions}`);
   console.log(`  Service:  ${serviceLabel}`);
+  const runningCore = versionCore(health?.version);
+  const ownCore = versionCore(serverVersion);
+  if (runningCore && ownCore && runningCore !== ownCore) {
+    console.log(`  Warning:  the running server is ${health!.version} but this apra-fleet is ${serverVersion} -- stop it ('apra-fleet stop'), then run 'apra-fleet install' and 'apra-fleet start'.`);
+  }
 }

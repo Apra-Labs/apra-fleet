@@ -613,7 +613,8 @@ Resolution order:
    with `APRA_FLEET_AUTOSTART=1` so it refuses (instead of clearing the
    marker) if a stop raced it. With a registered service, `start` runs the
    service's binary, so after /health the server's reported version is
-   compared again (`AUTOSTART_VERSION_SKEW` on a mismatch). Other codes: `AUTOSTART_TIMEOUT`,
+   compared again (`AUTOSTART_VERSION_SKEW` on a mismatch; that server stays up, so the
+   error says to `apra-fleet stop` it before `apra-fleet install`). Other codes: `AUTOSTART_TIMEOUT`,
    `AUTOSTART_NO_BINARY`, `SERVER_UNRESPONSIVE`. An unresponsive server gets
    the actionable error and no start. This replaces the old private stdio
    self-spawn fallback; stdio is now only the explicit

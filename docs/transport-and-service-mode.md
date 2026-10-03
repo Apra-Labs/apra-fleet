@@ -176,6 +176,12 @@ wrapper at logon: autostart without automatic restart. Install and status say so
   `State: stopped (stopped by <user> at <time> via 'apra-fleet stop' -- run 'apra-fleet start')`.
   A port-only override (`APRA_FLEET_PORT` without `APRA_FLEET_DATA_DIR`) records the stop only
   after confirming the server it stops is on its own port.
+- Only `APRA_FLEET_SERVICE=1` (set by our service templates) makes a launch skip on the marker;
+  a hand-run `apra-fleet run` starts even in a shell that inherited `INVOCATION_ID` /
+  `XPC_SERVICE_NAME`, and the marker stays. `apra-fleet status` then shows
+  `State: running (stop marker set -- run 'apra-fleet start' to clear)`: clients still will not
+  auto-start it if it dies. The server removes `APRA_FLEET_SERVICE` / `APRA_FLEET_AUTOSTART` from
+  its environment at startup so nothing it spawns inherits them.
 
 ### Start back-off
 
@@ -206,8 +212,13 @@ returns 503 with it; a sprint child prints it on stderr). See
 - `apra-fleet stop` now persists across logon and boot on every OS and blocks client auto-start
   until `apra-fleet start` (or `apra-fleet install`).
 - The client only auto-starts an apra-fleet of its own version; after an upgrade that left an
-  older registered binary, it fails with `AUTOSTART_VERSION_SKEW` -- run `apra-fleet install`.
-- The install summary reports "registered and running" only once the server answers /health.
+  older registered binary, it fails with `AUTOSTART_VERSION_SKEW`. If the service already started
+  the mismatched server it stays up (and other clients attach to it): `apra-fleet stop`, then
+  `apra-fleet install` and `apra-fleet start`. `apra-fleet status` warns when the running server's
+  version differs from the installed apra-fleet.
+- The install summary reports "registered and running" only once the server answers /health
+  (wait 30s by default; `APRA_FLEET_INSTALL_HEALTH_TIMEOUT_MS` overrides it, `0` skips the
+  check).
 
 ## Supported user-facing interfaces
 

@@ -327,7 +327,8 @@ describe('auto-start: version of the server that came up, and a stop racing the 
                 timeoutMs: 5000, expectedVersion: 'v0.4.4_abc', healthVersion: async () => 'v0.4.3_95435e',
             }),
             (err) => err.code === 'AUTOSTART_VERSION_SKEW' && err.message.includes('v0.4.3_95435e')
-                && err.message.includes('v0.4.4_abc') && /apra-fleet install/.test(err.message),
+                && err.message.includes('v0.4.4_abc') && /apra-fleet install/.test(err.message)
+                && /still running/.test(err.message) && /apra-fleet stop/.test(err.message),
         );
     });
 

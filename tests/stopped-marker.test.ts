@@ -7,6 +7,8 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
 
 const { mockCheckRunning } = vi.hoisted(() => ({ mockCheckRunning: vi.fn() }));
 vi.mock('../src/services/singleton.js', async (importOriginal) => ({
@@ -29,6 +31,17 @@ import {
   STOPPED_MARKER_PATH, readStoppedMarker, writeStoppedMarker, clearStoppedMarker, STOPPED_BY_USER_FILE,
 } from '../src/services/stopped-marker.js';
 import { FLEET_DIR } from '../src/paths.js';
+import { serverVersion } from '../src/version.js';
+
+async function withHealth(version: string, fn: (url: string) => Promise<void>): Promise<void> {
+  const srv = http.createServer((_req, res) => { res.end(JSON.stringify({ version, uptime: 1, sessions: 0 })); });
+  await new Promise<void>((r) => srv.listen(0, '127.0.0.1', () => r()));
+  try {
+    await fn(`http://127.0.0.1:${(srv.address() as AddressInfo).port}/mcp`);
+  } finally {
+    await new Promise<void>((r) => srv.close(() => r()));
+  }
+}
 
 const RUNNING = { running: true as const, state: 'running' as const, url: 'http://127.0.0.1:7999/mcp', pid: 1234 };
 const GONE = { running: false as const, state: 'gone' as const };
@@ -104,6 +117,32 @@ describe('stopped-by-user marker', () => {
     }
     expect(out.join('\n')).toMatch(/not stopping it/);
     expect(fs.existsSync(STOPPED_MARKER_PATH)).toBe(false);
+  });
+
+  it('status flags a server running while the stop marker is set', async () => {
+    writeStoppedMarker('apra-fleet stop');
+    await withHealth(serverVersion, async (url) => {
+      mockCheckRunning.mockResolvedValue({ ...RUNNING, url });
+      await runStatus([]);
+    });
+    expect(out.join('\n')).toMatch(/State:\s+running \(stop marker set -- run 'apra-fleet start' to clear\)/);
+    expect(out.join('\n')).not.toMatch(/Warning:/);
+  });
+
+  it('status running without a marker is plain "running"', async () => {
+    await withHealth(serverVersion, async (url) => {
+      mockCheckRunning.mockResolvedValue({ ...RUNNING, url });
+      await runStatus([]);
+    });
+    expect(out.join('\n')).toMatch(/State:\s+running$/m);
+  });
+
+  it('status warns when the running server is another version than this apra-fleet', async () => {
+    await withHealth('v0.0.1_deadbe', async (url) => {
+      mockCheckRunning.mockResolvedValue({ ...RUNNING, url });
+      await runStatus([]);
+    });
+    expect(out.join('\n')).toMatch(/Warning:\s+the running server is v0\.0\.1_deadbe but this apra-fleet is .* stop it \('apra-fleet stop'\), then run 'apra-fleet install'/);
   });
 
   it('status without a marker is plain "stopped"', async () => {

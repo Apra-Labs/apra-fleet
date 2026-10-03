@@ -286,7 +286,8 @@ async function assertServerVersion(inst, deps) {
         throw new FleetAutoStartError(
             `Started the apra-fleet HTTP server, but it reports version ${reported} while this client belongs to ` +
                 `apra-fleet ${clientServerVersion(deps)} (the registered service runs a different apra-fleet build). ` +
-                "Run 'apra-fleet install' to install the matching version, then 'apra-fleet start'.",
+                'That server is still running and other clients will attach to it: stop it (\'apra-fleet stop\'), ' +
+                "then run 'apra-fleet install' to install the matching version, then 'apra-fleet start'.",
             { code: 'AUTOSTART_VERSION_SKEW', details: { expected: clientServerVersion(deps), found: reported, url: inst.url, pid: inst.pid } },
         );
     }
