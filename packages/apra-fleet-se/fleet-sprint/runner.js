@@ -94,7 +94,7 @@ import {
     createLlmAuthSelfHealCallback,
 } from './vcs-auth.mjs';
 import { validateIssueId, validateBranchName, validateBranchPair, validateArgs } from './sprint-args.mjs';
-import { verifyBeadsIdentity } from './beads-identity-check.mjs';
+import { verifyBeadsIdentity, BEADS_READING_ROLES } from './beads-identity-check.mjs';
 import { ROLE_BACKLOG, selectBacklogMember, formatBacklogSelection } from './backlog-role.mjs';
 import { sweepTokenMemories } from './beads-memory-hygiene.mjs';
 import {
@@ -1389,6 +1389,17 @@ async function runSprintCycle(context) {
     // the two spots issues a command(). `context.verifyBeadsIdentity` is the
     // test-harness seam (same shape as the other injected preconditions);
     // there is deliberately no CLI flag to skip it.
+    //
+    // A member that a beads-reading role is dispatched to and that has no
+    // beads database (or no sync.remote while the expectation names one) is
+    // set up HERE, before any dispatch, from the expected beads remote -- its
+    // VCS credential ensured first -- and re-verified; failing that, the
+    // sprint stops with BEADS_SETUP_FAILED. The set-up commands go through
+    // command() above, so noteMemberCommand() sees them.
+    const beadsSetupMembers = [...new Set([
+        backlogMember,
+        ...BEADS_READING_ROLES.flatMap((role) => getMembersForRole(role) || []),
+    ])];
     await (context.verifyBeadsIdentity ?? verifyBeadsIdentity)({
         command,
         log,
@@ -1396,6 +1407,18 @@ async function runSprintCycle(context) {
         backlogMember,
         members: physicalMembers,
         expected: validated.expectBeads ?? null,
+        setupMembers: beadsSetupMembers,
+        ensureVcsAuth: ensureVcsAuthFresh,
+        // The set-up's beads pull goes through DoltSync with the same
+        // reactive VCS-auth self-heal every D-pull bracket gets.
+        onAuthFailure,
+        // Built per member OS/shell (member_detail via resolveMemberTarget,
+        // which degrades to POSIX and logs when the member cannot be resolved).
+        memberShell: async (member) => getSeCommands(await resolveMemberTarget({
+            fleetApi: (args && typeof args.callTool === 'function') ? sprintScopedFleetApi({ callTool: args.callTool, log }) : undefined,
+            member,
+            log,
+        })),
     });
 
     // Self-heals deploy.md's declared Permissions onto the deployer /

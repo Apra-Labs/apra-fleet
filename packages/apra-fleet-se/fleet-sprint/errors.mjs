@@ -900,6 +900,11 @@ export const BEADS_IDENTITY_FAILURE_REASONS = Object.freeze({
     MISMATCH: 'MISMATCH',
     // The member cannot run bd at all (not installed / not on PATH).
     MISSING_TOOL: 'MISSING_TOOL',
+    // A beads-reading member had no usable beads database (or no
+    // sync.remote) and the preflight could not set one up from the sprint's
+    // expected beads remote -- dispatching would hand the role a database
+    // that does not hold the sprint's issues, so refuse up front.
+    BEADS_SETUP_FAILED: 'BEADS_SETUP_FAILED',
 });
 
 /**
@@ -911,7 +916,9 @@ export const BEADS_IDENTITY_FAILURE_REASONS = Object.freeze({
  * when a member cannot run bd at all -- a bd probe failed because bd is not
  * installed or not on PATH (reason MISSING_TOOL), so every later bd command
  * there would fail too. Any other probe that fails or cannot be parsed is a
- * logged warning, never this error.
+ * logged warning, never this error -- except BEADS_SETUP_FAILED: a
+ * beads-reading member had no database / no sync.remote and setting it up
+ * from the expected remote failed.
  *
  * A WorkflowError so main()'s terminal record names the reason, but
  * deliberately NOT a typed abort: nothing has been dispatched or mutated, so
