@@ -63,8 +63,8 @@ test('SKILL.md includes a dispatch condition for each lifecycle-support role', (
   // harvester: dispatched at sprint close
   assert.match(skillMd, /harvester/,
     'SKILL.md must mention harvester');
-  assert.match(skillMd, /sprint close|CHANGELOG/i,
-    'SKILL.md must state harvester dispatch condition (sprint close / CHANGELOG)');
+  assert.match(skillMd, /sprint close/i,
+    'SKILL.md must state harvester dispatch condition (sprint close)');
 });
 
 // 4. SKILL.md must not reference /auto-sprint (no cross-skill coupling)

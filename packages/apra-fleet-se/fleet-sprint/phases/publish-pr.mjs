@@ -98,6 +98,8 @@ export async function runPublishPrPhase({
     getMemberForRole,
     // The verdict this phase publishes but must never change.
     finalVerdictResult,
+    // Engine-computed cost block from ./harvest.mjs, rendered in the PR body.
+    costAnalysis = '',
 }) {
     phase(`Publish PR C${finalCycleLabel}`);
     // The branch push is the LAST step of a sprint that has already done all of
@@ -249,6 +251,7 @@ export async function runPublishPrPhase({
             details: [
                 validated.skipRegression ? 'Regression pass: skipped by launch option -- not run this sprint.' : null,
             ],
+            costAnalysis,
             previousBody,
         });
         const prBody = buildBody();
