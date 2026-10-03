@@ -296,6 +296,20 @@ describe('WindowsServiceManager lifecycle', () => {
       warn.mockRestore();
     });
 
+    it('WSH probe false negative + /create denied + existing wscript launcher task -> reused, launcher kept, no console warning', async () => {
+      taskExists = true;
+      const existingXml = '<Task><Actions><Exec><Command>C:\\Windows\\System32\\wscript.exe</Command>'
+        + `<Arguments>//B //Nologo //E:JScript "${launcherPathFor(wrapper)}"</Arguments></Exec></Actions></Task>`;
+      const base = schtasks.getMockImplementation()!;
+      schtasks.mockImplementation((args: string[]) => (args[0] === '/query' && args.includes('/xml') ? existingXml : base(args)));
+      wsh = false;
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      expect(await mgr().register('x.exe', [], 'l')).toBe('reused');
+      expect(fs.readFileSync(launcherPathFor(wrapper), 'utf8')).toContain(JSON.stringify(wrapper));
+      expect(warn.mock.calls.join(' ')).not.toMatch(/Windows Script Host is unavailable/);
+      warn.mockRestore();
+    });
+
     it('XML create denied and no task to reuse -> per-user Run entry for the wrapper, result run-key', async () => {
       expect(await mgr().register('x.exe', [], 'l')).toBe('run-key');
       expect(reg).toHaveBeenCalledWith(['add', RUN_KEY, '/v', RUN_VALUE, '/t', 'REG_SZ', '/d',

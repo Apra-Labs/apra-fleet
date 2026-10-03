@@ -355,15 +355,18 @@ export class WindowsServiceManager implements ServiceManager {
     // launcher never runs. Fall back to running the .bat directly (a visible
     // console window) and say so.
     const hidden = this.probeWsh(this.env, path.dirname(this.wrapperPath));
-    if (!hidden) {
-      // No launcher at all, so start() (Run-entry mode) and anything else that
-      // prefers the launcher fall back to the .bat the registration uses.
+    // Applied only once we know what will launch the server: a task/Run entry
+    // registered for the .bat must leave no launcher behind (start() in
+    // Run-entry mode prefers it), but a reused task that already runs wscript +
+    // our launcher keeps it -- the probe can give a false negative (timeout
+    // under slow AV, failed probe-file write).
+    const visibleFallback = (): void => {
       try { fs.unlinkSync(launcherPath); } catch { /* absent */ }
       console.warn(
         '    Windows Script Host is unavailable, so the server cannot be launched hidden: it will run in a ' +
         'visible console window. Do not close that window (closing it stops the server).',
       );
-    }
+    };
     const runValue = hidden ? `"${wscriptPath(this.env)}" ${launcherArguments(launcherPath)}` : `"${this.wrapperPath}"`;
 
     const xmlPath = path.join(path.dirname(this.wrapperPath), 'apra-fleet-task.xml');
@@ -381,6 +384,7 @@ export class WindowsServiceManager implements ServiceManager {
       // A task now covers logon autostart: drop a Run-key fallback left by an
       // earlier install so the server is not launched twice at logon.
       this.deleteRunKey();
+      if (!hidden) visibleFallback();
       return 'created';
     } catch (createErr) {
       createMsg = (createErr as Error).message;
@@ -402,13 +406,14 @@ export class WindowsServiceManager implements ServiceManager {
     } catch { /* no task */ }
     // Ours: the wrapper itself (tasks from earlier installs) or wscript
     // running our hidden launcher.
-    const runsOurs = command !== null && (
-      normalizeTaskPath(command) === normalizeTaskPath(this.wrapperPath)
-      || (/wscript\.exe"?$/i.test(command.trim()) && taskArgs !== null
-        && normalizeTaskPath(taskArgs).includes(normalizeTaskPath(launcherPath)))
-    );
-    if (taskFound && runsOurs) {
+    const runsWrapper = command !== null && normalizeTaskPath(command) === normalizeTaskPath(this.wrapperPath);
+    const runsLauncher = command !== null && /wscript\.exe"?$/i.test(command.trim()) && taskArgs !== null
+      && normalizeTaskPath(taskArgs).includes(normalizeTaskPath(launcherPath));
+    if (taskFound && (runsWrapper || runsLauncher)) {
       this.reusedExistingTask = true;
+      // A reused launcher task needs the launcher (written above); a reused
+      // .bat task runs visibly whatever the probe said.
+      if (runsWrapper && !hidden) visibleFallback();
       return 'reused';
     }
     if (taskFound) {
@@ -420,6 +425,7 @@ export class WindowsServiceManager implements ServiceManager {
 
     // Last resort: a per-user HKCU Run entry. Logon autostart only -- nothing
     // revives a server that dies mid-session.
+    if (!hidden) visibleFallback();
     try {
       this.runReg(['add', RUN_KEY, '/v', RUN_VALUE, '/t', 'REG_SZ', '/d', runValue, '/f']);
     } catch (regErr) {
