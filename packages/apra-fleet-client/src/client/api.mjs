@@ -94,7 +94,10 @@
  *   'stalled' (transcript froze past the stall threshold) |
  *   'agent_never_started' (session log never appeared at its authoritative path within
  *   timeout_s; the process was killed) |
- *   'max_total_time' (max_total_s, measured from the call including setup, ran out) | ...
+ *   'max_total_time' (max_total_s, measured from the call including setup, ran out) |
+ *   'secret_delivery_unavailable' (the member's stored credentials cannot be delivered
+ *   without a command line -- relay member or SFTP disabled; deterministic, do not retry;
+ *   no LLM call was made) | ...
  * @property {PermissionDenied} [permissionDenied] - Present when `reason === 'permission_denied'`:
  *   the member CLI refused tool calls for lack of a grant (AGY headless mode auto-denies them
  *   and exits 0, which used to surface as 'empty_response'). Pass `suggestedGrants` to
@@ -355,6 +358,10 @@
  * @property {string} [api_key] - AI provider API key. If omitted, the local OAuth
  *   session is copied to the member instead. Supports {{secret.NAME}} token --
  *   resolved from the credential store server-side before use.
+ * @property {boolean} [clear_stored_credentials] - Remove ALL credential env vars stored for
+ *   the member in the fleet registry and do nothing else (registry only; works for relay,
+ *   offline and local members). The recovery for reason secret_delivery_unavailable.
+ *   Cannot be combined with api_key.
  */
 
 /**
@@ -404,9 +411,11 @@
  *   "secret_variable_denied" | "secret_variable_expired" | "oauth_not_supported" |
  *   "oauth_token_expired_no_refresh" | "oauth_credential_file_missing" |
  *   "oauth_credential_write_failed" | "oauth_settings_merge_failed" | "oauth_copy_failed" |
- *   "oob_cancelled" | "secret_delivery_unavailable"} reason - Machine-readable outcome code.
+ *   "oob_cancelled" | "secret_delivery_unavailable" | "stored_credentials_cleared" |
+ *   "invalid_arguments"} reason - Machine-readable outcome code.
  *   Branch on this, never on the text. secret_delivery_unavailable: the member has no channel
- *   that delivers the key without a command line (relay member, SFTP unavailable); nothing stored.
+ *   that delivers the key without a command line (relay member, SFTP unavailable).
+ *   stored_credentials_cleared: clear_stored_credentials removed the stored env vars (ok=true).
  * @property {string|null} provider - The resolved ProviderAdapter's own name (claude, codex,
  *   copilot, agy, opencode or none -- there is no gemini adapter), null when unresolved.
  * @property {string|null} credentialLabel - What was deployed, never the secret: the env var

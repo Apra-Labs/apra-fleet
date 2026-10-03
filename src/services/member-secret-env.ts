@@ -16,9 +16,35 @@ import { getStrategy } from './strategy.js';
  * and carries no part of the secret.
  */
 
+/** The remedy any caller surfaces when stored credentials cannot be delivered. */
+export const CLEAR_STORED_CREDENTIALS_HINT =
+  'or clear the member\'s stored credentials with provision_llm_auth {clear_stored_credentials: true} '
+  + '(registry only; then provide the credential in that machine\'s own environment)';
+
+/**
+ * A secret could not be delivered to the member without a command line --
+ * deterministic (relay member, SFTP subsystem disabled, ...), so callers must
+ * classify it before dispatch and never retry it.
+ */
+export class SecretDeliveryError extends Error {
+  readonly reason = 'secret_delivery_unavailable' as const;
+  constructor(agent: Agent, cause: string) {
+    const remedy = agent.agentType === 'relay'
+      ? `Relay members have no channel that delivers a credential without a command line; ${CLEAR_STORED_CREDENTIALS_HINT}.`
+      : `Enable the SFTP subsystem on the member's sshd (sshd_config: "Subsystem sftp <path-to-sftp-server>" or "Subsystem sftp internal-sftp", then restart sshd), ${CLEAR_STORED_CREDENTIALS_HINT}.`;
+    super(`Cannot deliver a credential to "${agent.friendlyName}" without exposing it on a command line (${cause}). ${remedy}`);
+    this.name = 'SecretDeliveryError';
+  }
+}
+
 /** Write `content` to a fresh owner-only file on the member; returns its absolute path. */
 export async function writeMemberSecretFile(agent: Agent, content: string, kind = 'env'): Promise<string> {
-  return getStrategy(agent).writeSecretFile(`.apra-fleet-${kind}-${randomUUID()}`, content);
+  try {
+    return await getStrategy(agent).writeSecretFile(`.apra-fleet-${kind}-${randomUUID()}`, content);
+  } catch (err) {
+    if (err instanceof SecretDeliveryError) throw err;
+    throw new SecretDeliveryError(agent, (err as Error)?.message ?? String(err));
+  }
 }
 
 /** Best-effort removal of a file written by writeMemberSecretFile. */

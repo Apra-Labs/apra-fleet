@@ -127,9 +127,10 @@ export class RelayStrategy implements AgentStrategy {
 
   // No relay channel delivers a file to a known absolute path without a
   // command line, so a stored credential cannot reach a relay member safely.
-  // Fail loudly rather than fall back to an inline (argv-visible) value.
+  // Fail loudly rather than fall back to an inline (argv-visible) value;
+  // member-secret-env.ts wraps this in a SecretDeliveryError with the remedy.
   async writeSecretFile(): Promise<string> {
-    throw new Error(`Member "${this.agent.friendlyName}" is reached through the relay, which cannot deliver a stored credential without putting it on a command line. Stored credentials are not supported for relay members -- set the credential in that machine's own environment instead.`);
+    throw new Error('the relay transport has no file channel to a known path');
   }
 
   async removeSecretFile(): Promise<void> { /* nothing was written */ }

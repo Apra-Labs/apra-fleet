@@ -187,17 +187,24 @@ export async function writeSecretFileInHome(agent: Agent, fileName: string, cont
   return withSftpSession(agent, undefined, async (sftp) => {
     const home = (await sftpRealpath(sftp, '.')).replace(/\/+$/, '');
     const remotePath = `${home}/${fileName}`;
-    await new Promise<void>((resolve, reject) => {
-      sftp.writeFile(remotePath, Buffer.from(content, 'utf-8'), { mode: 0o600 }, (err) => {
-        if (err) reject(err);
-        else resolve();
+    // open (0600) -> fchmod -> write -> close: a server that ignores the
+    // open-time mode is still owner-only BEFORE any content lands. Windows
+    // servers ignore/reject the chmod -- not fatal there (profile ACL).
+    const data = Buffer.from(content, 'utf-8');
+    const handle = await new Promise<Buffer>((resolve, reject) => {
+      sftp.open(remotePath, 'w', { mode: 0o600 }, (err, h) => (err ? reject(err) : resolve(h)));
+    });
+    let written = false;
+    try {
+      await new Promise<void>((resolve) => { sftp.fchmod(handle, 0o600, () => resolve()); });
+      await new Promise<void>((resolve, reject) => {
+        sftp.write(handle, data, 0, data.length, 0, (err) => (err ? reject(err) : resolve()));
       });
-    });
-    // A server that ignores the open-time mode still gets an explicit chmod.
-    // Windows servers ignore/reject it -- not fatal there.
-    await new Promise<void>((resolve) => {
-      sftp.chmod(remotePath, 0o600, () => resolve());
-    });
+      written = true;
+    } finally {
+      await new Promise<void>((resolve) => { sftp.close(handle, () => resolve()); });
+      if (!written) await new Promise<void>((resolve) => { sftp.unlink(remotePath, () => resolve()); });
+    }
     return sftpPathToShellPath(remotePath);
   });
 }

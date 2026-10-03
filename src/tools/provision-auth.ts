@@ -16,7 +16,7 @@ import { collectOobApiKey } from '../services/auth-socket.js';
 import { logLine, logWarn } from '../utils/log-helpers.js';
 import { findSecretTokens, legacyTokenWarning } from '../services/secret-token.js';
 import { invalidatePreflightCache } from '../services/preflight-check.js';
-import { stageEnvVars, writeMemberSecretFile, removeMemberSecretFile } from '../services/member-secret-env.js';
+import { stageEnvVars, writeMemberSecretFile, removeMemberSecretFile, SecretDeliveryError } from '../services/member-secret-env.js';
 import type { Agent } from '../types.js';
 import type { ProviderAdapter } from '../providers/index.js';
 
@@ -24,6 +24,11 @@ export const provisionAuthSchema = z.object({
   ...memberIdentifier,
   api_key: z.string().optional().describe(
     `Your AI provider API key. If omitted, your local OAuth session is copied to the member instead. Supports {{secret.NAME}} token -- value is resolved from the credential store before use.`
+  ),
+  clear_stored_credentials: z.boolean().optional().describe(
+    'Remove ALL credential env vars stored for this member in the fleet registry (what every dispatch delivers to it), and do nothing else. '
+    + 'Registry only: works for relay, offline and local members, and never contacts the member (values already written to its shell profile or user environment stay). '
+    + 'Use it when a dispatch fails with reason secret_delivery_unavailable and the credential is provided on that machine itself. Cannot be combined with api_key.'
   ),
 });
 
@@ -70,7 +75,11 @@ export type ProvisionAuthReason =
   | 'oob_cancelled'
   /** The member has no channel that delivers a key without a command line
    *  (relay member, or SFTP unavailable); nothing was stored. */
-  | 'secret_delivery_unavailable';
+  | 'secret_delivery_unavailable'
+  /** clear_stored_credentials: the member's stored credential env vars were removed. ok=true. */
+  | 'stored_credentials_cleared'
+  /** clear_stored_credentials was combined with api_key. */
+  | 'invalid_arguments';
 
 interface ProvisionAuthFields {
   /** True when credentials were deployed (verified or not). */
@@ -114,7 +123,7 @@ export interface ProvisionAuthResult {
   structuredContent: ProvisionAuthStructured;
 }
 
-const OK_REASONS: ProvisionAuthReason[] = ['ok', 'deployed_unverified', 'deployed_with_errors', 'skipped_local_member'];
+const OK_REASONS: ProvisionAuthReason[] = ['ok', 'deployed_unverified', 'deployed_with_errors', 'skipped_local_member', 'stored_credentials_cleared'];
 
 /**
  * Resolve a provider's display name for the structured payload without ever
@@ -271,6 +280,9 @@ async function provisionOAuthCopy(agent: Agent, provider: ProviderAdapter): Prom
           { ...who, reason: 'oauth_credential_file_missing' });
       }
     } catch (err: any) {
+      if (err instanceof SecretDeliveryError) {
+        return authResult(`[FAIL] ${err.message}`, { ...who, reason: 'secret_delivery_unavailable', expiresAt });
+      }
       return authResult(`[FAIL] Failed to copy ${file.localPath} to "${agent.friendlyName}": ${err.message}`,
         { ...who, reason: 'oauth_copy_failed', expiresAt });
     }
@@ -349,7 +361,8 @@ async function provisionApiKey(agent: Agent, apiKey: string, provider: ProviderA
   try {
     persistFile = await writeMemberSecretFile(agent, cmds.persistEnvFileContent(envVarName, apiKey), 'persist');
   } catch (err: any) {
-    return authResult(`[FAIL] Cannot deliver the API key to "${agent.friendlyName}" without exposing it on a command line: ${err.message}\n  Nothing was stored.`, {
+    if (!(err instanceof SecretDeliveryError)) throw err;
+    return authResult(`[FAIL] ${err.message}\n  The key was not stored by this call.`, {
       provider: provider.name, memberId: agent.id, memberName: agent.friendlyName,
       reason: 'secret_delivery_unavailable', credentialLabel: envVarName,
     });
@@ -437,6 +450,26 @@ export async function provisionAuth(input: ProvisionAuthInput): Promise<Provisio
   }
   const agent = agentOrError as Agent;
   const who = { memberId: agent.id, memberName: agent.friendlyName };
+
+  // Registry-only recovery path: never contacts the member, so it works for
+  // relay, offline and local members alike (the supported way out of
+  // secret_delivery_unavailable).
+  if (input.clear_stored_credentials) {
+    if (input.api_key) {
+      return authResult('[FAIL] clear_stored_credentials cannot be combined with api_key.',
+        { ...who, reason: 'invalid_arguments', provider: safeProviderName(agent.llmProvider) });
+    }
+    const names = Object.keys(agent.encryptedEnvVars ?? {});
+    updateAgent(agent.id, { encryptedEnvVars: undefined });
+    invalidatePreflightCache(agent.id);
+    logLine('provision_llm_auth', `cleared ${names.length} stored credential env var(s): ${names.join(', ') || '(none)'}`, agent);
+    return authResult(names.length > 0
+      ? `[OK] Cleared ${names.length} stored credential env var(s) for "${agent.friendlyName}": ${names.join(', ')}.\n`
+        + '  Dispatches no longer deliver them; provide the credential in that machine\'s own environment (or re-run provision_llm_auth). '
+        + 'Values already written to the member\'s shell profile / user environment were not touched.'
+      : `[OK] "${agent.friendlyName}" has no stored credential env vars -- nothing to clear.`,
+    { ...who, reason: 'stored_credentials_cleared', provider: safeProviderName(agent.llmProvider), credentialLabel: names.join(',') || null });
+  }
 
   if (agent.agentType === 'local') {
     return authResult(`[SKIP] Skipping "${agent.friendlyName}" -- local members use this machine's credentials directly.`,

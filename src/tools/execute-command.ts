@@ -4,7 +4,7 @@ import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
 import { getAgentOS, getAgentShell, isPosixShell, touchAgent } from '../utils/agent-helpers.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
-import { stageAuthEnv, removeMemberSecretFile } from '../services/member-secret-env.js';
+import { stageAuthEnv, removeMemberSecretFile, SecretDeliveryError, type StagedAuthEnv } from '../services/member-secret-env.js';
 import { writeStatusline } from '../services/statusline.js';
 import { ensureCloudReady } from '../services/cloud/lifecycle.js';
 import { generateTaskWrapper, generateTaskWrapperWindows } from '../services/cloud/task-wrapper.js';
@@ -137,6 +137,8 @@ export interface ExecuteCommandStructured {
   stderr: string;
   isError?: boolean;
   reason?: string;
+  /** The member's stored credential env vars could not be delivered safely, so the command ran without them. */
+  storedEnvNotDelivered?: 'secret_delivery_unavailable';
   [key: string]: unknown;
 }
 
@@ -368,8 +370,21 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
   // deletes -- never as inline values on the member's command line.
   let stagedEnvPath: string | null = null;
   let stagedEnvConsumed = false;
+  let storedEnvNotDelivered = false;
   try {
-    const staged = await stageAuthEnv(agent);
+    // The stored env vars are AMBIENT for execute_command (the command did not
+    // ask for them, unlike {{secret.NAME}}), so a member that cannot receive
+    // them safely (relay, SFTP disabled) still runs the command -- without
+    // them, never inline -- and the result says so with the remedy.
+    let staged: StagedAuthEnv = { prefix: '', path: null };
+    try {
+      staged = await stageAuthEnv(agent);
+    } catch (err) {
+      if (!(err instanceof SecretDeliveryError)) throw err;
+      storedEnvNotDelivered = true;
+      legacyWarnings.push(`[WARN] Ran WITHOUT the member's stored credential env vars: ${err.message}`);
+      logWarn('execute_command', 'stored env vars not delivered (secret_delivery_unavailable)', agent);
+    }
     stagedEnvPath = staged.path;
     const result = await strategy.execCommand(staged.prefix + wrapped, input.timeout_s * 1000, undefined, onPidCaptured);
     stagedEnvConsumed = result.code === 0;
@@ -409,7 +424,7 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
     const legacySuffix = legacyWarnings.length > 0 ? `\n${legacyWarnings.join('\n')}` : '';
     return {
       text: (result.code === 0 ? `Exit code: 0\n${output}` : `Exit code: ${result.code}\n${output}`) + legacySuffix,
-      structuredContent: { exitCode: result.code, stdout: redactedStdout, stderr: redactedStderr },
+      structuredContent: { exitCode: result.code, stdout: redactedStdout, stderr: redactedStderr, ...(storedEnvNotDelivered ? { storedEnvNotDelivered: 'secret_delivery_unavailable' as const } : {}) },
     };
   } catch (err: any) {
     writeStatusline(new Map([[agent.id, 'offline']]));

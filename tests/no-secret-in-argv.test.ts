@@ -64,6 +64,7 @@ vi.mock('../src/services/strategy.js', () => ({
       transferFiles: vi.fn(),
       writeSecretFile: vi.fn(async (name: string, content: string) => {
         if (agent.agentType === 'relay') throw new Error('relay: no safe delivery channel');
+        if (agent.host === 'no-sftp.example') throw new Error('Unable to start subsystem: sftp');
         const p = `${homeFor(agent)}/${name}`;
         secretFiles.push({ path: p, content });
         return p;
@@ -291,6 +292,80 @@ describe('relay members', () => {
     expect(structuredContent.ok).toBe(false);
     expect(getAgent(member.id)?.encryptedEnvVars?.ANTHROPIC_API_KEY).toBeUndefined();
     expect(execCalls.some(c => c.includes(FAKE_KEY))).toBe(false);
+  });
+});
+
+// Upgrade safety: a member whose stored credential can no longer be delivered
+// (relay, or an SSH member without the SFTP subsystem) gets a typed,
+// non-retried, actionable failure and a supported recovery path.
+const UNDELIVERABLE: Array<{ label: string; over: Partial<Agent>; remedy: RegExp }> = [
+  { label: 'relay member', over: { agentType: 'relay', relayMemberId: 'hub-m' }, remedy: /Relay members have no channel/ },
+  { label: 'SSH member without the SFTP subsystem', over: { host: 'no-sftp.example' }, remedy: /Subsystem sftp/ },
+];
+
+describe('undeliverable stored credentials', () => {
+  for (const { label, over, remedy } of UNDELIVERABLE) {
+    it(`${label}: execute_prompt fails typed BEFORE touching the member, never retried, with the remedy`, async () => {
+      const member = makeTestAgent({ friendlyName: `ud-ep-${label}`, os: 'linux', ...over, encryptedEnvVars: storedEnv({ ANTHROPIC_API_KEY: FAKE_KEY }) });
+      addAgent(member);
+
+      const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+
+      expect(result.structuredContent).toMatchObject({ isError: true, reason: 'secret_delivery_unavailable' });
+      expect(result.text).toMatch(remedy);
+      expect(result.text).toContain('clear_stored_credentials');
+      // No kill, no prompt write, no dispatch, no retry.
+      expect(execCalls).toEqual([]);
+    });
+
+    it(`${label}: execute_command still runs, WITHOUT the stored vars, and says so`, async () => {
+      const member = makeTestAgent({ friendlyName: `ud-ec-${label}`, os: 'linux', ...over, encryptedEnvVars: storedEnv({ ANTHROPIC_API_KEY: FAKE_KEY }) });
+      addAgent(member);
+      mockExecCommand.mockResolvedValue({ stdout: 'ok', stderr: '', code: 0 });
+
+      const result = await executeCommand({ member_id: member.id, command: 'echo hi', timeout_s: 5 });
+
+      expect(typeof result).not.toBe('string');
+      const r = result as { text: string; structuredContent: Record<string, unknown> };
+      expect(r.structuredContent.exitCode).toBe(0);
+      expect(r.structuredContent.storedEnvNotDelivered).toBe('secret_delivery_unavailable');
+      expect(r.text).toContain('WITHOUT the member\'s stored credential env vars');
+      expect(execCalls).toHaveLength(1);
+      expectNoSecretInArgv([FAKE_KEY]);
+      expect(execCalls[0]).not.toContain('.apra-fleet-env-');
+    });
+
+    it(`${label}: clear_stored_credentials (registry only) is the supported recovery`, async () => {
+      const member = makeTestAgent({ friendlyName: `ud-clr-${label}`, os: 'linux', ...over, encryptedEnvVars: storedEnv({ ANTHROPIC_API_KEY: FAKE_KEY, CLAUDE_CONFIG_DIR: FAKE_CFG }) });
+      addAgent(member);
+
+      const cleared = await provisionAuth({ member_id: member.id, clear_stored_credentials: true });
+      expect(cleared.structuredContent).toMatchObject({ ok: true, reason: 'stored_credentials_cleared', credentialLabel: 'ANTHROPIC_API_KEY,CLAUDE_CONFIG_DIR' });
+      expect(getAgent(member.id)?.encryptedEnvVars).toBeUndefined();
+      expect(execCalls).toEqual([]); // never contacts the member
+
+      // Dispatch now proceeds (no stored vars -> nothing to deliver).
+      await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+      expect(execCalls.length).toBeGreaterThan(0);
+      expect(secretFiles).toHaveLength(0);
+    });
+  }
+
+  it('clear_stored_credentials cannot be combined with api_key', async () => {
+    const member = makeTestAgent({ friendlyName: 'ud-clr-bad', os: 'linux', encryptedEnvVars: storedEnv({ ANTHROPIC_API_KEY: FAKE_KEY }) });
+    addAgent(member);
+    const r = await provisionAuth({ member_id: member.id, clear_stored_credentials: true, api_key: FAKE_KEY });
+    expect(r.structuredContent).toMatchObject({ ok: false, reason: 'invalid_arguments' });
+    expect(getAgent(member.id)?.encryptedEnvVars?.ANTHROPIC_API_KEY).toBeDefined();
+  });
+
+  it('provision_llm_auth api_key on an SSH member without SFTP refuses with the sshd remedy', async () => {
+    const member = makeTestAgent({ friendlyName: 'ud-pa-nosftp', os: 'linux', host: 'no-sftp.example' });
+    addAgent(member);
+    const r = await provisionAuth({ member_id: member.id, api_key: FAKE_KEY });
+    expect(r.structuredContent.reason).toBe('secret_delivery_unavailable');
+    expect(r.text).toContain('Subsystem sftp');
+    expect(getAgent(member.id)?.encryptedEnvVars).toBeUndefined();
   });
 });
 

@@ -148,6 +148,21 @@ class RemoteStrategy implements AgentStrategy {
   }
 }
 
+/** Per-user 0700 directory for local members' staged secret files. Throws if
+ *  an existing path is not a private directory owned by this user. */
+export function privateSecretDir(base = os.tmpdir()): string {
+  const uid = typeof process.getuid === 'function' ? process.getuid() : undefined;
+  const dir = path.join(base, `apra-fleet-secrets-${uid ?? os.userInfo().username}`);
+  try { fs.mkdirSync(dir, { mode: 0o700 }); } catch (err: any) { if (err?.code !== 'EEXIST') throw err; }
+  if (uid !== undefined) {
+    const st = fs.lstatSync(dir);
+    if (!st.isDirectory() || st.isSymbolicLink() || st.uid !== uid || (st.mode & 0o077) !== 0) {
+      throw new Error(`Refusing to stage a secret in ${dir}: not a private (0700) directory owned by this user`);
+    }
+  }
+  return dir;
+}
+
 class LocalStrategy implements AgentStrategy {
   constructor(private agent: Agent) {}
 
@@ -431,10 +446,11 @@ class LocalStrategy implements AgentStrategy {
 
   async writeSecretFile(fileName: string, content: string): Promise<string> {
     if (!/^[A-Za-z0-9._-]+$/.test(fileName)) throw new Error(`Unsafe secret file name: ${fileName}`);
-    // 'wx' = O_CREAT|O_EXCL: never follows a pre-planted file/symlink in a
-    // shared tmp dir; 0600 keeps other local users out (Windows: %TEMP% is
-    // per-user).
-    const p = path.join(os.tmpdir(), fileName);
+    // A private 0700 dir (verified: ours, not a symlink, no group/other bits),
+    // so even a misconfigured shared TMPDIR without the sticky bit cannot let
+    // another user swap the file between create and source. 'wx' =
+    // O_CREAT|O_EXCL on top. Windows: %TEMP% is per-user.
+    const p = path.join(privateSecretDir(), fileName);
     fs.writeFileSync(p, content, { encoding: 'utf-8', mode: 0o600, flag: 'wx' });
     // Git Bash on a Windows host wants forward slashes.
     return process.platform === 'win32' && getAgentShell(this.agent) === 'gitbash' ? p.replace(/\\/g, '/') : p;

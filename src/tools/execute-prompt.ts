@@ -12,7 +12,7 @@ import { getAgentOS, getAgentShell, touchAgent, getStoredPid, isPosixShellMember
 import { updateAgent } from '../services/registry.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { isRetryable, authErrorAdvice, workspaceNotTrustedAdvice, type PromptErrorCategory } from '../utils/prompt-errors.js';
-import { stageAuthEnv } from '../services/member-secret-env.js';
+import { stageAuthEnv, removeMemberSecretFile, SecretDeliveryError, type StagedAuthEnv } from '../services/member-secret-env.js';
 import { writeStatusline } from '../services/statusline.js';
 import { getModelOverride } from '../services/user-config.js';
 import { ensureCloudReady } from '../services/cloud/lifecycle.js';
@@ -48,7 +48,7 @@ import { ensureAgyProject } from '../services/agy-project.js';
 
 export interface ExecutePromptStructured {
   isError?: boolean;
-  reason?: 'busy' | 'reserved' | 'dispatch_failed' | 'nonzero_exit' | 'max_turns_exhausted' | 'empty_response' | 'orphan_recovery_timeout' | 'workspace_not_trusted' | 'auth' | 'server' | 'overloaded' | 'insufficient_context_headroom' | 'budget_exhausted' | 'session_not_found' | 'fork_unsupported' | 'stalled' | 'agent_never_started' | 'max_total_time' | 'preflight_offline' | 'preflight_auth_missing' | 'preflight_auth_expired' | 'usage_limit' | 'permission_denied';
+  reason?: 'busy' | 'reserved' | 'dispatch_failed' | 'nonzero_exit' | 'max_turns_exhausted' | 'empty_response' | 'orphan_recovery_timeout' | 'workspace_not_trusted' | 'auth' | 'server' | 'overloaded' | 'insufficient_context_headroom' | 'budget_exhausted' | 'session_not_found' | 'fork_unsupported' | 'stalled' | 'agent_never_started' | 'max_total_time' | 'preflight_offline' | 'preflight_auth_missing' | 'preflight_auth_expired' | 'usage_limit' | 'permission_denied' | 'secret_delivery_unavailable';
   // The LLM's actual reply text on success. Callers that dispatch execute_prompt
   // via an MCP client only ever see structuredContent (the content array is
   // dropped when structuredContent is also present) -- this field exists so the
@@ -309,8 +309,9 @@ async function deletePromptFile(agent: Agent, strategy: AgentStrategy, promptFil
     const escapedFolder = escapeWindowsArg(remoteDir);
     // extraPaths here are only staged credential files (absolute member
     // paths); PowerShell members have no durable stdout mirror.
-    const extras = extraPaths.map(p => `; Remove-Item -LiteralPath '${escapePowerShellArgInner(p)}' -Force -ErrorAction SilentlyContinue`).join('');
-    const psScript = `Set-Location "${escapedFolder}"; Remove-Item "${promptFileName}" -Force -ErrorAction SilentlyContinue${extras}`;
+    // Removed first, by absolute path, independent of the work folder.
+    const extras = extraPaths.map(p => `Remove-Item -LiteralPath '${escapePowerShellArgInner(p)}' -Force -ErrorAction SilentlyContinue; `).join('');
+    const psScript = `${extras}Set-Location "${escapedFolder}"; Remove-Item "${promptFileName}" -Force -ErrorAction SilentlyContinue`;
     const encoded = Buffer.from(psScript, 'utf16le').toString('base64');
     await strategy.execCommand(`powershell -EncodedCommand ${encoded}`).catch(() => { /* ignore */ });
   } else {
@@ -318,7 +319,10 @@ async function deletePromptFile(agent: Agent, strategy: AgentStrategy, promptFil
     // apra-fleet-6z8.1: the durable stdout mirror is cleaned up in the SAME
     // round trip as the prompt file -- no extra exec per dispatch.
     const extras = extraPaths.map(p => ` "${escapeDoubleQuoted(p)}"`).join('');
-    await strategy.execCommand(`cd "${escapedFolder}" && rm -f ${promptFileName}${extras}`).catch(() => { /* ignore */ });
+    // extraPaths are absolute (durable mirror, staged credential files): removed
+    // unconditionally, even when the work folder is gone and the cd fails.
+    const extrasRm = extras ? `rm -f${extras}; ` : '';
+    await strategy.execCommand(`${extrasRm}cd "${escapedFolder}" && rm -f ${promptFileName}`).catch(() => { /* ignore */ });
   }
 }
 
@@ -1431,11 +1435,36 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     }
   }
 
-  // Kill any leftover session from a previous (possibly zombie) execute_prompt call
-  await tryKillPid(agent, strategy, cmds);
+  // Stage the first attempt's credential file BEFORE touching the member
+  // (kill, prompt write, dispatch). A delivery failure (relay member, SFTP
+  // subsystem disabled) is deterministic: a typed failure, never retried.
+  const stagedEnvPaths: string[] = [];
+  let preStaged: StagedAuthEnv | undefined;
+  try {
+    preStaged = await stageAuthEnv(agent);
+  } catch (err) {
+    if (!(err instanceof SecretDeliveryError)) throw err;
+    scope.abort(`secret delivery unavailable (no LLM call)`);
+    inFlightAgents.delete(agent.id);
+    stallDetector.remove(agent.id);
+    writeStatusline(new Map([[agent.id, 'idle']]));
+    return {
+      text: `[FAIL] execute_prompt on "${agent.friendlyName}" rejected -- ${err.message} No LLM call was made.`,
+      structuredContent: { isError: true, reason: 'secret_delivery_unavailable' },
+    };
+  }
+  if (preStaged.path) stagedEnvPaths.push(preStaged.path);
 
-  // Write the rendered prompt (with substitutions applied) to the prompt file before execution
-  await writePromptFile(agent, strategy, promptFilePath, renderedPrompt);
+  try {
+    // Kill any leftover session from a previous (possibly zombie) execute_prompt call
+    await tryKillPid(agent, strategy, cmds);
+
+    // Write the rendered prompt (with substitutions applied) to the prompt file before execution
+    await writePromptFile(agent, strategy, promptFilePath, renderedPrompt);
+  } catch (err) {
+    if (preStaged.path) await removeMemberSecretFile(agent, preStaged.path);
+    throw err;
+  }
 
   // apra-fleet-6z8.1: remembered for the lease-of-life gate below -- the pid
   // outlives the SSH channel that reported it, and is the only way to tell a
@@ -1488,11 +1517,15 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   // via ps) for the whole dispatch. Each attempt stages its own file because
   // the prefix deletes it once loaded; any file a failed attempt left behind
   // is removed with the prompt file at the end.
-  const stagedEnvPaths: string[] = [];
+  // The first attempt uses the file staged before dispatch (preStaged).
   const dispatchAttempt = async (cmd: string, attemptTimeoutMs: number, attemptMaxTotalMs: number | undefined) => {
     lastAttempt = { timeoutMs: attemptTimeoutMs, maxTotalMs: attemptMaxTotalMs };
-    const staged = await stageAuthEnv(agent);
-    if (staged.path) stagedEnvPaths.push(staged.path);
+    let staged = preStaged;
+    preStaged = undefined;
+    if (!staged) {
+      staged = await stageAuthEnv(agent);
+      if (staged.path) stagedEnvPaths.push(staged.path);
+    }
     return strategy.execCommand(staged.prefix + cmd, attemptTimeoutMs, attemptMaxTotalMs, onPidCaptured, dispatchSignal);
   };
   const isMaxTotalKill = (err: unknown): boolean => {
