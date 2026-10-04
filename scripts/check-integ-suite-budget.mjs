@@ -13,12 +13,25 @@
 //
 // Usage (from the repo root, after a completed real-bd suite pass):
 //   node scripts/check-integ-suite-budget.mjs [status-file-path] [--quarantine[=path]]
+//       [--budget-advisory] [--slow=<slow-status-file>] [--summary=<markdown-file>]
 //
 // --quarantine also classifies every failed file as NEW or QUARANTINED
 // against tests/regression/quarantine.json (or the given path). An entry
 // matches by fingerprint (the results key, i.e. the test file name) and,
 // when it has `os`, process.platform. An EXPIRED entry does not quarantine:
 // its failure counts as new and is called out loudly.
+//
+// --budget-advisory reports over-budget files but keeps them out of the exit
+// code (the nightly gate: only new/expired failures fail the job).
+//
+// --slow=<file> merges a second status file (the slow lane, written by
+// scripts/integ-file-results-reporter.mjs) into the results under a `slow/`
+// prefix, so slow-lane failures go through the same quarantine. Every
+// packages/apra-fleet-se/test/slow/*.test.mjs must have a result there, else
+// exit 2 (a crashed lane must never read as green).
+//
+// --summary=<file> appends a markdown summary (headSha, totals, new vs
+// quarantined, budget offenders) to that file, e.g. $GITHUB_STEP_SUMMARY.
 //
 // Exit codes:
 //   0 = no file over budget (and, with --quarantine, no new failures)
@@ -31,7 +44,7 @@
 // completed -- it does not itself run the suite. See INTEG-SUITE.md for the
 // full procedure (start/poll/wait for completion) before running this.
 
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, readdirSync, appendFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -39,6 +52,9 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'
 
 // Matches the "~5 minutes" single-file budget from INTEG-SUITE.md step 7.
 export const BUDGET_MS = 300000;
+
+export const SLOW_TEST_DIR = path.join(repoRoot, 'packages', 'apra-fleet-se', 'test', 'slow');
+export const SLOW_PREFIX = 'slow/';
 
 export const DEFAULT_QUARANTINE_FILE = path.join(repoRoot, 'tests', 'regression', 'quarantine.json');
 export const MAX_QUARANTINE_DAYS = 30;
@@ -118,6 +134,70 @@ export function loadResults(statusFilePath) {
 }
 
 /**
+ * Load the whole status document (results plus headSha/run metadata).
+ * Same null/throw contract as loadResults.
+ */
+export function loadStatusDoc(statusFilePath) {
+  if (!existsSync(statusFilePath)) return null;
+  const parsed = JSON.parse(readFileSync(statusFilePath, 'utf8'));
+  if (!parsed || typeof parsed.results !== 'object' || parsed.results === null) {
+    throw new Error(`status file ${statusFilePath} has no "results" object`);
+  }
+  return parsed;
+}
+
+export function listSlowTestFiles(dir = SLOW_TEST_DIR) {
+  return readdirSync(dir).filter((f) => f.endsWith('.test.mjs')).sort();
+}
+
+/**
+ * Merge slow-lane results into the main results under the `slow/` prefix.
+ * Throws (fail-loud) when an expected slow test file has no recorded result.
+ */
+export function mergeSlowResults(results, slowResults, expectedFiles) {
+  const missing = expectedFiles.filter((f) => !slowResults[f]);
+  if (missing.length) {
+    throw new Error(`slow lane has no recorded result for: ${missing.join(', ')} (lane crashed or never ran?)`);
+  }
+  const merged = { ...results };
+  for (const [f, rec] of Object.entries(slowResults)) merged[SLOW_PREFIX + f] = rec;
+  return merged;
+}
+
+/** Render the markdown job summary (no tracking-issue ids: printed at runtime). */
+export function renderSummary({ pass, headSha, results, budget, budgetAdvisory, newFailures, quarantined }) {
+  const all = Object.values(results);
+  const failed = all.filter((r) => r && r.passed === false).length;
+  const lines = [
+    '## Nightly real-bd suite gate',
+    '',
+    `- result: ${pass ? 'PASS' : 'FAIL'}`,
+    `- headSha: ${headSha ?? 'unknown'}`,
+    `- files: total=${all.length} pass=${all.length - failed} fail=${failed}`,
+    `- failures: new=${newFailures.length} quarantined=${quarantined.length}`,
+    '',
+  ];
+  if (newFailures.length) {
+    lines.push('### New failures', '');
+    for (const f of newFailures) {
+      lines.push(`- ${f.file}${f.expired ? ` (quarantine EXPIRED on ${f.expired.expires})` : ''}`);
+    }
+    lines.push('');
+  }
+  if (quarantined.length) {
+    lines.push('### Quarantined failures', '');
+    for (const q of quarantined) lines.push(`- ${q.file} (until ${q.entry.expires}): ${q.entry.reason}`);
+    lines.push('');
+  }
+  if (!budget.ok) {
+    lines.push(`### Over the single-file budget${budgetAdvisory ? ' (advisory)' : ''}`, '');
+    for (const o of budget.offenders) lines.push(`- ${o.file} (${Math.round(o.durationMs / 1000)}s)`);
+    lines.push('');
+  }
+  return lines.join('\n') + '\n';
+}
+
+/**
  * Check every file's recorded durationMs against the budget.
  *
  * @param {Record<string, {durationMs?: number}>} results
@@ -156,46 +236,66 @@ function main() {
   const qArg = argv.find((a) => a === '--quarantine' || a.startsWith('--quarantine='));
   const quarantineFile = qArg === undefined ? null
     : (qArg.includes('=') ? path.resolve(qArg.slice(qArg.indexOf('=') + 1)) : DEFAULT_QUARANTINE_FILE);
+  const valueOf = (name) => {
+    const a = argv.find((x) => x.startsWith(`--${name}=`));
+    return a === undefined ? null : path.resolve(a.slice(a.indexOf('=') + 1));
+  };
+  const budgetAdvisory = argv.includes('--budget-advisory');
+  const slowFile = valueOf('slow');
+  const summaryFile = valueOf('summary');
   const statusFile = argv.find((a) => !a.startsWith('--')) ?? path.join(repoRoot, 'integ-suite-status.json');
+  // Fail loud (exit 2), and say so in the job summary too when one is wanted.
+  const die = (msg) => {
+    console.error(`[check-integ-suite-budget] ERROR: ${msg}`);
+    if (summaryFile) {
+      try {
+        appendFileSync(summaryFile, `## Nightly real-bd suite gate\n\n- result: FAIL (incomplete/invalid run)\n- ${msg}\n`);
+      } catch { /* best-effort */ }
+    }
+    process.exit(2);
+  };
 
   let entries = null;
   if (quarantineFile) {
     try {
       entries = loadQuarantine(quarantineFile);
     } catch (e) {
-      console.error(`[check-integ-suite-budget] ERROR: invalid quarantine file ${quarantineFile}: ${e.message}`);
-      process.exit(2);
+      die(`invalid quarantine file ${quarantineFile}: ${e.message}`);
     }
   }
 
-  let results;
+  let doc;
   try {
-    results = loadResults(statusFile);
+    doc = loadStatusDoc(statusFile);
   } catch (e) {
-    console.error(`[check-integ-suite-budget] ERROR: ${e.message}`);
-    process.exit(2);
+    die(e.message);
   }
 
-  if (results === null) {
-    console.error(
-      `[check-integ-suite-budget] ERROR: no status file at ${statusFile} -- ` +
-      'run the suite first (see packages/apra-fleet-se/test/INTEG-SUITE.md).'
-    );
-    process.exit(2);
+  if (doc === null) {
+    die(`no status file at ${statusFile} -- run the suite first (see packages/apra-fleet-se/test/INTEG-SUITE.md).`);
   }
+  let results = doc.results;
   if (Object.keys(results).length === 0) {
-    console.error(
-      `[check-integ-suite-budget] ERROR: ${statusFile} has zero recorded results -- ` +
-      'run/finish the suite first (see packages/apra-fleet-se/test/INTEG-SUITE.md).'
-    );
-    process.exit(2);
+    die(`${statusFile} has zero recorded results -- run/finish the suite first (see packages/apra-fleet-se/test/INTEG-SUITE.md).`);
+  }
+
+  if (slowFile) {
+    try {
+      const slowDoc = loadStatusDoc(slowFile);
+      if (slowDoc === null) throw new Error(`no slow-lane status file at ${slowFile}`);
+      results = mergeSlowResults(results, slowDoc.results, listSlowTestFiles());
+    } catch (e) {
+      die(e.message);
+    }
   }
 
   const result = checkBudget(results);
-  console.log(`[check-integ-suite-budget] ${result.message}`);
+  console.log(`[check-integ-suite-budget] ${result.message}${!result.ok && budgetAdvisory ? ' (advisory, not gating)' : ''}`);
   let newCount = 0;
+  let newFailures = [];
+  let quarantined = [];
   if (entries) {
-    const { newFailures, quarantined } = classifyFailures(results, entries);
+    ({ newFailures, quarantined } = classifyFailures(results, entries));
     newCount = newFailures.length;
     console.log(`[check-integ-suite-budget] failures: new=${newFailures.length} quarantined=${quarantined.length}`);
     for (const f of newFailures) {
@@ -209,8 +309,16 @@ function main() {
       console.log(`[check-integ-suite-budget]   quarantined ${q.file} (until ${q.entry.expires}): ${q.entry.reason}`);
     }
     if (quarantined.length) console.log(`[check-integ-suite-budget]   tracking issue per entry: see ${quarantineFile}`);
+  } else {
+    newFailures = Object.entries(results).filter(([, r]) => r && r.passed === false).map(([file]) => ({ file }));
   }
-  process.exit(result.ok && newCount === 0 ? 0 : 1);
+  const pass = (result.ok || budgetAdvisory) && newCount === 0;
+  if (summaryFile) {
+    appendFileSync(summaryFile, renderSummary({
+      pass, headSha: doc.headSha, results, budget: result, budgetAdvisory, newFailures, quarantined,
+    }));
+  }
+  process.exit(pass ? 0 : 1);
 }
 
 // Only run when invoked directly (not when imported for tests).
