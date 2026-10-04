@@ -84,6 +84,12 @@ export interface KBEntry {
   created_at: string;
   superseded_at?: string;
   promoted_at?: string;
+  // kb_demote: when trust last stepped DOWN a rung. Undefined on every row
+  // that was never demoted. Deliberately independent of promoted_at -- an
+  // entry can carry both, and comparing the two is how a later promotion gate
+  // tells "demoted since its last promotion" from "promoted since its last
+  // demotion".
+  demoted_at?: string;
   use_count: number;
   last_accessed?: string;
 }
@@ -249,6 +255,12 @@ export interface MemoryProvider {
   getLinked(id: string): Promise<KBEntry[]>;
   prime(opts: PrimeOptions): Promise<PrimedContext>;
   promote(id: string, reason?: string): Promise<{ id: string; confidence_before: Confidence; confidence_after: Confidence }>;
+  // kb_demote: the DOWN rung of the same ladder promote() walks up, one rung
+  // per call, with the same response shape. reason is REQUIRED (unlike
+  // promote's optional one) because a demotion with no recorded evidence is
+  // indistinguishable from a mistake. evidence_files is optional (D2): the
+  // "basis vanished" case has nothing to cite.
+  demote(id: string, reason: string, evidenceFiles?: string[]): Promise<{ id: string; confidence_before: Confidence; confidence_after: Confidence }>;
   sync(opts?: SyncOptions): Promise<SyncResult>;
   // T2.1 (F5, D4): dedicated no-bump aggregation read (kb_list pattern -- never
   // touches use_count/last_accessed). Part of the interface (not just

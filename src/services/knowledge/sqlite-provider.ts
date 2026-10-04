@@ -22,6 +22,7 @@ import {
   orJoinFtsTerms,
 } from './audn.js';
 import { computeFileHashBatch } from './file-hash.js';
+import { validateFilePaths } from './path-validation.js';
 import { KbCaptureRejected } from './types.js';
 import type {
   MemoryProvider,
@@ -151,6 +152,8 @@ export class SqliteProvider implements MemoryProvider {
         created_at TEXT NOT NULL,
         superseded_at TEXT,
         promoted_at TEXT,
+        demoted_at TEXT,
+        demoted_basis_hashes TEXT,
         use_count INTEGER NOT NULL DEFAULT 0,
         last_accessed TEXT
       );
@@ -209,6 +212,22 @@ export class SqliteProvider implements MemoryProvider {
     try {
       this.db.exec("ALTER TABLE entries ADD COLUMN source_file_hashes TEXT NOT NULL DEFAULT '{}'");
     } catch {}
+
+    // kb_demote: the two demotion columns. There is no migration framework --
+    // the swallowed ALTER is the ONLY mechanism that brings a DB created before
+    // this change up to the current schema, so each column gets its own
+    // try/catch (a single statement that fails on column one would silently
+    // skip column two). Both are nullable with no default: NULL means
+    // "never demoted", which is exactly what every pre-existing row is.
+    // demoted_basis_hashes snapshots source_file_hashes AS OF the demotion, so
+    // a later promotion gate can tell "basis unchanged since we demoted it"
+    // (stay demoted) from "the code moved on" (eligible again).
+    try {
+      this.db.exec('ALTER TABLE entries ADD COLUMN demoted_at TEXT');
+    } catch {}
+    try {
+      this.db.exec('ALTER TABLE entries ADD COLUMN demoted_basis_hashes TEXT');
+    } catch {}
   }
 
   private getDb(): DatabaseSync {
@@ -239,6 +258,7 @@ export class SqliteProvider implements MemoryProvider {
       created_at: row.created_at as string,
       superseded_at: row.superseded_at as string | undefined,
       promoted_at: row.promoted_at as string | undefined,
+      demoted_at: (row.demoted_at as string | null) ?? undefined,
       use_count: row.use_count as number,
       last_accessed: row.last_accessed as string | undefined,
     };
@@ -260,7 +280,7 @@ export class SqliteProvider implements MemoryProvider {
         flagged_for_review, contradiction_of,
         author, source, confidence, scope, created_at,
         source_file_hashes,
-        superseded_at, promoted_at, use_count
+        superseded_at, promoted_at, demoted_at, demoted_basis_hashes, use_count
       ) VALUES (
         ?, ?, ?, ?, ?,
         ?, ?, ?, ?,
@@ -268,7 +288,7 @@ export class SqliteProvider implements MemoryProvider {
         ?, ?,
         ?, ?, ?, ?, ?,
         ?,
-        NULL, NULL, 0
+        NULL, NULL, NULL, NULL, 0
       )
     `).run(
       id,
@@ -1464,6 +1484,114 @@ export class SqliteProvider implements MemoryProvider {
     // than preserving the original capture source.
     db.prepare('UPDATE entries SET confidence = ?, promoted_at = ?, content = ?, source = ? WHERE id = ?')
       .run(confidence_after, now, newContent, 'promotion', id);
+
+    return { id, confidence_before, confidence_after };
+  }
+
+  /**
+   * kb_demote (D4): the DOWN rung of the trust ladder, one rung per call --
+   * CONFIRMED -> INFERRED, INFERRED -> UNVERIFIED, UNVERIFIED is a no-op.
+   * This is the "I am now LESS certain" path. It is NOT the "this claim is
+   * wrong" path: a falsified claim goes through kb_feedback (durable downvote)
+   * or kb_resolve_contradiction.
+   *
+   * Deliberate differences from promote():
+   *  - NO basis-resolution gate. An entry whose basis has vanished is a
+   *    legitimate demote target -- the very case where trust should fall.
+   *  - promoted_at and source are left UNTOUCHED. promote() stamps
+   *    source='promotion' (D5); demotion is not a capture provenance event, and
+   *    rewriting source here would erase where the claim came from.
+   *  - the note is '\n[Demoted: ...]' (ONE newline). It must NOT match
+   *    FEEDBACK_MARKER_RE (two newlines + '[feedback ' + ISO date), which is the
+   *    permanent durable-downvote marker: a match would make this entry
+   *    forever unrevivable by the freshness sweep (see freshnessRevivable).
+   *
+   * All refusals are checked BEFORE any write, in this order, so a refused
+   * demote leaves the row byte-identical.
+   */
+  async demote(
+    id: string,
+    reason: string,
+    evidenceFiles?: string[]
+  ): Promise<{ id: string; confidence_before: Confidence; confidence_after: Confidence }> {
+    const db = this.getDb();
+    const row = db.prepare('SELECT * FROM entries WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+    if (!row) throw new Error('Entry not found: ' + id);
+
+    const entry = this.rowToEntry(row);
+    if (entry.superseded_at) throw new Error('Cannot demote superseded entry: ' + id);
+
+    // Mirror of the promote() directive guard: directive state is
+    // human-terminal. Demoting an ACTIVE directive (type='user-directive' +
+    // CONFIRMED) would deactivate it through a side door, so the whole type is
+    // refused rather than only the active ones -- the pending/active state
+    // stays binary and agent-unreachable.
+    if (entry.type === 'user-directive') {
+      throw new Error(
+        'Cannot demote a user-directive via kb_demote: directive state is human-terminal only. Run `apra-fleet kb reject-directive ' + id + '` to discard it.'
+      );
+    }
+
+    // Same evidence floor as promote(): the note is the only durable record of
+    // WHY trust moved, and "wrong" / "stale" is not auditable.
+    if (!isNonTrivialPromoteReason(reason)) {
+      throw new Error(
+        'kb_demote requires a reason recording why this entry is less certain '
+          + '(at least ' + MIN_PROMOTE_REASON_LENGTH + ' characters stating what you checked). Entry: ' + id
+      );
+    }
+
+    // D2: evidence_files is OPTIONAL -- omitted or empty is allowed, because
+    // "the basis vanished" demotions have nothing to cite. When files ARE
+    // given they must be real: a traversing/absolute path is rejected by the
+    // shared path guard, and a non-existent path is refused by the SAME
+    // resolver promote() uses for its basis check, so demote and promote never
+    // disagree about whether a path is checkable.
+    if (evidenceFiles !== undefined && evidenceFiles.length > 0) {
+      validateFilePaths(evidenceFiles);
+      const unresolvedEvidence = this.unresolvableBasisFiles(evidenceFiles);
+      if (unresolvedEvidence.length > 0) {
+        throw new Error(
+          'Cannot demote with evidence that does not resolve: missing '
+            + unresolvedEvidence.join(', ') + '. Entry: ' + id
+        );
+      }
+    }
+
+    const confidence_before = entry.confidence;
+    let confidence_after: Confidence;
+
+    if (confidence_before === 'CONFIRMED') {
+      confidence_after = 'INFERRED';
+    } else if (confidence_before === 'INFERRED') {
+      confidence_after = 'UNVERIFIED';
+    } else {
+      // Floor of the ladder: no rung below UNVERIFIED. Return before == after
+      // and write NOTHING (not even demoted_at), so a no-op demote cannot
+      // silently re-snapshot the basis or re-stamp the row.
+      return { id, confidence_before, confidence_after: confidence_before };
+    }
+
+    const now = new Date().toISOString();
+    // String concatenation (not a template literal) per the ASCII pre-commit
+    // hook gotcha: backtick-n escapes inside JS template literals false-
+    // positive on the hook's non-ASCII scan.
+    const evidenceSuffix =
+      evidenceFiles !== undefined && evidenceFiles.length > 0
+        ? ' | evidence: ' + evidenceFiles.join(', ')
+        : '';
+    const demotionNote =
+      '\n[Demoted: ' + reason + evidenceSuffix + ' -- ' + (entry.author || 'unknown') + ']';
+    const newContent = entry.content + demotionNote;
+
+    // D6: snapshot the basis hashes AS THEY ARE NOW, straight off the row (not
+    // re-hashed from disk) -- the question a later promotion gate asks is
+    // "have the files moved since we demoted it?", which only a point-in-time
+    // copy of the stored basis can answer.
+    const basisSnapshot = (row.source_file_hashes as string | null) ?? '{}';
+
+    db.prepare('UPDATE entries SET confidence = ?, demoted_at = ?, demoted_basis_hashes = ?, content = ? WHERE id = ?')
+      .run(confidence_after, now, basisSnapshot, newContent, id);
 
     return { id, confidence_before, confidence_after };
   }

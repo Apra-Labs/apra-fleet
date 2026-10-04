@@ -276,6 +276,19 @@ export class HttpKbProvider implements MemoryProvider {
     return this.fallback.promote(id, reason);
   }
 
+  // D1: kb_demote has NO remote route yet, and the local fallback promote()
+  // uses would write the demotion into a DIFFERENT (local) KB than the one the
+  // caller is reading from -- a silent, invisible no-op against the real KB.
+  // Fail loudly instead. kb_promote's existing silent local-fallback behaviour
+  // is deliberately left untouched here.
+  async demote(
+    _id: string,
+    _reason: string,
+    _evidenceFiles?: string[]
+  ): Promise<{ id: string; confidence_before: Confidence; confidence_after: Confidence }> {
+    throw new Error('kb_demote is not supported for an HTTP KB yet');
+  }
+
   async sync(_opts?: SyncOptions): Promise<SyncResult> {
     return { synced: false, reason: 'local-only provider' };
   }
