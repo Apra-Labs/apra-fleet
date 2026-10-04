@@ -1196,11 +1196,13 @@ test('every command() call site in member-provisioning.mjs passes member_name or
 // createChildBeadWithAllocatedId, verifyDoerStreakClosed and
 // claimBeadsBatched.
 //
-// Its baseline is SIX: createChildBeadWithAllocatedId owns THREE
+// Its baseline is EIGHT: createChildBeadWithAllocatedId owns THREE
 // (the explicit-id path's `bd show <childId> --json` collision probe, the
 // `bd create --body-file`, and the explicit-id path's `bd update --parent`
-// link) and computeChildFloor/verifyDoerStreakClosed/claimBeadsBatched own ONE
-// each, all verified compliant.
+// link), adoptLandedChild owns TWO (the post-failure `bd show` re-probe and
+// the adopted child's `bd update --parent` link, GitHub #615), and
+// computeChildFloor/verifyDoerStreakClosed/claimBeadsBatched own ONE each,
+// all verified compliant.
 //
 // Its agent() baseline is ZERO, same per-module baseline reasoning as the
 // other extracted helper modules above -- a raw `agent(` appearing in this
@@ -1208,7 +1210,7 @@ test('every command() call site in member-provisioning.mjs passes member_name or
 // helper, which is exactly what a zero baseline turns red.
 // =============================================================================
 const BEADS_CHILDREN_PATH = path.join(__dirname, '../fleet-sprint/beads-children.mjs');
-const EXPECTED_BEADS_CHILDREN_COMMAND_COUNT = 6;
+const EXPECTED_BEADS_CHILDREN_COMMAND_COUNT = 8;
 
 test('every command() call site in beads-children.mjs passes member_name or member_id', () => {
     const { sites, violations } = checkPath(BEADS_CHILDREN_PATH);
