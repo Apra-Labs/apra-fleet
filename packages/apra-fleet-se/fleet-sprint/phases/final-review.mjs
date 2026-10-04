@@ -204,6 +204,30 @@ export async function runFinalReviewPhase({
     if (finalKbCandidates.length > 0) {
         log(`[kb-work] offering ${finalKbCandidates.length} INFERRED entr(ies) to the final reviewer for promotion.`);
     }
+    // D7/C5: offer the final reviewer demotion candidates too, scoped to the
+    // whole sprint's changed files -- the final reviewer has read the entire
+    // diff, so it is well positioned to judge whether something the KB
+    // believed is now less certain. Deliberately a SEPARATE, self-contained
+    // git-diff computation rather than importing runner.js's own
+    // changedFilesForRound(): this module's command() call sites are pinned
+    // at an exact count by test/dispatch-safety-guard.test.mjs specifically
+    // to catch an unreviewed new one, and a cross-module import would not
+    // change that -- the call site still has to live, and be counted, here.
+    let finalReviewChangedFiles = [];
+    try {
+        const diffRes = await command(`git diff --name-only origin/${validated.baseBranch}...${validated.branch}`, {
+            member_name: getMemberForRole('reviewer'), silent: true, failSoft: true,
+        });
+        if (diffRes && diffRes.ok) {
+            finalReviewChangedFiles = String(diffRes.output || '').split('\n').map((line) => line.trim()).filter(Boolean);
+        }
+    } catch (err) {
+        log(`[kb-work] could not compute the sprint's changed files for demotion candidates (non-fatal): ${err.message}`);
+    }
+    const finalKbDemotionCandidates = await kbWork.demotionCandidates(finalReviewRepoPath, finalReviewChangedFiles);
+    if (finalKbDemotionCandidates.length > 0) {
+        log(`[kb-work] offering ${finalKbDemotionCandidates.length} entr(ies) to the final reviewer for demotion.`);
+    }
     // apra-fleet-3swo.5.7: the final-review ladder -- its dispatch, its
     // read-side git-sync bracket, its max_turns-exhaustion resume at doubled
     // turns, its retry-once wrapper, its auth self-heal and its FAIL degrade --
@@ -241,6 +265,7 @@ export async function runFinalReviewPhase({
             unclosedVerifyIds: finalUnclosedVerifyIds,
             deferredAtGoalIds: finalDeferredAtGoalIds,
             kbCandidates: finalKbCandidates,
+            kbDemotionCandidates: finalKbDemotionCandidates,
             kbKnowledge: kbPriming.knowledgeOf(getMemberForRole('reviewer')),
         }),
         resumePrompt: 'Continue your final review exactly where you left off in this same session -- do not restart or re-read the diff from scratch. Weigh the remaining evidence and return your final PASS/FAIL verdict now (with newTasks findings if FAIL).',

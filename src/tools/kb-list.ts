@@ -20,6 +20,8 @@ export const kbListSchema = z.object({
   symbol: z.string().optional().describe('Filter to entries whose symbols array contains this value'),
   tag: z.string().optional().describe('Filter to entries whose tags array contains this value (exact match)'),
   limit: z.number().optional().describe('Max entries to return (default: no limit)'),
+  exclude_unchanged_demotions: z.boolean().optional()
+    .describe('Drop an entry that was demoted more recently than it was last promoted or captured, UNLESS at least one of its cited files now hashes differently from the snapshot taken at demotion time. Use this to avoid re-offering an entry for promotion when nothing about it has actually changed since it was demoted.'),
 });
 
 export type KbListInput = z.infer<typeof kbListSchema>;
@@ -35,6 +37,7 @@ export async function kbList(input: KbListInput): Promise<string> {
     symbol: input.symbol,
     tag: input.tag,
     limit: input.limit,
+    excludeUnchangedDemotions: input.exclude_unchanged_demotions,
   });
 
   const results = entries.map(e => ({

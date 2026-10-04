@@ -90,6 +90,15 @@ export interface KBEntry {
   // tells "demoted since its last promotion" from "promoted since its last
   // demotion".
   demoted_at?: string;
+  // kb_demote: a JSON snapshot of source_file_hashes AS OF the demotion
+  // (sqlite-provider.ts's demote(), D6). Since source_file_hashes is itself
+  // write-once at capture (no UPDATE site ever rewrites it), this snapshot is
+  // byte-identical to the entry's source_file_hashes for its whole life --
+  // so re-hashing the cited files now and comparing against THIS map is how
+  // the fleet-sprint ping-pong guard (list()'s excludeUnchangedDemotions)
+  // decides "has anything actually changed since this entry was demoted".
+  // Undefined on every row that was never demoted.
+  demoted_basis_hashes?: string;
   use_count: number;
   last_accessed?: string;
 }

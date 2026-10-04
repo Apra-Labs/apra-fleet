@@ -416,7 +416,12 @@ const DISPATCH_ROLE_PATH = path.join(__dirname, '../fleet-sprint/dispatch-role.m
 // unguarded: beads-children.mjs is registered in GUARDED_MODULES, so the
 // aggregate checkModules(guardedModulePaths()) test below scans it, and it
 // gets its own explicit baseline count below.
-const EXPECTED_COMMAND_COUNT = 4;
+// 4 -> 5 (D7/fleet-sprint demotion candidates): dispatchReview() gained
+// changedFilesForRound()'s `git diff --name-only origin/<base>...<branch>`
+// site, scoping the reviewer's demotion candidates to the files this round's
+// diff actually touched. Verified compliant: it carries member_name (the
+// reviewer pool head).
+const EXPECTED_COMMAND_COUNT = 5;
 // Bumped 9 -> 10 (2026-07-18): the doer max_turns-exhaustion resume path
 // (dispatchDoerResume) adds one new agent() call site -- a resume-and-continue
 // dispatch on the SAME session with an escalated max_turns, verified compliant
@@ -917,7 +922,14 @@ test('every command() call site in phases/re-review.mjs passes member_name or me
 // would mean the orchestrator had started filing them itself.
 // =============================================================================
 const FINAL_REVIEW_PHASE_PATH = path.join(__dirname, '../fleet-sprint/phases/final-review.mjs');
-const EXPECTED_FINAL_REVIEW_PHASE_COMMAND_COUNT = 0;
+// 0 -> 1 (D7/fleet-sprint demotion candidates): this phase now computes its
+// own `git diff --name-only origin/<base>...<branch>` to scope the final
+// reviewer's demotion candidates to the whole sprint's changed files. Kept as
+// a self-contained call site here (not imported from runner.js's own
+// changedFilesForRound()) precisely so THIS baseline -- not a shared one --
+// is what turns red on a future unreviewed command() addition. Verified
+// compliant: it carries member_name (getMemberForRole('reviewer')).
+const EXPECTED_FINAL_REVIEW_PHASE_COMMAND_COUNT = 1;
 
 const REGRESSION_TEST_PHASE_PATH = path.join(__dirname, '../fleet-sprint/phases/regression-test.mjs');
 const EXPECTED_REGRESSION_TEST_PHASE_COMMAND_COUNT = 0;

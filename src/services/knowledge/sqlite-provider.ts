@@ -259,6 +259,7 @@ export class SqliteProvider implements MemoryProvider {
       superseded_at: row.superseded_at as string | undefined,
       promoted_at: row.promoted_at as string | undefined,
       demoted_at: (row.demoted_at as string | null) ?? undefined,
+      demoted_basis_hashes: (row.demoted_basis_hashes as string | null) ?? undefined,
       use_count: row.use_count as number,
       last_accessed: row.last_accessed as string | undefined,
     };
@@ -1406,6 +1407,20 @@ export class SqliteProvider implements MemoryProvider {
   // instead of an easy-to-miss opt-out flag threaded through query(). Always
   // excludes superseded and stale entries (no override -- this is an
   // audit-the-live-set tool, not a full-history query).
+  //
+  // excludeUnchangedDemotions (D6, fleet-sprint's promotion/demotion
+  // ping-pong guard): when true, drop a row whose demoted_at is MORE RECENT
+  // than COALESCE(promoted_at, created_at) -- i.e. it was demoted since its
+  // last promotion/creation -- UNLESS at least one of its cited basis files
+  // now hashes differently from the demoted_basis_hashes snapshot taken at
+  // demote time. Without this an entry a reviewer just demoted would be
+  // re-offered to promote on the very next round with NOTHING having
+  // changed about it, and a reviewer that demotes it again every round makes
+  // no forward progress. Computed HERE, not in a caller, because only the
+  // provider holds the repoPath anchor computeFileHashBatch needs and the
+  // demoted_basis_hashes snapshot a caller has no business re-deriving.
+  // Opt-in and additive: every existing caller (kb_export's CONFIRMED-only
+  // read, kb_stats's bible-drift read, kb_list's own default) is unaffected.
   async list(opts: {
     confidence?: Confidence;
     type?: KBEntry['type'];
@@ -1413,6 +1428,7 @@ export class SqliteProvider implements MemoryProvider {
     symbol?: string;
     tag?: string;
     limit?: number;
+    excludeUnchangedDemotions?: boolean;
   }): Promise<KBEntry[]> {
     const db = this.getDb();
     const conditions: string[] = ['e.superseded_at IS NULL', 'e.stale = 0'];
@@ -1440,8 +1456,14 @@ export class SqliteProvider implements MemoryProvider {
     }
 
     const where = 'WHERE ' + conditions.join(' AND ');
-    const limitClause = opts.limit !== undefined ? 'LIMIT ?' : '';
-    if (opts.limit !== undefined) params.push(opts.limit);
+    // The ping-pong filter runs AFTER the SQL layer and can only ever REMOVE
+    // rows, never add any back -- so applying opts.limit in SQL first could
+    // under-fill the result (fewer than `limit` survivors) even when more
+    // non-ping-ponged rows exist past the cursor. Fetch unlimited in that
+    // case and slice in JS, after filtering, instead.
+    const applyLimitInSql = opts.limit !== undefined && !opts.excludeUnchangedDemotions;
+    const limitClause = applyLimitInSql ? 'LIMIT ?' : '';
+    if (applyLimitInSql) params.push(opts.limit as number);
 
     const rows = db.prepare(`
       SELECT e.* FROM entries e
@@ -1450,7 +1472,51 @@ export class SqliteProvider implements MemoryProvider {
       ${limitClause}
     `).all(...params) as Record<string, unknown>[];
 
-    return rows.map(r => this.rowToEntry(r));
+    let entries = rows.map(r => this.rowToEntry(r));
+    if (opts.excludeUnchangedDemotions) {
+      entries = await this.filterUnchangedDemotions(entries);
+      if (opts.limit !== undefined) entries = entries.slice(0, opts.limit);
+    }
+    return entries;
+  }
+
+  // T-D6: the ping-pong predicate list() applies when excludeUnchangedDemotions
+  // is set. A row with no demoted_at, or one demoted no more recently than its
+  // last promotion/creation, is never a candidate for exclusion and passes
+  // through untouched -- this only ever REMOVES rows the caller would
+  // otherwise have seen, never adds one. An unparseable or empty
+  // demoted_basis_hashes snapshot is never grounds to exclude -- same "never
+  // falsely suppress" rule basisFullyMatches already applies for staling.
+  private async filterUnchangedDemotions(entries: KBEntry[]): Promise<KBEntry[]> {
+    if (this.anchorIsMissing()) return entries;
+
+    const candidates = entries.filter(e =>
+      typeof e.demoted_at === 'string'
+      && e.demoted_at > (e.promoted_at ?? e.created_at)
+    );
+    if (candidates.length === 0) return entries;
+
+    const basisByCandidateId = new Map<string, Record<string, string>>();
+    const fileSet = new Set<string>();
+    for (const e of candidates) {
+      const basis = this.parseBasis(e.demoted_basis_hashes ?? null);
+      if (!basis) continue; // no provable basis -- never excluded, see header
+      basisByCandidateId.set(e.id, basis);
+      for (const file of Object.keys(basis)) fileSet.add(file);
+    }
+    if (basisByCandidateId.size === 0) return entries;
+
+    const currentHashes = await computeFileHashBatch(
+      [...fileSet],
+      this.repoPath !== undefined ? { cwd: this.repoPath } : undefined
+    );
+
+    const excludedIds = new Set<string>();
+    for (const [id, basis] of basisByCandidateId) {
+      if (this.basisFullyMatches(basis, currentHashes)) excludedIds.add(id);
+    }
+    if (excludedIds.size === 0) return entries;
+    return entries.filter(e => !excludedIds.has(e.id));
   }
 
   async promote(id: string, reason?: string): Promise<{ id: string; confidence_before: Confidence; confidence_after: Confidence }> {

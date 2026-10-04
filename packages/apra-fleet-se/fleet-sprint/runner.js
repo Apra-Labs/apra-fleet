@@ -222,7 +222,7 @@ import {
 // second one.
 import {
     createKbPrimingClient, KB_SELF_INJECTING_ROLES, kbQueryTerms,
-    kbKnowledgeBlock, kbPromotionBlock,
+    kbKnowledgeBlock, kbPromotionBlock, kbDemotionBlock,
 } from './kb.mjs';
 // Beads scope discovery + the shared full-DB snapshot: the single in-memory
 // BFS scope rule (now shared by bdListScoped and classifyVerifySet instead of
@@ -392,7 +392,7 @@ export {
 // single source of truth for their implementation (apra-fleet-3swo.6.11).
 export {
     createKbPrimingClient, KB_SELF_INJECTING_ROLES, kbQueryTerms,
-    kbKnowledgeBlock, kbPromotionBlock,
+    kbKnowledgeBlock, kbPromotionBlock, kbDemotionBlock,
 };
 // Re-exported so importers of the verify-set classifier from runner.js keep
 // working; beads-scope.mjs is the single source of truth for its
@@ -1712,6 +1712,30 @@ async function runSprintCycle(context) {
     }
 
     /**
+     * The files this round's diff touched, for the D7 demotion-candidate
+     * scope (a reviewer should only be offered demotion candidates whose
+     * cited files the diff it is reviewing actually changed). Best-effort,
+     * matching every other KB-adjacent read in this engine: a git failure of
+     * any kind degrades to [], never throws into a dispatch -- this is
+     * optional prompt context, not required for the dispatch to proceed.
+     * @param {string} member
+     * @param {string} baseBranch
+     * @param {string} branch
+     * @returns {Promise<string[]>}
+     */
+    async function changedFilesForRound(member, baseBranch, branch) {
+        if (!member || !baseBranch || !branch) return [];
+        try {
+            const res = await command(`git diff --name-only origin/${baseBranch}...${branch}`, { member_name: member, silent: true, failSoft: true });
+            if (!res || !res.ok) return [];
+            return String(res.output || '').split('\n').map((line) => line.trim()).filter(Boolean);
+        } catch (err) {
+            log(`[kb-work] could not compute this round's changed files for ${member} (non-fatal): ${err.message}`);
+            return [];
+        }
+    }
+
+    /**
      * Dispatches one reviewer round and returns its schema-validated verdict.
      * Shared by the per-round Develop/Review dispatch and the Cycle Evaluation
      * re-review so both apply the same contract rule: a `CHANGES_NEEDED`
@@ -1736,6 +1760,19 @@ async function runSprintCycle(context) {
         const kbCandidates = await kbWork.promotionCandidates(reviewerRepoPath);
         if (kbCandidates.length > 0) {
             log(`[kb-work] offering ${kbCandidates.length} INFERRED entr(ies) to the reviewer for promotion.`);
+        }
+        // D7: fetch the CONFIRMED/INFERRED entries this reviewer may demote,
+        // scoped to the files THIS round's diff actually touched. Same missing-
+        // input reasoning as kbCandidates above -- without this kb_demotions is
+        // structurally always empty. Best-effort: a git failure degrades the
+        // changed-files list to [], which in turn makes demotionCandidates
+        // return [], never fails the review.
+        const kbDemotionCandidates = await kbWork.demotionCandidates(
+            reviewerRepoPath,
+            await changedFilesForRound(reviewerPool[0], validated.baseBranch, validated.branch)
+        );
+        if (kbDemotionCandidates.length > 0) {
+            log(`[kb-work] offering ${kbDemotionCandidates.length} entr(ies) to the reviewer for demotion.`);
         }
         // What the KB knows about the beads UNDER REVIEW, not just whatever the
         // sprint-start prime happened to surface. Falls back to the primed set
@@ -1781,6 +1818,7 @@ async function runSprintCycle(context) {
                 branch: validated.branch,
                 goal: validated.goal,
                 kbCandidates,
+                kbDemotionCandidates,
                 kbKnowledge: reviewerKnowledge,
             }),
             // Restate the review scope: a resumed dispatch replaces the

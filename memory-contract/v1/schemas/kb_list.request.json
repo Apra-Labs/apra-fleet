@@ -49,6 +49,10 @@
         "limit": {
           "type": "number",
           "description": "Max entries to return (default: no limit)"
+        },
+        "exclude_unchanged_demotions": {
+          "type": "boolean",
+          "description": "Drop an entry that was demoted more recently than it was last promoted or captured, UNLESS at least one of its cited files now hashes differently from the snapshot taken at demotion time. Use this to avoid re-offering an entry for promotion when nothing about it has actually changed since it was demoted."
         }
       },
       "additionalProperties": false

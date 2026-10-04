@@ -186,6 +186,9 @@ export function vetKbWork(role, result) {
 /** Max promotion candidates offered to one reviewer, so the prompt stays bounded. */
 export const KB_MAX_PROMOTION_CANDIDATES = 40;
 
+/** Max demotion candidates offered to one reviewer, so the prompt stays bounded. */
+export const KB_MAX_DEMOTION_CANDIDATES = 20;
+
 export function createKbWorkClient(opts = {}) {
     const { callTool, log = () => {}, remoteUrlFor } = opts;
     const active = typeof callTool === 'function';
@@ -229,6 +232,16 @@ export function createKbWorkClient(opts = {}) {
          *
          * Best-effort by design -- a cold or unreachable KB must degrade to
          * "nothing to promote", never fail the review dispatch.
+         *
+         * D6 ping-pong guard: `exclude_unchanged_demotions: true` asks kb_list
+         * to drop an entry that was demoted more recently than it was last
+         * promoted or created UNLESS one of its cited files now hashes
+         * differently from the snapshot taken at demote time. Without this a
+         * reviewer that just demoted an entry would be offered the SAME entry
+         * to promote on the very next round with nothing having changed about
+         * it -- a demote-then-promote loop that never converges. The
+         * exclusion itself runs server-side (the provider holds the repoPath
+         * anchor the re-hash needs); this call only has to ask for it.
          */
         async promotionCandidates(repoPath) {
             // Without a repo path kb_list would resolve against the fleet
@@ -241,6 +254,7 @@ export function createKbWorkClient(opts = {}) {
                     ...scopeOf(repoPath),
                     confidence: 'INFERRED',
                     limit: KB_MAX_PROMOTION_CANDIDATES,
+                    exclude_unchanged_demotions: true,
                 }));
                 const results = parsed && Array.isArray(parsed.results) ? parsed.results : [];
                 return results
@@ -251,6 +265,52 @@ export function createKbWorkClient(opts = {}) {
                     .slice(0, KB_MAX_PROMOTION_CANDIDATES);
             } catch (err) {
                 log(`[kb-work] could not list promotion candidates for ${repoPath} (non-fatal): ${err.message}`);
+                return [];
+            }
+        },
+        /**
+         * The CONFIRMED/INFERRED entries this reviewer may demote (D7): the
+         * demotion-side mirror of promotionCandidates above. A KB entry id
+         * exists only inside the KB, and the reviewer subagent has no
+         * apra-fleet MCP tools to look one up, so without this call
+         * `kb_demotions` would be structurally always empty for the same
+         * reason `kb_promotions` was before promotionCandidates existed.
+         *
+         * Scoped to THIS round's changed files: offering every CONFIRMED/
+         * INFERRED entry in the whole KB would swamp the prompt with claims
+         * unrelated to what the reviewer is actually looking at, and a
+         * reviewer cannot usefully judge whether an entry it never read
+         * about is now wrong. `changedFiles` is the caller's own round diff
+         * (e.g. `git diff --name-only`), not re-derived here.
+         *
+         * Best-effort by design, matching promotionCandidates -- a cold or
+         * unreachable KB must degrade to "nothing to demote", never fail the
+         * review dispatch.
+         */
+        async demotionCandidates(repoPath, changedFiles) {
+            if (!active || !repoPath) return [];
+            const files = Array.isArray(changedFiles) ? changedFiles.filter((f) => typeof f === 'string' && f.length > 0) : [];
+            if (files.length === 0) return [];
+            try {
+                const parsed = parseResult(await callTool('kb_list', {
+                    repo_path: repoPath,
+                    ...scopeOf(repoPath),
+                }));
+                const results = parsed && Array.isArray(parsed.results) ? parsed.results : [];
+                return results
+                    .filter((e) => e
+                        && typeof e.id === 'string'
+                        // demote() refuses type='user-directive' outright (directive
+                        // state is human-terminal), so offering one as a candidate
+                        // can only produce a guaranteed refusal.
+                        && e.type !== 'user-directive'
+                        // Only entries trust can actually be pulled DOWN from.
+                        && (e.confidence === 'CONFIRMED' || e.confidence === 'INFERRED')
+                        && Array.isArray(e.source_files)
+                        && e.source_files.some((f) => files.includes(f)))
+                    .slice(0, KB_MAX_DEMOTION_CANDIDATES);
+            } catch (err) {
+                log(`[kb-work] could not list demotion candidates for ${repoPath} (non-fatal): ${err.message}`);
                 return [];
             }
         },
@@ -762,6 +822,54 @@ export function kbPromotionBlock(kbCandidates) {
         + 'blanket-promote, and never promote by module, tag or timestamp. Promoting '
         + 'nothing is a valid outcome; return [] in that case.\n'
         + wrapUntrustedBlock('kb_list --confidence INFERRED', JSON.stringify(
+            kbCandidates.map((e) => ({
+                id: e.id,
+                title: e.title,
+                summary: e.summary,
+                source_files: e.source_files,
+            })),
+            null,
+            2
+        )),
+    ];
+}
+
+/**
+ * The "KNOWLEDGE BANK -- demotion candidates" block, the demotion-side mirror
+ * of kbPromotionBlock above. Lists CONFIRMED/INFERRED entries whose cited
+ * files this round's diff touches, so the reviewer can judge whether the
+ * repo change it just reviewed means an existing entry is now less certain.
+ *
+ * Every id named here is copied VERBATIM from this block: it is the ONLY
+ * source of demotable ids, exactly the same discipline kbPromotionBlock
+ * already requires for `kb_promotions`.
+ *
+ * Returns a single-element array (or an empty one) so callers can spread it
+ * into their prompt-section list, matching kbPromotionBlock.
+ *
+ * @param {object[]|undefined} kbCandidates
+ * @returns {string[]}
+ */
+export function kbDemotionBlock(kbCandidates) {
+    if (!Array.isArray(kbCandidates) || kbCandidates.length === 0) return [];
+    return [
+        'KNOWLEDGE BANK -- demotion candidates. These entries sit at CONFIRMED or '
+        + 'INFERRED and cite one or more files this round touched. Do NOT call any kb_* '
+        + 'tool yourself: return your decisions in the `kb_demotions` field of your '
+        + 'structured output as [{id, reason, evidence_files?}] and the orchestrator executes '
+        + 'them. The `id` MUST be copied verbatim from this block -- it is the ONLY source of '
+        + 'demotable ids.\n'
+        + 'Demote ONLY an entry whose claim you independently found to be LESS certain '
+        + 'during THIS review -- by reading the diff, running the tests, or checking the '
+        + 'cited files yourself. The `reason` must state what you checked (at least 20 '
+        + 'characters, e.g. "the cited helper was removed in this diff"). `evidence_files` '
+        + 'is optional -- omit it when the demotion has nothing new to cite. This is the '
+        + '"I am now LESS certain" path, not the "this claim is wrong" path: if you '
+        + 'independently verified the claim is actually WRONG, use kb_feedback or '
+        + 'kb_resolve_contradiction instead of demoting it. Never blanket-demote, and '
+        + 'never demote by module, tag or timestamp. Demoting nothing is a valid '
+        + 'outcome; return [] in that case.\n'
+        + wrapUntrustedBlock('kb_list (CONFIRMED/INFERRED, scoped to this round\'s changed files)', JSON.stringify(
             kbCandidates.map((e) => ({
                 id: e.id,
                 title: e.title,
