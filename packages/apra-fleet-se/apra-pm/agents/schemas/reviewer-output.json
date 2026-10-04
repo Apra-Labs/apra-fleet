@@ -80,6 +80,36 @@
         }
       }
     },
+    "kb_demotions": {
+      "type": "array",
+      "description": "Entries this reviewer independently found to be LESS certain than the KB currently records, copied from the 'KNOWLEDGE BANK -- demotion candidates' block in your dispatch prompt. Reviewer-only, same evidence floor as kb_promotions. The engine makes the kb_demote calls.",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "reason"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The entry id, copied verbatim from the 'KNOWLEDGE BANK -- demotion candidates' block in your dispatch prompt. That block is the ONLY source of demotable ids -- do not call a kb_* tool to find one, and never invent one.",
+            "minLength": 1
+          },
+          "reason": {
+            "type": "string",
+            "description": "What you checked that makes this entry less certain. kb_demote refuses a trivial reason.",
+            "minLength": 20
+          },
+          "evidence_files": {
+            "type": "array",
+            "description": "Files supporting the demotion. Optional -- omit or send [] when the demotion has nothing new to cite.",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
     "kb_captures": {
       "type": "array",
       "description": "Durable knowledge this role verified during its run. The engine makes the kb_capture calls; the role only decides. Optional -- omit or send [] to capture nothing.",

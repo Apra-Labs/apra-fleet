@@ -130,6 +130,7 @@ function isToolError(res) {
 export function vetKbWork(role, result) {
     const captures = [];
     const promotions = [];
+    const demotions = [];
     const refused = [];
 
     const rawCaptures = (result && Array.isArray(result.kb_captures)) ? result.kb_captures : [];
@@ -180,7 +181,30 @@ export function vetKbWork(role, result) {
         }
     }
 
-    return { captures, promotions, refused };
+    // D6/C4: kb_demotions is gated exactly like kb_promotions -- same
+    // reviewer-only role check, same KB_MIN_PROMOTE_REASON evidence floor.
+    // Lowering trust is exactly as auditable an act as raising it.
+    const rawDemotions = (result && Array.isArray(result.kb_demotions)) ? result.kb_demotions : [];
+    if (rawDemotions.length > 0 && !KB_PROMOTER_ROLES.has(role)) {
+        refused.push(`${role}: kb_demotions refused -- demotion is reviewer-only`);
+    } else {
+        for (const d of rawDemotions) {
+            if (!d || typeof d.id !== 'string' || d.id.length === 0) {
+                refused.push(`${role}: demotion missing id`);
+                continue;
+            }
+            if (typeof d.reason !== 'string' || d.reason.trim().length < KB_MIN_PROMOTE_REASON) {
+                refused.push(`${role}: demotion ${d.id} has no recorded evidence`);
+                continue;
+            }
+            const evidenceFiles = Array.isArray(d.evidence_files)
+                ? d.evidence_files.filter((f) => typeof f === 'string' && f.length > 0)
+                : [];
+            demotions.push({ id: d.id, reason: d.reason.trim(), evidence_files: evidenceFiles });
+        }
+    }
+
+    return { captures, promotions, demotions, refused };
 }
 
 /** Max promotion candidates offered to one reviewer, so the prompt stays bounded. */
@@ -393,20 +417,21 @@ export function createKbWorkClient(opts = {}) {
             }
         },
         async apply(role, repoPath, result) {
-            const { captures, promotions, refused } = vetKbWork(role, result);
+            const { captures, promotions, demotions, refused } = vetKbWork(role, result);
 
             for (const r of refused) log(`[kb-work] refused -- ${r}`);
-            // Log every promotion with its stated evidence BEFORE attempting it.
-            // This log is the audit trail the bible never had.
+            // Log every promotion/demotion with its stated evidence BEFORE
+            // attempting it. This log is the audit trail the bible never had.
             for (const p of promotions) log(`[kb-work] promote ${p.id} (${role}): ${p.reason}`);
+            for (const d of demotions) log(`[kb-work] demote ${d.id} (${role}): ${d.reason}`);
 
             // Without a repo path a capture would land in whichever KB the fleet
             // server's cwd resolves to -- the tm7 defect. Refuse rather than guess.
             if (!active || !repoPath) {
-                if ((captures.length || promotions.length) && !repoPath) {
-                    log(`[kb-work] no repo path for ${role} -- ${captures.length} capture(s) and ${promotions.length} promotion(s) dropped`);
+                if ((captures.length || promotions.length || demotions.length) && !repoPath) {
+                    log(`[kb-work] no repo path for ${role} -- ${captures.length} capture(s), ${promotions.length} promotion(s) and ${demotions.length} demotion(s) dropped`);
                 }
-                return { captured: 0, promoted: 0, refused: refused.length };
+                return { captured: 0, promoted: 0, demoted: 0, refused: refused.length };
             }
 
             let captured = 0;
@@ -446,8 +471,31 @@ export function createKbWorkClient(opts = {}) {
                     log(`[kb-work] kb_promote failed for ${p.id} (non-fatal): ${err.message}`);
                 }
             }
-            if (captured || promoted) log(`[kb-work] ${role}: captured ${captured}, promoted ${promoted}`);
-            return { captured, promoted, refused: refused.length };
+            let demoted = 0;
+            for (const d of demotions) {
+                try {
+                    // Same repo-blindness guard as kb_promote above: repo_path
+                    // and the URL scope are REQUIRED, or this resolves against
+                    // the fleet server's cwd -- a different project's KB,
+                    // where the id does not exist.
+                    const res = await callTool('kb_demote', {
+                        id: d.id,
+                        reason: d.reason,
+                        evidence_files: d.evidence_files,
+                        repo_path: repoPath,
+                        ...scopeOf(repoPath),
+                    });
+                    if (isToolError(res)) {
+                        log(`[kb-work] kb_demote rejected for ${d.id} (non-fatal): ${toolErrorText(res)}`);
+                        continue;
+                    }
+                    demoted++;
+                } catch (err) {
+                    log(`[kb-work] kb_demote failed for ${d.id} (non-fatal): ${err.message}`);
+                }
+            }
+            if (captured || promoted || demoted) log(`[kb-work] ${role}: captured ${captured}, promoted ${promoted}, demoted ${demoted}`);
+            return { captured, promoted, demoted, refused: refused.length };
         },
 
         /**

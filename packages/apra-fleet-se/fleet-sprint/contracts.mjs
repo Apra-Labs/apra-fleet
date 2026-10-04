@@ -755,6 +755,23 @@ export const finalVerdict = {
                 required: ['id', 'reason'],
             },
         },
+        // D7/C3: the demotion-side mirror of kb_promotions above, same
+        // reasoning -- the Final Review is the strongest-evidence demoter too.
+        // Same {id, reason, evidence_files?} shape as reviewer-output.json's
+        // kb_demotions, executed by the same kbWork.apply path. Optional:
+        // demoting nothing is the common answer.
+        kb_demotions: {
+            type: 'array',
+            items: {
+                type: 'object',
+                properties: {
+                    id: { type: 'string' },
+                    reason: { type: 'string' },
+                    evidence_files: { type: 'array', items: { type: 'string' } },
+                },
+                required: ['id', 'reason'],
+            },
+        },
     },
     required: ['verdict', 'notes'],
 };
