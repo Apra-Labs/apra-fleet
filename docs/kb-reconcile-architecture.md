@@ -48,7 +48,7 @@ is an ordinary KB tool, so the PM invokes them like any other `kb_*` step.
               |
    4. reconciler agent     code-arbitrates the pairs hashes cannot settle
               |
-   5. kb_export            re-write + auto-commit the reconciled bible
+   5. kb_export            additively merge + auto-commit the bible
 ```
 
 ### 1. kb_import -- the trusted-channel write path
@@ -156,11 +156,15 @@ reputation. NEVER delete. The agent reports
 
 ### 5. kb_export -- persist the reconciled bible
 
-The flow ends with `kb_export`, which re-writes `.fleet/kb-canonical.json` from
-the CONFIRMED, non-superseded, non-stale entries and auto-commits it (pm-kb
+The flow ends with `kb_export`, which additively merges the CONFIRMED,
+non-superseded, non-stale entries whose cited files match their recorded hash
+basis into `.fleet/kb-canonical.json` and auto-commits it (pm-kb
 identity, pathspec-only, content-gated, non-fatal -- see knowledge-layer.md).
 Reconcile winners are CONFIRMED and un-staled when the predicate allows, so they
-pass the export filter; superseded losers and pending directives do not appear.
+pass the export filter; superseded losers and pending directives are never
+added. Export never removes or rewrites an entry already in the bible, so a
+superseded loser or a directive smuggled in via a merged bible persists after
+re-export and must be removed by hand (curation).
 No post-prefilter sweep is needed: `resolveContradiction` sets the winner's
 final stale state itself.
 
