@@ -1004,10 +1004,16 @@ export class SqliteProvider implements MemoryProvider {
   // supersede.
   //
   // belowConfirmedOnly narrows the answer to rows that are ALSO still below
-  // CONFIRMED. The cold-seed needs that narrowing -- an entry demoted and
-  // later promoted back up to CONFIRMED is CONFIRMED again and must keep
-  // seeding. The export shrink guard does not: an id missing from a
-  // CONFIRMED-only export is by construction not CONFIRMED locally.
+  // CONFIRMED. BOTH callers need it, because demoted_at is write-once --
+  // promote() updates confidence/promoted_at/content/source and never clears
+  // it, so "was ever demoted" outlives the demotion. The cold-seed needs it
+  // because an entry demoted and later promoted back to CONFIRMED is CONFIRMED
+  // again and must keep seeding. The export shrink guard needs it too: list()
+  // excludes stale and superseded rows, so a CONFIRMED-but-stale entry is
+  // missing from a CONFIRMED-only export while still CONFIRMED locally -- call
+  // it "demoted" and its loss gets auto-committed silently. Callers that omit
+  // the flag therefore ask the WIDER question ("ever demoted"), which is a
+  // safety hazard for any commit decision.
   //
   // Ids with no local row are simply absent from the result. A bible is read
   // on machines that never captured its entries, so "no local row" is the

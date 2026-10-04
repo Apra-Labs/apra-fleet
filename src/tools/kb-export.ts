@@ -567,7 +567,14 @@ export async function kbExport(input: KbExportInput): Promise<string> {
   const committed = maybeAutoCommitBible(repoPath, outPath, canonical.length, scope, {
     previous,
     currentIds: canonical.map(e => e.id),
-    demotedLocally: ids => source.demotedIds(ids),
+    // belowConfirmedOnly is REQUIRED here, not an optimisation. demoted_at is
+    // write-once (promote() never clears it), and a CONFIRMED-only export drops
+    // stale/superseded rows -- so a demote -> re-verify -> promote entry that is
+    // later staled is CONFIRMED locally yet missing from the export while still
+    // carrying demoted_at. Without the narrowing that entry would be permanently
+    // exempt from the guard and its loss auto-committed: exactly the
+    // apra-fleet-ong truncation this guard exists to refuse.
+    demotedLocally: ids => source.demotedIds(ids, { belowConfirmedOnly: true }),
   });
 
   return JSON.stringify({ exported: canonical.length, path: outPath, scope, committed });
