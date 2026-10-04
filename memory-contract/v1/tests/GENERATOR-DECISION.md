@@ -10,7 +10,7 @@ Tree probed: branch `u1_contract_v1_skeleton`. Reproduce every claim below with:
 npm run build && node memory-contract/v1/tests/probe-generator-2020-12.mjs
 ```
 
-Exit 0 = all claims still hold. The probe reads the REAL 23 request schemas from
+Exit 0 = all claims still hold. The probe reads the REAL 24 request schemas from
 `dist/tools/*.js` (the surface is TypeScript, so a build is required first) and
 checks each emitted document against the draft-2020-12 **metaschema** using
 `Ajv2020` -- not against eyeballing.
@@ -27,9 +27,9 @@ taken because neither candidate emits clean 2020-12 on its own:
 
 | Candidate | Verdict | Evidence |
 |---|---|---|
-| zod-native `z.toJSONSchema` (`zod/v4`, zod 3.25.76) | **Unusable today** | Throws on every schema in the surface: `TypeError: Cannot read properties of undefined (reading 'def')` on the real `kbCaptureSchema`. Every schema in `src/tools/` is authored against the zod **v3** API (`import { z } from 'zod'`), and the v4 emitter only walks v4 internals. Making it usable means migrating all 23 schemas in `src/`, which is outside this task's write scope. |
+| zod-native `z.toJSONSchema` (`zod/v4`, zod 3.25.76) | **Unusable today** | Throws on every schema in the surface: `TypeError: Cannot read properties of undefined (reading 'def')` on the real `kbCaptureSchema`. Every schema in `src/tools/` is authored against the zod **v3** API (`import { z } from 'zod'`), and the v4 emitter only walks v4 internals. Making it usable means migrating all 24 schemas in `src/`, which is outside this task's write scope. |
 | `zod-to-json-schema@3.25.1`, `target: 'jsonSchema2020-12'` | **Rejected** | Its 2020-12 mode is a net REGRESSION versus its own draft-07 mode -- see 1.1. |
-| `zod-to-json-schema@3.25.1`, `target: 'jsonSchema7'` + postprocess | **Chosen** | Closest raw output; all 23 tools are metaschema-valid 2020-12 after a purely mechanical normalisation. |
+| `zod-to-json-schema@3.25.1`, `target: 'jsonSchema7'` + postprocess | **Chosen** | Closest raw output; all 24 tools are metaschema-valid 2020-12 after a purely mechanical normalisation. |
 
 ### 1.1 Why the library's own `jsonSchema2020-12` target is not used
 
@@ -75,7 +75,7 @@ All rows are on the chosen path (`jsonSchema7` emit + postprocess) and
 | Closed enums | `confidence`, `scope`, `direction`, capture `type` | `{"type":"string","enum":[...]}` -- closed lists of 3 / 2 / 2 / 5 respectively, e.g. `["CONFIRMED","INFERRED","UNVERIFIED"]` | yes |
 | Optional vs nullable | `z.string().optional()` vs `.nullable()` vs `.nullish()` | optional -> omitted from `required`; nullable -> present in `required` with `type:["string","null"]`; nullish -> both. All three stay distinguishable. | yes |
 | Recursive / entry-reference | `Entry = z.lazy(() => z.object({id, refines: Entry.optional()}))` | `$defs` anchor plus a self `$ref` of `#/$defs/v1-kb-entry` | yes |
-| Whole surface | all 23 real request schemas (16 `kb_*` + 7 `code_*`, matching the `INVENTORY.md` count) | one document per tool | yes, all 23 |
+| Whole surface | all 24 real request schemas (17 `kb_*` + 7 `code_*`, matching the `INVENTORY.md` count) | one document per tool | yes, all 24 |
 | Tuple (`prefixItems`) | `z.tuple([string, number])` -- absent from today's surface, probed because the postprocess carries a fix for it | raw emit is REJECTED by the metaschema (array-form `items`); postprocess converts it to `prefixItems` + `items: false`, which validates | yes, after postprocess |
 
 **Enums are closed, proven.** Every `z.enum` in the surface emits a bounded
@@ -95,7 +95,7 @@ recorded as INV-07 below. The probe asserts both halves (role stays open, and
 | D2 | Dialect declaration | The draft-07 base emit declares draft-07. | Fixed mechanically by `postprocessTo2020_12` (fix 1). Not an open degradation. |
 | D3 | Tuple encoding | draft-07 array-form `items`. | Fixed mechanically (fix 4). No tuple exists in the surface today. |
 | D4 | `definitions` vs `$defs` | draft-07 keyword name. | Set via `definitionPath: '$defs'`; the postprocess also renames defensively (fix 2). |
-| D5 | Cross-field / conditional rules | Everything in section 4. **Note: there is no `.refine`, `.superRefine` or `.transform` anywhere in the 23 request schemas** -- so nothing is lost at the zod level. These rules were never in zod to begin with; they live only in handler code and prose, which is exactly why they must be annotated rather than assumed. | `x-invariant` annotations, section 4. |
+| D5 | Cross-field / conditional rules | Everything in section 4. **Note: there is no `.refine`, `.superRefine` or `.transform` anywhere in the 24 request schemas** -- so nothing is lost at the zod level. These rules were never in zod to begin with; they live only in handler code and prose, which is exactly why they must be annotated rather than assumed. | `x-invariant` annotations, section 4. |
 | D6 | Response shapes | Nothing to degrade: no tool in this surface declares a response zod schema (`INVENTORY.md` section 3), so there is no response type to generate from. The AUDN-outcome union in section 2 is a probe of the SHAPE the responses have, not of a declared schema. | `x-invariant: INV-08`; declaring response schemas is downstream work, not this task's. |
 
 ## 4. x-invariant list (input to T7, complete as-is)
@@ -121,7 +121,7 @@ apply is the `Id` / `Applies to` columns below.
 | INV-03 | `kb_capture` | `type='user-directive'` forces `scope='project'` regardless of the requested scope, and the entry is stored as a PENDING PROPOSAL (UNVERIFIED + flagged + `directive:pending`) at the `SqliteProvider.capture()` choke point. No MCP-reachable route can mint an active directive. | `src/tools/kb-capture.ts`, `src/services/knowledge/sqlite-provider.ts` | Directive quarantine |
 | INV-04 | `kb_capture` | `supersedes` retires the named entry ONLY if AUDN independently matches it as a same-topic candidate (same type, overlapping symbols and source_files); otherwise it is ignored. It cannot retire an arbitrary id. | `src/tools/kb-capture.ts` field description, AUDN service | Superseding and AUDN matching |
 | INV-05 | `kb_import`, `kb_stats` | `repo` and `repo_path` are an ALIAS PAIR and `repo` wins (`input.repo ?? input.repo_path`). Both names must survive into the generated binding: zod strips an unknown key silently, so a binding that keeps only one name fails by reporting an empty/zeroed KB rather than erroring. | `src/tools/kb-stats.ts`, `src/tools/kb-import.ts` | Scope resolution and repo aliasing |
-| INV-06 | `kb_setup` | Its `repo_path` carries NO scope semantics -- it only locates a `.git` directory for hook installation, and the tool writes one global config. It is the only one of the 16 `kb_*` schemas that does not spread `kbScopeFields`. A generated binding must not infer project-KB resolution from the presence of the field. | `src/tools/kb-setup.ts`, `src/services/knowledge/kb-scope-input.ts`, `INVENTORY.md` 2.1 scope note | Scope resolution and repo aliasing |
+| INV-06 | `kb_setup` | Its `repo_path` carries NO scope semantics -- it only locates a `.git` directory for hook installation, and the tool writes one global config. It is the only one of the 17 `kb_*` schemas that does not spread `kbScopeFields`. A generated binding must not infer project-KB resolution from the presence of the field. | `src/tools/kb-setup.ts`, `src/services/knowledge/kb-scope-input.ts`, `INVENTORY.md` 2.1 scope note | Scope resolution and repo aliasing |
 | INV-07 | `kb_capture` | `role` is intentionally an OPEN string in the schema. The closed `Author` enum (`doer`, `reviewer`, `planner`, `plan-reviewer`, `kb-agent`, `kb-reconciler`, `harvest`, `pm`, `user`) is enforced server-side; anything outside it -- including an absent hint -- stamps the literal `unknown`. `source` is derived from the validated role/type and is never accepted from the caller. | `AUTHOR_VALUES` / `validateAuthor` in `src/tools/kb-capture.ts` | Capture provenance and confidence clamp |
 | INV-08 | `kb_query` | Two mutually exclusive response shapes keyed by the request: `flagged_only: true` returns `{flagged_entries, total, note}`, otherwise `{l1_results, l2_expanded, related_claims?}`. Additionally at least one of `query`, `tag` or `flagged_only` MUST be supplied; the handler throws when all three are absent. | `src/tools/kb-query.ts` (guard throw and the `flagged_only` branch) | Query modes |
 | INV-09 | all response shapes | No tool declares a response zod schema, so no generated response schema is authoritative; the shapes in `INVENTORY.md` section 2 are OBSERVED, and an AUDN-style outcome union loses its `discriminator` mapping when emitted as `anyOf`. | `INVENTORY.md` section 3, `src/services/tool-registry.ts` | Query modes |

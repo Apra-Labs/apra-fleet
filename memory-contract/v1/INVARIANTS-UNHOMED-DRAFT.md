@@ -294,10 +294,10 @@ resolution). Feedback: `src/tools/kb-feedback.ts:39-48` delegates to
 `stale`, `flagged_for_review` and `content` otherwise (`:1447-1449`). Neither
 names `confidence`; the response echoes it back (`kb-feedback.ts:47`) so a
 caller can observe it unchanged, and a downvoted CONFIRMED entry stays
-CONFIRMED-but-stale-flagged. `demote()` (`sqlite-provider.ts:1535-1620`) is
+CONFIRMED-but-stale-flagged. `demote()` (`sqlite-provider.ts:1601-1686`) is
 the one operation that IS addressable to an entry id and writes `confidence`
 DOWNWARD: `CONFIRMED -> INFERRED`, `INFERRED -> UNVERIFIED`, one rung per call,
-a no-op floor at `UNVERIFIED` that writes nothing (`:1587-1596`). It refuses,
+a no-op floor at `UNVERIFIED` that writes nothing (`:1653-1662`). It refuses,
 before any write, a missing entry, an already-superseded entry, a
 `user-directive` of either state, a non-trivial-reason failure, and unresolved
 `evidence_files` -- spec.md section 4.7 carries the full rule, proof,
@@ -313,7 +313,7 @@ side effect" (it does not, on any of the four writes enumerated here).
 
 **THE DEMOTE THAT IS, AND THE ONE THAT IS NOT.** `kb_demote` is the
 entry-id-addressable, caller-invoked downward write: `demote(id, reason,
-evidenceFiles?)` (`sqlite-provider.ts:1535-1620`, spec.md 4.7). A SECOND,
+evidenceFiles?)` (`sqlite-provider.ts:1601-1686`, spec.md 4.7). A SECOND,
 unrelated downward write pre-dates it and is NOT `kb_demote` and never becomes
 reachable through it: `decayConceptEntries` (`sqlite-provider.ts:746-765`),
 `SET confidence = 'UNVERIFIED' WHERE confidence = 'INFERRED'` (`:757`) over

@@ -728,28 +728,29 @@ remain revivable by a later freshness sweep (4.5), which a feedback-flagged
 entry is not.
 
 **THE PROOF.** `SqliteProvider.demote()`
-(`src/services/knowledge/sqlite-provider.ts:1535-1620`) checks every refusal
-before the first write, in this order: missing entry (`:1542`, `Entry not
-found`), already-superseded (`:1545`), `type === 'user-directive'`
-(`:1552-1556`, pointing the caller at the CLI-only `reject-directive` command
-instead of refusing silently), a `reason` below `MIN_PROMOTE_REASON_LENGTH`
-(`:1560-1565`, `isNonTrivialPromoteReason` -- the identical helper `promote()`
-calls), and unresolved `evidence_files` (`:1573-1582`, `validateFilePaths` then
-`unresolvableBasisFiles`, the SAME resolver `promote()`'s own basis check uses,
-so the two operations never disagree about whether a path is checkable). The
-ladder itself is `:1587-1596`: `CONFIRMED -> INFERRED`, `INFERRED ->
-UNVERIFIED`, and the `else` branch (the `UNVERIFIED` floor) returns
-`confidence_before` as `confidence_after` and returns immediately -- no
-`UPDATE` statement runs for a no-op demote. A successful call's single write
-(`:1616-1617`) sets `confidence`, `demoted_at`, `demoted_basis_hashes` (a
-snapshot of the row's OWN already-stored `source_file_hashes`, not a re-hash
-off disk -- comment `:1610-1614` explains why: the question a later promotion
-asks is whether the files moved SINCE the demotion, which only a point-in-time
-copy can answer) and `content`; it does not touch `promoted_at` or `source`.
-The appended note is `'\n[Demoted: ' + reason + evidenceSuffix + ' -- ' +
-author + ']'` (`:1606-1607`), ONE leading newline, which the method's own doc
-comment (`:1527-1530`) states deliberately does not match `FEEDBACK_MARKER_RE`
-(two newlines plus `'[feedback '` plus an ISO date) -- a match would make the
+(`src/services/knowledge/sqlite-provider.ts:1601-1686`) checks every refusal
+before the first write, in this order: missing entry (`:1608`, `Entry not
+found`), already-superseded (`:1611`),
+`type === 'user-directive'` (`:1618-1621`, pointing the caller at the
+CLI-only `reject-directive` command instead of refusing silently), a `reason`
+below `MIN_PROMOTE_REASON_LENGTH` (`:1626-1631`, `isNonTrivialPromoteReason` --
+the identical helper `promote()` calls), and unresolved `evidence_files`
+(`:1639-1648`, `validateFilePaths` then `unresolvableBasisFiles`, the SAME
+resolver `promote()`'s own basis check uses, so the two operations never
+disagree about whether a path is checkable). The ladder itself is
+`:1653-1662`: `CONFIRMED -> INFERRED`, `INFERRED -> UNVERIFIED`, and the
+`else` branch (the `UNVERIFIED` floor) returns `confidence_before` as
+`confidence_after` and returns immediately -- no `UPDATE` statement runs for a
+no-op demote. A successful call's single write (`:1682-1683`) sets
+`confidence`, `demoted_at`, `demoted_basis_hashes` (a snapshot of the row's
+OWN already-stored `source_file_hashes`, not a re-hash off disk -- comment
+`:1676-1680` explains why: the question a later promotion asks is whether the
+files moved SINCE the demotion, which only a point-in-time copy can answer)
+and `content`; it does not touch `promoted_at` or `source`. The appended note
+is `'\n[Demoted: ' + reason + evidenceSuffix + ' -- ' + author + ']'`
+(`:1672-1673`), ONE leading newline, which the method's own doc comment
+(`:1593-1596`) states deliberately does not match `FEEDBACK_MARKER_RE` (two
+newlines plus `'[feedback '` plus an ISO date) -- a match would make the
 entry permanently unrevivable by the freshness sweep (`freshnessRevivable`,
 4.5). `HttpKbProvider.demote()` throws its own not-supported error and writes
 nothing to the local fallback DB, reached through `requireSqliteProject`

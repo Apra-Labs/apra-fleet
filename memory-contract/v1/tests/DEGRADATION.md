@@ -76,7 +76,7 @@ cannot check, and why.
 
 ## D-4 -- `parsed` is a consumer-side decode, not a wire field
 
-- **Tool / method:** all 23 inventoried tools, via `wrapTool`
+- **Tool / method:** all 24 inventoried tools, via `wrapTool`
   (`src/services/tool-registry.ts`).
 - **Unverifiable behaviour:** every handler `JSON.stringify`s its body into a
   text content block. The envelope carries `content` (and, for non-inventoried
@@ -214,7 +214,7 @@ cannot check, and why.
 
 ## D-12 -- Request-level zod validation is bypassed by any handler-call harness
 
-- **Tool / method:** all 23 tools, at the MCP SDK boundary.
+- **Tool / method:** all 24 tools, at the MCP SDK boundary.
 - **Unverifiable behaviour:** the real zod input validation happens in
   `server.tool()` registration, BEFORE a handler is invoked. Both this harness
   and `record-fixtures.mjs` hold handler references directly (they need the

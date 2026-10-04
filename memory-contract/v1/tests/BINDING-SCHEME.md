@@ -138,7 +138,7 @@ This is exposed as `node memory-contract/v1/generate-contract.mjs --check`
   `MISMATCHES` is non-empty; exits 0 and prints an OK summary line
   (`<N> tools, <N*2> schema files, <N> binding files, all match`) otherwise.
 
-Because the same 23-tool roster (`KB_MODULES` + `CODE_EXPORTS`) drives both
+Because the same 24-tool roster (`KB_MODULES` + `CODE_EXPORTS`) drives both
 the schema pair count and the binding count in one loop iteration per tool,
 "registered tool" and "one binding, one schema pair" can never structurally
 diverge from each other in this script's output -- the `--check` scan exists

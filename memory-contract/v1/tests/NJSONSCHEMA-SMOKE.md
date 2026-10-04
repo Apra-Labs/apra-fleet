@@ -7,7 +7,7 @@ decision. This is a note, not a test: the generated C# is throwaway and is
 
 ## What was probed
 
-Three schemas from the 46 committed under `memory-contract/v1/schemas/`,
+Three schemas from the 48 committed under `memory-contract/v1/schemas/`,
 chosen per the bead's instruction (one `kb_*`, one `code_*`, one with a
 discriminated union):
 
