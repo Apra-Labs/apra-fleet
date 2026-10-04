@@ -13,10 +13,10 @@
 //
 // WHAT THIS DOES
 // ---------------
-// Registers all 58 tools (23 of them memory-contract tools: 16 kb_* + 7
+// Registers all 59 tools (24 of them memory-contract tools: 17 kb_* + 7
 // code_*, INVENTORY.md section 1) with a 4-line fake McpServer -- the exact
 // technique INVENTORY.md section 1 used to verify the tool count at runtime
-// -- then calls each of the 23 wrapped handlers with a scripted request and
+// -- then calls each of the 24 wrapped handlers with a scripted request and
 // records the wrapTool response ENVELOPE (the {content, structuredContent?}
 // shape wrapTool() returns, per T1.3.3/.33 widening the emitted response
 // schemas to that general envelope -- NOT the inner JSON payload) to
@@ -61,7 +61,7 @@
 //
 // THE RECORDED CORPUS IS NOT BYTE-REPRODUCIBLE (my-beads-db-27m.50): running
 // this file twice never produces a byte-identical fixtures/ tree, even with
-// nothing about the 23 tools' behaviour changed. Three concrete axes,
+// nothing about the 24 tools' behaviour changed. Three concrete axes,
 // verified against the real corpus history:
 //   - entry `id` fields are fresh UUIDs, minted per run (kb_capture's
 //     handler, not this harness).

@@ -18,14 +18,15 @@ The layer has two planes:
 |  - SqliteProvider (local) |      |  - symbol definitions     |
 |  - HttpKbProvider (http)  |      |  - call graphs            |
 |                           |      |  - file impact analysis   |
-|  16 kb_* MCP tools:       |      |  MCP server: npx gitnexus |
+|  17 kb_* MCP tools:       |      |  MCP server: npx gitnexus |
 |  kb_capture  kb_query     |      |  Fleet proxies 7 of its   |
 |  kb_context  kb_invalidate|      |  tools: code_graph,       |
 |  kb_session_prime         |      |  code_impact, code_query, |
-|  kb_promote  kb_harvest   |      |  code_context, code_map,  |
-|  kb_setup    kb_export    |      |  code_flow, code_tests    |
-|  kb_import   kb_list      |      |                           |
-|  kb_stats    kb_feedback  |      |                           |
+|  kb_promote  kb_demote    |      |  code_context, code_map,  |
+|  kb_harvest  kb_setup     |      |  code_flow, code_tests    |
+|  kb_export   kb_import    |      |                           |
+|  kb_list     kb_stats     |      |                           |
+|  kb_feedback              |      |                           |
 |  kb_freshness_sweep       |      |                           |
 |  kb_reconcile_prefilter   |      |                           |
 |  kb_resolve_contradiction |      |                           |
@@ -226,8 +227,10 @@ UNVERIFIED  <->  INFERRED  <->  CONFIRMED
   and the ceiling for `kb_capture`.
 - `CONFIRMED` -- the reviewer approved the code the entry describes. Highest.
 
-`kb_promote` is the only way up a rung; `kb_demote` is the only way back down
-one when an entry turns out to be less certain than recorded (not the same as
+`kb_promote` is the principal path up a rung, with two additional routes:
+`kb_resolve_contradiction` (winner set to CONFIRMED) and `kb_import` (bible
+entries preserve their confidence). `kb_demote` is the only way back down
+one rung when an entry turns out to be less certain than recorded (not the same as
 proven wrong -- see `docs/kb-trust-model.md`). See that doc for the full
 demotion contract: evidence rules, every refusal, the re-offer rule, and the
 bible-safety behaviour.

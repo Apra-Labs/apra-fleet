@@ -22,8 +22,7 @@
 //
 // Writes memory-contract/v1/schemas/<tool>.request.json and
 // memory-contract/v1/schemas/<tool>.response.json for all 24 tools (17 kb_*
-// + 7 code_*; INVENTORY.md section 1's prose count is updated by a later
-// lane task, not this one), plus one
+// + 7 code_*), plus one
 // memory-contract/v1/bindings/mcp/<tool>.json binding definition per tool
 // (T1.2.3), each ref-ing its own request/response schema pair by $id rather
 // than inlining any shape. Every emitted schema document is validated against
@@ -109,7 +108,7 @@ const GROUP_HTTP_STATUS = {
 // task (T1.3.3) adds under bindings/openapi/.
 const OPENAPI_ID_BASE = 'https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/bindings/openapi';
 
-// Same 23-tool roster the probe in tests/probe-generator-2020-12.mjs reads,
+// Same 24-tool roster the probe in tests/probe-generator-2020-12.mjs reads,
 // reproduced here rather than imported so this script has no runtime
 // dependency on a file owned by T1.2.1. Any drift between the two lists is
 // itself a signal INVENTORY.md's tool count (section 1) needs re-checking.
@@ -242,9 +241,9 @@ function validateOrThrow(tool, kind, doc) {
  * `zodToJsonSchema()` call -- e.g. the recursive-entry case proved in
  * GENERATOR-DECISION.md section 2. `kbScopeFields` (repo_path/repo_remote_url,
  * INVENTORY.md 2.1's scope-field note), the one shape genuinely shared across
- * 15 of the 16 kb_* request schemas, is mixed in via OBJECT SPREAD at each
+ * 16 of the 17 kb_* request schemas, is mixed in via OBJECT SPREAD at each
  * call site in src/tools/*.ts, not by re-using one shared zod object
- * reference. Spread produces 15 structurally-identical but reference-distinct
+ * reference. Spread produces 16 structurally-identical but reference-distinct
  * sub-schemas, so there is no single shared sub-schema for the dedupe
  * mechanism to find -- each tool's request document legitimately inlines its
  * own copy. This is a property of how the source schemas are authored, not a
