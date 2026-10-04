@@ -5,6 +5,7 @@ import { getKbProviders } from '../services/knowledge/kb-providers.js';
 import { validateFilePaths } from '../services/knowledge/path-validation.js';
 import { kbScopeFields } from '../services/knowledge/kb-scope-input.js';
 import { getProvider } from './code-intelligence.js';
+import { isSqliteProject } from '../services/knowledge/require-sqlite-project.js';
 import type { KBEntry } from '../services/knowledge/types.js';
 import { FLEET_DIR } from '../paths.js';
 
@@ -324,11 +325,30 @@ export async function kbSessionPrime(input: KbSessionPrimeInput): Promise<string
             .filter(isCanonicalBibleEntry)
             .filter(e => !existingIds.has(e.id));
 
-          let ordered = valid;
+          // kb_demote (design 6.2, D-a): a bible entry whose LOCAL row was
+          // demoted and still sits below CONFIRMED is NOT seeded. Without
+          // this the demotion is invisible in practice: toCanonicalKBEntry
+          // defaults a bible entry's confidence to CONFIRMED and never
+          // consults the local row, so the committed bible would keep
+          // injecting the doubted claim as CONFIRMED into every session.
+          // Narrow on purpose -- an id with NO local row (the normal
+          // cross-machine case) and an id whose local row was demoted and
+          // later promoted back to CONFIRMED are both left untouched. Over an
+          // HTTP project KB there are no local rows to consult, so it
+          // degrades to the previous behaviour rather than refusing (this
+          // block is non-fatal by contract and must never throw).
+          const demotedLocally = isSqliteProject(providers.project)
+            ? providers.project.demotedIds(valid.map(e => e.id), { belowConfirmedOnly: true })
+            : new Set<string>();
+          const seedable = demotedLocally.size > 0
+            ? valid.filter(e => !demotedLocally.has(e.id))
+            : valid;
+
+          let ordered = seedable;
           if (hintSymbols.length > 0 || hintModules.length > 0) {
-            const matched = valid.filter(e => canonicalMatchesHints(e, hintSymbols, hintModules));
+            const matched = seedable.filter(e => canonicalMatchesHints(e, hintSymbols, hintModules));
             const matchedIds = new Set(matched.map(e => e.id));
-            const rest = valid.filter(e => !matchedIds.has(e.id));
+            const rest = seedable.filter(e => !matchedIds.has(e.id));
             ordered = [...matched, ...rest];
           }
 

@@ -4,7 +4,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { getKbProviders } from '../services/knowledge/kb-providers.js';
 import { kbScopeFields } from '../services/knowledge/kb-scope-input.js';
-import { logWarn } from '../utils/log-helpers.js';
+import { logLine, logWarn } from '../utils/log-helpers.js';
 import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
 import { KB_CONFIG_PATH } from '../services/knowledge/kb-config.js';
 import type { KbConfigFile } from '../services/knowledge/kb-config.js';
@@ -217,21 +217,77 @@ function autoCommitEnabled(): boolean {
   return autoCommitMode() !== 'off';
 }
 
-// The entry count of the bible ALREADY on disk, read before we overwrite it.
-// Accepts both shapes (legacy bare array, v2 envelope) like entriesUnchanged.
-// null means "no comparable prior bible" -- absent file, or unparseable -- in
-// which case there is no shrink to detect and the export is a first write.
-function bibleEntryCount(outPath: string): number | null {
+// The bible ALREADY on disk, read before we overwrite it: how many entries it
+// carried AND which ids they were. Accepts both shapes (legacy bare array, v2
+// envelope) like entriesUnchanged. null means "no comparable prior bible" --
+// absent file, or unparseable -- in which case there is no shrink to detect
+// and the export is a first write.
+//
+// kb_demote (design 6.2, D-b): the ids are what widened this from a bare
+// count. A count alone cannot tell an intentional demotion-driven removal from
+// the apra-fleet-ong truncation -- both read as "fewer entries than before".
+// `ids` collects only entries whose id is a string, so ids.length < count
+// means the previous file held entries this guard cannot even name; the guard
+// treats that as un-nameable loss and refuses (see isDemotionOnlyShrink).
+interface PreviousBible {
+  count: number;
+  ids: string[];
+}
+
+function previousBible(outPath: string): PreviousBible | null {
   if (!fs.existsSync(outPath)) return null;
   try {
     const parsed = JSON.parse(fs.readFileSync(outPath, 'utf-8'));
     const existing = Array.isArray(parsed)
       ? parsed
       : (parsed && Array.isArray(parsed.entries) ? parsed.entries : null);
-    return existing === null ? null : existing.length;
+    if (existing === null) return null;
+    const ids: string[] = [];
+    for (const entry of existing as unknown[]) {
+      const id = (entry as { id?: unknown } | null)?.id;
+      if (typeof id === 'string' && id.length > 0) ids.push(id);
+    }
+    return { count: existing.length, ids };
   } catch {
     return null;
   }
+}
+
+// kb_demote (design 6.2, D-b): the shrink guard's inputs. The guard has to
+// answer "WHICH ids went missing, and did a human deliberately lower trust in
+// every one of them", which needs the previous bible's ids, this export's ids,
+// and a local-row lookup -- the caller owns the KB provider, so it supplies
+// the lookup rather than this module reaching for one.
+interface ShrinkGuardInput {
+  previous: PreviousBible | null;
+  currentIds: string[];
+  /** Which of the given ids have a local row carrying demoted_at. */
+  demotedLocally: (ids: string[]) => Set<string>;
+}
+
+// True only when EVERY id that the previous bible had and this export lost is
+// a local row that was explicitly demoted. That is the one shrink shape with a
+// recorded human decision behind it; everything else (a staled basis, a lost
+// DB, an import into the wrong worktree -- apra-fleet-ong) is knowledge
+// disappearing with nobody's consent, and keeps the original refusal.
+//
+// Deliberately conservative at every unknown: an unnameable previous entry, a
+// shrink with no missing id at all (duplicate ids in the previous file -- no
+// removal to justify), or a failed lookup all return false. The cost of a
+// false negative is a diff a human commits by hand; the cost of a false
+// positive is silently committing lost knowledge.
+function isDemotionOnlyShrink(shrink: ShrinkGuardInput, previous: PreviousBible): boolean {
+  if (previous.ids.length !== previous.count) return false;
+  const currentIds = new Set(shrink.currentIds);
+  const missing = previous.ids.filter(id => !currentIds.has(id));
+  if (missing.length === 0) return false;
+  let demoted: Set<string>;
+  try {
+    demoted = shrink.demotedLocally(missing);
+  } catch {
+    return false;
+  }
+  return missing.every(id => demoted.has(id));
 }
 
 /** Test seam: the default is a trust decision, so it is asserted directly. */
@@ -282,20 +338,35 @@ function maybeAutoCommitBible(
   outPath: string,
   entryCount: number,
   scope: 'project' | 'global' = 'project',
-  previousEntryCount: number | null = null,
+  shrink: ShrinkGuardInput | null = null,
 ): boolean {
   const mode = autoCommitMode();
   if (mode === 'off') return false;
   if (!isGitRepo(repoPath)) return false;
 
-  if (mode === 'default' && previousEntryCount !== null && entryCount < previousEntryCount) {
-    logWarn(
-      'kb-export',
-      'bible SHRANK from ' + previousEntryCount + ' to ' + entryCount + ' entries -- written to disk but NOT '
-      + 'auto-committed. Review the diff and commit it yourself if the loss is intended '
-      + '(set { bible: { autoCommit: true } } to commit shrinking exports unattended).',
-    );
-    return false;
+  const previous = shrink?.previous ?? null;
+  if (mode === 'default' && previous !== null && entryCount < previous.count) {
+    // kb_demote (design 6.2, D-b): one narrow exception. A shrink whose every
+    // missing id was explicitly demoted locally IS the intended outcome of
+    // kb_demote -- a demoted entry stops being CONFIRMED, so it stops being
+    // exported, and refusing to commit that would leave a permanently dirty
+    // bible nobody can land. Any other shrink falls through to the original
+    // refusal below, warning text unchanged.
+    if (isDemotionOnlyShrink(shrink as ShrinkGuardInput, previous)) {
+      logLine(
+        'kb-export',
+        'bible shrank from ' + previous.count + ' to ' + entryCount + ' entries, and every removed id was '
+        + 'demoted locally (kb_demote) -- committing the intentional removal.',
+      );
+    } else {
+      logWarn(
+        'kb-export',
+        'bible SHRANK from ' + previous.count + ' to ' + entryCount + ' entries -- written to disk but NOT '
+        + 'auto-committed. Review the diff and commit it yourself if the loss is intended '
+        + '(set { bible: { autoCommit: true } } to commit shrinking exports unattended).',
+      );
+      return false;
+    }
   }
 
   try {
@@ -486,12 +557,18 @@ export async function kbExport(input: KbExportInput): Promise<string> {
     },
     entries: canonical,
   };
-  // Read the OUTGOING count before the write below destroys it -- the shrink
+  // Read the OUTGOING bible before the write below destroys it -- the shrink
   // guard in maybeAutoCommitBible compares against the bible being replaced.
-  const previousEntryCount = bibleEntryCount(outPath);
+  // kb_demote (D-b): its IDS, not just its count, so the guard can ask whether
+  // each id that went missing was deliberately demoted.
+  const previous = previousBible(outPath);
   fs.writeFileSync(outPath, asciiSafeStringify(bible) + '\n', 'utf-8');
 
-  const committed = maybeAutoCommitBible(repoPath, outPath, canonical.length, scope, previousEntryCount);
+  const committed = maybeAutoCommitBible(repoPath, outPath, canonical.length, scope, {
+    previous,
+    currentIds: canonical.map(e => e.id),
+    demotedLocally: ids => source.demotedIds(ids),
+  });
 
   return JSON.stringify({ exported: canonical.length, path: outPath, scope, committed });
 }

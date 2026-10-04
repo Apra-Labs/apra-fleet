@@ -992,6 +992,46 @@ export class SqliteProvider implements MemoryProvider {
     return row !== undefined;
   }
 
+  // kb_demote bible safety (design 6.2 workstream D): which of `ids` have a
+  // LOCAL row recording a demotion. Both callers -- the kb_session_prime
+  // cold-seed and the kb_export shrink guard -- ask about ids that came out of
+  // a JSON bible file, so this is a SAFETY check on a delivery/commit decision,
+  // not a retrieval: like hasEntry (and unlike query({ids})) it bumps no
+  // use_count/last_accessed telemetry.
+  //
+  // Checks ALL rows, stale and superseded included: "someone deliberately
+  // lowered trust in this id here" is not erased by a later stale or
+  // supersede.
+  //
+  // belowConfirmedOnly narrows the answer to rows that are ALSO still below
+  // CONFIRMED. The cold-seed needs that narrowing -- an entry demoted and
+  // later promoted back up to CONFIRMED is CONFIRMED again and must keep
+  // seeding. The export shrink guard does not: an id missing from a
+  // CONFIRMED-only export is by construction not CONFIRMED locally.
+  //
+  // Ids with no local row are simply absent from the result. A bible is read
+  // on machines that never captured its entries, so "no local row" is the
+  // normal case, not an error (same tolerance as touch()).
+  demotedIds(ids: string[], opts?: { belowConfirmedOnly?: boolean }): Set<string> {
+    const found = new Set<string>();
+    if (ids.length === 0) return found;
+    const db = this.getDb();
+    const confidenceClause = opts?.belowConfirmedOnly ? " AND confidence != 'CONFIRMED'" : '';
+    // Chunked so a large bible can never trip SQLite's bound-parameter limit.
+    const chunkSize = 400;
+    for (let i = 0; i < ids.length; i += chunkSize) {
+      const chunk = ids.slice(i, i + chunkSize);
+      const placeholders = chunk.map(() => '?').join(',');
+      const rows = db.prepare(
+        'SELECT id FROM entries WHERE id IN (' + placeholders + ') AND demoted_at IS NOT NULL' + confidenceClause
+      ).all(...chunk) as Array<Record<string, unknown>>;
+      for (const row of rows) {
+        if (typeof row.id === 'string') found.add(row.id);
+      }
+    }
+    return found;
+  }
+
   // KB audit 2026-08-11: the write half of "delivery is retrieval".
   //
   // query() bumps use_count/last_accessed for everything it returns, but an
