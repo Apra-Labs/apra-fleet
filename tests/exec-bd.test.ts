@@ -10,6 +10,18 @@ import {
   BD_MAX_BUFFER_BYTES,
   BD_LARGE_OUTPUT_WARN_BYTES,
 } from '../scripts/lib/exec-bd.mjs';
+import { bdChildEnv } from './helpers/bd-child-env.js';
+
+// my-beads-db-qy8.9.3: on a host that exports BEADS_DIR globally, the real
+// (uninjected-impl) execBdSync/execBdAsync calls below would otherwise
+// inherit it verbatim and hit that ambient workspace instead of whatever bd
+// resolves from cwd -- same class of leak as my-beads-db-qy8.9. These calls
+// only ever run `bd --version` / a bogus `bd list --parent`, so the blast
+// radius here was always read-only, but the static bd-env-strip guard
+// (scripts/check-bd-env-strip.mjs) flags any real bd invocation missing
+// env: bdChildEnv() regardless, so it stays correct if a later edit here
+// adds a write.
+const BD_CHILD_ENV: NodeJS.ProcessEnv = bdChildEnv();
 
 // Tests for apra-fleet-2cc.1: scripts/lib/exec-bd.mjs -- the single shared
 // cross-platform 'bd' invocation helper used by scripts/sandbox-seed-beads.mjs
@@ -164,7 +176,7 @@ describe('execBdSync', () => {
     // equivalent must succeed on this platform (Windows via the resolved
     // bin/bd.js script, shell-less; POSIX via the real bd binary/symlink,
     // also shell-less).
-    const out = execBdSync(['--version'], { encoding: 'utf-8' });
+    const out = execBdSync(['--version'], { encoding: 'utf-8', env: BD_CHILD_ENV });
     expect(String(out)).toMatch(/bd version/);
   });
 
@@ -176,11 +188,9 @@ describe('execBdSync', () => {
     // Run from an empty temp dir with BEADS_DIR stripped so bd never resolves
     // this repo's own tracker (it then just reports no beads workspace).
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'exec-bd-inject-'));
-    const env = { ...process.env };
-    delete env.BEADS_DIR;
     let out = '';
     try {
-      out = String(execBdSync(['list', '--parent', 'a & echo INJECTED-BY-TEST', '--json', '--limit', '0'], { encoding: 'utf-8', cwd, env, windowsHide: true }));
+      out = String(execBdSync(['list', '--parent', 'a & echo INJECTED-BY-TEST', '--json', '--limit', '0'], { encoding: 'utf-8', cwd, env: BD_CHILD_ENV, windowsHide: true }));
     } catch (err) {
       // bd itself rejecting the bogus id is also an acceptable outcome here
       // -- what matters is that no shell ever ran the injected echo.
@@ -261,7 +271,7 @@ describe('execBdAsync', () => {
   });
 
   it('defaults to the real node:child_process execFile when no implementation is injected, and can run a real "bd --version"', async () => {
-    const out = await execBdAsync(['--version'], { encoding: 'utf-8' });
+    const out = await execBdAsync(['--version'], { encoding: 'utf-8', env: BD_CHILD_ENV });
     expect(String(out.stdout)).toMatch(/bd version/);
   });
 });
