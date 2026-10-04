@@ -204,7 +204,34 @@ export function vetKbWork(role, result) {
         }
     }
 
-    return { captures, promotions, demotions, refused };
+    // my-beads-db-qy8.13: ONE id cannot be promoted and demoted in the same
+    // round. promotionCandidates offers INFERRED entries; demotionCandidates
+    // offers CONFIRMED/INFERRED entries citing a changed file -- so a single
+    // INFERRED entry whose source_files intersect the round diff lands in
+    // BOTH blocks. The two loops above validate independently, so both halves
+    // pass, and apply() would then call kb_promote followed by kb_demote on
+    // that id: no net confidence change, two notes appended, demoted_at
+    // stamped for nothing.
+    //
+    // Refused BOTH ways rather than picking a winner. The pair is
+    // self-contradictory evidence about the same claim, and honouring either
+    // half would record a trust decision the reviewer did not actually make.
+    // This is the authoritative gate: the prompt-side exclusion in
+    // kbDemotionBlock stops the collision being OFFERED, but cannot stop a
+    // reviewer that names the id itself.
+    const collidingIds = new Set(
+        demotions.filter((d) => promotions.some((p) => p.id === d.id)).map((d) => d.id),
+    );
+    for (const id of collidingIds) {
+        refused.push(`${role}: ${id} appears in both kb_promotions and kb_demotions -- refused both ways`);
+    }
+
+    return {
+        captures,
+        promotions: promotions.filter((p) => !collidingIds.has(p.id)),
+        demotions: demotions.filter((d) => !collidingIds.has(d.id)),
+        refused,
+    };
 }
 
 /** Max promotion candidates offered to one reviewer, so the prompt stays bounded. */
@@ -933,11 +960,31 @@ export function kbPromotionBlock(kbCandidates) {
  * Returns a single-element array (or an empty one) so callers can spread it
  * into their prompt-section list, matching kbPromotionBlock.
  *
+ * my-beads-db-qy8.13: `promotionCandidates` is this round's promotion block,
+ * and any id already offered there is REMOVED here. An INFERRED entry whose
+ * source_files intersect the round diff qualifies for both blocks, and
+ * offering the same claim as "promote me" and "demote me" in one prompt asks
+ * the reviewer a question with no coherent answer -- and a reviewer that
+ * answers both gets the whole pair refused by vetKbWork. Promotion keeps the
+ * id: it is the block the entry was captured FOR. Omitting the argument
+ * leaves behaviour exactly as before, so older call sites are unaffected.
+ *
+ * This is presentation only. vetKbWork is the authoritative gate -- it still
+ * refuses a reviewer that names a colliding id on its own.
+ *
  * @param {object[]|undefined} kbCandidates
+ * @param {object[]|undefined} promotionCandidates
  * @returns {string[]}
  */
-export function kbDemotionBlock(kbCandidates) {
+export function kbDemotionBlock(kbCandidates, promotionCandidates) {
     if (!Array.isArray(kbCandidates) || kbCandidates.length === 0) return [];
+    const promotedIds = new Set(
+        (Array.isArray(promotionCandidates) ? promotionCandidates : [])
+            .filter((e) => e && typeof e.id === 'string')
+            .map((e) => e.id),
+    );
+    kbCandidates = kbCandidates.filter((e) => !(e && promotedIds.has(e.id)));
+    if (kbCandidates.length === 0) return [];
     return [
         'KNOWLEDGE BANK -- demotion candidates. These entries sit at CONFIRMED or '
         + 'INFERRED and cite one or more files this round touched. Do NOT call any kb_* '

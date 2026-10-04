@@ -2441,7 +2441,31 @@ function vetKbWork(role, result) {
     }
   }
 
-  return { captures, promotions, demotions, rejected };
+  // my-beads-db-qy8.13: ONE id cannot be promoted and demoted in the same
+  // round. A single INFERRED entry citing a file the round touched reaches
+  // the reviewer in BOTH the promotion and the demotion candidate block, and
+  // the two loops above validate independently -- so both halves pass and the
+  // executor would run kb_promote then kb_demote on that id: no net
+  // confidence change, two notes appended, demoted_at stamped for nothing.
+  //
+  // Refused BOTH ways rather than picking a winner: the pair is
+  // self-contradictory evidence about the same claim, and honouring either
+  // half would record a trust decision the reviewer did not actually make.
+  // Must stay byte-identical to the copies in lib/vet-kb-work.mjs and
+  // fleet-sprint/kb.mjs, refusal string included.
+  const collidingIds = new Set(
+    demotions.filter((d) => promotions.some((p) => p.id === d.id)).map((d) => d.id),
+  );
+  for (const id of collidingIds) {
+    rejected.push(`${role}: ${id} appears in both kb_promotions and kb_demotions -- refused both ways`);
+  }
+
+  return {
+    captures,
+    promotions: promotions.filter((p) => !collidingIds.has(p.id)),
+    demotions: demotions.filter((d) => !collidingIds.has(d.id)),
+    rejected,
+  };
 }
 
 /**

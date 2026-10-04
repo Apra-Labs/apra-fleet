@@ -440,7 +440,7 @@ export function buildReviewerPrompt({ beadIds, acceptanceCriteriaJson, baseBranc
         // which of this sprint's captures earned CONFIRMED.
         ...kbKnowledgeBlock(kbKnowledge),
         ...kbPromotionBlock(kbCandidates),
-        ...kbDemotionBlock(kbDemotionCandidates),
+        ...kbDemotionBlock(kbDemotionCandidates, kbCandidates),
         'Do NOT run any `bd` command yourself and do NOT mutate beads directly in any way ' +
         '(no bd update, bd close, bd create, etc.) -- the orchestrator applies your ' +
         '`reopenIds` via `bd update <id> --status=open` and creates your `newTasks` via ' +
@@ -574,7 +574,7 @@ export function buildFinalVerdictPrompt({ targetIssues, branch, baseBranch, goal
     // and was stranded at INFERRED forever.
     lines.push(...kbKnowledgeBlock(kbKnowledge));
     lines.push(...kbPromotionBlock(kbCandidates));
-    lines.push(...kbDemotionBlock(kbDemotionCandidates));
+    lines.push(...kbDemotionBlock(kbDemotionCandidates, kbCandidates));
     return lines.join('\n\n');
 }
 
