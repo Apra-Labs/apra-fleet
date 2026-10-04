@@ -88,7 +88,7 @@ describe('the shared bd-invocation helper (scripts/lib/exec-bd.mjs) on the host 
       let threw: unknown = null;
       let out = '';
       try {
-        out = String(execBdSync(['--version'], { encoding: 'utf-8' }));
+        out = String(execBdSync(['--version'], { encoding: 'utf-8', env: BD_CHILD_ENV }));
       } catch (err) {
         threw = err;
       }
