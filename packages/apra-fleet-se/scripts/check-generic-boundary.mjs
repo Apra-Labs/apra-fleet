@@ -114,6 +114,15 @@ export const SIGNAL_PATTERNS = [
         belongs: "the target repo's CLAUDE.md / AGENTS.md (repo-layout guidance is target-authored context the agent already reads)",
     },
     {
+        id: 'apra-fleet-regression-structure',
+        // apra-fleet's own regression playbook is a real-bd suite plus a
+        // sandboxed toy-sprint smoke test; the engine once dictated that
+        // two-part shape to every target (apra-fleet-0zvl).
+        re: /\breal-bd\b|\breal functional suite\b|\bsandbox smoke\b|\bsmoke sprint\b|\btoy-sprint\b/gi,
+        why: "dictates apra-fleet's own regression structure (real-bd suite + sandboxed toy-sprint smoke test) -- another target's regression pass has its own parts",
+        belongs: "the target repo's regression-test-playbook.md (it defines what the pass consists of); the engine just tells the runner to run every part the playbook defines",
+    },
+    {
         id: 'bead-id-in-llm-text',
         // apra-fleet-417.2.1, apra-fleet-eft.37.5, apra-fleet-5co8 -- an
         // issue id from THIS repo's tracker. The standing CLAUDE.md rule:

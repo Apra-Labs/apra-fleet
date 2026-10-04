@@ -30,6 +30,13 @@
 // manual timer (below) is watched concurrently instead.
 
 import { spawn, spawnSync } from 'node:child_process';
+import { ensureTestSandbox } from './test-sandbox.mjs';
+
+// Every suite (and every process it spawns) runs against a per-run temp
+// HOME/USERPROFILE/APRA_FLEET_DATA_DIR and refuses the real profile -- see
+// scripts/test-sandbox.mjs. Removed on exit.
+const testSandbox = ensureTestSandbox(process.env);
+process.on('exit', () => testSandbox.cleanup());
 
 const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 const isWindows = process.platform === 'win32';

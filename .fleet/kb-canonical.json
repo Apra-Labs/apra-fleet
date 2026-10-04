@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "9eb97b3c06e7669b4c8f1d8e41c5e3a62a98040c",
     "branch": "chore/v05-kb-superset",
-    "entry_count": 375
+    "entry_count": 378
   },
   "entries": [
     {
@@ -6847,6 +6847,57 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-10-02T09:20:12.324Z"
+    },
+    {
+      "id": "59499fc5-c202-4cd5-a01e-df99a29d9521",
+      "type": "learning",
+      "title": "node:test cancels a test waiting only on an unref'd timer",
+      "summary": "A test whose only pending work is an unref'd setTimeout (such as beads-view freshForLaunch's timeout) is cancelled with 'Promise resolution is still pending but the event loop has already resolved'; inject a referenced timer through the setTimeout/clearTimeout deps.",
+      "symbols": [
+        "createBeadsView",
+        "freshForLaunch"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/src/supervisor/beads-view.mjs",
+        "packages/apra-fleet-se/test/supervisor-beads-view.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-03T01:35:02.780Z"
+    },
+    {
+      "id": "e687ffa8-8697-4f7f-9418-ba7f3efd6c2b",
+      "type": "knowledge",
+      "title": "Supervisor ledger setScopeFreshness before start() overwrites the on-disk ledger",
+      "summary": "createLedger's transact() persists the current in-memory document; before ledger.start() has loaded the file that document is empty, so any setScopeFreshness call before supervisor.start() would write an empty reservations map over the real ledger.",
+      "symbols": [
+        "createLedger",
+        "setScopeFreshness",
+        "serveMain"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/src/supervisor/ledger.mjs",
+        "packages/apra-fleet-se/bin/serve.mjs",
+        "packages/apra-fleet-se/src/supervisor/beads-view.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-02T23:19:56.679Z"
+    },
+    {
+      "id": "f34ed294-df0a-43fc-a138-fa5f773bcaa3",
+      "type": "knowledge",
+      "title": "doltPullBefore records the remote tip before the caller re-lists, so a failed post-pull list is not retried",
+      "summary": "doltPullBefore records the new remote tip as soon as the pull succeeds. A caller that skips its re-list on remote-unchanged must also track whether its own last list succeeded; otherwise a list failure after a successful pull leaves stale data marked fresh.",
+      "symbols": [
+        "doltPullBefore",
+        "setLastSyncedTip",
+        "createBeadsView"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/dolt-sync.mjs",
+        "packages/apra-fleet-se/src/supervisor/beads-view.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-02T23:26:04.340Z"
     }
   ]
 }

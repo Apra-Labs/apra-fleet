@@ -248,11 +248,11 @@ describe('regression-test-playbook.md sandbox lifecycle', () => {
 
     it('regression-test-playbook.md Setup actually invokes sandbox-lock.mjs acquire and kill-port.mjs 18700 before "node dist/index.js start" -- reverting either line is what the prior tests prove would leave the busy-check/stale-port guard unenforced', () => {
       const text = fs.readFileSync(PLAYBOOK_PATH, 'utf-8');
-      // Anchor to the actual '## Setup'/'## Reset' HEADINGS (a whole line),
+      // Anchor to the actual '## Setup'/'## Teardown' HEADINGS (a whole line),
       // not a backticked mention of the same text elsewhere in the file's
       // intro/cross-reference prose -- mirrors the sibling
       // regression-playbook-port3001-guard.test.ts pattern.
-      const setupSection = text.split(/^## Setup$/m)[1]?.split(/^## Reset$/m)[0] ?? '';
+      const setupSection = text.split(/^## Setup$/m)[1]?.split(/^## Teardown$/m)[0] ?? '';
       // apra-fleet-5co8.39: acquire no longer takes an explicit "$$" pid
       // argument -- the CLI now records its own process.ppid (the Setup
       // shell's real, native OS pid), since $$ is an MSYS-internal pid under
@@ -461,50 +461,13 @@ describe('regression-test-playbook.md sandbox lifecycle', () => {
     });
   });
 
-  // ---------------------------------------------------------------------
-  // Property 5: Cross-instance safety -- the documented time-bound
-  // mitigation this playbook accepts (dolt-orphan-sweep's 5-minute tick)
-  // is present and the smoke test's own bounds stay inside it.
-  // ---------------------------------------------------------------------
-  describe('cross-instance safety: the documented time-bound mitigation is present', () => {
-    it('regression-test-playbook.md Test scenario step 4 hard-enforces the UPTIME_DEADLINE = SUPERVISOR_STARTED_AT + 280 stop (the actual enforcement point) -- Teardown\'s SUPERVISOR_UPTIME >= 300 check is only a belt-and-suspenders warning, not the hard stop', () => {
-      const text = fs.readFileSync(PLAYBOOK_PATH, 'utf-8');
-      // The real hard stop: Test scenario step 4's sprint-poll loop bails at
-      // +280s, before the sweep's 300s/5-minute tick can ever fire.
-      expect(text).toMatch(/UPTIME_DEADLINE\s*=\s*\$\(\(\s*SUPERVISOR_STARTED_AT\s*\+\s*280\s*\)\)/);
-      expect(text).toMatch(/"\$\(date \+%s\)"\s*-ge\s*"\$UPTIME_DEADLINE"/);
-      // The Teardown check is documented as belt-and-suspenders, not the
-      // enforcement mechanism -- still present, but not what this test
-      // treats as the hard bound.
-      expect(text).toMatch(/SUPERVISOR_UPTIME"\s*-ge\s*300/);
-      expect(text).toMatch(/belt-and-suspenders/i);
-      expect(text).toMatch(/dolt-orphan-sweep/i);
-    });
-
-    it('regression-test-playbook.md guards the supervisor started-at marker BEFORE computing UPTIME_DEADLINE, so a missing/empty/non-numeric marker fails with the real reason instead of the misleading sweep-tick message', () => {
-      const text = fs.readFileSync(PLAYBOOK_PATH, 'utf-8');
-      // An absent marker must be caught by an existence check, and the
-      // diagnostic must name the marker file path.
-      expect(text).toMatch(/if \[ ! -f "\$SANDBOX\.supervisor\.started_at" \]; then/);
-      expect(text).toMatch(/supervisor started-at marker file[\s\S]{0,200}is missing/);
-      // An empty or non-numeric marker must be rejected too (a bare `cat`
-      // of an empty file otherwise makes UPTIME_DEADLINE evaluate to 280).
-      expect(text).toMatch(/case "\$SUPERVISOR_STARTED_AT" in\s*\n\s*'' \| \*\[!0-9\]\* \)/);
-      expect(text).toMatch(/does not hold an integer[\s\S]{0,120}epoch timestamp/);
-      // The guard must sit BEFORE the deadline computation, not after it.
-      const guardIndex = text.indexOf('if [ ! -f "$SANDBOX.supervisor.started_at" ]; then');
-      const deadlineIndex = text.search(/UPTIME_DEADLINE\s*=\s*\$\(\(\s*SUPERVISOR_STARTED_AT\s*\+\s*280\s*\)\)/);
-      expect(guardIndex).toBeGreaterThan(-1);
-      expect(deadlineIndex).toBeGreaterThan(guardIndex);
-    });
-  });
-
   // -----------------------------------------------------------------------
-  // Property 6: Supervisor bearer auth -- all supervisor curls carry the
-  // bearer token, the pre-mint step runs before the supervisor boots, and
-  // the post-shutdown liveness check treats 401 as alive.
+  // Property 6: Supervisor bearer auth -- every supervisor curl in the
+  // playbooks carries the bearer token. (The regression playbook no longer
+  // boots a supervisor itself since main's #600/#610 restructuring, so the
+  // pre-mint and post-shutdown liveness pins that lived here are gone.)
   // -----------------------------------------------------------------------
-  describe('supervisor bearer auth: curls carry the bearer header, pre-mint runs first, 401 treated as alive', () => {
+  describe('supervisor bearer auth: curls carry the bearer header', () => {
     // apra-fleet-ky2l.2's acceptance criterion is "grep finds no unauthenticated
     // curl against the supervisor port in the three playbooks" -- deploy.md and
     // integ-test-playbook.md must be scanned too, not just this doc.
@@ -519,7 +482,7 @@ describe('regression-test-playbook.md sandbox lifecycle', () => {
     const AUTH_CURL_DOCS: Array<{ name: string; path: string }> = [
       { name: 'deploy.md', path: DEPLOY_PATH },
       { name: 'integ-test-playbook.md', path: INTEG_PLAYBOOK_PATH },
-      { name: 'regression-test-playbook.md (Setup/Reset/Teardown/Test scenario)', path: PLAYBOOK_PATH },
+      { name: 'regression-test-playbook.md', path: PLAYBOOK_PATH },
     ];
 
     it.each(AUTH_CURL_DOCS)(
@@ -551,75 +514,6 @@ describe('regression-test-playbook.md sandbox lifecycle', () => {
       const { withBearerCount, withoutBearer } = findSupervisorCurlsWithoutBearer(text);
       expect(withBearerCount).toBe(0);
       expect(withoutBearer).toHaveLength(0);
-    });
-
-    it('the pre-mint node -e import call appears BEFORE the serve.mjs boot line in both Setup and Reset', () => {
-      const text = fs.readFileSync(PLAYBOOK_PATH, 'utf-8');
-
-      // Check Setup section - look for the fenced bash block in the "Boot the supervisor" subsection
-      const setupSection = text.split(/^## Setup$/m)[1]?.split(/^## Reset$/m)[0] ?? '';
-      // Look for the specific node -e import pattern that mints the key
-      const setupPreMintMatch = setupSection.match(/node -e "import\('<repo-root>\/dist\/services\/jwt\.js'\)\.then\(m => \{ m\.getOrCreateKey\(\); \}\)"/);
-      const setupServeMatch = setupSection.match(/node "<repo-root>\/packages\/apra-fleet-se\/bin\/serve\.mjs"/);
-      expect(setupPreMintMatch).not.toBeNull();
-      expect(setupServeMatch).not.toBeNull();
-      expect(setupPreMintMatch!.index).toBeLessThan(setupServeMatch!.index);
-
-      // Check Reset section
-      const resetSection = text.split(/^## Reset$/m)[1]?.split(/^## Teardown$/m)[0] ?? '';
-      const resetPreMintMatch = resetSection.match(/node -e "import\('<repo-root>\/dist\/services\/jwt\.js'\)\.then\(m => \{ m\.getOrCreateKey\(\); \}\)"/);
-      const resetServeMatch = resetSection.match(/node "<repo-root>\/packages\/apra-fleet-se\/bin\/serve\.mjs"/);
-      expect(resetPreMintMatch).not.toBeNull();
-      expect(resetServeMatch).not.toBeNull();
-      expect(resetPreMintMatch!.index).toBeLessThan(resetServeMatch!.index);
-    });
-
-    it('the Teardown post-shutdown liveness check compares http_code and treats 401 as alive (not gone)', () => {
-      const text = fs.readFileSync(PLAYBOOK_PATH, 'utf-8');
-
-      // The post-shutdown check should use http_code comparison
-      expect(text).toMatch(/CODE=\$\(curl\s+(?:[^)]*?)http_code/);
-
-      // It should treat code 000 as gone
-      expect(text).toMatch(/\[ "\$CODE" = "000" \]/);
-
-      // It should mention 401 as alive (from the comment)
-      expect(text).toMatch(/401[\s\S]{0,200}alive/i);
-    });
-  });
-
-  // -----------------------------------------------------------------------
-  // Regression verification: Teardown liveness check distinguishes 401 from
-  // refused (port gone). This automated test runs the extracted liveness
-  // snippet logic against stub servers.
-  // -----------------------------------------------------------------------
-  describe('Teardown liveness check: 401 treated as alive, port gone as gone', () => {
-    it('liveness snippet reports alive when server returns 401', async () => {
-      // Simulate the playbook's liveness check: probe returns 401 (port answering,
-      // but unauthenticated), and the check must treat this as "alive" (not gone).
-      // This test extracts the essence of the check:
-      // CODE=$(curl ...http_code ... || echo 000); if [ "$CODE" = "000" ]; break
-      const code = '401'; // Simulating curl returning 401 status
-      const isGone = code === '000';
-      expect(isGone).toBe(false); // 401 should NOT be treated as gone
-    });
-
-    it('liveness snippet reports gone when connection is refused (port closed)', () => {
-      // Simulate connection refused (port not listening): curl returns empty output,
-      // which is caught and replaced with 000 (connection error).
-      const code = '000'; // Simulating connection refused
-      const isGone = code === '000';
-      expect(isGone).toBe(true); // 000 should be treated as gone
-    });
-
-    it('reverting curl rewrite (no bearer header) causes readiness loop to fail on 401', () => {
-      // Falsifiability check: with the curl rewrite reverted (no bearer header),
-      // the playbook's curls would get 401 responses. The readiness loop in Setup
-      // requires 200, so it would fail when the supervisor returns 401 from an
-      // unauthenticated request. This is the original symptom the fix closes.
-      const text = fs.readFileSync(PLAYBOOK_PATH, 'utf-8');
-      // Verify bearer header is present in setup readiness loop
-      expect(text).toMatch(/HEALTH="\$\(curl[\s\S]{0,200}Authorization: Bearer/);
     });
   });
 

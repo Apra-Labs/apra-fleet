@@ -148,6 +148,7 @@ function sendUnauthorized(res) {
  *   beadsIdentity?: { get: () => object|null, refresh: () => Promise<object> },
  *   project?: { projectDir: string, source: string },
  *   toolchain?: object,
+ *   backlogMember?: { get: () => { member: object|null, status: string, reason: string|null } },
  *   logger?: { log?: Function, error?: Function },
  *   createServer?: (handler: (req: any, res: any) => void) => import('http').Server,
  * }} [deps]
@@ -246,6 +247,14 @@ export function createSupervisor(deps = {}) {
     if (!token && typeof deps.dataDir === 'string' && deps.dataDir.length > 0) {
         token = loadOrCreateToken(deps.dataDir).token;
     }
+    // Optional backlog-member state handle (src/supervisor/backlog-member.mjs,
+    // wired by bin/serve.mjs); surfaced on GET /api/health as `backlogMember`
+    // only when wired, so an unwired health answer is unchanged.
+    const backlogMember = deps.backlogMember && typeof deps.backlogMember.get === 'function' ? deps.backlogMember : null;
+    const backlogMemberSummary = () => {
+        const st = backlogMember.get();
+        return { status: st.status, name: st.member ? st.member.name : null, reason: st.reason ?? null };
+    };
 
     // Module seams -- inert stubs unless a real collaborator was injected.
     const seams = {
@@ -422,6 +431,7 @@ export function createSupervisor(deps = {}) {
             // just above.
             toolchain: toolchainSummaryOf(toolchain),
             ...(toolchainWarningOf(toolchain) ? { toolchainWarning: toolchainWarningOf(toolchain) } : {}),
+            ...(backlogMember ? { backlogMember: backlogMemberSummary() } : {}),
         });
     });
 

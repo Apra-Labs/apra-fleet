@@ -71,14 +71,14 @@ const PLAN_REVIEWER_MAX_TURNS = 500;
 const SCOPED_REPLAN_PLANNER_MAX_TURNS = 500;
 /** Scoped replan plan-reviewer turn base. */
 const SCOPED_REPLAN_REVIEWER_MAX_TURNS = 500;
-/** Harvester turn base: it writes docs/changelog across the whole epic. */
+/** Harvester turn base: it writes docs across the whole epic. */
 const HARVESTER_MAX_TURNS = 500;
 /** Deployer turn base: it runs real deploy commands per a runbook. */
 const DEPLOYER_MAX_TURNS = 500;
 /**
- * Regression turn base: the real functional suite alone spends roughly one
- * turn per liveness poll for the better part of an hour, and this single
- * dispatch carries both it and the sandbox smoke sprint.
+ * Regression turn base: one dispatch runs the target's whole regression
+ * playbook, which can poll a long-running suite (roughly one turn per
+ * liveness poll) for the better part of an hour.
  */
 const REGRESSION_TEST_MAX_TURNS = 500;
 /**

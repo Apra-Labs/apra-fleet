@@ -153,6 +153,12 @@ function normalizeFolderPath(folder: string): string {
  * - Relay agents: no check -- the folder is a path on the RELAYED machine,
  *   not this machine's own filesystem, so there's no local duplicate-folder
  *   concept to enforce here (apra-fleet-jfn).
+ * - When `llmProvider` is given, a folder may hold at most one LLM member and
+ *   at most one LLM-less (llm_provider 'none') member: only members of the
+ *   SAME kind clash. The rule exists so two agents never edit one checkout;
+ *   an LLM-less command executor (e.g. a supervisor's backlog member running
+ *   bd) is not an agent. Omitting `llmProvider` keeps the strict any-member
+ *   check.
  * Returns true if a duplicate exists.
  */
 export function hasDuplicateFolder(
@@ -161,15 +167,18 @@ export function hasDuplicateFolder(
   host?: string,
   port?: number,
   excludeId?: string,
+  llmProvider?: string,
 ): boolean {
   const agents = getAllAgents();
   const normalizedFolder = normalizeFolderPath(folder);
+  const isLlmLess = (p: string | undefined) => (p ?? 'claude') === 'none';
 
   for (const agent of agents) {
     if (excludeId && agent.id === excludeId) continue;
 
     const agentFolder = normalizeFolderPath(agent.workFolder);
     if (agentFolder !== normalizedFolder) continue;
+    if (llmProvider !== undefined && isLlmLess(llmProvider) !== isLlmLess(agent.llmProvider)) continue;
 
     if (agentType === 'local' && agent.agentType === 'local') {
       return true;

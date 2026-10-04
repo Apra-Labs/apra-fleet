@@ -5,12 +5,12 @@ Test group. Its job is to close out this cycle's new feature work: for each
 feature the orchestrator hands the runner, verify its acceptance criteria
 against the sprint branch working tree and close it, or file a bug.
 
-This playbook does NOT do sandbox lifecycle (`## Setup` / `## Reset` /
-`## Teardown`), the toy-sprint smoke test, or the full real-`bd`
-functional suite -- those live in `regression-test-playbook.md`, run ONCE
-PER SPRINT by `regression-test-runner` in the Finalization group. If a
-step here would need a throwaway install/server/toy-repo sandbox, it
-belongs there, not here. (`deployer` deploys via `deploy.md`; it does not
+This playbook does NOT do the install smoke sandbox (`## Setup` /
+`## Teardown` of `regression-test-playbook.md`, run ONCE PER SPRINT by
+`regression-test-runner` in the Finalization group), the toy-sprint smoke
+test, or the full real-`bd` functional suite (both moved to CI; the latter
+runs in `.github/workflows/regression-nightly.yml`). If a step here would
+need a throwaway install/server sandbox, it belongs there, not here. (`deployer` deploys via `deploy.md`; it does not
 run this file.)
 
 **The deploy this playbook's tests run against is a SANDBOX deploy, and
@@ -132,10 +132,10 @@ about the agy/Antigravity provider (deployed with `install --llm agy`, see
 `deploy.md`), its end-to-end proof is a toy sprint run by an agy member:
 inside THIS sprint's sandbox (`env` values above), register the toy member
 with `--llm agy` instead of `--llm claude`, then seed and launch the toy
-sprint the way `regression-test-playbook.md`'s seed step and `## Test
-scenario` do (`maxCycles: 1`, via the sandbox `SUPERVISOR_PORT`). Record the
-installed commit, the provider, and the toy sprint's verdict. The regression
-playbook itself stays claude-only.
+sprint the way the former regression toy-sprint smoke did -- its seed step
+and `## Test scenario` in `git show 3ba248f9:regression-test-playbook.md`
+(`maxCycles: 1`, via the sandbox `SUPERVISOR_PORT`). Record the installed
+commit, the provider, and the toy sprint's verdict.
 
 ## Sandbox teardown (always, last)
 
@@ -188,5 +188,5 @@ INCONCLUSIVE evidence, never a pass. Omit it when no SHA was supplied.
 This playbook covers repo-local, per-feature test execution only. For
 anything sandbox- or environment-level -- a new required member role, a
 new pre-sprint gate, a new CLI subcommand, a toy-sprint scenario step --
-extend `regression-test-playbook.md` instead; that is where install/server/
-sandbox lifecycle coverage lives.
+add it to CI (`.github/workflows/`, `tests/integration/fresh-install/`)
+instead; see `regression-test-playbook.md`'s "Adding new features".

@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
 import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
-import { addAgent } from '../src/services/registry.js';
+import { addAgent, getKeysDir } from '../src/services/registry.js';
 import type { SSHExecResult } from '../src/types.js';
 
 const mockExecCommand = vi.fn<(cmd: string, timeout?: number) => Promise<SSHExecResult>>();
@@ -325,5 +328,74 @@ describe('removeMember - agy project cleanup', () => {
 
     expect(result).toContain('\u2705');
     expect(mockExecCommand.mock.calls.some(c => isDeleteCmd(c[0]))).toBe(false);
+  });
+});
+
+// Regression: remove_member used to delete whatever key_path a member was
+// registered with (incl. a user's personal ~/.ssh/id_ed25519) and strip it
+// from the member's authorized_keys. Only fleet-generated keys (under the
+// fleet keys dir) may be touched.
+describe('removeMember - SSH key ownership', () => {
+  const pubKeyLine = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIkeyownership000000000000000000000000000 user@host';
+  const dirs: string[] = [];
+  const makeKey = (parent: string): string => {
+    const dir = fs.mkdtempSync(path.join(parent, 'rm-key-test-'));
+    dirs.push(dir);
+    const keyPath = path.join(dir, 'id_ed25519');
+    fs.writeFileSync(keyPath, 'PRIVATE KEY', 'utf-8');
+    fs.writeFileSync(`${keyPath}.pub`, `${pubKeyLine}\n`, 'utf-8');
+    return keyPath;
+  };
+  const akCmds = () => mockExecCommand.mock.calls.map(c => c[0]).filter(c => c.includes('authorized_keys'));
+
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
+    mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
+    mockReadMemberStatus.mockReturnValue('idle');
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+    for (const d of dirs.splice(0)) fs.rmSync(d, { recursive: true, force: true });
+  });
+
+  it('leaves a user-supplied key (outside the fleet keys dir) and its authorized_keys entry untouched', async () => {
+    const keyPath = makeKey(os.tmpdir());
+    const member = makeTestAgent({ friendlyName: 'user-key', os: 'linux' as any, keyPath });
+    addAgent(member);
+
+    const result = await removeMember({ member_id: member.id });
+
+    expect(result).toContain('\u2705');
+    expect(fs.existsSync(keyPath)).toBe(true);
+    expect(fs.existsSync(`${keyPath}.pub`)).toBe(true);
+    expect(akCmds()).toHaveLength(0);
+  });
+
+  it('deletes an unshared fleet-generated key and removes it from authorized_keys', async () => {
+    const keyPath = makeKey(getKeysDir());
+    const member = makeTestAgent({ friendlyName: 'fleet-key', os: 'linux' as any, keyPath });
+    addAgent(member);
+
+    await removeMember({ member_id: member.id });
+
+    expect(fs.existsSync(keyPath)).toBe(false);
+    expect(fs.existsSync(`${keyPath}.pub`)).toBe(false);
+    expect(akCmds()).toHaveLength(1);
+  });
+
+  it('keeps a fleet-generated key still used by another member', async () => {
+    const keyPath = makeKey(getKeysDir());
+    const member = makeTestAgent({ friendlyName: 'fleet-key-1', os: 'linux' as any, keyPath });
+    const sibling = makeTestAgent({ friendlyName: 'fleet-key-2', os: 'linux' as any, keyPath });
+    addAgent(member);
+    addAgent(sibling);
+
+    await removeMember({ member_id: member.id });
+
+    expect(fs.existsSync(keyPath)).toBe(true);
+    expect(fs.existsSync(`${keyPath}.pub`)).toBe(true);
   });
 });

@@ -14,7 +14,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
-import { addAgent } from '../src/services/registry.js';
+import { addAgent, getKeysDir } from '../src/services/registry.js';
 import type { SSHExecResult } from '../src/types.js';
 
 // ---------------------------------------------------------------------------
@@ -217,7 +217,8 @@ describe('remove_member authorized_keys cleanup command safety', () => {
     mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
     mockReadMemberStatus.mockReturnValue('idle');
 
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-key-test-'));
+    // Inside the fleet keys dir: only fleet-generated keys get authorized_keys cleanup.
+    tmpDir = fs.mkdtempSync(path.join(getKeysDir(), 'fleet-key-test-'));
     keyPath = path.join(tmpDir, 'id_ed25519');
     fs.writeFileSync(`${keyPath}.pub`, `${pubKeyLine}\n`, 'utf-8');
   });

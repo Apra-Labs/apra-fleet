@@ -84,8 +84,19 @@ jobs:
 
       # Non-destructive; imports git-tracked .beads/issues.jsonl so dashboard/
       # backlog integration tests have a queryable DB (Dolt DB is gitignored).
+      # Retried: a concurrent `bd dolt push` can move refs/dolt/data mid-clone
+      # ("cannot lock ref"). The partial DB is cleared before each retry.
       - name: Bootstrap this repo's own beads DB (required by dashboard/backlog integration tests)
-        run: bd bootstrap --yes
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            if bd bootstrap --yes; then exit 0; fi
+            echo "::warning::bd bootstrap failed (attempt $attempt/3)"
+            rm -rf .beads/embeddeddolt
+            if [ "$attempt" -lt 3 ]; then sleep $((attempt * 15)); fi
+          done
+          echo "::error::bd bootstrap failed after 3 attempts"
+          exit 1
 
       # scripts/run-all-tests.mjs is the single source of truth: runs vitest,
       # every workspace suite, and apra-pm, each exactly once.

@@ -1,0 +1,115 @@
+name: Regression - nightly real-bd suite
+
+# Tier B of the regression revamp (apra-fleet-7f39): the unmocked apra-fleet-se
+# suite against the real bd CLI, plus the slow lane (real-time watchdog
+# tests). Moved here from the in-sprint regression playbook, where it took
+# ~18% of sprint wall-clock. Runs nightly, on bd pin changes, and on demand.
+# Scheduled runs fire only from the default branch.
+
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+  push:
+    # Files that pin the bd version (the installer is the source of truth,
+    # read below), plus this workflow itself.
+    paths:
+      - 'src/cli/install.ts'
+      - '.github/workflows/ci.yml'
+      - 'tests/integration/fresh-install/checklist.json'
+      - '.github/workflows/regression-nightly.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  real-bd-suite:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js 22.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      # Same pin the installer ships (src/cli/install.ts); fail loud if it
+      # cannot be found rather than silently testing some other bd.
+      # CI='' defeats @beads/bd's postinstall guard that skips the download in CI.
+      - name: Install pinned bd CLI
+        env:
+          CI: ''
+        run: |
+          BD_PIN="$(grep -oE "@beads/bd@[0-9]+\.[0-9]+\.[0-9]+" src/cli/install.ts | head -n1)"
+          if [ -z "$BD_PIN" ]; then
+            echo "::error::could not find the @beads/bd@X.Y.Z pin in src/cli/install.ts"
+            exit 1
+          fi
+          echo "Installing $BD_PIN"
+          npm install -g "$BD_PIN" --foreground-scripts
+          bd --version
+
+      - name: Configure git identity (bd init commits)
+        run: |
+          git config --global user.name "regression-nightly"
+          git config --global user.email "regression-nightly@apra-fleet.invalid"
+
+      # Imports git-tracked .beads/issues.jsonl so dashboard/backlog tests
+      # have a queryable DB (the Dolt DB is gitignored). Same as ci.yml,
+      # including the retry for a concurrent `bd dolt push` moving the ref.
+      - name: Bootstrap this repo's own beads DB
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            if bd bootstrap --yes; then exit 0; fi
+            echo "::warning::bd bootstrap failed (attempt $attempt/3)"
+            rm -rf .beads/embeddeddolt
+            if [ "$attempt" -lt 3 ]; then sleep $((attempt * 15)); fi
+          done
+          echo "::error::bd bootstrap failed after 3 attempts"
+          exit 1
+
+      # --status exit codes: 0 pass, 1 failures, 3 still running, 2 infra
+      # fail-loud. Start and poll in one step so the detached run is ours.
+      - name: Run apra-fleet-se suite against real bd
+        id: integ
+        run: |
+          node scripts/run-integ-suites.mjs --start
+          while :; do
+            rc=0
+            node scripts/run-integ-suites.mjs --status --wait=45 || rc=$?
+            if [ "$rc" -ne 3 ]; then break; fi
+          done
+          echo "integ-suites --status exit=$rc"
+          exit "$rc"
+
+      - name: Run slow lane
+        if: ${{ !cancelled() }}
+        run: npm run test:slow --workspace=@apralabs/apra-fleet-se
+
+      - name: Upload integ-suite status
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integ-suite-status
+          path: |
+            integ-suite-status.json
+            integ-suite-run.log
+          if-no-files-found: warn
+          retention-days: 30

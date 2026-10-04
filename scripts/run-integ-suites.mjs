@@ -60,18 +60,28 @@
 //       "pass COMPLETE" line plus exit 0/1, never exit 0 alone)
 //   1 = complete, failures recorded (prints "pass COMPLETE" with count)
 //   3 = still running (live) -- poll again with --status --wait=N
-//   2 = infra fail-loud: stale/corrupt status file, or run not live with
+//   2 = infra fail-loud: stale/corrupt status file, status file pinned to
+//       another HEAD/lock (or unpinned legacy file), or run not live with
 //       pending files remaining (crashed -- run --start to resume)
 //
 // Status file: integ-suite-status.json at the repo root (gitignored,
 // throwaway state -- never commit it). Heartbeat:
 // integ-suite-heartbeat.json. Supervisor log: integ-suite-run.log.
+// INTEG_SUITES_STATUS_FILE / INTEG_SUITES_HEARTBEAT_FILE / INTEG_SUITES_LOG_FILE
+// override the paths (tests use this to stay off the real files).
+//
+// Commit pin: --start records headSha (git rev-parse HEAD), lockSha (sha256 of
+// package-lock.json) and bdVersion in a fresh status file. Every --start and
+// --status refuses (exit 2) a status file recorded at a different HEAD or lock,
+// or one with no headSha at all (legacy), so a resume can never report results
+// from another commit as this commit's. Use --fresh to start a pinned pass.
 
 import {
   readdirSync, readFileSync, writeFileSync, renameSync, existsSync, rmSync,
   openSync, closeSync, statSync,
 } from 'node:fs';
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -82,12 +92,14 @@ const scriptPath = fileURLToPath(import.meta.url);
 const repoRoot = path.resolve(path.dirname(scriptPath), '..');
 // pkgDir/testDir come from ./integ-lane-args.mjs so the paths this runner
 // discovers files under are the exact ones the spawned lane argv is built
-// from -- one resolution, not two that can drift.
+// from -- one resolution, not two that can drift. (The checkpoint reporter
+// path lives there too, as INTEG_REPORTER_PATH.)
 const pkgDir = INTEG_PKG_DIR;
 const testDir = INTEG_TEST_DIR;
-const statusFile = path.join(repoRoot, 'integ-suite-status.json');
-const heartbeatFile = path.join(repoRoot, 'integ-suite-heartbeat.json');
-const logFile = path.join(repoRoot, 'integ-suite-run.log');
+const statusFile = process.env.INTEG_SUITES_STATUS_FILE || path.join(repoRoot, 'integ-suite-status.json');
+const heartbeatFile = process.env.INTEG_SUITES_HEARTBEAT_FILE || path.join(repoRoot, 'integ-suite-heartbeat.json');
+const logFile = process.env.INTEG_SUITES_LOG_FILE || path.join(repoRoot, 'integ-suite-run.log');
+const lockFile = path.join(repoRoot, 'package-lock.json');
 
 const HEARTBEAT_STALE_MS = 120000;
 const TEST_CONCURRENCY = 8;
@@ -126,7 +138,8 @@ function usage() {
     '  --supervise ...  INTERNAL (spawned by --start; do not run directly)',
     '  --help           this text',
     'Exit codes for --status: 0 complete+pass or nothing recorded; 1 complete+failures;',
-    '  3 still running (poll again); 2 infra fail-loud (stale/corrupt state, or crashed',
+    '  3 still running (poll again); 2 infra fail-loud (stale/corrupt state, status pinned to',
+    '  another HEAD/lock or unpinned -- use --fresh, or crashed',
     '  with pending files -- run --start to resume).',
     `Status file: ${statusFile}`,
   ].join('\n'));
@@ -172,6 +185,55 @@ function checkStale(files, status) {
     fail(
       `status file records results for files that no longer exist: ${stale.join(', ')}. ` +
       'The test directory changed mid-pass; use --fresh to start a new pass.'
+    );
+  }
+}
+
+// SHAs are resolved in JS (execFileSync, no shell) so this works the same
+// under bash, cmd and PowerShell.
+function gitHead() {
+  try {
+    return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8', timeout: 30000 }).trim();
+  } catch (e) {
+    fail(`could not resolve HEAD via git rev-parse in ${repoRoot} (${e.message})`);
+  }
+}
+
+function lockSha() {
+  if (!existsSync(lockFile)) return null;
+  return createHash('sha256').update(readFileSync(lockFile)).digest('hex');
+}
+
+function bdVersionOrNull() {
+  try {
+    const out = execFileSync('bd', ['--version'], {
+      encoding: 'utf8', timeout: 10000, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true,
+    });
+    return out.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+// Refuse results recorded at another commit (or a legacy, unpinned file).
+// Called right after every checkStale(). --fresh is the way out.
+function checkPinned(status) {
+  if (!status) return;
+  const head = gitHead();
+  if (!status.headSha) {
+    fail(
+      `status file ${statusFile} has no headSha (legacy, unpinned file); HEAD is ${head}. ` +
+      'Its results cannot be tied to this commit; use --fresh to start a pinned pass.'
+    );
+  }
+  if (status.headSha !== head) {
+    fail(`results recorded at ${status.headSha}, HEAD is ${head}; use --fresh to start a pass at this HEAD.`);
+  }
+  const lock = lockSha();
+  if ((status.lockSha ?? null) !== lock) {
+    fail(
+      `results recorded with package-lock.json sha256 ${status.lockSha ?? 'none'}, current is ${lock ?? 'none'} ` +
+      `(HEAD ${head}); use --fresh to start a new pass.`
     );
   }
 }
@@ -225,6 +287,7 @@ function computeSummary(files, status) {
 
 function printSummary(files, status) {
   const s = computeSummary(files, status);
+  console.log(`[integ-suites] headSha=${status.headSha} bd=${status.bdVersion ?? 'n/a'}`);
   console.log(
     `[integ-suites] discovered=${files.length} done=${s.done.length} pending=${s.pending.length} ` +
     `failed=${s.failed.length} inflight=${s.inflight.length} ` +
@@ -252,7 +315,7 @@ function stateFingerprint(files, status) {
 
 async function cmdStatus(files) {
   let status = loadStatus();
-  if (status) checkStale(files, status);
+  if (status) { checkStale(files, status); checkPinned(status); }
 
   if (waitSeconds > 0) {
     const initial = stateFingerprint(files, status);
@@ -262,7 +325,7 @@ async function cmdStatus(files) {
       status = loadStatus();
       if (stateFingerprint(files, status) !== initial) break;
     }
-    if (status) checkStale(files, status);
+    if (status) { checkStale(files, status); checkPinned(status); }
   }
 
   if (!status) {
@@ -289,8 +352,16 @@ async function cmdStatus(files) {
 }
 
 function cmdStart(files) {
-  const status = loadStatus() || { startedAt: new Date().toISOString(), testDir: 'packages/apra-fleet-se/test', results: {} };
+  const status = loadStatus() || {
+    startedAt: new Date().toISOString(),
+    testDir: 'packages/apra-fleet-se/test',
+    results: {},
+    headSha: gitHead(),
+    lockSha: lockSha(),
+    bdVersion: bdVersionOrNull(),
+  };
   checkStale(files, status);
+  checkPinned(status);
   if (isLive(status)) {
     console.log(`[integ-suites] a run is already live (supervisor pid=${status.run.pid}) -- poll it with --status --wait=45 instead.`);
     process.exit(3);

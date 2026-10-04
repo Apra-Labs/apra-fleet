@@ -196,9 +196,9 @@ export async function runIntegTestPhase({
           `re-routed to development next cycle instead of staying stuck in verify.`
         : '';
     // The per-cycle Integ Test phase is FEATURE CLOSURE ONLY:
-    // integ-test-playbook.md owns no sandbox, no smoke test, and no
-    // real-bd suite -- those belong to regression-test-playbook.md,
-    // dispatched once per sprint in Finalization below.
+    // whole-product regression checks belong to the target's
+    // regression-test-playbook.md, dispatched once per sprint in
+    // Finalization below.
     const featurePrompt = (openFeaturesNotInVerifySet.length > 0
         ? `Run tests using integ-test-playbook.md, for these open feature id(s) only: ` +
           `${openFeaturesNotInVerifySet.map((f) => f.id).join(', ')}. Add bug beads if needed, filed under ` +

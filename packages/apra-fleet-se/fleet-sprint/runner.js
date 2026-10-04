@@ -95,7 +95,7 @@ import {
 } from './vcs-auth.mjs';
 import { validateIssueId, validateBranchName, validateArgs } from './sprint-args.mjs';
 import { verifyBeadsIdentity } from './beads-identity-check.mjs';
-import { ROLE_BACKLOG } from './backlog-role.mjs';
+import { ROLE_BACKLOG, selectBacklogMember, formatBacklogSelection } from './backlog-role.mjs';
 import { sweepTokenMemories } from './beads-memory-hygiene.mjs';
 import {
     buildPlannerPrompt, buildPlanReviewerPrompt, buildStreakAssignmentPrompt, buildDoerPrompt,
@@ -190,7 +190,7 @@ import { runRegressionTestPhase } from './phases/regression-test.mjs';
 // return value is its own contract, and group('Finalization')/endGroup() wrap
 // all four Finalization phases rather than either of these two). Their ORDER
 // is load-bearing: the harvester is a code-writing role whose
-// docs/changelog/sprint-analysis commits must be G-pushed by its own policy
+// docs/sprint-analysis commits must be G-pushed by its own policy
 // bracket before Publish PR pushes the branch and raises the PR a human reads.
 // See each module's header for where its boundary is drawn.
 import { runHarvestPhase } from './phases/harvest.mjs';
@@ -547,7 +547,7 @@ const ROLE_REVIEWER = roleConst('reviewer');
 //   deployer           -> 'standard' (mostly mechanical: follow deploy.md)
 //   integ-test-runner  -> 'standard' (mostly mechanical: follow integ-test-playbook.md)
 //   regression-test-runner -> 'standard' (mostly mechanical: follow regression-test-playbook.md)
-//   harvester          -> 'standard' (docs/CHANGELOG synthesis, not code-critical)
+//   harvester          -> 'standard' (docs synthesis, not code-critical)
 // These tier keywords ('cheap' | 'standard' | 'premium') are resolved to a
 // concrete model PER MEMBER, server-side, by execute-prompt.ts's
 // resolveModelForTier() (via each member's registered model_tiers). That is
@@ -1363,17 +1363,13 @@ async function runSprintCycle(context) {
     // doc comment for why 'orchestrator' is an application-level pseudo-role
     // deliberately outside contracts.ROLES.
     //
-    // apra-fleet-TODO(orchestrator-hard-fail): an unmapped orchestrator
-    // silently falling back to unmappedRoleFallbackPool[0] is a known defect
-    // (docs/design-orchestrator-worktree-model-v2.md section 1/6.4) -- it has
-    // repeatedly caused the orchestrator to run against a stale/wrong-scope bd
-    // clone. Making this a hard launch-time failure is the intended fix, but
-    // it cannot land in isolation: it requires the supervisor to
-    // auto-inject roleMap.backlog on every launch first (section 6.2,
-    // not yet implemented) -- otherwise every existing caller that relies on
-    // the implicit fallback (including this file's own test harness) breaks.
-    // Land 6.2, update callers, THEN make this throw.
-    const backlogMember = getMemberForRole(ROLE_BACKLOG);
+    // An unmapped backlog does NOT fail the launch: the shared selector
+    // (backlog-role.mjs, also used by bin/cli.mjs) auto-selects a member and
+    // the choice is reported loudly below.
+    const backlogSelection = selectBacklogMember({ roleMap: validated.roleMap, members: physicalMembers });
+    const backlogMember = backlogSelection.member;
+    const backlogSelectionLine = formatBacklogSelection(backlogSelection);
+    if (backlogSelectionLine) log(backlogSelectionLine);
 
     // Deprecated-alias warnings (deprecated orchestrator key -> backlog),
     // collected by validateArgs() and/or forwarded by bin/cli.mjs.
@@ -3159,15 +3155,15 @@ async function runSprintCycle(context) {
         log('Skipping Regression Test Phase (no regression-test-playbook.md found, or the probe itself failed -- see prior log line)');
     }
 
-    // The phase body lives in ./phases/harvest.mjs (apra-fleet-3swo.6.9). It
-    // returns nothing: the sprint-analysis document, the changelog/docs commits
-    // and the issue deferrals are all written by the DISPATCHED harvester in
-    // its own repo, and the 'harvester' policy row's pushCode/pushBeads bracket
-    // publishes them -- so no later phase reads a value from it. It must
+    // The phase body lives in ./phases/harvest.mjs (apra-fleet-3swo.6.9). The
+    // sprint-analysis document, the docs commits and the issue deferrals are
+    // all written by the DISPATCHED harvester in its own repo, and the
+    // 'harvester' policy row's pushCode/pushBeads bracket publishes them. The
+    // only value it returns is the cost block Publish PR renders. It must
     // nonetheless run HERE, after Regression Test (whose summary it folds into
     // the analysis document) and before Publish PR (which pushes the branch the
     // harvester just committed to).
-    await runHarvestPhase({
+    const { costAnalysis } = await runHarvestPhase({
         phase, log, dispatchCtx,
         validated, targetIssues, finalCycleLabel, budget,
         closedCountHistory, highWaterClosedCount,
@@ -3196,7 +3192,7 @@ async function runSprintCycle(context) {
         phase, log, command,
         args, validated, targetIssues, backlogMember, finalCycleLabel,
         gitSync, getMemberForRole,
-        finalVerdictResult,
+        finalVerdictResult, costAnalysis,
     });
 
     endGroup();

@@ -12,13 +12,20 @@
 // budget, naming the offending file(s).
 //
 // Usage (from the repo root, after a completed real-bd suite pass):
-//   node scripts/check-integ-suite-budget.mjs [status-file-path]
+//   node scripts/check-integ-suite-budget.mjs [status-file-path] [--quarantine[=path]]
+//
+// --quarantine also classifies every failed file as NEW or QUARANTINED
+// against tests/regression/quarantine.json (or the given path). An entry
+// matches by fingerprint (the results key, i.e. the test file name) and,
+// when it has `os`, process.platform. An EXPIRED entry does not quarantine:
+// its failure counts as new and is called out loudly.
 //
 // Exit codes:
-//   0 = no file over budget
-//   1 = one or more files over budget (offenders printed)
+//   0 = no file over budget (and, with --quarantine, no new failures)
+//   1 = one or more files over budget, or (with --quarantine) one or more
+//       new failures
 //   2 = fail-loud: no status file / no recorded results (run the suite via
-//       scripts/run-integ-suites.mjs first)
+//       scripts/run-integ-suites.mjs first), or an invalid quarantine file
 //
 // This is a point-in-time check against whatever pass most recently
 // completed -- it does not itself run the suite. See INTEG-SUITE.md for the
@@ -32,6 +39,66 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'
 
 // Matches the "~5 minutes" single-file budget from INTEG-SUITE.md step 7.
 export const BUDGET_MS = 300000;
+
+export const DEFAULT_QUARANTINE_FILE = path.join(repoRoot, 'tests', 'regression', 'quarantine.json');
+export const MAX_QUARANTINE_DAYS = 30;
+const DAY_MS = 24 * 60 * 60 * 1000;
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * Validate a parsed quarantine document and return its entries.
+ * Throws (fail-loud) on a missing field, a bad date, an expiry more than
+ * MAX_QUARANTINE_DAYS after addedAt, or a duplicate fingerprint+os.
+ */
+export function validateQuarantine(doc) {
+  if (!doc || !Array.isArray(doc.entries)) throw new Error('quarantine file has no "entries" array');
+  const seen = new Set();
+  for (const [i, e] of doc.entries.entries()) {
+    const where = `quarantine entry #${i} (${e?.fingerprint ?? '?'})`;
+    for (const k of ['fingerprint', 'bead', 'reason', 'addedAt', 'expires']) {
+      if (typeof e?.[k] !== 'string' || e[k].trim() === '') throw new Error(`${where}: missing "${k}"`);
+    }
+    if (e.os !== undefined && typeof e.os !== 'string') throw new Error(`${where}: "os" must be a string`);
+    for (const k of ['addedAt', 'expires']) {
+      if (!DATE_RE.test(e[k]) || Number.isNaN(Date.parse(e[k]))) throw new Error(`${where}: "${k}" must be YYYY-MM-DD`);
+    }
+    const days = (Date.parse(e.expires) - Date.parse(e.addedAt)) / DAY_MS;
+    if (days < 0 || days > MAX_QUARANTINE_DAYS) {
+      throw new Error(`${where}: expires must be 0-${MAX_QUARANTINE_DAYS} days after addedAt (got ${days})`);
+    }
+    const key = `${e.fingerprint}|${e.os ?? '*'}`;
+    if (seen.has(key)) throw new Error(`${where}: duplicate fingerprint`);
+    seen.add(key);
+  }
+  return doc.entries;
+}
+
+export function loadQuarantine(filePath) {
+  if (!existsSync(filePath)) throw new Error(`quarantine file not found: ${filePath}`);
+  return validateQuarantine(JSON.parse(readFileSync(filePath, 'utf8')));
+}
+
+/** An entry is expired once the whole `expires` day (UTC) has passed. */
+export function isExpired(entry, now = new Date()) {
+  return now.getTime() >= Date.parse(entry.expires) + DAY_MS;
+}
+
+/**
+ * Split failed files into new vs quarantined.
+ * @returns {{ newFailures: {file: string, expired?: object}[], quarantined: {file: string, entry: object}[] }}
+ */
+export function classifyFailures(results, entries, now = new Date(), platform = process.platform) {
+  const newFailures = [];
+  const quarantined = [];
+  const failed = Object.entries(results).filter(([, rec]) => rec && rec.passed === false).map(([f]) => f).sort();
+  for (const file of failed) {
+    const matches = entries.filter((e) => e.fingerprint === file && (!e.os || e.os === platform));
+    const live = matches.find((e) => !isExpired(e, now));
+    if (live) quarantined.push({ file, entry: live });
+    else newFailures.push(matches.length ? { file, expired: matches[0] } : { file });
+  }
+  return { newFailures, quarantined };
+}
 
 /**
  * Load a run-integ-suites.mjs status file's `results` map from disk.
@@ -85,7 +152,21 @@ export function checkBudget(results, budgetMs = BUDGET_MS) {
 }
 
 function main() {
-  const statusFile = process.argv[2] ?? path.join(repoRoot, 'integ-suite-status.json');
+  const argv = process.argv.slice(2);
+  const qArg = argv.find((a) => a === '--quarantine' || a.startsWith('--quarantine='));
+  const quarantineFile = qArg === undefined ? null
+    : (qArg.includes('=') ? path.resolve(qArg.slice(qArg.indexOf('=') + 1)) : DEFAULT_QUARANTINE_FILE);
+  const statusFile = argv.find((a) => !a.startsWith('--')) ?? path.join(repoRoot, 'integ-suite-status.json');
+
+  let entries = null;
+  if (quarantineFile) {
+    try {
+      entries = loadQuarantine(quarantineFile);
+    } catch (e) {
+      console.error(`[check-integ-suite-budget] ERROR: invalid quarantine file ${quarantineFile}: ${e.message}`);
+      process.exit(2);
+    }
+  }
 
   let results;
   try {
@@ -112,7 +193,24 @@ function main() {
 
   const result = checkBudget(results);
   console.log(`[check-integ-suite-budget] ${result.message}`);
-  process.exit(result.ok ? 0 : 1);
+  let newCount = 0;
+  if (entries) {
+    const { newFailures, quarantined } = classifyFailures(results, entries);
+    newCount = newFailures.length;
+    console.log(`[check-integ-suite-budget] failures: new=${newFailures.length} quarantined=${quarantined.length}`);
+    for (const f of newFailures) {
+      if (f.expired) {
+        console.log(`[check-integ-suite-budget]   NEW ${f.file} -- quarantine EXPIRED on ${f.expired.expires}; fix it or renew the entry`);
+      } else {
+        console.log(`[check-integ-suite-budget]   NEW ${f.file}`);
+      }
+    }
+    for (const q of quarantined) {
+      console.log(`[check-integ-suite-budget]   quarantined ${q.file} (until ${q.entry.expires}): ${q.entry.reason}`);
+    }
+    if (quarantined.length) console.log(`[check-integ-suite-budget]   tracking issue per entry: see ${quarantineFile}`);
+  }
+  process.exit(result.ok && newCount === 0 ? 0 : 1);
 }
 
 // Only run when invoked directly (not when imported for tests).

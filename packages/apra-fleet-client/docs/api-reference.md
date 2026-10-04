@@ -399,7 +399,7 @@ Calls `register_member` -- adds a machine to the fleet.
 | Field | Type | Notes |
 |---|---|---|
 | `friendly_name` | `string` | Required. Human-friendly name for this member (1-64 chars, alphanumeric, dots, dashes, underscores only). |
-| `work_folder` | `string` | Required. Working directory on the target machine. For remote members, must be a fully-qualified/absolute path (e.g. `/home/bella/repo` or `C:\Users\bella\repo`) -- tilde and relative paths are rejected. |
+| `work_folder` | `string` | Required. Working directory on the target machine. For remote members, must be a fully-qualified/absolute path (e.g. `/home/bella/repo` or `C:\Users\bella\repo`) -- tilde and relative paths are rejected. A folder may hold at most one LLM member and one LLM-less (llm_provider none) member. |
 | `member_type` | `"local" \| "remote"?` | Member type (default: `"remote"`). |
 | `host` | `string?` | IP address or hostname of the remote machine. |
 | `port` | `number?` | SSH port (default: 22). |
@@ -443,7 +443,7 @@ and means "new value for this field". Identifies the target member via
 | `member_id` | `string?` | UUID of the member. |
 | `member_name` | `string?` | Friendly name of the member. |
 | `friendly_name` | `string?` | New friendly name. |
-| `work_folder` | `string?` | New working directory. For non-local (remote/relay) members, must be a fully-qualified/absolute path (e.g. `/home/bella/repo` or `C:\Users\bella\repo`) -- tilde and relative paths are rejected. |
+| `work_folder` | `string?` | New working directory. For non-local (remote/relay) members, must be a fully-qualified/absolute path (e.g. `/home/bella/repo` or `C:\Users\bella\repo`) -- tilde and relative paths are rejected. A folder may hold at most one LLM member and one LLM-less (llm_provider none) member. |
 | `host` | `string?` | New host (remote members only). |
 | `port` | `number?` | New SSH port (remote members only). |
 | `username` | `string?` | New SSH username (remote members only). |

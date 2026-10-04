@@ -126,7 +126,10 @@ describe('scope-overlap -- apra-fleet-72o0 bulk fetch', () => {
         const srcPath = url.fileURLToPath(new URL('../src/supervisor/scope-overlap.mjs', import.meta.url));
         const src = fs.readFileSync(srcPath, 'utf-8');
         const fnSrc = src.slice(src.indexOf('export async function bdListAllBeadsWithClosed'));
-        assert.match(fnSrc, /execBdAsync\(\['list', '--all', '--limit', '0', '--json'\]\)/);
+        // The argv array may be followed by an exec-options argument (the
+        // optional cwd the cached beads view pins); the argv itself is the
+        // contract pinned here.
+        assert.match(fnSrc, /execBdAsync\(\['list', '--all', '--limit', '0', '--json'\][,)]/);
     });
 
     test('existing behavior preserved: no-overlap (disjoint scopes launch cleanly)', async () => {
