@@ -207,6 +207,7 @@ MCP tools that ship with the KB:
 | `kb_context` | Batch file freshness check (single git call for N files) |
 | `kb_invalidate` | Mark files stale immediately (also called by the git hook) |
 | `kb_promote` | Advance confidence: UNVERIFIED -> INFERRED -> CONFIRMED |
+| `kb_demote` | Step confidence back down one rung when an entry is less certain than recorded (not for proven-wrong claims -- see `docs/kb-trust-model.md`) |
 | `kb_harvest` | Extract learnings from a session transcript (auto-fires after execute_prompt) |
 | `kb_export` | Additively merge live CONFIRMED entries whose cited files still match their recorded hashes into `.fleet/kb-canonical.json` -- the git-shareable team bible |
 | `kb_setup` | Install git hook, write provider config, store remote token encrypted |

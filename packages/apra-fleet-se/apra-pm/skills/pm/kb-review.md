@@ -13,6 +13,28 @@ CLI-only resolutions, never `kb_promote`.
 - When an agent reports a `flagged` audn_decision from `kb_capture`.
 - Periodically, to keep the KB free of unresolved contradictions.
 
+## Demote, feedback, or resolve -- not the same tool
+
+This skill's Step 4 resolutions use `kb_promote`/`kb_capture` for pairs that
+are ALREADY flagged as contradictions. Before reaching for one of those,
+pick the right tool for what you actually found in an entry:
+
+- An entry is **less certain than its recorded confidence**, but not shown to
+  be wrong (its basis drifted, or it could not be re-confirmed the way that
+  confidence level implies) -> `kb_demote`. This steps it down one rung
+  (CONFIRMED -> INFERRED -> UNVERIFIED) and is reversible once the basis
+  changes again. It does not flag the entry for review and is not a
+  substitute for the contradiction workflow below.
+- An entry is **proven wrong** -> `kb_feedback` (a durable downvote) if there
+  is no competing entry to pair it with, or `kb_resolve_contradiction` /
+  this skill's Step 4 flow when a newer finding directly contradicts it.
+- **Never** `kb_invalidate` for either case -- it only marks a file's
+  context-cache rows stale on a content change and carries no confidence or
+  correctness judgment.
+
+See `docs/kb-trust-model.md` for the full two-way trust ladder and the
+`kb_demote` contract (evidence rules, refusals, and safeguards).
+
 ## Steps
 
 ### Step 1: Fetch flagged entries

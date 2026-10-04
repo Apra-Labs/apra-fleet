@@ -214,10 +214,10 @@ bypasses `getKbProviders`.
 
 ## Trust model (enforced)
 
-Every entry carries a confidence tier and moves up a one-way ladder:
+Every entry carries a confidence tier and moves along a two-way ladder:
 
 ```
-UNVERIFIED  ->  INFERRED  ->  CONFIRMED
+UNVERIFIED  <->  INFERRED  <->  CONFIRMED
 ```
 
 - `UNVERIFIED` -- extracted but unchecked (auto-harvested from a transcript, a
@@ -225,6 +225,12 @@ UNVERIFIED  ->  INFERRED  ->  CONFIRMED
 - `INFERRED` -- verified by reading source, or captured deliberately. Default,
   and the ceiling for `kb_capture`.
 - `CONFIRMED` -- the reviewer approved the code the entry describes. Highest.
+
+`kb_promote` is the only way up a rung; `kb_demote` is the only way back down
+one when an entry turns out to be less certain than recorded (not the same as
+proven wrong -- see `docs/kb-trust-model.md`). See that doc for the full
+demotion contract: evidence rules, every refusal, the re-offer rule, and the
+bible-safety behaviour.
 
 **The clamp is enforced at two layers.** `kb_capture` clamps any incoming
 `CONFIRMED` down to `INFERRED` in the tool handler (returning
