@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "a993f497d35892ff89039edb94be940fd1fb0b5e",
     "branch": "main",
-    "entry_count": 266
+    "entry_count": 270
   },
   "entries": [
     {
@@ -1308,6 +1308,22 @@
       "updated_at": "2026-09-25T22:26:28.392Z"
     },
     {
+      "id": "3bfba14e-ca66-486b-88cc-5588d797da18",
+      "type": "knowledge",
+      "title": "Project kb_export throws on an unparseable existing bible instead of overwriting it",
+      "summary": "readExistingBibleEntries in kb-export.ts throws when .fleet/kb-canonical.json is invalid JSON or has no entries array. The fleet-sprint engine's exportBible treats that as non-fatal, so a corrupt bible silently stops all project-scope exports until it is fixed by hand.",
+      "symbols": [
+        "readExistingBibleEntries",
+        "exportProjectBible"
+      ],
+      "source_files": [
+        "src/tools/kb-export.ts",
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-04T02:57:24.895Z"
+    },
+    {
       "id": "3c011e6f-b099-492c-80dc-9705e6a74b97",
       "type": "knowledge",
       "title": "Supervisor shutdown stops seams only -- sprint children survive as orphans",
@@ -2126,6 +2142,21 @@
       "updated_at": "2026-09-25T22:26:31.289Z"
     },
     {
+      "id": "644304d1-ed64-4d09-9cd5-7411274847c1",
+      "type": "knowledge",
+      "title": "kb_export description text lives in five places; the binding is generated",
+      "summary": "The kb_export tool description is duplicated in tool-registry.ts, generate-contract.mjs, INVENTORY.md (twice) and the generated binding JSON; edit the sources and regenerate.",
+      "symbols": [],
+      "source_files": [
+        "src/services/tool-registry.ts",
+        "memory-contract/v1/generate-contract.mjs",
+        "memory-contract/v1/INVENTORY.md",
+        "memory-contract/v1/bindings/mcp/kb_export.json"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-04T02:26:33.582Z"
+    },
+    {
       "id": "64bedb7a-8a2d-46ba-9586-6254a88f6dcd",
       "type": "knowledge",
       "title": "dispatchReview has exactly two consumers, Review and Re-Review, not three",
@@ -2904,6 +2935,26 @@
       "updated_at": "2026-09-29T06:13:12.954Z"
     },
     {
+      "id": "9633904f-dcfa-458c-8e41-8478792634a5",
+      "type": "knowledge",
+      "title": "Project-scope kb_export is additive and basis-filtered; global scope still rewrites",
+      "summary": "kb_export scope=project never removes or rewrites existing bible entries and adds only CONFIRMED entries whose source_file_hashes basis matches the files on disk; with nothing to add it leaves the file untouched. Global scope still rewrites from the live CONFIRMED set.",
+      "symbols": [
+        "exportProjectBible",
+        "qualifiesForProjectBible",
+        "filterProjectBibleCandidates",
+        "readExistingBibleEntries"
+      ],
+      "source_files": [
+        "src/tools/kb-export.ts",
+        "src/services/knowledge/bible-basis-filter.ts",
+        "tests/knowledge/kb-export-branch-basis-filter.test.ts",
+        "tests/knowledge/kb-bible-truncation-commit.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-04T02:26:33.584Z"
+    },
+    {
       "id": "96a63862-eb7a-43f3-8352-4cd686412d43",
       "type": "knowledge",
       "title": "gitRepos is an access list; only a single URL-shaped entry is a usable origin",
@@ -3116,6 +3167,22 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:11.427Z"
+    },
+    {
+      "id": "a3cc5d24-192c-440a-8ff0-653e9631bccd",
+      "type": "learning",
+      "title": "kb-reconcile-e2e fixture's import-source bible is also kb_export's target file",
+      "summary": "tests/knowledge/kb-reconcile-e2e.test.ts writes its merged branch-B import fixture to <repo>/.fleet/kb-canonical.json, the same path kbExport writes, so any change to kb_export merge semantics treats every fixture entry as already in the bible.",
+      "symbols": [
+        "kbExport",
+        "writeBible"
+      ],
+      "source_files": [
+        "tests/knowledge/kb-reconcile-e2e.test.ts",
+        "src/tools/kb-export.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-04T00:17:31.779Z"
     },
     {
       "id": "a3fdac5d-31b6-4b87-9456-10d813aa095b",
