@@ -216,8 +216,10 @@ function renderFileDetail(file, rec, note) {
     '',
   ];
   if (failures.length === 0) out.push('<p>No per-test detail recorded for this file.</p>');
+  // Blank line before <pre>: GFM then parses it as its own raw-HTML block
+  // ending at </pre>, so blank lines inside an error stay inside the <pre>.
   for (const f of failures) {
-    out.push(`<p><b>${esc(f.name)}</b></p>`, `<pre>${esc(errorExcerpt(f.error))}</pre>`);
+    out.push(`<p><b>${esc(f.name)}</b></p>`, '', `<pre>${esc(errorExcerpt(f.error))}</pre>`, '');
   }
   if (failedCount > failures.length && failures.length) {
     out.push(`<p>... ${failedCount - failures.length} more failing test(s) not captured (see the artifact).</p>`);
@@ -373,6 +375,10 @@ export function main(argv = process.argv.slice(2)) {
   if (report.verdict === 'BROKEN') console.log(`::error title=Nightly regression BROKEN::${oneLine}`);
   else if (report.verdict === 'FAIL') console.log(`::warning title=Nightly regression FAIL::${oneLine}`);
   console.log(`[nightly-summary] ${oneLine}`);
+  // Also in the job log (step summaries are not retrievable via the API).
+  console.log('::group::Nightly summary (markdown)');
+  console.log(report.markdown);
+  console.log('::endgroup::');
   return report;
 }
 

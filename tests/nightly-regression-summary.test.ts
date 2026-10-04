@@ -85,6 +85,9 @@ describe('renderNightlyReport', () => {
     expect(md.slice(newIdx, qIdx)).toContain('<summary><code>fresh.test.mjs</code> -- 1 failing test</summary>');
     expect(md).toContain('<b>breaks &lt;now&gt;</b>'); // test names are HTML-escaped
     expect(md).toContain('<pre>line1\nline2\nline3\nline4\nline5\nline6\n...</pre>'); // first lines only
+    // <pre> starts its own GFM HTML block (blank line before it), so a blank
+    // line inside an assertion message cannot escape into markdown.
+    expect(md).toContain('<p><b>flakes</b></p>\n\n<pre>timed out</pre>\n');
     expect(md.slice(qIdx, eIdx)).toContain('quarantined until 2026-10-31: load timeout');
     expect(md.slice(eIdx)).toContain('quarantine expired 2026-10-01');
     expect(md).not.toContain('x-1'); // never print tracking ids
