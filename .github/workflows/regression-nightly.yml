@@ -87,21 +87,75 @@ jobs:
 
       # --status exit codes: 0 pass, 1 failures, 3 still running, 2 infra
       # fail-loud. Start and poll in one step so the detached run is ours.
+      # Test failures do not fail this step: its --status exit code goes to
+      # an output and the quarantine gate below decides. Any other exit code
+      # (2 = crashed/pending/stale) still fails the step here.
       - name: Run apra-fleet-se suite against real bd
         id: integ
         run: |
-          node scripts/run-integ-suites.mjs --start
+          node scripts/run-integ-suites.mjs --start || echo "integ-suites --start exit=$?"
           while :; do
             rc=0
             node scripts/run-integ-suites.mjs --status --wait=45 || rc=$?
             if [ "$rc" -ne 3 ]; then break; fi
           done
           echo "integ-suites --status exit=$rc"
-          exit "$rc"
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          if [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ]; then exit "$rc"; fi
 
+      # Same command as the package's test:slow script (same replay-mode env),
+      # plus the checkpoint reporter writing slow-suite-status.json so the gate
+      # can apply the quarantine (slow/ fingerprints). node --test exits 1 on
+      # test failures; the gate checks every slow file has a result.
       - name: Run slow lane
+        id: slow
         if: ${{ !cancelled() }}
-        run: npm run test:slow --workspace=@apralabs/apra-fleet-se
+        working-directory: packages/apra-fleet-se
+        env:
+          INTEG_SUITES_STATUS_FILE: ${{ github.workspace }}/slow-suite-status.json
+          INTEG_SUITES_HEARTBEAT_FILE: ${{ runner.temp }}/slow-suite-heartbeat.json
+        run: |
+          rm -f "$INTEG_SUITES_STATUS_FILE"
+          rc=0
+          node --test \
+            --test-reporter=./test/helpers/timestamped-reporter.mjs --test-reporter-destination=stdout \
+            --test-reporter="$GITHUB_WORKSPACE/scripts/integ-file-results-reporter.mjs" --test-reporter-destination=stdout \
+            "$PWD"/test/slow/*.test.mjs || rc=$?
+          echo "slow lane exit=$rc"
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+
+      # The only step that fails the job on test results: new failures or
+      # expired quarantine entries (tests/regression/quarantine.json). A
+      # missing/incomplete status file exits 2 -- never green-by-absence.
+      # Over-budget files are reported in the summary but do not gate.
+      - name: Quarantine gate (new failures only)
+        if: ${{ !cancelled() }}
+        env:
+          INTEG_RC: ${{ steps.integ.outputs.rc }}
+          SLOW_RC: ${{ steps.slow.outputs.rc }}
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          if [ "$INTEG_RC" != "0" ] && [ "$INTEG_RC" != "1" ]; then
+            echo "::error::real-bd suite did not complete (--status exit='$INTEG_RC')"
+            exit 2
+          fi
+          if [ -z "$SLOW_RC" ]; then
+            echo "::error::slow lane did not run"
+            exit 2
+          fi
+          if [ ! -f integ-suite-status.json ]; then
+            echo "::error::no integ-suite-status.json -- the real-bd suite recorded nothing"
+            exit 2
+          fi
+          HEAD_SHA="$(node -p "require('./integ-suite-status.json').headSha")"
+          if [ "$HEAD_SHA" != "$EXPECTED_SHA" ]; then
+            echo "::error::integ-suite-status.json headSha=$HEAD_SHA, expected $EXPECTED_SHA"
+            exit 2
+          fi
+          node scripts/check-integ-suite-budget.mjs integ-suite-status.json \
+            --quarantine --budget-advisory \
+            --slow=slow-suite-status.json \
+            --summary="$GITHUB_STEP_SUMMARY"
 
       - name: Upload integ-suite status
         if: always()
@@ -111,5 +165,6 @@ jobs:
           path: |
             integ-suite-status.json
             integ-suite-run.log
+            slow-suite-status.json
           if-no-files-found: warn
           retention-days: 30

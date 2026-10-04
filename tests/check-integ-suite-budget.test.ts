@@ -5,6 +5,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import {
   BUDGET_MS, checkBudget, loadResults, classifyFailures, validateQuarantine, loadQuarantine, DEFAULT_QUARANTINE_FILE,
+  mergeSlowResults, listSlowTestFiles, SLOW_PREFIX,
 } from '../scripts/check-integ-suite-budget.mjs';
 
 // Tests for apra-fleet-eft.17.2: verify scripts/check-integ-suite-budget.mjs
@@ -254,5 +255,93 @@ describe('quarantine (new vs quarantined failures)', () => {
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
+  });
+});
+
+describe('nightly gate (--budget-advisory, --slow, --summary)', () => {
+  const scriptPath = path.join(__dirname, '..', 'scripts', 'check-integ-suite-budget.mjs');
+  const today = new Date().toISOString().slice(0, 10);
+  const later = new Date(Date.now() + 10 * 86400000).toISOString().slice(0, 10);
+  const q = (fingerprint: string) => ({ fingerprint, bead: 'x-1', reason: 'load', addedAt: today, expires: later });
+  const slowFiles = listSlowTestFiles();
+  let tmp: string;
+  beforeEach(() => { tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'integ-gate-')); });
+  afterEach(() => { fs.rmSync(tmp, { recursive: true, force: true }); });
+
+  const run = (args: string[]) => {
+    try {
+      return { code: 0, out: execFileSync('node', [scriptPath, ...args], { encoding: 'utf8', stdio: 'pipe' }) };
+    } catch (e: any) {
+      return { code: e.status as number, out: `${e.stdout}${e.stderr}` };
+    }
+  };
+  const write = (name: string, doc: unknown) => {
+    const p = path.join(tmp, name);
+    fs.writeFileSync(p, JSON.stringify(doc));
+    return p;
+  };
+  const slowWithFirstFailing = () => {
+    const r: Record<string, { passed: boolean; durationMs: number }> = {};
+    for (const f of slowFiles) r[f] = { passed: true, durationMs: 1 };
+    r[slowFiles[0]] = { passed: false, durationMs: 1 };
+    return r;
+  };
+
+  it('mergeSlowResults prefixes slow/ and throws when an expected slow file has no result', () => {
+    const merged = mergeSlowResults({ 'a.test.mjs': { passed: true } }, { 'x.test.mjs': { passed: false } }, ['x.test.mjs']);
+    expect(Object.keys(merged).sort()).toEqual(['a.test.mjs', `${SLOW_PREFIX}x.test.mjs`]);
+    expect(() => mergeSlowResults({}, {}, ['x.test.mjs'])).toThrow(/no recorded result for: x.test.mjs/);
+  });
+
+  it('exits 0 with only quarantined failures even when a file is over budget, and writes the summary', () => {
+    const status = write('status.json', {
+      headSha: 'abc123',
+      results: {
+        'flaky.test.mjs': { passed: false, durationMs: 1 },
+        'long.test.mjs': { passed: true, durationMs: BUDGET_MS + 1 },
+      },
+    });
+    const slow = write('slow.json', { results: slowWithFirstFailing() });
+    const qFile = write('q.json', { entries: [q('flaky.test.mjs'), q(`slow/${slowFiles[0]}`)] });
+    const summary = path.join(tmp, 'summary.md');
+
+    // Without --budget-advisory the over-budget file still gates (default unchanged).
+    expect(run([status, `--quarantine=${qFile}`, `--slow=${slow}`]).code).toBe(1);
+
+    const r = run([status, `--quarantine=${qFile}`, '--budget-advisory', `--slow=${slow}`, `--summary=${summary}`]);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain('new=0 quarantined=2');
+    const md = fs.readFileSync(summary, 'utf8');
+    expect(md).toContain('result: PASS');
+    expect(md).toContain('headSha: abc123');
+    expect(md).toContain(`files: total=${2 + slowFiles.length} pass=${slowFiles.length} fail=2`);
+    expect(md).toContain(`slow/${slowFiles[0]}`);
+    expect(md).toContain('long.test.mjs');
+    expect(md).not.toContain('x-1');
+  });
+
+  it('exits 1 on a new slow-lane failure and lists it in the summary', () => {
+    const status = write('status.json', { headSha: 'abc', results: { 'ok.test.mjs': { passed: true, durationMs: 1 } } });
+    const slow = write('slow.json', { results: slowWithFirstFailing() });
+    const qFile = write('q.json', { entries: [q('other.test.mjs')] });
+    const summary = path.join(tmp, 'summary.md');
+    const r = run([status, `--quarantine=${qFile}`, '--budget-advisory', `--slow=${slow}`, `--summary=${summary}`]);
+    expect(r.code).toBe(1);
+    expect(r.out).toContain(`NEW slow/${slowFiles[0]}`);
+    const md = fs.readFileSync(summary, 'utf8');
+    expect(md).toContain('result: FAIL');
+    expect(md).toContain('### New failures');
+  });
+
+  it('exits 2 (never green-by-absence) on a missing or incomplete slow status, or a missing main status', () => {
+    const status = write('status.json', { headSha: 'abc', results: { 'ok.test.mjs': { passed: true, durationMs: 1 } } });
+    const qFile = write('q.json', { entries: [q('other.test.mjs')] });
+    const summary = path.join(tmp, 'summary.md');
+    expect(run([status, `--quarantine=${qFile}`, '--budget-advisory', `--slow=${path.join(tmp, 'none.json')}`]).code).toBe(2);
+    const partial = write('slow.json', { results: {} });
+    const r = run([status, `--quarantine=${qFile}`, '--budget-advisory', `--slow=${partial}`, `--summary=${summary}`]);
+    expect(r.code).toBe(2);
+    expect(fs.readFileSync(summary, 'utf8')).toContain('result: FAIL');
+    expect(run([path.join(tmp, 'missing.json'), `--quarantine=${qFile}`, '--budget-advisory']).code).toBe(2);
   });
 });
