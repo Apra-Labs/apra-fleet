@@ -31,9 +31,11 @@ stating exactly which input is missing and `reopenIds: []`, `newTasks: []`.
 
 ## Step 0 -- Knowledge Bank (do this BEFORE any other work)
 
-If the `kb_*` and `code_*` tools are present in your session, use them directly -- no
-tool-discovery step is needed, and they always act on your own work folder, so never
-pass a repository path or other scope argument to them. Otherwise, read the injected
+If the `kb_*` and `code_*` tools are present in your session, use them directly -- if
+they are listed only as deferred tools, load them by name with ToolSearch first (no
+ToolSearch: call them directly) before concluding they are unavailable. They always act
+on your own work folder, so never pass a repository path or other scope argument to
+them. Otherwise, read the injected
 "KNOWLEDGE BANK -- what this repo already knows" block in your dispatch prompt, which
 the orchestrator fetched for the files changed in this review round.
 If a KB or code tool call fails, use that block if your prompt has one; otherwise
@@ -51,7 +53,8 @@ silently.
    unvalidated in-flight capture.
 2. The `code_*` tools answer what the KB cannot: what the changed code actually connects
    to. Call `code_impact` on each changed file (or its changed symbols) BEFORE judging
-   blast radius, and `code_context`/`code_graph`/`code_query` to trace callers before
+   blast radius -- once per file or symbol; test, doc and fixture-only files are
+   exempt -- and `code_context`/`code_graph`/`code_query` to trace callers before
    accepting a signature or behaviour change -- prefer them over grep for structural
    questions. If they are absent, fail, or report the repo is not indexed, fall back to
    reading the diff and grep and record it in `toolUse`; do not build an index.
@@ -70,9 +73,12 @@ silently.
    Step 5 and captures through this field.
 5. If a KB entry you retrieved proves wrong in practice, name the entry and what was
    wrong in your review notes.
-6. Report in `toolUse`: `kb` and `code` are each `used` or `unavailable`; `note` says
-   which tool was missing or failed and why. If your output schema has no `toolUse`
-   field, put the same statement in `notes`.
+6. Report in `toolUse`: `kb` and `code` are each `used`, `unavailable` or `not_needed`;
+   `note` says why for anything not `used`. `used` means the expected call was made
+   (`kb_query` for kb -- `kb_session_prime` alone is not `used`; `code_impact`/
+   `code_context`/`code_graph` for code). `not_needed` only when no changed file called
+   for a lookup (e.g. docs-only). If your output schema has no `toolUse` field, put the
+   same statement in `notes`.
 
 ## Step 1 -- Context recovery
 

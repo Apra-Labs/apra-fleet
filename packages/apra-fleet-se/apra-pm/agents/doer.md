@@ -67,9 +67,11 @@ explicitly names an already-collected evidence artifact to verify against.
 
 ## Step 0 -- Knowledge Bank (do this BEFORE any other work)
 
-If the `kb_*` and `code_*` tools are present in your session, use them directly -- no
-tool-discovery step is needed, and they always act on your own work folder, so never
-pass a repository path or other scope argument to them. Otherwise, read the injected
+If the `kb_*` and `code_*` tools are present in your session, use them directly -- if
+they are listed only as deferred tools, load them by name with ToolSearch first (no
+ToolSearch: call them directly) before concluding they are unavailable. They always act
+on your own work folder, so never pass a repository path or other scope argument to
+them. Otherwise, read the injected
 "KNOWLEDGE BANK -- what this repo already knows" block in your dispatch prompt, which
 the orchestrator fetched for the beads you were assigned.
 If a KB or code tool call fails, use that block if your prompt has one; otherwise
@@ -97,13 +99,18 @@ silently.
    yourself. If a KB entry you relied on proves wrong in practice, say so in your final
    `notes`, naming the entry and what was wrong.
 4. BEFORE editing a symbol or file, call `code_impact` on it (or
-   `code_context`/`code_graph` for its callers/callees) and use the result to scope the
-   change and its tests -- prefer them over grep for symbol lookups, call-chain tracing, and impact
-   analysis. If they are absent, fail, or report the repo is not indexed, fall back to
-   grep and record it in `toolUse`; do not try to build an index yourself.
-5. Report in `toolUse`: `kb` and `code` are each `used` or `unavailable`; `note` says
-   which tool was missing or failed and why. If your output schema has no `toolUse`
-   field, put the same statement in `notes`.
+   `code_context`/`code_graph` for its callers/callees) once per changed file or symbol,
+   not per edit, and use the result to scope the change and its tests; test, doc and
+   fixture-only files are exempt. Prefer these over grep for symbol lookups, call-chain
+   tracing, and impact analysis. If they are absent, fail, or report the repo is not
+   indexed, fall back to grep and record it in `toolUse`; do not try to build an index
+   yourself.
+5. Report in `toolUse`: `kb` and `code` are each `used`, `unavailable` or `not_needed`;
+   `note` says why for anything not `used`. `used` means the expected call was made
+   (`kb_query` for kb -- `kb_session_prime` alone is not `used`; `code_impact`/
+   `code_context`/`code_graph` for code). `not_needed` only when no assigned bead or
+   changed file called for a lookup (e.g. docs-only, or every bead skipped). If your
+   output schema has no `toolUse` field, put the same statement in `notes`.
 
 ## Step 1 -- Work only your assigned bead ids
 
@@ -232,10 +239,12 @@ When every assigned bead id has been closed (or explicitly skipped per Step 1's
 has-open-children case, Step 1's same-lane stop rule, Step 2.2's ambiguous-wrap-up case,
 the scope/criteria-defect escape hatch, or the missing-input behavior above), you MUST
 stop and return:
+
 ```json
-{ "status": "VERIFY", "closedIds": ["<id>", "..."], "notes": "string" }
+{ "status": "VERIFY", "closedIds": ["<id>", "..."], "notes": "string",
+  "toolUse": { "kb": "used", "code": "used" } }
 ```
-Include the `toolUse` field (Step 0 item 5) as well; see Output schema for its shape.
+`toolUse` follows Step 0 item 5.
 `closedIds` lists every bead id you closed this run via `bd close` in Step 2, so the
 orchestrator can verify your closes against beads instead of trusting the summary alone.
 Do NOT continue past VERIFY.
@@ -246,7 +255,7 @@ Do NOT continue past VERIFY.
 - NEVER push to the base branch -- always work on the sprint feature branch
 - If a task needs a secret or token you do not have, close the task with
   `bd close <id> --reason="blocked: missing secret <name>"`, then STOP and return
-  `{ "status": "BLOCKED", "closedIds": [...closed so far...], "notes": "blocked: missing secret <name>", "toolUse": {...} }`
+  `{ "status": "BLOCKED", "closedIds": [...closed so far...], "notes": "blocked: missing secret <name>", "toolUse": { "kb": "used", "code": "not_needed", "note": "no source edit before the block" } }`
 
 ## Output schema
 

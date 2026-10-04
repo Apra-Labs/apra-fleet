@@ -80,7 +80,7 @@
     },
     "toolUse": {
       "type": "object",
-      "description": "How this run used the kb_* and code_* tools its role prompt expects (Step 0). Optional for backward compatibility, but expected: report \"unavailable\" with a note rather than skipping the calls silently.",
+      "description": "How this run used the kb_* and code_* tools its role prompt expects (Step 0). Optional for backward compatibility, but expected: report \"unavailable\" or \"not_needed\" with a note rather than skipping the calls silently.",
       "required": [
         "kb",
         "code"
@@ -90,19 +90,23 @@
           "type": "string",
           "enum": [
             "used",
-            "unavailable"
-          ]
+            "unavailable",
+            "not_needed"
+          ],
+          "description": "used = kb_query was called (kb_session_prime alone is not used)."
         },
         "code": {
           "type": "string",
           "enum": [
             "used",
-            "unavailable"
-          ]
+            "unavailable",
+            "not_needed"
+          ],
+          "description": "used = code_impact, code_context or code_graph was called."
         },
         "note": {
           "type": "string",
-          "description": "Which tool was missing or failed, and why. Expected when either value is \"unavailable\"."
+          "description": "Why a value is not \"used\": which tool was missing or failed, or why no lookup was needed."
         }
       }
     }

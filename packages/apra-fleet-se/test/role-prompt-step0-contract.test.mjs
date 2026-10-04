@@ -4,7 +4,8 @@
 // schemas/ are not role prompts) except kb-reconciler.md -- which fleet-sprint
 // never dispatches and whose whole job is KB curation -- must tell the role:
 //   - use the kb_* and code_* tools directly when they are present (no
-//     tool-discovery probe, no repository-path/scope argument);
+//     tool-discovery probe -- the one exception is loading tools listed as
+//     deferred by name -- and no repository-path/scope argument);
 //   - otherwise read the injected KNOWLEDGE BANK block;
 //   - if a tool call fails, use the block if the prompt has one, otherwise
 //     continue without KB -- never report the dispatch blocked over it.
@@ -91,7 +92,11 @@ const collapse = (s) => s.replace(/\s+/g, ' ');
 
 // Required instructions (whitespace-collapsed match).
 const TOOLS_WHEN_PRESENT_RE = /If the `kb_\*` and `code_\*` tools are present in your session, use them directly/;
-const NO_DISCOVERY_NO_SCOPE_RE = /no tool-discovery step is needed, and they always act on your own work folder, so never pass a repository path or other scope argument to them/;
+// Either the plain no-discovery clause, or the one sanctioned deferred-tool
+// clause (load by name with ToolSearch only when the tools are listed as deferred).
+const DEFERRED_LOAD_SENTENCE = 'if they are listed only as deferred tools, load them by name with ToolSearch first (no ToolSearch: call them directly) before concluding they are unavailable.';
+const NO_DISCOVERY_RE = new RegExp(`no tool-discovery step is needed|${DEFERRED_LOAD_SENTENCE.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`);
+const NO_SCOPE_RE = /they always act on your own work folder, so never pass a repository path or other scope argument to them/i;
 const blockOtherwiseRe = (heading) => new RegExp(`Otherwise, read the injected "${heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}" block`);
 const FALLBACK_RE = /If a KB or code tool call fails, use that block if your prompt has one; otherwise continue without KB\./;
 const NEVER_BLOCKED_RE = /never report this dispatch as blocked because of it/;
@@ -104,7 +109,8 @@ const KB_CAPTURE_TOOL_RE = /(?<![A-Za-z0-9])kb_capture\b/; // the tool, not the 
 const NEGATED_KB_CAPTURE_RE = /\b(?:never|do not|don't)\b[^.]{0,80}(?<![A-Za-z0-9])kb_capture\b/i;
 const KB_TOOL_TOKEN_RE = /(?<![A-Za-z0-9])kb_[a-z][a-z_]*/;
 const BLOCK_VERB_RE = /\b(?:blocked|stop|halt|abort|cannot proceed)\b/i;
-const KB_SUBJECT_RE = /\b(?:KB|kb_[a-z_]+|code_[a-z_]+|knowledge bank|code tools?|MCP server)\b/i;
+// A quoted "kb" JSON key (the toolUse example in an output template) is not a KB subject.
+const KB_SUBJECT_RE = /(?<!")\b(?:KB|kb_[a-z_]+|code_[a-z_]+|knowledge bank|code tools?|MCP server)\b(?!")/i;
 const FAILURE_RE = /\b(?:fail\w*|unavailable|not available|not running|missing|errors?|absent|no KB tools)\b/i;
 const NEGATED_BLOCK_RE = /\bnever\b[^.]{0,30}\b(?:report|stop|block)|\b(?:do not|don't)\s+(?:report|stop|block)|\bnot\s+a\s+reason\s+to\s+stop/i;
 const TOOL_NAME_RE = /(?<![A-Za-z0-9])((?:kb|code)_[a-z][a-z_]*)\b/g;
@@ -117,11 +123,11 @@ function step0Violations(content, { heading, allowed, outputFields }) {
     const v = [];
     const flat = collapse(content);
     if (!TOOLS_WHEN_PRESENT_RE.test(flat)) v.push('missing tools-when-present instruction');
-    if (!NO_DISCOVERY_NO_SCOPE_RE.test(flat)) v.push('missing no-discovery / no-scope-argument instruction');
+    if (!NO_DISCOVERY_RE.test(flat) || !NO_SCOPE_RE.test(flat)) v.push('missing no-discovery / no-scope-argument instruction');
     if (!blockOtherwiseRe(heading).test(flat)) v.push(`missing block-otherwise instruction naming "${heading}"`);
     if (!FALLBACK_RE.test(flat)) v.push('missing conditional fallback (use the block if present, otherwise continue without KB)');
     if (!NEVER_BLOCKED_RE.test(flat)) v.push('missing never-report-blocked instruction');
-    if (/\bToolSearch\b/.test(stripFrontmatter(content))) v.push('instructs a ToolSearch tool-discovery probe');
+    if (/\bToolSearch\b/.test(collapse(stripFrontmatter(content)).split(DEFERRED_LOAD_SENTENCE).join(''))) v.push('instructs a ToolSearch tool-discovery probe');
 
     for (const s of sentences(content)) {
         if (KB_FEEDBACK_RE.test(s)) v.push(`instructs kb_feedback: ${JSON.stringify(s)}`);
@@ -236,14 +242,19 @@ test('allowlist: a kb_/code_ tool name the member allowlist lacks is caught; out
 
 const EXPECTED_RE = /The `(?:kb_query|code_impact)` and `(?:kb_query|code_impact)` calls below are EXPECTED, not optional, whenever the tools are present\./;
 const REPORT_UNAVAILABLE_RE = /record that in `toolUse` \(Output schema\) and continue -- never skip silently\./;
-const TOOLUSE_SHAPE_RE = /Report in `toolUse`: `kb` and `code` are each `used` or `unavailable`; `note` says which tool was missing or failed and why\. If your output schema has no `toolUse` field, put the same statement in `notes`\./;
+const TOOLUSE_SHAPE_RE = /Report in `toolUse`: `kb` and `code` are each `used`, `unavailable` or `not_needed`; `note` says why for anything not `used`\./;
+const USED_MEANS_RE = /`used` means the expected call was made \(`kb_query` for kb -- `kb_session_prime` alone is not `used`; `code_impact`\/ ?`code_context`\/`code_graph` for code\)\./;
+const NOT_NEEDED_RE = /`not_needed` only when no (?:assigned bead or )?changed file called for a lookup/;
+const NOTES_FALLBACK_RE = /If your output schema has no `toolUse` field, put the same statement in `notes`\./;
+const DEFERRED_RE = new RegExp(DEFERRED_LOAD_SENTENCE.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
 const EXPECTED_CALLS = {
     'doer.md': [
         /for EACH assigned bead, call `kb_query` at least once, with a query drawn from the bead's title and criteria, BEFORE reading its source/,
         /BEFORE editing a symbol or file, call `code_impact` on it/,
+        /once per changed file or symbol, not per edit, .*?test, doc and fixture-only files are exempt/,
     ],
     'reviewer.md': [
-        /Call `code_impact` on each changed file \(or its changed symbols\) BEFORE judging blast radius/,
+        /Call `code_impact` on each changed file \(or its changed symbols\) BEFORE judging blast radius -- once per file or symbol; test, doc and fixture-only files are exempt/,
         /Call `kb_query` at least once per review/,
     ],
 };
@@ -266,6 +277,10 @@ function expectedCallViolations(file, content) {
     if (!EXPECTED_RE.test(flat)) v.push('missing EXPECTED-not-optional statement');
     if (!REPORT_UNAVAILABLE_RE.test(flat)) v.push('missing report-unavailable-in-toolUse rule');
     if (!TOOLUSE_SHAPE_RE.test(flat)) v.push('missing toolUse reporting shape');
+    if (!USED_MEANS_RE.test(flat)) v.push('missing definition of used');
+    if (!NOT_NEEDED_RE.test(flat)) v.push('missing not_needed rule');
+    if (!NOTES_FALLBACK_RE.test(flat)) v.push('missing notes fallback');
+    if (!DEFERRED_RE.test(flat)) v.push('missing deferred-tool loading rule');
     for (const re of EXPECTED_CALLS[file]) if (!re.test(flat)) v.push(`missing expected call: ${re}`);
     return v;
 }
@@ -282,7 +297,20 @@ test('expected-call check is not vacuous: the optional "when the tools are prese
     assert.ok(v.includes('missing EXPECTED-not-optional statement'), JSON.stringify(v));
     assert.ok(v.includes('missing report-unavailable-in-toolUse rule'), JSON.stringify(v));
     assert.ok(v.includes('missing toolUse reporting shape'), JSON.stringify(v));
+    for (const m of ['missing definition of used', 'missing not_needed rule', 'missing deferred-tool loading rule']) assert.ok(v.includes(m), JSON.stringify(v));
+    assert.ok(v.some((x) => /once per changed file/.test(x)), JSON.stringify(v));
+    // The first-pass expected-call wording (no not_needed, no used definition) also fails.
+    const firstPass = 'Report in `toolUse`: `kb` and `code` are each `used` or `unavailable`; `note` says which tool was missing or failed and why.';
+    const v2 = expectedCallViolations('doer.md', firstPass);
+    assert.ok(v2.includes('missing toolUse reporting shape') && v2.includes('missing not_needed rule'), JSON.stringify(v2));
     assert.ok(v.some((x) => /kb_query/.test(x)) && v.some((x) => /code_impact/.test(x)), JSON.stringify(v));
+});
+
+test('ToolSearch: only the deferred-tool loading sentence is exempt; any other ToolSearch mention is still a probe', () => {
+    const ok = `If the \`kb_*\` and \`code_*\` tools are present in your session, use them directly -- ${DEFERRED_LOAD_SENTENCE}`;
+    assert.ok(!step0Violations(ok, CTX_FIXTURE()).some((x) => /ToolSearch/.test(x)));
+    const bad = `${ok}\n\n1. Run ToolSearch with query "kb" to discover the tools.`;
+    assert.ok(step0Violations(bad, CTX_FIXTURE()).some((x) => /ToolSearch/.test(x)));
 });
 
 test('toolUse is an optional field of the doer and reviewer output schemas', () => {
@@ -292,6 +320,6 @@ test('toolUse is an optional field of the doer and reviewer output schemas', () 
         assert.ok(tu, `${role}-output.json has no toolUse property`);
         assert.ok(!schema.required.includes('toolUse'), `${role}: toolUse must stay optional`);
         assert.deepEqual(tu.required, ['kb', 'code']);
-        for (const k of ['kb', 'code']) assert.deepEqual(tu.properties[k].enum, ['used', 'unavailable']);
+        for (const k of ['kb', 'code']) assert.deepEqual(tu.properties[k].enum, ['used', 'unavailable', 'not_needed']);
     }
 });
