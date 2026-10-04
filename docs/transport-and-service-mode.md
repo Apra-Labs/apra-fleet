@@ -211,23 +211,35 @@ returns 503 with it; a sprint child prints it on stderr). See
   can neither replace nor disable it (`/create /xml /f` and `/change /disable` are "Access is
   denied"). Install detects such a legacy task -- its `schtasks /query /xml` has no repeating
   TimeTrigger (`<Repetition><Interval>`), or an "any user" LogonTrigger (no `<UserId>`), or (when
-  Windows Script Host works) an action other than `wscript.exe` + our launcher -- and:
+  Windows Script Host works) an action other than `wscript.exe` + our launcher, or the wrapper path
+  split at a space into Command + Arguments (0.4.3 passed it to `/tr` unquoted, so a profile like
+  `C:\Users\John Smith` ran `C:\Users\John` and the server never started) -- and:
   - interactive desktop console (stdin and stdout are a TTY, no `CI`, no `SSH_CONNECTION` /
     `SSH_CLIENT` / `SSH_TTY`, `SESSIONNAME` set, `APRA_FLEET_NONINTERACTIVE` unset): prints what is
     about to happen and requests ONE UAC elevation whose only action is
-    `schtasks /delete /tn ApraFleet /f` (powershell `Start-Process ... -Verb RunAs -Wait`), checks
-    the exit code and that the task is gone, then creates the new task WITHOUT elevation. Nothing
-    else ever runs elevated. The UAC dialog is the confirmation; there is no extra flag or prompt.
+    `schtasks /delete /tn ApraFleet /f` (powershell `Start-Process ... -Verb RunAs -Wait`, no
+    timeout, so a consent dialog left open never outlives install's decision). Whatever the exit
+    code, the task's presence decides: gone -> the new task is created WITHOUT elevation (HKCU Run
+    fallback if that fails); still there -> declined / could not start the elevated step / failed is
+    reported and the old task is kept. Nothing else ever runs elevated. The UAC dialog is the
+    confirmation; there is no extra flag or prompt.
   - declined, failed, or non-interactive (`apra-fleet update` runs install detached with no TTY, so
     it never prompts): the old task stays in use and install prints what is missing (no automatic
     revive after a crash, visible console window, `apra-fleet stop` cannot disable the task) and the
     fix: from an elevated prompt `schtasks /delete /tn ApraFleet /f`, then from a normal prompt
-    `apra-fleet install`. Set `APRA_FLEET_NONINTERACTIVE=1` to always take this path.
+    `apra-fleet install`. Set `APRA_FLEET_NONINTERACTIVE=1` to always take this path. Because a
+    detached install has no console, the guidance is also saved to `<data dir>/service-notice.json`
+    and appended to `fleet.log`; the next `apra-fleet status`, `stop` or `update` prints it once
+    (stderr). Installing the current task (or uninstall) removes the file. `apra-fleet update` says
+    to run `apra-fleet status` after the background install.
   - while a legacy task is installed, `apra-fleet status` shows
-    `installed (enabled -- legacy task (upgrade needed: ...))` plus the same fix, and
-    `apra-fleet stop` prints it when disabling is denied (the stop still holds: the
-    stopped-by-user marker makes every task launch exit without starting the server).
-  A task XML without a `<Triggers>` section is never classed legacy.
+    `installed (enabled -- legacy task (upgrade needed: ...))` plus the fix, and `apra-fleet stop`
+    prints it when disabling is denied (the stop still holds: the stopped-by-user marker makes every
+    task launch exit without starting the server). The elevated `schtasks /delete` step is only
+    suggested for an elevated-owned task; an old-form task the user owns just needs
+    `apra-fleet install`.
+  A task XML without a `<Triggers>` section is never classed legacy. apra-fleet never suggests an
+  elevated install.
 - Scripts and workflows that relied on the client's private stdio self-spawn now start the SHARED
   HTTP server, which keeps running after they exit. Set `APRA_FLEET_TRANSPORT=stdio` to keep the
   old private, per-process server.
