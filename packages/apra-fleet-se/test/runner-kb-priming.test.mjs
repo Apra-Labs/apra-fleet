@@ -458,6 +458,80 @@ describe('createKbWorkClient (KB trust pipeline Phase 2, fleet-sprint half)', ()
         assert.equal(out.promoted, 0);
     });
 
+    // D6/C4: the demotion-side mirror of the kb_promote test above.
+    test('a reviewer demotion becomes a real kb_demote call', async () => {
+        const { calls, callTool } = recorder();
+        const client = createKbWorkClient({ callTool, log: () => {} });
+
+        const out = await client.apply('reviewer', '/srv/a', {
+            kb_demotions: [{ id: 'abc123', reason: GOOD_REASON }],
+        });
+
+        assert.equal(out.demoted, 1);
+        // Same repo-blindness guard as kb_promote: repo_path is REQUIRED, or
+        // the demotion resolves against the fleet server's cwd and fails
+        // "Entry not found". evidence_files defaults to [] when omitted.
+        assert.deepEqual(
+            calls.find((c) => c.name === 'kb_demote').args,
+            { id: 'abc123', reason: GOOD_REASON, evidence_files: [], repo_path: '/srv/a' },
+        );
+    });
+
+    test('a demotion carries its evidence_files through to the real kb_demote call', async () => {
+        const { calls, callTool } = recorder();
+        const client = createKbWorkClient({ callTool, log: () => {} });
+
+        await client.apply('reviewer', '/srv/a', {
+            kb_demotions: [{ id: 'abc123', reason: GOOD_REASON, evidence_files: ['src/real.ts'] }],
+        });
+
+        assert.deepEqual(calls.find((c) => c.name === 'kb_demote').args.evidence_files, ['src/real.ts']);
+    });
+
+    test('an MCP isError result on kb_demote is not counted as demoted, and does not fail the round', async () => {
+        const logs = [];
+        const { callTool } = errorRecorder('no such entry');
+        const client = createKbWorkClient({ callTool, log: (m) => logs.push(m) });
+
+        const out = await client.apply('reviewer', '/srv/a', {
+            kb_demotions: [{ id: 'abc123', reason: GOOD_REASON }],
+        });
+
+        assert.equal(out.demoted, 0);
+        assert.ok(
+            logs.some((l) => /kb_demote rejected for abc123 \(non-fatal\)/.test(l)),
+            'an isError result must be logged, not silently swallowed',
+        );
+    });
+
+    test('kb_demotions from a non-reviewer role results in NO demote call', async () => {
+        for (const role of ['doer', 'planner', 'harvester']) {
+            const { calls, callTool } = recorder();
+            const client = createKbWorkClient({ callTool, log: () => {} });
+
+            const out = await client.apply(role, '/srv/a', {
+                kb_demotions: [{ id: 'abc123', reason: GOOD_REASON }],
+            });
+
+            assert.equal(out.demoted, 0, `${role} must not demote`);
+            assert.equal(calls.filter((c) => c.name === 'kb_demote').length, 0);
+            assert.equal(out.refused, 1, `${role}'s kb_demotions must be recorded as refused`);
+        }
+    });
+
+    test('a demotion with a reason under 20 characters is refused, never reaching kb_demote', async () => {
+        const { calls, callTool } = recorder();
+        const client = createKbWorkClient({ callTool, log: () => {} });
+
+        const out = await client.apply('reviewer', '/srv/a', {
+            kb_demotions: [{ id: 'abc123', reason: 'too short' }],
+        });
+
+        assert.equal(out.demoted, 0);
+        assert.equal(calls.filter((c) => c.name === 'kb_demote').length, 0);
+        assert.equal(out.refused, 1);
+    });
+
     test('an unverifiable payload results in NO tool call', async () => {
         const { calls, callTool } = recorder();
         const client = createKbWorkClient({ callTool, log: () => {} });
@@ -817,6 +891,22 @@ describe('the work client resolves its own scope from the repo path it is given'
         assert.equal(argsFor(calls, 'kb_promote').repo_remote_url, REMOTE_URL);
     });
 
+    // D6/C4: a real kb_demote call carries repo_path AND the member's remote
+    // URL, exactly as kb_promote does above -- the acceptance bar this lane's
+    // own test task names explicitly.
+    test('kb_demote carries repo_path and the remote URL', async () => {
+        const { calls, client } = workClient();
+
+        const out = await client.apply('reviewer', REMOTE_FOLDER, {
+            kb_demotions: [{ id: 'abc123', reason: GOOD_REASON }],
+        });
+
+        assert.equal(out.demoted, 1);
+        const demoteArgs = argsFor(calls, 'kb_demote');
+        assert.equal(demoteArgs.repo_path, REMOTE_FOLDER);
+        assert.equal(demoteArgs.repo_remote_url, REMOTE_URL);
+    });
+
     test('kb_export writes the bible for the member repo, selected by URL', async () => {
         const { calls, client } = workClient();
 
@@ -833,6 +923,7 @@ describe('the work client resolves its own scope from the repo path it is given'
         await client.apply('reviewer', '/srv/local/repo', {
             kb_captures: [GOOD_CAPTURE],
             kb_promotions: [{ id: 'abc123', reason: GOOD_REASON }],
+            kb_demotions: [{ id: 'xyz789', reason: GOOD_REASON }],
         });
         await client.exportBible('/srv/local/repo');
 
