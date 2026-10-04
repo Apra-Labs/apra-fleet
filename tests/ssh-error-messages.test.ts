@@ -37,6 +37,10 @@ describe('classifySshError (#150)', () => {
   it('handles empty string gracefully', () => {
     expect(() => classifySshError('')).not.toThrow();
   });
+
+  it('maps a refused channel open to the sshd session-limit cause', () => {
+    expect(classifySshError('(SSH) Channel open failure: open failed')).toContain('MaxSessions');
+  });
 });
 
 describe('onboarding hook gating (#150)', () => {
