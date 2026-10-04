@@ -671,7 +671,11 @@ async function main() {
 // test needs to read the SAME KB_MODULES/CODE_EXPORTS this script generates
 // from, not a fourth hand-copied list). Guarded below so importing this
 // module for its exports does not also run main() as a side effect.
-export { KB_MODULES, CODE_EXPORTS, SCHEMAS_DIR, BINDINGS_MCP_DIR };
+// DESCRIPTIONS is exported too (my-beads-db-qy8.3.3) so a description-
+// byte-match test can read the SAME map this script embeds into
+// bindings/mcp/<tool>.json, rather than re-deriving it from the generated
+// output and merely proving the generator agrees with itself.
+export { KB_MODULES, CODE_EXPORTS, SCHEMAS_DIR, BINDINGS_MCP_DIR, DESCRIPTIONS };
 
 // Only run when invoked directly (`node generate-contract.mjs[.--check]`),
 // not when imported as a module (e.g. by a test reading the exports above).

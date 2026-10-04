@@ -30,6 +30,7 @@ import {
   CODE_EXPORTS,
   SCHEMAS_DIR,
   BINDINGS_MCP_DIR,
+  DESCRIPTIONS,
 } from '../memory-contract/v1/generate-contract.mjs';
 
 type ToolHandler = (input: unknown, extra?: unknown) => Promise<unknown>;
@@ -147,6 +148,43 @@ describe('bindings/mcp descriptions match the live registerAllTools() descriptio
 
       expect(live, `${tool}: registerAllTools() never called server.tool() with this name`).toBeDefined();
       expect(binding.description, `${tool}: bindings/mcp/${tool}.json description is stale vs the live registration`).toBe(
+        live,
+      );
+    }
+  });
+});
+
+// my-beads-db-qy8.3.3: the test above only proves the GENERATED bindings/mcp/
+// file matches the live registration -- it says nothing about the generator's
+// own DESCRIPTIONS source map, which is a hand-maintained copy that
+// contract:generate --check cannot re-derive from (it has no runtime
+// dependency on tool-registry.ts, by design -- see generate-contract.mjs's own
+// comment on DESCRIPTIONS). A clean `contract:generate --check` only proves
+// "DESCRIPTIONS matches what is currently on disk"; it does not prove
+// "DESCRIPTIONS matches what registerAllTools() actually passes to
+// server.tool() right now". This closes that gap directly, reading
+// DESCRIPTIONS itself rather than its generated output, for kb_demote
+// specifically (the newest entry and the one most likely to have been
+// hand-copied with a typo) and for every other kb_*/code_* tool alongside it.
+describe('generator DESCRIPTIONS map matches the live registerAllTools() descriptions (my-beads-db-qy8.3.3)', () => {
+  it("DESCRIPTIONS.kb_demote is byte-identical to tool-registry.ts's kb_demote registration string", async () => {
+    const liveDescriptions = await registeredToolDescriptions();
+
+    expect(liveDescriptions.get('kb_demote'), 'registerAllTools() never called server.tool() with kb_demote').toBeDefined();
+    expect(DESCRIPTIONS.kb_demote).toBe(liveDescriptions.get('kb_demote'));
+  });
+
+  it('every kb_*/code_* DESCRIPTIONS entry equals the description registerAllTools() passes to server.tool()', async () => {
+    const registered = kbAndCodeToolNames(await registeredToolNames());
+    const liveDescriptions = await registeredToolDescriptions();
+
+    for (const tool of [...registered].sort()) {
+      const generatorDescription = (DESCRIPTIONS as Record<string, string>)[tool];
+      const live = liveDescriptions.get(tool);
+
+      expect(generatorDescription, `${tool}: no DESCRIPTIONS entry in generate-contract.mjs`).toBeDefined();
+      expect(live, `${tool}: registerAllTools() never called server.tool() with this name`).toBeDefined();
+      expect(generatorDescription, `${tool}: generate-contract.mjs DESCRIPTIONS entry is stale vs the live registration`).toBe(
         live,
       );
     }
