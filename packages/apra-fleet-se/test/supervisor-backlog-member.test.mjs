@@ -245,6 +245,9 @@ describe('ensureBacklogMember: refusals', () => {
         const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'backlog-member-serve-')));
         const project = path.join(tmp, 'proj');
         fs.mkdirSync(path.join(project, '.beads'), { recursive: true });
+        // A project .beads is only discovered when it holds bd init's
+        // metadata.json (isProjectBeadsDir), so the fixture must carry one.
+        fs.writeFileSync(path.join(project, '.beads', 'metadata.json'), '{}');
         const prevCwd = process.cwd();
         const prevDataDir = process.env.FLEET_SE_DATA_DIR;
         process.env.FLEET_SE_DATA_DIR = path.join(tmp, 'se-data');

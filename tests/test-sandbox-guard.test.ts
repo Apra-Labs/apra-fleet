@@ -46,6 +46,7 @@ describe('test sandbox', () => {
 
   it('a child node process pointed back at the real home is refused before any module loads', () => {
     expect(process.env.NODE_OPTIONS ?? '').toMatch(/test-sandbox-guard\.mjs/);
+    // isolated-home-allow: deliberately points the child at the real home to prove the sandbox guard refuses it.
     const r = spawnSync(process.execPath, ['-e', 'console.log("RAN")'], {
       env: { ...process.env, HOME: REAL, USERPROFILE: REAL },
       encoding: 'utf8',

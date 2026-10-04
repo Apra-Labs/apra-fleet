@@ -63,6 +63,7 @@ describe('fresh-install host opt-in guard', () => {
     expect(dropped).toEqual(['/usr/local/bin', '/opt/tool/node/bin']);
     const win = scrubNodeFromPath('C:/Windows;C:/nodejs', { sep: ';', join: (a: string, b: string) => `${a}/${b}`, exists: (f: string) => files.has(f) });
     expect(win.path).toBe('C:/Windows');
+    // isolated-home-allow: plain data passed to a pure env-filter function; no process runs with this HOME.
     const env = hostPassEnv({ Path: 'x', CI: 'true', npm_config_prefix: '/p', HOME: '/h', GITHUB_ACTIONS: 'true' }, 'scrubbed');
     expect(env).toEqual({ Path: 'scrubbed', HOME: '/h', GITHUB_ACTIONS: 'true' });
   });

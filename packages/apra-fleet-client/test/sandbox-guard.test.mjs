@@ -22,6 +22,7 @@ test('client tests run sandboxed: home and fleet data dir are not the real profi
 });
 
 test('a child pointed back at the real home is refused by the preloaded guard', () => {
+    // isolated-home-allow: deliberately points the child at the real home to prove the sandbox guard refuses it.
     const r = spawnSync(process.execPath, ['-e', 'console.log("RAN")'], {
         env: { ...process.env, HOME: REAL, USERPROFILE: REAL }, encoding: 'utf8', windowsHide: true,
     });
