@@ -6,6 +6,7 @@ import type { ServiceStatus } from '../services/service-manager/types.js';
 import { SERVER_INFO_PATH } from '../paths.js';
 import { readStoppedMarker, describeStoppedMarker } from '../services/stopped-marker.js';
 import { serverVersion } from '../version.js';
+import { showPendingServiceNotice } from '../services/service-notice.js';
 
 function versionCore(v: string | undefined): string | null {
   // Capped like the client's versionCore: v comes from a server's /health reply.
@@ -66,6 +67,8 @@ export function formatServiceLabel(svcStatus: ServiceStatus): string {
 }
 
 export async function runStatus(_args: string[]): Promise<void> {
+  // Guidance a detached install (apra-fleet update) could not show.
+  showPendingServiceNotice();
   const instance = await checkRunningInstance();
   // GitHub #585: a stale server.json means the previous server died uncleanly.
   const previousNote = instance.state === 'gone' ? describePreviousServer(instance.previous) : null;

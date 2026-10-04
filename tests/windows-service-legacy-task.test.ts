@@ -26,7 +26,7 @@ vi.mock('node:child_process');
 import {
   WindowsServiceManager, legacyTaskProblems, elevationPromptAllowed, elevatedSchtasksScript,
   buildTaskXml, encodeTaskXml, launcherArguments, launcherPathFor,
-  LEGACY_TASK_DELETE_ARGV, UAC_DECLINED_EXIT,
+  LEGACY_TASK_DELETE_ARGV, UAC_DECLINED_EXIT, ELEVATION_NOT_STARTED_EXIT, legacyTaskFix, legacyTaskGuidance,
 } from '../src/services/service-manager/windows.js';
 import { formatServiceLabel } from '../src/cli/status.js';
 
@@ -34,6 +34,8 @@ const WRAPPER = 'C:\\Users\\u\\.apra-fleet\\bin\\apra-fleet-service.bat';
 const LAUNCHER = launcherPathFor(WRAPPER);
 const WSCRIPT = 'C:\\Windows\\System32\\wscript.exe';
 const DELETE_ARGV = ['/delete', '/tn', 'ApraFleet', '/f'];
+const NOTICE = 'C:\\data\\service-notice.json';
+const LOG = 'C:\\log.txt';
 
 /** What `schtasks /query /xml` returns for a 0.4.3 task (`/create /sc onlogon /rl limited /tr <bat>`). */
 const LEGACY_XML = [
@@ -126,7 +128,12 @@ describe('elevationPromptAllowed', () => {
 });
 
 /** schtasks fake with a stateful task: legacy until the elevated delete removes it. */
-function legacyWorld(opts: { elevatedExit?: number; deleteWorks?: boolean; createAfterDelete?: boolean } = {}) {
+function legacyWorld(opts: {
+  elevatedExit?: number; deleteWorks?: boolean; createAfterDelete?: boolean;
+  /** The task is deleted even though the runner reports elevatedExit (a late consent). */
+  deletesAnyway?: boolean;
+  legacyXml?: string;
+} = {}) {
   let present = true;
   let createdNew = false;
   const calls: string[][] = [];
@@ -140,7 +147,7 @@ function legacyWorld(opts: { elevatedExit?: number; deleteWorks?: boolean; creat
         present = true; createdNew = true; return 'SUCCESS';
       case '/query':
         if (!present) throw new Error('ERROR: The system cannot find the file specified.');
-        return args.includes('/xml') ? (createdNew ? CURRENT_QUERIED_XML : LEGACY_XML) : '';
+        return args.includes('/xml') ? (createdNew ? CURRENT_QUERIED_XML : (opts.legacyXml ?? LEGACY_XML)) : '';
       case '/change':
         if (!createdNew) throw new Error('ERROR: Access is denied.');
         return 'SUCCESS';
@@ -151,7 +158,7 @@ function legacyWorld(opts: { elevatedExit?: number; deleteWorks?: boolean; creat
   const elevated = vi.fn((argv: readonly string[]) => {
     order.push(`ELEVATED ${argv.join(' ')}`);
     const code = opts.elevatedExit ?? 0;
-    if (code === 0 && opts.deleteWorks !== false) present = false;
+    if (opts.deletesAnyway || (code === 0 && opts.deleteWorks !== false)) present = false;
     return code;
   });
   const reg = vi.fn((args: string[]) => { if (args[0] !== 'add') throw new Error('not found'); return ''; });
@@ -161,7 +168,7 @@ function legacyWorld(opts: { elevatedExit?: number; deleteWorks?: boolean; creat
 function mgrFor(w: ReturnType<typeof legacyWorld>, canPrompt: boolean | undefined, env: Record<string, string> = { USERDOMAIN: 'HOST', USERNAME: 'u' }) {
   return new WindowsServiceManager(w.schtasks, WRAPPER, {
     runReg: w.reg, env, probeWsh: () => true, stoppedByUser: () => true,
-    runElevatedSchtasks: w.elevated,
+    runElevatedSchtasks: w.elevated, noticePath: NOTICE,
     ...(canPrompt === undefined ? {} : { canPromptElevation: () => canPrompt }),
   });
 }
@@ -203,6 +210,7 @@ describe('register() with a legacy task it cannot replace', () => {
     ['declined', { elevatedExit: UAC_DECLINED_EXIT }, /Elevation declined/],
     ['failed', { elevatedExit: 5 }, /elevated delete failed \(exit code 5\)/],
     ['reported success but the task is still there', { deleteWorks: false }, /task still exists/],
+    ['could not be started', { elevatedExit: ELEVATION_NOT_STARTED_EXIT }, /elevated step could not be started/],
   ])('elevation %s -> keeps reusing the old task and prints the fix', async (_n, opts, why) => {
     const w = legacyWorld(opts);
     expect(await mgrFor(w, true).register('x.exe', [], 'C:\\log.txt')).toBe('reused');
@@ -224,6 +232,66 @@ describe('register() with a legacy task it cannot replace', () => {
     expect(w.elevated).not.toHaveBeenCalled();
     expect(out()).toContain('schtasks /delete /tn ApraFleet /f');
     expect(out()).toContain('no automatic revive after a crash');
+  });
+
+  it('fallback persists the guidance for a detached install: notice file + service log', async () => {
+    const w = legacyWorld();
+    await mgrFor(w, false).register('x.exe', [], LOG);
+    const noticeWrite = vi.mocked(fs.writeFileSync).mock.calls.find(c => c[0] === NOTICE);
+    expect(noticeWrite).toBeDefined();
+    const saved = JSON.parse(String(noticeWrite![1]));
+    expect(saved.text).toContain('schtasks /delete /tn ApraFleet /f');
+    expect(saved.text).toContain('no automatic revive after a crash');
+    const logAppend = vi.mocked(fs.appendFileSync).mock.calls.find(c => c[0] === LOG);
+    expect(String(logAppend?.[1])).toMatch(/apra-fleet install: The ApraFleet scheduled task was registered by an older apra-fleet/);
+    expect(vi.mocked(fs.unlinkSync).mock.calls.some(c => c[0] === NOTICE)).toBe(false);
+  });
+
+  it('installing the current task clears a pending notice', async () => {
+    const w = legacyWorld();
+    await mgrFor(w, true).register('x.exe', [], LOG);
+    expect(vi.mocked(fs.unlinkSync).mock.calls.some(c => c[0] === NOTICE)).toBe(true);
+    expect(vi.mocked(fs.writeFileSync).mock.calls.some(c => c[0] === NOTICE)).toBe(false);
+  });
+
+  it.each([
+    ['killed/failed runner', -1],
+    ['declined code but a late consent deleted it', UAC_DECLINED_EXIT],
+  ])('%s, yet the task is gone -> creates the new task (never "reuse" of a deleted task)', async (_n, code) => {
+    const w = legacyWorld({ elevatedExit: code, deletesAnyway: true });
+    expect(await mgrFor(w, true).register('x.exe', [], LOG)).toBe('created');
+    expect(w.calls.filter(c => c[0] === '/create')).toHaveLength(2);
+    expect(w.isPresent()).toBe(true);
+  });
+
+  it('task gone after elevation but the non-elevated create fails -> HKCU Run fallback', async () => {
+    const w = legacyWorld({ elevatedExit: -1, deletesAnyway: true, createAfterDelete: false });
+    expect(await mgrFor(w, true).register('x.exe', [], LOG)).toBe('run-key');
+    expect(w.reg).toHaveBeenCalledWith(expect.arrayContaining(['add']));
+  });
+
+  it("0.4.3 wrapper split at a space (unquoted /tr) is recognised as ours and legacy -> offer, not a throw", async () => {
+    const spaced = 'C:\\Users\\John Smith\\.apra-fleet\\bin\\apra-fleet-service.bat';
+    const splitXml = LEGACY_XML.replace(`<Command>${WRAPPER}</Command>`,
+      '<Command>C:\\Users\\John</Command><Arguments>Smith\\.apra-fleet\\bin\\apra-fleet-service.bat</Arguments>');
+    expect(legacyTaskProblems(splitXml, { launcherPath: launcherPathFor(spaced), launcherExpected: true, wrapperPath: spaced }))
+      .toEqual(['no-revive', 'visible-console', 'split-path', 'elevated']);
+    const mk = (canPrompt: boolean, w: ReturnType<typeof legacyWorld>) => new WindowsServiceManager(w.schtasks, spaced, {
+      runReg: w.reg, env: { USERDOMAIN: 'HOST', USERNAME: 'u' }, probeWsh: () => true,
+      runElevatedSchtasks: w.elevated, canPromptElevation: () => canPrompt, noticePath: NOTICE,
+    });
+    const accepted = legacyWorld({ legacyXml: splitXml });
+    expect(await mk(true, accepted).register('x.exe', [], LOG)).toBe('created');
+    expect(accepted.elevated).toHaveBeenCalledWith(DELETE_ARGV);
+    const fallback = legacyWorld({ legacyXml: splitXml });
+    expect(await mk(false, fallback).register('x.exe', [], LOG)).toBe('reused');
+    expect(out()).toContain('the task command is split at a space in the install path');
+  });
+
+  it('a task running some OTHER program is still refused loudly', async () => {
+    const other = legacyWorld({ legacyXml: LEGACY_XML.replace(`<Command>${WRAPPER}</Command>`, '<Command>C:\\other\\x.bat</Command><Arguments>y</Arguments>') });
+    await expect(mgrFor(other, true).register('x.exe', [], LOG)).rejects.toThrow(/existing ApraFleet task runs C:\\other\\x\.bat/);
+    expect(other.elevated).not.toHaveBeenCalled();
   });
 
   describe('default prompt gate (stdin/stdout TTY + env)', () => {
@@ -284,19 +352,25 @@ describe('register() with a legacy task it cannot replace', () => {
     }) as any);
     const mgr = new WindowsServiceManager(w.schtasks, WRAPPER, {
       runReg: w.reg, env: { USERDOMAIN: 'HOST', USERNAME: 'u', SystemRoot: 'C:\\Windows' }, probeWsh: () => true,
-      canPromptElevation: () => true,
+      canPromptElevation: () => true, noticePath: NOTICE,
     });
     expect(await mgr.register('x.exe', [], 'C:\\log.txt')).toBe('reused');
     expect(out()).toMatch(/Elevation declined/);
     const psCalls = vi.mocked(execFileSync).mock.calls;
     expect(psCalls).toHaveLength(1);
-    const [file, argv] = psCalls[0] as unknown as [string, string[]];
+    const [file, argv, execOpts] = psCalls[0] as unknown as [string, string[], { timeout?: number }];
+    // No timeout: a killed powershell would leave the consent dialog open.
+    expect(execOpts.timeout).toBeUndefined();
     expect(file).toBe('C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe');
     expect(argv.slice(0, -1)).toEqual(['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand']);
     const script = Buffer.from(argv[argv.length - 1], 'base64').toString('utf16le');
     expect(script).toBe(elevatedSchtasksScript(DELETE_ARGV));
     expect(script).toContain("Start-Process -FilePath 'schtasks.exe' -ArgumentList @('/delete','/tn','ApraFleet','/f') -Verb RunAs -Wait -PassThru");
     expect(script.match(/RunAs/g)).toHaveLength(1);
+    // Declined (Win32 1223 anywhere in the exception chain) vs could-not-start are distinct.
+    expect(script).toContain(`[System.ComponentModel.Win32Exception] -and $e.NativeErrorCode -eq ${UAC_DECLINED_EXIT}) { exit ${UAC_DECLINED_EXIT} }`);
+    expect(script).toContain('$e = $e.InnerException');
+    expect(script).toMatch(new RegExp(`exit ${ELEVATION_NOT_STARTED_EXIT}\\r\\n}$`));
   });
 });
 
@@ -344,15 +418,28 @@ describe('status and stop with a legacy task installed', () => {
     expect(text).toContain('no automatic revive after a crash');
     expect(text).toContain('schtasks /delete /tn ApraFleet /f');
     expect(text).toMatch(/then, from a normal prompt:\s+apra-fleet install/);
-    expect(text).toMatch(/The stop still holds/);
+    expect(text).toMatch(/A stop made with 'apra-fleet stop' still holds/);
   });
 
   it('stop on a current task that cannot be disabled keeps the plain warning', async () => {
     const mgr = new WindowsServiceManager(queryRunner(CURRENT_QUERIED_XML), WRAPPER, { runReg: vi.fn() });
     await mgr.stop();
     const text = warn.mock.calls.map(c => c.join(' ')).join('\n');
-    expect(text).toMatch(/its triggers may start the server again/);
+    expect(text).toMatch(/Could not disable the ApraFleet task/);
+    // The stopped-by-user marker is honoured by every launch: no "may start again" scare.
+    expect(text).not.toMatch(/may start the server again/);
+    expect(text).toMatch(/A stop made with 'apra-fleet stop' still holds/);
     expect(text).not.toContain('schtasks /delete');
+  });
+
+  it('a user-owned old-form task (no "elevated" problem) is fixed by a plain re-install', async () => {
+    const userOwnedOld = CURRENT_QUERIED_XML.replace(/<Repetition>[\s\S]*?<\/Repetition>/, '');
+    const st = await new WindowsServiceManager(queryRunner(userOwnedOld), WRAPPER, { runReg: vi.fn(), stoppedByUser: () => false }).query();
+    expect(st.detail).toBe('legacy task (upgrade needed: no automatic revive after a crash)');
+    expect(st.notice).toBe('To upgrade it, run from a normal prompt:\n    apra-fleet install');
+    expect(st.notice).not.toMatch(/elevated|schtasks/);
+    expect(legacyTaskGuidance(['no-revive'])).not.toMatch(/elevated|schtasks \/delete/);
+    expect(legacyTaskFix(['no-revive', 'elevated'])).toContain('schtasks /delete /tn ApraFleet /f');
   });
 });
 

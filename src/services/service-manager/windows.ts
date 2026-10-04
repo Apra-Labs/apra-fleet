@@ -7,6 +7,7 @@ import { WINDOWS_TASK_NAME, SERVICE_ENV_MARKER } from './types.js';
 import { gracefulStopByServerJson } from './index.js';
 import { clearServiceStartFailures } from '../service-start-guard.js';
 import { readStoppedMarker } from '../stopped-marker.js';
+import { SERVICE_NOTICE_PATH, writeServiceNotice, clearServiceNotice } from '../service-notice.js';
 import { BIN_DIR } from '../../cli/config.js';
 
 const WRAPPER_PATH = path.join(BIN_DIR, 'apra-fleet-service.bat');
@@ -43,6 +44,8 @@ export type ElevatedSchtasksRunner = (argv: readonly string[]) => number;
 export const LEGACY_TASK_DELETE_ARGV: readonly string[] = Object.freeze(['/delete', '/tn', WINDOWS_TASK_NAME, '/f']);
 /** ERROR_CANCELLED: the user declined the UAC prompt. */
 export const UAC_DECLINED_EXIT = 1223;
+/** The elevated step could not be started for another reason (policy, missing schtasks.exe, ...). */
+export const ELEVATION_NOT_STARTED_EXIT = 4097;
 /** Set to 1 to never offer the one-time UAC prompt (install falls back to guidance). */
 export const NONINTERACTIVE_ENV = 'APRA_FLEET_NONINTERACTIVE';
 
@@ -63,6 +66,8 @@ export interface WindowsServiceOptions {
   runElevatedSchtasks?: ElevatedSchtasksRunner;
   /** Whether a UAC prompt may be shown (default: elevationPromptAllowed(env, stdin/stdout TTY)). */
   canPromptElevation?: () => boolean;
+  /** Pending-notice file for guidance a detached install could not show (default: SERVICE_NOTICE_PATH). */
+  noticePath?: string;
 }
 
 // GitHub #585: every schtasks/taskkill/reg call pipes ALL stdio (stderr too)
@@ -86,8 +91,10 @@ function psQuote(s: string): string {
 /**
  * The PowerShell script behind the default elevated runner: one
  * Start-Process of schtasks.exe with the elevation verb and exactly `argv`, waiting for
- * it and exiting with its exit code (UAC_DECLINED_EXIT when the prompt is
- * declined, which makes Start-Process throw).
+ * it and exiting with its exit code. A declined prompt makes Start-Process
+ * throw a Win32Exception with NativeErrorCode 1223 somewhere in the exception
+ * chain -> UAC_DECLINED_EXIT; any other failure to start the elevated step ->
+ * ELEVATION_NOT_STARTED_EXIT.
  */
 export function elevatedSchtasksScript(argv: readonly string[]): string {
   return [
@@ -95,7 +102,11 @@ export function elevatedSchtasksScript(argv: readonly string[]): string {
     'try {',
     `  $p = Start-Process -FilePath 'schtasks.exe' -ArgumentList @(${argv.map(psQuote).join(',')}) -Verb RunAs -Wait -PassThru -WindowStyle Hidden`,
     '  exit $p.ExitCode',
-    `} catch { exit ${UAC_DECLINED_EXIT} }`,
+    '} catch {',
+    '  $e = $_.Exception',
+    `  while ($e) { if ($e -is [System.ComponentModel.Win32Exception] -and $e.NativeErrorCode -eq ${UAC_DECLINED_EXIT}) { exit ${UAC_DECLINED_EXIT} }; $e = $e.InnerException }`,
+    `  exit ${ELEVATION_NOT_STARTED_EXIT}`,
+    '}',
   ].join('\r\n');
 }
 
@@ -106,14 +117,24 @@ function defaultRunElevatedSchtasks(env: Record<string, string | undefined>): El
     try {
       // Not windowsHide: the interactive console is inherited (no new window),
       // and a hidden requester can leave the UAC prompt blinking in the taskbar.
+      // No timeout: killing powershell while the consent dialog is still open
+      // would not close it, and a late "Yes" would then delete the task after
+      // install had already decided to keep it (no task, no autostart).
       execFileSync(ps, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded],
-        { stdio: ['ignore', 'pipe', 'pipe'], timeout: 300_000 });
+        { stdio: ['ignore', 'pipe', 'pipe'] });
       return 0;
     } catch (err) {
       const status = (err as { status?: number | null }).status;
       return typeof status === 'number' ? status : -1;
     }
   };
+}
+
+/** Append a timestamped install message to the service log (best-effort). */
+function appendServiceLog(logPath: string, text: string): void {
+  try {
+    fs.appendFileSync(logPath, `[${new Date().toISOString()}] apra-fleet install: ${text.replace(/\n/g, '\r\n')}\r\n`);
+  } catch { /* best-effort */ }
 }
 
 function indent(text: string, by = '    '): string {
@@ -331,17 +352,28 @@ function runsOurLauncher(command: string | null, args: string | null, launcherPa
  *    (the .bat runs in a visible console). Only reported when the launcher is
  *    expected -- with Windows Script Host disabled the current task runs the
  *    .bat directly too;
+ *  - 'split-path': the wrapper path was split at a space into <Command> +
+ *    <Arguments> (0.4.3 passed it to /tr unquoted, e.g. a "C:\Users\John
+ *    Smith" profile), so the task runs "C:\Users\John" and never starts the
+ *    server. Needs opts.wrapperPath;
  *  - 'elevated': a LogonTrigger without <UserId> ("any user" logon), which only
  *    an elevated shell can register -- so a normal shell can neither replace
  *    nor disable it.
  * Empty for the current definition, and for XML without a <Triggers> section
  * (unreadable: never classed legacy). XML tag names are not localized.
  */
-export type LegacyTaskProblem = 'no-revive' | 'visible-console' | 'elevated';
+export type LegacyTaskProblem = 'no-revive' | 'visible-console' | 'split-path' | 'elevated';
+
+/** Whether the action is `wrapperPath` split at a space into Command + Arguments. */
+export function runsSplitWrapper(command: string | null, args: string | null, wrapperPath: string): boolean {
+  if (command === null || args === null || !args.trim()) return false;
+  return normalizeTaskPath(`${command} ${args}`) === normalizeTaskPath(wrapperPath)
+    && normalizeTaskPath(command) !== normalizeTaskPath(wrapperPath);
+}
 
 export function legacyTaskProblems(
   raw: Buffer | string,
-  opts: { launcherPath: string; launcherExpected: boolean },
+  opts: { launcherPath: string; launcherExpected: boolean; wrapperPath?: string },
 ): LegacyTaskProblem[] {
   const xml = decodeSchtasks(raw);
   const problems: LegacyTaskProblem[] = [];
@@ -353,9 +385,12 @@ export function legacyTaskProblems(
   const repeating = [...triggers.matchAll(/<(TimeTrigger|CalendarTrigger)\b[^>]*>([\s\S]*?)<\/\1>/gi)]
     .some(m => /<Repetition>[\s\S]*?<Interval>\s*P[^<]*<\/Interval>/i.test(m[2]));
   if (!repeating) problems.push('no-revive');
-  if (opts.launcherExpected && !runsOurLauncher(taskXmlCommand(xml), taskXmlArguments(xml), opts.launcherPath)) {
+  const command = taskXmlCommand(xml);
+  const args = taskXmlArguments(xml);
+  if (opts.launcherExpected && !runsOurLauncher(command, args, opts.launcherPath)) {
     problems.push('visible-console');
   }
+  if (opts.wrapperPath && runsSplitWrapper(command, args, opts.wrapperPath)) problems.push('split-path');
   const logonTriggers = [...triggers.matchAll(/<LogonTrigger\b[^>]*>([\s\S]*?)<\/LogonTrigger>|<LogonTrigger\b[^>]*\/>/gi)];
   if (logonTriggers.some(m => !/<UserId>\s*\S[\s\S]*?<\/UserId>/i.test(m[1] ?? ''))) problems.push('elevated');
   return problems;
@@ -364,6 +399,7 @@ export function legacyTaskProblems(
 const LEGACY_PROBLEM_TEXT: Record<LegacyTaskProblem, string> = {
   'no-revive': 'no automatic revive after a crash',
   'visible-console': 'the server runs in a visible console window',
+  'split-path': 'the task command is split at a space in the install path, so the server does not start',
   'elevated': "'apra-fleet stop' cannot disable the task",
 };
 
@@ -372,8 +408,15 @@ export function legacyTaskDetail(problems: LegacyTaskProblem[]): string {
   return `legacy task (upgrade needed: ${problems.map(p => LEGACY_PROBLEM_TEXT[p]).join('; ')})`;
 }
 
-/** The exact manual fix, shared by install, status and stop. */
-export function legacyTaskFix(): string {
+/**
+ * The exact manual fix, shared by install, status and stop. The elevated
+ * delete is only needed for an elevated-owned task ('elevated'); a user-owned
+ * old-form task is replaced by a plain re-install.
+ */
+export function legacyTaskFix(problems: LegacyTaskProblem[]): string {
+  if (!problems.includes('elevated')) {
+    return ['To upgrade it, run from a normal prompt:', '    apra-fleet install'].join('\n');
+  }
   return [
     'To upgrade it, run once from an elevated prompt (Run as administrator):',
     `    schtasks /delete /tn ${WINDOWS_TASK_NAME} /f`,
@@ -384,11 +427,14 @@ export function legacyTaskFix(): string {
 
 /** Full actionable guidance: what is missing and the exact fix. */
 export function legacyTaskGuidance(problems: LegacyTaskProblem[]): string {
+  const intro = problems.includes('elevated')
+    ? [`The ${WINDOWS_TASK_NAME} scheduled task was registered by an older apra-fleet from an elevated prompt,`,
+      'so it cannot be replaced from a normal shell and is still in use. Missing:']
+    : [`The ${WINDOWS_TASK_NAME} scheduled task was registered by an older apra-fleet and is still in use. Missing:`];
   return [
-    `The ${WINDOWS_TASK_NAME} scheduled task was registered by an older apra-fleet from an elevated prompt,`,
-    'so it cannot be replaced from a normal shell and is still in use. Missing:',
+    ...intro,
     ...problems.map(p => `  - ${LEGACY_PROBLEM_TEXT[p]}`),
-    legacyTaskFix(),
+    legacyTaskFix(problems),
   ].join('\n');
 }
 
@@ -489,6 +535,7 @@ export class WindowsServiceManager implements ServiceManager {
   private readonly stoppedByUser: () => boolean;
   private readonly runElevatedSchtasks: ElevatedSchtasksRunner;
   private readonly canPromptElevation: () => boolean;
+  private readonly noticePath: string;
 
   constructor(
     private readonly runSchtasks: SchtasksRunner = defaultSchtasksRunner,
@@ -505,6 +552,7 @@ export class WindowsServiceManager implements ServiceManager {
     this.runElevatedSchtasks = opts.runElevatedSchtasks ?? defaultRunElevatedSchtasks(this.env);
     this.canPromptElevation = opts.canPromptElevation
       ?? (() => elevationPromptAllowed(this.env, { stdin: !!process.stdin.isTTY, stdout: !!process.stdout.isTTY }));
+    this.noticePath = opts.noticePath ?? SERVICE_NOTICE_PATH;
   }
 
   async register(binaryPath: string, args: string[], logPath: string): Promise<RegisterResult> {
@@ -560,6 +608,7 @@ export class WindowsServiceManager implements ServiceManager {
       // A task now covers logon autostart: drop a Run-key fallback left by an
       // earlier install so the server is not launched twice at logon.
       this.deleteRunKey();
+      clearServiceNotice(this.noticePath);
       if (!hidden) visibleFallback();
       return 'created';
     };
@@ -579,17 +628,27 @@ export class WindowsServiceManager implements ServiceManager {
       taskArgs = taskXmlArguments(existing);
       taskFound = true;
     } catch { /* no task */ }
-    // Ours: the wrapper itself (tasks from earlier installs) or wscript
+    // Ours: the wrapper itself (tasks from earlier installs), the wrapper split
+    // at a space by 0.4.3's unquoted /tr (broken, so legacy), or wscript
     // running our hidden launcher.
     const runsWrapper = command !== null && normalizeTaskPath(command) === normalizeTaskPath(this.wrapperPath);
+    const runsSplit = runsSplitWrapper(command, taskArgs, this.wrapperPath);
     const runsLauncher = runsOurLauncher(command, taskArgs, launcherPath);
-    if (taskFound && (runsWrapper || runsLauncher)) {
-      const problems = legacyTaskProblems(existing, { launcherPath, launcherExpected: hidden });
+    if (taskFound && (runsWrapper || runsSplit || runsLauncher)) {
+      const problems = legacyTaskProblems(existing, { launcherPath, launcherExpected: hidden, wrapperPath: this.wrapperPath });
+      if (runsSplit && !problems.includes('split-path')) problems.push('split-path');
       if (problems.length === 0 || !this.replaceLegacyTask(problems)) {
         if (problems.length > 0) {
           // /create was just refused, so this task cannot be disabled either.
           if (!problems.includes('elevated')) problems.push('elevated');
-          console.warn(indent(legacyTaskGuidance(problems)));
+          const guidance = legacyTaskGuidance(problems);
+          console.warn(indent(guidance));
+          // A detached install (apra-fleet update) has no console: persist it
+          // for the next service verb, and leave it in the service log.
+          writeServiceNotice(guidance, this.noticePath);
+          appendServiceLog(logPath, guidance);
+        } else {
+          clearServiceNotice(this.noticePath);
         }
         this.reusedExistingTask = true;
         // A reused launcher task needs the launcher (written above); a reused
@@ -616,6 +675,7 @@ export class WindowsServiceManager implements ServiceManager {
     // Last resort: a per-user HKCU Run entry. Logon autostart only -- nothing
     // revives a server that dies mid-session.
     if (!hidden) visibleFallback();
+    clearServiceNotice(this.noticePath);
     try {
       this.runReg(['add', RUN_KEY, '/v', RUN_VALUE, '/t', 'REG_SZ', '/d', runValue, '/f']);
     } catch (regErr) {
@@ -642,17 +702,17 @@ export class WindowsServiceManager implements ServiceManager {
     console.log(`    Requesting a one-time Windows elevation (UAC) whose ONLY action is: schtasks ${LEGACY_TASK_DELETE_ARGV.join(' ')}`);
     console.log('    The new task is then created without elevation. Decline to keep the old task.');
     const code = this.runElevatedSchtasks(LEGACY_TASK_DELETE_ARGV);
-    if (code !== 0) {
-      console.warn(code === UAC_DECLINED_EXIT
-        ? '    Elevation declined -- the old task was kept.'
-        : `    The elevated delete failed (exit code ${code}) -- the old task was kept.`);
-      return false;
-    }
-    if (this.taskExists()) {
-      console.warn('    The elevated delete reported success, but the task still exists -- the old task was kept.');
-      return false;
-    }
-    return true;
+    // Whatever the exit code says, the task's presence decides: a non-zero
+    // or killed runner may still have deleted it, and keeping "reuse" then
+    // would leave no task and no Run entry (no autostart at all).
+    if (!this.taskExists()) return true;
+    console.warn(
+      code === 0 ? '    The elevated delete reported success, but the task still exists -- the old task was kept.'
+        : code === UAC_DECLINED_EXIT ? '    Elevation declined -- the old task was kept.'
+          : code === ELEVATION_NOT_STARTED_EXIT ? '    The elevated step could not be started -- the old task was kept.'
+            : `    The elevated delete failed (exit code ${code}) -- the old task was kept.`,
+    );
+    return false;
   }
 
   /** Problems of the installed task when it is a legacy one (empty: current or unreadable). */
@@ -670,7 +730,7 @@ export class WindowsServiceManager implements ServiceManager {
     // install keeps the launcher only when the task should use it (WSH works).
     let launcherExpected = false;
     try { launcherExpected = fs.existsSync(launcherPath); } catch { /* treat as absent */ }
-    return legacyTaskProblems(raw, { launcherPath, launcherExpected });
+    return legacyTaskProblems(raw, { launcherPath, launcherExpected, wrapperPath: this.wrapperPath });
   }
 
   async unregister(): Promise<void> {
@@ -680,6 +740,7 @@ export class WindowsServiceManager implements ServiceManager {
       // Tolerate task-not-found
     }
     this.deleteRunKey();
+    clearServiceNotice(this.noticePath);
     try { fs.unlinkSync(this.wrapperPath); } catch {}
     try { fs.unlinkSync(launcherPathFor(this.wrapperPath)); } catch {}
   }
@@ -729,22 +790,19 @@ export class WindowsServiceManager implements ServiceManager {
       try {
         this.runSchtasks(['/change', '/tn', WINDOWS_TASK_NAME, '/disable']);
       } catch (err) {
+        console.warn(`Could not disable the ${WINDOWS_TASK_NAME} task (${(err as Error).message.trim()}).`);
         const problems = this.installedLegacyProblems();
         if (problems.length > 0) {
           // Disabling was just refused, whatever the XML says.
           if (!problems.includes('elevated')) problems.push('elevated');
-          console.warn(`Could not disable the ${WINDOWS_TASK_NAME} task (${(err as Error).message.trim()}).`);
           console.warn(legacyTaskGuidance(problems));
-          console.warn(
-            "The stop still holds: until 'apra-fleet start', every launch of the task exits without " +
-            'starting the server (the stopped-by-user marker).',
-          );
-        } else {
-          console.warn(
-            `Could not disable the ${WINDOWS_TASK_NAME} task (${(err as Error).message.trim()}); ` +
-            'its triggers may start the server again.',
-          );
         }
+        // The stopped-by-user marker (written by apra-fleet stop) makes every
+        // service launch exit without starting the server.
+        console.warn(
+          "A stop made with 'apra-fleet stop' still holds: until 'apra-fleet start', every launch of the task " +
+          'exits without starting the server.',
+        );
       }
     }
     return gracefulStopByServerJson((pid) => {
@@ -788,7 +846,7 @@ export class WindowsServiceManager implements ServiceManager {
     }
     if (legacy.length > 0) {
       details.push(legacyTaskDetail(legacy));
-      result.notice = legacyTaskFix();
+      result.notice = legacyTaskFix(legacy);
     }
     if (details.length > 0) result.detail = details.join('; ');
     return result;

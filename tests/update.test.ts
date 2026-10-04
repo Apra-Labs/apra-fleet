@@ -31,6 +31,8 @@ vi.mock('node:child_process', () => ({
     unref: vi.fn(),
   })),
 }));
+vi.mock('../src/services/service-notice.js', () => ({ showPendingServiceNotice: vi.fn() }));
+import { showPendingServiceNotice } from '../src/services/service-notice.js';
 
 describe('runUpdate (T6)', () => {
   const mockTmpDir = '/tmp';
@@ -127,6 +129,10 @@ describe('runUpdate (T6)', () => {
       expect.objectContaining({ detached: true })
     );
     expect(process.exit).toHaveBeenCalledWith(0);
+    // The detached installer has no console: point the user at status, and
+    // show any guidance the previous detached install left behind.
+    expect(console.log).toHaveBeenCalledWith(expect.stringContaining("Run 'apra-fleet status'"));
+    expect(showPendingServiceNotice).toHaveBeenCalledTimes(1);
   });
 
   it('missing install-config.json -- uses defaults with warning', async () => {
