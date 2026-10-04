@@ -2119,6 +2119,16 @@ export async function runDevelopLoopScenario(tag, {
     if (beforeSprint) {
         await beforeSprint({ tempDir, runCmd, epicBead, tasks });
     }
+    // The issue-id prefix of the DB this scenario actually created: the fixed
+    // 'mock' under replay, a template/dir-derived name under real bd. Resolved
+    // via the same `bd where --json` probe the sprint runs, so a scenario can
+    // assert on it in both modes. `expectBeads` may be a function of
+    // `{ prefix }` for scenarios that need to build the expectation from it.
+    let dbPrefix;
+    try {
+        dbPrefix = JSON.parse((await runCmd('bd where --json', tempDir)).stdout || '{}').prefix;
+    } catch { /* leave undefined */ }
+    if (typeof expectBeads === 'function') expectBeads = expectBeads({ prefix: dbPrefix });
     const dispatched = [];
     const commandLog = [];
     const commandLogDetailed = [];
@@ -2258,7 +2268,7 @@ export async function runDevelopLoopScenario(tag, {
         // as intended by callers that deliberately induce one (e.g. a doer
         // throw or a typed sprint-abort) to verify error handling.
         passed = (error === null);
-        return { dispatched, commandLog, commandLogDetailed, memberGitState, logs, states, error, result, tasks, epicBeadId: epicBead.id, finalBeadsById, branch, tempDir, forgottenMemories,
+        return { dispatched, commandLog, commandLogDetailed, memberGitState, logs, states, error, result, tasks, epicBeadId: epicBead.id, finalBeadsById, branch, tempDir, dbPrefix, forgottenMemories,
             remainingMemories: memoriesSink.live ? Object.fromEntries(memoriesSink.live) : undefined };
     } finally {
         // apra-fleet-20i.1.2: see runOnce() above.

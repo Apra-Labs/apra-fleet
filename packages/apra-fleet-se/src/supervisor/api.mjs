@@ -42,14 +42,14 @@ import { statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import { readJsonBody, sendJson } from './server.mjs';
-import { validateIssueId, validateBranchName } from '../../fleet-sprint/runner.js';
+import { validateIssueId, validateBranchName, validateBranchPair } from '../../fleet-sprint/runner.js';
 import { resolveRoleMap } from '../../bin/cli.mjs';
 import { resolveBacklogRoleAlias, ROLE_BACKLOG } from '../../fleet-sprint/backlog-role.mjs';
 import { normalizeRole } from '../../fleet-sprint/contracts.mjs';
 import { isDeterministicTerminalReason } from './history.mjs';
 import { defaultHasTerminalState } from './watchdog.mjs';
 import { toBeadsSummary } from './beads-identity.mjs';
-import { fleetMembersUnavailableReason } from './fleet-members.mjs';
+import { fleetMembersUnavailableReason, fleetMembersStoppedByUserReason } from './fleet-members.mjs';
 
 /** This module's own on-disk path -- the default build-version stamp's source (see defaultBuildVersion() below). */
 const API_MODULE_PATH = fileURLToPath(import.meta.url);
@@ -448,6 +448,8 @@ export function createSprintController(deps = {}) {
         catch (err) { throw new ApiError(400, err.message, 'branch'); }
         try { validateBranchName(base, 'base'); }
         catch (err) { throw new ApiError(400, err.message, 'base'); }
+        try { validateBranchPair(branch, base); }
+        catch (err) { throw new ApiError(400, err.message, 'branch'); }
         if (members.length === 0) {
             throw new ApiError(400, 'members must be a non-empty list of member names', 'members');
         }
@@ -580,6 +582,11 @@ export function createSprintController(deps = {}) {
             console.error(`[unreservable] listMembers() failed while computing the unreservable-member exclude set (treating as none this launch): ${membersListError}`);
             membersListRaw = undefined;
         }
+        // The fleet server was stopped on purpose ('apra-fleet stop'): refuse
+        // the launch with that actionable message instead of spawning a
+        // sprint that could only fail at connect.
+        const stoppedByUser = fleetMembersStoppedByUserReason(membersListRaw);
+        if (stoppedByUser) throw new ApiError(503, stoppedByUser);
         // Backlog hard pin, part 2: the pin is only enforceable against a
         // member list that was actually read. listFleetMembers() never
         // throws, so its unavailable marker (not the catch above) is the

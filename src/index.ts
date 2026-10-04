@@ -247,9 +247,19 @@ Usage:
  * exits 0, like the already-running case. Every other launch (terminal, CI,
  * nohup, containers, scripts) exits 1 so the refusal stays visible.
  */
+// Captured once by startHttpServer (which also strips our markers from the
+// env so children never inherit them). Still "any service-manager hint":
+// installs predating the APRA_FLEET_SERVICE marker rely on systemd/launchd
+// vars, and for a refusal the only cost of a false positive (a hand-run shell
+// under systemd) is exit code 0 instead of 1 -- the refusal is still printed.
+let serviceManagedLaunch: boolean | null = null;
+
 async function refusalExitCode(): Promise<number> {
-  const { launchedByServiceManager } = await import('./services/service-manager/types.js');
-  return launchedByServiceManager() ? 0 : 1;
+  if (serviceManagedLaunch === null) {
+    const { launchedByServiceManager } = await import('./services/service-manager/types.js');
+    serviceManagedLaunch = launchedByServiceManager();
+  }
+  return serviceManagedLaunch ? 0 : 1;
 }
 
 function resolveTransport(args: string[]): 'http' | 'stdio' | 'invalid' {
@@ -356,6 +366,42 @@ async function startStdioServer() {
 }
 
 async function startHttpServer() {
+  // GitHub #585 recovery: a service launch (logon, the Windows task's repeating
+  // revive trigger) that keeps failing backs off instead of retrying -- and
+  // writing a new fleet-<pid>.log -- every interval. See service-start-guard.ts.
+  const { consumeLaunchMarkers } = await import('./services/service-manager/types.js');
+  const launch = consumeLaunchMarkers();
+  serviceManagedLaunch = launch.managed;
+  // The stopped-by-user skip and the start backoff decide whether to start at
+  // all, so they apply ONLY to our own service templates (APRA_FLEET_SERVICE=1,
+  // set by the task wrapper, the plist and the unit) -- never to a hand-run
+  // `apra-fleet run` in a shell that merely inherited INVOCATION_ID or
+  // XPC_SERVICE_NAME (systemd-run --shell, tmux from a user unit, CI runners).
+  const startGuard = launch.service ? await import('./services/service-start-guard.js') : null;
+  if (startGuard) {
+    // A deliberate `apra-fleet stop` must stick across logon/boot on every OS:
+    // launchd RunAtLoad, an enabled systemd unit, the Windows HKCU Run
+    // fallback, or an old task that could not be disabled all launch us here.
+    // Exit 0 (launchd SuccessfulExit=false / systemd Restart=on-failure do not
+    // restart it) and KEEP the marker -- only `apra-fleet start`/install clear it.
+    const { readStoppedMarker, describeStoppedMarker } = await import('./services/stopped-marker.js');
+    const stopped = readStoppedMarker();
+    if (stopped) {
+      const line = `${new Date().toISOString()} apra-fleet service launch skipped: ${describeStoppedMarker(stopped)}`;
+      // Someone is watching (a console, or stderr on a mintty/Git Bash tty
+      // while stdout is piped): always say why.
+      if (process.stdout.isTTY || process.stderr.isTTY) console.error(line);
+      else if (startGuard.shouldLogServiceNotice('stopped-by-user')) console.log(line);
+      process.exit(0);
+    }
+    const skip = startGuard.serviceStartBackoff();
+    if (skip) {
+      console.log(`${new Date().toISOString()} ${skip}`);
+      process.exit(0);
+    }
+    startGuard.recordServiceStartAttempt();
+  }
+
   const { loadOnboardingState, resetSessionFlags } = await import('./services/onboarding.js');
   const { getAllAgents: getAgentsForStartup } = await import('./services/registry.js');
   // Pass current member count so upgrade detection works: existing registry + no onboarding.json -> skip banner
@@ -381,7 +427,18 @@ async function startHttpServer() {
   // Detect already-running instance before starting
   const instance = await checkRunningInstance();
   if (instance.running) {
-    logLine('startup', `apra-fleet already running at ${instance.url} pid=${instance.pid} -- exiting`);
+    const msg = `apra-fleet already running at ${instance.url} pid=${instance.pid} -- exiting`;
+    if (startGuard) {
+      // Service launches (a revive-trigger tick) go to the service log only,
+      // not a fresh fleet-<pid>.log per tick, and at most once an hour (a
+      // server running outside the task would otherwise log ~288 lines/day).
+      if (startGuard.shouldLogServiceNotice('already-running')) {
+        console.log(`${new Date().toISOString()} ${msg}`);
+      }
+      startGuard.clearServiceStartFailures();
+    } else {
+      logLine('startup', msg);
+    }
     process.exit(0);
   }
   if (instance.state === 'gone') {
@@ -429,6 +486,12 @@ async function startHttpServer() {
 
   // Release startup lock now that server.json is written (server.json is the long-lived detection mechanism)
   lock.release();
+  // The stopped-by-user marker is NOT cleared here: only an explicit
+  // `apra-fleet start` / `apra-fleet install` ends a deliberate stop. (A
+  // service launch never gets this far while it exists; a manual `run`
+  // leaves it, so if this server later dies clients still do not
+  // auto-start -- the conservative side.)
+  startGuard?.clearServiceStartFailures();
 
   // Make HTTP handle available to shutdown_server tool
   setHttpHandle(handle);

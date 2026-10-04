@@ -11,17 +11,29 @@
  *      - 'stdio'                       -> stdio self-spawn, no probe.
  *      - APRA_FLEET_SERVER_CMD/_BIN set (and transport is not forced 'http')
  *                                      -> explicit stdio request, no probe.
- *      - 'http'                        -> probe only; NEVER falls back to stdio.
- *      - unset                         -> http is the product default: probe, then fall back.
+ *      - 'http'                        -> probe only; never starts a server, never stdio.
+ *      - unset                         -> http is the product default: probe, then step 3.
  *   2. HTTP singleton probe -- checkRunningInstance(): ~/.apra-fleet/data/server.json
  *      {pid, url}, pid-alive check + GET <url with /mcp -> /health> (2s timeout),
  *      self-healing (deletes server.json only for a dead pid or a refused port;
  *      a live-but-unresponsive server keeps it). On success: attach over
  *      StreamableHttpTransport, spawn nothing.
- *   3. stdio self-spawn fallback (refused while an unresponsive HTTP singleton
- *      still owns the data dir) -- the existing four command tiers
- *      (APRA_FLEET_SERVER_CMD, APRA_FLEET_SERVER_BIN, bundled sibling index.js,
- *      dev-monorepo dist/index.js), fed to StdioTransport.
+ *   3. The singleton is verifiably GONE (no server.json, dead pid, or refused
+ *      port): start the SHARED HTTP server exactly as `apra-fleet start` does
+ *      (auto-start.mjs -- detached, user-level, outlives this client; a lock
+ *      serialises racing clients; capped at N starts per M minutes), wait for
+ *      /health, then attach over HTTP. An UNRESPONSIVE singleton (alive, not
+ *      answering) is never replaced: actionable error. (GitHub #585 recovery;
+ *      this replaced the old private stdio self-spawn, which is now only
+ *      reachable via APRA_FLEET_TRANSPORT=stdio or APRA_FLEET_SERVER_CMD/_BIN.)
+ *
+ * Long-lived HTTP clients get a ReconnectingHttpTransport (connectFleet /
+ * createFleetHttpTransport): on a refused connection it re-probes, auto-starts
+ * a gone server and retries a request ONCE only when it provably never reached
+ * the server -- never an in-flight execute_prompt/execute_command.
+ *
+ * Claude Code and other MCP hosts connect by URL and never use this module;
+ * they are covered by the OS user-level service (install), not by this.
  *
  * Scope guard (ADR): the launcher/auto-sprint client and the MCP server are ALWAYS
  * separate processes. This module decides only the transport, never merges them.
@@ -35,9 +47,18 @@ import net from 'node:net';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { StdioTransport, StreamableHttpTransport } from './transport.mjs';
+import { StdioTransport } from './transport.mjs';
 import { McpClient } from './client.mjs';
 import { ApraFleet } from './api.mjs';
+import { autoStartFleetServer, readStoppedByUser, stoppedByUserError } from './auto-start.mjs';
+import { ReconnectingHttpTransport } from './reconnecting-transport.mjs';
+
+export {
+    autoStartFleetServer, resolveFleetStartCommand, lastServerLog, FleetAutoStartError,
+    readStoppedByUser, stoppedByUserError, STOPPED_BY_USER_FILE,
+    AUTOSTART_MAX_STARTS, AUTOSTART_WINDOW_MS, AUTOSTART_TIMEOUT_MS,
+} from './auto-start.mjs';
+export { ReconnectingHttpTransport, isNeverDeliveredError } from './reconnecting-transport.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -219,12 +240,15 @@ export function resolveFleetServerCommand(deps = {}) {
 }
 
 /**
- * The ADR's resolution order, as a pure descriptor (nothing is spawned or connected).
+ * The ADR's resolution order. Returns a connection descriptor; nothing is
+ * connected. The only side effect: when the shared HTTP server is verifiably
+ * gone, it is started (step 3) -- inject `autoStartFleetServer` to fake that.
  *
  * @param {{ env?: Record<string, string|undefined>, dirname?: string,
  *           exists?: (candidate: string) => boolean,
- *           checkRunningInstance?: (deps?: object) => Promise<object> }} [deps]
- * @returns {Promise<{mode: 'http', url: string, pid: number, reason: string}
+ *           checkRunningInstance?: (deps?: object) => Promise<object>,
+ *           autoStartFleetServer?: (deps: object) => Promise<{url: string, pid: number, started?: boolean}> }} [deps]
+ * @returns {Promise<{mode: 'http', url: string, pid: number, reason: string, started?: boolean}
  *                 | {mode: 'stdio', command: string, args: string[], reason: string}>}
  */
 export async function resolveFleetServerConnection(deps = {}) {
@@ -269,7 +293,7 @@ export async function resolveFleetServerConnection(deps = {}) {
             'APRA_FLEET_TRANSPORT=http was requested, but no healthy apra-fleet HTTP singleton was found.\n' +
                 `  Checked: ${getServerInfoPath(env)} (pid alive + GET /health)\n` +
                 "  Start one with 'apra-fleet start' (or 'apra-fleet install'), or unset " +
-                'APRA_FLEET_TRANSPORT to allow the stdio self-spawn fallback.',
+                'APRA_FLEET_TRANSPORT to let the client start the shared server itself.',
         );
     }
 
@@ -278,18 +302,57 @@ export async function resolveFleetServerConnection(deps = {}) {
     if (instance && instance.state === 'unresponsive') {
         throw new Error(
             `The apra-fleet HTTP server (pid ${instance.pid} at ${instance.url}) is alive but not answering /health.\n` +
-                '  Refusing to self-spawn a second (stdio) server on the same data dir.\n' +
+                '  Refusing to start a second server on the same data dir.\n' +
                 "  Run 'apra-fleet stop' and retry, or set APRA_FLEET_TRANSPORT=stdio to force a private stdio server.",
         );
     }
 
-    // Step 3 -- stdio self-spawn fallback.
-    const cmd = resolveFleetServerCommand(deps);
+    // Step 3 -- the shared server is gone: start it the way 'apra-fleet start'
+    // does and attach over HTTP.
+    // A server the user stopped with 'apra-fleet stop' stays stopped: fail
+    // with the actionable error instead of starting it (also on a mid-run
+    // reconnect, which re-runs this resolution).
+    const stopped = readStoppedByUser(getFleetDataDir(env));
+    if (stopped) throw stoppedByUserError(stopped);
+    const autoStart = deps.autoStartFleetServer || autoStartFleetServer;
+    const started = await autoStart({ ...deps, env, checkRunningInstance: probe });
     return {
-        mode: 'stdio',
-        ...cmd,
-        reason: `no healthy fleet singleton found; self-spawning stdio server via ${cmd.command} ${cmd.args.join(' ')}`,
+        mode: 'http',
+        url: started.url,
+        pid: started.pid,
+        started: started.started !== false,
+        reason: started.started === false
+            ? `attached to HTTP singleton at ${started.url} (pid ${started.pid}), started by another client`
+            : `the shared HTTP server was not running; started it and attached at ${started.url} (pid ${started.pid})`,
     };
+}
+
+/**
+ * A ReconnectingHttpTransport for an http-mode resolution: on a refused
+ * connection or a lost session it re-runs the resolution (re-probe; auto-start
+ * a gone server unless APRA_FLEET_TRANSPORT=http) and reconnects.
+ *
+ * @param {{url: string}} connection an http-mode result of resolveFleetServerConnection
+ * @param {object} [deps] same bag as resolveFleetServerConnection, plus `options`
+ *   (transport options) and `createTransport` (tests).
+ * @returns {ReconnectingHttpTransport}
+ */
+export function createFleetHttpTransport(connection, deps = {}) {
+    const env = deps.env || process.env;
+    const forcedHttp = (env.APRA_FLEET_TRANSPORT || '').trim().toLowerCase() === 'http';
+    // Reconnecting must stay on HTTP: never let the resolver pick stdio here.
+    const relocateEnv = { ...env };
+    delete relocateEnv.APRA_FLEET_SERVER_CMD;
+    delete relocateEnv.APRA_FLEET_SERVER_BIN;
+    if (!forcedHttp) delete relocateEnv.APRA_FLEET_TRANSPORT;
+    return new ReconnectingHttpTransport(connection.url, {
+        options: deps.options || {},
+        createTransport: deps.createTransport,
+        relocate: async () => {
+            const r = await resolveFleetServerConnection({ ...deps, env: relocateEnv });
+            return r.url;
+        },
+    });
 }
 
 /**
@@ -305,7 +368,7 @@ export async function connectFleet(deps = {}) {
     const options = deps.options || {};
 
     const transport = resolution.mode === 'http'
-        ? new StreamableHttpTransport(resolution.url, options)
+        ? createFleetHttpTransport(resolution, { ...deps, options })
         : new StdioTransport(resolution.command, resolution.args, options);
 
     await transport.start();

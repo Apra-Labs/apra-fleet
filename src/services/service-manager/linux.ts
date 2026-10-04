@@ -5,6 +5,7 @@ import os from 'node:os';
 import type { ServiceManager, ServiceStatus } from './types.js';
 import { LINUX_UNIT_NAME, SERVICE_ENV_MARKER } from './types.js';
 import { gracefulStopByServerJson } from './index.js';
+import { clearServiceStartFailures } from '../service-start-guard.js';
 
 const UNIT_DIR = path.join(os.homedir(), '.config', 'systemd', 'user');
 const UNIT_PATH = path.join(UNIT_DIR, LINUX_UNIT_NAME);
@@ -59,6 +60,8 @@ export class LinuxServiceManager implements ServiceManager {
   }
 
   async start(): Promise<void> {
+    // An explicit start is never skipped by the failed-start backoff.
+    clearServiceStartFailures();
     checkSystemd();
     execFileSync('systemctl', ['--user', 'start', SERVICE_NAME]);
   }

@@ -7,16 +7,16 @@ import { existsSync, realpathSync } from 'node:fs';
 import { FleetWorkflow } from '@apralabs/apra-fleet-workflow';
 import { WorkflowEngine } from '@apralabs/apra-fleet-workflow/engine';
 import { createDashboardViewer } from '@apralabs/apra-fleet-workflow/viewer';
-import { StreamableHttpTransport } from '@apralabs/apra-fleet-client/transport';
 import { McpClient } from '@apralabs/apra-fleet-client/client';
 import { ApraFleet } from '@apralabs/apra-fleet-client';
 import {
     resolveFleetServerCommand as sharedResolveFleetServerCommand,
     resolveFleetServerConnection as sharedResolveFleetServerConnection,
+    createFleetHttpTransport,
     getServerInfoPath,
 } from '@apralabs/apra-fleet-client/server-resolution';
 import { beadsExtension } from '../fleet-sprint/viewer-extensions.mjs';
-import { validateIssueId, validateBranchName, checkMemberTopology, createMemberReservationClient, resyncReacquiredMember, commandResultToSoftGit } from '../fleet-sprint/runner.js';
+import { validateIssueId, validateBranchName, validateBranchPair, checkMemberTopology, createMemberReservationClient, resyncReacquiredMember, commandResultToSoftGit } from '../fleet-sprint/runner.js';
 import { normalizeRole } from '../fleet-sprint/contracts.mjs';
 import { ROLE_BACKLOG, resolveBacklogRoleAlias, selectBacklogMember, formatBacklogSelection } from '../fleet-sprint/backlog-role.mjs';
 import { BEADS_IDENTITY_PROBES, parseBeadsIdentity, formatBeadsIdentity, parseExpectedIdentity } from '../fleet-sprint/beads-identity.mjs';
@@ -655,6 +655,7 @@ async function main() {
         targetIssues.forEach(validateIssueId);
         validateBranchName(branchName, 'branch');
         validateBranchName(baseBranch, 'base');
+        validateBranchPair(branchName, baseBranch);
         ({ roleMap, warnings: roleMapWarnings } = await resolveRoleMapWithWarnings(values['role-map']));
         for (const w of roleMapWarnings) console.warn(`Warning: ${w}`);
     } catch (err) {
@@ -720,7 +721,17 @@ async function main() {
     // fail fast with a typed error naming the missing connection config --
     // silently self-spawning a private stdio server here would defeat the
     // whole point of sharing one fleet-server connection across N children.
-    const connection = await resolveFleetServerConnection();
+    let connection;
+    try {
+        connection = await resolveFleetServerConnection();
+    } catch (err) {
+        // e.g. the server was stopped with 'apra-fleet stop', or auto-start
+        // refused/failed: print the actionable message on stderr (the
+        // supervisor surfaces a launch's stderr tail), not a stack trace.
+        console.error(`Error: ${err && err.message ? err.message : err}`);
+        process.exit(1);
+        return;
+    }
     if (connection.mode !== 'http') {
         const err = new FleetServerUnreachableError(
             'No reachable apra-fleet HTTP singleton was found. cli.mjs no longer ' +
@@ -736,7 +747,10 @@ async function main() {
         process.exit(1);
         return;
     }
-    const transport = new StreamableHttpTransport(connection.url);
+    // Reconnecting HTTP transport: if the shared server dies mid-run it is
+    // re-probed (and auto-started when gone) before the next request; a request
+    // is retried once only when it provably never reached the server.
+    const transport = createFleetHttpTransport(connection, { dirname: __dirname, exists: existsSync });
     await transport.start();
     const mcpClient = new McpClient(transport);
 
