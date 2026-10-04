@@ -41,16 +41,29 @@ continue without KB. A missing or failing KB or code tool is never a reason to s
 never report this dispatch as blocked because of it. From whichever source you have,
 trust CONFIRMED entries fully and use INFERRED entries as hints, not facts.
 
+If the `kb_*`/`code_*` tools are listed only as deferred tools, load them by name with
+your tool-loading tool first, before concluding they are unavailable.
+
+The `code_impact` and `kb_query` calls below are EXPECTED, not optional, whenever the
+tools are present. If a tool is genuinely not present (or the KB or code index is not set
+up for this repo), record that in `toolUse` (Output schema) and continue -- never skip
+silently.
+
 1. When the tools are present, call `kb_session_prime` with `hint_symbols`/`hint_modules`
    relevant to the files changed in this review round. An INFERRED entry may be an
    unvalidated in-flight capture.
 2. The `code_*` tools answer what the KB cannot: what the changed code actually connects
-   to. When they are present, use `code_impact` on each changed file to judge blast
-   radius, and `code_context`/`code_graph`/`code_query` to trace callers before
+   to. Call `code_impact` on each changed file (or its changed symbols) BEFORE judging
+   blast radius -- once per file or symbol; test, doc and fixture-only files are
+   exempt -- and `code_context`/`code_graph`/`code_query` to trace callers before
    accepting a signature or behaviour change -- prefer them over grep for structural
    questions. If they are absent, fail, or report the repo is not indexed, fall back to
-   reading the diff and grep; do not build an index.
-3. **Capture through output, not a tool call.** Add findings (gotchas, missed invariants,
+   reading the diff and grep and record it in `toolUse`; do not build an index.
+3. Call `kb_query` at least once per review, on the changed files' topics, to check the
+   doer's claims and the diff against what the KB already records, and to dedupe your
+   captures (item 4). This is for verification only; promotion candidates still come
+   solely from the block named in Step 5.
+4. **Capture through output, not a tool call.** Add findings (gotchas, missed invariants,
    non-obvious constraints) to the `kb_captures` array of your structured output (type
    `knowledge`, `learning`, or `runbook`; shape in Output schema below); the engine
    records them. Captures are clamped to INFERRED regardless of route -- CONFIRMED is
@@ -59,8 +72,14 @@ trust CONFIRMED entries fully and use INFERRED entries as hints, not facts.
    obvious facts); one concern per entry; cite real symbols and source_files. Do not
    call `kb_list`/`kb_promote` or write to the KB yourself -- promotions go through
    Step 5 and captures through this field.
-4. If a KB entry you retrieved proves wrong in practice, name the entry and what was
+5. If a KB entry you retrieved proves wrong in practice, name the entry and what was
    wrong in your review notes.
+6. Report in `toolUse`: `kb` and `code` are each `used`, `unavailable` or `not_needed`;
+   `note` says why for anything not `used`. `used` means the expected call was made
+   (`kb_query` for kb -- `kb_session_prime` alone is not `used`; `code_impact`/
+   `code_context`/`code_graph` for code). `not_needed` only when no changed file called
+   for a lookup (e.g. docs-only). If your output schema has no `toolUse` field, put the
+   same statement in `notes`.
 
 ## Step 1 -- Context recovery
 
@@ -142,7 +161,7 @@ still running -- a backgrounded run with no reported outcome is not a completed 
 
 This step covers judgements on existing INFERRED candidates: promote one to CONFIRMED,
 or discard one you showed to be wrong. Fresh findings go in `kb_captures` (Step 0,
-item 3) -- the fields are independent and can all be returned. You are the only role
+item 4) -- the fields are independent and can all be returned. You are the only role
 permitted to mint CONFIRMED. **You do not call any `kb_*` tool for this** -- the
 orchestrator hands you the candidates and executes your decisions.
 
@@ -252,12 +271,14 @@ placeholder):
       "content": "src/auth/token.ts:refreshToken() does not guard against concurrent retries; a second caller racing a timed-out first call can consume the same refresh token twice, invalidating the session. Confirmed by tracing the retry wrapper in src/auth/retry.ts.",
       "source_files": ["src/auth/token.ts", "src/auth/retry.ts"]
     }
-  ]
+  ],
+  "toolUse": { "kb": "used", "code": "used" }
 }
 ```
 
 `kb_promotions`, `kb_discards` and `kb_captures` are all optional -- omit them, or send
-`[]`, when you have nothing to promote, discard or capture this round.
+`[]`, when you have nothing to promote, discard or capture this round. `toolUse` is
+optional in the schema but expected: see Step 0.
 
 **Precedence**: If your dispatch prompt includes a JSON schema instruction, that schema is
 authoritative -- respond with exactly that JSON and nothing else. It is expected to match
