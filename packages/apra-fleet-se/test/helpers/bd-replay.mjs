@@ -173,7 +173,12 @@ const SYNC_REMOTE_UNSET_STDOUT = '{\n  "key": "sync.remote",\n  "location": "con
 // behavior changed. Normalize the quoted path argument to a stable
 // placeholder for MATCHING purposes only -- record/real mode still executes
 // the real, unmodified `cmd` (with the real path bd must actually read).
-const normalizeCommandForMatching = (cmd) => cmd.replace(/(--body-file|--file)\s+"[^"]*"/g, '$1 "<TMPFILE>"');
+// `bd init --database <name>` (bdInitCommandForClone, for long scenario keys)
+// differs from a bare `bd init` only in the dolt db name, which replay ignores;
+// fold both to `bd init` so a recording made with either form matches the other.
+const normalizeCommandForMatching = (cmd) => cmd
+    .replace(/(--body-file|--file)\s+"[^"]*"/g, '$1 "<TMPFILE>"')
+    .replace(/^(\s*bd\s+init)\s+--database\s+\S+\s*$/, '$1');
 
 // ---------------------------------------------------------------------------
 // real-mode D-pull/D-push bracket caching (apra-fleet-eft.17.1)

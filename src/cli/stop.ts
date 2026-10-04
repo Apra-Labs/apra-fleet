@@ -5,12 +5,20 @@ import { checkRunningInstance } from '../services/singleton.js';
 import { SERVER_INFO_PATH, FLEET_DIR, isNonDefaultInstance } from '../paths.js';
 import { getServiceManager } from '../services/service-manager/index.js';
 import { isApraFleetProcess, isPidAlive, postShutdown } from '../utils/process-utils.js';
+import { writeStoppedMarker } from '../services/stopped-marker.js';
 
 export async function runStop(_args: string[]): Promise<void> {
   // A sandboxed instance (non-default port or data dir) must never touch the
   // machine-global service registration -- symmetric with runStart(). It
   // stops only its own server via its data dir's server.json.
   const sandboxed = isNonDefaultInstance();
+  // Record the deliberate stop FIRST (so no client auto-starts the server
+  // while or after it goes down) -- but only into a data dir that is ours. A
+  // port-only override shares the default data dir with another instance
+  // (e.g. production), so it records the stop only once the server it is
+  // about to stop is confirmed to be on its port (below).
+  const ownsDataDir = !sandboxed || !!process.env.APRA_FLEET_DATA_DIR;
+  if (ownsDataDir) writeStoppedMarker('apra-fleet stop');
   if (sandboxed) {
     console.log('Non-default instance: stopping only this instance (registered OS services are not touched).');
   } else {
@@ -48,6 +56,7 @@ export async function runStop(_args: string[]): Promise<void> {
       return;
     }
   }
+  if (!ownsDataDir) writeStoppedMarker('apra-fleet stop');
 
   const { pid, url } = instance;
   await postShutdown(url);
