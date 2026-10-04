@@ -191,6 +191,9 @@ describe('runInstall --force service step never leaves the server stopped', () =
     await expect(runInstall(['--skill', 'none', '--force', '--transport', 'http'])).rejects.toThrow('exit');
     expect(process.exit).toHaveBeenCalledWith(1);
     expect(errLines.join('\n')).toContain(serviceRestartCommand());
+    // apra-fleet is a user-level service: never advise an elevated install.
+    expect(errLines.join('\n')).not.toMatch(/elevated prompt|as administrator/i);
+    expect(errLines.join('\n')).toContain("apra-fleet status");
     expect(logLines.join('\n')).not.toContain('installed successfully');
   });
 
