@@ -71,9 +71,19 @@ jobs:
           git config --global user.email "regression-nightly@apra-fleet.invalid"
 
       # Imports git-tracked .beads/issues.jsonl so dashboard/backlog tests
-      # have a queryable DB (the Dolt DB is gitignored). Same as ci.yml.
+      # have a queryable DB (the Dolt DB is gitignored). Same as ci.yml,
+      # including the retry for a concurrent `bd dolt push` moving the ref.
       - name: Bootstrap this repo's own beads DB
-        run: bd bootstrap --yes
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            if bd bootstrap --yes; then exit 0; fi
+            echo "::warning::bd bootstrap failed (attempt $attempt/3)"
+            rm -rf .beads/embeddeddolt
+            if [ "$attempt" -lt 3 ]; then sleep $((attempt * 15)); fi
+          done
+          echo "::error::bd bootstrap failed after 3 attempts"
+          exit 1
 
       # --status exit codes: 0 pass, 1 failures, 3 still running, 2 infra
       # fail-loud. Start and poll in one step so the detached run is ours.
