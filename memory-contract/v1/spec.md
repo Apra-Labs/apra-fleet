@@ -18,7 +18,7 @@ full. Do not copy invariant prose between this file, `methods.json`, and
 
 ## 1. Envelope
 
-Every one of the 23 tools (16 `kb_*`, 7 `code_*`) is registered through the
+Every one of the 24 tools (17 `kb_*`, 7 `code_*`) is registered through the
 shared `wrapTool` helper (`src/services/tool-registry.ts`), so every response is
 wrapped in the same minimal text-content envelope, current fields only:
 
@@ -31,14 +31,14 @@ ToolTextResponse = { content: [ { type: "text", text: string } ] }
   though no tool declares a response zod schema (`INVENTORY.md` section 3).
 - No tool in this surface returns `structuredContent`; that channel is unused
   here (`wrapTool` only forwards it when the handler returns
-  `{text, structuredContent}`, and all 23 handlers return a bare `string`).
+  `{text, structuredContent}`, and all 24 handlers return a bare `string`).
 - **The published schemas are deliberately WIDER than the reachable shape, and
   that is not a contradiction of the two statements above.** Every
   `schemas/*.response.json` permits `content` to hold 1-3 items, allows an
   optional `annotations` object on each item, and allows an optional
   `structuredContent` -- because the schema documents `wrapTool`'s general
-  contract, not the subset these 23 handlers happen to reach. The narrower
-  claims above are REACHABILITY findings about this surface: all 23 handlers
+  contract, not the subset these 24 handlers happen to reach. The narrower
+  claims above are REACHABILITY findings about this surface: all 24 handlers
   return a bare `string`, so `wrapTool` emits exactly one text item and never
   populates `structuredContent`. A consumer MUST validate against the schema,
   which accepts everything `wrapTool` can emit; a consumer that hard-codes the
@@ -48,7 +48,7 @@ ToolTextResponse = { content: [ { type: "text", text: string } ] }
   extension, not a schema change -- see section 5.
 - On top of the envelope, a response body is either:
   - **Body known** -- the text envelope plus a documented `parsed` object, for
-    all 16 `kb_*` tools (`schemas/kb_*.response.json`).
+    all 17 `kb_*` tools (`schemas/kb_*.response.json`).
   - **Body opaque** -- the text envelope only, with `parsed` typed as
     unconstrained JSON, for all 7 `code_*` tools (`schemas/code_*.response.json`).
     This is a deliberate permissive schema (see `methods.json`'s
@@ -189,7 +189,7 @@ quarantine itself lives in "Directive quarantine" below (T2).
 
 ## 4. Invariants
 
-Six subsections, each the spec.md home that an `x-invariant` id in
+Seven subsections, each the spec.md home that an `x-invariant` id in
 `schemas/*.json` (see `tests/GENERATOR-DECISION.md` section 4) or a
 `see_also` pointer in `methods.json` resolves to -- per the hand-off list in
 `tests/GENERATOR-DECISION.md` section 4 ("no invariant points anywhere
@@ -698,6 +698,103 @@ the response contract is observed rather than enforced -- is not
 mechanically checkable; see `tests/DEGRADATION.md` D-4, which records the
 same root fact (`parsed` is a consumer-side decode of `wrapTool`'s text
 envelope, never a schema-checked wire field) for the whole surface.
+
+### 4.7 Demotion
+
+**THE RULE.** A provider MUST expose `demote(id, reason, evidenceFiles?)` as the
+DOWN rung of the same trust ladder `promote()` (4.2, `methods.json` P-8) walks
+up: `CONFIRMED -> INFERRED`, `INFERRED -> UNVERIFIED`, ONE rung per call, never
+more. `UNVERIFIED` MUST be a floor: a call against an entry already at
+`UNVERIFIED` MUST be a no-op that returns `confidence_before` equal to
+`confidence_after` and MUST write NOTHING -- not `demoted_at`, not a
+re-snapshotted basis, not the content note. A provider MUST require a
+non-trivial `reason` (the same evidence floor `promote()` enforces) and MUST
+refuse a call that omits one. `evidence_files` is OPTIONAL: a demotion whose
+basis simply vanished has nothing new to cite, so omitting it or supplying an
+empty array MUST succeed; but when files ARE supplied, every one MUST resolve
+in the worktree through the SAME resolver `promote()` uses for its own basis
+check, and any that do not MUST refuse the whole call, writing nothing. A
+provider MUST refuse a demote against an already-superseded entry, and MUST
+refuse a demote of any `user-directive` entry outright regardless of its
+current confidence -- directive state is human-terminal (4.3) and MUST NOT
+become reachable through a second, agent-facing route. Unlike `promote()`,
+`demote()` carries NO basis-resolution gate on the entry's OWN `source_files`:
+an entry whose cited basis has vanished IS the legitimate demote target, not a
+disqualified one. Every refusal MUST be checked, and MUST leave the row
+byte-identical, before any write happens. A successful demote MUST leave
+`promoted_at` and `source` untouched, and MUST append a demotion note shaped so
+it is NOT mistaken for a `kb_feedback` downvote marker -- a demoted entry MUST
+remain revivable by a later freshness sweep (4.5), which a feedback-flagged
+entry is not.
+
+**THE PROOF.** `SqliteProvider.demote()`
+(`src/services/knowledge/sqlite-provider.ts:1535-1620`) checks every refusal
+before the first write, in this order: missing entry (`:1542`, `Entry not
+found`), already-superseded (`:1545`), `type === 'user-directive'`
+(`:1552-1556`, pointing the caller at the CLI-only `reject-directive` command
+instead of refusing silently), a `reason` below `MIN_PROMOTE_REASON_LENGTH`
+(`:1560-1565`, `isNonTrivialPromoteReason` -- the identical helper `promote()`
+calls), and unresolved `evidence_files` (`:1573-1582`, `validateFilePaths` then
+`unresolvableBasisFiles`, the SAME resolver `promote()`'s own basis check uses,
+so the two operations never disagree about whether a path is checkable). The
+ladder itself is `:1587-1596`: `CONFIRMED -> INFERRED`, `INFERRED ->
+UNVERIFIED`, and the `else` branch (the `UNVERIFIED` floor) returns
+`confidence_before` as `confidence_after` and returns immediately -- no
+`UPDATE` statement runs for a no-op demote. A successful call's single write
+(`:1616-1617`) sets `confidence`, `demoted_at`, `demoted_basis_hashes` (a
+snapshot of the row's OWN already-stored `source_file_hashes`, not a re-hash
+off disk -- comment `:1610-1614` explains why: the question a later promotion
+asks is whether the files moved SINCE the demotion, which only a point-in-time
+copy can answer) and `content`; it does not touch `promoted_at` or `source`.
+The appended note is `'\n[Demoted: ' + reason + evidenceSuffix + ' -- ' +
+author + ']'` (`:1606-1607`), ONE leading newline, which the method's own doc
+comment (`:1527-1530`) states deliberately does not match `FEEDBACK_MARKER_RE`
+(two newlines plus `'[feedback '` plus an ISO date) -- a match would make the
+entry permanently unrevivable by the freshness sweep (`freshnessRevivable`,
+4.5). `HttpKbProvider.demote()` throws its own not-supported error and writes
+nothing to the local fallback DB, reached through `requireSqliteProject`
+(`src/tools/kb-demote.ts:18-23`) the same way `kb_feedback` is. The four new
+taxonomy codes are `E-DEMOTE-REASON-REQUIRED`, `E-DEMOTE-EVIDENCE-UNRESOLVED`,
+`E-DEMOTE-SUPERSEDED` and `E-DEMOTE-REFUSED-DIRECTIVE` (`taxonomy.json` groups
+`authority` and `governance`); the not-found and path-traversal refusals reuse
+the existing `E-ENTRY-NOT-FOUND` and `E-PATH-TRAVERSAL` codes rather than
+minting demote-specific twins.
+
+**THE OBLIGATION.** A second implementation MUST move at most one rung per
+call and MUST treat `UNVERIFIED` as a true floor -- a no-op call that writes
+`demoted_at`, re-snapshots the basis, or otherwise touches the row is
+observationally a successful demote with nothing to show for it, which is not
+a no-op at all. It MUST require the same non-trivial-reason floor that governs
+promotion: lowering trust is exactly as auditable an act as raising it, never a
+no-reason housekeeping operation. It MUST validate supplied `evidence_files`
+through the SAME resolver promotion uses, so the two operations never disagree
+about what counts as a checkable path, while still accepting an empty or
+omitted list -- a basis-vanished demotion legitimately has nothing to cite. It
+MUST NOT gate `demote()` on the entry's own existing basis the way `promote()`
+is gated: requiring a resolvable basis to demote would make the
+worst-evidenced entries exactly the ones trust could never be pulled back down
+from. It MUST refuse a `user-directive` demote outright rather than silently
+no-op it or route it through the ordinary ladder, because directive state has
+exactly one terminal authority (the human CLI) and a demote that "succeeds"
+quietly would be a second, agent-reachable one. And it MUST keep the demotion
+note shaped so it stays distinguishable from a feedback downvote marker,
+because the freshness sweep's revival predicate (4.5) depends on that
+distinction remaining true.
+
+**THE TEST HOOK.** `tests/knowledge/kb-demote.test.ts` exercises the ladder
+against a real `:memory:` provider with the row read back after every call:
+one rung per call in each direction, the `UNVERIFIED` no-op asserted
+byte-identical, each refusal (not-found, superseded, user-directive, reason
+under 20 trimmed characters, unresolved evidence, a traversing evidence path)
+asserted to leave the row untouched, `evidence_files` omitted/empty/populated,
+the appended note asserted NOT to match `FEEDBACK_MARKER_RE`, a later
+freshness sweep asserted to still revive a demoted entry, a `kb_promote` call
+after a demote asserted to move the entry one rung back up, the
+pre-existing-DB `demoted_*` column ALTER path, and `HttpKbProvider.demote()`'s
+refusal writing nothing to the local fallback. Fixtures
+`fixtures/kb_demote/{happy,noop-unverified,refusal-reason-required,
+refusal-evidence-unresolved,refusal-superseded,refusal-refused-directive}.json`
+cover the round-trip harness.
 
 ## 5. Envelope extensions (T3, RESERVED)
 

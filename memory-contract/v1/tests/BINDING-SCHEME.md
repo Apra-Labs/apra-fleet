@@ -23,7 +23,7 @@ memory-contract/v1/bindings/mcp/<tool>.json
 ```
 
 `<tool>` is the exact tool name from `INVENTORY.md` section 1/2 (e.g.
-`kb_capture`, `code_graph`) -- 23 files today (16 `kb_*` + 7 `code_*`), one per
+`kb_capture`, `code_graph`) -- 24 files today (17 `kb_*` + 7 `code_*`), one per
 tool, no more and no fewer. `INVENTORY.md` remains the arbiter of the count;
 this scheme does not re-derive it.
 

@@ -11,22 +11,29 @@ after merging main at `97877f5e` (kb_*/code_* surface unchanged; server total
 
 ## 1. Verified tool count
 
-**23 tools: 16 `kb_*` + 7 `code_*`.**
+**24 tools: 17 `kb_*` + 7 `code_*`.**
 
-The source plan claimed 24 (17 `kb_*` + 7 `code_*`). That claim is WRONG by one
-`kb_*` tool. The verified number is 23.
+The source plan originally claimed 24 (17 `kb_*` + 7 `code_*`). The audit below,
+against the tree named in the preamble, found that claim WRONG by one `kb_*`
+tool at the time -- the verified number then was 23 (16 `kb_*` + 7 `code_*`).
+`kb_demote` (my-beads-db-qy8.2) has since been registered as a seventeenth
+`kb_*` tool, so the live count is 24 again. This is a new tool landing, not a
+correction of the original audit: the original 23-count finding below still
+accurately describes the tree it was taken against.
 
-How it was verified (two independent methods, agreeing):
+How the original count was verified (two independent methods, agreeing):
 
 1. **Static** -- every `server.tool` call site with a `kb_` or `code_` prefixed
    name in `src/services/tool-registry.ts` (the single registration function
    `registerAllTools`). No `kb_*`/`code_*` tool is registered anywhere else, and
-   no registration is conditional: all 23 calls are unguarded statements in the
-   body of `registerAllTools`.
+   no registration is conditional: all registration calls are unguarded
+   statements in the body of `registerAllTools` -- 23 of them at the time of
+   this audit, 24 today with `kb_demote` added.
 2. **Runtime** -- `registerAllTools` was driven with a 4-line fake `McpServer`
    (an object with a `tool()` method and `server.sendLoggingMessage()`) that
-   records every registration. Result: 58 tools registered in total, of which 16
-   carry the `kb_` prefix and 7 carry the `code_` prefix.
+   records every registration. Result at the time: 58 tools registered in
+   total, of which 16 carried the `kb_` prefix and 7 carried the `code_`
+   prefix; with `kb_demote` added, the `kb_*` count is 17 and the total is 59.
 
 The runtime method is the stronger evidence and is reproducible: it exercises the
 real registration path including the dynamic `await import(...)` of every tool
@@ -44,7 +51,7 @@ Response column notation:
 
 No tool in this surface declares a response zod schema; see section 3.
 
-### 2.1 kb_* tools (16)
+### 2.1 kb_* tools (17)
 
 | # | Tool | Request schema | Request fields | Response (observed) | Description (summarized) |
 |---|------|----------------|----------------|---------------------|---------------------------|
@@ -56,16 +63,17 @@ No tool in this surface declares a response zod schema; see section 3.
 | 6 | `kb_list` | `kbListSchema` (`src/tools/kb-list.ts`) | repo_remote_url, repo_path, confidence, type, module, symbol, tag, limit | `text(JSON): {results, total}` | List KB entries by confidence/type/module/symbol/tag, excluding superseded/stale, without touching FTS ranking or use_count telemetry. |
 | 7 | `kb_harvest` | `kbHarvestSchema` (`src/tools/kb-harvest.ts`) | repo_remote_url, repo_path, session_transcript, session_id | `text(JSON): {entries_captured, entries_updated, entries_skipped, entries_rejected}` | Scan a session transcript for learnings and capture them into the KB. Extracted entries are UNVERIFIED with author/source=harvest. |
 | 8 | `kb_promote` | `kbPromoteSchema` (`src/tools/kb-promote.ts`) | repo_remote_url, repo_path, id, reason | `text(JSON): {id, previous_confidence, new_confidence}` | Upgrade KB entry confidence UNVERIFIED -> INFERRED -> CONFIRMED, appending a promotion note as evidence trail. No-op on an already-CONFIRMED entry. |
-| 9 | `kb_freshness_sweep` | `kbFreshnessSweepSchema` (`src/tools/kb-freshness-sweep.ts`) | repo_remote_url, repo_path | `text(JSON): {checked, staled, unstaled}` | Bounded full-KB bidirectional freshness sweep: re-hash every entry's stored basis against the current worktree, stale mismatches, revive stale entries whose basis matches again (superseded/downvoted/invalidated stay retired). |
-| 10 | `kb_import` | `kbImportSchema` (`src/tools/kb-import.ts`) | repo_remote_url, path, repo, repo_path, scope, skip_sweep | `text(JSON): KbImportReport {imported, skipped, linked, flagged, rejected, sweep:{checked, staled, unstaled}}` | Import a merged bible (`.fleet/kb-canonical.json`) into the warm local KB via the AUDN choke point (dup/refine/contradiction routing); directive entries are forced to pending proposals. Runs a freshness sweep after import unless `skip_sweep`. |
-| 11 | `kb_resolve_contradiction` | `kbResolveContradictionSchema` (`src/tools/kb-resolve-contradiction.ts`) | repo_remote_url, repo_path, winnerId, loserId, evidence | `text(JSON): {winnerId, loserId}` | Resolve a KB contradiction pair: winner goes to CONFIRMED with evidence appended, loser is superseded+stale. Refuses (writes nothing) if either id is missing, already superseded, not a genuine pair, or involves an ACTIVE directive. |
-| 12 | `kb_reconcile_prefilter` | `kbReconcilePrefilterSchema` (`src/tools/kb-reconcile-prefilter.ts`) | repo_remote_url, repo_path | `text(JSON): {pairs, resolved[], left_for_agent[], skipped_directive}` | Mechanical hash-basis prefilter over flagged contradiction pairs: a pair with exactly one side hash-matching the current worktree is auto-resolved via `kb_resolve_contradiction`; the rest are left for the reconciler agent. |
-| 13 | `kb_setup` | `kbSetupSchema` (`src/tools/kb-setup.ts`) | repo_path, provider, remote, token | `text(JSON): {success, steps}` | Set up the KB: install the git post-commit hook, write provider config, store remote credentials encrypted. Run once per repo. |
-| 14 | `kb_export` | `kbExportSchema` (`src/tools/kb-export.ts`) | repo_remote_url, repo_path, scope | `text(JSON): {exported, path, scope, committed}` | Export CONFIRMED/non-superseded/non-stale entries to a canonical bible file. Project scope: only entries whose cited files match their recorded hash basis, merged additively (existing entries never removed; nothing new -> no rewrite, no commit). Global scope: unchanged. Auto-commits the bible file by default when content changed. |
-| 15 | `kb_stats` | `kbStatsSchema` (`src/tools/kb-stats.ts`) | repo_remote_url, repo, repo_path, symbols | `text(JSON): ProviderStats spread plus bible` -- `{supported?, reason?, totals, stale, flagged, superseded, retrieval, promote_ratio, coverage?, bible}` | Read-only KB health aggregation: totals by confidence/type, stale/flagged/superseded counts, retrieval hit_rate, promote_ratio, and canonical-bible presence/drift. Never bumps use_count/last_accessed. |
-| 16 | `kb_feedback` | `kbFeedbackSchema` (`src/tools/kb-feedback.ts`) | repo_remote_url, repo_path, id, reason, role | `text(JSON): {id, stale, flagged_for_review, confidence}` | Downvote a KB entry that proved wrong in practice: marks stale+flagged_for_review and appends a feedback note. Never deletes or touches confidence, except an ACTIVE directive is flagged but not staled. |
+| 9 | `kb_demote` | `kbDemoteSchema` (`src/tools/kb-demote.ts`) | repo_remote_url, repo_path, id, reason, evidence_files | `text(JSON): {id, previous_confidence, new_confidence}` | Downgrade KB entry confidence one rung: CONFIRMED -> INFERRED -> UNVERIFIED, no-op at UNVERIFIED. The DOWN rung of the ladder `kb_promote` walks up. Requires a non-trivial reason; `evidence_files` is optional (omit when the demotion has nothing new to cite). Refuses outright against a superseded entry or a `user-directive` entry. |
+| 10 | `kb_freshness_sweep` | `kbFreshnessSweepSchema` (`src/tools/kb-freshness-sweep.ts`) | repo_remote_url, repo_path | `text(JSON): {checked, staled, unstaled}` | Bounded full-KB bidirectional freshness sweep: re-hash every entry's stored basis against the current worktree, stale mismatches, revive stale entries whose basis matches again (superseded/downvoted/invalidated stay retired). |
+| 11 | `kb_import` | `kbImportSchema` (`src/tools/kb-import.ts`) | repo_remote_url, path, repo, repo_path, scope, skip_sweep | `text(JSON): KbImportReport {imported, skipped, linked, flagged, rejected, sweep:{checked, staled, unstaled}}` | Import a merged bible (`.fleet/kb-canonical.json`) into the warm local KB via the AUDN choke point (dup/refine/contradiction routing); directive entries are forced to pending proposals. Runs a freshness sweep after import unless `skip_sweep`. |
+| 12 | `kb_resolve_contradiction` | `kbResolveContradictionSchema` (`src/tools/kb-resolve-contradiction.ts`) | repo_remote_url, repo_path, winnerId, loserId, evidence | `text(JSON): {winnerId, loserId}` | Resolve a KB contradiction pair: winner goes to CONFIRMED with evidence appended, loser is superseded+stale. Refuses (writes nothing) if either id is missing, already superseded, not a genuine pair, or involves an ACTIVE directive. |
+| 13 | `kb_reconcile_prefilter` | `kbReconcilePrefilterSchema` (`src/tools/kb-reconcile-prefilter.ts`) | repo_remote_url, repo_path | `text(JSON): {pairs, resolved[], left_for_agent[], skipped_directive}` | Mechanical hash-basis prefilter over flagged contradiction pairs: a pair with exactly one side hash-matching the current worktree is auto-resolved via `kb_resolve_contradiction`; the rest are left for the reconciler agent. |
+| 14 | `kb_setup` | `kbSetupSchema` (`src/tools/kb-setup.ts`) | repo_path, provider, remote, token | `text(JSON): {success, steps}` | Set up the KB: install the git post-commit hook, write provider config, store remote credentials encrypted. Run once per repo. |
+| 15 | `kb_export` | `kbExportSchema` (`src/tools/kb-export.ts`) | repo_remote_url, repo_path, scope | `text(JSON): {exported, path, scope, committed}` | Export CONFIRMED/non-superseded/non-stale entries to a canonical bible file. Project scope: only entries whose cited files match their recorded hash basis, merged additively (existing entries never removed; nothing new -> no rewrite, no commit). Global scope: unchanged. Auto-commits the bible file by default when content changed. |
+| 16 | `kb_stats` | `kbStatsSchema` (`src/tools/kb-stats.ts`) | repo_remote_url, repo, repo_path, symbols | `text(JSON): ProviderStats spread plus bible` -- `{supported?, reason?, totals, stale, flagged, superseded, retrieval, promote_ratio, coverage?, bible}` | Read-only KB health aggregation: totals by confidence/type, stale/flagged/superseded counts, retrieval hit_rate, promote_ratio, and canonical-bible presence/drift. Never bumps use_count/last_accessed. |
+| 17 | `kb_feedback` | `kbFeedbackSchema` (`src/tools/kb-feedback.ts`) | repo_remote_url, repo_path, id, reason, role | `text(JSON): {id, stale, flagged_for_review, confidence}` | Downvote a KB entry that proved wrong in practice: marks stale+flagged_for_review and appends a feedback note. Never deletes or touches confidence, except an ACTIVE directive is flagged but not staled. |
 
-Scope-field note: 15 of the 16 `kb_*` request schemas spread the shared
+Scope-field note: 16 of the 17 `kb_*` request schemas spread the shared
 `kbScopeFields` (`src/services/knowledge/kb-scope-input.ts`), which is where
 `repo_path` and `repo_remote_url` come from. `kb_setup` is the sole exclusion and
 it is by design: its `repo_path` only locates a `.git` directory for hook
@@ -81,34 +89,34 @@ preserve, because zod strips an unknown key silently rather than erroring.
 
 | # | Tool | Request schema | Request fields | Response (observed) | Description (summarized) |
 |---|------|----------------|----------------|---------------------|---------------------------|
-| 17 | `code_graph` | `codeGraphSchema` (`src/tools/code-intelligence.ts`) | symbol, repo | `text(JSON): opaque` (provider payload) | Trace the call graph for a symbol. Returns callers and callees across the codebase for structural analysis (symbol lookup, call chains, impact). |
-| 18 | `code_impact` | `codeImpactSchema` (`src/tools/code-intelligence.ts`) | target, direction, file_path, repo | `text(JSON): opaque` (provider payload) | Find what is affected by changes to a symbol. Analyzes the blast radius of modifications across the codebase for impact assessment. |
-| 19 | `code_query` | `codeQuerySchema` (`src/tools/code-intelligence.ts`) | query, repo | `text(JSON): opaque` (provider payload) | Search the codebase for symbols, patterns, or concepts using natural language or code patterns. Pre-indexed for instant answers. |
-| 20 | `code_context` | `codeContextSchema` (`src/tools/code-intelligence.ts`) | name, repo, repo_remote_url | `text(JSON): opaque` (provider payload, KB-enriched by `enrichContextWithKb`) | Get callers, callees, and execution flows for a symbol. Enriched with KB context for full understanding of symbol role and dependencies. |
-| 21 | `code_map` | `codeMapSchema` (`src/tools/code-intelligence.ts`) | repo, top | `text(JSON): opaque` (provider payload) | Get the architectural map of a repository: module communities with their key symbols and files, ranked by size. |
-| 22 | `code_flow` | `codeFlowSchema` (`src/tools/code-intelligence.ts`) | from, to, name, repo | `text(JSON): opaque` (provider payload) | Find process flows (entry -> steps -> exit) matching a name or specific endpoints. Pre-indexed alternative to manual call chain tracing. |
-| 23 | `code_tests` | `codeTestsSchema` (`src/tools/code-intelligence.ts`) | symbol, repo | `text(JSON): opaque` (provider payload) | Find the test files and test functions that exercise a symbol (transitive callers, depth 2). Faster than grep for test discovery. |
+| 18 | `code_graph` | `codeGraphSchema` (`src/tools/code-intelligence.ts`) | symbol, repo | `text(JSON): opaque` (provider payload) | Trace the call graph for a symbol. Returns callers and callees across the codebase for structural analysis (symbol lookup, call chains, impact). |
+| 19 | `code_impact` | `codeImpactSchema` (`src/tools/code-intelligence.ts`) | target, direction, file_path, repo | `text(JSON): opaque` (provider payload) | Find what is affected by changes to a symbol. Analyzes the blast radius of modifications across the codebase for impact assessment. |
+| 20 | `code_query` | `codeQuerySchema` (`src/tools/code-intelligence.ts`) | query, repo | `text(JSON): opaque` (provider payload) | Search the codebase for symbols, patterns, or concepts using natural language or code patterns. Pre-indexed for instant answers. |
+| 21 | `code_context` | `codeContextSchema` (`src/tools/code-intelligence.ts`) | name, repo, repo_remote_url | `text(JSON): opaque` (provider payload, KB-enriched by `enrichContextWithKb`) | Get callers, callees, and execution flows for a symbol. Enriched with KB context for full understanding of symbol role and dependencies. |
+| 22 | `code_map` | `codeMapSchema` (`src/tools/code-intelligence.ts`) | repo, top | `text(JSON): opaque` (provider payload) | Get the architectural map of a repository: module communities with their key symbols and files, ranked by size. |
+| 23 | `code_flow` | `codeFlowSchema` (`src/tools/code-intelligence.ts`) | from, to, name, repo | `text(JSON): opaque` (provider payload) | Find process flows (entry -> steps -> exit) matching a name or specific endpoints. Pre-indexed alternative to manual call chain tracing. |
+| 24 | `code_tests` | `codeTestsSchema` (`src/tools/code-intelligence.ts`) | symbol, repo | `text(JSON): opaque` (provider payload) | Find the test files and test functions that exercise a symbol (transitive callers, depth 2). Faster than grep for test discovery. |
 
 `code_context` is the only `code_*` tool that takes `repo_remote_url`, because it
 is the only one that touches the KB.
 
-Registration descriptions for all 23 tools are reproduced verbatim in Appendix A.
+Registration descriptions for all 24 tools are reproduced verbatim in Appendix A.
 
 ## 3. Decision rule: responses that are not schema-shaped
 
 Observed facts about the response side of this surface:
 
-- Every one of the 23 tools is registered through the shared `wrapTool` helper in
+- Every one of the 24 tools is registered through the shared `wrapTool` helper in
   `src/services/tool-registry.ts`, which converts the handler return value into
   MCP `content: [{type: 'text', text}]` blocks.
 - NO tool in this surface declares a response zod schema. The registration call
   is given a name, a description and a REQUEST shape only.
 - NO tool in this surface returns `structuredContent`. `wrapTool` forwards
   `structuredContent` only when the handler returns `{text, structuredContent}`;
-  all 23 handlers return a bare `string`, so the channel is unused here. (In the
-  wider 58-tool server, only non-memory tools use it, e.g. `execute_command`
+  all 24 handlers return a bare `string`, so the channel is unused here. (In the
+  wider 59-tool server, only non-memory tools use it, e.g. `execute_command`
   and `execute_prompt`.)
-- All 23 handlers return a JSON-stringified value. So every response is
+- All 24 handlers return a JSON-stringified value. So every response is
   JSON-parseable in practice, even though none is schema-declared.
 
 **Decision rule (v1):** a response is NEVER left un-schema'd, and a missing shape
@@ -122,7 +130,7 @@ ToolTextResponse = { content: [ { type: "text", text: string } ] }
 On top of that envelope, each tool gets one of two response bodies:
 
 - **Body known** -- the handler stringifies an object whose top-level keys are
-  observable in this repo (all 16 `kb_*` tools). The generated response schema is
+  observable in this repo (all 17 `kb_*` tools). The generated response schema is
   the text envelope PLUS the documented parsed-body object.
 - **Body opaque** -- the handler stringifies a value this repo types as `unknown`
   because it is a pass-through from an external code-intelligence provider (all 7
@@ -422,8 +430,10 @@ themselves).
 
 ## 6. Downstream notes
 
-- The tool count to propagate is **23** (16 `kb_*`, 7 `code_*`). Anything citing
-  24 is citing the unverified plan number.
+- The tool count to propagate is **24** (17 `kb_*`, 7 `code_*`), now that
+  `kb_demote` (my-beads-db-qy8.2) has landed. Section 1 records the original
+  23-tool audit and the subsequent growth to 24; anything citing 23 today is
+  citing the pre-`kb_demote` count.
 - A generated binding typed against `MemoryProvider` alone is INCOMPLETE: the six
   methods plus one property in section 4.2 are tool-reachable but undeclared.
 - Response-schema generation must handle three irregularities: `kb_query`'s
@@ -495,6 +505,12 @@ Scan a session transcript for learnings and capture them into the KB. Returns {e
 
 ```text
 Upgrade KB entry confidence: UNVERIFIED -> INFERRED -> CONFIRMED. Appends promotion note to content as evidence trail. CONFIRMED entries are no-op.
+```
+
+### kb_demote
+
+```text
+Downgrade KB entry confidence one rung: CONFIRMED -> INFERRED -> UNVERIFIED. UNVERIFIED entries are a no-op. This is the "I am now LESS certain" path, not the "this claim is wrong" path. Requires a reason (at least 20 characters stating what you checked); evidence_files is optional -- omit it when the demotion has nothing new to cite. Appends a demotion note to content as an evidence trail. Guidance: less certain -> kb_demote; proven wrong -> kb_feedback or kb_resolve_contradiction (NOT kb_invalidate, which only touches context-cache rows). Returns {id, previous_confidence, new_confidence}.
 ```
 
 ### kb_freshness_sweep
