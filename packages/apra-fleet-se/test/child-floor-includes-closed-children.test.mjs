@@ -2,6 +2,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert';
 import { execFileSync } from 'node:child_process';
 import { computeChildFloor } from '../fleet-sprint/runner.js';
+import { bdChildEnv } from './helpers/bd-replay.mjs';
 
 // apra-fleet-bkax.1: computeChildFloor (fleet-sprint/beads-children.mjs)
 // issued `bd list --parent <parentId> --json` WITHOUT a closed-children flag.
@@ -111,7 +112,7 @@ describe('computeChildFloor -- includes closed children in the floor computation
     test('bd list --help documents the --all flag computeChildFloor dispatches (apra-fleet-btj9.4)', (t) => {
         let helpText;
         try {
-            helpText = execFileSync('bd', ['list', '--help'], { encoding: 'utf8' });
+            helpText = execFileSync('bd', ['list', '--help'], { encoding: 'utf8', env: bdChildEnv() });
         } catch (err) {
             if (err && err.code === 'ENOENT') {
                 t.skip('bd binary not found on PATH -- cannot verify --all against a real `bd list --help`');

@@ -5,6 +5,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 // @ts-expect-error -- plain .mjs helper, no type declarations
 import { execBdSync } from '../scripts/lib/exec-bd.mjs';
+import { bdChildEnv } from './helpers/bd-child-env.js';
 import {
   isSyncRemoteActive,
   parseActiveSyncRemoteValue,
@@ -39,8 +40,8 @@ import {
 // query the unrelated ambient database instead of the fixture, producing a
 // false result.ok===false. Mirrors the BD_CHILD_ENV pattern already proven in
 // tests/2cc-win-bd-invocation-integ.test.ts (apra-fleet-2cc.3 / my-beads-db-27m.14).
-const BD_CHILD_ENV: NodeJS.ProcessEnv = { ...process.env };
-delete BD_CHILD_ENV.BEADS_DIR;
+// (shared helper: tests/helpers/bd-child-env.ts, per my-beads-db-qy8.9.1)
+const BD_CHILD_ENV: NodeJS.ProcessEnv = bdChildEnv();
 
 describe('defaultSandboxPath', () => {
   it('is the parent directory of the repo path (matches "$HOME/toy-repo" -> "$HOME")', () => {
