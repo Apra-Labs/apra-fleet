@@ -752,7 +752,7 @@ export const AGY_ORCHESTRATOR_DENIED_TOOLS = [
   'cloud_control', 'monitor_task', 'stop_prompt', 'credential_store_set',
   'credential_store_list', 'credential_store_delete', 'credential_store_update',
   'send_email', 'send_message', 'report_status', 'respond_to_message',
-  'kb_invalidate', 'kb_context', 'kb_harvest', 'kb_promote',
+  'kb_invalidate', 'kb_context', 'kb_harvest', 'kb_promote', 'kb_demote',
   'kb_freshness_sweep', 'kb_import', 'kb_resolve_contradiction',
   'kb_reconcile_prefilter', 'kb_setup', 'kb_export',
 ];
