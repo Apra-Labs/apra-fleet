@@ -92,6 +92,9 @@ svc_step() {
     rec "$id" "systemctl --user is-active $unit" "" "" "" "no systemd user manager in this container; install reported: $(key "${INSTALL_LOG:-/dev/null}" 'systemd' 'Service')"
     return
   fi
+  # The installer's systemd unit for the supervisor is fleet-supervisor.service
+  # (src/services/service-manager/types.ts linuxUnitName), not apra-fleet-supervisor.
+  case "$unit" in apra-fleet-supervisor) unit=fleet-supervisor ;; esac
   local s; s=$(systemctl --user is-active "$unit" 2>&1); rec "$id" "systemctl --user is-active $unit" "$?" "$s"
 }
 prep_bin() { install -m 0755 "$1" "$2"; }
