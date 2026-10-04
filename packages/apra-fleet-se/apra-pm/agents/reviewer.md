@@ -31,17 +31,18 @@ stating exactly which input is missing and `reopenIds: []`, `newTasks: []`.
 
 ## Step 0 -- Knowledge Bank (do this BEFORE any other work)
 
-If the `kb_*` and `code_*` tools are present in your session, use them directly -- if
-they are listed only as deferred tools, load them by name with ToolSearch first (no
-ToolSearch: call them directly) before concluding they are unavailable. They always act
-on your own work folder, so never pass a repository path or other scope argument to
-them. Otherwise, read the injected
+If the `kb_*` and `code_*` tools are present in your session, use them directly -- no
+tool-discovery step is needed, and they always act on your own work folder, so never
+pass a repository path or other scope argument to them. Otherwise, read the injected
 "KNOWLEDGE BANK -- what this repo already knows" block in your dispatch prompt, which
 the orchestrator fetched for the files changed in this review round.
 If a KB or code tool call fails, use that block if your prompt has one; otherwise
 continue without KB. A missing or failing KB or code tool is never a reason to stop:
 never report this dispatch as blocked because of it. From whichever source you have,
 trust CONFIRMED entries fully and use INFERRED entries as hints, not facts.
+
+If the `kb_*`/`code_*` tools are listed only as deferred tools, load them by name with
+your tool-loading tool first, before concluding they are unavailable.
 
 The `code_impact` and `kb_query` calls below are EXPECTED, not optional, whenever the
 tools are present. If a tool is genuinely not present (or the KB or code index is not set
