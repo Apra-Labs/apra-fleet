@@ -292,6 +292,11 @@ describe('kb-reconcile two-branch e2e (T3.3, F6/D6)', () => {
 
     expect(canonicalIds).toContain(bContraId);          // winner: exported
     expect(canonicalIds).not.toContain(aContra.id);      // loser: superseded, excluded
-    expect(canonicalIds).not.toContain('b-directive');   // pending proposal, never CONFIRMED
+    // The project export is ADDITIVE: the bible file imported above already
+    // carries b-directive as a pre-existing entry, and an export never removes
+    // or rewrites those. What must still hold is that the KB did not mint a
+    // CONFIRMED row for it (pending proposal), so the export did not add it.
+    expect(canonical.find(e => e.id === 'b-directive')).toEqual(bDirective);
+    expect((await provider.list({ confidence: 'CONFIRMED' })).some(e => e.id === 'b-directive')).toBe(false);
   });
 });
