@@ -9,6 +9,7 @@ import * as kbProvidersModule from '../../src/services/knowledge/kb-providers.js
 import {
   qualifiesForProjectBible,
   filterProjectBibleCandidates,
+  isRepoRelativePath,
 } from '../../src/services/knowledge/bible-basis-filter.js';
 import type { KBEntryInput } from '../../src/services/knowledge/types.js';
 
@@ -218,6 +219,16 @@ describe('qualifiesForProjectBible (cases a-f)', () => {
     expect(qualifiesForProjectBible(entry(['a.ts', 'b.ts']), { 'a.ts': 'h1', 'b.ts': 'other' }, cur)).toBe(false);
     expect(qualifiesForProjectBible(entry(['a.ts', 'b.ts']), { 'a.ts': 'h1' }, cur)).toBe(false);
     expect(qualifiesForProjectBible(entry(['a.ts', 'b.ts']), { 'a.ts': 'h1', 'b.ts': 'h2' }, cur)).toBe(true);
+  });
+  it('g: a cited or basis path outside the repo (absolute, drive, UNC, ..) never qualifies, even with a matching hash', () => {
+    for (const p of ['../outside.ts', 'src/../../x.ts', '/etc/passwd', 'C:\\x.ts', 'C:x.ts', '\\\\host\\share\\x.ts']) {
+      expect(isRepoRelativePath(p)).toBe(false);
+      expect(qualifiesForProjectBible(entry([p]), { [p]: 'h1' }, { [p]: H('h1') })).toBe(false);
+      expect(qualifiesForProjectBible(entry(['a.ts']), { 'a.ts': 'h1', [p]: 'h1' }, { 'a.ts': H('h1'), [p]: H('h1') })).toBe(false);
+    }
+    expect(isRepoRelativePath('src/a.ts')).toBe(true);
+    expect(isRepoRelativePath('src\\a.ts')).toBe(true);
+    expect(isRepoRelativePath('a..b.ts')).toBe(true);
   });
 
   it('filterProjectBibleCandidates hashes the repo files and preserves order', async () => {

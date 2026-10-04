@@ -182,7 +182,7 @@ through it" column lists only the `kb_*`/`code_*` tools in this surface.
 | P-11 | `touch` | `touch(ids: string[]): Promise<number>` | `kb_session_prime` | telemetry write (`use_count`/`last_accessed`), existence-tolerant | no (counter advances) |
 | P-12 | `relatedClaims` | `relatedClaims(ids: string[], limit?): Promise<KBEntry[]>` | `kb_query` (only when `expand_related` is true) | read | yes |
 
-### 4.2 Provider members reached by tools but NOT declared on MemoryProvider (6 methods + 1 property)
+### 4.2 Provider members reached by tools but NOT declared on MemoryProvider (7 methods + 1 property)
 
 These are `SqliteProvider` members (`src/services/knowledge/sqlite-provider.ts`)
 that registered tools call directly. They are part of the real contract surface
@@ -196,7 +196,8 @@ against `MemoryProvider` would not cover them.
 | X-3 | `freshnessSweep` | `freshnessSweep(root?): Promise<{checked, staled, unstaled}>` | `kb_freshness_sweep`, `kb_import` (post-import unless `skip_sweep`) | mutate-trust (bidirectional stale/unstale) | yes for a fixed worktree |
 | X-4 | `resolveContradiction` | `resolveContradiction(winnerId, loserId, evidence): Promise<{winnerId, loserId}>` | `kb_resolve_contradiction`, and internally from `reconcilePrefilter` | mutate-trust (winner to CONFIRMED with flags cleared; loser superseded plus stale) | NO -- a second call REFUSES, because the loser is now superseded |
 | X-5 | `reconcilePrefilter` | `reconcilePrefilter(): Promise<{pairs, resolved[], left_for_agent[], skipped_directive}>` | `kb_reconcile_prefilter` | mutate-trust (writes only via `resolveContradiction`) | yes in effect (resolved pairs are no longer flagged) |
-| X-6 | `hasEntry` | `hasEntry(id: string): boolean` -- SYNCHRONOUS, the only non-Promise member on this list | `kb_import` | read | yes |
+| X-6 | `hasEntry` | `hasEntry(id: string): boolean` -- SYNCHRONOUS (non-Promise) | `kb_import` | read | yes |
+| X-8 | `getSourceFileBases` | `getSourceFileBases(ids: string[]): Map<string, Record<string, string> \| null>` -- SYNCHRONOUS (non-Promise); stored per-file hash basis per id, null when unknown/empty | `kb_export` (project-scope bible filter) | read | yes |
 | X-7 | `repoPath` | property, not a method | NOT read by `kb_freshness_sweep` -- `src/tools/kb-freshness-sweep.ts:30` calls `providers.project.freshnessSweep()` with NO argument; the tool only names `repoPath` in a comment at line 27, and the sweep root defaults inside `freshnessSweep()` itself (`SqliteProvider`'s own stored anchor), not from a value the tool passes in | read (by the provider internally, not by this tool) | n/a |
 
 Also off-interface and reachable, but CLI-only rather than tool-reachable (listed
@@ -269,7 +270,7 @@ pass-throughs to the embedded `fallback: SqliteProvider`, connectivity
 notwithstanding. Only `capture`, `query`, `context`, `invalidate`, and `prime`
 (five methods) actually attempt an HTTP request first.
 
-**4.4.2 -- The 6 methods + 1 property reachable-but-undeclared on `MemoryProvider`
+**4.4.2 -- The 7 methods + 1 property reachable-but-undeclared on `MemoryProvider`
 (section 4.2): none of them exist on `HttpKbProvider` at all.**
 
 | # | Member | On `HttpKbProvider`? | Consequence | Verdict class |
@@ -280,14 +281,15 @@ notwithstanding. Only `capture`, `query`, `context`, `invalidate`, and `prime`
 | X-4 | `resolveContradiction` | absent | `kb_resolve_contradiction` -> `SqliteProvider.resolveContradiction` only | missing member |
 | X-5 | `reconcilePrefilter` | absent | `kb_reconcile_prefilter` -> `SqliteProvider.reconcilePrefilter` only | missing member |
 | X-6 | `hasEntry` | absent | `kb_import` -> `SqliteProvider.hasEntry` only | missing member |
+| X-8 | `getSourceFileBases` | absent | `kb_export` -> `SqliteProvider.getSourceFileBases` only | missing member |
 | X-7 | `repoPath` | absent (property) | `kb_freshness_sweep` reads `SqliteProvider.repoPath` directly; no analogous property on `HttpKbProvider` | missing member |
 
 None of these are "missing" in the sense of an incomplete HTTP implementation
-that should be filled in -- per the 4.4 preamble, the six tools in this table
+that should be filled in -- per the 4.4 preamble, the seven tools in this table
 never receive anything except a `SqliteProvider` instance in this tree, so the
 gap is currently unreachable rather than a live bug. It is recorded here
 because a v1 contract binding generated only from `MemoryProvider` +
-`HttpKbProvider`'s declared surface would still miss these six tools' true
+`HttpKbProvider`'s declared surface would still miss these seven tools' true
 provider dependency, same root cause as section 4.2's existing finding.
 
 **4.4.3 -- Asymmetries outside the `MemoryProvider` interface itself.** These are

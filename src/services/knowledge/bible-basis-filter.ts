@@ -1,5 +1,17 @@
+import path from 'node:path';
 import { computeFileHashBatch } from './file-hash.js';
 import type { FileHashResult } from './file-hash.js';
+
+/**
+ * A cited/basis path must stay inside the exported repo: relative, with no
+ * '..' segment and no POSIX, drive-letter or UNC root. Anything else is never
+ * hashed and never qualifies (the bible only describes this tree).
+ */
+export function isRepoRelativePath(file: string): boolean {
+  if (typeof file !== 'string' || file.length === 0) return false;
+  if (path.posix.isAbsolute(file) || path.win32.isAbsolute(file) || /^[A-Za-z]:/.test(file)) return false;
+  return !file.split(/[\\/]+/).includes('..');
+}
 
 // Project-scope bible qualification (kb_export, scope=project).
 //
@@ -33,6 +45,7 @@ export interface BibleCandidate {
  *  - it cites at least one source file;
  *  - its stored basis is non-empty (null/empty/unparseable basis never matches);
  *  - every cited source file has a key in the basis;
+ *  - every cited and basis path is repo-relative (isRepoRelativePath);
  *  - every basis hash equals that file's current hash (a missing file -- a
  *    null/absent current hash -- is a mismatch).
  * Same comparison semantics as SqliteProvider.basisFullyMatches, plus the
@@ -49,9 +62,11 @@ export function qualifiesForProjectBible(
   const basisFiles = Object.keys(basis);
   if (basisFiles.length === 0) return false;
   for (const file of entry.source_files) {
+    if (!isRepoRelativePath(file)) return false;
     if (!Object.prototype.hasOwnProperty.call(basis, file)) return false;
   }
   for (const file of basisFiles) {
+    if (!isRepoRelativePath(file)) return false;
     const current = currentHashes[file];
     if (!current || typeof basis[file] !== 'string' || current.hash !== basis[file]) return false;
   }
@@ -70,7 +85,7 @@ export async function filterProjectBibleCandidates<T extends BibleCandidate>(
   const fileSet = new Set<string>();
   for (const e of entries) {
     const basis = basisById.get(e.id);
-    if (basis) for (const f of Object.keys(basis)) fileSet.add(f);
+    if (basis) for (const f of Object.keys(basis)) if (isRepoRelativePath(f)) fileSet.add(f);
   }
   const currentHashes = fileSet.size > 0
     ? await computeFileHashBatch([...fileSet], { cwd: repoPath })

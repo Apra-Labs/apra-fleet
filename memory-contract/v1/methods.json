@@ -20,7 +20,7 @@
     "kb_constraint_repo_path_validation": {
       "confirmed_by": "kb_session_prime --top_entries capture, cross-checked against src/tools/kb-export.ts, src/tools/kb-import.ts, src/tools/kb-stats.ts, src/tools/kb-session-prime.ts",
       "finding": "The 23-tool surface does NOT share one repo_path anchor/validation path. kb_export and kb_import validate repo_path against the real filesystem and throw E-REPO-PATH-INVALID BEFORE getKbProviders is ever called -- the provider method below is never reached on that path. kb_session_prime and kb_stats pass repo_path through verbatim to the provider with no filesystem check, tolerating a missing anchor. This is recorded per affected method entry below as a per-tool 'repo_path_validation' field (values: 'validated-pre-provider' | 'verbatim-passthrough') rather than flattened into one statement, because the same provider method (e.g. list, capture) is reached by tools on both sides of the split.",
-      "affected_methods": ["P-2 capture", "P-3 query", "P-7 prime", "P-10 stats", "P-11 touch", "X-1 list", "X-3 freshnessSweep", "X-6 hasEntry"]
+      "affected_methods": ["P-2 capture", "P-3 query", "P-7 prime", "P-10 stats", "P-11 touch", "X-1 list", "X-3 freshnessSweep", "X-6 hasEntry", "X-8 getSourceFileBases"]
     },
     "not_in_scope": "approveDirective, rejectDirective, addDirective, flaggedPairs (INVENTORY.md section 4.2) are CLI-only and not reachable by any registered MCP tool, so they have no entry here.",
     "kb_setup_absence_note": "kb_setup is intentionally absent from every `tools` array below, and its absence is not a gap. It is a pre-provider configuration tool: it installs the git post-commit hook, writes a single GLOBAL provider config, and stores remote credentials -- it never resolves a project KB and reaches no MemoryProvider member, so there is no P-*/X-* entry it could map to. It is also the one kb_* tool that does not spread kbScopeFields, so its repo_path carries no scope semantics (INVENTORY.md section 2, 'Scope-field note', and section 12 `kb_setup`). It still has a request schema, a response schema, an MCP binding and a fixture, because it is one of the 23 registered tools; only the provider-method mapping is empty, and its binding therefore carries an empty errors[] array.",
@@ -317,9 +317,25 @@
       ],
       "side_effect_class": "pure read",
       "idempotent": true,
-      "idempotent_note": "The only synchronous (non-Promise) member on this surface.",
+      "idempotent_note": "Synchronous (non-Promise) member.",
       "error_codes": ["E-PROVIDER-UNINITIALIZED"],
       "see_also": []
+    },
+    {
+      "id": "X-8",
+      "member": "getSourceFileBases",
+      "kind": "undeclared-member",
+      "interface": "SqliteProvider (not declared on MemoryProvider)",
+      "signature": "getSourceFileBases(ids: string[]): Map<string, Record<string, string> | null>",
+      "purpose": "Synchronous read of the stored per-file hash basis (source_file_hashes) for the given entry ids; null for an unknown id or an empty/unparseable basis. Used by kb_export's project-scope bible filter to admit only CONFIRMED entries whose every cited file still hashes to its recorded basis at the repo root.",
+      "tools": [
+        { "name": "kb_export", "request_schema_ref": "schemas/kb_export.request.json", "response_schema_ref": "schemas/kb_export.response.json", "repo_path_validation": "validated-pre-provider" }
+      ],
+      "side_effect_class": "pure read",
+      "idempotent": true,
+      "idempotent_note": "Synchronous (non-Promise) member; chunked SELECT, no writes.",
+      "error_codes": ["E-PROVIDER-UNINITIALIZED"],
+      "see_also": ["X-1"]
     }
   ],
   "properties": [
