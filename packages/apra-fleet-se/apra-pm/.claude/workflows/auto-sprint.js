@@ -2346,10 +2346,11 @@ const KB_MIN_PROMOTE_REASON = 20;
 
 const KB_EXEC_SCHEMA = {
   type: 'object',
-  required: ['captured', 'promoted'],
+  required: ['captured', 'promoted', 'demoted'],
   properties: {
     captured: { type: 'number' },
     promoted: { type: 'number' },
+    demoted:  { type: 'number' },
     failed:   { type: 'number' },
     notes:    { type: 'string' },
   },
@@ -2448,14 +2449,17 @@ function vetKbWork(role, result) {
  * common case costs no dispatch at all.
  */
 async function runKbWork(repoPath, role, result) {
-  const { captures, promotions, rejected } = vetKbWork(role, result);
+  const { captures, promotions, demotions, rejected } = vetKbWork(role, result);
 
   for (const r of rejected) log(`KB refused -- ${r}`);
   // Every promotion is logged with its stated evidence, whether or not the call
   // later succeeds. This log IS the audit trail the bible never had.
   for (const p of promotions) log(`KB promote ${p.id} (${role}): ${p.reason}`);
+  // Demotion gets the same audit-trail logging as promotion -- lowering trust
+  // is exactly as auditable an act as raising it (see vetKbWork's D6/C4 note).
+  for (const d of demotions) log(`KB demote ${d.id} (${role}): ${d.reason}`);
 
-  if (captures.length === 0 && promotions.length === 0) return null;
+  if (captures.length === 0 && promotions.length === 0 && demotions.length === 0) return null;
 
   try {
     return await dispatch(
@@ -2469,11 +2473,15 @@ async function runKbWork(repoPath, role, result) {
       `reword, merge, split or invent entries.\n` +
       `Step 3: For EACH object in promotions below, call mcp__apra-fleet__kb_promote ` +
       `with repo_path "${repoPath}" and that object's id and reason verbatim.\n` +
-      `Step 4: Return the counts. A call refused by the tool counts in failed, ` +
-      `not captured/promoted -- report it, do not retry it with altered fields.\n\n` +
+      `Step 4: For EACH object in demotions below, call mcp__apra-fleet__kb_demote ` +
+      `with repo_path "${repoPath}" and that object's id, reason, and evidence_files ` +
+      `verbatim.\n` +
+      `Step 5: Return the counts. A call refused by the tool counts in failed, ` +
+      `not captured/promoted/demoted -- report it, do not retry it with altered fields.\n\n` +
       `captures: ${JSON.stringify(captures)}\n` +
-      `promotions: ${JSON.stringify(promotions)}\n\n` +
-      `If ToolSearch returns no KB tools, return {captured:0, promoted:0, failed:0}.`,
+      `promotions: ${JSON.stringify(promotions)}\n` +
+      `demotions: ${JSON.stringify(demotions)}\n\n` +
+      `If ToolSearch returns no KB tools, return {captured:0, promoted:0, demoted:0, failed:0}.`,
       {
         model: MODEL_HAIKU,
         label: `kb-exec-${role}`,

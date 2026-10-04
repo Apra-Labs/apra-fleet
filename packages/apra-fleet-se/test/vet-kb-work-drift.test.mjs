@@ -136,3 +136,37 @@ describe('the workflow copy carries the same constants', () => {
         assert.match(src, /demotion is reviewer-only/);
     });
 });
+
+// my-beads-db-qy8.7: vetKbWork vetted kb_demotions but runKbWork silently
+// dropped them -- no tool call, no refusal log, nothing. These pin the fix
+// (option a: wire demotions into runKbWork the way promotions are wired),
+// via source inspection since auto-sprint.js runs in a VM with no
+// require()/import and cannot be exercised directly.
+describe('auto-sprint.js executes vetted kb_demotions (my-beads-db-qy8.7)', () => {
+    const src = fs.readFileSync(AUTO_SPRINT, 'utf-8');
+
+    test('runKbWork destructures demotions from vetKbWork', () => {
+        assert.match(src, /const \{ captures, promotions, demotions, rejected \} = vetKbWork\(role, result\);/);
+    });
+
+    test('runKbWork logs each demotion for the audit trail', () => {
+        assert.match(src, /for \(const d of demotions\) log\(`KB demote \$\{d\.id\} \(\$\{role\}\): \$\{d\.reason\}`\);/);
+    });
+
+    test('runKbWork early-return guard no longer drops a demotions-only payload', () => {
+        assert.match(src, /if \(captures\.length === 0 && promotions\.length === 0 && demotions\.length === 0\) return null;/);
+    });
+
+    test('the executor prompt has a step calling kb_demote with id/reason/evidence_files', () => {
+        assert.match(src, /mcp__apra-fleet__kb_demote `[^]*?that object's id, reason, and evidence_files/);
+    });
+
+    test('the executor prompt interpolates the demotions array', () => {
+        assert.match(src, /demotions: \$\{JSON\.stringify\(demotions\)\}/);
+    });
+
+    test('KB_EXEC_SCHEMA requires and reports a demoted count', () => {
+        assert.match(src, /required:\s*\['captured',\s*'promoted',\s*'demoted'\]/);
+        assert.match(src, /demoted:\s*\{\s*type:\s*'number'\s*\}/);
+    });
+});
