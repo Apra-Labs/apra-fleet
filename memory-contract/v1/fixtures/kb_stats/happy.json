@@ -13,7 +13,7 @@
     "content": [
       {
         "type": "text",
-        "text": "{\"totals\":{\"by_confidence\":{\"CONFIRMED\":1,\"INFERRED\":1,\"UNVERIFIED\":0},\"by_type\":{\"context-cache\":1,\"learning\":0,\"knowledge\":1,\"runbook\":0,\"user-directive\":0},\"total\":2},\"stale\":0,\"flagged\":0,\"superseded\":0,\"retrieval\":{\"entries_retrieved\":2,\"total_uses\":6,\"hit_rate\":1},\"promote_ratio\":1,\"coverage\":{\"fraction\":1,\"symbols\":{\"exampleFn\":true}},\"bible\":{\"present\":false,\"entries\":0,\"drift\":1}}"
+        "text": "{\"totals\":{\"by_confidence\":{\"CONFIRMED\":1,\"INFERRED\":1,\"UNVERIFIED\":0},\"by_type\":{\"context-cache\":1,\"learning\":0,\"knowledge\":1,\"runbook\":0,\"user-directive\":0},\"total\":2},\"stale\":0,\"flagged\":0,\"superseded\":0,\"retrieval\":{\"entries_retrieved\":2,\"total_uses\":8,\"hit_rate\":1},\"promote_ratio\":1,\"coverage\":{\"fraction\":1,\"symbols\":{\"exampleFn\":true}},\"bible\":{\"present\":false,\"entries\":0,\"drift\":1}}"
       }
     ]
   }

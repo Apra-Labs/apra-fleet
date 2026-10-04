@@ -471,6 +471,40 @@ if (idFoo) {
   });
 }
 
+// --- kb_demote (happy: CONFIRMED -> INFERRED on idFoo, one rung down the
+// same ladder kb_promote/happy walked up earlier) --------------------------
+if (idFoo) {
+  await recordHappy('kb_demote', 'happy', {
+    repo_path: repoA,
+    repo_remote_url: REMOTE_A,
+    id: idFoo,
+    reason: 'On a later re-read, the increment claim no longer felt fully re-verified against the current file.',
+    evidence_files: ['src/example.ts'],
+  });
+}
+
+// --- kb_demote (noop-unverified: a fresh UNVERIFIED entry demotes to
+// itself -- floor of the ladder, no rung below UNVERIFIED) -----------------
+const captureForDemoteNoop = await recordHappy('kb_capture', 'setup-for-demote-noop', {
+  repo_path: repoA,
+  repo_remote_url: REMOTE_A,
+  type: 'knowledge',
+  title: 'Entry captured at UNVERIFIED for the kb_demote floor case',
+  summary: 'Used only to demonstrate that demoting an already-UNVERIFIED entry is a no-op.',
+  content: 'This entry starts and stays at UNVERIFIED across a demote call.',
+  source_files: ['src/example.ts'],
+  confidence: 'UNVERIFIED',
+});
+const idDemoteNoop = parseEnvelopeText(captureForDemoteNoop)?.id;
+if (idDemoteNoop) {
+  await recordHappy('kb_demote', 'noop-unverified', {
+    repo_path: repoA,
+    repo_remote_url: REMOTE_A,
+    id: idDemoteNoop,
+    reason: 'Checking the no-op floor: this entry is already UNVERIFIED and must stay UNVERIFIED.',
+  });
+}
+
 // --- kb_harvest -------------------------------------------------------
 await recordHappy('kb_harvest', 'happy', {
   repo_path: repoA,
@@ -649,6 +683,38 @@ if (idBroken) {
   }, 'E-PROMOTE-SUPERSEDED');
 }
 
+// -- kb_demote authority-group refusals (the 3 new codes mirroring the
+// promote-side siblings just above) ---------------------------------------
+await recordRefusal('kb_demote', 'refusal-reason-required', {
+  repo_path: repoA,
+  repo_remote_url: REMOTE_A,
+  id: idFoo ?? 'placeholder-id',
+  // kb_demote's zod schema requires `reason` as a string (unlike kb_promote,
+  // whose reason is optional) -- an empty string is schema-valid but fails
+  // the provider's own MIN_PROMOTE_REASON_LENGTH floor, so this still
+  // exercises the PROVIDER refusal rather than a schema-validation failure.
+  reason: '',
+}, 'E-DEMOTE-REASON-REQUIRED');
+
+await recordRefusal('kb_demote', 'refusal-evidence-unresolved', {
+  repo_path: repoA,
+  repo_remote_url: REMOTE_A,
+  id: idFoo ?? 'placeholder-id',
+  reason: 'Checking the evidence-resolution guard: the cited evidence file does not exist in this worktree.',
+  evidence_files: ['src/this-evidence-file-does-not-exist.ts'],
+}, 'E-DEMOTE-EVIDENCE-UNRESOLVED');
+
+if (idBroken) {
+  // idBroken was superseded by the resolve_contradiction call above -- same
+  // precondition kb_promote/refusal-superseded relies on.
+  await recordRefusal('kb_demote', 'refusal-superseded', {
+    repo_path: repoA,
+    repo_remote_url: REMOTE_A,
+    id: idBroken,
+    reason: 'Attempting to demote an entry that was already superseded by the contradiction resolution above.',
+  }, 'E-DEMOTE-SUPERSEDED');
+}
+
 fs.writeFileSync(path.join(repoA, 'src', 'soon-to-be-deleted.ts'), 'export const placeholder = 1;\n');
 const captureForBasisLoss = await recordHappy('kb_capture', 'setup-for-basis-unresolved', {
   repo_path: repoA,
@@ -763,6 +829,13 @@ if (idDirective) {
     id: idDirective,
     reason: 'Attempting to promote a user-directive proposal directly, bypassing CLI activation.',
   }, 'E-PROMOTE-REFUSED-DIRECTIVE');
+
+  await recordRefusal('kb_demote', 'refusal-refused-directive', {
+    repo_path: repoA,
+    repo_remote_url: REMOTE_A,
+    id: idDirective,
+    reason: 'Attempting to demote a user-directive proposal directly; directive state is human-terminal only.',
+  }, 'E-DEMOTE-REFUSED-DIRECTIVE');
 }
 
 // -- non-error outcome (authority group's silent clamp branch) -----------

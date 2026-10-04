@@ -53,9 +53,10 @@
           "meaning": "A file list contains an absolute path or a parent-directory traversal.",
           "raising_methods": [
             { "method_id": "P-4", "member": "context", "tool": "kb_context", "position": "provider" },
-            { "method_id": "P-5", "member": "invalidate", "tool": "kb_invalidate", "position": "provider" }
+            { "method_id": "P-5", "member": "invalidate", "tool": "kb_invalidate", "position": "provider" },
+            { "method_id": "P-13", "member": "demote", "tool": "kb_demote", "position": "provider" }
           ],
-          "source": "src/services/knowledge/path-validation.ts:6 (absolute), :10 (traversal)",
+          "source": "src/services/knowledge/path-validation.ts:6 (absolute), :10 (traversal); demote evidence_files check at sqlite-provider.ts:1568",
           "surfaced": "thrown",
           "retryable": false
         },
@@ -182,6 +183,40 @@
           "retryable": false,
           "group_decision": "AUTHORITY, not conflict. The refusal is about the target's standing to hold a higher tier, which is the same policy as the clamp; it is not about the semantics of a contradiction pair.",
           "see_also": ["Superseding and AUDN matching"]
+        },
+        {
+          "code": "E-DEMOTE-REASON-REQUIRED",
+          "meaning": "The demotion carries no non-trivial reason (absent, or shorter than MIN_PROMOTE_REASON_LENGTH). Moving trust down must still record why, same evidence floor as promote.",
+          "raising_methods": [
+            { "method_id": "P-13", "member": "demote", "tool": "kb_demote", "position": "provider" }
+          ],
+          "source": "src/services/knowledge/sqlite-provider.ts:1552-1559 (isNonTrivialPromoteReason)",
+          "surfaced": "thrown",
+          "retryable": false,
+          "see_also": ["Capture provenance and confidence clamp"]
+        },
+        {
+          "code": "E-DEMOTE-EVIDENCE-UNRESOLVED",
+          "meaning": "One or more evidence_files supplied with the demotion do not resolve in this worktree. evidence_files is optional (a basis-vanished demotion has nothing to cite), but files that ARE named must be real.",
+          "raising_methods": [
+            { "method_id": "P-13", "member": "demote", "tool": "kb_demote", "position": "provider" }
+          ],
+          "source": "src/services/knowledge/sqlite-provider.ts:1567-1576",
+          "surfaced": "thrown",
+          "retryable": false,
+          "see_also": ["Capture provenance and confidence clamp"]
+        },
+        {
+          "code": "E-DEMOTE-SUPERSEDED",
+          "meaning": "The target entry is already superseded, so there is no live trust tier left to lower.",
+          "raising_methods": [
+            { "method_id": "P-13", "member": "demote", "tool": "kb_demote", "position": "provider" }
+          ],
+          "source": "src/services/knowledge/sqlite-provider.ts:1539",
+          "surfaced": "thrown",
+          "retryable": false,
+          "group_decision": "AUTHORITY, not conflict -- mirrors E-PROMOTE-SUPERSEDED's own group_decision: the refusal is about the target's standing to hold ANY tier, not the semantics of a contradiction pair.",
+          "see_also": ["Superseding and AUDN matching"]
         }
       ]
     },
@@ -196,6 +231,17 @@
             { "method_id": "P-8", "member": "promote", "tool": "kb_promote", "position": "provider" }
           ],
           "source": "src/services/knowledge/sqlite-provider.ts:1353-1357",
+          "surfaced": "thrown",
+          "retryable": false,
+          "see_also": ["Directive quarantine"]
+        },
+        {
+          "code": "E-DEMOTE-REFUSED-DIRECTIVE",
+          "meaning": "Demotion of a user-directive entry is refused outright; directive state (pending or active) is human-terminal only.",
+          "raising_methods": [
+            { "method_id": "P-13", "member": "demote", "tool": "kb_demote", "position": "provider" }
+          ],
+          "source": "src/services/knowledge/sqlite-provider.ts:1546-1550",
           "surfaced": "thrown",
           "retryable": false,
           "see_also": ["Directive quarantine"]
@@ -273,9 +319,10 @@
           "meaning": "The named entry id has no row.",
           "raising_methods": [
             { "method_id": "P-8", "member": "promote", "tool": "kb_promote", "position": "provider" },
-            { "method_id": "X-2", "member": "feedback", "tool": "kb_feedback", "position": "provider" }
+            { "method_id": "X-2", "member": "feedback", "tool": "kb_feedback", "position": "provider" },
+            { "method_id": "P-13", "member": "demote", "tool": "kb_demote", "position": "provider" }
           ],
-          "source": "src/services/knowledge/sqlite-provider.ts:1340 (promote), :1431 (feedback)",
+          "source": "src/services/knowledge/sqlite-provider.ts:1340 (promote), :1431 (feedback), :1536 (demote)",
           "surfaced": "thrown",
           "retryable": false
         },

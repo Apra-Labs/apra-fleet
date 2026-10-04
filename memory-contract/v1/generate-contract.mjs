@@ -21,8 +21,9 @@
 //   npm run build && npm run contract:check     (--check mode, see below)
 //
 // Writes memory-contract/v1/schemas/<tool>.request.json and
-// memory-contract/v1/schemas/<tool>.response.json for all 23 tools (16 kb_*
-// + 7 code_*, per INVENTORY.md section 1), plus one
+// memory-contract/v1/schemas/<tool>.response.json for all 24 tools (17 kb_*
+// + 7 code_*; INVENTORY.md section 1's prose count is updated by a later
+// lane task, not this one), plus one
 // memory-contract/v1/bindings/mcp/<tool>.json binding definition per tool
 // (T1.2.3), each ref-ing its own request/response schema pair by $id rather
 // than inlining any shape. Every emitted schema document is validated against
@@ -121,6 +122,7 @@ const KB_MODULES = [
   ['kb_list', 'kb-list.js', 'kbListSchema'],
   ['kb_harvest', 'kb-harvest.js', 'kbHarvestSchema'],
   ['kb_promote', 'kb-promote.js', 'kbPromoteSchema'],
+  ['kb_demote', 'kb-demote.js', 'kbDemoteSchema'],
   ['kb_freshness_sweep', 'kb-freshness-sweep.js', 'kbFreshnessSweepSchema'],
   ['kb_import', 'kb-import.js', 'kbImportSchema'],
   ['kb_resolve_contradiction', 'kb-resolve-contradiction.js', 'kbResolveContradictionSchema'],
@@ -139,7 +141,7 @@ const CODE_EXPORTS = [
   ['code_flow', 'codeFlowSchema'],
   ['code_tests', 'codeTestsSchema'],
 ];
-const EXPECTED_TOOL_COUNT = KB_MODULES.length + CODE_EXPORTS.length; // 23, per INVENTORY.md section 1
+const EXPECTED_TOOL_COUNT = KB_MODULES.length + CODE_EXPORTS.length; // 24 (17 kb_* + 7 code_*); INVENTORY.md section 1's prose count is updated by a later lane task
 
 // Registration description text, byte-exact from src/services/tool-registry.ts
 // (verified against INVENTORY.md Appendix A, which states it was "captured
@@ -165,6 +167,8 @@ const DESCRIPTIONS = {
     'Scan a session transcript for learnings and capture them into the KB. Returns {entries_captured, entries_updated, entries_skipped}. Extracted entries are UNVERIFIED and author=harvest, source=harvest.',
   kb_promote:
     'Upgrade KB entry confidence: UNVERIFIED -> INFERRED -> CONFIRMED. Appends promotion note to content as evidence trail. CONFIRMED entries are no-op.',
+  kb_demote:
+    'Downgrade KB entry confidence one rung: CONFIRMED -> INFERRED -> UNVERIFIED. UNVERIFIED entries are a no-op. This is the "I am now LESS certain" path, not the "this claim is wrong" path. Requires a reason (at least 20 characters stating what you checked); evidence_files is optional -- omit it when the demotion has nothing new to cite. Appends a demotion note to content as an evidence trail. Guidance: less certain -> kb_demote; proven wrong -> kb_feedback or kb_resolve_contradiction (NOT kb_invalidate, which only touches context-cache rows). Returns {id, previous_confidence, new_confidence}.',
   kb_freshness_sweep:
     'Bounded full-KB bidirectional freshness sweep: re-hash every entry that has a stored per-file basis against the CURRENT worktree, mark mismatches stale, and revive stale entries whose full basis matches again (superseded, feedback-downvoted, and invalidated entries stay retired). This is the branch-switch revival surface kb_session_prime cannot be (prime excludes stale entries). Returns {checked, staled, unstaled}.',
   kb_import:

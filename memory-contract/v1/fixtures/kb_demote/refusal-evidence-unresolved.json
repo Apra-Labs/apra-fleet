@@ -1,0 +1,19 @@
+{
+  "tool": "kb_demote",
+  "case": "refusal-evidence-unresolved",
+  "kind": "refusal",
+  "request": {
+    "repo_path": "<SCRATCH_REPO_A>",
+    "repo_remote_url": "https://example.test/memory-contract-fixtures-a.git",
+    "id": "cd9da5b1-8395-4cb4-88c5-bc17045e7bdf",
+    "reason": "Checking the evidence-resolution guard: the cited evidence file does not exist in this worktree.",
+    "evidence_files": [
+      "src/this-evidence-file-does-not-exist.ts"
+    ]
+  },
+  "error": {
+    "message": "Cannot demote with evidence that does not resolve: missing src/this-evidence-file-does-not-exist.ts. Entry: cd9da5b1-8395-4cb4-88c5-bc17045e7bdf",
+    "thrown": true
+  },
+  "expected_error_code": "E-DEMOTE-EVIDENCE-UNRESOLVED"
+}

@@ -1,0 +1,31 @@
+{
+  "$id": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/bindings/mcp/kb_demote.json#",
+  "name": "kb_demote",
+  "description": "Downgrade KB entry confidence one rung: CONFIRMED -> INFERRED -> UNVERIFIED. UNVERIFIED entries are a no-op. This is the \"I am now LESS certain\" path, not the \"this claim is wrong\" path. Requires a reason (at least 20 characters stating what you checked); evidence_files is optional -- omit it when the demotion has nothing new to cite. Appends a demotion note to content as an evidence trail. Guidance: less certain -> kb_demote; proven wrong -> kb_feedback or kb_resolve_contradiction (NOT kb_invalidate, which only touches context-cache rows). Returns {id, previous_confidence, new_confidence}.",
+  "request": {
+    "$ref": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/schemas/kb_demote.request.json#"
+  },
+  "response": {
+    "$ref": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/schemas/kb_demote.response.json#"
+  },
+  "errors": [
+    {
+      "$ref": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/validation/codes/1"
+    },
+    {
+      "$ref": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/authority/codes/3"
+    },
+    {
+      "$ref": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/authority/codes/4"
+    },
+    {
+      "$ref": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/authority/codes/5"
+    },
+    {
+      "$ref": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/governance/codes/1"
+    },
+    {
+      "$ref": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/not_found/codes/0"
+    }
+  ]
+}

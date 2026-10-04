@@ -1,0 +1,25 @@
+{
+  "tool": "kb_capture",
+  "case": "setup-for-demote-noop",
+  "kind": "happy",
+  "request": {
+    "repo_path": "<SCRATCH_REPO_A>",
+    "repo_remote_url": "https://example.test/memory-contract-fixtures-a.git",
+    "type": "knowledge",
+    "title": "Entry captured at UNVERIFIED for the kb_demote floor case",
+    "summary": "Used only to demonstrate that demoting an already-UNVERIFIED entry is a no-op.",
+    "content": "This entry starts and stays at UNVERIFIED across a demote call.",
+    "source_files": [
+      "src/example.ts"
+    ],
+    "confidence": "UNVERIFIED"
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"id\":\"d6ec73dc-dc37-4fe0-81ce-5f3ab1d74c4f\",\"audn_decision\":\"add\",\"confidence_clamped\":false}"
+      }
+    ]
+  }
+}

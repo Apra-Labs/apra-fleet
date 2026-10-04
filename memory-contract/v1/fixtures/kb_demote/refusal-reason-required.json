@@ -1,0 +1,16 @@
+{
+  "tool": "kb_demote",
+  "case": "refusal-reason-required",
+  "kind": "refusal",
+  "request": {
+    "repo_path": "<SCRATCH_REPO_A>",
+    "repo_remote_url": "https://example.test/memory-contract-fixtures-a.git",
+    "id": "cd9da5b1-8395-4cb4-88c5-bc17045e7bdf",
+    "reason": ""
+  },
+  "error": {
+    "message": "kb_demote requires a reason recording why this entry is less certain (at least 20 characters stating what you checked). Entry: cd9da5b1-8395-4cb4-88c5-bc17045e7bdf",
+    "thrown": true
+  },
+  "expected_error_code": "E-DEMOTE-REASON-REQUIRED"
+}

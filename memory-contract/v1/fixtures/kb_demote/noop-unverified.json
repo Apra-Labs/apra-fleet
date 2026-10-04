@@ -1,0 +1,19 @@
+{
+  "tool": "kb_demote",
+  "case": "noop-unverified",
+  "kind": "happy",
+  "request": {
+    "repo_path": "<SCRATCH_REPO_A>",
+    "repo_remote_url": "https://example.test/memory-contract-fixtures-a.git",
+    "id": "d6ec73dc-dc37-4fe0-81ce-5f3ab1d74c4f",
+    "reason": "Checking the no-op floor: this entry is already UNVERIFIED and must stay UNVERIFIED."
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"id\":\"d6ec73dc-dc37-4fe0-81ce-5f3ab1d74c4f\",\"previous_confidence\":\"UNVERIFIED\",\"new_confidence\":\"UNVERIFIED\"}"
+      }
+    ]
+  }
+}

@@ -97,12 +97,32 @@
       "status": 403
     },
     {
+      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/authority/codes/3",
+      "title": "The demotion carries no non-trivial reason (absent, or shorter than MIN_PROMOTE_REASON_LENGTH). Moving trust down must still record why, same evidence floor as promote.",
+      "status": 403
+    },
+    {
+      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/authority/codes/4",
+      "title": "One or more evidence_files supplied with the demotion do not resolve in this worktree. evidence_files is optional (a basis-vanished demotion has nothing to cite), but files that ARE named must be real.",
+      "status": 403
+    },
+    {
+      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/authority/codes/5",
+      "title": "The target entry is already superseded, so there is no live trust tier left to lower.",
+      "status": 403
+    },
+    {
       "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/governance/codes/0",
       "title": "Promotion of a user-directive entry is refused outright; a directive can only become active through the CLI-only consent step.",
       "status": 403
     },
     {
       "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/governance/codes/1",
+      "title": "Demotion of a user-directive entry is refused outright; directive state (pending or active) is human-terminal only.",
+      "status": 403
+    },
+    {
+      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/governance/codes/2",
       "title": "The contradiction pair involves an ACTIVE user-directive; directives are never auto-resolved. Writes NOTHING.",
       "status": 403
     },

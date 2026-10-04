@@ -95,8 +95,11 @@ describe('memory-contract/v1 recorded response fixtures validate against their s
 
     // Non-vacuous: the 32-fixture population the original ajv sweep measured
     // (48 committed fixtures total, 16 carry `error` instead), plus
-    // kb_query/happy-confirmed-only (trust filters).
-    expect(keys.length).toBe(33);
+    // kb_query/happy-confirmed-only (trust filters), plus 3 kb_demote-lane
+    // fixtures that carry `response` (kb_demote/happy, kb_demote/noop-unverified,
+    // kb_capture/setup-for-demote-noop -- the other 4 new fixtures are refusals
+    // and carry `error`).
+    expect(keys.length).toBe(36);
     expect(failures).toEqual([]);
   });
 
@@ -123,7 +126,7 @@ describe('memory-contract/v1 recorded response fixtures validate against their s
       }
     }
 
-    expect(keys.length).toBe(33);
+    expect(keys.length).toBe(36);
     expect(failures).toEqual([]);
   });
 

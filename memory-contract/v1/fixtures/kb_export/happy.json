@@ -10,7 +10,7 @@
     "content": [
       {
         "type": "text",
-        "text": "{\"exported\":1,\"path\":\"<SCRATCH_REPO_A>\\\\.fleet\\\\kb-canonical.json\",\"scope\":\"project\",\"committed\":false}"
+        "text": "{\"exported\":1,\"path\":\"<SCRATCH_REPO_A>/.fleet/kb-canonical.json\",\"scope\":\"project\",\"committed\":false}"
       }
     ]
   }

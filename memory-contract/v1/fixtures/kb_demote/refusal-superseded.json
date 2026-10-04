@@ -1,16 +1,16 @@
 {
-  "tool": "kb_promote",
+  "tool": "kb_demote",
   "case": "refusal-superseded",
   "kind": "refusal",
   "request": {
     "repo_path": "<SCRATCH_REPO_A>",
     "repo_remote_url": "https://example.test/memory-contract-fixtures-a.git",
     "id": "5a11ebbc-b1d1-4908-891a-e3a1a44a08ee",
-    "reason": "Attempting to re-promote an entry that was already superseded by the contradiction resolution above."
+    "reason": "Attempting to demote an entry that was already superseded by the contradiction resolution above."
   },
   "error": {
-    "message": "Cannot promote superseded entry: 5a11ebbc-b1d1-4908-891a-e3a1a44a08ee",
+    "message": "Cannot demote superseded entry: 5a11ebbc-b1d1-4908-891a-e3a1a44a08ee",
     "thrown": true
   },
-  "expected_error_code": "E-PROMOTE-SUPERSEDED"
+  "expected_error_code": "E-DEMOTE-SUPERSEDED"
 }

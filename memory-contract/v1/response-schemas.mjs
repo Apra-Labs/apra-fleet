@@ -1,4 +1,4 @@
-// Response body schemas for the v1 memory contract's 23 inventoried tools.
+// Response body schemas for the v1 memory contract's 24 inventoried tools.
 //
 // WHY THIS FILE EXISTS
 // INVENTORY.md section 3 records the decision rule for responses: no tool in
@@ -13,7 +13,7 @@
 // DECISION RULE (INVENTORY.md section 3, reproduced for callers of this
 // module): every tool response is modelled as a minimal text-content
 // envelope, `{ content: [ { type: "text", text: string } ] }`, plus one of:
-//   - Body known   -- the 16 kb_* tools, whose handler stringifies an object
+//   - Body known   -- the 17 kb_* tools, whose handler stringifies an object
 //     with an observable top-level shape. Modelled field-for-field below.
 //   - Body opaque  -- the 7 code_* tools, whose handler proxies an
 //     unconstrained provider payload (Promise<unknown>). Modelled as
@@ -147,6 +147,11 @@ const KB_RESPONSE_BODIES = {
     entries_rejected: z.number(),
   }),
   kb_promote: z.object({
+    id: z.string(),
+    previous_confidence: z.string(),
+    new_confidence: z.string(),
+  }),
+  kb_demote: z.object({
     id: z.string(),
     previous_confidence: z.string(),
     new_confidence: z.string(),

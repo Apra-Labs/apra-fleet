@@ -155,6 +155,22 @@
       "see_also": ["Directive quarantine"]
     },
     {
+      "id": "P-13",
+      "member": "demote",
+      "kind": "interface-method",
+      "interface": "MemoryProvider",
+      "signature": "demote(id: string, reason: string, evidenceFiles?: string[]): Promise<{id, confidence_before, confidence_after}>",
+      "purpose": "Downgrade an entry's confidence one tier (CONFIRMED -> INFERRED -> UNVERIFIED), appending the reason (and any cited evidence files) as a demotion note. The DOWN rung of the same ladder promote() (P-8) walks up.",
+      "tools": [
+        { "name": "kb_demote", "request_schema_ref": "schemas/kb_demote.request.json", "response_schema_ref": "schemas/kb_demote.response.json", "repo_path_validation": "verbatim-passthrough" }
+      ],
+      "side_effect_class": "trust-mutating",
+      "idempotent": false,
+      "idempotent_note": "No-op only at the UNVERIFIED floor; above it every call retreats one tier. Unlike promote(), there is no basis-resolution gate -- an entry whose basis has vanished is exactly the legitimate demote target.",
+      "error_codes": ["E-ENTRY-NOT-FOUND", "E-PATH-TRAVERSAL", "E-DEMOTE-SUPERSEDED", "E-DEMOTE-REFUSED-DIRECTIVE", "E-DEMOTE-REASON-REQUIRED", "E-DEMOTE-EVIDENCE-UNRESOLVED", "E-PROVIDER-UNINITIALIZED"],
+      "see_also": ["Directive quarantine"]
+    },
+    {
       "id": "P-9",
       "member": "sync",
       "kind": "interface-method",

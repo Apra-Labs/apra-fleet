@@ -1,0 +1,16 @@
+{
+  "tool": "kb_demote",
+  "case": "refusal-refused-directive",
+  "kind": "refusal",
+  "request": {
+    "repo_path": "<SCRATCH_REPO_A>",
+    "repo_remote_url": "https://example.test/memory-contract-fixtures-a.git",
+    "id": "21be7e98-9a05-4fd3-af72-f1a6b97ff597",
+    "reason": "Attempting to demote a user-directive proposal directly; directive state is human-terminal only."
+  },
+  "error": {
+    "message": "Cannot demote a user-directive via kb_demote: directive state is human-terminal only. Run `apra-fleet kb reject-directive 21be7e98-9a05-4fd3-af72-f1a6b97ff597` to discard it.",
+    "thrown": true
+  },
+  "expected_error_code": "E-DEMOTE-REFUSED-DIRECTIVE"
+}

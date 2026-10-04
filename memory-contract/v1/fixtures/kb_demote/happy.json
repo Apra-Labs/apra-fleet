@@ -1,0 +1,22 @@
+{
+  "tool": "kb_demote",
+  "case": "happy",
+  "kind": "happy",
+  "request": {
+    "repo_path": "<SCRATCH_REPO_A>",
+    "repo_remote_url": "https://example.test/memory-contract-fixtures-a.git",
+    "id": "cd9da5b1-8395-4cb4-88c5-bc17045e7bdf",
+    "reason": "On a later re-read, the increment claim no longer felt fully re-verified against the current file.",
+    "evidence_files": [
+      "src/example.ts"
+    ]
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"id\":\"cd9da5b1-8395-4cb4-88c5-bc17045e7bdf\",\"previous_confidence\":\"CONFIRMED\",\"new_confidence\":\"INFERRED\"}"
+      }
+    ]
+  }
+}

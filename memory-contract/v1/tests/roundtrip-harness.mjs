@@ -207,6 +207,9 @@ export const SCENARIO = [
   { tool: 'kb_import', case: 'happy' },
   { tool: 'kb_freshness_sweep', case: 'happy' },
   { tool: 'kb_feedback', case: 'happy', derive: { id: 'FOO' } },
+  { tool: 'kb_demote', case: 'happy', derive: { id: 'FOO' } },
+  { tool: 'kb_capture', case: 'setup-for-demote-noop', captureId: 'DEMOTE_NOOP' },
+  { tool: 'kb_demote', case: 'noop-unverified', derive: { id: 'DEMOTE_NOOP' } },
   { tool: 'kb_harvest', case: 'happy' },
   { tool: 'kb_capture', case: 'happy-contradiction-a', captureId: 'BROKEN' },
   { tool: 'kb_capture', case: 'happy-contradiction-b', captureId: 'FIXED' },
@@ -274,6 +277,9 @@ export const SCENARIO = [
   },
   { tool: 'kb_promote', case: 'refusal-reason-required', derive: { id: 'FOO' } },
   { tool: 'kb_promote', case: 'refusal-superseded', derive: { id: 'BROKEN' } },
+  { tool: 'kb_demote', case: 'refusal-reason-required', derive: { id: 'FOO' } },
+  { tool: 'kb_demote', case: 'refusal-evidence-unresolved', derive: { id: 'FOO' } },
+  { tool: 'kb_demote', case: 'refusal-superseded', derive: { id: 'BROKEN' } },
   {
     tool: 'kb_capture',
     case: 'setup-for-basis-unresolved',
@@ -312,6 +318,7 @@ export const SCENARIO = [
     assertParsed: assertDirectiveQuarantined,
   },
   { tool: 'kb_promote', case: 'refusal-promote-directive', derive: { id: 'DIRECTIVE' } },
+  { tool: 'kb_demote', case: 'refusal-refused-directive', derive: { id: 'DIRECTIVE' } },
   { tool: 'kb_capture', case: 'non-error-confidence-clamped', assertParsed: assertConfidenceClamped },
 ];
 

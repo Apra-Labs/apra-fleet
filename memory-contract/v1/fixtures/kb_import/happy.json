@@ -5,7 +5,7 @@
   "request": {
     "repo": "<SCRATCH_REPO_B>",
     "repo_remote_url": "https://example.test/memory-contract-fixtures-b.git",
-    "path": "<SCRATCH_REPO_A>\\.fleet\\kb-canonical.json"
+    "path": "<SCRATCH_REPO_A>/.fleet/kb-canonical.json"
   },
   "response": {
     "content": [
