@@ -80,7 +80,7 @@ method in this surface is classified `consent-gated` on its own (the
 consent-gated CLI-only surface -- `approveDirective`, `rejectDirective`,
 `addDirective` -- is not tool-reachable; see `methods.json`'s `not_in_scope`).
 
-### 2.2 Undeclared members reached by tools but absent from `MemoryProvider` (`methods.json` ids X-1..X-6, plus the X-7 property)
+### 2.2 Undeclared members reached by tools but absent from `MemoryProvider` (`methods.json` ids X-1..X-6 and X-8, plus the X-7 property)
 
 `list`, `feedback`, `freshnessSweep`, `resolveContradiction`,
 `reconcilePrefilter`, `hasEntry` (methods), and `repoPath` (property, not a
