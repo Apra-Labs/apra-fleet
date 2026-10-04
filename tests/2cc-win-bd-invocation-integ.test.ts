@@ -6,6 +6,7 @@ import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { execBdSync } from '../scripts/lib/exec-bd.mjs';
+import { bdChildEnv } from './helpers/bd-child-env.js';
 
 // apra-fleet-2cc.3: integration coverage for apra-fleet-2cc's Windows fix
 // streak (2cc.1: shell-safe bd invocation via scripts/lib/exec-bd.mjs; 2cc.2:
@@ -31,8 +32,8 @@ const CHECK_TOY_DOER_CREDS_SCRIPT = path.join(SCRIPTS_DIR, 'check-toy-doer-crede
 // database as "already initialized" and abort, even though the toy-repo fixture
 // itself is a fresh, empty git repo. Strip it so every invocation here is
 // genuinely scoped to the fixture's own cwd, matching a real toy-repo checkout.
-const BD_CHILD_ENV: NodeJS.ProcessEnv = { ...process.env };
-delete BD_CHILD_ENV.BEADS_DIR;
+// (shared helper: tests/helpers/bd-child-env.ts, per my-beads-db-qy8.9.1)
+const BD_CHILD_ENV: NodeJS.ProcessEnv = bdChildEnv();
 
 /** Runs a bd subcommand with BD_CHILD_ENV and surfaces real stderr on failure
  *  (an execFileSync failure with stdio 'ignore' reports only "Command failed",
