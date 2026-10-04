@@ -235,6 +235,7 @@ stop and return:
 ```json
 { "status": "VERIFY", "closedIds": ["<id>", "..."], "notes": "string" }
 ```
+Include the `toolUse` field (Step 0 item 5) as well; see Output schema for its shape.
 `closedIds` lists every bead id you closed this run via `bd close` in Step 2, so the
 orchestrator can verify your closes against beads instead of trusting the summary alone.
 Do NOT continue past VERIFY.
@@ -245,7 +246,7 @@ Do NOT continue past VERIFY.
 - NEVER push to the base branch -- always work on the sprint feature branch
 - If a task needs a secret or token you do not have, close the task with
   `bd close <id> --reason="blocked: missing secret <name>"`, then STOP and return
-  `{ "status": "BLOCKED", "closedIds": [...closed so far...], "notes": "blocked: missing secret <name>" }`
+  `{ "status": "BLOCKED", "closedIds": [...closed so far...], "notes": "blocked: missing secret <name>", "toolUse": {...} }`
 
 ## Output schema
 
