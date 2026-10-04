@@ -64,6 +64,25 @@ const CASES = [
     ['doer', null],
     ['doer', undefined],
     ['doer', { kb_captures: [], kb_promotions: [] }],
+    // D6/C4 (kb_demotions): the exact same cases as kb_promotions above,
+    // mirrored -- this is the lockstep behavior this task's own bead exists
+    // to guard, so it gets guarded here too, not left as an untested copy.
+    ['reviewer', { kb_demotions: [{ id: 'abc', reason: GOOD_REASON }] }],
+    ['reviewer', { kb_demotions: [{ id: 'abc', reason: 'ok' }] }],
+    ['reviewer', { kb_demotions: [{ id: 'abc', reason: '' }] }],
+    ['reviewer', { kb_demotions: [{ id: 'abc', reason: '   ' }] }],
+    ['reviewer', { kb_demotions: [{ reason: GOOD_REASON }] }],
+    ['reviewer', { kb_demotions: [{ id: 'abc', reason: 'x'.repeat(20) }] }],
+    ['reviewer', { kb_demotions: [{ id: 'abc', reason: 'x'.repeat(19) }] }],
+    ['reviewer', { kb_demotions: [{ id: 'abc', reason: GOOD_REASON, evidence_files: ['src/real.ts'] }] }],
+    ['reviewer', { kb_demotions: [{ id: 'abc', reason: GOOD_REASON, evidence_files: [] }] }],
+    ['doer', { kb_demotions: [{ id: 'abc', reason: GOOD_REASON }] }],
+    ['planner', { kb_demotions: [{ id: 'abc', reason: GOOD_REASON }] }],
+    ['harvester', { kb_demotions: [{ id: 'abc', reason: GOOD_REASON }] }],
+    ['deployer', { kb_demotions: [{ id: 'abc', reason: GOOD_REASON }] }],
+    ['doer', { kb_captures: [GOOD_CAPTURE], kb_demotions: [{ id: 'abc', reason: GOOD_REASON }] }],
+    ['reviewer', { kb_promotions: [{ id: 'abc', reason: GOOD_REASON }], kb_demotions: [{ id: 'xyz', reason: GOOD_REASON }] }],
+    ['doer', { kb_captures: [], kb_promotions: [], kb_demotions: [] }],
 ];
 
 describe('vetKbWork copies do not drift (apra-fleet-4wz.9)', () => {
@@ -73,6 +92,7 @@ describe('vetKbWork copies do not drift (apra-fleet-4wz.9)', () => {
             const b = pmVet(role, payload);
             assert.deepEqual(a.captures, b.captures, 'captures differ between the two copies');
             assert.deepEqual(a.promotions, b.promotions, 'promotions differ between the two copies');
+            assert.deepEqual(a.demotions, b.demotions, 'demotions differ between the two copies');
             // The refusal REASONS are prose and may be worded per engine, but the
             // COUNT of refusals must match -- a rule that fires in one copy and
             // not the other is exactly the drift this guards.
@@ -110,5 +130,9 @@ describe('the workflow copy carries the same constants', () => {
 
     test('auto-sprint.js still refuses kb_promotions from a non-reviewer role', () => {
         assert.match(src, /promotion is reviewer-only/);
+    });
+
+    test('auto-sprint.js still refuses kb_demotions from a non-reviewer role', () => {
+        assert.match(src, /demotion is reviewer-only/);
     });
 });

@@ -23,6 +23,7 @@ export const KB_CAPTURE_TYPES = ['knowledge', 'learning', 'runbook'];
 export function vetKbWork(role, result) {
   const captures = [];
   const promotions = [];
+  const demotions = [];
   const rejected = [];
 
   const rawCaptures = (result && Array.isArray(result.kb_captures)) ? result.kb_captures : [];
@@ -75,5 +76,28 @@ export function vetKbWork(role, result) {
     }
   }
 
-  return { captures, promotions, rejected };
+  // D6/C4: kb_demotions is gated exactly like kb_promotions -- same
+  // reviewer-only role check, same KB_MIN_PROMOTE_REASON evidence floor.
+  // Lowering trust is exactly as auditable an act as raising it.
+  const rawDemotions = (result && Array.isArray(result.kb_demotions)) ? result.kb_demotions : [];
+  if (rawDemotions.length > 0 && !KB_PROMOTER_ROLES.has(role)) {
+    rejected.push(`${role}: kb_demotions refused -- demotion is reviewer-only`);
+  } else {
+    for (const d of rawDemotions) {
+      if (!d || typeof d.id !== 'string' || d.id.length === 0) {
+        rejected.push(`${role}: demotion missing id`);
+        continue;
+      }
+      if (typeof d.reason !== 'string' || d.reason.trim().length < KB_MIN_PROMOTE_REASON) {
+        rejected.push(`${role}: demotion ${d.id} has no recorded evidence`);
+        continue;
+      }
+      const evidenceFiles = Array.isArray(d.evidence_files)
+        ? d.evidence_files.filter((f) => typeof f === 'string' && f.length > 0)
+        : [];
+      demotions.push({ id: d.id, reason: d.reason.trim(), evidence_files: evidenceFiles });
+    }
+  }
+
+  return { captures, promotions, demotions, rejected };
 }

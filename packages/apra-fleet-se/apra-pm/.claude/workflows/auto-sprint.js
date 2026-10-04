@@ -1491,6 +1491,36 @@ const REVIEW_SCHEMA = {
         }
       }
     },
+    "kb_demotions": {
+      "type": "array",
+      "description": "Entries this reviewer independently found to be LESS certain than the KB currently records, copied from the 'KNOWLEDGE BANK -- demotion candidates' block in your dispatch prompt. Reviewer-only, same evidence floor as kb_promotions. The engine makes the kb_demote calls.",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "reason"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The entry id, copied verbatim from the 'KNOWLEDGE BANK -- demotion candidates' block in your dispatch prompt. That block is the ONLY source of demotable ids -- do not call a kb_* tool to find one, and never invent one.",
+            "minLength": 1
+          },
+          "reason": {
+            "type": "string",
+            "description": "What you checked that makes this entry less certain. kb_demote refuses a trivial reason.",
+            "minLength": 20
+          },
+          "evidence_files": {
+            "type": "array",
+            "description": "Files supporting the demotion. Optional -- omit or send [] when the demotion has nothing new to cite.",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
     "kb_captures": {
       "type": "array",
       "description": "Durable knowledge this role verified during its run. The engine makes the kb_capture calls; the role only decides. Optional -- omit or send [] to capture nothing.",
@@ -2333,6 +2363,7 @@ const KB_EXEC_SCHEMA = {
 function vetKbWork(role, result) {
   const captures = [];
   const promotions = [];
+  const demotions = [];
   const rejected = [];
 
   const rawCaptures = (result && Array.isArray(result.kb_captures)) ? result.kb_captures : [];
@@ -2386,7 +2417,30 @@ function vetKbWork(role, result) {
     }
   }
 
-  return { captures, promotions, rejected };
+  // D6/C4: kb_demotions is gated exactly like kb_promotions -- same
+  // reviewer-only role check, same KB_MIN_PROMOTE_REASON evidence floor.
+  // Lowering trust is exactly as auditable an act as raising it.
+  const rawDemotions = (result && Array.isArray(result.kb_demotions)) ? result.kb_demotions : [];
+  if (rawDemotions.length > 0 && !KB_PROMOTER_ROLES.has(role)) {
+    rejected.push(`${role}: kb_demotions refused -- demotion is reviewer-only`);
+  } else {
+    for (const d of rawDemotions) {
+      if (!d || typeof d.id !== 'string' || d.id.length === 0) {
+        rejected.push(`${role}: demotion missing id`);
+        continue;
+      }
+      if (typeof d.reason !== 'string' || d.reason.trim().length < KB_MIN_PROMOTE_REASON) {
+        rejected.push(`${role}: demotion ${d.id} has no recorded evidence`);
+        continue;
+      }
+      const evidenceFiles = Array.isArray(d.evidence_files)
+        ? d.evidence_files.filter((f) => typeof f === 'string' && f.length > 0)
+        : [];
+      demotions.push({ id: d.id, reason: d.reason.trim(), evidence_files: evidenceFiles });
+    }
+  }
+
+  return { captures, promotions, demotions, rejected };
 }
 
 /**
@@ -2409,7 +2463,7 @@ async function runKbWork(repoPath, role, result) {
       `calls listed below and report counts. Make NO judgment about whether an ` +
       `entry is correct -- that decision has already been made and validated.\n\n` +
       `Step 1: Call ToolSearch with query ` +
-      `"select:mcp__apra-fleet__kb_capture,mcp__apra-fleet__kb_promote".\n` +
+      `"select:mcp__apra-fleet__kb_capture,mcp__apra-fleet__kb_promote,mcp__apra-fleet__kb_demote".\n` +
       `Step 2: For EACH object in captures below, call mcp__apra-fleet__kb_capture ` +
       `with repo_path "${repoPath}" and that object's fields verbatim. Do not ` +
       `reword, merge, split or invent entries.\n` +
