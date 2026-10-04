@@ -343,6 +343,78 @@ describe('kb_demote bible safety: only a demotion-only shrink auto-commits', () 
     expect(warnings.some(w => w.includes('bible SHRANK from 4 to 2 entries'))).toBe(true);
   });
 
+  it('refuses the shrink when a missing id was demoted but has since been re-promoted to CONFIRMED', async () => {
+    // REGRESSION (round-2 review). demoted_at is WRITE-ONCE: promote() rewrites
+    // confidence/promoted_at/content/source and never clears it, so "has a
+    // demoted_at" outlives the demotion forever. list() also drops stale rows,
+    // so a re-promoted entry that later goes stale is missing from a
+    // CONFIRMED-only export while still CONFIRMED locally. Asking the WIDE
+    // question ("was this id ever demoted?") made every such entry permanently
+    // exempt from the guard -- demote -> re-verify -> promote -> freshness
+    // sweep -> silent auto-commit of the loss, the exact apra-fleet-ong shape
+    // this guard exists to refuse.
+    //
+    // One basis file PER entry so a single entry can be staled on its own.
+    const ownBasis = (name: string): string => {
+      const p = path.join(repoDir, 'src', name + '.ts');
+      fs.writeFileSync(p, 'export const ' + name + ' = 1;\n');
+      return p;
+    };
+    const fileAlpha = ownBasis('alpha');
+    const fileBeta = ownBasis('beta');
+    const fileGamma = ownBasis('gamma');
+    git(repoDir, ['add', '-A']);
+    gitCommit(repoDir, 'seed: one cited file per entry');
+
+    const idAlpha = await captureConfirmed(provider, 'claim alpha', fileAlpha);
+    const idBeta = await captureConfirmed(provider, 'claim beta', fileBeta);
+    await captureConfirmed(provider, 'claim gamma', fileGamma);
+
+    const first = JSON.parse(await kbExport({ repo_path: repoDir }));
+    expect(first.exported).toBe(3);
+    expect(first.committed).toBe(true);
+    expect(bibleAtHead().entries).toHaveLength(3);
+    const shaBefore = headSha();
+    const commitsBefore = commitCount();
+
+    // beta: trust fell, then the claim was re-verified and promoted back up.
+    // It is CONFIRMED again -- and still carries demoted_at.
+    await provider.demote(idBeta, DEMOTE_REASON);
+    const rePromoted = await provider.promote(idBeta, PROMOTE_REASON);
+    expect(rePromoted.confidence_after).toBe('CONFIRMED');
+    expect(provider.demotedIds([idBeta]).has(idBeta)).toBe(true);
+    expect(provider.demotedIds([idBeta], { belowConfirmedOnly: true }).has(idBeta)).toBe(false);
+
+    // beta's cited file changes, so the freshness sweep stales it. Nobody
+    // chose to drop this knowledge -- it is exactly the unexplained loss.
+    fs.writeFileSync(fileBeta, 'export const beta = 2;\n');
+    const sweep = await provider.freshnessSweep(repoDir);
+    expect(sweep.staled).toBe(1);
+
+    // alpha is a genuine demotion, so the shrink LOOKS demotion-shaped.
+    await provider.demote(idAlpha, DEMOTE_REASON);
+
+    const result = JSON.parse(await kbExport({ repo_path: repoDir }));
+
+    expect(result.exported).toBe(1);
+    expect(result.committed).toBe(false);
+    expect(headSha()).toBe(shaBefore);
+    expect(commitCount()).toBe(commitsBefore);
+    expect(bibleAtHead().entries).toHaveLength(3);
+
+    const shrinkWarning = warnings.find(w => w.includes('bible SHRANK'));
+    expect(shrinkWarning).toBeDefined();
+    expect(shrinkWarning).toContain('[fleet:warn] kb-export');
+    expect(shrinkWarning).toContain(
+      'bible SHRANK from 3 to 1 entries -- written to disk but NOT auto-committed. '
+      + 'Review the diff and commit it yourself if the loss is intended '
+      + '(set { bible: { autoCommit: true } } to commit shrinking exports unattended).',
+    );
+
+    // The loss stays a reviewable working-tree diff.
+    expect(git(repoDir, ['status', '--porcelain', '--', BIBLE_REL]).trim()).not.toBe('');
+  });
+
   it('leaves a non-shrinking export committing exactly as before', async () => {
     await seedCommittedBible();
     const commitsBefore = commitCount();
