@@ -244,8 +244,60 @@ describe('verifyBeadsIdentity', () => {
         assert.ok(logs.some((l) => l.includes('the supplied expected beads identity carries no syncRemote; syncRemote is not compared on any member this sprint')), JSON.stringify(logs));
     });
 
-    test('BEADS_IDENTITY_FAILURE_REASONS has no probe-failure reason any more: only MISMATCH is fatal', () => {
-        assert.deepEqual(Object.keys(BEADS_IDENTITY_FAILURE_REASONS), ['MISMATCH']);
+    test('BEADS_IDENTITY_FAILURE_REASONS: only MISMATCH and a missing bd binary are fatal (no generic probe-failure reason)', () => {
+        assert.deepEqual(Object.keys(BEADS_IDENTITY_FAILURE_REASONS), ['MISMATCH', 'MISSING_TOOL']);
+    });
+
+    // GitHub #616: bd itself missing on a member is fatal at sprint start,
+    // narrowly -- every other probe failure keeps the warning above.
+    const PWSH_NO_BD = "bd : The term 'bd' is not recognized as the name of a cmdlet, function, script file, or operable program.";
+    const BASH_NO_BD = 'bash: line 1: bd: command not found';
+    for (const [shell, text] of [['PowerShell', PWSH_NO_BD], ['POSIX', BASH_NO_BD]]) {
+        test(`bd not installed on a member (${shell} wording) aborts with MISSING_TOOL naming member, binary and the fix`, async () => {
+            const { command } = fakeCommand({
+                orch: identityAnswers(),
+                m1: {
+                    ...identityAnswers(),
+                    [BEADS_IDENTITY_PROBES.where]: { fail: text },
+                    [BEADS_IDENTITY_PROBES.syncRemote]: { fail: text },
+                },
+            });
+            await assert.rejects(
+                verifyBeadsIdentity({ command, log: () => {}, backlogMember: 'orch', members: ['m1'] }),
+                (err) => {
+                    assert.ok(err instanceof BeadsIdentityError);
+                    assert.equal(err.reason, BEADS_IDENTITY_FAILURE_REASONS.MISSING_TOOL);
+                    assert.equal(err.member, 'm1');
+                    assert.match(err.message, /'bd' is not installed or not on PATH on member 'm1'/);
+                    assert.match(err.message, /Install bd on that member \(or fix that member's PATH\)/);
+                    return true;
+                },
+            );
+        });
+    }
+
+    test('bd missing on the backlog member aborts before any other member is probed', async () => {
+        const { command, calls } = fakeCommand({ orch: { ...identityAnswers(), [BEADS_IDENTITY_PROBES.where]: { fail: BASH_NO_BD } }, m1: identityAnswers() });
+        await assert.rejects(
+            verifyBeadsIdentity({ command, log: () => {}, backlogMember: 'orch', members: ['m1'] }),
+            (err) => err.reason === BEADS_IDENTITY_FAILURE_REASONS.MISSING_TOOL && err.member === 'orch',
+        );
+        assert.ok(calls.every((c) => c.opts.member_name === 'orch'));
+    });
+
+    test('profile noise naming another binary, or git missing for the origin probe, stays a WARNING', async () => {
+        const { command } = fakeCommand({
+            orch: identityAnswers(),
+            m1: {
+                ...identityAnswers(),
+                [BEADS_IDENTITY_PROBES.where]: { fail: '/home/u/.bashrc: line 3: pyenv: command not found\nError: no beads database found' },
+                [BEADS_IDENTITY_PROBES.repoRemote]: { fail: 'bash: git: command not found' },
+            },
+        });
+        const logs = [];
+        const res = await verifyBeadsIdentity({ command, log: (l) => logs.push(l), backlogMember: 'orch', members: ['m1'] });
+        assert.ok(logs.some((l) => l.startsWith(BEADS_IDENTITY_WARNING_PREFIX) && l.includes("member 'm1' reports no beads database")), JSON.stringify(logs));
+        assert.ok(!('m1' in res.members));
     });
 
     test('rejects a missing backlog member up front', async () => {

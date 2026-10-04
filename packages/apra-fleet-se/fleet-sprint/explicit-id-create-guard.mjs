@@ -16,10 +16,10 @@ import { explicitIdCreateModulePaths, EXPLICIT_ID_CREATE_EXEMPT } from './guarde
 // command (`bd create`, of ANY shape) unless it lives in beads-children.mjs
 // -- the single module that pairs an explicit-id create with the
 // probe-and-refuse seam (assertChildIdFree(), called from
-// createChildBeadWithAllocatedId) that guards against `bd create`'s silent
-// overwrite-on-collision behavior (apra-fleet-btj9). A second, unguarded
-// bead-creation site anywhere else in this directory is exactly how that
-// overwrite bug returns, so this is a mechanical scan -- same shape as the
+// createChildBeadWithAllocatedId) that refuses an occupied id and keeps it
+// out of the allocator's pool (apra-fleet-btj9). A second, unguarded
+// bead-creation site anywhere else in this directory would bypass that
+// id discipline, so this is a mechanical scan -- same shape as the
 // sibling guards -- rather than a call-graph proof that assertChildIdFree()
 // actually ran first.
 //

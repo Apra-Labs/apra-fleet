@@ -663,12 +663,11 @@ reach):
 #### itself must be probed, not trusted
 
 Two independent gaps let the allocator hand out an id that already belongs
-to an existing bead, and `bd create --id <id>` on an occupied id is not a
-safe no-op: it **silently overwrites** whatever bead already holds that id
-(open or closed), reusing the same row and clobbering its
-title/description/priority/type with no error. Both gaps had to close for
-the hazard to actually go away -- fixing only one leaves the other as a live
-path to the same silent-overwrite outcome:
+to an existing bead. Current bd refuses `bd create --id <id>` on an
+occupied id (open or closed); older bd releases silently overwrote the
+occupant. Either way an occupied id costs the newTask its create, and once
+re-pooled it is re-minted on every later allocation. Both gaps had to close
+for the hazard to actually go away:
 
 - **Floor computation must count closed children.** The allocator seeds its
   first allocation under a parent from a best-effort read of the parent's
@@ -693,8 +692,8 @@ path to the same silent-overwrite outcome:
   manually-created bead can leave an id occupied despite the allocator
   believing otherwise. On the explicit-id path, the creator therefore probes
   (`bd show <id> --json`) before ever calling `bd create --id`, and refuses
-  (releasing the reservation, throwing loudly) rather than proceeding into
-  an overwrite if the id is already occupied. The probe's failure mode is
+  (releasing the reservation, throwing loudly) rather than dispatching a
+  create that cannot succeed if the id is already occupied. The probe's failure mode is
   itself two-valued and must be told apart: `bd show <missing-id> --json`
   does not exit 0 with an empty result, it exits non-zero with a documented
   "no issues found" error payload -- so the probe's own catch block
@@ -704,6 +703,18 @@ path to the same silent-overwrite outcome:
   assuming an unrecognized failure means the id is free. The null-allocator
   fallback path (`bd create --parent`, no explicit id) needs no such probe:
   `bd` mints the id itself in that case and cannot collide.
+
+**A failed create dispatch consumes its id and retries.** `release()` is
+only called for a failure before `bd create` is dispatched (staging the
+description). Once the create was dispatched, its failure does not prove the
+id is free (bd refusing a duplicate id means it is occupied; a transport
+fault can hide a create that landed), so the id is `confirm()`ed -- consumed,
+never re-pooled -- and the creator retries with a freshly allocated id, up to
+`CHILD_CREATE_MAX_ATTEMPTS` dispatches in total, logging each. A newTask that
+still fails falls back to the parent's notes (then the run log), as before.
+Separately, every `allocate()` that carries a `floor` drops
+pooled ids at or below it, whether or not the floor raises the high-water, so
+an occupied id that did reach the pool is never handed out again.
 
 **Reservation lifecycle after the create lands is asymmetric, and that
 asymmetry is load-bearing, not an oversight.** `release()` returns a

@@ -86,7 +86,7 @@
  */
 
 import { DoltDivergedError, DoltSyncError } from './errors.mjs';
-import { classifyFailure, toDoltVerdict } from './vcs-module.mjs';
+import { classifyFailure, toDoltVerdict, commandBinary } from './vcs-module.mjs';
 import { buildSettleCallback } from './dolt-settle.mjs';
 
 // ---------------------------------------------------------------------------
@@ -673,11 +673,13 @@ const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  * 'diverged' classification remains excluded and is still returned
  * immediately, never retried.
  *
- * @returns {Promise<{ ok: boolean, output: string, error: string|null, kind?: 'no-remote'|'empty-remote'|'remote-unreachable'|'diverged'|'auth'|'transient'|'unknown' }>}
+ * @returns {Promise<{ ok: boolean, output: string, error: string|null, kind?: 'no-remote'|'empty-remote'|'remote-unreachable'|'diverged'|'auth'|'transient'|'missing-tool'|'unknown', missingTool?: string }>}
  */
 async function runDoltStep({ command, member, cmd, label, log, maxTransientRetries, onAuthFailure, sleep = defaultSleep, backoffBaseMs = DOLT_BACKOFF_BASE_MS, timeoutS = DOLT_STEP_TIMEOUT_S, spawnOutageBudgetMs = DOLT_SPAWN_OUTAGE_BUDGET_MS, now = Date.now }) {
     let attempt = 0;
     let authHealAttempted = false;
+    /** The info the self-heal was invoked with, reported back on a failed retry. */
+    let healTrigger = null;
     const startedAt = now();
     // An explicitly passed `maxTransientRetries` caps BOTH ladders (see the
     // ROUND-3 CORRECTION in the constants block); left undefined, the generic
@@ -691,9 +693,22 @@ async function runDoltStep({ command, member, cmd, label, log, maxTransientRetri
     // eslint-disable-next-line no-constant-condition
     while (true) {
         const res = await command(cmd, { member_name: member, silent: true, failSoft: true, label, timeout_s: timeoutS });
-        if (res && res.ok) return res;
+        if (res && res.ok) {
+            if (authHealAttempted) log(`[Dolt] self-heal recovered: ${label} succeeded for member '${member}' on the retry after re-provisioning credentials.`);
+            return res;
+        }
         const error = res ? res.error : 'unknown command failure';
-        const kind = classifyDoltFailure(error);
+        // Same verdict classifyDoltFailure() returns, read once here so a
+        // missing-tool failure can also name the binary.
+        const classified = classifyFailure(error, { provider: 'dolt', tool: commandBinary(cmd) });
+        const kind = toDoltVerdict(classified.kind);
+        if (kind === 'missing-tool') {
+            // GitHub #616: a missing binary is never retried and never sent to
+            // the credential self-heal -- neither can install it.
+            const tool = classified.missingTool || commandBinary(cmd);
+            log(`[Dolt] ${label} FAILED (missing-tool): '${tool}' was not found on member '${member}' -- install it on that member or put it on that member's PATH. Not retrying and not re-provisioning credentials. Raw: ${error}`);
+            return { ok: false, output: res ? res.output : '', error, kind, missingTool: tool, selfHealed: false };
+        }
         if (kind === 'transient') {
             // Sub-classify WITHIN the transient verdict: only the spawn-outage
             // class gets the long wall-clock budget (see the constants block
@@ -729,8 +744,9 @@ async function runDoltStep({ command, member, cmd, label, log, maxTransientRetri
             // this used to drop only the former, unlike repair()).
             forgetMemberSyncState(member);
             log(`[Dolt] ${kind} failure for member '${member}' (${label}); invoking self-heal (provision_vcs_auth) once before a single bounded retry: ${error}`);
+            healTrigger = { member, label, cmd, error, source: 'dolt', failureKind: kind };
             try {
-                await onAuthFailure({ member, label, cmd, error, kind: 'dolt' });
+                await onAuthFailure(healTrigger);
             } catch (healErr) {
                 log(`[Dolt] self-heal for member '${member}' (${label}) failed; not retrying further: ${healErr.message}`);
                 log(`[Dolt] ${label} FAILED (${kind}) -- reads/writes for member '${member}' may be stale until this is resolved. Raw: ${error}`);
@@ -759,9 +775,36 @@ async function runDoltStep({ command, member, cmd, label, log, maxTransientRetri
         // stale" apart from "the credentials were just refreshed and the
         // failure text is lying" -- see doltPushGuarded's post-reconcile
         // re-push branch.
+        if (authHealAttempted) {
+            log(`[Dolt] self-heal did not recover: ${label} still failed for member '${member}' after re-provisioning credentials.`);
+            // Let the self-heal remember this futile heal for the rest of the
+            // run, so the next step failing the same way is not re-healed.
+            if (typeof onAuthFailure.recordHealOutcome === 'function') {
+                try { await onAuthFailure.recordHealOutcome({ ...healTrigger, recovered: false }); }
+                catch (recordErr) { log(`[Dolt] could not record the failed self-heal for member '${member}': ${recordErr.message}`); }
+            }
+        }
         log(`[Dolt] ${label} FAILED (${kind}) -- reads/writes for member '${member}' may be stale until this is resolved. Raw: ${error}`);
         return { ok: false, output: res ? res.output : '', error, kind, selfHealed: authHealAttempted };
     }
+}
+
+/**
+ * The terminal error for a D-pull/D-push whose binary is missing on the member
+ * (GitHub #616): names the binary and the member, and says plainly that
+ * credentials were not touched.
+ * @param {string} member
+ * @param {'pull'|'push'} operation
+ * @param {{ error: string, missingTool?: string }} step
+ * @returns {DoltSyncError}
+ */
+function missingToolSyncError(member, operation, step) {
+    const tool = step.missingTool || 'bd';
+    return new DoltSyncError(
+        `[Dolt] D-${operation} for member '${member}' failed: '${tool}' is not installed or not on PATH on member '${member}' -- ` +
+        `install it there (or fix that member's PATH) and retry. Not a credential problem; credentials were not re-provisioned. Raw: ${step.error}`,
+        { member, doltOutput: step.error, details: { kind: 'missing-tool', operation, tool } },
+    );
 }
 
 /**
@@ -1307,6 +1350,9 @@ export async function doltPullBefore(member, opts = {}) {
                 { member, doltOutput: pull.error, details: { kind: 'auth', operation: 'pull' } },
             );
         }
+        if (pull.kind === 'missing-tool') {
+            throw missingToolSyncError(member, 'pull', pull);
+        }
         if (pull.kind === 'remote-unreachable') {
             const url = extractDoltRemoteUrl(pull.error);
             throw new DoltSyncError(
@@ -1624,6 +1670,9 @@ export async function doltPushAfter(member, opts = {}) {
                 { member, doltOutput: push.error, details: { kind: 'auth', operation: 'push' } },
             );
         }
+        if (push.kind === 'missing-tool') {
+            throw missingToolSyncError(member, 'push', push);
+        }
         if (push.kind === 'remote-unreachable') {
             const url = extractDoltRemoteUrl(push.error);
             throw new DoltSyncError(
@@ -1905,16 +1954,20 @@ export function classifySyncError(err) {
 // doltPushAfter), so it always maps to 'conflict-unresolvable' here, never
 // 'conflict-resolvable' (that state exists only transiently, mid-reconcile,
 // and is never itself reported as a degraded terminal outcome).
-const NEUTRAL_KIND_MAP = {
+export const NEUTRAL_KIND_MAP = Object.freeze({
     diverged: 'conflict-unresolvable',
     auth: 'auth',
     transient: 'transient',
     'no-remote': 'no-store',
     'empty-remote': 'no-store',
     'remote-unreachable': 'store-unreachable',
+    // A missing bd/dolt binary on the member (GitHub #616). The ADR taxonomy
+    // has no environment-fault kind, and 'store-unreachable' would misreport a
+    // reachable store, so it maps to 'unknown' -- explicitly, not by fallback.
+    'missing-tool': 'unknown',
     unknown: 'unknown',
     error: 'unknown',
-};
+});
 
 /**
  * Map an adapter-flavored outcome `kind` (classifySyncError's return value) to

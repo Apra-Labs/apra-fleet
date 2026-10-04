@@ -67,6 +67,12 @@ The launcher resolves its connection in this exact order:
    **spawn nothing**. This is the expected steady-state path for any machine where
    `apra-fleet install` / `apra-fleet start` has run.
 
+> **Amendment 2026-10-02 (GitHub #585):** step 3 is now "start the shared HTTP
+> server" -- the client runs `apra-fleet start`, waits for `/health` and attaches
+> over HTTP -- instead of self-spawning a private stdio server, which was invisible
+> to other clients. Stdio remains only for the explicit stdio request in step 1.
+> The text below is the original decision, kept for history.
+
 3. **stdio self-spawn fallback.** Only if no healthy HTTP singleton was found
    (server never installed/started, service stopped, stale `server.json`, or stdio
    explicitly forced), fall back to the existing four-tier command resolution and

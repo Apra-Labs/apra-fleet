@@ -13,7 +13,7 @@ Get the shape right before launching.
 | Field | Required | Type | Default | Notes |
 |-------|----------|------|---------|-------|
 | `issues` | **yes** | array of strings | -- | Beads issue IDs (sprint roots), e.g. `["BD-1","BD-2"]`. Must be non-empty; every entry a non-empty string. |
-| `branch` | **yes** | string | -- | Sprint branch name, e.g. `"feat/auth"`. Created from `origin/<base_branch>` if it does not exist. |
+| `branch` | **yes** | string | -- | Sprint branch name, e.g. `"feat/auth"`. Created from `origin/<base_branch>` if it does not exist. Must differ from `base_branch`. |
 | `goal` | no | string | `"P1/P2"` | Exit when no open issues at or above this priority. Must be exactly `"P1"`, `"P1/P2"`, or `"P1/P2/P3"`. |
 | `max_cycles` | no | positive integer | `5` | Hard cycle ceiling. |
 | `base_branch` | no | string | `"main"` | PR target branch. |
@@ -70,7 +70,7 @@ explicit `branch`.
 1. **Issues exist and are open** -- `bd show <id>` for each root; a missing root hard-fails preflight.
 2. **Ready leaf work exists** -- at least some leaves under the roots are unblocked (`bd ready`); an all-blocked backlog deadlocks and aborts.
 3. **Branch name chosen** -- explicit `branch`, created if absent.
-4. **`base_branch` is the intended PR target** (default `main`).
+4. **`base_branch` is the intended PR target** (default `main`) and must differ from `branch` -- an equal pair is rejected at launch.
 5. **Branching off latest main** -- the workflow fetches and cuts new branches from `origin/<base_branch>`; if fetch fails, launch fails. Make sure the remote is reachable.
 
 ## Common failures and the exact error you'll see

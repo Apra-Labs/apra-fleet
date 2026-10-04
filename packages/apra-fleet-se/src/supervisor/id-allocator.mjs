@@ -313,11 +313,14 @@ export function createIdAllocator(deps = {}) {
 
         const st = parentState(parentId);
         // Seed the high-water above any pre-existing children on first contact.
-        if (Number.isInteger(opts.floor) && opts.floor > st.highWater) {
-            // Only lift the high-water; never drop it. Free holes below the new
-            // floor that predate the allocator are discarded (they belong to
-            // beads that already exist), so we never hand out an id <= floor.
-            st.highWater = opts.floor;
+        if (Number.isInteger(opts.floor)) {
+            // Only lift the high-water; never drop it.
+            if (opts.floor > st.highWater) st.highWater = opts.floor;
+            // Always discard free holes <= floor, even when the floor does not
+            // raise the high-water: the floor is the highest existing child, so
+            // a pooled seq at or below it may belong to a bead that already
+            // exists (e.g. one released after a failed create), and must never
+            // be handed out again (GitHub #615).
             st.free = st.free.filter((n) => n > opts.floor);
         }
 

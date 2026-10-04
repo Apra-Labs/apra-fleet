@@ -100,7 +100,7 @@ Declared in `package.json#exports`:
 | `@apralabs/apra-fleet-client/client` | `src/client/client.mjs` | `McpClient` class, `DEFAULT_REQUEST_TIMEOUT_MS` |
 | `@apralabs/apra-fleet-client/factory` | `src/client/factory.mjs` | `createWorkflowEngine()` |
 | `@apralabs/apra-fleet-client/transport` | `src/client/transport.mjs` | `StdioTransport`, `StreamableHttpTransport` |
-| `@apralabs/apra-fleet-client/server-resolution` | `src/client/server-resolution.mjs` | `connectFleet()`, `checkRunningInstance()`, `resolveFleetServerConnection()`, `resolveFleetServerCommand()`, `getFleetDataDir()`, `getServerInfoPath()` |
+| `@apralabs/apra-fleet-client/server-resolution` | `src/client/server-resolution.mjs` | `connectFleet()`, `checkRunningInstance()`, `resolveFleetServerConnection()`, `resolveFleetServerCommand()`, `resolveFleetStartCommand()`, `autoStartFleetServer()`, `createFleetHttpTransport()`, `ReconnectingHttpTransport`, `isNeverDeliveredError()`, `lastServerLog()`, `FleetAutoStartError`, `AUTOSTART_MAX_STARTS`, `AUTOSTART_WINDOW_MS`, `AUTOSTART_TIMEOUT_MS`, `getFleetDataDir()`, `getServerInfoPath()` |
 
 `src/client/errors.mjs` (`ClientError`, `TimeoutError`, `AbortError`,
 `TransportClosedError`) is not listed in `exports` but its instances are the

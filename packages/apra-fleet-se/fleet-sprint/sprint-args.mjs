@@ -204,6 +204,36 @@ export function validateBranchName(name, label) {
     return name;
 }
 
+// Strip the ref prefixes a caller may legitimately pass for the same branch
+// (refs/heads/<b>, origin/<b>, refs/remotes/origin/<b>) so "main",
+// "origin/main" and "refs/heads/main" all compare equal. Compared
+// case-insensitively: a pair differing only in case is never a legitimate
+// sprint (case-insensitive filesystems and hosts treat them as one branch).
+function normalizeBranchForCompare(name) {
+    let n = String(name).toLowerCase();
+    for (const prefix of ['refs/remotes/origin/', 'refs/heads/', 'origin/']) {
+        if (n.startsWith(prefix)) { n = n.slice(prefix.length); break; }
+    }
+    return n;
+}
+
+/**
+ * Rejects a sprint whose working branch is its base branch (GitHub #613):
+ * the review range base..branch would be empty, doer commits would land
+ * directly on the base, and the closing PR could never be opened (head ==
+ * base). Shared by validateArgs, bin/cli.mjs and the supervisor launch API so
+ * every entry point refuses the same pairs with the same message.
+ *
+ * @param {string} branch
+ * @param {string} base
+ */
+export function validateBranchPair(branch, base) {
+    if (typeof branch !== 'string' || typeof base !== 'string') return;
+    if (normalizeBranchForCompare(branch) === normalizeBranchForCompare(base)) {
+        throw new Error(`[Arg Contract] Invalid branch "${branch}": must differ from base_branch "${base}" (the sprint works on its own branch and opens a PR into the base).`);
+    }
+}
+
 /**
  * Validates and normalizes the args object passed into main(context).
  * Rejects unknown keys and missing/malformed required keys loudly.
@@ -260,6 +290,7 @@ export function validateArgs(args) {
         throw new Error('[Arg Contract] Missing required arg: base_branch (branch the sprint branch is created from and the PR targets).');
     }
     validateBranchName(args.base_branch, 'base_branch');
+    validateBranchPair(args.branch, args.base_branch);
 
     // --- goal (optional, default 'P1/P2'; the priority band this sprint aims
     // to clear, consumed by the exit-condition logic) ---
