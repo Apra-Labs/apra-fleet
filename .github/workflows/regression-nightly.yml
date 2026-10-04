@@ -3,33 +3,35 @@ name: Regression - nightly real-bd suite
 # Tier B of the regression revamp (apra-fleet-7f39): the unmocked apra-fleet-se
 # suite against the real bd CLI, plus the slow lane (real-time watchdog
 # tests). Moved here from the in-sprint regression playbook, where it took
-# ~18% of sprint wall-clock. Runs nightly, on bd pin changes, and on demand.
+# ~18% of sprint wall-clock. Runs nightly and on demand (no push trigger).
 # Scheduled runs fire only from the default branch.
+#
+# Advisory: this job never puts a red X on a commit for a test outcome -- CI
+# is the verdict on main. The verdict (PASS / FAIL / BROKEN) is the headline
+# of the job summary and the job output `verdict`. Harness breakage (suite
+# crashed or timed out, no status file, headSha mismatch, slow lane missing)
+# is BROKEN, stated loudly, and still green. Only the runner setup steps
+# (checkout .. bootstrap beads DB) can fail the job.
 
 on:
   schedule:
     - cron: '17 3 * * *'
   workflow_dispatch:
-  push:
-    # Files that pin the bd version (the installer is the source of truth,
-    # read below), plus this workflow itself.
-    paths:
-      - 'src/cli/install.ts'
-      - '.github/workflows/ci.yml'
-      - 'tests/integration/fresh-install/checklist.json'
-      - '.github/workflows/regression-nightly.yml'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
 permissions:
+  actions: read     # previous nightly run's artifact, for the delta
   contents: read
 
 jobs:
   real-bd-suite:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 100
+    outputs:
+      verdict: ${{ steps.report.outputs.verdict || 'BROKEN' }}
 
     steps:
       - name: Checkout repository
@@ -85,13 +87,18 @@ jobs:
           echo "::error::bd bootstrap failed after 3 attempts"
           exit 1
 
+
+      # Everything below never fails the job on a test outcome or harness
+      # breakage: the report step turns both into the verdict.
+      #
       # --status exit codes: 0 pass, 1 failures, 3 still running, 2 infra
       # fail-loud. Start and poll in one step so the detached run is ours.
-      # Test failures do not fail this step: its --status exit code goes to
-      # an output and the quarantine gate below decides. Any other exit code
-      # (2 = crashed/pending/stale) still fails the step here.
+      # The exit code goes to an output for the report step; anything but
+      # 0/1 (or no output at all: step timed out) is BROKEN there.
       - name: Run apra-fleet-se suite against real bd
         id: integ
+        timeout-minutes: 45
+        continue-on-error: true
         run: |
           node scripts/run-integ-suites.mjs --start || echo "integ-suites --start exit=$?"
           while :; do
@@ -101,15 +108,16 @@ jobs:
           done
           echo "integ-suites --status exit=$rc"
           echo "rc=$rc" >> "$GITHUB_OUTPUT"
-          if [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ]; then exit "$rc"; fi
 
       # Same command as the package's test:slow script (same replay-mode env),
-      # plus the checkpoint reporter writing slow-suite-status.json so the gate
-      # can apply the quarantine (slow/ fingerprints). node --test exits 1 on
-      # test failures; the gate checks every slow file has a result.
+      # plus the checkpoint reporter writing slow-suite-status.json so the
+      # report can apply the quarantine (slow/ fingerprints). node --test exits
+      # 1 on test failures; the report checks every slow file has a result.
       - name: Run slow lane
         id: slow
         if: ${{ !cancelled() }}
+        timeout-minutes: 25
+        continue-on-error: true
         working-directory: packages/apra-fleet-se
         env:
           INTEG_SUITES_STATUS_FILE: ${{ github.workspace }}/slow-suite-status.json
@@ -124,41 +132,10 @@ jobs:
           echo "slow lane exit=$rc"
           echo "rc=$rc" >> "$GITHUB_OUTPUT"
 
-      # The only step that fails the job on test results: new failures or
-      # expired quarantine entries (tests/regression/quarantine.json). A
-      # missing/incomplete status file exits 2 -- never green-by-absence.
-      # Over-budget files are reported in the summary but do not gate.
-      - name: Quarantine gate (new failures only)
-        if: ${{ !cancelled() }}
-        env:
-          INTEG_RC: ${{ steps.integ.outputs.rc }}
-          SLOW_RC: ${{ steps.slow.outputs.rc }}
-          EXPECTED_SHA: ${{ github.sha }}
-        run: |
-          if [ "$INTEG_RC" != "0" ] && [ "$INTEG_RC" != "1" ]; then
-            echo "::error::real-bd suite did not complete (--status exit='$INTEG_RC')"
-            exit 2
-          fi
-          if [ -z "$SLOW_RC" ]; then
-            echo "::error::slow lane did not run"
-            exit 2
-          fi
-          if [ ! -f integ-suite-status.json ]; then
-            echo "::error::no integ-suite-status.json -- the real-bd suite recorded nothing"
-            exit 2
-          fi
-          HEAD_SHA="$(node -p "require('./integ-suite-status.json').headSha")"
-          if [ "$HEAD_SHA" != "$EXPECTED_SHA" ]; then
-            echo "::error::integ-suite-status.json headSha=$HEAD_SHA, expected $EXPECTED_SHA"
-            exit 2
-          fi
-          node scripts/check-integ-suite-budget.mjs integ-suite-status.json \
-            --quarantine --budget-advisory \
-            --slow=slow-suite-status.json \
-            --summary="$GITHUB_STEP_SUMMARY"
-
       - name: Upload integ-suite status
+        id: upload
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: integ-suite-status
@@ -168,3 +145,60 @@ jobs:
             slow-suite-status.json
           if-no-files-found: warn
           retention-days: 30
+
+      # Previous nightly run on main that has a status artifact (any
+      # conclusion), for the newly failing/passing delta. Best-effort: the
+      # report says "no previous run to compare" when this finds nothing.
+      - name: Fetch previous nightly status
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREV_DIR: ${{ runner.temp }}/prev-nightly
+        run: |
+          ids="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow regression-nightly.yml \
+            --branch main --status completed -L 10 --json databaseId --jq '.[].databaseId')" || ids=""
+          for id in $ids; do
+            [ "$id" = "$GITHUB_RUN_ID" ] && continue
+            rm -rf "$PREV_DIR"
+            if gh run download "$id" --repo "$GITHUB_REPOSITORY" -n integ-suite-status -D "$PREV_DIR"; then
+              gh run view "$id" --repo "$GITHUB_REPOSITORY" --json headSha,url \
+                --jq '{headSha: .headSha, runUrl: .url}' > "$PREV_DIR/meta.json" || true
+              echo "previous nightly run: $id"
+              exit 0
+            fi
+          done
+          rm -rf "$PREV_DIR"
+          echo "no previous nightly run with a status artifact"
+
+      # The verdict: PASS / FAIL (new or expired-quarantine failures, see
+      # tests/regression/quarantine.json) / BROKEN (harness). Written as the
+      # summary headline and the job output; never fails the job.
+      - name: Nightly verdict and summary
+        id: report
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        env:
+          INTEG_RC: ${{ steps.integ.outputs.rc }}
+          SLOW_RC: ${{ steps.slow.outputs.rc }}
+          ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
+          PREV_DIR: ${{ runner.temp }}/prev-nightly
+        run: |
+          node scripts/nightly-regression-summary.mjs \
+            --status=integ-suite-status.json \
+            --slow=slow-suite-status.json \
+            --quarantine \
+            --integ-rc="$INTEG_RC" \
+            --slow-rc="$SLOW_RC" \
+            --expected-sha="$GITHUB_SHA" \
+            --previous="$PREV_DIR" \
+            --summary="$GITHUB_STEP_SUMMARY" \
+            --github-output="$GITHUB_OUTPUT" \
+            --repo-url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+            --run-url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            --artifact-url="$ARTIFACT_URL" \
+          || {
+            echo "::error::nightly summary script crashed"
+            echo "verdict=BROKEN" >> "$GITHUB_OUTPUT"
+            echo "## BROKEN -- nightly summary script crashed (see the job log)" >> "$GITHUB_STEP_SUMMARY"
+          }
