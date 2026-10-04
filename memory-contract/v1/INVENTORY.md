@@ -16,7 +16,7 @@ after merging main at `97877f5e` (kb_*/code_* surface unchanged; server total
 The source plan originally claimed 24 (17 `kb_*` + 7 `code_*`). The audit below,
 against the tree named in the preamble, found that claim WRONG by one `kb_*`
 tool at the time -- the verified number then was 23 (16 `kb_*` + 7 `code_*`).
-`kb_demote` (my-beads-db-qy8.2) has since been registered as a seventeenth
+The `kb_demote` tool has since been registered as a seventeenth
 `kb_*` tool, so the live count is 24 again. This is a new tool landing, not a
 correction of the original audit: the original 23-count finding below still
 accurately describes the tree it was taken against.
@@ -431,7 +431,7 @@ themselves).
 ## 6. Downstream notes
 
 - The tool count to propagate is **24** (17 `kb_*`, 7 `code_*`), now that
-  `kb_demote` (my-beads-db-qy8.2) has landed. Section 1 records the original
+  the `kb_demote` tool has landed. Section 1 records the original
   23-tool audit and the subsequent growth to 24; anything citing 23 today is
   citing the pre-`kb_demote` count.
 - A generated binding typed against `MemoryProvider` alone is INCOMPLETE: the six

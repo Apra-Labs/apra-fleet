@@ -56,7 +56,7 @@
             { "method_id": "P-5", "member": "invalidate", "tool": "kb_invalidate", "position": "provider" },
             { "method_id": "P-13", "member": "demote", "tool": "kb_demote", "position": "provider" }
           ],
-          "source": "src/services/knowledge/path-validation.ts:6 (absolute), :10 (traversal); demote evidence_files check at sqlite-provider.ts:1568",
+          "source": "src/services/knowledge/path-validation.ts:6 (absolute), :10 (traversal); demote evidence_files check at sqlite-provider.ts:1683",
           "surfaced": "thrown",
           "retryable": false
         },
@@ -156,7 +156,7 @@
           "raising_methods": [
             { "method_id": "P-8", "member": "promote", "tool": "kb_promote", "position": "provider" }
           ],
-          "source": "src/services/knowledge/sqlite-provider.ts:1366-1370 (isNonTrivialPromoteReason)",
+          "source": "src/services/knowledge/sqlite-provider.ts:1571",
           "surfaced": "thrown",
           "retryable": false,
           "see_also": ["Capture provenance and confidence clamp"]
@@ -167,7 +167,7 @@
           "raising_methods": [
             { "method_id": "P-8", "member": "promote", "tool": "kb_promote", "position": "provider" }
           ],
-          "source": "src/services/knowledge/sqlite-provider.ts:1377-1384",
+          "source": "src/services/knowledge/sqlite-provider.ts:1582-1591",
           "surfaced": "thrown",
           "retryable": false,
           "see_also": ["Capture provenance and confidence clamp"]
@@ -178,7 +178,7 @@
           "raising_methods": [
             { "method_id": "P-8", "member": "promote", "tool": "kb_promote", "position": "provider" }
           ],
-          "source": "src/services/knowledge/sqlite-provider.ts:1343",
+          "source": "src/services/knowledge/sqlite-provider.ts:1548",
           "surfaced": "thrown",
           "retryable": false,
           "group_decision": "AUTHORITY, not conflict. The refusal is about the target's standing to hold a higher tier, which is the same policy as the clamp; it is not about the semantics of a contradiction pair.",
@@ -190,7 +190,7 @@
           "raising_methods": [
             { "method_id": "P-13", "member": "demote", "tool": "kb_demote", "position": "provider" }
           ],
-          "source": "src/services/knowledge/sqlite-provider.ts:1552-1559 (isNonTrivialPromoteReason)",
+          "source": "src/services/knowledge/sqlite-provider.ts:1669",
           "surfaced": "thrown",
           "retryable": false,
           "see_also": ["Capture provenance and confidence clamp"]
@@ -201,7 +201,7 @@
           "raising_methods": [
             { "method_id": "P-13", "member": "demote", "tool": "kb_demote", "position": "provider" }
           ],
-          "source": "src/services/knowledge/sqlite-provider.ts:1567-1576",
+          "source": "src/services/knowledge/sqlite-provider.ts:1682-1691",
           "surfaced": "thrown",
           "retryable": false,
           "see_also": ["Capture provenance and confidence clamp"]
@@ -212,7 +212,7 @@
           "raising_methods": [
             { "method_id": "P-13", "member": "demote", "tool": "kb_demote", "position": "provider" }
           ],
-          "source": "src/services/knowledge/sqlite-provider.ts:1539",
+          "source": "src/services/knowledge/sqlite-provider.ts:1654",
           "surfaced": "thrown",
           "retryable": false,
           "group_decision": "AUTHORITY, not conflict -- mirrors E-PROMOTE-SUPERSEDED's own group_decision: the refusal is about the target's standing to hold ANY tier, not the semantics of a contradiction pair.",
@@ -230,7 +230,7 @@
           "raising_methods": [
             { "method_id": "P-8", "member": "promote", "tool": "kb_promote", "position": "provider" }
           ],
-          "source": "src/services/knowledge/sqlite-provider.ts:1353-1357",
+          "source": "src/services/knowledge/sqlite-provider.ts:1558-1562",
           "surfaced": "thrown",
           "retryable": false,
           "see_also": ["Directive quarantine"]
@@ -241,7 +241,7 @@
           "raising_methods": [
             { "method_id": "P-13", "member": "demote", "tool": "kb_demote", "position": "provider" }
           ],
-          "source": "src/services/knowledge/sqlite-provider.ts:1546-1550",
+          "source": "src/services/knowledge/sqlite-provider.ts:1661-1665",
           "surfaced": "thrown",
           "retryable": false,
           "see_also": ["Directive quarantine"]
@@ -252,7 +252,7 @@
           "raising_methods": [
             { "method_id": "X-4", "member": "resolveContradiction", "tool": "kb_resolve_contradiction", "position": "provider" }
           ],
-          "source": "src/services/knowledge/sqlite-provider.ts:1569-1571",
+          "source": "src/services/knowledge/sqlite-provider.ts:1883-1885",
           "surfaced": "thrown",
           "retryable": false,
           "see_also": ["Directive quarantine"]
@@ -295,7 +295,7 @@
           "raising_methods": [
             { "method_id": "X-4", "member": "resolveContradiction", "tool": "kb_resolve_contradiction", "position": "provider" }
           ],
-          "source": "src/services/knowledge/sqlite-provider.ts:1564-1566",
+          "source": "src/services/knowledge/sqlite-provider.ts:1877-1880",
           "surfaced": "thrown",
           "retryable": false
         },
@@ -305,7 +305,7 @@
           "raising_methods": [
             { "method_id": "X-4", "member": "resolveContradiction", "tool": "kb_resolve_contradiction", "position": "provider" }
           ],
-          "source": "src/services/knowledge/sqlite-provider.ts:1560-1561",
+          "source": "src/services/knowledge/sqlite-provider.ts:1873-1875",
           "surfaced": "thrown",
           "retryable": false
         }
@@ -322,7 +322,7 @@
             { "method_id": "X-2", "member": "feedback", "tool": "kb_feedback", "position": "provider" },
             { "method_id": "P-13", "member": "demote", "tool": "kb_demote", "position": "provider" }
           ],
-          "source": "src/services/knowledge/sqlite-provider.ts:1340 (promote), :1431 (feedback), :1536 (demote)",
+          "source": "src/services/knowledge/sqlite-provider.ts:1545 (promote), :1744 (feedback), :1651 (demote)",
           "surfaced": "thrown",
           "retryable": false
         },
@@ -332,7 +332,7 @@
           "raising_methods": [
             { "method_id": "X-4", "member": "resolveContradiction", "tool": "kb_resolve_contradiction", "position": "provider" }
           ],
-          "source": "src/services/knowledge/sqlite-provider.ts:1554-1555",
+          "source": "src/services/knowledge/sqlite-provider.ts:1867-1869",
           "surfaced": "thrown",
           "retryable": false,
           "note": "Kept distinct from E-ENTRY-NOT-FOUND rather than merged: it names a PAIR operation that wrote nothing, and INVENTORY.md 5.2 and methods.json X-4 both carry it under its own name."
