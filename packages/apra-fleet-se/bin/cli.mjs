@@ -16,7 +16,7 @@ import {
     getServerInfoPath,
 } from '@apralabs/apra-fleet-client/server-resolution';
 import { beadsExtension } from '../fleet-sprint/viewer-extensions.mjs';
-import { validateIssueId, validateBranchName, checkMemberTopology, createMemberReservationClient, resyncReacquiredMember, commandResultToSoftGit } from '../fleet-sprint/runner.js';
+import { validateIssueId, validateBranchName, validateBranchPair, checkMemberTopology, createMemberReservationClient, resyncReacquiredMember, commandResultToSoftGit } from '../fleet-sprint/runner.js';
 import { normalizeRole } from '../fleet-sprint/contracts.mjs';
 import { ROLE_BACKLOG, resolveBacklogRoleAlias, selectBacklogMember, formatBacklogSelection } from '../fleet-sprint/backlog-role.mjs';
 import { BEADS_IDENTITY_PROBES, parseBeadsIdentity, formatBeadsIdentity, parseExpectedIdentity } from '../fleet-sprint/beads-identity.mjs';
@@ -655,6 +655,7 @@ async function main() {
         targetIssues.forEach(validateIssueId);
         validateBranchName(branchName, 'branch');
         validateBranchName(baseBranch, 'base');
+        validateBranchPair(branchName, baseBranch);
         ({ roleMap, warnings: roleMapWarnings } = await resolveRoleMapWithWarnings(values['role-map']));
         for (const w of roleMapWarnings) console.warn(`Warning: ${w}`);
     } catch (err) {

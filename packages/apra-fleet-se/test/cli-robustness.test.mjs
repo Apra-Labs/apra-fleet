@@ -4,6 +4,8 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 import {
     parseCliArgs,
@@ -557,5 +559,21 @@ describe('formatViewerListenError / attachViewerErrorHandler (e: viewer port)', 
         } finally {
             await new Promise((resolve) => blocker.close(resolve));
         }
+    });
+});
+
+// GitHub #613: the CLI refuses branch == base before any fleet connection or
+// dispatch (exit 1, the shared [Arg Contract] message naming both values).
+describe('CLI branch/base pair', () => {
+    test('--branch equal to --base (origin/ spelling) exits 1 before connecting to anything', () => {
+        const cliPath = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'cli.mjs');
+        // Inherits the per-run test sandbox env from the test runner; only
+        // NODE_TEST_CONTEXT is dropped, since cli.mjs refuses to self-execute
+        // when it sees it.
+        const env = { ...process.env };
+        delete env.NODE_TEST_CONTEXT;
+        const r = spawnSync(process.execPath, [cliPath, '--issue', 'bd-1', '--members', 'local', '--branch', 'main', '--base', 'origin/main'], { env, encoding: 'utf8', timeout: 60000 });
+        assert.equal(r.status, 1, `stdout=${r.stdout} stderr=${r.stderr}`);
+        assert.ok(r.stderr.includes('[Arg Contract] Invalid branch "main": must differ from base_branch "origin/main"'), r.stderr);
     });
 });

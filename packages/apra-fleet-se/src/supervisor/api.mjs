@@ -42,7 +42,7 @@ import { statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import { readJsonBody, sendJson } from './server.mjs';
-import { validateIssueId, validateBranchName } from '../../fleet-sprint/runner.js';
+import { validateIssueId, validateBranchName, validateBranchPair } from '../../fleet-sprint/runner.js';
 import { resolveRoleMap } from '../../bin/cli.mjs';
 import { resolveBacklogRoleAlias, ROLE_BACKLOG } from '../../fleet-sprint/backlog-role.mjs';
 import { normalizeRole } from '../../fleet-sprint/contracts.mjs';
@@ -448,6 +448,8 @@ export function createSprintController(deps = {}) {
         catch (err) { throw new ApiError(400, err.message, 'branch'); }
         try { validateBranchName(base, 'base'); }
         catch (err) { throw new ApiError(400, err.message, 'base'); }
+        try { validateBranchPair(branch, base); }
+        catch (err) { throw new ApiError(400, err.message, 'branch'); }
         if (members.length === 0) {
             throw new ApiError(400, 'members must be a non-empty list of member names', 'members');
         }

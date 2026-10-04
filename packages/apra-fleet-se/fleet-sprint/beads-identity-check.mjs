@@ -17,7 +17,10 @@
 //   - MISMATCH is FATAL: a field that resolved on BOTH sides and differs
 //     means the member's bd points at a different project. Throws
 //     BeadsIdentityError (reason MISMATCH) before any bd mutation.
-//   - an UNRESOLVED probe is a WARNING: a probe that failed, or answered
+//   - bd MISSING is FATAL: a bd probe whose failure classifies as a
+//     missing-tool failure for bd itself (not installed / not on PATH) throws
+//     BeadsIdentityError (reason MISSING_TOOL) naming the member and the fix.
+//   - any other UNRESOLVED probe is a WARNING: a probe that failed, or answered
 //     something unparseable/empty, leaves that field out of the comparison.
 //     The warning names the member, the field, the probe, the error and the
 //     fix, so the operator can repair it; the first real bd on that member
@@ -38,7 +41,8 @@ import {
     compareIdentity,
     formatBeadsIdentity,
 } from './beads-identity.mjs';
-import { BeadsIdentityError, BEADS_IDENTITY_FAILURE_REASONS } from './errors.mjs';
+import { BeadsIdentityError, BEADS_IDENTITY_FAILURE_REASONS, VCS_FAILURE_KINDS } from './errors.mjs';
+import { classifyFailure, commandBinary } from './vcs-module.mjs';
 
 // Short: three cheap local reads per member. A member that cannot answer
 // `bd where` inside a minute is not a member this sprint should mutate.
@@ -165,6 +169,27 @@ function noExpectationWarning(backlogMember, probed) {
         `To restore it: fix the backlog member's beads (${BEADS_IDENTITY_FIELD_FIX.prefix}), or launch via the supervisor so --expect-beads is supplied.`;
 }
 
+// GitHub #616: the one probe outcome that is fatal besides a mismatch -- the
+// member cannot run bd AT ALL (not installed / not on PATH). Every later bd
+// command on it would fail, and the sync self-heal cannot fix a missing
+// binary, so the sprint stops here with the fix named. Only a failure of a bd
+// probe that classifies as missing-tool FOR bd counts; every other probe
+// failure (no database, unset field, unrelated profile noise) stays a warning.
+function assertBdPresent(member, probed) {
+    for (const f of probed.failures) {
+        const tool = commandBinary(f.probe);
+        if (tool !== 'bd') continue;
+        const c = classifyFailure(f.error, { tool });
+        if (c.kind !== VCS_FAILURE_KINDS.MISSING_TOOL) continue;
+        throw new BeadsIdentityError(
+            `Beads identity check failed: 'bd' is not installed or not on PATH on member '${member}' ` +
+            `('${f.probe}' -> ${summarizeRaw(f.error)}). Install bd on that member (or fix that member's PATH) and relaunch; ` +
+            'no bd command can run there, and re-provisioning credentials cannot fix a missing binary.',
+            { reason: BEADS_IDENTITY_FAILURE_REASONS.MISSING_TOOL, member, details: { tool: 'bd', probe: f.probe, error: f.error } }
+        );
+    }
+}
+
 function assertMatches(member, expected, actual, cmp) {
     if (cmp.ok) return;
     const lines = cmp.mismatches.map((m) => `${m.field}: expected '${m.expected || '(unset)'}', actual '${m.actual || '(unset)'}'`);
@@ -178,8 +203,9 @@ function assertMatches(member, expected, actual, cmp) {
 /**
  * The precondition itself. Probes the backlog member, then every other
  * distinct member. Throws BeadsIdentityError (reason MISMATCH) before
- * returning when a field that resolved on both sides differs; every probe
- * that could not resolve a field is a logged + published warning instead.
+ * returning when a field that resolved on both sides differs, and (reason
+ * MISSING_TOOL) when a member cannot run bd at all; every other probe that
+ * could not resolve a field is a logged + published warning instead.
  *
  * @param {{
  *   command: Function, log?: Function, publishState?: Function,
@@ -210,6 +236,7 @@ export async function verifyBeadsIdentity({ command, log = () => {}, publishStat
     const result = { expected: null, expectedFrom: 'args', members: {}, warnings };
 
     const backlogProbe = await p.probe(backlogMember);
+    assertBdPresent(backlogMember, backlogProbe);
     const backlogHasDb = !!backlogProbe.identity.beadsDir;
 
     let expectedIdentity = expected;
@@ -267,6 +294,7 @@ export async function verifyBeadsIdentity({ command, log = () => {}, publishStat
     for (const member of ordered) {
         if (member === backlogMember) continue;
         const probed = await p.probe(member);
+        assertBdPresent(member, probed);
         settle(member, probed, !!expectedIdentity);
     }
 
