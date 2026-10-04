@@ -213,6 +213,22 @@ export const KB_MAX_PROMOTION_CANDIDATES = 40;
 /** Max demotion candidates offered to one reviewer, so the prompt stays bounded. */
 export const KB_MAX_DEMOTION_CANDIDATES = 20;
 
+/**
+ * my-beads-db-qy8.12.1: the server-side cap demotionCandidates puts on its
+ * kb_list read.
+ *
+ * kb_list now applies the changed-file intersection itself (`source_files`),
+ * but two of demotionCandidates' filters still run on this side -- the
+ * CONFIRMED/INFERRED tier check and the user-directive exclusion -- and both
+ * can only REMOVE rows. Asking the server for exactly
+ * KB_MAX_DEMOTION_CANDIDATES would therefore under-fill the page whenever a
+ * UNVERIFIED or directive entry sits early in the id order. Over-fetching a
+ * constant multiple leaves headroom for those removals while keeping the
+ * number of entries crossing the MCP boundary a CONSTANT -- it does not grow
+ * with the size of the KB, which was the whole defect.
+ */
+export const KB_DEMOTION_CANDIDATE_FETCH_LIMIT = KB_MAX_DEMOTION_CANDIDATES * 5;
+
 export function createKbWorkClient(opts = {}) {
     const { callTool, log = () => {}, remoteUrlFor } = opts;
     const active = typeof callTool === 'function';
@@ -273,6 +289,13 @@ export function createKbWorkClient(opts = {}) {
             // (the apra-fleet-tm7 repo-blindness class). Refuse rather than guess.
             if (!active || !repoPath) return [];
             try {
+                // BOUND (my-beads-db-qy8.12.1): `limit` is honoured in SQL even
+                // with exclude_unchanged_demotions set -- the provider
+                // over-fetches a constant multiple of it (list()'s
+                // DEMOTION_FILTER_OVERFETCH) so the ping-pong filter has room
+                // to drop rows. The read therefore costs O(limit), never
+                // O(INFERRED tier); it previously degraded to a full
+                // unlimited scan the moment this flag was added.
                 const parsed = parseResult(await callTool('kb_list', {
                     repo_path: repoPath,
                     ...scopeOf(repoPath),
@@ -316,9 +339,19 @@ export function createKbWorkClient(opts = {}) {
             const files = Array.isArray(changedFiles) ? changedFiles.filter((f) => typeof f === 'string' && f.length > 0) : [];
             if (files.length === 0) return [];
             try {
+                // BOUND (my-beads-db-qy8.12.1): this read used to carry no
+                // filter and no limit, so the ENTIRE KB crossed the MCP
+                // boundary on every reviewer round just to be intersected
+                // with the round diff here. The intersection now runs
+                // server-side (`source_files`) and the response is capped at
+                // KB_DEMOTION_CANDIDATE_FETCH_LIMIT, a constant -- the bytes
+                // on the wire are a function of the diff and that cap, never
+                // of KB size.
                 const parsed = parseResult(await callTool('kb_list', {
                     repo_path: repoPath,
                     ...scopeOf(repoPath),
+                    source_files: files,
+                    limit: KB_DEMOTION_CANDIDATE_FETCH_LIMIT,
                 }));
                 const results = parsed && Array.isArray(parsed.results) ? parsed.results : [];
                 return results
@@ -330,6 +363,11 @@ export function createKbWorkClient(opts = {}) {
                         && e.type !== 'user-directive'
                         // Only entries trust can actually be pulled DOWN from.
                         && (e.confidence === 'CONFIRMED' || e.confidence === 'INFERRED')
+                        // Re-applied on this side on purpose, the same
+                        // defense-in-depth rule isInjectableKbEntry documents:
+                        // an older fleet server's zod schema silently STRIPS
+                        // the unknown `source_files` key rather than erroring,
+                        // so the filter being requested is not proof it ran.
                         && Array.isArray(e.source_files)
                         && e.source_files.some((f) => files.includes(f)))
                     .slice(0, KB_MAX_DEMOTION_CANDIDATES);

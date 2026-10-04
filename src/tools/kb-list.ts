@@ -19,6 +19,8 @@ export const kbListSchema = z.object({
   module: z.string().optional().describe('Filter by exact module name'),
   symbol: z.string().optional().describe('Filter to entries whose symbols array contains this value'),
   tag: z.string().optional().describe('Filter to entries whose tags array contains this value (exact match)'),
+  source_files: z.array(z.string()).optional()
+    .describe('Filter to entries citing at least one of these basis files (exact match against the entry source_files array). Use this to scope a read to the files a change actually touched, instead of reading the whole KB and intersecting client-side. An empty array means no filter.'),
   limit: z.number().optional().describe('Max entries to return (default: no limit)'),
   exclude_unchanged_demotions: z.boolean().optional()
     .describe('Drop an entry that was demoted more recently than it was last promoted or captured, UNLESS at least one of its cited files now hashes differently from the snapshot taken at demotion time. Use this to avoid re-offering an entry for promotion when nothing about it has actually changed since it was demoted.'),
@@ -36,6 +38,7 @@ export async function kbList(input: KbListInput): Promise<string> {
     module: input.module,
     symbol: input.symbol,
     tag: input.tag,
+    sourceFiles: input.source_files,
     limit: input.limit,
     excludeUnchangedDemotions: input.exclude_unchanged_demotions,
   });

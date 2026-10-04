@@ -46,6 +46,13 @@
           "type": "string",
           "description": "Filter to entries whose tags array contains this value (exact match)"
         },
+        "source_files": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Filter to entries citing at least one of these basis files (exact match against the entry source_files array). Use this to scope a read to the files a change actually touched, instead of reading the whole KB and intersecting client-side. An empty array means no filter."
+        },
         "limit": {
           "type": "number",
           "description": "Max entries to return (default: no limit)"

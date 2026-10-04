@@ -62,6 +62,21 @@ function isNonTrivialPromoteReason(reason?: string): boolean {
   return (reason ?? '').trim().length >= MIN_PROMOTE_REASON_LENGTH;
 }
 
+/**
+ * my-beads-db-qy8.12.1: how many rows list() fetches per requested row when
+ * excludeUnchangedDemotions is set.
+ *
+ * The ping-pong filter runs in JS, after SQL, and can only REMOVE rows -- so
+ * a bare `LIMIT n` could return fewer than n survivors. The fix must not be
+ * "fetch everything": that makes the read cost grow with KB size (the defect
+ * this constant exists to close). Fetching a constant multiple of the limit
+ * keeps the read bounded by the CALLER'S limit alone while leaving room for
+ * the filter to drop rows and still fill the page. 5x is empirical headroom:
+ * the filter only ever drops entries demoted-since-last-promotion whose cited
+ * files still hash identically, which is a small minority of any live tier.
+ */
+const DEMOTION_FILTER_OVERFETCH = 5;
+
 class NotImplementedError extends Error {
   constructor(method: string) {
     super(`SqliteProvider.${method}() not yet implemented`);
@@ -1427,6 +1442,7 @@ export class SqliteProvider implements MemoryProvider {
     module?: string;
     symbol?: string;
     tag?: string;
+    sourceFiles?: string[];
     limit?: number;
     excludeUnchangedDemotions?: boolean;
   }): Promise<KBEntry[]> {
@@ -1454,16 +1470,43 @@ export class SqliteProvider implements MemoryProvider {
       conditions.push('EXISTS (SELECT 1 FROM json_each(e.tags) WHERE value = ?)');
       params.push(opts.tag);
     }
+    // my-beads-db-qy8.12.1: server-side basis-file filter. fleet-sprint's
+    // demotionCandidates wants only the entries that cite a file THIS round
+    // touched; without this it had to pull the WHOLE KB across the MCP
+    // boundary and intersect client-side, so the payload grew with KB size.
+    // Empty array is treated as "no filter" (same as omitted) -- matching
+    // every other optional filter here, and avoiding a `value IN ()` that
+    // SQLite would reject.
+    if (opts.sourceFiles !== undefined && opts.sourceFiles.length > 0) {
+      const placeholders = opts.sourceFiles.map(() => '?').join(', ');
+      conditions.push(`EXISTS (SELECT 1 FROM json_each(e.source_files) WHERE value IN (${placeholders}))`);
+      for (const f of opts.sourceFiles) params.push(f);
+    }
 
     const where = 'WHERE ' + conditions.join(' AND ');
     // The ping-pong filter runs AFTER the SQL layer and can only ever REMOVE
-    // rows, never add any back -- so applying opts.limit in SQL first could
-    // under-fill the result (fewer than `limit` survivors) even when more
-    // non-ping-ponged rows exist past the cursor. Fetch unlimited in that
-    // case and slice in JS, after filtering, instead.
-    const applyLimitInSql = opts.limit !== undefined && !opts.excludeUnchangedDemotions;
+    // rows, never add any back -- so applying opts.limit verbatim in SQL
+    // could under-fill the result (fewer than `limit` survivors) even when
+    // more non-ping-ponged rows exist past the cursor.
+    //
+    // my-beads-db-qy8.12.1: the original answer to that was to drop the LIMIT
+    // entirely and slice in JS, which turned every `limit` + ping-pong call
+    // (fleet-sprint's promotionCandidates is the only one) into a full scan of
+    // the matching tier -- a cost that grows without bound as the KB grows.
+    // Instead we OVER-FETCH a constant multiple of the caller's limit: still
+    // enough headroom that the JS-side filter can remove rows and leave a full
+    // page, but a bound that is a function of `limit` alone and never of KB
+    // size. The residual case (more than DEMOTION_FILTER_OVERFETCH x limit
+    // consecutive ping-ponged rows at the head of the id order) under-fills
+    // the page by exactly the amount the old unlimited scan would have
+    // back-filled -- an under-fill of an advisory candidate list, never a
+    // correctness error, and the next round re-reads anyway.
+    const applyLimitInSql = opts.limit !== undefined;
+    const sqlLimit = opts.excludeUnchangedDemotions
+      ? (opts.limit as number) * DEMOTION_FILTER_OVERFETCH
+      : (opts.limit as number);
     const limitClause = applyLimitInSql ? 'LIMIT ?' : '';
-    if (applyLimitInSql) params.push(opts.limit as number);
+    if (applyLimitInSql) params.push(sqlLimit);
 
     const rows = db.prepare(`
       SELECT e.* FROM entries e
