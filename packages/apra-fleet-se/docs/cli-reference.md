@@ -213,9 +213,9 @@ call:
    (`src/services/singleton.ts`) checks `~/.apra-fleet/data/server.json`
    for a live pid + a passing `/health` GET; on success, attach via
    `StreamableHttpTransport` and spawn nothing.
-3. **stdio self-spawn fallback** -- only when no healthy HTTP singleton is
-   found: the four-tier `resolveFleetServerCommand()` resolution above,
-   feeding `StdioTransport`.
+3. **Start the shared HTTP server** -- when the singleton is verifiably
+   gone: run `apra-fleet start`, wait for `/health`, attach over HTTP
+   (stdio only via the explicit `stdio`/CMD/BIN path).
 
 See `docs/adr-workflow-server-resolution.md` for the full rationale; this
 is binding on any future change to `resolveFleetServerCommand()`.

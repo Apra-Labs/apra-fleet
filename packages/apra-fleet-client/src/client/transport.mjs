@@ -307,7 +307,13 @@ export class StreamableHttpTransport extends EventEmitter {
         }
         
         if (!response.ok) {
-            throw new Error(`Failed to send message: HTTP ${response.status}`);
+            // .status lets callers classify the failure (404 = unknown
+            // session, rejected before any tool ran -- see
+            // reconnecting-transport.mjs) without parsing the message.
+            const httpErr = new Error(`Failed to send message: HTTP ${response.status}`);
+            httpErr.status = response.status;
+            try { await response.body?.cancel(); } catch { /* ignore */ }
+            throw httpErr;
         }
         
         // The server sends the JSON-RPC response over an SSE stream in the POST response

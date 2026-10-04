@@ -18,13 +18,14 @@ Inside this monorepo, add it as a workspace dependency:
 }
 ```
 
-## Recommended: `connectFleet()` (auto-picks stdio vs. HTTP)
+## Recommended: `connectFleet()` (auto-picks HTTP vs. stdio)
 
 For most callers, hand-picking a transport (the two sections below) is more
 than you need. `connectFleet()` from `@apralabs/apra-fleet-client/server-resolution`
 does it for you: it probes for a running HTTP singleton
 (`~/.apra-fleet/data/server.json` + a `/health` check), attaches to it if
-found, and otherwise self-spawns a stdio server -- performing whichever
+found, and otherwise (when it is verifiably gone) starts the shared HTTP
+server with `apra-fleet start` and attaches to that -- performing whichever
 handshake the chosen transport needs.
 
 ```js
@@ -268,10 +269,9 @@ try {
 ## What this package will not do for you
 
 - It does not manage the `apra-fleet` server's lifecycle. `connectFleet()`
-  will health-probe an existing HTTP singleton and self-spawn a stdio
-  server as a fallback, and `ApraFleet.shutdownServer()` asks a connected
-  server to terminate itself -- but nothing here supervises, restarts, or
-  installs the server.
+  will health-probe an existing HTTP singleton and start the shared
+  HTTP server (detached, via `apra-fleet start`) if it is gone, and `ApraFleet.shutdownServer()` asks a connected
+  server to terminate itself -- but nothing here supervises or installs the server.
 - It does not retry a request that produced a response or timed out. (The
   HTTP transport does transparently retry a POST whose `fetch` rejected at
   the connection level before any response was produced, and reopens its
