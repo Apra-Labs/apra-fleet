@@ -206,6 +206,28 @@ returns 503 with it; a sprint child prints it on stderr). See
 
 - Windows: re-run `apra-fleet install` to get the new task definition (hidden launcher, revive
   trigger). An existing onlogon task keeps working (logon start only, no revive) until then.
+- Windows, upgrading from 0.4.3 or earlier: those versions registered the task with
+  `schtasks /sc onlogon`, which needs admin, so the old task is elevated-owned and a normal shell
+  can neither replace nor disable it (`/create /xml /f` and `/change /disable` are "Access is
+  denied"). Install detects such a legacy task -- its `schtasks /query /xml` has no repeating
+  TimeTrigger (`<Repetition><Interval>`), or an "any user" LogonTrigger (no `<UserId>`), or (when
+  Windows Script Host works) an action other than `wscript.exe` + our launcher -- and:
+  - interactive desktop console (stdin and stdout are a TTY, no `CI`, no `SSH_CONNECTION` /
+    `SSH_CLIENT` / `SSH_TTY`, `SESSIONNAME` set, `APRA_FLEET_NONINTERACTIVE` unset): prints what is
+    about to happen and requests ONE UAC elevation whose only action is
+    `schtasks /delete /tn ApraFleet /f` (powershell `Start-Process ... -Verb RunAs -Wait`), checks
+    the exit code and that the task is gone, then creates the new task WITHOUT elevation. Nothing
+    else ever runs elevated. The UAC dialog is the confirmation; there is no extra flag or prompt.
+  - declined, failed, or non-interactive (`apra-fleet update` runs install detached with no TTY, so
+    it never prompts): the old task stays in use and install prints what is missing (no automatic
+    revive after a crash, visible console window, `apra-fleet stop` cannot disable the task) and the
+    fix: from an elevated prompt `schtasks /delete /tn ApraFleet /f`, then from a normal prompt
+    `apra-fleet install`. Set `APRA_FLEET_NONINTERACTIVE=1` to always take this path.
+  - while a legacy task is installed, `apra-fleet status` shows
+    `installed (enabled -- legacy task (upgrade needed: ...))` plus the same fix, and
+    `apra-fleet stop` prints it when disabling is denied (the stop still holds: the
+    stopped-by-user marker makes every task launch exit without starting the server).
+  A task XML without a `<Triggers>` section is never classed legacy.
 - Scripts and workflows that relied on the client's private stdio self-spawn now start the SHARED
   HTTP server, which keeps running after they exit. Set `APRA_FLEET_TRANSPORT=stdio` to keep the
   old private, per-process server.
