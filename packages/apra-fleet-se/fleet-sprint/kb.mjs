@@ -1446,7 +1446,8 @@ export function kbKnowledgeBlock(entries, { captureChannel = true, source = 'pri
         + 'it was captured. An entry describes the tree it was captured against, so if one '
         + 'contradicts what you actually observe in the code right now, the code wins -- say so '
         + 'in your notes rather than bending your work to fit the entry.\n'
-        + 'You do not need to call any kb_* tool to read these. '
+        + 'You do not need a kb_* tool to read these entries; they do not replace any kb_* lookup '
+        + 'your role instructions call for. '
         + captureLine
         + wrapUntrustedBlock(label, JSON.stringify(
             injectable.map((e) => ({

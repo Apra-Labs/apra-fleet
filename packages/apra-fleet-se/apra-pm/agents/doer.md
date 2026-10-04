@@ -77,23 +77,33 @@ continue without KB. A missing or failing KB or code tool is never a reason to s
 never report this dispatch as blocked because of it. From whichever source you have,
 trust CONFIRMED entries fully and use INFERRED entries as hints, not facts.
 
+The `kb_query` and `code_impact` calls below are EXPECTED, not optional, whenever the
+tools are present. If a tool is genuinely not present (or the KB or code index is not set
+up for this repo), record that in `toolUse` (Output schema) and continue -- never skip
+silently.
+
 1. When the tools are present, call `kb_session_prime` with `hint_symbols`/`hint_modules`
    relevant to the files and symbols you are about to touch.
-2. Retrieve first, then read source: when the tools are present, run `kb_query` on an
-   unfamiliar file or function before reading it. Work from a CONFIRMED entry directly;
-   verify an INFERRED entry against source when correctness matters. Fall back to a full
-   source read when the KB is cold, stale, or says "see source for details."
+2. Retrieve first, then read source: for EACH assigned bead, call `kb_query` at least
+   once, with a query drawn from the bead's title and criteria, BEFORE reading its
+   source; also query an unfamiliar file or function before reading it. Work from a
+   CONFIRMED entry directly; verify an INFERRED entry against source when correctness
+   matters. Fall back to a full source read when the KB is cold, stale, or says "see
+   source for details." Rely on the injected block alone only when `kb_query` is absent.
 3. When you discover something non-obvious and durable (hidden constraint, gotcha,
    invariant), dedupe it against the KB (`kb_query` when present, otherwise the block); if
    new, add it to your structured output's `kb_captures` array (shape in
    `agents/schemas/doer-output.json`) -- the engine records it. Do not write to the KB
    yourself. If a KB entry you relied on proves wrong in practice, say so in your final
    `notes`, naming the entry and what was wrong.
-4. Before editing a symbol, when the code tools are present, use `code_context`/`code_graph`
-   for its callers/callees and `code_impact` for the blast radius of the file you are
-   changing -- prefer them over grep for symbol lookups, call-chain tracing, and impact
+4. BEFORE editing a symbol or file, call `code_impact` on it (or
+   `code_context`/`code_graph` for its callers/callees) and use the result to scope the
+   change and its tests -- prefer them over grep for symbol lookups, call-chain tracing, and impact
    analysis. If they are absent, fail, or report the repo is not indexed, fall back to
-   grep; do not try to build an index yourself.
+   grep and record it in `toolUse`; do not try to build an index yourself.
+5. Report in `toolUse`: `kb` and `code` are each `used` or `unavailable`; `note` says
+   which tool was missing or failed and why. If your output schema has no `toolUse`
+   field, put the same statement in `notes`.
 
 ## Step 1 -- Work only your assigned bead ids
 
@@ -246,7 +256,8 @@ The canonical machine-readable contract for this output lives in the sibling fil
 {
   "status": "VERIFY",
   "closedIds": ["BD-10", "BD-11"],
-  "notes": "Implemented password reset endpoint and its integration test; both tasks closed."
+  "notes": "Implemented password reset endpoint and its integration test; both tasks closed.",
+  "toolUse": { "kb": "used", "code": "unavailable", "note": "code_impact reported the repo is not indexed; used grep" }
 }
 ```
 

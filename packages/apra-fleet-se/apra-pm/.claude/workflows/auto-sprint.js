@@ -1564,6 +1564,34 @@ const REVIEW_SCHEMA = {
           }
         }
       }
+    },
+    "toolUse": {
+      "type": "object",
+      "description": "How this run used the kb_* and code_* tools its role prompt expects (Step 0). Optional for backward compatibility, but expected: report \"unavailable\" with a note rather than skipping the calls silently.",
+      "required": [
+        "kb",
+        "code"
+      ],
+      "properties": {
+        "kb": {
+          "type": "string",
+          "enum": [
+            "used",
+            "unavailable"
+          ]
+        },
+        "code": {
+          "type": "string",
+          "enum": [
+            "used",
+            "unavailable"
+          ]
+        },
+        "note": {
+          "type": "string",
+          "description": "Which tool was missing or failed, and why. Expected when either value is \"unavailable\"."
+        }
+      }
     }
   }
 };
@@ -1735,6 +1763,34 @@ const DOER_STATUS_SCHEMA = {
               "type": "string"
             }
           }
+        }
+      }
+    },
+    "toolUse": {
+      "type": "object",
+      "description": "How this run used the kb_* and code_* tools its role prompt expects (Step 0). Optional for backward compatibility, but expected: report \"unavailable\" with a note rather than skipping the calls silently.",
+      "required": [
+        "kb",
+        "code"
+      ],
+      "properties": {
+        "kb": {
+          "type": "string",
+          "enum": [
+            "used",
+            "unavailable"
+          ]
+        },
+        "code": {
+          "type": "string",
+          "enum": [
+            "used",
+            "unavailable"
+          ]
+        },
+        "note": {
+          "type": "string",
+          "description": "Which tool was missing or failed, and why. Expected when either value is \"unavailable\"."
         }
       }
     }

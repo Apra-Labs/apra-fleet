@@ -227,3 +227,71 @@ test('allowlist: a kb_/code_ tool name the member allowlist lacks is caught; out
     const fields = step0Violations('Return `kb_captures` and `kb_promotions`.', CTX_FIXTURE());
     assert.ok(!fields.some((x) => /allowlist/.test(x)), JSON.stringify(fields));
 });
+
+// ---------------------------------------------------------------------------
+// Expected tool calls (doer, reviewer): kb_query and code_impact are expected,
+// not optional, and an unavailable tool is reported in toolUse, never skipped
+// silently. Planner/plan-reviewer stay conditional (wrapper roles).
+// ---------------------------------------------------------------------------
+
+const EXPECTED_RE = /The `(?:kb_query|code_impact)` and `(?:kb_query|code_impact)` calls below are EXPECTED, not optional, whenever the tools are present\./;
+const REPORT_UNAVAILABLE_RE = /record that in `toolUse` \(Output schema\) and continue -- never skip silently\./;
+const TOOLUSE_SHAPE_RE = /Report in `toolUse`: `kb` and `code` are each `used` or `unavailable`; `note` says which tool was missing or failed and why\. If your output schema has no `toolUse` field, put the same statement in `notes`\./;
+const EXPECTED_CALLS = {
+    'doer.md': [
+        /for EACH assigned bead, call `kb_query` at least once, with a query drawn from the bead's title and criteria, BEFORE reading its source/,
+        /BEFORE editing a symbol or file, call `code_impact` on it/,
+    ],
+    'reviewer.md': [
+        /Call `code_impact` on each changed file \(or its changed symbols\) BEFORE judging blast radius/,
+        /Call `kb_query` at least once per review/,
+    ],
+};
+
+// The previous, optional doer Step 0 wording (items 2 and 4), kept inline so
+// the check below is proven to reject it.
+const PRE_EXPECTED_DOER_STEP0 = [
+    '2. Retrieve first, then read source: when the tools are present, run `kb_query` on an',
+    '   unfamiliar file or function before reading it.',
+    '4. Before editing a symbol, when the code tools are present, use `code_context`/`code_graph`',
+    '   for its callers/callees and `code_impact` for the blast radius of the file you are',
+    '   changing. If they are absent, fail, or report the repo is not indexed, fall back to',
+    '   grep; do not try to build an index yourself.',
+].join('\n');
+
+/** Missing expected-call / unavailable-reporting instructions in one role prompt. */
+function expectedCallViolations(file, content) {
+    const flat = collapse(stripFrontmatter(content));
+    const v = [];
+    if (!EXPECTED_RE.test(flat)) v.push('missing EXPECTED-not-optional statement');
+    if (!REPORT_UNAVAILABLE_RE.test(flat)) v.push('missing report-unavailable-in-toolUse rule');
+    if (!TOOLUSE_SHAPE_RE.test(flat)) v.push('missing toolUse reporting shape');
+    for (const re of EXPECTED_CALLS[file]) if (!re.test(flat)) v.push(`missing expected call: ${re}`);
+    return v;
+}
+
+for (const file of Object.keys(EXPECTED_CALLS)) {
+    test(`${file}: kb_query and code_impact calls are expected, unavailability is reported`, () => {
+        const v = expectedCallViolations(file, fs.readFileSync(path.join(AGENTS_DIR, file), 'utf8'));
+        assert.deepEqual(v, [], `${file}:\n- ${v.join('\n- ')}`);
+    });
+}
+
+test('expected-call check is not vacuous: the optional "when the tools are present" doer Step 0 fails it', () => {
+    const v = expectedCallViolations('doer.md', PRE_EXPECTED_DOER_STEP0);
+    assert.ok(v.includes('missing EXPECTED-not-optional statement'), JSON.stringify(v));
+    assert.ok(v.includes('missing report-unavailable-in-toolUse rule'), JSON.stringify(v));
+    assert.ok(v.includes('missing toolUse reporting shape'), JSON.stringify(v));
+    assert.ok(v.some((x) => /kb_query/.test(x)) && v.some((x) => /code_impact/.test(x)), JSON.stringify(v));
+});
+
+test('toolUse is an optional field of the doer and reviewer output schemas', () => {
+    for (const role of ['doer', 'reviewer']) {
+        const schema = JSON.parse(fs.readFileSync(path.join(SCHEMAS_DIR, `${role}-output.json`), 'utf8'));
+        const tu = schema.properties.toolUse;
+        assert.ok(tu, `${role}-output.json has no toolUse property`);
+        assert.ok(!schema.required.includes('toolUse'), `${role}: toolUse must stay optional`);
+        assert.deepEqual(tu.required, ['kb', 'code']);
+        for (const k of ['kb', 'code']) assert.deepEqual(tu.properties[k].enum, ['used', 'unavailable']);
+    }
+});
