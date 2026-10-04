@@ -60,6 +60,20 @@ export const REPO_ROOT = path.resolve(__dirname, '..');
 const SKIP_DIR_NAMES = new Set(['node_modules', '.git', 'dist', 'build', '.gitnexus', 'fixtures']);
 const SCANNABLE_EXT = new Set(['.ts', '.mjs', '.cjs', '.js']);
 
+/**
+ * This is a raw-text/regex scanner (balanced-bracket aware, not a real JS
+ * parser -- see module doc), so it cannot distinguish an actual call site
+ * from the SAME TEXT appearing inside a string-literal fixture. This
+ * guard's own test file deliberately contains string literals that read
+ * like real bd-invocation call sites (e.g. the literal text
+ * "execFileSync('bd', ['init'], { cwd });") so it can feed them to
+ * scanFile() as synthetic sources and pin the scanner's behavior
+ * (tests/check-bd-env-strip.test.ts). Scanning that file as part of the
+ * real tests/ sweep would treat its own fixtures as live findings, so it is
+ * excluded here -- it is the guard's self-test, not a real bd-spawn site.
+ */
+const SELF_TEST_EXCLUSIONS = new Set(['tests/check-bd-env-strip.test.ts']);
+
 /** Function names whose first argument is checked for a literal 'bd' shape. */
 const ARGV_STYLE_CALLEES = new Set(['execFile', 'execFileSync', 'spawn', 'spawnSync']);
 /** Function names that take a single shell command string as their first argument. */
@@ -72,20 +86,26 @@ const CALL_RE = new RegExp(
     'g'
 );
 
+/** Both spellings are real in this repo: singular `test` (most packages) and plural `tests` (e.g. packages/fleet-api-contract/tests). */
+const PACKAGE_TEST_DIR_NAMES = ['test', 'tests'];
+
 /**
- * Discover every `packages/<pkg>/test` dir (the generic "packages/**\/test"
- * half of the scanned set) plus the two static roots. Dynamic discovery
- * (rather than a hardcoded per-package list) means a new package's test dir
- * is covered automatically.
+ * Discover every `packages/<pkg>/test` (or `.../tests`) dir (the generic
+ * "packages/**\/test(s)" half of the scanned set) plus the two static roots.
+ * Dynamic discovery (rather than a hardcoded per-package list) means a new
+ * package's test dir is covered automatically -- for that to actually hold,
+ * this must accept both the singular and plural spelling other packages use.
  */
 export function discoverPackageTestDirs(repoRoot = REPO_ROOT) {
     const pkgsDir = path.join(repoRoot, 'packages');
     if (!fs.existsSync(pkgsDir)) return [];
     const dirs = [];
     for (const name of fs.readdirSync(pkgsDir)) {
-        const testDir = path.join(pkgsDir, name, 'test');
-        if (fs.existsSync(testDir) && fs.statSync(testDir).isDirectory()) {
-            dirs.push(path.relative(repoRoot, testDir).split(path.sep).join('/'));
+        for (const testDirName of PACKAGE_TEST_DIR_NAMES) {
+            const testDir = path.join(pkgsDir, name, testDirName);
+            if (fs.existsSync(testDir) && fs.statSync(testDir).isDirectory()) {
+                dirs.push(path.relative(repoRoot, testDir).split(path.sep).join('/'));
+            }
         }
     }
     return dirs.sort();
@@ -111,6 +131,7 @@ export function listScannableFiles(repoRoot = REPO_ROOT, roots = scanRoots(repoR
     for (const root of roots) walk(path.join(repoRoot, root));
     return files
         .map((abs) => ({ abs, rel: path.relative(repoRoot, abs).split(path.sep).join('/') }))
+        .filter((f) => !SELF_TEST_EXCLUSIONS.has(f.rel))
         .sort((a, b) => a.rel.localeCompare(b.rel));
 }
 
@@ -281,8 +302,19 @@ function isBdInvocation(calleeName, args) {
     const first = args[0] ?? '';
     const inner = literalStringValue(first);
     if (inner == null) return false;
-    if (ARGV_STYLE_CALLEES.has(calleeName)) return inner.trim() === 'bd';
-    if (SHELL_STYLE_CALLEES.has(calleeName)) return /^\s*bd(\s|$)/.test(inner);
+    // ARGV_STYLE_CALLEES (execFile/execFileSync/spawn/spawnSync) normally take
+    // just the bare program name ('bd') as their first argument -- but with an
+    // explicit `{ shell: true }` (or any other truthy `shell:` option) in the
+    // options object, Node treats that first argument as a full shell command
+    // string exactly like exec/execSync, e.g.
+    // `spawnSync('bd dolt remote add origin file:///tmp/x', { shell: true })`
+    // or `execFileSync('bd init --from-jsonl', { shell: true })`. Both shapes
+    // are real, present in this repo, and must be caught the same way as the
+    // SHELL_STYLE_CALLEES case below -- so the same regex applies to both
+    // callee groups rather than requiring an exact 'bd' match for argv-style.
+    if (ARGV_STYLE_CALLEES.has(calleeName) || SHELL_STYLE_CALLEES.has(calleeName)) {
+        return /^\s*bd(\s|$)/.test(inner);
+    }
     return false;
 }
 
@@ -433,11 +465,15 @@ export function scanFiles(files) {
  * cannot strip BEADS_DIR (none are known at the time of writing -- every
  * current call site either already uses bdChildEnv() or is a dynamic
  * (non-literal) command this scanner does not flag in the first place).
- * An exception needs BOTH an entry here AND a `BD-ENV-STRIP-EXCEPTION:`
- * anchor comment within `window` lines of the call site, stating the
- * reason -- so the exception is reviewed in the diff, same convention as
+ * An exception needs BOTH an entry here AND a `BD-ENV-STRIP-EXCEPTION:
+ * <reason>` anchor comment within `window` lines of the call site, stating
+ * the reason -- so the exception is reviewed in the diff, same convention as
  * packages/apra-fleet-se/scripts/check-generic-boundary.mjs's
- * ALLOWED_EXCEPTIONS.
+ * ALLOWED_EXCEPTIONS. `anchorRe` must also match the anchor comment's own
+ * text (not just the generic `BD-ENV-STRIP-EXCEPTION:` marker) so that a
+ * file with more than one exception resolves each entry to ITS OWN anchor
+ * rather than always the file's first one -- mirroring
+ * check-generic-boundary.mjs's ALLOWED_EXCEPTIONS/anchorRe pairing.
  */
 export const ALLOWED_EXCEPTIONS = [];
 
@@ -447,9 +483,10 @@ export function applyExceptions(findings, contentsByRel, exceptions = ALLOWED_EX
     const resolved = exceptions.map((ex) => {
         const content = contentsByRel[ex.file];
         if (!content) throw new Error(`ALLOWED_EXCEPTIONS entry "${ex.name}" names a file not in the scanned set: ${ex.file}`);
+        if (!ex.anchorRe) throw new Error(`ALLOWED_EXCEPTIONS entry "${ex.name}" must set anchorRe so it resolves to ITS OWN anchor comment, not just the file's first BD-ENV-STRIP-EXCEPTION marker`);
         const lines = content.split('\n');
-        const idx = lines.findIndex((l) => ANCHOR_RE.test(l));
-        if (idx === -1) throw new Error(`ALLOWED_EXCEPTIONS entry "${ex.name}" has no BD-ENV-STRIP-EXCEPTION anchor comment in ${ex.file}`);
+        const idx = lines.findIndex((l) => ANCHOR_RE.test(l) && ex.anchorRe.test(l));
+        if (idx === -1) throw new Error(`ALLOWED_EXCEPTIONS entry "${ex.name}" has no BD-ENV-STRIP-EXCEPTION anchor matching ${ex.anchorRe} in ${ex.file}`);
         return { ...ex, anchorLine: idx + 1, hits: 0 };
     });
     const violations = [];
