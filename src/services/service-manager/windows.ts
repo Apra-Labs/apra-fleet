@@ -655,6 +655,24 @@ export class WindowsServiceManager implements ServiceManager {
     return true;
   }
 
+  /** Problems of the installed task when it is a legacy one (empty: current or unreadable). */
+  private installedLegacyProblems(): LegacyTaskProblem[] {
+    try {
+      const raw = this.runSchtasks(['/query', '/tn', WINDOWS_TASK_NAME, '/xml']);
+      return this.legacyProblemsOf(raw);
+    } catch {
+      return [];
+    }
+  }
+
+  private legacyProblemsOf(raw: Buffer | string): LegacyTaskProblem[] {
+    const launcherPath = launcherPathFor(this.wrapperPath);
+    // install keeps the launcher only when the task should use it (WSH works).
+    let launcherExpected = false;
+    try { launcherExpected = fs.existsSync(launcherPath); } catch { /* treat as absent */ }
+    return legacyTaskProblems(raw, { launcherPath, launcherExpected });
+  }
+
   async unregister(): Promise<void> {
     try {
       this.runSchtasks(['/delete', '/tn', WINDOWS_TASK_NAME, '/f']);
@@ -711,10 +729,22 @@ export class WindowsServiceManager implements ServiceManager {
       try {
         this.runSchtasks(['/change', '/tn', WINDOWS_TASK_NAME, '/disable']);
       } catch (err) {
-        console.warn(
-          `Could not disable the ${WINDOWS_TASK_NAME} task (${(err as Error).message.trim()}); ` +
-          'its triggers may start the server again.',
-        );
+        const problems = this.installedLegacyProblems();
+        if (problems.length > 0) {
+          // Disabling was just refused, whatever the XML says.
+          if (!problems.includes('elevated')) problems.push('elevated');
+          console.warn(`Could not disable the ${WINDOWS_TASK_NAME} task (${(err as Error).message.trim()}).`);
+          console.warn(legacyTaskGuidance(problems));
+          console.warn(
+            "The stop still holds: until 'apra-fleet start', every launch of the task exits without " +
+            'starting the server (the stopped-by-user marker).',
+          );
+        } else {
+          console.warn(
+            `Could not disable the ${WINDOWS_TASK_NAME} task (${(err as Error).message.trim()}); ` +
+            'its triggers may start the server again.',
+          );
+        }
       }
     }
     return gracefulStopByServerJson((pid) => {
@@ -743,13 +773,24 @@ export class WindowsServiceManager implements ServiceManager {
     // task as "installed (disabled)". If the XML query itself fails the task
     // still exists (the CSV query just answered), so default to enabled.
     let enabled = true;
-    try { enabled = taskXmlEnabled(this.runSchtasks(['/query', '/tn', WINDOWS_TASK_NAME, '/xml'])); } catch { /* keep default */ }
+    let legacy: LegacyTaskProblem[] = [];
+    try {
+      const raw = this.runSchtasks(['/query', '/tn', WINDOWS_TASK_NAME, '/xml']);
+      enabled = taskXmlEnabled(raw);
+      legacy = this.legacyProblemsOf(raw);
+    } catch { /* keep defaults */ }
     const result: ServiceStatus = { installed: true, running: status === 'Running', enabled };
+    const details: string[] = [];
     if (!enabled) {
-      result.detail = this.stoppedByUser()
+      details.push(this.stoppedByUser()
         ? "stopped by user -- 'apra-fleet start' re-enables it"
-        : "task disabled outside apra-fleet -- 'apra-fleet start' re-enables it";
+        : "task disabled outside apra-fleet -- 'apra-fleet start' re-enables it");
     }
+    if (legacy.length > 0) {
+      details.push(legacyTaskDetail(legacy));
+      result.notice = legacyTaskFix();
+    }
+    if (details.length > 0) result.detail = details.join('; ');
     return result;
   }
 

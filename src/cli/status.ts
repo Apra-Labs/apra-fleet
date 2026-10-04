@@ -73,7 +73,8 @@ export async function runStatus(_args: string[]): Promise<void> {
   const svcMgr = await getServiceManager();
   const svcStatus: ServiceStatus = await svcMgr.query().catch(() => ({ installed: false, running: false }));
 
-  const serviceLabel = formatServiceLabel(svcStatus);
+  const serviceLabel = formatServiceLabel(svcStatus)
+    + (svcStatus.notice ? '\n' + svcStatus.notice.split('\n').map(l => `            ${l}`).join('\n') : '');
 
   if (instance.state === 'unresponsive') {
     console.log('apra-fleet status');

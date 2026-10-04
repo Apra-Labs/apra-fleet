@@ -28,6 +28,7 @@ import {
   buildTaskXml, encodeTaskXml, launcherArguments, launcherPathFor,
   LEGACY_TASK_DELETE_ARGV, UAC_DECLINED_EXIT,
 } from '../src/services/service-manager/windows.js';
+import { formatServiceLabel } from '../src/cli/status.js';
 
 const WRAPPER = 'C:\\Users\\u\\.apra-fleet\\bin\\apra-fleet-service.bat';
 const LAUNCHER = launcherPathFor(WRAPPER);
@@ -296,6 +297,62 @@ describe('register() with a legacy task it cannot replace', () => {
     expect(script).toBe(elevatedSchtasksScript(DELETE_ARGV));
     expect(script).toContain("Start-Process -FilePath 'schtasks.exe' -ArgumentList @('/delete','/tn','ApraFleet','/f') -Verb RunAs -Wait -PassThru");
     expect(script.match(/RunAs/g)).toHaveLength(1);
+  });
+});
+
+describe('status and stop with a legacy task installed', () => {
+  let warn: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(fs.existsSync).mockReturnValue(true);
+    mockGracefulStop.mockResolvedValue(true);
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+  afterEach(() => warn.mockRestore());
+
+  const queryRunner = (xml: string) => vi.fn((args: string[]) => {
+    if (args[0] === '/change') throw new Error('ERROR: Access is denied.');
+    if (args.includes('/xml')) return xml;
+    if (args.includes('csv')) return '"\\ApraFleet","N/A","Running"\r\n';
+    return '';
+  });
+
+  it('status shows "legacy task (upgrade needed: ...)" plus the fix', async () => {
+    const mgr = new WindowsServiceManager(queryRunner(LEGACY_XML), WRAPPER, { runReg: vi.fn(), stoppedByUser: () => false });
+    const st = await mgr.query();
+    expect(formatServiceLabel(st)).toBe(
+      'installed (enabled -- legacy task (upgrade needed: no automatic revive after a crash; ' +
+      "the server runs in a visible console window; 'apra-fleet stop' cannot disable the task))",
+    );
+    expect(st.notice).toContain('schtasks /delete /tn ApraFleet /f');
+    expect(st.notice).toContain('apra-fleet install');
+  });
+
+  it('status of a current task has no legacy hint', async () => {
+    const mgr = new WindowsServiceManager(queryRunner(CURRENT_QUERIED_XML), WRAPPER, { runReg: vi.fn(), stoppedByUser: () => false });
+    const st = await mgr.query();
+    expect(formatServiceLabel(st)).toBe('installed (enabled)');
+    expect(st.notice).toBeUndefined();
+  });
+
+  it('stop prints the legacy guidance when disabling is denied, and still stops the server', async () => {
+    const mgr = new WindowsServiceManager(queryRunner(LEGACY_XML), WRAPPER, { runReg: vi.fn() });
+    expect(await mgr.stop()).toBe(true);
+    expect(mockGracefulStop).toHaveBeenCalled();
+    const text = warn.mock.calls.map(c => c.join(' ')).join('\n');
+    expect(text).toMatch(/Could not disable the ApraFleet task \(ERROR: Access is denied\.\)/);
+    expect(text).toContain('no automatic revive after a crash');
+    expect(text).toContain('schtasks /delete /tn ApraFleet /f');
+    expect(text).toMatch(/then, from a normal prompt:\s+apra-fleet install/);
+    expect(text).toMatch(/The stop still holds/);
+  });
+
+  it('stop on a current task that cannot be disabled keeps the plain warning', async () => {
+    const mgr = new WindowsServiceManager(queryRunner(CURRENT_QUERIED_XML), WRAPPER, { runReg: vi.fn() });
+    await mgr.stop();
+    const text = warn.mock.calls.map(c => c.join(' ')).join('\n');
+    expect(text).toMatch(/its triggers may start the server again/);
+    expect(text).not.toContain('schtasks /delete');
   });
 });
 

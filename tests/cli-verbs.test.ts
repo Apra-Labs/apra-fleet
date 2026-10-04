@@ -615,6 +615,18 @@ describe('runStatus', () => {
     expect(output()).toContain('installed (disabled)');
   });
 
+  it('prints the service notice (legacy task fix) under the Service line', async () => {
+    mockSvcMgr.query.mockResolvedValue({
+      installed: true, running: false, enabled: true,
+      detail: 'legacy task (upgrade needed: no automatic revive after a crash)',
+      notice: 'To upgrade it, run once from an elevated prompt (Run as administrator):\n    schtasks /delete /tn ApraFleet /f',
+    });
+    await runStatus([]);
+    expect(output()).toContain('installed (enabled -- legacy task (upgrade needed: no automatic revive after a crash))');
+    expect(output()).toMatch(/\n {12}To upgrade it, run once from an elevated prompt/);
+    expect(output()).toMatch(/\n {16}schtasks \/delete \/tn ApraFleet \/f/);
+  });
+
   it('shows running state with URL when server is up', async () => {
     mockCheckRunning.mockResolvedValue(RUNNING);
     await runStatus([]);
