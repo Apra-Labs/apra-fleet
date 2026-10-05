@@ -117,7 +117,9 @@
         { "id": "L22", "title": "diagnostics: OS SKU and root task folder security descriptor (informational)", "platforms": ["windows"], "severity": "advisory", "expect": { "exit": 0 } },
         { "id": "L23", "title": "diagnostics: System32\\Tasks ACL (informational)", "platforms": ["windows"], "severity": "advisory", "expect": { "exit": 0 } },
         { "id": "L24", "title": "diagnostics: a real standard-user logon can register a probe task (informational)", "platforms": ["windows"], "severity": "advisory", "expect": { "exit": 0 } },
-        { "id": "L25", "title": "diagnostics: a real admin logon (UAC-filtered token) can register a probe task (informational)", "platforms": ["windows"], "severity": "advisory", "expect": { "exit": 0 } }
+        { "id": "L25", "title": "diagnostics: a real admin logon (UAC-filtered token) can register a probe task (informational)", "platforms": ["windows"], "severity": "advisory", "expect": { "exit": 0 } },
+        { "id": "L26", "title": "diagnostics: runner account RID, FilterAdministratorToken, logon type (informational)", "platforms": ["windows"], "severity": "advisory", "expect": { "exit": 0 } },
+        { "id": "L27", "title": "diagnostics: runner account real logon token and a probe task (informational)", "platforms": ["windows"], "severity": "advisory", "expect": { "exit": 0 } }
       ]
     }
   }

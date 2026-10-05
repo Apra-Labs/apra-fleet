@@ -497,6 +497,29 @@ try {
         & schtasks.exe /delete /tn "FiProbe-$($pr.user)" /f 2>&1 | Out-Null
         & net.exe user $pr.user /delete 2>&1 | Out-Null
       }
+      # Diagnostics (advisory): can THIS user get a real UAC-filtered logon?
+      $pol2 = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -ErrorAction SilentlyContinue
+      $me = [Security.Principal.WindowsIdentity]::GetCurrent()
+      $logonGroups = (& $WhoAmI /groups /fo csv 2>$null | ConvertFrom-Csv | Where-Object { $_.'Group Name' -match '^NT AUTHORITY\\(INTERACTIVE|SERVICE|BATCH|NETWORK|REMOTE INTERACTIVE LOGON)$|^CONSOLE LOGON$' } | ForEach-Object 'Group Name') -join ','
+      $procs = @(Get-Process -IncludeUserName -ErrorAction SilentlyContinue | Where-Object { $_.UserName -like "*\$env:USERNAME" -and $_.ProcessName -match '^(explorer|sihost|ctfmon|Runner\.Listener|Runner\.Worker)$' } | ForEach-Object { "$($_.ProcessName)#$($_.Id)@s$($_.SessionId)" }) -join ' '
+      Rec L26 'diag: this account (RID, FilterAdministratorToken, logon type, desktop processes)' 0 "sid=$($me.User.Value) FilterAdministratorToken=$($pol2.FilterAdministratorToken) logon=$logonGroups procs=$procs"
+      $pw = 'Fi9!' + ([guid]::NewGuid().ToString('N').Substring(0, 16))
+      & net.exe user $env:USERNAME $pw 2>&1 | Out-Null
+      $po = Join-Path $UlDir 'L27.out'; $pil = "$po.il"; $pc = Join-Path $UlDir 'L27.cmd'
+      [IO.File]::WriteAllText($pc, "@echo off`r`n`"$WhoAmI`" /groups /fo csv > `"$pil`" 2>&1`r`nschtasks.exe /create /tn FiProbe-self /sc once /st 23:59 /tr `"cmd.exe /c exit`" /f > `"$po`" 2>&1`r`n>>`"$po`" echo rc=%ERRORLEVEL%`r`n", [Text.Encoding]::ASCII)
+      $err = ''
+      try {
+        $cred = New-Object Management.Automation.PSCredential("$env:COMPUTERNAME\$env:USERNAME", (ConvertTo-SecureString $pw -AsPlainText -Force))
+        Start-Process cmd.exe -ArgumentList @('/d', '/c', "`"$pc`"") -Credential $cred -WorkingDirectory $UlDir -Wait -ErrorAction Stop
+      } catch { $err = "launch failed: $($_.Exception.Message)" }
+      $il = 'IL unknown'
+      try {
+        $rows = Get-Content $pil -ErrorAction Stop | ConvertFrom-Csv
+        $il = 'IL=' + (($rows | Where-Object { $_.'Group Name' -like 'Mandatory Label\*' } | Select-Object -First 1).'Group Name' -replace '^Mandatory Label\\', '') + '; Administrators=' + ($rows | Where-Object { $_.'Group Name' -eq 'BUILTIN\Administrators' } | Select-Object -First 1).Attributes
+      } catch {}
+      $txt = if (Test-Path $po) { ((Get-Content $po) -join ' ').Trim() } else { '(no output)' }
+      Rec L27 "diag: $env:USERNAME real logon (seclogon) token + probe task" $(if ($txt -match 'rc=0') { 0 } else { 1 }) "$txt $err" $il
+      & schtasks.exe /delete /tn FiProbe-self /f 2>&1 | Out-Null
     }
     default { Log "unknown pass $Pass" }
   }
