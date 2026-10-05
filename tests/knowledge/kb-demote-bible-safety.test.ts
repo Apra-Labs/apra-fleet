@@ -186,7 +186,9 @@ describe('kb_demote bible safety: the cold-seed does not re-inject a demoted ent
 
 describe('kb_demote bible safety: only a demotion-only shrink auto-commits', () => {
   const KB_CONFIG_PATH = path.join(FLEET_DIR, 'knowledge', 'config.json');
-  const BIBLE_REL = '.fleet/kb-canonical.json';
+  // Global scope: since #631 the project export is additive (it never removes
+  // an entry), so only the global export can shrink and reach the guard.
+  const BIBLE_REL = '.fleet/kb-canonical-global.json';
 
   let repoDir: string;
   let provider: SqliteProvider;
@@ -258,7 +260,7 @@ describe('kb_demote bible safety: only a demotion-only shrink auto-commits', () 
       await captureConfirmed(provider, 'claim two', basisFile),
       await captureConfirmed(provider, 'claim three', basisFile),
     ];
-    const first = JSON.parse(await kbExport({ repo_path: repoDir }));
+    const first = JSON.parse(await kbExport({ repo_path: repoDir, scope: 'global' }));
     expect(first.exported).toBe(3);
     expect(first.committed).toBe(true);
     expect(bibleAtHead().entries).toHaveLength(3);
@@ -272,7 +274,7 @@ describe('kb_demote bible safety: only a demotion-only shrink auto-commits', () 
 
     await provider.demote(ids[0], DEMOTE_REASON);
 
-    const result = JSON.parse(await kbExport({ repo_path: repoDir }));
+    const result = JSON.parse(await kbExport({ repo_path: repoDir, scope: 'global' }));
 
     // It really is a shrink: 3 committed entries in, 2 out.
     expect(result.exported).toBe(2);
@@ -299,7 +301,7 @@ describe('kb_demote bible safety: only a demotion-only shrink auto-commits', () 
     await provider.demote(ids[0], DEMOTE_REASON);
     await provider.feedback(ids[1], 'this entry did not hold up in practice', 'test-agent');
 
-    const result = JSON.parse(await kbExport({ repo_path: repoDir }));
+    const result = JSON.parse(await kbExport({ repo_path: repoDir, scope: 'global' }));
 
     expect(result.exported).toBe(1);
     expect(result.committed).toBe(false);
@@ -335,7 +337,7 @@ describe('kb_demote bible safety: only a demotion-only shrink auto-commits', () 
 
     await provider.demote(ids[0], DEMOTE_REASON);
 
-    const result = JSON.parse(await kbExport({ repo_path: repoDir }));
+    const result = JSON.parse(await kbExport({ repo_path: repoDir, scope: 'global' }));
 
     expect(result.exported).toBe(2);
     expect(result.committed).toBe(false);
@@ -370,7 +372,7 @@ describe('kb_demote bible safety: only a demotion-only shrink auto-commits', () 
     const idBeta = await captureConfirmed(provider, 'claim beta', fileBeta);
     await captureConfirmed(provider, 'claim gamma', fileGamma);
 
-    const first = JSON.parse(await kbExport({ repo_path: repoDir }));
+    const first = JSON.parse(await kbExport({ repo_path: repoDir, scope: 'global' }));
     expect(first.exported).toBe(3);
     expect(first.committed).toBe(true);
     expect(bibleAtHead().entries).toHaveLength(3);
@@ -394,7 +396,7 @@ describe('kb_demote bible safety: only a demotion-only shrink auto-commits', () 
     // alpha is a genuine demotion, so the shrink LOOKS demotion-shaped.
     await provider.demote(idAlpha, DEMOTE_REASON);
 
-    const result = JSON.parse(await kbExport({ repo_path: repoDir }));
+    const result = JSON.parse(await kbExport({ repo_path: repoDir, scope: 'global' }));
 
     expect(result.exported).toBe(1);
     expect(result.committed).toBe(false);
@@ -421,7 +423,7 @@ describe('kb_demote bible safety: only a demotion-only shrink auto-commits', () 
 
     // Growth, not shrink: the guard must not be in the way at all.
     await captureConfirmed(provider, 'claim four', basisFile);
-    const result = JSON.parse(await kbExport({ repo_path: repoDir }));
+    const result = JSON.parse(await kbExport({ repo_path: repoDir, scope: 'global' }));
 
     expect(result.exported).toBe(4);
     expect(result.committed).toBe(true);
@@ -436,7 +438,7 @@ describe('kb_demote bible safety: only a demotion-only shrink auto-commits', () 
     const shaBefore = headSha();
 
     await provider.demote(ids[0], DEMOTE_REASON);
-    const result = JSON.parse(await kbExport({ repo_path: repoDir }));
+    const result = JSON.parse(await kbExport({ repo_path: repoDir, scope: 'global' }));
 
     expect(result.exported).toBe(2);
     expect(result.committed).toBe(false);
@@ -450,7 +452,7 @@ describe('kb_demote bible safety: only a demotion-only shrink auto-commits', () 
 
     // Not a demotion: the operator override is unchanged by the widening.
     await provider.feedback(ids[1], 'this entry did not hold up in practice', 'test-agent');
-    const result = JSON.parse(await kbExport({ repo_path: repoDir }));
+    const result = JSON.parse(await kbExport({ repo_path: repoDir, scope: 'global' }));
 
     expect(result.exported).toBe(2);
     expect(result.committed).toBe(true);

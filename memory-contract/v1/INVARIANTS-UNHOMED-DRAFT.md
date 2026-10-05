@@ -275,7 +275,7 @@ a contradiction signal returns `decision: 'flagged'` with
 entry; the provider acts on it at `sqlite-provider.ts:693-698` by setting
 `flagged_for_review = 1` on the existing row and inserting the new one. Nothing
 is retired. Resolution is `resolveContradiction`
-(`sqlite-provider.ts:1545-1615`), and all four refusals precede the first write
+(`sqlite-provider.ts:1568-1638`), and all four refusals precede the first write
 at `:1583-1585`: missing entry `:1554-1556`, already-superseded `:1560-1562`,
 not-a-pair `:1564-1566` (`loser.contradiction_of === winner.id ||
 winner.contradiction_of === loser.id`, either direction, because the pair is

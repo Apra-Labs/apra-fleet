@@ -157,8 +157,8 @@ const EXPECTED_TOKENS: Record<string, string> = {
   'src/tools/kb-query.ts:55': 'Provide query',
   'src/services/knowledge/path-validation.ts:6': 'absolute',
   'src/services/knowledge/path-validation.ts:10': 'Path traversal rejected',
-  'src/services/knowledge/sqlite-provider.ts:1683': 'validateFilePaths',
-  'src/tools/kb-export.ts:159': 'repo_path does not exist',
+  'src/services/knowledge/sqlite-provider.ts:1706': 'validateFilePaths',
+  'src/tools/kb-export.ts:162': 'repo_path does not exist',
   'src/tools/kb-import.ts:76': 'repo does not exist',
   'src/tools/kb-import.ts:144': 'bible file not found',
   'src/tools/kb-import.ts:151': 'bible file is not valid JSON',
@@ -168,23 +168,23 @@ const EXPECTED_TOKENS: Record<string, string> = {
   'src/services/knowledge/sqlite-provider.ts:348': 'unresolvableBasisFiles',
   'src/services/knowledge/sqlite-provider.ts:404': 'missing_source_files',
   'src/tools/kb-import.ts:222': 'rejected',
-  'src/services/knowledge/sqlite-provider.ts:1571': 'isNonTrivialPromoteReason',
-  'src/services/knowledge/sqlite-provider.ts:1582': 'unresolvableBasisFiles',
-  'src/services/knowledge/sqlite-provider.ts:1548': 'Cannot promote superseded',
-  'src/services/knowledge/sqlite-provider.ts:1669': 'isNonTrivialPromoteReason',
-  'src/services/knowledge/sqlite-provider.ts:1682': 'unresolvedEvidence',
-  'src/services/knowledge/sqlite-provider.ts:1654': 'Cannot demote superseded',
-  'src/services/knowledge/sqlite-provider.ts:1558': 'Cannot promote a user-directive',
-  'src/services/knowledge/sqlite-provider.ts:1661': 'Cannot demote a user-directive',
-  'src/services/knowledge/sqlite-provider.ts:1883': 'never auto-resolved',
+  'src/services/knowledge/sqlite-provider.ts:1594': 'isNonTrivialPromoteReason',
+  'src/services/knowledge/sqlite-provider.ts:1605': 'unresolvableBasisFiles',
+  'src/services/knowledge/sqlite-provider.ts:1571': 'Cannot promote superseded',
+  'src/services/knowledge/sqlite-provider.ts:1692': 'isNonTrivialPromoteReason',
+  'src/services/knowledge/sqlite-provider.ts:1705': 'unresolvedEvidence',
+  'src/services/knowledge/sqlite-provider.ts:1677': 'Cannot demote superseded',
+  'src/services/knowledge/sqlite-provider.ts:1581': 'Cannot promote a user-directive',
+  'src/services/knowledge/sqlite-provider.ts:1684': 'Cannot demote a user-directive',
+  'src/services/knowledge/sqlite-provider.ts:1906': 'never auto-resolved',
   'src/services/knowledge/audn.ts:145': 'input.supersedes',
   'src/services/knowledge/audn.ts:224': "CONFIRMED') continue",
-  'src/services/knowledge/sqlite-provider.ts:1877': 'genuine contradiction pair',
-  'src/services/knowledge/sqlite-provider.ts:1873': 'already superseded',
-  'src/services/knowledge/sqlite-provider.ts:1545': 'Entry not found',
-  'src/services/knowledge/sqlite-provider.ts:1744': 'Entry not found',
-  'src/services/knowledge/sqlite-provider.ts:1651': 'Entry not found',
-  'src/services/knowledge/sqlite-provider.ts:1867': 'do not exist',
+  'src/services/knowledge/sqlite-provider.ts:1900': 'genuine contradiction pair',
+  'src/services/knowledge/sqlite-provider.ts:1896': 'already superseded',
+  'src/services/knowledge/sqlite-provider.ts:1568': 'Entry not found',
+  'src/services/knowledge/sqlite-provider.ts:1767': 'Entry not found',
+  'src/services/knowledge/sqlite-provider.ts:1674': 'Entry not found',
+  'src/services/knowledge/sqlite-provider.ts:1890': 'do not exist',
   'src/services/knowledge/sqlite-provider.ts:248': 'not initialized',
   'src/tools/code-intelligence.ts:131': 'is not configured',
   'src/tools/code-intelligence.ts:151': 'is not configured',
@@ -261,13 +261,13 @@ describe('memory-contract rot guard: GUARD 1 -- citation rot', () => {
   });
 
   // Falsifiability: directly reproduce the reviewer's probe (shifting
-  // E-DEMOTE-SUPERSEDED's citation from :1654 to :1658 produced NO error
+  // E-DEMOTE-SUPERSEDED's citation from :1677 to :1681 produced NO error
   // under the old guard) against the REAL on-disk file, with no mutation.
   it('resolveCitation fails when a real citation is shifted a few lines, and passes at the true location', () => {
-    const real: Citation = { file: 'src/services/knowledge/sqlite-provider.ts', startLine: 1654, endLine: 1654 };
+    const real: Citation = { file: 'src/services/knowledge/sqlite-provider.ts', startLine: 1677, endLine: 1677 };
     expect(resolveCitation(real, 'Cannot demote superseded').ok).toBe(true);
 
-    const shifted: Citation = { ...real, startLine: 1658, endLine: 1658 };
+    const shifted: Citation = { ...real, startLine: 1681, endLine: 1681 };
     const shiftedResult = resolveCitation(shifted, 'Cannot demote superseded');
     expect(shiftedResult.ok).toBe(false);
   });
