@@ -20,7 +20,8 @@ vi.mock('../src/services/preflight-check.js', () => ({
 
 // Global mock: the code_* pre-flight's self-heal never spawns a real
 // `npx gitnexus analyze` in tests -- every not-ready index reads as "build
-// started". code-index-heal.test.ts uses vi.unmock to test the real seam.
+// started". code-reindex-tools.test.ts uses vi.unmock to drive the real
+// scheduler against a fake npx.
 vi.mock('../src/tools/code-index-heal.js', () => ({
   scheduleIndexBuild: vi.fn(() => ({ started: true })),
 }));
