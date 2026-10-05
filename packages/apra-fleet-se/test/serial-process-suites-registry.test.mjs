@@ -67,6 +67,7 @@ const KNOWN_LIGHT_PROCESS_SPAWNS = {
     '4ul-terminal-state-runid-keying.test.mjs': "spawnSync(process.execPath, ['-e', 'process.exit(0)']) -- inert pid probe, exits immediately, no real work.",
     'k7b6-watchdog-finished-integration.test.mjs': "spawnSync(process.execPath, ['-e', 'process.exit(0)']) -- inert pid probe, exits immediately, no real work.",
     'k7b8-dolt-diverged-conflict-integration.test.mjs': "spawnSync(process.execPath, ['-e', 'process.exit(0)']) -- inert pid probe, exits immediately, no real work.",
+    'mvp-a6-relaunch-gate.test.mjs': "spawnSync(process.execPath, ['-e', 'process.exit(0)']) -- inert pid probe, exits immediately, no real work.",
     'sprint-lock.test.mjs': "spawnSync(process.execPath, ['-e', 'process.exit(0)']) -- inert pid probe, exits immediately, no real work.",
     'se-os-commands-shell-matrix.test.mjs': "spawnSync(process.execPath, ['--input-type=module', '-e', script], ...) -- the inline script only calls an already-imported pure function and writes JSON to stdout; no external target file, server, or Dolt bootstrap.",
     // String literals inside an assertion message, not real code -- this

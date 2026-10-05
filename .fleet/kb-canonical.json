@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "7089d28145df9ebb88e42db63a3dacb38cee3f7d",
     "branch": "v0.5_dashboard",
-    "entry_count": 420
+    "entry_count": 424
   },
   "entries": [
     {
@@ -3592,6 +3592,24 @@
       "updated_at": "2026-09-29T06:13:53.962Z"
     },
     {
+      "id": "6f885419-762f-426e-a9a2-589a6154aa73",
+      "type": "learning",
+      "title": "Tests building a persisting dolt mutex must flush it before deleting its temp dataDir",
+      "summary": "createDoltMutex persists mutex.json through a queued writer that mkdirs recursively, so a temp dir removed before mutex.flush() can be silently recreated (leaked) by a late write; use test/helpers/temp-dolt-mutex.mjs.",
+      "symbols": [
+        "createDoltMutex",
+        "tempDoltMutexFactory",
+        "flush"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/src/supervisor/dolt-mutex.mjs",
+        "packages/apra-fleet-se/test/helpers/temp-dolt-mutex.mjs",
+        "packages/apra-fleet-se/scripts/run-tests.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-05T22:01:25.858Z"
+    },
+    {
       "id": "7094ade4-8300-4b71-a5b4-5271683b5661",
       "type": "knowledge",
       "title": "Machine callers of MCP tool results must skip the onboarding preamble block",
@@ -4518,6 +4536,24 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:25.008Z"
+    },
+    {
+      "id": "906d2d97-40f6-4430-8df8-8c8021e9985e",
+      "type": "knowledge",
+      "title": "Topology probes must use commandResultStdout, not the execute_command text envelope",
+      "summary": "execute_command content[0].text is 'Exit code: N' plus mixed stdout/stderr with CRLF on Windows; cross-member comparisons in checkMemberTopology must use commandResultStdout (structuredContent.stdout, CRLF-normalised, throws on non-zero exit).",
+      "symbols": [
+        "commandResultStdout",
+        "checkMemberTopology"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/git-topology.mjs",
+        "packages/apra-fleet-se/bin/cli.mjs",
+        "src/tools/execute-command.ts",
+        "packages/apra-fleet-se/test/tbup-synced-topology-two-member.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-05T22:21:44.558Z"
     },
     {
       "id": "919a3f50-dcb3-4ee9-91d1-767fd503a3b8",
@@ -6224,6 +6260,24 @@
       "updated_at": "2026-09-29T06:13:12.550Z"
     },
     {
+      "id": "d2d0b211-5027-4500-8b01-4e78fd7b9f57",
+      "type": "knowledge",
+      "title": "Dolt mutex sprintId+pid does not identify one pusher: all D-pushes in a sprint process share both",
+      "summary": "doltPushAfter acquires the supervisor dolt mutex with (sprintId || member, {pid: process.pid}), so concurrent member D-pushes inside one sprint process present identical sprintId and pid; any mutex logic that treats {sprintId,pid} as one client identity breaks mutual exclusion.",
+      "symbols": [
+        "doltPushAfter",
+        "createDoltMutex",
+        "acquire"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/dolt-sync.mjs",
+        "packages/apra-fleet-se/src/supervisor/dolt-mutex.mjs",
+        "packages/apra-fleet-se/test/supervisor-dolt-mutex.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-05T22:01:28.216Z"
+    },
+    {
       "id": "d3016610-0d2a-40db-ba0b-537f49ff1cbf",
       "type": "knowledge",
       "title": "The slow-lane stalled-session bounds bind to DISPATCH_TIMEOUT_S, not the inactivity budget",
@@ -6830,6 +6884,25 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:11.365Z"
+    },
+    {
+      "id": "e1e30a69-c622-419e-9f07-d9608955cb3e",
+      "type": "knowledge",
+      "title": "Dolt mutex renew route answers 409 not-holder; HTTP client folds it into renewed=false",
+      "summary": "registerDoltMutexRoutes renew returns 409 {error:'not-holder'} for a non-holder token (no longer 200 renewed:false); coordination.mjs renew() turns the non-ok response into a caught throw that returns false, so dolt-sync logs both 'renew failed' and 'REFUSED'.",
+      "symbols": [
+        "registerDoltMutexRoutes",
+        "renew",
+        "doltPushAfter"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/src/supervisor/dolt-mutex.mjs",
+        "packages/apra-fleet-se/fleet-sprint/coordination.mjs",
+        "packages/apra-fleet-se/fleet-sprint/dolt-sync.mjs",
+        "src/tools/dolt-push-mutex.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-05T22:29:23.979Z"
     },
     {
       "id": "e1f7f60f-f7ea-4163-9166-4616c5a03fa1",

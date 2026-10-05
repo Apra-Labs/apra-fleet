@@ -538,3 +538,48 @@ export function commandResultToSoftGit(res) {
     const ok = exitCode !== undefined ? exitCode === 0 : !(res && res.isError);
     return { ok, stdout: text, error: ok ? undefined : (text || 'unknown error') };
 }
+
+/**
+ * Map an `execute_command` result to its trimmed stdout, for the topology
+ * probes (getOriginUrl / doltProbe / getIdentity) that compare values across
+ * members. The raw `content[0].text` is the human-facing envelope
+ * (`Exit code: N\n<stdout+stderr>`, CRLF on Windows members), so comparing it
+ * makes two members with the same origin look different. Prefers
+ * `structuredContent.stdout`; falls back to the text minus the leading
+ * `Exit code: N` line. Throws (naming the exit code and output) on a non-zero
+ * exit code or `isError`.
+ *
+ * @param {any} res - an `execute_command` MCP result or plain string.
+ * @returns {string} LF-normalised, trimmed stdout.
+ */
+export function commandResultStdout(res) {
+    let text = '';
+    if (typeof res === 'string') {
+        text = res;
+    } else if (res && Array.isArray(res.content)) {
+        text = res.content
+            .map((c) => (c && typeof c.text === 'string' ? c.text : ''))
+            .join('\n');
+    } else if (res && typeof res.text === 'string') {
+        text = res.text;
+    }
+    const norm = (s) => s.replace(/\r\n/g, '\n').trim();
+
+    let exitCode;
+    if (res && res.structuredContent && typeof res.structuredContent.exitCode === 'number') {
+        exitCode = res.structuredContent.exitCode;
+    } else {
+        const m = /^\s*Exit code:\s*(-?\d+)/.exec(text);
+        if (m) exitCode = Number(m[1]);
+    }
+
+    const failed = exitCode !== undefined ? exitCode !== 0 : Boolean(res && res.isError);
+    if (failed) {
+        throw new Error(`command failed with exit code ${exitCode === undefined ? 'unknown' : exitCode}: ${norm(text) || 'unknown error'}`);
+    }
+
+    if (res && res.structuredContent && typeof res.structuredContent.stdout === 'string') {
+        return norm(res.structuredContent.stdout);
+    }
+    return norm(text.replace(/^\s*Exit code:\s*-?\d+[^\n]*\r?\n?/, ''));
+}
