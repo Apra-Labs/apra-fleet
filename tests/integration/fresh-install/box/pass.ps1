@@ -460,6 +460,43 @@ try {
       AsLimited L21 probe-task 'schtasks.exe' @('/create', '/tn', 'ApraFleetULProbe', '/sc', 'once', '/st', '23:59', '/tr', 'cmd.exe /c exit', '/rl', 'limited', '/f') 120
       Rec L21 'diag: Medium token creates a plain probe task' $RC (Key $LOG @('SUCCESS', 'ERROR')) $script:LimToken
       Run L21x probe-delete 'schtasks.exe' @('/delete', '/tn', 'ApraFleetULProbe', '/f')
+      # Diagnostics (advisory): is task creation denied to every non-admin on this
+      # OS (Server SKU / root task folder SD), or only to the synthesized token?
+      $os = Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue
+      $rootSd = 'unreadable'
+      try {
+        $b = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Schedule\TaskCache\Tree' -Name SD -ErrorAction Stop).SD
+        $rootSd = (New-Object Security.AccessControl.RawSecurityDescriptor($b, 0)).GetSddlForm('All')
+      } catch { $rootSd = "unreadable: $($_.Exception.Message)" }
+      [IO.File]::WriteAllText((Join-Path $Logs 'L22-root-sd.log'), "os=$($os.Caption) $($os.Version) ProductType=$($os.ProductType)`r`nroot task folder SD: $rootSd`r`n", $Utf8)
+      Rec L22 'diag: OS SKU + root task folder SD' 0 "ProductType=$($os.ProductType) $($os.Caption) | $rootSd"
+      Run L23 tasks-dir-acl 'icacls.exe' @((Join-Path $env:SystemRoot 'System32\Tasks'))
+      Rec L23 'diag: icacls System32\Tasks' $RC ((Get-Content $LOG -ErrorAction SilentlyContinue | Where-Object { $_ -match '\S' } | Select-Object -First 8 | ForEach-Object { $_.Trim() }) -join ' | ')
+      foreach ($pr in @(@{ id = 'L24'; user = 'fi-std'; admin = $false }, @{ id = 'L25'; user = 'fi-adm'; admin = $true })) {
+        # A real logon (CreateProcessWithLogonW): a standard user's token, or an
+        # admin's UAC-filtered token -- the token a normal shell really gets.
+        $pw = 'Fi9!' + ([guid]::NewGuid().ToString('N').Substring(0, 16))
+        & net.exe user $pr.user $pw /add /y 2>&1 | Out-Null
+        if ($pr.admin) { & net.exe localgroup Administrators $pr.user /add 2>&1 | Out-Null }
+        $po = Join-Path $UlDir "$($pr.id).out"; $pil = "$po.il"; $pc = Join-Path $UlDir "$($pr.id).cmd"
+        Remove-Item $po, $pil -ErrorAction SilentlyContinue
+        [IO.File]::WriteAllText($pc, "@echo off`r`n`"$WhoAmI`" /groups /fo csv > `"$pil`" 2>&1`r`nschtasks.exe /create /tn FiProbe-$($pr.user) /sc once /st 23:59 /tr `"cmd.exe /c exit`" /f > `"$po`" 2>&1`r`n>>`"$po`" echo rc=%ERRORLEVEL%`r`n", [Text.Encoding]::ASCII)
+        $err = ''
+        try {
+          $cred = New-Object Management.Automation.PSCredential("$env:COMPUTERNAME\$($pr.user)", (ConvertTo-SecureString $pw -AsPlainText -Force))
+          Start-Process cmd.exe -ArgumentList @('/d', '/c', "`"$pc`"") -Credential $cred -LoadUserProfile -WorkingDirectory $UlDir -Wait -ErrorAction Stop
+        } catch { $err = "launch failed: $($_.Exception.Message)" }
+        $il = 'IL unknown'
+        try {
+          $rows = Get-Content $pil -ErrorAction Stop | ConvertFrom-Csv
+          $il = 'IL=' + (($rows | Where-Object { $_.'Group Name' -like 'Mandatory Label\*' } | Select-Object -First 1).'Group Name' -replace '^Mandatory Label\\', '') + '; Administrators=' + ($rows | Where-Object { $_.'Group Name' -eq 'BUILTIN\Administrators' } | Select-Object -First 1).Attributes
+        } catch {}
+        $txt = if (Test-Path $po) { ((Get-Content $po) -join ' ').Trim() } else { '(no output)' }
+        [IO.File]::WriteAllText((Join-Path $Logs "$($pr.id)-probe-$($pr.user).log"), "$txt`r`n$il`r`n$err`r`n", $Utf8)
+        Rec $pr.id "diag: $($pr.user) (real logon$(if ($pr.admin) { ', admin filtered token' })) creates a probe task" $(if ($txt -match 'rc=0') { 0 } else { 1 }) "$txt $err" $il
+        & schtasks.exe /delete /tn "FiProbe-$($pr.user)" /f 2>&1 | Out-Null
+        & net.exe user $pr.user /delete 2>&1 | Out-Null
+      }
     }
     default { Log "unknown pass $Pass" }
   }
