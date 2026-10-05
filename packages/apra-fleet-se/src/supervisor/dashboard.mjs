@@ -603,8 +603,17 @@ export function renderSprintStackHtml(views, mountPrefix) {
 // activation rather than stale data.
 const TAB_ACTIVATION_STALE_MS = 3000;
 
+// The Backlog tab's own, longer activation threshold. BEFORE: it shared the
+// Sprints tab's 3000 ms, so nearly every Backlog activation refetched
+// GET /api/backlog/tasks and rebuilt the beads table. AFTER: 30000 ms -- the
+// backlog changes on planning timescales, not seconds, and a refetch is still
+// one tab switch away once the data is older than this. The Sprints tab keeps
+// TAB_ACTIVATION_STALE_MS (3000) unchanged.
+const BACKLOG_TAB_ACTIVATION_STALE_MS = 30000;
+
 const DASHBOARD_TAB_SCRIPT = `
     var TAB_ACTIVATION_STALE_MS = ${TAB_ACTIVATION_STALE_MS};
+    var BACKLOG_TAB_ACTIVATION_STALE_MS = ${BACKLOG_TAB_ACTIVATION_STALE_MS};
     function switchTab(id) {
         document.querySelectorAll('.tab-btn').forEach(function (b) { b.classList.remove('active'); });
         document.querySelectorAll('.tab-content').forEach(function (c) { c.classList.remove('active'); });
@@ -620,7 +629,7 @@ const DASHBOARD_TAB_SCRIPT = `
         if (id === 'sprints' && window.__fleetSeSprintStack && typeof window.__fleetSeSprintStack.refreshIfStale === 'function') {
             window.__fleetSeSprintStack.refreshIfStale(TAB_ACTIVATION_STALE_MS);
         } else if (id === 'backlog' && window.__fleetSeBacklog && typeof window.__fleetSeBacklog.refreshIfStale === 'function') {
-            window.__fleetSeBacklog.refreshIfStale(TAB_ACTIVATION_STALE_MS);
+            window.__fleetSeBacklog.refreshIfStale(BACKLOG_TAB_ACTIVATION_STALE_MS);
         }
     }
 `;
