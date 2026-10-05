@@ -11,7 +11,7 @@ import { getStrategy } from '../services/strategy.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { getProvider } from '../providers/index.js';
 import { seedWorkspaceTrust, workspaceTrustTransportFor } from '../utils/workspace-trust.js';
-import { perFolderMcpEntryNeeded } from '../services/session-mcp-config.js';
+import { perFolderMcpEntryNeeded, REMOTE_SESSION_MCP_FILE } from '../services/session-mcp-config.js';
 import {
   deleteMemberFile,
   ensureGitExcluded,
@@ -722,6 +722,10 @@ async function syncMemberMcpConfig(
       });
       workFolderFiles.push(...result.workFolderFiles);
     }
+    // A remote member's per-dispatch session MCP config lives in the work
+    // folder while a session runs: keep it out of `git status` (and out of a
+    // role's `git add -A`).
+    if (agent.agentType !== 'local' && provider.mcpConfigFlag) workFolderFiles.push(REMOTE_SESSION_MCP_FILE);
     await ensureGitExcluded(exec, agent.workFolder, workFolderFiles, agentOs === 'windows', shell);
   } catch (e: any) {
     if (e instanceof MemberConfigError) {

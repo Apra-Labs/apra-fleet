@@ -25,6 +25,8 @@ import type { SSHExecResult } from '../src/types.js';
 const ID = '11111111-2222-3333-4444-555555555555';
 const claude = getProvider('claude');
 
+const TASK = 'Your task is described in .fleet-task.md in the current directory. Read that file first, then execute the task.';
+
 const baseOpts = {
   promptFile: '.fleet-task.md',
   sessionId: 'sess-1',
@@ -40,8 +42,11 @@ describe('--mcp-config on the dispatch command line, per OS and shell', () => {
     const cmd = getOsCommands('windows', 'powershell5').buildAgentPromptCommand(claude, {
       ...baseOpts, folder: 'C:\\Users\\bella\\project', agentName: 'doer', mcpConfigPath: cfg,
     });
-    expect(cmd.endsWith(` --model "claude-sonnet-4-6" --mcp-config "${cfg}"`)).toBe(true);
-    expect(cmd).toContain('claude --agent "doer" -p "Your task is described in .fleet-task.md');
+    const without = getOsCommands('windows', 'powershell5').buildAgentPromptCommand(claude, {
+      ...baseOpts, folder: 'C:\\Users\\bella\\project', agentName: 'doer',
+    });
+    expect(cmd).toBe(`${without} --mcp-config "${cfg}"`);
+    expect(cmd.endsWith(`Write-Output "FLEET_PID:$pid"; claude --agent "doer" -p "${TASK}" --output-format json --max-turns 50 --session-id "sess-1" --permission-mode acceptEdits --model "claude-sonnet-4-6" --mcp-config "${cfg}"`)).toBe(true);
     expect(cmd).not.toContain('--strict-mcp-config');
     expect(cmd.indexOf('--mcp-config')).toBeGreaterThan(cmd.indexOf(' -p "'));
   });
@@ -51,9 +56,9 @@ describe('--mcp-config on the dispatch command line, per OS and shell', () => {
     const cmd = getOsCommands('linux').buildAgentPromptCommand(claude, {
       ...baseOpts, folder: '/home/u/repo', inv: 'inv-1', mcpConfigPath: cfg,
     });
-    expect(cmd).toContain(`--model "claude-sonnet-4-6" --mcp-config "${cfg}"`);
-    expect(cmd.indexOf('--mcp-config')).toBeGreaterThan(cmd.indexOf(' -p "'));
-    expect(cmd.indexOf('--mcp-config')).toBeLessThan(cmd.indexOf('| tee'));
+    const without = getOsCommands('linux').buildAgentPromptCommand(claude, { ...baseOpts, folder: '/home/u/repo', inv: 'inv-1' });
+    expect(cmd).toBe(without.replace('--model "claude-sonnet-4-6"', `--model "claude-sonnet-4-6" --mcp-config "${cfg}"`));
+    expect(cmd).toContain(`claude -p "[inv-1] ${TASK}" --output-format json --max-turns 50 --session-id "sess-1" --permission-mode acceptEdits --model "claude-sonnet-4-6" --mcp-config "${cfg}" | tee`);
     expect(cmd).not.toContain('--strict-mcp-config');
   });
 
@@ -62,7 +67,9 @@ describe('--mcp-config on the dispatch command line, per OS and shell', () => {
     const cmd = getOsCommands('windows', 'pwsh7').buildAgentPromptCommand(claude, {
       ...baseOpts, folder: 'C:\\Users\\bella\\project', mcpConfigPath: cfg,
     });
-    expect(cmd.endsWith(` --mcp-config "${cfg}"`)).toBe(true);
+    const without = getOsCommands('windows', 'pwsh7').buildAgentPromptCommand(claude, { ...baseOpts, folder: 'C:\\Users\\bella\\project' });
+    expect(cmd).toBe(`${without} --mcp-config "${cfg}"`);
+    expect(cmd.endsWith(`claude -p "${TASK}" --output-format json --max-turns 50 --session-id "sess-1" --permission-mode acceptEdits --model "claude-sonnet-4-6" --mcp-config "${cfg}"`)).toBe(true);
   });
 
   it('remote claude member on Windows (gitbash): POSIX quoting of the C:/ form', () => {

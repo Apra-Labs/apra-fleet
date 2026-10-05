@@ -720,6 +720,23 @@ describe('composePermissions -- legacy fleet MCP entries pruned from settings.lo
     expect(allCmds.some(cmd => cmd.includes('cat >') && cmd.includes('.mcp.json'))).toBe(false);
   });
 
+  it('a REMOTE claude member: the per-dispatch session MCP config file is git-excluded in the work folder', async () => {
+    const member = makeTestAgent({ friendlyName: 'claude-remote-exclude', llmProvider: 'claude', os: 'linux' });
+    addAgent(member);
+    const fsHandler = makeFsHandler();
+    mockExecCommand.mockImplementation(async (cmd: string) => {
+      if (cmd.includes('rev-parse --git-path info/exclude')) return { stdout: '/home/testuser/project/.git/info/exclude\n', stderr: '', code: 0 };
+      return fsHandler(cmd);
+    });
+
+    expect(await composePermissions({ member_id: member.id, role: 'doer' })).toContain('Permissions composed');
+
+    const excludeWrite = mockExecCommand.mock.calls.map(c => c[0] as string)
+      .find(cmd => cmd.startsWith('cat > "/home/testuser/project/.git/info/exclude"'));
+    expect(excludeWrite).toBeDefined();
+    expect(excludeWrite).toContain('/.fleet-session-mcp.json');
+  });
+
   it('a LOCAL claude member gets no per-folder apra-fleet entry (its dispatches carry the member config per session)', async () => {
     const member = makeTestAgent({
       friendlyName: 'claude-local-doer', llmProvider: 'claude', os: 'linux', agentType: 'local',
