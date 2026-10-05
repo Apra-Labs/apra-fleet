@@ -399,7 +399,8 @@ describe('status and stop with a legacy task installed', () => {
       "the server runs in a visible console window; 'apra-fleet stop' cannot disable the task))",
     );
     expect(st.notice).toContain('schtasks /delete /tn ApraFleet /f');
-    expect(st.notice).toContain('apra-fleet install');
+    // --force: the old task's server is still running and install refuses without it.
+    expect(st.notice).toContain('then, from a normal prompt:\n    apra-fleet install --force');
   });
 
   it('status of a current task has no legacy hint', async () => {
@@ -436,7 +437,7 @@ describe('status and stop with a legacy task installed', () => {
     const userOwnedOld = CURRENT_QUERIED_XML.replace(/<Repetition>[\s\S]*?<\/Repetition>/, '');
     const st = await new WindowsServiceManager(queryRunner(userOwnedOld), WRAPPER, { runReg: vi.fn(), stoppedByUser: () => false }).query();
     expect(st.detail).toBe('legacy task (upgrade needed: no automatic revive after a crash)');
-    expect(st.notice).toBe('To upgrade it, run from a normal prompt:\n    apra-fleet install');
+    expect(st.notice).toBe('To upgrade it, run from a normal prompt:\n    apra-fleet install --force');
     expect(st.notice).not.toMatch(/elevated|schtasks/);
     expect(legacyTaskGuidance(['no-revive'])).not.toMatch(/elevated|schtasks \/delete/);
     expect(legacyTaskFix(['no-revive', 'elevated'])).toContain('schtasks /delete /tn ApraFleet /f');

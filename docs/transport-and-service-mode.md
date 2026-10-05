@@ -227,7 +227,8 @@ returns 503 with it; a sprint child prints it on stderr). See
     it never prompts): the old task stays in use and install prints what is missing (no automatic
     revive after a crash, visible console window, `apra-fleet stop` cannot disable the task) and the
     fix: from an elevated prompt `schtasks /delete /tn ApraFleet /f`, then from a normal prompt
-    `apra-fleet install`. Set `APRA_FLEET_NONINTERACTIVE=1` to always take this path. Because a
+    `apra-fleet install --force` (`--force`: the server the old task started is still running).
+    Set `APRA_FLEET_NONINTERACTIVE=1` to always take this path. Because a
     detached install has no console, the guidance is also saved to `<data dir>/service-notice.json`
     and appended to `fleet.log`; the next `apra-fleet status`, `stop` or `update` prints it once
     (stderr). Installing the current task (or uninstall) removes the file. `apra-fleet update` says
@@ -237,7 +238,7 @@ returns 503 with it; a sprint child prints it on stderr). See
     prints it when disabling is denied (the stop still holds: the stopped-by-user marker makes every
     task launch exit without starting the server). The elevated `schtasks /delete` step is only
     suggested for an elevated-owned task; an old-form task the user owns just needs
-    `apra-fleet install`.
+    `apra-fleet install --force`.
   A task XML without a `<Triggers>` section is never classed legacy. apra-fleet never suggests an
   elevated install.
 - Scripts and workflows that relied on the client's private stdio self-spawn now start the SHARED

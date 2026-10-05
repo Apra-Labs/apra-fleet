@@ -411,17 +411,19 @@ export function legacyTaskDetail(problems: LegacyTaskProblem[]): string {
 /**
  * The exact manual fix, shared by install, status and stop. The elevated
  * delete is only needed for an elevated-owned task ('elevated'); a user-owned
- * old-form task is replaced by a plain re-install.
+ * old-form task is replaced by a plain re-install. --force: the server the
+ * old task started is still running, and install refuses to replace a
+ * running server without it.
  */
 export function legacyTaskFix(problems: LegacyTaskProblem[]): string {
   if (!problems.includes('elevated')) {
-    return ['To upgrade it, run from a normal prompt:', '    apra-fleet install'].join('\n');
+    return ['To upgrade it, run from a normal prompt:', '    apra-fleet install --force'].join('\n');
   }
   return [
     'To upgrade it, run once from an elevated prompt (Run as administrator):',
     `    schtasks /delete /tn ${WINDOWS_TASK_NAME} /f`,
     'then, from a normal prompt:',
-    '    apra-fleet install',
+    '    apra-fleet install --force',
   ].join('\n');
 }
 
