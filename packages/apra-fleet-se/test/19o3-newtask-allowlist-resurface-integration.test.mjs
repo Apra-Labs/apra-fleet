@@ -74,7 +74,7 @@ describe('apra-fleet-19o.3: bracketed titles validate and rejected newTasks reap
         await withScenarioMarkers('19o3-resurface', async () => {
             const { tempDir, epicBead } = await setupMinimal('19o3resurface', [
                 { title: TASK_A_TITLE },
-                { title: TASK_B_TITLE, priority: 'P1', dedupCheck: { query: 'q', candidateIds: [], verdict: 'no-overlap' } },
+                { title: TASK_B_TITLE, priority: 'P1' },
             ]);
             const dispatched = [];
             const commandLog = [];
