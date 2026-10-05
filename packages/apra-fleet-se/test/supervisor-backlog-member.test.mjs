@@ -276,7 +276,12 @@ describe('ensureBacklogMember: refusals', () => {
             console.log = origLog;
             process.chdir(prevCwd);
             if (prevDataDir === undefined) delete process.env.FLEET_SE_DATA_DIR; else process.env.FLEET_SE_DATA_DIR = prevDataDir;
-            fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+            // Best-effort temp cleanup: on Windows the startup beads-identity
+            // probe's bd child can still hold the project dir for a moment
+            // (EBUSY); a leftover temp dir must not fail the assertions above.
+            try {
+                fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+            } catch { /* leftover temp dir; harmless */ }
         }
     });
 
