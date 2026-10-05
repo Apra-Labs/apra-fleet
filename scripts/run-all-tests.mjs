@@ -47,7 +47,57 @@ const timeoutMs = (() => {
     return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_TIMEOUT_MS;
 })();
 
-const defaultSuites = [
+// apra-fleet-3604.1: the root vitest run used ~853s of its 900s bound on the
+// Windows CI runner, so it is split into N independently bounded suites via
+// vitest's own --shard=i/N. Each shard is a separate `vitest run` process
+// with its own full APRA_TEST_TIMEOUT_MS budget, and a timeout/failure in one
+// shard does not skip the next (same loop semantics as every other suite).
+// Vitest assigns spec files to shards by the sha1 of their root-relative path
+// across ALL configured projects (root and packages/apra-fleet-shell-ui), so
+// the shards are disjoint and their union is exactly the unsharded file set
+// -- but the split is by hash, not duration, hence N=3 rather than 2 to leave
+// room for uneven shards. Each shard runs vitest's globalSetup on its own, so
+// each gets its own APRA_FLEET_TEST_DATA_DIR. N=1 keeps the legacy single
+// 'vitest' suite with no --shard flag.
+const DEFAULT_VITEST_SHARDS = 3;
+const VITEST_SHARDS_ENV = 'APRA_TEST_VITEST_SHARDS';
+
+function resolveVitestShardCount(env) {
+    const raw = env[VITEST_SHARDS_ENV];
+    if (raw === undefined || raw === '') return DEFAULT_VITEST_SHARDS;
+    // Strict: a typo must fail loudly, never silently fall back to a default
+    // that would hide the misconfiguration.
+    if (!/^[0-9]+$/.test(raw.trim()) || Number(raw) < 1 || !Number.isSafeInteger(Number(raw))) {
+        throw new Error(`${VITEST_SHARDS_ENV} must be a positive integer (got ${JSON.stringify(raw)})`);
+    }
+    return Number(raw);
+}
+
+function vitestShardSuites() {
+    const count = resolveVitestShardCount(process.env);
+    const base = ['exec', '--', 'vitest', 'run'];
+    if (count === 1) return [{ name: 'vitest', cmd: npmCmd, args: base }];
+    return Array.from({ length: count }, (_, i) => ({
+        name: `vitest-shard-${i + 1}-of-${count}`,
+        cmd: npmCmd,
+        args: [...base, `--shard=${i + 1}/${count}`],
+    }));
+}
+
+// A suite that finishes but used more than this fraction of its wall-clock
+// budget is named in a WARNING line, so creeping toward the bound is visible
+// in a green run rather than only after a timeout.
+const HEADROOM_WARN_FRACTION = 0.7;
+
+/** Seconds with at most one decimal, e.g. 212, 0.4. */
+function fmtSeconds(ms) {
+    return `${Number((ms / 1000).toFixed(1))}s`;
+}
+
+// A function, not a constant, so the vitest shard count (and its loud
+// validation) is only resolved when the default list is actually used --
+// APRA_TEST_SUITES_JSON bypasses all of it.
+const buildDefaultSuites = () => [
     // apra-fleet-i9ag.15.16.1: the memory-contract drift guard
     // (`npm run contract:check` -> memory-contract/v1/generate-contract.mjs
     // --check) used to run only when someone remembered to type it, so an
@@ -60,7 +110,7 @@ const defaultSuites = [
     // APRA_TEST_SUITES_JSON stub-suite override still bypasses it exactly
     // like everything else here.
     { name: 'contract:check', cmd: npmCmd, args: ['run', 'contract:check'] },
-    { name: 'vitest', cmd: npmCmd, args: ['exec', '--', 'vitest', 'run'] },
+    ...vitestShardSuites(),
     { name: 'apra-fleet-client', cmd: npmCmd, args: ['test', '--workspace=@apralabs/apra-fleet-client'] },
     { name: 'apra-fleet-workflow', cmd: npmCmd, args: ['test', '--workspace=@apralabs/apra-fleet-workflow'] },
     { name: 'apra-fleet-se', cmd: npmCmd, args: ['test', '--workspace=@apralabs/apra-fleet-se'] },
@@ -71,7 +121,7 @@ const defaultSuites = [
 
 const suites = process.env.APRA_TEST_SUITES_JSON
     ? JSON.parse(process.env.APRA_TEST_SUITES_JSON)
-    : defaultSuites;
+    : buildDefaultSuites();
 
 // apra-fleet-qe83.4: test-only escape hatch that makes killTree()/child.kill()
 // no-ops, so a test can simulate "taskkill is unavailable/denied, or the
@@ -337,6 +387,7 @@ let failed = false;
 // below names WHICH suite failed even when a multi-minute suite's own output
 // has long since scrolled the per-suite FAILED line out of view.
 const outcomes = [];
+const headroomWarnings = [];
 for (const suite of suites) {
     // apra-fleet-qe83.3.2 rework (round 3 fix): a terminating signal handled
     // while the previous suite's own 'exit' event resolved runBounded()
@@ -345,20 +396,36 @@ for (const suite of suites) {
     // orphan it outside the signal's own kill cascade.
     if (terminating) break;
     console.log(`\n> running ${suite.name} suite...\n`);
+    const startedAt = Date.now();
     const result = await runBounded(suite);
     if (terminating) break;
+    // apra-fleet-3604.1: per-suite elapsed time vs budget, shown in SUMMARY.
+    const elapsedMs = Date.now() - startedAt;
+    const timing = `(${fmtSeconds(elapsedMs)}/${fmtSeconds(timeoutMs)})`;
     if (result.timedOut) {
         failed = true;
-        outcomes.push(`${suite.name}=TIMED_OUT`);
+        outcomes.push(`${suite.name}=TIMED_OUT${timing}`);
         console.error(`\n> ${suite.name} suite TIMED OUT after ${timeoutMs}ms and was killed\n`);
     } else if (result.status !== 0) {
         failed = true;
-        outcomes.push(`${suite.name}=FAILED`);
+        outcomes.push(`${suite.name}=FAILED${timing}`);
         console.error(`\n> ${suite.name} suite FAILED (exit ${result.status})\n`);
     } else {
-        outcomes.push(`${suite.name}=ok`);
+        outcomes.push(`${suite.name}=ok${timing}`);
+    }
+    if (elapsedMs > HEADROOM_WARN_FRACTION * timeoutMs) {
+        const pct = Math.round((elapsedMs / timeoutMs) * 100);
+        headroomWarnings.push(
+            `WARNING: ${suite.name} suite used ${pct}% of its wall-clock budget ` +
+            `${timing} -- above the ${Math.round(HEADROOM_WARN_FRACTION * 100)}% headroom threshold; ` +
+            `it is close to timing out (split it further or speed it up)`,
+        );
+        console.error(`\n> ${headroomWarnings[headroomWarnings.length - 1]}\n`);
     }
 }
+
+// Repeated just above SUMMARY so they are not scrolled away by later suites.
+for (const warning of headroomWarnings) console.log(`\n${warning}`);
 
 // One machine-greppable line naming every suite that actually ran and how it
 // ended. Suites never reached (an outer terminating signal broke the loop) are

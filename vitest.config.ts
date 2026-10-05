@@ -49,9 +49,11 @@ export default defineConfig({
     // pattern below, node environment, etc.) as the root project; the
     // shell-ui entry picks up its own packages/apra-fleet-shell-ui/
     // vitest.config.ts (jsdom environment) as a second project run in the
-    // same `vitest run` invocation -- the bounded runner's 'vitest' suite
-    // (scripts/run-all-tests.mjs) already spawns this, so no new suite entry
-    // is needed there for shell-ui's tests to run under `npm test`.
+    // same `vitest run` invocation -- the bounded runner's vitest shard suites
+    // (scripts/run-all-tests.mjs, `vitest run --shard=i/N`) already spawn
+    // this, so no new suite entry is needed there for shell-ui's tests to run
+    // under `npm test`. --shard partitions spec files across BOTH projects
+    // (by path hash), so each shell-ui file runs in exactly one shard.
     projects: ['.', 'packages/apra-fleet-shell-ui'],
     include: ['tests/**/*.test.ts', 'packages/*/tests/**/*.test.ts'],
     exclude: sqliteAvailable ? defaultExclude : [...defaultExclude, ...NODE_SQLITE_DEPENDENT_TESTS],
