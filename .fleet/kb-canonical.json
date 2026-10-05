@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "7089d28145df9ebb88e42db63a3dacb38cee3f7d",
     "branch": "v0.5_dashboard",
-    "entry_count": 420
+    "entry_count": 421
   },
   "entries": [
     {
@@ -4500,6 +4500,24 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:25.008Z"
+    },
+    {
+      "id": "906d2d97-40f6-4430-8df8-8c8021e9985e",
+      "type": "knowledge",
+      "title": "Topology probes must use commandResultStdout, not the execute_command text envelope",
+      "summary": "execute_command content[0].text is 'Exit code: N' plus mixed stdout/stderr with CRLF on Windows; cross-member comparisons in checkMemberTopology must use commandResultStdout (structuredContent.stdout, CRLF-normalised, throws on non-zero exit).",
+      "symbols": [
+        "commandResultStdout",
+        "checkMemberTopology"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/git-topology.mjs",
+        "packages/apra-fleet-se/bin/cli.mjs",
+        "src/tools/execute-command.ts",
+        "packages/apra-fleet-se/test/tbup-synced-topology-two-member.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-05T22:21:44.558Z"
     },
     {
       "id": "919a3f50-dcb3-4ee9-91d1-767fd503a3b8",
