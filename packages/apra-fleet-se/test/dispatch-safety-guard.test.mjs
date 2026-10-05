@@ -625,7 +625,7 @@ const ABORT_PATH = path.join(__dirname, '../fleet-sprint/abort.mjs');
 // finalizeAbort()'s `git remote get-url origin` PR-capability probe and
 // appendRejectedFindingToParentNotes()'s `bd note <id> --file ...` call --
 // exactly the two that left runner.js.
-const EXPECTED_ABORT_COMMAND_COUNT = 4;
+const EXPECTED_ABORT_COMMAND_COUNT = 5;
 
 test('every command() call site in abort.mjs passes member_name or member_id', () => {
     const { sites, violations } = checkPath(ABORT_PATH);

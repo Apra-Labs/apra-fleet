@@ -68,6 +68,7 @@
 
 import { dispatchRole, TURN_BASES } from '../dispatch-role.mjs';
 import { classifyVerifySet } from '../beads-scope.mjs';
+import { flagUnverifiedBugDedup } from '../abort.mjs';
 
 /**
  * Runs the per-cycle Integ Test phase.
@@ -270,6 +271,7 @@ export async function runIntegTestPhase({
             issuesCreated: 0,
             passed: false,
             bugsFiled: [],
+            dedupChecks: [],
             summary: `Integ test runner infra dispatch failure (${integInfraInconclusive.reason}): ${integInfraInconclusive.message}`,
         };
     }
@@ -304,6 +306,15 @@ export async function runIntegTestPhase({
         // still reported passed:true). Log every outcome, not just
         // failures.
         log(`Integration tests PASSED this cycle (C${cycle}): ${integResult.featuresClosed} feature(s) closed, ${integResult.issuesCreated} bug(s) filed. ${integResult.summary}`);
+    }
+    // Dedup evidence: every bug the runner filed must carry a no-overlap
+    // dedupChecks entry; gaps are flagged (WARN + [dedup-unverified] note),
+    // never sprint-fatal. Skipped on an infra-inconclusive stub (no bugs).
+    if (!integInfraInconclusive) {
+        await flagUnverifiedBugDedup({
+            command, member: backlogMember,
+            bugsFiled: integResult.bugsFiled, dedupChecks: integResult.dedupChecks, log,
+        });
     }
     // apra-fleet: Step 1c in integ-test-runner.md requires out-of-scope
     // failures observed during verification to be cross-linked or filed,

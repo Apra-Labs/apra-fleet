@@ -154,6 +154,48 @@ export function validateNewTask(newTask) {
     return { ok: true, title, description, priority, dedupCheck: dedup.dedupCheck };
 }
 
+/**
+ * Post-parse cross-check of the integ-test-runner's dedup evidence. The runner
+ * files beads directly, so creation cannot be blocked; instead every id in
+ * `bugsFiled` must have a `dedupChecks` entry with a non-blank query and
+ * verdict 'no-overlap'. Any id that does not (missing entry, blank query, or
+ * verdict 'overlap' -- a bead created despite a found overlap) is flagged: a
+ * WARN log line naming it plus a note starting '[dedup-unverified]' appended
+ * to that bead (append semantics through the member-side staging seam, never
+ * shell-interpolated). Never throws and never fails the sprint.
+ * @returns {Promise<string[]>} the flagged bead ids
+ */
+export async function flagUnverifiedBugDedup({ command, member, bugsFiled, dedupChecks, log = () => {} }) {
+    const ids = Array.isArray(bugsFiled) ? bugsFiled.filter((b) => typeof b === 'string' && b) : [];
+    const entries = Array.isArray(dedupChecks) ? dedupChecks : [];
+    const flagged = [];
+    for (const id of ids) {
+        const entry = entries.find((e) => e && e.beadId === id);
+        let why = null;
+        if (!entry) why = 'no dedupChecks entry';
+        else if (typeof entry.query !== 'string' || entry.query.trim() === '') why = 'blank dedup query';
+        else if (entry.verdict !== 'no-overlap') why = `dedup verdict '${entry.verdict}' (bead filed despite a found overlap)`;
+        if (!why) continue;
+        flagged.push(id);
+        log(`WARN: integ-test bug ${id} is dedup-unverified (${why}) -- flagged for human review.`);
+        if (!SAFE_BEAD_ID_RE.test(id)) continue;
+        try {
+            const noteFile = await stageCommandBodyMemberSide({
+                command, member,
+                content: `[dedup-unverified] Filed by the integ-test-runner without verified dedup evidence: ${why}. Check it against the open backlog for duplicates.`,
+                label: `Stage dedup-unverified note for ${id}`,
+            });
+            await command(
+                `bd note ${id} --file "${noteFile}"`,
+                { member_name: member, silent: true, label: `Append dedup-unverified note to ${id}` }
+            );
+        } catch (err) {
+            log(`WARN: could not append the [dedup-unverified] note to ${id} (non-fatal): ${err.message}`);
+        }
+    }
+    return flagged;
+}
+
 const SAFE_BEAD_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 /**

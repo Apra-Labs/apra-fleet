@@ -138,6 +138,7 @@ const FIXTURES = {
             issuesCreated: 1,
             passed: false,
             bugsFiled: ['BD-9'],
+            dedupChecks: [{ beadId: 'BD-9', query: 'q', candidateIds: [], verdict: 'no-overlap' }],
             summary: 'One feature failed integration.',
         },
         invalid: {

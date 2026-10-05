@@ -584,6 +584,21 @@ const FALLBACK_integReport = {
         issuesCreated: { type: 'number' },
         passed: { type: 'boolean' },
         bugsFiled: { type: 'array', items: { type: 'string' } },
+        // One dedup-evidence entry per filed bug (REQUIRED, [] when none filed).
+        // Mirrors integ-test-runner-output.json; keep the two in sync.
+        dedupChecks: {
+            type: 'array',
+            items: {
+                type: 'object',
+                properties: {
+                    beadId: { type: 'string' },
+                    query: { type: 'string' },
+                    candidateIds: { type: 'array', items: { type: 'string' } },
+                    verdict: { type: 'string', enum: ['no-overlap', 'overlap'] },
+                },
+                required: ['beadId', 'query', 'candidateIds', 'verdict'],
+            },
+        },
         summary: { type: 'string' },
         deployedSha: {
             type: 'string',
@@ -618,7 +633,7 @@ const FALLBACK_integReport = {
             },
         },
     },
-    required: ['featuresClosed', 'issuesCreated', 'passed', 'bugsFiled', 'summary'],
+    required: ['featuresClosed', 'issuesCreated', 'passed', 'bugsFiled', 'dedupChecks', 'summary'],
 };
 
 // Fallback for role "regression-test-runner". Canonical source:
