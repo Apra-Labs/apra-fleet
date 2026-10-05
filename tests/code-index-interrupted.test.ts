@@ -36,6 +36,7 @@ import {
   codeIndexReadiness, ensureGitNexusIndexReady, indexNotReadyError, CodeIntelError,
 } from '../src/tools/code-intelligence-readiness.js';
 import { scheduleIndexBuild } from '../src/tools/code-index-heal.js';
+import { missingOnServerPathMessage } from '../src/utils/find-on-path.js';
 import { codeIndexDir, isRecordedAnalyzeAlive, scheduleReindex, RECORDED_ANALYZE_MAX_AGE_MS } from '../src/tools/code-intelligence-reindex.js';
 import { GitNexusProvider } from '../src/tools/code-intelligence-gitnexus.js';
 import { handleCodeStatus, handleCodeQuery } from '../src/tools/code-intelligence.js';
@@ -197,7 +198,10 @@ describe('pre-flight self-heal (ensureGitNexusIndexReady)', () => {
     [{ started: false, reason: 'paused', pause: { result: 'failed', lastLine: 'out of memory', logPath: '/d/analyze.log', finished: 'f' } } as const,
       /Automatic rebuilds for this folder are paused: the last automatic analyze ended 'failed' without a ready index \(log: \/d\/analyze\.log, last line 'out of memory'\)/,
       /call code_reindex -- it retries the build and re-arms automatic rebuilds/],
-    [{ started: false, reason: 'npx-not-found' } as const, /npx is not on its PATH/, /Install Node\.js/],
+    [{ started: false, reason: 'npx-not-found', detail: missingOnServerPathMessage('node (required by npx)', '/usr/bin:/bin') } as const,
+      /cannot start a build: a tool it needs is not on its PATH/,
+      /^node \(required by npx\) was not found on the apra-fleet server's PATH \(searched: \/usr\/bin:\/bin\)\. .*re-run 'apra-fleet install' to refresh the service PATH.* Then retry the same call\.$/],
+    [{ started: false, reason: 'npx-not-found' } as const, /not on its PATH/, /npx was not found .*re-run 'apra-fleet install' to refresh the service PATH/],
     [{ started: false, reason: 'already-running' } as const, /already running/, /Retry the same call/],
     [{ started: false, reason: 'spawn-failed', detail: 'boom' } as const, /failed: spawn-failed \(boom\)/, /code_reindex/],
   ])('not started (%o): the message says why', (outcome, problem, remediation) => {
@@ -261,7 +265,12 @@ describe('scheduleReindex (real) reports why it did not start', () => {
     const saved = process.env.PATH;
     process.env.PATH = path.join(scratch, 'empty-bin');
     try {
-      expect(scheduleReindex(repo)).toMatchObject({ started: false, reason: 'npx-not-found' });
+      const out = scheduleReindex(repo);
+      expect(out).toMatchObject({ started: false, reason: 'npx-not-found' });
+      // The heal message carries the scheduler's detail: PATH searched + install/refresh remedy.
+      const err = indexNotReadyError('gitnexus', repo, 'interrupted', out);
+      expect(err.remediation).toContain(`searched: ${process.env.PATH}`);
+      expect(err.remediation).toContain("re-run 'apra-fleet install' to refresh the service PATH");
     } finally { process.env.PATH = saved; }
   });
 });

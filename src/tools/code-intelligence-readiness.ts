@@ -18,6 +18,7 @@ import { join } from 'path';
 import { isRecordedAnalyzeAlive, isReindexRunning } from './code-intelligence-reindex.js';
 import { readGitNexusIndexState } from './code-index-state.js';
 import { scheduleIndexBuild, type ScheduleReindexOutcome } from './code-index-heal.js';
+import { missingOnServerPathMessage } from '../utils/find-on-path.js';
 
 export { readGitNexusIndexState, type GitNexusIndexState } from './code-index-state.js';
 
@@ -162,9 +163,12 @@ function healText(heal: IndexHealOutcome | undefined): [string, string] {
         'Retry the same call in a minute or so; if it still fails, check code_status and call code_reindex.',
       ];
     case 'npx-not-found':
+      // heal.detail is spawnAnalyze's npxUnavailableReason(): which tool is
+      // missing (npx or node), the PATH searched, and the install/refresh
+      // remedy -- the same text code_reindex reports.
       return [
-        ' The fleet server cannot build it: npx is not on its PATH.',
-        'Install Node.js (which provides npm and npx) on the fleet server host and restart the server, then retry the same call.',
+        ' The fleet server cannot start a build: a tool it needs is not on its PATH.',
+        `${heal.detail || missingOnServerPathMessage('npx')} Then retry the same call.`,
       ];
     case 'remote-member':
       return [
