@@ -17,7 +17,7 @@ import {
 } from '@apralabs/apra-fleet-client/server-resolution';
 import { beadsExtension, kbCodeIntelExtension } from '../fleet-sprint/viewer-extensions.mjs';
 import { VIEWER_BACK_LINK_TEXT } from '../src/supervisor/viewer-back-link.mjs';
-import { validateIssueId, validateBranchName, validateBranchPair, checkMemberTopology, createMemberReservationClient, resyncReacquiredMember, commandResultToSoftGit } from '../fleet-sprint/runner.js';
+import { validateIssueId, validateBranchName, validateBranchPair, checkMemberTopology, createMemberReservationClient, resyncReacquiredMember, commandResultToSoftGit, commandResultStdout } from '../fleet-sprint/runner.js';
 import { normalizeRole } from '../fleet-sprint/contracts.mjs';
 import { ROLE_BACKLOG, resolveBacklogRoleAlias, selectBacklogMember, formatBacklogSelection } from '../fleet-sprint/backlog-role.mjs';
 import { BEADS_IDENTITY_PROBES, parseBeadsIdentity, formatBeadsIdentity, parseExpectedIdentity } from '../fleet-sprint/beads-identity.mjs';
@@ -901,13 +901,11 @@ async function main() {
     // EXPLICITLY here (never inferred). Single-member trivially passes in
     // either mode.
     const syncedMode = Boolean(values.sync);
+    // Topology probes compare values across members, so they must see parsed
+    // stdout, not the 'Exit code: N' execute_command envelope (CRLF/stderr).
     const runCommand = async (cmd, member) => {
         const res = await fleetApi.executeCommand({ command: cmd, member_name: member });
-        if (res && res.isError) {
-            const errText = res.content && res.content[0] ? res.content[0].text : 'unknown error';
-            throw new Error(errText);
-        }
-        return res && res.content && res.content[0] ? res.content[0].text : '';
+        return commandResultStdout(res);
     };
     // apra-fleet: exclude any member flagged `unreservable` from this
     // git-identity/git-remote probe -- such a member (e.g. a shared
