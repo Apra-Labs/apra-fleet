@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "7089d28145df9ebb88e42db63a3dacb38cee3f7d",
     "branch": "v0.5_dashboard",
-    "entry_count": 421
+    "entry_count": 422
   },
   "entries": [
     {
@@ -6848,6 +6848,25 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:11.365Z"
+    },
+    {
+      "id": "e1e30a69-c622-419e-9f07-d9608955cb3e",
+      "type": "knowledge",
+      "title": "Dolt mutex renew route answers 409 not-holder; HTTP client folds it into renewed=false",
+      "summary": "registerDoltMutexRoutes renew returns 409 {error:'not-holder'} for a non-holder token (no longer 200 renewed:false); coordination.mjs renew() turns the non-ok response into a caught throw that returns false, so dolt-sync logs both 'renew failed' and 'REFUSED'.",
+      "symbols": [
+        "registerDoltMutexRoutes",
+        "renew",
+        "doltPushAfter"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/src/supervisor/dolt-mutex.mjs",
+        "packages/apra-fleet-se/fleet-sprint/coordination.mjs",
+        "packages/apra-fleet-se/fleet-sprint/dolt-sync.mjs",
+        "src/tools/dolt-push-mutex.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-05T22:29:23.979Z"
     },
     {
       "id": "e1f7f60f-f7ea-4163-9166-4616c5a03fa1",
