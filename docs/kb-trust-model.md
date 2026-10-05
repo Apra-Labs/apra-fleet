@@ -135,3 +135,12 @@ answer different questions and are not interchangeable:
 - **Never** `kb_invalidate` for either case -- it only marks a file's
   context-cache rows stale on a file-content change and carries no confidence
   or correctness judgment at all.
+
+## Demotion inside the sprint reviewer loop
+
+The rules above are the tool contract. For how the fleet-sprint engine sources
+demotion candidates for a reviewer, bounds those reads so they cannot grow
+with KB size, guards against a demote/promote ping-pong (D6) and a same-round
+promote/demote collision on one id, and why that vetting logic is
+deliberately triplicated across three runtimes, see
+[kb-demote-sprint-wiring.md](kb-demote-sprint-wiring.md).

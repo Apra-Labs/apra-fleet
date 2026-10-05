@@ -461,6 +461,8 @@ third-party verticals.
 | Windows shell selection (probe order, gitbash/pwsh7/powershell5, shell vs os) | [docs/windows-shell-selection.md](docs/windows-shell-selection.md) |
 | Cross-shell command construction for member-bound commands | [docs/cross-shell-command-construction.md](docs/cross-shell-command-construction.md) |
 | Knowledge Layer (setup, usage, provider swap) | [docs/knowledge-layer.md](docs/knowledge-layer.md) |
+| KB trust ladder (`kb_promote`/`kb_demote` contract, refusals, bible safety) | [docs/kb-trust-model.md](docs/kb-trust-model.md) |
+| kb_demote in the sprint reviewer loop (candidate sourcing, bounded reads, collision guard, lockstep triplication) | [docs/kb-demote-sprint-wiring.md](docs/kb-demote-sprint-wiring.md) |
 | Code intelligence provider abstraction | [docs/code-intelligence-providers.md](docs/code-intelligence-providers.md) |
 | Hub-spoke cloud migration plan (historical; see tier-3 ownership ADR) | [docs/hub-spoke-master-plan.md](docs/hub-spoke-master-plan.md) |
 | Tier-3 ownership decision (fleet-dashboard vs `src/hub-service/`) | [docs/adr-tier3-ownership.md](docs/adr-tier3-ownership.md) |
