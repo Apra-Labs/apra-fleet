@@ -433,7 +433,7 @@ try {
       Run L14b stop-high-server 'taskkill.exe' (@('/F') + ($hp | ForEach-Object { @('/PID', "$_") }))
       Rec L14b 'runner artifact: stop the High-integrity legacy server (elevated)' $(if ($hp.Count) { $RC } else { 0 }) $(if ($hp.Count) { Key $LOG @('SUCCESS', 'ERROR') } else { 'no apra-fleet process running' }) "pids: $($hp -join ',')"
       AsLimited L15 fix-install $AF @('install', '--force', '--workflows', 'none')
-      Rec L15 'apra-fleet install --force --workflows none (not elevated)' $RC (Key $LOG @('installed successfully', '^Error')) "$($script:LimToken); exe present=$(YesNo (Test-Path $AF))"
+      Rec L15 'apra-fleet install --force --workflows none (not elevated)' $RC (Key $LOG @('installed successfully', '^Error')) "$($script:LimToken); exe present=$(YesNo (Test-Path $AF)); $(FirstMatch $LOG 'schtasks /create failed')"
       TaskFormStep L16 $env:USERNAME
       $gone = -not (Test-Path $nf)
       Rec L17 'service-notice.json removed by the new task' ([int](-not $gone)) $(if ($gone) { 'notice cleared' } else { 'service-notice.json still present after the new task was installed' })
@@ -442,6 +442,11 @@ try {
       # The new task (created without elevation) runs the candidate.
       HealthStep L19 120
       OneServerStep L20
+      # Diagnostic (advisory): can this Medium token register ANY task of its own?
+      # Separates a token/runner limit from a product /create problem.
+      AsLimited L21 probe-task 'schtasks.exe' @('/create', '/tn', 'ApraFleetULProbe', '/sc', 'once', '/st', '23:59', '/tr', 'cmd.exe /c exit', '/rl', 'limited', '/f') 120
+      Rec L21 'diag: Medium token creates a plain probe task' $RC (Key $LOG @('SUCCESS', 'ERROR')) $script:LimToken
+      Run L21x probe-delete 'schtasks.exe' @('/delete', '/tn', 'ApraFleetULProbe', '/f')
     }
     default { Log "unknown pass $Pass" }
   }
