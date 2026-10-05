@@ -107,7 +107,7 @@ export async function startFakeFleet(opts = {}) {
                 return textReply(JSON.stringify({ members }));
             case 'register_member': {
                 if (members.some((m) => m.name === args.friendly_name)) {
-                    return textReply(`❌ A member named "${args.friendly_name}" already exists.`);
+                    return textReply(`\u274c A member named "${args.friendly_name}" already exists.`);
                 }
                 const member = {
                     id: `fake-${members.length + 1}`,
@@ -123,7 +123,7 @@ export async function startFakeFleet(opts = {}) {
             }
             case 'update_member': {
                 const member = findMember(args);
-                if (!member) return textReply(`❌ Member "${args.member_name ?? args.member_id}" not found.`);
+                if (!member) return textReply(`\u274c Member "${args.member_name ?? args.member_id}" not found.`);
                 if (Array.isArray(args.tags)) member.tags = [...args.tags];
                 if (typeof args.unreservable === 'boolean') member.unreservable = args.unreservable;
                 if (typeof args.llm_provider === 'string') member.llmProvider = args.llm_provider;

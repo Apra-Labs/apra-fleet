@@ -78,7 +78,9 @@ const KNOWN_LIGHT_PROCESS_SPAWNS = {
     // target suite files.
     'integration-gate-status.test.mjs': 'spawnSync(process.execPath, [SCRIPT, ...]) runs scripts/integration-gate-status.mjs once, offline, over inline example data -- a read-only status script, not a server or Dolt bootstrap.',
     'merge-kb-canonical.test.mjs': 'spawnSync(process.execPath, [SCRIPT, ...]) runs scripts/merge-kb-canonical.mjs once over local JSON fixtures -- a pure merge script, not a server or Dolt bootstrap.',
-    'run-tests-script-wiring.test.mjs': "spawnSync(process.execPath, derivedArgs, ...) runs scripts/run-tests.mjs against exactly ONE lightweight probe file (test/helpers/run-tests-wiring-probe.mjs), not the real suite.",
+    'cli-robustness.test.mjs': "spawnSync(process.execPath, [cliPath, '--branch', 'main', '--base', 'origin/main', ...]) runs bin/cli.mjs once and it refuses branch == base before any fleet connection, bd call or server start (main #628).",
+    'stopped-by-user-launch.test.mjs': 'spawnSync(process.execPath, [bin/cli.mjs, ...]) runs the sprint CLI once against a stopped-by-user marker; it prints the stop message and exits 1 before connecting anywhere (main #629).',
+    'run-tests-script-wiring.test.mjs':"spawnSync(process.execPath, derivedArgs, ...) runs scripts/run-tests.mjs against exactly ONE lightweight probe file (test/helpers/run-tests-wiring-probe.mjs), not the real suite.",
 };
 
 function listTestFiles() {

@@ -68,6 +68,7 @@ test('gone server: two concurrent clients start exactly one shared HTTP server, 
             'transport.stop();',
             'process.exit(0);',
         ].join('\n'));
+        // isolated-home-allow: HOME/USERPROFILE point at this test's own temp home, never the real profile.
         const env = { ...process.env, APRA_FLEET_DATA_DIR: dataDir, APRA_FLEET_PORT: String(port), HOME: home, USERPROFILE: home };
         for (const k of ['APRA_FLEET_TRANSPORT', 'APRA_FLEET_SERVER_CMD', 'APRA_FLEET_SERVER_BIN', 'APRA_FLEET_SERVICE', 'INVOCATION_ID', 'XPC_SERVICE_NAME']) delete env[k];
 

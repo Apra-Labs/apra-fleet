@@ -616,7 +616,10 @@ describe('install --project-dir (apra-fleet-i9ag.17.4.2)', () => {
     expect(exitCode).toBeUndefined();
     expect(configWriteContents()).toHaveLength(0);
     expect(vi.mocked(fs.rmSync).mock.calls.some(([p]) => (p as any)?.toString() === CONFIG_PATH)).toBe(false);
-    expect(vi.mocked(fs.unlinkSync).mock.calls.length).toBe(0);
+    // Path-scoped: since main #629 every install clears the stopped-by-user
+    // marker / start-backoff file in the data dir (an unlink of THOSE files is
+    // expected); the guarantee here is only about the console-set config.
+    expect(vi.mocked(fs.unlinkSync).mock.calls.some(([p]) => (p as any)?.toString() === CONFIG_PATH)).toBe(false);
   });
 
   it('an install that overwrites an existing installation (--force) still respects the option', async () => {

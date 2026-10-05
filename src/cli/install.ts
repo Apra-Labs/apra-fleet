@@ -2223,7 +2223,9 @@ ${restartHint}
   const instructions = llm === 'claude' ? 'Run /mcp in Claude Code to load the server.' : `Restart ${paths.name} to load the server.`;
   const forceNote = force ? `\nRestart ${clientName} to reload the MCP server.` : '';
   const supervisorLine = supervisorServiceAttempted
-    ? `\n  Supervisor:  ${supervisorServiceRegistered ? 'registered and running' : 'registration skipped'}`
+    // "started", never "running": like the server line (main #629), "running"
+    // is reserved for a state this install actually verified.
+    ? `\n  Supervisor:  ${supervisorServiceRegistered ? 'registered and started' : 'registration skipped'}`
     : '';
   // fleet-se summary line (apra-fleet-i9ag.13.7.2): "ready" with the detected
   // node/npm/bd versions when --workflows all, else NOT INSTALLED with the

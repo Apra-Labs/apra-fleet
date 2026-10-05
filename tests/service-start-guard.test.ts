@@ -88,6 +88,7 @@ describe('built server honours the backoff under the service marker', () => {
   it('service launch in backoff: exit 0, one line to the service log, no fleet-<pid>.log, no server.json', async () => {
     // HOME/USERPROFILE sandboxed too: if the guard regressed, a full server would start and
     // must not touch the real ~/.apra-fleet (fleet.key) or ~/.fleet-tasks.
+    // isolated-home-allow: HOME/USERPROFILE point at this test's own temp data dir, never the real profile.
     const { code, stdout } = await runServer({
       APRA_FLEET_DATA_DIR: dataDir, APRA_FLEET_PORT: '1', APRA_FLEET_SERVICE: '1', HOME: dataDir, USERPROFILE: dataDir,
     });
@@ -143,6 +144,7 @@ describe('built server: service launch after apra-fleet stop', () => {
   for (const leaked of [{ INVOCATION_ID: 'abc123' }, { XPC_SERVICE_NAME: MACOS_PLIST_LABEL }]) {
     it(`hand-run with only ${Object.keys(leaked)[0]} set starts the server despite the marker (marker kept)`, async () => {
       const port = await freePort();
+      // isolated-home-allow: HOME/USERPROFILE point at this test's own temp data dir, never the real profile.
       const { ready, stdout } = await runServerUntilReady({
         APRA_FLEET_DATA_DIR: dataDir, APRA_FLEET_PORT: String(port), HOME: dataDir, USERPROFILE: dataDir, ...leaked,
       }, path.join(dataDir, 'server.json'));
