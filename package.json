@@ -69,7 +69,7 @@
     "build:binary": "npm run build && npm run build:ui:checked && npm run build:sea && node scripts/gen-sea-config.mjs --require-ui && npm run build:sea-package",
     "start": "node dist/index.js",
     "dev": "tsc --watch",
-    "pretest": "npm run build:contract",
+    "pretest": "npm run build:contract && npm run build:ui:checked",
     "test": "node scripts/run-all-tests.mjs",
     "test:watch": "vitest",
     "smoke": "tsc && node dist/smoke-test.js",

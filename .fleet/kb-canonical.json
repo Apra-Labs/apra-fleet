@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "7089d28145df9ebb88e42db63a3dacb38cee3f7d",
     "branch": "v0.5_dashboard",
-    "entry_count": 422
+    "entry_count": 423
   },
   "entries": [
     {
@@ -4987,6 +4987,23 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:27.780Z"
+    },
+    {
+      "id": "a03b9578-5ac6-4937-8180-e06ddaefed8d",
+      "type": "knowledge",
+      "title": "SEA staleness path list must include inlined workspace package sources",
+      "summary": "build-sea.mjs bundles src/index.ts with esbuild bundle:true, so workspace packages imported from src (apra-fleet-client, fleet-api-contract) are inlined into the SEA binary; their src and package.json must be in SEA_RELEVANT_GIT_PATHS, while their gitignored dist/ trees are invisible to git anyway.",
+      "symbols": [
+        "SEA_RELEVANT_GIT_PATHS",
+        "resolveSeaBinaryStaleness"
+      ],
+      "source_files": [
+        "tests/helpers/sea-binary-staleness.ts",
+        "scripts/build-sea.mjs",
+        "tests/sea-binary-staleness.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-05T22:13:25.669Z"
     },
     {
       "id": "a05ff689-9610-4624-ac2f-301d91e83846",
