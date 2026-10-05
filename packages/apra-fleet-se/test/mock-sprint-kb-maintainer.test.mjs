@@ -27,7 +27,9 @@ const B = 'github.com/mock-org/second-repo';
 // precondition's repoRemote comparison (it derives the expectation from the
 // orchestrator). An expectation with no repoRemote leaves that field
 // uncompared, so the multi-repository scenarios run to completion.
-const EXPECT_BEADS_ANY_REPO = JSON.stringify({ beadsDir: '', prefix: 'mock', syncRemote: '', repoRemote: '' });
+// The prefix is the DB's own: 'mock' under replay, template-derived under the
+// real-bd lane (#634's function form of expectBeads, resolved by the harness).
+const EXPECT_BEADS_ANY_REPO = ({ prefix }) => JSON.stringify({ beadsDir: '', prefix: prefix ?? 'mock', syncRemote: '', repoRemote: '' });
 
 const approvedReviewer = async () => ({
     content: [{ text: JSON.stringify({ verdict: 'APPROVED', notes: 'Approved.', reopenIds: [], newTasks: [] }) }],
