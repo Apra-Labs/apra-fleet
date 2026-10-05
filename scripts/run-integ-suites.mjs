@@ -436,6 +436,7 @@ function cmdStart(files) {
 function runLane(files, concurrency) {
   return new Promise((resolve) => {
     if (files.length === 0) { resolve(0); return; }
+    // process.env already carries the sandbox (cmdSupervise entered it).
     const laneEnv = {
       ...process.env,
       APRA_FLEET_BD_MOCK: 'off',
@@ -443,7 +444,6 @@ function runLane(files, concurrency) {
       INTEG_SUITES_STATUS_FILE: statusFile,
       INTEG_SUITES_HEARTBEAT_FILE: heartbeatFile,
     };
-    const sandbox = ensureTestSandbox(laneEnv);
     const child = spawn(
       process.execPath,
       buildLaneArgs(files, concurrency),
@@ -453,7 +453,6 @@ function runLane(files, concurrency) {
         env: laneEnv,
       }
     );
-    child.on('exit', () => sandbox.cleanup());
 
     child.on('error', (e) => {
       console.error(`[integ-suites] supervisor: could not spawn node --test (lane concurrency=${concurrency}): ${e.message}`);
@@ -482,6 +481,13 @@ async function cmdSupervise(assignedFiles) {
 
   const startMs = Date.now();
 
+  // Enter the per-run test sandbox in THIS (detached supervisor) process, the
+  // way scripts/with-test-sandbox.mjs does: ensureTestSandbox() rewrites
+  // process.env (HOME, USERPROFILE, APPDATA, APRA_FLEET_DATA_DIR, the guard
+  // preload) so os.homedir() and every lane child resolve inside it. Status
+  // and heartbeat files are absolute repo-root paths, unaffected.
+  const sandbox = ensureTestSandbox(process.env);
+
   // Two sequential (never overlapping) lanes: the bulk of the suite keeps
   // its concurrency=8 wall-clock win, then the dolt-heavy watchdog tests run
   // alone at low concurrency so their per-attempt dolt overhead is never
@@ -497,6 +503,7 @@ async function cmdSupervise(assignedFiles) {
     isolatedExit = await runLane(isolatedFiles, ISOLATED_LANE_CONCURRENCY);
   } finally {
     clearInterval(hb);
+    sandbox.cleanup();
   }
 
   const exitCode = mainExit !== 0 ? mainExit : isolatedExit;
