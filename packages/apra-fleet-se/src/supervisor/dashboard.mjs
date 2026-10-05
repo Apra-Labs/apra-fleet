@@ -304,7 +304,8 @@ export function renderFinishedRunsHtml(runs, mountPrefix) {
         var id = escapeHtml(run.sprintId);
         var isLaunchFailed = run.status === 'launch-failed';
         var badgeHtml = isLaunchFailed ? launchFailedBadge() : verdictBadge(run.verdict);
-        var linksHtml = isLaunchFailed
+        var noTerminal = isLaunchFailed || run.hasTerminalState === false;
+        var linksHtml = noTerminal
             ? '<a class="raw-log-link" href="' + mountHref(prefix, '/sprints/' + encodeURIComponent(run.sprintId) + '/log') + '" target="_blank" rel="noopener" style="margin-left:auto; font-size: 12px;">Raw log</a>'
             : prLink(run.prUrl) +
                 '<a class="history-link" href="' + mountHref(prefix, '/sprints/' + encodeURIComponent(run.sprintId) + '/history') + '" target="_blank" rel="noopener" style="margin-left:auto; font-size: 12px;">History</a>';
