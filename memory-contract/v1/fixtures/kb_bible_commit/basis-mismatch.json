@@ -1,0 +1,20 @@
+{
+  "tool": "kb_bible_commit",
+  "case": "basis-mismatch",
+  "kind": "happy",
+  "request": {
+    "ids": [
+      "8c3610dd-18a5-4fbf-a5b5-98b699db77ae"
+    ],
+    "baseBranch": "main",
+    "baseCommit": "0123456789abcdef0123456789abcdef01234567"
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"path\":\"<SCRATCH_REPO_A>\\\\.fleet\\\\kb-canonical.json\",\"merged\":[],\"skipped\":[{\"id\":\"8c3610dd-18a5-4fbf-a5b5-98b699db77ae\",\"reason\":\"basis_mismatch\"}],\"entry_count\":1,\"committed\":false}"
+      }
+    ]
+  }
+}

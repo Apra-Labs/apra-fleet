@@ -766,11 +766,15 @@ export function createKbWorkClient(opts = {}) {
                 return { committed: 0, pending: ids.length };
             }
             const skipped = Array.isArray(outcome.result.skipped) ? outcome.result.skipped : [];
+            // Every id leaves the queue, skipped ones included: a skip (an id not
+            // CONFIRMED, or whose cited files no longer match its recorded basis) can
+            // never succeed on a retry without a new capture, and kb_export refuses the
+            // same entries, so re-queuing would only repeat the skip every round.
             for (const id of ids) pending.delete(id);
             if (pending.size === 0) confirmations.delete(repo);
             const merged = Array.isArray(outcome.result.merged) ? outcome.result.merged.length : ids.length - skipped.length;
             if (skipped.length > 0) {
-                log(`[kb-work] kb_bible_commit skipped ${skipped.length} id(s) for ${repo} (not CONFIRMED in the maintainer's KB): ${skipped.map((x) => (x && x.id) || String(x)).join(', ')}`);
+                log(`[kb-work] kb_bible_commit skipped ${skipped.length} id(s) for ${repo} (dropped from the queue, with the reason the tool returned): ${skipped.map((x) => (x && x.id ? (x.reason ? `${x.id} (${x.reason})` : x.id) : String(x))).join(', ')}`);
             }
             log(`[kb-work] bible commit for ${repo} on maintainer '${maintainer}': ${merged} confirmation(s) ${outcome.pushed ? 'committed and pushed' : 'already in the bible -- nothing to push'}`);
             return { committed: outcome.pushed ? merged : 0, pending: pending.size };
