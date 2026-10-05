@@ -719,6 +719,23 @@ describe('composePermissions -- legacy fleet MCP entries pruned from settings.lo
     // Never a tracked project .mcp.json.
     expect(allCmds.some(cmd => cmd.includes('cat >') && cmd.includes('.mcp.json'))).toBe(false);
   });
+
+  it('a LOCAL claude member gets no per-folder apra-fleet entry (its dispatches carry the member config per session)', async () => {
+    const member = makeTestAgent({
+      friendlyName: 'claude-local-doer', llmProvider: 'claude', os: 'linux', agentType: 'local',
+      host: undefined, port: undefined, username: undefined, authType: undefined, encryptedPassword: undefined,
+    });
+    addAgent(member);
+    installFsMock();
+
+    const result = await composePermissions({ member_id: member.id, role: 'doer' });
+    expect(result).toContain('Permissions composed');
+
+    const allCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
+    expect(allCmds.some(cmd => cmd.includes(`?member=${member.id}`))).toBe(false);
+    // The client-side deny rules still land in settings.local.json.
+    expect(allCmds.some(cmd => cmd.includes('settings.local.json') && cmd.includes('mcp__apra-fleet__execute_prompt'))).toBe(true);
+  });
 });
 
 describe('composePermissions -- member MCP commands carry resolved paths, never shell expansion', () => {

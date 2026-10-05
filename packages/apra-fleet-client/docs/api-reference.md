@@ -280,6 +280,16 @@ fields are sent as the tool payload; `timeoutMs` is passed to
 `deriveTimeoutMs(payload)` when not given explicitly), and `signal` as
 `opts.signal`.
 
+A claude member's dispatched session is started with
+`--mcp-config <file>` naming one `apra-fleet` http server at
+`http://localhost:<port>/mcp?member=<member uuid>` (this server's port for a
+local member, the member install's default port for a remote one), so the
+session is member-scoped whatever the folder or user config says; other MCP
+servers stay available (`--strict-mcp-config` is not used). A remote member
+gets it only while its recorded `fleetMcp` says its own server answers a
+member session; otherwise, or when the file cannot be written, the session
+runs with its own MCP config (the per-folder entry).
+
 | Field | Type | Notes |
 |---|---|---|
 | `prompt` | `string` | The prompt to send to the LLM on the remote member. |
@@ -562,7 +572,10 @@ containing a shell-chaining metacharacter (`|`, `;`, `&&`, backtick, `$()`)
 Every compose (proactive or `grant`) also wires the member's per-folder
 `apra-fleet` MCP entry, whose URL ends in `?member=<member uuid>`: claude
 writes it to Claude's local scope (`projects[<workFolder>].mcpServers` in the
-member's `~/.claude.json`), opencode to `<workFolder>/opencode.json`, and agy
+member's `~/.claude.json`) for a REMOTE member only (a local claude member gets
+the member server per dispatch session through `--mcp-config`, see
+`executePrompt`, so no folder entry is written for it; a folder entry an
+older compose wrote for that member is removed), opencode to `<workFolder>/opencode.json`, and agy
 gets none (it has no per-project MCP config). claude and agy also receive
 client-side deny rules for exactly the registered fleet tools outside the
 member allowlist; opencode gets none. The retired `apra-fleet-member`

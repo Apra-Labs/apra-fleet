@@ -101,13 +101,17 @@ afterEach(() => {
 const memberUrl = (id: string) => new RegExp(`\\?member=${id}$`);
 
 describe.skipIf(process.platform === 'win32')('update_member -- work folder move re-composes', () => {
-  it('claude: the new folder gets the ?member= entry, the old folder entry and permission file are removed', async () => {
+  it('claude (local member): no folder entry is written for either folder; the old permission file is removed', async () => {
     const oldWf = makeClone();
     const newWf = makeClone();
     const member = addMember('claude', oldWf);
-    writeJson(claudeJson(), { mcpServers: { deepwiki: DEEPWIKI }, projects: { [oldWf]: { mcpServers: { deepwiki: DEEPWIKI } } } });
+    // An entry an older compose wrote for this member in the old folder.
+    writeJson(claudeJson(), {
+      mcpServers: { deepwiki: DEEPWIKI },
+      projects: { [oldWf]: { mcpServers: { deepwiki: DEEPWIKI, 'apra-fleet': { type: 'http', url: `http://localhost:7523/mcp?member=${member.id}` } } } },
+    });
     expect(await composePermissions({ member_id: member.id, role: 'doer' })).toContain('Permissions composed');
-    expect(readJson(claudeJson()).projects[oldWf].mcpServers['apra-fleet'].url).toMatch(memberUrl(member.id));
+    expect(readJson(claudeJson()).projects[oldWf].mcpServers['apra-fleet']).toBeUndefined();
 
     const result = await updateMember({ member_id: member.id, work_folder: newWf });
     expect(result).toContain('updated');
@@ -115,7 +119,7 @@ describe.skipIf(process.platform === 'win32')('update_member -- work folder move
     expect(result).not.toContain('could not remove');
 
     const projects = readJson(claudeJson()).projects;
-    expect(projects[newWf].mcpServers['apra-fleet'].url).toMatch(memberUrl(member.id));
+    expect(projects[newWf]?.mcpServers?.['apra-fleet']).toBeUndefined();
     expect(projects[oldWf].mcpServers['apra-fleet']).toBeUndefined();
     expect(projects[oldWf].mcpServers.deepwiki).toEqual(DEEPWIKI);
     expect(fs.existsSync(path.join(newWf, '.claude', 'settings.local.json'))).toBe(true);
@@ -148,7 +152,11 @@ describe.skipIf(process.platform === 'win32')('remove_member -- member-side clea
     const member = addMember('claude', wf);
     writeJson(claudeJson(), { mcpServers: { deepwiki: DEEPWIKI }, projects: { [wf]: { mcpServers: { deepwiki: DEEPWIKI } } } });
     expect(await composePermissions({ member_id: member.id, role: 'doer' })).toContain('Permissions composed');
-    expect(readJson(claudeJson()).projects[wf].mcpServers['apra-fleet']).toBeDefined();
+    // A local claude member gets no folder entry from compose; seed one as an
+    // older compose would have left it, so remove_member's cleanup is exercised.
+    const seeded = readJson(claudeJson());
+    seeded.projects[wf].mcpServers['apra-fleet'] = { type: 'http', url: `http://localhost:7523/mcp?member=${member.id}` };
+    writeJson(claudeJson(), seeded);
 
     const result = await removeMember({ member_id: member.id });
     expect(result).toContain('has been removed');

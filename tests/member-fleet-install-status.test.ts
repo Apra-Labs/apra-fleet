@@ -177,11 +177,18 @@ describe('remote member: install, self-register, verify MEMBER session', () => {
 
   it('the role check runs only once the member session is verified (not on an earlier failure)', async () => {
     const agent = remoteClaude();
-    const world = newWorld({ claudeJson: { projects: {} } });
+    const world = newWorld({ listTools: ['version'] });
     let called = false;
     const s = await probeMemberFleetMcp(agent, { ...deps(world), roleAgents: async () => { called = true; return { ok: true }; } });
-    expect(s).toMatchObject({ state: 'unavailable', reason: 'mcp-entry-missing' });
+    expect(s).toMatchObject({ state: 'unavailable', reason: 'member-tools-missing' });
     expect(called).toBe(false);
+  });
+
+  it('role files the check healed are named on the available status', async () => {
+    const agent = remoteClaude();
+    const s = await probeMemberFleetMcp(agent, { ...deps(newWorld()), roleAgents: async () => ({ ok: true, healed: ['doer.md'] }) });
+    expect(s).toMatchObject({ state: 'available' });
+    expect(s.detail).toContain('rewrote role files that hid the member kb_*/code_* tools: doer.md');
   });
 
   it('a session that lists no kb_*/code_* tools is unavailable(member-tools-missing)', async () => {
@@ -192,20 +199,28 @@ describe('remote member: install, self-register, verify MEMBER session', () => {
     expect(s).toMatchObject({ state: 'unavailable', reason: 'member-tools-missing' });
   });
 
-  it('missing per-folder entry -> unavailable(mcp-entry-missing)', async () => {
+  it('claude: no per-folder entry is required (dispatches get the member config per session) -> available', async () => {
     const agent = remoteClaude();
     const world = newWorld({ claudeJson: { projects: {} } });
     const s = await probeMemberFleetMcp(agent, deps(world));
-    expect(s).toMatchObject({ state: 'unavailable', reason: 'mcp-entry-missing', version: VERSION });
-    expect(world.execLog.some(c => c.includes("'call'"))).toBe(false);
+    expect(s).toMatchObject({ state: 'available', version: VERSION });
+    expect(world.execLog.some(c => c.includes('.claude.json'))).toBe(false);
+    expect(world.execLog.some(c => c.includes("'call'"))).toBe(true);
   });
 
-  it('a per-folder entry for a different member id is also mcp-entry-missing', async () => {
+  it('claude: a per-folder entry for a different member id does not gate either', async () => {
     const agent = remoteClaude();
     const other = makeTestAgent({ id: '11111111-2222-3333-4444-555555555555' });
-    const world = newWorld({ claudeJson: entryFor(other) });
+    const s = await probeMemberFleetMcp(agent, deps(newWorld({ claudeJson: entryFor(other) })));
+    expect(s).toMatchObject({ state: 'available' });
+  });
+
+  it('opencode: a missing per-folder entry still gates -> unavailable(mcp-entry-missing)', async () => {
+    const agent = makeTestAgent({ os: 'linux', llmProvider: 'opencode', workFolder: WORK, friendlyName: 'bella-oc' });
+    const world = newWorld();
     const s = await probeMemberFleetMcp(agent, deps(world));
-    expect(s).toMatchObject({ state: 'unavailable', reason: 'mcp-entry-missing' });
+    expect(s).toMatchObject({ state: 'unavailable', reason: 'mcp-entry-missing', version: VERSION });
+    expect(world.execLog.some(c => c.includes("'call'"))).toBe(false);
   });
 
   it('--id rejected -> unavailable(install-too-old)', async () => {
@@ -404,12 +419,12 @@ describe('fleetMcp status is an observation, never sticky', () => {
 
   it('flips unavailable -> available on the next probe after a manual fix', async () => {
     const agent = remoteClaude();
-    const world = newWorld({ claudeJson: { projects: {} } });
+    const world = newWorld({ listTools: ['version'] });
     const d = deps(world);
     const first = await refreshMemberFleetMcp(agent, d);
-    expect(first).toMatchObject({ state: 'unavailable', reason: 'mcp-entry-missing' });
+    expect(first).toMatchObject({ state: 'unavailable', reason: 'member-tools-missing' });
 
-    world.claudeJson = entryFor(agent); // the manual fix: compose_permissions re-run
+    world.listTools = newWorld().listTools; // the manual fix: member install upgraded
     const second = await refreshMemberFleetMcp(agent, d);
     expect(second).toMatchObject({ state: 'available', version: VERSION });
     expect(second).not.toHaveProperty('reason');
@@ -420,11 +435,11 @@ describe('fleetMcp status is an observation, never sticky', () => {
   it('the default recorder writes the status onto the member registry entry and overwrites it', async () => {
     const agent = remoteClaude();
     addAgent(agent);
-    const world = newWorld({ claudeJson: { projects: {} } });
+    const world = newWorld({ listTools: ['version'] });
     const d = { ...deps(world), record: defaultMemberFleetMcpDeps().record };
     await refreshMemberFleetMcp(agent, d);
-    expect(getAgent(agent.id)?.fleetMcp).toMatchObject({ state: 'unavailable', reason: 'mcp-entry-missing' });
-    world.claudeJson = entryFor(agent);
+    expect(getAgent(agent.id)?.fleetMcp).toMatchObject({ state: 'unavailable', reason: 'member-tools-missing' });
+    world.listTools = newWorld().listTools;
     await refreshMemberFleetMcp(agent, d);
     expect(getAgent(agent.id)?.fleetMcp).toEqual({ state: 'available', version: VERSION, checkedAt: expect.any(String) });
   });

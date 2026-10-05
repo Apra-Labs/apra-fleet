@@ -11,6 +11,7 @@ import { getStrategy } from '../services/strategy.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { getProvider } from '../providers/index.js';
 import { seedWorkspaceTrust, workspaceTrustTransportFor } from '../utils/workspace-trust.js';
+import { perFolderMcpEntryNeeded } from '../services/session-mcp-config.js';
 import {
   deleteMemberFile,
   ensureGitExcluded,
@@ -698,6 +699,12 @@ async function syncMemberMcpConfig(
   const exec = (cmd: string, t?: number) => strategy.execCommand(cmd, t);
   const workFolderFiles = permissionPaths.filter(p => !isHomeAnchored(p));
   try {
+    // A local claude member gets the member config per dispatch session
+    // (--mcp-config), so no folder entry is written for it: the sync runs in
+    // remove mode instead, pruning legacy entries and a folder entry an older
+    // compose wrote for THIS member (so the human's own sessions in that
+    // clone get their user-scope server back), and nothing else.
+    const perFolder = perFolderMcpEntryNeeded(agent);
     if (provider.syncMemberMcpEntry) {
       // The member MCP wiring touches home-anchored files too (~/.claude.json,
       // agy/opencode global MCP configs), so resolve the home here when the
@@ -710,7 +717,8 @@ async function syncMemberMcpConfig(
         agentOs,
         shell,
         transport: workspaceTrustTransportFor(agent, strategy),
-        url: memberMcpUrl(agent),
+        url: perFolder ? memberMcpUrl(agent) : null,
+        ...(perFolder ? {} : { removeOnlyOwnEntry: true }),
       });
       workFolderFiles.push(...result.workFolderFiles);
     }

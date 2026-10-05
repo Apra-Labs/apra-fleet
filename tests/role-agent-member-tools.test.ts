@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -109,11 +109,31 @@ describe('member-init role check (checkRoleAgentMemberTools), local member', () 
     return home;
   }
 
-  it('installed role files from before the fix -> fails loudly, naming them', async () => {
+  it('installed role files from before the fix -> self-healed: rewritten from the canonical set, named in healed', async () => {
     const home = homeWith({ 'doer.md': read('doer.md'), 'reviewer.md': read('reviewer.md') });
     const r = await checkRoleAgentMemberTools(makeTestLocalAgent({ llmProvider: 'claude' }), home);
-    expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.detail).toMatch(/doer\.md.*reviewer\.md|reviewer\.md.*doer\.md/);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect([...(r.healed ?? [])].sort()).toEqual(['doer.md', 'reviewer.md']);
+    const doer = fs.readFileSync(path.join(home, '.claude', 'agents', 'doer.md'), 'utf-8');
+    expect(rolesMissingMemberToolGrant([{ relPath: 'doer.md', content: doer }])).toEqual([]);
+    // a second check finds nothing to heal
+    expect(await checkRoleAgentMemberTools(makeTestLocalAgent({ llmProvider: 'claude' }), home)).toEqual({ ok: true });
+  });
+
+  it('role files that cannot be rewritten -> fails loudly, naming them', async () => {
+    const home = homeWith({ 'doer.md': read('doer.md'), 'reviewer.md': read('reviewer.md') });
+    const spy = vi.spyOn(fs, 'writeFileSync').mockImplementation(() => { throw new Error('EACCES: permission denied'); });
+    try {
+      const r = await checkRoleAgentMemberTools(makeTestLocalAgent({ llmProvider: 'claude' }), home);
+      expect(r.ok).toBe(false);
+      if (!r.ok) {
+        expect(r.detail).toMatch(/doer\.md.*reviewer\.md|reviewer\.md.*doer\.md/);
+        expect(r.detail).toContain('could not be rewritten');
+        expect(r.detail).toContain('EACCES');
+      }
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('installed role files from the current transform -> ok', async () => {

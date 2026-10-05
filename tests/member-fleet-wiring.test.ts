@@ -254,12 +254,12 @@ describe('register_member fleet_install', () => {
     expect(result).toContain('fleetMcp: unavailable (E-FOLDER-TAKEN)');
   });
 
-  it('a missing per-folder MCP entry -> unavailable(mcp-entry-missing)', async () => {
+  it('claude: a missing per-folder MCP entry does not gate (dispatches get the member config per session)', async () => {
     const w = newWorld({ entry: false });
     __setMemberFleetMcpDeps(withRealRecord(fakeDeps(w)));
     const result = await registerMember({ ...REMOTE, friendly_name: 'bella', fleet_install: 'auto', port: 22, cloud_region: 'us-east-1', cloud_idle_timeout_min: 30 } as any);
     expect(result).toContain('Member registered successfully');
-    expect(result).toContain('fleetMcp: unavailable (mcp-entry-missing)');
+    expect(result).toContain('fleetMcp: available');
   });
 
   it('agy member -> unavailable(no-per-project-mcp), unverified; nothing installed', async () => {
@@ -299,13 +299,13 @@ describe('register_member fleet_install', () => {
 
 describe('recoverable: unavailable -> available on re-probe, no restart', () => {
   it('member_detail refresh:true flips the recorded status after the cause is fixed', async () => {
-    const w = newWorld({ entry: false });
+    const w = newWorld({ listTools: ['version'] });
     __setMemberFleetMcpDeps(withRealRecord(fakeDeps(w)));
     const a = remoteMember();
     const first = JSON.parse(await memberDetail({ member_id: a.id, format: 'json', refresh: true }));
-    expect(first.fleetMcp).toMatchObject({ state: 'unavailable', reason: 'mcp-entry-missing' });
+    expect(first.fleetMcp).toMatchObject({ state: 'unavailable', reason: 'member-tools-missing' });
     expect(getAgent(a.id)!.fleetMcp).toMatchObject({ state: 'unavailable' });
-    w.entry = true; // operator fixes the member
+    w.listTools = newWorld().listTools; // operator fixes the member
     const second = JSON.parse(await memberDetail({ member_id: a.id, format: 'json', refresh: true }));
     expect(second.fleetMcp).toMatchObject({ state: 'available', version: VERSION });
     expect(getAgent(a.id)!.fleetMcp).toMatchObject({ state: 'available' });

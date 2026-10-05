@@ -798,7 +798,7 @@ export const FLEET_MCP_FIX: Record<FleetMcpUnavailableReason | FleetMcpProviderR
   'E-FOLDER-TAKEN': 'The member install has this work folder registered under another id; unregister it there, then member_detail with refresh:true.',
   'register-failed': 'Run update_member {member_id, fleet_install: "auto"} to upgrade apra-fleet on the member and re-register it (read fleetMcp detail for the error), then member_detail with refresh:true.',
   'mcp-entry-missing': 'Re-run compose_permissions for the member so its per-folder apra-fleet MCP entry points at ?member=<uuid>, then member_detail with refresh:true.',
-  'role-agents-hide-member-tools': 'Remote member: run update_member for it (re-provisions its role agent files); local member: re-run apra-fleet install on the orchestrator so ~/.claude/agents grants the kb_*/code_* tools. Then member_detail with refresh:true.',
+  'role-agents-hide-member-tools': 'Remote member: run update_member for it (re-provisions its role agent files); local member: the probe already tried to rewrite the role files in ~/.claude/agents, so make them writable (or re-run apra-fleet install on the orchestrator). Then member_detail with refresh:true.',
   'no-per-project-mcp': 'agy has no per-project MCP config; its roles get injected knowledge only. Use another provider for KB/code tools.',
   'provider-unsupported': 'This LLM provider has no MCP entry fleet configures; its roles get injected knowledge only.',
   'member-config-unreadable': 'Fix permissions on the member config file named in the detail, then re-run compose_permissions.',
@@ -844,8 +844,10 @@ export interface MemberFleetMcpDeps extends MemberFleetInstallDeps {
   /** Persist the observation on the member registry entry. */
   record(memberId: string, status: FleetMcpStatus): void;
   /** Do the role files a `claude --agent <role>` dispatch loads grant the
-   *  member kb_* / code_* tools? Optional: absent means not checked. */
-  roleAgents?(agent: Agent): Promise<{ ok: true } | { ok: false; detail: string }>;
+   *  member kb_* / code_* tools? Heals what it can (local: rewrites bad role
+   *  files; remote: re-provisions) and reports `healed` files. Optional:
+   *  absent means not checked. */
+  roleAgents?(agent: Agent): Promise<{ ok: true; healed?: string[] } | { ok: false; detail: string }>;
 }
 
 
@@ -1051,11 +1053,16 @@ const PER_FOLDER_PROVIDERS = new Set<LlmProvider>(['claude', 'opencode']);
  *
  *  - agy: unavailable(no-per-project-mcp), unverified; nothing is probed.
  *  - providers with no per-folder fleet entry: unavailable(provider-unsupported), unverified.
- *  - LOCAL members: no install; a direct MEMBER session to this server.
+ *  - LOCAL members: no install and no per-folder entry (a claude dispatch gets
+ *    the member config per session, --mcp-config); a direct MEMBER session to
+ *    this server, i.e. the exact URL that session is given.
  *  - remote members: ensure the install (opts.install, default true; false
  *    only probes the version), register the member on its own install
  *    (`register-member --type local --id <uuid>`), check the per-folder MCP
- *    entry, then verify a MEMBER session through `apra-fleet call` on the member.
+ *    entry (not for claude: per-session config, the entry is only its
+ *    fallback), then verify a MEMBER session through `apra-fleet call`.
+ *  - claude, both: the role files `--agent <role>` loads must grant the member
+ *    tools; roleAgents heals them (local rewrite, remote re-provision) first.
  */
 export async function probeMemberFleetMcp(
   agent: Agent,
@@ -1169,6 +1176,10 @@ async function probeMemberFleetMcpInner(
       if (!roles.ok) {
         const { state: _s, checkedAt: _c, detail: prior, ...keep } = status;
         return unavailable('role-agents-hide-member-tools', prior ? `${roles.detail}. Also: ${prior}` : roles.detail, keep);
+      }
+      if (roles.healed && roles.healed.length > 0) {
+        const note = `rewrote role files that hid the member kb_*/code_* tools: ${roles.healed.join(', ')}`;
+        return { ...status, detail: status.detail ? `${status.detail}. ${note}` : note };
       }
     }
     return status;
@@ -1296,12 +1307,18 @@ async function probeRemote(
     return fail('register-failed', `register-member exited ${reg.code}: ${memberErrorDetail(out)}`);
   }
 
-  // 3. The per-folder MCP entry compose_permissions writes must point at this member.
-  const url = await readMemberMcpEntryUrl(agent, home, deps);
-  if (!url || !url.endsWith(memberQuery(agent))) {
-    return fail('mcp-entry-missing', url
-      ? `per-folder apra-fleet entry points at ${url}, not ${memberQuery(agent)}`
-      : 'no per-folder apra-fleet MCP entry for the work folder; run compose_permissions');
+  // 3. The per-folder MCP entry compose_permissions writes must point at this
+  // member -- for providers whose dispatched session reads it. A claude
+  // dispatch gets the member config per session (--mcp-config, see
+  // session-mcp-config.ts) once this probe reports available, so the
+  // per-folder entry is only its fallback and does not gate.
+  if ((agent.llmProvider ?? 'claude') !== 'claude') {
+    const url = await readMemberMcpEntryUrl(agent, home, deps);
+    if (!url || !url.endsWith(memberQuery(agent))) {
+      return fail('mcp-entry-missing', url
+        ? `per-folder apra-fleet entry points at ${url}, not ${memberQuery(agent)}`
+        : 'no per-folder apra-fleet MCP entry for the work folder; run compose_permissions');
+    }
   }
 
   // 4. A MEMBER session on the member answers version and lists kb_* / code_*.

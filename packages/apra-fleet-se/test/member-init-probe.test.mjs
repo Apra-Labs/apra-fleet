@@ -276,3 +276,24 @@ test('the kb_maintainer selection is consumed, not re-made', async () => {
     assert.equal(calls, 1);
     assert.match(formatMemberInitLine(rec), /^\[member-init\] OK member 'm1': verified .*kb_maintainer: 'keeper'$/);
 });
+
+test('local claude member: verified on the server-side probe of the per-session config path -- no per-folder entry required, healed role files reported as detail, not as a failure', async () => {
+    const f = fakeFleet({
+        type: 'local',
+        fleetMcp: { state: 'available', checkedAt: 'x', detail: 'rewrote role files that hid the member kb_*/code_* tools: doer.md' },
+    });
+    const [rec] = await f.make(['m1']).probeAll();
+    assert.equal(rec.verified, true);
+    assert.deepEqual(rec.problems, []);
+    assert.equal(rec.server, 'skipped');
+    assert.ok(f.orchestratorCalls.some((c) => c.args && c.args.refresh === true), 'the server-side probe (and its self-heal) runs through member_detail refresh:true');
+    assert.match(f.logs[0], /OK member 'm1': verified/);
+});
+
+test('local claude member whose role files could not be healed -> unverified, and the fix names the rewrite that failed', async () => {
+    const f = fakeFleet({ type: 'local', fleetMcp: { state: 'unavailable', reason: 'role-agents-hide-member-tools', checkedAt: 'x', detail: 'could not be rewritten' } });
+    const [rec] = await f.make(['m1']).probeAll();
+    assert.equal(rec.verified, false);
+    assert.equal(rec.reason, 'role-agents-hide-member-tools');
+    assert.match(rec.fix, /automatic rewrite failed/);
+});

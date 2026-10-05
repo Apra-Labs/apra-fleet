@@ -773,7 +773,9 @@ export class ApraFleet {
     }
 
     /**
-     * Run an AI prompt on a member.
+     * Run an AI prompt on a member. A claude member's session gets the
+     * member-scoped `apra-fleet` server per session (`--mcp-config`); see
+     * docs/api-reference.md.
      * @param {ExecutePromptOptions} options
      * @returns {Promise<{content?: {type: string, text: string}[], structuredContent?: ExecutePromptStructured}>}
      *   the raw callTool() result -- see the {@link ExecutePromptStructured} typedef above
@@ -954,7 +956,9 @@ export class ApraFleet {
     /**
      * Compose and deliver a scoped permission profile to a member. Also writes
      * the member's per-folder `apra-fleet` MCP entry (`?member=<uuid>`) through
-     * the member provider's own per-project config, with deny rules for every
+     * the member provider's own per-project config (not for a local claude
+     * member, whose dispatches get it per session: an entry an older compose
+     * wrote for it is removed instead), with deny rules for every
      * fleet tool outside the member allowlist (claude, agy), merged by union
      * with any existing deny rules. The result states why a member config was
      * not edited (tracked by git, not strict JSON, unreadable) and when a stale

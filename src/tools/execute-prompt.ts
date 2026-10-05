@@ -45,6 +45,7 @@ import type { ParsedResponse, PermissionDenial, UsageLimitSignal } from '../prov
 import { isMaxTurnsResponse } from '../providers/provider.js';
 import { preflightCheck } from '../services/preflight-check.js';
 import { ensureAgyProject } from '../services/agy-project.js';
+import { sessionMcpInjectionAvailable, sessionMcpConfigPath, sessionMcpConfigIsPerDispatch, writeSessionMcpConfig } from '../services/session-mcp-config.js';
 
 export interface ExecutePromptStructured {
   isError?: boolean;
@@ -1174,7 +1175,16 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     ? { sourceSessionId: forkSourceId, newSessionId: mintedId ?? uuid() }
     : undefined;
 
-  const promptOpts = {
+  // Per-session member MCP config (Claude --mcp-config): the dispatched
+  // session gets the ?member=<uuid> apra-fleet server whatever the folder or
+  // user config says. Path resolved here so every retry (freshOpts spreads
+  // promptOpts) carries it; the file is written with the prompt file below,
+  // and a failed write clears it (fallback: the session's own MCP config).
+  const sessionMcpPath = sessionMcpInjectionAvailable(agent)
+    ? sessionMcpConfigPath(agent, resolvedWorkFolder)
+    : undefined;
+
+  const promptOpts: Parameters<typeof cmds.buildAgentPromptCommand>[1] = {
     folder: resolvedWorkFolder,
     promptFile: promptFileName,
     sessionId: mintedId,
@@ -1187,6 +1197,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     agentName: input.agent,
     fork: forkDescriptor,
     projectId: agyProjectId,
+    ...(sessionMcpPath ? { mcpConfigPath: sessionMcpPath } : {}),
   };
 
   // apra-fleet issue #390: session log paths live on the MEMBER's machine, under
@@ -1243,7 +1254,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     logPathAuthoritative: !!resolvedLogPath && logPathAuthoritative,
   });
 
-  const claudeCmd = cmds.buildAgentPromptCommand(provider, promptOpts);
+  let claudeCmd = cmds.buildAgentPromptCommand(provider, promptOpts);
 
   // apra-fleet-6z8.1: the per-invocation durable stdout mirror the unix prompt
   // wrapper tees to (see durableOutputPath / buildAgentPromptCommand). A
@@ -1439,6 +1450,8 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   // (kill, prompt write, dispatch). A delivery failure (relay member, SFTP
   // subsystem disabled) is deterministic: a typed failure, never retried.
   const stagedEnvPaths: string[] = [];
+  /** Per-dispatch session MCP config files to remove with the prompt file. */
+  const sessionMcpCleanup: string[] = [];
   let preStaged: StagedAuthEnv | undefined;
   try {
     preStaged = await stageAuthEnv(agent);
@@ -1464,6 +1477,19 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   } catch (err) {
     if (preStaged.path) await removeMemberSecretFile(agent, preStaged.path);
     throw err;
+  }
+  if (sessionMcpPath) {
+    const wrote = await writeSessionMcpConfig(agent, sessionMcpPath, (cmd, t) => strategy.execCommand(cmd, t));
+    if (wrote.ok) {
+      if (sessionMcpConfigIsPerDispatch(agent)) sessionMcpCleanup.push(sessionMcpPath);
+    } else {
+      // Fallback, never zero: dispatch without the flag; the session then
+      // uses the per-folder / user-scope apra-fleet entry it would have had.
+      scope.warn(`session MCP config not written (${wrote.detail}); dispatching without --mcp-config`);
+      delete promptOpts.mcpConfigPath;
+      claudeCmd = cmds.buildAgentPromptCommand(provider, promptOpts);
+      if (sessionMcpConfigIsPerDispatch(agent)) sessionMcpCleanup.push(sessionMcpPath);
+    }
   }
 
   // apra-fleet-6z8.1: remembered for the lease-of-life gate below -- the pid
@@ -2100,7 +2126,7 @@ session: ${parsed.sessionId}`;
       inFlightAgents.delete(agent.id);
     }
     stallDetector.remove(agent.id);
-    await deletePromptFile(agent, strategy, promptFilePath, [...(durablePath ? [durablePath] : []), ...stagedEnvPaths]);
+    await deletePromptFile(agent, strategy, promptFilePath, [...(durablePath ? [durablePath] : []), ...stagedEnvPaths, ...sessionMcpCleanup]);
   }
   } catch (err) {
     if (claimGuardActive) {
