@@ -3,7 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { randomUUID } from 'crypto';
 import { escapeHtml } from './html-utils.mjs';
-import { DebouncedStateWriter, DEFAULT_DEBOUNCE_MS, writeJsonFileAtomic } from './debounced-writer.mjs';
+import { DebouncedStateWriter, DEFAULT_DEBOUNCE_MS, writeJsonFileAtomic, findGitWorkingTreeRoot } from './debounced-writer.mjs';
 import { getRunningRunStatePath, getTerminalRunStatePath } from './run-state-paths.mjs';
 import { buildListStatePayload, resolveStringRefs } from './lean-state.mjs';
 import { capCommandActivityMeta, getFullOutput } from './command-output-cap.mjs';
@@ -1213,6 +1213,7 @@ export function createDashboardViewer(workflow, opts = {}) {
     // opts.stateSnapshotPrefix (default `run_`, giving `run_<HHMMSS>.json`).
     // auto-sprint passes `sprint-logs`/`sprint_` explicitly so its user-facing
     // convention is unchanged.
+    const stateSnapshotDirExplicit = !!opts.stateSnapshotDir;
     const stateSnapshotDir = opts.stateSnapshotDir || 'workflow-logs';
     const stateSnapshotPrefix = opts.stateSnapshotPrefix || 'run_';
     let saved = false;
@@ -1223,6 +1224,27 @@ export function createDashboardViewer(workflow, opts = {}) {
             const dir = path.isAbsolute(stateSnapshotDir)
                 ? stateSnapshotDir
                 : path.join(process.cwd(), stateSnapshotDir);
+            // my-beads-db-qy8.9.4: the DEFAULT relative path (no explicit
+            // opts.stateSnapshotDir) resolves under whatever process.cwd()
+            // happens to be at the moment the run ends -- normally a
+            // caller-owned scratch dir, but a bug or test-ordering race
+            // (cwd restored to a repo checkout before this fires) would
+            // otherwise silently scribble an untracked file straight into
+            // that checkout. Refuse and warn instead of writing; an
+            // explicit opts.stateSnapshotDir (e.g. apra-fleet-se's
+            // `sprint-logs`) is a deliberate choice and is never guarded.
+            if (!stateSnapshotDirExplicit) {
+                const gitRoot = findGitWorkingTreeRoot(dir);
+                if (gitRoot) {
+                    console.warn(
+                        `[Viewer] Refusing to write crash-net snapshot to default location ${dir}: ` +
+                        `it resolves inside the git working tree at ${gitRoot}. This usually means ` +
+                        `process.cwd() changed back into a repo checkout before the run ended. Pass ` +
+                        `an explicit opts.stateSnapshotDir if you intend to write here.`
+                    );
+                    return;
+                }
+            }
             const now = new Date();
             const pad2 = (n) => String(n).padStart(2, '0');
             const hhmmss = `${pad2(now.getHours())}${pad2(now.getMinutes())}${pad2(now.getSeconds())}`;

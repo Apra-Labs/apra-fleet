@@ -53,6 +53,29 @@ export function writeJsonFileAtomic(filePath, data) {
     fs.renameSync(tmpPath, filePath);
 }
 
+// my-beads-db-qy8.9.4: guard for the crash-net snapshot's DEFAULT relative
+// path (../viewer/index.mjs persistState()). Walks `startDir` and its
+// ancestors looking for a `.git` entry (a directory for a normal checkout,
+// or a file for a linked worktree/submodule) and returns the first such
+// ancestor, or null if none is found before the filesystem root. A plain
+// `fs.mkdtempSync()` scratch directory never has a `.git` ancestor, so this
+// only trips when the resolved snapshot directory would actually land
+// inside a real git working tree -- which is exactly the "process.cwd()
+// unexpectedly points at a repo checkout, not the scratch dir a test/run
+// meant to use" failure mode this guards against. Deliberately NOT used for
+// an explicit opts.stateSnapshotDir: a caller that names its own directory
+// (e.g. apra-fleet-se's `sprint-logs` inside the user's own target repo) is
+// making a deliberate choice, not falling back to an ambient cwd.
+export function findGitWorkingTreeRoot(startDir) {
+    let dir = path.resolve(startDir);
+    while (true) {
+        if (fs.existsSync(path.join(dir, '.git'))) return dir;
+        const parent = path.dirname(dir);
+        if (parent === dir) return null;
+        dir = parent;
+    }
+}
+
 export class DebouncedStateWriter {
     /**
      * @param {object} opts
