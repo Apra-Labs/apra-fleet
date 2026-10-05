@@ -9,8 +9,9 @@ import {
   closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, statSync, writeFileSync,
 } from 'fs';
 import { homedir } from 'os';
-import { delimiter, dirname, isAbsolute, join } from 'path';
+import { dirname, isAbsolute, join } from 'path';
 import { logWarn, logError } from '../utils/log-helpers.js';
+import { findExecutableOnPath, missingOnServerPathMessage, npxUnavailableReason } from '../utils/find-on-path.js';
 import { FLEET_DIR } from '../paths.js';
 import { resolveProjectSlug } from '../services/knowledge/project-slug.js';
 import { isPidAlive, readGitNexusIndexState } from './code-index-state.js';
@@ -144,17 +145,7 @@ function logLineCount(dir: string): number {
 
 /** Resolve an executable on PATH (PATHEXT-aware on Windows) without a shell. */
 export function findOnPath(name: string): string | null {
-  const exts = process.platform === 'win32'
-    ? ['', ...(process.env.PATHEXT ?? '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean)]
-    : [''];
-  for (const dir of (process.env.PATH ?? '').split(delimiter)) {
-    if (!dir) continue;
-    for (const ext of exts) {
-      const candidate = join(dir, name + ext);
-      try { if (statSync(candidate).isFile()) return candidate; } catch { /* next */ }
-    }
-  }
-  return null;
+  return findExecutableOnPath(name);
 }
 
 const GITNEXUS_MISSING = /not found|E404|404 Not Found|could not determine executable|ENOENT|ENOTFOUND|EAI_AGAIN/i;
@@ -224,8 +215,9 @@ export function spawnAnalyze(repoPath: string): SpawnAnalyzeOutcome {
   if (readGitNexusIndexState(repoPath).lockHeld) {
     return { started: false, reason: 'already-running', detail: 'a gitnexus analyze lock is held for this folder' };
   }
-  if (!findOnPath('npx')) {
-    return { started: false, reason: 'npx-not-found', detail: 'npx is not on PATH' };
+  const npxReason = npxUnavailableReason();
+  if (npxReason) {
+    return { started: false, reason: 'npx-not-found', detail: npxReason };
   }
 
   let dir: string;
@@ -395,7 +387,8 @@ async function codeReindexOutcome(repo: string, boundMs: number): Promise<CodeRe
     if (exited) {
       if (spawnError) {
         const missing = /ENOENT/.test(spawnError);
-        return { outcome: 'not-started', reason: missing ? 'npx-not-found' : 'spawn-failed', detail: spawnError, logPath: log };
+        const detail = missing ? `${spawnError}: ${missingOnServerPathMessage('npx')}` : spawnError;
+        return { outcome: 'not-started', reason: missing ? 'npx-not-found' : 'spawn-failed', detail, logPath: log };
       }
       if (exitCode === 0) {
         if (lines.some((l) => /already up to date/i.test(l))) return { outcome: 'up-to-date', lastLine: last, logPath: log };
