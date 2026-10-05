@@ -43,7 +43,7 @@
           "raising_methods": [
             { "method_id": "P-3", "member": "query", "tool": "kb_query", "position": "pre-provider" }
           ],
-          "source": "src/tools/kb-query.ts:34",
+          "source": "src/tools/kb-query.ts:55",
           "surfaced": "thrown",
           "retryable": false,
           "note": "kb_session_prime also reaches P-3 but cannot raise this: it builds its own selectors."
@@ -67,7 +67,7 @@
             { "method_id": "X-1", "member": "list", "tool": "kb_export", "position": "pre-provider" },
             { "method_id": "P-2", "member": "capture", "tool": "kb_import", "position": "pre-provider" }
           ],
-          "source": "src/tools/kb-export.ts:157, src/tools/kb-import.ts:75",
+          "source": "src/tools/kb-export.ts:159, src/tools/kb-import.ts:76",
           "surfaced": "thrown",
           "retryable": false,
           "group_decision": "VALIDATION, not provider_internal. Decided deliberately rather than left to fall through to a generic internal code. The throw happens BEFORE getKbProviders, so no provider exists yet and nothing about the provider has failed; the only thing known to be wrong is a field of the request. Filing it under provider_internal would also imply the wrong retry posture -- an internal error invites a retry, while this one can only be fixed by changing the request. Both tools that raise it write into repo_path, which is why they refuse where the verbatim-passthrough tools tolerate a missing anchor (_meta.anchor_policy_note)."
@@ -78,7 +78,7 @@
           "raising_methods": [
             { "method_id": "P-2", "member": "capture", "tool": "kb_import", "position": "pre-provider" }
           ],
-          "source": "src/tools/kb-import.ts:143",
+          "source": "src/tools/kb-import.ts:144",
           "surfaced": "thrown",
           "retryable": false,
           "note": "No methods.json entry cites this code: it is a tool-boundary throw on the kb_import route, reached before P-2 capture. INVENTORY.md 5.2 is the authority for it."
@@ -89,7 +89,7 @@
           "raising_methods": [
             { "method_id": "P-2", "member": "capture", "tool": "kb_import", "position": "pre-provider" }
           ],
-          "source": "src/tools/kb-import.ts:150",
+          "source": "src/tools/kb-import.ts:151",
           "surfaced": "thrown",
           "retryable": false
         },
@@ -99,7 +99,7 @@
           "raising_methods": [
             { "method_id": "P-2", "member": "capture", "tool": "kb_import", "position": "pre-provider" }
           ],
-          "source": "src/tools/kb-import.ts:168",
+          "source": "src/tools/kb-import.ts:169",
           "surfaced": "thrown",
           "retryable": false
         }
@@ -116,7 +116,7 @@
             { "method_id": "P-2", "member": "capture", "tool": "kb_harvest", "position": "provider" },
             { "method_id": "P-2", "member": "capture", "tool": "kb_import", "position": "provider" }
           ],
-          "source": "src/services/knowledge/sqlite-provider.ts:339 (assertCheckableBasis, KbCaptureRejected('no_source_files'))",
+          "source": "src/services/knowledge/sqlite-provider.ts:388 (assertCheckableBasis), :394 (KbCaptureRejected('no_source_files'))",
           "surfaced": "thrown",
           "retryable": false,
           "note": "On the kb_import route this throw is caught per entry and counted -- see E-IMPORT-ENTRY-REJECTED."
@@ -129,7 +129,7 @@
             { "method_id": "P-2", "member": "capture", "tool": "kb_harvest", "position": "provider" },
             { "method_id": "P-2", "member": "capture", "tool": "kb_import", "position": "provider" }
           ],
-          "source": "src/services/knowledge/sqlite-provider.ts:349 (assertCheckableBasis, KbCaptureRejected('missing_source_files'))",
+          "source": "src/services/knowledge/sqlite-provider.ts:348 (unresolvableBasisFiles), :404 (assertCheckableBasis, KbCaptureRejected('missing_source_files'))",
           "surfaced": "thrown",
           "retryable": false
         },
@@ -363,7 +363,7 @@
             { "method_id": "X-6", "member": "hasEntry", "tool": "kb_import", "position": "provider" },
             { "method_id": "X-8", "member": "getSourceFileBases", "tool": "kb_export", "position": "provider" }
           ],
-          "source": "src/services/knowledge/sqlite-provider.ts:197 (SqliteProvider.getDb)",
+          "source": "src/services/knowledge/sqlite-provider.ts:248-249 (SqliteProvider.getDb)",
           "surfaced": "thrown",
           "retryable": false,
           "note": "methods.json also cites this code on P-6 getLinked and P-9 sync, which have no tool route (tools: []); every member reached through getDb can raise it. init() itself (P-1) has no throw site of its own -- its ABSENCE is what causes this code everywhere else."
