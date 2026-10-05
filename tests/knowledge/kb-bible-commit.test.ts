@@ -291,13 +291,22 @@ describe('capture -> promote -> bible commit -> export round trip (basis filter)
 
     const result = JSON.parse(await kbExport({}, { folder: clone }));
     const ids = readBible(clone).entries.map(e => e.id);
+    // `committed` is present because kb_bible_commit wrote it and the export is
+    // additive -- the basis predicate never admitted it. kb_bible_commit itself
+    // applies no basis check (a shared admission predicate is planned work).
     expect(ids).toContain(committed);
     expect(ids).toContain(unchanged);
     expect(ids).not.toContain(changed);
     expect(result.exported).toBe(ids.length);
   });
 
-  it('kb_import of a bible populates the basis of each imported entry', async () => {
+  // CHARACTERIZATION ONLY, pending a separate decision: kb_import routes through
+  // capture(), which hashes the LOCAL file at import time, so an entry
+  // confirmed on another branch gains a basis taken from this checkout rather
+  // than from the tree it was verified on. This pins that the column is
+  // populated (export would otherwise drop every imported entry); it does not
+  // assert that a local-file basis is the right basis for an imported entry.
+  it('kb_import currently populates each imported entry basis from the local file (characterization)', async () => {
     const report = JSON.parse(await kbImport({ skip_sweep: true }, { folder: clone }));
     expect(report.imported).toBe(2);
     const bases = provider.getSourceFileBases(['kb-existing-1', 'kb-existing-2']);
