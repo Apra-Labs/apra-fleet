@@ -87,6 +87,7 @@ import { fileURLToPath } from 'node:url';
 import {
   buildLaneArgs, INTEG_PKG_DIR, INTEG_TEST_DIR,
 } from './integ-lane-args.mjs';
+import { ensureTestSandbox } from './test-sandbox.mjs';
 
 const scriptPath = fileURLToPath(import.meta.url);
 const repoRoot = path.resolve(path.dirname(scriptPath), '..');
@@ -425,24 +426,34 @@ function cmdStart(files) {
 // without it, every test file in this lane ran with the operator's REAL
 // HOME/USERPROFILE, APPDATA/LOCALAPPDATA and ~/.apra-fleet-se, because
 // test/isolated-home-setup.mjs only takes effect when it is preloaded.
+//
+// The lane also runs inside the per-run test sandbox (scripts/test-sandbox.mjs),
+// like every other test runner (#626: "the sandbox is applied by the runners").
+// Without it, a test that spawns a real supervisor or fleet client with no
+// fleet server reachable made the client AUTO-START a real apra-fleet server
+// (#629) on the default port from this checkout -- the sandbox marker is what
+// makes that auto-start refuse in a test run.
 function runLane(files, concurrency) {
   return new Promise((resolve) => {
     if (files.length === 0) { resolve(0); return; }
+    const laneEnv = {
+      ...process.env,
+      APRA_FLEET_BD_MOCK: 'off',
+      APRA_FLEET_TEST_CONCURRENCY: String(concurrency),
+      INTEG_SUITES_STATUS_FILE: statusFile,
+      INTEG_SUITES_HEARTBEAT_FILE: heartbeatFile,
+    };
+    const sandbox = ensureTestSandbox(laneEnv);
     const child = spawn(
       process.execPath,
       buildLaneArgs(files, concurrency),
       {
         cwd: pkgDir,
         stdio: 'inherit',
-        env: {
-          ...process.env,
-          APRA_FLEET_BD_MOCK: 'off',
-          APRA_FLEET_TEST_CONCURRENCY: String(concurrency),
-          INTEG_SUITES_STATUS_FILE: statusFile,
-          INTEG_SUITES_HEARTBEAT_FILE: heartbeatFile,
-        },
+        env: laneEnv,
       }
     );
+    child.on('exit', () => sandbox.cleanup());
 
     child.on('error', (e) => {
       console.error(`[integ-suites] supervisor: could not spawn node --test (lane concurrency=${concurrency}): ${e.message}`);
