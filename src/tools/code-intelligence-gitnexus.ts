@@ -9,6 +9,7 @@ import { maybeScheduleReindex } from './code-intelligence-reindex.js';
 import { isTestPath } from './code-intelligence-tests.js';
 import { ensureGitNexusIndexReady } from './code-intelligence-readiness.js';
 import { logError } from '../utils/log-helpers.js';
+import { missingOnServerPathMessage, npxUnavailableReason } from '../utils/find-on-path.js';
 
 let sharedClient: Client | null = null;
 let connectionPromise: Promise<Client> | null = null;
@@ -37,6 +38,10 @@ async function getGitNexusClient(): Promise<Client> {
   if (connectionPromise) return connectionPromise;
 
   connectionPromise = (async () => {
+    // Fail with the cause, not a bare "spawn npx ENOENT": a service-managed
+    // server only has the PATH its service definition recorded at install.
+    const npxReason = npxUnavailableReason();
+    if (npxReason) throw new Error(npxReason); // callGitNexus resets the connection
     const transport = new StdioClientTransport({
       command: 'npx',
       args: ['-y', 'gitnexus', 'mcp'],
@@ -165,7 +170,8 @@ async function callGitNexus(name: string, params: Record<string, unknown>): Prom
     return result;
   } catch (err) {
     resetConnection();
-    const detail = err instanceof Error ? err.message : String(err);
+    let detail = err instanceof Error ? err.message : String(err);
+    if (/\bENOENT\b/.test(detail) && /npx/.test(detail)) detail = `${detail}: ${missingOnServerPathMessage('npx')}`;
     return offlineResult(detail);
   }
 }
