@@ -450,7 +450,10 @@ export function summarizeFinishedRun(sprintId, state, mtimeMs = 0) {
  * HISTORY_EVENTS) with NO terminal state file also gets a synthesized row --
  * `{ sprintId, verdict: null, prUrl: null, endedAt: <event's `at`>, goal:
  * null, workflowName: null, status: 'launch-failed', reason: <event's
- * reason>, hasTerminalState: false }` -- merged and deduped by sprintId with
+ * reason>, hasTerminalState: false }` -- (i9ag.10.1.1) likewise for
+ * ABORTED_BY_RESTART / FORCE_RELEASED / AUTO_RELEASED with status
+ * 'aborted-by-restart' / 'force-released' / 'auto-released' (LAUNCH_FAILED
+ * wins if both) -- merged and deduped by sprintId with
  * the file-backed row always winning when both exist. With no `history`
  * collaborator injected, no launch-failed rows are ever synthesized.
  *
@@ -594,16 +597,30 @@ export function createFinishedRunsIndex(deps = {}) {
         // synthesis too -- the exact "operator sees nothing" outcome this
         // block exists to eliminate, just reached through a narrower door.
         if (history) {
-            const launchFailedBySprintId = new Map();
+            // apra-fleet-i9ag.10.1.1: RELEASE events (a sprint with no live
+            // Sprint Stack row any more) also synthesize a row when no usable
+            // terminal file exists. Status names the event. CHILD_EXITED and
+            // FINISHED never synthesize. If one sprintId carries both
+            // LAUNCH_FAILED and a release event, LAUNCH_FAILED wins (it is
+            // the more specific cause); otherwise the last event wins.
+            const RELEASE_STATUS = new Map([
+                [HISTORY_EVENTS.ABORTED_BY_RESTART, 'aborted-by-restart'],
+                [HISTORY_EVENTS.FORCE_RELEASED, 'force-released'],
+                [HISTORY_EVENTS.AUTO_RELEASED, 'auto-released'],
+            ]);
+            const synthBySprintId = new Map();
             for (const e of history.list()) {
                 if (!e || typeof e.sprintId !== 'string') continue;
-                if (e.event !== HISTORY_EVENTS.LAUNCH_FAILED) continue;
+                const isLaunch = e.event === HISTORY_EVENTS.LAUNCH_FAILED;
+                if (!isLaunch && !RELEASE_STATUS.has(e.event)) continue;
                 if (producedIds.has(e.sprintId)) continue;
-                // history.list() is insertion order -- the last LAUNCH_FAILED
-                // event recorded for a given sprintId wins.
-                launchFailedBySprintId.set(e.sprintId, e);
+                const prior = synthBySprintId.get(e.sprintId);
+                if (prior && prior.status === 'launch-failed' && !isLaunch) continue;
+                // history.list() is insertion order -- the last event of the
+                // winning class recorded for a given sprintId wins.
+                synthBySprintId.set(e.sprintId, { e, status: isLaunch ? 'launch-failed' : RELEASE_STATUS.get(e.event) });
             }
-            for (const e of launchFailedBySprintId.values()) {
+            for (const { e, status } of synthBySprintId.values()) {
                 rows.push({
                     sprintId: e.sprintId,
                     verdict: null,
@@ -611,7 +628,7 @@ export function createFinishedRunsIndex(deps = {}) {
                     endedAt: typeof e.at === 'string' && e.at.length > 0 ? e.at : null,
                     goal: null,
                     workflowName: null,
-                    status: 'launch-failed',
+                    status,
                     reason: typeof e.reason === 'string' && e.reason.length > 0 ? e.reason : null,
                     hasTerminalState: false,
                 });

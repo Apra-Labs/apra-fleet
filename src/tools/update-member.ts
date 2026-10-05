@@ -33,7 +33,7 @@ export const updateMemberSchema = z.object({
     .regex(/^[^<>\n\r]+$/, 'host must not contain angle brackets or newlines')
     .optional()
     .describe('New host (remote members only)'),
-  port: z.number().optional().describe('New SSH port (remote members only)'),
+  port: z.number().int('port must be an integer').min(1, 'port must be between 1 and 65535').max(65535, 'port must be between 1 and 65535').optional().describe('New SSH port, 1-65535 (remote members only)'),
   username: z.string().optional().describe('New SSH username (remote members only)'),
   auth_type: z.enum(['password', 'key']).optional().describe('New auth method (remote members only)'),
   password: z.string().optional().describe('New SSH password. Omit for out-of-band entry — a password prompt will open in a separate terminal window. Supports {{secret.NAME}} token — value is resolved from the credential store before use.'),
@@ -52,7 +52,7 @@ export const updateMemberSchema = z.object({
   // Cloud fields
   cloud_region: z.string().optional().describe('AWS region for the cloud instance'),
   cloud_profile: z.string().optional().describe('AWS CLI profile name'),
-  cloud_idle_timeout_min: z.number().optional().describe('Minutes of inactivity before auto-stop'),
+  cloud_idle_timeout_min: z.number().min(1, 'cloud_idle_timeout_min must be at least 1 minute').max(1440, 'cloud_idle_timeout_min must be at most 1440 minutes (24 hours)').optional().describe('Minutes of inactivity before auto-stop (1-1440)'),
   cloud_activity_command: z.string().optional().describe('Custom shell command for workload detection. Must output "busy" or "idle". Pass empty string to clear.'),
   llm_provider: z.enum(['claude', 'codex', 'copilot', 'agy', 'opencode']).optional().describe('Change the LLM provider for this member.'),
   model_cheap: z.enum(CURATED_CHEAP_MODELS).optional().describe('Change custom cheap model'),
@@ -249,7 +249,7 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
   if (input.model_premium !== undefined) updates.modelPremium = input.model_premium;
   if (input.unattended !== undefined) updates.unattended = input.unattended === 'false' ? false : input.unattended;
   if (input.host) updates.host = input.host;
-  if (input.port) updates.port = input.port;
+  if (input.port !== undefined) updates.port = input.port;
   if (input.username) updates.username = input.username;
   if (input.auth_type) updates.authType = input.auth_type;
   if (preEncryptedPassword) {
@@ -274,7 +274,7 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
       const updatedCloud = { ...existing.cloud };
       if (input.cloud_region) updatedCloud.region = input.cloud_region;
       if (input.cloud_profile !== undefined) updatedCloud.profile = input.cloud_profile || undefined;
-      if (input.cloud_idle_timeout_min) updatedCloud.idleTimeoutMin = input.cloud_idle_timeout_min;
+      if (input.cloud_idle_timeout_min !== undefined) updatedCloud.idleTimeoutMin = input.cloud_idle_timeout_min;
       if (input.cloud_activity_command !== undefined) {
         updatedCloud.activityCommand = input.cloud_activity_command || undefined;
       }

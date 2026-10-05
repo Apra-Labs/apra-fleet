@@ -474,7 +474,7 @@ error naming the key (the member is not updated) -- they are no longer silently 
 | `friendly_name` | `string?` | New friendly name. |
 | `work_folder` | `string?` | New working directory. For non-local (remote/relay) members, must be a fully-qualified/absolute path (e.g. `/home/bella/repo` or `C:\Users\bella\repo`) -- tilde and relative paths are rejected. A folder may hold at most one LLM member and one LLM-less (llm_provider none) member. A real change removes what `compose_permissions` wrote in the OLD folder (per-folder `apra-fleet` MCP entry, permission keys, `.git/info/exclude` lines) and re-runs `compose_permissions`, so the new folder gets its `?member=<uuid>` entry at once. |
 | `host` | `string?` | New host (remote members only). |
-| `port` | `number?` | New SSH port (remote members only). |
+| `port` | `number?` | New SSH port (remote members only). Integer, 1-65535; out-of-range is rejected. |
 | `username` | `string?` | New SSH username (remote members only). |
 | `auth_type` | `"password" \| "key"?` | New SSH authentication method (remote members only). |
 | `password` | `string?` | New SSH password. Omit for out-of-band entry via terminal prompt. Supports secret variable tokens. |
@@ -485,7 +485,7 @@ error naming the key (the member is not updated) -- they are no longer silently 
 | `icon` | `string?` | Override the auto-assigned emoji icon. Use named aliases (blue-circle, green-square, red-circle, etc.) or pass raw emoji. |
 | `cloud_region` | `string?` | New AWS region for the cloud instance. |
 | `cloud_profile` | `string?` | New AWS CLI profile name. |
-| `cloud_idle_timeout_min` | `number?` | New minutes of inactivity before auto-stop. |
+| `cloud_idle_timeout_min` | `number?` | New minutes of inactivity before auto-stop (min: 1, max: 1440; out-of-range is rejected). |
 | `cloud_activity_command` | `string?` | New custom shell command for workload detection. Must output "busy" or "idle". Pass empty string to clear. |
 | `llm_provider` | `"claude" \| "codex" \| "copilot" \| "agy" \| "opencode"?` | Change the LLM provider for this member. A real change removes what `compose_permissions` wrote for the OLD provider (its permission file, its per-folder `apra-fleet` MCP entry, its `.git/info/exclude` lines; other MCP servers such as `deepwiki` are kept) and re-runs `compose_permissions` for the new one. Passing the current provider does nothing extra. |
 | `model_cheap` | `string?` | Change custom cheap model. |

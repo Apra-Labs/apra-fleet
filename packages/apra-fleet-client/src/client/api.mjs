@@ -275,7 +275,7 @@
  * @property {string} [work_folder] - New working directory. For non-local (remote/relay) members, must be a fully-qualified/absolute path -- "~" and relative paths are rejected. A folder may hold at most one LLM member and one LLM-less (llm_provider none) member.
  * @property {string} [host] - New host
  * @property {string} [username] - New SSH username
- * @property {number} [port] - New SSH port
+ * @property {number} [port] - New SSH port (integer, 1-65535; out-of-range values are rejected)
  * @property {"password" | "key"} [auth_type] - New auth method
  * @property {string} [password] - New SSH password
  * @property {boolean} [rotate_password] - Trigger out-of-band password re-entry for a member already using password auth. Ignored if auth_type is not password.
@@ -285,7 +285,7 @@
  * @property {string} [icon] - Override the auto-assigned emoji icon. Use named aliases (e.g. blue-circle, green-square) or a raw emoji.
  * @property {string} [cloud_region] - AWS region for the cloud instance
  * @property {string} [cloud_profile] - AWS CLI profile name
- * @property {number} [cloud_idle_timeout_min] - Minutes of inactivity before auto-stop
+ * @property {number} [cloud_idle_timeout_min] - Minutes of inactivity before auto-stop (1-1440; out-of-range values are rejected)
  * @property {string} [cloud_activity_command] - Custom shell command for workload detection. Must output "busy" or "idle". Pass empty string to clear.
  * @property {"claude" | "codex" | "copilot" | "agy" | "opencode"} [llm_provider] - Change the LLM provider
  * @property {"gpt-oss-120b" | "gpt-120" | "gemini-3.8-flash-low" | "haiku" | "gpt-5.4-mini"} [model_cheap] - Change custom cheap model

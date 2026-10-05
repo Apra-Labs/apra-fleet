@@ -52,7 +52,7 @@ export const FAILED_VERDICTS = Object.freeze(['FAIL', 'CHANGES_NEEDED', 'ABORTED
  * an operator-attention signal, never a declared ending (see watchdog.mjs's
  * file-level invariants).
  */
-export const FAILED_RUN_STATUSES = Object.freeze(['launch-failed', 'crashed', 'failed', 'aborted']);
+export const FAILED_RUN_STATUSES = Object.freeze(['launch-failed', 'crashed', 'failed', 'aborted', 'aborted-by-restart', 'force-released', 'auto-released']);
 
 /**
  * True when a run's (status, verdict) pair says it ended badly -- i.e. the

@@ -109,6 +109,43 @@ describe('updateMember', () => {
     expect(result).toContain('already uses folder "/srv/app" on host 10.0.0.1:2222');
   });
 
+  describe('numeric field validation (port, cloud_idle_timeout_min)', () => {
+    const base = { member_id: 'member-1' };
+
+    it.each([0, -1, 65536, 22.5])('schema rejects port %s', (port) => {
+      expect(updateMemberSchema.safeParse({ ...base, port }).success).toBe(false);
+    });
+
+    it('a rejected port never reaches the apply step, so the stored port is unchanged', async () => {
+      const agent = makeTestAgent({ id: 'member-1', port: 22 });
+      addAgent(agent);
+      const parsed = updateMemberSchema.safeParse({ ...base, port: 0 });
+      expect(parsed.success).toBe(false);
+      expect(getAllAgents().find(a => a.id === 'member-1')!.port).toBe(22);
+    });
+
+    it('persists a valid port (2222) on a remote member', async () => {
+      addAgent(makeTestAgent({ id: 'member-1', port: 22 }));
+      const parsed = updateMemberSchema.parse({ ...base, port: 2222 });
+      await updateMember(parsed);
+      expect(getAllAgents().find(a => a.id === 'member-1')!.port).toBe(2222);
+    });
+
+    it.each([0, 1441])('schema rejects cloud_idle_timeout_min %s', (v) => {
+      expect(updateMemberSchema.safeParse({ ...base, cloud_idle_timeout_min: v }).success).toBe(false);
+    });
+
+    it('persists cloud_idle_timeout_min 45 on a cloud member', async () => {
+      addAgent(makeTestAgent({
+        id: 'member-1',
+        cloud: { provider: 'aws', instanceId: 'i-1', region: 'us-east-1', idleTimeoutMin: 30 },
+      } as any));
+      const parsed = updateMemberSchema.parse({ ...base, cloud_idle_timeout_min: 45 });
+      await updateMember(parsed);
+      expect(getAllAgents().find(a => a.id === 'member-1')!.cloud!.idleTimeoutMin).toBe(45);
+    });
+  });
+
   it('allows host change when no collision exists', async () => {
     const agent1 = makeTestAgent({ id: 'member-1', host: '10.0.0.1', port: 22, workFolder: '/srv/app' });
     const agent2 = makeTestAgent({ id: 'member-2', host: '10.0.0.2', port: 22, workFolder: '/srv/other' });
