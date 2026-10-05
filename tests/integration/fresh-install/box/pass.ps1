@@ -130,6 +130,100 @@ function UpdateArgv {
 }
 function Ok($rc) { return "$rc" -eq '0' }
 
+# Summary of the ApraFleet task XML: logon=<DOMAIN\user|ANY-USER|none>
+# repeat=<interval|none> policy=<...> action=<wscript-launcher|bat|other:...>.
+# Sets $script:TaskMiss to what the NEW form lacks (empty = new form).
+function TaskSummary($id) {
+  Run $id 'task-xml' 'schtasks.exe' @('/query', '/tn', 'ApraFleet', '/xml')
+  $x = Get-Content -LiteralPath $script:LOG -Raw -Encoding UTF8
+  $logon = 'none'
+  if ($x -match '(?s)<LogonTrigger>(.*?)</LogonTrigger>') { $lt = $Matches[1]; if ($lt -match '<UserId>([^<]+)</UserId>') { $logon = $Matches[1].Trim() } else { $logon = 'ANY-USER' } }
+  $repeat = 'none'
+  if ($x -match '(?s)<TimeTrigger>(.*?)</TimeTrigger>') { if ($Matches[1] -match '<Interval>([^<]+)</Interval>') { $repeat = $Matches[1].Trim() } }
+  $policy = if ($x -match '<MultipleInstancesPolicy>([^<]+)<') { $Matches[1].Trim() } else { 'default' }
+  $cmd = if ($x -match '<Command>([^<]+)</Command>') { $Matches[1].Trim() } else { '' }
+  $targs = if ($x -match '<Arguments>([^<]+)</Arguments>') { $Matches[1].Trim() } else { '' }
+  $action = "other:$cmd $targs"
+  if ($cmd -match 'wscript\.exe"?$' -and $targs -match 'apra-fleet-service\.js') { $action = 'wscript-launcher' }
+  if ($cmd -match 'apra-fleet-service\.bat"?$' -and -not $targs) { $action = 'bat' }
+  $miss = @()
+  if (-not (Ok $script:RC)) { $miss += "task query failed (exit $($script:RC))" }
+  if ($logon -notmatch '\\') { $miss += 'user-scoped LogonTrigger' }
+  if ($repeat -ne 'PT5M') { $miss += 'PT5M revive TimeTrigger' }
+  if ($policy -ne 'IgnoreNew') { $miss += 'IgnoreNew policy' }
+  if ($action -like 'other:*') { $miss += 'wscript launcher (or .bat) action' }
+  $script:TaskMiss = $miss
+  return "logon=$logon repeat=$repeat policy=$policy action=$action"
+}
+# The task is the NEW form (optionally scoped to $wantUser).
+function TaskFormStep($id, $wantUser = '') {
+  $k = TaskSummary $id
+  $miss = @($script:TaskMiss)
+  if ($wantUser -and $k -notmatch ('logon=\S*\\' + [regex]::Escape($wantUser) + ' ')) { $miss += "LogonTrigger scoped to $wantUser" }
+  $obs = if ($miss.Count) { 'NOT the new task form; missing: ' + ($miss -join ', ') } else { 'new form' }
+  Rec $id 'schtasks /query /tn ApraFleet /xml (new form?)' ([int]($miss.Count -gt 0)) $k $obs
+}
+# apra-fleet status output ($file) shows no legacy-task hint.
+function NoLegacyHintStep($id, $file) {
+  $hit = Get-Content -LiteralPath $file -Encoding UTF8 -ErrorAction SilentlyContinue | Where-Object { $_ -match 'legacy task|upgrade needed|schtasks /delete' } | Select-Object -First 1
+  $svc = FirstMatch $file 'Service:'
+  if ($hit) { Rec $id 'apra-fleet status: no legacy-task hint' 1 $hit.Trim() 'status still reports a legacy task' }
+  elseif (-not $svc) { Rec $id 'apra-fleet status: no legacy-task hint' 1 (Head $file 160) 'status printed no Service: line (status did not run?)' }
+  else { Rec $id 'apra-fleet status: no legacy-task hint' 0 $svc 'no legacy hint' }
+}
+# Exactly one process listens on the server port, and it is apra-fleet.
+function OneServerStep($id) {
+  $pids = @(Get-NetTCPConnection -LocalPort 7523 -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique)
+  $names = @($pids | ForEach-Object { (Get-Process -Id $_ -ErrorAction SilentlyContinue).ProcessName })
+  $all = @(Get-Process apra-fleet -ErrorAction SilentlyContinue).Count
+  $ok = ($pids.Count -eq 1) -and ($names -join ',') -eq 'apra-fleet'
+  Rec $id 'Get-NetTCPConnection -LocalPort 7523 -State Listen' ([int](-not $ok)) "listeners=$($pids.Count) pids=$($pids -join ',') names=$($names -join ',')" "apra-fleet processes=$all"
+}
+
+# --- pass UL: a standard local user who cannot touch an elevated task -------
+$UlUser = 'fiuluser'
+$UlDir = 'C:\fi-ul'
+$UlPw = 'Fi-' + [guid]::NewGuid().ToString('N').Substring(0, 16) + '-a9Z'
+# Grant SeBatchLogonRight (scheduled task with stored password) to $sid.
+function GrantBatchLogon($sid) {
+  $inf = Join-Path $UlDir 'rights.inf'; $db = Join-Path $UlDir 'rights.sdb'
+  & secedit.exe /export /cfg $inf /areas USER_RIGHTS | Out-Null
+  $lines = Get-Content $inf
+  $found = $false
+  $lines = $lines | ForEach-Object { if ($_ -match '^SeBatchLogonRight\s*=') { $found = $true; "$_,*$sid" } else { $_ } }
+  if (-not $found) { $lines = $lines -replace '^\[Privilege Rights\]$', "[Privilege Rights]`r`nSeBatchLogonRight = *$sid" }
+  Set-Content -Path $inf -Value $lines -Encoding Unicode
+  & secedit.exe /configure /db $db /cfg $inf /areas USER_RIGHTS | Out-Null
+  return $LASTEXITCODE
+}
+# Run a command AS the standard user (scheduled task, stored password, limited
+# run level): no console, no TTY, no SESSIONNAME. Sets $script:RC/$script:LOG.
+function AsUser($id, $name, $exe, [string[]]$argv = @(), $timeoutSec = 900) {
+  $script:LOG = Join-Path $Logs "$id-$name.log"
+  $out = Join-Path $UlDir "$id-$name.out"; $rcf = Join-Path $UlDir "$id-$name.rc"; $cmdf = Join-Path $UlDir "$id-$name.cmd"
+  Remove-Item $out, $rcf -ErrorAction SilentlyContinue
+  $line = (Quote $exe) + ' ' + (($argv | ForEach-Object { Quote $_ }) -join ' ')
+  [IO.File]::WriteAllText($cmdf, "@echo off`r`n$line > `"$out`" 2>&1`r`necho %ERRORLEVEL%> `"$rcf`"`r`n", [Text.Encoding]::ASCII)
+  $tn = "fi-ul-$id-$name"
+  $script:RC = 'ERR not run'
+  try {
+    $act = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument "/d /c `"$cmdf`""
+    Register-ScheduledTask -TaskName $tn -Action $act -User "$env:COMPUTERNAME\$UlUser" -Password $UlPw -RunLevel Limited -Force | Out-Null
+    Start-ScheduledTask -TaskName $tn
+    $deadline = (Get-Date).AddSeconds($timeoutSec)
+    while (-not (Test-Path $rcf) -and (Get-Date) -lt $deadline) { Start-Sleep 2 }
+    if (Test-Path $rcf) { Start-Sleep 1; $script:RC = (Get-Content $rcf -Raw).Trim() }
+    else { $info = Get-ScheduledTaskInfo -TaskName $tn -ErrorAction SilentlyContinue; $script:RC = "ERR no result after ${timeoutSec}s (task last result $($info.LastTaskResult))" }
+  } catch { $script:RC = "ERR $($_.Exception.Message)" }
+  finally { Unregister-ScheduledTask -TaskName $tn -Confirm:$false -ErrorAction SilentlyContinue }
+  $text = if (Test-Path $out) { Get-Content $out -Raw -Encoding UTF8 } else { '(no output file)' }
+  [IO.File]::WriteAllText($script:LOG, "$text`r`n=== EXIT CODE: $($script:RC) ===`r`n", $Utf8)
+}
+function FirstMatch($file, $pattern) {
+  $m = Get-Content -LiteralPath $file -Encoding UTF8 -ErrorAction SilentlyContinue | Where-Object { $_ -match $pattern } | Select-Object -First 1
+  if ($m) { return $m.Trim() } else { return '' }
+}
+
 try {
   [IO.File]::WriteAllText($Res, '', $Utf8)
   Log "pass $Pass start; whoami=$(whoami)"
@@ -193,8 +287,12 @@ try {
       $keyAfter = FleetKeyHash; $kr = if ($keyBefore -eq $keyAfter -or $keyBefore -eq 'absent') { 0 } else { 1 }
       Rec U14 'sha256 ~\.apra-fleet\fleet.key before/after' $kr "before=$keyBefore after=$keyAfter"
       TaskStep U15 ApraFleet
-      Run U16 status $AF @('status'); Rec U16 'apra-fleet status' $RC (Key $LOG @('State:'))
+      Run U16 status $AF @('status'); Rec U16 'apra-fleet status' $RC (Key $LOG @('State:')); $StatusLog = $LOG
       Run U17 update-check $AF @('update', '--check'); Rec U17 'apra-fleet update --check' $RC (Key $LOG @('up to date', 'Update', 'Error'))
+      # The baseline's onlogon task was replaced by the new form (elevated runner: /create /xml /f allowed).
+      TaskFormStep U18
+      NoLegacyHintStep U19 $StatusLog
+      OneServerStep U20
     }
     'U2' {
       Run V01 base-version $BaseExe @('--version'); Rec V01 'base --version' $RC (Key $LOG @('apra-fleet v')) (VerOf $LOG)
@@ -215,7 +313,84 @@ try {
       $m = MemberHasDummy; $s = SecretHasDummy
       Rec V10 'registry.json fi-dummy + secret --list fi_dummy_secret' ([int](-not $m) + [int](-not $s)) "member=$(YesNo $m) secret=$(YesNo $s)"
       TaskStep V11 ApraFleet
-      Run V12 status $AF @('status'); Rec V12 'apra-fleet status' $RC (Key $LOG @('State:'))
+      Run V12 status $AF @('status'); Rec V12 'apra-fleet status' $RC (Key $LOG @('State:')); $StatusLog = $LOG
+      TaskFormStep V13
+      NoLegacyHintStep V14 $StatusLog
+      OneServerStep V15
+    }
+    'UL' {
+      # Probe (advisory): UAC policy and this context's integrity level -- whether
+      # a RunAs elevation could ever be auto-approved here.
+      $pol = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -ErrorAction SilentlyContinue
+      $il = ((& whoami.exe /groups 2>$null) | Where-Object { $_ -match 'Mandatory Label' } | ForEach-Object { ($_ -split '\s{2,}')[0] }) -join ','
+      Rec L00 'UAC policy + integrity level' 0 "EnableLUA=$($pol.EnableLUA) ConsentPromptBehaviorAdmin=$($pol.ConsentPromptBehaviorAdmin) PromptOnSecureDesktop=$($pol.PromptOnSecureDesktop) IL=$il SESSIONNAME=$env:SESSIONNAME user=$(whoami)"
+      # A standard local user: can never create/replace/disable a task an admin registered.
+      New-Item -ItemType Directory -Force $UlDir | Out-Null
+      & icacls.exe $UlDir /grant 'Users:(OI)(CI)M' | Out-Null
+      $o = (& net.exe user $UlUser $UlPw /add /passwordchg:no /expires:never 2>&1 | Out-String).Trim(); $rc = $LASTEXITCODE
+      $sid = ''
+      try { $sid = (New-Object Security.Principal.NTAccount($UlUser)).Translate([Security.Principal.SecurityIdentifier]).Value } catch { Log "sid lookup failed: $_" }
+      $grc = if ($sid) { GrantBatchLogon $sid } else { 'no sid' }
+      $admins = (& net.exe localgroup Administrators 2>$null | Out-String) -match "(?m)^$UlUser\s*$"
+      Copy-Item $CandExe (Join-Path $UlDir 'cand.exe') -Force; Copy-Item $BaseExe (Join-Path $UlDir 'base.exe') -Force
+      AsUser L01 whoami 'cmd.exe' @('/d', '/c', 'echo HOME=%USERPROFILE%& whoami /groups')
+      $UlHome = if ((Get-Content $LOG -Raw) -match 'HOME=(\S+)') { $Matches[1].Trim() } else { "C:\Users\$UlUser" }
+      $UlAF = Join-Path $UlHome '.apra-fleet\bin\apra-fleet.exe'
+      $UlData = Join-Path $UlHome '.apra-fleet\data'
+      $ok = ($rc -eq 0) -and $sid -and ("$grc" -eq '0') -and (-not $admins) -and (Ok $script:RC)
+      Rec L01 "net user $UlUser /add (standard user) + batch logon right; run as that user" ([int](-not $ok)) "net user rc=$rc sid=$sid secedit rc=$grc admin=$(YesNo $admins) as-user rc=$($script:RC) home=$UlHome" (FirstMatch $LOG 'Mandatory Label')
+
+      Run L02 base-version $BaseExe @('--version'); Rec L02 'base --version' $RC (Key $LOG @('apra-fleet v')) (VerOf $LOG)
+      # The baseline install as the standard user: its own onlogon /create is denied (non-fatal).
+      AsUser L03 base-install (Join-Path $UlDir 'base.exe') @('install', '--workflows', 'none')
+      Rec L03 "base install --workflows none (as $UlUser)" $RC (Key $LOG @('installed successfully', '^Error'))
+      # The legacy task exactly as the baseline registers it from an ELEVATED prompt
+      # (/tr <wrapper> /sc onlogon /rl limited), for this user. /ru+/rp (stored
+      # password) instead of the user's own interactive token: the user has no
+      # desktop session on the runner, and the task must still be able to run.
+      $wrapper = Join-Path $UlHome '.apra-fleet\bin\apra-fleet-service.bat'
+      Run L04 legacy-task 'schtasks.exe' @('/create', '/tn', 'ApraFleet', '/tr', $wrapper, '/sc', 'onlogon', '/rl', 'limited', '/ru', $UlUser, '/rp', $UlPw, '/f')
+      $lrc = $RC; $lk = Key $LOG @('SUCCESS', 'ERROR')
+      $k = TaskSummary L04
+      Rec L04 'admin: schtasks /create /tn ApraFleet /tr <wrapper> /sc onlogon /rl limited (legacy task)' $lrc $k $lk
+      Run L05 legacy-run 'schtasks.exe' @('/run', '/tn', 'ApraFleet')
+      HealthStep L05 120
+
+      # Upgrade as the standard user: /create /xml /f must be denied -> legacy task reused.
+      AsUser L06 upgrade (Join-Path $UlDir 'cand.exe') @('install', '--force', '--workflows', 'none')
+      $UpLog = $LOG
+      Rec L06 "cand install --force --workflows none (as $UlUser)" $RC (Key $LOG @('installed successfully', 'NOT running', '^Error'))
+      $reused = FirstMatch $UpLog 'existing task reused'
+      $guid = FirstMatch $UpLog 'registered by an older apra-fleet from an elevated prompt'
+      $why = if (-not $reused) { "no 'existing task reused': the standard user's /create was NOT denied, so the legacy precondition did not hold" } elseif (-not $guid) { 'reused, but no legacy-task guidance printed' } else { 'reused with guidance' }
+      Rec L07 'install output: legacy task reused + guidance' ([int](-not ($reused -and $guid))) "$reused | $guid" $why
+      $elev = FirstMatch $UpLog 'Requesting a one-time Windows elevation|Elevation declined|elevated step could not be started|elevated delete'
+      Rec L08 'no elevation attempted (non-interactive)' ([int][bool]$elev) $(if ($elev) { $elev } else { 'no elevation attempted' })
+      $k = TaskSummary L09
+      $kept = $k -match 'logon=ANY-USER repeat=none' -and $k -match 'action=bat'
+      Rec L09 'legacy task still in place (not replaced)' ([int](-not $kept)) $k $(if ($kept) { 'legacy task kept' } else { 'the legacy task was changed although the standard user cannot change it' })
+      $nf = Join-Path $UlData 'service-notice.json'
+      $nt = Get-Content $nf -Raw -ErrorAction SilentlyContinue
+      $nok = $nt -and $nt -match 'schtasks /delete /tn ApraFleet /f' -and $nt -match 'no automatic revive'
+      Rec L10 "notice file $nf" ([int](-not $nok)) $(if ($nt) { Head $nf 160 } else { 'service-notice.json missing' })
+      $fl = Join-Path $UlData 'fleet.log'
+      $ll = FirstMatch $fl 'apra-fleet install: The ApraFleet scheduled task was registered by an older apra-fleet'
+      Rec L11 "fleet.log has the legacy-task guidance" ([int](-not $ll)) $(if ($ll) { $ll } else { "no 'apra-fleet install: The ApraFleet scheduled task ...' line in $fl" })
+      # The server came back through the OLD task.
+      HealthStep L12 120
+      AsUser L13 status $UlAF @('status')
+      $hint = FirstMatch $LOG 'legacy task \(upgrade needed:'; $fix = FirstMatch $LOG 'schtasks /delete /tn ApraFleet /f'
+      Rec L13 "apra-fleet status (as $UlUser) shows the legacy hint + fix" ([int](-not ($hint -and $fix))) "$hint | $fix" $(if (-not $hint) { 'no legacy task (upgrade needed: ...) hint' } elseif (-not $fix) { 'hint without the schtasks /delete fix' } else { 'hint + fix' })
+
+      # The documented fix: elevated delete, then a normal-user install --force.
+      Run L14 fix-delete 'schtasks.exe' @('/delete', '/tn', 'ApraFleet', '/f'); Rec L14 'admin: schtasks /delete /tn ApraFleet /f' $RC (Key $LOG @('SUCCESS', 'ERROR'))
+      AsUser L15 fix-install $UlAF @('install', '--force', '--workflows', 'none')
+      Rec L15 "apra-fleet install --force --workflows none (as $UlUser)" $RC (Key $LOG @('installed successfully', '^Error'))
+      TaskFormStep L16 $UlUser
+      $gone = -not (Test-Path (Join-Path $UlData 'service-notice.json'))
+      Rec L17 'service-notice.json removed by the new task' ([int](-not $gone)) $(if ($gone) { 'notice cleared' } else { 'service-notice.json still present after the new task was installed' })
+      AsUser L18 status-after $UlAF @('status')
+      NoLegacyHintStep L18 $LOG
     }
     default { Log "unknown pass $Pass" }
   }
