@@ -262,6 +262,26 @@ export const SCENARIO = [
   // kb_bible_commit merges the promoted FOO entry into repo A's bible at entry
   // level with explicit base-branch provenance (local commit only, no push).
   { tool: 'kb_bible_commit', case: 'happy', derive: { ids: ['FOO'] } },
+  // basis-mismatch: a CONFIRMED entry whose cited file is edited after capture is
+  // skipped by kb_bible_commit (same basis rule as kb_export).
+  {
+    tool: 'kb_capture',
+    case: 'setup-for-bible-commit-basis-mismatch',
+    captureId: 'DRIFT',
+    setup: [
+      { op: 'write', repo: 'A', rel: 'src/basis-drift.ts', contents: 'export const drift = 1;\n' },
+    ],
+  },
+  { tool: 'kb_promote', case: 'setup-first-promote-for-bible-commit-basis-mismatch', derive: { id: 'DRIFT' } },
+  { tool: 'kb_promote', case: 'setup-second-promote-for-bible-commit-basis-mismatch', derive: { id: 'DRIFT' } },
+  {
+    tool: 'kb_bible_commit',
+    case: 'basis-mismatch',
+    derive: { ids: ['DRIFT'] },
+    setup: [
+      { op: 'write', repo: 'A', rel: 'src/basis-drift.ts', contents: 'export const drift = 2;\n' },
+    ],
+  },
   { tool: 'kb_query', case: 'happy-confirmed-only', assertParsed: assertConfirmedOnly },
   { tool: 'kb_stats', case: 'happy' },
   { tool: 'kb_import', case: 'happy' },

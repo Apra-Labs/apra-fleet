@@ -352,7 +352,7 @@ The SQLite database is one developer's private, warm working memory. The
   Cold-seed never writes the database and never activates a directive; the write
   path into a warm KB is `kb_import` (see below).
 
-Member sessions read the bible through an in-memory view, and sprint writes are routed through one maintainer per repository that commits each round with `kb_bible_commit`; see [kb-member-view-and-maintainer.md](kb-member-view-and-maintainer.md).
+Member sessions read the bible through an in-memory view, and sprint writes are routed through one maintainer per repository that commits each round with `kb_bible_commit`; see [kb-member-view-and-maintainer.md](kb-member-view-and-maintainer.md). Both `kb_bible_commit` and `kb_export` (scope=project) admit an entry only through the same basis predicate: every cited source file must still hash to its recorded basis, otherwise `kb_bible_commit` skips the id with reason `basis_mismatch`.
 
 ### Why the DB is central and the bible is in-repo
 

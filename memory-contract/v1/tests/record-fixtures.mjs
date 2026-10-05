@@ -421,6 +421,37 @@ if (idFoo) {
   });
 }
 
+// Basis skip: a CONFIRMED entry whose cited file was edited after capture fails
+// the shared bible basis predicate (same rule as kb_export) and is reported in
+// skipped with reason basis_mismatch; the bible is left untouched.
+{
+  fs.writeFileSync(path.join(repoA, 'src', 'basis-drift.ts'), 'export const drift = 1;\n');
+  const captureDrift = await recordHappy('kb_capture', 'setup-for-bible-commit-basis-mismatch', {
+    type: 'knowledge',
+    title: 'Entry whose cited file changes after capture',
+    summary: 'Set up to demonstrate the kb_bible_commit basis_mismatch skip reason.',
+    content: 'This entry cites src/basis-drift.ts, which is edited after the entry is promoted to CONFIRMED.',
+    source_files: ['src/basis-drift.ts'],
+  });
+  const idDrift = parseEnvelopeText(captureDrift)?.id;
+  if (idDrift) {
+    await recordHappy('kb_promote', 'setup-first-promote-for-bible-commit-basis-mismatch', {
+      id: idDrift,
+      reason: 'First promotion (UNVERIFIED -> INFERRED) of the entry used by the basis_mismatch fixture.',
+    });
+    await recordHappy('kb_promote', 'setup-second-promote-for-bible-commit-basis-mismatch', {
+      id: idDrift,
+      reason: 'Second promotion (INFERRED -> CONFIRMED) while the cited file still matches the capture basis.',
+    });
+    fs.writeFileSync(path.join(repoA, 'src', 'basis-drift.ts'), 'export const drift = 2;\n');
+    await recordHappy('kb_bible_commit', 'basis-mismatch', {
+      ids: [idDrift],
+      baseBranch: 'main',
+      baseCommit: '0123456789abcdef0123456789abcdef01234567',
+    });
+  }
+}
+
 // --- kb_query trust filters (after kb_promote, so idFoo is CONFIRMED) -------
 // Same query as kb_query/happy, restricted to CONFIRMED and non-disputed
 // entries: the INFERRED context-cache entry that happy.json returns must be
