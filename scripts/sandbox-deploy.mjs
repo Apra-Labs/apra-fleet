@@ -715,7 +715,7 @@ export async function teardown(sprintId, { home = os.homedir(), foreignPorts = [
   // 1. Supervisor: graceful shutdown only if the port answers with OUR pid.
   if (values.SUPERVISOR_PID && isPidAlive(values.SUPERVISOR_PID)) {
     const supervisorToken = sandboxSupervisorToken(values);
-    const h =await getJson(`http://127.0.0.1:${supervisorPort}/api/health`, 2000, supervisorToken);
+    const h = await getJson(`http://127.0.0.1:${supervisorPort}/api/health`, 2000, supervisorToken);
     if (h && String(h.pid) === values.SUPERVISOR_PID) {
       await postJson(`http://127.0.0.1:${supervisorPort}/api/shutdown`, 2000, supervisorToken);
       await waitForExit(values.SUPERVISOR_PID, 5000);

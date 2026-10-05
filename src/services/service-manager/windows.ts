@@ -458,7 +458,9 @@ export class WindowsServiceManager implements ServiceManager {
     fs.mkdirSync(path.dirname(this.wrapperPath), { recursive: true });
     // The wrapper's >> redirect fails (exit 1, nothing logged) when the log
     // dir is missing; create it now -- the wrapper also re-creates it.
-    try { fs.mkdirSync(path.win32.dirname(logPath), { recursive: true }); } catch { /* the wrapper retries */ }
+    // Host path module (identical on win32): path.win32.dirname on a POSIX
+    // host turns 'C:\\log.txt' into a backslash-named dir in the cwd.
+    try { fs.mkdirSync(path.dirname(logPath), { recursive: true }); } catch { /* the wrapper retries */ }
     fs.writeFileSync(this.wrapperPath, buildWrapperBat(binaryPath, args, logPath, {
       serviceMarker: this.isMcpServer,
       workingDirectory: options.workingDirectory,
