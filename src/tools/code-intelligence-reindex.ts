@@ -319,11 +319,15 @@ export function spawnAnalyze(repoPath: string, opts: { auto?: boolean } = {}): S
       autoPaused = prev?.autoPaused;
     }
     state.set(repoPath, { lastFinishedAt: Date.now(), autoPaused });
-    if (autoPaused && auto) {
-      logWarn('code-intelligence-reindex', `automatic reindex for ${repoPath} ended ${status.result} without a ready index; automatic rebuilds paused until code_reindex or a server restart`);
-    }
+    // One warning per finished run: the failure detail and, for an automatic
+    // run, that automatic rebuilds are now paused.
+    const pausedNote = autoPaused && auto
+      ? '; automatic rebuilds paused until code_reindex or a server restart'
+      : '';
     if (status.result === 'failed') {
-      logWarn('code-intelligence-reindex', `background reindex for ${repoPath} ended failed (${errMsg ?? `exit ${code}`}): ${lines.slice(-5).join(' | ')}`);
+      logWarn('code-intelligence-reindex', `background reindex for ${repoPath} ended failed (${errMsg ?? `exit ${code}`}): ${lines.slice(-5).join(' | ')}${pausedNote}`);
+    } else if (pausedNote) {
+      logWarn('code-intelligence-reindex', `automatic reindex for ${repoPath} ended ${status.result} without a ready index${pausedNote}`);
     }
   };
 
