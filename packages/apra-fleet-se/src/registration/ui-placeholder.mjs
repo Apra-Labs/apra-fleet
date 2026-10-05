@@ -40,6 +40,7 @@
 // =============================================================================
 
 import { buildManifest } from './manifest.mjs';
+import { THEME_CSS } from '../supervisor/theme.mjs';
 
 // Exported (not just module-private) so a sibling page module that swaps in
 // real content for ONE manifest path via the staticHandler seam below (e.g.
@@ -48,7 +49,14 @@ import { buildManifest } from './manifest.mjs';
 // placeholder byte-for-byte, instead of hand-copying this HTML.
 export const PLACEHOLDER_HTML = `<!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><title>fleet-supervisor UI</title></head>
+<head>
+<meta charset="utf-8">
+<title>fleet-supervisor UI</title>
+<style>
+${THEME_CSS}
+body { padding: 20px; }
+</style>
+</head>
 <body>
 <p>fleet-supervisor UI arrives in a later sprint.</p>
 </body>
