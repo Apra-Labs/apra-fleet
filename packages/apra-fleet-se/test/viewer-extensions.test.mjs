@@ -1492,9 +1492,10 @@ describe('beadsExtension.js: description expand state and render throttle', () =
         t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 1_000_000 });
         const s = setup();
         s.push([{ id: 'P', title: 'parent', status: 'open' }, { id: 'C', parent: 'P', title: 'child', status: 'open' }]);
+        assert.ok(s.html().includes('#C</td>'), 'C visible before folding P');
         const before = s.writes();
         s.listeners['click'][0]({ target: { closest: () => ({ dataset: { toggleId: 'P' } }) } });
         assert.strictEqual(s.writes(), before + 1);
-        assert.ok(!s.html().includes('>#C<'));
+        assert.ok(!s.html().includes('#C</td>'));
     });
 });
