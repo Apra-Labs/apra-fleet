@@ -83,6 +83,15 @@ function quietExec(cmd: string, args: string[]): Buffer {
 const defaultSchtasksRunner: SchtasksRunner = (args) => quietExec('schtasks', args);
 const defaultRegRunner: RegRunner = (args) => quietExec('reg', args);
 
+/**
+ * The schtasks error text of a failed run, without execFileSync's
+ * "Command failed: <command line>" prefix, on one line.
+ */
+export function schtasksErrorReason(msg: string): string {
+  const lines = msg.split(/\r?\n/).map(l => l.trim()).filter(l => l && !/^Command failed:/i.test(l));
+  return lines.join(' ') || msg.trim() || '(no error text)';
+}
+
 /** A PowerShell single-quoted string literal. */
 function psQuote(s: string): string {
   return `'${s.replace(/'/g, "''")}'`;
@@ -675,7 +684,9 @@ export class WindowsServiceManager implements ServiceManager {
     }
 
     // Last resort: a per-user HKCU Run entry. Logon autostart only -- nothing
-    // revives a server that dies mid-session.
+    // revives a server that dies mid-session. Say WHY the task was refused:
+    // without it the fallback is undiagnosable.
+    console.warn(`    schtasks /create failed: ${schtasksErrorReason(createMsg)}`);
     if (!hidden) visibleFallback();
     clearServiceNotice(this.noticePath);
     try {
