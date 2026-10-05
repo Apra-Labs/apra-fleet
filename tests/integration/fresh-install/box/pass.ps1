@@ -183,87 +183,50 @@ function OneServerStep($id) {
 }
 
 # --- pass UL: the same user, NOT elevated ------------------------------------
-# A 0.4.3 user's "normal shell": the same account without its admin rights.
-# The runner account never gets a UAC-filtered token: a Limited scheduled task
-# ran at High integrity, and runas /trustlevel:0x20000 made Administrators
-# deny-only but stayed High -- and a task registered elevated stays writable
-# from High. AsLimited below builds the Medium token UAC would.
+# A 0.4.3 user's "normal shell": a real logon of the same account, which UAC
+# gives the filtered token (Medium, Administrators deny-only). The runner
+# account is the built-in Administrator (RID 500), which without Admin Approval
+# Mode is never filtered, and a token synthesized from the elevated one
+# (CreateRestrictedToken) is refused by Task Scheduler although a real filtered
+# logon is not. So UL turns Admin Approval Mode on for the built-in account and
+# runs each non-elevated step in a NEW logon of the same account (seclogon,
+# throwaway password): the token UAC really gives a normal shell. Only on a
+# disposable box (Windows Sandbox, or the host driver's --i-am-disposable).
 $UlDir = Join-Path $env:SystemDrive 'fi-ul'
 # Absolute: Git for Windows puts a GNU whoami on PATH that rejects /groups.
 $WhoAmI = Join-Path $env:SystemRoot 'System32\whoami.exe'
+$UacKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+$script:UlCred = $null
+$script:UlAamSet = $false
+$script:UlAamPrev = $null
 # Integrity level of the current context, e.g. "High Mandatory Level".
 function IntegrityLevel {
   $row = (& $WhoAmI /groups /fo csv 2>$null) | ConvertFrom-Csv | Where-Object { $_.'Group Name' -like 'Mandatory Label\*' } | Select-Object -First 1
   if ($row) { return ($row.'Group Name' -replace '^Mandatory Label\\', '') } else { return 'unknown' }
 }
-# A normal (non-elevated) shell's token for THIS user, built the way UAC builds
-# it: a LUA-restricted copy of our own token (Administrators deny-only, no
-# admin privileges) lowered to Medium integrity. CreateProcessAsUser needs no
-# extra privilege for a restricted copy of the caller's own token.
-$FiLimitedSrc = @'
-using System;
-using System.Runtime.InteropServices;
-using System.Text;
-public static class FiLimited {
-  [StructLayout(LayoutKind.Sequential)] struct SID_AND_ATTRIBUTES { public IntPtr Sid; public uint Attributes; }
-  [StructLayout(LayoutKind.Sequential)] struct TOKEN_MANDATORY_LABEL { public SID_AND_ATTRIBUTES Label; }
-  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] struct STARTUPINFO {
-    public int cb; public string lpReserved; public string lpDesktop; public string lpTitle;
-    public int dwX, dwY, dwXSize, dwYSize, dwXCountChars, dwYCountChars, dwFillAttribute, dwFlags;
-    public short wShowWindow, cbReserved2; public IntPtr lpReserved2, hStdInput, hStdOutput, hStdError; }
-  [StructLayout(LayoutKind.Sequential)] struct PROCESS_INFORMATION { public IntPtr hProcess, hThread; public int dwProcessId, dwThreadId; }
-  [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
-  [DllImport("advapi32.dll", SetLastError = true)] static extern bool OpenProcessToken(IntPtr h, uint access, out IntPtr tok);
-  [DllImport("advapi32.dll", SetLastError = true)] static extern bool CreateRestrictedToken(IntPtr existing, uint flags,
-    uint disableSidCount, IntPtr sidsToDisable, uint deletePrivCount, IntPtr privsToDelete, uint restrictedSidCount, IntPtr sidsToRestrict, out IntPtr newToken);
-  [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)] static extern bool ConvertStringSidToSid(string s, out IntPtr sid);
-  [DllImport("advapi32.dll")] static extern int GetLengthSid(IntPtr sid);
-  [DllImport("advapi32.dll", SetLastError = true)] static extern bool SetTokenInformation(IntPtr tok, int cls, ref TOKEN_MANDATORY_LABEL info, int len);
-  [DllImport("advapi32.dll", SetLastError = true, EntryPoint = "SetTokenInformation")] static extern bool SetTokenPtr(IntPtr tok, int cls, ref IntPtr info, int len);
-  [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)] static extern bool ConvertStringSecurityDescriptorToSecurityDescriptor(string sddl, uint rev, out IntPtr sd, IntPtr size);
-  [DllImport("advapi32.dll", SetLastError = true)] static extern bool GetSecurityDescriptorDacl(IntPtr sd, out bool present, out IntPtr dacl, out bool defaulted);
-  [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)] static extern bool CreateProcessAsUser(IntPtr tok, string app,
-    StringBuilder cmd, IntPtr pa, IntPtr ta, bool inherit, uint flags, IntPtr env, string dir, ref STARTUPINFO si, out PROCESS_INFORMATION pi);
-  [DllImport("kernel32.dll")] static extern uint WaitForSingleObject(IntPtr h, uint ms);
-  [DllImport("kernel32.dll")] static extern bool GetExitCodeProcess(IntPtr h, out uint code);
-  [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
-  static Exception Fail(string what) { return new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), what); }
-  // Exit code of cmdLine run with the restricted Medium token; -2 on timeout.
-  public static int Run(string cmdLine, int timeoutMs, string userSid) {
-    IntPtr tok, rtok, sid, usid, sd, dacl; bool present, defaulted;
-    // ASSIGN_PRIMARY | DUPLICATE | QUERY | ADJUST_DEFAULT | ADJUST_SESSIONID
-    if (!OpenProcessToken(GetCurrentProcess(), 0x1 | 0x2 | 0x8 | 0x80 | 0x100, out tok)) throw Fail("OpenProcessToken");
-    // DISABLE_MAX_PRIVILEGE | LUA_TOKEN
-    if (!CreateRestrictedToken(tok, 0x1 | 0x4, 0, IntPtr.Zero, 0, IntPtr.Zero, 0, IntPtr.Zero, out rtok)) throw Fail("CreateRestrictedToken");
-    if (!ConvertStringSidToSid("S-1-16-8192", out sid)) throw Fail("ConvertStringSidToSid");
-    TOKEN_MANDATORY_LABEL tml = new TOKEN_MANDATORY_LABEL();
-    tml.Label.Sid = sid; tml.Label.Attributes = 0x20; // SE_GROUP_INTEGRITY
-    if (!SetTokenInformation(rtok, 25, ref tml, Marshal.SizeOf(tml) + GetLengthSid(sid))) throw Fail("SetTokenInformation(TokenIntegrityLevel)");
-    // The elevated token's default owner (BUILTIN\Administrators) and default
-    // DACL (Administrators + SYSTEM) were copied, and Administrators is now
-    // deny-only, so every object this token creates (a task registration
-    // included) was refused. UAC's filtered token has the user as owner and a
-    // DACL granting the user: set the same.
-    if (!ConvertStringSidToSid(userSid, out usid)) throw Fail("ConvertStringSidToSid(user)");
-    if (!SetTokenPtr(rtok, 4, ref usid, IntPtr.Size)) throw Fail("SetTokenInformation(TokenOwner)");
-    if (!ConvertStringSecurityDescriptorToSecurityDescriptor("D:(A;;GA;;;" + userSid + ")(A;;GA;;;SY)", 1, out sd, IntPtr.Zero)) throw Fail("ConvertStringSecurityDescriptorToSecurityDescriptor");
-    if (!GetSecurityDescriptorDacl(sd, out present, out dacl, out defaulted)) throw Fail("GetSecurityDescriptorDacl");
-    if (!SetTokenPtr(rtok, 6, ref dacl, IntPtr.Size)) throw Fail("SetTokenInformation(TokenDefaultDacl)");
-    STARTUPINFO si = new STARTUPINFO(); si.cb = Marshal.SizeOf(si);
-    PROCESS_INFORMATION pi;
-    // CREATE_NO_WINDOW
-    if (!CreateProcessAsUser(rtok, null, new StringBuilder(cmdLine), IntPtr.Zero, IntPtr.Zero, false, 0x08000000, IntPtr.Zero, null, ref si, out pi)) throw Fail("CreateProcessAsUser");
-    try {
-      if (WaitForSingleObject(pi.hProcess, (uint)timeoutMs) != 0) return -2;
-      uint code; GetExitCodeProcess(pi.hProcess, out code); return (int)code;
-    } finally { CloseHandle(pi.hProcess); CloseHandle(pi.hThread); CloseHandle(rtok); CloseHandle(tok); }
+# Prepares the filtered logon of THIS account; returns what it changed.
+function EnableLimitedLogon {
+  $did = @()
+  if ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value -match '-500$') {
+    $script:UlAamPrev = (Get-ItemProperty $UacKey -Name FilterAdministratorToken -ErrorAction SilentlyContinue).FilterAdministratorToken
+    Set-ItemProperty $UacKey -Name FilterAdministratorToken -Value 1 -Type DWord
+    $script:UlAamSet = $true
+    $did += 'built-in Administrator: Admin Approval Mode on'
   }
+  $pw = 'Fi9!' + ([guid]::NewGuid().ToString('N').Substring(0, 20))
+  & net.exe user $env:USERNAME $pw 2>&1 | Out-Null
+  $did += "throwaway password (net user exit $LASTEXITCODE)"
+  $script:UlCred = New-Object Management.Automation.PSCredential("$env:COMPUTERNAME\$env:USERNAME", (ConvertTo-SecureString $pw -AsPlainText -Force))
+  return ($did -join '; ')
 }
-'@
-# Run a command as THIS user with that non-elevated token: no console, no TTY,
-# so no prompt is possible. Sets $script:RC/$script:LOG/$script:LimToken.
+function RestoreLimitedLogon {
+  if (-not $script:UlAamSet) { return }
+  if ($null -eq $script:UlAamPrev) { Remove-ItemProperty $UacKey -Name FilterAdministratorToken -ErrorAction SilentlyContinue }
+  else { Set-ItemProperty $UacKey -Name FilterAdministratorToken -Value $script:UlAamPrev -Type DWord }
+}
+# Run a command in a new logon of THIS user (the non-elevated token): output to
+# files, no TTY, so no prompt is possible. Sets $script:RC/$script:LOG/$script:LimToken.
 function AsLimited($id, $name, $exe, [string[]]$argv = @(), $timeoutSec = 900) {
-  if (-not ('FiLimited' -as [type])) { Add-Type -TypeDefinition $FiLimitedSrc -Language CSharp }
   $script:LOG = Join-Path $Logs "$id-$name.log"
   $out = Join-Path $UlDir "$id-$name.out"; $rcf = Join-Path $UlDir "$id-$name.rc"; $cmdf = Join-Path $UlDir "$id-$name.cmd"
   Remove-Item $out, $rcf, "$rcf.tmp" -ErrorAction SilentlyContinue
@@ -274,11 +237,12 @@ function AsLimited($id, $name, $exe, [string[]]$argv = @(), $timeoutSec = 900) {
   [IO.File]::WriteAllText($cmdf, "@echo off`r`n`"$WhoAmI`" /groups /fo csv > `"$ilf`" 2>&1`r`n$line > `"$out`" 2>&1`r`n>`"$rcf.tmp`" echo %ERRORLEVEL%`r`nmove /y `"$rcf.tmp`" `"$rcf`" >nul`r`n", [Text.Encoding]::ASCII)
   $script:RC = 'ERR not run'
   try {
-    $code = [FiLimited]::Run("cmd.exe /d /c `"$cmdf`"", $timeoutSec * 1000, [Security.Principal.WindowsIdentity]::GetCurrent().User.Value)
-    if ($code -eq -2) { $script:RC = "ERR timeout after ${timeoutSec}s (restricted-token process)" }
+    if (-not $script:UlCred) { throw 'no limited logon prepared' }
+    $p = Start-Process cmd.exe -ArgumentList @('/d', '/c', "`"$cmdf`"") -Credential $script:UlCred -WorkingDirectory $UlDir -PassThru -ErrorAction Stop
+    if (-not $p.WaitForExit($timeoutSec * 1000)) { try { $p.Kill() } catch {}; $script:RC = "ERR timeout after ${timeoutSec}s (limited logon)" }
     elseif (Test-Path $rcf) { $script:RC = ([string](Get-Content $rcf -Raw)).Trim() }
-    else { $script:RC = "$code" }
-  } catch { $script:RC = "ERR restricted-token launch failed: $($_.Exception.InnerException.Message)$($_.Exception.Message)" }
+    else { $script:RC = "$($p.ExitCode)" }
+  } catch { $script:RC = "ERR limited-logon launch failed: $($_.Exception.Message)" }
   $script:LimToken = 'token unknown (no whoami output)'
   try {
     $rows = Get-Content $ilf -ErrorAction Stop | ConvertFrom-Csv
@@ -396,10 +360,11 @@ try {
       New-Item -ItemType Directory -Force $UlDir | Out-Null
       # Created elevated (owner Administrators): let the filtered token write its results.
       & icacls.exe $UlDir /grant '*S-1-5-11:(OI)(CI)M' | Out-Null
+      $prep = EnableLimitedLogon
       # The same user's filtered token must be MEDIUM integrity (not elevated).
       AsLimited L01 whoami $WhoAmI @('/groups', '/fo', 'csv') 120
       $medium = $script:LimToken -match 'IL=Medium Mandatory Level' -and $script:LimToken -match 'Administrators=Group used for deny only'
-      Rec L01 'limited-token context of the same user is not elevated' ([int](-not ($medium -and (Ok $RC)))) "rc=$RC $($script:LimToken)" $(if ($medium) { 'medium integrity' } else { 'the restricted-token process did not run at Medium integrity with Administrators deny-only, so it cannot stand in for a normal shell' })
+      Rec L01 'limited-token context of the same user is not elevated' ([int](-not ($medium -and (Ok $RC)))) "rc=$RC $($script:LimToken) | $prep" $(if ($medium) { 'medium integrity' } else { 'the new logon of this user did not run at Medium integrity with Administrators deny-only, so it cannot stand in for a normal shell' })
 
       Run L02 base-version $BaseExe @('--version'); Rec L02 'base --version' $RC (Key $LOG @('apra-fleet v')) (VerOf $LOG)
       # The baseline install from the ELEVATED runner context, as 0.4.3 users had to:
@@ -437,8 +402,9 @@ try {
 
       # The documented fix: elevated delete, then a non-elevated install --force.
       Run L14 fix-delete 'schtasks.exe' @('/delete', '/tn', 'ApraFleet', '/f'); Rec L14 'elevated: schtasks /delete /tn ApraFleet /f' $RC (Key $LOG @('SUCCESS', 'ERROR'))
-      # Runner artifact, NOT part of the documented fix: this account has no
-      # filtered token, so the legacy task ran the server at High integrity,
+      # Runner artifact, NOT part of the documented fix: this account's desktop
+      # session logged on unfiltered (before Admin Approval Mode was turned on),
+      # so the legacy task ran the server at High integrity,
       # which no Medium process may stop. On a real UAC machine the task
       # (/rl limited, the user's interactive token) runs it at Medium and the
       # install --force below stops it itself. Stop it elevated here instead.
@@ -460,72 +426,13 @@ try {
       AsLimited L21 probe-task 'schtasks.exe' @('/create', '/tn', 'ApraFleetULProbe', '/sc', 'once', '/st', '23:59', '/tr', 'cmd.exe /c exit', '/rl', 'limited', '/f') 120
       Rec L21 'diag: Medium token creates a plain probe task' $RC (Key $LOG @('SUCCESS', 'ERROR')) $script:LimToken
       Run L21x probe-delete 'schtasks.exe' @('/delete', '/tn', 'ApraFleetULProbe', '/f')
-      # Diagnostics (advisory): is task creation denied to every non-admin on this
-      # OS (Server SKU / root task folder SD), or only to the synthesized token?
-      $os = Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue
-      $rootSd = 'unreadable'
-      try {
-        $b = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Schedule\TaskCache\Tree' -Name SD -ErrorAction Stop).SD
-        $rootSd = (New-Object Security.AccessControl.RawSecurityDescriptor($b, 0)).GetSddlForm('All')
-      } catch { $rootSd = "unreadable: $($_.Exception.Message)" }
-      [IO.File]::WriteAllText((Join-Path $Logs 'L22-root-sd.log'), "os=$($os.Caption) $($os.Version) ProductType=$($os.ProductType)`r`nroot task folder SD: $rootSd`r`n", $Utf8)
-      Rec L22 'diag: OS SKU + root task folder SD' 0 "ProductType=$($os.ProductType) $($os.Caption) | $rootSd"
-      Run L23 tasks-dir-acl 'icacls.exe' @((Join-Path $env:SystemRoot 'System32\Tasks'))
-      Rec L23 'diag: icacls System32\Tasks' $RC ((Get-Content $LOG -ErrorAction SilentlyContinue | Where-Object { $_ -match '\S' } | Select-Object -First 8 | ForEach-Object { $_.Trim() }) -join ' | ')
-      foreach ($pr in @(@{ id = 'L24'; user = 'fi-std'; admin = $false }, @{ id = 'L25'; user = 'fi-adm'; admin = $true })) {
-        # A real logon (CreateProcessWithLogonW): a standard user's token, or an
-        # admin's UAC-filtered token -- the token a normal shell really gets.
-        $pw = 'Fi9!' + ([guid]::NewGuid().ToString('N').Substring(0, 16))
-        & net.exe user $pr.user $pw /add /y 2>&1 | Out-Null
-        if ($pr.admin) { & net.exe localgroup Administrators $pr.user /add 2>&1 | Out-Null }
-        $po = Join-Path $UlDir "$($pr.id).out"; $pil = "$po.il"; $pc = Join-Path $UlDir "$($pr.id).cmd"
-        Remove-Item $po, $pil -ErrorAction SilentlyContinue
-        [IO.File]::WriteAllText($pc, "@echo off`r`n`"$WhoAmI`" /groups /fo csv > `"$pil`" 2>&1`r`nschtasks.exe /create /tn FiProbe-$($pr.user) /sc once /st 23:59 /tr `"cmd.exe /c exit`" /f > `"$po`" 2>&1`r`n>>`"$po`" echo rc=%ERRORLEVEL%`r`n", [Text.Encoding]::ASCII)
-        $err = ''
-        try {
-          $cred = New-Object Management.Automation.PSCredential("$env:COMPUTERNAME\$($pr.user)", (ConvertTo-SecureString $pw -AsPlainText -Force))
-          Start-Process cmd.exe -ArgumentList @('/d', '/c', "`"$pc`"") -Credential $cred -LoadUserProfile -WorkingDirectory $UlDir -Wait -ErrorAction Stop
-        } catch { $err = "launch failed: $($_.Exception.Message)" }
-        $il = 'IL unknown'
-        try {
-          $rows = Get-Content $pil -ErrorAction Stop | ConvertFrom-Csv
-          $il = 'IL=' + (($rows | Where-Object { $_.'Group Name' -like 'Mandatory Label\*' } | Select-Object -First 1).'Group Name' -replace '^Mandatory Label\\', '') + '; Administrators=' + ($rows | Where-Object { $_.'Group Name' -eq 'BUILTIN\Administrators' } | Select-Object -First 1).Attributes
-        } catch {}
-        $txt = if (Test-Path $po) { ((Get-Content $po) -join ' ').Trim() } else { '(no output)' }
-        [IO.File]::WriteAllText((Join-Path $Logs "$($pr.id)-probe-$($pr.user).log"), "$txt`r`n$il`r`n$err`r`n", $Utf8)
-        Rec $pr.id "diag: $($pr.user) (real logon$(if ($pr.admin) { ', admin filtered token' })) creates a probe task" $(if ($txt -match 'rc=0') { 0 } else { 1 }) "$txt $err" $il
-        & schtasks.exe /delete /tn "FiProbe-$($pr.user)" /f 2>&1 | Out-Null
-        & net.exe user $pr.user /delete 2>&1 | Out-Null
-      }
-      # Diagnostics (advisory): can THIS user get a real UAC-filtered logon?
-      $pol2 = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -ErrorAction SilentlyContinue
-      $me = [Security.Principal.WindowsIdentity]::GetCurrent()
-      $logonGroups = (& $WhoAmI /groups /fo csv 2>$null | ConvertFrom-Csv | Where-Object { $_.'Group Name' -match '^NT AUTHORITY\\(INTERACTIVE|SERVICE|BATCH|NETWORK|REMOTE INTERACTIVE LOGON)$|^CONSOLE LOGON$' } | ForEach-Object 'Group Name') -join ','
-      $procs = @(Get-Process -IncludeUserName -ErrorAction SilentlyContinue | Where-Object { $_.UserName -like "*\$env:USERNAME" -and $_.ProcessName -match '^(explorer|sihost|ctfmon|Runner\.Listener|Runner\.Worker)$' } | ForEach-Object { "$($_.ProcessName)#$($_.Id)@s$($_.SessionId)" }) -join ' '
-      Rec L26 'diag: this account (RID, FilterAdministratorToken, logon type, desktop processes)' 0 "sid=$($me.User.Value) FilterAdministratorToken=$($pol2.FilterAdministratorToken) logon=$logonGroups procs=$procs"
-      $pw = 'Fi9!' + ([guid]::NewGuid().ToString('N').Substring(0, 16))
-      & net.exe user $env:USERNAME $pw 2>&1 | Out-Null
-      $po = Join-Path $UlDir 'L27.out'; $pil = "$po.il"; $pc = Join-Path $UlDir 'L27.cmd'
-      [IO.File]::WriteAllText($pc, "@echo off`r`n`"$WhoAmI`" /groups /fo csv > `"$pil`" 2>&1`r`nschtasks.exe /create /tn FiProbe-self /sc once /st 23:59 /tr `"cmd.exe /c exit`" /f > `"$po`" 2>&1`r`n>>`"$po`" echo rc=%ERRORLEVEL%`r`n", [Text.Encoding]::ASCII)
-      $err = ''
-      try {
-        $cred = New-Object Management.Automation.PSCredential("$env:COMPUTERNAME\$env:USERNAME", (ConvertTo-SecureString $pw -AsPlainText -Force))
-        Start-Process cmd.exe -ArgumentList @('/d', '/c', "`"$pc`"") -Credential $cred -WorkingDirectory $UlDir -Wait -ErrorAction Stop
-      } catch { $err = "launch failed: $($_.Exception.Message)" }
-      $il = 'IL unknown'
-      try {
-        $rows = Get-Content $pil -ErrorAction Stop | ConvertFrom-Csv
-        $il = 'IL=' + (($rows | Where-Object { $_.'Group Name' -like 'Mandatory Label\*' } | Select-Object -First 1).'Group Name' -replace '^Mandatory Label\\', '') + '; Administrators=' + ($rows | Where-Object { $_.'Group Name' -eq 'BUILTIN\Administrators' } | Select-Object -First 1).Attributes
-      } catch {}
-      $txt = if (Test-Path $po) { ((Get-Content $po) -join ' ').Trim() } else { '(no output)' }
-      Rec L27 "diag: $env:USERNAME real logon (seclogon) token + probe task" $(if ($txt -match 'rc=0') { 0 } else { 1 }) "$txt $err" $il
-      & schtasks.exe /delete /tn FiProbe-self /f 2>&1 | Out-Null
     }
     default { Log "unknown pass $Pass" }
   }
 } catch {
   Log "UNHANDLED: $($_.Exception.Message) at $($_.InvocationInfo.PositionMessage)"
 } finally {
+  if ($Pass -eq 'UL') { RestoreLimitedLogon }
   # Evidence for service failures (Last Run Time / Last Result / Logon Mode).
   try { Run 'diag' 'schtasks-verbose' 'schtasks.exe' @('/query', '/tn', 'ApraFleet', '/v', '/fo', 'list') } catch {}
   Get-ChildItem (Join-Path $FleetHome 'data') -Filter *.log -ErrorAction SilentlyContinue | ForEach-Object { Copy-Item $_.FullName (Join-Path $Logs $_.Name) -ErrorAction SilentlyContinue }
