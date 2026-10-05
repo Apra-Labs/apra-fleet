@@ -181,45 +181,37 @@ function OneServerStep($id) {
 }
 
 # --- pass UL: the same user, NOT elevated ------------------------------------
-# The runner account is an admin with UAC on (EnableLUA=1), so its logon
-# session also holds a filtered, medium-integrity token -- exactly the
-# "normal shell" of a 0.4.3 user who once installed from an elevated prompt.
+# A 0.4.3 user's "normal shell": the same account without its admin rights.
+# The runner account never gets a UAC-filtered token (a Limited scheduled task
+# still ran at High integrity), so runas /trustlevel:0x20000 (Basic User:
+# Administrators deny-only, medium integrity, no password) stands in for it.
 $UlDir = Join-Path $env:SystemDrive 'fi-ul'
 # Integrity level of the current context, e.g. "High Mandatory Level".
 function IntegrityLevel {
   $row = (& whoami.exe /groups /fo csv 2>$null) | ConvertFrom-Csv | Where-Object { $_.'Group Name' -like 'Mandatory Label\*' } | Select-Object -First 1
   if ($row) { return ($row.'Group Name' -replace '^Mandatory Label\\', '') } else { return 'unknown' }
 }
-# Run a command as THIS user with the filtered (non-elevated) token: a
-# scheduled task with the user's interactive token and run level Limited --
-# no console, no TTY, no SESSIONNAME. Sets $script:RC/$script:LOG.
+# Run a command as THIS user without its admin rights (runas /trustlevel:0x20000,
+# medium integrity): its own console, no TTY on our side, no prompt possible.
+# Sets $script:RC/$script:LOG.
 function AsLimited($id, $name, $exe, [string[]]$argv = @(), $timeoutSec = 900) {
   $script:LOG = Join-Path $Logs "$id-$name.log"
   $out = Join-Path $UlDir "$id-$name.out"; $rcf = Join-Path $UlDir "$id-$name.rc"; $cmdf = Join-Path $UlDir "$id-$name.cmd"
-  Remove-Item $out, $rcf -ErrorAction SilentlyContinue
+  Remove-Item $out, $rcf, "$rcf.tmp" -ErrorAction SilentlyContinue
   $line = (Quote $exe) + ' ' + (($argv | ForEach-Object { Quote $_ }) -join ' ')
-  [IO.File]::WriteAllText($cmdf, "@echo off`r`n$line > `"$out`" 2>&1`r`necho %ERRORLEVEL%> `"$rcf`"`r`n", [Text.Encoding]::ASCII)
-  $tn = "fi-ul-$id-$name"
+  # Redirection FIRST: "echo 1> f" would make 1 a stream number. The rc file
+  # appears atomically (move) so it is never read half-written.
+  [IO.File]::WriteAllText($cmdf, "@echo off`r`n$line > `"$out`" 2>&1`r`n>`"$rcf.tmp`" echo %ERRORLEVEL%`r`nmove /y `"$rcf.tmp`" `"$rcf`" >nul`r`n", [Text.Encoding]::ASCII)
   $script:RC = 'ERR not run'
-  $st = 'not registered'
-  try {
-    $act = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument "/d /c `"$cmdf`""
-    $prin = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Limited
-    Register-ScheduledTask -TaskName $tn -Action $act -Principal $prin -Force | Out-Null
-    Start-ScheduledTask -TaskName $tn
+  $ro = (& runas.exe '/trustlevel:0x20000' "cmd.exe /d /c $cmdf" 2>&1 | Out-String).Trim()
+  if ($LASTEXITCODE -ne 0) {
+    $script:RC = "ERR runas /trustlevel failed (exit $LASTEXITCODE): $ro"
+  } else {
     $deadline = (Get-Date).AddSeconds($timeoutSec)
-    $started = Get-Date
-    while (-not (Test-Path $rcf) -and (Get-Date) -lt $deadline) {
-      Start-Sleep 2
-      # Fail fast when the task already ended (or never started: logon failure) without a result.
-      $st = (Get-ScheduledTask -TaskName $tn -ErrorAction SilentlyContinue).State
-      if ("$st" -ne 'Running' -and ((Get-Date) - $started).TotalSeconds -gt 20) { Start-Sleep 3; break }
-    }
-    $info = Get-ScheduledTaskInfo -TaskName $tn -ErrorAction SilentlyContinue
-    if (Test-Path $rcf) { Start-Sleep 1; $script:RC = (Get-Content $rcf -Raw).Trim() }
-    else { $script:RC = "ERR no result from the limited-token task (state $st, last result 0x$('{0:X}' -f [int64]$info.LastTaskResult))" }
-  } catch { $script:RC = "ERR $($_.Exception.Message)" }
-  finally { Unregister-ScheduledTask -TaskName $tn -Confirm:$false -ErrorAction SilentlyContinue }
+    while (-not (Test-Path $rcf) -and (Get-Date) -lt $deadline) { Start-Sleep 2 }
+    if (Test-Path $rcf) { $script:RC = ([string](Get-Content $rcf -Raw)).Trim() }
+    else { $script:RC = "ERR no result from the runas /trustlevel process after ${timeoutSec}s" }
+  }
   $text = if (Test-Path $out) { Get-Content $out -Raw -Encoding UTF8 } else { '(no output file)' }
   [IO.File]::WriteAllText($script:LOG, "$text`r`n=== EXIT CODE: $($script:RC) ===`r`n", $Utf8)
 }
@@ -331,10 +323,10 @@ try {
       # Created elevated (owner Administrators): let the filtered token write its results.
       & icacls.exe $UlDir /grant '*S-1-5-11:(OI)(CI)M' | Out-Null
       # The same user's filtered token must be MEDIUM integrity (not elevated).
-      AsLimited L01 whoami 'whoami.exe' @('/groups', '/fo', 'csv')
+      AsLimited L01 whoami 'whoami.exe' @('/groups', '/fo', 'csv') 120
       $limIL = FirstMatch $LOG 'Mandatory Label'
       $medium = $limIL -match 'Medium Mandatory Level'
-      Rec L01 'limited-token context of the same user is not elevated' ([int](-not ($medium -and (Ok $RC)))) "rc=$RC $limIL" $(if ($medium) { 'medium integrity' } else { 'the limited-token task did not run at medium integrity, so it cannot stand in for a normal shell' })
+      Rec L01 'limited-token context of the same user is not elevated' ([int](-not ($medium -and (Ok $RC)))) "rc=$RC $limIL" $(if ($medium) { 'medium integrity' } else { 'the runas /trustlevel process did not run at medium integrity, so it cannot stand in for a normal shell' })
 
       Run L02 base-version $BaseExe @('--version'); Rec L02 'base --version' $RC (Key $LOG @('apra-fleet v')) (VerOf $LOG)
       # The baseline install from the ELEVATED runner context, as 0.4.3 users had to:
