@@ -873,8 +873,8 @@ describe('createWorkflowsPermissionPreflightCallback', () => {
         assert.ok(calls.some((c) => c.cmd.includes('git diff --name-only')), 'expected the diff command to have actually run (branch was ahead)');
     });
 
-    test('(case 3c: no-op, same branch/missing branch info) an absent baseBranch, absent branch, or branch === baseBranch is a pure no-op with no command issued at all', async () => {
-        for (const [branch, baseBranch] of [[null, 'main'], ['feat/x', null], ['main', 'main']]) {
+    test('(case 3c: no-op, missing branch info) an absent baseBranch or absent branch is a pure no-op with no command issued at all', async () => {
+        for (const [branch, baseBranch] of [[null, 'main'], ['feat/x', null]]) {
             const { command, calls } = makeCommandMock({});
             const logs = [];
             const warn = createWorkflowsPermissionPreflightCallback({
@@ -884,6 +884,19 @@ describe('createWorkflowsPermissionPreflightCallback', () => {
             assert.equal(logs.length, 0, `expected no warning for branch=${JSON.stringify(branch)} baseBranch=${JSON.stringify(baseBranch)}`);
             assert.equal(calls.length, 0, `expected no command issued for branch=${JSON.stringify(branch)} baseBranch=${JSON.stringify(baseBranch)}`);
         }
+    });
+
+    test('(case 3c2) branch === baseBranch is no longer a silent no-op: the pair is rejected at launch, so here it falls through to the ahead-count check', async () => {
+        const { command, calls } = makeCommandMock({
+            'git rev-list --count': [{ ok: true, output: '0', error: null }],
+        });
+        const logs = [];
+        const warn = createWorkflowsPermissionPreflightCallback({
+            callTool: memberDetailGithub, command, log: (m) => logs.push(m), gitAccess: 'read',
+        });
+        await warn('fleet-mac', 'main', 'main');
+        assert.ok(calls.some((c) => c.cmd.includes('git rev-list --count')), 'expected the ahead-count probe to run for branch === baseBranch');
+        assert.equal(logs.length, 0, 'nothing ahead -> no warning');
     });
 
     test('(case 3d: no-op, non-GitHub provider) a member registered to a non-GitHub provider is silently skipped before any level is read, and no git command is issued', async () => {

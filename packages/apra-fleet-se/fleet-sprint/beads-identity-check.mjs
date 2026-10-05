@@ -17,9 +17,10 @@
 //   - MISMATCH is FATAL: a field that resolved on BOTH sides and differs
 //     means the member's bd points at a different project. Throws
 //     BeadsIdentityError (reason MISMATCH) before any bd mutation.
-//   - BD_MISSING is FATAL: the member's shell reports no bd executable at
-//     all, so every bd there would fail mid-sprint. Throws before any
-//     dispatch, naming the member and the fix.
+//   - bd MISSING is FATAL: a bd probe whose failure classifies as a
+//     missing-tool failure for bd itself (not installed / not on PATH) throws
+//     BeadsIdentityError (reason MISSING_TOOL) before any dispatch, naming
+//     the member and the fix -- every bd there would fail mid-sprint.
 //   - a beads-reading member with NO beads database, or with a database but
 //     no sync.remote while the expectation names one, is SET UP before any
 //     dispatch (setupMemberBeads below): `bd config set sync.remote
@@ -29,7 +30,7 @@
 //     preflight throws BEADS_SETUP_FAILED naming the member, the cause and
 //     the fix -- never a warning followed by dispatches whose `bd show`
 //     cannot find the sprint's issues.
-//   - an UNRESOLVED probe is a WARNING: a probe that failed, or answered
+//   - any other UNRESOLVED probe is a WARNING: a probe that failed, or answered
 //     something unparseable/empty, leaves that field out of the comparison.
 //     The warning names the member, the field, the probe, the error and the
 //     fix, so the operator can repair it; the first real bd on that member
@@ -52,8 +53,9 @@ import {
     normalizeRemoteUrl,
     hasBeadsDatabase,
 } from './beads-identity.mjs';
-import { BeadsIdentityError, BEADS_IDENTITY_FAILURE_REASONS } from './errors.mjs';
+import { BeadsIdentityError, BEADS_IDENTITY_FAILURE_REASONS, VCS_FAILURE_KINDS } from './errors.mjs';
 import { syncBefore as doltSyncBefore } from './dolt-sync.mjs';
+import { classifyFailure, commandBinary } from './vcs-module.mjs';
 
 // Short: three cheap local reads per member. A member that cannot answer
 // `bd where` inside a minute is not a member this sprint should mutate.
@@ -185,24 +187,30 @@ function noExpectationWarning(backlogMember, probed) {
         `To restore it: fix the backlog member's beads (${BEADS_IDENTITY_FIELD_FIX.prefix}), or launch via the supervisor so --expect-beads is supplied.`;
 }
 
-// The shell reported that no `bd` executable exists (POSIX shells, cmd,
-// PowerShell), as opposed to bd running and failing.
-const BD_NOT_FOUND_RE = /\bbd: (?:command )?not found|bd: No such file or directory|'bd' is not recognized|The term 'bd' is not recognized|\bexit(?:ed)?(?: with)?(?: code)?:? 127\b/i;
-
 export const BD_MISSING_FIX =
-    "install the beads CLI (bd) on that member so 'bd --version' works in its workFolder shell " +
-    '(re-running the member fleet install places it in the member fleet bin dir), then rerun the sprint';
+    "install bd on that member (or fix that member's PATH) so 'bd --version' works in its workFolder shell " +
+    '(re-running the member fleet install places it in the member fleet bin dir), then relaunch';
 
-/** Throws BD_MISSING when the member's `bd where` probe proved bd is absent. */
+// The one probe outcome that is fatal besides a mismatch -- the member cannot
+// run bd AT ALL (not installed / not on PATH). Every later bd command on it
+// would fail, and neither the sync self-heal nor the beads set-up below can
+// fix a missing binary, so the sprint stops here with the fix named. Only a
+// failure of a bd probe that classifies as missing-tool FOR bd counts (the
+// shared VCS failure classifier); every other probe failure (no database,
+// unset field, unrelated profile noise) stays a warning.
 export function assertBdPresent(member, probed) {
-    const failure = probed.failures.find((f) => f.key === 'where');
-    const text = `${failure ? failure.error : ''}\n${probed.raw.where || ''}`;
-    if (!failure || !BD_NOT_FOUND_RE.test(text)) return;
-    throw new BeadsIdentityError(
-        `Beads preflight failed: member '${member}' has no bd CLI ('${BEADS_IDENTITY_PROBES.where}' -> ${summarizeRaw(text)}). ` +
-        `Every sprint role on it runs bd, so the sprint stops before any dispatch. To fix: ${BD_MISSING_FIX}.`,
-        { reason: BEADS_IDENTITY_FAILURE_REASONS.BD_MISSING, member }
-    );
+    for (const f of probed.failures) {
+        const tool = commandBinary(f.probe);
+        if (tool !== 'bd') continue;
+        const c = classifyFailure(f.error, { tool });
+        if (c.kind !== VCS_FAILURE_KINDS.MISSING_TOOL) continue;
+        throw new BeadsIdentityError(
+            `Beads identity check failed: 'bd' is not installed or not on PATH on member '${member}' ` +
+            `('${f.probe}' -> ${summarizeRaw(f.error)}). Every sprint role on it runs bd, so the sprint stops before any dispatch; ` +
+            're-provisioning credentials cannot fix a missing binary. To fix: ' + BD_MISSING_FIX + '.',
+            { reason: BEADS_IDENTITY_FAILURE_REASONS.MISSING_TOOL, member, details: { tool: 'bd', probe: f.probe, error: f.error } }
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -640,8 +648,9 @@ function assertMatches(member, expected, actual, cmp) {
 /**
  * The precondition itself. Probes the backlog member, then every other
  * distinct member. Throws BeadsIdentityError (reason MISMATCH) before
- * returning when a field that resolved on both sides differs; every probe
- * that could not resolve a field is a logged + published warning instead.
+ * returning when a field that resolved on both sides differs, and (reason
+ * MISSING_TOOL) when a member cannot run bd at all; every other probe that
+ * could not resolve a field is a logged + published warning instead.
  * A beads-reading member with no database (or no sync.remote while the
  * expectation names one) is set up first and re-verified; failing that it
  * throws BEADS_SETUP_FAILED.

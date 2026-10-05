@@ -210,14 +210,14 @@ one resolution order used identically by `src/cli/workflow.ts` and
 
 1. `APRA_FLEET_TRANSPORT` forced override (`http` fails loud with no
    singleton rather than silently falling back to a private server; `stdio`
-   or a set `APRA_FLEET_SERVER_CMD`/`_BIN` goes straight to self-spawn).
+   or a set `APRA_FLEET_SERVER_CMD`/`_BIN` goes straight to a private stdio server).
 2. Probe for a healthy HTTP singleton (`checkRunningInstance()` -- the same
    pid + `/health` check the installed service already uses for
    startup-dedup) and attach with zero spawned processes. This is the
    default, steady-state path.
-3. Fall back to stdio self-spawn (the four-tier command resolution
-   `resolveFleetServerCommand()` already had) only when no healthy
-   singleton is found.
+3. If the singleton is verifiably gone, start the shared HTTP server by
+   running `apra-fleet start` (detached, lock-guarded, loop-guarded) and
+   attach over HTTP. Stdio is only the explicit `stdio` / CMD / BIN path.
 
 The rationale for one shared helper over two copies: a launcher that merely
 mirrored the old stdio-only `resolveFleetServerCommand()` would always

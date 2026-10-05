@@ -9,6 +9,8 @@ import { logWarn } from '../utils/log-helpers.js';
 import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
 import { KB_CONFIG_PATH } from '../services/knowledge/kb-config.js';
 import type { KbConfigFile } from '../services/knowledge/kb-config.js';
+import { filterProjectBibleCandidates } from '../services/knowledge/bible-basis-filter.js';
+import type { SqliteProvider } from '../services/knowledge/sqlite-provider.js';
 import type { KBEntry } from '../services/knowledge/types.js';
 
 // T3.4 (F8b, D8): export half of the shareable, diffable team bible. Writes
@@ -366,6 +368,98 @@ function maybeAutoCommitBible(
   }
 }
 
+// Id ordering for the additive project merge, whose existing bible entries are
+// raw objects (never re-shaped) and so carry an id of unknown type.
+function byId(a: { id?: unknown }, b: { id?: unknown }): number {
+  const x = String(a.id);
+  const y = String(b.id);
+  return x < y ? -1 : x > y ? 1 : 0;
+}
+
+/**
+ * Entries of the bible already on disk, as raw objects (never re-shaped, so
+ * they are written back byte-for-byte equivalent). Accepts the v2 envelope and
+ * the legacy bare array. An absent file is an empty bible. A file that exists
+ * but cannot be parsed as either shape THROWS: the project export is additive
+ * and must never overwrite (and so silently drop) a bible it cannot read.
+ */
+function readExistingBibleEntries(outPath: string): Array<Record<string, unknown>> {
+  if (!fs.existsSync(outPath)) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(fs.readFileSync(outPath, 'utf-8'));
+  } catch (err) {
+    throw new Error('kb_export: existing bible is not valid JSON, refusing to overwrite it: ' + outPath
+      + ' (' + (err instanceof Error ? err.message : String(err)) + ')');
+  }
+  const list = Array.isArray(parsed)
+    ? parsed
+    : (parsed && typeof parsed === 'object' && Array.isArray((parsed as { entries?: unknown }).entries)
+      ? (parsed as { entries: unknown[] }).entries
+      : null);
+  if (list === null) {
+    throw new Error('kb_export: existing bible has no entries array, refusing to overwrite it: ' + outPath);
+  }
+  return list as Array<Record<string, unknown>>;
+}
+
+// PROJECT-SCOPE EXPORT: basis filter + additive merge.
+//
+// Only CONFIRMED (non-superseded, non-stale -- list() already excludes those)
+// entries whose per-file hash basis matches the files in repoPath qualify (see
+// qualifiesForProjectBible in services/knowledge/bible-basis-filter.ts). A
+// member-local KB routinely holds entries about files the exported tree does
+// not contain; publishing them would leak them into the committed artifact.
+//
+// The merge is ADDITIVE: every entry already in the bible is kept exactly as it
+// is (curated, possibly human-edited), qualifying entries whose id is not yet
+// present are added, and on an id collision the existing bible entry wins.
+// Nothing is ever removed by an export -- removal is a human (or reconcile)
+// edit of the file. Consequently the project bible never shrinks through this
+// path and the shrink guard in maybeAutoCommitBible only matters for global.
+//
+// No new id to add -> the file is not touched at all (byte-identical,
+// provenance untouched) and nothing is committed.
+//
+// `exported` in the response is the number of entries in the bible as written
+// (or as left on disk when nothing was added), not the number newly added.
+async function exportProjectBible(
+  source: SqliteProvider,
+  repoPath: string,
+  outPath: string,
+  input: KbExportInput,
+): Promise<string> {
+  const existing = readExistingBibleEntries(outPath);
+  const existingIds = new Set(existing.map(e => String(e.id)));
+
+  const confirmed = await source.list({ confidence: ['CONFIRMED'] });
+  const newCandidates = confirmed.filter(e => !existingIds.has(e.id));
+  const bases = source.getSourceFileBases(newCandidates.map(e => e.id));
+  const qualifying = await filterProjectBibleCandidates(newCandidates, bases, repoPath);
+
+  if (qualifying.length === 0) {
+    return JSON.stringify({ exported: existing.length, path: outPath, scope: 'project', committed: false });
+  }
+
+  const merged = [...existing, ...qualifying.map(toCanonicalEntry)].sort(byId);
+  const bible = {
+    version: 2 as const,
+    provenance: {
+      commit: input.baseCommit ?? resolveHeadCommit(repoPath),
+      branch: input.baseBranch ?? resolveBranch(repoPath),
+      entry_count: merged.length,
+    },
+    entries: merged,
+  };
+  const fleetDir = path.dirname(outPath);
+  if (!fs.existsSync(fleetDir)) fs.mkdirSync(fleetDir, { recursive: true });
+  const previousEntryCount = bibleEntryCount(outPath);
+  fs.writeFileSync(outPath, asciiSafeStringify(bible) + '\n', 'utf-8');
+
+  const committed = maybeAutoCommitBible(repoPath, outPath, merged.length, 'project', previousEntryCount);
+  return JSON.stringify({ exported: merged.length, path: outPath, scope: 'project', committed });
+}
+
 export async function kbExport(input: KbExportInput, anchor?: KbAnchor): Promise<string> {
   // kb_export WRITES <folder>/.fleet/kb-canonical.json and git-commits it, so
   // an unreachable folder has no meaningful behaviour left -- it must not
@@ -379,20 +473,24 @@ export async function kbExport(input: KbExportInput, anchor?: KbAnchor): Promise
   // source from process cwd while writing to repoPath is how repo A's entries
   // used to end up serialised into repo B's committed bible.
   const providers = await getKbProviders(repoPath, resolved.remoteUrl);
-  const source = scope === 'global' ? providers.global : requireSqliteProject(providers.project, 'kb_export');
-  const entries = await source.list({ confidence: ['CONFIRMED'] });
+  const fleetDir = path.join(repoPath, '.fleet');
+  const fileName = scope === 'global' ? 'kb-canonical-global.json' : 'kb-canonical.json';
+  const outPath = path.join(fleetDir, fileName);
+
+  if (scope === 'project') {
+    return exportProjectBible(requireSqliteProject(providers.project, 'kb_export'), repoPath, outPath, input);
+  }
+
+  const entries = await providers.global.list({ confidence: ['CONFIRMED'] });
 
   // Deterministic ordering by id so re-exports produce meaningful diffs.
   const canonical: CanonicalEntry[] = entries
     .map(toCanonicalEntry)
     .sort(compareById);
 
-  const fleetDir = path.join(repoPath, '.fleet');
   if (!fs.existsSync(fleetDir)) {
     fs.mkdirSync(fleetDir, { recursive: true });
   }
-  const fileName = scope === 'global' ? 'kb-canonical-global.json' : 'kb-canonical.json';
-  const outPath = path.join(fleetDir, fileName);
 
   // KB-TRUST PHASE 3a: the bible records the commit it was exported from, so a
   // later audit can date its entries against the tree they were verified on.

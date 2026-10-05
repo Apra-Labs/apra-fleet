@@ -5,7 +5,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 
 import { doltPushMutex } from '../src/tools/dolt-push-mutex.js';
-import { childIdAllocator } from '../src/tools/child-id-allocator.js';
+import { childIdAllocator, childIdAllocatorSchema } from '../src/tools/child-id-allocator.js';
 import {
   createDoltMutex,
   createIdAllocator,
@@ -229,6 +229,26 @@ describe('child_id_allocator tool', () => {
     expect(await allocCall({ action: 'release', token: a.token })).toEqual({ released: true });
     const reused = await allocCall({ action: 'allocate', parent_id: 'apra-fleet-r' });
     expect(reused.seq).toBe(a.seq);
+  });
+
+  // GitHub #615: the floor must prune pooled ids <= floor even when it does
+  // not raise the high-water, or an occupied released id is re-minted forever.
+  it('prunes a released id at or below the floor even when the floor does not raise the high-water', async () => {
+    const a = await allocCall({ action: 'allocate', parent_id: 'apra-fleet-s' });
+    const b = await allocCall({ action: 'allocate', parent_id: 'apra-fleet-s' });
+    expect(await allocCall({ action: 'confirm', token: b.token })).toEqual({ confirmed: true });
+    expect(await allocCall({ action: 'release', token: a.token })).toEqual({ released: true });
+    // floor 2 == highWater 2.
+    const next = await allocCall({ action: 'allocate', parent_id: 'apra-fleet-s', floor: 2 });
+    expect(next.childId).toBe('apra-fleet-s.3');
+    const status = await allocCall({ action: 'status' });
+    expect(status.parents['apra-fleet-s'].free).toEqual([]);
+  });
+
+  it('describes floor as the highest existing child seq (what callers pass), not a count', () => {
+    const desc = (childIdAllocatorSchema.shape.floor as any).description as string;
+    expect(desc).toMatch(/Highest EXISTING child seq/);
+    expect(desc).not.toMatch(/Count of children/);
   });
 
   it('validates required arguments per action', async () => {

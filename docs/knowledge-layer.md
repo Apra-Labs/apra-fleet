@@ -334,8 +334,13 @@ See [kb-trust-model.md](kb-trust-model.md) for the ladder in full.
 The SQLite database is one developer's private, warm working memory. The
 **canonical bible** is the team's shared, git-native slice of it:
 
-- `kb_export` writes all `CONFIRMED`, non-superseded, non-stale PROJECT entries
-  to `<repo>/.fleet/kb-canonical.json` (a stable field set --
+- `kb_export` merges `CONFIRMED`, non-superseded, non-stale PROJECT entries
+  into `<repo>/.fleet/kb-canonical.json`, additively. An entry qualifies only
+  when every file it cites has a recorded per-file hash (`source_file_hashes`)
+  matching the file currently in the repo; an empty basis or a missing file
+  excludes it. Entries already in the bible are never removed or rewritten
+  (the bible entry wins on an id clash); when nothing new qualifies the file is
+  left byte-identical and nothing is committed. (a stable field set --
   `{id, type, title, summary, symbols, source_files, confidence, updated_at}`
   -- id-sorted for meaningful diffs, ASCII-escaped so it honours the repo's
   ASCII-only rule).
@@ -383,6 +388,9 @@ is deliberately narrow:
   disables it. A missing config or a config with no `bible` section degrades to
   the default (ON). A *malformed* config degrades to OFF -- "I could not read
   your settings" must not be the moment the tool starts committing for you.
+- **Shrink guard:** the auto-commit is skipped (the file is still written) when an export would shrink the bible, unless `bible.autoCommit` is explicitly true. Because
+  project-scope export is additive and never drops entries, the guard can now
+  only trigger for `scope='global'`, which is unchanged.
 - **No push.** The commit rides the branch's existing push flow; `kb_export`
   never pushes.
 

@@ -116,8 +116,9 @@ describe('createChildBeadWithAllocatedId -- collision guard refuses to overwrite
             original,
             'the original CLOSED bead content must be byte-for-byte unchanged after the rejected create',
         );
-        assert.strictEqual(allocator.calls.release, 1, 'the reservation must be released on collision');
-        assert.strictEqual(allocator.calls.confirm, 0, 'confirm must never be called on a refused create');
+        assert.strictEqual(allocator.calls.release, 0, 'an occupied id must never be released back to the pool (GitHub #615)');
+        assert.strictEqual(allocator.calls.confirm, allocator.calls.allocate, 'every occupied id the probe refused is consumed');
+        assert.strictEqual(allocator.calls.allocate, 3, 'bounded retries with a fresh allocation each');
         assert.ok(
             !calls.some((c) => c.startsWith('bd create ')),
             `no bd create dispatch must occur on a refused create, got: ${JSON.stringify(calls)}`,
@@ -155,8 +156,8 @@ describe('createChildBeadWithAllocatedId -- collision guard refuses to overwrite
             original,
             'the original OPEN bead content must be byte-for-byte unchanged after the rejected create',
         );
-        assert.strictEqual(allocator.calls.release, 1);
-        assert.strictEqual(allocator.calls.confirm, 0);
+        assert.strictEqual(allocator.calls.release, 0);
+        assert.strictEqual(allocator.calls.confirm, allocator.calls.allocate);
         assert.ok(!calls.some((c) => c.startsWith('bd create ')));
     });
 

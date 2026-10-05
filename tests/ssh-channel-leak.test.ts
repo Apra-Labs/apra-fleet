@@ -61,6 +61,9 @@ let clients: MockClient[] = [];
 let maxSessionsForNewClients = 10;
 let deferExec = false;
 const deferred: Array<() => void> = [];
+// Number of upcoming connects whose socket closes after the banner but
+// before 'ready' (ssh2 emits 'close' with no 'error' in that case).
+let closeBeforeReadyConnects = 0;
 
 class MockClient extends EventEmitter {
   live = 0;
@@ -69,7 +72,10 @@ class MockClient extends EventEmitter {
   sftps: MockSFTP[] = [];
   execCalls: string[] = [];
   end = vi.fn(() => { this.emit('close'); });
-  connect(_config: unknown): void { this.emit('ready'); }
+  connect(_config: unknown): void {
+    if (closeBeforeReadyConnects > 0) { closeBeforeReadyConnects -= 1; this.emit('close'); return; }
+    this.emit('ready');
+  }
   private admit(): Error | null {
     if (this.live >= this.maxSessions) return new Error(OPEN_FAILED);
     this.live += 1;
@@ -130,6 +136,7 @@ describe('SSH layer closes every channel it opens', () => {
     maxSessionsForNewClients = 10;
     deferExec = false;
     deferred.length = 0;
+    closeBeforeReadyConnects = 0;
     ssh = await import('../src/services/ssh.js');
     sftp = await import('../src/services/sftp.js');
     vi.useFakeTimers();
@@ -286,6 +293,57 @@ describe('SSH layer closes every channel it opens', () => {
     expect(clients).toHaveLength(2);
     clients[1].streams[1].finish(0);
     await expect(next).resolves.toMatchObject({ code: 0 });
+    expect(totalLive()).toBe(0);
+  });
+
+  it('a connect that closes before ready rejects every concurrent caller (no shared hang) and the next call reconnects', async () => {
+    const agent = makeTestAgent();
+    closeBeforeReadyConnects = 1;
+    const a = ssh.execCommand(agent, 'one', 1000);
+    const b = ssh.execCommand(agent, 'two', 1000);
+    a.catch(() => {});
+    b.catch(() => {});
+    await flush();
+    await expect(a).rejects.toThrow(/closed before it became ready/);
+    await expect(b).rejects.toThrow(/closed before it became ready/);
+    expect(clients).toHaveLength(1);
+
+    const next = ssh.execCommand(agent, 'three', 1000);
+    await flush();
+    expect(clients).toHaveLength(2);
+    clients[1].streams[0].finish(0);
+    await expect(next).resolves.toMatchObject({ code: 0 });
+    expect(totalLive()).toBe(0);
+  });
+
+  it('a timeout on a retired connection still sends the remote kill (leased on the fresh connection)', async () => {
+    const agent = makeTestAgent();
+    const running: Array<Promise<unknown>> = [];
+    for (let i = 0; i < 10; i++) {
+      const p = ssh.execCommand(agent, `long ${i}`, i === 0 ? 1000 : 60000);
+      p.catch(() => {});
+      running.push(p);
+      await flush();
+    }
+    clients[0].streams[0].emit('data', Buffer.from('FLEET_PID:4242\n'));
+    // channel #11 is refused -> clients[0] is retired, new work goes to clients[1]
+    const eleventh = ssh.execCommand(agent, 'eleventh', 60000);
+    await flush();
+    expect(clients).toHaveLength(2);
+
+    // the PID-carrying command on the retired connection times out
+    await vi.advanceTimersByTimeAsync(1000);
+    await expect(running[0]).rejects.toThrow(/timed out/);
+    const killCalls = clients[1].execCalls.filter((c) => c.includes('4242'));
+    expect(killCalls).toHaveLength(1);
+    // the retired connection is still serving its other 9 commands
+    expect(clients[0].end).not.toHaveBeenCalled();
+
+    clients[1].streams.forEach((s) => s.finish(0));
+    clients[0].streams.slice(1).forEach((s) => s.finish(0));
+    await expect(eleventh).resolves.toMatchObject({ code: 0 });
+    await Promise.allSettled(running);
+    expect(clients[0].end).toHaveBeenCalledTimes(1);
     expect(totalLive()).toBe(0);
   });
 

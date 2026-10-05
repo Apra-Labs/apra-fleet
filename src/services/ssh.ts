@@ -123,6 +123,14 @@ function connectClient(config: ConnectConfig, key: string): Promise<Client> {
       reject(err);
     });
 
+    // ssh2 emits 'error' only when no SSH banner was seen; a socket that
+    // closes after the banner but before 'ready' (no DISCONNECT) would
+    // otherwise leave this promise -- shared by every concurrent caller for
+    // the member via `connecting` -- pending forever. A no-op once resolved.
+    client.once('close', () => {
+      reject(new Error(`SSH connection to ${key} closed before it became ready`));
+    });
+
     client.connect(config);
   });
 }
@@ -308,22 +316,39 @@ export async function execCommand(
   let capturedPid: number | undefined;
   function killRemoteTree() {
     if (capturedPid === undefined || !client) return;
+    let killCmd: string;
     try {
-      const killCmd = getOsCommands(getAgentOS(agent), getAgentShell(agent)).killPid(capturedPid);
-      // Best-effort, fire-and-forget on a FRESH channel -- the timed-out
-      // command's own channel may itself be wedged and must not be relied
-      // on to carry the kill. stdin EOF + a safety close so this channel
-      // can never outlive the kill command.
-      client.exec(killCmd, (err, killStream) => {
-        if (err) return;
-        try { killStream.end(); } catch { /* best-effort */ }
-        killStream.on('data', () => {});
-        killStream.stderr?.on('data', () => {});
-        const killTimer = setTimeout(() => { try { killStream.close(); } catch { /* best-effort */ } }, 30000);
-        killTimer.unref();
-        killStream.on('close', () => clearTimeout(killTimer));
+      killCmd = getOsCommands(getAgentOS(agent), getAgentShell(agent)).killPid(capturedPid);
+    } catch { return; /* best-effort */ }
+    // Best-effort, fire-and-forget on a FRESH channel -- the timed-out
+    // command's own channel may itself be wedged and must not be relied on
+    // to carry the kill. Opened through openPooledChannel so it is LEASED:
+    // the timed-out command's release can no longer end a retired connection
+    // before the kill is sent (a PID kill works over any connection to the
+    // member), and a refused open retries once on a fresh connection.
+    // stdin EOF + a safety close so this channel can never outlive the kill.
+    openPooledChannel(agent, (c) => openExec(c, killCmd)).then(({ channel: killStream, release }) => {
+      let done = false;
+      const finish = (): void => {
+        if (done) return;
+        done = true;
+        clearTimeout(killTimer);
+        release();
+      };
+      const killTimer = setTimeout(() => {
+        try { killStream.close(); } catch { /* best-effort */ }
+        finish();
+      }, 30000);
+      killTimer.unref();
+      try { killStream.end(); } catch { /* best-effort */ }
+      killStream.on('data', () => {});
+      killStream.stderr?.on('data', () => {});
+      killStream.on('close', finish);
+      killStream.on('error', () => {
+        try { killStream.close(); } catch { /* best-effort */ }
+        finish();
       });
-    } catch { /* best-effort; connection may already be gone */ }
+    }).catch(() => { /* best-effort; the member may be unreachable */ });
   }
 
   return new Promise<SSHExecResult>((resolve, reject) => {

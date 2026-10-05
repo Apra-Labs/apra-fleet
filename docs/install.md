@@ -118,7 +118,7 @@ always separate processes. Set `APRA_FLEET_TRANSPORT=http` (the default) or
 `APRA_FLEET_TRANSPORT=stdio` to control how the launcher reaches that
 server: `http` (default) attaches to the already-running installed-service
 singleton at `http://localhost:${APRA_FLEET_PORT:-7523}/mcp` and spawns
-nothing; `stdio` self-spawns a private server as a subprocess. See `docs/adr-workflow-server-resolution.md` for the full
+nothing; `stdio` (explicit only) runs a private server as a subprocess; if no singleton is running, `http` mode starts the shared one. See `docs/adr-workflow-server-resolution.md` for the full
 resolution order (this same order also governs where role schemas resolve
 from in the installed-binary case: `APRA_FLEET_SE_SCHEMAS_DIR`, set by the
 launcher to `~/.apra-fleet/schemas`, is tier 1 of the schema resolution

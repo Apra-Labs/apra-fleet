@@ -281,17 +281,30 @@ describe('kb-reconcile two-branch e2e (T3.3, F6/D6)', () => {
     expect(rawRow(aUndecided.id).superseded_at).toBeFalsy();
     expect(rawRow(bUndecidedId).contradiction_of).toBe(aUndecided.id);
 
-    // --- Step 6: kb_export writes the reconciled bible --------------------
-    const exportReport = JSON.parse(await kbExport({}, { folder: repoDir }));
-    expect(exportReport.exported).toBeGreaterThanOrEqual(1);
-
+    // --- Step 6: kb_export never publishes an absolute-basis entry --------
+    // Every basis in this fixture is an absolute temp path. The project bible
+    // only describes the exported tree, so a cited/basis path that is not
+    // repo-relative never qualifies (isRepoRelativePath), even with a matching
+    // hash -- the winner stays in the KB but is NOT added to the bible. Nothing
+    // qualifies, so the additive export leaves the file byte-identical (still
+    // the bare array written above) and commits nothing.
     const canonicalPath = path.join(fleetDir, 'kb-canonical.json');
-    // KB-TRUST PHASE 3a: the bible is now a v2 envelope; entries live under .entries.
-    const canonical = (JSON.parse(fs.readFileSync(canonicalPath, 'utf-8')) as { entries: { id: string }[] }).entries;
+    const bibleBefore = fs.readFileSync(canonicalPath, 'utf-8');
+    const exportReport = JSON.parse(await kbExport({}, { folder: repoDir }));
+    expect(exportReport.exported).toBe(5);
+    expect(exportReport.committed).toBe(false);
+    expect(fs.readFileSync(canonicalPath, 'utf-8')).toBe(bibleBefore);
+
+    const canonical = JSON.parse(bibleBefore) as { id: string }[];
     const canonicalIds = canonical.map(e => e.id);
 
-    expect(canonicalIds).toContain(bContraId);          // winner: exported
+    expect(canonicalIds).not.toContain(bContraId);       // winner: absolute basis, not published
     expect(canonicalIds).not.toContain(aContra.id);      // loser: superseded, excluded
-    expect(canonicalIds).not.toContain('b-directive');   // pending proposal, never CONFIRMED
+    // The project export is ADDITIVE: the bible file imported above already
+    // carries b-directive as a pre-existing entry, and an export never removes
+    // or rewrites those. What must still hold is that the KB did not mint a
+    // CONFIRMED row for it (pending proposal).
+    expect(canonical.find(e => e.id === 'b-directive')).toEqual(bDirective);
+    expect((await provider.list({ confidence: ['CONFIRMED'] })).some(e => e.id === 'b-directive')).toBe(false);
   });
 });

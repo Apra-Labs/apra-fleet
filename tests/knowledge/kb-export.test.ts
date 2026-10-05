@@ -32,12 +32,24 @@ let provider: SqliteProvider;
 let globalProvider: SqliteProvider;
 let tmpDir: string;
 
+// The project export only publishes entries whose per-file hash basis matches
+// the files in repo_path, so the project provider is anchored at tmpDir and
+// every file the fixtures cite exists there at capture time (unchanged after).
+const CITED_FILES = [
+  'src/default.ts', 'src/a.ts', 'src/b.ts', 'src/c.ts',
+  'src/order0.ts', 'src/order1.ts', 'src/order2.ts', 'src/order3.ts', 'src/order4.ts',
+];
+
 beforeEach(async () => {
-  provider = new SqliteProvider(':memory:');
+  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-export-test-'));
+  for (const rel of CITED_FILES) {
+    fs.mkdirSync(path.dirname(path.join(tmpDir, rel)), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, rel), 'export const x = ' + JSON.stringify(rel) + ';');
+  }
+  provider = new SqliteProvider(':memory:', tmpDir);
   await provider.init();
   globalProvider = new SqliteProvider(':memory:');
   await globalProvider.init();
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-export-test-'));
   vi.spyOn(kbProvidersModule, 'getKbProviders').mockResolvedValue({
     project: provider,
     global: globalProvider,
@@ -137,6 +149,8 @@ describe('kb_export (T3.4, F8b, D8)', () => {
   });
 
   it('creates the .fleet directory when missing', async () => {
+    const { id } = await provider.capture(makeInput({ title: 'Dir creation entry' }));
+    await provider.promote(id, 'confirmed for test: basis checked in fixture');
     expect(fs.existsSync(path.join(tmpDir, '.fleet'))).toBe(false);
 
     await kbExport({}, { folder: tmpDir });
@@ -144,14 +158,15 @@ describe('kb_export (T3.4, F8b, D8)', () => {
     expect(fs.existsSync(path.join(tmpDir, '.fleet', 'kb-canonical.json'))).toBe(true);
   });
 
-  it('writes an empty array when there are no CONFIRMED entries', async () => {
+  it('writes nothing when there are no CONFIRMED entries and no bible exists yet', async () => {
+    // Project export is additive: with nothing qualifying to add, the bible is
+    // left exactly as it was -- here, absent.
     await provider.capture(makeInput({ title: 'Only inferred' }));
 
     const result = JSON.parse(await kbExport({}, { folder: tmpDir }));
     expect(result.exported).toBe(0);
-
-    const written = JSON.parse(fs.readFileSync(path.join(tmpDir, '.fleet', 'kb-canonical.json'), 'utf-8')).entries;
-    expect(written).toEqual([]);
+    expect(result.committed).toBe(false);
+    expect(fs.existsSync(path.join(tmpDir, '.fleet', 'kb-canonical.json'))).toBe(false);
   });
 
   it('output is ASCII-only even when entry text has non-ASCII characters', async () => {
