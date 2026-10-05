@@ -36,6 +36,21 @@ import { ApraFleet } from '@apralabs/apra-fleet-client';
  * pin) read it through fleetMembersUnavailableReason().
  */
 export const FLEET_MEMBERS_UNAVAILABLE = Symbol.for('apra-fleet-se.fleetMembersUnavailable');
+/** Set (with the client's actionable message) when the fleet server was stopped with 'apra-fleet stop'. */
+export const FLEET_STOPPED_BY_USER = Symbol.for('apra-fleet-se.fleetStoppedByUser');
+
+/**
+ * The "stopped by the user" message carried by a listMembers()-shaped
+ * result, or null. A launch must surface it verbatim (the fix is
+ * 'apra-fleet start'), not a generic "fleet unavailable".
+ * @param {*} result
+ * @returns {string|null}
+ */
+export function fleetMembersStoppedByUserReason(result) {
+    if (!result || (typeof result !== 'object' && typeof result !== 'function')) return null;
+    const reason = result[FLEET_STOPPED_BY_USER];
+    return typeof reason === 'string' ? reason : null;
+}
 
 /**
  * Mark a listMembers()-shaped result as "unavailable". Returns the same
@@ -97,7 +112,11 @@ export async function listFleetMembers(deps = {}) {
         connection = await resolveConnection();
     } catch (err) {
         logError('[fleet-members] failed to resolve fleet server connection:', err);
-        return markFleetMembersUnavailable({ members: [] }, `could not resolve the fleet server connection: ${errorText(err)}`);
+        const result = markFleetMembersUnavailable({ members: [] }, `could not resolve the fleet server connection: ${errorText(err)}`);
+        if (err && err.code === 'SERVER_STOPPED_BY_USER') {
+            Object.defineProperty(result, FLEET_STOPPED_BY_USER, { value: errorText(err), enumerable: false, configurable: true, writable: false });
+        }
+        return result;
     }
     if (!connection || connection.mode !== 'http') {
         logError(`[fleet-members] no reachable fleet HTTP singleton (${connection && connection.reason})`);

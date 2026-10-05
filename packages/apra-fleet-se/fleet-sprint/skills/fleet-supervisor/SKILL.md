@@ -430,7 +430,7 @@ Field names, exactly as the API expects them:
 | Field | Required | Notes |
 |---|---|---|
 | `issue` | yes | comma-separated bead root IDs (parent/epic OR a standalone leaf bead). Alias: `target_issue`. |
-| `branch` | yes | created from `base` if it doesn't exist yet. |
+| `branch` | yes | created from `base` if it doesn't exist yet. Must differ from `base` (an equal pair is a 400). |
 | `base` | yes | alias: `base_branch`. This is what the sprint branches FROM -- pass the branch you actually want, not always `main`. |
 | `members` | yes | array of registered member names. One member = safest default. |
 | `goal` | no | `P1`, `P1/P2` (default), or `P1/P2/P3`. |

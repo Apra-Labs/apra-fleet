@@ -1278,6 +1278,9 @@ export class ApraFleet {
      * src/tools/child-id-allocator.ts). Mints globally-distinct child ids under
      * a shared parent for sprints launched WITHOUT a supervisor, so two sprints
      * creating children under the same parent never derive the same id.
+     * `floor` (allocate) is the parent's highest existing child seq: the
+     * counter is never below it and released ids at or below it are dropped
+     * from the reuse pool on every allocate.
      *
      * @param {{ action: 'allocate'|'confirm'|'release'|'status',
      *           parent_id?: string, token?: string, sprint_id?: string,

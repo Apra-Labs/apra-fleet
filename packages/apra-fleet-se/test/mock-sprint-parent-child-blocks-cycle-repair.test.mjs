@@ -6,30 +6,51 @@ import fs from 'fs/promises';
 import { fileURLToPath } from 'url';
 import { FleetWorkflow } from '@apralabs/apra-fleet-workflow';
 import { WorkflowEngine } from '@apralabs/apra-fleet-workflow/engine';
+import { bdMode } from './helpers/bd-replay.mjs';
 import { runCmd, buildMockFleetApi, teardown, withScenarioMarkers, bdInitCommandForClone } from './helpers/mock-sprint-harness.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const check = (cond, msg) => assert.ok(cond, msg);
 
-// =============================================================================
-// apra-fleet-xbu.2.1: pre-sprint validation already DETECTS the self-inflicted
-// "parent-child + blocks cycle" deadlock shape (a bead has a 'blocks'
-// dependency on its own --parent ancestor/descendant, which `bd dep cycles`
-// does not flag since it never walks parent-child edges) -- it used to just
-// throw a diagnosis naming the exact `bd dep remove` fix. Since the repair
-// commands are computed deterministically, runner.js now AUTO-REPAIRS this
-// shape (removes the offending 'blocks' edge, re-queries --ready, and
-// continues) instead of hard-failing.
-//
-// Reproducing this shape requires a MULTI-target sprint (`target_issues`,
-// plural): the bead carrying the 'blocks' edge (P) must itself be fetched as
-// a CHILD of one target (GP) while its own child (C, the edge's other end)
-// is fetched as a child of P acting as a SECOND target -- `bd list --parent`
-// is single-level only, so a single-target scope can never see both ends of
-// the pair at once. This mirrors the real incident shape (e.g. apra-fleet-
-// 0pu blocked by its own child apra-fleet-0pu.1, inside a multi-issue
-// ruggedization-batch sprint).
-// =============================================================================
+// Real bd (>= 1.3) refuses to build the parent-child + blocks cycle this fixture
+// needs, in BOTH orders (blocks edge first then re-parent, or parent first then
+// blocks edge): "cannot be blocked by its descendant/ancestor" or "would create
+// a cycle". So under real bd the auto-repair below is defense-in-depth (it
+// still protects older bd versions and pre-existing databases) and cannot be
+// exercised end to end; the mock lane keeps exercising it. In real mode each
+// test instead asserts the property that made the setup unconstructible: bd
+// rejects the edge, in both orders.
+const REAL_BD = bdMode() === 'real';
+
+async function assertRealBdRejectsCycle(tag) {
+    const tempDir = path.join(os.tmpdir(), `apra-fleet-mock-sprint-${tag}-${Date.now()}-${process.pid}`);
+    await fs.mkdir(tempDir, { recursive: true });
+    try {
+        await runCmd(bdInitCommandForClone(tempDir), tempDir);
+        const create = async (title) => (await runCmd(`bd create -t task "${title}" -d "Scenario." --silent`, tempDir)).stdout.trim();
+        const rejected = (res) => Boolean(res.err || (res.stderr && res.stderr.trim()));
+        const REJECTION = /descendant|ancestor|cycle/i;
+        const text = (res) => `${res.err ? res.err.message : ''} ${res.stderr}`;
+
+        // Order 1: parent first, then the blocks edge.
+        const p1 = await create(`${tag} p1`);
+        const c1 = await create(`${tag} c1`);
+        await runCmd(`bd update ${c1} --parent ${p1}`, tempDir);
+        const dep1 = await runCmd(`bd dep add ${p1} ${c1}`, tempDir);
+        check(rejected(dep1) && REJECTION.test(text(dep1)), `expected real bd to reject P blocked-by its child, got: ${JSON.stringify(dep1)}`);
+
+        // Order 2: blocks edge first, then re-parent.
+        const p2 = await create(`${tag} p2`);
+        const c2 = await create(`${tag} c2`);
+        const dep2 = await runCmd(`bd dep add ${p2} ${c2}`, tempDir);
+        check(!rejected(dep2), `the standalone blocks edge must be accepted, got: ${JSON.stringify(dep2)}`);
+        const parentRes = await runCmd(`bd update ${c2} --parent ${p2}`, tempDir);
+        check(rejected(parentRes) && REJECTION.test(text(parentRes)), `expected real bd to reject re-parenting under the blocker, got: ${JSON.stringify(parentRes)}`);
+    } finally {
+        await teardown(tempDir);
+    }
+}
+
 async function setupCycleFixture(tag) {
     const tempDir = path.join(os.tmpdir(), `apra-fleet-mock-sprint-${tag}-${Date.now()}-${process.pid}`);
     await fs.mkdir(tempDir, { recursive: true });
@@ -97,6 +118,7 @@ async function runCycleScenario(tag, { members = ['local'], maxCycles = 1, befor
 }
 
 test('mock sprint: pre-sprint validation auto-repairs a 2-node parent+blocks cycle instead of hard-failing', async () => {
+    if (REAL_BD) return assertRealBdRejectsCycle('xbucyclerepair');
     await withScenarioMarkers('xbucyclerepair', async () => {
         console.log('Running mock sprint scenario (multi-target: parent blocked by its own child -- auto-repair path)...');
         const { logs, error, pId, cId, finalBeadsById } = await runCycleScenario('xbucyclerepair');
@@ -128,6 +150,7 @@ test('mock sprint: pre-sprint validation auto-repairs a 2-node parent+blocks cyc
 });
 
 test('mock sprint: pre-sprint validation still hard-fails when repair leaves no other ready work', async () => {
+    if (REAL_BD) return assertRealBdRejectsCycle('xbucyclenorepairwork');
     await withScenarioMarkers('xbucyclenorepairwork', async () => {
         console.log('Running mock sprint scenario (cycle repaired, but a separate unrelated blocker still leaves nothing ready)...');
         const { logs, error } = await runCycleScenario('xbucyclenorepairwork', {

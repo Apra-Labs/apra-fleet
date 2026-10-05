@@ -6,6 +6,8 @@ import type { ServiceStatus } from '../services/service-manager/types.js';
 import { SERVER_INFO_PATH } from '../paths.js';
 import { detectFleetSePrereqs, summarizeFleetSePrereqs } from './fleet-se-prereqs.js';
 import type { FleetSePrereqResult } from './fleet-se-prereqs.js';
+import { readStoppedMarker, describeStoppedMarker } from '../services/stopped-marker.js';
+import { serverVersion } from '../version.js';
 
 /**
  * Injection seam for the fleet-se prerequisite probe (apra-fleet-i9ag.13.8).
@@ -15,6 +17,12 @@ import type { FleetSePrereqResult } from './fleet-se-prereqs.js';
  */
 export interface RunStatusDeps {
   detectFleetSePrereqs: () => FleetSePrereqResult;
+}
+
+function versionCore(v: string | undefined): string | null {
+  // Capped like the client's versionCore: v comes from a server's /health reply.
+  const m = /(\d{1,9}\.\d{1,9}\.\d{1,9})/.exec((v ?? '').slice(0, 64));
+  return m ? m[1] : null;
 }
 
 interface HealthResponse {
@@ -77,12 +85,16 @@ function readServerInfo(): { pid?: number; port?: number; url?: string } {
  * made `apra-fleet status` tell fresh Windows installs that both services were
  * disabled while they were running and answering /health -- a definite wrong
  * claim where saying less is correct. Loud honesty over a silent falsehood.
+ *
+ * A manager-supplied `detail` (GitHub #585: why a task is disabled -- stopped
+ * by the user, or disabled outside apra-fleet -- or the HKCU Run fallback) is
+ * appended inside the parentheses: "installed (disabled -- stopped by user ...)".
  */
-function serviceLabelFor(status: ServiceStatus): string {
-  if (!status.installed) return 'not installed';
-  if (status.enabled === true) return 'installed (enabled)';
-  if (status.enabled === false) return 'installed (disabled)';
-  return 'installed';
+export function formatServiceLabel(svcStatus: ServiceStatus): string {
+  if (!svcStatus.installed) return 'not installed';
+  const state = svcStatus.enabled === true ? 'enabled' : svcStatus.enabled === false ? 'disabled' : null;
+  if (state === null) return svcStatus.detail ? `installed (${svcStatus.detail})` : 'installed';
+  return svcStatus.detail ? `installed (${state} -- ${svcStatus.detail})` : `installed (${state})`;
 }
 
 /**
@@ -132,8 +144,8 @@ export async function runStatus(
   const supervisorStatus: ServiceStatus = await supervisorMgr.query()
     .catch(() => ({ installed: false, running: false }));
 
-  const serviceLabel = `${serviceLabelFor(svcStatus)}${runStateFor(svcStatus)}`;
-  const supervisorLabel = `${serviceLabelFor(supervisorStatus)}${runStateFor(supervisorStatus)}`;
+  const serviceLabel = `${formatServiceLabel(svcStatus)}${runStateFor(svcStatus)}`;
+  const supervisorLabel = `${formatServiceLabel(supervisorStatus)}${runStateFor(supervisorStatus)}`;
 
   if (instance.state === 'unresponsive') {
     console.log('apra-fleet status');
@@ -147,8 +159,9 @@ export async function runStatus(
   }
 
   if (!instance.running) {
+    const marker = readStoppedMarker();
     console.log('apra-fleet status');
-    console.log(`  State:    stopped`);
+    console.log(`  State:    ${marker ? `stopped (${describeStoppedMarker(marker)})` : 'stopped'}`);
     console.log(`  Service (MCP server):       ${serviceLabel}`);
     console.log(`  Service (fleet supervisor): ${supervisorLabel}`);
     console.log(fleetSeLine);
@@ -158,8 +171,11 @@ export async function runStatus(
   const info = readServerInfo();
   const health = await getHealth(instance.url);
 
+  const marker = readStoppedMarker();
   console.log('apra-fleet status');
-  console.log(`  State:    running`);
+  // A server running while the stop marker exists (e.g. a manual run): clients
+  // will not auto-start it again if it dies until `apra-fleet start`.
+  console.log(`  State:    running${marker ? " (stop marker set -- run 'apra-fleet start' to clear)" : ''}`);
   if (info.pid) console.log(`  PID:      ${info.pid}`);
   if (info.port) console.log(`  Port:     ${info.port}`);
   console.log(`  URL:      ${instance.url}`);
@@ -169,4 +185,9 @@ export async function runStatus(
   console.log(`  Service (MCP server):       ${serviceLabel}`);
   console.log(`  Service (fleet supervisor): ${supervisorLabel}`);
   console.log(fleetSeLine);
+  const runningCore = versionCore(health?.version);
+  const ownCore = versionCore(serverVersion);
+  if (runningCore && ownCore && runningCore !== ownCore) {
+    console.log(`  Warning:  the running server is ${health!.version} but this apra-fleet is ${serverVersion} -- stop it ('apra-fleet stop'), then run 'apra-fleet install' and 'apra-fleet start'.`);
+  }
 }

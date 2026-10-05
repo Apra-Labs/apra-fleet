@@ -152,8 +152,8 @@ describe('createChildBeadWithAllocatedId -- collision probe fails closed on an u
             /refusing to create child bead at id 'parent-1\.3': the collision probe could not be evaluated/,
         );
 
-        assert.strictEqual(allocator.calls.release, 1, 'the reservation must be released when the probe cannot be evaluated');
-        assert.strictEqual(allocator.calls.confirm, 0, 'confirm must never be called when the probe cannot be evaluated');
+        assert.strictEqual(allocator.calls.release, 0, 'an unprobeable id is consumed, never released back to the pool (GitHub #615)');
+        assert.strictEqual(allocator.calls.confirm, allocator.calls.allocate, 'each unprobeable id is consumed (a gap costs nothing)');
         assert.ok(
             !calls.some((c) => c.startsWith('bd create ')),
             `no bd create dispatch must occur when the probe fails closed, got: ${JSON.stringify(calls)}`,

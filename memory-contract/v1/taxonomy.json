@@ -313,7 +313,8 @@
             { "method_id": "X-3", "member": "freshnessSweep", "tool": "kb_freshness_sweep", "position": "provider" },
             { "method_id": "X-4", "member": "resolveContradiction", "tool": "kb_resolve_contradiction", "position": "provider" },
             { "method_id": "X-5", "member": "reconcilePrefilter", "tool": "kb_reconcile_prefilter", "position": "provider" },
-            { "method_id": "X-6", "member": "hasEntry", "tool": "kb_import", "position": "provider" }
+            { "method_id": "X-6", "member": "hasEntry", "tool": "kb_import", "position": "provider" },
+            { "method_id": "X-8", "member": "getSourceFileBases", "tool": "kb_export", "position": "provider" }
           ],
           "source": "src/services/knowledge/sqlite-provider.ts:197 (SqliteProvider.getDb)",
           "surfaced": "thrown",

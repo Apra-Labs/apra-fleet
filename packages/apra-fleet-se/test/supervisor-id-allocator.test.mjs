@@ -185,6 +185,39 @@ describe('id-allocator -- floor seeds above pre-existing children', () => {
         assert.equal(seqOf(g.childId, parent), 4, 'must mint above the pre-existing floor');
         await alloc.stop();
     });
+
+    // GitHub #615: a released seq that is at/below the floor (it is an
+    // occupied id) must be dropped even when the floor does NOT raise the
+    // high-water -- otherwise it is re-minted every round.
+    test('a floor at or below the high-water still prunes pooled ids <= floor', async () => {
+        const alloc = createIdAllocator({ dataDir: dir, leaseMs: 100_000 });
+        await alloc.start();
+        const parent = 'apra-fleet-eft.9';
+        const g1 = await alloc.allocate(parent, { pid: process.pid });
+        const g2 = await alloc.allocate(parent, { pid: process.pid });
+        await alloc.confirm(g2.token);
+        // .1 is released back to the pool, but a bead now occupies it.
+        await alloc.release(g1.token);
+        assert.deepEqual(alloc.status().parents[parent].free, [1]);
+        // floor 2 == highWater 2: the floor does not raise the high-water.
+        const g3 = await alloc.allocate(parent, { pid: process.pid, floor: 2 });
+        assert.equal(seqOf(g3.childId, parent), 3, 'must not re-mint the occupied .1');
+        assert.deepEqual(alloc.status().parents[parent].free, [], 'pooled .1 must be pruned');
+        await alloc.stop();
+    });
+
+    test('pooled ids above the floor are still reused', async () => {
+        const alloc = createIdAllocator({ dataDir: dir, leaseMs: 100_000 });
+        await alloc.start();
+        const parent = 'apra-fleet-eft.9';
+        const g1 = await alloc.allocate(parent, { pid: process.pid });
+        const g2 = await alloc.allocate(parent, { pid: process.pid });
+        await alloc.confirm(g1.token);
+        await alloc.release(g2.token);
+        const g3 = await alloc.allocate(parent, { pid: process.pid, floor: 1 });
+        assert.equal(seqOf(g3.childId, parent), 2, 'a free hole above the floor is reused');
+        await alloc.stop();
+    });
 });
 
 describe('id-allocator -- lives in the supervisor (end-to-end over HTTP routes)', () => {

@@ -273,6 +273,28 @@ describe('runStart', () => {
     );
   });
 
+  it('drops APRA_FLEET_AUTOSTART / APRA_FLEET_SERVICE: consumed from its own env, never passed to the spawned server', async () => {
+    mockCheckRunning.mockResolvedValueOnce(STOPPED).mockResolvedValueOnce(RUNNING);
+    const saved = process.env.APRA_FLEET_SERVICE;
+    process.env.APRA_FLEET_AUTOSTART = '1';
+    process.env.APRA_FLEET_SERVICE = '1';
+    try {
+      vi.useFakeTimers();
+      const p = runStart([]);
+      await vi.advanceTimersByTimeAsync(2001);
+      await p;
+      expect(process.env.APRA_FLEET_AUTOSTART).toBeUndefined();
+      const opts = vi.mocked(spawn).mock.calls[0][2] as { env?: Record<string, string> };
+      expect(opts.env).toBeDefined();
+      expect(opts.env!.APRA_FLEET_AUTOSTART).toBeUndefined();
+      expect(opts.env!.APRA_FLEET_SERVICE).toBeUndefined();
+      expect(opts.env!.PATH ?? opts.env!.Path).toBeDefined();
+    } finally {
+      delete process.env.APRA_FLEET_AUTOSTART;
+      if (saved === undefined) delete process.env.APRA_FLEET_SERVICE; else process.env.APRA_FLEET_SERVICE = saved;
+    }
+  });
+
   it('logs success URL after server comes up', async () => {
     mockCheckRunning.mockResolvedValueOnce(STOPPED).mockResolvedValueOnce(RUNNING);
     vi.useFakeTimers();

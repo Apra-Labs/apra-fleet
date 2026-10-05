@@ -4,7 +4,8 @@ Reconcile a warm local KB against a merged bible after two or more branches
 land -- absorb the incoming knowledge, revive entries whose basis matches
 the merged worktree again, mechanically settle contradictions a file hash
 can decide, and dispatch a reconciler agent for the rest. Ends with the
-canonical bible re-exported so the merged branch's KB reflects merged truth.
+canonical bible re-exported: confirmed entries whose cited files still match
+their hash basis are added, so the merged branch's bible gains the merged truth.
 
 ## When to run
 
@@ -108,11 +109,16 @@ If `left_for_agent` is empty, skip straight to Step 5.
 kb_export()
 ```
 
-Writes every live `CONFIRMED` project entry -- which now includes every
-mechanical and agent-resolved winner -- to `.fleet/kb-canonical.json` and
-auto-commits it (pathspec-only, identity `pm-kb`, non-fatal on any git
-failure). This is existing `kb_export` machinery; no new commit step is
-needed here. Push is not automatic; it rides the normal sprint push cadence.
+ADDS to `.fleet/kb-canonical.json` every live `CONFIRMED` project entry not
+already in it whose cited files still match its recorded hash basis -- which
+includes the mechanical and agent-resolved winners -- and auto-commits it
+(pathspec-only, identity `pm-kb`, non-fatal on any git failure). This is
+existing `kb_export` machinery; no new commit step is needed here. Push is
+not automatic; it rides the normal sprint push cadence.
+
+The export never removes or rewrites an entry already in the bible: a
+superseded loser, or an entry later retired, stays there after re-export and
+must be removed by hand.
 
 ## Report
 

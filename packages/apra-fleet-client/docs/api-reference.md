@@ -854,11 +854,44 @@ Resolution order:
    endpoint derived from `url` (2s timeout). A stale/dead entry causes
    `server.json` to be deleted (self-healing). On success, attaches over
    `StreamableHttpTransport` and spawns nothing.
-3. **Stdio self-spawn fallback** -- `resolveFleetServerCommand()`'s four
-   tiers: `APRA_FLEET_SERVER_CMD` (a full `"<command> <args...>"` string),
-   `APRA_FLEET_SERVER_BIN` (resolved via `PATH`, run with `run --transport
-   stdio`), a bundled sibling `index.js` next to this module, or (dev
-   monorepo layout) `../../../dist/index.js` relative to it.
+3. **Start the shared HTTP server** -- when the singleton is verifiably
+   gone (no `server.json`, dead pid, or recorded port refused; never when
+   merely unresponsive), run the same `apra-fleet start` a user would
+   (`resolveFleetStartCommand()`: the running apra-fleet binary itself; else
+   `<dirname>/index.js`, dev `dist/index.js` or repo `dist/index.js` via
+   `node`; else `~/.apra-fleet/bin/apra-fleet[.exe]`), wait for `/health`
+   (default 45s, `APRA_FLEET_AUTOSTART_TIMEOUT_MS`) and attach over HTTP
+   (`mode: 'http'`, `started: true`). The started server is detached and
+   outlives the client. Racing clients share
+   `<data dir>/client-autostart.lock` (one runs start, others wait for
+   `/health`). Loop guard: `<data dir>/client-autostart.json` allows 3
+   auto-starts per 10 minutes, then `FleetAutoStartError` `AUTOSTART_LIMIT`
+   naming the newest server log. Version match: only a candidate whose
+   version equals the apra-fleet version this client ships with
+   (`clientServerVersion()`: nearest `version.json`, else
+   `workflows/.installed.json` of the install) is started -- the matching
+   build is preferred, and with no match the client refuses with
+   `AUTOSTART_VERSION_SKEW` naming both versions and `apra-fleet install`
+   (`AUTOSTART_VERSION_UNKNOWN` when its own version is unknown); an older
+   server can lack guards the client relies on. Inside the test sandbox
+   (`APRA_TEST_SANDBOX_ROOT`) an uninjected lookup fails with
+   `AUTOSTART_TEST_UNINJECTED`. A server stopped on purpose (`apra-fleet stop`
+   wrote `<data dir>/stopped-by-user.json`, see `readStoppedByUser()`) is never
+   started: `SERVER_STOPPED_BY_USER` with "apra-fleet was stopped by the user
+   at <time> ...; run 'apra-fleet start'" (resolution and the reconnecting
+   transport alike; a running server is still attached). The marker is
+   re-checked under the start lock, and the spawned `apra-fleet start` runs
+   with `APRA_FLEET_AUTOSTART=1` so it refuses (instead of clearing the
+   marker) if a stop raced it. With a registered service, `start` runs the
+   service's binary, so after /health the server's reported version is
+   compared again (`AUTOSTART_VERSION_SKEW` on a mismatch; that server stays up, so the
+   error says to `apra-fleet stop` it before `apra-fleet install`). Other codes: `AUTOSTART_TIMEOUT`,
+   `AUTOSTART_NO_BINARY`, `SERVER_UNRESPONSIVE`. An unresponsive server gets
+   the actionable error and no start. This replaces the old private stdio
+   self-spawn fallback; stdio is now only the explicit
+   `APRA_FLEET_TRANSPORT=stdio` / `APRA_FLEET_SERVER_CMD`/`_BIN` path
+   (`resolveFleetServerCommand()`'s four tiers: CMD string, BIN via `PATH`,
+   bundled sibling `index.js`, dev `../../../dist/index.js`).
 
 The launcher/auto-sprint client and the MCP server are always separate
 processes; this module only decides the transport, it never merges them.
@@ -908,8 +941,8 @@ fall back to stdio).
 
 #### `async connectFleet(deps = {})`
 
-Resolves + connects in one call. Builds a `StreamableHttpTransport` or
-`StdioTransport` per `resolveFleetServerConnection`'s result, starts it,
+Resolves + connects in one call. Builds a `ReconnectingHttpTransport` (http
+mode) or `StdioTransport` per `resolveFleetServerConnection`'s result, starts it,
 wraps it in `McpClient`, performs the `initialize`/`notifications/initialized`
 handshake for stdio connections (the HTTP transport already does its own
 `initialize` POST inside `start()`), and returns
@@ -918,6 +951,27 @@ handshake for stdio connections (the HTTP transport already does its own
 
 `deps.options`, if given, is forwarded to the transport constructor (e.g.
 HTTP headers or child-process spawn options).
+
+`resolveFleetServerConnection` also accepts an injectable
+`deps.autoStartFleetServer`.
+
+#### Auto-start and reconnect exports
+
+- `autoStartFleetServer`, `resolveFleetStartCommand`, `lastServerLog`,
+  `FleetAutoStartError`, `AUTOSTART_MAX_STARTS`, `AUTOSTART_WINDOW_MS`,
+  `AUTOSTART_TIMEOUT_MS` -- step 3 above.
+- `createFleetHttpTransport(connection, deps)` -- builds the
+  `ReconnectingHttpTransport` for an http connection (used by fleet-sprint's
+  `bin/cli.mjs`).
+- `ReconnectingHttpTransport` -- on a refused connection (ECONNREFUSED before
+  send) or HTTP 404 unknown session (rejected by the router before any tool
+  runs) it re-probes (running -> new session; gone -> auto-start unless
+  `APRA_FLEET_TRANSPORT=http`; unresponsive -> error) and retries that request
+  once. A request that may have reached the server (e.g. an in-flight
+  `execute_prompt`/`execute_command` whose response stream died) is rejected
+  and never re-sent; the next request reconnects.
+- `isNeverDeliveredError(err)` -- the predicate behind that retry rule.
+  `StreamableHttpTransport` send errors now carry `.status`.
 
 ## `src/client/factory.mjs`
 

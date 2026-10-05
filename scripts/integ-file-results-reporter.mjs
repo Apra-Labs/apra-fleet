@@ -29,8 +29,18 @@
 // test run.
 //
 // Status file layout (shared with run-integ-suites.mjs):
-//   { run: {...}, results: { "<basename>": { passed, durationMs,
-//     elapsedSeconds, finishedAt, failures?: [{name, error}] } } }
+//   { run: {..., startedAt, lastResultAt}, results: { "<basename>": {
+//     passed, durationMs, elapsedSeconds, finishedAt,
+//     tests?: {total, passed, failed, skipped},
+//     failures?: [{name, error}] } } }
+// tests{} counts individual tests (not suites); skip/todo count as skipped.
+// failures[] is bounded (MAX_FAILURES_PER_FILE entries, MAX_ERROR_CHARS
+// each) and omits noise entries: a suite failing only because a subtest
+// failed, and tests cancelled by their parent. A suite that failed for its
+// own reason (e.g. a hook) is kept -- it is where that cause surfaces.
+// run.startedAt is set (if absent) to this reporter's start time and
+// run.lastResultAt on every file result, so a lane with no supervisor (the
+// nightly slow lane) still has a wall-clock duration.
 //
 // Heartbeat: touches integ-suite-heartbeat.json (throttled to ~1/second) on
 // every event so the runner's liveness check can distinguish a live run
@@ -100,8 +110,17 @@ function heartbeat() {
   }
 }
 
+const reporterStartedAt = new Date().toISOString();
+
 function trimError(err) {
-  const text = String((err && (err.message || err.stack)) || err || 'unknown error');
+  // node:test wraps the real error (ERR_TEST_FAILURE) and keeps it in
+  // .cause; for a hook failure the wrapper message names the hook and the
+  // cause holds the reason, so keep both when they differ.
+  const msg = err && err.message;
+  const cause = err && err.cause && (err.cause.message || String(err.cause));
+  let text;
+  if (cause && msg && cause !== msg) text = `${msg}: ${cause}`;
+  else text = String(cause || msg || (err && err.stack) || err || 'unknown error');
   return text.length > MAX_ERROR_CHARS ? text.slice(0, MAX_ERROR_CHARS) + '...' : text;
 }
 
@@ -109,6 +128,26 @@ export default async function* integFileResultsReporter(source) {
   // Failure details seen so far, keyed by basename, merged into the file's
   // result at (or after) its file-level completion.
   const failuresByFile = new Map();
+  // Individual-test counts per basename. A file whose result is already
+  // recorded gets late counts flushed on the next write and at stream end.
+  const countsByFile = new Map();
+  const recorded = new Set();
+  const dirty = new Set();
+  const countsFor = (base) => {
+    let c = countsByFile.get(base);
+    if (!c) { c = { total: 0, passed: 0, failed: 0, skipped: 0 }; countsByFile.set(base, c); }
+    return c;
+  };
+  const flushDirty = (status) => {
+    for (const f of dirty) {
+      if (status.results[f]) status.results[f].tests = { ...countsFor(f) };
+    }
+    dirty.clear();
+  };
+  const isNoiseFailure = (data) => {
+    const ft = data.details && data.details.error && data.details.error.failureType;
+    return ft === 'cancelledByParent' || (ft === 'subtestsFailed' && data.details.type === 'suite');
+  };
 
   const isFileLevel = (data) =>
     data && data.nesting === 0 && typeof data.file === 'string'
@@ -128,22 +167,35 @@ export default async function* integFileResultsReporter(source) {
           inflight.add(base);
           status.run.inflight = [...inflight].sort();
         });
-      } else if (event.type === 'test:fail' && base && !isFileLevel(data)) {
-        // Individual failing test inside a file: stash detail, and if the
-        // file's result was already recorded (out-of-order stream), merge
-        // the detail into it now.
-        const list = failuresByFile.get(base) || [];
-        if (list.length < MAX_FAILURES_PER_FILE) {
-          list.push({ name: data.name, error: trimError(data.details && data.details.error) });
+      } else if ((event.type === 'test:pass' || event.type === 'test:fail') && base && !isFileLevel(data)) {
+        // Individual test (or suite) inside a file. Count tests only --
+        // suites are containers. Inner events can arrive after the file's
+        // own result (see header), so late counts are marked dirty.
+        if (data.details && data.details.type !== 'suite') {
+          const c = countsFor(base);
+          c.total += 1;
+          if (data.skip || data.todo) c.skipped += 1;
+          else if (event.type === 'test:pass') c.passed += 1;
+          else c.failed += 1;
+          if (recorded.has(base)) dirty.add(base);
         }
-        failuresByFile.set(base, list);
-        mutateStatus((status) => {
-          const rec = status.results[base];
-          if (rec) {
-            rec.passed = false;
-            rec.failures = list.slice(0, MAX_FAILURES_PER_FILE);
+        if (event.type === 'test:fail' && !data.todo && !isNoiseFailure(data)) {
+          // Failing test: stash detail, and if the file's result was already
+          // recorded (out-of-order stream), merge the detail into it now.
+          const list = failuresByFile.get(base) || [];
+          if (list.length < MAX_FAILURES_PER_FILE) {
+            list.push({ name: data.name, error: trimError(data.details && data.details.error) });
           }
-        });
+          failuresByFile.set(base, list);
+          mutateStatus((status) => {
+            const rec = status.results[base];
+            if (rec) {
+              rec.passed = false;
+              rec.failures = list.slice(0, MAX_FAILURES_PER_FILE);
+            }
+            flushDirty(status);
+          });
+        }
       } else if (event.type === 'test:complete' && isFileLevel(data)) {
         const durationMs = data.details && typeof data.details.duration_ms === 'number'
           ? data.details.duration_ms : null;
@@ -153,17 +205,24 @@ export default async function* integFileResultsReporter(source) {
         if (fileError && failures.length === 0) {
           failures.push({ name: base, error: fileError });
         }
+        recorded.add(base);
         mutateStatus((status) => {
           const inflight = new Set((status.run && status.run.inflight) || []);
           inflight.delete(base);
-          if (status.run) status.run.inflight = [...inflight].sort();
+          status.run = status.run || {};
+          status.run.inflight = [...inflight].sort();
+          if (!status.run.startedAt) status.run.startedAt = reporterStartedAt;
+          const finishedAt = new Date().toISOString();
+          status.run.lastResultAt = finishedAt;
           status.results[base] = {
             passed: !fileError,
             durationMs,
             elapsedSeconds: durationMs === null ? null : Math.round(durationMs / 1000),
-            finishedAt: new Date().toISOString(),
+            finishedAt,
+            tests: { ...countsFor(base) },
             ...(fileError ? { failures: failures.slice(0, MAX_FAILURES_PER_FILE) } : {}),
           };
+          flushDirty(status);
         });
       }
     } catch (e) {
@@ -172,4 +231,7 @@ export default async function* integFileResultsReporter(source) {
     // This reporter yields no output of its own; the timestamped reporter
     // handles the human-readable log stream.
   }
+  // Inner events can arrive after their file's result (see header): write
+  // any counts still pending once the stream ends.
+  if (dirty.size) mutateStatus(flushDirty);
 }

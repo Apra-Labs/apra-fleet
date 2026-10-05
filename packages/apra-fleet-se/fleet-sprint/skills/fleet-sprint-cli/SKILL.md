@@ -44,6 +44,9 @@ on this list -- flags evolve and this skill can drift.
   is invisible to the scope filter no matter what you pass -- only true
   children are picked up. See the epics/manifest-bead guidance in
   `packages/apra-fleet-se/fleet-sprint/docs/README.md`.
+- `--branch` must differ from `--base` (`main` vs `origin/main` or
+  `refs/heads/main` count as the same branch); an equal pair is rejected at
+  launch.
 - `--branch` is created from `--base` if it does not already exist. If it
   does exist (e.g. you are resuming), it is reused as-is.
 - **`--base` is resolved against the remote, not your local checkout.** A new

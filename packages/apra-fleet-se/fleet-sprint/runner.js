@@ -93,7 +93,7 @@ import {
     createWorkflowsPermissionPreflightCallback,
     createLlmAuthSelfHealCallback,
 } from './vcs-auth.mjs';
-import { validateIssueId, validateBranchName, validateArgs } from './sprint-args.mjs';
+import { validateIssueId, validateBranchName, validateBranchPair, validateArgs } from './sprint-args.mjs';
 import { verifyBeadsIdentity } from './beads-identity-check.mjs';
 import { ROLE_BACKLOG, selectBacklogMember, formatBacklogSelection } from './backlog-role.mjs';
 import { sweepTokenMemories } from './beads-memory-hygiene.mjs';
@@ -340,7 +340,7 @@ export {
 // Re-exported so importers of the CLI arg-contract validators from runner.js
 // keep working (notably bin/cli.mjs); sprint-args.mjs is the single source of
 // truth for their implementation (apra-fleet-3swo.3.3).
-export { validateIssueId, validateBranchName, validateArgs };
+export { validateIssueId, validateBranchName, validateBranchPair, validateArgs };
 // Re-exported so importers of the five previously-exported prompt builders
 // from runner.js keep working; prompts.mjs is the single source of truth for
 // their implementation (apra-fleet-3swo.3.4). buildPlanReviewerPrompt and
@@ -1383,7 +1383,7 @@ async function runSprintCycle(context) {
     // absent that, the orchestrator's own identity). A probe that fails or
     // resolves nothing is a logged `[beads-identity] WARNING:` (with the
     // fix) and that field is left out of the comparison -- only a proven
-    // mismatch is fatal.
+    // mismatch, or bd itself missing on a member, is fatal.
     // Sits here rather than next to wrapCommand() above because the
     // backlog member is only resolved at this point; nothing between
     // the two spots issues a command(). `context.verifyBeadsIdentity` is the

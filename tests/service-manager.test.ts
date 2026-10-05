@@ -50,12 +50,16 @@ describe('WindowsServiceManager', () => {
       expect(call[1]).toContain('set APRA_FLEET_SERVICE=1'); // service-launch marker
     });
 
-    it('calls schtasks /create with onlogon trigger and limited run-level', async () => {
+    // GitHub #585 recovery: /sc onlogon is "Access is denied" for a standard
+    // user; the user-scoped XML definition is not.
+    it('calls schtasks /create /xml (never /sc onlogon)', async () => {
       const mgr = new WindowsServiceManager();
       await mgr.register('/bin/apra-fleet.exe', ['--transport', 'http'], '/logs/fleet.log');
-      expect(execFileSync).toHaveBeenCalledWith('schtasks', expect.arrayContaining([
-        '/create', '/tn', 'ApraFleet', '/sc', 'onlogon', '/rl', 'limited', '/f',
-      ]), expect.objectContaining({ timeout: expect.any(Number) }));
+      expect(execFileSync).toHaveBeenCalledWith('schtasks', [
+        '/create', '/tn', 'ApraFleet', '/xml', expect.stringContaining('apra-fleet-task.xml'), '/f',
+      ], expect.objectContaining({ timeout: expect.any(Number) }));
+      const all = vi.mocked(execFileSync).mock.calls.flatMap(c => c[1] as string[]);
+      expect(all).not.toContain('onlogon');
     });
   });
 
@@ -81,7 +85,7 @@ describe('WindowsServiceManager', () => {
       vi.mocked(spawn).mockReturnValueOnce(mockChild as any);
       const mgr = new WindowsServiceManager();
       await mgr.start();
-      expect(spawn).toHaveBeenCalledWith('schtasks', ['/run', '/tn', 'ApraFleet'], { detached: true, stdio: 'ignore', windowsHide: true });
+      expect(spawn).toHaveBeenCalledWith('schtasks', ['/run', '/tn', 'ApraFleet'], expect.objectContaining({ detached: true, stdio: 'ignore', windowsHide: true }));
       expect(mockChild.unref).toHaveBeenCalled();
     });
   });
@@ -139,6 +143,8 @@ describe('WindowsServiceManager', () => {
           if (opts.csv instanceof Error) throw opts.csv;
           return opts.csv as any;
         }
+        // No HKCU Run fallback entry on this host (reg query fails).
+        if (cmd === 'reg') throw new Error('ERROR: The system was unable to find the specified registry key or value.');
         return '' as any;
       }) as any);
     }
@@ -158,7 +164,7 @@ describe('WindowsServiceManager', () => {
     it('a DISABLED task reports enabled:false', async () => {
       mockHost({ probe: '1\r\n' });
       expect(await new WindowsServiceManager().query())
-        .toEqual({ installed: true, running: false, enabled: false });
+        .toEqual({ installed: true, running: false, enabled: false, detail: expect.stringContaining('disabled') });
     });
 
     it('a registered-but-idle READY task is enabled and not running', async () => {
@@ -219,7 +225,7 @@ describe('WindowsServiceManager', () => {
       it('maps an explicit Disabled status to enabled:false', async () => {
         mockHost({ probe: new Error('no powershell'), csv: '"ApraFleet","N/A","Disabled"\r\n' });
         expect(await new WindowsServiceManager().query())
-          .toEqual({ installed: true, running: false, enabled: false });
+          .toEqual({ installed: true, running: false, enabled: false, detail: expect.stringContaining('disabled') });
       });
 
       it('leaves enabled UNDEFINED for a status string it does not recognize', async () => {
@@ -265,7 +271,9 @@ describe('WindowsServiceManager', () => {
       vi.mocked(execFileSync).mockImplementation(((_cmd: string, args: string[]) => args.includes('/xml')
         ? Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from('<Task><Settings><Enabled>false</Enabled></Settings></Task>', 'utf16le')])
         : '"ApraFleet","N/A","Disabled"\r\n') as any);
-      expect(await new WindowsServiceManager().query()).toEqual({ installed: true, running: false, enabled: false });
+      expect(await new WindowsServiceManager().query()).toEqual({
+        installed: true, running: false, enabled: false, detail: expect.stringContaining('disabled'),
+      });
     });
 
     // GitHub #585: no schtasks/taskkill stderr may reach the console above status.

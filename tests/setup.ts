@@ -19,6 +19,9 @@ vi.mock('../src/services/preflight-check.js', () => ({
 }));
 
 process.env.NODE_ENV = 'test';
+// install's post-start /health wait: off unless a test opts in
+// (_setServiceHealthWaitOverride) -- no test may wait on a real server.
+process.env.APRA_FLEET_INSTALL_HEALTH_TIMEOUT_MS ??= '0';
 // apra-fleet-2xs.9: unique-per-run directory computed once in tests/global-setup.ts
 // and handed to every worker via provide/inject, so concurrent `vitest run`
 // invocations never share (and corrupt) the same registry.json. Falls back to the

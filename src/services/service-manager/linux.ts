@@ -5,6 +5,7 @@ import os from 'node:os';
 import type { RegisterOptions, ServiceDescriptor, ServiceId, ServiceManager, ServiceStatus } from './types.js';
 import { DEFAULT_SERVICE_ID, SERVICE_ENV_MARKER, getServiceDescriptor } from './types.js';
 import { gracefulStopByServerJson } from './index.js';
+import { clearServiceStartFailures } from '../service-start-guard.js';
 
 const UNIT_DIR = path.join(os.homedir(), '.config', 'systemd', 'user');
 
@@ -84,6 +85,9 @@ export class LinuxServiceManager implements ServiceManager {
   }
 
   async start(): Promise<void> {
+    // An explicit start is never skipped by the MCP server's failed-start
+    // backoff (the backoff state belongs to the MCP server service only).
+    if (this.descriptor.gracefulStopViaServerJson) clearServiceStartFailures();
     checkSystemd();
     execFileSync('systemctl', ['--user', 'start', this.unitName]);
   }
