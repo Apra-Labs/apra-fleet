@@ -755,6 +755,33 @@ export const finalVerdict = {
                 required: ['id', 'reason'],
             },
         },
+        // The Final Review's DISCARD judgement, mirroring reviewer-output.json's
+        // kb_discards: same {id, reason} shape as kb_promotions, executed by the
+        // same kbWork.apply path. Optional: discarding nothing is the common answer.
+        // The reason minLength is the engine's evidence bar (kb.mjs
+        // KB_MIN_PROMOTE_REASON, enforced in vetKbWork); kept as a literal so
+        // this schema module stays dependency-free, pinned equal by
+        // test/kb-review-judgements.test.mjs.
+        kb_discards: {
+            type: 'array',
+            description: 'Promotion candidates the final review showed to be WRONG and is discarding (the entry drops out of every later read). Same evidence bar as kb_promotions. An id may not appear in both kb_promotions and kb_discards -- the engine refuses both. The engine makes the discard calls.',
+            items: {
+                type: 'object',
+                properties: {
+                    id: {
+                        type: 'string',
+                        description: "The entry id, copied verbatim from the 'KNOWLEDGE BANK -- promotion candidates' block in your dispatch prompt. Never invent one.",
+                        minLength: 1,
+                    },
+                    reason: {
+                        type: 'string',
+                        description: 'The evidence that the entry is wrong -- what you actually checked that contradicts its claim.',
+                        minLength: 20,
+                    },
+                },
+                required: ['id', 'reason'],
+            },
+        },
     },
     required: ['verdict', 'notes'],
 };

@@ -1,4 +1,4 @@
-import type { ProviderAdapter, PromptOptions, ParsedResponse, ParseResponseContext, ComposePermissionOptions, PermissionDenial, PermissionDenialItem, UsageLimitSignal, RegisterMcpEndpointOptions, RegisterMcpEndpointResult, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult, SessionIdStrategy, ExecTimeoutSource, TargetOS } from './provider.js';
+import type { ProviderAdapter, PromptOptions, ParsedResponse, ParseResponseContext, ComposePermissionOptions, PermissionDenial, PermissionDenialItem, UsageLimitSignal, MemberMcpSyncContext, MemberMcpSyncResult, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult, SessionIdStrategy, ExecTimeoutSource, TargetOS } from './provider.js';
 import { joinForOS, resolveHomeDir, defaultUsageLimitSignal } from './provider.js';
 import type { LlmProvider, SSHExecResult, Agent } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
@@ -10,6 +10,9 @@ import { stripAnsi } from '../utils/ansi.js';
 import { logWarn } from '../utils/log-helpers.js';
 import { getModelOverride } from '../services/user-config.js';
 import { transformAgentForAgy } from '../cli/agent-transform.js';
+import { MEMBER_ALLOWED_TOOLS, MEMBER_DENIED_TOOLS } from '../services/member-tool-allowlist.js';
+import { agyMemberDenyRules, joinMemberPath, pruneLegacyMcpInMemberFile } from '../services/member-config-io.js';
+import { isPosixShell } from '../utils/agent-helpers.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -449,6 +452,23 @@ export class AgyProvider implements ProviderAdapter {
     }];
   }
 
+  /** agy has no per-project MCP config, so no per-folder member entry is
+   *  written. The only member-MCP work is pruning the retired
+   *  apra-fleet-member url+bearer entry from agy's machine-global
+   *  ~/.gemini/config/mcp_config.json, when that file exists. */
+  async syncMemberMcpEntry(ctx: MemberMcpSyncContext): Promise<MemberMcpSyncResult> {
+    if (!ctx.memberHomeDir) {
+      throw new Error('agy: the member home directory could not be resolved, so mcp_config.json cannot be checked');
+    }
+    const isWindows = ctx.agentOs === 'windows';
+    const file = joinMemberPath(ctx.memberHomeDir.trim(), '.gemini/config/mcp_config.json', isWindows, ctx.shell);
+    const pruned = await pruneLegacyMcpInMemberFile(ctx.execCommand, file, isPosixShell(isWindows, ctx.shell));
+    return {
+      workFolderFiles: [],
+      detail: pruned ? `agy: pruned apra-fleet-member from ${file}` : 'agy: no per-project MCP config; nothing to write',
+    };
+  }
+
   async preparePermissionsDelivery(
     _agent: Agent,
     execCommand: WorkspaceTrustExecFn,
@@ -515,43 +535,6 @@ export class AgyProvider implements ProviderAdapter {
 
   headlessInvocation(promptLiteral: string): string {
     return `-p "${promptLiteral}"`;
-  }
-
-  async registerMcpEndpoint(opts: RegisterMcpEndpointOptions): Promise<RegisterMcpEndpointResult> {
-    // AGY has no `agy mcp` CLI verb (`agy help` lists: changelog, help, install, models,
-    // plugin(s), update -- no mcp verb) and no project/user scope distinction -- it reads
-    // MCP server config from a single centralized, machine-global file. See
-    // docs/member-onboarding-journey.md section 3a for the live-verified investigation.
-    // Merge under mcpServers.<name>, preserving any sibling entries (mirrors the
-    // uninstall-time precision-cleanup pattern in src/cli/uninstall.ts).
-    const configDir = path.join(os.homedir(), '.gemini', 'config');
-    const configFile = path.join(configDir, 'mcp_config.json');
-    fs.mkdirSync(configDir, { recursive: true });
-
-    let settings: Record<string, unknown> = {};
-    if (fs.existsSync(configFile)) {
-      try {
-        settings = JSON.parse(fs.readFileSync(configFile, 'utf-8'));
-      } catch {
-        // malformed file -- start fresh rather than write on top of unparseable state
-        settings = {};
-      }
-    }
-
-    const mcpServers = (settings.mcpServers as Record<string, unknown> | undefined) ?? {};
-    mcpServers['apra-fleet-member'] = {
-      type: 'http',
-      url: opts.url,
-      headers: { Authorization: `Bearer ${opts.token}` },
-    };
-    settings.mcpServers = mcpServers;
-
-    fs.writeFileSync(configFile, JSON.stringify(settings, null, 2) + '\n');
-
-    return {
-      mechanism: 'config-file-merge',
-      detail: `merged apra-fleet-member into ${configFile} (mcpServers.apra-fleet-member)`,
-    };
   }
 
   async ensureWorkspaceTrusted(
@@ -736,32 +719,18 @@ export function detectAgyPermissionDenial(result: SSHExecResult, agentOs?: Parse
   return { actions, denials, suggestedGrants, hint, signals };
 }
 
-export const AGY_MEMBER_ALLOWED_TOOLS = [
-  'code_graph', 'code_impact', 'code_query', 'code_context', 'code_map',
-  'code_flow', 'code_tests', 'kb_session_prime', 'kb_query', 'kb_stats',
-  'kb_capture', 'kb_feedback', 'kb_list',
-];
+// Derived from the shared member allowlist (src/services/member-tool-allowlist.ts)
+// rather than hand-listed: agy members get exactly the base member allowlist,
+// and the agy orchestrator denies every other registered tool. agy members are
+// not channel-capable, so MEMBER_CHANNEL_TOOLS (respond_to_message) stays denied.
+export const AGY_MEMBER_ALLOWED_TOOLS: string[] = [...MEMBER_ALLOWED_TOOLS];
 
-export const AGY_ORCHESTRATOR_DENIED_TOOLS = [
-  'register_member', 'list_members', 'get_member_model_pricing', 'remove_member',
-  'update_member', 'dolt_push_mutex', 'child_id_allocator', 'member_reservation',
-  'send_files', 'receive_files', 'execute_prompt', 'execute_command',
-  'provision_llm_auth', 'setup_ssh_key', 'setup_git_app', 'provision_vcs_auth',
-  'revoke_vcs_auth', 'vcs_credential_exec', 'fleet_status', 'member_detail',
-  'update_llm_cli', 'shutdown_server', 'version', 'compose_permissions',
-  'cloud_control', 'monitor_task', 'stop_prompt', 'credential_store_set',
-  'credential_store_list', 'credential_store_delete', 'credential_store_update',
-  'send_email', 'send_message', 'report_status', 'respond_to_message',
-  'kb_invalidate', 'kb_context', 'kb_harvest', 'kb_promote',
-  'kb_freshness_sweep', 'kb_import', 'kb_resolve_contradiction',
-  'kb_reconcile_prefilter', 'kb_setup', 'kb_export',
-  'member_owner', 'member_git_status',
-];
+export const AGY_ORCHESTRATOR_DENIED_TOOLS: string[] = [...MEMBER_DENIED_TOOLS];
 
-export const AGY_ORCHESTRATOR_DENY_RULES: string[] = AGY_ORCHESTRATOR_DENIED_TOOLS.flatMap(tool => [
-  `mcp(apra-fleet/${tool})`,
-  `mcp(apra-fleet-member/${tool})`
-]);
+// Exactly the complement of the member allowlist on the apra-fleet server. The
+// retired apra-fleet-member alias is no longer denied here: compose prunes that
+// entry from agy's mcp_config.json instead (syncMemberMcpEntry).
+export const AGY_ORCHESTRATOR_DENY_RULES: string[] = agyMemberDenyRules();
 
 export interface AgySkillsCheckResult {
   installed: string[];

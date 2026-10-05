@@ -32,9 +32,34 @@ Normal for a new member. `register_member` still succeeds; run
 Before provisioning: for the default OAuth flow, log in locally first (`/login`
 in a Claude Code session, or `claude auth login`) -- `provision_llm_auth` copies
 your credentials to the member. For the API-key flow, pass the key as the
-`api_key` parameter. The tool checks token expiry before deploying; an expired
+`api_key` parameter; a Claude Code OAuth token from `claude setup-token`
+(`sk-ant-oat...`) also goes in `api_key` and is set as `CLAUDE_CODE_OAUTH_TOKEN`
+(an `sk-ant-api...` key as `ANTHROPIC_API_KEY`). Without `api_key`, a credential
+already stored for the member is re-deployed rather than overwritten by your
+login (this is what cloud start and sprint self-heal do); pass
+`force_oauth_copy: true` to copy your local login instead and clear the stored
+credential. The tool checks token expiry before deploying; an expired
 access token with a live refresh token still deploys, and the member's CLI
 refreshes on first use.
+
+**`secret_delivery_unavailable` on execute_prompt / provision_llm_auth**
+
+The fleet delivers a member's stored credentials (API key, OAuth token, set by
+`provision_llm_auth` or `apra-fleet auth --member`) through an owner-only file
+written over SFTP -- never on the member's command line, where any local user
+could read it with `ps`. When no such channel exists, the dispatch is refused
+before any LLM call and is not retried:
+
+- SSH member with the SFTP subsystem disabled: enable it in the member's
+  `sshd_config` (`Subsystem sftp internal-sftp`, or the path to `sftp-server`)
+  and restart sshd.
+- Relay member (no safe channel exists), or you prefer not to enable SFTP:
+  provide the credential in that machine's own environment, then clear the
+  stored copy with `provision_llm_auth {member_name: "<name>", clear_stored_credentials: true}`
+  (registry only; works offline and over relay).
+
+`execute_command` still runs on such a member, without the stored credential
+env vars, and says so in its result (`storedEnvNotDelivered`).
 
 **Auth error (401 / 403)**
 

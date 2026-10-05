@@ -66,7 +66,13 @@ beforeEach(() => {
   // homedir at a path that can't have an installed skills dir, forcing resolution
   // to fall through to the repo checkout (same technique as
   // tests/compose-permissions.test.ts).
-  vi.spyOn(os, 'homedir').mockReturnValue('/nonexistent-test-home');
+  // The home is a real scratch dir (no installed skills dir in it) because
+  // compose now writes the member's per-folder apra-fleet MCP entry into the
+  // local member's ~/.claude.json, resolved in JavaScript from os.homedir() --
+  // so the real ~/.claude.json is never touched.
+  const scratchHome = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-k4sc-home-'));
+  scratchDirs.push(scratchHome);
+  vi.spyOn(os, 'homedir').mockReturnValue(scratchHome);
   // See file header "Workspace-trust safety note": never let this test touch the
   // real machine's $HOME/.claude.json.
   vi.spyOn(ClaudeProvider.prototype, 'ensureWorkspaceTrusted').mockResolvedValue({
@@ -117,7 +123,7 @@ describe.skipIf(process.platform === 'win32')(
     expect(onDisk.permissions.allow).toContain('Bash(docker:*)');
   });
 
-  it('merges a grant onto an existing settings.local.json, preserving the pre-existing JWT mcpServers entry', async () => {
+  it('merges a grant onto an existing settings.local.json and prunes the legacy JWT mcpServers entry', async () => {
     const workFolder = makeScratchWorkFolder();
     const claudeDir = path.join(workFolder, '.claude');
     fs.mkdirSync(claudeDir, { recursive: true });
@@ -153,8 +159,13 @@ describe.skipIf(process.platform === 'win32')(
     expect(result).toContain('Granted');
 
     const onDisk = JSON.parse(fs.readFileSync(settingsPath(workFolder), 'utf-8'));
-    // The JWT entry register_member wrote must survive the merge.
-    expect(onDisk.mcpServers['apra-fleet-member']).toEqual(preexisting.mcpServers['apra-fleet-member']);
+    // The retired url+bearer apra-fleet-member entry is pruned (no live
+    // bearer token left on disk); the member's own entry is the per-folder
+    // local-scope apra-fleet one in the Claude config, not this file.
+    expect(onDisk.mcpServers).toBeUndefined();
+    expect(JSON.stringify(onDisk)).not.toContain('super-secret-jwt');
+    const claudeConfig = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.claude.json'), 'utf-8'));
+    expect(claudeConfig.projects[workFolder.replace(/\\/g, '/')].mcpServers['apra-fleet'].url).toMatch(new RegExp(`\\?member=${member.id}$`));
     // Prior allow entries survive...
     expect(onDisk.permissions.allow).toEqual(expect.arrayContaining(['Read', 'Bash(git:*)']));
     // ...and the new grant (plus its co-occurrence expansion) is added.

@@ -1,10 +1,10 @@
 import { z } from 'zod';
+import { KB_REMOVED_SCOPE_KEYS_SHAPE } from '../services/knowledge/kb-removed-scope-keys.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { getKbProviders } from '../services/knowledge/kb-providers.js';
-import { kbScopeFields } from '../services/knowledge/kb-scope-input.js';
-import { KbCaptureRejected } from '../services/knowledge/types.js';
-import type { KBEntryInput, ContentType, Confidence, AudnDecision } from '../services/knowledge/types.js';
+import { resolveKbAnchor, type KbAnchor } from '../services/knowledge/kb-self.js';
+import { readBibleEntries, importBibleEntries } from '../services/knowledge/bible-import.js';
 import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
 
 // T2.1 (F4, D3 HARDENED): kb_import -- the trusted-channel write path that lets a
@@ -34,20 +34,8 @@ import { requireSqliteProject } from '../services/knowledge/require-sqlite-proje
 // directive gate quarantines them either way.
 
 export const kbImportSchema = z.object({
-  ...kbScopeFields,
   path: z.string().optional()
-    .describe('Explicit path to a bible JSON file. When omitted, resolves to <repo>/.fleet/kb-canonical.json. TRUST NOTE: importing the repo-resolved .fleet/kb-canonical.json is the git-reviewed trusted channel; an explicit --path bible is caller-asserted trust (equivalent in power to kb_promote). Directives are quarantined to pending proposals either way.'),
-  repo: z.string().optional()
-    .describe('Repo root used to resolve <repo>/.fleet/kb-canonical.json when --path is omitted, and to anchor the post-import freshness sweep. Validated (must exist and be a directory) or the call fails; when omitted, falls back to the validated process working directory.'),
-  // KB audit 2026-08-11: the apra-fleet-src trap again. Every other kb_* tool
-  // names this input `repo_path`; kb_import alone took `repo`, and zod strips
-  // unknown keys silently -- so calling it the way every sibling is called did
-  // not error, it resolved against the SERVER's cwd and imported an unrelated
-  // repo's bible. Invisible, because it still reports a successful import. The
-  // sprint engine calls this per member, which is precisely the repo-blindness
-  // class per-member path resolution exists to prevent.
-  repo_path: z.string().optional()
-    .describe('Alias for `repo`, matching the input name used by every other kb_* tool. Ignored when `repo` is also supplied.'),
+    .describe('Explicit path to a bible JSON file (e.g. <worktree>/.fleet/kb-canonical.json). This is a file path, not a scope selector: the KB written is always the calling session\'s own (a member session -> its work folder; otherwise the server folder). When omitted, resolves to <own folder>/.fleet/kb-canonical.json. TRUST NOTE: importing the repo-resolved .fleet/kb-canonical.json is the git-reviewed trusted channel; an explicit --path bible is caller-asserted trust (equivalent in power to kb_promote). Directives are quarantined to pending proposals either way.'),
   scope: z.literal('project').optional()
     .describe('Only project scope is supported (imports into the project KB). Global bibles are a separate concern.'),
   // KB audit 2026-08-12, found by a LIVE sprint rather than by review. The
@@ -61,61 +49,21 @@ export const kbImportSchema = z.object({
   // fire", by a side door. Opt-out, defaulting to today's behaviour.
   skip_sweep: z.boolean().optional()
     .describe('Skip the post-import freshness sweep. The sweep re-judges EVERY entry in the KB against this worktree, which is right for a deliberate audit but wrong for a routine import: an import performed to warm the KB should not mass-stale it because unrelated files have changed since capture. prime() still runs its own bounded freshness check on the entries it actually returns, so skipping this does not surface stale claims. Default false (sweep runs, unchanged).'),
+  // Removed pre-redesign scope keys: declared only so a caller still passing one
+  // is refused with E-SCOPE-KEY-REMOVED instead of silently re-scoped.
+  ...KB_REMOVED_SCOPE_KEYS_SHAPE,
 });
 
 export type KbImportInput = z.infer<typeof kbImportSchema>;
 
-// F4 (D3, KB d5193cb9): repo path resolution precedence, mirroring kb-export --
-// (1) explicit repo, validated (must exist and be a directory) or refuse; (2)
-// validated process working directory when repo is omitted (same check, not a
-// blind default); (3) neither validates -> throw. kb_import is an explicit
-// command, so it throws like kb_export rather than silently skipping.
-function resolveRepoPath(explicit?: string): string {
-  const candidate = explicit || process.cwd();
-  if (!fs.existsSync(candidate) || !fs.statSync(candidate).isDirectory()) {
-    throw new Error('kb_import: repo does not exist or is not a directory: ' + candidate);
+// The KB anchor is the calling session's own folder (kb-self.ts). kb_import
+// reads the bible and sweeps against that folder on THIS host, so an anchor
+// naming a folder on another host refuses rather than silently skipping.
+function requireLocalFolder(folder: string): string {
+  if (!fs.existsSync(folder) || !fs.statSync(folder).isDirectory()) {
+    throw new Error('kb_import: repo folder does not exist or is not a directory on this host: ' + folder);
   }
-  return candidate;
-}
-
-const VALID_TYPES: readonly ContentType[] = ['context-cache', 'learning', 'knowledge', 'runbook', 'user-directive'];
-const VALID_CONFIDENCE: readonly Confidence[] = ['CONFIRMED', 'INFERRED', 'UNVERIFIED'];
-
-interface BibleEntry {
-  id: string;
-  type: ContentType;
-  title: string;
-  summary: string;
-  symbols?: string[];
-  source_files?: string[];
-  confidence: Confidence;
-  updated_at?: string;
-}
-
-// Validate a single parsed bible entry against the exported CanonicalEntry field
-// set {id, type, title, summary, symbols, source_files, confidence, updated_at}
-// (KB b9df569a -- NOTE: no content field). Malformed entries are tolerated and
-// skipped individually rather than aborting the whole import.
-function isValidBibleEntry(e: unknown): e is BibleEntry {
-  if (!e || typeof e !== 'object') return false;
-  const r = e as Record<string, unknown>;
-  if (typeof r.id !== 'string' || r.id.length === 0) return false;
-  if (typeof r.type !== 'string' || !(VALID_TYPES as readonly string[]).includes(r.type)) return false;
-  if (typeof r.title !== 'string' || r.title.length === 0) return false;
-  if (typeof r.summary !== 'string' || r.summary.length === 0) return false;
-  if (typeof r.confidence !== 'string' || !(VALID_CONFIDENCE as readonly string[]).includes(r.confidence)) return false;
-  if (r.symbols !== undefined && !Array.isArray(r.symbols)) return false;
-  if (r.source_files !== undefined && !Array.isArray(r.source_files)) return false;
-  return true;
-}
-
-// LOW-2: bible entries carry no content field, so synthesize content
-// DETERMINISTICALLY from the summary. Determinism matters twice: (1) a re-import
-// of the same bible produces byte-identical content so AUDN's content-equality
-// 'none' path can dedupe an id-collision-with-identical-content case; (2) it
-// keeps import a pure function of the bible file.
-function synthesizeContent(entry: BibleEntry): string {
-  return entry.summary;
+  return folder;
 }
 
 export interface KbImportReport {
@@ -133,9 +81,9 @@ export interface KbImportReport {
   sweep: { checked: number; staled: number; unstaled: number };
 }
 
-export async function kbImport(input: KbImportInput): Promise<string> {
-  // `repo` wins over the `repo_path` alias so existing callers are unaffected.
-  const repoAnchor = resolveRepoPath(input.repo ?? input.repo_path);
+export async function kbImport(input: KbImportInput, anchor?: KbAnchor): Promise<string> {
+  const resolved = resolveKbAnchor(anchor);
+  const repoAnchor = requireLocalFolder(resolved.folder);
   const biblePath = input.path ?? path.join(repoAnchor, '.fleet', 'kb-canonical.json');
 
   // Validate the file resolves and parses to the bible array shape BEFORE
@@ -143,107 +91,19 @@ export async function kbImport(input: KbImportInput): Promise<string> {
   if (!fs.existsSync(biblePath)) {
     throw new Error('kb_import: bible file not found: ' + biblePath);
   }
-  const raw = fs.readFileSync(biblePath, 'utf-8');
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    throw new Error('kb_import: bible file is not valid JSON: ' + biblePath);
-  }
-  // KB-TRUST PHASE 3a: the bible has TWO on-disk shapes and must accept both.
-  //
-  //   v1 (legacy): a bare JSON array of entries.
-  //   v2:          { version, provenance: {commit, branch, entry_count}, entries }
-  //
-  // Selection is on Array.isArray, exactly as the design specifies. This import
-  // side ships BEFORE the export side starts writing v2 -- a v2 bible fed to an
-  // older apra-fleet throws the not-a-JSON-array error below, which is expected
-  // and acceptable, but it means the reader must never lag the writer.
-  const bibleEntries = Array.isArray(parsed)
-    ? parsed
-    : (parsed && typeof parsed === 'object' && Array.isArray((parsed as { entries?: unknown }).entries))
-      ? (parsed as { entries: unknown[] }).entries
-      : null;
-
-  if (bibleEntries === null) {
-    throw new Error('kb_import: bible file is not a JSON array of entries: ' + biblePath);
-  }
+  // Parsing (both on-disk shapes) is shared with the member bible view
+  // (services/knowledge/bible-import.ts); a malformed file throws KbBibleError.
+  const bibleEntries = readBibleEntries(biblePath, 'kb_import');
 
   // repoAnchor (resolved above) selects the KB, so an import 'for' repo B can
   // never land in whichever repo the server process happens to sit in.
-  const providers = await getKbProviders(repoAnchor, input.repo_remote_url);
+  const providers = await getKbProviders(repoAnchor, resolved.remoteUrl);
   const provider = requireSqliteProject(providers.project, 'kb_import');
 
-  let imported = 0;
-  let skipped = 0;
-  let linked = 0;
-  let flagged = 0;
-  let rejected = 0;
-
-  for (const candidate of bibleEntries) {
-    // Malformed entry -> tolerate and skip individually.
-    if (!isValidBibleEntry(candidate)) {
-      skipped++;
-      continue;
-    }
-    const entry = candidate;
-
-    // ORDER OF OPERATIONS (LOW-2): id-exists check FIRST, before capture()/AUDN.
-    // This is what makes re-import EXACT even for symbol-less/file-less entries
-    // AUDN can never dedupe.
-    if (provider.hasEntry(entry.id)) {
-      skipped++;
-      continue;
-    }
-
-    const kbInput: KBEntryInput = {
-      type: entry.type,
-      title: entry.title,
-      summary: entry.summary,
-      content: synthesizeContent(entry),
-      source_files: entry.source_files ?? [],
-      symbols: entry.symbols ?? [],
-      tags: [],
-      content_hash: '',
-      content_hash_type: 'sha256',
-      flagged_for_review: false,
-      // Bible entries carry no author; the trusted channel is the provenance.
-      author: 'unknown',
-      source: 'import',
-      confidence: entry.confidence,
-      scope: 'project',
-    };
-
-    // Route through the AUDN choke point with the INTERNAL import mode and the
-    // preserved bible id. A user-directive is still forced through the directive
-    // gate (pending proposal) INSIDE capture() -- import mode does not bypass it.
-    // KB-TRUST PHASE 1: isolate each entry so one unfalsifiable bible entry is
-    // counted and the import continues, rather than aborting every entry after
-    // it. Import mode exempts the confidence clamp, never the basis check.
-    let audn_decision: AudnDecision;
-    try {
-      ({ audn_decision } = await provider.capture(kbInput, {
-        importMode: true,
-        preferredId: entry.id,
-      }));
-    } catch (err) {
-      if (err instanceof KbCaptureRejected) {
-        rejected++;
-        continue;
-      }
-      throw err;
-    }
-
-    if (audn_decision === 'add') imported++;
-    else if (audn_decision === 'none') skipped++;
-    // AUDN 'update' means the entry was linked to a same-topic predecessor and
-    // BOTH stay live -- supersede is opt-in (input.supersedes) and kb_import
-    // never sets it, because a bible authored on another branch cannot name a
-    // local entry's id. Counting these as "superseded" reported a retirement
-    // that never happened.
-    else if (audn_decision === 'update') linked++;
-    else if (audn_decision === 'flagged') flagged++;
-  }
+  // Same entry loop the member bible view uses: import mode (bible confidence
+  // preserved, directives quarantined), id-exists skip first, per-entry
+  // isolation of capture basis rejections.
+  const { imported, skipped, linked, flagged, rejected } = await importBibleEntries(provider, bibleEntries);
 
   // After the entry loop, run freshnessSweep() (T1.3) so imported entries whose
   // basis does not match THIS worktree stale immediately rather than serving

@@ -46,7 +46,7 @@ see `generate-contract.mjs`'s `openapi.yaml` builder for its shape.
   "request": { "$ref": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/schemas/<tool>.request.json#" },
   "response": { "$ref": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/schemas/<tool>.response.json#" },
   "errors": [
-    { "$ref": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#/groups/<group>/codes/<index>" }
+    { "$ref": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#<CODE>" }
   ]
 }
 ```
@@ -68,6 +68,12 @@ stays meaningful. Order follows `taxonomy.json`'s own group/array order, never
 the `DESCRIPTIONS`/roster order, so re-ordering `KB_MODULES`/`CODE_EXPORTS`
 can never change this array's content. See `generate-contract.mjs`'s
 `buildBindingDoc`/`taxonomyCodeRef`.
+
+Each `$ref` names its code BY ID (`taxonomy.json#<CODE>`, resolving to the
+entry's `$anchor`, which always equals its `code`), never by a positional
+JSON Pointer: inserting a code mid-array must not change what an existing
+ref means (taxonomy.json `_meta.ref_rule`; guarded by
+`tests/memory-contract-parity.test.ts`).
 
 ### 2.1 No inlined schema bodies
 

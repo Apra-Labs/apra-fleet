@@ -3,8 +3,10 @@
  * (src/utils/env-prefix.ts): buildEnvPrefix / buildEnvAssignments.
  *
  * One case per acceptance bullet of the parent feature:
- *   - POSIX and PowerShell forms for member.env only, auth only, merged
- *   - auth wins on a name collision
+ *   - POSIX and PowerShell forms for member.env
+ *   - stored auth credentials are NEVER rendered inline (they travel in the
+ *     staged owner-only file, src/services/member-secret-env.ts)
+ *   - auth wins on a name collision (the member.env entry is dropped)
  *   - a gitbash Windows member gets the POSIX form (shell, not os, decides)
  *   - values containing ' $ ` \ spaces and newlines round-trip LITERALLY --
  *     asserted by actually executing the generated prefix in this platform's
@@ -23,7 +25,6 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, it, expect } from 'vitest';
 import { buildEnvPrefix, buildEnvAssignments } from '../src/utils/env-prefix.js';
-import { buildAuthEnvPrefix } from '../src/utils/auth-env.js';
 import { encryptPassword } from '../src/utils/crypto.js';
 import type { Agent } from '../src/types.js';
 import type { MemberShell } from '../src/os/os-commands.js';
@@ -67,12 +68,10 @@ describe('buildEnvPrefix - empty maps', () => {
     expect(buildEnvPrefix(member, { os: 'windows' })).toBe('');
   });
 
-  it('returns empty string when the only populated source is excluded by include', () => {
-    const memberOnly = makeAgent({ env: { FOO: 'bar' } });
-    expect(buildEnvPrefix(memberOnly, { os: 'linux', include: { auth: true, member: false } })).toBe('');
-
+  it('returns empty string when the member has ONLY stored auth credentials (never inline)', () => {
     const authOnly = makeAgent({ auth: { TOKEN: 'secret' } });
-    expect(buildEnvPrefix(authOnly, { os: 'linux', include: { auth: false, member: true } })).toBe('');
+    expect(buildEnvPrefix(authOnly, { os: 'linux' })).toBe('');
+    expect(buildEnvPrefix(authOnly, { os: 'windows' })).toBe('');
   });
 });
 
@@ -80,7 +79,7 @@ describe('buildEnvPrefix - empty maps', () => {
 
 describe('buildEnvPrefix - member.env only', () => {
   const member = makeAgent({ env: { FLEET_A: 'one', FLEET_B: 'two' } });
-  const opts = { include: { auth: false, member: true } } as const;
+  const opts = {} as const;
 
   it('POSIX form: single-quoted export chain ending in " && "', () => {
     const prefix = buildEnvPrefix(member, { os: 'linux', ...opts });
@@ -98,70 +97,47 @@ describe('buildEnvPrefix - member.env only', () => {
   });
 });
 
-// -- auth only --------------------------------------------------------------
+// -- stored auth credentials never inline ----------------------------------
 
-describe('buildEnvPrefix - auth env only', () => {
-  const member = makeAgent({ auth: { API_TOKEN: 'sek-ret' } });
-  const opts = { include: { auth: true, member: false } } as const;
-
-  it('POSIX form decrypts the stored value', () => {
-    expect(buildEnvPrefix(member, { os: 'linux', ...opts }))
-      .toBe("export API_TOKEN='sek-ret' && ");
-  });
-
-  it('PowerShell form decrypts the stored value', () => {
-    expect(buildEnvPrefix(member, { os: 'windows', ...opts }))
-      .toBe("$env:API_TOKEN='sek-ret'; ");
-  });
-
-  it('buildAuthEnvPrefix delegates to exactly this include set', () => {
-    const both = makeAgent({ env: { FLEET_A: 'one' }, auth: { API_TOKEN: 'sek-ret' } });
-    // The member.env entry must NOT appear via the auth-only entry point.
-    expect(buildAuthEnvPrefix(both, 'linux')).toBe("export API_TOKEN='sek-ret' && ");
-    expect(buildAuthEnvPrefix(both, 'windows')).toBe("$env:API_TOKEN='sek-ret'; ");
-  });
-});
-
-// -- merged + collision precedence -----------------------------------------
-
-describe('buildEnvPrefix - merged sources', () => {
+describe('buildEnvPrefix - stored auth credentials are never rendered inline', () => {
+  // Credentials reach the member CLI through the staged owner-only file
+  // (src/services/member-secret-env.ts), never through the command line.
   const member = makeAgent({
     env: { FLEET_A: 'one', FLEET_B: 'two' },
     auth: { API_TOKEN: 'sek-ret' },
   });
 
-  it('POSIX: includes both sources by default, member.env first then auth', () => {
-    expect(buildEnvPrefix(member, { os: 'linux' }))
-      .toBe("export FLEET_A='one' && export FLEET_B='two' && export API_TOKEN='sek-ret' && ");
+  it('POSIX: only member.env is rendered; the credential value never appears', () => {
+    const prefix = buildEnvPrefix(member, { os: 'linux' });
+    expect(prefix).toBe("export FLEET_A='one' && export FLEET_B='two' && ");
+    expect(prefix).not.toContain('sek-ret');
+    expect(prefix).not.toContain('API_TOKEN');
   });
 
-  it('PowerShell: includes both sources by default', () => {
-    expect(buildEnvPrefix(member, { os: 'windows' }))
-      .toBe("$env:FLEET_A='one'; $env:FLEET_B='two'; $env:API_TOKEN='sek-ret'; ");
+  it('PowerShell: only member.env is rendered; the credential value never appears', () => {
+    const prefix = buildEnvPrefix(member, { os: 'windows' });
+    expect(prefix).toBe("$env:FLEET_A='one'; $env:FLEET_B='two'; ");
+    expect(prefix).not.toContain('sek-ret');
   });
 
-  it('auth WINS a name collision -- a member.env entry can never shadow a credential', () => {
+  it('auth WINS a name collision -- a member.env entry named like a credential is dropped', () => {
     const colliding = makeAgent({
       env: { API_TOKEN: 'member-supplied-impostor', FLEET_A: 'one' },
       auth: { API_TOKEN: 'the-real-credential' },
     });
 
     const assignments = buildEnvAssignments(colliding, { os: 'linux' });
-    expect(assignments).toEqual([
-      { name: 'API_TOKEN', value: 'the-real-credential' },
-      { name: 'FLEET_A', value: 'one' },
-    ]);
+    expect(assignments).toEqual([{ name: 'FLEET_A', value: 'one' }]);
 
     const posix = buildEnvPrefix(colliding, { os: 'linux' });
-    expect(posix).toContain("export API_TOKEN='the-real-credential'");
+    expect(posix).toBe("export FLEET_A='one' && ");
     expect(posix).not.toContain('member-supplied-impostor');
-    // Exactly one assignment for the colliding name in each form.
-    expect(posix.match(/export API_TOKEN=/g)).toHaveLength(1);
+    expect(posix).not.toContain('the-real-credential');
 
     const ps = buildEnvPrefix(colliding, { os: 'windows' });
-    expect(ps).toContain("$env:API_TOKEN='the-real-credential'");
+    expect(ps).toBe("$env:FLEET_A='one'; ");
     expect(ps).not.toContain('member-supplied-impostor');
-    expect(ps.match(/\$env:API_TOKEN=/g)).toHaveLength(1);
+    expect(ps).not.toContain('the-real-credential');
   });
 });
 
@@ -209,15 +185,11 @@ describe('buildEnvPrefix - invalid stored names throw', () => {
     expect(() => buildEnvAssignments(member, { os: 'linux' })).toThrow(/Invalid env variable name/);
   });
 
-  it('throws for an invalid name stored in the AUTH map too', () => {
+  it('does not render (or validate) the AUTH map -- that is the staged file\'s job', () => {
+    // decryptAuthEnvVars (src/utils/auth-env.ts) rejects a bad stored auth
+    // name when the file is staged; this builder never touches auth values.
     const member = makeAgent({ auth: { 'BAD NAME': 'value' } });
-    expect(() => buildEnvPrefix(member, { os: 'linux' })).toThrow(/Invalid env variable name/);
-  });
-
-  it('does not throw when the offending source is excluded', () => {
-    const member = makeAgent({ env: { 'BAD NAME': 'v' }, auth: { GOOD: 'v' } });
-    expect(() => buildEnvPrefix(member, { os: 'linux', include: { auth: true, member: false } }))
-      .not.toThrow();
+    expect(buildEnvPrefix(member, { os: 'linux' })).toBe('');
   });
 });
 
@@ -232,12 +204,16 @@ describe('buildEnvAssignments', () => {
     expect(buildEnvAssignments(member, { os: 'windows', shell: 'gitbash' })).toEqual(expected);
   });
 
-  it('honours include{} the same way buildEnvPrefix does', () => {
+  it('keepAuthNameCollisions (long_running: no credential delivered) keeps the member.env value', () => {
+    const colliding = makeAgent({ env: { API_TOKEN: 'member-value', FLEET_A: 'one' }, auth: { API_TOKEN: 'sek-ret' } });
+    expect(buildEnvAssignments(colliding, { os: 'linux', keepAuthNameCollisions: true }))
+      .toEqual([{ name: 'API_TOKEN', value: 'member-value' }, { name: 'FLEET_A', value: 'one' }]);
+  });
+
+  it('returns member.env only, never a stored auth credential', () => {
     const member = makeAgent({ env: { FLEET_A: 'one' }, auth: { API_TOKEN: 'sek-ret' } });
-    expect(buildEnvAssignments(member, { os: 'linux', include: { auth: false, member: true } }))
+    expect(buildEnvAssignments(member, { os: 'linux' }))
       .toEqual([{ name: 'FLEET_A', value: 'one' }]);
-    expect(buildEnvAssignments(member, { os: 'linux', include: { auth: true, member: false } }))
-      .toEqual([{ name: 'API_TOKEN', value: 'sek-ret' }]);
   });
 });
 
@@ -277,7 +253,7 @@ describe('buildEnvPrefix - escaping round-trip', () => {
       const names = Object.keys(ROUND_TRIP);
 
       if (isWin) {
-        const prefix = buildEnvPrefix(member, { os: 'windows', include: { auth: false, member: true } });
+        const prefix = buildEnvPrefix(member, { os: 'windows' });
         const reads = names
           .map((n) => `[IO.File]::WriteAllText('${dir.replace(/'/g, "''")}\\${n}.out', $env:${n})`)
           .join('; ');
@@ -290,7 +266,7 @@ describe('buildEnvPrefix - escaping round-trip', () => {
           timeout: 60_000,
         });
       } else {
-        const prefix = buildEnvPrefix(member, { os: 'linux', include: { auth: false, member: true } });
+        const prefix = buildEnvPrefix(member, { os: 'linux' });
         const reads = names
           .map((n) => `printf '%s' "$${n}" > '${dir}/${n}.out'`)
           .join(' && ');
@@ -308,7 +284,7 @@ describe('buildEnvPrefix - escaping round-trip', () => {
 
   it(`asserts the ${isWin ? 'POSIX' : 'PowerShell'} (non-native) form structurally`, () => {
     if (isWin) {
-      const prefix = buildEnvPrefix(member, { os: 'linux', include: { auth: false, member: true } });
+      const prefix = buildEnvPrefix(member, { os: 'linux' });
       // POSIX single-quote escaping: the ONLY transform is ' -> '\''; every
       // other character sits literally inside the single quotes.
       expect(prefix).toContain(`export FLEET_RT_QUOTE='it'\\''s got '\\''single'\\'' quotes'`);
@@ -319,7 +295,7 @@ describe('buildEnvPrefix - escaping round-trip', () => {
       expect(prefix).toContain(`export FLEET_RT_NEWLINE='line1\nline2'`);
       expect(prefix.endsWith(' && ')).toBe(true);
     } else {
-      const prefix = buildEnvPrefix(member, { os: 'windows', include: { auth: false, member: true } });
+      const prefix = buildEnvPrefix(member, { os: 'windows' });
       // PowerShell single-quote escaping: the ONLY transform is ' -> ''.
       expect(prefix).toContain(`$env:FLEET_RT_QUOTE='it''s got ''single'' quotes'`);
       expect(prefix).toContain(`$env:FLEET_RT_DOLLAR='$HOME \${BRACED} $env:PATH $1'`);

@@ -75,7 +75,7 @@ const toolTextContentItem = z.object({
 });
 
 /**
- * The shared MCP text-content envelope every one of the 23 handlers uses.
+ * The shared MCP text-content envelope every one of the 24 handlers uses.
  * 1..3 content items (onboarding preamble + payload + nudge suffix, in that
  * order, preamble/suffix optional), plus an optional `structuredContent`
  * sibling (wrapTool returns it whenever the handler's raw return value was
@@ -94,10 +94,18 @@ const KB_RESPONSE_BODIES = {
     audn_decision: z.enum(['add', 'update', 'flagged', 'none']),
     confidence_clamped: z.boolean(),
   }),
-  kb_invalidate: z.object({
-    invalidated: z.number(),
-    files: z.array(z.string()),
-  }),
+  // files path: {invalidated, files}; ids path: {discarded, not_found, already_discarded}.
+  kb_invalidate: z.union([
+    z.object({
+      invalidated: z.number(),
+      files: z.array(z.string()),
+    }),
+    z.object({
+      discarded: z.array(z.string()),
+      not_found: z.array(z.string()),
+      already_discarded: z.array(z.string()),
+    }),
+  ]),
   // F-10 (my-beads-db-27m.9, caught by the live round-trip harness): `fresh`
   // and `stale` are NOT string arrays. src/tools/kb-context.ts:32-33 filters
   // the provider's result objects (`{file, status, reason, entry_id}`) and
@@ -196,6 +204,19 @@ const KB_RESPONSE_BODIES = {
     scope: z.enum(['project', 'global']),
     committed: z.boolean(),
   }),
+  // kb_bible_commit: ids the caller named are either merged (live CONFIRMED in
+  // this KB) or skipped with a reason; committed is true only when a local
+  // commit of the bible path was made (never pushed).
+  kb_bible_commit: z.object({
+    path: z.string(),
+    merged: z.array(z.string()),
+    skipped: z.array(z.object({
+      id: z.string(),
+      reason: z.enum(['not_confirmed_or_unknown']),
+    })),
+    entry_count: z.number(),
+    committed: z.boolean(),
+  }),
   // F-9: kb_stats spreads ProviderStats (whose supported/reason/coverage are
   // only present for a provider that cannot compute stats at all) and adds
   // bible. Nested aggregates have no zod shape anywhere to cite, so they stay
@@ -252,6 +273,8 @@ const CODE_TOOLS = [
   'code_map',
   'code_flow',
   'code_tests',
+  'code_reindex',
+  'code_status',
 ];
 
 /**

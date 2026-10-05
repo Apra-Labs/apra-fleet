@@ -71,12 +71,27 @@ export interface OsCommands {
 
   // --- Auth ---
   credentialFileCheck(destPath: string): string;
+  /** @deprecated carries `content` in the command line -- use credentialFileInstall. */
   credentialFileWrite(content: string, destPath: string): string;
+  /**
+   * Move a credential file already staged on the member (strategy.writeSecretFile,
+   * owner-only) to `destPath`, owner-only. Carries only paths, never content.
+   */
+  credentialFileInstall(stagedPath: string, destPath: string): string;
   credentialFileRemove(destPath: string): string;
+  /** Rename destPath to destPath+suffix when it exists (reversible removal); prints "moved" when it did. */
+  credentialFileMoveAside(destPath: string, suffix: string): string;
   apiKeyCheck(envVarName?: string): string;
-  setEnv(name: string, value: string): string[];
+  /**
+   * Persisting an env var on the member is two-step so the VALUE never sits
+   * in a command line: persistEnvFileContent() renders the file content
+   * (delivered over SFTP/fs, owner-only), then persistEnvFromFile() returns
+   * the command that applies it and deletes the file -- it carries only the
+   * file path.
+   */
+  persistEnvFileContent(name: string, value: string): string;
+  persistEnvFromFile(name: string, filePath: string): string;
   unsetEnv(name: string): string[];
-  envPrefix(name: string, value: string): string;
 
   // --- Git credential helper ---
   gitCredentialHelperWrite(host: string, username: string, token: string, label?: string, scopeUrl?: string): string;

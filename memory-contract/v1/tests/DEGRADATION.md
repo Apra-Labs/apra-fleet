@@ -21,19 +21,25 @@ cannot check, and why.
 
 ---
 
-## D-1 -- `kb_export` / `kb_import`: `repo_path` is validated against the real filesystem
+## D-1 -- kb (self) resolution depends on the session and the host filesystem
 
-- **Tool / method:** `kb_export` (`X-1`, `src/tools/kb-export.ts:157`),
-  `kb_import` (`P-2`, `src/tools/kb-import.ts:75`).
-- **Unverifiable behaviour:** both refuse with `E-REPO-PATH-INVALID` when the
-  supplied `repo_path` does not exist or is not a directory. The check runs
-  BEFORE `getKbProviders`, so no provider is involved.
-- **Why schema validation cannot check it:** `repo_path` is `type: "string"`.
-  Whether that string names an existing directory ON THE HOST SERVING THE CALL
-  is not a property of the document; it is a property of a filesystem the
-  validator cannot see. A request that is schema-valid can still be refused, and
-  a request that is refused today can succeed tomorrow with no document change.
-- **Seed:** CONFIRMED KB finding, also recorded on T1.4.1.
+- **Tool / method:** every `kb_*` tool, via `resolveSelfAnchor()`
+  (`src/services/knowledge/kb-self.ts`); `kb_export` (`X-1`) and `kb_import`
+  (`P-2`) additionally via `requireLocalFolder()`.
+- **Unverifiable behaviour:** no request carries a scope field; the KB is the
+  calling session's own. Whether the call succeeds or is refused with
+  `E-SELF-NO-WORKFOLDER` / `E-SELF-NOT-A-REPO` / `E-SELF-NO-REMOTE` (or, for
+  the writing tools on a remote member session, `E-REPO-PATH-INVALID`) depends
+  on WHICH session made it and on the folder that session's member is
+  registered with ON THE HOST SERVING THE CALL. The check runs BEFORE
+  `getKbProviders`, so no provider is involved.
+- **Why schema validation cannot check it:** the session is not part of the
+  request document, and the folder's existence, git-ness and origin remote are
+  properties of a filesystem the validator cannot see. The identical (empty)
+  request can be served for one session and refused for another.
+- **Consequence for this harness:** every fixture names the session it was
+  recorded in (`fixture.session`), and the provider dispatches it as that
+  session (`ENVIRONMENT.sessions`).
 
 ## D-2 -- KB provider identity is keyed on the `(slug, repoPath)` PAIR
 
@@ -42,7 +48,7 @@ cannot check, and why.
   cache is a `Map` keyed by `providerKey(slug, repoPath)` (NUL-joined), not by
   slug.
 - **Unverifiable behaviour:** two callers that resolve to the SAME project slug
-  but pass different `repo_path` values get DISTINCT provider instances, each
+  but anchor at different folders get DISTINCT provider instances, each
   anchored at its own caller's `repoPath`. The anchor decides where relative
   `source_files` resolve, so the identical request document can be admitted
   under one anchor and refused with `E-BASIS-MISSING-FILES` under another.

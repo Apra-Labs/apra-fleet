@@ -17,10 +17,6 @@
         "name": {
           "type": "string",
           "description": "Process name or label fragment to match, e.g. \"RemoveMember\""
-        },
-        "repo": {
-          "type": "string",
-          "description": "Absolute path to the repository root. Required when multiple repositories are indexed."
         }
       },
       "additionalProperties": false

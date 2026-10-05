@@ -217,7 +217,7 @@ describe('ApraFleet', () => {
         };
 
         const fleet = new ApraFleet(mockClient);
-        const options = { member_name: 'alice' };
+        const options = { member_name: 'alice', force_oauth_copy: true };
         const result = await fleet.provisionLlmAuth(options);
 
         assert.strictEqual(calledName, 'provision_llm_auth');
@@ -665,7 +665,7 @@ describe('ApraFleet', () => {
         };
 
         const fleet = new ApraFleet(mockClient);
-        const options = { repo_path: '/work/repo', provider: 'sqlite' };
+        const options = { provider: 'sqlite', offline_fallback: 'error' };
         const result = await fleet.kbSetup(options);
 
         assert.strictEqual(calledName, 'kb_setup');
@@ -688,6 +688,23 @@ describe('ApraFleet', () => {
 
         assert.strictEqual(calledName, 'kb_setup');
         assert.deepStrictEqual(calledArgs, {});
+    });
+
+    test('kbSetup refuses a removed scope key client-side (E-SCOPE-KEY-REMOVED), sending nothing', async () => {
+        let called = false;
+        const fleet = new ApraFleet({ async callTool() { called = true; return {}; } });
+        await assert.rejects(fleet.kbSetup({ repo_path: '/work/repo', provider: 'sqlite' }), (err) => err.code === 'E-SCOPE-KEY-REMOVED');
+        assert.strictEqual(called, false);
+    });
+    test('exports code_reindex and code_status wrappers that call the tools with no arguments', async () => {
+        const calls = [];
+        const mockClient = { async callTool(name, args) { calls.push([name, args]); return { ok: true }; } };
+        const fleet = new ApraFleet(mockClient);
+        assert.strictEqual(typeof fleet.codeReindex, 'function');
+        assert.strictEqual(typeof fleet.codeStatus, 'function');
+        await fleet.codeReindex();
+        await fleet.codeStatus();
+        assert.deepStrictEqual(calls, [['code_reindex', {}], ['code_status', {}]]);
     });
 });
 
@@ -719,11 +736,13 @@ describe('apra-fleet-client api-reference method-doc parity', () => {
 
         // apra-fleet-972p.1.3: pin the exact exported-method count (34 as of
         // apra-fleet-4qtu.3.2's memberGitStatus addition, which followed
-        // apra-fleet-4qtu.2.1's memberOwner). A future wrapper
+        // apra-fleet-4qtu.2.1's memberOwner; 39 once the KB redesign's
+        // kbExport, kbBibleCommit, codeReindex, codeStatus and sessionStats
+        // merged in). A future wrapper
         // addition/removal must update this assertion deliberately, rather
         // than silently passing the >25 sanity floor above while docs drift
         // out of sync.
-        assert.strictEqual(methods.size, 34, `expected exactly 34 ApraFleet methods, parsed ${methods.size}: ${[...methods].sort().join(', ')}`);
+        assert.strictEqual(methods.size, 39, `expected exactly 39 ApraFleet methods, parsed ${methods.size}: ${[...methods].sort().join(', ')}`);
 
         // Documented method names are those referenced as `name(...)` inside a
         // backtick code span anywhere in the doc (covers both a method's own

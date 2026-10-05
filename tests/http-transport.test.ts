@@ -574,6 +574,9 @@ describe('(j) unauthenticated ?member= URL-param fallback on /mcp initialize', (
   });
 
   it('registers a member via the URL param with role "doer" under the local workspace when no JWT is present', async () => {
+    // The param must name a REGISTERED member (an unknown one is refused, below).
+    backupAndResetRegistry();
+    addAgent(makeTestAgent({ id: 'url-param-member-id', friendlyName: 'url-param-member' }));
     const handle = await createHttpTransport({ registerTools: noop, preferredPort: 0 });
     handles.push(handle);
     const issuer = getTokenIssuer();
@@ -592,6 +595,18 @@ describe('(j) unauthenticated ?member= URL-param fallback on /mcp initialize', (
     expect(registered?.status).toBe('online');
 
     sessionRegistry.unregister(issuer.workspaceId(), 'url-param-member-id');
+  });
+
+  it('refuses an initialize whose ?member= names no registered member with 403 "unknown member"', async () => {
+    backupAndResetRegistry();
+    const handle = await createHttpTransport({ registerTools: noop, preferredPort: 0 });
+    handles.push(handle);
+
+    const { status, body } = await postMcpInitializeRaw(handle.port, { memberParam: 'no-such-member-uuid' });
+    expect(status).toBe(403);
+    expect(JSON.parse(body)).toEqual({ error: 'unknown member' });
+    expect(sessionRegistry.get(getTokenIssuer().workspaceId(), 'no-such-member-uuid')).toBeUndefined();
+    expect(handle.sessions.size).toBe(0);
   });
 
   it('resolves a legacy friendly-name ?member= param to the registered agent\'s UUID', async () => {

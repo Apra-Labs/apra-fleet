@@ -1,0 +1,332 @@
+// Role prompt Step 0 contract (KB redesign).
+//
+// Every TOP-LEVEL role prompt in apra-pm/agents (non-recursive: _shared/ and
+// schemas/ are not role prompts) except kb-reconciler.md -- which fleet-sprint
+// never dispatches and whose whole job is KB curation -- must tell the role:
+//   - use the kb_* and code_* tools directly when they are present (no
+//     tool-discovery probe, no ToolSearch named anywhere, no
+//     repository-path/scope argument);
+//   - otherwise read the injected KNOWLEDGE BANK block;
+//   - if a tool call fails, use the block if the prompt has one, otherwise
+//     continue without KB -- never report the dispatch blocked over it.
+// and must never instruct kb_feedback, a direct kb_capture call, repo_path on a
+// kb_* call, or a tool name outside the shared member allowlist.
+//
+// The allowlist is imported from the built root module (no hardcoded copy):
+// dist/services/member-tool-allowlist.js, produced by the root `npm run build`.
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import { kbKnowledgeBlock } from '../fleet-sprint/kb.mjs';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const AGENTS_DIR = path.join(__dirname, '..', 'apra-pm', 'agents');
+const SCHEMAS_DIR = path.join(AGENTS_DIR, 'schemas');
+const PRE_REWRITE_FIXTURE = path.join(__dirname, 'fixtures', 'role-prompt-step0', 'doer.pre-rewrite.md');
+const EXCLUDED = new Set(['kb-reconciler.md']);
+const MIN_ROLE_FILES = 10;
+
+const { MEMBER_ALLOWED_TOOLS } = await import('../../../dist/services/member-tool-allowlist.js');
+
+/** Non-recursive: regular *.md files directly in dir, minus the excluded ones. Throws if dir is missing. */
+function coveredRoleFiles(dir) {
+    return fs.readdirSync(dir, { withFileTypes: true })
+        .filter((d) => d.isFile() && d.name.endsWith('.md') && !EXCLUDED.has(d.name))
+        .map((d) => d.name)
+        .sort();
+}
+
+/** The enumeration guard: a moved directory throws, an empty one (or too few roles) fails. */
+function assertRoleSet(dir) {
+    const files = coveredRoleFiles(dir);
+    assert.ok(
+        files.length >= MIN_ROLE_FILES,
+        `expected at least ${MIN_ROLE_FILES} covered role prompts in ${dir}, found ${files.length}: ${JSON.stringify(files)}`
+    );
+    return files;
+}
+
+/** The heading the engine-injected block opens with, read from kb.mjs (not hardcoded). */
+function injectedBlockHeading() {
+    const [block] = kbKnowledgeBlock([{ confidence: 'CONFIRMED', title: 't', summary: 's' }]);
+    const m = /^(KNOWLEDGE BANK -- [^.]+)\./.exec(block);
+    assert.ok(m, `kbKnowledgeBlock no longer opens with a "KNOWLEDGE BANK -- ..." heading: ${JSON.stringify(block.slice(0, 80))}`);
+    return m[1];
+}
+
+/** Structured-output field names that start with kb_ (kb_captures, ...), read from the schemas. */
+function kbOutputFieldNames() {
+    const names = new Set();
+    for (const f of fs.readdirSync(SCHEMAS_DIR)) {
+        if (!f.endsWith('.json')) continue;
+        for (const m of fs.readFileSync(path.join(SCHEMAS_DIR, f), 'utf8').matchAll(/"((?:kb|code)_[a-z_]+)"\s*:/g)) names.add(m[1]);
+    }
+    return names;
+}
+
+function stripFrontmatter(content) {
+    return content.replace(/^---\n[\s\S]*?\n---\n/, '');
+}
+
+/**
+ * Prose units: paragraphs, split again at each list item, whitespace-collapsed,
+ * then split into sentences. Prompt markdown hard-wraps sentences, so a
+ * physical line is not a unit of meaning.
+ */
+function sentences(content) {
+    const out = [];
+    for (const para of stripFrontmatter(content).split(/\n\s*\n/)) {
+        for (const item of para.split(/\n(?=\s*(?:\d+\.|[-*])\s)/)) {
+            const collapsed = item.replace(/\s+/g, ' ').trim();
+            if (collapsed) out.push(...collapsed.split(/(?<=[.!?])\s+(?=[A-Z*`"(])/));
+        }
+    }
+    return out;
+}
+
+const collapse = (s) => s.replace(/\s+/g, ' ');
+
+// Required instructions (whitespace-collapsed match).
+const TOOLS_WHEN_PRESENT_RE = /If the `kb_\*` and `code_\*` tools are present in your session, use them directly/;
+const NO_DISCOVERY_NO_SCOPE_RE = /no tool-discovery step is needed, and they always act on your own work folder, so never pass a repository path or other scope argument to them/;
+// Deferred-tool loading, phrased without naming any provider's tool-loading tool
+// (the ToolSearch ban below stays absolute; agy/opencode renders drop ToolSearch).
+const DEFERRED_LOAD_RE = /If the `kb_\*`\/`code_\*` tools are listed only as deferred tools, load them by name with your tool-loading tool first, before concluding they are unavailable\./;
+const blockOtherwiseRe = (heading) => new RegExp(`Otherwise, read the injected "${heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}" block`);
+const FALLBACK_RE = /If a KB or code tool call fails, use that block if your prompt has one; otherwise continue without KB\./;
+const NEVER_BLOCKED_RE = /never report this dispatch as blocked because of it/;
+
+// Forbidden instructions.
+// Token starts use a lookbehind, not \b: in mcp__server__kb_feedback the "_"
+// before "kb" is a word character, so \bkb_ would miss a prefixed name.
+const KB_FEEDBACK_RE = /(?<![A-Za-z0-9])kb_feedback\b/;
+const KB_CAPTURE_TOOL_RE = /(?<![A-Za-z0-9])kb_capture\b/; // the tool, not the kb_captures output field
+const NEGATED_KB_CAPTURE_RE = /\b(?:never|do not|don't)\b[^.]{0,80}(?<![A-Za-z0-9])kb_capture\b/i;
+const KB_TOOL_TOKEN_RE = /(?<![A-Za-z0-9])kb_[a-z][a-z_]*/;
+const BLOCK_VERB_RE = /\b(?:blocked|stop|halt|abort|cannot proceed)\b/i;
+const KB_SUBJECT_RE = /\b(?:KB|kb_[a-z_]+|code_[a-z_]+|knowledge bank|code tools?|MCP server)\b/i;
+// A "kb" JSON key (the toolUse example in an output template) is not a KB subject;
+// a double-quoted "kb" in prose still is.
+const KB_JSON_KEY_RE = /"kb"\s*:/g;
+const FAILURE_RE = /\b(?:fail\w*|unavailable|not available|not running|missing|errors?|absent|no KB tools)\b/i;
+const NEGATED_BLOCK_RE = /\bnever\b[^.]{0,30}\b(?:report|stop|block)|\b(?:do not|don't)\s+(?:report|stop|block)|\bnot\s+a\s+reason\s+to\s+stop/i;
+const TOOL_NAME_RE = /(?<![A-Za-z0-9])((?:kb|code)_[a-z][a-z_]*)\b/g;
+
+/**
+ * Every Step 0 contract violation in one role prompt's content.
+ * @returns {string[]} human-readable violations (empty = conforming)
+ */
+function step0Violations(content, { heading, allowed, outputFields }) {
+    const v = [];
+    const flat = collapse(content);
+    if (!TOOLS_WHEN_PRESENT_RE.test(flat)) v.push('missing tools-when-present instruction');
+    if (!NO_DISCOVERY_NO_SCOPE_RE.test(flat)) v.push('missing no-discovery / no-scope-argument instruction');
+    if (!blockOtherwiseRe(heading).test(flat)) v.push(`missing block-otherwise instruction naming "${heading}"`);
+    if (!FALLBACK_RE.test(flat)) v.push('missing conditional fallback (use the block if present, otherwise continue without KB)');
+    if (!NEVER_BLOCKED_RE.test(flat)) v.push('missing never-report-blocked instruction');
+    if (/\bToolSearch\b/.test(stripFrontmatter(content))) v.push('instructs a ToolSearch tool-discovery probe');
+
+    for (const s of sentences(content)) {
+        if (KB_FEEDBACK_RE.test(s)) v.push(`instructs kb_feedback: ${JSON.stringify(s)}`);
+        if (KB_CAPTURE_TOOL_RE.test(s) && !NEGATED_KB_CAPTURE_RE.test(s)) v.push(`instructs a direct kb_capture call: ${JSON.stringify(s)}`);
+        if (/\brepo_path\b/.test(s) && KB_TOOL_TOKEN_RE.test(s)) v.push(`passes repo_path on a kb_* call: ${JSON.stringify(s)}`);
+        if (BLOCK_VERB_RE.test(s) && KB_SUBJECT_RE.test(s.replace(KB_JSON_KEY_RE, '')) && FAILURE_RE.test(s) && !NEGATED_BLOCK_RE.test(s)) {
+            v.push(`reports blocked on a KB/code tool failure: ${JSON.stringify(s)}`);
+        }
+    }
+    for (const m of stripFrontmatter(content).matchAll(TOOL_NAME_RE)) {
+        const name = m[1];
+        if (outputFields.has(name)) continue;
+        if (!allowed.includes(name)) v.push(`names a tool outside the member allowlist: ${name}`);
+    }
+    return [...new Set(v)];
+}
+
+function contractContext() {
+    return { heading: injectedBlockHeading(), allowed: MEMBER_ALLOWED_TOOLS, outputFields: kbOutputFieldNames() };
+}
+
+test('enumeration: non-recursive, at least 10 role prompts, kb-reconciler excluded, subfolders excluded', () => {
+    const files = assertRoleSet(AGENTS_DIR);
+    assert.ok(!files.includes('kb-reconciler.md'), 'kb-reconciler.md must be excluded');
+    assert.ok(fs.existsSync(path.join(AGENTS_DIR, 'kb-reconciler.md')), 'premise: kb-reconciler.md exists, so the exclusion is real');
+    assert.ok(fs.statSync(path.join(AGENTS_DIR, '_shared')).isDirectory(), 'premise: _shared/ exists and holds .md files');
+    for (const f of files) assert.ok(!f.includes('/') && !f.includes(path.sep), `${f} is not top-level`);
+    const sharedMd = fs.readdirSync(path.join(AGENTS_DIR, '_shared')).filter((f) => f.endsWith('.md'));
+    assert.ok(sharedMd.length > 0, 'premise: _shared/ has .md files');
+    for (const f of sharedMd) assert.ok(!files.includes(f) || fs.existsSync(path.join(AGENTS_DIR, f)), `${f} came from _shared/`);
+});
+
+test('enumeration: a moved (missing) directory fails', () => {
+    assert.throws(() => assertRoleSet(path.join(AGENTS_DIR, '..', 'agents-moved-away')), /ENOENT/);
+});
+
+test('enumeration: an empty directory fails', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'role-step0-empty-'));
+    try {
+        assert.throws(() => assertRoleSet(dir), /at least 10 covered role prompts/);
+    } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+});
+
+test('the shared member allowlist is imported, not copied, and is non-empty', () => {
+    assert.ok(Array.isArray(MEMBER_ALLOWED_TOOLS) && MEMBER_ALLOWED_TOOLS.includes('kb_session_prime'));
+    assert.ok(!MEMBER_ALLOWED_TOOLS.includes('execute_prompt'));
+});
+
+for (const file of coveredRoleFiles(AGENTS_DIR)) {
+    test(`${file}: conforms to the Step 0 contract`, () => {
+        const content = fs.readFileSync(path.join(AGENTS_DIR, file), 'utf8');
+        const violations = step0Violations(content, contractContext());
+        assert.deepEqual(violations, [], `${file} violates the Step 0 contract:\n- ${violations.join('\n- ')}`);
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Non-vacuity: the checker must reject what it exists to reject.
+// ---------------------------------------------------------------------------
+
+test('a pre-rewrite role prompt (fixture copy) fails the contract on every forbidden/missing point', () => {
+    const content = fs.readFileSync(PRE_REWRITE_FIXTURE, 'utf8');
+    const violations = step0Violations(content, contractContext());
+    const has = (re) => violations.some((x) => re.test(x));
+    assert.ok(has(/missing tools-when-present/), `expected missing tools-when-present, got ${JSON.stringify(violations)}`);
+    assert.ok(has(/missing block-otherwise/), 'expected missing block-otherwise');
+    assert.ok(has(/missing conditional fallback/), 'expected missing conditional fallback');
+    assert.ok(has(/instructs kb_feedback/), 'expected kb_feedback');
+    assert.ok(has(/direct kb_capture/), 'expected direct kb_capture');
+    assert.ok(has(/repo_path on a kb_\* call/), 'expected repo_path');
+    assert.ok(has(/ToolSearch/), 'expected ToolSearch probe');
+});
+
+const CTX_FIXTURE = () => contractContext();
+
+test('report-blocked pattern: a stop-on-KB-tool-failure instruction is caught; the never-blocked wording is not', () => {
+    const bad = [
+        '## Step 0 -- Knowledge Bank',
+        '',
+        '1. If the KB tools are not available (MCP server not running), stop and report that',
+        '   the work cannot proceed.',
+    ].join('\n');
+    assert.ok(step0Violations(bad, CTX_FIXTURE()).some((x) => /reports blocked/.test(x)));
+    const bad2 = 'If a code tool call fails, return status BLOCKED.';
+    assert.ok(step0Violations(bad2, CTX_FIXTURE()).some((x) => /reports blocked/.test(x)));
+    const good = 'A missing or failing KB or code tool is never a reason to stop: never report this dispatch as blocked because of it.';
+    assert.ok(!step0Violations(good, CTX_FIXTURE()).some((x) => /reports blocked/.test(x)));
+});
+
+test('direct kb_capture: an instruction is caught, a prohibition and the kb_captures field are not', () => {
+    assert.ok(step0Violations('When you find a gotcha, call `kb_capture` with type "learning".', CTX_FIXTURE()).some((x) => /direct kb_capture/.test(x)));
+    assert.ok(!step0Violations('Do not call `kb_capture` yourself.', CTX_FIXTURE()).some((x) => /direct kb_capture/.test(x)));
+    assert.ok(!step0Violations('Add it to the `kb_captures` array.', CTX_FIXTURE()).some((x) => /direct kb_capture/.test(x)));
+});
+
+test('allowlist: a kb_/code_ tool name the member allowlist lacks is caught; output fields are not', () => {
+    assert.ok(!MEMBER_ALLOWED_TOOLS.includes('code_nonexistent'), 'premise: code_nonexistent is not registered');
+    const v = step0Violations('When present, call `code_nonexistent` first, then `kb_query`.', CTX_FIXTURE());
+    assert.ok(v.includes('names a tool outside the member allowlist: code_nonexistent'), JSON.stringify(v));
+    assert.ok(!v.some((x) => /kb_query/.test(x)));
+    const fields = step0Violations('Return `kb_captures` and `kb_promotions`.', CTX_FIXTURE());
+    assert.ok(!fields.some((x) => /allowlist/.test(x)), JSON.stringify(fields));
+});
+
+// ---------------------------------------------------------------------------
+// Expected tool calls (doer, reviewer): kb_query and code_impact are expected,
+// not optional, and an unavailable tool is reported in toolUse, never skipped
+// silently. Planner/plan-reviewer stay conditional (wrapper roles).
+// ---------------------------------------------------------------------------
+
+const EXPECTED_RE = /The `(?:kb_query|code_impact)` and `(?:kb_query|code_impact)` calls below are EXPECTED, not optional, whenever the tools are present\./;
+const REPORT_UNAVAILABLE_RE = /record that in `toolUse` \(Output schema\) and continue -- never skip silently\./;
+const TOOLUSE_SHAPE_RE = /Report in `toolUse`: `kb` and `code` are each `used`, `unavailable` or `not_needed`; `note` says why for anything not `used`\./;
+const USED_MEANS_RE = /`used` means the expected call was made \(`kb_query` for kb -- `kb_session_prime` alone is not `used`; `code_impact`\/ ?`code_context`\/`code_graph` for code\)\./;
+const NOT_NEEDED_RE = /`not_needed` only when no (?:assigned bead or )?changed file called for a lookup/;
+const NOTES_FALLBACK_RE = /If your output schema has no `toolUse` field, put the same statement in `notes`\./;
+const EXPECTED_CALLS = {
+    'doer.md': [
+        /for EACH assigned bead, call `kb_query` at least once, with a query drawn from the bead's title and criteria, BEFORE reading its source/,
+        /BEFORE editing a symbol or file, call `code_impact` on it/,
+        /once per changed file or symbol, not per edit, .*?test, doc and fixture-only files are exempt/,
+    ],
+    'reviewer.md': [
+        /Call `code_impact` on each changed file \(or its changed symbols\) BEFORE judging blast radius -- once per file or symbol; test, doc and fixture-only files are exempt/,
+        /Call `kb_query` at least once per review/,
+    ],
+};
+
+// The previous, optional doer Step 0 wording (items 2 and 4), kept inline so
+// the check below is proven to reject it.
+const PRE_EXPECTED_DOER_STEP0 = [
+    '2. Retrieve first, then read source: when the tools are present, run `kb_query` on an',
+    '   unfamiliar file or function before reading it.',
+    '4. Before editing a symbol, when the code tools are present, use `code_context`/`code_graph`',
+    '   for its callers/callees and `code_impact` for the blast radius of the file you are',
+    '   changing. If they are absent, fail, or report the repo is not indexed, fall back to',
+    '   grep; do not try to build an index yourself.',
+].join('\n');
+
+/** Missing expected-call / unavailable-reporting instructions in one role prompt. */
+function expectedCallViolations(file, content) {
+    const flat = collapse(stripFrontmatter(content));
+    const v = [];
+    if (!EXPECTED_RE.test(flat)) v.push('missing EXPECTED-not-optional statement');
+    if (!REPORT_UNAVAILABLE_RE.test(flat)) v.push('missing report-unavailable-in-toolUse rule');
+    if (!TOOLUSE_SHAPE_RE.test(flat)) v.push('missing toolUse reporting shape');
+    if (!USED_MEANS_RE.test(flat)) v.push('missing definition of used');
+    if (!NOT_NEEDED_RE.test(flat)) v.push('missing not_needed rule');
+    if (!NOTES_FALLBACK_RE.test(flat)) v.push('missing notes fallback');
+    if (!DEFERRED_LOAD_RE.test(flat)) v.push('missing deferred-tool loading rule');
+    for (const re of EXPECTED_CALLS[file]) if (!re.test(flat)) v.push(`missing expected call: ${re}`);
+    return v;
+}
+
+for (const file of Object.keys(EXPECTED_CALLS)) {
+    test(`${file}: kb_query and code_impact calls are expected, unavailability is reported`, () => {
+        const v = expectedCallViolations(file, fs.readFileSync(path.join(AGENTS_DIR, file), 'utf8'));
+        assert.deepEqual(v, [], `${file}:\n- ${v.join('\n- ')}`);
+    });
+}
+
+test('expected-call check is not vacuous: the optional "when the tools are present" doer Step 0 fails it', () => {
+    const v = expectedCallViolations('doer.md', PRE_EXPECTED_DOER_STEP0);
+    assert.ok(v.includes('missing EXPECTED-not-optional statement'), JSON.stringify(v));
+    assert.ok(v.includes('missing report-unavailable-in-toolUse rule'), JSON.stringify(v));
+    assert.ok(v.includes('missing toolUse reporting shape'), JSON.stringify(v));
+    for (const m of ['missing definition of used', 'missing not_needed rule', 'missing deferred-tool loading rule']) assert.ok(v.includes(m), JSON.stringify(v));
+    assert.ok(v.some((x) => /once per changed file/.test(x)), JSON.stringify(v));
+    // The first-pass expected-call wording (no not_needed, no used definition) also fails.
+    const firstPass = 'Report in `toolUse`: `kb` and `code` are each `used` or `unavailable`; `note` says which tool was missing or failed and why.';
+    const v2 = expectedCallViolations('doer.md', firstPass);
+    assert.ok(v2.includes('missing toolUse reporting shape') && v2.includes('missing not_needed rule'), JSON.stringify(v2));
+    assert.ok(v.some((x) => /kb_query/.test(x)) && v.some((x) => /code_impact/.test(x)), JSON.stringify(v));
+});
+
+test('ToolSearch ban has no exemption: a deferred-load sentence naming ToolSearch is still a probe', () => {
+    const named = 'If the `kb_*`/`code_*` tools are listed only as deferred tools, load them by name with ToolSearch first.';
+    assert.ok(step0Violations(named, CTX_FIXTURE()).some((x) => /ToolSearch/.test(x)));
+    const neutral = 'If the `kb_*`/`code_*` tools are listed only as deferred tools, load them by name with your tool-loading tool first, before concluding they are unavailable.';
+    assert.ok(!step0Violations(neutral, CTX_FIXTURE()).some((x) => /ToolSearch/.test(x)));
+});
+
+test('report-blocked: a "kb" JSON key is not a KB subject, a double-quoted "kb" in prose still is', () => {
+    const jsonKey = 'Then STOP and return `{ "status": "BLOCKED", "notes": "missing secret", "toolUse": { "kb": "used" } }`.';
+    assert.ok(!step0Violations(jsonKey, CTX_FIXTURE()).some((x) => /reports blocked/.test(x)));
+    const prose = 'If the "kb" tools are missing, stop and report the dispatch as blocked.';
+    assert.ok(step0Violations(prose, CTX_FIXTURE()).some((x) => /reports blocked/.test(x)));
+});
+
+test('toolUse is an optional field of the doer and reviewer output schemas', () => {
+    for (const role of ['doer', 'reviewer']) {
+        const schema = JSON.parse(fs.readFileSync(path.join(SCHEMAS_DIR, `${role}-output.json`), 'utf8'));
+        const tu = schema.properties.toolUse;
+        assert.ok(tu, `${role}-output.json has no toolUse property`);
+        assert.ok(!schema.required.includes('toolUse'), `${role}: toolUse must stay optional`);
+        assert.deepEqual(tu.required, ['kb', 'code']);
+        for (const k of ['kb', 'code']) assert.deepEqual(tu.properties[k].enum, ['used', 'unavailable', 'not_needed']);
+    }
+});

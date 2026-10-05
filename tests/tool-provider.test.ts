@@ -27,6 +27,8 @@ vi.mock('../src/services/strategy.js', () => ({
     execCommand: mockExecCommand,
     testConnection: mockTestConnection,
     transferFiles: vi.fn(),
+    writeSecretFile: vi.fn(async (name: string) => `/home/testuser/${name}`),
+    removeSecretFile: vi.fn(async () => {}),
     close: vi.fn(),
   }),
 }));
@@ -229,12 +231,14 @@ describe('provisionAuth — API key per provider', () => {
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
     mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
 
-    const { text: result } = await provisionAuth({ member_id: member.id, api_key: 'cl-code-12345' });
-    expect(result).toContain('API key provisioned');
+    const { text: result } = await provisionAuth({ member_id: member.id, api_key: 'sk-ant-oat01-FAKE' });
+    expect(result).toContain('OAuth token provisioned');
 
     const cmds = mockExecCommand.mock.calls.map(c => c[0] as string);
     expect(cmds.some(c => c.includes('CLAUDE_CODE_OAUTH_TOKEN'))).toBe(true);
-    expect(cmds.some(c => c.includes('ANTHROPIC_API_KEY'))).toBe(false);
+    // ANTHROPIC_API_KEY is only ever cleared (other credential kind), never set.
+    expect(cmds.some(c => c.includes('export ANTHROPIC_API_KEY=') && !c.startsWith('sed '))).toBe(false);
+    expect(cmds).toContain('unset ANTHROPIC_API_KEY');
   });
   it('uses OOB API key entry for non-Claude providers without api_key', async () => {
     const copilotProvider = providers.getProvider('copilot');

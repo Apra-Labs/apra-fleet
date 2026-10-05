@@ -74,7 +74,11 @@ send client-to-server messages.
   twice, after 500 ms and 2000 ms; a non-`ok` status or any other error is
   never retried.
 - **`stop()`** -- aborts the internal `AbortController`, tearing down both
-  the open GET stream and any in-flight POST.
+  the open GET stream and any in-flight POST. Local only: the server-side
+  session stays alive.
+- **`async close()`** -- best-effort HTTP `DELETE` of the session
+  (`mcp-session-id`, 5 s bound) so the server releases the McpServer and any
+  member registry entry, then `stop()`. Use for short-lived sessions.
 
 Both fetches go through `undici`'s own `fetch` with a dedicated `Agent`
 (`headersTimeout: 0`, `bodyTimeout: 0`, `keepAliveTimeout: 4000`) rather
@@ -142,6 +146,22 @@ abort support on top of a transport.
 - **`async callTool(name, args, opts = {})`** -- convenience wrapper:
   `request('tools/call', { name, arguments: args }, opts)`. This is what
   `ApraFleet`'s methods call under the hood.
+
+- **`async listTools(opts = {})`** -- `request('tools/list', {}, opts)`;
+  resolves `{ tools: [{ name, ... }] }`. On a MEMBER session
+  (`?member=<uuid>`) this is exactly the member allowlist.
+
+### `connectFleetMember(memberId, deps)` (`server-resolution.mjs`)
+
+Resolves the local HTTP singleton, appends `?member=<memberId>` and connects,
+returning `{ transport, mcpClient, mode: 'http', url, close }`. `deps.origin:
+'engine'` also appends `origin=engine` (engine-origin session: its kb_/code_
+calls are excluded from the member's `session_stats` counts; only memberCall and
+`apra-fleet call` set it). Always `await close()` when done: it DELETEs the server session (`transport.stop()` alone leaks it). Refuses a stdio
+resolution (a member identity rides on the URL). An unregistered uuid rejects
+with `err.status === 403` / `err.code === 'HTTP_403'` (raised by
+`StreamableHttpTransport.start()` for any non-OK initialize response as
+`HTTP_<status>`).
 
 ## `src/client/errors.mjs`
 
@@ -325,6 +345,9 @@ Calls `fleet_status` -- status of all fleet members.
 | Field | Type | Notes |
 |---|---|---|
 | `format` | `"compact" \| "json"?` | Output format. |
+| `repo_path` | `string?` | Absolute path to a repo checkout. Adds that repo's code-intelligence index health and its KB scope's bible drift. |
+
+KB health (`kbHealth` in JSON) covers every project KB scope on the server plus the global KB, one entry per scope -- it never depends on the server's working directory.
 
 In `"json"` format the payload always carries `dataDir` -- the resolved
 absolute fleet data directory (honors `APRA_FLEET_DATA_DIR`). It is
@@ -355,6 +378,9 @@ session (`session.id`, the current session ID or `null`), work folder
 | `member_id` | `string?` | UUID of the member. |
 | `member_name` | `string?` | Friendly name of the member. |
 | `format` | `"compact" \| "json"?` | Output format (default: `"compact"`). |
+| `refresh` | `boolean?` | Re-probe the member's own apra-fleet MCP now and record the new `fleetMcp` status. Without it the recorded status is returned and nothing is probed. |
+
+`fleetMcp` (`{state, reason?, version?, checkedAt, detail?, unverified?, fleetInstalledAt?, installFailure?, beads?}` or `null`) is the last recorded status of the member's own apra-fleet MCP server; `fleetInstalledAt` is the ISO 8601 time this fleet's own install last succeeded on the member (absent if it never did). `installFailure` (`{reason, detail?}`) is set when a requested upgrade failed before the member was touched and the older install stayed in use (also named in `detail`; `fleetMcpFix` then carries the upgrade fix even when `available`). `fleetMcpFix` (`string` or `null`) is a one-line operator fix, present when `fleetMcp` is `unavailable` or `unverified` and `null` when the member's KB/code tools are usable; the text output prints it as a `fleetMcp fix:` line. `beads` (`{state: "missing"|"broken", detail, fix}`) is present only when the bd CLI is not usable on a remote member (neither on its PATH nor in `<home>/.apra-fleet/bin`); it is independent of `state`, and the text output prints it as `bd=` and `bd fix:` lines.
 
 Returns a plain multi-line text summary for `"compact"`, or the structured
 `MemberDetailResult` object for `"json"` -- `server_version`, `name`, `icon`,
@@ -426,6 +452,7 @@ Calls `register_member` -- adds a machine to the fleet.
 | `tags` | `string[]?` | Optional list of free-form labels (max 10 tags, each max 64 chars). Used for filtering and grouping. |
 | `code_intel_provider` | `"codebase-memory" \| "gitnexus" \| "none"?` | Code-intelligence provider for this member. Omit for fleet-wide default. |
 | `unreservable` | `boolean?` | Mark this member as never exclusively reservable, so it can be shared by more than one sprint (e.g. fleet-sprint's shared "backlog" role). Default: `false`. |
+| `fleet_install` | `"auto" \| "skip"?` | Install/update apra-fleet on the member and verify its own MCP (default `"auto"`); `"skip"` only reports the probe result. Registration succeeds either way; the result reports `fleetMcp`. |
 | `shell` | `"gitbash" \| "pwsh7" \| "powershell5"?` | Override the probed Windows shell for this member. Windows members only -- ignored for non-Windows members. |
 | `owner` | `{package: string, ref: string}?` | Which package/consumer owns this member for its own bookkeeping (e.g. a fleet-sprint project binding it to a checkout). Not a project/repo/group field. |
 | `env` | `Record<string, string>?` | Free-form name -> value map for this member. Names must match the portable env-name pattern (letters, digits, underscore; cannot start with a digit); total size across all names+values is capped at 4096 characters. Exported into the processes execute_command and execute_prompt run on the member, including long_running tasks. Stored auth credentials win a name collision, so an entry here cannot shadow one. |
@@ -435,15 +462,17 @@ Calls `register_member` -- adds a machine to the fleet.
 #### `updateMember(options: UpdateMemberOptions)`
 
 Calls `update_member` -- changes a member's settings. Every field is optional
-and means "new value for this field". Identifies the target member via
+and means "new value for this field". Unknown input keys are rejected with an
+error naming the key (the member is not updated) -- they are no longer silently dropped. Identifies the target member via
 `member_id` or `member_name`.
 
 | Field | Type | Notes |
 |---|---|---|
 | `member_id` | `string?` | UUID of the member. |
 | `member_name` | `string?` | Friendly name of the member. |
+| `fleet_install` | `"auto" \| "skip"?` | `"auto"`: for a remote member, probe it and install/upgrade its own apra-fleet when missing or older than the orchestrator (build-aware: same-core different builds upgrade, newer cores never downgrade), self-register and verify, even when nothing else changed; the result includes the `fleetMcp` line (then `member_detail` with `refresh: true`). `"skip"`: no install. Omitted: install only on a provider change. |
 | `friendly_name` | `string?` | New friendly name. |
-| `work_folder` | `string?` | New working directory. For non-local (remote/relay) members, must be a fully-qualified/absolute path (e.g. `/home/bella/repo` or `C:\Users\bella\repo`) -- tilde and relative paths are rejected. A folder may hold at most one LLM member and one LLM-less (llm_provider none) member. |
+| `work_folder` | `string?` | New working directory. For non-local (remote/relay) members, must be a fully-qualified/absolute path (e.g. `/home/bella/repo` or `C:\Users\bella\repo`) -- tilde and relative paths are rejected. A folder may hold at most one LLM member and one LLM-less (llm_provider none) member. A real change removes what `compose_permissions` wrote in the OLD folder (per-folder `apra-fleet` MCP entry, permission keys, `.git/info/exclude` lines) and re-runs `compose_permissions`, so the new folder gets its `?member=<uuid>` entry at once. |
 | `host` | `string?` | New host (remote members only). |
 | `port` | `number?` | New SSH port (remote members only). Integer, 1-65535; out-of-range is rejected. |
 | `username` | `string?` | New SSH username (remote members only). |
@@ -458,7 +487,7 @@ and means "new value for this field". Identifies the target member via
 | `cloud_profile` | `string?` | New AWS CLI profile name. |
 | `cloud_idle_timeout_min` | `number?` | New minutes of inactivity before auto-stop (min: 1, max: 1440; out-of-range is rejected). |
 | `cloud_activity_command` | `string?` | New custom shell command for workload detection. Must output "busy" or "idle". Pass empty string to clear. |
-| `llm_provider` | `"claude" \| "codex" \| "copilot" \| "agy" \| "opencode"?` | Change the LLM provider for this member. |
+| `llm_provider` | `"claude" \| "codex" \| "copilot" \| "agy" \| "opencode"?` | Change the LLM provider for this member. A real change removes what `compose_permissions` wrote for the OLD provider (its permission file, its per-folder `apra-fleet` MCP entry, its `.git/info/exclude` lines; other MCP servers such as `deepwiki` are kept) and re-runs `compose_permissions` for the new one. Passing the current provider does nothing extra. |
 | `model_cheap` | `string?` | Change custom cheap model. |
 | `model_standard` | `string?` | Change custom standard model. |
 | `model_premium` | `string?` | Change custom premium model. |
@@ -476,8 +505,9 @@ and means "new value for this field". Identifies the target member via
 
 #### `removeMember(options: RemoveMemberOptions)`
 
-Calls `remove_member` -- removes a member from the fleet. Without `force`,
-refuses (text containing `member-held`) while the member is busy, reserved
+Calls `remove_member` -- removes a member from the fleet. Before the member is deleted (and before the fleet's own SSH key is removed from the member), it removes what `compose_permissions` wrote for the member (per-folder `apra-fleet` MCP entry, permission keys, `.git/info/exclude` lines); anything it could not remove, or could not reach, is reported as a warning in the result.
+
+Without `force`, it refuses (text containing `member-held`) while the member is busy, reserved
 (`reservedBy` set), or a registered workflow package reports it held (DQ-22,
 consulted the same way `memberOwner` does below).
 
@@ -643,6 +673,39 @@ stdout/stderr. The plaintext appears in no field of the result.
 `exitCode`, `stdout`/`stderr` (credential redacted), `tokenRedactions`,
 `credentialLabel`, `memberId`, `memberName`.
 
+#### kb_* scope keys
+
+Every `kb_*` call acts on the calling session's own KB (a member session's
+registered work folder; a FULL session's fleet server working folder). The
+pre-redesign scope keys `repo_path`, `repo` and `repo_remote_url` are removed:
+the server refuses a call carrying any of them with `E-SCOPE-KEY-REMOVED`,
+and `kbSetup` / `kbExport` / `kbBibleCommit` refuse them client-side with the same code
+before sending (`assertNoRemovedKbScopeKeys`, `KB_REMOVED_SCOPE_KEYS` are
+exported). For direct `callTool` users: `kb_list` accepts `confidence` as a
+list or as one tier string, and `kb_context` defaults to
+`["CONFIRMED","INFERRED"]`.
+
+#### `kbExport(options?: KbExportOptions)`
+
+Calls `kb_export` -- exports the calling session's CONFIRMED KB entries to the
+canonical bible file and auto-commits it locally (never pushed). Options:
+`scope?` (`"project" | "global"`), `baseBranch?`, `baseCommit?`. When given,
+`baseBranch` (the target base branch the entries merge into) and `baseCommit`
+are written to the bible's `provenance.branch` / `provenance.commit`; when
+omitted they default to the export folder's HEAD branch and commit. Result
+JSON (via `parseToolJson`): `{exported, path, scope, committed}`.
+
+#### `kbBibleCommit(options: KbBibleCommitOptions)`
+
+Calls `kb_bible_commit` -- merges exactly `ids` into the bible at entry level
+(every existing entry is kept; only the given ids are added or replaced),
+writes `baseBranch` / `baseCommit` into provenance, and makes a local commit
+scoped to the bible path. It never pushes. Ids that are not live CONFIRMED
+entries are skipped and listed in `skipped`; no mergeable ids or an unchanged
+entry set makes no commit. Re-running with the same ids after resetting to a
+newer HEAD re-merges, so a rejected push can be retried without a manual
+merge. Result JSON: `{path, merged, skipped, entry_count, committed}`.
+
 #### `composePermissions(options: ComposePermissionsOptions)`
 
 Calls `compose_permissions` -- composes and delivers a scoped permission
@@ -664,6 +727,27 @@ supervisor grants `deploy.md` documents by name (the active-sprints gate
 `Bash(curl * localhost:8787/api/sprints*)` and the stale-reservation
 force-release `Bash(curl * localhost:8787/api/reservations/*)`), which
 remain grantable -- are rejected outright, for every caller.
+
+Every compose (proactive or `grant`) also wires the member's per-folder
+`apra-fleet` MCP entry, whose URL ends in `?member=<member uuid>`: claude
+writes it to Claude's local scope (`projects[<workFolder>].mcpServers` in the
+member's `~/.claude.json`), opencode to `<workFolder>/opencode.json`, and agy
+gets none (it has no per-project MCP config). claude and agy also receive
+client-side deny rules for exactly the registered fleet tools outside the
+member allowlist; opencode gets none. The retired `apra-fleet-member`
+url+bearer entry is pruned wherever compose finds it, `deepwiki` is never
+touched, a tracked `.mcp.json` is never written, and work-folder files compose
+writes are listed in the clone's `.git/info/exclude` so it stays clean. A
+failure to write the entry is returned as a `[FAIL]` result (the permission
+files that did land are still recorded in the `project_folder` ledger; the
+ledger never records the MCP entry). A member config compose must not edit
+-- tracked by git, not strict JSON, or unreadable -- is left untouched and the
+otherwise-successful result carries a `Member MCP config NOT edited: <file> is
+<why> (fleetMcp unavailable: <reason>)` line; a later successful compose
+clears such a recorded fleetMcp status (`fleetMcp: cleared the stale
+unavailable status (<reason>)` line). Existing `deny` rules are merged by
+union -- a user-authored deny rule is never dropped; only fleet-derived
+`apra-fleet` deny rules compose no longer derives are retired.
 
 #### `setupSshKey(options: SetupSshKeyOptions)`
 
@@ -712,6 +796,39 @@ only: a caller reaching the console through a tunnel or proxy the server does
 not know about should resolve `url` against its own origin instead of using
 this value. Read `structuredContent`, never scrape it out of the display
 text.
+
+#### `codeReindex()` / `codeStatus()`
+
+Calls `code_reindex` / `code_status` -- index maintenance for the calling
+session's own repo (a member session's registered work folder, otherwise the
+fleet server's folder; neither takes arguments). `codeReindex()` starts a
+detached `gitnexus analyze`, captures its output to
+`<data>/code-index/<slug>/analyze.log`, and returns after the first tick; its
+`outcome` is `started`, `up-to-date`, `starting`, `already-running` or
+`not-started` (with a typed `reason`: `npx-not-found`, `gitnexus-not-found`,
+`analyze-failed`, `spawn-failed`, `remote-member`, `provider-not-supported`). Both tools are
+gated on the member's code-intel provider: `none` fails with
+`E-CODE-INTEL-DISABLED` (nothing is spawned); any non-gitnexus provider (e.g.
+`codebase-memory`) returns `{ outcome: 'not-started', reason:
+'provider-not-supported', provider, indexedCommit: null, detail }` from both
+tools instead of gitnexus readiness. `codeStatus()` returns the
+last run (`analyze.phase`, `analyze.result` = `indexed` | `up-to-date` |
+`incomplete` | `failed`, `analyze.lastLine`), live `readiness`
+(`ready` | `building` | `missing`) and `indexedCommit`. Extract both with
+`parseToolJson()`.
+
+#### `sessionStats(options?: SessionStatsOptions)`
+
+Calls `session_stats` -- a member's kb_* / code_* tool call counts on this
+server, aggregated across that member's sessions (engine-origin sessions
+excluded). On a member session the calling member is reported and
+`member_id` may be omitted; a non-member session must pass it. Extract the
+JSON with `parseToolJson()`: a `SessionStatsResult` -- `{ member_id, since,
+kb, code, total, tools }` (`since` changes when the server restarts).
+
+| Field | Type | Notes |
+|---|---|---|
+| `member_id` | `string?` | Member uuid to read; required on a non-member session. |
 
 #### `doltPushMutex(options)`
 
@@ -807,14 +924,17 @@ the provider config, and stores remote credentials encrypted. Run once per
 repo; `options` defaults to `{}` if omitted entirely. Merges into any existing
 KB config (keys it does not own are preserved). The result carries `steps` and
 `warnings` (e.g. plain-http remote to a non-loopback host, stored token dropped
-after a remote change, malformed existing config discarded).
+after a remote change, malformed existing config discarded). The KB (and its
+post-commit hook) is the calling session's own: the removed scope keys
+(`repo_path`, `repo`, `repo_remote_url`) are refused client-side with
+`E-SCOPE-KEY-REMOVED` (see "kb_* scope keys").
 
 | Field | Type | Notes |
 |---|---|---|
-| `repo_path` | `string?` | Path to the git repository for post-commit hook installation (default: current directory). |
 | `provider` | `"sqlite" \| "http"?` | KB provider type (default: `"sqlite"`). |
 | `remote` | `string?` | Remote KB server URL, http(s) only (required when `provider` is `"http"`). Use https for any non-loopback host: plain http sends the token in cleartext (accepted, with a warning). |
 | `token` | `string?` | Authentication token for the remote KB server (stored encrypted, never logged). |
+| `offline_fallback` | `"local" \| "error"?` | Only for `provider: "http"`: `"local"` (default) degrades to the local sqlite KB when the remote is unreachable; `"error"` hard-fails every KB read/write instead. Kept from disk when omitted. |
 
 #### `shutdownServer(opts = {})`
 

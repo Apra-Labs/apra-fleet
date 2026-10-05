@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
-import path from 'node:path';
 import os from 'node:os';
+import path from 'node:path';
 import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
 import { addAgent, getKeysDir } from '../src/services/registry.js';
 import type { SSHExecResult } from '../src/types.js';
@@ -195,6 +195,56 @@ describe('removeMember - decommissioning', () => {
 
     expect(result).toContain('✅');
     expect(result).toContain('⚠️');
+  });
+
+  it('runs the member-side config cleanup BEFORE removing the fleet key from authorized_keys', async () => {
+    // Fleet-generated key (under the fleet keys dir): remove_member only
+    // touches authorized_keys for those, never for a user-supplied key.
+    fs.mkdirSync(getKeysDir(), { recursive: true });
+    const dir = fs.mkdtempSync(path.join(getKeysDir(), 'rm-order-'));
+    try {
+      const keyPath = path.join(dir, 'id_ed25519');
+      fs.writeFileSync(keyPath, 'PRIVATE');
+      fs.writeFileSync(`${keyPath}.pub`, 'ssh-ed25519 AAAAC3Nza fleet@test');
+      const member = makeTestAgent({ friendlyName: 'order-worker', keyPath, os: 'linux', workFolder: '/home/u/proj' });
+      addAgent(member);
+
+      await removeMember({ member_id: member.id });
+
+      const allCmds = mockExecCommand.mock.calls.map(c => c[0]);
+      const configIdx = allCmds.findIndex(c => c.includes('/home/u/proj/.claude/settings.local.json'));
+      const keyIdx = allCmds.findIndex(c => c.includes('authorized_keys'));
+      expect(configIdx).toBeGreaterThanOrEqual(0);
+      expect(keyIdx).toBeGreaterThan(configIdx);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('reports a composed config it could not remove, and still removes the member', async () => {
+    const member = makeTestAgent({ friendlyName: 'locked-worker', os: 'linux', workFolder: '/home/u/proj' });
+    addAgent(member);
+    mockExecCommand.mockImplementation(async (cmd: string) =>
+      cmd.includes('settings.local.json') && cmd.includes('cat ')
+        ? { stdout: '', stderr: 'Permission denied', code: 1 }
+        : { stdout: '', stderr: '', code: 0 });
+
+    const result = await removeMember({ member_id: member.id });
+
+    expect(result).toContain('has been removed');
+    expect(result).toContain("Could not remove the member's composed config");
+    expect(result).toContain('E-MEMBER-CONFIG-UNREADABLE');
+  });
+
+  it('reports that the composed config was NOT removed when the member is unreachable', async () => {
+    const member = makeTestAgent({ friendlyName: 'gone-worker' });
+    addAgent(member);
+    mockTestConnection.mockResolvedValue({ ok: false, latencyMs: 0, error: 'timeout' });
+
+    const result = await removeMember({ member_id: member.id });
+
+    expect(result).toContain('has been removed');
+    expect(result).toMatch(/unreachable \(timeout\) -- its composed config[^\n]*was NOT removed/);
   });
 
   it('continues removal even when VCS revoke throws', async () => {

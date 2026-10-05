@@ -90,39 +90,24 @@ Step 0a while any permission is missing.
 
 ## Step 0b -- Knowledge Bank (do this BEFORE any deploy.md operation)
 
-Use the live KB tools when they are available; otherwise use the pre-fetched
+If the `kb_*` and `code_*` tools are present in your session, use them directly -- no
+tool-discovery step is needed, and they always act on your own work folder, so never
+pass a repository path or other scope argument to them. Otherwise, read the injected
 "KNOWLEDGE BANK -- what this repo already knows" block in your dispatch prompt, which
-the orchestrator fetched for the deploy targets in `deploy.md`. On a dispatched member
-the fleet MCP server (mcp__apra-fleet__*) is usually disabled for this role, so expect
-to be on the fallback. A missing or failing KB tool never means "no KB": when the
-tools are unavailable, the pre-fetched block IS this repo's knowledge, and any
-judgment that depends on what the KB does or does not record must be made from that
-block, not from the tool failure. You have no KB context only when the tools are
-unavailable AND the block is absent. None of these tool calls is ever a requirement.
+the orchestrator fetched for the deploy targets in `deploy.md`.
+If a KB or code tool call fails, use that block if your prompt has one; otherwise
+continue without KB. A missing or failing KB or code tool is never a reason to stop:
+never report this dispatch as blocked because of it. From whichever source you have,
+trust CONFIRMED entries fully and use INFERRED entries as hints, not facts.
 
-<!-- if-tool: ToolSearch -->
-1. When the KB tools are available, prime from them first.
-   Run ToolSearch with query
-   `"select:mcp__apra-fleet__kb_session_prime,mcp__apra-fleet__kb_capture"`, then call
-   `mcp__apra-fleet__kb_session_prime` with `repo_path` set to the repo being deployed,
-   and `hint_modules` naming the deploy targets in `deploy.md`. If ToolSearch surfaces
-   no KB tools or a call fails, use the pre-fetched block instead -- that is the
-   fallback, not a gap.
-<!-- else-tool: ToolSearch -->
-1. When your environment exposes the KB tools, prime from them first (no
-   tool-discovery step is needed on this provider): call
-   `mcp__apra-fleet__kb_session_prime` with `repo_path` set to the repo being deployed,
-   and `hint_modules` naming the deploy targets in `deploy.md`. If those tools are not
-   available or a call fails, use the pre-fetched block instead -- that is the
-   fallback, not a gap.
-<!-- end-tool: ToolSearch -->
-2. From whichever source you have, trust CONFIRMED entries fully. Use INFERRED entries
-   as hints, not facts.
-3. When a deploy step fails for a non-obvious reason, or a runbook instruction turns out
-   to be wrong or incomplete, call `mcp__apra-fleet__kb_capture` with type "runbook"
-   or "learning" if it is reachable -- it usually is not on a dispatched environment,
-   in which case simply note the deploy gotcha in your own report instead. A deploy
-   gotcha you had to discover is exactly what the next deploy needs.
+1. When the tools are present, call `kb_session_prime` with `hint_modules` naming the
+   deploy targets in `deploy.md`.
+2. Any judgment that depends on what the KB does or does not record is made from the
+   live result or the injected block, never inferred from a tool failure.
+3. This role has no KB-capture channel: when a deploy step fails for a non-obvious
+   reason, or a runbook instruction turns out to be wrong or incomplete, note the deploy
+   gotcha in your own report. A deploy gotcha you had to discover is exactly what the
+   next deploy needs.
 
 ## deploy.md operations
 

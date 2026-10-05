@@ -36,8 +36,8 @@ this pair as "member identifier" rather than repeating it.
 **Authentication and git:** `provision_llm_auth`, `setup_ssh_key`, `setup_git_app`,
 `provision_vcs_auth`, `revoke_vcs_auth`, `vcs_credential_exec`.
 
-**Status and maintenance:** `fleet_status`, `member_detail`, `update_llm_cli`,
-`shutdown_server`, `version`, `compose_permissions`, `cloud_control`.
+**Status and maintenance:** `fleet_status`, `member_detail`, `session_stats`,
+`update_llm_cli`, `shutdown_server`, `version`, `compose_permissions`, `cloud_control`.
 
 **Credential store:** `credential_store_set`, `credential_store_list`,
 `credential_store_update`, `credential_store_delete`.
@@ -169,6 +169,7 @@ Modifies an existing member's registration. All fields except `member_id` are op
 | `shell` | `"gitbash"` \| `"pwsh7"` \| `"powershell5"` | no | Override the probed Windows shell |
 | `unreservable` | boolean | no | Make the member shareable across sprints |
 | `cloud_region` / `cloud_profile` / `cloud_idle_timeout_min` / `cloud_activity_command` | - | no | Cloud settings; pass an empty string to clear `cloud_activity_command` |
+| `fleet_install` | `"auto"` \| `"skip"` | no | `"auto"`: for a remote member, installs or upgrades its own apra-fleet when missing or older (build-aware) even when nothing else changed, then self-registers and verifies; a local member gets only the MEMBER-session probe; the result carries the `fleetMcp` line. `"skip"`: never installs (a refresh triggered by another change runs with install off). Omitted: install only on a provider change. A member whose apra-fleet lacks the member-install marker is not touched and records `full-install-running` (see docs/member-fleet-mcp-wiring.md) |
 
 **What it does:**
 
@@ -534,6 +535,7 @@ Provides a quick summary table of all fleet members.
 | Name | Type | Required | Description |
 |------|------|----------|-------------|
 | `format` | `"compact"` \| `"json"` | no | Default `"compact"`. `"json"` returns structured data |
+| `repo_path` | string | no | Absolute path to a repo checkout. Adds that repo's code-intelligence index health and the canonical-bible drift of its KB scope. The server's own working directory is never used. |
 
 **What it does:**
 
@@ -554,6 +556,29 @@ Provides a quick summary table of all fleet members.
 | Session | first 8 chars of session ID or `(none)` | Active conversation thread |
 | Last Activity | relative time (e.g. "5m ago", "2d ago") | When `execute_prompt` or `send_files` last touched this member |
 | Tokens | `in: N / out: N` or omitted | Accumulated token totals for this member |
+
+**Fleet-wide sections (independent of the server's working directory):** the fleet server is one long-lived process serving every project, so `fleet_status` never derives a project or repo from its own cwd.
+
+- **KB health** enumerates every KB scope on disk (`<data dir>/knowledge/<project-slug>/kb.sqlite`) and reports one line per non-empty project scope, labeled `kb[<slug>]`, plus `kb[global]`; empty scopes are collapsed into one `kb: empty scope(s): ...` line. JSON: `kbHealth: { projectProvider, scopes: [{ scope, totals, stale, flagged, superseded, retrieval, promote_ratio, bible }], global, errors, totalEntries }`. Bible drift needs a repo checkout, so it is computed only for the scope of `repo_path`; other scopes report `bible: { computable: false, reason }`.
+- **Code intelligence** indexes are per repo (`<repo>/.gitnexus`). Without `repo_path` the line reads `code-intel: per-repo index; ...` (JSON: `{ present: false, computable: false, reason }`); the 30-day top-symbols telemetry is fleet-wide and always shown.
+
+### `session_stats`
+
+A member's `kb_*` and `code_*` tool call counts on THIS server, aggregated
+across all of the member's sessions since the server started. Member-allowed.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `member_id` | string | no | Omit on a member session (the calling member is reported; another id is refused). Required on a non-member session |
+
+**Returns** JSON `{ member_id, since, kb, code, total, tools }` -- `since` is
+when counting started (server start), `tools` the per-tool counts. Calls made
+from sessions opened with `origin=engine` (the engine's `memberCall` and the
+`apra-fleet call` verb) are not counted, and non-member sessions are never
+counted. fleet-sprint reads it before and after every dispatch to report calls
+per member per dispatch; see [knowledge-layer.md](knowledge-layer.md).
 
 ### `member_detail`
 

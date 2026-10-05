@@ -339,7 +339,12 @@ export async function runPlanPhase({
                     `Plan phase for cycle ${cycle} exhausted ${planningRounds} plan round(s) without a usable ` +
                     'plan-reviewer verdict -- the last round\'s verdict was synthesized from a dispatch failure, ' +
                     'not a genuine review. The plan was never actually reviewed; re-run the sprint once the ' +
-                    'plan-reviewer dispatch channel recovers.',
+                    'plan-reviewer dispatch channel recovers.' +
+                    // The synthesized verdict's notes carry the underlying
+                    // dispatch error (member + reason/transport text); name it
+                    // here so the terminal failure says WHAT broke, not just
+                    // that something did.
+                    (lastVerdict.notes ? ` Last dispatch failure: ${lastVerdict.notes}` : ''),
                     {
                         notes: lastVerdict ? lastVerdict.notes : null,
                         cycle,

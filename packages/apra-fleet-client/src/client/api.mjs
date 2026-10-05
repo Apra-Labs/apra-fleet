@@ -94,7 +94,10 @@
  *   'stalled' (transcript froze past the stall threshold) |
  *   'agent_never_started' (session log never appeared at its authoritative path within
  *   timeout_s; the process was killed) |
- *   'max_total_time' (max_total_s, measured from the call including setup, ran out) | ...
+ *   'max_total_time' (max_total_s, measured from the call including setup, ran out) |
+ *   'secret_delivery_unavailable' (the member's stored credentials cannot be delivered
+ *   without a command line -- relay member or SFTP disabled; deterministic, do not retry;
+ *   no LLM call was made) | ...
  * @property {PermissionDenied} [permissionDenied] - Present when `reason === 'permission_denied'`:
  *   the member CLI refused tool calls for lack of a grant (AGY headless mode auto-denies them
  *   and exits 0, which used to surface as 'empty_response'). Pass `suggestedGrants` to
@@ -140,6 +143,21 @@
  * @property {AbortSignal} [signal] - Optional AbortSignal to cancel the client-side wait for
  *   a response. Not sent to the server. Aborting rejects the pending request locally; it
  *   cannot cancel a job already accepted by the remote fleet-server (see client.mjs).
+ */
+
+/**
+ * @typedef {Object} SessionStatsOptions
+ * @property {string} [member_id] - Member uuid to read; omit on a member session (the calling member is used), required on a non-member session
+ */
+
+/**
+ * @typedef {Object} SessionStatsResult
+ * @property {string} member_id - Member uuid the counts belong to
+ * @property {string} since - ISO time counting started (server start); a change between two snapshots means the server restarted
+ * @property {number} kb - kb_* calls counted
+ * @property {number} code - code_* calls counted
+ * @property {number} total - kb + code
+ * @property {Object<string, number>} tools - Per-tool counts (tools called at least once)
  */
 
 /**
@@ -191,6 +209,7 @@
 /**
  * @typedef {Object} FleetStatusOptions
  * @property {"compact" | "json"} [format] - Output format
+ * @property {string} [repo_path] - Absolute path to a repo checkout; adds that repo's code-intelligence index health and its KB scope's bible drift. The server's own cwd is never used. KB health itself always covers every project KB scope plus the global KB.
  */
 
 /**
@@ -240,6 +259,7 @@
  * @property {string[]} [tags] - Optional list of free-form labels
  * @property {"false" | "auto" | "dangerous"} [unattended] - Permission mode for unattended execution
  * @property {boolean} [unreservable] - Mark this member as never exclusively reservable, so it can be shared by more than one sprint at once (e.g. fleet-sprint's shared "backlog" role)
+ * @property {"auto" | "skip"} [fleet_install] - Whether registration installs/updates apra-fleet on the member (default "auto"; local members only get the MEMBER-session probe). "skip" performs no install and reports the probe result only. Registration succeeds either way; the result reports fleetMcp.
  * @property {"gitbash" | "pwsh7" | "powershell5"} [shell] - Override the probed Windows shell for this member. Windows members only -- ignored for non-windows members.
  * @property {{package: string, ref: string}} [owner] - Which package/consumer owns this member for its own bookkeeping (e.g. a fleet-sprint project binding it to a checkout). Not a project/repo/group field.
  * @property {Object<string, string>} [env] - Free-form name -> value map for this member. Names must match the portable env-name pattern; total size across all names+values is capped at 4096 characters. Exported into the processes execute_command and execute_prompt run on the member, including long_running tasks. Stored auth credentials win a name collision.
@@ -250,6 +270,7 @@
  * @typedef {Object} UpdateMemberOptions
  * @property {string} [member_id] - UUID of the member
  * @property {string} [member_name] - Friendly name of the member
+ * @property {"auto" | "skip"} [fleet_install] - "auto": for a remote member, install/upgrade the member's own apra-fleet when missing or older (build-aware), self-register and verify, even when nothing else changed. "skip": never install. Omit: install only on a provider change. Unknown input keys are rejected by the server.
  * @property {string} [friendly_name] - New friendly name
  * @property {string} [work_folder] - New working directory. For non-local (remote/relay) members, must be a fully-qualified/absolute path -- "~" and relative paths are rejected. A folder may hold at most one LLM member and one LLM-less (llm_provider none) member.
  * @property {string} [host] - New host
@@ -284,6 +305,20 @@
  */
 
 /**
+ * A member's own apra-fleet MCP observation (src/types.ts FleetMcpStatus).
+ * @typedef {Object} FleetMcpStatus
+ * @property {"available" | "unavailable"} state
+ * @property {string} [reason] - Machine-readable cause when unavailable (e.g. install-too-old, E-FOLDER-TAKEN, mcp-entry-missing, role-agents-hide-member-tools, no-per-project-mcp)
+ * @property {string} [version] - apra-fleet version the member's own install reports
+ * @property {string} checkedAt - ISO 8601 time of the probe
+ * @property {string} [detail] - Human-readable diagnostic
+ * @property {boolean} [unverified] - KB/code tools could not be verified (e.g. agy)
+ * @property {string} [fleetInstalledAt] - ISO 8601 time this fleet's own install run last succeeded on the member; carried across later probes; absent when the fleet never installed it (a refusal or observation-only probe never sets it)
+ * @property {{reason: string, detail?: string}} [installFailure] - A requested apra-fleet upgrade that failed before the member was touched while the older install stayed in use; present on available and unavailable statuses, also named in detail
+ * @property {{state: "missing" | "broken", detail: string, fix: string}} [beads] - Present only when the beads CLI (bd) is not usable on a remote member (not on its PATH nor in <home>/.apra-fleet/bin); independent of state; absent when bd works or could not be probed
+ */
+
+/**
  * Structured result returned by memberDetail() when called with format: 'json'
  * (src/tools/member-detail.ts). When format is 'compact' (the default), memberDetail()
  * instead returns a plain multi-line text summary, not this shape.
@@ -312,6 +347,10 @@
  * @property {string|null} [agyProjectId] - agy members only: id of the member's own agy project
  *   (~/.gemini/config/projects/<id>.json), passed as `--project <id>` on every dispatch; null until
  *   provisioned (compose_permissions/execute_prompt provision it on first use)
+ * @property {FleetMcpStatus|null} fleetMcp - Last recorded state of the member's own apra-fleet MCP
+ *   server (null when never probed). Recoverable: `member_detail { refresh: true }` re-probes and records.
+ * @property {string|null} [fleetMcpFix] - One-line operator fix for `fleetMcp` when the member's KB/code tools are
+ *   not usable (state "unavailable" or `unverified`); null when available and verified
  * @property {Object} [llm_cli] - LLM CLI info: { version, auth }
  * @property {Object|string} [tokenUsage] - Cumulative token usage, or "compute only" for llmProvider "none"
  * @property {Object} [session] - Session info: { id, lastActivity, lastLlmActivityAt, status, idleSecs }
@@ -472,9 +511,18 @@
  * @typedef {Object} ProvisionLlmAuthOptions
  * @property {string} [member_id] - UUID of the member
  * @property {string} [member_name] - Friendly name of the member
- * @property {string} [api_key] - AI provider API key. If omitted, the local OAuth
- *   session is copied to the member instead. Supports {{secret.NAME}} token --
- *   resolved from the credential store server-side before use.
+ * @property {string} [api_key] - AI provider API key or Claude Code OAuth token
+ *   (sk-ant-oat..., from `claude setup-token`; routed to CLAUDE_CODE_OAUTH_TOKEN). If
+ *   omitted, a credential already stored for the member is re-deployed, else the local
+ *   OAuth session is copied to the member. Supports {{secret.NAME}} token -- resolved
+ *   from the credential store server-side before use.
+ * @property {boolean} [force_oauth_copy] - Only without api_key: copy the local OAuth
+ *   session even when the member has a stored env credential, and clear that credential
+ *   (ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN) so the copied login applies.
+ * @property {boolean} [clear_stored_credentials] - Remove ALL credential env vars stored for
+ *   the member in the fleet registry and do nothing else (registry only; works for relay,
+ *   offline and local members). The recovery for reason secret_delivery_unavailable.
+ *   Cannot be combined with api_key or force_oauth_copy.
  */
 
 /**
@@ -524,7 +572,11 @@
  *   "secret_variable_denied" | "secret_variable_expired" | "oauth_not_supported" |
  *   "oauth_token_expired_no_refresh" | "oauth_credential_file_missing" |
  *   "oauth_credential_write_failed" | "oauth_settings_merge_failed" | "oauth_copy_failed" |
- *   "oob_cancelled"} reason - Machine-readable outcome code. Branch on this, never on the text.
+ *   "oob_cancelled" | "secret_delivery_unavailable" | "stored_credentials_cleared" |
+ *   "invalid_arguments"} reason - Machine-readable outcome code.
+ *   Branch on this, never on the text. secret_delivery_unavailable: the member has no channel
+ *   that delivers the key without a command line (relay member, SFTP unavailable).
+ *   stored_credentials_cleared: clear_stored_credentials removed the stored env vars (ok=true).
  * @property {string|null} provider - The resolved ProviderAdapter's own name (claude, codex,
  *   copilot, agy, opencode or none -- there is no gemini adapter), null when unresolved.
  * @property {string|null} credentialLabel - What was deployed, never the secret: the env var
@@ -653,6 +705,28 @@
  */
 
 /**
+ * @typedef {Object} KbExportOptions
+ * No scope key: the KB is the calling session's own. The removed repo_path, repo and
+ * repo_remote_url are refused with E-SCOPE-KEY-REMOVED (client-side and by the server).
+ * @property {"project" | "global"} [scope] - project (default): export the project KB to
+ *   .fleet/kb-canonical.json. global: export the GLOBAL KB to .fleet/kb-canonical-global.json.
+ * @property {string} [baseBranch] - The target base branch (the branch the entries merge
+ *   into), written to provenance.branch. Omitted: the export folder HEAD branch.
+ * @property {string} [baseCommit] - The base commit the entries were verified against,
+ *   written to provenance.commit. Omitted: the export folder HEAD commit.
+ */
+
+/**
+ * @typedef {Object} KbBibleCommitOptions
+ * @property {string[]} ids - Ids of the entries confirmed this round. Ids that are not
+ *   live CONFIRMED entries are skipped and reported in the result's skipped list.
+ *   An empty list makes no commit.
+ * @property {string} baseBranch - The target base branch, written to provenance.branch.
+ * @property {string} baseCommit - The base commit the entries were verified against,
+ *   written to provenance.commit.
+ */
+
+/**
  * @typedef {Object} SetupSshKeyOptions
  * @property {string} [member_id] - UUID of the member
  * @property {string} [member_name] - Friendly name of the member
@@ -744,8 +818,9 @@
 
 /**
  * @typedef {Object} KbSetupOptions
- * @property {string} [repo_path] - Path to the git repository for post-commit hook installation
- *   (default: current directory)
+ * No scope key: the KB (and its post-commit hook) is the calling session's own. The removed
+ * repo_path, repo and repo_remote_url are refused with E-SCOPE-KEY-REMOVED (client-side and by
+ * the server).
  * @property {"sqlite" | "http"} [provider] - KB provider type (default: sqlite)
  * @property {string} [remote] - Remote KB server URL, http(s) only (required when provider is
  *   "http"). Use https for any non-loopback host: plain http sends the token in cleartext
@@ -829,6 +904,34 @@ export function parseToolJson(result) {
 const isStringArray = (v) => Array.isArray(v) && v.every((s) => typeof s === 'string');
 
 /**
+ * The pre-redesign kb_* scope keys. Every kb_* tool acts on the calling
+ * session's own KB, so the server refuses a call carrying any of these with
+ * E-SCOPE-KEY-REMOVED (src/services/knowledge/kb-removed-scope-keys.ts). The
+ * kb_* wrappers below refuse them client-side with the same code, so a stale
+ * caller fails fast and identically whichever side catches it.
+ */
+export const KB_REMOVED_SCOPE_KEYS = Object.freeze(['repo_path', 'repo', 'repo_remote_url']);
+
+/**
+ * Throw E-SCOPE-KEY-REMOVED when `options` carries a removed kb_* scope key
+ * (any value other than undefined).
+ * @param {string} tool - the kb_* tool name, for the message
+ * @param {Record<string, unknown>} [options]
+ */
+export function assertNoRemovedKbScopeKeys(tool, options) {
+    if (!options || typeof options !== 'object') return;
+    const present = KB_REMOVED_SCOPE_KEYS.filter((k) => options[k] !== undefined);
+    if (present.length === 0) return;
+    const err = new Error(
+        `E-SCOPE-KEY-REMOVED: ${tool} no longer accepts ${present.map((k) => `'${k}'`).join(', ')} ` +
+        '(removed in the KB redesign); the call was not sent. Remediation: drop it -- every kb_* call acts on the ' +
+        "calling session's own KB (a member session's registered work folder; a FULL session's fleet server working folder).",
+    );
+    err.code = 'E-SCOPE-KEY-REMOVED';
+    throw err;
+}
+
+/**
  * Typed read of an execute_prompt permission denial. Accepts the raw executePrompt()
  * result or its `structuredContent`; returns the {@link PermissionDenied} block when
  * `reason === 'permission_denied'` and the block is well-formed, else null.
@@ -850,6 +953,55 @@ export function permissionDenialOf(result) {
         hint: d.hint,
         signals: isStringArray(d.signals) ? [...d.signals] : [],
     };
+}
+
+/**
+ * Anchored text shapes of a fleet tool failure that reached the caller WITHOUT
+ * a structured error flag (an older server, or a plain-string tool result).
+ * Each pattern matches only at the START of the result text, so a genuine
+ * LLM reply that merely mentions "connection refused" mid-body never matches
+ * (a successful execute_prompt reply is display-wrapped or carried in
+ * structuredContent.response, never bare).
+ */
+const FLEET_TOOL_FAILURE_TEXT_RES = Object.freeze([
+    /^\s*(?:\[FAIL\]\s*)?Failed to execute (?:command|prompt) on "/,
+    /^\s*\(SSH\)\s/,
+    /^\s*(?:Error:\s*)?(?:connect\s+)?(?:ECONNREFUSED|ECONNRESET|EHOSTUNREACH|ENETUNREACH|ETIMEDOUT|EPIPE)\b/,
+    /^\s*(?:Error:\s*)?(?:Timed out while waiting for handshake|Connection lost before handshake|All configured authentication methods failed|Not connected)\b/,
+]);
+
+/**
+ * Typed read of a fleet TOOL/TRANSPORT failure on a raw callTool() result --
+ * as opposed to a successful tool call whose payload is the member's (or the
+ * LLM's) answer. Returns null for a successful result.
+ *
+ * Signals, strongest first:
+ *   - 'isError': the MCP-level `result.isError === true` flag. This is what the
+ *     MCP server returns when a tool handler THROWS (e.g. an SSH channel that
+ *     could not be opened): `{ content: [{ text: err.message }], isError: true }`
+ *     with no structuredContent, so the text is the bare transport error.
+ *   - 'text': fallback for a result carrying no structured flag and no
+ *     `structuredContent.response`, whose text starts with a recognisable
+ *     fleet failure shape (FLEET_TOOL_FAILURE_TEXT_RES).
+ *
+ * A result whose `structuredContent.isError` is set is NOT reported here:
+ * that is the tool's own classified failure (it carries a `reason`), which
+ * callers already read directly.
+ *
+ * @param {{ isError?: boolean, content?: { text?: string }[], structuredContent?: Record<string, any> } | null | undefined} result
+ * @returns {{ source: 'isError' | 'text', text: string } | null}
+ */
+export function fleetToolFailureOf(result) {
+    if (!result || typeof result !== 'object') return null;
+    const sc = result.structuredContent;
+    if (sc && sc.isError) return null;
+    const text = Array.isArray(result.content)
+        ? result.content.map((c) => (c && typeof c.text === 'string' ? c.text : '')).filter(Boolean).join('\n')
+        : '';
+    if (result.isError === true) return { source: 'isError', text };
+    if (sc && typeof sc.response === 'string') return null;
+    if (FLEET_TOOL_FAILURE_TEXT_RES.some((re) => re.test(text))) return { source: 'text', text };
+    return null;
 }
 
 export class ApraFleet {
@@ -935,7 +1087,7 @@ export class ApraFleet {
 
     /**
      * Get detailed status for one member: connectivity, session, work folder, provider, registered shell (Windows).
-     * @param {{ member_id?: string, member_name?: string, format?: 'compact'|'json' }} options
+     * @param {{ member_id?: string, member_name?: string, format?: 'compact'|'json', refresh?: boolean }} options
      * @returns {Promise<string|MemberDetailResult>} A compact text summary when format is
      *   "compact" (default), or the structured MemberDetailResult object when format is "json".
      */
@@ -977,7 +1129,10 @@ export class ApraFleet {
     }
 
     /**
-     * Change a member's settings.
+     * Change a member's settings. Changing `llm_provider` or `work_folder`
+     * removes the composed permission/MCP config written for the old
+     * provider/folder and re-composes for the member as updated (see
+     * docs/api-reference.md).
      * @param {UpdateMemberOptions} options
      */
     async updateMember(options) {
@@ -985,7 +1140,9 @@ export class ApraFleet {
     }
 
     /**
-     * Remove a member from the fleet.
+     * Remove a member from the fleet. Member-side composed config (the
+     * per-folder `apra-fleet` MCP entry, permission keys) is removed first;
+     * what could not be removed is reported as a warning.
      *
      * Without `force`, refuses (error text containing "member-held") while the member is
      * busy, reserved (reservedBy set), or a registered workflow package reports it held
@@ -1170,18 +1327,57 @@ export class ApraFleet {
      * credentials encrypted. Run once per repo. Merges into any existing KB config (keys it
      * does not own are preserved); the result carries `steps` and `warnings` (e.g. plain-http
      * remote, dropped token after a remote change, discarded malformed config).
+     * The removed scope keys (repo_path, repo, repo_remote_url) are refused
+     * with E-SCOPE-KEY-REMOVED before anything is sent.
      * @param {KbSetupOptions} [options]
      */
     async kbSetup(options = {}) {
+        assertNoRemovedKbScopeKeys('kb_setup', options);
         return this.mcpClient.callTool('kb_setup', options);
     }
 
     /**
-     * Compose and deliver a scoped permission profile to a member.
+     * Compose and deliver a scoped permission profile to a member. Also writes
+     * the member's per-folder `apra-fleet` MCP entry (`?member=<uuid>`) through
+     * the member provider's own per-project config, with deny rules for every
+     * fleet tool outside the member allowlist (claude, agy), merged by union
+     * with any existing deny rules. The result states why a member config was
+     * not edited (tracked by git, not strict JSON, unreadable) and when a stale
+     * fleetMcp unavailable status was cleared; see docs/api-reference.md.
      * @param {ComposePermissionsOptions} options
      */
     async composePermissions(options) {
         return this.mcpClient.callTool('compose_permissions', options);
+    }
+
+    /**
+     * Export the calling session's CONFIRMED KB entries to the canonical bible
+     * file and auto-commit it locally (never pushed). Pass baseBranch/baseCommit
+     * to record the target base branch and base commit in provenance.
+     * Result JSON: {exported, path, scope, committed}; extract with parseToolJson().
+     * The removed scope keys (repo_path, repo, repo_remote_url) are refused
+     * with E-SCOPE-KEY-REMOVED before anything is sent.
+     * @param {KbExportOptions} [options]
+     */
+    async kbExport(options = {}) {
+        assertNoRemovedKbScopeKeys('kb_export', options);
+        return this.mcpClient.callTool('kb_export', options);
+    }
+
+    /**
+     * Merge exactly the given confirmed entry ids into the bible at entry level
+     * (existing entries kept), write baseBranch/baseCommit provenance, and make a
+     * local commit scoped to the bible path. Never pushes; re-running with the
+     * same ids after resetting to a newer HEAD re-merges, so a rejected push can
+     * be retried. Result JSON: {path, merged, skipped, entry_count, committed};
+     * extract with parseToolJson().
+     * The removed scope keys (repo_path, repo, repo_remote_url) are refused
+     * with E-SCOPE-KEY-REMOVED before anything is sent.
+     * @param {KbBibleCommitOptions} options
+     */
+    async kbBibleCommit(options) {
+        assertNoRemovedKbScopeKeys('kb_bible_commit', options);
+        return this.mcpClient.callTool('kb_bible_commit', options);
     }
 
     /**
@@ -1225,6 +1421,57 @@ export class ApraFleet {
      */
     async credentialStoreSet(options) {
         return this.mcpClient.callTool('credential_store_set', options);
+    }
+
+    /**
+     * code_reindex -- rebuild the code index of the calling session's own repo
+     * (a member session's work folder, otherwise the fleet server's folder;
+     * there is no repo argument). Starts gitnexus analyze detached with its
+     * output captured to <data>/code-index/<slug>/analyze.log and returns
+     * after the first tick. Extract the JSON with parseToolJson(): `outcome`
+     * is 'started' | 'up-to-date' | 'starting' | 'already-running' |
+     * 'not-started'; a not-started result carries a typed `reason`
+     * ('npx-not-found' | 'gitnexus-not-found' | 'analyze-failed' |
+     * 'spawn-failed' | 'remote-member' | 'provider-not-supported'). Only the
+     * gitnexus provider is supported: provider 'none' makes the tool fail with
+     * E-CODE-INTEL-DISABLED, and any other provider (e.g. codebase-memory)
+     * yields { outcome: 'not-started', reason: 'provider-not-supported',
+     * provider, indexedCommit: null, detail }. Every result carries
+     * `indexedCommit` (the commit the index is built at, or null when there
+     * is no index or the folder is remote). Poll codeStatus() for completion.
+     */
+    async codeReindex() {
+        return this.mcpClient.callTool('code_reindex', {});
+    }
+
+    /**
+     * code_status -- the calling session's own code index state: the last
+     * analyze run (`analyze`: phase, result 'indexed' | 'up-to-date' |
+     * 'incomplete' | 'failed', lastLine, ...), live `readiness`
+     * ('ready' | 'building' | 'missing'), `indexedCommit`, `lockHeld`, and
+     * `logPath`. A remote work folder returns { remote: true, repo,
+     * indexedCommit: null, detail }. Same provider gate as codeReindex():
+     * provider 'none' fails with E-CODE-INTEL-DISABLED; a non-gitnexus
+     * provider returns the not-supported shape { outcome: 'not-started',
+     * reason: 'provider-not-supported', provider, indexedCommit: null,
+     * detail } rather than gitnexus readiness. Extract the JSON with
+     * parseToolJson().
+     */
+    async codeStatus() {
+        return this.mcpClient.callTool('code_status', {});
+    }
+
+    /**
+     * session_stats -- a member's kb_* / code_* tool call counts on this
+     * server, aggregated across that member's sessions (engine-origin
+     * sessions excluded). On a member session the calling member is reported
+     * and `member_id` may be omitted; a non-member session must pass it.
+     * Extract the JSON with parseToolJson(): a SessionStatsResult.
+     *
+     * @param {SessionStatsOptions} [options]
+     */
+    async sessionStats(options = {}) {
+        return this.mcpClient.callTool('session_stats', options);
     }
 
     /**

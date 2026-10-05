@@ -3,8 +3,6 @@
   "case": "refusal-resolve-missing-entry",
   "kind": "refusal",
   "request": {
-    "repo_path": "<SCRATCH_REPO_A>",
-    "repo_remote_url": "https://example.test/memory-contract-fixtures-a.git",
     "winnerId": "fixture-does-not-exist-winner",
     "loserId": "fixture-does-not-exist-loser",
     "evidence": "Neither id was ever captured."

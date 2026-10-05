@@ -101,7 +101,7 @@ describe('kb_export auto-commit (T2.3, F6a, D5 amended)', () => {
     await provider.promote(a.id, 'test fixture: verified against the seeded tree');
     await provider.promote(a.id, 'test fixture: verified against the seeded tree');
 
-    const result = JSON.parse(await kbExport({ repo_path: repoDir }));
+    const result = JSON.parse(await kbExport({}, { folder: repoDir }));
     expect(result.exported).toBe(1);
     expect(result.committed).toBe(true);
 
@@ -125,10 +125,10 @@ describe('kb_export auto-commit (T2.3, F6a, D5 amended)', () => {
     await provider.promote(a.id, 'test fixture: verified against the seeded tree');
     await provider.promote(a.id, 'test fixture: verified against the seeded tree');
 
-    const first = JSON.parse(await kbExport({ repo_path: repoDir }));
+    const first = JSON.parse(await kbExport({}, { folder: repoDir }));
     expect(first.committed).toBe(true);
 
-    const second = JSON.parse(await kbExport({ repo_path: repoDir }));
+    const second = JSON.parse(await kbExport({}, { folder: repoDir }));
     expect(second.committed).toBe(false);
 
     const log = git(repoDir, ['log', '--format=%H']).trim().split('\n');
@@ -148,7 +148,7 @@ describe('kb_export auto-commit (T2.3, F6a, D5 amended)', () => {
     await provider.promote(a.id, 'test fixture: verified against the seeded tree');
     await provider.promote(a.id, 'test fixture: verified against the seeded tree');
 
-    const result = JSON.parse(await kbExport({ repo_path: repoDir }));
+    const result = JSON.parse(await kbExport({}, { folder: repoDir }));
     expect(result.exported).toBe(1);
     expect(result.committed).toBe(false);
     expect(fs.existsSync(path.join(repoDir, '.fleet', 'kb-canonical.json'))).toBe(true);
@@ -164,7 +164,7 @@ describe('kb_export auto-commit (T2.3, F6a, D5 amended)', () => {
     await provider.promote(a.id, 'test fixture: verified against the seeded tree');
     await provider.promote(a.id, 'test fixture: verified against the seeded tree');
 
-    const result = JSON.parse(await kbExport({ repo_path: repoDir }));
+    const result = JSON.parse(await kbExport({}, { folder: repoDir }));
     expect(result.exported).toBe(1);
     expect(result.committed).toBe(false);
 
@@ -183,7 +183,7 @@ describe('kb_export auto-commit (T2.3, F6a, D5 amended)', () => {
     await provider.promote(a.id, 'test fixture: verified against the seeded tree');
     await provider.promote(a.id, 'test fixture: verified against the seeded tree');
 
-    const result = JSON.parse(await kbExport({ repo_path: repoDir }));
+    const result = JSON.parse(await kbExport({}, { folder: repoDir }));
     expect(result.committed).toBe(true);
 
     // The commit contains ONLY the bible file -- the staged unrelated file

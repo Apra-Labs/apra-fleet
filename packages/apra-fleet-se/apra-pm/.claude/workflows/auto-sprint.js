@@ -1457,7 +1457,7 @@ const REVIEW_SCHEMA = {
         "properties": {
           "title": {
             "type": "string",
-            "description": "Plain text only: letters, digits, space, and . , : ; ! ? ( ) ' _ / [ ] - -- nothing else. No backticks, double quotes, $, or backslash (the title is interpolated into a shell command downstream). Do NOT wrap a command/flag/filename in backticks here -- write it plain (e.g. \"Surface the Windows service registration mode in apra-fleet status\") or move the formatted detail into description instead, which has no such restriction. NOT enforced as a hard schema constraint here (deliberately no \"pattern\"): a single out-of-allowlist newTask title must never make ajv reject/retry the WHOLE structured verdict (verdict, notes, reopenIds, and the other newTasks) -- see validateNewTask() in fleet-sprint/runner.js, the actual (per-item, non-fatal) enforcement point, applied after parsing."
+            "description": "Plain text only: letters, digits, space, and . , : ; ! ? ( ) ' _ / [ ] - -- nothing else. No backticks, double quotes, $, or backslash (the title is interpolated into a shell command downstream). Do NOT wrap a command/flag/filename in backticks here -- write it plain (e.g. \"Surface the service registration mode in the status output\") or move the formatted detail into description instead, which has no such restriction. NOT enforced as a hard schema constraint here (deliberately no \"pattern\"): a single out-of-allowlist newTask title must never make ajv reject/retry the WHOLE structured verdict (verdict, notes, reopenIds, and the other newTasks) -- see validateNewTask() in fleet-sprint/runner.js, the actual (per-item, non-fatal) enforcement point, applied after parsing."
           },
           "description": {
             "type": "string"
@@ -1486,6 +1486,29 @@ const REVIEW_SCHEMA = {
           "reason": {
             "type": "string",
             "description": "The evidence for this promotion -- what you actually checked. kb_promote refuses a trivial reason.",
+            "minLength": 20
+          }
+        }
+      }
+    },
+    "kb_discards": {
+      "type": "array",
+      "description": "Promotion candidates this reviewer showed to be WRONG and is discarding (the entry drops out of every later read). Reviewer-only, with the same evidence bar as kb_promotions. An id may not appear in both kb_promotions and kb_discards -- the engine refuses both. The engine makes the discard calls.",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "reason"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The entry id, copied verbatim from the 'KNOWLEDGE BANK -- promotion candidates' block in your dispatch prompt. That block is the ONLY source of discardable ids -- do not call a kb_* tool to find one, and never invent one.",
+            "minLength": 1
+          },
+          "reason": {
+            "type": "string",
+            "description": "The evidence that the entry is wrong -- what you actually checked that contradicts its claim.",
             "minLength": 20
           }
         }
@@ -1522,12 +1545,12 @@ const REVIEW_SCHEMA = {
           },
           "content": {
             "type": "string",
-            "description": "Full detail of the entry. REQUIRED -- kbCaptureSchema declares content as z.string().min(1), so a capture without it is rejected at the MCP boundary and persists nothing (apra-fleet-23c).",
+            "description": "Full detail of the entry. REQUIRED -- a capture without it is rejected and persists nothing.",
             "minLength": 40
           },
           "source_files": {
             "type": "array",
-            "description": "Files that make this claim checkable. At least one is REQUIRED -- SqliteProvider.capture() rejects an entry with no basis, because the freshness sweep can never stale it.",
+            "description": "Files that make this claim checkable. At least one is REQUIRED -- an entry with no basis is rejected, because the freshness sweep can never stale it.",
             "items": {
               "type": "string"
             },
@@ -1539,6 +1562,38 @@ const REVIEW_SCHEMA = {
               "type": "string"
             }
           }
+        }
+      }
+    },
+    "toolUse": {
+      "type": "object",
+      "description": "How this run used the kb_* and code_* tools its role prompt expects (Step 0). Optional for backward compatibility, but expected: report \"unavailable\" or \"not_needed\" with a note rather than skipping the calls silently.",
+      "required": [
+        "kb",
+        "code"
+      ],
+      "properties": {
+        "kb": {
+          "type": "string",
+          "enum": [
+            "used",
+            "unavailable",
+            "not_needed"
+          ],
+          "description": "used = kb_query was called (kb_session_prime alone is not used)."
+        },
+        "code": {
+          "type": "string",
+          "enum": [
+            "used",
+            "unavailable",
+            "not_needed"
+          ],
+          "description": "used = code_impact, code_context or code_graph was called."
+        },
+        "note": {
+          "type": "string",
+          "description": "Why a value is not \"used\": which tool was missing or failed, or why no lookup was needed."
         }
       }
     }
@@ -1712,6 +1767,38 @@ const DOER_STATUS_SCHEMA = {
               "type": "string"
             }
           }
+        }
+      }
+    },
+    "toolUse": {
+      "type": "object",
+      "description": "How this run used the kb_* and code_* tools its role prompt expects (Step 0). Optional for backward compatibility, but expected: report \"unavailable\" or \"not_needed\" with a note rather than skipping the calls silently.",
+      "required": [
+        "kb",
+        "code"
+      ],
+      "properties": {
+        "kb": {
+          "type": "string",
+          "enum": [
+            "used",
+            "unavailable",
+            "not_needed"
+          ],
+          "description": "used = kb_query was called (kb_session_prime alone is not used)."
+        },
+        "code": {
+          "type": "string",
+          "enum": [
+            "used",
+            "unavailable",
+            "not_needed"
+          ],
+          "description": "used = code_impact, code_context or code_graph was called."
+        },
+        "note": {
+          "type": "string",
+          "description": "Why a value is not \"used\": which tool was missing or failed, or why no lookup was needed."
         }
       }
     }
@@ -2254,9 +2341,10 @@ async function primeKB(repoPath) {
     `  a. First check if "${repoPath}/.fleet/kb-canonical.json" exists (use Bash: test -f).\n` +
     `  b. If it does NOT exist, run: echo $APRA_FLEET_DATA_DIR (using Bash) to get the data dir.\n` +
     `     Then check if "$APRA_FLEET_DATA_DIR/kb-canonical.json" exists.\n` +
-    `  c. Call mcp__apra-fleet__kb_import with repo set to "${repoPath}".\n` +
-    `     If the bible was found at the data dir path (step b), also pass\n` +
-    `     path set to that full path (e.g. "/tmp/sprint-test/data-b/kb-canonical.json").\n` +
+    `  c. Call mcp__apra-fleet__kb_import with path set to the full path of the bible\n` +
+    `     file you found: "${repoPath}/.fleet/kb-canonical.json" (step a), or the\n` +
+    `     data dir path (step b, e.g. "/tmp/sprint-test/data-b/kb-canonical.json").\n` +
+    `     Pass no other scope argument -- kb tools always use your session's own KB.\n` +
     `  d. If neither path has the bible, or the tool is unavailable, set imported=false and continue.\n`;
   const stepNum = _kbImported ? 2 : 3;
   try {
@@ -2267,8 +2355,8 @@ async function primeKB(repoPath) {
       (_kbImported ? `"` : `,mcp__apra-fleet__kb_import"`) +
       ` to load the tool schema(s).\n` +
       importStep +
-      `Step ${stepNum}: Call mcp__apra-fleet__kb_session_prime with:\n` +
-      `  repo_path: "${repoPath}"\n` +
+      `Step ${stepNum}: Call mcp__apra-fleet__kb_session_prime with no arguments ` +
+      `(it always primes your session's own KB; it takes no repo/scope argument).\n` +
       `Step ${stepNum + 1}: Parse the JSON string result. Extract the top_entries array.\n` +
       `  For each entry return: title, summary, confidence, flagged_for_review, contradiction_of, symbols, source_files, type.\n` +
       `  Do NOT return the content field.\n` +
@@ -2386,6 +2474,13 @@ function vetKbWork(role, result) {
     }
   }
 
+  // kb_discards is applied only by the fleet-sprint engine (maintainer-routed
+  // kb_invalidate). This legacy workflow has no discard path, so refuse and log
+  // rather than silently dropping a reviewer's DISCARD.
+  if (result && Array.isArray(result.kb_discards) && result.kb_discards.length > 0) {
+    rejected.push(`${role}: kb_discards refused -- not supported by this workflow (${result.kb_discards.length} dropped)`);
+  }
+
   return { captures, promotions, rejected };
 }
 
@@ -2411,10 +2506,11 @@ async function runKbWork(repoPath, role, result) {
       `Step 1: Call ToolSearch with query ` +
       `"select:mcp__apra-fleet__kb_capture,mcp__apra-fleet__kb_promote".\n` +
       `Step 2: For EACH object in captures below, call mcp__apra-fleet__kb_capture ` +
-      `with repo_path "${repoPath}" and that object's fields verbatim. Do not ` +
-      `reword, merge, split or invent entries.\n` +
+      `with that object's fields verbatim (no repo/scope argument -- the tool ` +
+      `always writes your session's own KB). Do not reword, merge, split or ` +
+      `invent entries.\n` +
       `Step 3: For EACH object in promotions below, call mcp__apra-fleet__kb_promote ` +
-      `with repo_path "${repoPath}" and that object's id and reason verbatim.\n` +
+      `with that object's id and reason verbatim.\n` +
       `Step 4: Return the counts. A call refused by the tool counts in failed, ` +
       `not captured/promoted -- report it, do not retry it with altered fields.\n\n` +
       `captures: ${JSON.stringify(captures)}\n` +

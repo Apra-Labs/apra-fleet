@@ -21,7 +21,9 @@ import { azureDevOpsProvider } from '../services/vcs/azure-devops.js';
 import type { Agent } from '../types.js';
 import type { VcsProviderService } from '../services/vcs/types.js';
 import { logLine } from '../utils/log-helpers.js';
+import { removeMemberFromOwnInstall, getMemberFleetMcpDeps } from '../services/member-fleet-install.js';
 import { invalidatePreflightCache } from '../services/preflight-check.js';
+import { removeComposedMemberConfig } from './compose-permissions.js';
 
 const vcsProviders: Record<string, VcsProviderService> = {
   github: githubProvider,
@@ -78,12 +80,80 @@ export async function removeMember(input: RemoveMemberInput): Promise<string> {
   // Cancel any pending credential cleanup timer
   cancelCredentialCleanup(agent.id);
 
-  // Best-effort: clear auth credentials from the member before removing
-  // Skip for local members — their credentials belong to the host machine
+  // Probe a remote member once. Every member-side step below needs it, and the
+  // ORDER matters: all member-side cleanup (composed config, own-install
+  // registration, agy project) runs while the fleet still holds the member's
+  // access, and the fleet's own access (credentials, authorized_keys) is
+  // removed LAST. Local members are always reachable.
+  let reachable = agent.agentType !== 'remote';
+  let connectError: string | undefined;
+  let connectThrew = false;
   if (agent.agentType === 'remote') {
     try {
       const conn = await strategy.testConnection();
-      if (conn.ok) {
+      reachable = conn.ok;
+      if (!conn.ok) connectError = conn.error ?? 'connection failed';
+    } catch (e: unknown) {
+      connectThrew = true;
+      connectError = e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  // Best-effort: remove what compose_permissions wrote for this member -- the
+  // per-folder apra-fleet MCP entry (?member=<id>), the fleet permission keys
+  // and the git exclude lines -- so the work folder is not left pointing at a
+  // member that no longer exists. Anything it could not remove is reported.
+  if (reachable) {
+    try {
+      const removedConfig = await removeComposedMemberConfig(agent);
+      logLine('remove_member', `removed composed member config (${removedConfig.join('; ') || 'nothing to remove'})`, agent);
+    } catch (e: unknown) {
+      warnings.push(`Could not remove the member's composed config (per-folder apra-fleet MCP entry / permission keys) from ${agent.workFolder}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  } else {
+    warnings.push(`Member was unreachable (${connectError}) -- its composed config (per-folder apra-fleet MCP entry / permission keys) in ${agent.workFolder} was NOT removed`);
+  }
+
+  // Best-effort: drop the member's self-registration on its OWN apra-fleet
+  // install (apra-fleet-b4g.56). A failure is reported, never silent.
+  if (agent.agentType === 'remote') {
+    try {
+      const r = await removeMemberFromOwnInstall(agent, getMemberFleetMcpDeps());
+      if (!r.removed && 'reason' in r) {
+        warnings.push(`Could not remove the member's registration from its own apra-fleet install (${r.reason}): ${r.detail}`);
+      }
+    } catch (e: unknown) {
+      warnings.push(`Could not remove the member's registration from its own apra-fleet install: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  // Best-effort: delete the member's agy project file (and a legacy
+  // fleet-<id>.json, if present) so its permission grants don't linger on
+  // its machine (docs/agy-provider.md section 1). Skipped
+  // entirely when another registered member still shares the id -- deleting
+  // it would strip that other member's grants too.
+  if (agent.llmProvider === 'agy' && agent.agyProjectId) {
+    const sharedProject = getAllAgents().some(a => a.id !== agent.id && a.agyProjectId === agent.agyProjectId);
+    if (!sharedProject) {
+      try {
+        const result = await removeAgyProject(agent, (cmd, timeoutMs) => strategy.execCommand(cmd, timeoutMs));
+        if (result.errors.length > 0) {
+          warnings.push(`Could not fully remove agy project file for "${agent.friendlyName}": ${result.errors.join('; ')}`);
+        }
+      } catch (err) {
+        warnings.push(`Could not remove agy project file for "${agent.friendlyName}": ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+  }
+
+  // Best-effort: clear auth credentials from the member, and finally the
+  // fleet's own SSH key. Skip for local members -- their credentials belong to
+  // the host machine.
+  if (agent.agentType === 'remote' && connectThrew) {
+    warnings.push('Could not connect to member -- auth credentials may still be present');
+  } else if (agent.agentType === 'remote') {
+    try {
+      if (reachable) {
         const cmds = getOsCommands(getAgentOS(agent), getAgentShell(agent));
         const exec = async (cmd: string) => {
           const r = await strategy.execCommand(cmd, 15000);
@@ -97,9 +167,12 @@ export async function removeMember(input: RemoveMemberInput): Promise<string> {
           await strategy.execCommand(cmds.credentialFileRemove(file.remotePath), 10000).catch(() => {});
         }
 
-        // Remove the provider's API key env var from shell profiles
-        for (const cmd of cmds.unsetEnv(provider.authEnvVar)) {
-          await strategy.execCommand(cmd, 10000).catch(() => {});
+        // Remove the provider's auth env vars (every credential kind) from shell profiles
+        const authVars = new Set([provider.authEnvVar, ...(provider.authEnvVarNames?.() ?? [])].filter(Boolean));
+        for (const envVar of authVars) {
+          for (const cmd of cmds.unsetEnv(envVar)) {
+            await strategy.execCommand(cmd, 10000).catch(() => {});
+          }
         }
 
         // VCS auth revoke: remove git credential helper if a VCS provider is configured.
@@ -147,25 +220,6 @@ export async function removeMember(input: RemoveMemberInput): Promise<string> {
       }
     } catch {
       warnings.push('Could not connect to member — auth credentials may still be present');
-    }
-  }
-
-  // Best-effort: delete the member's agy project file (and a legacy
-  // fleet-<id>.json, if present) so its permission grants don't linger on
-  // its machine (docs/agy-provider.md section 1). Skipped
-  // entirely when another registered member still shares the id -- deleting
-  // it would strip that other member's grants too.
-  if (agent.llmProvider === 'agy' && agent.agyProjectId) {
-    const sharedProject = getAllAgents().some(a => a.id !== agent.id && a.agyProjectId === agent.agyProjectId);
-    if (!sharedProject) {
-      try {
-        const result = await removeAgyProject(agent, (cmd, timeoutMs) => strategy.execCommand(cmd, timeoutMs));
-        if (result.errors.length > 0) {
-          warnings.push(`Could not fully remove agy project file for "${agent.friendlyName}": ${result.errors.join('; ')}`);
-        }
-      } catch (err) {
-        warnings.push(`Could not remove agy project file for "${agent.friendlyName}": ${err instanceof Error ? err.message : String(err)}`);
-      }
     }
   }
 

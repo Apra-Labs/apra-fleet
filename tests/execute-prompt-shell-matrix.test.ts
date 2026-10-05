@@ -54,6 +54,9 @@ vi.mock('../src/services/strategy.js', () => ({
     execCommand: mockExecCommand,
     testConnection: vi.fn(),
     transferFiles: vi.fn(),
+    // Stored auth env vars are staged in an owner-only file (never argv).
+    writeSecretFile: vi.fn(async (name: string) => `/home/testuser/${name}`),
+    removeSecretFile: vi.fn(async () => {}),
     close: vi.fn(),
   }),
 }));
@@ -367,8 +370,9 @@ describe('execute_prompt durable mirror + orphan-recovery coupling: shell matrix
  * execute-prompt.ts has five places that hand a provider prompt command to
  * strategy.execCommand: the main launch, and four independently-gated retry
  * paths (dispatch exception, stale session, server overloaded, and the
- * workspace-trust self-heal). They all concatenate the SAME `envPrefix`
- * computed once near the top of the function.
+ * workspace-trust self-heal). They all go through dispatchAttempt, which
+ * prepends the SAME member.env `envPrefix` (computed once near the top of the
+ * function) and then that attempt's staged auth-file loader.
  *
  * That "computed once" shape is exactly what makes a regression cheap: drop
  * the concatenation at any ONE retry site and that retry silently runs with
@@ -382,7 +386,9 @@ describe('execute_prompt env prefix: main launch + all four retry sites (F14)', 
   const AUTH_VALUE = 'super-secret-credential';
   const EXPECTED_PREFIX =
     "export FLEET_S9_A='one' && export FLEET_S9_B='two' && "
-    + "export API_TOKEN='" + AUTH_VALUE + "' && ";
+    // ...then this attempt's staged auth-file loader (path only; KB #623:
+    // stored credentials never ride the command line), so auth wins a collision.
+    + ". '/home/testuser/.apra-fleet-env-";
 
   function envMember(overrides: Partial<Agent> = {}): Agent {
     return makeTestAgent({
@@ -416,6 +422,7 @@ describe('execute_prompt env prefix: main launch + all four retry sites (F14)', 
     expect(dispatches.length).toBe(expectedCount);
     for (const cmd of dispatches) {
       expect(cmd.startsWith(EXPECTED_PREFIX), `dispatch missing env prefix: ${cmd.slice(0, 160)}`).toBe(true);
+      expect(cmd).not.toContain(AUTH_VALUE);
     }
   }
 
@@ -542,12 +549,13 @@ describe('execute_prompt env prefix: main launch + all four retry sites (F14)', 
 
     await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
     const psPrefix =
-      "$env:FLEET_S9_A='one'; $env:FLEET_S9_B='two'; $env:API_TOKEN='" + AUTH_VALUE + "'; ";
+      "$env:FLEET_S9_A='one'; $env:FLEET_S9_B='two'; $__fleetEnv = ";
     const dispatches = promptDispatches();
     expect(dispatches.length).toBeGreaterThan(0);
     for (const cmd of dispatches) {
       expect(cmd.startsWith(psPrefix)).toBe(true);
       expect(cmd).not.toContain('export FLEET_S9_A=');
+      expect(cmd).not.toContain(AUTH_VALUE);
     }
   });
 });
