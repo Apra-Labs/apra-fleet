@@ -19,8 +19,57 @@ import { createRunSummary, refreshSummaryCore, applyExtensionSummary, backfillEx
 // endpoints, no longer exists). `opts.state` is embedded as a JSON literal;
 // any literal `</script>`-like sequence inside it is escaped so it can never
 // terminate the embedding <script> tag early.
+// Optional caller-supplied "back" link (opts.backLink = { href, text }):
+// a host that launches this viewer can ask the page to carry one plain
+// anchor back to wherever the operator came from. Rendered as the first
+// content of the real <body> element (inside the template, never spliced
+// into finished markup), HTML-escaped, and marked with the stable
+// VIEWER_BACK_LINK_ATTR attribute so a host that re-serves the page through
+// its own proxy can find (and replace) it. Absent -> the template output is
+// byte-identical to a template without this feature.
+export const VIEWER_BACK_LINK_ATTR = 'data-viewer-back-link';
+
+/**
+ * Validate an opts.backLink value. Returns null when absent, the normalized
+ * { href, text } when valid, and THROWS (naming the option) when invalid --
+ * a malformed back link is a caller bug, never silently dropped.
+ * @param {*} backLink
+ * @returns {{href: string, text: string} | null}
+ */
+export function validateViewerBackLink(backLink) {
+    if (backLink === undefined || backLink === null) return null;
+    if (typeof backLink !== 'object' || Array.isArray(backLink)) {
+        throw new TypeError('opts.backLink must be an object { href, text }');
+    }
+    const { href, text } = backLink;
+    if (typeof href !== 'string' || href.length === 0) {
+        throw new TypeError('opts.backLink.href must be a non-empty absolute http(s) URL');
+    }
+    let parsed;
+    try {
+        parsed = new URL(href);
+    } catch {
+        throw new TypeError(`opts.backLink.href is not an absolute URL: ${JSON.stringify(href)}`);
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        throw new TypeError(`opts.backLink.href must use http or https, got ${JSON.stringify(parsed.protocol)}`);
+    }
+    if (typeof text !== 'string' || text.trim().length === 0) {
+        throw new TypeError('opts.backLink.text must be a non-empty string');
+    }
+    return { href, text };
+}
+
+function renderBackLinkHtml(backLink) {
+    if (!backLink) return '';
+    return `\n  <a ${VIEWER_BACK_LINK_ATTR}="" href="${escapeHtml(backLink.href)}" `
+        + `style="display:inline-block;margin:6px 12px;color:var(--accent);font-size:12px;text-decoration:none;">`
+        + `${escapeHtml(backLink.text)}</a>`;
+}
+
 const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
     const isHistory = !!opts.history;
+    const backLinkHtml = renderBackLinkHtml(validateViewerBackLink(opts.backLink));
     const frozenStateLiteral = isHistory
         ? JSON.stringify(backfillExtensionSummaries(opts.state ?? null, dashboardExtensions) ?? null).replace(/</g, '\\u003c')
         : 'null';
@@ -192,7 +241,7 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
     .toast.show { opacity: 1; transform: translateY(0); }
   </style>
 </head>
-<body data-view="${isHistory ? 'history' : 'live'}">
+<body data-view="${isHistory ? 'history' : 'live'}">${backLinkHtml}
   <div class="header">
     <div class="header-title">
       <h1><span id="workflow-name">Loading...</span></h1>
@@ -1019,6 +1068,9 @@ export { HTML_TEMPLATE };
  *   fleet-sprint (e.g., { members, targetIssues, goal }). Defaults to null if omitted.
  * @param {Array} [opts.dashboardExtensions] - Dashboard widget extensions
  * @param {Object} [opts.env] - Environment variables (defaults to process.env)
+ * @param {{href: string, text: string}} [opts.backLink] - Optional link
+ *   rendered as the first content of the page body (absolute http(s) href,
+ *   non-empty text; invalid values throw here). Omit for no link.
  * @param {string} [opts.host='127.0.0.1'] - Interface to bind. Loopback by
  *   default -- see the `host`/`exclusive` note at server.listen() below for
  *   why the bind address is explicit rather than the OS wildcard.
@@ -1032,6 +1084,9 @@ export function createDashboardViewer(workflow, opts = {}) {
     // genuinely wants this dashboard reachable off-box must say so.
     const host = (typeof opts.host === 'string' && opts.host.length > 0) ? opts.host : '127.0.0.1';
     const dashboardExtensions = opts.dashboardExtensions || [];
+    // Validated up front so a malformed back link fails at construction,
+    // not on the first GET /.
+    const backLink = validateViewerBackLink(opts.backLink);
 
     // apra-fleet-eft.2.3 (renamed under eft.37.1): stable per-run id, NOT an
     // HHMMSS-style clock key (see run-state-paths.mjs) -- this is what
@@ -1459,7 +1514,7 @@ export function createDashboardViewer(workflow, opts = {}) {
     const server = http.createServer((req, res) => {
         if (req.url === '/') {
             res.writeHead(200, { 'Content-Type': 'text/html' });
-            res.end(HTML_TEMPLATE(dashboardExtensions));
+            res.end(backLink ? HTML_TEMPLATE(dashboardExtensions, { backLink }) : HTML_TEMPLATE(dashboardExtensions));
         } else if (req.url === '/events') {
             res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Connection': 'keep-alive', 'Cache-Control': 'no-cache' });
             clients.add(res);
