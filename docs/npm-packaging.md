@@ -424,6 +424,15 @@ above, which still catches a real `ui-kit`-driven change (Vite's output
 filenames are content-hashed and are named in `index.html`) but no longer
 fires on a no-op rebuild.
 
+**`npm test` builds its own prerequisites on a fresh clone.** The root
+`pretest` runs `build:contract && build:ui:checked`. `scripts/build-ui-checked.mjs`
+builds `apra-fleet-ui-kit` first and then the console shell UI (the shell
+imports ui-kit's built output, so the order matters), and exits non-zero if
+`packages/apra-fleet-shell-ui/dist/index.html` is missing. Tests that read the
+built shell dist therefore never depend on a developer having run `build:ui`
+by hand. CI also runs an explicit UI build step ahead of the tests, so the UI
+is built twice there; this is redundant but harmless.
+
 ### 7.2 Other package.json fields
 
 | Field | Value | Notes |
