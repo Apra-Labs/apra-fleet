@@ -779,3 +779,75 @@ describe('verify: supervisor auth and HTTP status reporting', () => {
     expect(fs.existsSync(path.join(home, 'se', 'private'))).toBe(false); // nothing minted
   });
 });
+
+// teardown step 1 probes the supervisor with probeJson so a rejected bearer
+// (HTTP 401) is NAMED instead of silently skipping graceful /api/shutdown.
+// SUPERVISOR_PID is a disposable child (stopOwned kills the recorded pid) --
+// NEVER process.pid.
+describe('teardown: supervisor 401 is named, graceful shutdown still works on 200', () => {
+  const servers: http.Server[] = [];
+  const children: ChildProcess[] = [];
+  afterEach(async () => {
+    for (const c of children.splice(0)) { try { c.kill('SIGKILL'); } catch { /* gone */ } }
+    for (const s of servers.splice(0)) { s.closeAllConnections(); await new Promise<void>((r) => s.close(() => r())); }
+  });
+
+  function disposableChild(): ChildProcess {
+    const c = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 120000)'], { stdio: 'ignore' });
+    children.push(c);
+    return c;
+  }
+
+  /** Fake supervisor: records requests; `mode` 401 rejects everything, 200
+   *  answers /api/health with the child's pid and, on POST /api/shutdown,
+   *  kills the child and stops listening (as a real graceful stop would). */
+  async function fake(mode: 401 | 200, child: ChildProcess, requests: string[]): Promise<number> {
+    const srv = http.createServer((req, res) => {
+      requests.push(`${req.method} ${req.url}`);
+      if (mode === 401) { res.writeHead(401, { 'Content-Type': 'application/json' }); res.end('{"error":"unauthorized"}'); return; }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      if (req.method === 'POST' && req.url === '/api/shutdown') {
+        res.end('{"ok":true}');
+        child.kill('SIGKILL');
+        setImmediate(() => { srv.close(); srv.closeAllConnections(); });
+        return;
+      }
+      res.end(JSON.stringify({ pid: child.pid, uptimeSeconds: 1 }));
+    });
+    servers.push(srv);
+    await new Promise<void>((resolve) => srv.listen(0, '127.0.0.1', () => resolve()));
+    return (srv.address() as net.AddressInfo).port;
+  }
+
+  async function setup(mode: 401 | 200) {
+    const home = mkHome(); homes.push(home);
+    const child = disposableChild();
+    const requests: string[] = [];
+    const port = await fake(mode, child, requests);
+    const v = await init('s', { home });
+    const closedFleetPort = await osPort(); // nothing listens: steps 2/3 never touch a real server
+    writeValues('s', { ...v, APRA_FLEET_PORT: String(closedFleetPort), MCP_PID: '', SUPERVISOR_PORT: String(port), SUPERVISOR_PID: String(child.pid) }, home);
+    return { home, child, requests, port };
+  }
+
+  it('a supervisor answering 401 is reported as HTTP 401 and never receives POST /api/shutdown', async () => {
+    const { home, child, requests, port } = await setup(401);
+    const err = await teardown('s', { home }).then(() => null, (e) => e as Error);
+    expect(err).toBeInstanceOf(SandboxDeployError);
+    const line = err!.message.split('\n').find((l) => l.includes('sandbox supervisor'));
+    expect(line).toContain(`/api/health on ${port} failed: HTTP 401`);
+    expect(line).toContain('graceful /api/shutdown skipped');
+    expect(requests).not.toContain('POST /api/shutdown');
+    expect(requests).toContain('GET /api/health');
+    // the recorded pid is still ours to kill (stopOwned isRecorded path)
+    expect(isPidAlive(child.pid!)).toBe(false);
+  }, 30000);
+
+  it('a supervisor answering 200 with the recorded pid still receives POST /api/shutdown', async () => {
+    const { home, child, requests } = await setup(200);
+    const r = await teardown('s', { home });
+    expect(r.removed).toBe(true);
+    expect(requests).toContain('POST /api/shutdown');
+    expect(isPidAlive(child.pid!)).toBe(false);
+  }, 30000);
+});
