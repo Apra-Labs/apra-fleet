@@ -72,6 +72,8 @@ function Head($file, $n = 200) {
 # curl.exe ships with Windows 10 1803+; same semantics as the Linux dialect.
 function Http($method, $path, [string[]]$extra = @()) {
   $script:BODY = Join-Path $Logs ("http-" + (($method + $path) -replace '[^A-Za-z0-9]', '_') + '.body')
+  # A failed request must not leave an earlier response looking like this one's.
+  Remove-Item -LiteralPath $script:BODY -ErrorAction SilentlyContinue
   $a = @('-s', '-o', $script:BODY, '-w', '%{http_code}', '--max-time', '15', '-X', $method) + $extra + @("$BaseUrl$path")
   $code = (& curl.exe @a 2>$null | Out-String).Trim()
   if (-not $code -or $code -eq '000') { $code = 'ERR connection failed' }
@@ -186,9 +188,11 @@ function OneServerStep($id) {
 # still ran at High integrity), so runas /trustlevel:0x20000 (Basic User:
 # Administrators deny-only, medium integrity, no password) stands in for it.
 $UlDir = Join-Path $env:SystemDrive 'fi-ul'
+# Absolute: Git for Windows puts a GNU whoami on PATH that rejects /groups.
+$WhoAmI = Join-Path $env:SystemRoot 'System32\whoami.exe'
 # Integrity level of the current context, e.g. "High Mandatory Level".
 function IntegrityLevel {
-  $row = (& whoami.exe /groups /fo csv 2>$null) | ConvertFrom-Csv | Where-Object { $_.'Group Name' -like 'Mandatory Label\*' } | Select-Object -First 1
+  $row = (& $WhoAmI /groups /fo csv 2>$null) | ConvertFrom-Csv | Where-Object { $_.'Group Name' -like 'Mandatory Label\*' } | Select-Object -First 1
   if ($row) { return ($row.'Group Name' -replace '^Mandatory Label\\', '') } else { return 'unknown' }
 }
 # Run a command as THIS user without its admin rights (runas /trustlevel:0x20000,
@@ -201,7 +205,9 @@ function AsLimited($id, $name, $exe, [string[]]$argv = @(), $timeoutSec = 900) {
   $line = (Quote $exe) + ' ' + (($argv | ForEach-Object { Quote $_ }) -join ' ')
   # Redirection FIRST: "echo 1> f" would make 1 a stream number. The rc file
   # appears atomically (move) so it is never read half-written.
-  [IO.File]::WriteAllText($cmdf, "@echo off`r`n$line > `"$out`" 2>&1`r`n>`"$rcf.tmp`" echo %ERRORLEVEL%`r`nmove /y `"$rcf.tmp`" `"$rcf`" >nul`r`n", [Text.Encoding]::ASCII)
+  # First the token this process really got (integrity level, Administrators state).
+  $ilf = "$out.il"; Remove-Item $ilf -ErrorAction SilentlyContinue
+  [IO.File]::WriteAllText($cmdf, "@echo off`r`n`"$WhoAmI`" /groups /fo csv > `"$ilf`" 2>&1`r`n$line > `"$out`" 2>&1`r`n>`"$rcf.tmp`" echo %ERRORLEVEL%`r`nmove /y `"$rcf.tmp`" `"$rcf`" >nul`r`n", [Text.Encoding]::ASCII)
   $script:RC = 'ERR not run'
   $ro = (& runas.exe '/trustlevel:0x20000' "cmd.exe /d /c $cmdf" 2>&1 | Out-String).Trim()
   if ($LASTEXITCODE -ne 0) {
@@ -212,8 +218,15 @@ function AsLimited($id, $name, $exe, [string[]]$argv = @(), $timeoutSec = 900) {
     if (Test-Path $rcf) { $script:RC = ([string](Get-Content $rcf -Raw)).Trim() }
     else { $script:RC = "ERR no result from the runas /trustlevel process after ${timeoutSec}s" }
   }
+  $script:LimToken = 'token unknown (no whoami output)'
+  try {
+    $rows = Get-Content $ilf -ErrorAction Stop | ConvertFrom-Csv
+    $il = ($rows | Where-Object { $_.'Group Name' -like 'Mandatory Label\*' } | Select-Object -First 1).'Group Name' -replace '^Mandatory Label\\', ''
+    $adm = ($rows | Where-Object { $_.'Group Name' -eq 'BUILTIN\Administrators' } | Select-Object -First 1).Attributes
+    $script:LimToken = "IL=$il; Administrators=$adm"
+  } catch {}
   $text = if (Test-Path $out) { Get-Content $out -Raw -Encoding UTF8 } else { '(no output file)' }
-  [IO.File]::WriteAllText($script:LOG, "$text`r`n=== EXIT CODE: $($script:RC) ===`r`n", $Utf8)
+  [IO.File]::WriteAllText($script:LOG, "$text`r`n=== TOKEN: $($script:LimToken) ===`r`n=== EXIT CODE: $($script:RC) ===`r`n", $Utf8)
 }
 function FirstMatch($file, $pattern) {
   $m = Get-Content -LiteralPath $file -Encoding UTF8 -ErrorAction SilentlyContinue | Where-Object { $_ -match $pattern } | Select-Object -First 1
@@ -323,10 +336,9 @@ try {
       # Created elevated (owner Administrators): let the filtered token write its results.
       & icacls.exe $UlDir /grant '*S-1-5-11:(OI)(CI)M' | Out-Null
       # The same user's filtered token must be MEDIUM integrity (not elevated).
-      AsLimited L01 whoami 'whoami.exe' @('/groups', '/fo', 'csv') 120
-      $limIL = FirstMatch $LOG 'Mandatory Label'
-      $medium = $limIL -match 'Medium Mandatory Level'
-      Rec L01 'limited-token context of the same user is not elevated' ([int](-not ($medium -and (Ok $RC)))) "rc=$RC $limIL" $(if ($medium) { 'medium integrity' } else { 'the runas /trustlevel process did not run at medium integrity, so it cannot stand in for a normal shell' })
+      AsLimited L01 whoami $WhoAmI @('/groups', '/fo', 'csv') 120
+      $medium = $script:LimToken -match 'IL=Medium Mandatory Level'
+      Rec L01 'limited-token context of the same user is not elevated' ([int](-not ($medium -and (Ok $RC)))) "rc=$RC $($script:LimToken)" $(if ($medium) { 'medium integrity' } else { 'the runas /trustlevel process did not run at medium integrity, so it cannot stand in for a normal shell' })
 
       Run L02 base-version $BaseExe @('--version'); Rec L02 'base --version' $RC (Key $LOG @('apra-fleet v')) (VerOf $LOG)
       # The baseline install from the ELEVATED runner context, as 0.4.3 users had to:
@@ -339,7 +351,7 @@ try {
       # Upgrade from the non-elevated token: /create /xml /f must be denied -> legacy task reused.
       AsLimited L06 upgrade $CandExe @('install', '--force', '--workflows', 'none')
       $UpLog = $LOG
-      Rec L06 'cand install --force --workflows none (not elevated)' $RC (Key $LOG @('installed successfully', 'NOT running', '^Error'))
+      Rec L06 'cand install --force --workflows none (not elevated)' $RC (Key $LOG @('installed successfully', 'NOT running', '^Error')) $script:LimToken
       $reused = FirstMatch $UpLog 'existing task reused'
       $guid = FirstMatch $UpLog 'registered by an older apra-fleet from an elevated prompt'
       $why = if (-not $reused) { "no 'existing task reused': the non-elevated /create was NOT denied, so the legacy precondition did not hold" } elseif (-not $guid) { 'reused, but no legacy-task guidance printed' } else { 'reused with guidance' }
@@ -365,7 +377,7 @@ try {
       # The documented fix: elevated delete, then a non-elevated install --force.
       Run L14 fix-delete 'schtasks.exe' @('/delete', '/tn', 'ApraFleet', '/f'); Rec L14 'elevated: schtasks /delete /tn ApraFleet /f' $RC (Key $LOG @('SUCCESS', 'ERROR'))
       AsLimited L15 fix-install $AF @('install', '--force', '--workflows', 'none')
-      Rec L15 'apra-fleet install --force --workflows none (not elevated)' $RC (Key $LOG @('installed successfully', '^Error'))
+      Rec L15 'apra-fleet install --force --workflows none (not elevated)' $RC (Key $LOG @('installed successfully', '^Error')) "$($script:LimToken); exe present=$(YesNo (Test-Path $AF))"
       TaskFormStep L16 $env:USERNAME
       $gone = -not (Test-Path $nf)
       Rec L17 'service-notice.json removed by the new task' ([int](-not $gone)) $(if ($gone) { 'notice cleared' } else { 'service-notice.json still present after the new task was installed' })
