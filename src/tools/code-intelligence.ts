@@ -7,7 +7,7 @@ import { CodebaseMemoryProvider } from './code-intelligence-codebase-memory.js';
 import { getAgent } from '../services/registry.js';
 import { resolveSelfSession, validateSelfRepoFolder } from '../services/knowledge/kb-self.js';
 import { knownRepoRemoteUrl } from '../services/member-remote-url.js';
-import { codeIntelDisabledError, indexedCommitOf } from './code-intelligence-readiness.js';
+import { codeIndexReadiness, codeIntelDisabledError, ensureGitNexusIndexReady, indexedCommitOf } from './code-intelligence-readiness.js';
 import { codeReindex, codeStatus, type CodeReindexResult, type CodeStatusResult } from './code-intelligence-reindex.js';
 
 export interface CodeIntelligenceProvider {
@@ -126,6 +126,9 @@ async function runCodeTool(
   self: CodeSelf = resolveCodeSelf(),
 ): Promise<unknown> {
   const provider = await getProvider(self.memberId);
+  // A remote member's folder is on another host: never start a build for it
+  // here. Checked before the provider's own (healing) pre-flight runs.
+  if (self.remote && provider instanceof GitNexusProvider) ensureGitNexusIndexReady(self.repo, { remote: true });
   const result = await provider[method]({ ...input, repo: self.repo });
   return withIndexedCommit(result, provider instanceof GitNexusProvider ? indexedCommitOf(self.repo) : null);
 }
@@ -236,7 +239,7 @@ export async function handleCodeStatus(_input: Record<string, unknown>, self: Co
   if (self.remote) {
     return { remote: true, repo: self.repo, indexedCommit: null, detail: `The work folder '${self.repo}' is on another host; run code_status from a session on that host.` };
   }
-  return codeStatus(self.repo);
+  return codeStatus(self.repo, codeIndexReadiness('gitnexus', self.repo));
 }
 
 export async function getProvider(memberId?: string): Promise<CodeIntelligenceProvider> {

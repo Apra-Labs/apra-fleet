@@ -1051,8 +1051,10 @@ export class ApraFleet {
      * code_status -- the calling session's own code index state: the last
      * analyze run (`analyze`: phase, result 'indexed' | 'up-to-date' |
      * 'incomplete' | 'failed', lastLine, ...), live `readiness`
-     * ('ready' | 'building' | 'missing'), `indexedCommit`, `lockHeld`, and
-     * `logPath`. A remote work folder returns { remote: true, repo,
+     * ('ready' | 'building' | 'interrupted' | 'missing'; 'interrupted' = an
+     * analyze died mid-write and none is running -- the next code_* call
+     * starts a rebuild), `indexedCommit`, `lockHeld`, and `logPath` (null
+     * when no analyze log exists yet). A remote work folder returns { remote: true, repo,
      * indexedCommit: null, detail }. Same provider gate as codeReindex():
      * provider 'none' fails with E-CODE-INTEL-DISABLED; a non-gitnexus
      * provider returns the not-supported shape { outcome: 'not-started',

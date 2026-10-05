@@ -540,7 +540,7 @@ describe('GitNexusProvider pre-flight index check (F3.1)', () => {
   it('graph() throws E-CODE-INDEX-NOT-READY without connecting when repo has no .gitnexus', async () => {
     const provider = new GitNexusProvider();
     await expect(provider.impact({ target: 'x', direction: 'upstream', repo: tempRepo })).rejects.toThrow(
-      `E-CODE-INDEX-NOT-READY: No gitnexus code index found for '${tempRepo}'. Remediation: Run 'npx gitnexus analyze --index-only' in the repo (or /pm index), then retry.`,
+      `E-CODE-INDEX-NOT-READY: No gitnexus code index found for '${tempRepo}'. An index build was started automatically. Remediation: Retry the same call in a minute or so (code_status shows the build progress).`,
     );
     expect(mockConnect).not.toHaveBeenCalled();
     expect(mockCallTool).not.toHaveBeenCalled();
@@ -549,7 +549,7 @@ describe('GitNexusProvider pre-flight index check (F3.1)', () => {
   it('impact() throws E-CODE-INDEX-NOT-READY without connecting when repo has no .gitnexus', async () => {
     const provider = new GitNexusProvider();
     await expect(provider.impact({ target: 'x', direction: 'upstream', repo: tempRepo })).rejects.toThrow(
-      `E-CODE-INDEX-NOT-READY: No gitnexus code index found for '${tempRepo}'. Remediation: Run 'npx gitnexus analyze --index-only' in the repo (or /pm index), then retry.`,
+      `E-CODE-INDEX-NOT-READY: No gitnexus code index found for '${tempRepo}'. An index build was started automatically. Remediation: Retry the same call in a minute or so (code_status shows the build progress).`,
     );
     expect(mockConnect).not.toHaveBeenCalled();
     expect(mockCallTool).not.toHaveBeenCalled();
@@ -558,7 +558,7 @@ describe('GitNexusProvider pre-flight index check (F3.1)', () => {
   it('query() throws E-CODE-INDEX-NOT-READY without connecting when repo has no .gitnexus', async () => {
     const provider = new GitNexusProvider();
     await expect(provider.query({ query: 'find exports', repo: tempRepo })).rejects.toThrow(
-      `E-CODE-INDEX-NOT-READY: No gitnexus code index found for '${tempRepo}'. Remediation: Run 'npx gitnexus analyze --index-only' in the repo (or /pm index), then retry.`,
+      `E-CODE-INDEX-NOT-READY: No gitnexus code index found for '${tempRepo}'. An index build was started automatically. Remediation: Retry the same call in a minute or so (code_status shows the build progress).`,
     );
     expect(mockConnect).not.toHaveBeenCalled();
     expect(mockCallTool).not.toHaveBeenCalled();
@@ -567,7 +567,7 @@ describe('GitNexusProvider pre-flight index check (F3.1)', () => {
   it('context() throws E-CODE-INDEX-NOT-READY without connecting when repo has no .gitnexus', async () => {
     const provider = new GitNexusProvider();
     await expect(provider.context({ name: 'x', repo: tempRepo })).rejects.toThrow(
-      `E-CODE-INDEX-NOT-READY: No gitnexus code index found for '${tempRepo}'. Remediation: Run 'npx gitnexus analyze --index-only' in the repo (or /pm index), then retry.`,
+      `E-CODE-INDEX-NOT-READY: No gitnexus code index found for '${tempRepo}'. An index build was started automatically. Remediation: Retry the same call in a minute or so (code_status shows the build progress).`,
     );
     expect(mockConnect).not.toHaveBeenCalled();
     expect(mockCallTool).not.toHaveBeenCalled();
@@ -941,7 +941,7 @@ describe('GitNexusProvider.map() pre-flight index check', () => {
   it('throws E-CODE-INDEX-NOT-READY without connecting when repo has no .gitnexus', async () => {
     const provider = new GitNexusProvider();
     await expect(provider.map({ repo: tempRepo })).rejects.toThrow(
-      `E-CODE-INDEX-NOT-READY: No gitnexus code index found for '${tempRepo}'. Remediation: Run 'npx gitnexus analyze --index-only' in the repo (or /pm index), then retry.`,
+      `E-CODE-INDEX-NOT-READY: No gitnexus code index found for '${tempRepo}'. An index build was started automatically. Remediation: Retry the same call in a minute or so (code_status shows the build progress).`,
     );
     expect(mockConnect).not.toHaveBeenCalled();
     expect(mockCallTool).not.toHaveBeenCalled();
@@ -1084,7 +1084,7 @@ describe('GitNexusProvider.flow() pre-flight index check', () => {
   it('throws E-CODE-INDEX-NOT-READY without connecting when repo has no .gitnexus', async () => {
     const provider = new GitNexusProvider();
     await expect(provider.flow({ name: 'x', repo: tempRepo })).rejects.toThrow(
-      `E-CODE-INDEX-NOT-READY: No gitnexus code index found for '${tempRepo}'. Remediation: Run 'npx gitnexus analyze --index-only' in the repo (or /pm index), then retry.`,
+      `E-CODE-INDEX-NOT-READY: No gitnexus code index found for '${tempRepo}'. An index build was started automatically. Remediation: Retry the same call in a minute or so (code_status shows the build progress).`,
     );
     expect(mockConnect).not.toHaveBeenCalled();
     expect(mockCallTool).not.toHaveBeenCalled();
@@ -1224,7 +1224,7 @@ describe('GitNexusProvider.tests() pre-flight index check', () => {
   it('throws E-CODE-INDEX-NOT-READY without connecting when repo has no .gitnexus', async () => {
     const provider = new GitNexusProvider();
     await expect(provider.tests({ symbol: 'x', repo: tempRepo })).rejects.toThrow(
-      `E-CODE-INDEX-NOT-READY: No gitnexus code index found for '${tempRepo}'. Remediation: Run 'npx gitnexus analyze --index-only' in the repo (or /pm index), then retry.`,
+      `E-CODE-INDEX-NOT-READY: No gitnexus code index found for '${tempRepo}'. An index build was started automatically. Remediation: Retry the same call in a minute or so (code_status shows the build progress).`,
     );
     expect(mockConnect).not.toHaveBeenCalled();
     expect(mockCallTool).not.toHaveBeenCalled();

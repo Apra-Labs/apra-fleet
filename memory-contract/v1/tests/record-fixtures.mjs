@@ -546,7 +546,10 @@ await recordHappy('kb_invalidate', 'happy', {
 // session (provider pinned to gitnexus) resolves its own work folder, a git
 // repo with no .gitnexus/meta.json, so every tool honestly refuses with
 // E-CODE-INDEX-NOT-READY from the pre-flight, without ever spawning the
-// gitnexus child process.
+// gitnexus child process. The pre-flight does start a background
+// `npx gitnexus analyze --index-only` in that scratch repo (self-heal of a
+// missing index); the recorded message is the "build was started" variant,
+// which is also what the vitest roundtrip sees (tests/setup.ts fakes the start).
 await withSession('CODE', async () => {
   await recordRefusal('code_graph', 'refusal-index-not-ready', { symbol: 'exampleFn' }, 'E-CODE-INDEX-NOT-READY');
   await recordRefusal('code_impact', 'refusal-index-not-ready', { target: 'exampleFn', direction: 'upstream' }, 'E-CODE-INDEX-NOT-READY');

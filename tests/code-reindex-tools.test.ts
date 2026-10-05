@@ -159,7 +159,7 @@ describe.skipIf(isWin)('code_reindex / code_status with a fake gitnexus', () => 
     expect(codeIndexReadiness('gitnexus', repo).ready).toBe(false);
 
     const done = await waitFor(() => {
-      const s = codeStatus(repo);
+      const s = codeStatus(repo, codeIndexReadiness('gitnexus', repo));
       return s.analyze?.phase === 'done' ? s : undefined;
     });
     const viaTool = await handleCodeStatus({}, { repo, memberId: 'm' });
@@ -172,7 +172,7 @@ describe.skipIf(isWin)('code_reindex / code_status with a fake gitnexus', () => 
   it('analyze.log holds the analyze output', async () => {
     process.env.FAKE_MODE = 'index';
     await handleCodeReindex({}, { repo, memberId: 'm' });
-    await waitFor(() => (codeStatus(repo).analyze?.phase === 'done' ? true : undefined));
+    await waitFor(() => (codeStatus(repo, codeIndexReadiness('gitnexus', repo)).analyze?.phase === 'done' ? true : undefined));
     const log = logOf(repo);
     expect(log).toContain('Analyzing repository');
     expect(log).toContain('Indexed ok');
@@ -182,7 +182,7 @@ describe.skipIf(isWin)('code_reindex / code_status with a fake gitnexus', () => 
     process.env.FAKE_MODE = 'uptodate';
     const r = await handleCodeReindex({}, { repo, memberId: 'm' });
     expect(r.outcome).toBe('up-to-date');
-    const s = await waitFor(() => (codeStatus(repo).analyze?.phase === 'done' ? codeStatus(repo) : undefined));
+    const s = await waitFor(() => (codeStatus(repo, codeIndexReadiness('gitnexus', repo)).analyze?.phase === 'done' ? codeStatus(repo, codeIndexReadiness('gitnexus', repo)) : undefined));
     expect(s.analyze?.result).toBe('up-to-date');
   });
 
@@ -207,7 +207,7 @@ describe.skipIf(isWin)('code_reindex / code_status with a fake gitnexus', () => 
     if (first.outcome === 'started' && first.pid) pids.add(first.pid);
     const second = await handleCodeReindex({}, { repo, memberId: 'm' });
     expect(second.outcome).toBe('already-running');
-    await waitFor(() => (codeStatus(repo).analyze?.phase === 'done' ? true : undefined));
+    await waitFor(() => (codeStatus(repo, codeIndexReadiness('gitnexus', repo)).analyze?.phase === 'done' ? true : undefined));
   });
 
   it('a code index build leaves the target work tree unchanged (index-only, .gitnexus/ excluded)', async () => {
@@ -217,7 +217,7 @@ describe.skipIf(isWin)('code_reindex / code_status with a fake gitnexus', () => 
     process.env.FAKE_MODE = 'index';
     const r = await handleCodeReindex({}, { repo, memberId: 'm' });
     if (r.outcome === 'started' && r.pid) pids.add(r.pid);
-    const done = await waitFor(() => (codeStatus(repo).analyze?.phase === 'done' ? codeStatus(repo) : undefined));
+    const done = await waitFor(() => (codeStatus(repo, codeIndexReadiness('gitnexus', repo)).analyze?.phase === 'done' ? codeStatus(repo, codeIndexReadiness('gitnexus', repo)) : undefined));
     expect(done.analyze?.result).toBe('indexed');
     expect(fs.existsSync(path.join(repo, '.gitnexus', 'meta.json'))).toBe(true);
     expect(porcelain(repo)).toBe(before);
