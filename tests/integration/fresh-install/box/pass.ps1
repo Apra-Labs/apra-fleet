@@ -219,6 +219,9 @@ public static class FiLimited {
   [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)] static extern bool ConvertStringSidToSid(string s, out IntPtr sid);
   [DllImport("advapi32.dll")] static extern int GetLengthSid(IntPtr sid);
   [DllImport("advapi32.dll", SetLastError = true)] static extern bool SetTokenInformation(IntPtr tok, int cls, ref TOKEN_MANDATORY_LABEL info, int len);
+  [DllImport("advapi32.dll", SetLastError = true, EntryPoint = "SetTokenInformation")] static extern bool SetTokenPtr(IntPtr tok, int cls, ref IntPtr info, int len);
+  [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)] static extern bool ConvertStringSecurityDescriptorToSecurityDescriptor(string sddl, uint rev, out IntPtr sd, IntPtr size);
+  [DllImport("advapi32.dll", SetLastError = true)] static extern bool GetSecurityDescriptorDacl(IntPtr sd, out bool present, out IntPtr dacl, out bool defaulted);
   [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)] static extern bool CreateProcessAsUser(IntPtr tok, string app,
     StringBuilder cmd, IntPtr pa, IntPtr ta, bool inherit, uint flags, IntPtr env, string dir, ref STARTUPINFO si, out PROCESS_INFORMATION pi);
   [DllImport("kernel32.dll")] static extern uint WaitForSingleObject(IntPtr h, uint ms);
@@ -226,8 +229,8 @@ public static class FiLimited {
   [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
   static Exception Fail(string what) { return new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), what); }
   // Exit code of cmdLine run with the restricted Medium token; -2 on timeout.
-  public static int Run(string cmdLine, int timeoutMs) {
-    IntPtr tok, rtok, sid;
+  public static int Run(string cmdLine, int timeoutMs, string userSid) {
+    IntPtr tok, rtok, sid, usid, sd, dacl; bool present, defaulted;
     // ASSIGN_PRIMARY | DUPLICATE | QUERY | ADJUST_DEFAULT | ADJUST_SESSIONID
     if (!OpenProcessToken(GetCurrentProcess(), 0x1 | 0x2 | 0x8 | 0x80 | 0x100, out tok)) throw Fail("OpenProcessToken");
     // DISABLE_MAX_PRIVILEGE | LUA_TOKEN
@@ -236,6 +239,16 @@ public static class FiLimited {
     TOKEN_MANDATORY_LABEL tml = new TOKEN_MANDATORY_LABEL();
     tml.Label.Sid = sid; tml.Label.Attributes = 0x20; // SE_GROUP_INTEGRITY
     if (!SetTokenInformation(rtok, 25, ref tml, Marshal.SizeOf(tml) + GetLengthSid(sid))) throw Fail("SetTokenInformation(TokenIntegrityLevel)");
+    // The elevated token's default owner (BUILTIN\Administrators) and default
+    // DACL (Administrators + SYSTEM) were copied, and Administrators is now
+    // deny-only, so every object this token creates (a task registration
+    // included) was refused. UAC's filtered token has the user as owner and a
+    // DACL granting the user: set the same.
+    if (!ConvertStringSidToSid(userSid, out usid)) throw Fail("ConvertStringSidToSid(user)");
+    if (!SetTokenPtr(rtok, 4, ref usid, IntPtr.Size)) throw Fail("SetTokenInformation(TokenOwner)");
+    if (!ConvertStringSecurityDescriptorToSecurityDescriptor("D:(A;;GA;;;" + userSid + ")(A;;GA;;;SY)", 1, out sd, IntPtr.Zero)) throw Fail("ConvertStringSecurityDescriptorToSecurityDescriptor");
+    if (!GetSecurityDescriptorDacl(sd, out present, out dacl, out defaulted)) throw Fail("GetSecurityDescriptorDacl");
+    if (!SetTokenPtr(rtok, 6, ref dacl, IntPtr.Size)) throw Fail("SetTokenInformation(TokenDefaultDacl)");
     STARTUPINFO si = new STARTUPINFO(); si.cb = Marshal.SizeOf(si);
     PROCESS_INFORMATION pi;
     // CREATE_NO_WINDOW
@@ -261,7 +274,7 @@ function AsLimited($id, $name, $exe, [string[]]$argv = @(), $timeoutSec = 900) {
   [IO.File]::WriteAllText($cmdf, "@echo off`r`n`"$WhoAmI`" /groups /fo csv > `"$ilf`" 2>&1`r`n$line > `"$out`" 2>&1`r`n>`"$rcf.tmp`" echo %ERRORLEVEL%`r`nmove /y `"$rcf.tmp`" `"$rcf`" >nul`r`n", [Text.Encoding]::ASCII)
   $script:RC = 'ERR not run'
   try {
-    $code = [FiLimited]::Run("cmd.exe /d /c `"$cmdf`"", $timeoutSec * 1000)
+    $code = [FiLimited]::Run("cmd.exe /d /c `"$cmdf`"", $timeoutSec * 1000, [Security.Principal.WindowsIdentity]::GetCurrent().User.Value)
     if ($code -eq -2) { $script:RC = "ERR timeout after ${timeoutSec}s (restricted-token process)" }
     elseif (Test-Path $rcf) { $script:RC = ([string](Get-Content $rcf -Raw)).Trim() }
     else { $script:RC = "$code" }
