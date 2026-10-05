@@ -152,7 +152,7 @@ export class MacOSServiceManager implements ServiceManager {
     // down through launchd itself. bootout also unloads the job, so a later
     // start() re-bootstraps via register(); callers that only want a pause
     // should use kickstart semantics instead.
-    try { execFileSync('launchctl', ['bootout', this.target()]); } catch {}
+    try { execFileSync('launchctl', ['bootout', this.target()], { stdio: 'pipe', timeout: 30_000 }); } catch {}
     return true;
   }
 

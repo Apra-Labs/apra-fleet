@@ -1,6 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   detectFleetSePrereqs,
+  summarizeFleetSePrereqs,
+  FLEET_SE_PREREQ_FIX_LINE,
   resolveFleetSeToolchainPaths,
   MIN_NODE_VERSION,
   PREREQ_PROBE_TIMEOUT_MS,
@@ -183,6 +185,42 @@ describe('detectFleetSePrereqs (apra-fleet-i9ag.12.8)', () => {
     expect(result.missing).toContain('npm');
     // node resolved fine -- isolates this case to the npm branch only.
     expect(result.missing).not.toContain('node');
+  });
+});
+
+// main #544 parity: main's tests/install-fleet-se-prereq.test.ts targets
+// main's checkFleetSePrereqs(); v0.5 (#547) replaced that API with
+// detectFleetSePrereqs(). The intents main pinned that the cases above and
+// tests/install-fleet-se-prereqs.test.ts do not already cover are restated
+// here against the v0.5 API, so a v0.5 -> main merge keeps them: both causes
+// reported together, an unparseable or 20.x node fails naming the versions,
+// and the operator-facing summary is ASCII only.
+describe('main #544 parity: fleet-se prerequisite causes', () => {
+  it('reports BOTH causes when node and npm are missing', () => {
+    const result = detectFleetSePrereqs({ exec: makeExec({}), platform: 'linux' });
+    expect(result.ok).toBe(false);
+    expect(result.missing).toEqual(expect.arrayContaining(['node', 'npm']));
+    const summary = summarizeFleetSePrereqs(result);
+    expect(summary).toContain('node: NOT INSTALLED');
+    expect(summary).toContain('npm: NOT INSTALLED');
+    expect(summary).toContain(FLEET_SE_PREREQ_FIX_LINE);
+  });
+
+  it('fails when the node version is unparseable', () => {
+    const result = detectFleetSePrereqs({ exec: makeExec({ node: 'garbage\n', npm: '10.9.0\n' }), platform: 'linux' });
+    expect(result.ok).toBe(false);
+    expect(result.missing).toContain('node');
+  });
+
+  it('fails when node is 20.x and names the found and required versions', () => {
+    const result = detectFleetSePrereqs({ exec: makeExec({ node: 'v20.11.0\n', npm: '10.9.0\n' }), platform: 'linux' });
+    expect(result.ok).toBe(false);
+    expect(summarizeFleetSePrereqs(result)).toContain(`node: 20.11.0 (requires ${MIN_NODE_VERSION}+)`);
+  });
+
+  it('the operator-facing summary is ASCII only', () => {
+    const summary = summarizeFleetSePrereqs(detectFleetSePrereqs({ exec: makeExec({ node: 'v20.0.0\n' }), platform: 'linux' }));
+    expect(/^[\x00-\x7F]*$/.test(summary)).toBe(true);
   });
 });
 

@@ -378,7 +378,7 @@ describe('WindowsServiceManager -- fleet-supervisor stop terminates the process 
     // REGRESSION GUARD -- see the block header. /T is the whole point: it is
     // what extends the kill from the cmd.exe wrapper to its descendants.
     expect(execFileSync).toHaveBeenCalledWith(
-      'taskkill', ['/F', '/T', '/PID', String(WRAPPER_PID)],
+      'taskkill', ['/F', '/T', '/PID', String(WRAPPER_PID)], expect.objectContaining({ stdio: 'pipe', windowsHide: true }),
     );
   });
 
@@ -413,8 +413,8 @@ describe('WindowsServiceManager -- fleet-supervisor stop terminates the process 
 
   it('still ends the scheduled task, under its own task name, for scheduler bookkeeping', async () => {
     await supervisor().stop();
-    expect(execFileSync).toHaveBeenCalledWith('schtasks', ['/end', '/tn', 'ApraFleetSupervisor']);
-    expect(execFileSync).not.toHaveBeenCalledWith('schtasks', ['/end', '/tn', 'ApraFleet']);
+    expect(execFileSync).toHaveBeenCalledWith('schtasks', ['/end', '/tn', 'ApraFleetSupervisor'], expect.objectContaining({ stdio: 'pipe', windowsHide: true }));
+    expect(execFileSync).not.toHaveBeenCalledWith('schtasks', ['/end', '/tn', 'ApraFleet'], expect.anything());
   });
 
   it('tree-kills EVERY matching wrapper pid, not just the first', async () => {
@@ -422,8 +422,8 @@ describe('WindowsServiceManager -- fleet-supervisor stop terminates the process 
       (cmd === 'powershell' ? '4242\r\n4243\r\n\r\n' : '') as any,
     );
     await supervisor().stop();
-    expect(execFileSync).toHaveBeenCalledWith('taskkill', ['/F', '/T', '/PID', '4242']);
-    expect(execFileSync).toHaveBeenCalledWith('taskkill', ['/F', '/T', '/PID', '4243']);
+    expect(execFileSync).toHaveBeenCalledWith('taskkill', ['/F', '/T', '/PID', '4242'], expect.objectContaining({ stdio: 'pipe', windowsHide: true }));
+    expect(execFileSync).toHaveBeenCalledWith('taskkill', ['/F', '/T', '/PID', '4243'], expect.objectContaining({ stdio: 'pipe', windowsHide: true }));
   });
 
   it('never uses the MCP server server.json handshake', async () => {
@@ -439,7 +439,7 @@ describe('WindowsServiceManager -- fleet-supervisor stop terminates the process 
       return '' as any;
     });
     await expect(supervisor().stop()).resolves.toBe(true);
-    expect(execFileSync).not.toHaveBeenCalledWith('taskkill', expect.anything());
+    expect(execFileSync).not.toHaveBeenCalledWith('taskkill', expect.anything(), expect.anything());
   });
 
   it('tolerates the pid exiting between discovery and the kill (taskkill exit 128)', async () => {
@@ -552,7 +552,7 @@ describe('WindowsServiceManager -- fleet-supervisor unregister terminates the pr
     expect(treeKillIdx).toBeGreaterThanOrEqual(0);
     expect(deleteIdx).toBeGreaterThan(treeKillIdx);
     expect(execFileSync).toHaveBeenCalledWith(
-      'taskkill', ['/F', '/T', '/PID', String(WRAPPER_PID)],
+      'taskkill', ['/F', '/T', '/PID', String(WRAPPER_PID)], expect.objectContaining({ stdio: 'pipe', windowsHide: true }),
     );
     expect(execFileSync).toHaveBeenCalledWith(
       'schtasks', ['/delete', '/tn', 'ApraFleetSupervisor', '/f'], expect.objectContaining({ stdio: 'pipe', windowsHide: true }),
@@ -574,8 +574,8 @@ describe('WindowsServiceManager -- fleet-supervisor unregister terminates the pr
       (cmd === 'powershell' ? '4242\r\n4243\r\n\r\n' : '') as any,
     );
     await supervisor().unregister();
-    expect(execFileSync).toHaveBeenCalledWith('taskkill', ['/F', '/T', '/PID', '4242']);
-    expect(execFileSync).toHaveBeenCalledWith('taskkill', ['/F', '/T', '/PID', '4243']);
+    expect(execFileSync).toHaveBeenCalledWith('taskkill', ['/F', '/T', '/PID', '4242'], expect.objectContaining({ stdio: 'pipe', windowsHide: true }));
+    expect(execFileSync).toHaveBeenCalledWith('taskkill', ['/F', '/T', '/PID', '4243'], expect.objectContaining({ stdio: 'pipe', windowsHide: true }));
   });
 
   it('resolves when nothing is running and the task is not registered', async () => {
@@ -585,7 +585,7 @@ describe('WindowsServiceManager -- fleet-supervisor unregister terminates the pr
       return '' as any;
     });
     await expect(supervisor().unregister()).resolves.toBeUndefined();
-    expect(execFileSync).not.toHaveBeenCalledWith('taskkill', expect.anything());
+    expect(execFileSync).not.toHaveBeenCalledWith('taskkill', expect.anything(), expect.anything());
   });
 
   it('stays tolerant when discovery itself fails -- still deletes the task', async () => {
@@ -886,7 +886,7 @@ describe('LinuxServiceManager -- fleet-supervisor service', () => {
   it('stops via systemctl, NOT via the MCP server server.json handshake', async () => {
     await supervisor().stop();
     expect(mockGracefulStop).not.toHaveBeenCalled();
-    expect(execFileSync).toHaveBeenCalledWith('systemctl', ['--user', 'stop', 'fleet-supervisor']);
+    expect(execFileSync).toHaveBeenCalledWith('systemctl', ['--user', 'stop', 'fleet-supervisor'], expect.objectContaining({ stdio: 'pipe', timeout: expect.any(Number) }));
   });
 
   it('unregisters without the MCP server server.json handshake', async () => {

@@ -570,7 +570,7 @@ export class WindowsServiceManager implements ServiceManager {
       try {
         const pids = this.findWrapperProcessIds();
         for (const pid of pids) {
-          try { execFileSync('taskkill', ['/F', '/T', '/PID', String(pid)]); } catch {}
+          try { execFileSync('taskkill', ['/F', '/T', '/PID', String(pid)], QUIET); } catch {}
         }
       } catch {
         // Could not even query for live wrapper processes -- tolerate and
@@ -656,7 +656,7 @@ export class WindowsServiceManager implements ServiceManager {
     const out = execFileSync(
       'powershell',
       ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded],
-      { encoding: 'utf8' },
+      { encoding: 'utf8', ...QUIET },
     );
     return String(out ?? '')
       .split(/\r?\n/)
@@ -711,7 +711,7 @@ export class WindowsServiceManager implements ServiceManager {
     const failures: string[] = [];
     for (const pid of pids) {
       try {
-        execFileSync('taskkill', ['/F', '/T', '/PID', String(pid)]);
+        execFileSync('taskkill', ['/F', '/T', '/PID', String(pid)], QUIET);
       } catch (err: any) {
         // taskkill exits 128 / "not found" when the process ended between the
         // query and the kill. The tree is gone, which is the goal -- tolerate.
@@ -722,7 +722,7 @@ export class WindowsServiceManager implements ServiceManager {
     }
 
     // Tolerated: the task may not be registered, or may already have ended.
-    try { execFileSync('schtasks', ['/end', '/tn', this.taskName]); } catch {}
+    try { execFileSync('schtasks', ['/end', '/tn', this.taskName], QUIET); } catch {}
 
     if (failures.length > 0) {
       throw new Error(

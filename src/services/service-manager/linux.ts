@@ -99,7 +99,8 @@ export class LinuxServiceManager implements ServiceManager {
     }
     // Services other than the MCP server never write server.json -- stop them
     // through systemd itself.
-    execFileSync('systemctl', ['--user', 'stop', this.unitName]);
+    // Quiet and time-limited like every other service-manager call (main #591).
+    execFileSync('systemctl', ['--user', 'stop', this.unitName], { stdio: 'pipe', timeout: 30_000 });
     return true;
   }
 
