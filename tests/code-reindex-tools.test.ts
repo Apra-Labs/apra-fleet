@@ -138,9 +138,7 @@ afterAll(() => {
 });
 
 function collectPids(): void {
-  // FLEET_DIR, not sandbox.data: that is where code_reindex and the #652
-  // self-heal actually record their analyze pids on this branch.
-  const d = path.join(FLEET_DIR, 'code-index');
+  const d = path.join(sandbox.data, 'code-index');
   if (!fs.existsSync(d)) return;
   for (const slug of fs.readdirSync(d)) {
     try {
