@@ -455,7 +455,9 @@ describe('install step 8 — Beads task tracker', () => {
 
     expect(exitSpy).toHaveBeenCalledWith(1);
     const errors = errorSpy.mock.calls.map(c => c.join(' ')).join('\n');
-    expect(errors).toContain('npm: not found');
+    // KB #605 (src/cli/beads-install.ts describeExecFailure) classifies a
+    // missing npm into one named cause rather than echoing the raw text.
+    expect(errors).toContain('npm is not available on PATH');
 
     logSpy.mockRestore();
     exitSpy.mockRestore();

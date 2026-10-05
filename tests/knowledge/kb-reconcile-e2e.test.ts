@@ -183,7 +183,7 @@ describe('kb-reconcile two-branch e2e (T3.3, F6/D6)', () => {
     const biblePath = writeBible([bDup, bRefine, bContra, bUndecided, bDirective]);
 
     // --- Step 3: kb_import it ---------------------------------------------
-    const importReport = JSON.parse(await kbImport({ repo: repoDir, path: biblePath }));
+    const importReport = JSON.parse(await kbImport({ path: biblePath }, { folder: repoDir }));
     expect(importReport.skipped).toBeGreaterThanOrEqual(1); // the duplicate
     expect(importReport.linked).toBeGreaterThanOrEqual(1); // the refinement
     expect(importReport.flagged).toBeGreaterThanOrEqual(2); // both contradictions
@@ -272,7 +272,7 @@ describe('kb-reconcile two-branch e2e (T3.3, F6/D6)', () => {
     expect(loser.stale).toBe(1);
     expect(loser.flagged_for_review).toBe(0);
 
-    const confirmedList = await provider.list({ confidence: 'CONFIRMED' });
+    const confirmedList = await provider.list({ confidence: ['CONFIRMED'] });
     expect(confirmedList.some(e => e.id === bContraId)).toBe(true);
     expect(confirmedList.some(e => e.id === aContra.id)).toBe(false);
 
@@ -290,7 +290,7 @@ describe('kb-reconcile two-branch e2e (T3.3, F6/D6)', () => {
     // the bare array written above) and commits nothing.
     const canonicalPath = path.join(fleetDir, 'kb-canonical.json');
     const bibleBefore = fs.readFileSync(canonicalPath, 'utf-8');
-    const exportReport = JSON.parse(await kbExport({ repo_path: repoDir }));
+    const exportReport = JSON.parse(await kbExport({}, { folder: repoDir }));
     expect(exportReport.exported).toBe(5);
     expect(exportReport.committed).toBe(false);
     expect(fs.readFileSync(canonicalPath, 'utf-8')).toBe(bibleBefore);
@@ -305,6 +305,6 @@ describe('kb-reconcile two-branch e2e (T3.3, F6/D6)', () => {
     // or rewrites those. What must still hold is that the KB did not mint a
     // CONFIRMED row for it (pending proposal).
     expect(canonical.find(e => e.id === 'b-directive')).toEqual(bDirective);
-    expect((await provider.list({ confidence: 'CONFIRMED' })).some(e => e.id === 'b-directive')).toBe(false);
+    expect((await provider.list({ confidence: ['CONFIRMED'] })).some(e => e.id === 'b-directive')).toBe(false);
   });
 });

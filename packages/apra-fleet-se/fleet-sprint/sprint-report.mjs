@@ -23,6 +23,7 @@
 
 import { createHash } from 'crypto';
 import { SAFE_TEXT_RE } from './newtask-text.mjs';
+import { formatDispatchToolCalls } from './dispatch-accounting.mjs';
 
 // ---------------------------------------------------------------------------
 // PR body/title text sanitization. The final reviewer's verdict notes are LLM
@@ -144,6 +145,14 @@ export function buildAnalysisText({
     // Set when the pass was deliberately skipped (e.g. 'launch option'), so the
     // report says so instead of the misleading "no playbook" line.
     regressionSkippedBy = null,
+    // Per-dispatch kb_* and code_* call records (sprint state's dispatchToolCalls,
+    // from session_stats snapshots). Omitted -> no section; an unknown count
+    // is printed as unknown, never 0.
+    dispatchToolCalls = null,
+    // The KB work client's unpublishedBible(): per repository, confirmations
+    // still not in a pushed bible commit. Rendered as a loud section only
+    // when any are, so a sprint whose bible was published reads as before.
+    kbBibleUnpublished = null,
 }) {
     // The once-per-sprint Regression Test phase runs after the final verdict
     // and never gates it. Its failures are filed as parent-less carry-over
@@ -200,8 +209,40 @@ export function buildAnalysisText({
         '## Regression pass (once per sprint, informational)',
         '',
         ...regressionLines,
+        ...kbBibleLines(kbBibleUnpublished),
     ];
+    if (Array.isArray(dispatchToolCalls)) {
+        lines.push(
+            '',
+            '## KB and code tool calls per member per dispatch',
+            '',
+            "Counted by each member's own fleet server (session_stats before/after each dispatch; the engine's own reads are excluded). 'unknown' means the count could not be read -- it is not zero.",
+            '',
+            ...formatDispatchToolCalls(dispatchToolCalls),
+        );
+    }
     return lines.join('\n');
+}
+
+/**
+ * The analysis section for KB confirmations that never reached a pushed bible
+ * commit (the push kept failing, the maintainer stayed busy or unreachable, or
+ * bible commits were sealed). Empty when every confirmation was published.
+ * @param {{ repos?: Array<{ repo: string, count: number }>, sealedReason?: string|null }|null} unpublished
+ * @returns {string[]}
+ */
+function kbBibleLines(unpublished) {
+    const repos = unpublished && Array.isArray(unpublished.repos) ? unpublished.repos.filter((r) => r && r.count > 0) : [];
+    if (repos.length === 0) return [];
+    return [
+        '',
+        '## KB bible',
+        '',
+        'WARNING: bible not published -- these KB confirmations are not in a pushed bible commit on the sprint branch'
+        + ' as of this analysis (the harvest round retries once more after it is written):',
+        ...repos.map((r) => `- ${r.repo}: ${r.count} unpublished confirmation(s).`),
+        ...(unpublished.sealedReason ? [`Bible commits were sealed: ${unpublished.sealedReason}.`] : []),
+    ];
 }
 
 /**

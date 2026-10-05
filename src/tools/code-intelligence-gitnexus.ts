@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'fs';
+import { readFileSync } from 'fs';
 import { execFileSync } from 'child_process';
 import { join } from 'path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -7,6 +7,7 @@ import type { CodeIntelligenceProvider } from './code-intelligence.js';
 import { freshnessNote } from './code-intelligence-freshness.js';
 import { maybeScheduleReindex } from './code-intelligence-reindex.js';
 import { isTestPath } from './code-intelligence-tests.js';
+import { assertCodeIndexReady } from './code-intelligence-readiness.js';
 import { logError } from '../utils/log-helpers.js';
 
 let sharedClient: Client | null = null;
@@ -17,19 +18,11 @@ let connectionPromise: Promise<Client> | null = null;
 // unhandled throw or a silent empty result -- mirrors the F3.1 error shape.
 const OFFLINE_MESSAGE =
   "Code intelligence is offline: the gitnexus service could not be reached. " +
-  "Start or reinstall it by running 'npx gitnexus analyze' in the repo " +
+  "Start or reinstall it by running 'npx gitnexus analyze --index-only' in the repo " +
   "(or /pm index), then retry.";
 
 function offlineResult(detail?: string): { content: Array<{ type: 'text'; text: string }>; isError: true } {
   const text = detail ? `${OFFLINE_MESSAGE} (${detail})` : OFFLINE_MESSAGE;
-  return { content: [{ type: 'text', text }], isError: true };
-}
-
-// Structured, actionable "missing index" result (F3.1). Returned without ever
-// spawning or contacting the child gitnexus process when a repo has not been
-// indexed yet.
-function missingIndexResult(repo: string): { content: Array<{ type: 'text'; text: string }>; isError: true } {
-  const text = `No code intelligence index found for ${repo}. Run 'npx gitnexus analyze' in the repo (or /pm index) and retry.`;
   return { content: [{ type: 'text', text }], isError: true };
 }
 
@@ -148,18 +141,16 @@ function appendFreshnessNote(result: unknown, note: string): unknown {
 // result and the shared state is reset so the next call reconnects.
 //
 // Pre-flight (F3.1): when the call carries a non-empty `repo` param, verify
-// the repo has been indexed (`<repo>/.gitnexus/meta.json` exists) BEFORE ever
-// touching the child process. Calls without a `repo` param are forwarded
-// untouched -- the check only applies when a repo is named.
+// the repo's index is ready (codeIndexReadiness, code-intelligence-readiness.ts
+// -- the one readiness check) BEFORE ever touching the child process; a
+// missing or still-building index throws E-CODE-INDEX-NOT-READY. Every code_* tool call carries the calling
+// session's resolved (self) folder as `repo` (resolveCodeSelf in
+// code-intelligence.ts); a direct provider call without one is forwarded
+// untouched.
 async function callGitNexus(name: string, params: Record<string, unknown>): Promise<unknown> {
   const repo = params.repo;
   const hasRepo = typeof repo === 'string' && repo.length > 0;
-  if (hasRepo) {
-    const metaPath = join(repo as string, '.gitnexus', 'meta.json');
-    if (!existsSync(metaPath)) {
-      return missingIndexResult(repo as string);
-    }
-  }
+  if (hasRepo) assertCodeIndexReady('gitnexus', repo as string);
 
   try {
     const client = await getGitNexusClient();

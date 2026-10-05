@@ -2,10 +2,7 @@
   "tool": "kb_stats",
   "case": "edge-empty-promote-ratio-null",
   "kind": "happy",
-  "request": {
-    "repo_path": "<SCRATCH_REPO_B>",
-    "repo_remote_url": "https://example.test/memory-contract-fixtures-b.git"
-  },
+  "request": {},
   "response": {
     "content": [
       {
@@ -13,5 +10,6 @@
         "text": "{\"totals\":{\"by_confidence\":{\"CONFIRMED\":0,\"INFERRED\":0,\"UNVERIFIED\":0},\"by_type\":{\"context-cache\":0,\"learning\":0,\"knowledge\":0,\"runbook\":0,\"user-directive\":0},\"total\":0},\"stale\":0,\"flagged\":0,\"superseded\":0,\"retrieval\":{\"entries_retrieved\":0,\"total_uses\":0,\"hit_rate\":null},\"promote_ratio\":null,\"bible\":{\"present\":false,\"entries\":0,\"drift\":0}}"
       }
     ]
-  }
+  },
+  "session": "B"
 }

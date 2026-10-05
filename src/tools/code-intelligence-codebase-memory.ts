@@ -17,17 +17,15 @@
 // ~/.cache/codebase-memory-mcp/ (README "Persistence" section; overridable
 // via CBM_CACHE_DIR, not read here -- the default location is the one the
 // fleet's own install path uses). If that directory is missing or empty, no
-// project has ever been indexed, so callCodebaseMemory() short-circuits with
-// a structured "no index" result instead of spawning the binary.
+// project has ever been indexed, so callCodebaseMemory() throws
+// E-CODE-INDEX-NOT-READY instead of spawning the binary.
 // ---------------------------------------------------------------------------
 
-import { existsSync, readdirSync } from 'fs';
-import { homedir } from 'os';
-import { join } from 'path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import type { CodeIntelligenceProvider } from './code-intelligence.js';
 import { isTestPath } from './code-intelligence-tests.js';
+import { assertCodeIndexReady } from './code-intelligence-readiness.js';
 
 let sharedClient: Client | null = null;
 let connectionPromise: Promise<Client> | null = null;
@@ -42,33 +40,6 @@ const OFFLINE_MESSAGE =
 
 function offlineResult(detail?: string): { content: Array<{ type: 'text'; text: string }>; isError: true } {
   const text = detail ? `${OFFLINE_MESSAGE} (${detail})` : OFFLINE_MESSAGE;
-  return { content: [{ type: 'text', text }], isError: true };
-}
-
-// codebase-memory-mcp's default database storage directory (README
-// "Persistence" section: "SQLite databases stored at
-// ~/.cache/codebase-memory-mcp/").
-const CACHE_DIR = join(homedir(), '.cache', 'codebase-memory-mcp');
-
-// Pre-flight index check: verify at least one project has been indexed
-// before ever spawning the child process. Never throws -- any error reading
-// the directory degrades to "no index" rather than blocking the call.
-function hasIndex(): boolean {
-  try {
-    return existsSync(CACHE_DIR) && readdirSync(CACHE_DIR).length > 0;
-  } catch {
-    return false;
-  }
-}
-
-// Structured, actionable "missing index" result, returned without ever
-// spawning or contacting the child codebase-memory-mcp process when no
-// project has been indexed yet.
-function missingIndexResult(): { content: Array<{ type: 'text'; text: string }>; isError: true } {
-  const text =
-    'No code intelligence index found. Say "Index this project" to your agent ' +
-    "(or run 'codebase-memory-mcp cli index_repository \\'{\"repo_path\": \"<repo>\"}\\'') " +
-    'and retry.';
   return { content: [{ type: 'text', text }], isError: true };
 }
 
@@ -170,13 +141,12 @@ function matchFilePath(match: Record<string, unknown>): string | undefined {
 }
 
 // Single guarded entry point for every provider method. Verifies an index
-// exists before ever touching the child process; a thrown connection/dead
+// is ready (codeIndexReadiness, code-intelligence-readiness.ts -- throws
+// E-CODE-INDEX-NOT-READY) before ever touching the child process; a thrown connection/dead
 // -client error is converted into a structured actionable result and the
 // shared state is reset so the next call reconnects.
 async function callCodebaseMemory(name: string, params: Record<string, unknown>): Promise<unknown> {
-  if (!hasIndex()) {
-    return missingIndexResult();
-  }
+  assertCodeIndexReady('codebase-memory', typeof params.project === 'string' ? params.project : undefined);
 
   try {
     const client = await getCodebaseMemoryClient();

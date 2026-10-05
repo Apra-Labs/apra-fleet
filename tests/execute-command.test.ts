@@ -17,6 +17,9 @@ vi.mock('../src/services/strategy.js', () => ({
     execCommand: mockExecCommand,
     testConnection: vi.fn(),
     transferFiles: vi.fn(),
+    // Stored auth env vars are staged in an owner-only file (never argv).
+    writeSecretFile: vi.fn(async (name: string) => `/home/testuser/${name}`),
+    removeSecretFile: vi.fn(async () => {}),
     close: vi.fn(),
   }),
 }));
@@ -177,11 +180,13 @@ describe('resolveTilde', () => {
 // ---------------------------------------------------------------------------
 
 /**
- * The sync path prepends buildEnvPrefix(agent, {os, shell}) -- member.env AND
- * auth env, rendered in the member's ACTUAL shell form. `shell` matters
+ * The sync path prepends buildEnvPrefix(agent, {os, shell}) -- member.env
+ * ONLY, rendered in the member's ACTUAL shell form. `shell` matters
  * independently of `os`: a Windows member registered as Git-for-Windows bash
  * must get POSIX exports, not PowerShell `$env:` assignments its shell would
- * mis-parse.
+ * mis-parse. Stored auth credentials never appear in the command: they are
+ * loaded from a staged owner-only file, AFTER the member.env prefix (so auth
+ * wins a name collision).
  *
  * The long_running path is deliberately different: its env goes INSIDE the
  * generated wrapper script (which persists as a file on the member) and
@@ -193,12 +198,10 @@ describe('execute_command: member.env at the dispatch sites (F14)', () => {
 
   const POSIX_PREFIX =
     "export FLEET_S9_A='va'" + String.fromCharCode(92) + "''l$x' && "
-    + "export FLEET_S9_B='plain' && "
-    + "export API_TOKEN='" + AUTH_VALUE + "' && ";
+    + "export FLEET_S9_B='plain' && ";
   const PS_PREFIX =
     "$env:FLEET_S9_A='va''l$x'; "
-    + "$env:FLEET_S9_B='plain'; "
-    + "$env:API_TOKEN='" + AUTH_VALUE + "'; ";
+    + "$env:FLEET_S9_B='plain'; ";
 
   function envMember(overrides: Partial<Agent> = {}): Agent {
     return makeTestAgent({
@@ -238,6 +241,11 @@ describe('execute_command: member.env at the dispatch sites (F14)', () => {
       expect(dispatched.startsWith(form === 'posix' ? POSIX_PREFIX : PS_PREFIX)).toBe(true);
       // ...and NOT the other shell's form.
       expect(dispatched).not.toContain(form === 'posix' ? '$env:FLEET_S9_A=' : 'export FLEET_S9_A=');
+      // The credential never rides the command line; the staged-file loader
+      // (path only) follows the member.env prefix, so auth wins a collision.
+      expect(dispatched).not.toContain(AUTH_VALUE);
+      const rest = dispatched.slice((form === 'posix' ? POSIX_PREFIX : PS_PREFIX).length);
+      expect(rest.startsWith(form === 'posix' ? ". '/home/testuser/.apra-fleet-env-" : '$__fleetEnv = ')).toBe(true);
     },
   );
 
@@ -269,8 +277,11 @@ describe('execute_command: member.env at the dispatch sites (F14)', () => {
 
     await executeCommand({ member_id: member.id, command: 'ls', timeout_s: 5 });
     const dispatched = mockExecCommand.mock.calls[0][0] as string;
-    expect(dispatched).not.toContain('export ');
+    // The only export is the work-folder wrapper's BIN_DIR PATH append (KB
+    // #605); no env-prefix assignment and no staged-credential loader.
+    expect(dispatched.replace('export PATH="$PATH:$HOME/.apra-fleet/bin"', '')).not.toContain('export ');
     expect(dispatched).not.toContain('$env:');
+    expect(dispatched).not.toContain('.apra-fleet-env-');
   });
 
   it('long_running POSIX: run.sh carries member.env and NEVER the auth credential', async () => {
@@ -288,7 +299,7 @@ describe('execute_command: member.env at the dispatch sites (F14)', () => {
     expect(runSh).toContain("export FLEET_S9_B='plain'");
     expect(runSh).toContain("export FLEET_S9_A='va'" + String.fromCharCode(92) + "''l$x'");
     // The script persists as a file on the member -- credentials must not be
-    // written into it (the sync path above deliberately DOES carry them).
+    // written into it.
     expect(runSh).not.toContain(AUTH_VALUE);
     expect(runSh).not.toContain('API_TOKEN');
     // The launcher prefix itself must not leak the credential either.

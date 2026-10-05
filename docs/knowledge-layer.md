@@ -80,7 +80,7 @@ single accessor every KB tool goes through to reach a provider. It is the only
 place in the codebase that resolves a repo to its database -- there is no
 second entry point. Run `kb_setup` to write the local config. That config is
 install-wide: one `FLEET_DIR/knowledge/config.json` selects the provider for
-every repo this fleet install serves (`kb_setup`'s `repo_path` only places the
+every repo this fleet install serves (`kb_setup` only places the
 git hook), even though each repo's entries stay in their own KB -- see below.
 
 ---
@@ -89,126 +89,192 @@ git hook), even though each repo's entries stay in their own KB -- see below.
 
 The fleet server is one long-lived process that serves many members working
 in many different repos, so nothing about the server's own working directory
-can be trusted to identify which repo a given tool call is about. Every KB
-tool therefore takes an explicit `repo_path`, and `getKbProviders` resolves
-providers keyed by that path -- never by `process.cwd()` inside server-handled
-code. A caller that omits `repo_path` gets whatever repo the calling process
-happens to be in, which is only correct for a single-repo CLI invocation.
+can identify which repo a given tool call is about. No `kb_*` tool takes a
+scope argument. Instead the KB a call reads or writes is derived from **who
+is calling** -- the calling session's "self" (below).
 
-**Scope can be supplied as a git remote URL, not just a local path.** Every
-`kb_*` tool schema also accepts an optional `repo_remote_url` (a single shared
-zod fragment, `kbScopeFields`, spread into each tool's schema so the field
-cannot drift or be redeclared inconsistently). `resolveProjectSlug` prefers an
-explicit remote URL when one is supplied -- slugifying it directly, with no
-shell-out -- and only falls back to shelling `git remote get-url origin`
-against `repo_path`, then the repo directory's basename, then the literal
-`default`, when no usable URL was given. This matters because a remote
-member's `repo_path` is a path on the *far side* of a connection (e.g. an SSH
-member's Windows work folder): it does not exist on the fleet server's
-filesystem, so the git-based fallback always fails for it. Supplying the
-repo's remote URL lets a remote member's KB calls resolve to the *same*
-project KB and slug that member's local counterpart would resolve to, instead
-of collapsing into one shared `default` database (or, before that, silently
-colliding with whichever repo the server process happened to start in).
-Passing an explicit URL is opt-in per call; a caller that omits it keeps the
-exact pre-existing path-only resolution.
+**The removed scope keys are refused, not ignored.** Before the redesign every
+`kb_*` tool took `repo_path` and `repo_remote_url` (`kb_stats` and `kb_import`
+also took `repo`). An MCP server built from a zod shape strips undeclared
+keys before the handler runs, so simply deleting them would have silently
+re-pointed an existing caller at a different KB. Instead every `kb_*` input
+schema still declares the three keys, described as `REMOVED`
+(`KB_REMOVED_SCOPE_KEYS_SHAPE`, `src/services/knowledge/kb-removed-scope-keys.ts`),
+and the `kb_*` tool wrapper in `src/services/tool-registry.ts` refuses any call
+carrying one (any value but absent/undefined) with `E-SCOPE-KEY-REMOVED`
+before any KB is resolved or opened. The message names every removed key
+present and what replaces it (nothing: drop it -- a member session acts on
+its registered work folder, a remote member's KB identity is its registered
+origin remote, and a FULL session acts on the server's working folder;
+`kb_import` keeps `path` for naming a bible file).
 
-**Provider caching is keyed by (slug, repoPath), not slug alone.** Two
-callers that resolve to the same project slug but supply different
-`repo_path` values (e.g. a remote member's unreachable path and that same
-member's local counterpart's real path) now get two distinct provider
-instances, each anchored at the `repoPath` its own caller supplied. This
-matters because `repoPath` is load-bearing: it is the root the capture basis
-check and the freshness re-hash resolve relative `source_files` against.
-Before this, the cache keyed on slug alone, so the *first* caller to resolve
-a given slug fixed `repoPath` for every later caller resolving to that same
-slug -- in practice, the anchor silently became whichever directory the fleet
-server process happened to be running in. Concurrent calls for the identical
-`(slug, repoPath)` pair still share one provider instead of racing to open
-two connections to the same SQLite file. The one exception is the global KB:
-there is exactly one of it, shared across every project, so it gets its own
-single-slot cache rather than living in the per-`(slug, repoPath)` map.
+- **Member session** (`?member=<uuid>` or a member JWT): the member's
+  registered work folder. The session's member id travels from the HTTP
+  transport to the handler through an `AsyncLocalStorage` lane
+  (`src/services/tool-scope.ts`), so handlers never receive it as a parameter.
+- **Full session** (no member identity): the fleet server's own working
+  folder (`process.cwd()` of the server process). An HTTP server cannot see a
+  client's cwd, so there is no separate "self" for local non-member callers:
+  a FULL session started from any client directory still reads and writes
+  the KB of the repository the SERVER was started in. When that folder cannot
+  carry a KB identity, the self-resolution error says exactly that -- "This is
+  a FULL session (no member identity), so its KB is the fleet server's own
+  working folder, not the calling client's directory; '<folder>' is not a git
+  repository" (or "has no origin remote") -- and names both fixes: restart
+  the fleet server with its working folder set to the intended repository, or
+  call from a member session (`?member=<id>`) of a member registered on it.
+
+`resolveSelfAnchor()` (`src/services/knowledge/kb-self.ts`) performs the
+resolution and `getSelfKbProviders()` feeds the result to `getKbProviders`.
+KB identity comes from the folder's origin remote, so a folder that is
+missing, not a git repository, or without an origin remote is refused with a
+typed error carrying a one-line remediation, never silently mapped to a
+directory-name or `default` KB:
+
+| Code | Meaning |
+|------|---------|
+| `E-SELF-NO-WORKFOLDER` | the work folder is unset, missing or not a directory |
+| `E-SELF-NOT-A-REPO` | the folder is not a git repository |
+| `E-SELF-NO-REMOTE` | no origin remote (or, for a remote member, no single known origin URL) |
+
+**Remote members.** A remote member's work folder is a path on another host,
+so git cannot be shelled out for it. Its KB identity is the single origin URL
+recorded on the member (`knownRepoRemoteUrl`, set via `update_member
+git_repos`), and the folder is passed through verbatim as the anchor. KB
+tool calls for such members are executed on the member itself (see
+[Member-session tool calls](#member-session-tool-calls)).
+
+**In-process callers may pass an explicit anchor.** Callers that already know
+exactly which repo they mean (the `execute_prompt` post-dispatch harvest, the
+`kb commit` CLI) pass a `KbAnchor` as the handler's *second* argument. It is
+not part of any tool input schema, so no MCP client can supply it.
+
+Every `kb_*` tool description carries a shared note (`KB_SELF_NOTE`) stating
+that scope is the calling session's own KB, that the removed scope keys fail
+with `E-SCOPE-KEY-REMOVED`, and listing the three self-resolution error codes.
+
+**Provider caching is keyed by (slug, repoPath), not slug alone.** Two callers
+that resolve to the same project slug but different anchors get distinct
+provider instances, each anchored at its own `repoPath`. `repoPath` is
+load-bearing: it is the root the capture basis check and the freshness
+re-hash resolve relative `source_files` against. Keying on slug alone let the
+first caller fix the anchor for everyone. Concurrent calls for the identical
+pair still share one provider. The global KB has exactly one instance and its
+own single-slot cache.
 
 **Slug resolution must not confuse "no auth" with "no host".** The slugifier
-strips a userinfo prefix from HTTPS remotes (`user@` in `https://user@host/...`)
-but must bound that strip to the authority section of the URL -- a greedy,
-unbounded strip on a plain HTTPS remote with no `@` at all consumes the entire
-remainder of the string, silently collapsing the slug to empty and falling
-through to the directory-basename fallback instead of the intended host-based
-one. Plain-HTTPS and SSH remotes for the same repository must slugify to the
-same value.
+strips a userinfo prefix from HTTPS remotes (`user@` in
+`https://user@host/...`) but must bound that strip to the authority section
+of the URL; an unbounded strip on a plain HTTPS remote consumes the rest of
+the string and collapses the slug to empty. Plain-HTTPS and SSH remotes for
+the same repository must slugify to the same value.
 
-**The anchor rule: a `repo_path` that does not exist on this host is never
-replaced by `process.cwd()`.** `getKbProviders(cwd, remoteUrl)` sets
-`repoPath = cwd ?? process.cwd()` -- an *explicit* `cwd`, even one that does
-not exist on this host (the normal case for a remote member's work folder),
-is passed through verbatim and used as the anchor as-is; the
-`process.cwd()` fallback fires only when `cwd` is *omitted* entirely. Every
-`kb_*` READ/PRIME tool call site therefore forwards its `repo_path` input
-straight through rather than pre-resolving it; the two writer tools that need
-a real local directory (`kb_export`, `kb_import`) are the exception -- see
-below. Two sites used to call a local `resolveRepoPath()` helper first, get
-`null` back for a non-existent path, and pass that through `?? undefined` --
-which then hit the `process.cwd()` fallback inside `getKbProviders`.
-`kb-session-prime.ts` and `kb-stats.ts` now pass the caller's explicit
-`repo_path` straight to `getKbProviders` unchanged, only consulting
-`resolveRepoPath()` as a fallback when `repo_path` was omitted entirely.
-`kb-export.ts` and `kb-import.ts` (four `resolveRepoPath()` helpers total in
-`src/tools`, not three) stay a deliberate different shape: both need a real
-local directory -- to write the bible file into (export) or to locate it by
-default (import) -- so their own `resolveRepoPath()` still validates any
-explicit `repo_path` and throws before `getKbProviders` is ever reached if it
-does not exist -- an intentional hard fail, not a silent `process.cwd()`
-degrade. The result: the *slug* (and therefore which project's database is
-opened) comes from `repo_remote_url` and points at the real, shared project
-KB, and the `repoPath` *anchor* stays
-the caller's own path -- never the fleet server's own working directory, a
-valid but unrelated tree that would otherwise get hashed as if it were the
-member's repo.
-
-Because a non-existent anchor still cannot verify anything about this host's
-tree, `SqliteProvider` suppresses freshness verdicts entirely whenever its
-anchor does not exist (`anchorIsMissing()`, checked by both `checkFreshness`
-at prime and `freshnessSweep`): every relative basis path would otherwise
-fail to resolve, every match would fail, and up to the whole prime batch (or,
-for a full sweep, every entry) would be marked stale against a tree that was
-never actually checked. Suppression is all-or-nothing per call, not
-per-file -- a missing anchor means "no verdict", not "read what you can and
-guess the rest". Capture needs no equivalent guard: `assertCheckableBasis`
-already fails closed there, rejecting any entry that cites a source file it
-cannot resolve under `repoPath`. Treat any new or existing call site that
-resolves `repo_path` locally before forwarding it as a candidate for this
-hazard unless it has been audited against this rule.
-
-**Which call sites forward `repo_remote_url`.** Every `kb_*` MCP tool
-handler that reads or writes an entry (`kb_list`, `kb_query`, `kb_context`,
-`kb_capture`, `kb_invalidate`, `kb_promote`, `kb_harvest`, `kb_feedback`,
-`kb_resolve_contradiction`, `kb_reconcile_prefilter`, `kb_freshness_sweep`,
-`kb_import`, `kb_export`, `kb_session_prime`) forwards its `repo_remote_url`
-input to `getKbProviders` via the shared `kbScopeFields` zod fragment. Two
-non-tool call sites forward it too: the fleet auto-harvest dispatch path
-(`src/tools/execute-prompt.ts`, via a `knownRepoRemoteUrl(agent)` helper that
-forwards the member's own registration-record URL only when one is already
-known -- never derived from `gitRepos`' bare `owner/repo` entries or
-discovered by shelling out to the member host) and the `code_context` KB
-enrichment path (`src/tools/code-intelligence-kb-enrich.ts`, threaded from
-that tool's own `repo_remote_url` input through to its `getKbProviders`
-call). The only two remaining `getKbProviders(...)` call sites in `src/` that
-do not forward a URL are `src/index.ts:140` and `src/cli/kb-directives.ts:147`
--- both local, single-repo CLI paths with no remote-scope input to forward
-and where the `process.cwd()` default is already correct, so this is
-deliberate, not an oversight.
+**A non-existent anchor is never replaced by `process.cwd()`.**
+`getKbProviders(cwd, remoteUrl)` uses `process.cwd()` only when `cwd` is
+omitted entirely; an explicit `cwd` that does not exist on this host (the
+normal case for a remote member) is used as-is. Because such an anchor cannot
+verify anything about this host's tree, `SqliteProvider` suppresses freshness
+verdicts entirely when its anchor is missing (`anchorIsMissing()`), at both
+prime and sweep: otherwise every relative basis path would fail to resolve
+and the whole batch would be marked stale against a tree never checked.
+Suppression is all-or-nothing per call. Capture needs no equivalent guard:
+`assertCheckableBasis` already fails closed. `kb_export` and `kb_import` need
+a real local directory (to write or locate the bible file), so they still
+validate the resolved folder and fail hard rather than degrade.
 
 **The single-accessor invariant is enforced textually, not structurally.** A
 source-level guard checks that no code path calls the deleted service-style
-accessor or `getKbProviders()` with no argument. That catches accidental
-regressions to the old pattern, but it cannot catch a *different* route to a
-provider, such as constructing a provider class directly with no explicit
-path -- any such construction still falls back to resolving its repo from
-`process.cwd()`, the exact hazard `getKbProviders` exists to close off. Any
-new provider-construction site must take an explicit repo path from its
-caller; do not rely on the guard test alone to catch a fallback provider that
-bypasses `getKbProviders`.
+accessor or `getKbProviders()` with no argument. It cannot catch a
+*different* route to a provider, such as constructing a provider class
+directly with no explicit path -- that still falls back to `process.cwd()`.
+Any new provider-construction site must take an explicit repo path from its
+caller; do not rely on the guard test alone.
+
+### Read defaults
+
+`kb_query`, `kb_list` and `kb_session_prime` default to CONFIRMED, undisputed
+entries only. `confidence` is a list input, so a caller wanting other tiers
+names them explicitly; internal callers that need UNVERIFIED or INFERRED
+entries (e.g. reconcile and prime paths) pass an explicit list. `flagged_only`
+is exempt from the default because its purpose is to surface disputed entries.
+
+**`kb_list` also accepts the legacy single-tier string.** Before the redesign
+`kb_list`'s `confidence` was one tier as a string (`"INFERRED"`); it is now a
+list. Both forms are accepted: a string is read as the one-element list, so
+`{ confidence: "INFERRED" }` and `{ confidence: ["INFERRED"] }` return the
+same result (and, being an explicit tier, both opt out of the dispute filter).
+
+**`kb_context` defaults to CONFIRMED + INFERRED (decision).** Its default
+tier set is `["CONFIRMED","INFERRED"]`, undisputed (`KB_CONTEXT_DEFAULT_CONFIDENCE`,
+`src/tools/kb-context.ts`, pinned by `tests/knowledge/kb-confidence-default.test.ts`).
+`kb_context` answers only "is my cached summary of this file still current?",
+and a context-cache entry's freshness is decided mechanically by its content
+hash against the file on disk -- not by trust in its claims. `kb_capture`
+stores at most INFERRED and context-cache entries are rarely promoted, so the
+CONFIRMED-only default reported almost every file missing. UNVERIFIED
+(harvest output) stays opt-in. In a MEMBER session the default read merges
+the member's checkout bible (CONFIRMED) with the member's own
+CONFIRMED/INFERRED captures from the per-repo DB (tagged
+`member:<caller uuid>`), so it never exposes another member's captures; its
+global-KB fallback stays CONFIRMED-only.
+
+### Member-session tool calls
+
+A member session sees a reduced tool list. The allowlist lives in one
+dependency-free module (`src/services/member-tool-allowlist.ts`) and is
+derived by rule from `REGISTERED_TOOL_NAMES`: every `kb_*` and `code_*` tool
+plus `version`, `report_status` and `session_stats`. A newly registered
+`kb_`/`code_` tool is therefore member-allowed automatically. Enforcement is
+deny-by-omission: the tool registry's proxy simply does not register tools
+outside the scope for that session, and an unregistered `?member=` id is
+rejected with 403 by the HTTP transport. The `agy` provider's member tool
+lists are derived from the same allowlist. Note the allowlist includes
+write/admin KB tools (`kb_setup`, `kb_promote`, `kb_resolve_contradiction`,
+`kb_export`), so a member session can mint CONFIRMED entries and reconfigure
+the KB; this matches the specification and is a known trust boundary.
+
+The per-folder MCP entry that gives a member this scoped session, and its
+install/verification flow, are described in
+[member-fleet-mcp-wiring.md](member-fleet-mcp-wiring.md); code tool readiness in
+[code-index-readiness.md](code-index-readiness.md).
+
+Per-member call counts: the server counts every `kb_*` and `code_*` call
+made from a MEMBER session against that member's uuid, aggregated across all
+of its sessions, in memory (`src/services/member-call-counts.ts`, recorded in
+the tool registry's shared handler wrapper). `session_stats` returns
+`{ member_id, since, kb, code, total, tools }` for the calling member (a FULL
+session must pass `member_id`). Sessions opened with `origin=engine` on the
+MCP URL -- set only by the engine's `memberCall` (via
+`connectFleetMember(id, { origin: 'engine' })`) and the `apra-fleet call`
+verb -- are not counted, so the engine's own reads (including the
+`session_stats` snapshots it takes around each dispatch) never inflate a
+member's numbers. `since` is the counter start (server process start); a
+change between two snapshots means the server restarted.
+
+The `apra-fleet call` CLI verb (`src/cli/call.ts`) lets a process on a member
+host call a tool as that member: arguments come from a file only (never the
+command line) and failures are typed errors. The engine's `memberCall`
+helper runs a local member's call in-process and a remote member's call by
+`send_files` of the args file plus `execute_command` of the verb, using a
+charset-validated command string; it is the path all engine KB calls take.
+The client's `connectFleetMember` and `close()` release the session with an
+HTTP `DELETE`. Consequences: a remote member needs `apra-fleet` installed and
+registered on it (see `apra-fleet install --member`) or its KB calls fail
+(logged as non-fatal), and each remote KB call costs one file transfer plus
+one command execution -- captures are not batched. The args file is staged
+under `.apra-call/` in the member's work folder, which sits inside its git
+checkout, so the engine must never leave it behind as untracked content:
+before the first send to a member it appends `.apra-call/` to the checkout's
+git exclude file (resolved with `git rev-parse --git-path info/exclude`, so
+subdirectories and linked worktrees work; idempotent; a no-op outside a git
+repo), and after every call, whatever its outcome, it deletes the args file.
+A failed exclude or delete is logged and never masks the call's own result.
+Both operations are built per member shell (POSIX and PowerShell
+`-EncodedCommand`) from strictly validated relative paths that are rejected,
+never escaped. This adds one to two extra command round trips per remote call.
+Short-lived tool-only
+member sessions register in the session registry when no live channel
+session exists, so they can briefly appear as the member's online session.
 
 ---
 
@@ -285,6 +351,8 @@ The SQLite database is one developer's private, warm working memory. The
   `COLD_KB_MAX=3`), prime reads the bible for OUTPUT only to warm the session.
   Cold-seed never writes the database and never activates a directive; the write
   path into a warm KB is `kb_import` (see below).
+
+Member sessions read the bible through an in-memory view, and sprint writes are routed through one maintainer per repository that commits each round with `kb_bible_commit`; see [kb-member-view-and-maintainer.md](kb-member-view-and-maintainer.md).
 
 ### Why the DB is central and the bible is in-repo
 
@@ -653,13 +721,13 @@ execute_prompt to <member>: "You are the KB Agent. Run kb_harvest on the last se
 
 `kb_harvest` fires automatically (fire-and-forget) when `execute_prompt`
 completes successfully. The PM does not need to dispatch it manually.
-`execute_prompt` passes the dispatched member's own working folder as
-`repo_path`, so the harvested learnings land in the KB for the repo the work
+`execute_prompt` passes the dispatched member's own working folder as an
+explicit in-process `KbAnchor`, so the harvested learnings land in the KB for the repo the work
 actually happened in rather than whichever repo the fleet server process
 happens to be running from -- see [Per-repo KB isolation](#per-repo-kb-isolation)
-for the routing rule and its current remote-member limitation. This is the
+for the routing rule. This is the
 only fully automatic KB writer; every other write path is a deliberate tool
-call from an agent that already supplies its own `repo_path`.
+call from an agent, scoped to that agent's own session folder.
 
 ---
 

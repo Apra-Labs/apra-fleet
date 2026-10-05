@@ -35,10 +35,20 @@
 //     prepareEnvironment(env)              // materialise ENVIRONMENT, return
 //        -> { substitutions: { paths, literals } },
 //     applySetup(ops) -> Promise<void>,    // execute declared precondition ops
-//     call(tool, request) -> Promise<envelope>,   // resolves with the wrapTool
-//                                          // envelope, or REJECTS for a thrown
-//                                          // refusal
+//     call(tool, request, session) -> Promise<envelope>,   // resolves with the
+//                                          // wrapTool envelope, or REJECTS for a
+//                                          // thrown refusal
 //   }
+//
+// SESSIONS, NOT SCOPE ARGUMENTS
+// -----------------------------
+// No kb_* request carries a repo/scope argument: a kb_* call always operates on
+// the CALLING SESSION's own KB (a member session -> that member's registered
+// work folder). So every fixture names the session it was recorded in
+// (fixture.session, default ENVIRONMENT.defaultSession), ENVIRONMENT.sessions
+// declares what each session is (a local member on one of the scratch repos, a
+// local member whose folder is missing, a remote member whose folder is on
+// another host), and the provider dispatches each call AS that session.
 //
 // Provider identity is keyed on the (slug, repoPath) PAIR, not on the slug
 // alone (src/services/knowledge/kb-providers.ts: `_providers` is a Map keyed by
@@ -116,25 +126,59 @@ export const RECORDED_REMOTE_B = 'https://example.test/memory-contract-fixtures-
  * `<SCRATCH_ROOT>/repo-import-rejected` literally, so the provider must place
  * that repo at exactly that name under its own scratch root.
  */
+export const RECORDED_REMOTE_IMPORT_REJECTED = 'https://example.test/memory-contract-fixtures-import-rejected.git';
+
 export const ENVIRONMENT = {
   repos: [
     {
       key: 'A',
       dir: 'repo-a',
       placeholder: PATH_PLACEHOLDERS.REPO_A,
-      // NOT a git repo on purpose: kb_setup then installs no real git hook and
-      // kb_export's isGitRepo() check stays false, so no `git add`/`git commit`
-      // ever runs (record-fixtures.mjs header, same reasoning).
+      // A git repository with an origin remote: a kb_* session needs both
+      // (E-SELF-NOT-A-REPO / E-SELF-NO-REMOTE otherwise). kb_export therefore
+      // auto-commits its bible into this scratch repo -- scratch-only.
+      git: true,
+      remote: 'A',
       files: {
         'src/example.ts': 'export function exampleFn(x: number): number {\n  return x + 1;\n}\n',
         'src/helper.ts': 'export function helperBar(): void {\n  // placeholder\n}\n',
       },
     },
-    { key: 'B', dir: 'repo-b', placeholder: PATH_PLACEHOLDERS.REPO_B, files: {} },
-    { key: 'CODE', dir: 'repo-code', placeholder: PATH_PLACEHOLDERS.REPO_CODE, files: {} },
-    { key: 'IMPORT_REJECTED', dir: 'repo-import-rejected', placeholder: null, files: {} },
+    { key: 'B', dir: 'repo-b', placeholder: PATH_PLACEHOLDERS.REPO_B, git: true, remote: 'B', files: {} },
+    // code_* (self): a git repository (E-SELF-NOT-A-REPO otherwise) with no
+    // code index; code tools need no origin remote.
+    { key: 'CODE', dir: 'repo-code', placeholder: PATH_PLACEHOLDERS.REPO_CODE, git: true, remote: null, files: {} },
+    { key: 'IMPORT_REJECTED', dir: 'repo-import-rejected', placeholder: null, git: true, remote: 'IMPORT_REJECTED', files: {} },
+    // E-SELF-NOT-A-REPO: a plain directory, never `git init`ed.
+    { key: 'PLAIN', dir: 'repo-plain', placeholder: null, files: {} },
+    // E-SELF-NO-REMOTE: a git repository with no origin remote.
+    { key: 'NO_REMOTE', dir: 'repo-no-remote', placeholder: null, git: true, remote: null, files: {} },
   ],
-  remotes: { A: RECORDED_REMOTE_A, B: RECORDED_REMOTE_B },
+  remotes: { A: RECORDED_REMOTE_A, B: RECORDED_REMOTE_B, IMPORT_REJECTED: RECORDED_REMOTE_IMPORT_REJECTED },
+  // Each session is one registered member. `repo` names a scratch repo above;
+  // `dir` names a folder under the scratch root that is never created. A
+  // `remote` member's folder lives on another host, so its KB identity is its
+  // recorded origin remote (`remote` names a key of `remotes`).
+  sessions: {
+    A: { member: 'contract-a', kind: 'local', repo: 'A' },
+    B: { member: 'contract-b', kind: 'local', repo: 'B' },
+    IMPORT_REJECTED: { member: 'contract-import-rejected', kind: 'local', repo: 'IMPORT_REJECTED' },
+    // code_* sessions pin their provider (codeIntelProvider) so the recorded
+    // outcome never depends on the host's global code-intelligence config.
+    CODE: { member: 'contract-code', kind: 'local', repo: 'CODE', codeIntelProvider: 'gitnexus' },
+    CODE_OFF: { member: 'contract-code-off', kind: 'local', repo: 'CODE', codeIntelProvider: 'none' },
+    CODE_CM: { member: 'contract-code-cm', kind: 'local', repo: 'CODE', codeIntelProvider: 'codebase-memory' },
+    NOT_A_REPO: { member: 'contract-not-a-repo', kind: 'local', repo: 'PLAIN' },
+    NO_REMOTE: { member: 'contract-no-remote', kind: 'local', repo: 'NO_REMOTE' },
+    NO_WORKFOLDER: { member: 'contract-no-workfolder', kind: 'local', dir: 'no-such-work-folder' },
+    REMOTE_UNREACHABLE: { member: 'contract-remote', kind: 'remote', dir: 'this-directory-does-not-exist', remote: 'A' },
+    // A FULL session (no member identity): its (self) is the fleet server's
+    // working folder, which the provider points at repo A for each call. It
+    // shares repo A's KB with session A (same origin remote), but its reads and
+    // writes go to the live KB, not a member's read-only checkout bible view.
+    FULL_A: { kind: 'full', repo: 'A' },
+  },
+  defaultSession: 'A',
 };
 
 // ---------------------------------------------------------------------------
@@ -142,6 +186,15 @@ export const ENVIRONMENT = {
 // rather than a thrown error. Each mirrors the assertion record-fixtures.mjs
 // made at recording time, so a silently-changed behaviour fails here too.
 // ---------------------------------------------------------------------------
+function assertProviderNotSupported(parsed) {
+  return parsed?.outcome === 'not-started'
+    && parsed?.reason === 'provider-not-supported'
+    && parsed?.provider === 'codebase-memory'
+    && parsed?.indexedCommit === null
+    ? null
+    : `expected { outcome:'not-started', reason:'provider-not-supported', provider:'codebase-memory', indexedCommit:null }, got ${JSON.stringify(parsed)}`;
+}
+
 function assertImportRejected(parsed) {
   return typeof parsed?.rejected === 'number' && parsed.rejected >= 1
     ? null
@@ -185,7 +238,7 @@ function assertDirectiveQuarantined(parsed, ctx) {
  *
  *   tool / case  -- locate memory-contract/v1/fixtures/<tool>/<case>.json
  *   captureId    -- name the id this step's live response mints, for later steps
- *   derive       -- { requestField: 'CAPTURED_NAME' }, resolved from live ids
+ *   derive       -- { requestField: 'CAPTURED_NAME' | ['CAPTURED_NAME', ...] }, resolved from live ids
  *   setup        -- provider-executed preconditions, applied before dispatch
  *   assertParsed -- extra live evidence check (response-field refusals etc.)
  */
@@ -198,16 +251,23 @@ export const SCENARIO = [
   { tool: 'kb_session_prime', case: 'happy' },
   { tool: 'kb_query', case: 'happy' },
   { tool: 'kb_list', case: 'happy' },
+  { tool: 'kb_list', case: 'happy-confidence-string' },
   { tool: 'kb_promote', case: 'happy', derive: { id: 'FOO' } },
+  // kb_export writes .fleet/kb-canonical.json into repo A; the kb_import step
+  // below reads it back through the path anchor, no derive needed. It runs
+  // BEFORE the CONFIRMED-only read and kb_stats because a member session's
+  // default (CONFIRMED) reads come from its checkout bible: the promoted entry
+  // is visible to them once it has been exported into that bible.
+  { tool: 'kb_export', case: 'happy' },
+  // kb_bible_commit merges the promoted FOO entry into repo A's bible at entry
+  // level with explicit base-branch provenance (local commit only, no push).
+  { tool: 'kb_bible_commit', case: 'happy', derive: { ids: ['FOO'] } },
   { tool: 'kb_query', case: 'happy-confirmed-only', assertParsed: assertConfirmedOnly },
   { tool: 'kb_stats', case: 'happy' },
-  // kb_export writes .fleet/kb-canonical.json into repo A; the kb_import step
-  // below reads it back through the path anchor, no derive needed.
-  { tool: 'kb_export', case: 'happy' },
   { tool: 'kb_import', case: 'happy' },
   // apra-fleet-i9ag.15.17: repo B never receives a live capture anywhere in
   // this scenario -- kb_import/happy above rejects its one entry (imported:0)
-  // rather than creating one -- so a kb_stats call scoped to repo B's slug
+  // rather than creating one -- so a kb_stats call from session B (repo B)
   // deterministically has zero CONFIRMED entries and stats.promote_ratio is
   // null (sqlite-provider.ts: `confirmedRow.c > 0 ? ... : null`). This is the
   // ONLY committed kb_stats fixture whose parsed body reaches promote_ratio:
@@ -216,6 +276,10 @@ export const SCENARIO = [
   // actually exercised by the corpus, not just by happy.json's non-null 1.
   { tool: 'kb_stats', case: 'edge-empty-promote-ratio-null' },
   { tool: 'kb_freshness_sweep', case: 'happy' },
+  // A MEMBER session's kb_feedback is the typed E-MEMBER-VIEW-READ-ONLY
+  // refusal (the member's bible view is read-only); the same request from a
+  // FULL (non-member) session succeeds against the live KB.
+  { tool: 'kb_feedback', case: 'refusal-member-view-read-only', derive: { id: 'FOO' } },
   { tool: 'kb_feedback', case: 'happy', derive: { id: 'FOO' } },
   { tool: 'kb_harvest', case: 'happy' },
   { tool: 'kb_capture', case: 'happy-contradiction-a', captureId: 'BROKEN' },
@@ -227,18 +291,35 @@ export const SCENARIO = [
     derive: { winnerId: 'FIXED', loserId: 'BROKEN' },
   },
   { tool: 'kb_invalidate', case: 'happy' },
-  { tool: 'code_graph', case: 'happy-no-index' },
-  { tool: 'code_impact', case: 'happy-no-index' },
-  { tool: 'code_query', case: 'happy-no-index' },
-  { tool: 'code_context', case: 'happy-no-index' },
-  { tool: 'code_map', case: 'happy-no-index' },
-  { tool: 'code_flow', case: 'happy-no-index' },
-  { tool: 'code_tests', case: 'happy-no-index' },
+  { tool: 'code_graph', case: 'refusal-index-not-ready' },
+  { tool: 'code_impact', case: 'refusal-index-not-ready' },
+  { tool: 'code_query', case: 'refusal-index-not-ready' },
+  { tool: 'code_context', case: 'refusal-index-not-ready' },
+  { tool: 'code_map', case: 'refusal-index-not-ready' },
+  { tool: 'code_flow', case: 'refusal-index-not-ready' },
+  { tool: 'code_tests', case: 'refusal-index-not-ready' },
 
   // -- PASS 2: taxonomy-coded refusals + non-error outcomes -----------------
   { tool: 'kb_query', case: 'refusal-no-selector' },
+  { tool: 'kb_query', case: 'refusal-scope-key-removed' },
+  { tool: 'kb_capture', case: 'refusal-scope-key-removed' },
+  { tool: 'kb_export', case: 'refusal-scope-key-removed' },
+  { tool: 'kb_freshness_sweep', case: 'refusal-scope-key-removed' },
   { tool: 'kb_context', case: 'refusal-path-traversal' },
   { tool: 'kb_export', case: 'refusal-repo-path-invalid' },
+  { tool: 'kb_bible_commit', case: 'refusal-repo-path-invalid' },
+  { tool: 'kb_query', case: 'refusal-self-no-workfolder' },
+  { tool: 'kb_stats', case: 'refusal-self-not-a-repo' },
+  { tool: 'code_query', case: 'refusal-self-no-workfolder' },
+  { tool: 'code_map', case: 'refusal-self-not-a-repo' },
+  { tool: 'code_reindex', case: 'refusal-self-no-workfolder' },
+  { tool: 'code_status', case: 'refusal-self-not-a-repo' },
+  { tool: 'code_query', case: 'refusal-intel-disabled' },
+  { tool: 'code_reindex', case: 'refusal-intel-disabled' },
+  { tool: 'code_status', case: 'refusal-intel-disabled' },
+  { tool: 'code_reindex', case: 'non-error-provider-not-supported', assertParsed: assertProviderNotSupported },
+  { tool: 'code_status', case: 'non-error-provider-not-supported', assertParsed: assertProviderNotSupported },
+  { tool: 'kb_list', case: 'refusal-self-no-remote' },
   { tool: 'kb_import', case: 'refusal-bible-not-found' },
   {
     tool: 'kb_import',
@@ -391,18 +472,17 @@ function loadNonErrorOutcomeNames() {
 
 /**
  * The taxonomy codes a tool's MCP binding claims it can raise. bindings/mcp
- * stores them as `$ref` JSON pointers into taxonomy.json
- * (`#/groups/<group>/codes/<index>`), so they are resolved back to codes here.
+ * stores them as `$ref`s into taxonomy.json BY ID (`taxonomy.json#<CODE>`,
+ * the entry's `$anchor`; taxonomy.json `_meta.ref_rule`), so the fragment is
+ * the code itself. A fragment naming no closed-set code is kept as-is so the
+ * caller's membership check fails loudly rather than silently dropping it.
  */
-function bindingErrorCodes(tool, taxonomyIndex) {
+function bindingErrorCodes(tool) {
   const binding = readJson(path.join(BINDINGS_MCP_DIR, `${tool}.json`));
   const codes = new Set();
   for (const ref of binding.errors ?? []) {
-    const pointer = String(ref.$ref ?? '').split('#')[1] ?? '';
-    const [, , group, , index] = pointer.split('/');
-    for (const [code, meta] of taxonomyIndex) {
-      if (meta.group === group && String(meta.index) === index) codes.add(code);
-    }
+    const fragment = String(ref.$ref ?? '').split('#')[1] ?? '';
+    if (fragment) codes.add(fragment);
   }
   return codes;
 }
@@ -644,7 +724,7 @@ function taxonomyFailures(fixture, taxonomyIndex) {
   if (!raisers.includes(fixture.tool)) {
     failures.push(`taxonomy raising_methods for ${code} do not name ${fixture.tool} (names ${raisers.join(', ')})`);
   }
-  if (!bindingErrorCodes(fixture.tool, taxonomyIndex).has(code)) {
+  if (!bindingErrorCodes(fixture.tool).has(code)) {
     failures.push(`bindings/mcp/${fixture.tool}.json carries no error ref for ${code}`);
   }
 
@@ -716,17 +796,26 @@ export async function runRoundTrip(provider, rosterTools, options = {}) {
 
     failures.push(...taxonomyFailures(fixture, taxonomyIndex).map((m) => `${key}: ${m}`));
 
+    if (fixture.session !== undefined && !Object.hasOwn(ENVIRONMENT.sessions, fixture.session)) {
+      fail(`fixture names session ${JSON.stringify(fixture.session)}, which ENVIRONMENT.sessions does not declare`);
+      continue;
+    }
+
     if (step.setup) await provider.applySetup(step.setup);
 
     // 1. request validates BEFORE dispatch
     const request = rehydrate(fixture.request, substitutions);
-    for (const [field, name] of Object.entries(step.derive ?? {})) {
-      const known = ids.get(name);
-      if (!known) {
-        fail(`derive needs the id captured as ${name}, which no earlier step produced`);
-      } else {
-        request[field] = known.live;
+    // A derive value is a captured name (scalar field) or an array of captured
+    // names (array-of-ids field, e.g. kb_bible_commit's ids).
+    for (const [field, nameOrNames] of Object.entries(step.derive ?? {})) {
+      const names = Array.isArray(nameOrNames) ? nameOrNames : [nameOrNames];
+      const live = [];
+      for (const name of names) {
+        const known = ids.get(name);
+        if (!known) fail(`derive needs the id captured as ${name}, which no earlier step produced`);
+        else live.push(known.live);
       }
+      if (live.length === names.length) request[field] = Array.isArray(nameOrNames) ? live : live[0];
     }
     const validateRequest = validatorFor(step.tool, 'request');
     record.requestValid = validateRequest(request);
@@ -739,7 +828,7 @@ export async function runRoundTrip(provider, rosterTools, options = {}) {
     let envelope;
     let thrown;
     try {
-      envelope = await provider.call(step.tool, request);
+      envelope = await provider.call(step.tool, request, fixture.session ?? ENVIRONMENT.defaultSession);
       record.dispatched = true;
     } catch (err) {
       thrown = err;

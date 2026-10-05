@@ -69,16 +69,28 @@ const SCHEMAS_DIR = path.resolve(HERE, '..', 'schemas');
  * this lane exists to close, so a tool is either covered or it is listed
  * here, and a listed tool with an empty reason is itself a failure.
  *
- * EMPTY ON PURPOSE as of apra-fleet-i9ag.15.16.2: all 23 inventoried tools
- * are reachable in-process against the sqlite provider (the 7 code_* tools
- * answer `{supported:false, reason}` with no GitNexus index present, which is
- * a real handler response, not a stub). The mechanism exists because the
- * roster is not frozen: the moment a tool needs a live remote (an HTTP KB
- * provider, a running GitNexus server), it must land HERE with a reason
- * rather than quietly falling out of the covered set.
+ * As of the KB redesign (self-scoped code_* tools), the 7 index-backed code_*
+ * query tools no longer answer `{supported:false, reason}` without an index:
+ * a missing index is a THROWN E-CODE-INDEX-NOT-READY refusal (pinned by their
+ * refusal-index-not-ready fixtures), so no ok response exists to validate
+ * without a live, built code index (GitNexus / codebase-memory). They are
+ * listed here, by name and reason, rather than quietly falling out of the
+ * covered set. code_reindex / code_status still answer in-process
+ * (provider-not-supported) and stay covered.
  * @type {Readonly<Record<string, string>>}
  */
-export const LIVE_SERVICE_SKIPS = Object.freeze({});
+const NEEDS_LIVE_CODE_INDEX =
+  'needs a live, built code index (GitNexus / codebase-memory): without one every call is the thrown ' +
+  'E-CODE-INDEX-NOT-READY refusal its refusal-index-not-ready fixture pins, so no ok response exists in-process';
+export const LIVE_SERVICE_SKIPS = Object.freeze({
+  code_graph: NEEDS_LIVE_CODE_INDEX,
+  code_impact: NEEDS_LIVE_CODE_INDEX,
+  code_query: NEEDS_LIVE_CODE_INDEX,
+  code_context: NEEDS_LIVE_CODE_INDEX,
+  code_map: NEEDS_LIVE_CODE_INDEX,
+  code_flow: NEEDS_LIVE_CODE_INDEX,
+  code_tests: NEEDS_LIVE_CODE_INDEX,
+});
 
 const ajv = new Ajv2020({ strict: false, allErrors: true });
 const compiledValidators = new Map();

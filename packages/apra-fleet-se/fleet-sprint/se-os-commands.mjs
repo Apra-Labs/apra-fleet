@@ -64,6 +64,18 @@
 //                          <base64 utf16le>` string; SePosixCommands throws
 //                          (a true POSIX member has no PowerShell to hand
 //                          the script to at all).
+//   ensureGitExcluded      member-call.mjs runRemote's args-file cleanup:
+//                          idempotently lists the args dir (.apra-call/) in
+//                          the member repo's git exclude file (resolved via
+//                          `git rev-parse --git-path info/exclude`, so repo
+//                          subdirs and linked worktrees work), silent exit-0
+//                          no-op outside a git repo.
+//   removeFile             member-call.mjs runRemote's engine-side args-file
+//                          delete (force, never errors when absent). Both
+//                          validate their work-folder-relative path against
+//                          the strict charset member-call.mjs uses and THROW
+//                          on anything else (assertSafeRelativePath in
+//                          se-posix.mjs); gitbash inherits the POSIX strings.
 //
 // Deliberately NOT included, so this stays an interface rather than a
 // catalogue:

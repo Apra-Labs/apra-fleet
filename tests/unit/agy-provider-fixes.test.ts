@@ -13,6 +13,7 @@ import {
   formatAgyPermissionRules,
   buildAgyNodeCommand,
 } from '../../src/providers/agy.js';
+import { MEMBER_ALLOWED_TOOLS, REGISTERED_TOOL_NAMES, ORCHESTRATOR_ONLY_TOOLS } from '../../src/services/member-tool-allowlist.js';
 import { getStrategy } from '../../src/services/strategy.js';
 import { ClaudeProvider } from '../../src/providers/claude.js';
 import { CodexProvider } from '../../src/providers/codex.js';
@@ -84,9 +85,9 @@ describe('AGY Fix 519 - Unit Verification Suite', { timeout: 30000 }, () => {
       const denyList: string[] = cfg.permissionGrants.permissionGrants.deny;
       expect(denyList).toEqual(AGY_ORCHESTRATOR_DENY_RULES);
       expect(denyList).toContain('mcp(apra-fleet/remove_member)');
-      expect(denyList).toContain('mcp(apra-fleet-member/remove_member)');
+      // The retired apra-fleet-member alias is pruned, not denied.
+      expect(denyList.some(r => r.startsWith('mcp(apra-fleet-member/'))).toBe(false);
       expect(denyList).toContain('mcp(apra-fleet/execute_prompt)');
-      expect(denyList).toContain('mcp(apra-fleet-member/execute_prompt)');
       expect(denyList).toContain('mcp(apra-fleet/shutdown_server)');
 
       // Member-needed read tools must NOT be in deny list
@@ -321,6 +322,29 @@ describe('AGY Fix 519 - Unit Verification Suite', { timeout: 30000 }, () => {
 
       expect(missing).toEqual([]);
       expect(duplicates).toEqual([]);
+    });
+
+    it('derives AGY_MEMBER_ALLOWED_TOOLS from the shared member allowlist', () => {
+      expect(AGY_MEMBER_ALLOWED_TOOLS).toEqual([...MEMBER_ALLOWED_TOOLS]);
+    });
+
+    it('derives AGY_ORCHESTRATOR_DENIED_TOOLS as every registered tool outside the member allowlist', () => {
+      const allowed = new Set(MEMBER_ALLOWED_TOOLS);
+      expect(AGY_ORCHESTRATOR_DENIED_TOOLS).toEqual(REGISTERED_TOOL_NAMES.filter(t => !allowed.has(t)));
+    });
+
+    it('denies the explicit orchestrator-only class (v0.5 console/supervisor tools) to agy members', () => {
+      expect(ORCHESTRATOR_ONLY_TOOLS.length).toBeGreaterThan(0);
+      for (const t of ORCHESTRATOR_ONLY_TOOLS) {
+        expect(AGY_ORCHESTRATOR_DENIED_TOOLS).toContain(t);
+        expect(AGY_MEMBER_ALLOWED_TOOLS).not.toContain(t);
+      }
+    });
+
+    it('keeps send_message and respond_to_message denied for agy (agy members are not channel-capable)', () => {
+      expect(AGY_ORCHESTRATOR_DENIED_TOOLS).toContain('send_message');
+      expect(AGY_ORCHESTRATOR_DENIED_TOOLS).toContain('respond_to_message');
+      expect(AGY_MEMBER_ALLOWED_TOOLS).not.toContain('respond_to_message');
     });
   });
 });

@@ -17,6 +17,7 @@ import type {
   AudnDecision,
   Confidence,
   ProviderStats,
+  DiscardResult,
 } from './types.js';
 
 const MAX_QUEUE_SIZE = 1000;
@@ -324,11 +325,14 @@ export class HttpKbProvider implements MemoryProvider {
     }
   }
 
-  async context(files: string[]): Promise<FileContextResult[]> {
+  async context(files: string[], confidence?: Confidence[], excludeDisputed?: boolean): Promise<FileContextResult[]> {
     await this.tryFlushQueue();
     try {
+      const ctxParams: Record<string, string> = { files: files.join(',') };
+      if (confidence?.length) ctxParams.confidence = confidence.join(',');
+      if (excludeDisputed) ctxParams.exclude_disputed = 'true';
       const result = await this.rawRequest<{ results: FileContextResult[] }>(
-        'GET', '/api/kb/context', undefined, { files: files.join(',') }
+        'GET', '/api/kb/context', undefined, ctxParams
       );
       this.markConnected();
       return result.results;
@@ -336,10 +340,14 @@ export class HttpKbProvider implements MemoryProvider {
       if (isConnectionError(err)) {
         this.markDegraded(err);
         if (this.strict) throw this.strictFailure(err);
-        return this.fallback.context(files);
+        return this.fallback.context(files, confidence, excludeDisputed);
       }
       throw err;
     }
+  }
+
+  async discard(_ids: string[], _opts?: { ownerTag?: string }): Promise<DiscardResult> {
+    throw new Error('kb_invalidate {ids} (id-level discard) is not supported by the HTTP KB provider');
   }
 
   async invalidate(files: string[]): Promise<{ invalidated: number }> {

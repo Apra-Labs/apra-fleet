@@ -1,5 +1,6 @@
 // Parity test: pins apra-fleet-client's hand-maintained JSDoc typedefs in
-// api.mjs against the server-side zod schemas (register_member, update_member)
+// api.mjs against the server-side zod schemas (register_member, update_member,
+// kb_export, kb_bible_commit)
 // and the member_detail result shape they claim to mirror.
 //
 // The typedefs have no compile-time link to the server tools -- see
@@ -43,6 +44,11 @@ const memberGitStatusSrc = readFileSync(path.join(repoRoot, 'src', 'tools', 'mem
 const memberOwnerSrc = readFileSync(path.join(repoRoot, 'src', 'tools', 'member-owner.ts'), 'utf8');
 const memberReservationSrc = readFileSync(path.join(repoRoot, 'src', 'tools', 'member-reservation.ts'), 'utf8');
 const listMembersSrc = readFileSync(path.join(repoRoot, 'src', 'tools', 'list-members.ts'), 'utf8');
+const sessionStatsSrc = readFileSync(path.join(repoRoot, 'src', 'tools', 'session-stats.ts'), 'utf8');
+const memberCallCountsSrc = readFileSync(path.join(repoRoot, 'src', 'services', 'member-call-counts.ts'), 'utf8');
+const kbExportSrc = readFileSync(path.join(repoRoot, 'src', 'tools', 'kb-export.ts'), 'utf8');
+const typesSrc = readFileSync(path.join(repoRoot, 'src', 'types.ts'), 'utf8');
+const kbBibleCommitSrc = readFileSync(path.join(repoRoot, 'src', 'tools', 'kb-bible-commit.ts'), 'utf8');
 
 /** Extract the text between a start marker (exclusive) and the next occurrence of an end marker. */
 function extractBlock(source, startMarker, endMarker) {
@@ -234,6 +240,16 @@ function assertFieldParity(label, schemaFields, typedefFields) {
     );
 }
 
+function kbExportSchemaFields() {
+    const block = extractBlock(kbExportSrc, 'export const kbExportSchema = z.object({', '\n});');
+    return extractTopLevelKeys(block, 2);
+}
+
+function kbBibleCommitSchemaFields() {
+    const block = extractBlock(kbBibleCommitSrc, 'export const kbBibleCommitSchema = z.object({', '\n});');
+    return extractTopLevelKeys(block, 2);
+}
+
 describe('apra-fleet-client typedef vs server zod schema parity', () => {
     test('RegisterMemberOptions matches registerMemberSchema field-for-field', () => {
         const schemaFields = registerMemberSchemaFields();
@@ -262,6 +278,21 @@ describe('apra-fleet-client typedef vs server zod schema parity', () => {
         assert.ok(typedefFields.has('shell'), 'sanity: UpdateMemberOptions should declare shell');
 
         assertFieldParity('UpdateMemberOptions vs updateMemberSchema', schemaFields, typedefFields);
+    });
+
+    test('KbExportOptions matches kbExportSchema field-for-field', () => {
+        const schemaFields = kbExportSchemaFields();
+        const typedefFields = extractTypedefProperties(apiMjsSrc, 'KbExportOptions');
+        assert.ok(schemaFields.has('baseBranch'), 'sanity: kbExportSchema should declare baseBranch');
+        assert.ok(typedefFields.has('baseBranch'), 'sanity: KbExportOptions should declare baseBranch');
+        assertFieldParity('KbExportOptions vs kbExportSchema', schemaFields, typedefFields);
+    });
+
+    test('KbBibleCommitOptions matches kbBibleCommitSchema field-for-field', () => {
+        const schemaFields = kbBibleCommitSchemaFields();
+        const typedefFields = extractTypedefProperties(apiMjsSrc, 'KbBibleCommitOptions');
+        assert.strictEqual(schemaFields.size, 3, `expected 3 kbBibleCommitSchema fields, parsed ${schemaFields.size}`);
+        assertFieldParity('KbBibleCommitOptions vs kbBibleCommitSchema', schemaFields, typedefFields);
     });
 
     test('MemberDetailResult matches the json-format result object member-detail.ts builds', () => {
@@ -382,5 +413,31 @@ describe('apra-fleet-client typedef vs server zod schema parity', () => {
         assert.ok(typedefFields.has('reason'), 'sanity: MemberHeldByEntry typedef should declare reason');
 
         assertFieldParity('MemberHeldByEntry typedef vs MemberHeldByEntry interface', interfaceFields, typedefFields);
+    });
+
+    test('FleetMcpStatus matches the FleetMcpStatus interface in src/types.ts', () => {
+        const block = extractBlock(typesSrc, 'export interface FleetMcpStatus {', '\n}');
+        // Interface members may be optional (`name?: T`), which extractTopLevelKeys does not match.
+        const serverFields = new Set([...block.matchAll(/^ {2}([a-zA-Z_]\w*)\??:/gm)].map((m) => m[1]));
+        const typedefFields = extractTypedefProperties(apiMjsSrc, 'FleetMcpStatus');
+        assert.ok(serverFields.has('state') && serverFields.has('checkedAt'), 'sanity: FleetMcpStatus should declare state, checkedAt');
+        assert.ok(serverFields.has('fleetInstalledAt'), 'sanity: server FleetMcpStatus should declare fleetInstalledAt');
+        assertFieldParity('FleetMcpStatus vs src/types.ts', serverFields, typedefFields);
+    });
+
+    test('SessionStatsOptions matches sessionStatsSchema field-for-field', () => {
+        const block = extractBlock(sessionStatsSrc, 'export const sessionStatsSchema = z.object({', '\n});');
+        const schemaFields = extractTopLevelKeys(block, 2);
+        const typedefFields = extractTypedefProperties(apiMjsSrc, 'SessionStatsOptions');
+        assert.ok(schemaFields.has('member_id'), 'sanity: sessionStatsSchema should declare member_id');
+        assertFieldParity('SessionStatsOptions vs sessionStatsSchema', schemaFields, typedefFields);
+    });
+
+    test('SessionStatsResult matches the MemberCallStats interface session_stats returns', () => {
+        const block = extractBlock(memberCallCountsSrc, 'export interface MemberCallStats {', '\n}');
+        const resultFields = extractTopLevelKeys(block, 2);
+        const typedefFields = extractTypedefProperties(apiMjsSrc, 'SessionStatsResult');
+        assert.ok(resultFields.has('since') && resultFields.has('kb') && resultFields.has('code'), 'sanity: MemberCallStats should declare since, kb, code');
+        assertFieldParity('SessionStatsResult vs MemberCallStats', resultFields, typedefFields);
     });
 });

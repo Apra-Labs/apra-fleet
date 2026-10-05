@@ -38,6 +38,7 @@ import {
   createResponseConformanceRecorder,
   validateToolResponse,
   schemaDeclaresParsedBody,
+  LIVE_SERVICE_SKIPS,
 } from '../memory-contract/v1/tests/response-conformance.mjs';
 import { KB_MODULES, CODE_EXPORTS } from '../memory-contract/v1/generate-contract.mjs';
 
@@ -212,12 +213,17 @@ describe('apra-fleet-i9ag.15.16.3: fixture-coverage audit (every tool reaches it
   }
 
   it('every inventoried tool has at least one committed response fixture', () => {
-    const missing = ROSTER.filter((tool) => !parsedByTool.has(tool) && !(tool in FIXTURE_PARSED_REACH_ALLOWLIST));
+    // A tool on the live lane's LIVE_SERVICE_SKIPS (the 7 index-backed code_*
+    // tools: under the KB redesign a missing code index is a THROWN refusal, so
+    // no ok response exists without a live index) must instead carry a
+    // committed REFUSAL fixture pinning that behaviour.
+    const missing = ROSTER.filter((tool) => !parsedByTool.has(tool) && !(tool in FIXTURE_PARSED_REACH_ALLOWLIST)
+      && !(tool in LIVE_SERVICE_SKIPS && listFixtureKeys().some((k: string) => k.startsWith(tool + '/refusal-'))));
     expect(missing).toEqual([]);
     // Non-vacuity: the audit really did enumerate the whole roster, not an
     // empty set that trivially satisfies every filter below.
-    expect(ROSTER.length).toBe(23);
-    expect(parsedByTool.size).toBe(23);
+    expect(ROSTER.length).toBe(26);
+    expect(parsedByTool.size).toBe(26 - Object.keys(LIVE_SERVICE_SKIPS).length);
   });
 
   it('every tool whose schema declares a TYPED parsed body has a fixture that actually reaches it', () => {
@@ -237,8 +243,8 @@ describe('apra-fleet-i9ag.15.16.3: fixture-coverage audit (every tool reaches it
       }
     }
     expect(failures).toEqual([]);
-    // 15 of 23 tools carry a typed parsed body; the other 8 are the 7 code_*
-    // tools plus kb_query.
+    // 15 of 26 tools carry a typed parsed body; the other 11 are the 9 code_*
+    // tools plus kb_invalidate and kb_query.
     expect(ROSTER.filter((tool) => schemaDeclaresParsedBody(tool))).toHaveLength(15);
   });
 

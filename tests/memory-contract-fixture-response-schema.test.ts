@@ -95,9 +95,13 @@ describe('memory-contract/v1 recorded response fixtures validate against their s
 
     // Non-vacuous: the 32-fixture population the original ajv sweep measured
     // (48 committed fixtures total, 16 carry `error` instead), plus
-    // kb_stats/edge-empty-promote-ratio-null (apra-fleet-i9ag.15.17) and
-    // kb_query/happy-confirmed-only (trust filters): 34 responses, 50 total.
-    expect(keys.length).toBe(34);
+    // kb_query/happy-confirmed-only (trust filters), minus the 7 code_*
+    // happy-no-index fixtures that became refusal-index-not-ready (a missing
+    // index is now a thrown E-CODE-INDEX-NOT-READY, never an ok response), plus the 2 code_reindex/code_status provider-not-supported outcomes,
+    // minus kb_feedback/happy (a MEMBER-session kb_feedback is now the
+    // E-MEMBER-VIEW-READ-ONLY refusal), plus kb_bible_commit/happy, plus kb_stats/edge-empty-promote-ratio-null
+    // (apra-fleet-i9ag.15.17, session B).
+    expect(keys.length).toBe(31); // + kb_feedback/happy (FULL session), kb_list/happy-confidence-string
     expect(failures).toEqual([]);
   });
 
@@ -124,7 +128,7 @@ describe('memory-contract/v1 recorded response fixtures validate against their s
       }
     }
 
-    expect(keys.length).toBe(34);
+    expect(keys.length).toBe(31); // + kb_stats/edge-empty-promote-ratio-null; // + kb_feedback/happy (FULL session), kb_list/happy-confidence-string
     expect(failures).toEqual([]);
   });
 

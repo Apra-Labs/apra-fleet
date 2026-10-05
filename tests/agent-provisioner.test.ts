@@ -70,8 +70,11 @@ describe('loadCanonicalAgentSet', () => {
     ]);
 
     const planner = set.find(f => f.relPath === 'planner.md')!;
-    expect(planner.content).toBe(FAKE_AGENT_ASSETS[0].content);
-    expect(planner.sha256).toBe(sha256(FAKE_AGENT_ASSETS[0].content));
+    // Body untouched; the tools allowlist gains the member MCP grants (a role
+    // runs as `claude --agent planner`, whose list filters the session).
+    expect(planner.content.replace(/^tools:.*$/m, '')).toBe(FAKE_AGENT_ASSETS[0].content.replace(/^tools:.*$/m, ''));
+    expect(planner.content).toMatch(/^tools: \[Read, Grep, mcp__apra-fleet__code_graph, .*mcp__apra-fleet__kb_query.*\]$/m);
+    expect(planner.sha256).toBe(sha256(planner.content));
     expect(planner.sha256).toMatch(/^[0-9a-f]{64}$/);
   });
 

@@ -61,6 +61,7 @@ export const GUARDED_MODULES = [
     'vcs-auth.mjs',
     'mcp-result.mjs',
     'member-target.mjs',
+    'member-call.mjs',
     'abort.mjs',
     'branch-ensure.mjs',
     'prompts.mjs',
@@ -70,6 +71,16 @@ export const GUARDED_MODULES = [
     'git-sync.mjs',
     'coordination.mjs',
     'kb.mjs',
+    // Per-repository kb_maintainer selection. Issues no fleet call itself
+    // (every member access is injected by runner.js), registered so a future
+    // direct call added here is scanned from the start.
+    'kb-maintainer.mjs',
+    // KB hint building and KNOWLEDGE BANK injection gating: pure / injected
+    // (the diff-file listing is a runner.js-supplied callback), no direct command().
+    'kb-hints.mjs',
+    'kb-injection.mjs',
+    // Pure lower-quality banner derivation; no command() site.
+    'lower-quality.mjs',
     'beads-scope.mjs',
     'beads-transitions.mjs',
     'role-policies.mjs',
@@ -377,17 +388,29 @@ export const GUARDED_MODULES = [
     'explicit-id-create-guard.mjs',
     // The beads identity contract (pure parse/compare helpers, no command()
     // or agent() site -- zero baseline) and the precondition that runs its
-    // three read-only probes: beads-identity-check.mjs carries ONE
-    // member_name-bearing command() call site (the probe loop), which is
-    // exactly what dispatch-safety-guard must keep scanning.
+    // three read-only probes: beads-identity-check.mjs carries TWO
+    // member_name-bearing command() call sites (the probe loop and the
+    // member beads set-up runner; its beads pull goes through DoltSync),
+    // which is exactly what dispatch-safety-guard must keep scanning.
     'beads-identity.mjs',
     'beads-identity-check.mjs',
     // The sprint-start token-usage memory sweep: TWO member_name-bearing
     // command() sites (the memory list and the per-key forget), no agent(),
     // and its push goes through an injected bracketed callback.
     'beads-memory-hygiene.mjs',
+    // The engine CI gate: ONE member_name-bearing command() site (the
+    // origin-remote read on the git-capable member), no agent(), no push.
+    'ci-gate.mjs',
     'vcs-module.mjs',
     'viewer-extensions.mjs',
+    // Per-dispatch kb_* and code_* accounting: reads session_stats through the
+    // injected memberCall around each dispatch. No command() or agent() site.
+    'dispatch-accounting.mjs',
+    // The per-member sprint-init probe: kb_*/code_* calls through the injected
+    // memberCall, member_detail on the orchestrator session, and ONE
+    // member-bound command channel (fleetApi.executeCommand, command strings
+    // built by getSeCommands().wrapForMember) for the remote start-if-down.
+    'member-init-probe.mjs',
     'vcs-providers/azure-devops.mjs',
     'vcs-providers/bitbucket.mjs',
     'vcs-providers/dolt.mjs',

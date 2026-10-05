@@ -1,9 +1,10 @@
 import { z } from 'zod';
+import { KB_REMOVED_SCOPE_KEYS_SHAPE } from '../services/knowledge/kb-removed-scope-keys.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { getKbProviders } from '../services/knowledge/kb-providers.js';
-import { kbScopeFields } from '../services/knowledge/kb-scope-input.js';
+import { resolveKbAnchor, type KbAnchor } from '../services/knowledge/kb-self.js';
 import { logWarn } from '../utils/log-helpers.js';
 import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
 import { KB_CONFIG_PATH } from '../services/knowledge/kb-config.js';
@@ -23,15 +24,11 @@ import type { KBEntry } from '../services/knowledge/types.js';
 // discretion: the export TOOL commits with its own dedicated identity
 // (pm-kb), so no role's "no git operations" rule is violated by this
 // automatic side effect.
-// F4 (T1.6): repo path resolution precedence -- (1) explicit repo_path input,
-// validated (must exist and be a directory) or kb_export refuses with a clear
-// error; (2) validated session context -- this process's own working
-// directory, used ONLY when repo_path is omitted, and put through the exact
-// same existence + isDirectory check as an explicit path, never trusted
-// blindly; (3) neither validates -- kb_export refuses with a clear error
-// rather than silently writing relative to an arbitrary path. There is no
-// bare process.cwd() fallback: the fallback tier is validated the same way
-// explicit input is.
+// kb (self): the repo written to is the calling session's own folder -- the
+// member's registered work folder for a member session, the server's working
+// folder otherwise (src/services/knowledge/kb-self.ts). It is validated (must
+// exist, be a git repo with an origin remote) or kb_export refuses with a
+// typed E-SELF error; it is never a scope argument.
 // T3.3 (F9a, D8): scope param -- 'project' (default, unchanged behavior) reads
 // the PROJECT KB and writes .fleet/kb-canonical.json (as before); 'global'
 // reads the GLOBAL KB (providers.global -- the shared kb.sqlite at
@@ -40,17 +37,25 @@ import type { KBEntry } from '../services/knowledge/types.js';
 // apra-fleet platform repo, committed there per D8). Same stable field set,
 // same asciiSafeStringify + deterministic id-sorted output, and the same
 // auto-commit behavior (T2.3) applies to the global file too.
+// Provenance names the TARGET BASE branch: the branch the bible's entries will
+// merge into, not the (typically feature) branch the export ran on. baseBranch
+// and baseCommit let the caller say so explicitly; when omitted, provenance
+// falls back to the export folder's own HEAD branch and commit (unchanged).
 export const kbExportSchema = z.object({
-  ...kbScopeFields,
-  repo_path: z.string().optional()
-    .describe('Path to the repo root to write the canonical bible into. Precedence: this explicit input, when given, is validated (must exist and be a directory) or the call fails; when omitted, falls back to the validated session working directory (same validation, not a blind default); if neither validates, kb_export refuses with a clear error.'),
   scope: z.enum(['project', 'global']).optional()
-    .describe('project (default, unchanged): export the project KB to .fleet/kb-canonical.json. global: export the GLOBAL KB to .fleet/kb-canonical-global.json in the given repo path (in practice the apra-fleet platform repo, committed there so the installer can distribute it -- D8).'),
+    .describe('project (default, unchanged): export the project KB to .fleet/kb-canonical.json. global: export the GLOBAL KB to .fleet/kb-canonical-global.json in the calling session\'s own repo (in practice the apra-fleet platform repo, committed there so the installer can distribute it -- D8).'),
+  baseBranch: z.string().min(1).optional()
+    .describe('The target base branch (the branch the entries merge into). Written to provenance.branch. Omitted: the export folder HEAD branch.'),
+  baseCommit: z.string().min(1).optional()
+    .describe('The base commit the entries were verified against. Written to provenance.commit. Omitted: the export folder HEAD commit.'),
+  // Removed pre-redesign scope keys: declared only so a caller still passing one
+  // is refused with E-SCOPE-KEY-REMOVED instead of silently re-scoped.
+  ...KB_REMOVED_SCOPE_KEYS_SHAPE,
 });
 
 export type KbExportInput = z.infer<typeof kbExportSchema>;
 
-interface CanonicalEntry {
+export interface CanonicalEntry {
   id: string;
   type: string;
   title: string;
@@ -66,7 +71,7 @@ interface CanonicalEntry {
  * legacy bare array, selecting on Array.isArray -- an older bible must keep
  * importing unchanged.
  */
-interface CanonicalBible {
+export interface CanonicalBible {
   version: 2;
   provenance: {
     /** 40-char HEAD sha, or null when the repo has no commits or git is absent. */
@@ -75,6 +80,59 @@ interface CanonicalBible {
     entry_count: number;
   };
   entries: CanonicalEntry[];
+}
+
+/** Map a KB entry to the bible's stable field set. Shared with kb_bible_commit. */
+export function toCanonicalEntry(e: KBEntry): CanonicalEntry {
+  return {
+    id: e.id,
+    type: e.type,
+    title: e.title,
+    summary: e.summary,
+    symbols: e.symbols,
+    source_files: e.source_files,
+    confidence: e.confidence,
+    updated_at: e.promoted_at || e.created_at,
+  };
+}
+
+/** Deterministic id ordering so re-exports produce meaningful diffs. */
+export function compareById(a: { id: string }, b: { id: string }): number {
+  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+}
+
+/**
+ * The entries of the bible already on disk, in either shape (legacy bare array
+ * or v2 envelope). null when the file is absent or unparseable.
+ */
+export function readBibleEntries(outPath: string): CanonicalEntry[] | null {
+  if (!fs.existsSync(outPath)) return null;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(outPath, 'utf-8'));
+    const existing = Array.isArray(parsed)
+      ? parsed
+      : (parsed && Array.isArray(parsed.entries) ? parsed.entries : null);
+    return existing as CanonicalEntry[] | null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * PATHSPEC-ONLY commit of the bible file with the dedicated pm-kb identity:
+ * git add <path> then a commit scoped to -- <path>, so unrelated staged or
+ * dirty working-tree state is never swept in. Throws on any git failure; the
+ * caller decides whether that is fatal. Never pushes.
+ */
+export function commitBiblePath(repoPath: string, outPath: string, message: string): void {
+  execFileSync('git', ['add', outPath], {
+    cwd: repoPath, timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  execFileSync(
+    'git',
+    ['-c', 'user.name=pm-kb', '-c', 'user.email=kb@pm.local', 'commit', '-m', message, '--', outPath],
+    { cwd: repoPath, timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] },
+  );
 }
 
 /**
@@ -134,7 +192,7 @@ function gitOrNull(repoPath: string, args: string[]): string | null {
 // ASCII too) and avoids template literals -- the pre-commit hook's
 // backtick-n/t/r scan false-positives on template-literal escape sequences,
 // the same gotcha T2.3's promote() fix worked around.
-function asciiSafeStringify(value: unknown): string {
+export function asciiSafeStringify(value: unknown): string {
   const json = JSON.stringify(value, null, 2);
   const maxAsciiCode = 127;
   const escapePrefix = String.fromCharCode(92) + 'u'; // backslash + 'u', built at runtime
@@ -152,16 +210,14 @@ function asciiSafeStringify(value: unknown): string {
   return out;
 }
 
-// F4 (T1.6): shared validation for both precedence tiers -- an explicit
-// repo_path (tier 1) and the session working directory fallback (tier 2, used
-// only when repo_path is omitted) go through the identical existence +
-// isDirectory check. Neither tier is ever trusted without it.
-function resolveRepoPath(explicit?: string): string {
-  const candidate = explicit || process.cwd();
-  if (!fs.existsSync(candidate) || !fs.statSync(candidate).isDirectory()) {
-    throw new Error('kb_export: repo_path does not exist or is not a directory: ' + candidate);
+// The resolved anchor folder must exist on THIS host: kb_export writes the
+// bible file there, so an anchor naming a folder on another host (a remote
+// member's work folder) has nothing meaningful to do and must refuse.
+export function requireLocalFolder(folder: string, toolName = 'kb_export'): string {
+  if (!fs.existsSync(folder) || !fs.statSync(folder).isDirectory()) {
+    throw new Error(toolName + ': repo folder does not exist or is not a directory on this host: ' + folder);
   }
-  return candidate;
+  return folder;
 }
 
 // T2.3 (F6a, D5 AMENDED): switch for the auto-commit below, read from the
@@ -239,7 +295,7 @@ export function _autoCommitEnabledForTest(): boolean {
   return autoCommitEnabled();
 }
 
-function isGitRepo(repoPath: string): boolean {
+export function isGitRepo(repoPath: string): boolean {
   return fs.existsSync(path.join(repoPath, '.git'));
 }
 
@@ -248,7 +304,7 @@ function isGitRepo(repoPath: string): boolean {
 // already matches HEAD for this one path -- re-exporting an identical bible
 // is a no-op, so there is nothing to commit. Any output (modified, or a
 // brand-new untracked file on the very first export) means it changed.
-function bibleContentChanged(repoPath: string, outPath: string): boolean {
+export function bibleContentChanged(repoPath: string, outPath: string): boolean {
   const status = execFileSync('git', ['status', '--porcelain', '--', outPath], {
     cwd: repoPath, encoding: 'utf-8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'],
   });
@@ -301,16 +357,9 @@ function maybeAutoCommitBible(
   try {
     if (!bibleContentChanged(repoPath, outPath)) return false;
 
-    execFileSync('git', ['add', outPath], {
-      cwd: repoPath, timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'],
-    });
     const scopeLabel = scope === 'global' ? 'global knowledge bible' : 'knowledge bible';
     const message = 'chore(kb): update ' + scopeLabel + ' -- ' + entryCount + ' confirmed entries';
-    execFileSync(
-      'git',
-      ['-c', 'user.name=pm-kb', '-c', 'user.email=kb@pm.local', 'commit', '-m', message, '--', outPath],
-      { cwd: repoPath, timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] },
-    );
+    commitBiblePath(repoPath, outPath, message);
     return true;
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
@@ -319,19 +368,8 @@ function maybeAutoCommitBible(
   }
 }
 
-function toCanonical(e: KBEntry): CanonicalEntry {
-  return {
-    id: e.id,
-    type: e.type,
-    title: e.title,
-    summary: e.summary,
-    symbols: e.symbols,
-    source_files: e.source_files,
-    confidence: e.confidence,
-    updated_at: e.promoted_at || e.created_at,
-  };
-}
-
+// Id ordering for the additive project merge, whose existing bible entries are
+// raw objects (never re-shaped) and so carry an id of unknown type.
 function byId(a: { id?: unknown }, b: { id?: unknown }): number {
   const x = String(a.id);
   const y = String(b.id);
@@ -385,11 +423,16 @@ function readExistingBibleEntries(outPath: string): Array<Record<string, unknown
 //
 // `exported` in the response is the number of entries in the bible as written
 // (or as left on disk when nothing was added), not the number newly added.
-async function exportProjectBible(source: SqliteProvider, repoPath: string, outPath: string): Promise<string> {
+async function exportProjectBible(
+  source: SqliteProvider,
+  repoPath: string,
+  outPath: string,
+  input: KbExportInput,
+): Promise<string> {
   const existing = readExistingBibleEntries(outPath);
   const existingIds = new Set(existing.map(e => String(e.id)));
 
-  const confirmed = await source.list({ confidence: 'CONFIRMED' });
+  const confirmed = await source.list({ confidence: ['CONFIRMED'] });
   const newCandidates = confirmed.filter(e => !existingIds.has(e.id));
   const bases = source.getSourceFileBases(newCandidates.map(e => e.id));
   const qualifying = await filterProjectBibleCandidates(newCandidates, bases, repoPath);
@@ -398,12 +441,12 @@ async function exportProjectBible(source: SqliteProvider, repoPath: string, outP
     return JSON.stringify({ exported: existing.length, path: outPath, scope: 'project', committed: false });
   }
 
-  const merged = [...existing, ...qualifying.map(toCanonical)].sort(byId);
+  const merged = [...existing, ...qualifying.map(toCanonicalEntry)].sort(byId);
   const bible = {
     version: 2 as const,
     provenance: {
-      commit: resolveHeadCommit(repoPath),
-      branch: resolveBranch(repoPath),
+      commit: input.baseCommit ?? resolveHeadCommit(repoPath),
+      branch: input.baseBranch ?? resolveBranch(repoPath),
       entry_count: merged.length,
     },
     entries: merged,
@@ -417,36 +460,33 @@ async function exportProjectBible(source: SqliteProvider, repoPath: string, outP
   return JSON.stringify({ exported: merged.length, path: outPath, scope: 'project', committed });
 }
 
-export async function kbExport(input: KbExportInput): Promise<string> {
-  // apra-fleet-b4g.7: this is the third resolveRepoPath site, and it stays a
-  // hard failure rather than adopting kb_session_prime/kb_stats' pass-verbatim
-  // rule. Those two only READ through the anchor, so an unreachable remote path
-  // can be carried honestly and suppressed by SqliteProvider.anchorIsMissing().
-  // kb_export WRITES <repo_path>/.fleet/kb-canonical.json and git-commits it, so
-  // an unreachable path has no meaningful behaviour left -- it must not proceed.
-  // What matters for the shared anchor policy is that it never degrades to the
-  // fleet server's process.cwd(): a supplied-but-invalid repo_path throws here,
-  // before getKbProviders is reached, so no provider is ever anchored at the
-  // server's own working directory (pinned in kb-anchor-never-cwd.test.ts).
-  const repoPath = resolveRepoPath(input.repo_path);
+export async function kbExport(input: KbExportInput, anchor?: KbAnchor): Promise<string> {
+  // kb_export WRITES <folder>/.fleet/kb-canonical.json and git-commits it, so
+  // an unreachable folder has no meaningful behaviour left -- it must not
+  // proceed. An invalid anchor throws here, before getKbProviders is reached,
+  // so no provider is ever anchored somewhere the caller did not mean.
+  const resolved = resolveKbAnchor(anchor);
+  const repoPath = requireLocalFolder(resolved.folder);
   const scope = input.scope ?? 'project';
 
   // Read from the SAME repo we are about to write the bible into. Resolving the
   // source from process cwd while writing to repoPath is how repo A's entries
   // used to end up serialised into repo B's committed bible.
-  const providers = await getKbProviders(repoPath, input.repo_remote_url);
+  const providers = await getKbProviders(repoPath, resolved.remoteUrl);
   const fleetDir = path.join(repoPath, '.fleet');
   const fileName = scope === 'global' ? 'kb-canonical-global.json' : 'kb-canonical.json';
   const outPath = path.join(fleetDir, fileName);
 
   if (scope === 'project') {
-    return exportProjectBible(requireSqliteProject(providers.project, 'kb_export'), repoPath, outPath);
+    return exportProjectBible(requireSqliteProject(providers.project, 'kb_export'), repoPath, outPath, input);
   }
 
-  const entries = await providers.global.list({ confidence: 'CONFIRMED' });
+  const entries = await providers.global.list({ confidence: ['CONFIRMED'] });
 
   // Deterministic ordering by id so re-exports produce meaningful diffs.
-  const canonical: CanonicalEntry[] = entries.map(toCanonical).sort(byId);
+  const canonical: CanonicalEntry[] = entries
+    .map(toCanonicalEntry)
+    .sort(compareById);
 
   if (!fs.existsSync(fleetDir)) {
     fs.mkdirSync(fleetDir, { recursive: true });
@@ -480,8 +520,8 @@ export async function kbExport(input: KbExportInput): Promise<string> {
   const bible: CanonicalBible = {
     version: 2,
     provenance: {
-      commit: resolveHeadCommit(repoPath),
-      branch: resolveBranch(repoPath),
+      commit: input.baseCommit ?? resolveHeadCommit(repoPath),
+      branch: input.baseBranch ?? resolveBranch(repoPath),
       entry_count: canonical.length,
     },
     entries: canonical,

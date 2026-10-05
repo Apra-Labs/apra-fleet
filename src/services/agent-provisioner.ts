@@ -9,6 +9,9 @@
  * and pushes only what's missing or stale.
  */
 import { createHash } from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import type { Agent, LlmProvider } from '../types.js';
 import { getOsCommands } from '../os/index.js';
 import { getAgentOS, getAgentShell } from '../utils/agent-helpers.js';
@@ -17,6 +20,7 @@ import { uploadContentToHome } from './sftp.js';
 import { loadAgentAssets } from '../cli/install.js';
 import { getAgentsDirRelative } from '../cli/config.js';
 import { getProvider } from '../providers/index.js';
+import { memberMcpToolGrants } from '../cli/agent-transform.js';
 
 export interface CanonicalAgentFile {
   relPath: string;
@@ -162,4 +166,69 @@ export async function provisionAgents(agent: Agent): Promise<ProvisionResult> {
   } catch (err: any) {
     return { pushed: [], warning: `Agent provisioning failed: ${err?.message ?? String(err)}` };
   }
+}
+
+/** Role files whose restrictive `tools:` list does not grant every member MCP
+ *  tool (exported for tests). A file with no tools list or a wildcard one
+ *  inherits every tool and is fine. */
+export function rolesMissingMemberToolGrant(files: Array<{ relPath: string; content: string }>): string[] {
+  const grants = memberMcpToolGrants();
+  const out: string[] = [];
+  for (const f of files) {
+    if (!f.relPath.endsWith('.md')) continue;
+    const fm = f.content.replace(/\r\n/g, '\n').match(/^---\s*\n([\s\S]*?)\n---\s*\n/);
+    if (!fm) continue;
+    const line = fm[1].split('\n').find(l => /^tools:\s*(.+)/.test(l));
+    if (!line) continue;
+    const tools = line.replace(/^tools:\s*/, '').trim().replace(/^\[/, '').replace(/\]$/, '')
+      .split(',').map(t => t.trim()).filter(Boolean);
+    if (tools.includes('*')) continue;
+    if (grants.some(g => !tools.includes(g))) out.push(f.relPath);
+  }
+  return out;
+}
+
+export type RoleAgentToolCheck = { ok: true } | { ok: false; detail: string };
+
+/**
+ * Member-init check through the CLI's real resolution path: a sprint role is
+ * dispatched as `claude --agent <role>`, and the role file's `tools:` list
+ * then filters the whole session, so a connected member MCP server is not
+ * enough -- the role files the member's CLI loads must grant the kb_* /
+ * code_* tools. Claude only (no other provider applies an MCP allowlist from
+ * these files). Remote: re-provisions stale role files first (the same push
+ * execute_prompt does before every dispatch), then requires the member's
+ * copies to match the canonical set. Local: the role files live in the
+ * orchestrator's own home, written by `apra-fleet install`.
+ */
+export async function checkRoleAgentMemberTools(agent: Agent, homeDir: string = os.homedir()): Promise<RoleAgentToolCheck> {
+  if ((agent.llmProvider ?? 'claude') !== 'claude') return { ok: true };
+  const canonical = loadCanonicalAgentSet('claude');
+  const badCanonical = rolesMissingMemberToolGrant(canonical);
+  if (badCanonical.length > 0) {
+    return { ok: false, detail: `role definitions do not grant the member kb_*/code_* tools: ${badCanonical.join(', ')}` };
+  }
+  const rel = remoteAgentsDir('claude');
+  if (!rel) return { ok: true };
+  if (agent.agentType === 'local') {
+    const dir = path.join(homeDir, rel);
+    const bad: string[] = [];
+    for (const f of canonical) {
+      if (!f.relPath.endsWith('.md')) continue;
+      let installed: string;
+      try { installed = fs.readFileSync(path.join(dir, f.relPath), 'utf-8'); } catch { continue; }
+      if (rolesMissingMemberToolGrant([{ relPath: f.relPath, content: installed }]).length > 0) bad.push(f.relPath);
+    }
+    return bad.length === 0
+      ? { ok: true }
+      : { ok: false, detail: `installed role files in ${dir} hide the member kb_*/code_* tools from --agent sessions: ${bad.join(', ')}` };
+  }
+  const pushed = await provisionAgents(agent);
+  if (pushed.warning) return { ok: false, detail: pushed.warning };
+  const { hashes, failed } = await probeRemoteAgentHashes(agent, rel);
+  if (failed || hashes === null) return { ok: false, detail: 'could not read the member role files back after provisioning' };
+  const stale = diffAgentSet(canonical, hashes).map(f => f.relPath).filter(p => p.endsWith('.md'));
+  return stale.length === 0
+    ? { ok: true }
+    : { ok: false, detail: `member role files differ from the canonical set (their tools lists may hide kb_*/code_*): ${stale.join(', ')}` };
 }

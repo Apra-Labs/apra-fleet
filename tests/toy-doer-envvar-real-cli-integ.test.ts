@@ -5,8 +5,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { runAuth } from '../src/cli/auth.js';
 import { addAgent, getAllAgents } from '../src/services/registry.js';
-import { buildAuthEnvPrefix } from '../src/utils/auth-env.js';
-import { getAgentOS } from '../src/utils/agent-helpers.js';
+import { decryptAuthEnvVars } from '../src/utils/auth-env.js';
 import {
   checkCleanEnvRealClaudeAuthViaEnvVar,
   defaultCredentialsPath,
@@ -28,8 +27,8 @@ import { applyIsolatedHome } from './helpers/isolated-home.mjs';
 // credentials-FILE branch. This suite pins the DISTINCT env-var branch:
 // LocalStrategy's clean-env dispatch (`env -i HOME=$SANDBOX ... bash -l -c
 // ...`) exports a member's encryptedEnvVars straight into the child shell
-// via buildAuthEnvPrefix() (src/utils/auth-env.ts) -- an inline
-// `export CLAUDE_CODE_OAUTH_TOKEN="<token>" && ...` prefix -- and the real
+// via a staged owner-only env file (src/utils/auth-env.ts,
+// src/services/member-secret-env.ts; the value is never inline) -- and the real
 // claude CLI must authenticate off of that alone, with no credentials file
 // involved at all.
 //
@@ -155,8 +154,7 @@ describe.skipIf(!REAL_CLI_PROBE_OPTED_IN || !CLAUDE_CLI_AVAILABLE || !REAL_TOKEN
       addAgent(member);
       const stored = getAllAgents().find(a => a.friendlyName === member.friendlyName)!;
 
-      const prefix = buildAuthEnvPrefix(stored, getAgentOS(stored));
-      expect(prefix).toBe('');
+      expect(decryptAuthEnvVars(stored)).toEqual({});
       expect(fs.existsSync(credPath())).toBe(false);
 
       const result = checkCleanEnvRealClaudeAuthViaEnvVar('', tmpHome);
@@ -185,12 +183,9 @@ describe.skipIf(!REAL_CLI_PROBE_OPTED_IN || !CLAUDE_CLI_AVAILABLE || !REAL_TOKEN
       // Never touches a credentials file -- registry-only (apra-fleet-eft.48.8).
       expect(fs.existsSync(credPath())).toBe(false);
 
-      // buildAuthEnvPrefix() is what LocalStrategy's dispatch actually
-      // prepends to every command for this member -- proves the real
-      // wiring, not just the probe's own escaping.
-      const prefix = buildAuthEnvPrefix(updated, getAgentOS(updated));
-      expect(prefix).toContain("export CLAUDE_CODE_OAUTH_TOKEN='");
-      expect(prefix).toContain(REAL_TOKEN as string);
+      // decryptAuthEnvVars() is what the dispatch stages into the member's
+      // owner-only env file -- proves the real wiring.
+      expect(decryptAuthEnvVars(updated).CLAUDE_CODE_OAUTH_TOKEN === REAL_TOKEN).toBe(true);
 
       const result = checkCleanEnvRealClaudeAuthViaEnvVar(REAL_TOKEN as string, tmpHome);
       expect(result.authenticated).toBe(true);

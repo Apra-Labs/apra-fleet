@@ -13,6 +13,7 @@ import { updateAgent } from '../services/registry.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { isRetryable, authErrorAdvice, workspaceNotTrustedAdvice, type PromptErrorCategory } from '../utils/prompt-errors.js';
 import { buildEnvPrefix } from '../utils/env-prefix.js';
+import { stageAuthEnv, removeMemberSecretFile, SecretDeliveryError, type StagedAuthEnv } from '../services/member-secret-env.js';
 import { writeStatusline } from '../services/statusline.js';
 import { getModelOverride } from '../services/user-config.js';
 import { ensureCloudReady } from '../services/cloud/lifecycle.js';
@@ -48,7 +49,7 @@ import { ensureAgyProject } from '../services/agy-project.js';
 
 export interface ExecutePromptStructured {
   isError?: boolean;
-  reason?: 'busy' | 'reserved' | 'dispatch_failed' | 'nonzero_exit' | 'max_turns_exhausted' | 'empty_response' | 'orphan_recovery_timeout' | 'workspace_not_trusted' | 'auth' | 'server' | 'overloaded' | 'insufficient_context_headroom' | 'budget_exhausted' | 'session_not_found' | 'fork_unsupported' | 'stalled' | 'agent_never_started' | 'max_total_time' | 'preflight_offline' | 'preflight_auth_missing' | 'preflight_auth_expired' | 'usage_limit' | 'permission_denied';
+  reason?: 'busy' | 'reserved' | 'dispatch_failed' | 'nonzero_exit' | 'max_turns_exhausted' | 'empty_response' | 'orphan_recovery_timeout' | 'workspace_not_trusted' | 'auth' | 'server' | 'overloaded' | 'insufficient_context_headroom' | 'budget_exhausted' | 'session_not_found' | 'fork_unsupported' | 'stalled' | 'agent_never_started' | 'max_total_time' | 'preflight_offline' | 'preflight_auth_missing' | 'preflight_auth_expired' | 'usage_limit' | 'permission_denied' | 'secret_delivery_unavailable';
   // The LLM's actual reply text on success. Callers that dispatch execute_prompt
   // via an MCP client only ever see structuredContent (the content array is
   // dropped when structuredContent is also present) -- this field exists so the
@@ -302,12 +303,16 @@ async function deletePromptFile(agent: Agent, strategy: AgentStrategy, promptFil
   const remoteDir = path.dirname(promptFilePath);
 
   // apra-fleet-7dir.5.4: gitbash members take the POSIX branch, matching
-  // writePromptFile above -- and only that branch deletes `extraPaths` (the
-  // durable stdout mirror), which lives at a POSIX /tmp path PowerShell would
-  // resolve to a different directory entirely.
+  // writePromptFile above -- the durable stdout mirror in `extraPaths` lives
+  // at a POSIX /tmp path PowerShell would resolve to a different directory
+  // entirely.
   if (!isPosixShellMember(agent)) {
     const escapedFolder = escapeWindowsArg(remoteDir);
-    const psScript = `Set-Location "${escapedFolder}"; Remove-Item "${promptFileName}" -Force -ErrorAction SilentlyContinue`;
+    // extraPaths here are only staged credential files (absolute member
+    // paths); PowerShell members have no durable stdout mirror.
+    // Removed first, by absolute path, independent of the work folder.
+    const extras = extraPaths.map(p => `Remove-Item -LiteralPath '${escapePowerShellArgInner(p)}' -Force -ErrorAction SilentlyContinue; `).join('');
+    const psScript = `${extras}Set-Location "${escapedFolder}"; Remove-Item "${promptFileName}" -Force -ErrorAction SilentlyContinue`;
     const encoded = Buffer.from(psScript, 'utf16le').toString('base64');
     await strategy.execCommand(`powershell -EncodedCommand ${encoded}`).catch(() => { /* ignore */ });
   } else {
@@ -315,7 +320,10 @@ async function deletePromptFile(agent: Agent, strategy: AgentStrategy, promptFil
     // apra-fleet-6z8.1: the durable stdout mirror is cleaned up in the SAME
     // round trip as the prompt file -- no extra exec per dispatch.
     const extras = extraPaths.map(p => ` "${escapeDoubleQuoted(p)}"`).join('');
-    await strategy.execCommand(`cd "${escapedFolder}" && rm -f ${promptFileName}${extras}`).catch(() => { /* ignore */ });
+    // extraPaths are absolute (durable mirror, staged credential files): removed
+    // unconditionally, even when the work folder is gone and the cd fails.
+    const extrasRm = extras ? `rm -f${extras}; ` : '';
+    await strategy.execCommand(`${extrasRm}cd "${escapedFolder}" && rm -f ${promptFileName}`).catch(() => { /* ignore */ });
   }
 }
 
@@ -830,8 +838,8 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   // practice, but that is a fact about what each provider adapter currently
   // advertises, not a name-based pre-filter here -- any provider that
   // implements the same MCP channel capability is picked up automatically. A
-  // member CAN still have a live sessionRegistry entry (registerMcpEndpoint
-  // gives it basic MCP tool access, apra-fleet-fnz.1-3) without that meaning
+  // member CAN still have a live sessionRegistry entry (its per-folder
+  // apra-fleet MCP entry gives it basic MCP tool access) without that meaning
   // it can receive or act on this push -- routing to it anyway would silently
   // spend the full timeout_s waiting for a response that can never arrive.
   // R2-F3: re-query session registry after the preflight await (10-20s) so
@@ -1009,11 +1017,11 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   const cmds = getOsCommands(getAgentOS(agent), getAgentShell(agent));
   const provider = getProvider(agent.llmProvider);
 
-  // F14: member.env AND auth env in the member's ACTUAL shell form. Computed
-  // ONCE here and prepended at the main launch below plus all four retry
-  // sites, so every command this tool dispatches carries the same
-  // environment -- a retry must not silently run with less env than the
-  // attempt it is replacing.
+  // F14: member.env ONLY, in the member's ACTUAL shell form. Computed ONCE
+  // here and prepended (by dispatchAttempt) to the main launch and all four
+  // retry sites, so every command this tool dispatches carries the same
+  // environment. Stored auth credentials never ride the command line: each
+  // attempt loads them from a staged file AFTER this prefix (auth wins).
   const envPrefix = buildEnvPrefix(agent, { os: getAgentOS(agent), shell: getAgentShell(agent) });
 
   const tiers = provider.modelTiers();
@@ -1243,7 +1251,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     logPathAuthoritative: !!resolvedLogPath && logPathAuthoritative,
   });
 
-  const claudeCmd = envPrefix + cmds.buildAgentPromptCommand(provider, promptOpts);
+  const claudeCmd = cmds.buildAgentPromptCommand(provider, promptOpts);
 
   // apra-fleet-6z8.1: the per-invocation durable stdout mirror the unix prompt
   // wrapper tees to (see durableOutputPath / buildAgentPromptCommand). A
@@ -1435,11 +1443,36 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     }
   }
 
-  // Kill any leftover session from a previous (possibly zombie) execute_prompt call
-  await tryKillPid(agent, strategy, cmds);
+  // Stage the first attempt's credential file BEFORE touching the member
+  // (kill, prompt write, dispatch). A delivery failure (relay member, SFTP
+  // subsystem disabled) is deterministic: a typed failure, never retried.
+  const stagedEnvPaths: string[] = [];
+  let preStaged: StagedAuthEnv | undefined;
+  try {
+    preStaged = await stageAuthEnv(agent);
+  } catch (err) {
+    if (!(err instanceof SecretDeliveryError)) throw err;
+    scope.abort(`secret delivery unavailable (no LLM call)`);
+    inFlightAgents.delete(agent.id);
+    stallDetector.remove(agent.id);
+    writeStatusline(new Map([[agent.id, 'idle']]));
+    return {
+      text: `[FAIL] execute_prompt on "${agent.friendlyName}" rejected -- ${err.message} No LLM call was made.`,
+      structuredContent: { isError: true, reason: 'secret_delivery_unavailable' },
+    };
+  }
+  if (preStaged.path) stagedEnvPaths.push(preStaged.path);
 
-  // Write the rendered prompt (with substitutions applied) to the prompt file before execution
-  await writePromptFile(agent, strategy, promptFilePath, renderedPrompt);
+  try {
+    // Kill any leftover session from a previous (possibly zombie) execute_prompt call
+    await tryKillPid(agent, strategy, cmds);
+
+    // Write the rendered prompt (with substitutions applied) to the prompt file before execution
+    await writePromptFile(agent, strategy, promptFilePath, renderedPrompt);
+  } catch (err) {
+    if (preStaged.path) await removeMemberSecretFile(agent, preStaged.path);
+    throw err;
+  }
 
   // apra-fleet-6z8.1: remembered for the lease-of-life gate below -- the pid
   // outlives the SSH channel that reported it, and is the only way to tell a
@@ -1486,9 +1519,22 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   // due together and the inactivity one, armed first, wins the tie. That
   // kill IS the max_total_s ceiling, so it is classified as max_total_time.
   let lastAttempt: { timeoutMs: number; maxTotalMs: number | undefined } | undefined;
-  const dispatchAttempt = (cmd: string, attemptTimeoutMs: number, attemptMaxTotalMs: number | undefined) => {
+  // Stored auth env vars reach the CLI through a per-attempt owner-only file
+  // the command loads and deletes (stageAuthEnv) -- never as inline values in
+  // the command line, which would sit in the member shell's argv (readable
+  // via ps) for the whole dispatch. Each attempt stages its own file because
+  // the prefix deletes it once loaded; any file a failed attempt left behind
+  // is removed with the prompt file at the end.
+  // The first attempt uses the file staged before dispatch (preStaged).
+  const dispatchAttempt = async (cmd: string, attemptTimeoutMs: number, attemptMaxTotalMs: number | undefined) => {
     lastAttempt = { timeoutMs: attemptTimeoutMs, maxTotalMs: attemptMaxTotalMs };
-    return strategy.execCommand(cmd, attemptTimeoutMs, attemptMaxTotalMs, onPidCaptured, dispatchSignal);
+    let staged = preStaged;
+    preStaged = undefined;
+    if (!staged) {
+      staged = await stageAuthEnv(agent);
+      if (staged.path) stagedEnvPaths.push(staged.path);
+    }
+    return strategy.execCommand(envPrefix + staged.prefix + cmd, attemptTimeoutMs, attemptMaxTotalMs, onPidCaptured, dispatchSignal);
   };
   const isMaxTotalKill = (err: unknown): boolean => {
     const msg = (err as { message?: unknown })?.message;
@@ -1601,7 +1647,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       scope.info(`[${resolvedModel}] retrying -- dispatch exception: ${dispatchErr.message}`);
       await tryKillPid(agent, strategy, cmds);
       const freshOpts = { ...promptOpts, sessionId: isCallerMinted ? uuid() : undefined, resuming: false, fork: undefined };
-      const retryCmd = envPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
+      const retryCmd = cmds.buildAgentPromptCommand(provider, freshOpts);
       result = await dispatchAttempt(retryCmd, budget.timeoutMs, budget.maxTotalMs);
     }
     let parsed = provider.parseResponse(result, parseCtx);
@@ -1645,7 +1691,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
         scope.info(`[${resolvedModel}] retrying -- stale session`);
         await tryKillPid(agent, strategy, cmds);
         const freshOpts = { ...promptOpts, sessionId: isCallerMinted ? uuid() : undefined, resuming: false, fork: undefined };
-        const retryCmd = envPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
+        const retryCmd = cmds.buildAgentPromptCommand(provider, freshOpts);
         result = await dispatchAttempt(retryCmd, staleBudget.timeoutMs, staleBudget.maxTotalMs);
         parsed = provider.parseResponse(result, parseCtx);
         if (parsed.usage) _epUsage = parsed.usage;
@@ -1666,7 +1712,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
         await tryKillPid(agent, strategy, cmds);
         await new Promise(r => setTimeout(r, SERVER_RETRY_DELAY_MS));
         const freshOpts = { ...promptOpts, sessionId: isCallerMinted ? uuid() : undefined, resuming: false, fork: undefined };
-        const retryCmd = envPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
+        const retryCmd = cmds.buildAgentPromptCommand(provider, freshOpts);
         result = await dispatchAttempt(retryCmd, overloadBudget.timeoutMs, overloadBudget.maxTotalMs);
         parsed = provider.parseResponse(result, parseCtx);
         if (parsed.usage) _epUsage = parsed.usage;
@@ -1826,7 +1872,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
         if (!healBudget.exhausted) {
           await tryKillPid(agent, strategy, cmds);
           const freshOpts = { ...promptOpts, sessionId: isCallerMinted ? uuid() : undefined, resuming: false, fork: undefined };
-          const retryCmd = envPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
+          const retryCmd = cmds.buildAgentPromptCommand(provider, freshOpts);
           result = await dispatchAttempt(retryCmd, healBudget.timeoutMs, healBudget.maxTotalMs);
           parsed = provider.parseResponse(result, parseCtx);
           if (parsed.usage) _epUsage = parsed.usage;
@@ -1987,12 +2033,12 @@ session: ${parsed.sessionId}`;
       // rejected count is the invariant working, not a regression to tune away.
       void import('./kb-harvest.js')
         .then(({ kbHarvest }) =>
+          // Explicit in-process anchor (not a tool input): this harvest is for
+          // the dispatched member's repo, not the server's own session.
           kbHarvest({
-            repo_path: resolvedWorkFolder,
-            repo_remote_url: knownRepoRemoteUrl(agent),
             session_transcript: parsed.result,
             session_id: parsed.sessionId,
-          })
+          }, { folder: resolvedWorkFolder, remoteUrl: knownRepoRemoteUrl(agent) })
         )
         .then((raw: string) => {
           try {
@@ -2062,7 +2108,7 @@ session: ${parsed.sessionId}`;
       inFlightAgents.delete(agent.id);
     }
     stallDetector.remove(agent.id);
-    await deletePromptFile(agent, strategy, promptFilePath, durablePath ? [durablePath] : []);
+    await deletePromptFile(agent, strategy, promptFilePath, [...(durablePath ? [durablePath] : []), ...stagedEnvPaths]);
   }
   } catch (err) {
     if (claimGuardActive) {

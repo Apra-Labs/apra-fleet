@@ -29,6 +29,11 @@ export async function createKbProviders(cwd?: string, remoteUrl?: string): Promi
 // touches -- so it gets its own single-slot cache.
 let _globalProvider: Promise<SqliteProvider> | null = null;
 
+/** The single shared global KB provider. */
+export function getGlobalKbProvider(): Promise<SqliteProvider> {
+  return getGlobalProvider();
+}
+
 function getGlobalProvider(): Promise<SqliteProvider> {
   if (!_globalProvider) {
     _globalProvider = (async () => {
@@ -275,6 +280,11 @@ function slugFor(cwd?: string, remoteUrl?: string): string {
     _slugCache.set(key, slug);
   }
   return slug;
+}
+
+/** The project slug (KB identity) for a repo folder, cached like getKbProviders'. */
+export function getProjectSlug(cwd?: string, remoteUrl?: string): string {
+  return slugFor(cwd, remoteUrl);
 }
 
 /**

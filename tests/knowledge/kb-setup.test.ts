@@ -41,7 +41,7 @@ function writeConfig(content: string): void {
 
 describe('kb_setup', () => {
   it('installs post-commit hook in repo', async () => {
-    const result = JSON.parse(await kbSetup({ repo_path: tmpDir }));
+    const result = JSON.parse(await kbSetup({}, { folder: tmpDir }));
     expect(result.success).toBe(true);
     const hookPath = path.join(tmpDir, '.git', 'hooks', 'post-commit');
     expect(fs.existsSync(hookPath)).toBe(true);
@@ -50,18 +50,17 @@ describe('kb_setup', () => {
   });
 
   it('writes config file with provider', async () => {
-    const result = JSON.parse(await kbSetup({ repo_path: tmpDir, provider: 'sqlite' }));
+    const result = JSON.parse(await kbSetup({ provider: 'sqlite' }, { folder: tmpDir }));
     expect(result.success).toBe(true);
     expect(result.steps.some((s: string) => s.includes('config'))).toBe(true);
   });
 
   it('stores remote token encrypted (never plaintext)', async () => {
     const result = JSON.parse(await kbSetup({
-      repo_path: tmpDir,
       provider: 'http',
       remote: 'http://localhost:7878',
       token: 'secret-token-123',
-    }));
+    }, { folder: tmpDir }));
     expect(result.success).toBe(true);
     expect(result.steps.some((s: string) => s.includes('encrypted'))).toBe(true);
 
@@ -89,7 +88,7 @@ describe('kb_setup remote validation', () => {
   }
 
   async function setupWith(remote: string, token = crypto.randomUUID()) {
-    const raw = await kbSetup({ repo_path: tmpDir, provider: 'http', remote, token });
+    const raw = await kbSetup({ provider: 'http', remote, token }, { folder: tmpDir });
     return { raw, token, result: JSON.parse(raw) as { success: boolean; warnings: string[] } };
   }
 
@@ -99,7 +98,7 @@ describe('kb_setup remote validation', () => {
     ['a non-http(s) scheme', 'ftp://kb.example.com/'],
   ])('rejects %s, naming the field, before any side effect', async (_label, remote) => {
     const existing = writeExistingConfig();
-    await expect(kbSetup({ repo_path: tmpDir, provider: 'http', remote, token: crypto.randomUUID() }))
+    await expect(kbSetup({ provider: 'http', remote, token: crypto.randomUUID() }, { folder: tmpDir }))
       .rejects.toThrow(/kb_setup: remote /);
     expect(fs.existsSync(hookPath())).toBe(false);
     expect(fs.readFileSync(configPath, 'utf-8')).toBe(existing);
@@ -107,7 +106,7 @@ describe('kb_setup remote validation', () => {
 
   it('does not echo the raw remote (which may carry credentials) in the rejection', async () => {
     const secretish = `user-${crypto.randomUUID()}`;
-    const err = await kbSetup({ repo_path: tmpDir, remote: `ftp://${secretish}@kb.example.com/` })
+    const err = await kbSetup({ remote: `ftp://${secretish}@kb.example.com/` }, { folder: tmpDir })
       .then(() => null, (e: Error) => e);
     expect(err).toBeInstanceOf(Error);
     expect(err!.message).not.toContain(secretish);
@@ -154,7 +153,7 @@ describe('kb_setup merges into the existing config', () => {
 
   type SetupResult = { success: boolean; warnings: string[] };
   async function setup(input: Parameters<typeof kbSetup>[0]): Promise<SetupResult> {
-    return JSON.parse(await kbSetup({ repo_path: tmpDir, ...input }));
+    return JSON.parse(await kbSetup({ ...input }, { folder: tmpDir }));
   }
 
   it('keeps bible.autoCommit and unknown keys when pointing at a remote', async () => {

@@ -137,7 +137,20 @@ export async function resolveSettleShellWith({ fleetApi, member, log = () => {} 
  *   fleetApi: object|null,
  *   resolveMemberProvider: ((member: string) => Promise<string|undefined>)|undefined,
  *   resolveSettleShell: (opts: { member: string, log?: Function }) => Promise<string>,
+ *   dispatchToolCalls: object[],
+ *   memberInit: object[],
+ *   startedAtMs: number,
  * }}
+ *
+ * `dispatchToolCalls` is the sprint's per-dispatch kb_* and code_* call record
+ * list (dispatch-accounting.mjs appends one entry per member dispatch, from
+ * session_stats snapshots taken before and after it). The sprint summary and
+ * the viewer read it from here.
+ *
+ * `memberInit` holds one record per member from the sprint-init probe
+ * (member-init-probe.mjs MemberInitRecord): verified status, fleetMcp, tool
+ * presence, CONFIRMED count and code index state. Filled once at sprint init
+ * and read by the KNOWLEDGE BANK injection and the viewer.
  */
 export function createSprintState({ callTool, log = () => {}, createFleetApi } = {}) {
     const active = typeof callTool === 'function';
@@ -152,12 +165,21 @@ export function createSprintState({ callTool, log = () => {}, createFleetApi } =
     // createMemberVcsProviderResolver and is unchanged by the relocation.
     const resolveMemberProvider = active ? createMemberVcsProviderResolver({ callTool, log }) : undefined;
 
+    // The sprint's ONE start stamp, taken when the state is built at the top
+    // of runSprintCycle. Every "since this sprint started" decision reads it
+    // (the stale in_progress reclaim, the KB promotion-candidate window)
+    // rather than taking its own Date.now().
+    const startedAtMs = Date.now();
+
     return {
+        startedAtMs,
         callTool: active ? callTool : undefined,
         fleetApi,
         resolveMemberProvider,
         resolveSettleShell({ member, log: callLog = log } = {}) {
             return resolveSettleShellWith({ fleetApi, member, log: callLog });
         },
+        dispatchToolCalls: [],
+        memberInit: [],
     };
 }

@@ -318,28 +318,30 @@ export function isMaxTurnsResponse(parsed: ParsedResponse | undefined | null): b
   return parsed.terminalReason === 'max_turns' || parsed.subtype === 'error_max_turns';
 }
 
-export interface RegisterMcpEndpointOptions {
-  /** e.g. http://<host>:<port>/mcp?member=<member-uuid> */
-  url: string;
-  /** JWT bearer token for the member's fleet MCP session. */
-  token: string;
-  workFolder: string;
-  scope: 'project' | 'user';
+/** Context for {@link ProviderAdapter.syncMemberMcpEntry}. */
+export interface MemberMcpSyncContext {
+  agent: import('../types.js').Agent;
+  execCommand: WorkspaceTrustExecFn;
+  /** The member's home directory, resolved in JavaScript (getMemberHomeDir); null when unresolvable. */
+  memberHomeDir: string | null;
+  agentOs: 'linux' | 'macos' | 'windows';
+  shell?: MemberShell;
+  /** Out-of-band file channel for large home-anchored files (see WorkspaceTrustTransport). */
+  transport?: WorkspaceTrustTransport;
+  /** The per-folder apra-fleet entry URL (.../mcp?member=<uuid>) to write, or null to REMOVE
+   *  the entry this provider wrote for the member's folder (provider switch cleanup). */
+  url: string | null;
 }
 
-export interface RegisterMcpEndpointResult {
-  /** e.g. 'cli-verb' (Claude's `claude mcp add`) or 'config-file-merge' (AGY/OpenCode). */
-  mechanism: string;
-  /** Human-readable detail for logging/audit -- what file or command was used. */
+export interface MemberMcpSyncResult {
+  /** Work-folder-relative files this provider owns for the member MCP entry -- the
+   *  caller keeps them out of `git status` via the clone's .git/info/exclude. */
+  workFolderFiles: string[];
+  /** Human-readable summary for logs/tool output. */
   detail: string;
 }
 
-/** Delivery channel for {@link ProviderAdapter.ensureWorkspaceTrusted} -- the SAME
- *  channel compose_permissions' deliverConfigFile already uses (AgentStrategy.execCommand:
- *  SSH for remote members, local shell exec for local members). Kept as a narrow function
- *  type (rather than importing AgentStrategy) so providers.ts has no dependency on
- *  services/strategy.ts. */
-export type WorkspaceTrustExecFn = (command: string, timeoutMs?: number) => Promise<SSHExecResult>;
+export type WorkspaceTrustExecFn =(command: string, timeoutMs?: number) => Promise<SSHExecResult>;
 
 /** Optional file-delivery channel for {@link ProviderAdapter.ensureWorkspaceTrusted}
  *  (GitHub #499). Writes `content` to `relPath`, resolved relative to the MEMBER's home
@@ -545,6 +547,30 @@ export interface ProviderAdapter {
   /** Returns the correct environment variable name for the given API key/token. */
   authEnvVarForToken(token: string): string;
 
+  /**
+   * Every env var name this provider's CLI reads a credential from. They are
+   * mutually exclusive: provisioning one clears the others (shell profiles and
+   * the member's stored encryptedEnvVars) so the CLI cannot pick a stale
+   * credential of the other kind. Optional -- providers with a single auth env
+   * var need not implement it.
+   */
+  authEnvVarNames?(): string[];
+
+  /**
+   * A warning when the token's shape is not one this provider recognises
+   * (the env var chosen for it is then a guess), or null when recognised.
+   * Must be pure -- preflight probes authEnvVarForToken with fake tokens.
+   * Never echoes the token itself.
+   */
+  authTokenKindWarning?(token: string): string | null;
+
+  /**
+   * Remote credential files an env-var token supersedes. When an env token is
+   * provisioned these are moved aside (renamed, never deleted) so a stale
+   * copied login cannot shadow or confuse the provisioned credential.
+   */
+  credentialFilesSupersededByEnvToken?(token: string): string[];
+
 
   // Windows / PowerShell prompt building helpers
   /** On Windows, wrap the command for execution (e.g. via .NET ProcessStartInfo or direct shell). */
@@ -556,12 +582,12 @@ export interface ProviderAdapter {
    *  Returns e.g. `-p "LITERAL"` for Claude/AGY/Copilot or `exec "LITERAL"` for Codex. */
   headlessInvocation(promptLiteral: string): string;
 
-  /** Register (or update) this member's apra-fleet MCP endpoint using the provider's own
-   *  native mechanism (CLI verb, e.g. Claude's `claude mcp add`; or config-file merge, e.g.
-   *  AGY/OpenCode). Optional until every provider's mechanism has been investigated and
-   *  implemented -- see docs/member-onboarding-journey.md section 3/3a.
-   *  Returns what was done, for logging/audit. */
-  registerMcpEndpoint?(opts: RegisterMcpEndpointOptions): Promise<RegisterMcpEndpointResult>;
+  /** Writes (ctx.url set) or removes (ctx.url null) the member's PER-FOLDER `apra-fleet`
+   *  MCP entry in this provider's native per-project config, and prunes the legacy
+   *  `apra-fleet-member` url+bearer entry wherever this provider keeps MCP servers.
+   *  Never writes a tracked project `.mcp.json`; never touches deepwiki or any other
+   *  server. Omitted by providers with nothing to write or prune. */
+  syncMemberMcpEntry?(ctx: MemberMcpSyncContext): Promise<MemberMcpSyncResult>;
 
   /** Optional provider-NATIVE usage/quota read for execute_prompt budget
    *  awareness (apra-fleet-eft.80.2). When implemented, this is the PRIMARY
@@ -588,7 +614,10 @@ export interface ProviderAdapter {
    *  because the PowerShell ones are handed straight to bash.exe and fail (apra-fleet-7dir.2.8).
    *  `transport.writeHomeFile`, when present, delivers the merged file without a shell
    *  command line (node:fs / SFTP) so a large ~/.claude.json cannot overflow the Windows
-   *  CreateProcess limit (GitHub #499); without it the adapter chunks the write on Windows. */
+   *  CreateProcess limit (GitHub #499); without it the adapter chunks the write on Windows.
+   *  `memberHomeDir` is the member home resolved in JavaScript (getMemberHomeDir); every
+   *  member-side path is built from it, never from a shell home variable, and an adapter
+   *  that needs it refuses (seeded: false, E-MEMBER-HOME-UNRESOLVED) when it is absent. */
   ensureWorkspaceTrusted(workFolder: string, execCommand: WorkspaceTrustExecFn, agentOs?: 'linux' | 'macos' | 'windows', shell?: MemberShell, transport?: WorkspaceTrustTransport, memberHomeDir?: string | null): Promise<EnsureWorkspaceTrustedResult>;
 }
 

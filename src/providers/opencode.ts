@@ -1,4 +1,4 @@
-import type { ProviderAdapter, PromptOptions, ParsedResponse, UsageLimitSignal, RegisterMcpEndpointOptions, RegisterMcpEndpointResult, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult, SessionIdStrategy, ExecTimeoutSource, TargetOS } from './provider.js';
+import type { ProviderAdapter, PromptOptions, ParsedResponse, UsageLimitSignal, MemberMcpSyncContext, MemberMcpSyncResult, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult, SessionIdStrategy, ExecTimeoutSource, TargetOS } from './provider.js';
 import { joinForOS, resolveHomeDir, defaultUsageLimitSignal } from './provider.js';
 import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
@@ -7,9 +7,23 @@ import type { MemberShell } from '../os/os-commands.js';
 import { logWarn } from '../utils/log-helpers.js';
 import { sanitizeSessionId } from '../os/os-commands.js';
 import { transformAgentForOpenCode } from '../cli/agent-transform.js';
-import fs from 'node:fs';
-import path from 'node:path';
-import os from 'node:os';
+import { isPosixShell } from '../utils/agent-helpers.js';
+import {
+  deleteMemberFile,
+  joinMemberPath,
+  pruneLegacyMcpInMemberFile,
+  readMemberJson,
+  MemberConfigError,
+  MemberConfigNotJsonError,
+  isGitTracked,
+  memberFileExists,
+  writeMemberJson,
+  LEGACY_MEMBER_MCP_SERVER_NAME,
+  MEMBER_MCP_SERVER_NAME,
+} from '../services/member-config-io.js';
+
+/** Work-folder-relative project config opencode reads MCP servers from. */
+export const OPENCODE_PROJECT_CONFIG = 'opencode.json';
 
 export class OpenCodeProvider implements ProviderAdapter {
   readonly name: LlmProvider = 'opencode';
@@ -239,21 +253,95 @@ export class OpenCodeProvider implements ProviderAdapter {
   // `permission:` schema only has the three coarse categories below (edit/write/bash)
   // -- no per-tool or per-server MCP granularity exists to map onto (confirmed against
   // docs/opencode-exploration.md's live investigation). MCP tool access under OpenCode
-  // would be all-or-nothing at the SERVER level via registerMcpEndpoint's
-  // `mcp.apra-fleet-member` registration (unconditionally enabled, no per-tool gate) --
-  // not by this permission map. NOTE: registerMcpEndpoint is currently unreachable for
-  // every provider (its one caller in register-member.ts is gated behind
-  // interactiveBootstrapEnabled(), hardcoded to return false, and behind
-  // memberProvider === 'claude' besides), so no MCP server is actually registered this
-  // way for anyone today -- this comment describes the mechanism's shape, not a live
-  // path. Either way, this is a genuine platform limitation, not a gap to fix here; do
-  // not add MCP entries to the returned permission object, they would not be understood
-  // by OpenCode's schema.
+  // is all-or-nothing at the SERVER level: the member's per-folder apra-fleet entry in
+  // <workFolder>/opencode.json (syncMemberMcpEntry) is enabled outright, and the fleet
+  // server itself serves a ?member= session only the member allowlist. Do not add MCP
+  // entries to the returned permission object; OpenCode's schema would not understand them.
   composePermissionConfig(role: 'doer' | 'reviewer', _allow: string[] = []): Array<Record<string, unknown> | string> {
     if (role === 'doer') {
       return [{ permission: { edit: 'allow', write: 'allow', bash: 'allow' } }];
     }
     return [{ permission: { edit: 'deny', write: 'allow', bash: 'allow' } }];
+  }
+
+  /** Writes (or removes) mcp['apra-fleet'] in <workFolder>/opencode.json -- the
+   *  project-scope config opencode reads -- and prunes the retired
+   *  apra-fleet-member entry there and in the global
+   *  ~/.config/opencode/opencode.json. opencode gets no MCP deny rules: the
+   *  server already serves a member session only the member allowlist. On
+   *  removal the file is deleted when nothing else remains in it. */
+  async syncMemberMcpEntry(ctx: MemberMcpSyncContext): Promise<MemberMcpSyncResult> {
+    const { agent, url } = ctx;
+    const isWindows = ctx.agentOs === 'windows';
+    const posix = isPosixShell(isWindows, ctx.shell);
+    const file = joinMemberPath(agent.workFolder, OPENCODE_PROJECT_CONFIG, isWindows, ctx.shell);
+
+    let config: Record<string, unknown>;
+    try {
+      config = await readMemberJson(ctx.execCommand, file, posix);
+    } catch (e) {
+      // JSONC (comments / trailing commas) is common in opencode.json: report it
+      // as a typed, recoverable status and never rewrite the file.
+      if (e instanceof MemberConfigNotJsonError) {
+        throw new MemberConfigNotJsonError(file, 'is not strict JSON (JSONC comments or trailing commas?)', 'opencode-config-unparseable');
+      }
+      throw e;
+    }
+    const mcp: Record<string, unknown> = (config.mcp && typeof config.mcp === 'object' && !Array.isArray(config.mcp))
+      ? config.mcp as Record<string, unknown>
+      : {};
+    const hadLegacy = LEGACY_MEMBER_MCP_SERVER_NAME in mcp;
+    delete mcp[LEGACY_MEMBER_MCP_SERVER_NAME];
+    // Check if the file actually exists on disk (even if empty or {})
+    const fileExists = await memberFileExists(ctx.execCommand, file, posix);
+    let detail: string;
+    if (url !== null) {
+      const cur = mcp[MEMBER_MCP_SERVER_NAME] as Record<string, unknown> | undefined;
+      const current = !!cur && typeof cur === 'object' && cur.type === 'remote' && cur.url === url && cur.enabled === true && Object.keys(cur).length === 3;
+      if (current && !hadLegacy) {
+        detail = `opencode: ${file} already up to date`;
+      } else {
+        if (fileExists && await isGitTracked(ctx.execCommand, agent.workFolder, OPENCODE_PROJECT_CONFIG, isWindows, posix)) {
+          throw new MemberConfigError(
+            'E-OPENCODE-CONFIG-TRACKED',
+            'opencode-config-tracked',
+            file,
+            `E-OPENCODE-CONFIG-TRACKED: ${file} is tracked by git; compose left it untouched (writing the member URL would dirty the repo). Untrack it or add the apra-fleet MCP entry to it yourself.`,
+          );
+        }
+        mcp[MEMBER_MCP_SERVER_NAME] = { type: 'remote', url, enabled: true };
+        config.mcp = mcp;
+        await writeMemberJson(ctx.execCommand, file, config, posix);
+        detail = `opencode: wrote ${MEMBER_MCP_SERVER_NAME} in ${file}`;
+      }
+    } else if (fileExists && await isGitTracked(ctx.execCommand, agent.workFolder, OPENCODE_PROJECT_CONFIG, isWindows, posix)) {
+      detail = `opencode: ${file} is tracked by git; left untouched`;
+    } else {
+      delete mcp[MEMBER_MCP_SERVER_NAME];
+      if (Object.keys(mcp).length > 0) config.mcp = mcp; else delete config.mcp;
+      if (Object.keys(config).length === 0) {
+        await deleteMemberFile(ctx.execCommand, file, posix);
+        detail = `opencode: removed ${file}`;
+      } else {
+        await writeMemberJson(ctx.execCommand, file, config, posix);
+        detail = `opencode: removed ${MEMBER_MCP_SERVER_NAME} from ${file}`;
+      }
+    }
+
+    if (ctx.memberHomeDir) {
+      const globalFile = joinMemberPath(ctx.memberHomeDir.trim(), '.config/opencode/opencode.json', isWindows, ctx.shell);
+      try {
+        if (await pruneLegacyMcpInMemberFile(ctx.execCommand, globalFile, posix)) {
+          detail += `; pruned apra-fleet-member from ${globalFile}`;
+        }
+      } catch (e) {
+        // The global config is only pruned best-effort (it is often JSONC):
+        // an unreadable/unparseable one is left alone and never fails compose.
+        if (!(e instanceof MemberConfigError)) throw e;
+        detail += `; skipped pruning ${globalFile} (${e.code})`;
+      }
+    }
+    return { workFolderFiles: [OPENCODE_PROJECT_CONFIG], detail };
   }
 
   supportsOAuthCopy(): boolean {
@@ -282,50 +370,6 @@ export class OpenCodeProvider implements ProviderAdapter {
 
   wrapWindowsPrompt(setupCmd: string, filePath: string, argList: string, _sessionId?: string, _model?: string): string {
     return `${setupCmd}Write-Output "FLEET_PID:$pid"; ${filePath} ${argList}`;
-  }
-
-  async registerMcpEndpoint(opts: RegisterMcpEndpointOptions): Promise<RegisterMcpEndpointResult> {
-    // OpenCode has no non-interactive registration verb for token-based auth --
-    // `opencode mcp auth <server>` is for interactive OAuth entry only, not a
-    // pre-minted bearer token from the hub/local server. Its native config file
-    // (opencode.json) supports remote MCP servers with bearer-auth headers
-    // natively: { type: 'remote', url, headers: { Authorization: 'Bearer ...' } }.
-    // Live-verified: a local HTTP listener confirmed OpenCode sends the
-    // Authorization header exactly as configured (see docs/member-onboarding-journey.md
-    // 3a and apra-fleet-fnz.3). Read-modify-write, same shape as AGY, scoped by
-    // `opts.scope`: 'project' writes workFolder/opencode.json, 'user' writes the
-    // global ~/.config/opencode/opencode.json.
-    const configFile = opts.scope === 'project'
-      ? path.join(opts.workFolder, 'opencode.json')
-      : path.join(os.homedir(), '.config', 'opencode', 'opencode.json');
-
-    fs.mkdirSync(path.dirname(configFile), { recursive: true });
-
-    let settings: Record<string, unknown> = {};
-    if (fs.existsSync(configFile)) {
-      try {
-        settings = JSON.parse(fs.readFileSync(configFile, 'utf-8'));
-      } catch {
-        // malformed file -- start fresh rather than write on top of unparseable state
-        settings = {};
-      }
-    }
-
-    const mcp = (settings.mcp as Record<string, unknown> | undefined) ?? {};
-    mcp['apra-fleet-member'] = {
-      type: 'remote',
-      url: opts.url,
-      enabled: true,
-      headers: { Authorization: `Bearer ${opts.token}` },
-    };
-    settings.mcp = mcp;
-
-    fs.writeFileSync(configFile, JSON.stringify(settings, null, 2) + '\n');
-
-    return {
-      mechanism: 'config-file-merge',
-      detail: `merged apra-fleet-member into ${configFile} (mcp.apra-fleet-member, remote+bearer-auth headers)`,
-    };
   }
 
   async ensureWorkspaceTrusted(_workFolder: string, _execCommand: WorkspaceTrustExecFn, _agentOs?: 'linux' | 'macos' | 'windows', _shell?: MemberShell): Promise<EnsureWorkspaceTrustedResult> {
