@@ -439,6 +439,23 @@ export function defaultHasTerminalState(sprintId, branch, env = process.env) {
 }
 
 /**
+ * Reads the engine's terminal record from a persisted run-state. The engine
+ * publishes `extensions.terminal.{terminalReason,verdict}`; the viewer
+ * overwrites TOP-LEVEL `state.terminalReason` with an error message or signal
+ * name, so the nested field wins and the top-level one is only a legacy
+ * fallback. Tolerates null / non-object / boolean test doubles.
+ * @param {unknown} state
+ * @returns {{ terminalReason: string|null, verdict: string|null }}
+ */
+export function readTerminal(state) {
+    if (!state || typeof state !== 'object') return { terminalReason: null, verdict: null };
+    const terminal = state.extensions?.terminal;
+    const terminalReason = (terminal && terminal.terminalReason) || state.terminalReason || null;
+    const verdict = (terminal && terminal.verdict) || null;
+    return { terminalReason, verdict };
+}
+
+/**
  * apra-fleet-k7b.2: formats a human-readable FINISHED detail string from a
  * persisted terminal run-state, copying the engine's own `terminalReason`
  * and `extensions.terminal.verdict` VERBATIM (never paraphrased/relabeled)
@@ -451,8 +468,7 @@ export function defaultHasTerminalState(sprintId, branch, env = process.env) {
  */
 export function formatFinishedDetail(state) {
     if (!state || typeof state !== 'object') return 'finished';
-    const terminalReason = state.terminalReason ?? null;
-    const verdict = state?.extensions?.terminal?.verdict ?? null;
+    const { terminalReason, verdict } = readTerminal(state);
     const parts = [];
     if (terminalReason) parts.push(`terminalReason=${terminalReason}`);
     if (verdict) parts.push(`verdict=${verdict}`);
@@ -476,8 +492,7 @@ export function defaultRecordFinished({ sprintId, state, logger, history }) {
     const detail = formatFinishedDetail(state);
     log(`[watchdog] FINISHED: Sprint '${sprintId}' finished (${detail}).`);
     if (!history || typeof history.record !== 'function') return;
-    const terminalReason = (state && typeof state === 'object' && state.terminalReason) || null;
-    const verdict = (state && typeof state === 'object' && state?.extensions?.terminal?.verdict) || null;
+    const { terminalReason, verdict } = readTerminal(state);
     try {
         const result = history.record({ sprintId, event: HISTORY_EVENTS.FINISHED, terminalReason, verdict });
         // history.record() is async; a rejection must never take the

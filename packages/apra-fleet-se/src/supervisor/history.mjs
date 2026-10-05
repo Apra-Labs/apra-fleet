@@ -21,6 +21,7 @@ import path from 'node:path';
 import os from 'node:os';
 
 import { renameWithRetry } from './rename-with-retry.mjs';
+import { RELAUNCH_GATE_REASONS } from './terminal-reasons.mjs';
 
 /** On-disk schema version for the persisted history document. */
 export const HISTORY_VERSION = 1;
@@ -92,7 +93,7 @@ const TERMINAL_DETAIL_EVENTS = Object.freeze([HISTORY_EVENTS.FINISHED, HISTORY_E
  * simply does not gate a relaunch (a false negative here only skips a
  * warning -- it never blocks a legitimate relaunch).
  */
-export const DETERMINISTIC_TERMINAL_REASONS = Object.freeze(new Set(['BEADS_SYNC_CONFLICT']));
+export const DETERMINISTIC_TERMINAL_REASONS = RELAUNCH_GATE_REASONS;
 
 /**
  * True when a `latestForIssueRoot()` terminal record represents a reason

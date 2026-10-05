@@ -1,4 +1,4 @@
-import { test, beforeEach } from 'node:test';
+import { test, beforeEach, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -10,8 +10,13 @@ import {
     verifyDoerStreakClosed,
 } from '../fleet-sprint/runner.js';
 import { invalidateSyncRemoteCache, clearLastSyncedTip, clearTipProbeFailures } from '../fleet-sprint/dolt-sync.mjs';
-import { createDoltMutex } from '../src/supervisor/dolt-mutex.mjs';
+import { tempDoltMutexFactory } from './helpers/temp-dolt-mutex.mjs';
 import { createIdAllocator } from '../src/supervisor/id-allocator.mjs';
+
+// Every real mutex persists mutex.json into its own temp dir, never the shared
+// isolated HOME (see helpers/temp-dolt-mutex.mjs).
+const mutexes = tempDoltMutexFactory();
+after(() => mutexes.cleanup());
 
 // =============================================================================
 // apra-fleet-eft.9.8 -- dolt sync discipline, one consolidated suite covering
@@ -135,7 +140,7 @@ test('(a) CONTROL: removing the pre-verification D-pull would falsely report the
 // =============================================================================
 
 test('(b) the global dolt push mutex serializes concurrent sprints -- push windows never overlap', async () => {
-    const mutex = createDoltMutex({ isPidAlive: () => true });
+    const mutex = mutexes.make({ isPidAlive: () => true });
     let insideCriticalSection = false;
     let maxConcurrent = 0;
     let concurrent = 0;

@@ -1,7 +1,13 @@
-import { test } from 'node:test';
+import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { doltPushAfter, DOLT_MUTEX_RENEW_INTERVAL_MS } from '../fleet-sprint/dolt-sync.mjs';
-import { createDoltMutex, nullDoltPushMutexClient } from '../src/supervisor/dolt-mutex.mjs';
+import { nullDoltPushMutexClient } from '../src/supervisor/dolt-mutex.mjs';
+import { tempDoltMutexFactory } from './helpers/temp-dolt-mutex.mjs';
+
+// Every real mutex persists mutex.json into its own temp dir, never the shared
+// isolated HOME (see helpers/temp-dolt-mutex.mjs).
+const mutexes = tempDoltMutexFactory();
+after(() => mutexes.cleanup());
 import { createHttpDoltPushMutexClient, createMcpDoltPushMutexClient } from '../fleet-sprint/runner.js';
 
 // =============================================================================
@@ -51,7 +57,7 @@ function gatedSettle(resolvedTables = ['issues']) {
 }
 
 test('the renewal interval is well under the supervisor mutex lease (a renewal that lands after expiry is useless)', () => {
-    const mutex = createDoltMutex();
+    const mutex = mutexes.make();
     assert.ok(
         DOLT_MUTEX_RENEW_INTERVAL_MS < mutex.leaseMs / 2,
         `renew interval ${DOLT_MUTEX_RENEW_INTERVAL_MS}ms must be well under the ${mutex.leaseMs}ms lease`,
@@ -98,7 +104,7 @@ test('renewals keep the REAL supervisor mutex from reclaiming a live holder mid-
 
     // A real mutex with an injected clock, so "time passes" deterministically.
     let clock = 0;
-    const mutex = createDoltMutex({ now: () => clock, isPidAlive: () => true });
+    const mutex = mutexes.make({ now: () => clock, isPidAlive: () => true });
     const client = {
         acquire: async (sprintId, o) => mutex.acquire(sprintId, o),
         release: async (token) => mutex.release(token),
