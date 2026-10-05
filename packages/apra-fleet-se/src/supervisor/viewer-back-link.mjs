@@ -57,6 +57,46 @@ import { sprintCardAnchorId } from './sprint-anchor.mjs';
 export const VIEWER_BACK_LINK_TEXT_PATTERN = /console|supervisor|dashboard|sprints/i;
 
 /**
+ * The visible text of every supervisor viewer back-link -- both the one this
+ * module injects into proxied/history pages and the one a supervisor-spawned
+ * child viewer renders itself (the workflow viewer's opts.backLink, threaded
+ * in via the fleet-sprint CLI's --viewer-back-url). Must match
+ * VIEWER_BACK_LINK_TEXT_PATTERN.
+ */
+export const VIEWER_BACK_LINK_TEXT = 'Back to the supervisor dashboard';
+
+/**
+ * The stable marker attribute the generic workflow viewer puts on a
+ * caller-supplied back-link anchor (apra-fleet-workflow's
+ * VIEWER_BACK_LINK_ATTR). Mirrored here as a literal rather than imported so
+ * this module stays free of a runtime dependency on the viewer package; the
+ * served-routes test pins the two to the same value.
+ */
+export const CHILD_VIEWER_BACK_LINK_ATTR = 'data-viewer-back-link';
+
+/**
+ * The ABSOLUTE back URL a supervisor-spawned child viewer renders when the
+ * operator opens it directly on its own host:port (the "Dashboard live at"
+ * address in the sprint's raw log) rather than through GET /sprints/:id/live:
+ * this supervisor's own origin + the dashboard root + that sprint's card
+ * anchor -- the same target viewerBackLinkHref() produces for the proxied
+ * routes, made absolute because the page is not served from this origin.
+ * Built with WHATWG URL, never by shell expansion.
+ * @param {string} serviceUrl - this supervisor's own origin, e.g. http://localhost:8787
+ * @param {string} sprintId
+ * @returns {string}
+ */
+export function supervisorViewerBackUrl(serviceUrl, sprintId) {
+    if (typeof serviceUrl !== 'string' || serviceUrl.length === 0) {
+        throw new TypeError('supervisorViewerBackUrl requires the supervisor serviceUrl');
+    }
+    if (typeof sprintId !== 'string' || sprintId.length === 0) {
+        throw new TypeError('supervisorViewerBackUrl requires a sprintId');
+    }
+    return new URL(viewerBackLinkHref('', sprintId), serviceUrl).href;
+}
+
+/**
  * Tag name at an already-located '<' in a LOWER-CASED document, '' when the
  * '<' does not open (or close) a named tag. Skips one leading '/' so a closing
  * tag reports the same name as its opener.
@@ -145,7 +185,7 @@ export function viewerBackLinkHref(mountPrefix, sprintId) {
  */
 export function renderViewerBackLinkHtml(mountPrefix, sprintId) {
     const href = viewerBackLinkHref(mountPrefix, sprintId);
-    return '<p class="live-view-back-link"><a href="' + href + '" target="_top">&larr; Back to the supervisor dashboard</a></p>';
+    return '<p class="live-view-back-link"><a href="' + href + '" target="_top">&larr; ' + VIEWER_BACK_LINK_TEXT + '</a></p>';
 }
 
 /**
@@ -172,6 +212,27 @@ export function injectViewerBackLink(html, backLinkHtml) {
         throw new Error('cannot inject a viewer back-link: the page has no <body> start tag (non-HTML response?)');
     }
     return html.slice(0, at) + backLinkHtml + html.slice(at);
+}
+
+/**
+ * Removes the back-link a supervisor-spawned child viewer renders itself
+ * (marked with CHILD_VIEWER_BACK_LINK_ATTR, see supervisorViewerBackUrl()) so
+ * a page re-served through this supervisor's proxy ends up with exactly ONE
+ * back-link: the mount-prefixed one injectViewerBackLink() adds. The child
+ * renders that anchor as the very first body content, so only an anchor in
+ * that position is removed -- a marker string anywhere else (script text,
+ * state data) is left alone. A page without one is returned unchanged.
+ * @param {string} html
+ * @returns {string}
+ */
+export function stripChildViewerBackLink(html) {
+    if (typeof html !== 'string') return html;
+    const at = bodyContentStartIndex(html);
+    if (at < 0) return html;
+    const rest = html.slice(at);
+    const m = /^\s*<a\s[^>]*\bdata-viewer-back-link\b[^>]*>[\s\S]*?<\/a>/i.exec(rest);
+    if (!m) return html;
+    return html.slice(0, at) + rest.slice(m[0].length);
 }
 
 /**
@@ -222,6 +283,16 @@ export function assertViewerBackLink(html, { mountPrefix = '', sprintId, where }
     const expected = viewerBackLinkHref(mountPrefix, sprintId);
     const anchors = renderedBodyAnchors(html);
     const hit = anchors.find((a) => a.href === expected && VIEWER_BACK_LINK_TEXT_PATTERN.test(a.text));
+    // Exactly one: a second anchor back to the same card (e.g. a child's own
+    // rendered link surviving next to the injected one) is a broken page too.
+    const cardSuffix = '#' + sprintCardAnchorId(sprintId);
+    const toCard = anchors.filter((a) => typeof a.href === 'string' && a.href.endsWith(cardSuffix));
+    if (hit && toCard.length > 1) {
+        throw new Error(
+            `${where}: refusing to serve sprint '${sprintId}' with ${toCard.length} back-links to the supervisor dashboard `
+            + `(expected exactly one; rendered body anchors: ${JSON.stringify(anchors)})`,
+        );
+    }
     if (!hit) {
         throw new Error(
             `${where}: refusing to serve sprint '${sprintId}' with no back-link to the supervisor dashboard `

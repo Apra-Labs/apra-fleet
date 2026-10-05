@@ -16,6 +16,7 @@ import {
     getServerInfoPath,
 } from '@apralabs/apra-fleet-client/server-resolution';
 import { beadsExtension, kbCodeIntelExtension } from '../fleet-sprint/viewer-extensions.mjs';
+import { VIEWER_BACK_LINK_TEXT } from '../src/supervisor/viewer-back-link.mjs';
 import { validateIssueId, validateBranchName, validateBranchPair, checkMemberTopology, createMemberReservationClient, resyncReacquiredMember, commandResultToSoftGit } from '../fleet-sprint/runner.js';
 import { normalizeRole } from '../fleet-sprint/contracts.mjs';
 import { ROLE_BACKLOG, resolveBacklogRoleAlias, selectBacklogMember, formatBacklogSelection } from '../fleet-sprint/backlog-role.mjs';
@@ -157,6 +158,12 @@ export function buildOptionsSpec() {
         // a direct/standalone CLI launch (no supervisor) falls back to
         // --branch for this identity, exactly as before this flag existed.
         'run-id': { type: 'string' },
+        // Absolute http(s) URL the sprint's own viewer page links back to
+        // (the workflow viewer's opts.backLink), threaded in by the
+        // supervisor's spawner (buildSprintArgv) so an operator who opens the
+        // viewer directly on --viewer-port still has a way back. Omitted
+        // (direct/standalone launch): no back-link, exactly as before.
+        'viewer-back-url': { type: 'string' },
         // The beads identity (JSON, serializeExpectedIdentity output) every
         // member's bd must resolve to, injected by the supervisor's spawner;
         // env fallback FLEET_SPRINT_EXPECT_BEADS. Omitted (direct launch):
@@ -213,6 +220,9 @@ Options:
                                 Normally set automatically to the supervisor's sprintId when this
                                 sprint is supervisor-spawned; omitted (direct/standalone launch)
                                 falls back to --branch, exactly as before this flag existed.
+      --viewer-back-url <url>  Absolute http(s) URL the viewer page links back to (e.g. the supervisor
+                                dashboard card for this sprint). Normally set automatically when the
+                                supervisor spawns this sprint; omitted, the viewer shows no back-link.
       --expect-beads <json>    Beads identity every member must resolve to, as JSON
                                 ({"beadsDir","prefix","syncRemote","repoRemote"}). Normally injected by
                                 the supervisor; env fallback FLEET_SPRINT_EXPECT_BEADS. Omitted: the
@@ -237,6 +247,28 @@ Options:
                                 sprint analysis and the PR body. Integration tests still run.
   -h, --help                   Show this help message.
 `.trim();
+
+/**
+ * Turns the raw --viewer-back-url value into the workflow viewer's
+ * opts.backLink. undefined (flag absent) -> undefined (no link). Anything
+ * other than an absolute http(s) URL THROWS, so main() exits non-zero before
+ * connecting to the fleet or dispatching anything.
+ * @param {string|undefined} raw
+ * @returns {{ href: string, text: string } | undefined}
+ */
+export function resolveViewerBackLink(raw) {
+    if (raw === undefined) return undefined;
+    let parsed;
+    try {
+        parsed = new URL(raw);
+    } catch {
+        throw new Error(`--viewer-back-url must be an absolute http(s) URL, got "${raw}".`);
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        throw new Error(`--viewer-back-url must be an absolute http(s) URL, got "${raw}".`);
+    }
+    return { href: raw, text: VIEWER_BACK_LINK_TEXT };
+}
 
 /**
  * Parses argv with `strict: true` so an unrecognized/typo'd flag (e.g.
@@ -618,6 +650,14 @@ async function main() {
         process.exit(1);
     }
 
+    let viewerBackLink;
+    try {
+        viewerBackLink = resolveViewerBackLink(values['viewer-back-url']);
+    } catch (err) {
+        console.error(`Error: ${err.message}`);
+        process.exit(1);
+    }
+
     // Split and clean comma-separated lists
     const targetIssues = values.issue.split(',').map(s => s.trim()).filter(Boolean);
     const rawMembers = values.members.split(',').map(s => s.trim()).filter(Boolean);
@@ -958,6 +998,9 @@ async function main() {
         // viewer's state.args stays optional/null for any other workflow
         // that doesn't pass launchArgs, and no existing state key changes.
         launchArgs: { members: validMembers, targetIssues, goal },
+        // --viewer-back-url: a way back to wherever launched this sprint
+        // (the supervisor dashboard card) when the viewer is opened directly.
+        ...(viewerBackLink ? { backLink: viewerBackLink } : {}),
     });
 
     // apra-fleet-unw2.16, N14 (e): the viewer port was hardcoded with no

@@ -26,6 +26,7 @@ import { resolveServiceToken } from '../src/supervisor/auth.mjs';
 import { createLedger, defaultDataDir } from '../src/supervisor/ledger.mjs';
 import { createHistory, HISTORY_EVENTS } from '../src/supervisor/history.mjs';
 import { createSpawner } from '../src/supervisor/spawner.mjs';
+import { supervisorViewerBackUrl } from '../src/supervisor/viewer-back-link.mjs';
 import { createReconciler, registerReservationRoutes, killPid } from '../src/supervisor/reconcile.mjs';
 import { createReadopter } from '../src/supervisor/readopt.mjs';
 import { createLiveProxy, registerLiveRoutes } from '../src/supervisor/proxy.mjs';
@@ -323,6 +324,90 @@ export function defaultEnsureBacklogMember({ beadsDir }) {
         registerMember: (options) => registerFleetMember({ options, resolveConnection }),
         updateMember: (options) => updateFleetMember({ options, resolveConnection }),
     });
+}
+
+/**
+ * The deps bin/serve.mjs hands createSpawner() -- the production launch
+ * wiring, pulled out of serveMain() so a test can build the exact spawner
+ * the real serve path uses (with spawn() stubbed) and inspect the child argv
+ * without starting a supervisor or a real sprint.
+ * @param {{ port: number, repoRoot: string, beadsIdentity: { get(): object|null }, serviceToken?: string,
+ *   toolchain: { nodePath?: string|null, nodeOk?: boolean, nodeVersion?: string|null },
+ *   history: { record: Function }, ledger: { recordExit: Function } }} ctx
+ * @returns {object}
+ */
+export function buildServeSpawnerDeps({ port, repoRoot, beadsIdentity, serviceToken, toolchain, history, ledger }) {
+    const serviceUrl = `http://localhost:${port}`;
+    return {
+        serviceUrl,
+        // Every spawned child's viewer, opened directly on its own
+        // --viewer-port, links back to its own card on THIS dashboard
+        // (spawner.mjs -> cli.mjs --viewer-back-url). Always supplied here,
+        // so the production launch path never yields a linkless child.
+        viewerBackUrlFor: (sprintId) => supervisorViewerBackUrl(serviceUrl, sprintId),
+        // Sprint children run from the project root (the folder holding the
+        // discovered .beads, not whatever subfolder the operator started in)
+        // and carry the resolved identity so the engine can verify every
+        // member's own `bd where` against it (see beads-identity.mjs). Read
+        // at each spawn (not captured at startup) so an identity recovered
+        // by GET /api/health?refresh=1 reaches later sprints; while it is
+        // unknown, --expect-beads is omitted and the engine falls back to
+        // the backlog member's own identity.
+        cwd: repoRoot,
+        expectBeads: () => {
+            const id = beadsIdentity.get();
+            return id ? serializeExpectedIdentity(id) : undefined;
+        },
+        // apra-fleet-50j6.2.1/50j6.1.2: thread this supervisor's own token
+        // through so a spawned child's coordination HTTP client (dolt-mutex,
+        // id-allocator) authenticates against the SAME guard server.mjs now
+        // enforces (see serveMain()'s createSupervisor({ token })).
+        serviceToken,
+        // apra-fleet-i9ag.19.10: the RECORDED node path, handed to
+        // node-runner.mjs's CONFIGURED tier (via spawner.mjs) so a
+        // service-started supervisor whose PATH never saw a login shell can
+        // still launch sprints.
+        //
+        // Deliberately the recorded value REGARDLESS of whether it validated
+        // in serveMain() -- the opposite of the bd rule right next to the validation
+        // block, and not an oversight. The CONFIGURED tier treats an
+        // unusable recorded path as a HARD error naming that exact path
+        // (answered as POST /api/sprints 503, api.mjs's
+        // runnerResolutionApiError), which is the honest outcome: withholding
+        // it here would let resolution fall through to a PATH lookup, which
+        // on the very host that needed the recording either fails with a
+        // vaguer message or -- worse -- silently succeeds with a DIFFERENT
+        // node than the one the operator recorded. bd can fall back silently
+        // because its fallback still works; node's cannot.
+        configuredNodePath: toolchain.nodePath ?? undefined,
+        // apra-fleet-i9ag.19.35: the version serveMain()'s validation accepted for
+        // that exact path, in this process -- passed ONLY when `nodeOk` was
+        // true, i.e. only when this supervisor has already seen that binary
+        // answer. node-runner.mjs's CONFIGURED tier consumes it instead of
+        // re-probing per launch, which is what makes it impossible for a
+        // launch to be 503'd over a node the startup line above just reported
+        // as healthy (see that module's "STARTUP AND LAUNCH MUST AGREE"
+        // header). Deliberately the exact opposite condition from
+        // `configuredNodePath` right above: the PATH is passed regardless of
+        // validation (an unusable recording must surface as a loud, path-naming
+        // 503, never a silent PATH fall-through), while the VERSION is an
+        // assertion that validation PASSED and must never be fabricated for a
+        // recording that did not.
+        configuredNodeVersion: toolchain.nodeOk ? (toolchain.nodeVersion ?? undefined) : undefined,
+        onChildExit: async ({ runId, exitCode, signal, at, logPath }) => {
+            if (!runId) return;
+            try {
+                await history.record({ sprintId: runId, event: HISTORY_EVENTS.CHILD_EXITED, exitCode, signal, at, logPath });
+            } catch (err) {
+                console.error(`[spawner] history.record(CHILD_EXITED) failed for '${runId}':`, err);
+            }
+            try {
+                await ledger.recordExit(runId, { exitCode, signal, at });
+            } catch (err) {
+                console.error(`[spawner] ledger.recordExit failed for '${runId}':`, err);
+            }
+        },
+    };
 }
 
 /**
@@ -645,71 +730,7 @@ export async function serveMain(argv = process.argv.slice(2), deps = {}) {
     // history event -- the ledger already has it (recorded at claim() time,
     // see createSprintController's launch()), but history's own copy stays
     // discoverable even after the reservation is eventually released.
-    const spawner = createSpawner({
-        serviceUrl: `http://localhost:${port}`,
-        // Sprint children run from the project root (the folder holding the
-        // discovered .beads, not whatever subfolder the operator started in)
-        // and carry the resolved identity so the engine can verify every
-        // member's own `bd where` against it (see beads-identity.mjs). Read
-        // at each spawn (not captured at startup) so an identity recovered
-        // by GET /api/health?refresh=1 reaches later sprints; while it is
-        // unknown, --expect-beads is omitted and the engine falls back to
-        // the backlog member's own identity.
-        cwd: repoRoot,
-        expectBeads: () => {
-            const id = beadsIdentity.get();
-            return id ? serializeExpectedIdentity(id) : undefined;
-        },
-        // apra-fleet-50j6.2.1/50j6.1.2: thread this supervisor's own token
-        // through so a spawned child's coordination HTTP client (dolt-mutex,
-        // id-allocator) authenticates against the SAME guard server.mjs now
-        // enforces (see createSupervisor({ token }) below).
-        serviceToken,
-        // apra-fleet-i9ag.19.10: the RECORDED node path, handed to
-        // node-runner.mjs's CONFIGURED tier (via spawner.mjs) so a
-        // service-started supervisor whose PATH never saw a login shell can
-        // still launch sprints.
-        //
-        // Deliberately the recorded value REGARDLESS of whether it validated
-        // above -- the opposite of the bd rule right next to the validation
-        // block, and not an oversight. The CONFIGURED tier treats an
-        // unusable recorded path as a HARD error naming that exact path
-        // (answered as POST /api/sprints 503, api.mjs's
-        // runnerResolutionApiError), which is the honest outcome: withholding
-        // it here would let resolution fall through to a PATH lookup, which
-        // on the very host that needed the recording either fails with a
-        // vaguer message or -- worse -- silently succeeds with a DIFFERENT
-        // node than the one the operator recorded. bd can fall back silently
-        // because its fallback still works; node's cannot.
-        configuredNodePath: toolchain.nodePath ?? undefined,
-        // apra-fleet-i9ag.19.35: the version the validation ABOVE accepted for
-        // that exact path, in this process -- passed ONLY when `nodeOk` was
-        // true, i.e. only when this supervisor has already seen that binary
-        // answer. node-runner.mjs's CONFIGURED tier consumes it instead of
-        // re-probing per launch, which is what makes it impossible for a
-        // launch to be 503'd over a node the startup line above just reported
-        // as healthy (see that module's "STARTUP AND LAUNCH MUST AGREE"
-        // header). Deliberately the exact opposite condition from
-        // `configuredNodePath` right above: the PATH is passed regardless of
-        // validation (an unusable recording must surface as a loud, path-naming
-        // 503, never a silent PATH fall-through), while the VERSION is an
-        // assertion that validation PASSED and must never be fabricated for a
-        // recording that did not.
-        configuredNodeVersion: toolchain.nodeOk ? (toolchain.nodeVersion ?? undefined) : undefined,
-        onChildExit: async ({ runId, exitCode, signal, at, logPath }) => {
-            if (!runId) return;
-            try {
-                await history.record({ sprintId: runId, event: HISTORY_EVENTS.CHILD_EXITED, exitCode, signal, at, logPath });
-            } catch (err) {
-                console.error(`[spawner] history.record(CHILD_EXITED) failed for '${runId}':`, err);
-            }
-            try {
-                await ledger.recordExit(runId, { exitCode, signal, at });
-            } catch (err) {
-                console.error(`[spawner] ledger.recordExit failed for '${runId}':`, err);
-            }
-        },
-    });
+    const spawner = createSpawner(buildServeSpawnerDeps({ port, repoRoot, beadsIdentity, serviceToken, toolchain, history, ledger }));
     // apra-fleet-3i3.1: the real kill-signal implementation is only wired in
     // HERE -- createReconciler()'s own default is a safe no-op (see
     // reconcile.mjs's module doc) so nothing outside this production entry

@@ -204,13 +204,13 @@ export async function allocateFreePort(opts = {}) {
  *   goal?: string, maxCycles?: number|string, allowMissingMembers?: boolean,
  *   requirementsFile?: string, roleMap?: object|string, budget?: number|string,
  *   viewerPort: number, serviceUrl?: string, runId?: string, expectBeads?: string,
- *   extraArgs?: string[], skipRegression?: boolean,
+ *   viewerBackUrl?: string, extraArgs?: string[], skipRegression?: boolean,
  * }} opts
  * @returns {string[]}
  */
 export function buildSprintArgv(opts = {}) {
     const { issue, members, branch, base, goal, maxCycles, allowMissingMembers,
-        requirementsFile, roleMap, budget, viewerPort, serviceUrl, runId, expectBeads, extraArgs, skipRegression } = opts;
+        requirementsFile, roleMap, budget, viewerPort, serviceUrl, runId, expectBeads, viewerBackUrl, extraArgs, skipRegression } = opts;
 
     if (!issue || !members || !branch || !base) {
         throw new Error('buildSprintArgv requires issue, members, branch, and base');
@@ -259,6 +259,12 @@ export function buildSprintArgv(opts = {}) {
     // database this supervisor reads. Omitted when the caller has none (a
     // direct/test spawner) -- the engine then skips the verification.
     if (expectBeads !== undefined) args.push('--expect-beads', expectBeads);
+    // The absolute URL of this sprint's card on the supervisor dashboard, so
+    // the child viewer -- when opened directly on its own --viewer-port --
+    // renders a way back (cli.mjs --viewer-back-url -> the workflow viewer's
+    // opts.backLink). Omitted only when the caller supplied none (direct/test
+    // spawners); createSpawner() always supplies it on the serve path.
+    if (viewerBackUrl !== undefined) args.push('--viewer-back-url', viewerBackUrl);
     if (Array.isArray(extraArgs)) args.push(...extraArgs);
     return args;
 }
@@ -282,6 +288,7 @@ export function buildSprintArgv(opts = {}) {
  *   isPortAvailable?: (port: number) => Promise<boolean>,
  *   logger?: { log?: Function, error?: Function },
  *   serviceUrl?: string,
+ *   viewerBackUrlFor?: (sprintId: string) => string,
  *   expectBeads?: string|(() => string|undefined),
  *   serviceToken?: string,
  *   onChildExit?: (info: { pid: number, runId: string|null, exitCode: number|null, signal: string|null, at: string, logPath: string }) => void,
@@ -401,6 +408,15 @@ export function createSpawner(deps = {}) {
     // one, spawned children simply omit --service-url and fall back exactly
     // as before -- no crash, unchanged behavior.
     const serviceUrl = deps.serviceUrl;
+    // Builds the per-sprint --viewer-back-url (the dashboard card this
+    // sprint's child viewer links back to). bin/serve.mjs always supplies it;
+    // when supplied, a launch with no runId is refused (there would be no
+    // card to point at) rather than silently spawning a linkless viewer.
+    // Absent (direct/test spawners) -> the flag is omitted, as before.
+    const viewerBackUrlFor = deps.viewerBackUrlFor;
+    if (viewerBackUrlFor !== undefined && typeof viewerBackUrlFor !== 'function') {
+        throw new TypeError('createSpawner deps.viewerBackUrlFor must be a function (sprintId) => url');
+    }
     // The serialized beads identity (fleet-sprint/beads-identity.mjs's
     // serializeExpectedIdentity() JSON) every child receives as
     // `--expect-beads`; threaded exactly like serviceUrl above -- optional,
@@ -460,12 +476,20 @@ export function createSpawner(deps = {}) {
         // propagates straight out of spawnSprint() with none of those side
         // effects ever having run.
         const command = resolveCommand();
+        let viewerBackUrl = opts.viewerBackUrl;
+        if (viewerBackUrl === undefined && viewerBackUrlFor) {
+            if (typeof opts.runId !== 'string' || opts.runId.length === 0) {
+                throw new Error('[spawner] cannot build the child viewer back URL: spawnSprint() was called without a runId');
+            }
+            viewerBackUrl = viewerBackUrlFor(opts.runId);
+        }
         const port = await allocateFreePort({ startPort: basePort, excludedPorts: livePortSet(), isAvailable });
         const args = [cliPath, ...buildSprintArgv({
             ...opts,
             viewerPort: port,
             serviceUrl: opts.serviceUrl ?? serviceUrl,
             expectBeads: opts.expectBeads ?? resolveExpectBeads(),
+            viewerBackUrl,
         })];
 
         // apra-fleet-ou7.1: opts.runId is the SAME sprintId createSprintController
