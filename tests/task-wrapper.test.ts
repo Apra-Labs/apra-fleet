@@ -430,7 +430,7 @@ describe('generateTaskWrapper - member env assignments (F14)', () => {
   });
 
   it('carries member.env but NEVER auth env -- the script persists as a file on the member', () => {
-    // buildEnvAssignments with the include set execute-command.ts uses for
+    // buildEnvAssignments with the options execute-command.ts uses for
     // this path. The auth credential is present on the member and MUST NOT
     // reach the generated script.
     const member = {
@@ -440,7 +440,7 @@ describe('generateTaskWrapper - member env assignments (F14)', () => {
       encryptedEnvVars: { API_TOKEN: encryptPassword('super-secret-credential') },
     } as unknown as Agent;
 
-    const env = buildEnvAssignments(member, { os: 'linux' });
+    const env = buildEnvAssignments(member, { os: 'linux', keepAuthNameCollisions: true });
     const script = generateTaskWrapper({ ...baseConfig, env });
     expect(script).toContain("export FLEET_S9_A='member-value'");
     expect(script).not.toContain('super-secret-credential');
@@ -484,7 +484,7 @@ describe('generateTaskWrapperWindows - member env assignments (F14)', () => {
       encryptedEnvVars: { API_TOKEN: encryptPassword('super-secret-credential') },
     } as unknown as Agent;
 
-    const env = buildEnvAssignments(member, { os: 'windows' });
+    const env = buildEnvAssignments(member, { os: 'windows', keepAuthNameCollisions: true });
     const script = generateTaskWrapperWindows({ ...baseConfig, env });
     expect(script).toContain("$env:FLEET_S9_A='member-value'");
     expect(script).not.toContain('super-secret-credential');

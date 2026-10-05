@@ -39,6 +39,14 @@ import { escapeShellArgInner, escapePowerShellArgInner } from './shell-escape.js
 export interface EnvPrefixOptions {
   os: RemoteOS;
   shell?: MemberShell;
+  /**
+   * Keep a member.env entry whose name is also a stored credential name.
+   * Only for a dispatch that delivers NO stored credentials at all (the
+   * long_running wrapper): there the member.env value is the only one the
+   * process would get, exactly as before stored credentials moved to the
+   * staged file. Default false (auth wins, the entry is dropped).
+   */
+  keepAuthNameCollisions?: boolean;
 }
 
 /** A resolved, merged, validated, UNESCAPED name/value pair. */
@@ -65,11 +73,11 @@ export interface EnvAssignment {
  *   a loud failure, never a silent skip: the alternative is emitting an
  *   unquotable name straight into a dispatched command string.
  */
-export function buildEnvAssignments(agent: Agent, _opts: EnvPrefixOptions): EnvAssignment[] {
+export function buildEnvAssignments(agent: Agent, opts: EnvPrefixOptions): EnvAssignment[] {
   // Auth wins a collision (rule 2): the credential itself is delivered by the
   // staged file (stageAuthEnv), loaded AFTER this prefix, so a member.env
   // entry with a credential's name is dropped here rather than rendered.
-  const authNames = new Set(Object.keys(agent.encryptedEnvVars ?? {}));
+  const authNames = new Set(opts.keepAuthNameCollisions ? [] : Object.keys(agent.encryptedEnvVars ?? {}));
 
   const assignments: EnvAssignment[] = [];
   for (const [name, value] of Object.entries(agent.env ?? {})) {

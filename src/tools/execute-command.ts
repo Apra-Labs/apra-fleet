@@ -278,6 +278,9 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
     const taskEnv = buildEnvAssignments(agent, {
       os: agentOsVal,
       shell: getAgentShell(agent),
+      // No stored credentials reach this task at all, so a colliding
+      // member.env name keeps its value (unchanged pre-merge behaviour).
+      keepAuthNameCollisions: true,
     });
 
     let launchCmd: string;

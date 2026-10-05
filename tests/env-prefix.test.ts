@@ -204,6 +204,12 @@ describe('buildEnvAssignments', () => {
     expect(buildEnvAssignments(member, { os: 'windows', shell: 'gitbash' })).toEqual(expected);
   });
 
+  it('keepAuthNameCollisions (long_running: no credential delivered) keeps the member.env value', () => {
+    const colliding = makeAgent({ env: { API_TOKEN: 'member-value', FLEET_A: 'one' }, auth: { API_TOKEN: 'sek-ret' } });
+    expect(buildEnvAssignments(colliding, { os: 'linux', keepAuthNameCollisions: true }))
+      .toEqual([{ name: 'API_TOKEN', value: 'member-value' }, { name: 'FLEET_A', value: 'one' }]);
+  });
+
   it('returns member.env only, never a stored auth credential', () => {
     const member = makeAgent({ env: { FLEET_A: 'one' }, auth: { API_TOKEN: 'sek-ret' } });
     expect(buildEnvAssignments(member, { os: 'linux' }))
