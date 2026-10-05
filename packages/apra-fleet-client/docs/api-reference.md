@@ -433,7 +433,7 @@ Calls `register_member` -- adds a machine to the fleet.
 | `tags` | `string[]?` | Optional list of free-form labels (max 10 tags, each max 64 chars). Used for filtering and grouping. |
 | `code_intel_provider` | `"codebase-memory" \| "gitnexus" \| "none"?` | Code-intelligence provider for this member. Omit for fleet-wide default. |
 | `unreservable` | `boolean?` | Mark this member as never exclusively reservable, so it can be shared by more than one sprint (e.g. fleet-sprint's shared "backlog" role). Default: `false`. |
-| `fleet_install` | `"auto" \| "skip"?` | Install/update apra-fleet on the member and verify its own MCP (default `"auto"`); `"skip"` only reports the probe result. Registration succeeds either way; the result reports `fleetMcp`. |
+| `fleet_install` | `"auto" \| "skip"?` | Install/update apra-fleet on the member, write its per-folder apra-fleet MCP entry and verify its own MCP (default `"auto"`); `"skip"` only reports the probe result. Registration succeeds either way; the result reports `fleetMcp`. |
 | `shell` | `"gitbash" \| "pwsh7" \| "powershell5"?` | Override the probed Windows shell for this member. Windows members only -- ignored for non-Windows members. |
 
 
@@ -448,7 +448,7 @@ error naming the key (the member is not updated) -- they are no longer silently 
 |---|---|---|
 | `member_id` | `string?` | UUID of the member. |
 | `member_name` | `string?` | Friendly name of the member. |
-| `fleet_install` | `"auto" \| "skip"?` | `"auto"`: for a remote member, probe it and install/upgrade its own apra-fleet when missing or older than the orchestrator (build-aware: same-core different builds upgrade, newer cores never downgrade), self-register and verify, even when nothing else changed; the result includes the `fleetMcp` line (then `member_detail` with `refresh: true`). `"skip"`: no install. Omitted: install only on a provider change. |
+| `fleet_install` | `"auto" \| "skip"?` | `"auto"`: for a remote member, probe it and install/upgrade its own apra-fleet when missing or older than the orchestrator (build-aware: same-core different builds upgrade, newer cores never downgrade), self-register, write its per-folder apra-fleet MCP entry and verify (for a claude member the entry is only the fallback of the per-session `--mcp-config`, so neither its write nor its check gates `fleetMcp`), even when nothing else changed; the result includes the `fleetMcp` line (then `member_detail` with `refresh: true`). `"skip"`: no install. Omitted: install only on a provider change. |
 | `friendly_name` | `string?` | New friendly name. |
 | `work_folder` | `string?` | New working directory. For non-local (remote/relay) members, must be a fully-qualified/absolute path (e.g. `/home/bella/repo` or `C:\Users\bella\repo`) -- tilde and relative paths are rejected. A folder may hold at most one LLM member and one LLM-less (llm_provider none) member. A real change removes what `compose_permissions` wrote in the OLD folder (per-folder `apra-fleet` MCP entry, permission keys, `.git/info/exclude` lines) and re-runs `compose_permissions`, so the new folder gets its `?member=<uuid>` entry at once. |
 | `host` | `string?` | New host (remote members only). |
@@ -480,7 +480,7 @@ error naming the key (the member is not updated) -- they are no longer silently 
 
 #### `removeMember(options: RemoveMemberOptions)`
 
-Calls `remove_member` -- removes a member from the fleet. Before the member is deleted (and before the fleet's own SSH key is removed from the member), it removes what `compose_permissions` wrote for the member (per-folder `apra-fleet` MCP entry, permission keys, `.git/info/exclude` lines); anything it could not remove, or could not reach, is reported as a warning in the result.
+Calls `remove_member` -- removes a member from the fleet. Before the member is deleted (and before the fleet's own SSH key is removed from the member), it removes what `compose_permissions` wrote for the member (per-folder `apra-fleet` MCP entry, permission keys, `.git/info/exclude` lines); anything it could not remove, or could not reach, is reported as a warning in the result. A local member's per-session MCP config file (`session-mcp/<uuid>.json` in the server data dir) is deleted too.
 
 | Field | Type | Notes |
 |---|---|---|

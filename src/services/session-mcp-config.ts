@@ -36,15 +36,17 @@ const SERVER_OK_REASONS: ReadonlySet<string> = new Set(['role-agents-hide-member
 /**
  * Whether a dispatch to `agent` gets the per-session member config.
  *  - claude only (the flag is a Claude CLI flag);
- *  - local members: always -- they share this server;
+ *  - local members: always -- they share this server -- except while the
+ *    recorded fleetMcp says this server refused the member session;
  *  - remote members: only when the member's recorded fleetMcp says its own
  *    server answered a member session. Pointing a session at a server that is
  *    not there would replace a working user-scope entry with a dead one.
  */
 export function sessionMcpInjectionAvailable(agent: Agent): boolean {
   if ((agent.llmProvider ?? 'claude') !== 'claude') return false;
-  if (agent.agentType === 'local') return true;
   const f = agent.fleetMcp;
+  // Local: this server -- unless it last refused this member's session.
+  if (agent.agentType === 'local') return !(f?.state === 'unavailable' && f.reason === 'member-session-failed');
   if (!f) return false;
   if (f.state === 'available') return f.unverified !== true;
   return !!f.reason && SERVER_OK_REASONS.has(f.reason);
@@ -72,6 +74,13 @@ export function sessionMcpConfigPath(agent: Agent, resolvedWorkFolder: string): 
     return path.join(FLEET_DIR, 'session-mcp', `${agent.id}.json`);
   }
   return joinMemberPath(resolvedWorkFolder, REMOTE_SESSION_MCP_FILE, getAgentOS(agent) === 'windows', getAgentShell(agent));
+}
+
+/** remove_member: deletes a local member's reused config file (no-op when absent).
+ *  A remote member's file is per dispatch and already removed with its prompt file. */
+export function removeLocalSessionMcpConfig(agent: Pick<Agent, 'id' | 'agentType'>): void {
+  if (agent.agentType !== 'local') return;
+  try { fs.unlinkSync(path.join(FLEET_DIR, 'session-mcp', `${agent.id}.json`)); } catch { /* absent */ }
 }
 
 /** True when the file lives in the work folder and must be removed after the dispatch. */

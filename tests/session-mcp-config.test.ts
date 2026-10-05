@@ -17,6 +17,7 @@ import {
   sessionMcpConfigIsPerDispatch,
   perFolderMcpEntryNeeded,
   writeSessionMcpConfig,
+  removeLocalSessionMcpConfig,
   REMOTE_SESSION_MCP_FILE,
 } from '../src/services/session-mcp-config.js';
 import { makeTestAgent, makeTestLocalAgent } from './test-helpers.js';
@@ -134,6 +135,8 @@ describe('session MCP config body, path and availability', () => {
   it('injection: claude only; local always; remote only when its own server answered a member session', () => {
     const at = 'x';
     expect(sessionMcpInjectionAvailable(makeTestLocalAgent())).toBe(true);
+    expect(sessionMcpInjectionAvailable(makeTestLocalAgent({ fleetMcp: { state: 'unavailable', reason: 'role-agents-hide-member-tools', checkedAt: at } }))).toBe(true);
+    expect(sessionMcpInjectionAvailable(makeTestLocalAgent({ fleetMcp: { state: 'unavailable', reason: 'member-session-failed', checkedAt: at } }))).toBe(false);
     expect(sessionMcpInjectionAvailable(makeTestLocalAgent({ llmProvider: 'opencode' }))).toBe(false);
     expect(sessionMcpInjectionAvailable(makeTestAgent())).toBe(false);
     expect(sessionMcpInjectionAvailable(makeTestAgent({ fleetMcp: { state: 'available', checkedAt: at } }))).toBe(true);
@@ -157,7 +160,9 @@ describe('writeSessionMcpConfig', () => {
     const exec = async (): Promise<SSHExecResult> => { throw new Error('no member command for a local member'); };
     expect(await writeSessionMcpConfig(agent, p, exec)).toEqual({ ok: true });
     expect(JSON.parse(fs.readFileSync(p, 'utf-8')).mcpServers['apra-fleet'].url).toContain(`?member=${ID}-w`);
-    fs.unlinkSync(p);
+    removeLocalSessionMcpConfig(agent);
+    expect(fs.existsSync(p)).toBe(false);
+    removeLocalSessionMcpConfig(agent); // absent: no throw
   });
 
   it('remote bash: the shared member writer (mkdir, heredoc write, read-back) with a quoted resolved path', async () => {
