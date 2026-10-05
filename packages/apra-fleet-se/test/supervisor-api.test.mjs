@@ -1730,7 +1730,7 @@ describe('api -- /api/health beads identity', () => {
 
     test('identity unknown: beads is null and beadsWarning carries the reason + fix; once refresh() recovers it the warning is gone', async () => {
         let current = null;
-        let warning = "no beads database found walking up from /x. Backlog and scope-overlap checks are disabled and sprints will verify against the backlog member's beads instead. To fix: restart fleet-se from inside the project folder, or pass --beads-dir <project-or-.beads-path>, then GET /api/health?refresh=1.";
+        let warning = "no beads database found walking up from /x. Backlog and scope-overlap checks are disabled, and this supervisor has no backlog member, so it cannot launch sprints. To fix: restart fleet-se from inside the project folder, or pass --beads-dir <project-or-.beads-path>, then GET /api/health?refresh=1.";
         const beadsIdentity = {
             get: () => current,
             getWarning: () => (current ? null : warning),

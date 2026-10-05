@@ -406,7 +406,7 @@ export const PROJECT_DIR_SOURCE = Object.freeze({
 export function formatStaleConfiguredProjectWarning(projectDir, configPath, opts = {}) {
     return `the configured project folder ${projectDir} does not exist or is not a directory ` +
         `(configured in ${configPath}). ` +
-        "Backlog and scope-overlap checks are disabled and sprints will verify against the backlog member's beads instead. " +
+        "Backlog and scope-overlap checks are disabled, and this supervisor has no backlog member, so it cannot launch sprints. " +
         'The cwd walk-up is deliberately NOT used as a fallback here, so this supervisor cannot silently adopt an unrelated tracker. ' +
         "To fix: point the setting at the project folder from the console's project setting " +
         '(or pass --beads-dir <project-or-.beads-path>), then RESTART the supervisor: ' + restartInstruction(opts.launchMode) + ' -- the setting is read ' +
@@ -538,7 +538,7 @@ export async function resolveProjectDir(opts = {}) {
 /** No `.beads` reachable by walking up from `cwd`. */
 export function formatNoBeadsWarning(cwd) {
     return `no beads database found walking up from ${cwd}. ` +
-        "Backlog and scope-overlap checks are disabled and sprints will verify against the backlog member's beads instead. " +
+        "Backlog and scope-overlap checks are disabled, and this supervisor has no backlog member, so it cannot launch sprints. " +
         `To fix: restart fleet-se from inside the project folder, or pass --beads-dir <project-or-.beads-path>, ${FIX_TAIL}`;
 }
 

@@ -301,7 +301,7 @@ carries the reason and the fix, e.g.:
 
 ```json
 "beads": null,
-"beadsWarning": "no beads database found walking up from /some/dir. Backlog and scope-overlap checks are disabled and sprints will verify against the backlog member's beads instead. To fix: restart fleet-se from inside the project folder, or pass --beads-dir <project-or-.beads-path>, then GET /api/health?refresh=1."
+"beadsWarning": "no beads database found walking up from /some/dir. Backlog and scope-overlap checks are disabled, and this supervisor has no backlog member, so it cannot launch sprints. To fix: restart fleet-se from inside the project folder, or pass --beads-dir <project-or-.beads-path>, then GET /api/health?refresh=1."
 ```
 
 (a nonexistent `--beads-dir` is still a startup error, not a warning).

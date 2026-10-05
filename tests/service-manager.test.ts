@@ -938,6 +938,42 @@ describe('service identity is distinct per platform', () => {
     ]), expect.anything());
   });
 
+  // main #629 model on v0.5's per-service managers: the supervisor gets the
+  // same user-scoped XML task + hidden launcher as the MCP server, but NO
+  // revive TimeTrigger (restartOnFailure=false) and its own launcher/XML/Run
+  // value, so it can never collide with the MCP server's files.
+  it('windows supervisor task: user-scoped XML, no revive trigger, its own launcher and Run value', async () => {
+    vi.clearAllMocks();
+    vi.mocked(execFileSync).mockImplementation(((cmd: string, args: string[]) => {
+      if (cmd === 'schtasks' && args[0] === '/create') throw new Error('ERROR: Access is denied.');
+      if (cmd === 'schtasks') throw new Error('ERROR: The system cannot find the file specified.');
+      return '';
+    }) as any);
+    vi.mocked(fs.mkdirSync).mockReturnValue(undefined as any);
+    vi.mocked(fs.writeFileSync).mockReturnValue(undefined);
+    vi.mocked(fs.unlinkSync).mockReturnValue(undefined);
+    const runReg = vi.fn((_args: string[]) => '');
+    const mgr = new WindowsServiceManager('fleet-supervisor', undefined, undefined, {
+      probeWsh: () => true, runReg, env: { USERDOMAIN: 'BOX', USERNAME: 'alice', SystemRoot: 'C:\\Windows' },
+    });
+    expect(await mgr.register('C:\\node\\node.exe', ['C:\\wf\\serve.mjs'], 'C:\\logs\\sup.log', { workingDirectory: 'C:\\wf' }))
+      .toBe('run-key');
+    const writes = vi.mocked(fs.writeFileSync).mock.calls.map(c => [String(c[0]).replace(/\\/g, '/'), c[1]] as const);
+    const xmlWrite = writes.find(([p]) => p.endsWith('/apra-fleet-supervisor-task.xml'));
+    expect(xmlWrite).toBeDefined();
+    const xml = (xmlWrite![1] as Buffer).subarray(2).toString('utf16le');
+    expect(xml).toContain('<LogonTrigger>');
+    expect(xml).toContain('<UserId>BOX\\alice</UserId>');
+    expect(xml).not.toContain('<TimeTrigger>');
+    expect(xml).toContain('Apra Fleet Sprint Supervisor');
+    expect(xml).toContain('apra-fleet-supervisor-service.js');
+    expect(writes.some(([p]) => p.endsWith('/apra-fleet-supervisor-service.js'))).toBe(true);
+    expect(writes.some(([p]) => p.endsWith('/apra-fleet-service.js'))).toBe(false);
+    expect(execFileSync).toHaveBeenCalledWith('schtasks', expect.arrayContaining(['/create', '/tn', 'ApraFleetSupervisor', '/xml']), expect.anything());
+    expect(runReg).toHaveBeenCalledWith(expect.arrayContaining(['add', '/v', 'ApraFleetSupervisor']));
+    expect(runReg).not.toHaveBeenCalledWith(expect.arrayContaining(['/v', 'ApraFleet']));
+  });
+
   it('macos uses a distinct plist label, no KeepAlive, and a WorkingDirectory', async () => {
     vi.clearAllMocks();
     vi.mocked(execFileSync).mockReturnValue('' as any);

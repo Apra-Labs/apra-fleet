@@ -169,7 +169,7 @@ probe fails: `bd` not on PATH, project not initialised), the supervisor
 STILL STARTS but warns loudly and runs with its beads identity unknown:
 
 ```
-[supervisor] WARNING: no beads database found walking up from <cwd>. Backlog and scope-overlap checks are disabled and sprints will verify against the backlog member's beads instead. To fix: restart fleet-se from inside the project folder, or pass --beads-dir <project-or-.beads-path>, then GET /api/health?refresh=1.
+[supervisor] WARNING: no beads database found walking up from <cwd>. Backlog and scope-overlap checks are disabled, and this supervisor has no backlog member, so it cannot launch sprints. To fix: restart fleet-se from inside the project folder, or pass --beads-dir <project-or-.beads-path>, then GET /api/health?refresh=1.
 ```
 
 In that state `GET /api/health` returns `beads: null` plus `beadsWarning`

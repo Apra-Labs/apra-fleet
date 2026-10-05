@@ -72,6 +72,7 @@ import { TOOLCHAIN_FIX_LINE } from '../src/supervisor/toolchain.mjs';
 import { prependToPathEnv } from './helpers/child-path-env.mjs';
 import { scaledTimeout } from './helpers/scaled-timeout.mjs';
 import { buildRecordedNode } from './helpers/recorded-node-fixture.mjs';
+import { startFakeFleet, writeProjectBeadsDir } from './helpers/fake-fleet-server.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SE_ROOT = path.resolve(__dirname, '..');
@@ -97,9 +98,17 @@ function track(pid) {
     return pid;
 }
 
+/** @type {Set<{ stop: () => Promise<void> }>} */
+const fakeFleets = new Set();
+
 after(async () => {
     for (const pid of spawnedPids) forceKill(pid);
     spawnedPids.clear();
+    for (const fleet of fakeFleets) {
+        // eslint-disable-next-line no-await-in-loop
+        await fleet.stop().catch(() => {});
+    }
+    fakeFleets.clear();
     for (const dir of tmpDirs) {
         // eslint-disable-next-line no-await-in-loop
         await fsp.rm(dir, { recursive: true, force: true }).catch(() => {});
@@ -339,10 +348,17 @@ async function bootServe(label, opts = {}) {
     const dataDir = await mkTmp(`i9ag19-11-${label}-se-data-`);
     const appDataDir = await mkTmp(`i9ag19-11-${label}-fleet-data-`);
     const homeDir = await mkTmp(`i9ag19-11-${label}-home-`);
-    // A cwd that is NOT a project: no .beads anywhere the supervisor should
-    // adopt, mirroring the "no project resolved yet" shape every scenario
-    // here shares -- none of them are about project-folder resolution.
+    // Every scenario serves the same minimal project (a `.beads` holding bd
+    // init's metadata.json) through a real fleet server on the wire
+    // (test/helpers/fake-fleet-server.mjs, found via server.json in
+    // APRA_FLEET_DATA_DIR): the supervisor ensures its LLM-less backlog
+    // member there and refreshes beads through it, exactly as in production,
+    // so a launch is refused only for the toolchain reasons these cases are
+    // about. None of them are about project-folder resolution.
     const cwd = await mkTmp(`i9ag19-11-${label}-cwd-`);
+    writeProjectBeadsDir(cwd);
+    const fleet = await startFakeFleet({ dataDir: appDataDir });
+    fakeFleets.add(fleet);
 
     if (typeof opts.malformedConfigText === 'string') {
         const filePath = supervisorConfigPath({ dataDir });
@@ -376,6 +392,7 @@ async function bootServe(label, opts = {}) {
         child,
         port,
         token,
+        fleet,
         getOutput: () => output,
         request: (pathname, method, body) => httpRequest(port, pathname, method, token, body),
     };
@@ -407,6 +424,7 @@ async function stopSupervisor(supervisor) {
         // Fall through to the hard kill.
     } finally {
         forceKill(supervisor.child.pid);
+        if (supervisor.fleet) await supervisor.fleet.stop().catch(() => {});
     }
 }
 
