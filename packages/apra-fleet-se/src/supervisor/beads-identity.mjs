@@ -60,6 +60,9 @@ const nodeExecFileAsync = promisify(nodeExecFile);
 /** Directory name bd discovers by walking up from its cwd. */
 export const BEADS_DIR_NAME = '.beads';
 
+/** bd's redirect file: a .beads holding only this points at the real database. */
+export const REDIRECT_FILE = 'redirect';
+
 /** File a real project .beads always holds (bd init) and bd's global-state ~/.beads never does. */
 export const PROJECT_DB_MARKER = 'metadata.json';
 
@@ -82,17 +85,35 @@ export const PROJECT_DB_MARKER = 'metadata.json';
  * metadata.json (written by bd init). Shared by discoverBeadsDir() and
  * project-route.mjs's hasBeadsDb report so the two can never disagree.
  * @param {string} beadsDir - the candidate .beads directory path
- * @param {{ existsSync: (p: string) => boolean, statSync?: (p: string) => { isDirectory(): boolean } }} [fsImpl]
+ * A .beads holding only a `redirect` file to a directory with metadata.json also
+ * qualifies; discoverBeadsDir() then stops at the LOCAL .beads (bd follows the
+ * redirect itself) instead of walking into a parent project.
+ * @param {{ existsSync: (p: string) => boolean, statSync?: (p: string) => { isDirectory(): boolean }, readFileSync?: (p: string, enc: string) => string }} [fsImpl]
  * @returns {boolean}
  */
 export function isProjectBeadsDir(beadsDir, fsImpl = fs) {
     try {
-        return fsImpl.existsSync(beadsDir)
-            && (typeof fsImpl.statSync !== 'function' || fsImpl.statSync(beadsDir).isDirectory())
-            && fsImpl.existsSync(path.join(beadsDir, PROJECT_DB_MARKER));
+        if (!isDir(beadsDir, fsImpl)) return false;
+        if (fsImpl.existsSync(path.join(beadsDir, PROJECT_DB_MARKER))) return true;
+        // Redirect-only .beads (bd's supported layout, e.g. a worktree):
+        // a `redirect` file whose content is the real .beads. SINGLE HOP only:
+        // the target must itself hold metadata.json, so a redirect to another
+        // redirect-only .beads (or to itself) is simply not a project and can
+        // never recurse. bd resolves a relative target against the PARENT of
+        // the .beads dir (verified with bd 1.3.0), not the .beads dir itself.
+        const redirectFile = path.join(beadsDir, REDIRECT_FILE);
+        if (!fsImpl.existsSync(redirectFile) || typeof fsImpl.readFileSync !== 'function') return false;
+        const raw = String(fsImpl.readFileSync(redirectFile, 'utf-8')).trim();
+        if (!raw) return false;
+        const target = path.resolve(path.dirname(beadsDir), raw);
+        return isDir(target, fsImpl) && fsImpl.existsSync(path.join(target, PROJECT_DB_MARKER));
     } catch {
         return false;
     }
+}
+
+function isDir(p, fsImpl) {
+    return fsImpl.existsSync(p) && (typeof fsImpl.statSync !== 'function' || fsImpl.statSync(p).isDirectory());
 }
 
 export function discoverBeadsDir(opts = {}) {
