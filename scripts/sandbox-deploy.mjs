@@ -270,6 +270,37 @@ export async function getJson(url, timeoutMs = 2000, token) {
   }
 }
 
+/** Status-aware sibling of getJson() (which keeps its null-on-anything
+ *  contract for existing callers). Never throws; returns
+ *    { ok: true,  status, body }          -- 2xx with a JSON body
+ *    { ok: false, status, body: null }    -- the server ANSWERED non-2xx
+ *    { ok: false, status: null, error }   -- no answer (refused/timeout/bad JSON)
+ *  so a caller can tell "bearer token rejected" apart from "nothing there". */
+export async function probeJson(url, timeoutMs = 2000, token) {
+  let res;
+  try {
+    const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
+    res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs), headers });
+  } catch (err) {
+    const cause = err && err.cause && err.cause.code ? err.cause.code : (err && err.name === 'TimeoutError' ? `timeout after ${timeoutMs}ms` : String(err && err.message ? err.message : err));
+    return { ok: false, status: null, error: cause };
+  }
+  if (!res.ok) return { ok: false, status: res.status, body: null };
+  try {
+    return { ok: true, status: res.status, body: await res.json() };
+  } catch {
+    return { ok: false, status: res.status, body: null, error: 'response was not JSON' };
+  }
+}
+
+/** Human-readable reason for a failed probeJson() result, naming the HTTP
+ *  status when the server answered (401/403 called out as a rejected token). */
+export function describeProbeFailure(probe) {
+  if (probe.status === 401 || probe.status === 403) return `HTTP ${probe.status} (bearer token rejected)`;
+  if (probe.status != null) return `HTTP ${probe.status}${probe.error ? ` (${probe.error})` : ''}`;
+  return `no answer (${probe.error || 'connection failed'})`;
+}
+
 async function postJson(url, timeoutMs = 2000, token) {
   try {
     const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
@@ -301,6 +332,36 @@ function tryLoadToken(dir) {
   } catch {
     return undefined;
   }
+}
+
+const TOKEN_SHAPE = /^[0-9a-f]{64}$/;
+
+/** READ-ONLY bearer token for THIS sandbox's supervisor.
+ *
+ *  Root cause this exists for: re-resolving the token later (tryLoadToken) is
+ *  NOT guaranteed to return what start() resolved. readLocalToken() prefers
+ *  <home>/.apra-fleet/fleet.key over <dataDir>/private/token, and under a
+ *  fresh HOME with no fleet.key (vitest's sandboxed HOME, or any brand-new
+ *  machine) start() and the spawned supervisor both resolve private/token --
+ *  then the sandbox fleet MCP server lazily mints fleet.key (jwt.ts
+ *  getOrCreateKey()) on its first authenticated call, which the supervisor's
+ *  own startup triggers. The supervisor keeps the private/token it loaded at
+ *  boot, but a later re-resolve now picks fleet.key, so verify() sent the
+ *  wrong bearer and got HTTP 401 -- previously swallowed as "did not answer
+ *  with pid" / "/api/members unreadable (null)". start() therefore records the
+ *  PATH (never the secret) of the token source whose bearer it just proved
+ *  against /api/health, and every later probe (same or separate process)
+ *  reads that exact file. Falls back to the read-only resolver for values
+ *  files written before this was recorded. Never mints anything. */
+function sandboxSupervisorToken(values) {
+  const recorded = values.SUPERVISOR_TOKEN_PATH;
+  if (recorded) {
+    try {
+      const token = fs.readFileSync(recorded, 'utf8').trim();
+      if (TOKEN_SHAPE.test(token)) return token;
+    } catch { /* gone/unreadable: fall back to the resolver */ }
+  }
+  return tryLoadToken(values.FLEET_SE_DATA_DIR);
 }
 
 /** Production supervisor's data dir: same default bin/serve.mjs's
@@ -489,7 +550,8 @@ export async function start(sprintId, { home = os.homedir() } = {}) {
   // shared ~/.apra-fleet/fleet.key already exists, both this pre-check and
   // the spawned child resolve it -- the sandbox supervisor intentionally
   // shares one token with production, not a bug.
-  const supervisorToken = resolveServiceToken(values.FLEET_SE_DATA_DIR).token;
+  const resolvedSupervisorToken = resolveServiceToken(values.FLEET_SE_DATA_DIR);
+  const supervisorToken = resolvedSupervisorToken.token;
   const serve = path.join(repoRoot, 'packages', 'apra-fleet-se', 'bin', 'serve.mjs');
   const supPid = spawnDetached([serve, '--port', String(supervisorPort)], env, path.join(root, 'supervisor.log'));
   values.SUPERVISOR_PID = String(supPid);
@@ -509,6 +571,11 @@ export async function start(sprintId, { home = os.homedir() } = {}) {
     if (await lostPortRace(supLog, supervisorPort)) throw portConflictError('supervisor', supervisorPort, msg);
     throw new SandboxDeployError(msg);
   }
+  // The bearer just proved against /api/health: record WHERE it came from so
+  // verify/teardown reuse it instead of re-resolving (see
+  // sandboxSupervisorToken() for why a re-resolve can diverge).
+  values.SUPERVISOR_TOKEN_PATH = resolvedSupervisorToken.path;
+  writeValues(sprintId, values, home);
   log(`supervisor up: pid=${supPid} port=${supervisorPort}`);
   return values;
 }
@@ -535,18 +602,25 @@ export async function verify(sprintId, { home = os.homedir() } = {}) {
   const fleetPort = Number(values.APRA_FLEET_PORT);
   const supervisorPort = Number(values.SUPERVISOR_PORT);
 
-  const supervisorToken = tryLoadToken(values.FLEET_SE_DATA_DIR);
+  // The token start() proved, not a fresh re-resolve -- see sandboxSupervisorToken().
+  const supervisorToken = sandboxSupervisorToken(values);
   const health = await getJson(`http://127.0.0.1:${fleetPort}/health`);
   if (!health || String(health.pid) !== values.MCP_PID) problems.push(`sandbox fleet server: /health on ${fleetPort} did not answer with pid ${values.MCP_PID}`);
-  const supHealth = await getJson(`http://127.0.0.1:${supervisorPort}/api/health`, 2000, supervisorToken);
-  if (!supHealth || String(supHealth.pid) !== values.SUPERVISOR_PID) problems.push(`sandbox supervisor: /api/health on ${supervisorPort} did not answer with pid ${values.SUPERVISOR_PID}`);
+  // Status-aware probes: a non-2xx answer (401 especially) is named as such,
+  // never collapsed into "did not answer" / "unreadable (null)".
+  const supProbe = await probeJson(`http://127.0.0.1:${supervisorPort}/api/health`, 2000, supervisorToken);
+  const supHealth = supProbe.ok ? supProbe.body : null;
+  if (!supProbe.ok) problems.push(`sandbox supervisor: /api/health on ${supervisorPort} failed: ${describeProbeFailure(supProbe)}`);
+  else if (!supHealth || String(supHealth.pid) !== values.SUPERVISOR_PID) problems.push(`sandbox supervisor: /api/health on ${supervisorPort} did not answer with pid ${values.SUPERVISOR_PID} (answered pid ${supHealth?.pid ?? 'none'})`);
   // Isolation: the sandbox supervisor must see the sandbox's EMPTY registry,
   // never production's members. The one exception is the supervisor's OWN
   // backlog member, which it registers into whatever registry it is attached
   // to at startup and names in /api/health (backlogMember.name).
-  const members = await getJson(`http://127.0.0.1:${supervisorPort}/api/members`, 10000, supervisorToken);
+  const membersProbe = await probeJson(`http://127.0.0.1:${supervisorPort}/api/members`, 10000, supervisorToken);
+  const members = membersProbe.ok ? membersProbe.body : null;
   const list = foreignSandboxMembers(supHealth, members);
-  if (!list) problems.push(`sandbox supervisor: /api/members unreadable (${JSON.stringify(members)})`);
+  if (!membersProbe.ok) problems.push(`sandbox supervisor: /api/members on ${supervisorPort} failed: ${describeProbeFailure(membersProbe)}`);
+  else if (!list) problems.push(`sandbox supervisor: /api/members unreadable (${JSON.stringify(members)})`);
   else if (list.length !== 0) problems.push(`sandbox supervisor sees ${list.length} member(s) besides its own backlog member -- it is attached to a NON-empty registry (production?)`);
   const sbInfo = readJsonFile(path.join(values.APRA_FLEET_DATA_DIR, 'server.json'));
   if (!sbInfo || String(sbInfo.pid) !== values.MCP_PID || Number(sbInfo.port) !== fleetPort) problems.push('sandbox server.json does not match the recorded pid/port');
@@ -640,8 +714,8 @@ export async function teardown(sprintId, { home = os.homedir(), foreignPorts = [
 
   // 1. Supervisor: graceful shutdown only if the port answers with OUR pid.
   if (values.SUPERVISOR_PID && isPidAlive(values.SUPERVISOR_PID)) {
-    const supervisorToken = tryLoadToken(values.FLEET_SE_DATA_DIR);
-    const h = await getJson(`http://127.0.0.1:${supervisorPort}/api/health`, 2000, supervisorToken);
+    const supervisorToken = sandboxSupervisorToken(values);
+    const h =await getJson(`http://127.0.0.1:${supervisorPort}/api/health`, 2000, supervisorToken);
     if (h && String(h.pid) === values.SUPERVISOR_PID) {
       await postJson(`http://127.0.0.1:${supervisorPort}/api/shutdown`, 2000, supervisorToken);
       await waitForExit(values.SUPERVISOR_PID, 5000);
