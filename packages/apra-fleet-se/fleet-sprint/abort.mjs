@@ -33,6 +33,7 @@ import { ApraFleet } from '@apralabs/apra-fleet-client';
 import { resolveProvider, capabilities as vcsCapabilities } from './vcs-module.mjs';
 import { raiseVcsPrForMember, PR_SKIPPED_NO_MCP_CLIENT } from './vcs-auth.mjs';
 import { buildSprintPrBody } from './pr-body.mjs';
+import { parseBdJson } from './beads-scope.mjs';
 import {
     findDoltDivergedCause, runGitStep, sanitizePrText, stageCommandBodyMemberSide, SAFE_TEXT_RE,
 } from './runner.js';
@@ -148,7 +149,88 @@ export function validateNewTask(newTask) {
     if (!description || !SAFE_DESCRIPTION_RE.test(description)) {
         return { ok: false, reason: `description fails ASCII-printable validation ${SAFE_DESCRIPTION_RE} (or is empty): ${JSON.stringify(description)}` };
     }
-    return { ok: true, title, description, priority };
+    const dedup = validateDedupCheck(newTask && newTask.dedupCheck);
+    if (!dedup.ok) return { ok: false, reason: dedup.reason };
+    return { ok: true, title, description, priority, dedupCheck: dedup.dedupCheck };
+}
+
+const SAFE_BEAD_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+/**
+ * Validates the machine-checkable dedup evidence a bead-proposing role
+ * attaches to a newTask: `{ query, candidateIds, verdict }`. Standalone so it
+ * survives any later redesign of how newTasks reach the orchestrator.
+ * @param {unknown} dedupCheck
+ * @returns {{ ok: true, dedupCheck: { query: string, candidateIds: string[], verdict: 'no-overlap'|'overlap' } } | { ok: false, reason: string }}
+ */
+export function validateDedupCheck(dedupCheck) {
+    if (!dedupCheck || typeof dedupCheck !== 'object' || Array.isArray(dedupCheck)) {
+        return { ok: false, reason: 'dedupCheck is missing (every newTask must carry { query, candidateIds, verdict } evidence of a backlog search)' };
+    }
+    const { query, candidateIds, verdict } = dedupCheck;
+    if (typeof query !== 'string' || query.trim() === '') {
+        return { ok: false, reason: 'dedupCheck.query must be a non-empty string (the search actually run)' };
+    }
+    if (!Array.isArray(candidateIds) || candidateIds.some((c) => typeof c !== 'string')) {
+        return { ok: false, reason: 'dedupCheck.candidateIds must be an array of strings' };
+    }
+    if (verdict !== 'no-overlap' && verdict !== 'overlap') {
+        return { ok: false, reason: `dedupCheck.verdict must be 'no-overlap' or 'overlap', got ${JSON.stringify(verdict)}` };
+    }
+    return { ok: true, dedupCheck: { query, candidateIds, verdict } };
+}
+
+/**
+ * validateNewTask() plus the dedup 'overlap' branch, shared by the three
+ * newTasks creation sites. For a valid 'no-overlap' item it returns the plain
+ * validation. For 'overlap' it checks candidateIds[0] with `bd show --json`;
+ * if that bead exists and is not closed, the finding is appended to ITS notes
+ * (append semantics via the member-side staging seam, never shell-interpolated)
+ * and `{ ok: true, merged: true, mergedInto }` is returned -- the caller must
+ * NOT create a bead. A missing/closed/unsafe candidate yields `{ ok: false }`
+ * so the caller's existing non-fatal rejection path runs.
+ * @returns {Promise<ReturnType<typeof validateNewTask> | { ok: true, merged: true, mergedInto: string }>}
+ */
+export async function validateNewTaskWithDedup({ newTask, command, member, cycle, log = () => {} }) {
+    const validation = validateNewTask(newTask);
+    if (!validation.ok || validation.dedupCheck.verdict !== 'overlap') return validation;
+    const candidate = validation.dedupCheck.candidateIds[0];
+    if (!candidate || !SAFE_BEAD_ID_RE.test(candidate)) {
+        return { ok: false, reason: `dedupCheck verdict 'overlap' needs a valid existing bead id first in candidateIds, got ${JSON.stringify(candidate)}` };
+    }
+    const probe = `bd show ${candidate} --json`;
+    let existing = null;
+    try {
+        const raw = await command(probe, { member_name: member, silent: true });
+        const parsed = parseBdJson(raw, probe);
+        const list = Array.isArray(parsed) ? parsed : (parsed ? [parsed] : []);
+        existing = list.find((b) => b && b.id === candidate) || null;
+    } catch (_err) {
+        existing = null; // bd exits non-zero for a missing id
+    }
+    if (!existing) {
+        return { ok: false, reason: `dedupCheck candidate '${candidate}' does not exist; cannot merge an 'overlap' finding into it` };
+    }
+    if (String(existing.status).toLowerCase() === 'closed') {
+        return { ok: false, reason: `dedupCheck candidate '${candidate}' is closed; cannot merge an 'overlap' finding into it` };
+    }
+    const noteBody = `[fleet-sprint newTask merged -- overlap with this bead]\n${JSON.stringify({
+        cycle, title: validation.title, description: validation.description, priority: validation.priority,
+    }, null, 2)}`;
+    try {
+        const noteFile = await stageCommandBodyMemberSide({
+            command, member, content: noteBody,
+            label: `Stage merged newTask finding for ${candidate} notes`,
+        });
+        await command(
+            `bd note ${candidate} --file "${noteFile}"`,
+            { member_name: member, silent: true, label: `Append merged newTask finding to ${candidate} notes` }
+        );
+    } catch (err) {
+        return { ok: false, reason: `merging into dedupCheck candidate '${candidate}' failed: ${err.message}` };
+    }
+    log(`Reviewer newTask '${validation.title}' merged into ${candidate} (dedupCheck overlap) -- no new bead created.`);
+    return { ok: true, merged: true, mergedInto: candidate };
 }
 
 /**

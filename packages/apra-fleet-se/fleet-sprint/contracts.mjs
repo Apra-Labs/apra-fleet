@@ -498,6 +498,17 @@ const FALLBACK_reviewerVerdict = {
                     title: { type: 'string' },
                     description: { type: 'string' },
                     priority: { type: 'string' },
+                    // Per-item dedup evidence; enforced per item in
+                    // validateNewTask(), deliberately NOT in `required` so one
+                    // bad newTask never makes ajv reject the whole verdict.
+                    dedupCheck: {
+                        type: 'object',
+                        properties: {
+                            query: { type: 'string' },
+                            candidateIds: { type: 'array', items: { type: 'string' } },
+                            verdict: { type: 'string', enum: ['no-overlap', 'overlap'] },
+                        },
+                    },
                 },
                 required: ['title', 'description', 'priority'],
             },
@@ -712,6 +723,17 @@ export const finalVerdict = {
                     title: { type: 'string' },
                     description: { type: 'string' },
                     priority: { type: 'string' },
+                    // Per-item dedup evidence; enforced per item in
+                    // validateNewTask(), deliberately NOT in `required` so one
+                    // bad newTask never makes ajv reject the whole verdict.
+                    dedupCheck: {
+                        type: 'object',
+                        properties: {
+                            query: { type: 'string' },
+                            candidateIds: { type: 'array', items: { type: 'string' } },
+                            verdict: { type: 'string', enum: ['no-overlap', 'overlap'] },
+                        },
+                    },
                 },
                 required: ['title', 'description', 'priority'],
             },

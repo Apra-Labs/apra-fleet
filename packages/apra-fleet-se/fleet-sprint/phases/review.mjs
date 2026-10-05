@@ -67,7 +67,7 @@
 
 import { applyGuardedReopens, foldReplanIds } from '../beads-transitions.mjs';
 import {
-    validateNewTask, appendRejectedFindingToParentNotes, persistNewTaskBestEffort,
+    validateNewTaskWithDedup, appendRejectedFindingToParentNotes, persistNewTaskBestEffort,
 } from '../abort.mjs';
 
 /**
@@ -238,7 +238,7 @@ export async function runReviewPhase({
         // for why this is an allowlist, not escaping. A rejection is
         // logged, recorded for the final-review evidence summary, and
         // skipped; it must never abort the sprint over one bad newTask.
-        const validation = validateNewTask(newTask);
+        const validation = await validateNewTaskWithDedup({ newTask, command, member: backlogMember, cycle, log });
         if (!validation.ok) {
             log(`Reviewer newTasks: REJECTED (not sent to bd create) -- ${validation.reason}`);
             rejectedNewTasks.push({ cycle, reason: validation.reason, raw: newTask });
@@ -263,6 +263,7 @@ export async function runReviewPhase({
             }
             continue;
         }
+        if (validation.merged) continue; // overlap: appended to the existing bead, no create
         const { title, description, priority } = validation;
         // A bead can only have one parent -- see the matching
         // comment on the re-review newTasks site below.

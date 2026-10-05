@@ -74,7 +74,7 @@ describe('apra-fleet-19o.3: bracketed titles validate and rejected newTasks reap
         await withScenarioMarkers('19o3-resurface', async () => {
             const { tempDir, epicBead } = await setupMinimal('19o3resurface', [
                 { title: TASK_A_TITLE },
-                { title: TASK_B_TITLE, priority: 'P1' },
+                { title: TASK_B_TITLE, priority: 'P1', dedupCheck: { query: 'q', candidateIds: [], verdict: 'no-overlap' } },
             ]);
             const dispatched = [];
             const commandLog = [];
@@ -140,13 +140,13 @@ describe('apra-fleet-19o.3: bracketed titles validate and rejected newTasks reap
                     if (currentCycle === 1 && !rejectedSubmitted) {
                         rejectedSubmitted = true;
                         newTasks = [
-                            { title: BAD_TITLE, description: BAD_DESCRIPTION, priority: 'P2' },
-                            { title: GOOD_BRACKET_TITLE, description: GOOD_BRACKET_DESCRIPTION, priority: 'P2' },
+                            { title: BAD_TITLE, description: BAD_DESCRIPTION, priority: 'P2', dedupCheck: { query: 'q', candidateIds: [], verdict: 'no-overlap' } },
+                            { title: GOOD_BRACKET_TITLE, description: GOOD_BRACKET_DESCRIPTION, priority: 'P2', dedupCheck: { query: 'q', candidateIds: [], verdict: 'no-overlap' } },
                         ];
                     } else if (currentCycle === 2 && !resubmitted) {
                         resubmitted = true;
                         newTasks = [
-                            { title: CORRECTED_TITLE, description: BAD_DESCRIPTION, priority: 'P2' },
+                            { title: CORRECTED_TITLE, description: BAD_DESCRIPTION, priority: 'P2', dedupCheck: { query: 'q', candidateIds: [], verdict: 'no-overlap' } },
                         ];
                     }
                     return {
