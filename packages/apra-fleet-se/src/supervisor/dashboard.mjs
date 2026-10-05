@@ -1087,20 +1087,39 @@ const sprintStackLiveScript = (mountPrefix) => `
         try {
             var res = await fetch('${mountHref(mountPrefix, '/state')}?_t=' + Date.now(), { cache: 'no-store' });
             var data = await res.json();
-            renderSprintStackFromState(data.sprints);
-            var counterEl = document.getElementById('running-counter');
-            if (counterEl) {
-                var running = Array.isArray(data.sprints) ? data.sprints.length : 0;
-                counterEl.innerHTML = '<strong>' + running + '</strong> running';
+            // Each section is isolated so one section's render failure
+            // (e.g. a malformed sprint view) never skips the others; the
+            // error is still console.error-logged, never swallowed.
+            try {
+                var counterEl = document.getElementById('running-counter');
+                if (counterEl) {
+                    var running = Array.isArray(data.sprints) ? data.sprints.length : 0;
+                    counterEl.innerHTML = '<strong>' + running + '</strong> running';
+                }
+            } catch (e) {
+                console.error('Poll Error (counter):', e);
+            }
+            try {
+                renderSprintStackFromState(data.sprints);
+            } catch (e) {
+                console.error('Poll Error (sprint stack):', e);
             }
             // apra-fleet-i9ag.4: the finished-sprints list rides the SAME
             // poll, so a sprint that just left the stack above shows up
             // below (with its verdict/PR) without a page reload.
-            var finishedEl = document.getElementById('finished-sprints');
-            if (finishedEl && Array.isArray(data.finished)) {
-                finishedEl.innerHTML = renderFinishedRunsHtml(data.finished, MOUNT_PREFIX);
+            try {
+                var finishedEl = document.getElementById('finished-sprints');
+                if (finishedEl && Array.isArray(data.finished)) {
+                    finishedEl.innerHTML = renderFinishedRunsHtml(data.finished, MOUNT_PREFIX);
+                }
+            } catch (e) {
+                console.error('Poll Error (finished sprints):', e);
             }
-            renderBeadsFreshnessFromState(data.beadsFreshness);
+            try {
+                renderBeadsFreshnessFromState(data.beadsFreshness);
+            } catch (e) {
+                console.error('Poll Error (beads freshness):', e);
+            }
         } catch (e) {
             console.error('Poll Error:', e);
         }
