@@ -3,6 +3,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
+import http from 'node:http';
+import crypto from 'node:crypto';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import {
   safeSandboxId,
@@ -17,6 +19,7 @@ import {
   init,
   teardown,
   up,
+  verify,
   smoke,
   getJson,
   lostPortRace,
@@ -678,5 +681,101 @@ describe('apra-fleet-ky2l.13/16: production token probes are read-only (never mi
     await withRealFleetKeyForcedAbsent(() => checkProductionUnchanged({ PROD_SUPERVISOR_PID: '999999' }, home));
 
     expect(fs.existsSync(path.join(prodSeDataDir(home), 'private'))).toBe(false);
+  });
+});
+
+// verify() must name an HTTP status the sandbox supervisor ANSWERED with (401
+// especially) instead of collapsing it into "did not answer with pid" /
+// "/api/members unreadable (null)", keep a genuine no-answer distinct, and
+// authenticate with the token start() proved (SUPERVISOR_TOKEN_PATH), never a
+// fresh re-resolve that can land on a since-minted fleet.key. In-process HTTP
+// servers on OS-assigned ports; values files under throwaway temp homes.
+describe('verify: supervisor auth and HTTP status reporting', () => {
+  const servers: http.Server[] = [];
+  afterEach(async () => {
+    for (const s of servers.splice(0)) await new Promise<void>((r) => s.close(() => r()));
+  });
+
+  /** Fake supervisor: 200 with {pid} only when the bearer matches `token`
+   *  (never, when token is null), 401 otherwise. Returns its port. */
+  async function fakeSupervisor(token: string | null, pid: string): Promise<number> {
+    const srv = http.createServer((req, res) => {
+      const ok = token !== null && req.headers.authorization === `Bearer ${token}`;
+      if (!ok) { res.writeHead(401, { 'Content-Type': 'application/json' }); res.end('{"error":"unauthorized"}'); return; }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(req.url === '/api/members' ? { members: [] } : { pid: Number(pid), uptimeSeconds: 1 }));
+    });
+    servers.push(srv);
+    await new Promise<void>((resolve) => srv.listen(0, '127.0.0.1', () => resolve()));
+    return (srv.address() as net.AddressInfo).port;
+  }
+
+  function writeFixture(home: string, supervisorPort: number, extra: Record<string, string> = {}): string {
+    const id = `verify-auth-${crypto.randomBytes(4).toString('hex')}`;
+    writeValues(id, {
+      SPRINT_ID: id,
+      APRA_FLEET_PORT: '1', // nothing there: the fleet-server line is not under test
+      APRA_FLEET_DATA_DIR: path.join(home, 'mcp'),
+      FLEET_SE_DATA_DIR: path.join(home, 'se'),
+      SUPERVISOR_PORT: String(supervisorPort),
+      MCP_PID: '1',
+      SUPERVISOR_PID: '424242',
+      ...extra,
+    }, home);
+    return id;
+  }
+
+  async function verifyError(id: string, home: string): Promise<Error> {
+    try {
+      await verify(id, { home });
+    } catch (err) {
+      return err as Error;
+    }
+    throw new Error('verify unexpectedly succeeded');
+  }
+
+  const supervisorLines = (msg: string) => msg.split('\n').filter((l) => l.includes('sandbox supervisor'));
+
+  it('a supervisor answering 401 to /api/health and /api/members is named as HTTP 401, not "did not answer"', async () => {
+    const home = mkHome(); homes.push(home);
+    const port = await fakeSupervisor(null, '424242');
+    const id = writeFixture(home, port);
+    const err = await verifyError(id, home);
+    expect(err).toBeInstanceOf(SandboxDeployError);
+    expect(err.message).toContain('401');
+    const lines = supervisorLines(err.message);
+    expect(lines.length).toBe(2);
+    for (const line of lines) {
+      expect(line).toContain('HTTP 401');
+      expect(line).not.toContain('did not answer with pid');
+      expect(line).not.toContain('unreadable (null)');
+    }
+  });
+
+  it('nothing listening on the supervisor port keeps the no-answer wording and never mentions 401', async () => {
+    const home = mkHome(); homes.push(home);
+    const port = await osPort(); // released immediately: nothing listens there
+    const id = writeFixture(home, port);
+    const err = await verifyError(id, home);
+    expect(err).toBeInstanceOf(SandboxDeployError);
+    // Match the status wording, not a bare '401': the OS-assigned port can contain it (e.g. 54010).
+    expect(err.message).not.toMatch(/HTTP 40[13]|bearer token rejected/);
+    const lines = supervisorLines(err.message);
+    expect(lines.length).toBe(2);
+    for (const line of lines) expect(line).toContain('no answer');
+  });
+
+  it('authenticates with the token at SUPERVISOR_TOKEN_PATH (what start() proved), not a fresh re-resolve', async () => {
+    const home = mkHome(); homes.push(home);
+    // A token that exists ONLY at the recorded path: no <se>/private/token,
+    // and it cannot be whatever fleet.key the (sandboxed) HOME may hold.
+    const token = crypto.randomBytes(32).toString('hex');
+    const tokenPath = path.join(home, 'start-proved-token');
+    fs.writeFileSync(tokenPath, token, { mode: 0o600 });
+    const port = await fakeSupervisor(token, '424242');
+    const id = writeFixture(home, port, { SUPERVISOR_TOKEN_PATH: tokenPath });
+    const err = await verifyError(id, home); // still fails on the fleet-server line
+    expect(supervisorLines(err.message)).toEqual([]);
+    expect(fs.existsSync(path.join(home, 'se', 'private'))).toBe(false); // nothing minted
   });
 });

@@ -169,3 +169,33 @@ open, on a tag-then-retry design:
 - The retry path refuses to proceed if teardown of the previous attempt did
   not fully succeed, rather than layering a new bind attempt on top of a
   partially-torn-down previous one.
+
+## Supervisor token is proved once and reused
+
+The sandbox supervisor guards its whole `/api/` surface with a bearer token.
+`scripts/sandbox-deploy.mjs` `start()` proves a token against `/api/health`
+and records the *path* of that token (never the secret) in the sandbox values
+file. `verify()` and `teardown()` reuse that recorded token rather than
+resolving one again. Re-resolving is unsafe: a key minted after startup can
+resolve to a different token than the one the supervisor was started with,
+producing a spurious 401 at verify time. The recorded value is validated
+against the same 64-hex pattern the local-token resolver uses, and older
+values files without it fall back to the read-only resolver (nothing is
+minted).
+
+Probe failures are classified, not collapsed: a 401/403 is reported as a
+rejected bearer token, while a genuine non-answer keeps its own wording, so
+operators can tell an auth problem from a dead supervisor. The legacy
+`getJson` helper still returns null on any failure for existing callers; it
+is status-blind, so new probes that must distinguish auth failures should use
+the status-aware probe instead.
+
+## Windows service launcher path
+
+The Windows service manager derives the launcher (`.bat`) path from the
+wrapper path by swapping only the extension (case-insensitively), leaving the
+directory portion untouched. Do not normalise separators in this mapping: on
+a POSIX host, Windows-style separator handling turned the path into a single
+backslash-named file in the current directory. Registration, uninstall and
+the Run-key start all go through the same mapping, and a lifecycle test
+guards against new backslash-named files appearing in the working directory.
