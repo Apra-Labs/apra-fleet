@@ -33,7 +33,7 @@ const BOX_DIR = path.join(HERE, 'box');
 const ALL_PASSES = ['A', 'B', 'U', 'U2'];
 // Opt-in passes (never in the default list), with the only platform they run on.
 // UL: a legacy (elevated, onlogon) task from the baseline, upgraded by a
-// standard user who cannot replace it.
+// non-elevated shell of the same user, which cannot replace it.
 const PLATFORM_PASSES = { UL: 'windows' };
 // Passes that start from the pinned upgrade baseline.
 const passNeedsBase = p => p === 'U' || p === 'U2' || p === 'UL';

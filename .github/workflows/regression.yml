@@ -5,7 +5,7 @@ name: Regression - install/upgrade proof
 # (Node), U (upgrade from the latest release via install --force) and U2
 # (upgrade along the 'apra-fleet update' path) through the host driver, one
 # fresh VM per OS x pass, plus Windows-only UL (the baseline's elevated legacy
-# task upgraded by a standard user). A stale upgrade-baseline pin is
+# task upgraded from a non-elevated shell). A stale upgrade-baseline pin is
 # INCONCLUSIVE (red).
 on:
   push:
@@ -117,7 +117,7 @@ jobs:
           - os: windows-2022
             binary: apra-fleet-installer-win-x64.exe
           # Windows only: the baseline's elevated onlogon task, upgraded by a
-          # standard user who cannot replace it (tests/integration/fresh-install).
+          # non-elevated shell that cannot replace it (tests/integration/fresh-install).
           - os: windows-2022
             pass: UL
             binary: apra-fleet-installer-win-x64.exe

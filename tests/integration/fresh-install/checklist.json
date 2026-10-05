@@ -88,14 +88,14 @@
       ]
     },
     "UL": {
-      "title": "Windows: legacy elevated task from the baseline, upgraded by a standard user (no elevation possible)",
-      "_comment": "The baseline (0.4.3) registered the task with schtasks /sc onlogon, which needs admin. A standard user can neither replace nor disable such a task: install must reuse it, explain the fix (notice file, fleet.log, status) without attempting elevation, and the documented fix (elevated delete, then a normal-user install --force) must yield the new task.",
+      "title": "Windows: the baseline's elevated legacy task, upgraded from a normal (non-elevated) shell",
+      "_comment": "The baseline (0.4.3) registered the task with schtasks /sc onlogon, which needs admin. The same user's non-elevated token (UAC on: a filtered, medium-integrity token, run via a Limited scheduled task -- no TTY) can neither replace nor disable it: install must reuse it, explain the fix (notice file, fleet.log, status) without attempting elevation, and the documented fix (elevated delete, then a non-elevated install --force) must yield the new task, which runs the candidate.",
       "steps": [
         { "id": "L00", "title": "probe: UAC policy and integrity level (informational)", "platforms": ["windows"], "severity": "advisory", "expect": { "exit": 0 } },
-        { "id": "L01", "title": "standard (non-admin) local user created and able to run commands", "platforms": ["windows"], "expect": { "exit": 0, "keyline": "admin=no" } },
+        { "id": "L01", "title": "non-elevated context of the same user runs at medium integrity", "platforms": ["windows"], "expect": { "exit": 0, "keyline": "Medium Mandatory Level" } },
         { "id": "L02", "title": "baseline --version", "platforms": ["windows"], "expect": { "exit": 0, "observed": "^${baselineVersion}$" } },
-        { "id": "L03", "title": "baseline install as the standard user", "platforms": ["windows"], "expect": { "exit": 0, "keyline": "installed successfully" } },
-        { "id": "L04", "title": "admin registers the legacy onlogon task (as the baseline does elevated)", "platforms": ["windows"], "expect": { "exit": 0, "keyline": "^logon=ANY-USER repeat=none .*action=bat$" } },
+        { "id": "L03", "title": "baseline install from the elevated runner (registers the legacy task)", "platforms": ["windows"], "expect": { "exit": 0, "keyline": "installed successfully" } },
+        { "id": "L04", "title": "the baseline registered the legacy onlogon task", "platforms": ["windows"], "expect": { "exit": 0, "keyline": "^logon=ANY-USER repeat=none .*action=bat$" } },
         { "id": "L05", "title": "baseline server up through the legacy task", "platforms": ["windows"], "expect": { "exit": 200, "observed": "^${baselineVersion}$" } },
         { "id": "L06", "title": "candidate install --force as the standard user", "platforms": ["windows"], "expect": { "exit": 0, "keyline": "installed successfully" } },
         { "id": "L07", "title": "legacy task reused (create denied) with guidance", "platforms": ["windows"], "expect": { "exit": 0 } },
@@ -106,10 +106,12 @@
         { "id": "L12", "title": "server back on the candidate through the old task", "platforms": ["windows"], "expect": { "exit": 200, "observed": "^${expectVersion}$" } },
         { "id": "L13", "title": "apra-fleet status shows legacy task (upgrade needed: ...) + fix", "platforms": ["windows"], "expect": { "exit": 0 } },
         { "id": "L14", "title": "documented fix 1/2: elevated schtasks /delete", "platforms": ["windows"], "expect": { "exit": 0 } },
-        { "id": "L15", "title": "documented fix 2/2: install --force as the standard user", "platforms": ["windows"], "expect": { "exit": 0, "keyline": "installed successfully" } },
-        { "id": "L16", "title": "task is now the NEW form, scoped to the standard user", "platforms": ["windows"], "expect": { "exit": 0, "keyline": "^logon=\\S*\\\\\\S+ repeat=PT5M policy=IgnoreNew action=(wscript-launcher|bat)$", "observed": "^new form$" } },
+        { "id": "L15", "title": "documented fix 2/2: install --force, not elevated", "platforms": ["windows"], "expect": { "exit": 0, "keyline": "installed successfully" } },
+        { "id": "L16", "title": "task is now the NEW form, scoped to the user", "platforms": ["windows"], "expect": { "exit": 0, "keyline": "^logon=\\S*\\\\\\S+ repeat=PT5M policy=IgnoreNew action=(wscript-launcher|bat)$", "observed": "^new form$" } },
         { "id": "L17", "title": "service-notice.json cleared", "platforms": ["windows"], "expect": { "exit": 0 } },
-        { "id": "L18", "title": "apra-fleet status has no legacy-task hint after the fix", "platforms": ["windows"], "expect": { "exit": 0 } }
+        { "id": "L18", "title": "apra-fleet status has no legacy-task hint after the fix", "platforms": ["windows"], "expect": { "exit": 0 } },
+        { "id": "L19", "title": "server up on the candidate through the new (non-elevated) task", "platforms": ["windows"], "expect": { "exit": 200, "observed": "^${expectVersion}$" } },
+        { "id": "L20", "title": "exactly one apra-fleet server listening on 7523", "platforms": ["windows"], "expect": { "exit": 0, "keyline": "^listeners=1 .*names=apra-fleet$" } }
       ]
     }
   }
