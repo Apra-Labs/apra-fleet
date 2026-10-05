@@ -1,12 +1,19 @@
 import http from 'node:http';
 import { execFileSync } from 'node:child_process';
 
+/**
+ * Whether `pid` exists. EPERM means it exists but we may not signal it -- a
+ * server running elevated (Windows High integrity) or as another user, seen
+ * from a normal shell. Treating that as dead made a non-elevated install call
+ * the elevated server "unrelated" and then fail EBUSY overwriting its binary.
+ * Same rule as utils/pid-helpers.ts and the client's server-resolution.mjs.
+ */
 export function isPidAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
-  } catch {
-    return false;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException)?.code === 'EPERM';
   }
 }
 
