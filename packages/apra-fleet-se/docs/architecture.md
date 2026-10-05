@@ -1818,6 +1818,36 @@ see is not evidence, and a navigation affordance that can silently vanish needs
 a check on the response rather than trust in the transform. A page that cannot
 carry the link is a dead end, so failing loudly is the honest answer.
 
+**Supervisor-launched viewers carry the back-link themselves, so the proxy
+never has to guess.** The generic workflow viewer accepts an opt-in caller
+supplied back link. It is validated at construction (absolute `http(s)` URL
+only), HTML-escaped, and marked with a `data-viewer-back-link` attribute; with
+no option the page is byte-identical to before, so standalone launches are
+unchanged. The sprint CLI exposes this as `--viewer-back-url` and exits
+non-zero on a non-`http(s)` value before connecting to anything. On the
+supervisor's serve path the spawner always supplies the per-run URL, and
+refuses to launch a sprint that has no run id rather than start a viewer with
+no way back. The result is that a child fetched directly (not through the
+proxy) already has exactly one link to its card.
+
+When the child is reached through the proxy, the proxy strips the child's own
+anchor (identified by the marker) before injecting the mount-prefixed one, so
+the operator sees one link whose href is valid under the `/ext/<id>` mount.
+The page assertion was tightened to match: it now fails not only when the link
+is missing but also when a page carries more than one link to the same card,
+so neither the proxy nor the history route can serve two. Tests derive the
+viewer routes from the rendered dashboard rather than a hand-written list, so a
+new viewer entry point cannot silently escape the check.
+
+**Dashboard live refresh isolates each render section.** The dashboard's
+client-side poll updates the running counter, the sprint stack, the finished
+sprints list and the beads-freshness indicator each inside its own
+`try/catch`, with every error still logged. The counter is written first from
+state, before the stack renders, so a malformed sprint entry that makes the
+stack render throw can no longer leave the counter showing a stale value that
+disagrees with the state. Keep any new poll section in its own guarded block
+for the same reason.
+
 ## Server-side member reservation
 
 Distinct from (and layered underneath) the supervisor's own reservation
