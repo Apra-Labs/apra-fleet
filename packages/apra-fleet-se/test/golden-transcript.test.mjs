@@ -605,6 +605,14 @@ function normalizeText(text, idMap, tempDir, branch) {
     // present, so normalize its value instead.
     out = out.replace(/\n[ \t]*"owner":\s*"[^"]*",/g, '');
     out = out.replace(/"created_by":\s*"[^"]*"/g, '"created_by": "<CREATED_BY>"');
+    // Volatile bd JSON keys that real bd emits but the committed (replayed)
+    // fixtures never carry: `revision` is a per-row content hash (bd >= 1.3),
+    // the last field of each bead object, so drop it together with whichever
+    // comma separates it from its neighbour. Add further denylisted keys here.
+    for (const key of ['revision']) {
+        out = out.replace(new RegExp(`,\\n[ \\t]*"${key}":\\s*"[^"]*"`, 'g'), '');
+        out = out.replace(new RegExp(`\\n[ \\t]*"${key}":\\s*"[^"]*",`, 'g'), '');
+    }
     if (tempDir) {
         out = out.split(tempDir).join('<TMPDIR>');
         out = out.split(tempDir.replace(/\\/g, '/')).join('<TMPDIR>');

@@ -491,6 +491,29 @@ export class SqliteProvider implements MemoryProvider {
     }
   }
 
+  /**
+   * Read-only accessor for the stored per-file hash basis (source_file_hashes)
+   * of the given entry ids. Each requested id maps to its parsed basis, or null
+   * when the basis is empty/unparseable or the id is unknown. Used by kb_export's
+   * project-scope bible filter; internal to this provider, not an MCP surface.
+   */
+  getSourceFileBases(ids: string[]): Map<string, Record<string, string> | null> {
+    const out = new Map<string, Record<string, string> | null>();
+    for (const id of ids) out.set(id, null);
+    if (ids.length === 0) return out;
+    const db = this.getDb();
+    // Chunk to stay well under SQLite's bound-parameter limit.
+    const CHUNK = 500;
+    for (let i = 0; i < ids.length; i += CHUNK) {
+      const chunk = ids.slice(i, i + CHUNK);
+      const rows = db.prepare(
+        `SELECT id, source_file_hashes FROM entries WHERE id IN (${chunk.map(() => '?').join(',')})`
+      ).all(...chunk) as { id: string; source_file_hashes: string | null }[];
+      for (const row of rows) out.set(row.id, this.parseBasis(row.source_file_hashes));
+    }
+    return out;
+  }
+
   // T1.3 (F2/D2 HARDENED): freshness check bounded to the primed set, now
   // BIDIRECTIONAL. Keyed off source_files with a per-file hash basis persisted
   // at capture time (source_file_hashes) -- NOT content_hash, which is only ever

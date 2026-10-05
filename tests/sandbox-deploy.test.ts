@@ -20,6 +20,7 @@ import {
   getJson,
   lostPortRace,
   SandboxDeployError,
+  foreignSandboxMembers,
   // @ts-expect-error -- plain .mjs helper, no type declarations
 } from '../scripts/sandbox-deploy.mjs';
 
@@ -102,6 +103,25 @@ async function squat(): Promise<number> {
   });
   return port;
 }
+
+describe('verify isolation: only the supervisor\'s own backlog member is tolerated', () => {
+  const health = { pid: 1, backlogMember: { status: 'ready', name: 'backlog-sandbox', reason: null } };
+  it('an empty registry, or one holding only the supervisor\'s own backlog member, is clean', () => {
+    expect(foreignSandboxMembers(health, { members: [] })).toEqual([]);
+    expect(foreignSandboxMembers(health, { members: [{ name: 'backlog-sandbox' }] })).toEqual([]);
+    expect(foreignSandboxMembers(health, [{ name: 'backlog-sandbox' }])).toEqual([]);
+  });
+  it('any other member is foreign (production registry), even next to the own backlog member', () => {
+    const foreign = foreignSandboxMembers(health, { members: [{ name: 'backlog-sandbox' }, { name: 'fleet-win1' }] });
+    expect(foreign.map((m: { name: string }) => m.name)).toEqual(['fleet-win1']);
+  });
+  it('without a backlogMember in /api/health nothing is exempt; an unreadable list is null', () => {
+    expect(foreignSandboxMembers({ pid: 1 }, { members: [{ name: 'backlog-sandbox' }] })).toHaveLength(1);
+    expect(foreignSandboxMembers(null, { members: [{ name: 'x' }] })).toHaveLength(1);
+    expect(foreignSandboxMembers(health, { error: 'boom' })).toBeNull();
+    expect(foreignSandboxMembers(health, null)).toBeNull();
+  });
+});
 
 describe('naming: everything derives from the sprintId alone', () => {
   it('is deterministic, filesystem-safe, and collision-free for ids that sanitize alike', () => {

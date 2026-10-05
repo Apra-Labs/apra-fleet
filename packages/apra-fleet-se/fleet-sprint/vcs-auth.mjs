@@ -1016,14 +1016,44 @@ export function createMemberVcsProviderResolver(opts = {}) {
  * transport-agnostic and unit-testable without a live fleet server.
  *
  * @param {{ callTool: (name: string, args: object) => Promise<any>, command: Function, log?: Function }} opts
- * @returns {(info: { member: string, label: string, cmd?: string, error: string, kind: 'git'|'dolt' }) => Promise<void>}
+ * @returns {((info: { member: string, label: string, cmd?: string, error: string, source?: 'git'|'dolt', failureKind?: string }) => Promise<void>) & { recordHealOutcome: (info: { member: string, label: string, error: string, recovered: boolean }) => Promise<void> }}
  */
 export function createVcsAuthSelfHealCallback(opts = {}) {
-    const { callTool, command, log = () => {}, azdevopsPatSecretName } = opts;
+    const { callTool, command, log = () => {}, azdevopsPatSecretName, now = () => Date.now(), futileHealTtlMs = FUTILE_HEAL_TTL_MS } = opts;
     const fleetApi = new ApraFleet({ callTool });
+    // GitHub #616: last-resort heals of UNCLASSIFIED failures that ran and did
+    // NOT recover, keyed by member + normalised error, so the same futile
+    // re-provisioning is not repeated on every D-pull. Only 'unknown' failures
+    // are remembered -- a genuine auth failure is always healed -- and each
+    // entry expires after futileHealTtlMs, so a later, different cause behind
+    // the same text still gets a heal.
+    /** @type {Map<string, { label: string, at: number }>} */
+    const futileHeals = new Map();
 
-    return async function onAuthFailure({ member, label, error }) {
-        log(`[Sync] self-heal: auth failure detected for member '${member}' (${label}); calling provision_vcs_auth to re-provision credentials: ${error}`);
+    function rememberedFutileHeal(key) {
+        const entry = futileHeals.get(key);
+        if (!entry) return null;
+        if (now() - entry.at >= futileHealTtlMs) {
+            futileHeals.delete(key);
+            return null;
+        }
+        return entry;
+    }
+
+    async function onAuthFailure({ member, label, error, source, failureKind }) {
+        if (failureKind === 'unknown') {
+            const entry = rememberedFutileHeal(selfHealMemoryKey(member, error));
+            if (entry) {
+                throw new Error(
+                    `skipping self-heal for member '${member}' (${label}): re-provisioning credentials already failed to recover ` +
+                    `this same unclassified failure earlier in this run (${entry.label}); fix the cause on the member instead.`,
+                );
+            }
+        }
+        const isAuth = failureKind === undefined || failureKind === 'auth';
+        log(isAuth
+            ? `[Sync] self-heal: auth failure detected for member '${member}' (${label}${source ? `, ${source}` : ''}); calling provision_vcs_auth to re-provision credentials: ${error}`
+            : `[Sync] self-heal: unclassified failure for member '${member}' (${label}${source ? `, ${source}` : ''}); re-provisioning credentials as a last resort via provision_vcs_auth: ${error}`);
 
         // apra-fleet-5co8.4.2: some providers (e.g. Azure DevOps PATs) can
         // never be fixed by this reactive re-provisioning call alone -- it
@@ -1055,8 +1085,47 @@ export function createVcsAuthSelfHealCallback(opts = {}) {
 
         await provisionVcsAuthForMember({ fleetApi, command, member, log, logPrefix: '[Sync] self-heal', azdevopsPatSecretName, resolvedProvider: resolved });
 
-        log(`[Sync] self-heal: provision_vcs_auth succeeded for member '${member}' (${label}); the failed command will be retried once.`);
+        log(`[Sync] self-heal: credentials re-provisioned for member '${member}' (${label}); the failed command will be retried once.`);
+    }
+
+    /**
+     * Called by runGitStep/runDoltStep after the post-heal retry; a heal that
+     * did not recover is remembered so it is not attempted again this run.
+     * @param {{ member: string, label: string, error: string, recovered: boolean, failureKind?: string }} info
+     */
+    onAuthFailure.recordHealOutcome = async function recordHealOutcome({ member, label, error, recovered, failureKind }) {
+        if (recovered || failureKind !== 'unknown') return;
+        futileHeals.set(selfHealMemoryKey(member, error), { label, at: now() });
     };
+
+    return onAuthFailure;
+}
+
+/** How long a futile unclassified self-heal is remembered (30 minutes). */
+export const FUTILE_HEAL_TTL_MS = 30 * 60 * 1000;
+
+/**
+ * Key for remembering a futile self-heal: the member plus the failure's
+ * DISTINGUISHING text. Warning/hint lines (shell-profile noise, git hints) are
+ * dropped and the fatal/error lines kept (else the TAIL of what remains), so
+ * two failures sharing a long common prefix never collapse into one key. The
+ * run-varying parts (pids, counts, hex ids, whitespace runs) are normalised
+ * away, but the number after "exit code"/"exit status" is kept, so distinct
+ * exit codes stay distinct.
+ * @param {string} member
+ * @param {string} error
+ * @returns {string}
+ */
+export function selfHealMemoryKey(member, error) {
+    const lines = String(error || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean)
+        .filter((l) => !/^(?:remote:\s*)?(?:warning|hint)\b/i.test(l));
+    const decisive = lines.filter((l) => /\b(?:fatal|error)\b/i.test(l));
+    let text = (decisive.length > 0 ? decisive : lines).join(' ');
+    text = text.replace(/(\bexit (?:code|status)\s*:?\s*)(\d+)|\b[0-9a-f]{7,}\b|\d+/gi,
+        (m, prefix, code) => (prefix ? `${prefix}${code}` : (/^\d+$/.test(m) ? '<n>' : '<hex>')));
+    text = text.toLowerCase().replace(/\s+/g, ' ').trim();
+    if (text.length > 500) text = text.slice(-500);
+    return `${member}|${text}`;
 }
 
 // How far ahead of a credential's known expiry the preflight treats it as
@@ -1231,7 +1300,11 @@ export function createWorkflowsPermissionPreflightCallback(opts = {}) {
 
     return async function warnIfWorkflowsPermissionMissing(member, branch, baseBranch) {
         try {
-            if (!branch || !baseBranch || branch === baseBranch) return;
+            // branch === baseBranch is rejected at launch (sprint-args.mjs
+            // validateBranchPair), so it is no longer tolerated as a silent no-op
+            // here: a same-named pair falls through to the ahead-count check,
+            // which still returns early when nothing is ahead of origin.
+            if (!branch || !baseBranch) return;
             if (silentMembers.has(member)) return;
 
             const { provider, authMode } = await resolveProvider(member, { fleetApi });

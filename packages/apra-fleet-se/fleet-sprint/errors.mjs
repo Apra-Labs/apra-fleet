@@ -50,6 +50,15 @@ import { WorkflowError } from '@apralabs/apra-fleet-workflow';
 //   UNSUPPORTED_OPERATION The requested action is not implemented for this
 //                         provider. A programming/config error; retrying and
 //                         re-authenticating are both pointless.
+//   MISSING_TOOL          The command's binary (bd, dolt, git, ...) could not
+//                         be found on the member at all: PowerShell's "is not
+//                         recognized as the name of a cmdlet", cmd.exe's "is
+//                         not recognized as an internal or external command",
+//                         POSIX "command not found" / ": not found", exit code
+//                         127, spawn ENOENT. Checked BEFORE every provider
+//                         rule (GitHub #616). Never retried and never routed
+//                         to the credential self-heal -- re-provisioning
+//                         cannot install a binary or fix a PATH.
 //   UNKNOWN               Explicitly unrecognized. Never retried, never
 //                         self-healed -- an unmatched stderr must surface, not
 //                         be guessed at.
@@ -68,6 +77,7 @@ export const VCS_FAILURE_KINDS = Object.freeze({
     EMPTY_REMOTE: 'EMPTY_REMOTE',
     REMOTE_UNREACHABLE: 'REMOTE_UNREACHABLE',
     UNSUPPORTED_OPERATION: 'UNSUPPORTED_OPERATION',
+    MISSING_TOOL: 'MISSING_TOOL',
     UNKNOWN: 'UNKNOWN',
 });
 
@@ -894,9 +904,10 @@ export class PreSprintValidationError extends WorkflowError {
 
 export const BEADS_IDENTITY_FAILURE_REASONS = Object.freeze({
     MISMATCH: 'MISMATCH',
-    // The member's shell cannot find the bd CLI at all: every bd a role or
-    // the engine runs there would fail mid-sprint, so refuse up front.
-    BD_MISSING: 'BD_MISSING',
+    // The member cannot run bd at all (not installed / not on PATH): every
+    // bd a role or the engine runs there would fail mid-sprint, so refuse up
+    // front.
+    MISSING_TOOL: 'MISSING_TOOL',
     // A beads-reading member had no usable beads database (or no
     // sync.remote) and the preflight could not set one up from the sprint's
     // expected beads remote -- dispatching would hand the role a database
@@ -909,12 +920,13 @@ export const BEADS_IDENTITY_FAILURE_REASONS = Object.freeze({
  * mutating bd command when a member's probed identity (`bd where` / `bd
  * config get sync.remote` / `git remote get-url origin`) DIFFERS from the
  * expected one (the supervisor's expectation, or the backlog member's
- * own identity) on a field that resolved on both sides. A probe that fails
- * or cannot be parsed is a logged warning, never this error: only a proven
- * mismatch is a data-corruption risk worth refusing the sprint for. The one
- * other refusals are BD_MISSING (the probe proved the member has no bd CLI)
- * and BEADS_SETUP_FAILED (a beads-reading member had no database / no
- * sync.remote and setting it up from the expected remote failed).
+ * own identity) on a field that resolved on both sides (reason MISMATCH), or
+ * when a member cannot run bd at all -- a bd probe failed because bd is not
+ * installed or not on PATH (reason MISSING_TOOL), so every later bd command
+ * there would fail too, or (reason BEADS_SETUP_FAILED) when a beads-reading
+ * member had no database / no sync.remote and setting it up from the
+ * expected remote failed. Any other probe that fails or cannot be parsed is a
+ * logged warning, never this error.
  *
  * A WorkflowError so main()'s terminal record names the reason, but
  * deliberately NOT a typed abort: nothing has been dispatched or mutated, so

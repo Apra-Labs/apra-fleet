@@ -79,7 +79,7 @@ describe('createVcsAuthSelfHealCallback', () => {
             repos: ['acme/widgets'],
         });
         assert.ok(logs.some((l) => /self-heal/.test(l) && /fleet-mac/.test(l)), `expected a self-heal log entry, got: ${JSON.stringify(logs)}`);
-        assert.ok(logs.some((l) => /provision_vcs_auth succeeded/.test(l)), `expected a self-heal success log entry, got: ${JSON.stringify(logs)}`);
+        assert.ok(logs.some((l) => /credentials re-provisioned for member/.test(l)), `expected a self-heal success log entry, got: ${JSON.stringify(logs)}`);
     });
 
     test('never hardcodes repos -- a DIFFERENT member\'s git remote yields a DIFFERENT repos value', async () => {
@@ -269,7 +269,7 @@ describe('createVcsAuthSelfHealCallback', () => {
             logs.some((l) => /could not resolve member 'fleet-mac'.*auth remedy hint/.test(l)),
             `expected a hint-lookup-failure log entry that still proceeds, got: ${JSON.stringify(logs)}`,
         );
-        assert.ok(logs.some((l) => /provision_vcs_auth succeeded/.test(l)), `expected the self-heal to still succeed, got: ${JSON.stringify(logs)}`);
+        assert.ok(logs.some((l) => /credentials re-provisioned for member/.test(l)), `expected the self-heal to still succeed, got: ${JSON.stringify(logs)}`);
     });
 });
 

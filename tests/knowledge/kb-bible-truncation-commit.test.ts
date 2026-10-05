@@ -22,23 +22,19 @@ import { FLEET_DIR } from '../../src/paths.js';
  *
  * This is the chain test the bug's done-criteria asked for: import -> sweep ->
  * export -> commit, in a real git worktree missing some cited files. It pins
- * the two things that make the loss survivable now:
+ * the things that make the loss impossible (project) or survivable (global):
  *
  *   1. Phase 1 refuses a missing/absent basis at CAPTURE, so those entries are
  *      COUNTED as rejected at import rather than silently vanishing later.
- *   2. Under the DEFAULT, auto-commit refuses a SHRINKING export, so a
- *      truncation lands as a reviewable working-tree diff and the committed
- *      artifact at HEAD is untouched.
- *
- * Point 2 used to be "auto-commit defaults to off". The 2026-08-11 directive
- * flipped that default ON -- an export nobody commits is knowledge nobody else
- * ever sees, which is how 16 of 17 repositories ended up with no bible at all.
- * The protection is therefore now an explicit size guard rather than a side
- * effect of the default, and these two cases pin it directly.
- *
- * The last case is deliberately unflattering: it records that an explicit
- * autoCommit opt-in STILL commits a truncation. That is the documented override
- * path, not a guarantee.
+ *   2. PROJECT scope: the export is additive. Entries already in the bible are
+ *      never removed, so the composition cannot truncate the project bible at
+ *      all -- with nothing new to add the file is left byte-identical and no
+ *      commit is made, whatever the autoCommit setting.
+ *   3. GLOBAL scope still rewrites its file from the live CONFIRMED set, so the
+ *      size guard still matters there: under the DEFAULT, auto-commit refuses a
+ *      SHRINKING export (reviewable working-tree diff, HEAD untouched), and an
+ *      explicit autoCommit opt-in is the documented override that commits it --
+ *      deliberately unflattering, not a guarantee.
  */
 
 function git(dir: string, args: string[]): string {
@@ -136,6 +132,7 @@ function headSha(): string {
   return git(repoDir, ['rev-parse', 'HEAD']).trim();
 }
 
+
 describe('apra-fleet-ong: import -> sweep -> export -> commit in a worktree missing cited files', () => {
   it('counts the entries it drops instead of losing them silently', async () => {
     const report = JSON.parse(await kbImport({ path: biblePath }, { folder: repoDir }));
@@ -148,77 +145,111 @@ describe('apra-fleet-ong: import -> sweep -> export -> commit in a worktree miss
     expect(report.imported).toBe(2);
   });
 
-  it('does not commit the shrunken bible, leaving the artifact at HEAD intact', async () => {
+  it('project export never shrinks the bible: file byte-identical, HEAD untouched, no commit', async () => {
+    const shaBefore = headSha();
+    const bytesBefore = fs.readFileSync(biblePath);
+
+    await kbImport({ path: biblePath }, { folder: repoDir });
+    const result = JSON.parse(await kbExport({}, { folder: repoDir }));
+
+    // The project export is additive: all five committed entries stay, and the
+    // two surviving KB entries are already present by id, so nothing is added.
+    expect(result.exported).toBe(5);
+    expect(result.committed).toBe(false);
+    expect(fs.readFileSync(biblePath).equals(bytesBefore)).toBe(true);
+    expect(headSha()).toBe(shaBefore);
+    expect(bibleAtHead()).toHaveLength(5);
+    expect(git(repoDir, ['log', '--format=%an|%s'])).not.toContain('pm-kb');
+  });
+
+  it('leaves no working-tree diff on the project bible at all', async () => {
+    await kbImport({ path: biblePath }, { folder: repoDir });
+    await kbExport({}, { folder: repoDir });
+
+    const status = git(repoDir, ['status', '--porcelain', '--', BIBLE_REL]).trim();
+    expect(status).toBe('');
+  });
+
+  it('survives a re-import of the untouched bible without further loss', async () => {
+    await kbImport({ path: biblePath }, { folder: repoDir });
+    await kbExport({}, { folder: repoDir });
+
+    // Round two, against the same (untouched) file. The two survivors are
+    // already present by id, so they are skipped rather than re-added; the
+    // three uncheckable entries are counted again; the bible keeps all five.
+    const second = JSON.parse(await kbImport({ path: biblePath }, { folder: repoDir }));
+    expect(second.imported).toBe(0);
+    expect(second.skipped).toBe(2);
+    expect(second.rejected).toBe(3);
+    expect(JSON.parse(fs.readFileSync(biblePath, 'utf-8'))).toHaveLength(5);
+  });
+
+  it('an explicit autoCommit opt-in still cannot truncate the project bible', async () => {
+    fs.mkdirSync(path.dirname(KB_CONFIG_PATH), { recursive: true });
+    fs.writeFileSync(KB_CONFIG_PATH, JSON.stringify({ bible: { autoCommit: true } }));
     const shaBefore = headSha();
 
     await kbImport({ path: biblePath }, { folder: repoDir });
     const result = JSON.parse(await kbExport({}, { folder: repoDir }));
 
-    // The export DOES shrink: 5 committed entries in, 2 exported out.
-    expect(result.exported).toBe(2);
-
-    // ong's core failure was that this shrink got committed. It must not.
     expect(result.committed).toBe(false);
     expect(headSha()).toBe(shaBefore);
-
-    // The committed artifact still holds all five entries. Anyone pulling this
-    // repo still gets the full bible.
     expect(bibleAtHead()).toHaveLength(5);
-
-    // No pm-kb commit was created at all.
-    expect(git(repoDir, ['log', '--format=%an|%s'])).not.toContain('pm-kb');
-  });
-
-  it('leaves the truncation as a reviewable working-tree diff', async () => {
-    await kbImport({ path: biblePath }, { folder: repoDir });
-    await kbExport({}, { folder: repoDir });
-
-    // The shrink is on disk and dirty -- a human can see and reject it. The
-    // whole point of defaulting auto-commit off is that this diff gets read.
-    const status = git(repoDir, ['status', '--porcelain', '--', BIBLE_REL]).trim();
-    expect(status).not.toBe('');
-    expect(status).toContain(BIBLE_REL);
-  });
-
-  it('makes the shrink legible in the diff via the v2 entry_count', async () => {
-    await kbImport({ path: biblePath }, { folder: repoDir });
-    await kbExport({}, { folder: repoDir });
-
-    const written = JSON.parse(fs.readFileSync(biblePath, 'utf-8'));
-    // A reader diffing this file sees the count drop, not just a shorter list.
-    expect(written.version).toBe(2);
-    expect(written.provenance.entry_count).toBe(2);
-    expect(written.entries).toHaveLength(2);
-    expect(written.entries.map((e: { id: string }) => e.id)).toEqual(['aaa-present-1', 'bbb-present-2']);
-  });
-
-  it('survives a re-import of its own truncated output without further loss', async () => {
-    await kbImport({ path: biblePath }, { folder: repoDir });
-    await kbExport({}, { folder: repoDir });
-
-    // Round two, against the v2 file the export just wrote. The two survivors
-    // are already present by id, so they are skipped rather than re-added, and
-    // nothing new is rejected: the truncation does not compound on each cycle.
-    const second = JSON.parse(await kbImport({ path: biblePath }, { folder: repoDir }));
-    expect(second.rejected).toBe(0);
-    expect(second.imported).toBe(0);
-    expect(second.skipped).toBe(2);
   });
 });
 
-describe('apra-fleet-ong: the explicit autoCommit opt-in is an override, not a guard', () => {
-  it('still commits a shrinking export when the operator opts in', async () => {
+// The GLOBAL bible is still rewritten from the live CONFIRMED set, so the
+// shrink guard in kb_export's auto-commit is still load-bearing there. Same
+// five-entry seed, committed as the global bible file. (The mocked providers
+// point global at the same store the import fills.)
+const GLOBAL_BIBLE_REL = '.fleet/kb-canonical-global.json';
+
+function seedCommittedGlobalBible(): void {
+  fs.writeFileSync(path.join(repoDir, GLOBAL_BIBLE_REL), JSON.stringify(BIBLE, null, 2));
+  git(repoDir, ['add', GLOBAL_BIBLE_REL]);
+  gitCommit(repoDir, 'seed: committed 5-entry global bible');
+}
+
+function globalBibleAtHead(): unknown {
+  return JSON.parse(git(repoDir, ['show', 'HEAD:' + GLOBAL_BIBLE_REL]));
+}
+
+describe('apra-fleet-ong: global-scope shrink guard', () => {
+  it('does not commit a shrunken global bible under the default, leaving HEAD intact', async () => {
+    seedCommittedGlobalBible();
+    const shaBefore = headSha();
+
+    await kbImport({ path: biblePath }, { folder: repoDir });
+    const result = JSON.parse(await kbExport({ scope: 'global' }, { folder: repoDir }));
+
+    // The global export DOES shrink: 5 committed entries in, 2 exported out.
+    expect(result.exported).toBe(2);
+    expect(result.committed).toBe(false);
+    expect(headSha()).toBe(shaBefore);
+    expect(globalBibleAtHead()).toHaveLength(5);
+    expect(git(repoDir, ['log', '--format=%an|%s'])).not.toContain('pm-kb');
+
+    // The truncation is on disk and dirty -- a human can see and reject it --
+    // and legible in the diff via the v2 entry_count.
+    const status = git(repoDir, ['status', '--porcelain', '--', GLOBAL_BIBLE_REL]).trim();
+    expect(status).toContain(GLOBAL_BIBLE_REL);
+    const written = JSON.parse(fs.readFileSync(path.join(repoDir, GLOBAL_BIBLE_REL), 'utf-8'));
+    expect(written.version).toBe(2);
+    expect(written.provenance.entry_count).toBe(2);
+    expect(written.entries.map((e: { id: string }) => e.id)).toEqual(['aaa-present-1', 'bbb-present-2']);
+  });
+
+  it('still commits a shrinking global export when the operator opts in', async () => {
+    seedCommittedGlobalBible();
     fs.mkdirSync(path.dirname(KB_CONFIG_PATH), { recursive: true });
     fs.writeFileSync(KB_CONFIG_PATH, JSON.stringify({ bible: { autoCommit: true } }));
 
     await kbImport({ path: biblePath }, { folder: repoDir });
-    const result = JSON.parse(await kbExport({}, { folder: repoDir }));
+    const result = JSON.parse(await kbExport({ scope: 'global' }, { folder: repoDir }));
 
-    // Recorded honestly: opting in re-arms the original failure. There is no
-    // shrink-size guard -- the protection is that this is off by default and
-    // turning it on is a deliberate act. If a guard is ever wanted, THIS is the
-    // assertion that must flip.
+    // Recorded honestly: opting in re-arms the original failure for the global
+    // file. If a guard is ever wanted there, THIS is the assertion that must flip.
     expect(result.committed).toBe(true);
-    expect(bibleAtHead()).toHaveProperty('provenance.entry_count', 2);
+    expect(globalBibleAtHead()).toHaveProperty('provenance.entry_count', 2);
   });
 });

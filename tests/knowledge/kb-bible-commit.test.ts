@@ -6,6 +6,7 @@ import { execFileSync } from 'node:child_process';
 import { SqliteProvider } from '../../src/services/knowledge/sqlite-provider.js';
 import { kbBibleCommit } from '../../src/tools/kb-bible-commit.js';
 import { kbExport } from '../../src/tools/kb-export.js';
+import { kbImport } from '../../src/tools/kb-import.js';
 import * as kbProvidersModule from '../../src/services/knowledge/kb-providers.js';
 import type { KBEntryInput } from '../../src/services/knowledge/types.js';
 
@@ -250,5 +251,60 @@ describe('bible provenance names the target base branch, not HEAD', () => {
     const bible = readBible(clone);
     expect(bible.provenance.branch).toBe('main');
     expect(bible.provenance.commit).toBe(base);
+  });
+});
+
+// The project kb_export basis filter reads the per-file hash basis
+// (source_file_hashes) that capture writes. Every KB-branch path that mints or
+// imports an entry goes through SqliteProvider.capture, so the basis must be
+// populated end to end: a capture -> promote -> bible commit -> export round
+// trip exports a CONFIRMED entry whose cited files are unchanged and leaves
+// out one whose cited file changed after capture.
+describe('capture -> promote -> bible commit -> export round trip (basis filter)', () => {
+  async function confirmedCiting(title: string, file: string): Promise<string> {
+    const { id } = await provider.capture(makeInput({
+      title, summary: 'Summary of ' + title, symbols: ['sym' + title], source_files: [file],
+    }));
+    await provider.promote(id, 'test fixture: verified');
+    await provider.promote(id, 'test fixture: verified');
+    return id;
+  }
+
+  it('exports the unchanged entry, excludes the changed one, keeps the committed round', async () => {
+    fs.writeFileSync(path.join(clone, 'src', 'b.ts'), 'export const b = 1;\n');
+    fs.writeFileSync(path.join(clone, 'src', 'c.ts'), 'export const c = 1;\n');
+    const head = git(clone, ['rev-parse', 'HEAD']).trim();
+
+    // Round 1: the maintainer's bible commit of one confirmed entry.
+    const committed = await confirmedCiting('Committed', 'src/a.ts');
+    const round = JSON.parse(await kbBibleCommit({ ids: [committed], baseBranch: 'main', baseCommit: head }, { folder: clone }));
+    expect(round.committed).toBe(true);
+
+    // Two more confirmed entries; one cited file changes after capture.
+    const unchanged = await confirmedCiting('Unchanged', 'src/b.ts');
+    const changed = await confirmedCiting('Changed', 'src/c.ts');
+    const bases = provider.getSourceFileBases([committed, unchanged, changed]);
+    for (const id of [committed, unchanged, changed]) {
+      expect(bases.get(id)).not.toBeNull();
+    }
+    fs.writeFileSync(path.join(clone, 'src', 'c.ts'), 'export const c = 2;\n');
+
+    const result = JSON.parse(await kbExport({}, { folder: clone }));
+    const ids = readBible(clone).entries.map(e => e.id);
+    expect(ids).toContain(committed);
+    expect(ids).toContain(unchanged);
+    expect(ids).not.toContain(changed);
+    expect(result.exported).toBe(ids.length);
+  });
+
+  it('kb_import of a bible populates the basis of each imported entry', async () => {
+    const report = JSON.parse(await kbImport({ skip_sweep: true }, { folder: clone }));
+    expect(report.imported).toBe(2);
+    const bases = provider.getSourceFileBases(['kb-existing-1', 'kb-existing-2']);
+    for (const id of ['kb-existing-1', 'kb-existing-2']) {
+      const basis = bases.get(id);
+      expect(basis).not.toBeNull();
+      expect(Object.keys(basis as Record<string, string>)).toEqual(['src/a.ts']);
+    }
   });
 });

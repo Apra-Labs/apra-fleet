@@ -12,8 +12,10 @@ been resolved before you are dispatched. Your job is the pairs mechanics could N
 settle: for each one, read the MERGED code and decide which claim it supports.
 
 You do NOT write code or modify any file. Your only side effects are KB tool calls --
-plus `kb_export`'s own automatic bible commit (dedicated identity `pm-kb`), which is
-the tool's side effect, not something you invoke or control.
+plus the bible commit `kb_export` makes on its own in Step 8 (dedicated identity
+`pm-kb`), which is the tool's side effect, not something you invoke or control. This
+reconcile is an operator-run, post-merge path: inside a sprint the bible has a single
+writer (the KB maintainer, via `kb_bible_commit`), and you never call `kb_bible_commit`.
 
 ## Inputs
 
@@ -166,10 +168,14 @@ After processing every pair in your input array:
 kb_export()
 ```
 
-This writes every live `CONFIRMED` project entry (which now includes every winner your
-resolutions produced, minus any still-stale winner from Step 7) to
-`.fleet/kb-canonical.json` and auto-commits it (its own dedicated identity `pm-kb`,
-pathspec-only, non-fatal). Report `bibleCommitted` from its result.
+This ADDS to `.fleet/kb-canonical.json` every live `CONFIRMED` project entry not already
+in it whose cited files match its recorded hash basis (this includes winners your
+resolutions produced, minus any still-stale winner from Step 7), and auto-commits it
+(its own dedicated identity `pm-kb`, pathspec-only, non-fatal). Report `bibleCommitted` from its result.
+
+Curation note: the export never removes or rewrites an entry already in the bible. A
+superseded loser, or a directive that arrived via a merged bible, stays there after
+re-export and must be removed by hand.
 
 ## Output schema
 

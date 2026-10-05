@@ -20,7 +20,7 @@
     "kb_self_resolution": {
       "confirmed_by": "src/services/knowledge/kb-self.ts (resolveSelfAnchor, validateSelfFolder), src/tools/kb-*.ts",
       "finding": "No kb_* tool takes a repo/scope argument. Every kb_* call operates on the CALLING SESSION's own KB: a member session resolves the member's registered work folder, any other session the fleet server's working folder. A local folder must exist, be a git repository and have an origin remote, else the call throws E-SELF-NO-WORKFOLDER, E-SELF-NOT-A-REPO or E-SELF-NO-REMOTE BEFORE getKbProviders is reached. A remote member's folder lives on another host, so its KB identity is the member's single known origin remote and the folder is carried verbatim (N-ANCHOR-VERBATIM-MISSING for the read tools); the WRITING tools kb_export, kb_bible_commit and kb_import then refuse with E-REPO-PATH-INVALID because they need the folder on this host. Recorded per affected tool below as 'anchor_validation' ('self-validated' | 'self-validated+local-folder-required'). The removed pre-redesign scope keys (repo_path, repo, repo_remote_url) are still declared on every kb_* input schema, described as REMOVED, so they reach the tool wrapper, which refuses them with E-SCOPE-KEY-REMOVED before any self-resolution -- they are never silently stripped.",
-      "affected_methods": ["P-2 capture", "P-3 query", "P-7 prime", "P-10 stats", "P-11 touch", "X-1 list", "X-3 freshnessSweep", "X-6 hasEntry"]
+      "affected_methods": ["P-2 capture", "P-3 query", "P-7 prime", "P-10 stats", "P-11 touch", "X-1 list", "X-3 freshnessSweep", "X-6 hasEntry", "X-8 getSourceFileBases"]
     },
     "not_in_scope": "approveDirective, rejectDirective, addDirective, flaggedPairs (INVENTORY.md section 4.2) are CLI-only and not reachable by any registered MCP tool, so they have no entry here.",
     "kb_setup_absence_note": "kb_setup is intentionally absent from every `tools` array below, and its absence is not a gap. It is a pre-provider configuration tool: it installs the git post-commit hook, writes a single GLOBAL provider config, and stores remote credentials -- it never resolves a project KB and reaches no MemoryProvider member, so there is no P-*/X-* entry it could map to. Like every kb_* tool it takes no scope argument; it installs the hook into the calling session's own folder and, when that folder cannot carry a KB identity, skips the hook with the typed E-SELF-* reason as a step instead of refusing (INVENTORY.md section 2, 'Scope-field note'). It still has a request schema, a response schema, an MCP binding and a fixture, because it is one of the 23 registered tools; only the provider-method mapping is empty, and its binding therefore carries an empty errors[] array.",
@@ -318,9 +318,26 @@
       ],
       "side_effect_class": "pure read",
       "idempotent": true,
-      "idempotent_note": "The only synchronous (non-Promise) member on this surface.",
+      "idempotent_note": "Synchronous (non-Promise) member.",
       "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-PROVIDER-UNINITIALIZED"],
       "see_also": []
+    },
+    {
+      "id": "X-8",
+      "member": "getSourceFileBases",
+      "kind": "undeclared-member",
+      "interface": "SqliteProvider (not declared on MemoryProvider)",
+      "signature": "getSourceFileBases(ids: string[]): Map<string, Record<string, string> | null>",
+      "purpose": "Synchronous read of the stored per-file hash basis (source_file_hashes) for the given entry ids; null for an unknown id or an empty/unparseable basis. Used by kb_export's project-scope bible filter to admit only CONFIRMED entries whose every cited file still hashes to its recorded basis at the repo root.",
+      "tools": [
+        { "name": "kb_export", "request_schema_ref": "schemas/kb_export.request.json", "response_schema_ref": "schemas/kb_export.response.json", "anchor_validation": "self-validated+local-folder-required" }
+      ],
+      "side_effect_class": "pure read",
+      "idempotent": true,
+      "idempotent_note": "Synchronous (non-Promise) member; chunked SELECT, no writes.",
+      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-REPO-PATH-INVALID", "E-PROVIDER-UNINITIALIZED"],
+      "error_codes_note": "E-REPO-PATH-INVALID (a remote member session, whose folder is not on this host) and the E-SELF-* codes are thrown by kb_export before this member is reached.",
+      "see_also": ["X-1"]
     }
   ],
   "properties": [

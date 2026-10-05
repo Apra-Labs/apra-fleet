@@ -46,7 +46,8 @@ test('mock sprint: all members share one beads identity -> sprint proceeds and l
         check(r.result && r.result.status === 'success', `expected a successful run, got ${JSON.stringify(r.result)}`);
         const okLines = r.logs.filter((l) => l.startsWith('beads ok: '));
         check(okLines.length === 2, `expected one "beads ok:" line per member, got: ${JSON.stringify(okLines)}`);
-        check(okLines[0].startsWith('beads ok: orch beads: ') && /prefix=mock/.test(okLines[0]), `orchestrator line: ${okLines[0]}`);
+        check(okLines[0].startsWith('beads ok: orch beads: ') && okLines[0].includes(`prefix=${r.dbPrefix}`), `orchestrator line (expected prefix=${r.dbPrefix}): ${okLines[0]}`);
+        check(r.dbPrefix, 'harness must report the created DB prefix');
         check(okLines[1].startsWith('beads ok: m2 beads: '), `second member line: ${okLines[1]}`);
         // No --expect-beads: the expectation is taken from the orchestrator.
         check(r.logs.some((l) => l.includes("taking the expectation from the backlog member 'orch'")), 'expected the orchestrator-derived expectation log line');
@@ -61,7 +62,7 @@ test('mock sprint: all members share one beads identity -> sprint proceeds and l
         check(published, `expected a beadsIdentity state publish, got namespaces: ${JSON.stringify(r.states.map((s) => s.namespace || (s.payload && s.payload.namespace)))}`);
         const data = published.data || (published.payload && published.payload.data);
         check(data && data.expectedFrom === 'backlog' && data.members && data.members.orch && data.members.m2, `unexpected beadsIdentity state shape: ${JSON.stringify(data)}`);
-        check(data.members.m2.prefix === 'mock' && /\.beads$/.test(data.members.m2.beadsDir), `unexpected member identity: ${JSON.stringify(data.members.m2)}`);
+        check(data.members.m2.prefix === r.dbPrefix && /\.beads$/.test(data.members.m2.beadsDir), `unexpected member identity: ${JSON.stringify(data.members.m2)}`);
     });
 });
 
@@ -215,7 +216,8 @@ test('mock sprint: beads set-up failure on a member -> typed BEADS_SETUP_FAILED 
 
 test('mock sprint: --expect-beads supplied and matching every member -> proceeds with the supplied expectation', async () => {
     await withScenarioMarkers('beadsid-expected', async () => {
-        const expectBeads = JSON.stringify({ beadsDir: '', prefix: 'mock', syncRemote: '', repoRemote: 'https://github.com/mock-org/mock-repo.git' });
+        // Prefix is the created DB's own (fixed 'mock' under replay, bd-derived under real bd).
+        const expectBeads = ({ prefix }) => JSON.stringify({ beadsDir: '', prefix, syncRemote: '', repoRemote: 'https://github.com/mock-org/mock-repo.git' });
         const r = await runDevelopLoopScenario('beadsid-expected', {
             members: ['orch'],
             taskSpecs: [{ title: 'Task: identity expected' }],
@@ -238,7 +240,7 @@ test('mock sprint: --expect-beads supplied and the ORCHESTRATOR itself differs -
             expectBeads,
         });
         check(r.error instanceof BeadsIdentityError && r.error.member === 'orch', `expected a BeadsIdentityError on the orchestrator, got: ${r.error && r.error.message}`);
-        check(/prefix: expected 'another-project', actual 'mock'/.test(r.error.message), `expected the prefix mismatch in the message, got: ${r.error.message}`);
+        check(new RegExp(`prefix: expected 'another-project', actual '${r.dbPrefix}'`).test(r.error.message), `expected the prefix mismatch in the message, got: ${r.error.message}`);
         check(r.commandLog.filter((c) => MUTATING_BD.test(c)).length === 0, 'expected NO mutating bd command');
     });
 });

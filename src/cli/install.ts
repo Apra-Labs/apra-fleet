@@ -162,6 +162,29 @@ let _seaOverride: boolean | null = null;
 /** Override isSea() result -- for tests only. Pass null to restore default. */
 export function _setSeaOverride(v: boolean | null): void { _seaOverride = v; }
 
+/**
+ * After the service step's start: wait until the server answers /health.
+ * true = answering, false = not within the timeout, null = not checked
+ * (APRA_FLEET_INSTALL_HEALTH_TIMEOUT_MS=0). Injectable for tests.
+ */
+export type ServiceHealthWait = () => Promise<boolean | null>;
+let _serviceHealthWaitOverride: ServiceHealthWait | null = null;
+export function _setServiceHealthWaitOverride(fn: ServiceHealthWait | null): void { _serviceHealthWaitOverride = fn; }
+
+async function waitForServiceHealth(): Promise<boolean | null> {
+  if (_serviceHealthWaitOverride) return _serviceHealthWaitOverride();
+  const raw = parseInt(process.env.APRA_FLEET_INSTALL_HEALTH_TIMEOUT_MS ?? '', 10);
+  const timeoutMs = Number.isFinite(raw) && raw >= 0 ? raw : 30_000;
+  if (timeoutMs === 0) return null;
+  const { checkRunningInstance } = await import('../services/singleton.js');
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if ((await checkRunningInstance()).running) return true;
+    if (Date.now() >= deadline) return false;
+    await new Promise(resolve => setTimeout(resolve, 500));
+  }
+}
+
 export function isSea(): boolean {
   if (_seaOverride !== null) return _seaOverride;
   try {
@@ -977,7 +1000,9 @@ async function registeredServiceManager(): Promise<ServiceManager | null> {
 /** Exact command an operator can run to bring the registered service back up. */
 export function serviceRestartCommand(): string {
   switch (process.platform) {
-    case 'win32': return `schtasks /run /tn ${WINDOWS_TASK_NAME}`;
+    // A stop disables the task (its repeating trigger would undo the stop);
+    // apra-fleet start re-enables it before running it.
+    case 'win32': return 'apra-fleet start';
     case 'linux': return `systemctl --user start ${LINUX_UNIT_NAME}`;
     case 'darwin': return `launchctl kickstart -k gui/${macosGuiUid()}/${MACOS_PLIST_LABEL}`;
     default: return 'apra-fleet install';
@@ -987,7 +1012,9 @@ export function serviceRestartCommand(): string {
 /** Exact command an operator can run to take the registered service down. */
 export function serviceStopCommand(): string {
   switch (process.platform) {
-    case 'win32': return `schtasks /end /tn ${WINDOWS_TASK_NAME}`;
+    // apra-fleet stop disables the task (its repeating trigger would undo a
+    // bare /end) and records the stop so nothing restarts the server.
+    case 'win32': return 'apra-fleet stop';
     case 'linux': return `systemctl --user stop ${LINUX_UNIT_NAME}`;
     case 'darwin': return `launchctl bootout gui/${macosGuiUid()}/${MACOS_PLIST_LABEL}`;
     default: return 'apra-fleet uninstall';
@@ -1368,6 +1395,11 @@ ${manualStopHint(pidsAfterStop)}
   }
 
   console.log(`\nInstalling Apra Fleet ${serverVersion} for ${paths.name}...\n`);
+  // Installing is an explicit (re)start intent: end a previous 'apra-fleet stop'.
+  {
+    const { clearStoppedMarker } = await import('../services/stopped-marker.js');
+    clearStoppedMarker();
+  }
 
   // --- Step 1: Copy binary ---
   let binaryPath = '';
@@ -1893,7 +1925,9 @@ ${manualStopHint(pidsAfterStop)}
 
   // --- Step N: Register and start service (SEA + HTTP mode only) ---
   let serviceRegistered = false;
+  let serviceHealthy: boolean | null = null;
   let serviceReused = false;
+  let serviceRunKey = false;
   if (serviceStep) {
     console.log(`  [${totalSteps}/${totalSteps}] Registering and starting service...`);
     // The server refuses to start when its configured port is taken (no
@@ -1908,11 +1942,23 @@ ${manualStopHint(pidsAfterStop)}
     }
     const svcMgr = await getServiceManager();
     try {
-      serviceReused = (await svcMgr.register(binaryPath, ['--transport', 'http'], LOG_FILE_PATH)) === 'reused';
+      const registered = await svcMgr.register(binaryPath, ['--transport', 'http'], LOG_FILE_PATH);
+      serviceReused = registered === 'reused';
+      serviceRunKey = registered === 'run-key';
       if (serviceReused) console.log('    Could not recreate the service task -- existing task reused.');
+      if (serviceRunKey) {
+        console.log('    Could not create the scheduled task -- registered a per-user logon entry (HKCU Run) instead.');
+        console.log('    This starts the server at logon but does NOT restart it if it stops; use apra-fleet start.');
+      }
       try {
         await svcMgr.start();
         serviceRegistered = true;
+        // Never report "running" on the strength of the start call alone (a
+        // launcher that cannot run, a refused port, a crash): ask /health.
+        serviceHealthy = await waitForServiceHealth();
+        if (serviceHealthy === false) {
+          console.warn(`    Service registered, but the server is not answering /health. Check ${LOG_FILE_PATH} and run apra-fleet status.`);
+        }
       } catch (startErr) {
         // Never delete a reused task: it predates this install (e.g. elevated).
         if (!serviceReused) { try { await svcMgr.unregister(); } catch {} }
@@ -1955,7 +2001,8 @@ ${restartHint}
   const clientName = llm === 'claude' ? 'Claude Code' : paths.name;
   const instructions = llm === 'claude' ? 'Run /mcp in Claude Code to load the server.' : `Restart ${paths.name} to load the server.`;
   const forceNote = force ? `\nRestart ${clientName} to reload the MCP server.` : '';
-  const serviceLine = serviceStep ? `\n  Service:     ${serviceRegistered ? `registered and running${serviceReused ? ' (existing task reused)' : ''}` : 'registration skipped'}` : '';
+  const serviceState = serviceHealthy === true ? 'registered and running' : serviceHealthy === false ? 'registered, but NOT answering /health (see the warning above)' : 'registered (health not checked)';
+  const serviceLine = serviceStep ? `\n  Service:     ${serviceRegistered ? `${serviceState}${serviceReused ? ' (existing task reused)' : ''}${serviceRunKey ? ' (logon autostart via HKCU Run, no automatic restart)' : ''}` : 'registration skipped'}` : '';
   console.log(`
 Apra Fleet ${serverVersion} installed successfully for ${paths.name}.
   Binary:      ${BIN_DIR}
