@@ -40,9 +40,29 @@
 //     (a stale/expired holder's late release cannot evict a newer holder), so
 //     the runner.js D-push bracket can release in a `finally` on success,
 //     failure, and (via lease expiry) child crash.
+//
+//   * Restart safety (apra-fleet-oiuf.1.1): the HOLDER (not the waiter queue)
+//     is persisted to <dataDir>/mutex.json on every holder transition (grant,
+//     renew, release, reclaim) and restored by start() when its lease is still
+//     live and its pid is still alive. Without this, a supervisor restart
+//     mid-push forgets the holder and lets a second sprint push concurrently.
+//     Waiters are not persisted -- their long-polls die with the old process
+//     and the clients re-acquire.
 // =============================================================================
 
+import path from 'node:path';
+import fsp from 'node:fs/promises';
+import { randomBytes } from 'node:crypto';
+
 import { isPidAlive } from './reconcile.mjs';
+import { defaultDataDir } from './ledger.mjs';
+import { renameWithRetry } from './rename-with-retry.mjs';
+
+/** On-disk schema version for mutex.json. */
+export const DOLT_MUTEX_FILE_VERSION = 1;
+
+/** Default file name for the persisted holder inside the data dir. */
+export const DOLT_MUTEX_FILENAME = 'mutex.json';
 
 /** Default lease duration: how long a single dolt push may hold the mutex
  *  before it is considered crashed/wedged and force-reclaimed. A real dolt
@@ -53,16 +73,32 @@ export const DEFAULT_LEASE_MS = 60_000;
 export const DEFAULT_SWEEP_MS = 5_000;
 
 let tokenSeq = 0;
-/** Monotonic, collision-free grant token. */
+/** Collision-free grant token. The random component guarantees a token minted
+ *  after a supervisor restart (fresh tokenSeq) can never equal a holder token
+ *  restored from mutex.json. */
 function nextToken(sprintId) {
     tokenSeq += 1;
-    return `${sprintId}#${tokenSeq}#${Date.now().toString(36)}`;
+    return `${sprintId}#${tokenSeq}#${Date.now().toString(36)}#${randomBytes(6).toString('hex')}`;
+}
+
+/** Validate a holder record read from disk; returns the in-memory shape or null. */
+function parsePersistedHolder(h) {
+    if (h === null || typeof h !== 'object') return null;
+    if (typeof h.sprintId !== 'string' || h.sprintId.length === 0) return null;
+    if (typeof h.token !== 'string' || h.token.length === 0) return null;
+    if (h.pid !== null && !Number.isInteger(h.pid)) return null;
+    if (!Number.isFinite(h.acquiredAt) || !Number.isFinite(h.leaseExpiresAt)) return null;
+    return { sprintId: h.sprintId, token: h.token, pid: h.pid, acquiredAt: h.acquiredAt, expiresAt: h.leaseExpiresAt };
 }
 
 /**
  * Create the global dolt push mutex.
  *
  * @param {{
+ *   dataDir?: string,          default defaultDataDir() from ledger.mjs
+ *   filePath?: string,         default <dataDir>/mutex.json
+ *   fs?: { mkdir: Function, readFile: Function, writeFile: Function, rename: Function },
+ *   renameRetry?: { maxAttempts?: number, baseDelayMs?: number, sleep?: Function },
  *   leaseMs?: number,
  *   sweepMs?: number,
  *   now?: () => number,
@@ -81,6 +117,13 @@ export function createDoltMutex(deps = {}) {
     const clearIntervalFn = deps.clearInterval ?? clearInterval;
     const logger = deps.logger ?? console;
     const log = (...a) => logger.log?.(...a);
+    const warn = (...a) => (logger.warn ?? logger.error ?? logger.log)?.(...a);
+    const logError = (...a) => (logger.error ?? logger.log)?.(...a);
+    const dataDir = deps.dataDir ?? defaultDataDir();
+    const filePath = deps.filePath ?? path.join(dataDir, DOLT_MUTEX_FILENAME);
+    const tmpPath = `${filePath}.tmp`;
+    const fs = deps.fs ?? fsp;
+    const renameRetryOpts = deps.renameRetry ?? {};
 
     /**
      * The single current holder, or null when the mutex is free.
@@ -97,6 +140,90 @@ export function createDoltMutex(deps = {}) {
     const waiters = [];
 
     let sweepTimer = null;
+    let loaded = false;
+
+    // Serialized disk writer: acquire/release/renew stay synchronous; each
+    // holder transition snapshots the holder NOW and queues an atomic
+    // tmp+rename write behind the previous one so writes never interleave and
+    // the last transition always lands last. A write failure is logged, never
+    // thrown into the caller.
+    let persistChain = Promise.resolve();
+
+    function persistHolder() {
+        const doc = {
+            version: DOLT_MUTEX_FILE_VERSION,
+            holder: holder
+                ? {
+                    sprintId: holder.sprintId,
+                    pid: holder.pid,
+                    token: holder.token,
+                    acquiredAt: holder.acquiredAt,
+                    leaseExpiresAt: holder.expiresAt,
+                }
+                : null,
+        };
+        const snapshot = `${JSON.stringify(doc, null, 2)}\n`;
+        persistChain = persistChain.then(async () => {
+            try {
+                await fs.mkdir(path.dirname(filePath), { recursive: true });
+                await fs.writeFile(tmpPath, snapshot, 'utf-8');
+                await renameWithRetry(fs, tmpPath, filePath, renameRetryOpts);
+            } catch (err) {
+                logError(`[dolt-mutex] failed to persist holder to ${filePath}: ${err && err.message ? err.message : err}`);
+            }
+        });
+        return persistChain;
+    }
+
+    /**
+     * Restore the holder from mutex.json. Never throws: a missing file is an
+     * empty holder; a corrupt file or unknown version is an empty holder plus
+     * a warning; an expired lease or dead pid is discarded with a log line.
+     */
+    async function loadHolder() {
+        let raw;
+        try {
+            raw = await fs.readFile(filePath, 'utf-8');
+        } catch (err) {
+            if (err && err.code === 'ENOENT') return;
+            warn(`[dolt-mutex] WARNING: could not read ${filePath} (${err && err.message ? err.message : err}); starting with no holder`);
+            return;
+        }
+        let doc;
+        try {
+            doc = JSON.parse(raw);
+        } catch (err) {
+            warn(`[dolt-mutex] WARNING: ${filePath} is not valid JSON (${err.message}); starting with no holder`);
+            return;
+        }
+        if (doc === null || typeof doc !== 'object' || doc.version !== DOLT_MUTEX_FILE_VERSION) {
+            warn(`[dolt-mutex] WARNING: ${filePath} has unknown version ${JSON.stringify(doc && doc.version)}; starting with no holder`);
+            return;
+        }
+        if (doc.holder === null || doc.holder === undefined) return;
+        const restored = parsePersistedHolder(doc.holder);
+        if (!restored) {
+            warn(`[dolt-mutex] WARNING: ${filePath} holds a malformed holder record; starting with no holder`);
+            return;
+        }
+        if (holder !== null) {
+            // Something was granted in-process before start() -- the live
+            // in-memory holder wins; the next transition overwrites the file.
+            log(`[dolt-mutex] not restoring persisted holder '${restored.sprintId}': a holder was already granted in this process`);
+            return;
+        }
+        const t = now();
+        let reason = null;
+        if (!(restored.expiresAt > t)) reason = 'lease expired';
+        else if (restored.pid != null && !probe(restored.pid)) reason = `pid ${restored.pid} is not alive`;
+        if (reason) {
+            log(`[dolt-mutex] discarding persisted holder '${restored.sprintId}' from ${filePath}: ${reason}`);
+            persistHolder();
+            return;
+        }
+        holder = restored;
+        log(`[dolt-mutex] restored holder '${holder.sprintId}' (pid ${holder.pid ?? 'n/a'}) from ${filePath}; lease expires in ${holder.expiresAt - t}ms`);
+    }
 
     /** Grant the mutex to `waiter`, minting a fresh lease + token. */
     function grant(waiter) {
@@ -108,6 +235,7 @@ export function createDoltMutex(deps = {}) {
             acquiredAt: at,
             expiresAt: at + leaseMs,
         };
+        persistHolder();
         waiter.resolve({ token: holder.token, sprintId: holder.sprintId, expiresAt: holder.expiresAt });
     }
 
@@ -139,6 +267,9 @@ export function createDoltMutex(deps = {}) {
         log(`[dolt-mutex] reclaiming ${leaseExpired ? 'expired' : 'dead-pid'} holder '${holder.sprintId}' (pid ${holder.pid ?? 'n/a'}); ${waiters.length} waiter(s) queued`);
         holder = null;
         pump();
+        // pump() persisted the new holder if it granted one; otherwise record
+        // the now-free mutex.
+        if (holder === null) persistHolder();
         return true;
     }
 
@@ -181,6 +312,7 @@ export function createDoltMutex(deps = {}) {
         log(`[dolt-mutex] '${holder.sprintId}' released; ${waiters.length} waiter(s) queued`);
         holder = null;
         pump();
+        if (holder === null) persistHolder();
         return true;
     }
 
@@ -193,6 +325,7 @@ export function createDoltMutex(deps = {}) {
     function renew(token) {
         if (holder === null || holder.token !== token) return false;
         holder.expiresAt = now() + leaseMs;
+        persistHolder();
         return { expiresAt: holder.expiresAt };
     }
 
@@ -233,6 +366,14 @@ export function createDoltMutex(deps = {}) {
 
         // -- seam lifecycle (server.mjs calls start()/stop()) ----------------
         async start() {
+            if (!loaded) {
+                loaded = true;
+                try {
+                    await loadHolder();
+                } catch (err) {
+                    warn(`[dolt-mutex] WARNING: restoring holder from ${filePath} failed (${err && err.message ? err.message : err}); starting with no holder`);
+                }
+            }
             if (sweepTimer) return;
             sweepTimer = setIntervalFn(() => { reclaimExpired(); }, sweepMs);
             // Do not keep the process alive solely for the sweep timer.
@@ -248,7 +389,13 @@ export function createDoltMutex(deps = {}) {
                 const w = waiters.shift();
                 w.reject(new Error('dolt mutex is shutting down'));
             }
+            // Leave mutex.json as-is (the holder survives the restart); just
+            // let any queued write land before the process goes away.
+            await persistChain;
         },
+
+        /** Resolves once every queued holder write has landed (tests/shutdown). */
+        flush() { return persistChain; },
 
         acquire,
         release,
@@ -257,6 +404,7 @@ export function createDoltMutex(deps = {}) {
         cancelWaiter,
         status,
         get leaseMs() { return leaseMs; },
+        get filePath() { return filePath; },
     };
 }
 

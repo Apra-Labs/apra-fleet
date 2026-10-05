@@ -476,8 +476,9 @@ describe('apra-fleet-f34.3: real concurrent launches engage the HTTP mutex/id-al
             // contract onto these real methods, mirroring the exact contract
             // packages/apra-fleet-se/test/mcp-coordination-clients.test.mjs
             // already unit-tests against runner.js's client factories.
-            const mutexCore = createDoltMutex({});
             const allocatorDataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'f34-3-mcp-allocator-'));
+            // mutex.json lands in the same temp dir (removed in this test's finally).
+            const mutexCore = createDoltMutex({ dataDir: allocatorDataDir });
             const allocatorCore = createIdAllocator({ dataDir: allocatorDataDir });
             const mcpCalls = [];
 
