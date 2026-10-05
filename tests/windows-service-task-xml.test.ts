@@ -10,7 +10,7 @@
  * Everything goes through injected runners -- no real schtasks/reg call, no
  * scheduled task, no registry write. The wrapper and XML land in a temp dir.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -112,7 +112,31 @@ describe('task user, start boundary, repeat interval', () => {
   });
 });
 
+const backslashNamesInCwd = (): Set<string> =>
+  new Set(fs.readdirSync(process.cwd()).filter(n => n.includes('\\')));
+
+describe('launcherPathFor keeps the host path', () => {
+  it('stays in the same directory for a POSIX wrapper and still maps a Windows one', () => {
+    expect(launcherPathFor('/tmp/x/apra-fleet-service.bat')).toBe('/tmp/x/apra-fleet-service.js');
+    expect(launcherPathFor('C:\\b\\apra-fleet-service.BAT')).toBe('C:\\b\\apra-fleet-service.js');
+  });
+});
+
 describe('WindowsServiceManager lifecycle', () => {
+  // A backslash is a separator on win32, not a filename character: skip there.
+  const cwdGuard = process.platform === 'win32' ? it.skip : it;
+  let cwdBefore: Set<string>;
+  beforeAll(() => { cwdBefore = backslashNamesInCwd(); });
+  afterAll(() => {
+    if (process.platform === 'win32') return;
+    const grown = [...backslashNamesInCwd()].filter(n => !cwdBefore.has(n));
+    expect(grown).toEqual([]);
+  });
+  cwdGuard('register puts the launcher .js next to the wrapper inside the temp dir', async () => {
+    await mgr().register('x.exe', [], 'l');
+    expect(fs.existsSync(path.join(dir, 'apra-fleet-service.js'))).toBe(true);
+  });
+
   let dir: string;
   let wrapper: string;
   let schtasks: ReturnType<typeof vi.fn>;
