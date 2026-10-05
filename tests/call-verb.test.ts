@@ -137,9 +137,11 @@ describe('apra-fleet call', () => {
   });
 
   it('a no-argument tool needs no --args-file (args default to {})', async () => {
-    const r = await run(['--member', memberId, 'version']);
-    expect(r.code).toBe(0);
-    expect(JSON.parse(r.out).isError).toBeFalsy();
+    for (const tool of ['version', 'session_stats']) {
+      const r = await run(['--member', memberId, tool]);
+      expect(r.code, `${tool}: ${r.err}`).toBe(0);
+      expect(JSON.parse(r.out).isError).toBeFalsy();
+    }
   });
 
   it('a tool with required arguments still needs --args-file (E-USAGE names them)', async () => {
