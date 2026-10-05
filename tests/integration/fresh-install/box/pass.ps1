@@ -234,7 +234,9 @@ function AsLimited($id, $name, $exe, [string[]]$argv = @(), $timeoutSec = 900) {
   # First the token this process really got (integrity level, Administrators
   # state). Redirection before echo: "echo 1> f" would make 1 a stream number.
   $ilf = "$out.il"; Remove-Item $ilf -ErrorAction SilentlyContinue
-  [IO.File]::WriteAllText($cmdf, "@echo off`r`n`"$WhoAmI`" /groups /fo csv > `"$ilf`" 2>&1`r`n$line > `"$out`" 2>&1`r`n>`"$rcf.tmp`" echo %ERRORLEVEL%`r`nmove /y `"$rcf.tmp`" `"$rcf`" >nul`r`n", [Text.Encoding]::ASCII)
+  # stdin from NUL: a seclogon process gets its own console, and a console stdin
+  # would make this an interactive context (prompts would wait forever).
+  [IO.File]::WriteAllText($cmdf, "@echo off`r`n`"$WhoAmI`" /groups /fo csv > `"$ilf`" 2>&1`r`n$line < NUL > `"$out`" 2>&1`r`n>`"$rcf.tmp`" echo %ERRORLEVEL%`r`nmove /y `"$rcf.tmp`" `"$rcf`" >nul`r`n", [Text.Encoding]::ASCII)
   $script:RC = 'ERR not run'
   try {
     if (-not $script:UlCred) { throw 'no limited logon prepared' }
