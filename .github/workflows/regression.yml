@@ -122,7 +122,8 @@ jobs:
             pass: UL
             binary: apra-fleet-installer-win-x64.exe
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    # UL runs in about two minutes; a hang must fail fast, not hold a runner.
+    timeout-minutes: ${{ matrix.pass == 'UL' && 20 || 60 }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
@@ -181,6 +182,8 @@ jobs:
           Write-Host "Machine PATH now: $($mp -join ';')"
 
       - name: Run pass ${{ matrix.pass }} through the host driver
+        # Leaves the job time to upload the report after a hang.
+        timeout-minutes: ${{ matrix.pass == 'UL' && 12 || 50 }}
         shell: bash
         run: >-
           node tests/integration/fresh-install/run.mjs

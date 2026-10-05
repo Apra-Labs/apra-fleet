@@ -226,7 +226,7 @@ function RestoreLimitedLogon {
 }
 # Run a command in a new logon of THIS user (the non-elevated token): output to
 # files, no TTY, so no prompt is possible. Sets $script:RC/$script:LOG/$script:LimToken.
-function AsLimited($id, $name, $exe, [string[]]$argv = @(), $timeoutSec = 900) {
+function AsLimited($id, $name, $exe, [string[]]$argv = @(), $timeoutSec = 300, $cred = $script:UlCred) {
   $script:LOG = Join-Path $Logs "$id-$name.log"
   $out = Join-Path $UlDir "$id-$name.out"; $rcf = Join-Path $UlDir "$id-$name.rc"; $cmdf = Join-Path $UlDir "$id-$name.cmd"
   Remove-Item $out, $rcf, "$rcf.tmp" -ErrorAction SilentlyContinue
@@ -239,9 +239,17 @@ function AsLimited($id, $name, $exe, [string[]]$argv = @(), $timeoutSec = 900) {
   [IO.File]::WriteAllText($cmdf, "@echo off`r`n`"$WhoAmI`" /groups /fo csv > `"$ilf`" 2>&1`r`n$line < NUL > `"$out`" 2>&1`r`n>`"$rcf.tmp`" echo %ERRORLEVEL%`r`nmove /y `"$rcf.tmp`" `"$rcf`" >nul`r`n", [Text.Encoding]::ASCII)
   $script:RC = 'ERR not run'
   try {
-    if (-not $script:UlCred) { throw 'no limited logon prepared' }
-    $p = Start-Process cmd.exe -ArgumentList @('/d', '/c', "`"$cmdf`"") -Credential $script:UlCred -WorkingDirectory $UlDir -PassThru -ErrorAction Stop
-    if (-not $p.WaitForExit($timeoutSec * 1000)) { try { $p.Kill() } catch {}; $script:RC = "ERR timeout after ${timeoutSec}s (limited logon)" }
+    if (-not $cred) { throw 'no limited logon prepared' }
+    # Every std handle redirected to a file: otherwise Start-Process hands the
+    # new logon THIS process's stdout pipe, a server started by the install
+    # inherits it, and the host driver never sees EOF (the runner hangs).
+    $nul = "$cmdf.stdin"; [IO.File]::WriteAllText($nul, '')
+    $p = Start-Process cmd.exe -ArgumentList @('/d', '/c', "`"$cmdf`"") -Credential $cred -LoadUserProfile -WorkingDirectory $UlDir -PassThru -ErrorAction Stop `
+      -RedirectStandardInput $nul -RedirectStandardOutput "$cmdf.stdout" -RedirectStandardError "$cmdf.stderr"
+    if (-not $p.WaitForExit($timeoutSec * 1000)) {
+      try { $p.Kill() } catch {}
+      $script:RC = "ERR timeout after ${timeoutSec}s (limited logon); procs: " + ((Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.ProcessName -match '^(cmd|apra-fleet|cand|base|schtasks|wscript|whoami)$' } | ForEach-Object { "$($_.ProcessName)#$($_.Id)" }) -join ' ')
+    }
     elseif (Test-Path $rcf) { $script:RC = ([string](Get-Content $rcf -Raw)).Trim() }
     else { $script:RC = "$($p.ExitCode)" }
   } catch { $script:RC = "ERR limited-logon launch failed: $($_.Exception.Message)" }
@@ -428,6 +436,16 @@ try {
       AsLimited L21 probe-task 'schtasks.exe' @('/create', '/tn', 'ApraFleetULProbe', '/sc', 'once', '/st', '23:59', '/tr', 'cmd.exe /c exit', '/rl', 'limited', '/f') 120
       Rec L21 'diag: Medium token creates a plain probe task' $RC (Key $LOG @('SUCCESS', 'ERROR')) $script:LimToken
       Run L21x probe-delete 'schtasks.exe' @('/delete', '/tn', 'ApraFleetULProbe', '/f')
+      # Diagnostic (advisory): the same launch path for a fresh, non-built-in
+      # admin -- separates the launch mechanism from the RID-500 account.
+      $apw = 'Fi9!' + ([guid]::NewGuid().ToString('N').Substring(0, 20))
+      & net.exe user fi-adm $apw /add /y 2>&1 | Out-Null
+      & net.exe localgroup Administrators fi-adm /add 2>&1 | Out-Null
+      $acred = New-Object Management.Automation.PSCredential("$env:COMPUTERNAME\fi-adm", (ConvertTo-SecureString $apw -AsPlainText -Force))
+      AsLimited L22 probe-task-fi-adm 'schtasks.exe' @('/create', '/tn', 'ApraFleetULProbe2', '/sc', 'once', '/st', '23:59', '/tr', 'cmd.exe /c exit', '/rl', 'limited', '/f') 120 $acred
+      Rec L22 'diag: a fresh admin (filtered logon, same launch path) creates a probe task' $RC (Key $LOG @('SUCCESS', 'ERROR')) $script:LimToken
+      & schtasks.exe /delete /tn ApraFleetULProbe2 /f 2>&1 | Out-Null
+      & net.exe user fi-adm /delete 2>&1 | Out-Null
     }
     default { Log "unknown pass $Pass" }
   }

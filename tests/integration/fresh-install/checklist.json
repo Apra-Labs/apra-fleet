@@ -113,7 +113,8 @@
         { "id": "L18", "title": "apra-fleet status has no legacy-task hint after the fix", "platforms": ["windows"], "expect": { "exit": 0 } },
         { "id": "L19", "title": "server up on the candidate through the new (non-elevated) task", "platforms": ["windows"], "expect": { "exit": 200, "observed": "^${expectVersion}$" } },
         { "id": "L20", "title": "exactly one apra-fleet server listening on 7523", "platforms": ["windows"], "expect": { "exit": 0, "keyline": "^listeners=1 .*names=apra-fleet$" } },
-        { "id": "L21", "title": "diagnostics: the Medium token can register a plain probe task (informational)", "platforms": ["windows"], "severity": "advisory", "expect": { "exit": 0 } }
+        { "id": "L21", "title": "diagnostics: the Medium token can register a plain probe task (informational)", "platforms": ["windows"], "severity": "advisory", "expect": { "exit": 0 } },
+        { "id": "L22", "title": "diagnostics: a fresh admin's filtered logon (same launch path) can register a probe task (informational)", "platforms": ["windows"], "severity": "advisory", "expect": { "exit": 0 } }
       ]
     }
   }
