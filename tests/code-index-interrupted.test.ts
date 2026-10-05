@@ -150,8 +150,8 @@ describe('pre-flight self-heal (ensureGitNexusIndexReady)', () => {
     expect(schedule).toHaveBeenCalledTimes(1);
     expect(schedule).toHaveBeenCalledWith(repo);
     expect(err.code).toBe('E-CODE-INDEX-NOT-READY');
-    expect(err.message).toContain('left incomplete by an analyze that stopped mid-write');
-    expect(err.message).toContain('An index build was started automatically.');
+    expect(err.message).toContain('is marked incomplete and no running analyze was found');
+    expect(err.message).toContain('An index build was requested automatically.');
     expect(err.remediation).toMatch(/Retry the same call in a minute/);
     expect(err.message).not.toMatch(/npx/);
     expect(err.message.split('Remediation:')).toHaveLength(2);
@@ -193,7 +193,10 @@ describe('pre-flight self-heal (ensureGitNexusIndexReady)', () => {
 
   it.each([
     [{ started: false, reason: 'disabled' } as const, /Automatic index builds are off/, /call code_reindex/i],
-    [{ started: false, reason: 'cooldown', detail: 'x' } as const, /ran recently without leaving a ready index/, /code_status/],
+    [{ started: false, reason: 'cooldown', detail: 'x' } as const, /finished moments ago/, /code_reindex/],
+    [{ started: false, reason: 'paused', pause: { result: 'failed', lastLine: 'out of memory', logPath: '/d/analyze.log', finished: 'f' } } as const,
+      /Automatic rebuilds for this folder are paused: the last automatic analyze ended 'failed' without a ready index \(log: \/d\/analyze\.log, last line 'out of memory'\)/,
+      /call code_reindex -- it retries the build and re-arms automatic rebuilds/],
     [{ started: false, reason: 'npx-not-found' } as const, /npx is not on its PATH/, /Install Node\.js/],
     [{ started: false, reason: 'already-running' } as const, /already running/, /Retry the same call/],
     [{ started: false, reason: 'spawn-failed', detail: 'boom' } as const, /failed: spawn-failed \(boom\)/, /code_reindex/],
@@ -216,7 +219,7 @@ describe('pre-flight self-heal (ensureGitNexusIndexReady)', () => {
 describe('wiring', () => {
   it('a provider call on an interrupted index schedules a build and throws before connecting', async () => {
     const repo = repoWith(INTERRUPTED_META);
-    await expect(new GitNexusProvider().query({ query: 'x', repo })).rejects.toThrow(/started automatically/);
+    await expect(new GitNexusProvider().query({ query: 'x', repo })).rejects.toThrow(/requested automatically/);
     expect(schedule).toHaveBeenCalledWith(repo);
   });
 

@@ -112,7 +112,7 @@ export function resolveCodeSelf(): CodeSelf {
 
 /** Appended to every code_* tool description so callers know there is no repo argument. */
 export const CODE_SELF_NOTE =
-  ' Scope: always the calling session\'s own repo -- a member session uses its registered work folder, any other session the fleet server\'s working folder; there is no repo/path scope argument. Fails with E-SELF-NO-WORKFOLDER or E-SELF-NOT-A-REPO when that folder is missing or is not a git repository, E-CODE-INDEX-NOT-READY when it has no code index yet or the index is still building, and E-CODE-INTEL-DISABLED when code intelligence is off (each with a one-line remediation).';
+  ' Scope: always the calling session\'s own repo -- a member session uses its registered work folder, any other session the fleet server\'s working folder; there is no repo/path scope argument. Fails with E-SELF-NO-WORKFOLDER or E-SELF-NOT-A-REPO when that folder is missing or is not a git repository, E-CODE-INDEX-NOT-READY when it has no usable code index yet (a missing or interrupted index gets a build requested automatically -- retry shortly) or the index is still building, and E-CODE-INTEL-DISABLED when code intelligence is off (each with a one-line remediation).';
 
 // ---------------------------------------------------------------------------
 // Handler functions -- resolve (self) (unless the caller already resolved it),

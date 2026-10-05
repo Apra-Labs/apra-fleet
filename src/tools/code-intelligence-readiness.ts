@@ -129,7 +129,7 @@ export function indexNotReadyError(
     return new CodeIntelError('E-CODE-INDEX-NOT-READY', `The gitnexus code index${where} is still being built.`, RETRY_SOON);
   }
   const problem = state === 'interrupted'
-    ? `The gitnexus code index${where} was left incomplete by an analyze that stopped mid-write.`
+    ? `The gitnexus code index${where} is marked incomplete and no running analyze was found.`
     : `No gitnexus code index found${where}.`;
   const [what, remediation] = healText(heal);
   return new CodeIntelError('E-CODE-INDEX-NOT-READY', `${problem}${what}`, remediation);
@@ -139,10 +139,18 @@ export function indexNotReadyError(
 function healText(heal: IndexHealOutcome | undefined): [string, string] {
   const detail = heal && !heal.started && heal.detail ? ` (${heal.detail})` : '';
   if (!heal) return ['', 'Call code_reindex to build the index, then retry the same call.'];
-  if (heal.started) return [' An index build was started automatically.', RETRY_SOON];
+  if (heal.started) return [' An index build was requested automatically.', RETRY_SOON];
   switch (heal.reason) {
     case 'already-running':
       return [' An index build is already running.', RETRY_SOON];
+    case 'paused': {
+      const p = heal.pause;
+      const last = p.lastLine ? `, last line '${p.lastLine}'` : '';
+      return [
+        ` Automatic rebuilds for this folder are paused: the last automatic analyze ended '${p.result}' without a ready index (log: ${p.logPath}${last}).`,
+        'Read that log, fix the cause, then call code_reindex -- it retries the build and re-arms automatic rebuilds.',
+      ];
+    }
     case 'disabled':
       return [
         ' Automatic index builds are off (autoReindex.enabled is false in the code-intelligence config.json).',
@@ -150,8 +158,8 @@ function healText(heal: IndexHealOutcome | undefined): [string, string] {
       ];
     case 'cooldown':
       return [
-        ` An automatic index build ran recently without leaving a ready index${detail}.`,
-        'Read the last analyze result and log via code_status, fix the cause, then call code_reindex and retry.',
+        ` An index build finished moments ago${detail}.`,
+        'Retry the same call in a minute or so; if it still fails, check code_status and call code_reindex.',
       ];
     case 'npx-not-found':
       return [

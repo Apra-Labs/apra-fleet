@@ -546,10 +546,16 @@ await recordHappy('kb_invalidate', 'happy', {
 // session (provider pinned to gitnexus) resolves its own work folder, a git
 // repo with no .gitnexus/meta.json, so every tool honestly refuses with
 // E-CODE-INDEX-NOT-READY from the pre-flight, without ever spawning the
-// gitnexus child process. The pre-flight does start a background
-// `npx gitnexus analyze --index-only` in that scratch repo (self-heal of a
-// missing index); the recorded message is the "build was started" variant,
-// which is also what the vitest roundtrip sees (tests/setup.ts fakes the start).
+// gitnexus child process.
+// NOTE (self-heal): the committed refusal-index-not-ready fixtures carry the
+// "An index build was requested automatically." variant -- the contract for a
+// missing index whose background build request succeeded, which is what the
+// vitest roundtrip produces (tests/setup.ts fakes the build request, so each
+// call sees the same outcome). Recording here against the real build instead
+// requests ONE real detached analyze in this scratch repo on the first call;
+// later calls then read "still being built" (or the npx-not-found variant when
+// npx is absent), so do not re-record these 7 fixtures with this script --
+// edit them to match indexNotReadyError's "requested" text instead.
 await withSession('CODE', async () => {
   await recordRefusal('code_graph', 'refusal-index-not-ready', { symbol: 'exampleFn' }, 'E-CODE-INDEX-NOT-READY');
   await recordRefusal('code_impact', 'refusal-index-not-ready', { target: 'exampleFn', direction: 'upstream' }, 'E-CODE-INDEX-NOT-READY');

@@ -159,7 +159,7 @@ const KB_SELF_NOTE =
 // Every code_* registration appends CODE_SELF_NOTE (src/tools/code-intelligence.ts),
 // reproduced byte-exact here for the same no-runtime-dependency reason.
 const CODE_SELF_NOTE =
-  ' Scope: always the calling session\'s own repo -- a member session uses its registered work folder, any other session the fleet server\'s working folder; there is no repo/path scope argument. Fails with E-SELF-NO-WORKFOLDER or E-SELF-NOT-A-REPO when that folder is missing or is not a git repository, E-CODE-INDEX-NOT-READY when it has no code index yet or the index is still building, and E-CODE-INTEL-DISABLED when code intelligence is off (each with a one-line remediation).';
+  ' Scope: always the calling session\'s own repo -- a member session uses its registered work folder, any other session the fleet server\'s working folder; there is no repo/path scope argument. Fails with E-SELF-NO-WORKFOLDER or E-SELF-NOT-A-REPO when that folder is missing or is not a git repository, E-CODE-INDEX-NOT-READY when it has no usable code index yet (a missing or interrupted index gets a build requested automatically -- retry shortly) or the index is still building, and E-CODE-INTEL-DISABLED when code intelligence is off (each with a one-line remediation).';
 
 const BASE_DESCRIPTIONS = {
   kb_capture:
@@ -213,7 +213,7 @@ const BASE_DESCRIPTIONS = {
   code_reindex:
     'Rebuild the code index of the calling session\'s own repo (runs gitnexus analyze detached; its output is captured to <data>/code-index/<slug>/analyze.log). Returns after the first tick -- outcome "started" (lock held, process alive, output seen), "up-to-date", "starting" (running, no tick yet), "already-running", or "not-started" with a typed reason (npx-not-found, gitnexus-not-found, analyze-failed, spawn-failed, remote-member, provider-not-supported). Only the gitnexus provider is supported: provider none fails with E-CODE-INTEL-DISABLED, any other provider (e.g. codebase-memory, which manages its own index) gets not-started with reason provider-not-supported naming the provider. Poll code_status for completion.',
   code_status:
-    'Report the code index state of the calling session\'s own repo: the last analyze run (phase, result indexed|up-to-date|incomplete|failed, last log line, log path), live readiness (ready|building|interrupted|missing; interrupted = an analyze died mid-write and none is running) and the indexed commit. Only the gitnexus provider is supported: provider none fails with E-CODE-INTEL-DISABLED, any other provider gets {outcome: "not-started", reason: "provider-not-supported", provider, indexedCommit: null} instead of gitnexus readiness.',
+    'Report the code index state of the calling session\'s own repo: the last analyze run (phase, result indexed|up-to-date|incomplete|failed, last log line, log path), live readiness (ready|building|interrupted|missing; interrupted = marked incomplete with no analyze running), the indexed commit, and autoReindexPaused (a failed automatic run that paused automatic rebuilds until code_reindex). Only the gitnexus provider is supported: provider none fails with E-CODE-INTEL-DISABLED, any other provider gets {outcome: "not-started", reason: "provider-not-supported", provider, indexedCommit: null} instead of gitnexus readiness.',
 };
 
 const DESCRIPTIONS = Object.fromEntries(

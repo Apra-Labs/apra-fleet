@@ -114,7 +114,7 @@ describe('E-CODE-INDEX-NOT-READY', () => {
     expect(out.isError).toBe(true);
     expect(out.text).toContain(`E-CODE-INDEX-NOT-READY: No gitnexus code index found for '${folders.missing}'.`);
     // tests/setup.ts fakes the self-heal start: the message says a build started, never "run npx".
-    expect(out.text).toContain('An index build was started automatically. Remediation: Retry the same call in a minute or so');
+    expect(out.text).toContain('An index build was requested automatically. Remediation: Retry the same call in a minute or so');
     expect(out.text).not.toMatch(/npx/);
     expect(remediationCount(out.text)).toBe(1);
   });

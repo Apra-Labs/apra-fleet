@@ -1054,7 +1054,10 @@ export class ApraFleet {
      * ('ready' | 'building' | 'interrupted' | 'missing'; 'interrupted' = an
      * analyze died mid-write and none is running -- the next code_* call
      * starts a rebuild), `indexedCommit`, `lockHeld`, and `logPath` (null
-     * when no analyze log exists yet). A remote work folder returns { remote: true, repo,
+     * when no analyze log exists yet), and `autoReindexPaused` (null, or the
+     * { result, lastLine, logPath, finished } of a failed automatic run --
+     * automatic rebuilds stay paused until codeReindex() or a server
+     * restart). A remote work folder returns { remote: true, repo,
      * indexedCommit: null, detail }. Same provider gate as codeReindex():
      * provider 'none' fails with E-CODE-INTEL-DISABLED; a non-gitnexus
      * provider returns the not-supported shape { outcome: 'not-started',
