@@ -172,7 +172,11 @@ working folder, which is typically a feature branch.
   and merges at ENTRY level: every entry already in the bible is kept, only
   the given ids are added or replaced, and an entry in the file but absent from
   the KB is never dropped. Ids that are not live CONFIRMED entries are skipped
-  and reported in `skipped` (never an error). It makes a local commit scoped to
+  and reported in `skipped` with reason `not_confirmed_or_unknown` (never an
+  error). A live CONFIRMED id is admitted only if it passes the same basis rule
+  as `kb_export` (scope=project): every cited source file has a recorded hash
+  matching the file in the repo; otherwise it is skipped with reason
+  `basis_mismatch` and any existing bible entry for it is left unchanged. It makes a local commit scoped to
   the bible path (identity `pm-kb`) and never pushes. No ids, no mergeable
   ids, or an unchanged entry set makes no write and no commit. Re-running with
   the same ids after resetting to a newer HEAD re-merges at entry level, so a

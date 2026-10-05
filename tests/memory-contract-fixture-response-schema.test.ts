@@ -101,7 +101,7 @@ describe('memory-contract/v1 recorded response fixtures validate against their s
     // minus kb_feedback/happy (a MEMBER-session kb_feedback is now the
     // E-MEMBER-VIEW-READ-ONLY refusal), plus kb_bible_commit/happy, plus kb_stats/edge-empty-promote-ratio-null
     // (apra-fleet-i9ag.15.17, session B).
-    expect(keys.length).toBe(31); // + kb_feedback/happy (FULL session), kb_list/happy-confidence-string
+    expect(keys.length).toBe(35); // + kb_feedback/happy (FULL session), kb_list/happy-confidence-string
     expect(failures).toEqual([]);
   });
 
@@ -128,7 +128,7 @@ describe('memory-contract/v1 recorded response fixtures validate against their s
       }
     }
 
-    expect(keys.length).toBe(31); // + kb_stats/edge-empty-promote-ratio-null; // + kb_feedback/happy (FULL session), kb_list/happy-confidence-string
+    expect(keys.length).toBe(35); // + kb_stats/edge-empty-promote-ratio-null; // + kb_feedback/happy (FULL session), kb_list/happy-confidence-string
     expect(failures).toEqual([]);
   });
 

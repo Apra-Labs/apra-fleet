@@ -24,7 +24,7 @@ const BASE = { baseBranch: 'main', baseCommit: 'a'.repeat(40) };
  * A fake maintainer: records every event in order. `pushFailures` is how many
  * G-pushes fail before one succeeds.
  */
-function harness({ pushFailures = 0, committed = true, unpushed = false } = {}) {
+function harness({ pushFailures = 0, committed = true, unpushed = false, skipped = [] } = {}) {
     const events = [];
     const logs = [];
     let pushesLeftToFail = pushFailures;
@@ -34,7 +34,7 @@ function harness({ pushFailures = 0, committed = true, unpushed = false } = {}) 
         if (tool === 'kb_query') return { l1_results: offeredEntries.map((id) => ({ id })) };
         events.push({ ev: tool, member: member.name, args });
         if (tool === 'kb_bible_commit') {
-            return { content: [{ text: JSON.stringify({ path: '.fleet/kb-canonical.json', merged: args.ids, skipped: [], entry_count: args.ids.length, committed }) }] };
+            return { content: [{ text: JSON.stringify({ path: '.fleet/kb-canonical.json', merged: args.ids.filter((id) => !skipped.some((s) => s.id === id)), skipped, entry_count: args.ids.length, committed }) }] };
         }
         return {};
     };
@@ -86,6 +86,20 @@ describe('commitRound: the review-round bible commit on the kb_maintainer', () =
         assert.equal(call.member, 'maint', 'kb_bible_commit runs in the maintainer session');
         assert.deepEqual(call.args, { ids: ['e1', 'e2'], baseBranch: 'main', baseCommit: BASE.baseCommit });
         assert.deepEqual(out, { committed: 2, pending: 0 });
+        assert.deepEqual(client.pendingConfirmations(), []);
+    });
+
+    test('a skipped id is logged with the reason the tool returned and leaves the pending queue', async () => {
+        const { client, logs } = harness({ skipped: [{ id: 'e2', reason: 'basis_mismatch' }] });
+        await confirm(client, ['e1', 'e2']);
+
+        const out = await client.commitRound();
+
+        const line = logs.find((l) => /kb_bible_commit skipped/.test(l));
+        assert.ok(line, logs.join('\n'));
+        assert.match(line, /e2 \(basis_mismatch\)/);
+        assert.ok(!/not CONFIRMED in the maintainer's KB/.test(line), line);
+        assert.deepEqual(out, { committed: 1, pending: 0 });
         assert.deepEqual(client.pendingConfirmations(), []);
     });
 
