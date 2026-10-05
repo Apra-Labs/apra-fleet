@@ -426,6 +426,11 @@ try {
       Run L14 fix-delete 'schtasks.exe' @('/delete', '/tn', 'ApraFleet', '/f'); Rec L14 'elevated: schtasks /delete /tn ApraFleet /f' $RC (Key $LOG @('SUCCESS', 'ERROR'))
       AsLimited L15 fix-install $AF @('install', '--force', '--workflows', 'none')
       Rec L15 'apra-fleet install --force --workflows none (not elevated)' $RC (Key $LOG @('installed successfully', '^Error')) "$($script:LimToken); exe present=$(YesNo (Test-Path $AF))"
+      # Diagnostics (advisory): which apra-fleet processes run at what integrity,
+      # and what the installer's own stop command does from the Medium token.
+      $procs = @(Get-Process apra-fleet -ErrorAction SilentlyContinue | ForEach-Object { "pid $($_.Id) start $($_.StartTime.ToString('HH:mm:ss'))" }) -join '; '
+      AsLimited L15d taskkill 'cmd.exe' @('/d', '/c', 'tasklist /NH /FO CSV | findstr /i apra-fleet & taskkill /F /IM apra-fleet.exe') 120
+      Rec L15d 'diag: apra-fleet processes; product taskkill from the Medium token' 0 (Head $LOG 300) "running before: $procs"
       TaskFormStep L16 $env:USERNAME
       $gone = -not (Test-Path $nf)
       Rec L17 'service-notice.json removed by the new task' ([int](-not $gone)) $(if ($gone) { 'notice cleared' } else { 'service-notice.json still present after the new task was installed' })
