@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "7089d28145df9ebb88e42db63a3dacb38cee3f7d",
     "branch": "v0.5_dashboard",
-    "entry_count": 419
+    "entry_count": 420
   },
   "entries": [
     {
@@ -3015,6 +3015,24 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-11T23:22:47.052Z"
+    },
+    {
+      "id": "5ac0acf9-8f78-49b1-b784-b10f197601d8",
+      "type": "knowledge",
+      "title": "sandbox-deploy teardown now fails on a supervisor non-2xx health answer even after killing the recorded pid",
+      "summary": "teardown() step 1 pushes a problem when /api/health answers non-2xx (e.g. 401). The run then throws SandboxDeployError and keeps the sandbox root and values file, even though stopOwned killed the recorded SUPERVISOR_PID. A second teardown succeeds.",
+      "symbols": [
+        "teardown",
+        "stopOwned",
+        "probeJson",
+        "describeProbeFailure"
+      ],
+      "source_files": [
+        "scripts/sandbox-deploy.mjs",
+        "tests/sandbox-deploy.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-05T20:59:08.941Z"
     },
     {
       "id": "5b0c0a37-6e58-4854-b1f4-b672ca0a6080",
