@@ -41,10 +41,7 @@ async function getGitNexusClient(): Promise<Client> {
     // Fail with the cause, not a bare "spawn npx ENOENT": a service-managed
     // server only has the PATH its service definition recorded at install.
     const npxReason = npxUnavailableReason();
-    if (npxReason) {
-      connectionPromise = null;
-      throw new Error(npxReason);
-    }
+    if (npxReason) throw new Error(npxReason); // callGitNexus resets the connection
     const transport = new StdioClientTransport({
       command: 'npx',
       args: ['-y', 'gitnexus', 'mcp'],
