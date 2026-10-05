@@ -20,9 +20,10 @@
  * installer can print both and the summary can name them.
  */
 import path from 'node:path';
+import { BEADS_PACKAGE } from './beads-pin.js';
 
-/** Pinned to match .github/workflows/ci.yml (schema v66 compatibility). */
-export const BEADS_NPM_PACKAGE = '@beads/bd@1.3.0';
+/** The ONE pin (src/cli/beads-pin.ts) -- never a second literal here. */
+export const BEADS_NPM_PACKAGE = BEADS_PACKAGE;
 
 export const BEADS_INSTALL_FIX =
   `install bd for this user so 'bd --version' works (for example 'npm install -g ${BEADS_NPM_PACKAGE}' with a user-writable npm prefix), then re-run the install`;

@@ -51,16 +51,25 @@ jobs:
       - name: Build
         run: npm run build
 
-      # Same pin the installer ships (src/cli/install.ts); fail loud if it
-      # cannot be found rather than silently testing some other bd.
+      # Same pin the installer ships (src/cli/beads-pin.ts BEADS_VERSION on
+      # v0.5, an inline @beads/bd@X.Y.Z in src/cli/install.ts on main); fail
+      # loud if it cannot be found rather than silently testing some other bd.
       # CI='' defeats @beads/bd's postinstall guard that skips the download in CI.
       - name: Install pinned bd CLI
         env:
           CI: ''
         run: |
-          BD_PIN="$(grep -oE "@beads/bd@[0-9]+\.[0-9]+\.[0-9]+" src/cli/install.ts | head -n1)"
+          BD_VER=""
+          if [ -f src/cli/beads-pin.ts ]; then
+            BD_VER="$(grep -oE "BEADS_VERSION = '[0-9]+\.[0-9]+\.[0-9]+'" src/cli/beads-pin.ts | grep -oE "[0-9]+\.[0-9]+\.[0-9]+" | head -n1)"
+          fi
+          if [ -n "$BD_VER" ]; then
+            BD_PIN="@beads/bd@$BD_VER"
+          else
+            BD_PIN="$(grep -oE "@beads/bd@[0-9]+\.[0-9]+\.[0-9]+" src/cli/install.ts | head -n1)"
+          fi
           if [ -z "$BD_PIN" ]; then
-            echo "::error::could not find the @beads/bd@X.Y.Z pin in src/cli/install.ts"
+            echo "::error::could not find the @beads/bd@X.Y.Z pin in src/cli/beads-pin.ts or src/cli/install.ts"
             exit 1
           fi
           echo "Installing $BD_PIN"
