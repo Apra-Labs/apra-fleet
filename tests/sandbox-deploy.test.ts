@@ -758,7 +758,8 @@ describe('verify: supervisor auth and HTTP status reporting', () => {
     const id = writeFixture(home, port);
     const err = await verifyError(id, home);
     expect(err).toBeInstanceOf(SandboxDeployError);
-    expect(err.message).not.toContain('401');
+    // Match the status wording, not a bare '401': the OS-assigned port can contain it (e.g. 54010).
+    expect(err.message).not.toMatch(/HTTP 40[13]|bearer token rejected/);
     const lines = supervisorLines(err.message);
     expect(lines.length).toBe(2);
     for (const line of lines) expect(line).toContain('no answer');
