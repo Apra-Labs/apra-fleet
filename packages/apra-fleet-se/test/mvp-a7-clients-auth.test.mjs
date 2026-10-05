@@ -132,7 +132,7 @@ async function buildAuthedSupervisor() {
     const dashboard = createDashboard({
         ledger, watchdog, expandScope: async (roots) => new Set(roots), backlog, logger: silentLogger,
     });
-    const mutex = createDoltMutex({ leaseMs: 100_000 });
+    const mutex = createDoltMutex({ leaseMs: 100_000, dataDir });
     const allocator = createIdAllocator({ filePath: path.join(dataDir, 'id-allocator.json'), logger: silentLogger });
     await allocator.start();
 
@@ -157,6 +157,7 @@ async function buildAuthedSupervisor() {
         async stop() {
             await supervisor.stop();
             await allocator.stop();
+            await mutex.stop();
         },
     };
 }

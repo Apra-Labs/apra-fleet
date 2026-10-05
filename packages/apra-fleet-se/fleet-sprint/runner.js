@@ -51,7 +51,7 @@ import { buildCreatePrCommand, resolveProvider, parseProviderRepoRef, getVcsProv
 // them from runner.js); resolveGitProviderForClassification left with the
 // brackets that were its only caller here.
 import {
-    checkMemberTopology, classifyGitFailure, runGitStep, commandResultToSoftGit,
+    checkMemberTopology, classifyGitFailure, runGitStep, commandResultToSoftGit, commandResultStdout,
 } from './git-topology.mjs';
 import { getSeCommands } from './se-os-commands.mjs';
 import { resultText, toolErrorText } from './mcp-result.mjs';
@@ -428,7 +428,7 @@ export { isReviewerContractViolation };
 // original name. resolveGitProviderForClassification is deliberately absent:
 // it was module-private to the pre-move region and stays reachable only from
 // git-topology.mjs.
-export { checkMemberTopology, classifyGitFailure, runGitStep, commandResultToSoftGit };
+export { checkMemberTopology, classifyGitFailure, runGitStep, commandResultToSoftGit, commandResultStdout };
 // Re-exported so importers of the per-member sync brackets from runner.js keep
 // working (git-sync.mjs takes syncMemberBefore/syncMemberAfter/
 // syncMemberAfterOrdered through injection, abort.mjs and the resume path take

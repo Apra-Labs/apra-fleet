@@ -225,10 +225,16 @@ describe('apra-fleet-k7b.8: a real sprint whose D-push bracket hits DOLT_DIVERGE
             // behind on disk for a real supervisor-spawned run.
             const statePath = getTerminalRunStatePath(runId, env);
             fs.mkdirSync(path.dirname(statePath), { recursive: true });
+            // Shaped exactly as engine + viewer leave it: the engine's reason
+            // lives ONLY under extensions.terminal; the viewer overwrites the
+            // TOP-LEVEL terminalReason with the error message
+            // (viewer/index.mjs sets state.terminalReason = res.error).
             fs.writeFileSync(statePath, JSON.stringify({
-                terminalReason: terminal.terminalReason,
+                status: 'failed',
+                terminalReason: terminal.message || `Error: ${terminal.terminalReason} (viewer error message)`,
                 extensions: { terminal },
             }));
+            assert.notEqual(terminal.message, terminal.terminalReason);
 
             // A REAL dead OS pid (spawn a trivial child, let it exit+get
             // reaped, then reuse its now-free pid) -- same idiom
@@ -252,7 +258,8 @@ describe('apra-fleet-k7b.8: a real sprint whose D-push bracket hits DOLT_DIVERGE
             // with the BEADS_SYNC_CONFLICT reason and conflictDump both
             // copied verbatim.
             assert.equal(classification.status, WATCHDOG_STATUS.FINISHED, 'a PID-gone sprint with a real persisted BEADS_SYNC_CONFLICT terminal state must classify FINISHED, not CRASHED');
-            assert.equal(classification.terminalState.terminalReason, 'BEADS_SYNC_CONFLICT');
+            assert.equal(classification.terminalState.extensions.terminal.terminalReason, 'BEADS_SYNC_CONFLICT');
+            assert.notEqual(classification.terminalState.terminalReason, 'BEADS_SYNC_CONFLICT', 'top-level terminalReason carries the viewer message, not the reason');
             assert.ok(classification.terminalState.extensions.terminal.conflictDump, 'expected the classification to carry the conflict dump linked from the terminal record');
             assert.equal(classification.terminalState.extensions.terminal.conflictDump.doltOutput, terminal.conflictDump.doltOutput);
 
@@ -262,7 +269,7 @@ describe('apra-fleet-k7b.8: a real sprint whose D-push bracket hits DOLT_DIVERGE
             assert.equal(snapshot.length, 1);
             assert.equal(snapshot[0].sprintId, runId);
             assert.equal(snapshot[0].status, WATCHDOG_STATUS.FINISHED);
-            assert.equal(snapshot[0].terminalState.terminalReason, 'BEADS_SYNC_CONFLICT');
+            assert.equal(snapshot[0].terminalState.extensions.terminal.terminalReason, 'BEADS_SYNC_CONFLICT');
             assert.notEqual(snapshot[0].status, WATCHDOG_STATUS.CRASHED);
 
             // 3) sprint-history.json -- the durable audit trail (real file,
