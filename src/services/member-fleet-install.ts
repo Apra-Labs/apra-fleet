@@ -846,6 +846,10 @@ export interface MemberFleetMcpDeps extends MemberFleetInstallDeps {
   /** Do the role files a `claude --agent <role>` dispatch loads grant the
    *  member kb_* / code_* tools? Optional: absent means not checked. */
   roleAgents?(agent: Agent): Promise<{ ok: true } | { ok: false; detail: string }>;
+  /** Write the member's per-folder apra-fleet MCP entry (the compose_permissions
+   *  writer). Optional: absent means the probe only checks the entry. `reason`
+   *  is set when a member config could not be safely edited. */
+  writeMcpEntry?(agent: Agent): Promise<{ ok: true } | { ok: false; reason?: string; detail: string }>;
 }
 
 
@@ -873,6 +877,10 @@ export function defaultMemberFleetMcpDeps(): MemberFleetMcpDeps {
     roleAgents: async (agent: Agent) => {
       const m = await import('./agent-provisioner.js');
       return m.checkRoleAgentMemberTools(agent);
+    },
+    writeMcpEntry: async (agent: Agent) => {
+      const m = await import('../tools/compose-permissions.js');
+      return m.writeMemberMcpEntry(agent);
     },
   };
 }
@@ -1060,7 +1068,7 @@ const PER_FOLDER_PROVIDERS = new Set<LlmProvider>(['claude', 'opencode']);
 export async function probeMemberFleetMcp(
   agent: Agent,
   deps: MemberFleetMcpDeps = defaultMemberFleetMcpDeps(),
-  opts: { install?: boolean; forceInstall?: boolean } = {},
+  opts: ProbeOpts = {},
 ): Promise<FleetMcpStatus> {
   const ctx = { installedNow: false };
   const status = await probeMemberFleetMcpInner(agent, deps, opts, ctx);
@@ -1142,7 +1150,7 @@ export async function probeMemberBeads(
 async function probeMemberFleetMcpInner(
   agent: Agent,
   deps: MemberFleetMcpDeps,
-  opts: { install?: boolean; forceInstall?: boolean },
+  opts: ProbeOpts,
   ctx: { installedNow: boolean },
 ): Promise<FleetMcpStatus> {
   const checkedAt = () => deps.now().toISOString();
@@ -1160,7 +1168,7 @@ async function probeMemberFleetMcpInner(
 
     const status = agent.agentType === 'local'
       ? await probeLocal(agent, deps, unavailable, checkedAt)
-      : await probeRemote(agent, deps, opts.install !== false, unavailable, checkedAt, opts.forceInstall === true, ctx);
+      : await probeRemote(agent, deps, opts.install !== false, unavailable, checkedAt, opts.forceInstall === true, ctx, opts.writeMcpEntry === true);
     // The member session listing kb_*/code_* proves the server, not what a
     // dispatched role sees: roles run as `claude --agent <role>`, whose tools
     // list filters the session. Verify that path too.
@@ -1176,6 +1184,11 @@ async function probeMemberFleetMcpInner(
     return unavailable('probe-failed', `probe threw: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
+
+/** Probe options. `writeMcpEntry` (register_member / update_member with a
+ *  fleet install) writes the per-folder MCP entry before it is checked;
+ *  without it (member_detail refresh) the probe stays read-only. */
+export interface ProbeOpts { install?: boolean; forceInstall?: boolean; writeMcpEntry?: boolean }
 
 type Unavailable = (reason: FleetMcpUnavailableReason, detail?: string, extra?: Partial<FleetMcpStatus>) => FleetMcpStatus;
 
@@ -1227,6 +1240,7 @@ async function probeRemote(
   checkedAt: () => string,
   forceInstall = false,
   ctx: { installedNow: boolean } = { installedNow: false },
+  writeMcpEntry = false,
 ): Promise<FleetMcpStatus> {
   const targetOs = getAgentOS(agent) as TargetOS;
   const shell = getAgentShell(agent);
@@ -1296,7 +1310,15 @@ async function probeRemote(
     return fail('register-failed', `register-member exited ${reg.code}: ${memberErrorDetail(out)}`);
   }
 
-  // 3. The per-folder MCP entry compose_permissions writes must point at this member.
+  // 3a. Write the per-folder MCP entry (the compose_permissions writer) so one
+  // register/update call ends with it in place -- after self-registration, so
+  // nothing the member-side register does can race it.
+  if (writeMcpEntry && deps.writeMcpEntry) {
+    const w = await deps.writeMcpEntry(agent);
+    if (!w.ok) return fail((w.reason as FleetMcpUnavailableReason | undefined) ?? 'mcp-entry-missing', w.detail);
+  }
+
+  // 3b. The per-folder MCP entry must point at this member.
   const url = await readMemberMcpEntryUrl(agent, home, deps);
   if (!url || !url.endsWith(memberQuery(agent))) {
     return fail('mcp-entry-missing', url
@@ -1332,7 +1354,7 @@ async function probeRemote(
 export async function refreshMemberFleetMcp(
   agent: Agent,
   deps: MemberFleetMcpDeps = defaultMemberFleetMcpDeps(),
-  opts: { install?: boolean; forceInstall?: boolean } = {},
+  opts: ProbeOpts = {},
 ): Promise<FleetMcpStatus> {
   const status = await probeMemberFleetMcp(agent, deps, opts);
   deps.record(agent.id, status);

@@ -328,7 +328,7 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
   t += `  cpu=${resources.cpu} | mem=${resources.memory} | disk=${resources.disk}${branchStr}\n`;
 
   if (fleetMcp) {
-    t += `  fleetMcp=${fleetMcp.state}${fleetMcp.reason ? ` (${fleetMcp.reason})` : ''}${fleetMcp.version ? ` | v${fleetMcp.version}` : ''}\n`;
+    t += `  fleetMcp=${fleetMcp.state}${fleetMcp.reason ? ` (${fleetMcp.reason})` : ''}${fleetMcp.version ? ` | v${fleetMcp.version.replace(/^v/, '')}` : ''}\n`;
     if (fleetMcp.installFailure) t += `  fleetMcp upgrade failed (${fleetMcp.installFailure.reason}): ${fleetMcp.detail ?? fleetMcp.installFailure.detail ?? ''}\n`;
     if (fleetMcpFix) t += `  fleetMcp fix: ${fleetMcpFix}\n`;
     if (fleetMcp.beads) t += `  bd=${fleetMcp.beads.state}: ${fleetMcp.beads.detail}\n  bd fix: ${fleetMcp.beads.fix}\n`;

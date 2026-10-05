@@ -18,6 +18,14 @@ vi.mock('../src/services/preflight-check.js', () => ({
   clearPreflightCache: vi.fn(),
 }));
 
+// Global mock: the code_* pre-flight's self-heal never spawns a real
+// `npx gitnexus analyze` in tests -- every not-ready index reads as "build
+// started". code-reindex-tools.test.ts uses vi.unmock to drive the real
+// scheduler against a fake npx.
+vi.mock('../src/tools/code-index-heal.js', () => ({
+  scheduleIndexBuild: vi.fn(() => ({ started: true })),
+}));
+
 process.env.NODE_ENV = 'test';
 // install's post-start /health wait: off unless a test opts in
 // (_setServiceHealthWaitOverride) -- no test may wait on a real server.

@@ -45,9 +45,9 @@ describe('gitnexus readiness', () => {
     expect(r.ready).toBe(false);
   });
 
-  it('incrementalInProgress is not ready (building)', () => {
+  it('incrementalInProgress with no live analyze is interrupted, not building', () => {
     const r = codeIndexReadiness('gitnexus', repoWith({ lastCommit: 'abc', incrementalInProgress: { startedAt: 1 } }));
-    expect(r).toEqual({ ready: false, state: 'building' });
+    expect(r).toEqual({ ready: false, state: 'interrupted' });
   });
 
   it('a held analyze lock (live pid) is not ready; a dead holder is ignored', () => {

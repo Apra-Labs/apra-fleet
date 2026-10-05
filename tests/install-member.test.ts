@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import { execSync } from 'node:child_process';
-import { runInstall, _setSeaOverride, _setManifestOverride } from '../src/cli/install.js';
+import { runInstall, _setSeaOverride, _setManifestOverride, MEMBER_INSTALL_NEXT_STEP } from '../src/cli/install.js';
 
 // `apra-fleet install --member`: server + user-mode auto-start only. Runs
 // against an in-memory filesystem rooted at a fake HOME (os/fs/child_process
@@ -157,5 +157,26 @@ describe('install --member', () => {
     expect(vi.mocked(console.error).mock.calls.flat().join('\n')).toContain('E-MEMBER-AUTOSTART');
     expect(vi.mocked(console.log).mock.calls.flat().join('\n')).not.toContain('installed successfully');
     expect(mockSvcMgr.register).not.toHaveBeenCalled();
+  });
+
+  it('summary names only what it did plus the member next step (no settings, /mcp or restart lines)', async () => {
+    for (const extra of [[], ['--force']]) {
+      vi.mocked(console.log).mockClear();
+      await runInstall(['--transport', 'http', '--member', ...extra]);
+      const out = vi.mocked(console.log).mock.calls.flat().join('\n');
+      expect(out).toContain('installed successfully');
+      expect(out).not.toContain('Settings:');
+      expect(out).not.toContain('Run /mcp');
+      expect(out).not.toMatch(/Restart Claude Code/);
+      expect(out).toContain(MEMBER_INSTALL_NEXT_STEP);
+    }
+  });
+
+  it('a full install still prints the settings file and the /mcp step', async () => {
+    await runInstall(['--transport', 'http', '--skill', 'none']);
+    const out = vi.mocked(console.log).mock.calls.flat().join('\n');
+    expect(out).toContain('Settings:');
+    expect(out).toContain('Run /mcp in Claude Code');
+    expect(out).not.toContain(MEMBER_INSTALL_NEXT_STEP);
   });
 });

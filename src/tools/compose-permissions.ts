@@ -761,6 +761,8 @@ function memberConfigWhy(reason: string): string {
 interface MemberMcpSyncOutcome {
   failure?: string;
   note?: string;
+  /** Set when a member config could not be safely edited (MemberConfigError reason). */
+  notEditedReason?: string;
 }
 
 /**
@@ -816,6 +818,7 @@ async function syncMemberMcpConfig(
         detail: e.message,
       });
       return {
+        notEditedReason: e.reason,
         note: `Member MCP config NOT edited: ${e.filePath} is ${memberConfigWhy(e.reason)} (fleetMcp unavailable: ${e.reason}) -- ${e.message}`,
       };
     }
@@ -842,6 +845,33 @@ async function syncMemberMcpConfig(
     };
   }
   return {};
+}
+
+/**
+ * Write ONLY the member's per-folder apra-fleet MCP entry (?member=<uuid>) --
+ * the same writer compose_permissions uses, without recomposing the permission
+ * config files (a recompose would replace mid-sprint grants). Used by the
+ * fleetMcp probe of register_member/update_member with fleet_install, so one
+ * call ends with the entry in place before it is checked.
+ *  - ok: the entry was written (or already up to date);
+ *  - not ok, `reason` set: a member config it cannot safely edit (tracked,
+ *    unparseable, unreadable) -- nothing was written to it;
+ *  - not ok, no `reason`: a hard write failure.
+ * Providers without a per-folder entry (no syncMemberMcpEntry) report ok and
+ * write nothing. Never throws.
+ */
+export async function writeMemberMcpEntry(agent: Agent): Promise<{ ok: true } | { ok: false; reason?: string; detail: string }> {
+  try {
+    const provider = getProvider(agent.llmProvider);
+    if (!provider.syncMemberMcpEntry) return { ok: true };
+    const strategy = getStrategy(agent);
+    const outcome = await syncMemberMcpConfig(agent, provider, strategy, [], null);
+    if (outcome.failure) return { ok: false, detail: outcome.failure };
+    if (outcome.notEditedReason) return { ok: false, reason: outcome.notEditedReason, detail: outcome.note ?? outcome.notEditedReason };
+    return { ok: true };
+  } catch (e: any) {
+    return { ok: false, detail: `could not write the apra-fleet member MCP entry: ${e?.message ?? String(e)}` };
+  }
 }
 
 /**
