@@ -9,6 +9,7 @@ import {
     defaultHasTerminalState,
     formatFinishedDetail,
     defaultRecordFinished,
+    readTerminal,
     WATCHDOG_STATUS,
 } from '../src/supervisor/watchdog.mjs';
 import { withTimestamps } from '../src/supervisor/log-timestamp.mjs';
@@ -375,5 +376,39 @@ describe('apra-fleet-i9ag.16.8: a terminal state is observed while the child pid
         });
         const [r] = await wd.classifyAll();
         assert.equal(r.status, WATCHDOG_STATUS.RUNNING_HEALTHY);
+    });
+});
+
+describe('apra-fleet-xv53.1.1: readTerminal -- nested engine terminalReason wins over the viewer top-level field', () => {
+    const nestedOnly = { extensions: { terminal: { terminalReason: 'BEADS_SYNC_CONFLICT', verdict: 'ABORTED' } } };
+    const both = { terminalReason: 'Error: some viewer message', extensions: { terminal: { terminalReason: 'BEADS_SYNC_CONFLICT', verdict: 'ABORTED' } } };
+
+    function record(state) {
+        const recorded = [];
+        defaultRecordFinished({
+            sprintId: 's', state, logger: { log() {}, error() {} },
+            history: { record: async (e) => { recorded.push(e); return e; } },
+        });
+        return recorded[0];
+    }
+
+    test('readTerminal is exported and tolerates non-object doubles', () => {
+        assert.deepEqual(readTerminal(nestedOnly), { terminalReason: 'BEADS_SYNC_CONFLICT', verdict: 'ABORTED' });
+        for (const v of [null, undefined, true, 'x', {}]) {
+            assert.deepEqual(readTerminal(v), { terminalReason: null, verdict: null });
+        }
+    });
+
+    test('nested-only state records BEADS_SYNC_CONFLICT', () => {
+        assert.equal(record(nestedOnly).terminalReason, 'BEADS_SYNC_CONFLICT');
+    });
+
+    test('top-level message plus nested reason: nested recorded and printed', () => {
+        assert.equal(record(both).terminalReason, 'BEADS_SYNC_CONFLICT');
+        assert.match(formatFinishedDetail(both), /terminalReason=BEADS_SYNC_CONFLICT/);
+    });
+
+    test('legacy top-level-only state still records that value', () => {
+        assert.equal(record({ terminalReason: 'SPRINT_STALLED' }).terminalReason, 'SPRINT_STALLED');
     });
 });
