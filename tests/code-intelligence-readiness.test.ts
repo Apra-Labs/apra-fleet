@@ -23,7 +23,7 @@ let scratch: string;
 let n = 0;
 
 function repoWith(meta: Record<string, unknown> | null, lock?: Record<string, unknown> | string): string {
-  const dir = path.join(scratch, `r${n++}`);
+  const dir = path.join(scratch, 'r' + String(n++));
   fs.mkdirSync(path.join(dir, '.gitnexus'), { recursive: true });
   if (meta) fs.writeFileSync(path.join(dir, '.gitnexus', 'meta.json'), JSON.stringify(meta));
   if (lock !== undefined) {
@@ -45,9 +45,9 @@ describe('gitnexus readiness', () => {
     expect(r.ready).toBe(false);
   });
 
-  it('incrementalInProgress is not ready (building)', () => {
+  it('incrementalInProgress with no live analyze is interrupted, not building', () => {
     const r = codeIndexReadiness('gitnexus', repoWith({ lastCommit: 'abc', incrementalInProgress: { startedAt: 1 } }));
-    expect(r).toEqual({ ready: false, state: 'building' });
+    expect(r).toEqual({ ready: false, state: 'interrupted' });
   });
 
   it('a held analyze lock (live pid) is not ready; a dead holder is ignored', () => {

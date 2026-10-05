@@ -625,8 +625,16 @@ gated on the member's code-intel provider: `none` fails with
 tools instead of gitnexus readiness. `codeStatus()` returns the
 last run (`analyze.phase`, `analyze.result` = `indexed` | `up-to-date` |
 `incomplete` | `failed`, `analyze.lastLine`), live `readiness`
-(`ready` | `building` | `missing`) and `indexedCommit`. Extract both with
-`parseToolJson()`.
+(`ready` | `building` | `interrupted` | `missing`; `interrupted` = the index
+is marked incomplete and no analyze is running), `indexedCommit`, `logPath`
+(the last run's `analyze.log`, or `null` when no analyze has written one yet)
+and `autoReindexPaused` (`null`, or `{ result, lastLine, logPath, finished }`
+of the automatic run that failed: automatic rebuilds of that folder stay
+paused until `codeReindex()` or a server restart). A code_* call on a local
+folder whose index is `missing` or `interrupted` requests a background build
+automatically (unless `autoReindex.enabled` is false in the code-intelligence
+config.json) and fails with `E-CODE-INDEX-NOT-READY` saying so. Extract both
+with `parseToolJson()`.
 
 #### `doltPushMutex(options)`
 

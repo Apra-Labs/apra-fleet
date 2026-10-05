@@ -91,6 +91,8 @@ beforeAll(() => {
   register('missing', 'gitnexus', gitRepo('missing'));
   const building = gitRepo('building');
   fs.mkdirSync(path.join(building, '.gitnexus'));
+  // A live analyze: the lock file names this (alive) process.
+  fs.writeFileSync(path.join(building, '.gitnexus', 'analyze.lock'), JSON.stringify({ pid: process.pid, token: 't' }));
   register('building', 'gitnexus', building);
   register('reindexing', 'gitnexus', gitRepo('reindexing'));
   register('off', 'none', gitRepo('off'));
@@ -111,15 +113,18 @@ describe('E-CODE-INDEX-NOT-READY', () => {
     const out = await call(await connectAs('missing'), 'code_query', { query: 'foo' });
     expect(out.isError).toBe(true);
     expect(out.text).toContain(`E-CODE-INDEX-NOT-READY: No gitnexus code index found for '${folders.missing}'.`);
-    expect(out.text).toContain("Remediation: Run 'npx gitnexus analyze --index-only' in the repo");
+    // tests/setup.ts fakes the self-heal start: the message says a build started, never "run npx".
+    expect(out.text).toContain('An index build was requested automatically. Remediation: Retry the same call in a minute or so');
+    expect(out.text).not.toMatch(/npx/);
     expect(remediationCount(out.text)).toBe(1);
   });
 
-  it('is returned when the index is still being built (.gitnexus/ present, no meta.json yet)', async () => {
+  it('is returned when the index is still being built (analyze lock held, no meta.json yet)', async () => {
     const out = await call(await connectAs('building'), 'code_query', { query: 'foo' });
     expect(out.isError).toBe(true);
     expect(out.text).toContain(`E-CODE-INDEX-NOT-READY: The gitnexus code index for '${folders.building}' is still being built.`);
-    expect(out.text).toContain('Remediation: Wait for the running');
+    expect(out.text).toContain('Remediation: Retry the same call in a minute or so');
+    expect(out.text).not.toMatch(/npx/);
     expect(remediationCount(out.text)).toBe(1);
   });
 

@@ -16,10 +16,29 @@ import { FLEET_DIR } from '../paths.js';
 import { resolveProjectSlug } from '../services/knowledge/project-slug.js';
 import { isPidAlive, readGitNexusIndexState } from './code-index-state.js';
 import { excludeLineFor } from '../services/member-config-io.js';
+import type { CodeIndexNotReadyState, CodeIndexReadiness } from './code-intelligence-readiness.js';
+
+/** Why automatic rebuilds of a repo are paused: the automatic run that failed. */
+export interface AutoReindexPause {
+  /** Result of that run ('failed', 'incomplete', or 'up-to-date' that still left no ready index). */
+  result: AnalyzeResult;
+  lastLine: string;
+  logPath: string;
+  finished: string;
+}
 
 interface ReindexEntry {
   runningChild?: ChildProcess;
+  /** The running child was started automatically (pre-flight heal / freshness), not by code_reindex. */
+  runningAuto?: boolean;
   lastFinishedAt?: number;
+  /**
+   * Set when an AUTOMATIC run ends without a ready index. While set, no
+   * automatic run starts for the repo (it would most likely fail the same way,
+   * e.g. an analyze that runs out of memory). Cleared by a run that leaves a
+   * ready index, by an explicit code_reindex, or by a server restart.
+   */
+  autoPaused?: AutoReindexPause;
 }
 
 // Module-level per-repo state (design D3): in-memory is acceptable -- the
@@ -208,8 +227,12 @@ export type SpawnAnalyzeOutcome =
  * stdout+stderr going straight to analyze.log (a file descriptor, so the run
  * outlives this server) and status.json kept current until exit. Never
  * throws. Does NOT apply config/cooldown -- callers decide whether to start.
+ * `auto` marks an automatic run: one that ends without a ready index pauses
+ * automatic runs for the repo (see ReindexEntry.autoPaused). An explicit run
+ * (auto false, i.e. code_reindex) clears any pause when it starts.
  */
-export function spawnAnalyze(repoPath: string): SpawnAnalyzeOutcome {
+export function spawnAnalyze(repoPath: string, opts: { auto?: boolean } = {}): SpawnAnalyzeOutcome {
+  const auto = opts.auto === true;
   const existing = state.get(repoPath);
   if (existing?.runningChild) return { started: false, reason: 'already-running' };
   if (readGitNexusIndexState(repoPath).lockHeld) {
@@ -257,7 +280,12 @@ export function spawnAnalyze(repoPath: string): SpawnAnalyzeOutcome {
     lastLine: '', lineCount: 0, phase: 'starting', result: null, exitCode: null,
   };
   writeStatus(dir, status);
-  state.set(repoPath, { runningChild: child, lastFinishedAt: existing?.lastFinishedAt });
+  state.set(repoPath, {
+    runningChild: child,
+    runningAuto: auto,
+    lastFinishedAt: existing?.lastFinishedAt,
+    autoPaused: auto ? existing?.autoPaused : undefined,
+  });
 
   const refresh = (): void => {
     const lines = readLogLines(dir);
@@ -272,7 +300,6 @@ export function spawnAnalyze(repoPath: string): SpawnAnalyzeOutcome {
 
   const finish = (code: number | null, errMsg?: string): void => {
     clearInterval(poller);
-    state.set(repoPath, { lastFinishedAt: Date.now() });
     const lines = readLogLines(dir);
     status.lastLine = lines.length > 0 ? lines[lines.length - 1] : (errMsg ?? '');
     status.lineCount = logLineCount(dir);
@@ -282,8 +309,25 @@ export function spawnAnalyze(repoPath: string): SpawnAnalyzeOutcome {
     status.result = errMsg ? 'failed' : resultFromExit(dir, repoPath, code);
     status.finished = new Date().toISOString();
     writeStatus(dir, status);
+    const idx = readGitNexusIndexState(repoPath);
+    const indexReady = idx.metaPresent && idx.lastCommit !== '' && !idx.incrementalInProgress;
+    const prev = state.get(repoPath);
+    let autoPaused: AutoReindexPause | undefined;
+    if (!indexReady && auto) {
+      autoPaused = { result: status.result, lastLine: status.lastLine, logPath: logPath(dir), finished: status.finished };
+    } else if (!indexReady) {
+      autoPaused = prev?.autoPaused;
+    }
+    state.set(repoPath, { lastFinishedAt: Date.now(), autoPaused });
+    // One warning per finished run: the failure detail and, for an automatic
+    // run, that automatic rebuilds are now paused.
+    const pausedNote = autoPaused && auto
+      ? '; automatic rebuilds paused until code_reindex or a server restart'
+      : '';
     if (status.result === 'failed') {
-      logWarn('code-intelligence-reindex', `background reindex for ${repoPath} ended failed (${errMsg ?? `exit ${code}`}): ${lines.slice(-5).join(' | ')}`);
+      logWarn('code-intelligence-reindex', `background reindex for ${repoPath} ended failed (${errMsg ?? `exit ${code}`}): ${lines.slice(-5).join(' | ')}${pausedNote}`);
+    } else if (pausedNote) {
+      logWarn('code-intelligence-reindex', `automatic reindex for ${repoPath} ended ${status.result} without a ready index${pausedNote}`);
     }
   };
 
@@ -296,30 +340,85 @@ export function spawnAnalyze(repoPath: string): SpawnAnalyzeOutcome {
   return { started: true, child, dir };
 }
 
+/** Why an automatic reindex request did not start an analyze. */
+export type ScheduleNotStartedReason = 'disabled' | 'cooldown' | 'paused' | NotStartedReason;
+
+export type ScheduleReindexOutcome =
+  | { started: true }
+  | { started: false; reason: 'paused'; pause: AutoReindexPause; detail?: string }
+  | { started: false; reason: Exclude<ScheduleNotStartedReason, 'paused'>; detail?: string };
+
+/** The pause on automatic rebuilds of `repoPath`, or null when they are armed. */
+export function autoReindexPause(repoPath: string): AutoReindexPause | null {
+  return state.get(repoPath)?.autoPaused ?? null;
+}
+
+/** Re-arm automatic rebuilds of `repoPath` (an explicit code_reindex does this). */
+export function clearAutoReindexPause(repoPath: string): void {
+  const entry = state.get(repoPath);
+  if (entry?.autoPaused) state.set(repoPath, { ...entry, autoPaused: undefined });
+}
+
 // Consults config + the decision function, then starts the shared analyze
 // runner. Never awaited on the tool-call path (it does not await the child),
-// never throws -- every failure path is logged and this function returns
-// false instead. Returns whether a reindex was actually started.
-export function maybeScheduleReindex(repoPath: string): boolean {
+// never throws -- every failure path is logged and a typed not-started
+// outcome is returned instead, so a caller can say WHY no build started
+// (auto-reindex disabled in config, cooldown, npx missing, ...).
+export function scheduleReindex(repoPath: string): ScheduleReindexOutcome {
   try {
     const config = readAutoReindexConfig();
-    if (config.enabled === false) return false;
+    if (config.enabled === false) return { started: false, reason: 'disabled' };
     const cooldownMs = typeof config.cooldownMs === 'number' ? config.cooldownMs : DEFAULT_COOLDOWN_MS;
 
     const existing = state.get(repoPath);
-    const decisionEntry = existing
-      ? { running: !!existing.runningChild, lastFinishedAt: existing.lastFinishedAt }
-      : undefined;
-    if (!shouldStartReindex(decisionEntry, Date.now(), cooldownMs)) return false;
+    if (existing?.runningChild) return { started: false, reason: 'already-running' };
+    if (existing?.autoPaused) return { started: false, reason: 'paused', pause: existing.autoPaused };
+    const decisionEntry = existing ? { running: false, lastFinishedAt: existing.lastFinishedAt } : undefined;
+    if (!shouldStartReindex(decisionEntry, Date.now(), cooldownMs)) {
+      return { started: false, reason: 'cooldown', detail: `an index build finished less than ${Math.round(cooldownMs / 1000)}s ago` };
+    }
 
-    return spawnAnalyze(repoPath).started;
+    const out = spawnAnalyze(repoPath, { auto: true });
+    return out.started ? { started: true } : { started: false, reason: out.reason, detail: out.detail };
   } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
     try {
-      const detail = err instanceof Error ? err.message : String(err);
-      logError('code-intelligence-reindex', `maybeScheduleReindex failed for ${repoPath}: ${detail}`);
+      logError('code-intelligence-reindex', `scheduleReindex failed for ${repoPath}: ${detail}`);
     } catch {
       // ignore -- logging itself must never throw out of this function
     }
+    return { started: false, reason: 'spawn-failed', detail };
+  }
+}
+
+/** Boolean form of scheduleReindex (the freshness-note trigger). Never throws. */
+export function maybeScheduleReindex(repoPath: string): boolean {
+  return scheduleReindex(repoPath).started;
+}
+
+// A recorded run older than this is never trusted as live by its pid alone:
+// the pid may have been reused by an unrelated process long after the run died.
+export const RECORDED_ANALYZE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * True when status.json under codeIndexDir(repo) records an analyze that has
+ * not finished and whose pid is still alive -- e.g. one started by a PREVIOUS
+ * server instance that is still running. On Windows/Linux the gitnexus lock
+ * leaves no file, so this is the cross-process signal for such a run. A
+ * finished, pid-less, dead-pid or implausibly old record is not live. Never
+ * throws.
+ */
+export function isRecordedAnalyzeAlive(repoPath: string, now: number = Date.now()): boolean {
+  try {
+    const status = readStatusFile(codeIndexDir(repoPath));
+    if (!status || status.phase === 'done') return false;
+    // codeIndexDir is keyed by project slug, which two folders can share.
+    if (typeof status.repo === 'string' && status.repo !== repoPath) return false;
+    if (typeof status.pid !== 'number' || !Number.isInteger(status.pid) || status.pid <= 0) return false;
+    const started = Date.parse(status.started);
+    if (Number.isFinite(started) && now - started > RECORDED_ANALYZE_MAX_AGE_MS) return false;
+    return isPidAlive(status.pid);
+  } catch {
     return false;
   }
 }
@@ -362,6 +461,8 @@ export async function codeReindex(repo: string, boundMs: number = FIRST_TICK_BOU
 }
 
 async function codeReindexOutcome(repo: string, boundMs: number): Promise<CodeReindexOutcome> {
+  // An explicit reindex re-arms automatic rebuilds paused by a failed automatic run.
+  clearAutoReindexPause(repo);
   const out = spawnAnalyze(repo);
   if (!out.started) {
     if (out.reason === 'already-running') {
@@ -421,15 +522,23 @@ export interface CodeStatusResult {
   /** status.json of the last analyze run for this folder, or null if none has run. */
   analyze: AnalyzeStatus | null;
   ready: boolean;
-  readiness: 'ready' | 'building' | 'missing';
+  readiness: 'ready' | CodeIndexNotReadyState;
   indexedCommit: string | null;
   incrementalInProgress: boolean;
   lockHeld: boolean;
-  logPath: string;
+  /** analyze.log of the last run; null when no analyze has written one under this install. */
+  logPath: string | null;
+  /** Set when an automatic run failed and automatic rebuilds are paused until code_reindex. */
+  autoReindexPaused: AutoReindexPause | null;
 }
 
-/** status.json + live readiness + the indexed commit for `repo`. Never throws on IO. */
-export function codeStatus(repo: string): CodeStatusResult {
+/**
+ * status.json + live readiness + the indexed commit for `repo`. `readiness` is
+ * the result of THE readiness check (codeIndexReadiness), passed in by the
+ * caller so code_status and the code_* pre-flight can never disagree (it lives
+ * in a module that imports this one). Never throws on IO.
+ */
+export function codeStatus(repo: string, readiness: CodeIndexReadiness): CodeStatusResult {
   const dir = codeIndexDir(repo);
   let analyze = readStatusFile(dir);
   // A run recorded as in-flight whose process is gone (server restarted mid-run)
@@ -446,14 +555,15 @@ export function codeStatus(repo: string): CodeStatusResult {
     };
   }
   const idx = readGitNexusIndexState(repo);
-  const ready = idx.metaPresent && idx.lastCommit !== '' && !idx.incrementalInProgress && !idx.lockHeld;
-  const running = !!state.get(repo)?.runningChild;
-  const readiness = ready ? 'ready' : (running || idx.lockHeld || idx.incrementalInProgress || existsSync(join(repo, '.gitnexus')) ? 'building' : 'missing');
+  const log = logPath(dir);
   return {
-    repo, analyze, ready, readiness,
+    repo, analyze,
+    ready: readiness.ready,
+    readiness: readiness.ready ? 'ready' : readiness.state,
     indexedCommit: idx.lastCommit || null,
     incrementalInProgress: idx.incrementalInProgress,
     lockHeld: idx.lockHeld,
-    logPath: logPath(dir),
+    logPath: existsSync(log) ? log : null,
+    autoReindexPaused: autoReindexPause(repo),
   };
 }

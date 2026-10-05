@@ -6,7 +6,7 @@
     "query": "exampleFn"
   },
   "error": {
-    "message": "E-CODE-INDEX-NOT-READY: No gitnexus code index found for '<SCRATCH_REPO_CODE>'. Remediation: Run 'npx gitnexus analyze --index-only' in the repo (or /pm index), then retry.",
+    "message": "E-CODE-INDEX-NOT-READY: No gitnexus code index found for '<SCRATCH_REPO_CODE>'. An index build was requested automatically. Remediation: Retry the same call in a minute or so (code_status shows the build progress).",
     "thrown": true
   },
   "expected_error_code": "E-CODE-INDEX-NOT-READY",

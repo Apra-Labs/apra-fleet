@@ -7,7 +7,7 @@ import type { CodeIntelligenceProvider } from './code-intelligence.js';
 import { freshnessNote } from './code-intelligence-freshness.js';
 import { maybeScheduleReindex } from './code-intelligence-reindex.js';
 import { isTestPath } from './code-intelligence-tests.js';
-import { assertCodeIndexReady } from './code-intelligence-readiness.js';
+import { ensureGitNexusIndexReady } from './code-intelligence-readiness.js';
 import { logError } from '../utils/log-helpers.js';
 import { missingOnServerPathMessage, npxUnavailableReason } from '../utils/find-on-path.js';
 
@@ -148,14 +148,17 @@ function appendFreshnessNote(result: unknown, note: string): unknown {
 // Pre-flight (F3.1): when the call carries a non-empty `repo` param, verify
 // the repo's index is ready (codeIndexReadiness, code-intelligence-readiness.ts
 // -- the one readiness check) BEFORE ever touching the child process; a
-// missing or still-building index throws E-CODE-INDEX-NOT-READY. Every code_* tool call carries the calling
+// not-ready index throws E-CODE-INDEX-NOT-READY. A missing or interrupted
+// (died mid-write) index first gets a background build started
+// (ensureGitNexusIndexReady), so a dead index heals itself instead of failing
+// every call until someone reindexes by hand. Every code_* tool call carries the calling
 // session's resolved (self) folder as `repo` (resolveCodeSelf in
 // code-intelligence.ts); a direct provider call without one is forwarded
 // untouched.
 async function callGitNexus(name: string, params: Record<string, unknown>): Promise<unknown> {
   const repo = params.repo;
   const hasRepo = typeof repo === 'string' && repo.length > 0;
-  if (hasRepo) assertCodeIndexReady('gitnexus', repo as string);
+  if (hasRepo) ensureGitNexusIndexReady(repo as string);
 
   try {
     const client = await getGitNexusClient();
