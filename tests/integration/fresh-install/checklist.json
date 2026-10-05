@@ -89,7 +89,7 @@
     },
     "UL": {
       "title": "Windows: the baseline's elevated legacy task, upgraded from a normal (non-elevated) shell",
-      "_comment": "The baseline (0.4.3) registered the task with schtasks /sc onlogon, which needs admin. The same user without admin rights (runas /trustlevel:0x20000: Administrators deny-only, medium integrity, no TTY on the harness side) can neither replace nor disable it: install must reuse it, explain the fix (notice file, fleet.log, status) without attempting elevation, and the documented fix (elevated delete, then a non-elevated install --force) must yield the new task, which runs the candidate.",
+      "_comment": "The baseline (0.4.3) registered the task with schtasks /sc onlogon, which needs admin. The same user's non-elevated token (built like UAC's: a LUA-restricted copy of the runner token, Administrators deny-only, lowered to Medium integrity; no console, no TTY) can neither replace nor disable it: install must reuse it, explain the fix (notice file, fleet.log, status) without attempting elevation, and the documented fix (elevated delete, then a non-elevated install --force) must yield the new task, which runs the candidate.",
       "steps": [
         { "id": "L00", "title": "probe: UAC policy and integrity level (informational)", "platforms": ["windows"], "severity": "advisory", "expect": { "exit": 0 } },
         { "id": "L01", "title": "non-elevated context of the same user runs at medium integrity", "platforms": ["windows"], "expect": { "exit": 0, "keyline": "Medium Mandatory Level" } },

@@ -184,9 +184,10 @@ function OneServerStep($id) {
 
 # --- pass UL: the same user, NOT elevated ------------------------------------
 # A 0.4.3 user's "normal shell": the same account without its admin rights.
-# The runner account never gets a UAC-filtered token (a Limited scheduled task
-# still ran at High integrity), so runas /trustlevel:0x20000 (Basic User:
-# Administrators deny-only, medium integrity, no password) stands in for it.
+# The runner account never gets a UAC-filtered token: a Limited scheduled task
+# ran at High integrity, and runas /trustlevel:0x20000 made Administrators
+# deny-only but stayed High -- and a task registered elevated stays writable
+# from High. AsLimited below builds the Medium token UAC would.
 $UlDir = Join-Path $env:SystemDrive 'fi-ul'
 # Absolute: Git for Windows puts a GNU whoami on PATH that rejects /groups.
 $WhoAmI = Join-Path $env:SystemRoot 'System32\whoami.exe'
@@ -195,29 +196,76 @@ function IntegrityLevel {
   $row = (& $WhoAmI /groups /fo csv 2>$null) | ConvertFrom-Csv | Where-Object { $_.'Group Name' -like 'Mandatory Label\*' } | Select-Object -First 1
   if ($row) { return ($row.'Group Name' -replace '^Mandatory Label\\', '') } else { return 'unknown' }
 }
-# Run a command as THIS user without its admin rights (runas /trustlevel:0x20000,
-# medium integrity): its own console, no TTY on our side, no prompt possible.
-# Sets $script:RC/$script:LOG.
+# A normal (non-elevated) shell's token for THIS user, built the way UAC builds
+# it: a LUA-restricted copy of our own token (Administrators deny-only, no
+# admin privileges) lowered to Medium integrity. CreateProcessAsUser needs no
+# extra privilege for a restricted copy of the caller's own token.
+$FiLimitedSrc = @'
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+public static class FiLimited {
+  [StructLayout(LayoutKind.Sequential)] struct SID_AND_ATTRIBUTES { public IntPtr Sid; public uint Attributes; }
+  [StructLayout(LayoutKind.Sequential)] struct TOKEN_MANDATORY_LABEL { public SID_AND_ATTRIBUTES Label; }
+  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] struct STARTUPINFO {
+    public int cb; public string lpReserved; public string lpDesktop; public string lpTitle;
+    public int dwX, dwY, dwXSize, dwYSize, dwXCountChars, dwYCountChars, dwFillAttribute, dwFlags;
+    public short wShowWindow, cbReserved2; public IntPtr lpReserved2, hStdInput, hStdOutput, hStdError; }
+  [StructLayout(LayoutKind.Sequential)] struct PROCESS_INFORMATION { public IntPtr hProcess, hThread; public int dwProcessId, dwThreadId; }
+  [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
+  [DllImport("advapi32.dll", SetLastError = true)] static extern bool OpenProcessToken(IntPtr h, uint access, out IntPtr tok);
+  [DllImport("advapi32.dll", SetLastError = true)] static extern bool CreateRestrictedToken(IntPtr existing, uint flags,
+    uint disableSidCount, IntPtr sidsToDisable, uint deletePrivCount, IntPtr privsToDelete, uint restrictedSidCount, IntPtr sidsToRestrict, out IntPtr newToken);
+  [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)] static extern bool ConvertStringSidToSid(string s, out IntPtr sid);
+  [DllImport("advapi32.dll")] static extern int GetLengthSid(IntPtr sid);
+  [DllImport("advapi32.dll", SetLastError = true)] static extern bool SetTokenInformation(IntPtr tok, int cls, ref TOKEN_MANDATORY_LABEL info, int len);
+  [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)] static extern bool CreateProcessAsUser(IntPtr tok, string app,
+    StringBuilder cmd, IntPtr pa, IntPtr ta, bool inherit, uint flags, IntPtr env, string dir, ref STARTUPINFO si, out PROCESS_INFORMATION pi);
+  [DllImport("kernel32.dll")] static extern uint WaitForSingleObject(IntPtr h, uint ms);
+  [DllImport("kernel32.dll")] static extern bool GetExitCodeProcess(IntPtr h, out uint code);
+  [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
+  static Exception Fail(string what) { return new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), what); }
+  // Exit code of cmdLine run with the restricted Medium token; -2 on timeout.
+  public static int Run(string cmdLine, int timeoutMs) {
+    IntPtr tok, rtok, sid;
+    // ASSIGN_PRIMARY | DUPLICATE | QUERY | ADJUST_DEFAULT | ADJUST_SESSIONID
+    if (!OpenProcessToken(GetCurrentProcess(), 0x1 | 0x2 | 0x8 | 0x80 | 0x100, out tok)) throw Fail("OpenProcessToken");
+    // DISABLE_MAX_PRIVILEGE | LUA_TOKEN
+    if (!CreateRestrictedToken(tok, 0x1 | 0x4, 0, IntPtr.Zero, 0, IntPtr.Zero, 0, IntPtr.Zero, out rtok)) throw Fail("CreateRestrictedToken");
+    if (!ConvertStringSidToSid("S-1-16-8192", out sid)) throw Fail("ConvertStringSidToSid");
+    TOKEN_MANDATORY_LABEL tml = new TOKEN_MANDATORY_LABEL();
+    tml.Label.Sid = sid; tml.Label.Attributes = 0x20; // SE_GROUP_INTEGRITY
+    if (!SetTokenInformation(rtok, 25, ref tml, Marshal.SizeOf(tml) + GetLengthSid(sid))) throw Fail("SetTokenInformation(TokenIntegrityLevel)");
+    STARTUPINFO si = new STARTUPINFO(); si.cb = Marshal.SizeOf(si);
+    PROCESS_INFORMATION pi;
+    // CREATE_NO_WINDOW
+    if (!CreateProcessAsUser(rtok, null, new StringBuilder(cmdLine), IntPtr.Zero, IntPtr.Zero, false, 0x08000000, IntPtr.Zero, null, ref si, out pi)) throw Fail("CreateProcessAsUser");
+    try {
+      if (WaitForSingleObject(pi.hProcess, (uint)timeoutMs) != 0) return -2;
+      uint code; GetExitCodeProcess(pi.hProcess, out code); return (int)code;
+    } finally { CloseHandle(pi.hProcess); CloseHandle(pi.hThread); CloseHandle(rtok); CloseHandle(tok); }
+  }
+}
+'@
+# Run a command as THIS user with that non-elevated token: no console, no TTY,
+# so no prompt is possible. Sets $script:RC/$script:LOG/$script:LimToken.
 function AsLimited($id, $name, $exe, [string[]]$argv = @(), $timeoutSec = 900) {
+  if (-not ('FiLimited' -as [type])) { Add-Type -TypeDefinition $FiLimitedSrc -Language CSharp }
   $script:LOG = Join-Path $Logs "$id-$name.log"
   $out = Join-Path $UlDir "$id-$name.out"; $rcf = Join-Path $UlDir "$id-$name.rc"; $cmdf = Join-Path $UlDir "$id-$name.cmd"
   Remove-Item $out, $rcf, "$rcf.tmp" -ErrorAction SilentlyContinue
   $line = (Quote $exe) + ' ' + (($argv | ForEach-Object { Quote $_ }) -join ' ')
-  # Redirection FIRST: "echo 1> f" would make 1 a stream number. The rc file
-  # appears atomically (move) so it is never read half-written.
-  # First the token this process really got (integrity level, Administrators state).
+  # First the token this process really got (integrity level, Administrators
+  # state). Redirection before echo: "echo 1> f" would make 1 a stream number.
   $ilf = "$out.il"; Remove-Item $ilf -ErrorAction SilentlyContinue
   [IO.File]::WriteAllText($cmdf, "@echo off`r`n`"$WhoAmI`" /groups /fo csv > `"$ilf`" 2>&1`r`n$line > `"$out`" 2>&1`r`n>`"$rcf.tmp`" echo %ERRORLEVEL%`r`nmove /y `"$rcf.tmp`" `"$rcf`" >nul`r`n", [Text.Encoding]::ASCII)
   $script:RC = 'ERR not run'
-  $ro = (& runas.exe '/trustlevel:0x20000' "cmd.exe /d /c $cmdf" 2>&1 | Out-String).Trim()
-  if ($LASTEXITCODE -ne 0) {
-    $script:RC = "ERR runas /trustlevel failed (exit $LASTEXITCODE): $ro"
-  } else {
-    $deadline = (Get-Date).AddSeconds($timeoutSec)
-    while (-not (Test-Path $rcf) -and (Get-Date) -lt $deadline) { Start-Sleep 2 }
-    if (Test-Path $rcf) { $script:RC = ([string](Get-Content $rcf -Raw)).Trim() }
-    else { $script:RC = "ERR no result from the runas /trustlevel process after ${timeoutSec}s" }
-  }
+  try {
+    $code = [FiLimited]::Run("cmd.exe /d /c `"$cmdf`"", $timeoutSec * 1000)
+    if ($code -eq -2) { $script:RC = "ERR timeout after ${timeoutSec}s (restricted-token process)" }
+    elseif (Test-Path $rcf) { $script:RC = ([string](Get-Content $rcf -Raw)).Trim() }
+    else { $script:RC = "$code" }
+  } catch { $script:RC = "ERR restricted-token launch failed: $($_.Exception.InnerException.Message)$($_.Exception.Message)" }
   $script:LimToken = 'token unknown (no whoami output)'
   try {
     $rows = Get-Content $ilf -ErrorAction Stop | ConvertFrom-Csv
@@ -337,8 +385,8 @@ try {
       & icacls.exe $UlDir /grant '*S-1-5-11:(OI)(CI)M' | Out-Null
       # The same user's filtered token must be MEDIUM integrity (not elevated).
       AsLimited L01 whoami $WhoAmI @('/groups', '/fo', 'csv') 120
-      $medium = $script:LimToken -match 'IL=Medium Mandatory Level'
-      Rec L01 'limited-token context of the same user is not elevated' ([int](-not ($medium -and (Ok $RC)))) "rc=$RC $($script:LimToken)" $(if ($medium) { 'medium integrity' } else { 'the runas /trustlevel process did not run at medium integrity, so it cannot stand in for a normal shell' })
+      $medium = $script:LimToken -match 'IL=Medium Mandatory Level' -and $script:LimToken -match 'Administrators=Group used for deny only'
+      Rec L01 'limited-token context of the same user is not elevated' ([int](-not ($medium -and (Ok $RC)))) "rc=$RC $($script:LimToken)" $(if ($medium) { 'medium integrity' } else { 'the restricted-token process did not run at Medium integrity with Administrators deny-only, so it cannot stand in for a normal shell' })
 
       Run L02 base-version $BaseExe @('--version'); Rec L02 'base --version' $RC (Key $LOG @('apra-fleet v')) (VerOf $LOG)
       # The baseline install from the ELEVATED runner context, as 0.4.3 users had to:
