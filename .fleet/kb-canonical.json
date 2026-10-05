@@ -1,9 +1,9 @@
 {
   "version": 2,
   "provenance": {
-    "commit": "9eb97b3c06e7669b4c8f1d8e41c5e3a62a98040c",
-    "branch": "chore/v05-kb-superset",
-    "entry_count": 417
+    "commit": "2e962a242779b2eea35bc4f388e9033a71b3d776",
+    "branch": "chore/v05-merge-kb-redesign-2",
+    "entry_count": 418
   },
   "entries": [
     {
@@ -7650,6 +7650,24 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:31.424Z"
+    },
+    {
+      "id": "c872c6d4-96f4-42b9-93e7-46349013671a",
+      "type": "knowledge",
+      "title": "kb_bible_commit and kb_export share one bible admission predicate",
+      "summary": "kb_bible_commit now admits a CONFIRMED id only if filterProjectBibleCandidates (bible-basis-filter.ts) passes it, the same rule kb_export scope=project uses; failures are skipped with reason basis_mismatch.",
+      "symbols": [
+        "kbBibleCommit",
+        "filterProjectBibleCandidates",
+        "qualifiesForProjectBible"
+      ],
+      "source_files": [
+        "src/tools/kb-bible-commit.ts",
+        "src/services/knowledge/bible-basis-filter.ts",
+        "tests/knowledge/kb-bible-commit-admission.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-05T08:34:05.036Z"
     }
   ]
 }

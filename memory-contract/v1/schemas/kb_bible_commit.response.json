@@ -77,7 +77,8 @@
                   "reason": {
                     "type": "string",
                     "enum": [
-                      "not_confirmed_or_unknown"
+                      "not_confirmed_or_unknown",
+                      "basis_mismatch"
                     ]
                   }
                 },

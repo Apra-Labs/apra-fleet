@@ -1,0 +1,17 @@
+{
+  "tool": "kb_promote",
+  "case": "setup-second-promote-for-bible-commit-basis-mismatch",
+  "kind": "happy",
+  "request": {
+    "id": "8c3610dd-18a5-4fbf-a5b5-98b699db77ae",
+    "reason": "Second promotion (INFERRED -> CONFIRMED) while the cited file still matches the capture basis."
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"id\":\"8c3610dd-18a5-4fbf-a5b5-98b699db77ae\",\"previous_confidence\":\"CONFIRMED\",\"new_confidence\":\"CONFIRMED\"}"
+      }
+    ]
+  }
+}
