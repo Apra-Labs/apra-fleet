@@ -72,6 +72,9 @@ export const DEFAULT_LEASE_MS = 60_000;
 /** Default background sweep interval for reclaiming expired/dead holders. */
 export const DEFAULT_SWEEP_MS = 5_000;
 
+/** Error code on waiters rejected because the mutex is stopping. */
+export const DOLT_MUTEX_STOPPING_CODE = 'supervisor-stopping';
+
 let tokenSeq = 0;
 /** Collision-free grant token. The random component guarantees a token minted
  *  after a supervisor restart (fresh tokenSeq) can never equal a holder token
@@ -278,9 +281,16 @@ export function createDoltMutex(deps = {}) {
      * owns it (immediately if free, otherwise FIFO-after every earlier waiter).
      * The resolved value is the lease token required to release/renew.
      *
+     * Reconnect proof: when opts.token is a non-empty string equal to the live
+     * holder's token AND sprintId equals the holder's, the call is idempotent --
+     * it resolves immediately with the SAME token, lease refreshed (and
+     * persisted), refreshed:true, and the waiter queue is untouched. Any other
+     * token (stale/unknown/no holder) acts as a fresh acquire. Without a token,
+     * same sprintId+pid as the holder still queues (intra-sprint serialization).
+     *
      * @param {string} sprintId
-     * @param {{ pid?: number|null }} [opts]
-     * @returns {Promise<{ token: string, sprintId: string, expiresAt: number }>}
+     * @param {{ pid?: number|null, token?: string }} [opts]
+     * @returns {Promise<{ token: string, sprintId: string, expiresAt: number, refreshed?: boolean }>}
      */
     function acquire(sprintId, opts = {}) {
         if (typeof sprintId !== 'string' || sprintId.length === 0) {
@@ -290,8 +300,17 @@ export function createDoltMutex(deps = {}) {
         if (pid !== null && !Number.isInteger(pid)) {
             return Promise.reject(new TypeError('acquire() pid must be an integer or null'));
         }
+        if (opts.token != null && typeof opts.token !== 'string') {
+            return Promise.reject(new TypeError('acquire() token must be a string'));
+        }
         // Opportunistically reclaim a wedged holder before we decide to wait.
         reclaimExpired();
+        if (typeof opts.token === 'string' && opts.token.length > 0
+            && holder !== null && holder.token === opts.token && holder.sprintId === sprintId) {
+            holder.expiresAt = now() + leaseMs;
+            persistHolder();
+            return Promise.resolve({ token: holder.token, sprintId: holder.sprintId, expiresAt: holder.expiresAt, refreshed: true });
+        }
         return new Promise((resolve, reject) => {
             waiters.push({ sprintId, pid, resolve, reject, enqueuedAt: now() });
             pump();
@@ -387,7 +406,9 @@ export function createDoltMutex(deps = {}) {
             // Fail any still-queued waiters so their promises never dangle.
             while (waiters.length > 0) {
                 const w = waiters.shift();
-                w.reject(new Error('dolt mutex is shutting down'));
+                const err = new Error('dolt mutex is shutting down');
+                err.code = DOLT_MUTEX_STOPPING_CODE;
+                w.reject(err);
             }
             // Leave mutex.json as-is (the holder survives the restart); just
             // let any queued write land before the process goes away.
@@ -412,14 +433,19 @@ export function createDoltMutex(deps = {}) {
  * Register the dolt push mutex HTTP routes against a supervisor (server.mjs).
  * Detached sprint children coordinate through these:
  *
- *   POST /api/dolt-push-mutex/:sprintId/acquire   body { pid? }
+ *   POST /api/dolt-push-mutex/:sprintId/acquire   body { pid?, token? }
  *       Long-polls: the response is deferred until this sprint genuinely owns
- *       the mutex, then returns 200 { token, expiresAt }. If the client aborts
+ *       the mutex, then returns 200 { token, expiresAt }. An optional body.token
+ *       equal to the live holder's token is a reconnect proof: 200 with the same
+ *       token and refreshed:true (any other token acts as a fresh acquire).
+ *       Waiters rejected by stop() get 503 { error:'supervisor-stopping',
+ *       retryable:true, message }. If the client aborts
  *       the request, its queued waiter is dropped.
  *   POST /api/dolt-push-mutex/:sprintId/release   body { token }
  *       Releases; 200 { released: boolean }.
  *   POST /api/dolt-push-mutex/:sprintId/renew     body { token }
- *       Extends the lease; 200 { renewed: boolean, expiresAt? }.
+ *       Extends the lease; 200 { renewed:true, expiresAt }, or
+ *       409 { error:'not-holder' } when the token is not the current holder's.
  *   GET  /api/dolt-push-mutex                      -> 200 status snapshot.
  *
  * @param {{ route: Function }} supervisor
@@ -440,12 +466,20 @@ export function registerDoltMutexRoutes(supervisor, mutex, http) {
                 mutex.cancelWaiter(sprintId, new Error('acquire request aborted by client'));
             }
         });
+        if (body.token != null && typeof body.token !== 'string') {
+            sendJson(res, 400, { error: 'acquire token must be a string' });
+            return;
+        }
         try {
-            const grant = await mutex.acquire(sprintId, { pid: body.pid });
+            const grant = await mutex.acquire(sprintId, { pid: body.pid, token: body.token });
             if (res.writableEnded) return; // client already gone
             sendJson(res, 200, { status: 'acquired', ...grant });
         } catch (err) {
             if (res.writableEnded) return;
+            if (err && err.code === DOLT_MUTEX_STOPPING_CODE) {
+                sendJson(res, 503, { error: DOLT_MUTEX_STOPPING_CODE, retryable: true, message: `acquire failed: ${err.message}` });
+                return;
+            }
             sendJson(res, 503, { error: `acquire failed: ${err.message}` });
         }
     });
@@ -471,7 +505,8 @@ export function registerDoltMutexRoutes(supervisor, mutex, http) {
             return;
         }
         const renewed = mutex.renew(body.token);
-        sendJson(res, 200, renewed ? { renewed: true, expiresAt: renewed.expiresAt } : { renewed: false });
+        if (!renewed) { sendJson(res, 409, { error: 'not-holder' }); return; }
+        sendJson(res, 200, { renewed: true, expiresAt: renewed.expiresAt });
     });
 
     supervisor.route('GET', '/api/dolt-push-mutex', async (req, res) => {

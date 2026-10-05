@@ -545,3 +545,139 @@ describe('dolt-mutex -- null client for supervisor-less runs', () => {
         assert.ok(DEFAULT_LEASE_MS > 0);
     });
 });
+
+// =============================================================================
+// apra-fleet-oiuf.1.2 -- route semantics: retryable 503 on stop, 409 not-holder
+// on a non-matching renew, and token-proven idempotent re-acquire.
+// =============================================================================
+
+describe('dolt-mutex routes -- stop / not-holder / token-proven re-acquire', () => {
+    function setup(opts = {}) {
+        const dataDir = newDataDir();
+        const mutex = mutexes.make({ leaseMs: 1_000, dataDir, ...opts });
+        const supervisor = createSupervisor({ port: 0 });
+        registerDoltMutexRoutes(supervisor, mutex, { readJsonBody, sendJson });
+        const call = async (url, body) => {
+            const res = mockRes();
+            await supervisor.handleRequest(mockReq('POST', url, body), res);
+            return { res, json: res.body ? JSON.parse(res.body) : undefined };
+        };
+        const acquireP = (sprintId, body) => {
+            const res = mockRes();
+            const done = supervisor.handleRequest(mockReq('POST', `/api/dolt-push-mutex/${sprintId}/acquire`, body), res);
+            return { res, done };
+        };
+        return { dataDir, mutex, call, acquireP };
+    }
+
+    test('a waiter pending when stop() runs gets 503 supervisor-stopping, retryable', async () => {
+        const { mutex, call, acquireP } = setup();
+        const a = await call('/api/dolt-push-mutex/A/acquire', { pid: process.pid });
+        assert.equal(a.res.statusCode, 200);
+        const w = acquireP('B', { pid: process.pid });
+        await settleTicks();
+        assert.equal(w.res.statusCode, undefined);
+        await mutex.stop();
+        await w.done;
+        assert.equal(w.res.statusCode, 503);
+        const body = JSON.parse(w.res.body);
+        assert.equal(body.error, 'supervisor-stopping');
+        assert.equal(body.retryable, true);
+        assert.match(body.message, /shutting down/);
+    });
+
+    test('a cancelled waiter keeps the plain 503 shape (not supervisor-stopping)', async () => {
+        const { mutex, call, acquireP } = setup();
+        await call('/api/dolt-push-mutex/A/acquire', { pid: process.pid });
+        const w = acquireP('B', { pid: process.pid });
+        await settleTicks();
+        mutex.cancelWaiter('B');
+        await w.done;
+        assert.equal(w.res.statusCode, 503);
+        const body = JSON.parse(w.res.body);
+        assert.match(body.error, /^acquire failed:/);
+        assert.equal(body.retryable, undefined);
+        await mutex.stop();
+    });
+
+    test('renew: unknown/stale token -> 409 not-holder; holder token -> 200 renewed', async () => {
+        const { mutex, call } = setup();
+        const a = await call('/api/dolt-push-mutex/A/acquire', { pid: process.pid });
+        const bad = await call('/api/dolt-push-mutex/A/renew', { token: 'nope' });
+        assert.equal(bad.res.statusCode, 409);
+        assert.deepEqual(bad.json, { error: 'not-holder' });
+        const ok = await call('/api/dolt-push-mutex/A/renew', { token: a.json.token });
+        assert.equal(ok.res.statusCode, 200);
+        assert.equal(ok.json.renewed, true);
+        await call('/api/dolt-push-mutex/A/release', { token: a.json.token });
+        const stale = await call('/api/dolt-push-mutex/A/renew', { token: a.json.token });
+        assert.equal(stale.res.statusCode, 409);
+        await mutex.stop();
+    });
+
+    test('acquire with the live holder token returns the same token, refreshed, lease moves, queue unchanged', async () => {
+        const clock = fakeClock(10_000);
+        const { mutex, dataDir, call, acquireP } = setup({ now: clock.now });
+        const a = await call('/api/dolt-push-mutex/A/acquire', { pid: process.pid });
+        const w = acquireP('B', { pid: process.pid });
+        await settleTicks();
+        assert.equal(mutex.status().queueDepth, 1);
+        clock.advance(400);
+        const re = await call('/api/dolt-push-mutex/A/acquire', { pid: process.pid, token: a.json.token });
+        assert.equal(re.res.statusCode, 200);
+        assert.equal(re.json.token, a.json.token);
+        assert.equal(re.json.refreshed, true);
+        assert.ok(re.json.expiresAt > a.json.expiresAt, 'lease moved forward');
+        assert.equal(re.json.expiresAt, 10_400 + 1_000);
+        assert.equal(mutex.status().queueDepth, 1, 'waiter queue untouched');
+        await mutex.flush();
+        assert.equal(readMutexFile(dataDir).holder.leaseExpiresAt, re.json.expiresAt);
+        await mutex.stop();
+        await w.done;
+    });
+
+    test('acquire with the holder sprintId+pid but NO token still queues', async () => {
+        const { mutex, call, acquireP } = setup();
+        await call('/api/dolt-push-mutex/A/acquire', { pid: process.pid });
+        const second = acquireP('A', { pid: process.pid });
+        await settleTicks();
+        assert.equal(second.res.statusCode, undefined, 'not granted while holder holds');
+        assert.equal(mutex.status().queueDepth, 1);
+        await mutex.stop();
+        await second.done;
+    });
+
+    test('acquire with a stale token is a fresh acquire: queues, then gets a NEW token', async () => {
+        const { mutex, call, acquireP } = setup();
+        const a = await call('/api/dolt-push-mutex/A/acquire', { pid: process.pid });
+        const stale = 'A#stale-token';
+        const w = acquireP('A', { pid: process.pid, token: stale });
+        await settleTicks();
+        assert.equal(w.res.statusCode, undefined, 'queues behind the live holder');
+        await call('/api/dolt-push-mutex/A/release', { token: a.json.token });
+        await w.done;
+        assert.equal(w.res.statusCode, 200);
+        const g = JSON.parse(w.res.body);
+        assert.notEqual(g.token, stale);
+        assert.notEqual(g.token, a.json.token);
+        assert.equal(g.refreshed, undefined);
+        await mutex.stop();
+    });
+
+    test('a token that matches the holder but on a different sprintId is not idempotent', async () => {
+        const { mutex, call, acquireP } = setup();
+        const a = await call('/api/dolt-push-mutex/A/acquire', { pid: process.pid });
+        const w = acquireP('B', { pid: process.pid, token: a.json.token });
+        await settleTicks();
+        assert.equal(w.res.statusCode, undefined);
+        await mutex.stop();
+        await w.done;
+    });
+
+    test('a non-string acquire token is a 400', async () => {
+        const { mutex, call } = setup();
+        const r = await call('/api/dolt-push-mutex/A/acquire', { pid: process.pid, token: 42 });
+        assert.equal(r.res.statusCode, 400);
+        await mutex.stop();
+    });
+});
