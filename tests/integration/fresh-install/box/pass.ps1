@@ -424,6 +424,14 @@ try {
 
       # The documented fix: elevated delete, then a non-elevated install --force.
       Run L14 fix-delete 'schtasks.exe' @('/delete', '/tn', 'ApraFleet', '/f'); Rec L14 'elevated: schtasks /delete /tn ApraFleet /f' $RC (Key $LOG @('SUCCESS', 'ERROR'))
+      # Runner artifact, NOT part of the documented fix: this account has no
+      # filtered token, so the legacy task ran the server at High integrity,
+      # which no Medium process may stop. On a real UAC machine the task
+      # (/rl limited, the user's interactive token) runs it at Medium and the
+      # install --force below stops it itself. Stop it elevated here instead.
+      $hp = @(Get-Process apra-fleet -ErrorAction SilentlyContinue | ForEach-Object Id)
+      Run L14b stop-high-server 'taskkill.exe' (@('/F') + ($hp | ForEach-Object { @('/PID', "$_") }))
+      Rec L14b 'runner artifact: stop the High-integrity legacy server (elevated)' $(if ($hp.Count) { $RC } else { 0 }) $(if ($hp.Count) { Key $LOG @('SUCCESS', 'ERROR') } else { 'no apra-fleet process running' }) "pids: $($hp -join ',')"
       AsLimited L15 fix-install $AF @('install', '--force', '--workflows', 'none')
       Rec L15 'apra-fleet install --force --workflows none (not elevated)' $RC (Key $LOG @('installed successfully', '^Error')) "$($script:LimToken); exe present=$(YesNo (Test-Path $AF))"
       # Diagnostics (advisory): which apra-fleet processes run at what integrity,

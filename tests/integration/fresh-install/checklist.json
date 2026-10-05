@@ -107,6 +107,7 @@
         { "id": "L13", "title": "apra-fleet status shows legacy task (upgrade needed: ...) + fix", "platforms": ["windows"], "expect": { "exit": 0 } },
         { "id": "L14", "title": "documented fix 1/2: elevated schtasks /delete", "platforms": ["windows"], "expect": { "exit": 0 } },
         { "id": "L15", "title": "documented fix 2/2: install --force, not elevated", "platforms": ["windows"], "expect": { "exit": 0, "keyline": "installed successfully" } },
+        { "id": "L14b", "title": "runner artifact: stop the High-integrity legacy server elevated (a real user's runs at Medium)", "platforms": ["windows"], "severity": "advisory", "expect": { "exit": 0 } },
         { "id": "L15d", "title": "diagnostics: apra-fleet processes and a Medium-token taskkill (informational)", "platforms": ["windows"], "severity": "advisory", "expect": { "exit": 0 } },
         { "id": "L16", "title": "task is now the NEW form, scoped to the user", "platforms": ["windows"], "expect": { "exit": 0, "keyline": "^logon=\\S*\\\\\\S+ repeat=PT5M policy=IgnoreNew action=(wscript-launcher|bat)$", "observed": "^new form$" } },
         { "id": "L17", "title": "service-notice.json cleared", "platforms": ["windows"], "expect": { "exit": 0 } },
