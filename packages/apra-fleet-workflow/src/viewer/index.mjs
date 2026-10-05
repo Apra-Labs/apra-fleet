@@ -287,7 +287,7 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
     <div class="content-area">
       <div class="tab-bar" id="tab-bar">
         <button class="tab-btn active" onclick="switchTab('core')">Activity Tree</button>
-        ${dashboardExtensions.map(ext => `<button class="tab-btn" onclick="switchTab('${ext.id}')">${ext.title}</button>`).join('\\n')}
+        ${dashboardExtensions.map(ext => `<button class="tab-btn" onclick="switchTab('${ext.id}')">${ext.title}</button>`).join('\n')}
       </div>
       <div id="tab-core" class="tab-content active panel">
         <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center;">
@@ -304,10 +304,10 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
           </div>
           <div id="extension-${ext.id}" style="flex: 1; min-height: 0; padding: 12px; overflow-y: auto;"></div>
         </div>
-      `).join('\\n')}
+      `).join('\n')}
     </div>
   </div>
-  ${dashboardExtensions.map(ext => `<script>\n${ext.js}\n</script>`).join('\\n')}
+  ${dashboardExtensions.map(ext => `<script>\n${ext.js}\n</script>`).join('\n')}
   <script>
     let globalState = null;
     function switchTab(id) {
