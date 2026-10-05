@@ -612,6 +612,10 @@ npm install && npm run build && npm test
 workspace and is otherwise only reachable via an explicit `--prefix`
 invocation) -- so a green local run and a green CI run see the same tests.
 
+On a fresh clone, `npm test` first builds what the tests need (the API contract
+and the console UI workspaces) via its `pretest` step, so no manual
+`build:ui` is required.
+
 See [CONTRIBUTING.md](CONTRIBUTING.md) to contribute.
 
 ## License
