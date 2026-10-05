@@ -6,7 +6,9 @@
 // it.skipIf(!binaryExists) -- file EXISTENCE, not freshness. A binary built
 // before a change to any SEA-relevant input (the esbuild entry graph under
 // src/, the console route wiring under src/console/, the packaged UI assets
-// under packages/apra-fleet-shell-ui/, or the SEA manifest generator itself,
+// under packages/apra-fleet-shell-ui/, the bundled workspace packages
+// (apra-fleet-client, fleet-api-contract, apra-fleet-ui-kit), or the SEA
+// manifest generator itself,
 // scripts/gen-sea-config.mjs / scripts/build-sea.mjs) still "exists", so the
 // suite ran against it and failed with a bare functional-looking assertion
 // (e.g. "expected 404 to be 200" on GET /ui) -- indistinguishable from a
@@ -30,12 +32,26 @@ import { join } from 'node:path';
  * packages/apra-fleet-shell-ui/dist -- that tree is gitignored (built UI
  * assets), so `git diff`/`git status` can never see a change there; its
  * freshness is instead checked by content in findUiDistFilesNotEmbedded().
+ *
+ * Also lists the workspace packages the SEA bundle inlines: build-sea.mjs
+ * bundles src/index.ts with esbuild bundle:true (only cpu-features external),
+ * so @apralabs/apra-fleet-client and @apralabs/fleet-api-contract sources are
+ * baked into the binary, and apra-fleet-ui-kit feeds the shell Vite build.
+ * Each is listed as its src + package.json rather than the whole dir: the
+ * dist/ trees are gitignored (invisible to git anyway) and test/docs changes
+ * must not mark the binary stale.
  */
 export const SEA_RELEVANT_GIT_PATHS = [
   'scripts/gen-sea-config.mjs',
   'scripts/build-sea.mjs',
   'packages/apra-fleet-shell-ui/src',
   'packages/apra-fleet-shell-ui/package.json',
+  'packages/apra-fleet-client/src',
+  'packages/apra-fleet-client/package.json',
+  'packages/fleet-api-contract/src',
+  'packages/fleet-api-contract/package.json',
+  'packages/apra-fleet-ui-kit/src',
+  'packages/apra-fleet-ui-kit/package.json',
   'src',
 ];
 
