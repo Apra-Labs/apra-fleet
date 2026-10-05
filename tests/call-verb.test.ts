@@ -134,8 +134,25 @@ describe('apra-fleet call', () => {
     const b = await run(['--member', memberId, 'version', '--args', '{}']);
     expect(b.code).not.toBe(0);
     expect(JSON.parse(b.err).error.code).toBe('E-USAGE');
-    const c = await run(['--member', memberId, 'version']);
-    expect(JSON.parse(c.err).error.message).toMatch(/--args-file/);
+  });
+
+  it('a no-argument tool needs no --args-file (args default to {})', async () => {
+    const r = await run(['--member', memberId, 'version']);
+    expect(r.code).toBe(0);
+    expect(JSON.parse(r.out).isError).toBeFalsy();
+  });
+
+  it('a tool with required arguments still needs --args-file (E-USAGE names them)', async () => {
+    const r = await run(['--member', memberId, 'kb_capture']);
+    expect(r.code).not.toBe(0);
+    const e = JSON.parse(r.err).error;
+    expect(e.code).toBe('E-USAGE');
+    expect(e.message).toMatch(/--args-file <path> is required \(kb_capture requires: .*title/);
+  });
+
+  it('--rm-args-file without --args-file is a usage error', async () => {
+    const r = await run(['--member', memberId, 'version', '--rm-args-file']);
+    expect(JSON.parse(r.err).error.code).toBe('E-USAGE');
   });
 
   it('a non-object or unreadable args file is an E-ARGS-FILE error', async () => {

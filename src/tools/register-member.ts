@@ -77,7 +77,7 @@ export const registerMemberSchema = z.object({
   }).optional().describe('Per-member model tier map. Keys: cheap, standard, premium. Values: model IDs (e.g. "ollama/qwen3-coder:30b"). A single model fills all tiers. At least one model recommended for opencode members.'),
   code_intel_provider: z.enum(['codebase-memory', 'gitnexus', 'none']).optional().describe('Code-intelligence provider for this member (default: fleet-wide config).'),
   unreservable: z.boolean().optional().describe('Mark this member as never exclusively reservable, so it can be shared by more than one sprint at once (e.g. a member filling fleet-sprint\'s shared "backlog" role). reserve/release/force_release become no-op successes and overlap guards skip it. Default: false.'),
-  fleet_install: z.enum(['auto', 'skip']).optional().default('auto').describe('Whether registration installs/updates apra-fleet on the member so it has its own fleet server (default "auto": probe the member, install or upgrade when missing/older, self-register it, verify a MEMBER session; local members only get the MEMBER-session probe). "skip" performs no install and reports the probe result only. Registration succeeds either way; the result reports the recoverable fleetMcp status (re-probe with member_detail refresh:true).'),
+  fleet_install: z.enum(['auto', 'skip']).optional().default('auto').describe('Whether registration installs/updates apra-fleet on the member so it has its own fleet server (default "auto": probe the member, install or upgrade when missing/older, self-register it, write its per-folder apra-fleet MCP entry, verify a MEMBER session; local members only get the MEMBER-session probe). "skip" performs no install and reports the probe result only. Registration succeeds either way; the result reports the recoverable fleetMcp status (re-probe with member_detail refresh:true).'),
   shell: z.enum(['gitbash', 'pwsh7', 'powershell5']).optional().describe('Override the probed Windows shell for this member (gitbash, pwsh7, or powershell5). Windows members only -- ignored for non-windows members.'),
 });
 
@@ -666,8 +666,11 @@ export async function registerMember(input: RegisterMemberInput, opts: RegisterM
   let fleetMcpLine: string | undefined;
   if (!opts.id && !opts.skipFleetMcp) {
     try {
+      // A fleet install also (re)writes the per-folder MCP entry before it is
+      // checked, so this one call ends at fleetMcp=available.
+      const install = (input.fleet_install ?? 'auto') !== 'skip';
       const status = await refreshMemberFleetMcp(
-        tempAgent, getMemberFleetMcpDeps(), { install: (input.fleet_install ?? 'auto') !== 'skip' },
+        tempAgent, getMemberFleetMcpDeps(), { install, writeMcpEntry: install },
       );
       fleetMcpLine = status.state === 'available'
         ? `available${status.version ? ` (apra-fleet ${status.version})` : ''}${status.installFailure && status.detail ? ` -- warning: ${status.detail}` : ''}`

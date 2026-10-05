@@ -1,13 +1,14 @@
 /**
  * `apra-fleet call` -- generic member-session tool call.
  *
- *   apra-fleet call --member <uuid> <tool> --args-file <path>
+ *   apra-fleet call --member <uuid> <tool> [--args-file <path>]
  *   apra-fleet call --member <uuid> --list-tools
  *
  * Opens a MEMBER session (?member=<uuid>) against the LOCAL server through
  * apra-fleet-client, so the server's own input schema validates the arguments
  * and the member tool allowlist applies. Arguments are ALWAYS read from a JSON
- * file -- there is deliberately no inline-JSON flag. The session is opened with
+ * file -- there is deliberately no inline-JSON flag. Without --args-file the
+ * arguments are {}, allowed only for a tool whose input schema requires none. The session is opened with
  * origin=engine, so its kb_/code_ calls are excluded from session_stats. Failures are printed as a
  * structured JSON error on stderr and the exit code is non-zero.
  */
@@ -16,11 +17,12 @@ import fs from 'node:fs';
 const USAGE = `apra-fleet call -- call a tool as a registered member session
 
 Usage:
-  apra-fleet call --member <uuid> <tool> --args-file <path>
+  apra-fleet call --member <uuid> <tool> [--args-file <path>]
   apra-fleet call --member <uuid> --list-tools
 
   --member <uuid>       Registered member id (an unregistered id fails with HTTP 403)
-  --args-file <path>    JSON file holding the tool arguments (a JSON object)
+  --args-file <path>    JSON file holding the tool arguments (a JSON object); omit it
+                        for a tool with no required arguments (they default to {})
   --rm-args-file        Delete the args file once read (used by remote memberCall)
   --list-tools          Print the member session's tools/list
   --help, -h            Show this help`;
@@ -78,6 +80,15 @@ function fail(io: CallIo, code: string, message: string, extra: Record<string, u
   return 1;
 }
 
+/** The required argument names of `tool` in a tools/list answer ([] when the
+ *  tool is not listed: the server then reports the unknown tool itself). */
+function requiredArgs(list: unknown, tool: string): string[] {
+  const tools = (list as { tools?: Array<{ name?: string; inputSchema?: { required?: unknown } }> } | null)?.tools;
+  const t = Array.isArray(tools) ? tools.find(x => x?.name === tool) : undefined;
+  const req = t?.inputSchema?.required;
+  return Array.isArray(req) ? req.map(String) : [];
+}
+
 /** Returns the process exit code. */
 export async function runCall(argv: string[], deps: CallDeps = {}): Promise<number> {
   const io: CallIo = deps.io ?? { out: t => console.log(t), err: t => console.error(t) };
@@ -89,11 +100,13 @@ export async function runCall(argv: string[], deps: CallDeps = {}): Promise<numb
     if (parsed.tool || parsed.argsFile) return fail(io, 'E-USAGE', '--list-tools takes no tool name or --args-file');
   } else {
     if (!parsed.tool) return fail(io, 'E-USAGE', 'a tool name is required (or use --list-tools)');
-    if (!parsed.argsFile) return fail(io, 'E-USAGE', '--args-file <path> is required');
+    if (parsed.rmArgsFile && !parsed.argsFile) return fail(io, 'E-USAGE', '--rm-args-file requires --args-file <path>');
   }
 
-  let args: unknown = undefined;
-  if (!parsed.listTools) {
+  // No --args-file: the arguments default to {} -- checked against the tool's
+  // input schema once connected (a tool with required arguments still needs a file).
+  let args: unknown = parsed.listTools ? undefined : {};
+  if (!parsed.listTools && parsed.argsFile) {
     try {
       args = JSON.parse((deps.readFile ?? (p => fs.readFileSync(p, 'utf8')))(parsed.argsFile!));
     } catch (e) {
@@ -130,6 +143,12 @@ export async function runCall(argv: string[], deps: CallDeps = {}): Promise<numb
     if (parsed.listTools) {
       io.out(JSON.stringify(await session.mcpClient.listTools()));
       return 0;
+    }
+    if (!parsed.argsFile) {
+      const required = requiredArgs(await session.mcpClient.listTools(), parsed.tool!);
+      if (required.length) {
+        return fail(io, 'E-USAGE', `--args-file <path> is required (${parsed.tool} requires: ${required.join(', ')})`, { tool: parsed.tool });
+      }
     }
     const result = await session.mcpClient.callTool(parsed.tool!, args) as { isError?: boolean; content?: Array<{ text?: string }> };
     if (result && result.isError) {
