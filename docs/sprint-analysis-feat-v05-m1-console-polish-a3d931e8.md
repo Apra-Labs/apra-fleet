@@ -1,14 +1,14 @@
 # Sprint Analysis: feat/v05-m1-console-polish
 
-Scope issue id(s): apra-fleet-i9ag.5, apra-fleet-i9ag.16, apra-fleet-i9ag.20, apra-fleet-i9ag.21.
+Scope issue id(s): apra-fleet-i9ag.22, apra-fleet-i9ag.23, apra-fleet-i9ag.24.
 Base branch: v0.5_dashboard.
 Cycles run: 1.
 
 ## Progress
 
-Closed-bead count history (per cycle evaluation): [16].
-High-water-mark closed count this sprint: 20.
-Final closed count: 16.
+Closed-bead count history (per cycle evaluation): [10].
+High-water-mark closed count this sprint: 13.
+Final closed count: 10.
 Final open-at-goal-priority count: 0.
 No beads were deferred out of scope at/above goal priority this sprint.
 
@@ -23,23 +23,55 @@ None.
 
 ## Final verdict
 
-FAIL -- FAIL. Build ok; full bounded suite green (TEST_EXIT=0; contract:check/vitest/client/workflow/se/apra-pm all ok; se lane pass=4889 fail=0; vitest 405 files passed).
+PASS -- Final review of v0.5_dashboard..feat/v05-m1-console-polish (7 commits, 14 files). I read the net diff against the three in-scope beads.
 
-SCOPE CHECK AGAINST THE REAL DIFF. Local v0.5_dashboard is stale; origin/v0.5_dashboard (546286ca) is an ancestor of the branch, so the net PR diff is 4 commits / 5 files: supervisor/theme.mjs (new), supervisor/dashboard.mjs, registration/project-page.mjs + 2 test files. File hygiene clean, every file justified.
+i9ag.22 (themed /ui placeholder): ui-placeholder.mjs now imports THEME_CSS from ../supervisor/theme.mjs and puts it in a <style> block with only a page-local body padding rule. No token declarations are duplicated. supervisor-project-page.test.mjs asserts THEME_CSS and var(--bg)/var(--text) on PLACEHOLDER_HTML and on GET /ui, /ui/sprints and the two-segment /ui/panels/git. Criteria met.
 
-i9ag.20 (Projects page black-on-dark) -- PASS. theme.mjs is a real single source of truth: dashboard.mjs's inline DASHBOARD_CSS is deleted and re-imported, project-page.mjs renders --bg/--text. Tests assert the emitted HTML contains THEME_CSS verbatim and that project-page.mjs declares no tokens itself. theme.mjs does ship (root package.json files[] includes packages/apra-fleet-se/src/; gen-sea-config walks the tree).
+i9ag.23 (counter vs stack): dashboard.mjs poll() now writes #running-counter in its own try/catch before renderSprintStackFromState. Finished-sprints and beads-freshness also each get their own try/catch, and every error is still console.error-logged. The new live-refresh test drives the real embedded script with sprints:[null,null]. It asserts the render threw and the counter reads 2, not the prior 5. Criteria met.
 
-i9ag.21 (header counter vs stack) -- PASS. First paint and poll both derive from ONE array: renderIndexPageHtml uses views.length for #running-counter and renderSprintStackHtml(views); poll() sets the counter from the same data.sprints it hands renderSprintStackFromState, which renders one row per element with no filtering. EventSource/heartbeat only call schedulePoll->poll, so there is no second render path. Tests drive the real extracted script.
+i9ag.24 (viewer back-link outside the proxy): the workflow viewer gains an opt-in opts.backLink. It is validated at construction (absolute http(s) URL only), HTML-escaped and marked with data-viewer-back-link. Without the option the page is byte-identical (tested). cli.mjs adds --viewer-back-url and exits non-zero on a non-http(s) value before connecting. On the serve path, buildServeSpawnerDeps always supplies viewerBackUrlFor, and spawner refuses a launch with no runId rather than starting a viewer with no link. The proxy strips the child's own anchor before injecting the mount-prefixed one. assertViewerBackLink now also fails if a page has more than one link to the same card, so neither the proxy nor the history route can serve two. The tests derive viewer routes from the rendered dashboard rather than a hand-written list, and cover a direct child fetch with one link, the proxied fetch with one link, and a standalone launch unchanged. All spawnSprint callers (api.mjs:778) pass runId. Criteria met.
 
-i9ag.16 -- REOPEN. Defect verifiably persists at branch HEAD. Its REOPENED note (acceptance run on 546286ca) requires the failure reason on the stack row and finished card. dashboard.mjs:276 still reads (isLaunchFailed && run.reason), so an ABORTED run renders reasonHtml='' regardless of reason data -- exactly the observed symptom -- and renderSprintSection surfaces no reason at all. Three P1 children encoding that correction (16.6 terminal-state detection, 16.7 reason on row/card, 16.8 its test) are still OPEN, so per GRAPH-SEMANTICS.md the container is not done. Nothing in this diff touches that code. The close reason's claim that both REOPENED regressions 'are covered by these assertions on this build' is false: the suites it cites were already in 546286ca, the build that reproduced the defect.
+Tests: npm run build OK. npm test: contract:check, apra-fleet-client (161), apra-fleet-workflow (361), apra-fleet-se (4953), apra-pm (489) all pass. vitest: 7239 pass, 1 fail: tests/sandbox-deploy.test.ts live up/env/teardown (isolation check: supervisor /api/health did not answer). This is not caused by this branch. The same test fails identically on a v0.5_dashboard worktree. Running the same sandbox-deploy up by hand on this branch, from an os.tmpdir() home, passes verify and smoke. It only fails under vitest. Filed as a follow-up.
 
-i9ag.5 -- REOPEN. Closed on circular evidence, same pattern: all .5 code and the cited i9ag53-console-dashboard-viewer-xlink test landed in df42a0b0 and are present in 546286ca, the binary whose acceptance run reported links=[] on the live viewer and History pages. No code or test landed since, so a passing suite cannot distinguish 'fixed' from 'the test never covered the observed failure mode'. Back-links do exist (proxy.mjs injectLiveViewBackLink; history page 'Back to supervisor'), which makes the untested gap -- most plausibly a viewer reached outside the proxy path -- the thing to pin. i9ag.9, the Windows click-only round-trip acceptance for .5, is itself still OPEN.
+Hygiene: every changed file maps to the three beads. The untracked backslash-named files in the repo root are not in the diff. They come from an existing test, tests/windows-service-task-xml.test.ts (filed).
 
-No KB promotions: the fleet MCP server failed to connect this session, so no promotion-candidate block was available.
+Tools: kb used (kb_query, no hits). code: code_impact failed because gitnexus is offline (spawn npx ENOENT), so I traced callers with grep instead. No promotion candidates were supplied.
 
 ## Regression pass (once per sprint, informational)
 
-Regression pass: FAILED (real-bd suite: fail, smoke test: fail).
+Regression pass: FAILED (Install smoke: pass, In-sprint smoke: fail).
 Carry-over beads filed: none.
-Summary: Regression test runner dispatch failed: [Workflow Error] Agent dispatch failed (empty_response): [FAIL] execute_prompt on "fleet-lin1-deploy" exited 0 but produced no parseable output (empty result -- the member CLI likely died mid-turn without printing its result envelope).
+Summary: Install smoke passed. A fresh install from this checkout into the throwaway HOME succeeded, and the server started on scratch port 18700. server.json confirmed that port, with no silent rebind. Teardown released the lock, stopped the server and deleted the sandbox. The sandbox-deploy sweep for this sprint's id printed 'nothing to tear down' and exited 0. In-sprint smoke: NOT RUN: moved to CI. The playbook defines it as not run in-sprint, so it is reported as passed: false and forces overall passed: false. No bead was filed for it, as the playbook directs. No test failures occurred, so no carry-over beads were filed. This result is informational and does not gate the sprint. Gotcha: an unrelated directory, ~/temp/.apra-fleet-tests-9te45, was left over from some other run. It was not touched, because the playbook's cleanup only targets the exact sandbox path.
 Informational only -- this pass ran after the final verdict and did not gate it; any bead above is parent-less by design and carries over to a future sprint.
+
+## KB and code tool calls per member per dispatch
+
+Counted by each member's own fleet server (session_stats before/after each dispatch; the engine's own reads are excluded). 'unknown' means the count could not be read -- it is not zero.
+
+- Dispatch 1: planner on member 'fleet-mac1' -- kb_* calls: unknown, code_* calls: unknown (unknown: before-snapshot read failed).
+- Dispatch 2: plan-reviewer on member 'fleet-mac1' -- kb_* calls: unknown, code_* calls: unknown (unknown: before-snapshot read failed).
+- Dispatch 3: doer on member 'fleet-mac1' [Streak [apra-fleet-i9ag.22.1.1, apra-fleet-i9ag.22.1.2]] -- kb_* calls: unknown, code_* calls: unknown (unknown: before-snapshot read failed).
+- Dispatch 4: doer on member 'fleet-mac1' [Streak [apra-fleet-i9ag.24.1.1, apra-fleet-i9ag.24.1.2, apra-fleet-i9ag.24.1.3]] -- kb_* calls: unknown, code_* calls: unknown (unknown: before-snapshot read failed).
+- Dispatch 5: doer on member 'fleet-mac1' [Streak [apra-fleet-i9ag.23.1.1, apra-fleet-i9ag.23.1.2]] -- kb_* calls: unknown, code_* calls: unknown (unknown: before-snapshot read failed).
+- Dispatch 6: reviewer on member 'fleet-mac1' -- kb_* calls: unknown, code_* calls: unknown (unknown: before-snapshot read failed).
+- Dispatch 7: doer on member 'fleet-mac1' [Streak [apra-fleet-i9ag.22.1.2]] -- kb_* calls: unknown, code_* calls: unknown (unknown: before-snapshot read failed).
+- Dispatch 8: reviewer on member 'fleet-mac1' -- kb_* calls: unknown, code_* calls: unknown (unknown: before-snapshot read failed).
+- Dispatch 9: deployer on member 'fleet-mac1-deploy' -- kb_* calls: unknown, code_* calls: unknown (unknown: before-snapshot read failed).
+- Dispatch 10: integ-test-runner on member 'fleet-mac1-deploy' -- kb_* calls: unknown, code_* calls: unknown (unknown: before-snapshot read failed).
+- Dispatch 11: reviewer on member 'fleet-mac1' [Final Review] -- kb_* calls: unknown, code_* calls: unknown (unknown: before-snapshot read failed).
+- Dispatch 12: regression-test-runner on member 'fleet-mac1-deploy' -- kb_* calls: unknown, code_* calls: unknown (unknown: before-snapshot read failed).
+
+Per-member totals:
+- member 'fleet-mac1': 9 dispatch(es), kb_* calls: unknown, code_* calls: unknown (9 dispatch(es) with unknown counts).
+- member 'fleet-mac1-deploy': 3 dispatch(es), kb_* calls: unknown, code_* calls: unknown (3 dispatch(es) with unknown counts).
+
+## Cost
+
+```
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $10.2799.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.0347 across 1 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 12 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+```

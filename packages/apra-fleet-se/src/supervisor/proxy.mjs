@@ -69,6 +69,7 @@ import {
     assertViewerBackLink,
     injectViewerBackLink,
     renderViewerBackLinkHtml,
+    stripChildViewerBackLink,
 } from './viewer-back-link.mjs';
 import { createChildPortResolver } from './child-port.mjs';
 
@@ -261,7 +262,13 @@ function proxyHtml({ host, port, req, res, prefix, sprintId, mountPrefix, logErr
                 // loud 502 rather than a silently linkless 200.
                 let body;
                 try {
-                    const rewritten = rewriteChildHtml(Buffer.concat(chunks).toString('utf-8'), prefix);
+                    // A supervisor-spawned child renders its own ABSOLUTE
+                    // back-link (for operators who open it directly on its
+                    // port); drop it so the proxied page carries exactly one,
+                    // the mount-prefixed one injected next.
+                    const rewritten = stripChildViewerBackLink(
+                        rewriteChildHtml(Buffer.concat(chunks).toString('utf-8'), prefix),
+                    );
                     const html = injectViewerBackLink(rewritten, renderViewerBackLinkHtml(mountPrefix, sprintId));
                     assertViewerBackLink(html, { mountPrefix, sprintId, where: 'GET /sprints/:id/live (live proxy)' });
                     body = Buffer.from(html, 'utf-8');

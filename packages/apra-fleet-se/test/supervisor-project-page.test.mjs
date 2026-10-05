@@ -257,5 +257,57 @@ describe('GET /ui/projects (apra-fleet-i9ag.17.2.2)', () => {
         assert.ok(!src.includes('--text-muted:'), 'project-page.mjs must not duplicate theme token declarations');
         assert.ok(!src.includes('--bg:'), 'project-page.mjs must not duplicate theme token declarations');
     });
+
+    test('placeholder page HTML carries THEME_CSS and contains a style block (apra-fleet-i9ag.22.1.2)', () => {
+        assert.ok(PLACEHOLDER_HTML.includes(THEME_CSS), 'PLACEHOLDER_HTML must contain THEME_CSS byte-for-byte');
+        assert.match(PLACEHOLDER_HTML, /<style>[\s\S]*<\/style>/, 'PLACEHOLDER_HTML must contain a <style> block');
+    });
+
+    test('placeholder page does not emit bare unstyled head (apra-fleet-i9ag.22.1.2)', () => {
+        assert.ok(!PLACEHOLDER_HTML.includes('<head><meta charset="utf-8"><title>fleet-supervisor UI</title></head>'), 'must not emit the old bare unstyled head string');
+    });
+
+    test('placeholder page served at /ui carries THEME_CSS in the HTML (apra-fleet-i9ag.22.1.2)', async () => {
+        const handler = createProjectsPageHandler({ token: null });
+        const res = mockRes();
+        await handler({ method: 'GET', url: '/ui', headers: {} }, res, ctxFor('/ui'));
+        const html = res.body.toString('utf-8');
+        assert.ok(html.includes(THEME_CSS), 'GET /ui must carry THEME_CSS');
+        assert.ok(html.includes('fleet-supervisor UI arrives in a later sprint'), 'GET /ui must contain the placeholder text');
+    });
+
+    test('placeholder page served at two-segment path /ui/panels/git carries THEME_CSS (apra-fleet-i9ag.22.1.2)', async () => {
+        const handler = createProjectsPageHandler({ token: null });
+        const res = mockRes();
+        await handler({ method: 'GET', url: '/ui/panels/git', headers: {} }, res, ctxFor('/ui/panels/git'));
+        const html = res.body.toString('utf-8');
+        assert.ok(html.includes(THEME_CSS), 'GET /ui/panels/git must carry THEME_CSS');
+        assert.ok(html.includes('fleet-supervisor UI arrives in a later sprint'), 'GET /ui/panels/git must contain the placeholder text');
+    });
+
+    test('placeholder page served at single-segment path /ui/sprints carries THEME_CSS (apra-fleet-i9ag.22.1.2)', async () => {
+        const handler = createProjectsPageHandler({ token: null });
+        const res = mockRes();
+        await handler({ method: 'GET', url: '/ui/sprints', headers: {} }, res, ctxFor('/ui/sprints'));
+        const html = res.body.toString('utf-8');
+        assert.ok(html.includes(THEME_CSS), 'GET /ui/sprints must carry THEME_CSS');
+        assert.ok(html.includes('fleet-supervisor UI arrives in a later sprint'), 'GET /ui/sprints must contain the placeholder text');
+    });
+
+    test('placeholder page body applies background and text color vars (apra-fleet-i9ag.22.1.2)', () => {
+        // The THEME_CSS itself includes the body rule with background: var(--bg) and color: var(--text),
+        // plus a page-local body rule with padding. Verify the placeholder HTML includes both.
+        assert.ok(PLACEHOLDER_HTML.includes('background: var(--bg)'), 'THEME_CSS must include background: var(--bg)');
+        assert.ok(PLACEHOLDER_HTML.includes('color: var(--text)'), 'THEME_CSS must include color: var(--text)');
+        assert.match(PLACEHOLDER_HTML, /body\s*\{\s*padding:/, 'must have a page-local body rule with padding');
+    });
+
+    test('single source of truth: ui-placeholder.mjs imports THEME_CSS and does not duplicate token definitions (apra-fleet-i9ag.22.1.2)', () => {
+        const uiPlaceholderPath = fileURLToPath(new URL('../src/registration/ui-placeholder.mjs', import.meta.url));
+        const src = fs.readFileSync(uiPlaceholderPath, 'utf-8');
+        assert.match(src, /import\s*\{[^}]*THEME_CSS[^}]*\}\s*from\s*['"]\.\.\/supervisor\/theme\.mjs['"]/, 'must import THEME_CSS from shared theme module');
+        assert.ok(!src.includes('--text-muted:'), 'ui-placeholder.mjs must not duplicate theme token declarations');
+        assert.ok(!src.includes('--bg:'), 'ui-placeholder.mjs must not duplicate theme token declarations');
+    });
 });
 

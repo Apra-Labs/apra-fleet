@@ -80,6 +80,7 @@ const KNOWN_LIGHT_PROCESS_SPAWNS = {
     'merge-kb-canonical.test.mjs': 'spawnSync(process.execPath, [SCRIPT, ...]) runs scripts/merge-kb-canonical.mjs once over local JSON fixtures -- a pure merge script, not a server or Dolt bootstrap.',
     'cli-robustness.test.mjs': "spawnSync(process.execPath, [cliPath, '--branch', 'main', '--base', 'origin/main', ...]) runs bin/cli.mjs once and it refuses branch == base before any fleet connection, bd call or server start (main #628).",
     'stopped-by-user-launch.test.mjs': 'spawnSync(process.execPath, [bin/cli.mjs, ...]) runs the sprint CLI once against a stopped-by-user marker; it prints the stop message and exits 1 before connecting anywhere (main #629).',
+    'viewer-back-link-direct-threading.test.mjs': "spawnSync(process.execPath, [bin/cli.mjs, ..., '--viewer-back-url', 'javascript:...']) runs the sprint CLI once; it rejects the invalid back URL and exits 1 before connecting anywhere.",
     'run-tests-script-wiring.test.mjs':"spawnSync(process.execPath, derivedArgs, ...) runs scripts/run-tests.mjs against exactly ONE lightweight probe file (test/helpers/run-tests-wiring-probe.mjs), not the real suite.",
 };
 

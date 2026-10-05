@@ -925,6 +925,30 @@ describe('apra-fleet-i9ag.21.2: header running counter agrees with the rendered 
 });
 
 
+describe('apra-fleet-i9ag.23.1.2: header running counter matches state when the sprint stack render throws', () => {
+    test('a poll whose stack render throws still writes the counter (N != prior K) and logs the error', async (t) => {
+        t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+        const errSpy = t.mock.method(console, 'error', () => {});
+        try {
+            const container = new MockContainer(EMPTY_STATE_HTML);
+            const counterContainer = new MockCounterElement('<strong>5</strong> running');
+            // Malformed views: renderSprintSection cannot read fields off null.
+            const fetchImpl = async () => ({
+                json: async () => ({ sprints: [null, null], finished: [] }),
+            });
+
+            runLiveRefreshScript({ container, fetchImpl, eventSourceCtor: undefined, counterContainer });
+            await flushMicrotasks();
+
+            assert.ok(errSpy.mock.calls.length >= 1, 'the stack render must actually have thrown and been console.error-logged');
+            assert.equal(counterContainer.innerHTML, '<strong>2</strong> running');
+        } finally {
+            t.mock.timers.reset();
+        }
+    });
+});
+
+
 // =============================================================================
 // apra-fleet-i9ag.16.8 -- a post-launch-window failure stops showing as
 // running, and shows its reason

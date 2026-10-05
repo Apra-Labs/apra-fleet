@@ -729,6 +729,17 @@ it has to keep working against whatever console version happens to be
 deployed. The string itself, asserted identically in tests on both sides, IS
 the contract, in the same sense an HTTP status code is.
 
+### The `/ui` placeholder page uses the shared theme
+
+Before a real UI is mounted, `/ui` (and its sub-paths such as `/ui/sprints`
+and two-segment paths like `/ui/panels/git`) serve a placeholder page. It
+imports the supervisor's shared theme stylesheet rather than declaring its
+own colors, and adds only a page-local body padding rule, so the placeholder
+follows the same design tokens (`--bg`, `--text`, ...) as every other console
+surface and cannot drift from them. Do not duplicate token declarations in
+the placeholder; a test asserts the theme is present on every placeholder
+route.
+
 ## compose_permissions denylist for console and supervisor endpoints
 
 `compose_permissions` (the tool that composes a member's auto-granted
