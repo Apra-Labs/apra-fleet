@@ -243,10 +243,10 @@ distinguishes them.
 ## U4 -- Contradiction-resolution refusal, and the evidence-gated demote
 
 Placement candidate: a subsection of its own. The demote half no longer
-documents an absence (my-beads-db-qy8.2 added `kb_demote`; its own rule/proof/
-obligation/test-hook block now lives at `spec.md` section 4.7, "Demotion",
-authored by my-beads-db-qy8.3.2) -- this draft's demote half is kept in sync
-with that landing rather than describing a missing capability.
+documents an absence (`kb_demote` has since landed; its own rule/proof/
+obligation/test-hook block now lives at `spec.md` section 4.7, "Demotion")
+-- this draft's demote half is kept in sync with that landing rather than
+describing a missing capability.
 
 **THE RULE.** Contradiction detection at capture time MUST FLAG and MUST NOT
 resolve: both entries stay live, the newer one recording that it disputes the
@@ -376,5 +376,5 @@ cannot be used to simulate a general-purpose `kb_demote` on a basis-bearing
 entry) and that `kb_demote` never inherits that predicate (so it can demote an
 entry regardless of whether it cites a basis). Neither assertion exists in
 `tests/knowledge/kb-demote.test.ts` or elsewhere today; that is a gap for this
-draft's eventual placement task, not for my-beads-db-qy8.3.2/.3.3, which cover
-only `kb_demote` itself.
+draft's eventual placement task, not for the `kb_demote` landing work, which
+covers only `kb_demote` itself.

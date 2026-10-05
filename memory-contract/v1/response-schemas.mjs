@@ -35,7 +35,7 @@
 //
 // CORRECTED CLAIM (the first version of this comment got this wrong): none of
 // that -- extra blocks, annotations, or structuredContent -- is reachable by
-// any of the 23 kb_*/code_* tools this contract inventories. tool-registry.ts
+// any of the 24 kb_*/code_* tools this contract inventories. tool-registry.ts
 // :99-101 computes `isJson = isJsonResponse(result)`; every inventoried
 // handler returns `JSON.stringify(...)`, so isJson is always true, which
 // nulls both the preamble (`getOnboardingPreamble` returns null when isJson)
@@ -46,7 +46,7 @@
 // from an inventoried tool never actually failed the old narrow schema on
 // these grounds -- the widening below documents wrapTool's GENERAL contract
 // (the shape ANY wrapTool-registered tool may emit), not a bug the
-// inventoried 23 trip over today. Fixed here on the SCHEMA side only, per
+// inventoried 24 trip over today. Fixed here on the SCHEMA side only, per
 // this task's acceptance criteria -- no harness/validator was loosened, and
 // the width is not justified against the inventoried tool set. `parsed`
 // (added by responseSchema() below) was untouched by THIS task; it was later
@@ -75,7 +75,7 @@ const toolTextContentItem = z.object({
 });
 
 /**
- * The shared MCP text-content envelope every one of the 23 handlers uses.
+ * The shared MCP text-content envelope every one of the 24 handlers uses.
  * 1..3 content items (onboarding preamble + payload + nudge suffix, in that
  * order, preamble/suffix optional), plus an optional `structuredContent`
  * sibling (wrapTool returns it whenever the handler's raw return value was

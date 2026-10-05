@@ -57,7 +57,7 @@ cannot check, and why.
 ## D-3 -- Taxonomy error codes never appear on the wire
 
 - **Tool / method:** every refusal path in `taxonomy.json` with
-  `surfaced: thrown` (23 of the codes in the closed set), across all 16 `kb_*`
+  `surfaced: thrown` (23 of the codes in the closed set), across all 17 `kb_*`
   tools.
 - **Unverifiable behaviour:** a refusal is raised as a plain `Error` whose
   message is human prose. The stable machine code (`E-PROMOTE-SUPERSEDED`, ...)
@@ -82,7 +82,7 @@ cannot check, and why.
   text content block. The envelope carries `content` (and, for non-inventoried
   tools, `structuredContent`) -- never a `parsed` key. `schemas/*.response.json`
   models the envelope PLUS a `parsed` body (INVENTORY.md section 3), but
-  `parsed` is declared OPTIONAL (my-beads-db-27m.47, `responseSchema()` in
+  `parsed` is declared OPTIONAL (`responseSchema()` in
   `response-schemas.mjs`), precisely because no handler ever puts it on the
   wire: a RAW envelope (`{content}` only, what every recorded fixture and
   every live response actually is) validates as-is, and a consumer that
@@ -97,7 +97,7 @@ cannot check, and why.
   distinguishable only by the `annotations` stamped on the preamble/suffix.
   Choosing the payload block, and failing loudly when its text does not parse,
   are both harness responsibilities.
-- **Verified statically too (my-beads-db-27m.47):** `tests/memory-contract-
+- **Verified statically too:** `tests/memory-contract-
   fixture-response-schema.test.ts` validates all 32 committed fixtures that
   carry a `response` two ways against `schemas/<tool>.response.json` -- (1)
   RAW, exactly as recorded, and (2) decoded via `decodeEnvelope` (this file's
