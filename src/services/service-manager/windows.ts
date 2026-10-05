@@ -184,8 +184,9 @@ export function buildWrapperBat(
  * so every registered service has its own launcher.
  */
 export function launcherPathFor(wrapperPath: string): string {
-  const base = path.win32.basename(wrapperPath).replace(/\.bat$/i, '');
-  return path.win32.join(path.win32.dirname(wrapperPath), `${base}.js`);
+  // Swap only the extension: path.win32.join would rewrite every '/' of a host
+  // (POSIX) path to '\\', yielding a single backslash-named file in the cwd.
+  return `${wrapperPath.replace(/\.bat$/i, '')}.js`;
 }
 
 /**
