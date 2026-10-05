@@ -3,7 +3,13 @@ import type { OsCommands, ProviderAdapter, PromptOptions } from './os-commands.j
 import { escapeDoubleQuoted, escapeGrepPattern, sanitizeSessionId } from './os-commands.js';
 import { escapeShellArg } from '../utils/shell-escape.js';
 
-const CLI_PATH = 'export PATH="$HOME/.local/bin:$PATH" && unset ANTIGRAVITY_SOURCE_METADATA CLAUDE_SOURCE_METADATA COPILOT_SOURCE_METADATA CODEX_SOURCE_METADATA && ';
+// The member's own fleet bin dir (<home>/.apra-fleet/bin: the member-install
+// apra-fleet, dolt, and bd when the installer could not place it on the system
+// PATH) is APPENDED, never prepended, so a tool the user already has on PATH
+// stays authoritative. $HOME is expanded by the member's own POSIX shell: these
+// builders have no probed home to resolve in JS, same as the .local/bin entry.
+export const FLEET_BIN_PATH_POSIX = '$HOME/.apra-fleet/bin';
+const CLI_PATH = `export PATH="$HOME/.local/bin:$PATH:${FLEET_BIN_PATH_POSIX}" && unset ANTIGRAVITY_SOURCE_METADATA CLAUDE_SOURCE_METADATA COPILOT_SOURCE_METADATA CODEX_SOURCE_METADATA && `;
 
 /**
  * Wrap a bash command string with PID capture.
@@ -214,8 +220,20 @@ export class LinuxCommands implements OsCommands {
     return `mkdir -p "$(dirname "${shellPath(p)}")" && printf '%s' "${escaped}" > "${shellPath(p)}" && chmod 600 "${shellPath(p)}"`;
   }
 
+  credentialFileInstall(stagedPath: string, destPath: string): string {
+    const p = shellPath(expandHome(destPath));
+    const s = escapeShellArg(stagedPath);
+    return `mkdir -p "$(dirname "${p}")" && mv -f ${s} "${p}" && chmod 600 "${p}"`;
+  }
+
   credentialFileRemove(destPath: string): string {
     return `rm -f "${shellPath(expandHome(destPath))}"`;
+  }
+
+  credentialFileMoveAside(destPath: string, suffix: string): string {
+    if (!/^[A-Za-z0-9._-]+$/.test(suffix)) throw new Error('Invalid backup suffix: ' + suffix);
+    const p = shellPath(expandHome(destPath));
+    return `if [ -f "${p}" ]; then mv -f "${p}" "${p}${suffix}" && echo moved; fi`;
   }
 
   apiKeyCheck(envVarName?: string): string {
@@ -224,14 +242,23 @@ export class LinuxCommands implements OsCommands {
     return `bash -l -c 'echo "\${${varName}:0:10}"'`;
   }
 
-  setEnv(name: string, value: string): string[] {
+  /** Shell profiles that receive a persisted env var (unsetEnv cleans the same set). */
+  protected envProfileFiles(): string[] {
+    return ['~/.bashrc', '~/.profile'];
+  }
+
+  // The profile line keeps the historical `export NAME="..."` shape so
+  // unsetEnv's sed (and members provisioned by earlier releases) match it.
+  persistEnvFileContent(name: string, value: string): string {
     if (!/^[A-Z_][A-Z0-9_]*$/i.test(name)) throw new Error('Invalid env var name: ' + name);
-    const escaped = escapeDoubleQuoted(value);
-    return [
-      `echo 'export ${name}="${escaped}"' >> ~/.bashrc`,
-      `echo 'export ${name}="${escaped}"' >> ~/.profile`,
-      `export ${name}="${escaped}"`,
-    ];
+    return `export ${name}="${escapeDoubleQuoted(value)}"\n`;
+  }
+
+  persistEnvFromFile(name: string, filePath: string): string {
+    if (!/^[A-Z_][A-Z0-9_]*$/i.test(name)) throw new Error('Invalid env var name: ' + name);
+    const q = escapeShellArg(filePath);
+    const appends = this.envProfileFiles().map(f => `cat ${q} >> ${f}`).join(' && ');
+    return `{ ${appends}; }; _fleet_rc=$?; rm -f ${q}; exit $_fleet_rc`;
   }
 
   unsetEnv(name: string): string[] {
@@ -241,10 +268,6 @@ export class LinuxCommands implements OsCommands {
       `sed -i '/export ${name}=/d' ~/.profile 2>/dev/null || true`,
       `unset ${name}`,
     ];
-  }
-
-  envPrefix(name: string, value: string): string {
-    return `${name}="${escapeDoubleQuoted(value)}"`;
   }
 
   // --- Git credential helper ---
@@ -335,7 +358,7 @@ export class LinuxCommands implements OsCommands {
   // --- Shell ---
 
   wrapInWorkFolder(folder: string, command: string): string {
-    return `cd "${escapeDoubleQuoted(folder)}" && ${command}`;
+    return `cd "${escapeDoubleQuoted(folder)}" && export PATH="$PATH:${FLEET_BIN_PATH_POSIX}" && ${command}`;
   }
 
   wrapPidCapture(command: string): string {

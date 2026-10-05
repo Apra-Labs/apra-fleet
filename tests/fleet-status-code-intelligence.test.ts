@@ -92,7 +92,7 @@ describe('codeIntelligenceHealth()', () => {
 describe('codeIntelligenceCompactLine()', () => {
   it('renders the no-index line verbatim when absent', () => {
     const line = codeIntelligenceCompactLine({ present: false });
-    expect(line).toBe("code-intel: no index (run 'npx gitnexus analyze' or /pm index)");
+    expect(line).toBe("code-intel: no index (run 'npx gitnexus analyze --index-only' or /pm index)");
   });
 
   it('renders nodes/edges/files, indexedAt, and matching HEAD', () => {
@@ -163,7 +163,7 @@ describe('codeIntelligenceCompactLine()', () => {
       present: false,
       topSymbols: [{ target: 'x', count: 1 }],
     });
-    expect(line).toBe("code-intel: no index (run 'npx gitnexus analyze' or /pm index) | top symbols (30d): x (1)");
+    expect(line).toBe("code-intel: no index (run 'npx gitnexus analyze --index-only' or /pm index) | top symbols (30d): x (1)");
   });
 });
 

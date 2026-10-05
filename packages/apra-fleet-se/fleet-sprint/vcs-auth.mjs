@@ -451,7 +451,7 @@ async function provisionVcsAuthForMember({ fleetApi, command, member, log = () =
  * @param {{ fleetApi: object, command: Function, member: string, log?: Function, logPrefix: string }} opts
  * @returns {Promise<{ expiresAt: Date|null, repo: string|null }>}
  */
-async function provisionPrCapableAuthForMember({ fleetApi, command, member, log = () => {}, logPrefix, remoteUrlOverride }) {
+export async function provisionPrCapableAuthForMember({ fleetApi, command, member, log = () => {}, logPrefix, remoteUrlOverride }) {
     return provisionVcsAuthForMember({ fleetApi, command, member, log, logPrefix, gitAccess: 'push+pr', remoteUrlOverride });
 }
 
@@ -1424,6 +1424,15 @@ export function createLlmAuthSelfHealCallback(opts = {}) {
         if (!outcome.ok) {
             log(`[Dispatch] self-heal: provision_llm_auth failed for member '${member}': ${text || '(no detail)'}. Not retrying.`);
             return false;
+        }
+
+        if (outcome.reason === 'deployed_unverified') {
+            // Credentials were deployed but the server's post-deploy auth test
+            // did not confirm them: surface its error line and the explicit
+            // switch, then still retry once (the test can be stricter than a real dispatch).
+            const authLine = (text.split('\n').find((l) => /Auth test/i.test(l)) || '').trim();
+            log(`[Dispatch] self-heal: provision_llm_auth deployed credentials for member '${member}' (${label}) but could not verify them${authLine ? `: ${authLine}` : ''}. If the member's stored credential is stale, re-run provision_llm_auth with a fresh api_key, or with force_oauth_copy: true to use your local login. Retrying the failed dispatch once.`);
+            return true;
         }
 
         log(`[Dispatch] self-heal: provision_llm_auth succeeded for member '${member}' (${label}); the failed dispatch will be retried once.`);

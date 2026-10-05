@@ -2,6 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/schemas/kb_setup.request.json#",
   "x-invariant": [
+    "INV-05",
     "INV-06"
   ],
   "$ref": "#/$defs/v1-kb_setup-request",
@@ -9,10 +10,6 @@
     "v1-kb_setup-request": {
       "type": "object",
       "properties": {
-        "repo_path": {
-          "type": "string",
-          "description": "Path to git repository for post-commit hook installation (default: current directory)"
-        },
         "provider": {
           "type": "string",
           "enum": [
@@ -36,6 +33,15 @@
             "error"
           ],
           "description": "Only meaningful for provider=http. What to do when the configured remote is unreachable: \"local\" (default) silently degrades to the local sqlite KB for reads and queues writes; \"error\" hard-fails every KB read/write instead. Persisted alongside provider/remote/token; merges into the existing config file like every other kb_setup input, so a hand-set value already on disk is kept when this is omitted."
+        },
+        "repo_path": {
+          "description": "REMOVED -- do not pass. A call carrying it fails with E-SCOPE-KEY-REMOVED; the KB is always the calling session's own."
+        },
+        "repo": {
+          "description": "REMOVED -- do not pass. A call carrying it fails with E-SCOPE-KEY-REMOVED; the KB is always the calling session's own."
+        },
+        "repo_remote_url": {
+          "description": "REMOVED -- do not pass. A call carrying it fails with E-SCOPE-KEY-REMOVED; the KB is always the calling session's own."
         }
       },
       "additionalProperties": false

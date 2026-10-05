@@ -8,7 +8,7 @@ import { detectOS } from '../utils/platform.js';
 import { getOsCommands } from '../os/index.js';
 import { shouldProbeShell, probeWindowsShell } from '../services/shell-probe.js';
 import { getProvider } from '../providers/index.js';
-import { addAgent, getAllAgents, hasDuplicateFolder } from '../services/registry.js';
+import { addAgent, getAgent, getAllAgents, hasDuplicateFolder, updateAgent } from '../services/registry.js';
 import { credentialResolve, credentialSet } from '../services/credential-store.js';
 import { getStrategy } from '../services/strategy.js';
 import { assignIcon } from '../services/icons.js';
@@ -28,6 +28,7 @@ import { seedWorkspaceTrust } from '../utils/workspace-trust.js';
 import { composePermissions } from './compose-permissions.js';
 import { isFullyQualifiedPath, workFolderNotAbsoluteError } from '../utils/work-folder-validation.js';
 import { getMemberHomeDir } from '../services/member-home.js';
+import { beadsStatusNote, refreshMemberFleetMcp, getMemberFleetMcpDeps } from '../services/member-fleet-install.js';
 import { ensureAgyProject } from '../services/agy-project.js';
 import { detectVcsProviderFromRemoteUrl } from '../utils/vcs-provider-detect.js';
 import { validateEnvMap } from '../utils/env-map-validation.js';
@@ -77,6 +78,7 @@ export const registerMemberSchema = z.object({
   }).optional().describe('Per-member model tier map. Keys: cheap, standard, premium. Values: model IDs (e.g. "ollama/qwen3-coder:30b"). A single model fills all tiers. At least one model recommended for opencode members.'),
   code_intel_provider: z.enum(['codebase-memory', 'gitnexus', 'none']).optional().describe('Code-intelligence provider for this member (default: fleet-wide config).'),
   unreservable: z.boolean().optional().describe('Mark this member as never exclusively reservable, so it can be shared by more than one sprint at once (e.g. a member filling fleet-sprint\'s shared "backlog" role). reserve/release/force_release become no-op successes and overlap guards skip it. Default: false.'),
+  fleet_install: z.enum(['auto', 'skip']).optional().default('auto').describe('Whether registration installs/updates apra-fleet on the member so it has its own fleet server (default "auto": probe the member, install or upgrade when missing/older, self-register it, verify a MEMBER session; local members only get the MEMBER-session probe). "skip" performs no install and reports the probe result only. Registration succeeds either way; the result reports the recoverable fleetMcp status (re-probe with member_detail refresh:true).'),
   shell: z.enum(['gitbash', 'pwsh7', 'powershell5']).optional().describe('Override the probed Windows shell for this member (gitbash, pwsh7, or powershell5). Windows members only -- ignored for non-windows members.'),
   owner: z.object({
     package: z.string().min(1),
@@ -107,10 +109,9 @@ export type RegisterMemberInput = z.infer<typeof registerMemberSchema>;
 export interface InteractiveBootstrapDeps {
   checkRunningInstance: typeof checkRunningInstance;
   spawn: typeof spawn;
-  getProvider: typeof getProvider;
 }
 
-const realInteractiveBootstrapDeps: InteractiveBootstrapDeps = { checkRunningInstance, spawn, getProvider };
+const realInteractiveBootstrapDeps: InteractiveBootstrapDeps = { checkRunningInstance, spawn };
 let interactiveBootstrapDeps: InteractiveBootstrapDeps = realInteractiveBootstrapDeps;
 
 /** Test-only: inject fakes for the interactive-session bootstrap's HTTP check and process spawn. */
@@ -132,7 +133,33 @@ function interactiveBootstrapEnabled(): boolean {
   return false;
 }
 
-export async function registerMember(input: RegisterMemberInput): Promise<string> {
+export interface RegisterMemberOptions {
+  /**
+   * Pre-assigned member id (CLI `--id`). Registering the same id again updates
+   * that registry entry in place instead of minting a new one; a folder owned
+   * by a different id is refused with E-FOLDER-TAKEN. Deliberately not part of
+   * registerMemberSchema (the MCP tool input), so the tool surface is unchanged.
+   */
+  id?: string;
+  /** Set by the shell CLI: it IS the member-side self-registration (or a manual
+   *  shell registration), so it never installs/probes fleetMcp (that would recurse). */
+  skipFleetMcp?: boolean;
+  /**
+   * Skip the automatic compose_permissions step. Set by the shell CLI for a
+   * member SELF-registration (`register-member --id <uuid>`, run by the
+   * orchestrator on the member's own install via buildSelfRegisterCommand in
+   * src/services/member-fleet-install.ts). The orchestrating server already
+   * composed this member's permissions and wrote its per-folder apra-fleet MCP
+   * entry (?member=<uuid>) before it runs the self-registration, and a member
+   * install (`install --member`) carries no fleet skill profiles, so composing
+   * again member-side would fail with "No complete profiles directory" and, even
+   * with profiles, would overwrite the orchestrator's role/tag composition with
+   * a tagless default.
+   */
+  skipCompose?: boolean;
+}
+
+export async function registerMember(input: RegisterMemberInput, opts: RegisterMemberOptions = {}): Promise<string> {
   const warnings: string[] = [];
   const isLocal = input.member_type === 'local';
   const isCloud = !!input.cloud_provider;
@@ -237,10 +264,11 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
   }
 
   // --- Duplicate folder check ---
-  if (hasDuplicateFolder(input.member_type, input.work_folder, input.host, input.port, undefined, input.llm_provider ?? 'claude')) {
+  if (hasDuplicateFolder(input.member_type, input.work_folder, input.host, input.port, opts.id, input.llm_provider ?? 'claude')) {
     const scope = isLocal ? 'this machine' : `host ${input.host}:${input.port}`;
+    const code = opts.id ? 'E-FOLDER-TAKEN: ' : '';
     const kind = (input.llm_provider ?? 'claude') === 'none' ? 'LLM-less' : 'LLM';
-    return `❌ Another ${kind} member already uses folder "${input.work_folder}" on ${scope} (a folder may hold one LLM member and one LLM-less member). Member was NOT registered.`;
+    return `❌ ${code}Another ${kind} member already uses folder "${input.work_folder}" on ${scope} (a folder may hold one LLM member and one LLM-less member). Member was NOT registered.`;
   }
 
   // --- Cloud: get instance state and resolve host ---
@@ -294,7 +322,7 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
 
   // --- Build tempAgent ---
   const tempAgent: Agent = {
-    id: uuid(),
+    id: opts.id ?? uuid(),
     friendlyName: input.friendly_name,
     agentType: input.member_type,
     host: isLocal ? undefined : (resolvedHost ?? ''),
@@ -530,10 +558,15 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
   }
 
   // Auto-assign icon
-  tempAgent.icon = assignIcon(getAllAgents().map(a => a.icon).filter(Boolean) as string[]);
+  const existing = opts.id ? getAgent(opts.id) : undefined;
+  tempAgent.icon = existing?.icon ?? assignIcon(getAllAgents().map(a => a.icon).filter(Boolean) as string[]);
 
-  // Persist
-  addAgent(tempAgent);
+  // Persist. A repeated pre-assigned id updates its one entry in place.
+  if (existing) {
+    updateAgent(tempAgent.id, { ...tempAgent, createdAt: existing.createdAt });
+  } else {
+    addAgent(tempAgent);
+  }
   logLine('register_member', `id=${tempAgent.id} name=${tempAgent.friendlyName} type=${tempAgent.agentType}`, tempAgent);
   writeStatusline();
 
@@ -566,17 +599,21 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
   // primary-mode resolution). Refusal is the only failure mode: if
   // compose_permissions itself fails, the registration must NOT be reported as
   // fully successful.
-  let composeResult: string;
-  try {
-    composeResult = await composePermissions({
-      member_id: tempAgent.id,
-      role: 'doer',
-      tags: tempAgent.tags,
-    });
-  } catch (e: any) {
-    composeResult = `compose_permissions threw: ${e?.message ?? String(e)}`;
+  // Skipped for a member self-registration (opts.skipCompose): the orchestrator
+  // composed this member already -- see RegisterMemberOptions.skipCompose.
+  let composeResult: string | undefined;
+  if (!opts.skipCompose) {
+    try {
+      composeResult = await composePermissions({
+        member_id: tempAgent.id,
+        role: 'doer',
+        tags: tempAgent.tags,
+      });
+    } catch (e: any) {
+      composeResult = `compose_permissions threw: ${e?.message ?? String(e)}`;
+    }
   }
-  if (!composeResult.startsWith('✅')) {
+  if (composeResult !== undefined && !composeResult.startsWith('✅')) {
     // Strip any leading non-ASCII status glyph from the underlying tool's
     // message so this hard-failure report stays ASCII (repo convention).
     const asciiDetail = composeResult.replace(/^[^\x00-\x7F]+\s*/, '');
@@ -599,43 +636,12 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
     if (!instance.running) {
       return `❌ Fleet server not running. Start it first with apra-fleet start, then re-run register_member.`;
     }
-    const mcpUrl = instance.url; // e.g. http://127.0.0.1:<actual-port>/mcp
 
-    // Mint through the pluggable issuer: workspace_id is the hard security
-    // boundary (docs/hub-spoke-master-plan.md section 3); the local dev-mode
-    // issuer derives it from this install's identity (one machine == one
-    // workspace). A hub-era issuer swaps in behind the same interface.
+    // The member reaches the fleet server through the per-folder apra-fleet
+    // MCP entry compose_permissions already wrote above (?member=<uuid>); the
+    // issuer here only scopes the session registry to this workspace.
     const { getTokenIssuer } = await import('../services/token-issuer.js');
     const issuer = getTokenIssuer();
-    const token = issuer.issue({
-      member_id: tempAgent.id,
-      role: 'doer',
-      work_folder: input.work_folder,
-    });
-
-    // Registration uses the provider's OWN native mechanism (apra-fleet-fnz.1,
-    // docs/member-onboarding-journey.md section 3/4 Journey A) rather than
-    // hand-writing a config file -- this is also what makes the mechanism
-    // provider-agnostic (AGY/OpenCode implement the same interface method with
-    // their own native paths) and avoids fighting compose_permissions' own
-    // writes to the same provider config (apra-fleet-2xs.1).
-    const memberProviderAdapter = interactiveBootstrapDeps.getProvider(tempAgent.llmProvider);
-    if (memberProviderAdapter.registerMcpEndpoint) {
-      try {
-        await memberProviderAdapter.registerMcpEndpoint({
-          // Identity is keyed on the member UUID everywhere -- the URL fallback
-          // param carries the UUID, matching the JWT's member_id claim.
-          url: mcpUrl + '?member=' + tempAgent.id,
-          token,
-          workFolder: input.work_folder,
-          scope: 'project',
-        });
-      } catch (e: any) {
-        warnings.push(`Could not register MCP endpoint: ${e.message}`);
-      }
-    } else {
-      warnings.push(`Provider "${memberProviderAdapter.name}" has no registerMcpEndpoint() -- interactive session bootstrap skipped.`);
-    }
 
     // CRITICAL-2: Kill existing claude process for this member before re-spawning
     const { sessionRegistry } = await import('../services/session-registry.js');
@@ -666,6 +672,25 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
       logLine('register_member', `Launched claude for member ${name}, pid ${proc.pid}`);
     } catch (e: any) {
       warnings.push(`Could not launch claude: ${e.message}`);
+    }
+  }
+
+  // --- fleetMcp: install/probe the member's own apra-fleet (apra-fleet-b4g.56) ---
+  // Never fails registration: every outcome is a recorded, recoverable status.
+  // Skipped when this call IS a member self-registration (CLI --id, run by the
+  // orchestrator on the member's own install): probing from there would recurse.
+  let fleetMcpLine: string | undefined;
+  if (!opts.id && !opts.skipFleetMcp) {
+    try {
+      const status = await refreshMemberFleetMcp(
+        tempAgent, getMemberFleetMcpDeps(), { install: (input.fleet_install ?? 'auto') !== 'skip' },
+      );
+      fleetMcpLine = status.state === 'available'
+        ? `available${status.version ? ` (apra-fleet ${status.version})` : ''}${status.installFailure && status.detail ? ` -- warning: ${status.detail}` : ''}`
+        : `unavailable (${status.reason ?? 'unknown'})${status.detail ? ` -- ${status.detail}` : ''}`;
+      fleetMcpLine += beadsStatusNote(status);
+    } catch (e: any) {
+      fleetMcpLine = `unavailable (probe-failed) -- ${e?.message ?? String(e)}`;
     }
   }
 
@@ -724,6 +749,9 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
     if (connResult.latencyMs !== undefined) {
       result += `  Latency: ${connResult.latencyMs}ms\n`;
     }
+  }
+  if (fleetMcpLine) {
+    result += `  fleetMcp: ${fleetMcpLine}\n`;
   }
   if (isCloud && cloudConfig) {
     result += `  Cloud:   ${cloudConfig.provider} / ${cloudConfig.instanceId} / ${cloudConfig.region}\n`;

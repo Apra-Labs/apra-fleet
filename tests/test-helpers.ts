@@ -45,11 +45,16 @@ export function makeConfigAwareExec(defaultStdout = 'Linux'): (cmd: string, ...r
     m = cmd.match(/\[System\.IO\.File\]::WriteAllText\("(.+?)", '([\s\S]*)', \(New-Object System\.Text\.UTF8Encoding\(\$false\)\)\)/);
     if (m) { files.set(m[1], m[2].replace(/''/g, "'")); return { stdout: '', stderr: '', code: 0 }; }
     // POSIX read (cat <path> 2>/dev/null ...) -- merge-read and read-back
-    m = cmd.match(/^cat (.+?) 2>\/dev\/null/);
+    m = cmd.match(/^cat (.+?) 2>\/dev\/null/) ?? cmd.match(/^if test -e (".+?"); then cat \1; fi$/);
     if (m) { return { stdout: files.get(m[1]) ?? '', stderr: '', code: 0 }; }
     // Windows read (Get-Content -Raw "<path>" ...)
-    m = cmd.match(/Get-Content -Raw "(.+?)"/);
+    m = cmd.match(/Get-Content -Raw (?:-LiteralPath )?"(.+?)"/);
     if (m) { return { stdout: files.get(m[1]) ?? '', stderr: '', code: 0 }; }
+    // Member home-directory probe (src/services/member-home.ts) -- compose
+    // writes the per-folder member MCP entry under the member's home.
+    if (cmd === 'printf \'%s\' "$HOME"') return { stdout: '/home/testuser', stderr: '', code: 0 };
+    // git exclude lookup: the simulated work folder is not a git repository.
+    if (cmd.startsWith('git -C ')) return { stdout: '', stderr: 'fatal: not a git repository', code: 128 };
     // OS detection, CLI checks, mkdir, ls, workspace-trust, everything else
     return { stdout: defaultStdout, stderr: '', code: 0 };
   };

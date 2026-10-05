@@ -51,6 +51,10 @@ your final `notes`, naming the bead id and the defect. This is a legitimate skip
 exception (see Step 3 and Rules); it lets the reviewer route the bead to re-planning in
 the same round.
 
+**CI is not yours**: never trigger, wait for or poll a CI run. A criterion that can only
+be met by a CI run is a criteria defect: do the locally checkable work and report the CI
+part under "criteria defects" (see above).
+
 **Live-evidence beads are not yours to close**: some beads' acceptance requires evidence
 from a LIVE run of the project's integration-test playbook or deployed environment. In a
 development dispatch, do NOT manufacture that evidence: never run the playbook's Setup,
@@ -61,43 +65,53 @@ the bead open and return `status: "BLOCKED"` with `notes` stating it needs
 integration-phase evidence. Closing one is legitimate ONLY when your dispatch prompt
 explicitly names an already-collected evidence artifact to verify against.
 
-## Step 0 -- Knowledge Bank (required -- do this BEFORE any other work)
+## Step 0 -- Knowledge Bank (do this BEFORE any other work)
 
-<!-- if-tool: ToolSearch -->
-1. Run ToolSearch with query
-   `"select:mcp__apra-fleet__kb_session_prime,mcp__apra-fleet__kb_query,mcp__apra-fleet__kb_capture,mcp__apra-fleet__kb_feedback,mcp__apra-fleet__code_context,mcp__apra-fleet__code_graph,mcp__apra-fleet__code_impact,mcp__apra-fleet__code_query"`
-<!-- else-tool: ToolSearch -->
-1. No tool-discovery step is needed on this provider: every step below names the KB
-   tool it wants directly. Confirm your environment exposes those tools, then call
-   them as written.
-<!-- end-tool: ToolSearch -->
-2. Call `mcp__apra-fleet__kb_session_prime` with `repo_path` set to the repo you are
-   working in, and `hint_symbols`/`hint_modules` relevant to the files and symbols you are
-   about to touch. Trust CONFIRMED entries fully. Use INFERRED entries as hints, not facts.
-3. Retrieve first, then read source: before reading an unfamiliar file or function, run
-   `mcp__apra-fleet__kb_query({ query: "<name>" })`. Work from a CONFIRMED entry directly;
-   verify an INFERRED entry against source when correctness matters. Fall back to a full
-   source read only if the KB is cold, stale, or says "see source for details."
-4. When you discover something non-obvious and durable (hidden constraint, gotcha,
-   invariant), dedupe with `mcp__apra-fleet__kb_query`; if new, add it to your structured
-   output's `kb_captures` array (shape in `agents/schemas/doer-output.json`) -- the engine
-   makes the actual `kb_capture` call. Call `mcp__apra-fleet__kb_capture` directly only if
-   your dispatch context has no `kb_captures` output field.
-5. If a KB entry you retrieved proves wrong in practice, call `mcp__apra-fleet__kb_feedback`
-   with the entry id and what was wrong.
-6. You do not need to call `mcp__apra-fleet__kb_harvest` yourself -- the fleet auto-dispatches
-   it as a backstop after your session ends; it is not your job to invoke it.
-7. Before editing a symbol, use `code_context`/`code_graph` for its callers/callees and
-   `code_impact` for the blast radius of the file you are changing -- prefer them over
-   grep for symbol lookups, call-chain tracing, and impact analysis. If the repo is not
-   indexed, fall back to grep; do not try to build an index yourself.
+If the `kb_*` and `code_*` tools are present in your session, use them directly -- no
+tool-discovery step is needed, and they always act on your own work folder, so never
+pass a repository path or other scope argument to them. Otherwise, read the injected
+"KNOWLEDGE BANK -- what this repo already knows" block in your dispatch prompt, which
+the orchestrator fetched for the beads you were assigned.
+If a KB or code tool call fails, use that block if your prompt has one; otherwise
+continue without KB. A missing or failing KB or code tool is never a reason to stop:
+never report this dispatch as blocked because of it. From whichever source you have,
+trust CONFIRMED entries fully and use INFERRED entries as hints, not facts.
 
-<!-- if-tool: ToolSearch -->
-If ToolSearch returns no KB tools (MCP server not running), skip these steps and proceed.
-<!-- else-tool: ToolSearch -->
-If those KB tools are not available in your environment (MCP server not running), skip
-these steps and proceed.
-<!-- end-tool: ToolSearch -->
+If the `kb_*`/`code_*` tools are listed only as deferred tools, load them by name with
+your tool-loading tool first, before concluding they are unavailable.
+
+The `kb_query` and `code_impact` calls below are EXPECTED, not optional, whenever the
+tools are present. If a tool is genuinely not present (or the KB or code index is not set
+up for this repo), record that in `toolUse` (Output schema) and continue -- never skip
+silently.
+
+1. When the tools are present, call `kb_session_prime` with `hint_symbols`/`hint_modules`
+   relevant to the files and symbols you are about to touch.
+2. Retrieve first, then read source: for EACH assigned bead, call `kb_query` at least
+   once, with a query drawn from the bead's title and criteria, BEFORE reading its
+   source; also query an unfamiliar file or function before reading it. Work from a
+   CONFIRMED entry directly; verify an INFERRED entry against source when correctness
+   matters. Fall back to a full source read when the KB is cold, stale, or says "see
+   source for details." Rely on the injected block alone only when `kb_query` is absent.
+3. When you discover something non-obvious and durable (hidden constraint, gotcha,
+   invariant), dedupe it against the KB (`kb_query` when present, otherwise the block); if
+   new, add it to your structured output's `kb_captures` array (shape in
+   `agents/schemas/doer-output.json`) -- the engine records it. Do not write to the KB
+   yourself. If a KB entry you relied on proves wrong in practice, say so in your final
+   `notes`, naming the entry and what was wrong.
+4. BEFORE editing a symbol or file, call `code_impact` on it (or
+   `code_context`/`code_graph` for its callers/callees) once per changed file or symbol,
+   not per edit, and use the result to scope the change and its tests; test, doc and
+   fixture-only files are exempt. Prefer these over grep for symbol lookups, call-chain
+   tracing, and impact analysis. If they are absent, fail, or report the repo is not
+   indexed, fall back to grep and record it in `toolUse`; do not try to build an index
+   yourself.
+5. Report in `toolUse`: `kb` and `code` are each `used`, `unavailable` or `not_needed`;
+   `note` says why for anything not `used`. `used` means the expected call was made
+   (`kb_query` for kb -- `kb_session_prime` alone is not `used`; `code_impact`/
+   `code_context`/`code_graph` for code). `not_needed` only when no assigned bead or
+   changed file called for a lookup (e.g. docs-only, or every bead skipped). If your
+   output schema has no `toolUse` field, put the same statement in `notes`.
 
 ## Step 1 -- Work only your assigned bead ids
 
@@ -226,9 +240,12 @@ When every assigned bead id has been closed (or explicitly skipped per Step 1's
 has-open-children case, Step 1's same-lane stop rule, Step 2.2's ambiguous-wrap-up case,
 the scope/criteria-defect escape hatch, or the missing-input behavior above), you MUST
 stop and return:
+
 ```json
-{ "status": "VERIFY", "closedIds": ["<id>", "..."], "notes": "string" }
+{ "status": "VERIFY", "closedIds": ["<id>", "..."], "notes": "string",
+  "toolUse": { "kb": "used", "code": "used" } }
 ```
+`toolUse` follows Step 0 item 5.
 `closedIds` lists every bead id you closed this run via `bd close` in Step 2, so the
 orchestrator can verify your closes against beads instead of trusting the summary alone.
 Do NOT continue past VERIFY.
@@ -239,7 +256,7 @@ Do NOT continue past VERIFY.
 - NEVER push to the base branch -- always work on the sprint feature branch
 - If a task needs a secret or token you do not have, close the task with
   `bd close <id> --reason="blocked: missing secret <name>"`, then STOP and return
-  `{ "status": "BLOCKED", "closedIds": [...closed so far...], "notes": "blocked: missing secret <name>" }`
+  `{ "status": "BLOCKED", "closedIds": [...closed so far...], "notes": "blocked: missing secret <name>", "toolUse": { "kb": "used", "code": "not_needed", "note": "no source edit before the block" } }`
 
 ## Output schema
 
@@ -250,7 +267,8 @@ The canonical machine-readable contract for this output lives in the sibling fil
 {
   "status": "VERIFY",
   "closedIds": ["BD-10", "BD-11"],
-  "notes": "Implemented password reset endpoint and its integration test; both tasks closed."
+  "notes": "Implemented password reset endpoint and its integration test; both tasks closed.",
+  "toolUse": { "kb": "used", "code": "unavailable", "note": "code_impact reported the repo is not indexed; used grep" }
 }
 ```
 

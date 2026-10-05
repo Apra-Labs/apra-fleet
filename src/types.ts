@@ -97,6 +97,46 @@ export interface Agent {
   /** Expiry of this member's LLM auth (OAuth session / API key), when known.
    *  ISO 8601. Distinct from vcsTokenExpiresAt (VCS credentials) above. */
   llmAuthExpiresAt?: string;
+  /** Last OBSERVED state of this member's own apra-fleet MCP server (install,
+   *  self-registration, per-folder MCP entry, MEMBER session). Never sticky:
+   *  every probe overwrites it, so a manual fix flips unavailable -> available
+   *  on the next probe with no restart (src/services/member-fleet-install.ts). */
+  fleetMcp?: FleetMcpStatus;
+}
+
+/** Observation of a member's apra-fleet MCP server (see Agent.fleetMcp). */
+export interface FleetMcpStatus {
+  state: 'available' | 'unavailable';
+  /** Machine-readable cause when unavailable (e.g. install-too-old,
+   *  E-FOLDER-TAKEN, mcp-entry-missing, no-per-project-mcp). */
+  reason?: string;
+  /** apra-fleet version the member's own install reports, when known. */
+  version?: string;
+  /** ISO 8601 time of the probe that produced this observation. */
+  checkedAt: string;
+  /** Human-readable diagnostic for the reason. Never required. */
+  detail?: string;
+  /** True when the member's KB/code tools could not be verified (e.g. agy),
+   *  so callers must treat it as unverified (it gets the injected KB block). */
+  unverified?: boolean;
+  /** ISO 8601 time this fleet last SUCCESSFULLY installed apra-fleet on the
+   *  member (ensureOnce returned installed:true). Written only by a successful
+   *  fleet install and carried across later probes; never set by a refusal or
+   *  an observation-only probe. An observation only: it is NOT an ownership
+   *  signal (a human full install over a fleet install clears the marker but
+   *  leaves this set); the member-install marker alone is (see
+   *  memberHasInstallMarker), and the fleet never sends --force-stop-full-install. */
+  fleetInstalledAt?: string;
+  /** A requested apra-fleet upgrade that failed before the member was touched
+   *  (no arch/source, download, checksum or transfer failure) while the older
+   *  install stayed in use. Present on available and unavailable statuses so a
+   *  later step can never hide it; `detail` names it too. */
+  installFailure?: { reason: string; detail?: string };
+  /** Present only when the beads CLI (bd) is NOT usable on a remote member
+   *  (neither on its PATH nor in <home>/.apra-fleet/bin): sprint roles there
+   *  cannot run bd. Independent of `state` (the KB/code tools may still work);
+   *  absent when bd works or could not be probed. */
+  beads?: { state: 'missing' | 'broken'; detail: string; fix: string };
 }
 
 export interface GitHubAppConfig {

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import os from 'node:os';
 import { makeTestAgent, makeTestLocalAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
 import { addAgent, getAllAgents } from '../src/services/registry.js';
 import { updateMember, updateMemberSchema } from '../src/tools/update-member.js';
@@ -524,7 +525,7 @@ describe('updateMember -- invokes ensureWorkspaceTrusted (apra-fleet-eft.40.2)',
     expect(result).toContain('updated');
     expect(spy).toHaveBeenCalledTimes(1);
     // apra-fleet-7dir.2.8 widened the hook with a 4th `shell` argument.
-    expect(spy).toHaveBeenCalledWith(member.workFolder, expect.any(Function), member.os, member.shell, TRUST_TRANSPORT, null);
+    expect(spy).toHaveBeenCalledWith(member.workFolder, expect.any(Function), member.os, member.shell, TRUST_TRANSPORT, os.homedir());
     expect(mockTestConnection).not.toHaveBeenCalled();
     spy.mockRestore();
   });

@@ -10,12 +10,28 @@ const __dirname = dirname(__filename);
 import { getStrategy } from '../services/strategy.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { getProvider } from '../providers/index.js';
-import { seedWorkspaceTrust } from '../utils/workspace-trust.js';
+import { seedWorkspaceTrust, workspaceTrustTransportFor } from '../utils/workspace-trust.js';
+import {
+  deleteMemberFile,
+  ensureGitExcluded,
+  memberMcpUrl,
+  pruneLegacyMcpEntries,
+  readMemberFile,
+  quotePosixPath,
+  quotePwshPath,
+  MemberConfigError,
+  MEMBER_MCP_SERVER_NAME,
+  readMemberJson,
+  removeGitExcluded,
+  writeMemberJson,
+} from '../services/member-config-io.js';
+import type { ProviderAdapter } from '../providers/provider.js';
 import type { Agent } from '../types.js';
 import type { MemberShell } from '../os/os-commands.js';
 import { getAgentShell, isPosixShell } from '../utils/agent-helpers.js';
 import { ensureAgyProject } from '../services/agy-project.js';
 import { getMemberHomeDir } from '../services/member-home.js';
+import { recordFleetMcpStatus, getAgent, updateAgent } from '../services/registry.js';
 import { getProviderInstallConfig, INSTALLABLE_LLM_PROVIDERS, readInstallConfig } from '../cli/config.js';
 
 export const composePermissionsSchema = z.object({
@@ -473,6 +489,49 @@ export function deepMergeUnion(target: Record<string, unknown>, source: Record<s
   return result;
 }
 
+/** A deny rule fleet derives for the member's own apra-fleet server (claude's
+ *  mcp__apra-fleet__<tool>, agy's mcp(apra-fleet/<tool>)). Only these may be
+ *  dropped from an existing deny list, and only when compose no longer derives
+ *  them (the tool joined the member allowlist) -- they are fleet's to retire. */
+function isFleetDerivedDenyRule(rule: unknown): boolean {
+  return typeof rule === 'string'
+    && (rule.startsWith(`mcp__${MEMBER_MCP_SERVER_NAME}__`) || rule.startsWith(`mcp(${MEMBER_MCP_SERVER_NAME}/`));
+}
+
+/** Union of an existing deny list and the one compose derives: every existing
+ *  rule is kept in its order (a user-authored rule is never dropped), new
+ *  rules are appended, and the only rules removed are fleet-derived ones
+ *  compose no longer derives (isFleetDerivedDenyRule). */
+export function mergeDenyRules(existing: unknown[], composed: unknown[]): unknown[] {
+  const composedKeys = new Set(composed.map(r => stableStringify(r)));
+  const kept = existing.filter(r => !isFleetDerivedDenyRule(r) || composedKeys.has(stableStringify(r)));
+  const merged = [...kept];
+  for (const r of composed) {
+    if (!merged.some(m => stableStringify(m) === stableStringify(r))) merged.push(r);
+  }
+  return merged;
+}
+
+/** deepMerge (arrays replace) for every key except a `deny` array present on
+ *  both sides, which is merged with mergeDenyRules -- so a proactive compose,
+ *  which resets `allow` to the composed profile, never discards a deny rule
+ *  the user added to the same file (claude permissions.deny, agy
+ *  permissionGrants.deny, copilot tools.deny). */
+export function deepMergeKeepDeny(target: Record<string, unknown>, source: Record<string, unknown>): Record<string, unknown> {
+  const result: Record<string, unknown> = { ...target };
+  for (const [key, value] of Object.entries(source)) {
+    const current = result[key];
+    if (isPlainObject(value) && isPlainObject(current)) {
+      result[key] = deepMergeKeepDeny(current, value);
+    } else if (key === 'deny' && Array.isArray(value) && Array.isArray(current)) {
+      result[key] = mergeDenyRules(current, value);
+    } else {
+      result[key] = value;
+    }
+  }
+  return result;
+}
+
 /** Raised by deliverConfigFile when a config write does not verifiably land on
  *  the member (nonzero mkdir/write exit, or a read-back that does not match the
  *  intended content). Carries the target path so the caller can surface exactly
@@ -588,9 +647,12 @@ async function deliverConfigFile(
   const dir = posix
     ? absPath.split('/').slice(0, -1).join('/')
     : winPath.split('\\').slice(0, -1).join('\\');
+  // Paths are quoted per shell so a $, backtick or quote in a real path name is
+  // passed through verbatim, never interpolated by the member's shell.
+  const qPath = posix ? quotePosixPath(absPath) : quotePwshPath(winPath);
   const mkdirCmd = posix
-    ? `mkdir -p "${dir}"`
-    : `New-Item -ItemType Directory -Force "${dir}"`;
+    ? `mkdir -p ${quotePosixPath(dir)}`
+    : `New-Item -ItemType Directory -Force ${quotePwshPath(dir)}`;
   const mkdirResult = await strategy.execCommand(mkdirCmd, LOCAL_FS_OP_TIMEOUT_MS);
   if (mkdirResult.code !== 0) {
     throw new ConfigDeliveryError(
@@ -600,8 +662,8 @@ async function deliverConfigFile(
   }
 
   const readCmd = posix
-    ? `cat "${absPath}" 2>/dev/null || true`
-    : `Get-Content -Raw "${winPath}" -ErrorAction SilentlyContinue`;
+    ? `cat ${qPath} 2>/dev/null || true`
+    : `Get-Content -Raw ${qPath} -ErrorAction SilentlyContinue`;
 
   let mergedContent: Record<string, unknown> | string = content;
   if (isPlainObject(content)) {
@@ -613,7 +675,12 @@ async function deliverConfigFile(
     } catch {
       // file missing, empty, or not JSON -- start from an empty object
     }
-    mergedContent = opts.unionArrays ? deepMergeUnion(existing, content) : deepMerge(existing, content);
+    // Drop the superseded fleet MCP entries (the old blanket
+    // mcpServers['apra-fleet'] {disabled:true} switch and the retired
+    // apra-fleet-member url+bearer entry) before merging -- deepMerge alone
+    // would preserve them forever.
+    pruneLegacyMcpEntries(existing);
+    mergedContent = opts.unionArrays ? deepMergeUnion(existing, content) : deepMergeKeepDeny(existing, content);
   }
 
   const contentStr = typeof mergedContent === 'string'
@@ -621,8 +688,8 @@ async function deliverConfigFile(
     : JSON.stringify(mergedContent, null, 2);
 
   const writeCmd = posix
-    ? `cat > "${absPath}" << 'FLEET_PERMS_EOF'\n${contentStr}\nFLEET_PERMS_EOF`
-    : `[System.IO.File]::WriteAllText("${winPath}", '${escapePowerShellArgInner(contentStr)}', (New-Object System.Text.UTF8Encoding($false)))`;
+    ? `cat > ${qPath} << 'FLEET_PERMS_EOF'\n${contentStr}\nFLEET_PERMS_EOF`
+    : `[System.IO.File]::WriteAllText(${qPath}, '${escapePowerShellArgInner(contentStr)}', (New-Object System.Text.UTF8Encoding($false)))`;
   const writeResult = await strategy.execCommand(writeCmd, LOCAL_FS_OP_TIMEOUT_MS);
   if (writeResult.code !== 0) {
     throw new ConfigDeliveryError(
@@ -667,6 +734,215 @@ async function deliverConfigFile(
       );
     }
   }
+}
+
+/** fleetMcp unavailable reasons that only describe the per-folder member MCP
+ *  entry compose writes -- a later successful compose has fixed exactly that,
+ *  so it clears them. Install/session reasons are left for a real re-probe. */
+const COMPOSE_OWNED_FLEET_MCP_REASONS = new Set([
+  'member-config-unreadable',
+  'member-config-unparseable',
+  'opencode-config-tracked',
+  'opencode-config-unparseable',
+  'mcp-entry-missing',
+]);
+
+/** Plain-words cause for a MemberConfigError reason (compose output). */
+function memberConfigWhy(reason: string): string {
+  if (reason.endsWith('-tracked')) return 'tracked by git';
+  if (reason.endsWith('-unparseable')) return 'not strict JSON';
+  if (reason.endsWith('-unreadable')) return 'unreadable';
+  return reason;
+}
+
+/** Outcome of syncMemberMcpConfig. `failure` is a hard failure message; `note`
+ *  is a line for the compose output (why a member config was not edited, or a
+ *  stale fleetMcp status that was cleared). */
+interface MemberMcpSyncOutcome {
+  failure?: string;
+  note?: string;
+}
+
+/**
+ * Writes the member's per-folder apra-fleet MCP entry (?member=<uuid>) through
+ * the provider's own mechanism, prunes legacy entries, and keeps every
+ * work-folder file compose wrote out of the clone's `git status` via
+ * .git/info/exclude (never a tracked file such as .gitignore or .mcp.json).
+ *  - a member config it cannot safely edit (tracked, unparseable, unreadable)
+ *    is RECOVERABLE: nothing is written to it, the member's fleetMcp status is
+ *    recorded unavailable with the reason, and `note` says why;
+ *  - on success, a previously recorded fleetMcp unavailable status that only
+ *    described this entry (COMPOSE_OWNED_FLEET_MCP_REASONS) is cleared.
+ */
+async function syncMemberMcpConfig(
+  agent: Agent,
+  provider: ProviderAdapter,
+  strategy: Awaited<ReturnType<typeof getStrategy>>,
+  permissionPaths: string[],
+  memberHomeDir: string | null,
+): Promise<MemberMcpSyncOutcome> {
+  const agentOs = (agent.os ?? 'linux') as 'linux' | 'macos' | 'windows';
+  const shell = getAgentShell(agent);
+  const exec = (cmd: string, t?: number) => strategy.execCommand(cmd, t);
+  const workFolderFiles = permissionPaths.filter(p => !isHomeAnchored(p));
+  try {
+    if (provider.syncMemberMcpEntry) {
+      // The member MCP wiring touches home-anchored files too (~/.claude.json,
+      // agy/opencode global MCP configs), so resolve the home here when the
+      // permission paths did not already need it.
+      const homeDir = memberHomeDir ?? await getMemberHomeDir(agent);
+      const result = await provider.syncMemberMcpEntry({
+        agent,
+        execCommand: exec,
+        memberHomeDir: homeDir,
+        agentOs,
+        shell,
+        transport: workspaceTrustTransportFor(agent, strategy),
+        url: memberMcpUrl(agent),
+      });
+      workFolderFiles.push(...result.workFolderFiles);
+    }
+    await ensureGitExcluded(exec, agent.workFolder, workFolderFiles, agentOs === 'windows', shell);
+  } catch (e: any) {
+    if (e instanceof MemberConfigError) {
+      // Recoverable: the sync wrote NOTHING to the file it could not safely
+      // edit. Record why on the member and let the rest of compose succeed.
+      // Files compose DID write (permission configs) still stay out of `git status`.
+      try { await ensureGitExcluded(exec, agent.workFolder, workFolderFiles, agentOs === 'windows', shell); } catch { /* best effort */ }
+      recordFleetMcpStatus(agent.id, {
+        state: 'unavailable',
+        reason: e.reason,
+        checkedAt: new Date().toISOString(),
+        detail: e.message,
+      });
+      return {
+        note: `Member MCP config NOT edited: ${e.filePath} is ${memberConfigWhy(e.reason)} (fleetMcp unavailable: ${e.reason}) -- ${e.message}`,
+      };
+    }
+    return { failure: `[FAIL] Failed to write the apra-fleet member MCP entry on "${agent.friendlyName}" (${provider.name}): ${e?.message ?? String(e)}` };
+  }
+  // Read the CURRENT record (the caller's agent object may predate it).
+  const recorded = getAgent(agent.id)?.fleetMcp;
+  if (recorded?.state === 'unavailable' && recorded.reason && COMPOSE_OWNED_FLEET_MCP_REASONS.has(recorded.reason)) {
+    if (recorded.fleetInstalledAt) {
+      // Keep the install stamp (the only "this fleet installed it" signal): record a
+      // minimal, explicitly unverified, non-unavailable status carrying it.
+      recordFleetMcpStatus(agent.id, {
+        state: 'available',
+        checkedAt: new Date().toISOString(),
+        unverified: true,
+        detail: 'stale compose status cleared; not yet re-probed',
+        fleetInstalledAt: recorded.fleetInstalledAt,
+      });
+    } else {
+      updateAgent(agent.id, { fleetMcp: undefined });
+    }
+    return {
+      note: `fleetMcp: cleared the stale unavailable status (${recorded.reason}) -- the member MCP entry is now written; re-probe with member_detail refresh:true`,
+    };
+  }
+  return {};
+}
+
+/**
+ * Removes exactly what compose_permissions wrote for `agent` under its CURRENT
+ * (soon to be previous) provider -- the inverse of a compose, used by
+ * update_member when a member switches provider:
+ *  - the per-folder apra-fleet MCP entry (provider.syncMemberMcpEntry with
+ *    url null), deepwiki and every other server untouched;
+ *  - the top-level keys compose writes into each permission config file; a
+ *    work-folder file left empty is deleted, a home-anchored file (e.g. agy's
+ *    own project file) is only rewritten;
+ *  - the .git/info/exclude lines compose added for its work-folder files.
+ * Returns human-readable detail lines; throws on a failure so the caller can
+ * surface it.
+ */
+export async function removeComposedMemberConfig(agent: Agent): Promise<string[]> {
+  const provider = getProvider(agent.llmProvider);
+  const strategy = getStrategy(agent);
+  const agentOs = (agent.os ?? 'linux') as 'linux' | 'macos' | 'windows';
+  const isWindows = agentOs === 'windows';
+  const shell = getAgentShell(agent);
+  const posix = isPosixShell(isWindows, shell);
+  const exec = (cmd: string, t?: number) => strategy.execCommand(cmd, t);
+  const details: string[] = [];
+
+  let paths: string[] = [];
+  try {
+    paths = provider.permissionConfigPaths(agent);
+  } catch {
+    // e.g. an agy member that never got a project id: compose never wrote one.
+    paths = [];
+  }
+  const memberHomeDir = (paths.some(isHomeAnchored) || provider.syncMemberMcpEntry)
+    ? await getMemberHomeDir(agent)
+    : null;
+
+  // The keys compose writes, per file: union over both roles, with a non-empty
+  // allow list so optional keys (e.g. copilot's tools) are included.
+  const keysPerPath: Array<Set<string> | null> = paths.map(() => new Set<string>());
+  for (const role of ['doer', 'reviewer'] as const) {
+    const configs = provider.composePermissionConfig(role, ['Read'], agent, { memberHomeDir, warnings: [] });
+    configs.forEach((cfg, i) => {
+      if (isPlainObject(cfg)) {
+        for (const k of Object.keys(cfg)) keysPerPath[i]?.add(k);
+      } else {
+        keysPerPath[i] = null; // whole-file (e.g. TOML) content
+      }
+    });
+  }
+
+  const workFolderFiles: string[] = [];
+  for (let i = 0; i < paths.length; i++) {
+    const rel = paths[i]!;
+    const homeAnchored = isHomeAnchored(rel);
+    if (!homeAnchored) workFolderFiles.push(rel);
+    const absPath = resolveRemotePath(agent.workFolder, rel, isWindows, shell, memberHomeDir);
+    const keys = keysPerPath[i];
+    if (keys === null) {
+      if (!homeAnchored && (await readMemberFile(exec, absPath, posix)).trim()) {
+        await deleteMemberFile(exec, absPath, posix);
+        details.push(`removed ${absPath}`);
+      }
+      continue;
+    }
+    const current = await readMemberJson(exec, absPath, posix);
+    if (Object.keys(current).length === 0) continue;
+    let changed = pruneLegacyMcpEntries(current);
+    for (const k of keys ?? []) {
+      if (k in current) { delete current[k]; changed = true; }
+    }
+    if (!changed) continue;
+    if (Object.keys(current).length === 0 && !homeAnchored) {
+      await deleteMemberFile(exec, absPath, posix);
+      details.push(`removed ${absPath}`);
+    } else {
+      await writeMemberJson(exec, absPath, current, posix);
+      details.push(`removed fleet permission keys from ${absPath}`);
+    }
+  }
+
+  if (provider.syncMemberMcpEntry) {
+    const result = await provider.syncMemberMcpEntry({
+      agent,
+      execCommand: exec,
+      memberHomeDir,
+      agentOs,
+      shell,
+      transport: workspaceTrustTransportFor(agent, strategy),
+      url: null,
+    });
+    workFolderFiles.push(...result.workFolderFiles);
+    details.push(result.detail);
+  }
+  await removeGitExcluded(exec, agent.workFolder, workFolderFiles, isWindows, shell);
+  return details;
+}
+
+/** The hard member-MCP failure result: the permission files landed (and the
+ *  ledger records them); only the member MCP entry is missing. */
+function memberMcpFailureResult(failure: string, projectFolder: string | undefined): string {
+  return `${failure}\n  The permission config files were written${projectFolder ? ' and recorded in the ledger' : ''}; the apra-fleet member MCP entry was NOT written.`;
 }
 
 export async function composePermissions(input: ComposePermissionsInput): Promise<string> {
@@ -744,8 +1020,8 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
       // Branched on the member's SHELL, not just its OS: a gitbash Windows
       // member cannot run Get-Content (apra-fleet-7dir.1.3).
       const readResult = isPosixShell(isWindowsAgent, agentShell)
-        ? await strategy.execCommand(`cat "${absSettingsPath}" 2>/dev/null || echo "{}"`, LOCAL_FS_OP_TIMEOUT_MS)
-        : await strategy.execCommand(`Get-Content -Raw "${absSettingsPath.replace(/\//g, '\\')}" -ErrorAction SilentlyContinue`, LOCAL_FS_OP_TIMEOUT_MS);
+        ? await strategy.execCommand(`cat ${quotePosixPath(absSettingsPath)} 2>/dev/null || echo "{}"`, LOCAL_FS_OP_TIMEOUT_MS)
+        : await strategy.execCommand(`Get-Content -Raw ${quotePwshPath(absSettingsPath.replace(/\//g, '\\'))} -ErrorAction SilentlyContinue`, LOCAL_FS_OP_TIMEOUT_MS);
       let current: any;
       try {
         current = JSON.parse(readResult.stdout.trim());
@@ -788,8 +1064,11 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
       }
       throw e;
     }
-
-    // Update ledger (only reached when every config file verifiably landed)
+    // Update the ledger with exactly what was written: reached only when every
+    // permission config file verifiably landed, and BEFORE the member MCP
+    // sync, so a sync failure can neither drop a grant that is already on disk
+    // from the ledger nor make the ledger claim anything the sync did not write
+    // (the ledger records permission grants only, never the MCP entry).
     if (input.project_folder) {
       const reason = input.grant_reason ?? 'granted mid-sprint';
       const date = new Date().toISOString().slice(0, 10);
@@ -801,13 +1080,17 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
       saveLedger(input.project_folder, ledger);
     }
 
+    const memberMcp = await syncMemberMcpConfig(agent, provider, strategy, paths, memberHomeDir);
+    if (memberMcp.failure) return memberMcpFailureResult(memberMcp.failure, input.project_folder);
+
     // apra-fleet-eft.40.2: self-healing -- repair workspace trust on EVERY
     // compose_permissions run (a member registered before this fix, or one whose
     // trust was never seeded, gets fixed the next time permissions are composed).
     await seedWorkspaceTrust(agent, strategy, 'compose_permissions');
 
     const warningsBlock = deliveryWarnings.length > 0 ? `\n  Warnings:\n    ${deliveryWarnings.join('\n    ')}` : '';
-    return `✅ Granted ${[...expanded].length} permissions on "${agent.friendlyName}" (${provider.name}):\n  ${[...expanded].join('\n  ')}${agyNote}${warningsBlock}`;
+    const memberMcpLine = memberMcp.note ? `\n  ${memberMcp.note}` : '';
+    return `✅ Granted ${[...expanded].length} permissions on "${agent.friendlyName}" (${provider.name}):\n  ${[...expanded].join('\n  ')}${agyNote}${memberMcpLine}${warningsBlock}`;
   }
 
   // Proactive compose mode
@@ -842,12 +1125,15 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
     }
     throw e;
   }
-
-  // Update ledger stacks (only reached when every config file verifiably landed)
+  // Update ledger stacks: only reached when every permission config file
+  // verifiably landed, and before the member MCP sync (see the grant path).
   if (input.project_folder) {
     ledger.stacks = stacks;
     saveLedger(input.project_folder, ledger);
   }
+
+  const memberMcp = await syncMemberMcpConfig(agent, provider, strategy, paths, memberHomeDir);
+  if (memberMcp.failure) return memberMcpFailureResult(memberMcp.failure, input.project_folder);
 
   // apra-fleet-eft.40.2: self-healing -- repair workspace trust on EVERY
   // compose_permissions run (a member registered before this fix, or one whose
@@ -857,5 +1143,6 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
   const customTags = (input.tags ?? []).filter(t => t !== 'doer' && t !== 'reviewer');
   const tagsLine = customTags.length ? `\n  Tags: ${customTags.join(', ')}` : '';
   const warningsBlock = deliveryWarnings.length > 0 ? `\n  Warnings:\n    ${deliveryWarnings.join('\n    ')}` : '';
-  return `✅ Permissions composed for "${agent.friendlyName}" (${mode}, ${provider.name}):\n  Stacks: ${stacks.join(', ') || 'none detected'}${tagsLine}\n  Config: ${paths.join(', ')}\n  Ledger grants: ${ledger.granted.length}${agyNote}${warningsBlock}`;
+  const memberMcpLine = memberMcp.note ? `\n  ${memberMcp.note}` : '';
+  return `✅ Permissions composed for "${agent.friendlyName}" (${mode}, ${provider.name}):\n  Stacks: ${stacks.join(', ') || 'none detected'}${tagsLine}\n  Config: ${paths.join(', ')}\n  Ledger grants: ${ledger.granted.length}${agyNote}${memberMcpLine}${warningsBlock}`;
 }

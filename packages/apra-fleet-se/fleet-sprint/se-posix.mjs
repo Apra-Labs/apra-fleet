@@ -23,6 +23,40 @@
 // through an independently probed path.
 
 /**
+ * Validate a work-folder-relative path before it is interpolated into a
+ * member-bound command string. Same strict charset member-call.mjs uses for
+ * its args path (^[A-Za-z0-9._/-]+$), plus: no '..' segment (no escaping the
+ * work folder), no leading '/' (relative only) and no leading '-' (never
+ * mistakable for an option). Anything else THROWS -- it is never quoted or
+ * escaped into the string. Shared by every dialect's git-exclude/remove-file
+ * primitive.
+ * @param {string} relPath
+ * @param {string} what caller-facing name for the error message
+ * @returns {string} the validated path
+ */
+export function assertSafeRelativePath(relPath, what = 'path') {
+  const p = String(relPath ?? '');
+  if (!/^[A-Za-z0-9._/-]+$/.test(p) || p.startsWith('/') || p.startsWith('-') || p.split('/').includes('..')) {
+    throw new Error(`Refusing to build a member command for unsafe ${what} '${relPath}' (allowed: work-folder-relative, letters, digits, '.', '_', '-', '/'; no '..' segment, no leading '/' or '-').`);
+  }
+  return p;
+}
+
+/**
+ * A single file line safe to embed single-quoted in POSIX and PowerShell:
+ * no single quote, backslash, $, backtick or newline.
+ * @param {string} line
+ * @returns {string}
+ */
+export function assertSafeFileLine(line) {
+  const l = String(line ?? '');
+  if (!/^[A-Za-z0-9 ._~:/@+="-]+$/.test(l)) {
+    throw new Error(`Refusing to build a member command for unsafe file line '${line}' (allowed: letters, digits, space and . _ ~ : / @ + = " -).`);
+  }
+  return l;
+}
+
+/**
  * POSIX command primitives. Also the base class the Git-for-Windows bash
  * implementation extends -- a gitbash member receives bash strings, so the
  * whole surface below is correct for it apart from genuinely Windows-native
@@ -135,6 +169,83 @@ export class SePosixCommands {
       .split(bq).join('\\' + bq)
       .replace(/\$/g, '\\$')
       .replace(/"/g, '\\"');
+  }
+
+  /**
+   * Idempotently add `entry` (e.g. '.apra-call/') as a line of the git
+   * exclude file of the repo containing the member's work folder
+   * (execute_command runs in the work folder). The exclude file is resolved
+   * by git itself (`git rev-parse --git-path info/exclude`), never assumed to
+   * be <workFolder>/.git/info/exclude: the work folder may be a repo
+   * subdirectory or a linked worktree whose .git is a file. The info/ dir is
+   * created when missing, a missing trailing newline is repaired before the
+   * append, and the line is appended only when not already present. Outside
+   * a git repo (or with no git on PATH) it is a silent no-op that exits 0.
+   *
+   * The only `$` expansions are of a shell-LOCAL variable this same string
+   * assigns (`excl`) -- nothing reads the member's environment ($HOME,
+   * $VAR/path, ~/, backticks).
+   * Caller: member-call.mjs runRemote (args-file cleanup).
+   * @param {string} entry work-folder-relative path/pattern, validated
+   * @returns {string}
+   */
+  ensureGitExcluded(entry) {
+    const e = assertSafeRelativePath(entry, 'git-exclude entry');
+    const script = `if excl=$(git rev-parse --git-path info/exclude 2>/dev/null) && [ -n "$excl" ]; then `
+      + `mkdir -p "$(dirname "$excl")" && `
+      + `{ grep -qxF -- '${e}' "$excl" 2>/dev/null || { `
+      + `if [ -s "$excl" ] && [ -n "$(tail -c 1 "$excl")" ]; then printf '\\n' >> "$excl"; fi; `
+      + `printf '%s\\n' '${e}' >> "$excl"; }; }; fi`;
+    return this.wrapForMember(script);
+  }
+
+  /**
+   * Delete a work-folder-relative file, never erroring when it is absent.
+   * Caller: member-call.mjs runRemote (engine-side args-file delete).
+   * @param {string} relPath validated
+   * @returns {string}
+   */
+  removeFile(relPath) {
+    const p = assertSafeRelativePath(relPath, 'file path');
+    return this.wrapForMember(`rm -f -- '${p}'`);
+  }
+
+  /**
+   * Create a work-folder-relative file (and its parent directory) when it is
+   * absent; an existing file is never truncated or modified. Idempotent.
+   * Caller: beads-identity-check.mjs member beads set-up (an empty
+   * .beads/config.yaml so `bd config set` has a workspace to write to).
+   * @param {string} relPath validated
+   * @returns {string}
+   */
+  ensureFile(relPath) {
+    const p = assertSafeRelativePath(relPath, 'file path');
+    const slash = p.lastIndexOf('/');
+    const dir = slash > 0 ? p.slice(0, slash) : '';
+    const create = `{ [ -e '${p}' ] || : > '${p}'; }`;
+    return this.wrapForMember(dir ? `mkdir -p -- '${dir}' && ${create}` : create);
+  }
+
+  /**
+   * Idempotently make `line` a whole line of a work-folder-relative file,
+   * creating the file (and its parent directory) when absent; nothing else in
+   * the file is touched. Same append shape as ensureGitExcluded.
+   * Caller: beads-identity-check.mjs member beads set-up (sync.remote in the
+   * untracked .beads/config.local.yaml layer).
+   * @param {string} relPath validated
+   * @param {string} line validated: letters, digits, space and . _ ~ : / @ + = " -
+   * @returns {string}
+   */
+  ensureLine(relPath, line) {
+    const p = assertSafeRelativePath(relPath, 'file path');
+    const l = assertSafeFileLine(line);
+    const slash = p.lastIndexOf('/');
+    const dir = slash > 0 ? p.slice(0, slash) : '';
+    const script = `${dir ? `mkdir -p -- '${dir}' && ` : ''}{ [ -e '${p}' ] || : > '${p}'; } && `
+      + `{ grep -qxF -- '${l}' '${p}' || { `
+      + `if [ -s '${p}' ] && [ -n "$(tail -c 1 '${p}')" ]; then printf '\\n' >> '${p}'; fi; `
+      + `printf '%s\\n' '${l}' >> '${p}'; }; }`;
+    return this.wrapForMember(script);
   }
 
   /**

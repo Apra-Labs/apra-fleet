@@ -265,7 +265,10 @@ last-resort safety net, not a temporary state) -- see `docs/role-contracts.md`.
 Once preconditions pass, the CLI starts a local HTTP dashboard
 (`createDashboardViewer` from `@apralabs/apra-fleet-workflow/viewer`) on
 `--viewer-port`, extended with this package's `beadsExtension` (a live beads
-task-tree panel -- see `docs/architecture.md` "The viewer"). A `server.listen()`
+task-tree panel -- see `docs/architecture.md` "The viewer") and
+`kbCodeIntelExtension` (the "Knowledge & Code Intel" tab: per-member and
+per-dispatch `kb_*`/`code_*` call counts from `session_stats` snapshots, with
+an unreadable count shown as "unknown", never 0). A `server.listen()`
 failure (most commonly `EADDRINUSE`, i.e. the port is already in use) is
 caught and reported as a clean, actionable error (`try --viewer-port <other
 port>`) instead of an unhandled crash.

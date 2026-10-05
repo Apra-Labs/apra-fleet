@@ -101,6 +101,10 @@ export async function runHarvestPhase({
     finalDeferredAtGoalIds,
     regressionResult,
     regressionSkippedBy = null,
+    // Sprint state's per-dispatch kb_* and code_* call records (dispatch-accounting.mjs).
+    dispatchToolCalls = null,
+    // The KB work client: the harvest round's bible commit runs through it.
+    kbWork = null,
     // Defined BY runner.js; injected to avoid a circular import (see header).
     computeBranchSlug,
     buildAnalysisText,
@@ -135,6 +139,10 @@ export async function runHarvestPhase({
         finalDeferredAtGoalIds,
         regressionResult,
         regressionSkippedBy,
+        dispatchToolCalls,
+        // Confirmations the final review round's bible commit could not
+        // publish -- persisted here so the warning outlives the live log.
+        kbBibleUnpublished: kbWork && typeof kbWork.unpublishedBible === 'function' ? kbWork.unpublishedBible() : null,
     });
     const costAnalysis = buildCostAnalysis(budget, {
         spend: integTestRunnerSpend,
@@ -187,6 +195,17 @@ export async function runHarvestPhase({
         log(`Harvester reported FAILED: ${harvesterResult.notes}`);
     } else {
         log(`Harvester: wrote sprint analysis (including the Final Review verdict) to ${analysisArtifactFile}.`);
+    }
+
+    // The harvest round's bible commit: confirmations still pending (a
+    // maintainer that was busy or whose push failed in an earlier round) go
+    // to the bible on each repository's kb_maintainer -- G-pull,
+    // kb_bible_commit, G-push. A no-op after a FAIL verdict or with nothing
+    // pending. Runs after the harvester's own G-push, so its commits are on
+    // the branch the bible commit lands on.
+    if (kbWork && typeof kbWork.commitRound === 'function') {
+        await kbWork.commitRound('harvest');
+        if (typeof kbWork.warnPending === 'function') kbWork.warnPending();
     }
     return { costAnalysis };
 }

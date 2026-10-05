@@ -1,0 +1,12 @@
+{
+  "tool": "code_map",
+  "case": "refusal-self-not-a-repo",
+  "kind": "refusal",
+  "request": {},
+  "error": {
+    "message": "E-SELF-NOT-A-REPO: The member 'contract-not-a-repo' work folder '<SCRATCH_ROOT>/repo-plain' is not a git repository. Remediation: Run 'git init' (or clone the project) in '<SCRATCH_ROOT>/repo-plain' and add an origin remote.",
+    "thrown": true
+  },
+  "expected_error_code": "E-SELF-NOT-A-REPO",
+  "session": "NOT_A_REPO"
+}

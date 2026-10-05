@@ -15,6 +15,7 @@ import { completesOnProcessExit, exitDrainMs } from './exit-drain.js';
 const MAX_OUTPUT_BYTES = 10 * 1024 * 1024; // 10 MB
 import { execCommand as sshExecCommand, testConnection as sshTestConnection, closeConnection as sshCloseConnection } from './ssh.js';
 import { uploadFiles, downloadFiles } from './file-transfer.js';
+import { writeSecretFileInHome, removeSecretFile as sftpRemoveSecretFile } from './sftp.js';
 import { RelayStrategy } from './relay-strategy.js';
 
 /** Build the wrapped `powershell -EncodedCommand ...` string RemoteStrategy.
@@ -70,6 +71,16 @@ export interface AgentStrategy {
   receiveFiles(remotePaths: string[], localDestination: string, abortSignal?: AbortSignal): Promise<TransferResult>;
   /** Delete files relative to the agent's workFolder. Best-effort -- errors are silently ignored. */
   deleteFiles(relativePaths: string[]): Promise<void>;
+  /**
+   * Write a secret-bearing file (owner-only) on the member WITHOUT any
+   * command line carrying its content -- SFTP for remote members, fs for
+   * local ones. `fileName` must not contain any part of the secret. Returns
+   * the absolute path in the form the member's shell accepts. Strategies with
+   * no such channel (relay) throw.
+   */
+  writeSecretFile(fileName: string, content: string): Promise<string>;
+  /** Best-effort removal of a file written by writeSecretFile. */
+  removeSecretFile(filePath: string): Promise<void>;
   testConnection(): Promise<{ ok: boolean; latencyMs: number; error?: string }>;
   close(): void;
 }
@@ -120,6 +131,14 @@ class RemoteStrategy implements AgentStrategy {
     } catch { /* ignore -- best-effort cleanup */ }
   }
 
+  async writeSecretFile(fileName: string, content: string): Promise<string> {
+    return writeSecretFileInHome(this.agent, fileName, content);
+  }
+
+  async removeSecretFile(filePath: string): Promise<void> {
+    await sftpRemoveSecretFile(this.agent, filePath);
+  }
+
   async testConnection(): Promise<{ ok: boolean; latencyMs: number; error?: string }> {
     return sshTestConnection(this.agent);
   }
@@ -127,6 +146,21 @@ class RemoteStrategy implements AgentStrategy {
   close(): void {
     sshCloseConnection(this.agent);
   }
+}
+
+/** Per-user 0700 directory for local members' staged secret files. Throws if
+ *  an existing path is not a private directory owned by this user. */
+export function privateSecretDir(base = os.tmpdir()): string {
+  const uid = typeof process.getuid === 'function' ? process.getuid() : undefined;
+  const dir = path.join(base, `apra-fleet-secrets-${uid ?? os.userInfo().username}`);
+  try { fs.mkdirSync(dir, { mode: 0o700 }); } catch (err: any) { if (err?.code !== 'EEXIST') throw err; }
+  if (uid !== undefined) {
+    const st = fs.lstatSync(dir);
+    if (!st.isDirectory() || st.isSymbolicLink() || st.uid !== uid || (st.mode & 0o077) !== 0) {
+      throw new Error(`Refusing to stage a secret in ${dir}: not a private (0700) directory owned by this user`);
+    }
+  }
+  return dir;
 }
 
 class LocalStrategy implements AgentStrategy {
@@ -408,6 +442,22 @@ class LocalStrategy implements AgentStrategy {
     for (const rel of relativePaths) {
       try { fs.unlinkSync(path.resolve(this.agent.workFolder, rel)); } catch { /* ignore */ }
     }
+  }
+
+  async writeSecretFile(fileName: string, content: string): Promise<string> {
+    if (!/^[A-Za-z0-9._-]+$/.test(fileName)) throw new Error(`Unsafe secret file name: ${fileName}`);
+    // A private 0700 dir (verified: ours, not a symlink, no group/other bits),
+    // so even a misconfigured shared TMPDIR without the sticky bit cannot let
+    // another user swap the file between create and source. 'wx' =
+    // O_CREAT|O_EXCL on top. Windows: %TEMP% is per-user.
+    const p = path.join(privateSecretDir(), fileName);
+    fs.writeFileSync(p, content, { encoding: 'utf-8', mode: 0o600, flag: 'wx' });
+    // Git Bash on a Windows host wants forward slashes.
+    return process.platform === 'win32' && getAgentShell(this.agent) === 'gitbash' ? p.replace(/\\/g, '/') : p;
+  }
+
+  async removeSecretFile(filePath: string): Promise<void> {
+    try { fs.rmSync(filePath, { force: true }); } catch { /* best-effort */ }
   }
 
   async testConnection(): Promise<{ ok: boolean; latencyMs: number; error?: string }> {

@@ -971,6 +971,12 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
         // tests are unaffected.
         commandLogDetailed = null,
         memberGitState = null,
+        // Optional ({ command, member_name }) => result|undefined hook, called
+        // for every executeCommand() before anything else. A test uses it to
+        // observe the ORDER of member commands (e.g. a G-pull's `git fetch`)
+        // relative to its own callTool events, and to fail one member's
+        // command: a returned non-undefined value is the command's result.
+        onCommand = null,
         // apra-fleet-unw2.9 (N11): injectable git/gh failure. Optional
         // (cmd: string) => boolean predicate, tested ONLY against `git `/
         // `gh ` commands (the ones this mock otherwise short-circuits to a
@@ -1062,6 +1068,8 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
     let planRound = 0;
     let reviewRound = 0;
     let extraTaskAdded = false;
+    /** member name -> the branch the engine last put it on (`git checkout [-B] <b>`), for `git rev-parse --abbrev-ref HEAD`. */
+    const mockCheckedOut = new Map();
     // apra-fleet-02s.3: a schema-repair re-ask RESUMES the session that just
     // failed and sends a lean reminder prompt (no longer a self-contained
     // echo of the original prompt) -- so opts.prompt.startsWith('Final review
@@ -1138,6 +1146,10 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
     const api = {
         executeCommand: async (opts) => {
             commandLog.push(opts.command);
+            if (onCommand) {
+                const injected = await onCommand({ command: opts.command, member_name: opts.member_name });
+                if (injected !== undefined) return injected;
+            }
 
             // apra-fleet-unw2.4 (N4): per-member command log + simulated
             // per-member git checkout state (see the option comments above).
@@ -1155,6 +1167,19 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
                 } else {
                     const coMatch = opts.command.match(/^git checkout (\S+)\s*$/);
                     if (coMatch) st.checkedOut = coMatch[1];
+                }
+            }
+
+            // The KB write path reads the maintainer's checked-out branch before
+            // every git command it runs there. Answer with the branch the member
+            // was last put on (`git checkout -B/<b>`), independent of the
+            // optional memberGitState model; unknown falls through below.
+            {
+                const mName = opts.member_name || '(none)';
+                const co = opts.command.match(/git checkout (?:-B )?([^\s-]\S*)/);
+                if (co) mockCheckedOut.set(mName, co[1]);
+                if (/^git rev-parse --abbrev-ref HEAD\s*$/.test(opts.command) && mockCheckedOut.has(mName)) {
+                    return mockCmdResult(0, mockCheckedOut.get(mName), '');
                 }
             }
 
@@ -2107,6 +2132,9 @@ export async function runDevelopLoopScenario(tag, {
     // buildMockFleetApi's `beadsMemories` option comment. The keys the
     // sweep forgot come back as `forgottenMemories` on the result.
     beadsMemories,
+    // Optional executeCommand observer/override -- see buildMockFleetApi's
+    // `onCommand` option comment.
+    onCommand,
 }) {
     const { tempDir, epicBead, tasks } = await setupMinimal(tag, taskSpecs);
     if (withRunbooks) {
@@ -2190,6 +2218,7 @@ export async function runDevelopLoopScenario(tag, {
             ...(prCurlResponseQueue !== undefined ? { prCurlResponseQueue } : {}),
             ...(beadsIdentity !== undefined ? { beadsIdentity } : {}),
             ...(beadsMemories !== undefined ? { beadsMemories, forgottenMemories, memoriesSink } : {}),
+            ...(onCommand !== undefined ? { onCommand } : {}),
         });
         // apra-fleet-20i.1.2: see runOnce() above -- same tag-as-logPrefix
         // threading, real single-sprint CLI path unaffected.

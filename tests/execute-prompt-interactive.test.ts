@@ -213,8 +213,8 @@ describe('executePrompt -- interactive routing (apra-fleet-2xs.8)', () => {
     memberId = member.id;
     addAgent(member);
 
-    // This member DOES have a live sessionRegistry entry -- registerMcpEndpoint
-    // gives Codex/OpenCode/Copilot basic MCP tool access (apra-fleet-fnz.1-3),
+    // This member DOES have a live sessionRegistry entry -- its MCP entry
+    // gives Codex/OpenCode/Copilot basic MCP tool access,
     // but docs/interactive-injection-provider-survey.md confirms none of them
     // can receive/act on a server-push mid-session prompt injection the way
     // Claude can, so none of them declare channelCapable in practice.

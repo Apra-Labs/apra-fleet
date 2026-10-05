@@ -225,19 +225,23 @@ describe('OsCommands via getOsCommands', () => {
   });
 
   describe('env commands', () => {
-    it('generates setenv commands for each OS', () => {
-      const linuxCmds = linux.setEnv('MY_VAR', 'value');
-      expect(linuxCmds.length).toBe(3);
-      expect(linuxCmds[0]).toContain('.bashrc');
+    it('persists an env var from a staged file; the command carries only the path', () => {
+      // Profile line keeps the historical shape unsetEnv's sed matches.
+      expect(linux.persistEnvFileContent('MY_VAR', 'value')).toBe('export MY_VAR="value"\n');
+      const linuxCmd = linux.persistEnvFromFile('MY_VAR', '/home/u/.apra-fleet-persist-1');
+      expect(linuxCmd).toContain(`cat '/home/u/.apra-fleet-persist-1' >> ~/.bashrc`);
+      expect(linuxCmd).toContain(`cat '/home/u/.apra-fleet-persist-1' >> ~/.profile`);
+      expect(linuxCmd).toContain(`rm -f '/home/u/.apra-fleet-persist-1'`);
+      expect(linuxCmd).not.toContain('value');
 
-      const macosCmds = macos.setEnv('MY_VAR', 'value');
-      expect(macosCmds.length).toBe(5);
-      expect(macosCmds.some(c => c.includes('.zshrc'))).toBe(true);
-      expect(macosCmds.some(c => c.includes('.zshenv'))).toBe(true);
+      const macosCmd = macos.persistEnvFromFile('MY_VAR', '/Users/u/.f');
+      for (const f of ['.bashrc', '.zshrc', '.zshenv', '.profile']) expect(macosCmd).toContain(`>> ~/${f}`);
 
-      const winCmds = windows.setEnv('MY_VAR', 'value');
-      expect(winCmds.length).toBe(1);
-      expect(winCmds[0]).toContain('SetEnvironmentVariable');
+      expect(windows.persistEnvFileContent('MY_VAR', 'value')).toBe(Buffer.from('value').toString('base64'));
+      const winCmd = windows.persistEnvFromFile('MY_VAR', 'C:/Users/u/.f');
+      expect(winCmd).toContain("SetEnvironmentVariable('MY_VAR', $v, 'User')");
+      expect(winCmd).toContain("Remove-Item -LiteralPath $f");
+      expect(winCmd).not.toContain('value');
     });
 
     it('generates unsetenv commands for each OS', () => {
@@ -333,14 +337,14 @@ describe('OsCommands via getOsCommands', () => {
   });
 
   describe('wrapInWorkFolder', () => {
-    it('linux: wraps with cd and &&', () => {
+    it('linux: wraps with cd and && and appends the member fleet bin dir to PATH', () => {
       expect(linux.wrapInWorkFolder('/home/user/project', 'echo hi'))
-        .toBe('cd "/home/user/project" && echo hi');
+        .toBe('cd "/home/user/project" && export PATH="$PATH:$HOME/.apra-fleet/bin" && echo hi');
     });
 
     it('macos: inherits linux wrapInWorkFolder', () => {
       expect(macos.wrapInWorkFolder('/opt/app', 'ls -la'))
-        .toBe('cd "/opt/app" && ls -la');
+        .toBe('cd "/opt/app" && export PATH="$PATH:$HOME/.apra-fleet/bin" && ls -la');
     });
 
     it('windows: wraps with Set-Location', () => {
@@ -348,6 +352,9 @@ describe('OsCommands via getOsCommands', () => {
         .toContain('Set-Location');
       expect(windows.wrapInWorkFolder('C:\\Users\\dev\\project', 'Get-ChildItem'))
         .toContain('Get-ChildItem');
+      // The member fleet bin dir (bd, dolt) is appended, after the user's own PATH.
+      expect(windows.wrapInWorkFolder('C:\\Users\\dev\\project', 'Get-ChildItem'))
+        .toContain('$env:Path = "$env:Path;$env:USERPROFILE\\.apra-fleet\\bin"; Get-ChildItem');
     });
 
     it('escapes folder injection in linux', () => {
@@ -643,16 +650,13 @@ describe('injection prevention', () => {
     expect(winCmd).toContain('^&');
   });
 
-  it('escapes injection in setenv values', () => {
-    const linuxCmds = linux.setEnv('MY_VAR', '"; rm -rf / #');
-    for (const cmd of linuxCmds) {
-      expect(cmd).toContain('\\"');
-    }
-
-    // PowerShell single-quote escaping: values are wrapped in '...', no shell metachar expansion
-    const winCmds = windows.setEnv('MY_VAR', "test'injection");
-    expect(winCmds[0]).toContain("''");
-    expect(winCmds[0]).toContain('SetEnvironmentVariable');
+  it('escapes injection in persisted env values and staged file paths', () => {
+    // The profile line is sourced later by the member shell -- value stays double-quote escaped.
+    expect(linux.persistEnvFileContent('MY_VAR', '"; rm -rf / #')).toContain('\\"');
+    expect(linux.persistEnvFromFile('MY_VAR', "/home/o'neil/.f")).toContain(`'/home/o'\\''neil/.f'`);
+    // PowerShell: the value is base64 (no quoting surface); the path is single-quote escaped.
+    expect(windows.persistEnvFromFile('MY_VAR', "C:/Users/o'neil/.f")).toContain("'C:/Users/o''neil/.f'");
+    expect(() => linux.persistEnvFromFile('BAD;NAME', '/f')).toThrow();
   });
 });
 

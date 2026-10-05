@@ -1,8 +1,8 @@
 import { z } from 'zod';
+import { KB_REMOVED_SCOPE_KEYS_SHAPE } from '../services/knowledge/kb-removed-scope-keys.js';
 import { computeFileHash } from '../services/knowledge/kb-service.js';
-import { getKbProviders } from '../services/knowledge/kb-providers.js';
+import { getSelfKbProviders, memberOwnerTag, type KbAnchor } from '../services/knowledge/kb-self.js';
 import { validateFilePaths } from '../services/knowledge/path-validation.js';
-import { kbScopeFields } from '../services/knowledge/kb-scope-input.js';
 import type { Author, CaptureSource } from '../services/knowledge/types.js';
 
 // D5 (T2.3): the full Author enum. Kept as a plain array (not a zod enum on
@@ -21,9 +21,6 @@ function validateAuthor(role: string | undefined): Author | 'unknown' {
 }
 
 export const kbCaptureSchema = z.object({
-  ...kbScopeFields,
-  repo_path: z.string().optional()
-    .describe('Path to the repo root this call is about. Selects WHICH project KB is read/written. When omitted, falls back to the calling process cwd, which is only correct for single-repo CLI use -- server-handled tool calls must pass it explicitly.'),
   type: z.enum(['context-cache', 'learning', 'knowledge', 'runbook', 'user-directive'])
     .describe('Content type: context-cache for file summaries, learning for session insights, knowledge for facts, runbook for procedures, user-directive for a standing user instruction/correction. NOTE (F1/D1): a user-directive captured here is stored as a PENDING PROPOSAL (UNVERIFIED, flagged for review, scope forced to project) -- it is NOT an active directive and does NOT gain any trust semantics until a human approves it in their own terminal via "apra-fleet kb approve-directive <id>". MCP cannot mint an active directive.'),
   title: z.string().min(1).describe('Short description (max ~80 chars)'),
@@ -42,15 +39,18 @@ export const kbCaptureSchema = z.object({
     .describe('Scope: project (default) or global for team-wide conventions'),
   supersedes: z.string().optional()
     .describe('Id of an entry this capture REPLACES. Only honored when AUDN independently matches that same entry as a same-topic candidate (same type, overlapping symbols and source_files), so it cannot retire an arbitrary entry. Omit it unless you mean to retire something -- an ordinary refinement links to its predecessor and both stay live. The KB Agent sets this when resolving a flagged pair; doer/reviewer captures should not.'),
+  // Removed pre-redesign scope keys: declared only so a caller still passing one
+  // is refused with E-SCOPE-KEY-REMOVED instead of silently re-scoped.
+  ...KB_REMOVED_SCOPE_KEYS_SHAPE,
 });
 
 export type KbCaptureInput = z.infer<typeof kbCaptureSchema>;
 
-export async function kbCapture(input: KbCaptureInput): Promise<string> {
+export async function kbCapture(input: KbCaptureInput, anchor?: KbAnchor): Promise<string> {
   if (input.source_files?.length) validateFilePaths(input.source_files);
   if (input.source_file) validateFilePaths([input.source_file]);
 
-  const providers = await getKbProviders(input.repo_path, input.repo_remote_url);
+  const providers = await getSelfKbProviders(anchor);
 
   let content_hash = '';
   let content_hash_type: 'git' | 'sha256' = 'sha256';
@@ -122,6 +122,15 @@ export async function kbCapture(input: KbCaptureInput): Promise<string> {
     if (!tags.includes('directive:pending')) {
       tags = [...tags, 'directive:pending'];
     }
+  }
+
+  // A MEMBER session's capture lands in the machine's per-repo DB tagged with
+  // the caller's member:<uuid>, so its unconfirmed knowledge stays its own:
+  // MEMBER INFERRED/UNVERIFIED reads, kb_promote and kb_invalidate only ever
+  // see entries carrying that tag (kb-self.ts memberOwnerTag).
+  const ownerTag = memberOwnerTag(anchor);
+  if (ownerTag !== undefined && !tags.includes(ownerTag)) {
+    tags = [...tags, ownerTag];
   }
 
   // my-beads-db-0d3.2: derived, not set per branch. The flag used to be set

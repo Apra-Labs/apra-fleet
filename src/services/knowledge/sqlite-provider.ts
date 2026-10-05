@@ -22,7 +22,7 @@ import {
   orJoinFtsTerms,
 } from './audn.js';
 import { computeFileHashBatch } from './file-hash.js';
-import { KbCaptureRejected } from './types.js';
+import { KbCaptureRejected, type DiscardResult } from './types.js';
 import type {
   MemoryProvider,
   KBEntry,
@@ -82,6 +82,10 @@ function trustFilterSql(filter: EntryTrustFilter | undefined): { conditions: str
   if (filter?.exclude_disputed) {
     conditions.push('e.flagged_for_review = 0 AND e.contradiction_of IS NULL');
   }
+  if (filter?.owner_tag) {
+    conditions.push('EXISTS (SELECT 1 FROM json_each(e.tags) WHERE value = ?)');
+    params.push(filter.owner_tag);
+  }
   return { conditions, params };
 }
 
@@ -96,7 +100,7 @@ export class SqliteProvider implements MemoryProvider {
    * repo-blindness failure class of apra-fleet-tm7. Undefined for the single
    * shared global KB, which spans every repo and has no one root.
    */
-  readonly repoPath: string | undefined;
+  repoPath: string | undefined;
 
   constructor(dbPath?: string, repoPath?: string) {
     this.repoPath = repoPath;
@@ -110,6 +114,16 @@ export class SqliteProvider implements MemoryProvider {
       fs.mkdirSync(dir, { recursive: true });
       this.dbPath = path.join(dir, 'kb.sqlite');
     }
+  }
+
+  /**
+   * Re-anchor after loading. Used only by the remote member bible view: the
+   * member's checkout is not on this host, so entries are imported with no
+   * anchor (the basis gate cannot check files here), then the remote folder is
+   * bound so freshness reads treat the anchor as missing and issue no verdict.
+   */
+  bindRepoPath(repoPath: string | undefined): void {
+    this.repoPath = repoPath;
   }
 
   async init(): Promise<void> {
@@ -942,7 +956,12 @@ export class SqliteProvider implements MemoryProvider {
     // gets a hash basis here regardless of type.
     const sourceFileHashes = await this.computeSourceFileHashes(input.source_files ?? []);
 
-    const candidates = this.findAudnCandidates(db, input);
+    // Verbatim (member bible view): the bible was reviewed and merged as a
+    // whole; AUDN against its own sibling entries would flag, re-id and
+    // demote them (a contradiction keyword in one summary disputes another
+    // CONFIRMED entry). Skip AUDN and keep the bible id.
+    const verbatim = opts?.verbatim === true && opts.importMode === true && opts.preferredId !== undefined;
+    const candidates = verbatim ? [] : this.findAudnCandidates(db, input);
     if (candidates.length > 0) {
       const result = this.evaluateAudn(db, input, candidates, content, now, sourceFileHashes);
       if (result) return result;
@@ -1106,9 +1125,15 @@ export class SqliteProvider implements MemoryProvider {
     return { results, total: results.length, l1_only: opts.l1_only ?? false };
   }
 
-  async context(files: string[]): Promise<FileContextResult[]> {
+  async context(files: string[], confidence?: Confidence[], excludeDisputed?: boolean, ownerTag?: string): Promise<FileContextResult[]> {
     const db = this.getDb();
     const results: FileContextResult[] = [];
+    const confClause = (confidence?.length
+      ? `AND confidence IN (${confidence.map(() => '?').join(',')})`
+      : '') + (excludeDisputed ? ' AND flagged_for_review = 0 AND contradiction_of IS NULL' : '')
+      + (ownerTag ? ' AND EXISTS (SELECT 1 FROM json_each(tags) WHERE value = ?)' : '');
+    const confParams: SQLInputValue[] = confidence?.length ? [...confidence] : [];
+    if (ownerTag) confParams.push(ownerTag);
 
     const fileEntries = new Map<string, KBEntry>();
     for (const file of files) {
@@ -1116,10 +1141,11 @@ export class SqliteProvider implements MemoryProvider {
         SELECT * FROM entries
         WHERE type = 'context-cache'
           AND superseded_at IS NULL
+          ${confClause}
           AND EXISTS (SELECT 1 FROM json_each(source_files) WHERE value = ?)
         ORDER BY created_at DESC
         LIMIT 1
-      `).all(file) as Record<string, unknown>[];
+      `).all(...confParams, file) as Record<string, unknown>[];
 
       if (rows.length > 0) {
         fileEntries.set(file, this.rowToEntry(rows[0]));
@@ -1162,19 +1188,44 @@ export class SqliteProvider implements MemoryProvider {
     return results;
   }
 
-  async invalidate(files: string[]): Promise<{ invalidated: number }> {
+  async discard(ids: string[], opts?: { ownerTag?: string }): Promise<DiscardResult> {
+    const db = this.getDb();
+    const result: DiscardResult = { discarded: [], not_found: [], already_discarded: [] };
+    const now = new Date().toISOString();
+    for (const id of new Set(ids)) {
+      const row = db.prepare('SELECT * FROM entries WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+      // An entry outside the caller's own scope is indistinguishable from an unknown id.
+      if (!row || (opts?.ownerTag && !this.rowToEntry(row).tags.includes(opts.ownerTag))) {
+        result.not_found.push(id);
+        continue;
+      }
+      if (row.superseded_at) {
+        result.already_discarded.push(id);
+        continue;
+      }
+      db.prepare('UPDATE entries SET superseded_at = ?, stale = 1 WHERE id = ?').run(now, id);
+      result.discarded.push(id);
+    }
+    return result;
+  }
+
+  async invalidate(files: string[], opts?: { ownerTag?: string }): Promise<{ invalidated: number }> {
     const db = this.getDb();
     let invalidated = 0;
+    // MEMBER own-scope: only entries carrying the caller's member tag.
+    const ownerClause = opts?.ownerTag ? 'AND EXISTS (SELECT 1 FROM json_each(tags) WHERE value = ?)' : '';
+    const ownerParams: SQLInputValue[] = opts?.ownerTag ? [opts.ownerTag] : [];
 
     for (const file of files) {
       const rows = db.prepare(`
         SELECT id FROM entries
         WHERE type = 'context-cache'
           AND superseded_at IS NULL
+          ${ownerClause}
           AND EXISTS (
             SELECT 1 FROM json_each(source_files) WHERE value = ?
           )
-      `).all(file) as { id: string }[];
+      `).all(...ownerParams, file) as { id: string }[];
 
       if (rows.length > 0) {
         const ids = rows.map(r => r.id);
@@ -1253,7 +1304,7 @@ export class SqliteProvider implements MemoryProvider {
     this.decayConceptEntries(this.getDb(), opts.decay_after_days ?? 30);
 
     const fileResults = opts.session_files?.length
-      ? await this.context(opts.session_files)
+      ? await this.context(opts.session_files, opts.confidence, opts.exclude_disputed, opts.owner_tag)
       : [];
 
     const stale_files = fileResults
@@ -1282,6 +1333,9 @@ export class SqliteProvider implements MemoryProvider {
           l1_only: true,
           limit: 10,
           include_stale: false,
+          confidence: opts.confidence,
+          exclude_disputed: opts.exclude_disputed,
+          owner_tag: opts.owner_tag,
         });
         top_entries = l1.results
           .filter(e => e.type !== 'context-cache')
@@ -1341,20 +1395,26 @@ export class SqliteProvider implements MemoryProvider {
   // excludes superseded and stale entries (no override -- this is an
   // audit-the-live-set tool, not a full-history query).
   async list(opts: {
-    confidence?: Confidence;
+    confidence?: Confidence[];
     type?: KBEntry['type'];
     module?: string;
     symbol?: string;
     tag?: string;
     limit?: number;
+    exclude_disputed?: boolean;
+    /** MEMBER own-scope: only entries tagged with this value (ANDed with `tag`). */
+    owner_tag?: string;
   }): Promise<KBEntry[]> {
     const db = this.getDb();
     const conditions: string[] = ['e.superseded_at IS NULL', 'e.stale = 0'];
     const params: SQLInputValue[] = [];
+    if (opts.exclude_disputed) {
+      conditions.push('e.flagged_for_review = 0 AND e.contradiction_of IS NULL');
+    }
 
-    if (opts.confidence) {
-      conditions.push('e.confidence = ?');
-      params.push(opts.confidence);
+    if (opts.confidence?.length) {
+      conditions.push(`e.confidence IN (${opts.confidence.map(() => '?').join(',')})`);
+      params.push(...opts.confidence);
     }
     if (opts.type) {
       conditions.push('e.type = ?');
@@ -1372,6 +1432,10 @@ export class SqliteProvider implements MemoryProvider {
       conditions.push('EXISTS (SELECT 1 FROM json_each(e.tags) WHERE value = ?)');
       params.push(opts.tag);
     }
+    if (opts.owner_tag) {
+      conditions.push('EXISTS (SELECT 1 FROM json_each(e.tags) WHERE value = ?)');
+      params.push(opts.owner_tag);
+    }
 
     const where = 'WHERE ' + conditions.join(' AND ');
     const limitClause = opts.limit !== undefined ? 'LIMIT ?' : '';
@@ -1387,12 +1451,19 @@ export class SqliteProvider implements MemoryProvider {
     return rows.map(r => this.rowToEntry(r));
   }
 
-  async promote(id: string, reason?: string): Promise<{ id: string; confidence_before: Confidence; confidence_after: Confidence }> {
+  async promote(
+    id: string,
+    reason?: string,
+    opts?: { ownerTag?: string },
+  ): Promise<{ id: string; confidence_before: Confidence; confidence_after: Confidence }> {
     const db = this.getDb();
     const row = db.prepare('SELECT * FROM entries WHERE id = ?').get(id) as Record<string, unknown> | undefined;
     if (!row) throw new Error(`Entry not found: ${id}`);
 
     const entry = this.rowToEntry(row);
+    // MEMBER own-scope: an entry the caller did not capture is indistinguishable
+    // from an unknown id (same message, so its existence is not disclosed).
+    if (opts?.ownerTag && !entry.tags.includes(opts.ownerTag)) throw new Error(`Entry not found: ${id}`);
     if (entry.superseded_at) throw new Error(`Cannot promote superseded entry: ${id}`);
 
     // H1 (F1, D1, closes yashr-9ha): promote() REFUSES any user-directive entry.

@@ -15,7 +15,7 @@ import {
     createFleetHttpTransport,
     getServerInfoPath,
 } from '@apralabs/apra-fleet-client/server-resolution';
-import { beadsExtension } from '../fleet-sprint/viewer-extensions.mjs';
+import { beadsExtension, kbCodeIntelExtension } from '../fleet-sprint/viewer-extensions.mjs';
 import { validateIssueId, validateBranchName, validateBranchPair, checkMemberTopology, createMemberReservationClient, resyncReacquiredMember, commandResultToSoftGit } from '../fleet-sprint/runner.js';
 import { normalizeRole } from '../fleet-sprint/contracts.mjs';
 import { ROLE_BACKLOG, resolveBacklogRoleAlias, selectBacklogMember, formatBacklogSelection } from '../fleet-sprint/backlog-role.mjs';
@@ -180,6 +180,10 @@ export function buildOptionsSpec() {
         // body's phases.regression:"skip"). Never silent: logged, and reported in
         // the sprint analysis and the PR body.
         'skip-regression': { type: 'boolean' },
+        // --ci-gate is DELIBERATELY NOT WIRED (2026-10-01): the runner's
+        // ci_gate arg is disabled until the CI-as-quality-resource epic
+        // (apra-fleet-dv8i) designs the flow -- see fleet-sprint/sprint-args.mjs.
+        // 'ci-gate': { type: 'string' },
         help: { type: 'boolean', short: 'h' },
     };
 }
@@ -347,7 +351,7 @@ export async function resolveRoleMapWithWarnings(rawValue, deps = {}) {
  * }} opts
  * @returns {object}
  */
-export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goal, maxCycles, requirementsFile, roleMap, roleMapWarnings, budget, dispatchTimeoutS, usageLimitMaxWaitS, usageLimitMaxReprobes, serviceUrl, runId, expectBeads, skipRegression }) {
+export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goal, maxCycles, requirementsFile, roleMap, roleMapWarnings, budget, dispatchTimeoutS, usageLimitMaxWaitS, usageLimitMaxReprobes, serviceUrl, runId, expectBeads, skipRegression, ciGate }) {
     const args = {
         target_issues: targetIssues,
         members,
@@ -382,6 +386,8 @@ export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goa
     // The raw --expect-beads JSON, forwarded verbatim; runner.js's
     // validateArgs() parses it (validateExpectBeads) and rejects bad JSON.
     if (expectBeads !== undefined) args.expect_beads = expectBeads;
+    // --ci-gate is not wired (apra-fleet-dv8i); ci_gate is never forwarded.
+    // if (ciGate !== undefined) args.ci_gate = ciGate;
     return args;
 }
 
@@ -919,7 +925,9 @@ async function main() {
     const server = createDashboardViewer(workflow, {
         port: viewerPort,
         name: 'Fleet-Sprint',
-        dashboardExtensions: [beadsExtension],
+        // kbCodeIntelExtension: its own tab (per-member, per-dispatch kb_* and
+        // code_* call counts), separate from the Tasks tab.
+        dashboardExtensions: [beadsExtension, kbCodeIntelExtension],
         // apra-fleet-eft.37.1/37.2: the core viewer now speaks opts.runId
         // (opts.sprintId is a deprecated BOUNDARY-COMPAT alias -- never use
         // it from here).
@@ -1086,6 +1094,7 @@ async function main() {
                 runId: effectiveRunId,
                 expectBeads,
                 skipRegression: Boolean(values['skip-regression']),
+                // ciGate: values['ci-gate'],  -- not wired (apra-fleet-dv8i)
             }),
             // apra-fleet-eft.75.1: wires this already-connected mcpClient
             // through to runner.js's createMemberSessionGuard (see its doc

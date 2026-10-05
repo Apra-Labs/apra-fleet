@@ -210,11 +210,23 @@ MCP tools that ship with the KB:
 | `kb_query` | Two-level FTS retrieval (L1: title+summary, L2: full content) |
 | `kb_list` | Audit-list entries by confidence/type/module/symbol (read-only, no use_count bump) |
 | `kb_context` | Batch file freshness check (single git call for N files) |
-| `kb_invalidate` | Mark files stale immediately (also called by the git hook) |
+| `kb_invalidate` | Mark files stale immediately (also called by the git hook), or discard own entries by `ids` |
 | `kb_promote` | Advance confidence: UNVERIFIED -> INFERRED -> CONFIRMED |
 | `kb_harvest` | Extract learnings from a session transcript (auto-fires after execute_prompt) |
 | `kb_export` | Additively merge live CONFIRMED entries whose cited files still match their recorded hashes into `.fleet/kb-canonical.json` -- the git-shareable team bible |
+| `kb_bible_commit` | Merge confirmed entry ids into the bible and commit locally with base-branch provenance (used by the sprint kb_maintainer) |
 | `kb_setup` | Install git hook, write provider config, store remote token encrypted |
+
+`code_*` tools resolve the calling session's own folder, refuse with typed
+`E-CODE-INDEX-NOT-READY` / `E-CODE-INTEL-DISABLED` errors when the index is not
+usable, and report `indexedCommit` on every result; `code_reindex` and
+`code_status` drive and inspect the index (see
+[docs/code-index-readiness.md](docs/code-index-readiness.md)). Registering a
+remote member also installs a member-mode apra-fleet on it and wires a
+per-folder MCP entry, recorded as `fleetMcp` (see
+[docs/member-fleet-mcp-wiring.md](docs/member-fleet-mcp-wiring.md)).
+`session_stats` reports each member's `kb_*` / `code_*` call counts, which
+fleet-sprint shows per dispatch in its Knowledge & Code Intel viewer tab.
 
 `kb_setup --remote <url> --token <key>` takes effect immediately: the next
 KB tool call resolves its project provider from this config, so a stock build
@@ -235,22 +247,21 @@ team-shared truth rather than a possibly-stale local copy. The default
 **The provider config is install-wide, not per repo.** There is one
 `knowledge/config.json` per fleet install, so pointing it at a remote KB
 points EVERY repo that install serves -- every member, every project -- at
-that server. `kb_setup`'s `repo_path` only chooses which repo gets the git
-post-commit hook; it does not scope the config. On a shared fleet server,
+that server. `kb_setup` only places the git post-commit hook (in the calling
+session's own repo); it does not scope the config. On a shared fleet server,
 treat `kb_setup --remote` as a change for all of its users.
 
-Every KB tool call is scoped to the repo it is about -- a fleet server
-handling many members across many repos never lets one repo's learnings land
-in another repo's KB. Scope is normally derived from the caller's repo path;
-tools also accept an explicit `repo_remote_url` so a remote member (whose
-work folder is a path on another host, unreachable from the fleet server's
-filesystem) resolves to the same project KB as a local clone of that repo
-instead of a shared fallback database. The automatic post-prompt harvest and
-the `code_context` KB enrichment path both forward this URL too, and an
-unreachable work-folder path is never silently swapped for the fleet
-server's own working directory -- see
+Every KB tool call is scoped to the calling session's own repo -- a fleet
+server handling many members across many repos never lets one repo's
+learnings land in another repo's KB. No `kb_*` tool takes a scope argument:
+a member session uses its registered work folder and any other session uses
+the fleet server's working folder, and a folder that is not a git repository
+with an origin remote is refused with a typed `E-SELF-*` error. Member
+sessions get a reduced tool list (`kb_*`, `code_*` and a few self-reporting
+tools), and the `apra-fleet call` verb lets a process call tools as a member.
+KB reads default to CONFIRMED, undisputed entries. See
 [Per-repo KB isolation](docs/knowledge-layer.md#per-repo-kb-isolation) for
-the full anchor and cache-keying rules.
+the resolution, anchor and cache-keying rules.
 
 The backend is swappable: start with local SQLite, add a central HTTP server for
 a team, or plug in Postgres later -- all via a one-line config change.

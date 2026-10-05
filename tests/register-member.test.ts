@@ -3,7 +3,7 @@
  * auto-runs compose_permissions for the member's role/tags) so it cannot silently
  * regress back to requiring a separate manual compose_permissions call.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -29,11 +29,23 @@ vi.mock('../src/tools/compose-permissions.js', async (importOriginal) => {
 
 describe('register_member: auto-runs compose_permissions (apra-fleet-5oo.1 / apra-fleet-5oo.2)', () => {
   let workFolder: string;
+  const scratchHome = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-regmember-home-'));
+  afterAll(() => {
+    fs.rmSync(scratchHome, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
+  });
   let actualCompose: typeof import('../src/tools/compose-permissions.js')['composePermissions'];
 
   beforeEach(async () => {
     backupAndResetRegistry();
     workFolder = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-regmember-compose-'));
+    // A real LocalStrategy runs here: compose writes the member's per-folder
+    // apra-fleet MCP entry into ~/.claude.json (home resolved via os.homedir())
+    // and trust seeding writes $HOME/.claude.json through the member shell,
+    // whose clean env is built (and cached) from HOME. Point both at ONE
+    // scratch home for the whole file so the real ~/.claude.json is never touched.
+    vi.stubEnv('HOME', scratchHome);
+    vi.stubEnv('USERPROFILE', scratchHome);
+    vi.spyOn(os, 'homedir').mockReturnValue(scratchHome);
     mockComposePermissions.mockReset();
     const actual = await vi.importActual<typeof import('../src/tools/compose-permissions.js')>('../src/tools/compose-permissions.js');
     actualCompose = actual.composePermissions;
@@ -48,6 +60,8 @@ describe('register_member: auto-runs compose_permissions (apra-fleet-5oo.1 / apr
     // total) was not enough headroom -- widen it rather than let a timing race
     // fail the next test in the file.
     fs.rmSync(workFolder, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
     vi.resetModules();
   });
 
@@ -135,7 +149,7 @@ describe('register_member: auto-runs compose_permissions (apra-fleet-5oo.1 / apr
 
     // Seed an unrelated settings key (as another tool sharing this file might)
     // that a re-run of compose_permissions must preserve, not clobber.
-    before.mcpServers = { ...(before.mcpServers ?? {}), 'apra-fleet-member': { unrelated: true } };
+    before.mcpServers = { ...(before.mcpServers ?? {}), 'some-other-server': { unrelated: true } };
     fs.writeFileSync(settingsPath, JSON.stringify(before, null, 2));
 
     // Simulate re-registration (or any later re-run) invoking compose_permissions
@@ -146,7 +160,7 @@ describe('register_member: auto-runs compose_permissions (apra-fleet-5oo.1 / apr
     const uniqueAllow = new Set(after.permissions.allow);
     expect(after.permissions.allow.length).toBe(uniqueAllow.size);
     expect(after.permissions.allow.length).toBe(before.permissions.allow.length);
-    expect(after.mcpServers['apra-fleet-member']).toEqual({ unrelated: true });
+    expect(after.mcpServers['some-other-server']).toEqual({ unrelated: true });
   }, 60000);
 });
 

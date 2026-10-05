@@ -10,17 +10,44 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // stable across resets.
 // ---------------------------------------------------------------------------
 const mockSpawn = vi.hoisted(() => vi.fn());
+// git rev-parse for the exclude file: '' = no repo, so the exclude step is a
+// quiet no-op here (tests/code-index-no-repo-writes.test.ts covers it for real).
+const mockExecFileSync = vi.hoisted(() => vi.fn(() => ''));
 const mockReadFileSync = vi.hoisted(() => vi.fn());
 const mockLogWarn = vi.hoisted(() => vi.fn());
 const mockLogError = vi.hoisted(() => vi.fn());
 
 vi.mock('child_process', () => ({
   spawn: mockSpawn,
+  execFileSync: mockExecFileSync,
 }));
 
-vi.mock('fs', () => ({
+// Only the config read is faked; the shared analyze runner's own fs use
+// (log file, status.json under the sandbox data dir) runs for real.
+vi.mock('fs', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('fs')>()),
   readFileSync: mockReadFileSync,
 }));
+
+const sandbox = vi.hoisted(() => {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const fs = require('node:fs') as typeof import('node:fs');
+  const os = require('node:os') as typeof import('node:os');
+  const path = require('node:path') as typeof import('node:path');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'reindex-unit-'));
+  fs.mkdirSync(path.join(dir, 'bin'));
+  fs.writeFileSync(path.join(dir, 'bin', process.platform === 'win32' ? 'npx.cmd' : 'npx'), '');
+  return { dir, bin: path.join(dir, 'bin') };
+});
+vi.mock('../src/paths.js', () => ({ FLEET_DIR: sandbox.dir }));
+vi.mock('../src/services/knowledge/project-slug.js', () => ({ resolveProjectSlug: () => 'slug' }));
+
+import { afterAll } from 'vitest';
+import { delimiter } from 'node:path';
+import { rmSync } from 'node:fs';
+const realPath = process.env.PATH;
+process.env.PATH = sandbox.bin + delimiter + realPath;
+afterAll(() => { process.env.PATH = realPath; rmSync(sandbox.dir, { recursive: true, force: true }); });
 
 vi.mock('../src/utils/log-helpers.js', () => ({
   logWarn: mockLogWarn,
@@ -34,7 +61,7 @@ function configAbsent(): void {
 }
 
 interface FakeChild {
-  stderr: { on: ReturnType<typeof vi.fn> };
+  pid: number;
   on: ReturnType<typeof vi.fn>;
   unref: ReturnType<typeof vi.fn>;
   listeners: Record<string, Array<(...args: unknown[]) => void>>;
@@ -43,7 +70,7 @@ interface FakeChild {
 function makeFakeChild(): FakeChild {
   const listeners: Record<string, Array<(...args: unknown[]) => void>> = {};
   const child: FakeChild = {
-    stderr: { on: vi.fn() },
+    pid: 99999991,
     on: vi.fn((event: string, cb: (...args: unknown[]) => void) => {
       listeners[event] = listeners[event] ?? [];
       listeners[event].push(cb);
@@ -106,7 +133,7 @@ describe('maybeScheduleReindex()', () => {
     configAbsent();
   });
 
-  it('spawns npx gitnexus analyze with the expected args when no reindex is running', async () => {
+  it('spawns npx gitnexus analyze --index-only (no AGENTS.md/CLAUDE.md/skills writes) when no reindex is running', async () => {
     const fakeChild = makeFakeChild();
     mockSpawn.mockReturnValue(fakeChild);
     const { maybeScheduleReindex } = await import('../src/tools/code-intelligence-reindex.js');
@@ -117,10 +144,10 @@ describe('maybeScheduleReindex()', () => {
     expect(mockSpawn).toHaveBeenCalledTimes(1);
     const [cmd, args, options] = mockSpawn.mock.calls[0] as [string, string[], Record<string, unknown>];
     expect(cmd).toBe('npx');
-    expect(args).toEqual(['gitnexus', 'analyze']);
+    expect(args).toEqual(['gitnexus', 'analyze', '--index-only']);
     expect(options.cwd).toBe('/repo/path');
     expect(options.detached).toBe(true);
-    expect(options.stdio).toEqual(['ignore', 'ignore', 'pipe']);
+    expect(options.stdio).toEqual(['ignore', expect.any(Number), expect.any(Number)]);
     expect(options.shell).toBe(process.platform === 'win32');
     expect(fakeChild.unref).toHaveBeenCalledTimes(1);
   });
@@ -171,22 +198,20 @@ describe('maybeScheduleReindex()', () => {
     expect(mockSpawn).toHaveBeenCalledTimes(1);
   });
 
-  it('logs via logError when the child exits non-zero, including a stderr tail', async () => {
+  it('records status.json and warns with the log tail when the child exits non-zero', async () => {
     const fakeChild = makeFakeChild();
     mockSpawn.mockReturnValue(fakeChild);
     const { maybeScheduleReindex } = await import('../src/tools/code-intelligence-reindex.js');
 
     maybeScheduleReindex('/repo/path');
-
-    const dataCall = fakeChild.stderr.on.mock.calls.find((c) => c[0] === 'data');
-    expect(dataCall).toBeDefined();
-    (dataCall as [string, (chunk: Buffer) => void])[1](Buffer.from('boom'));
-
     fakeChild.listeners['exit'][0](1);
 
     expect(mockLogWarn).toHaveBeenCalledTimes(1);
     const [, msg] = mockLogWarn.mock.calls[0] as [string, string];
-    expect(msg).toContain('boom');
+    expect(msg).toContain('exit 1');
+    const { readFileSync: realRead } = await vi.importActual<typeof import('fs')>('fs');
+    const status = JSON.parse(realRead(`${sandbox.dir}/code-index/slug/status.json`, 'utf8'));
+    expect(status).toMatchObject({ phase: 'done', result: 'failed', exitCode: 1 });
   });
 
   it('never throws when spawn itself throws', async () => {

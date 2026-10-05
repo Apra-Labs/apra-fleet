@@ -46,7 +46,7 @@
         "properties": {
           "title": {
             "type": "string",
-            "description": "Plain text only: letters, digits, space, and . , : ; ! ? ( ) ' _ / [ ] - -- nothing else. No backticks, double quotes, $, or backslash (the title is interpolated into a shell command downstream). Do NOT wrap a command/flag/filename in backticks here -- write it plain (e.g. \"Surface the Windows service registration mode in apra-fleet status\") or move the formatted detail into description instead, which has no such restriction. NOT enforced as a hard schema constraint here (deliberately no \"pattern\"): a single out-of-allowlist newTask title must never make ajv reject/retry the WHOLE structured verdict (verdict, notes, reopenIds, and the other newTasks) -- see validateNewTask() in fleet-sprint/runner.js, the actual (per-item, non-fatal) enforcement point, applied after parsing."
+            "description": "Plain text only: letters, digits, space, and . , : ; ! ? ( ) ' _ / [ ] - -- nothing else. No backticks, double quotes, $, or backslash (the title is interpolated into a shell command downstream). Do NOT wrap a command/flag/filename in backticks here -- write it plain (e.g. \"Surface the service registration mode in the status output\") or move the formatted detail into description instead, which has no such restriction. NOT enforced as a hard schema constraint here (deliberately no \"pattern\"): a single out-of-allowlist newTask title must never make ajv reject/retry the WHOLE structured verdict (verdict, notes, reopenIds, and the other newTasks) -- see validateNewTask() in fleet-sprint/runner.js, the actual (per-item, non-fatal) enforcement point, applied after parsing."
           },
           "description": {
             "type": "string"
@@ -75,6 +75,29 @@
           "reason": {
             "type": "string",
             "description": "The evidence for this promotion -- what you actually checked. kb_promote refuses a trivial reason.",
+            "minLength": 20
+          }
+        }
+      }
+    },
+    "kb_discards": {
+      "type": "array",
+      "description": "Promotion candidates this reviewer showed to be WRONG and is discarding (the entry drops out of every later read). Reviewer-only, with the same evidence bar as kb_promotions. An id may not appear in both kb_promotions and kb_discards -- the engine refuses both. The engine makes the discard calls.",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "reason"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The entry id, copied verbatim from the 'KNOWLEDGE BANK -- promotion candidates' block in your dispatch prompt. That block is the ONLY source of discardable ids -- do not call a kb_* tool to find one, and never invent one.",
+            "minLength": 1
+          },
+          "reason": {
+            "type": "string",
+            "description": "The evidence that the entry is wrong -- what you actually checked that contradicts its claim.",
             "minLength": 20
           }
         }
@@ -111,12 +134,12 @@
           },
           "content": {
             "type": "string",
-            "description": "Full detail of the entry. REQUIRED -- kbCaptureSchema declares content as z.string().min(1), so a capture without it is rejected at the MCP boundary and persists nothing (apra-fleet-23c).",
+            "description": "Full detail of the entry. REQUIRED -- a capture without it is rejected and persists nothing.",
             "minLength": 40
           },
           "source_files": {
             "type": "array",
-            "description": "Files that make this claim checkable. At least one is REQUIRED -- SqliteProvider.capture() rejects an entry with no basis, because the freshness sweep can never stale it.",
+            "description": "Files that make this claim checkable. At least one is REQUIRED -- an entry with no basis is rejected, because the freshness sweep can never stale it.",
             "items": {
               "type": "string"
             },
@@ -128,6 +151,38 @@
               "type": "string"
             }
           }
+        }
+      }
+    },
+    "toolUse": {
+      "type": "object",
+      "description": "How this run used the kb_* and code_* tools its role prompt expects (Step 0). Optional for backward compatibility, but expected: report \"unavailable\" or \"not_needed\" with a note rather than skipping the calls silently.",
+      "required": [
+        "kb",
+        "code"
+      ],
+      "properties": {
+        "kb": {
+          "type": "string",
+          "enum": [
+            "used",
+            "unavailable",
+            "not_needed"
+          ],
+          "description": "used = kb_query was called (kb_session_prime alone is not used)."
+        },
+        "code": {
+          "type": "string",
+          "enum": [
+            "used",
+            "unavailable",
+            "not_needed"
+          ],
+          "description": "used = code_impact, code_context or code_graph was called."
+        },
+        "note": {
+          "type": "string",
+          "description": "Why a value is not \"used\": which tool was missing or failed, or why no lookup was needed."
         }
       }
     }

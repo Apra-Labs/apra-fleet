@@ -135,7 +135,7 @@ function headSha(): string {
 
 describe('apra-fleet-ong: import -> sweep -> export -> commit in a worktree missing cited files', () => {
   it('counts the entries it drops instead of losing them silently', async () => {
-    const report = JSON.parse(await kbImport({ path: biblePath, repo: repoDir }));
+    const report = JSON.parse(await kbImport({ path: biblePath }, { folder: repoDir }));
 
     // Three entries cannot be checked against this worktree: two cite absent
     // files, one cites nothing at all. Phase 1 refuses them at the capture
@@ -149,8 +149,8 @@ describe('apra-fleet-ong: import -> sweep -> export -> commit in a worktree miss
     const shaBefore = headSha();
     const bytesBefore = fs.readFileSync(biblePath);
 
-    await kbImport({ path: biblePath, repo: repoDir });
-    const result = JSON.parse(await kbExport({ repo_path: repoDir }));
+    await kbImport({ path: biblePath }, { folder: repoDir });
+    const result = JSON.parse(await kbExport({}, { folder: repoDir }));
 
     // The project export is additive: all five committed entries stay, and the
     // two surviving KB entries are already present by id, so nothing is added.
@@ -163,21 +163,21 @@ describe('apra-fleet-ong: import -> sweep -> export -> commit in a worktree miss
   });
 
   it('leaves no working-tree diff on the project bible at all', async () => {
-    await kbImport({ path: biblePath, repo: repoDir });
-    await kbExport({ repo_path: repoDir });
+    await kbImport({ path: biblePath }, { folder: repoDir });
+    await kbExport({}, { folder: repoDir });
 
     const status = git(repoDir, ['status', '--porcelain', '--', BIBLE_REL]).trim();
     expect(status).toBe('');
   });
 
   it('survives a re-import of the untouched bible without further loss', async () => {
-    await kbImport({ path: biblePath, repo: repoDir });
-    await kbExport({ repo_path: repoDir });
+    await kbImport({ path: biblePath }, { folder: repoDir });
+    await kbExport({}, { folder: repoDir });
 
     // Round two, against the same (untouched) file. The two survivors are
     // already present by id, so they are skipped rather than re-added; the
     // three uncheckable entries are counted again; the bible keeps all five.
-    const second = JSON.parse(await kbImport({ path: biblePath, repo: repoDir }));
+    const second = JSON.parse(await kbImport({ path: biblePath }, { folder: repoDir }));
     expect(second.imported).toBe(0);
     expect(second.skipped).toBe(2);
     expect(second.rejected).toBe(3);
@@ -189,8 +189,8 @@ describe('apra-fleet-ong: import -> sweep -> export -> commit in a worktree miss
     fs.writeFileSync(KB_CONFIG_PATH, JSON.stringify({ bible: { autoCommit: true } }));
     const shaBefore = headSha();
 
-    await kbImport({ path: biblePath, repo: repoDir });
-    const result = JSON.parse(await kbExport({ repo_path: repoDir }));
+    await kbImport({ path: biblePath }, { folder: repoDir });
+    const result = JSON.parse(await kbExport({}, { folder: repoDir }));
 
     expect(result.committed).toBe(false);
     expect(headSha()).toBe(shaBefore);
@@ -219,8 +219,8 @@ describe('apra-fleet-ong: global-scope shrink guard', () => {
     seedCommittedGlobalBible();
     const shaBefore = headSha();
 
-    await kbImport({ path: biblePath, repo: repoDir });
-    const result = JSON.parse(await kbExport({ repo_path: repoDir, scope: 'global' }));
+    await kbImport({ path: biblePath }, { folder: repoDir });
+    const result = JSON.parse(await kbExport({ scope: 'global' }, { folder: repoDir }));
 
     // The global export DOES shrink: 5 committed entries in, 2 exported out.
     expect(result.exported).toBe(2);
@@ -244,8 +244,8 @@ describe('apra-fleet-ong: global-scope shrink guard', () => {
     fs.mkdirSync(path.dirname(KB_CONFIG_PATH), { recursive: true });
     fs.writeFileSync(KB_CONFIG_PATH, JSON.stringify({ bible: { autoCommit: true } }));
 
-    await kbImport({ path: biblePath, repo: repoDir });
-    const result = JSON.parse(await kbExport({ repo_path: repoDir, scope: 'global' }));
+    await kbImport({ path: biblePath }, { folder: repoDir });
+    const result = JSON.parse(await kbExport({ scope: 'global' }, { folder: repoDir }));
 
     // Recorded honestly: opting in re-arms the original failure for the global
     // file. If a guard is ever wanted there, THIS is the assertion that must flip.

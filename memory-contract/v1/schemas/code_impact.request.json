@@ -21,10 +21,6 @@
         "file_path": {
           "type": "string",
           "description": "File path hint for disambiguation"
-        },
-        "repo": {
-          "type": "string",
-          "description": "Absolute path to the repository root. Required when multiple repositories are indexed."
         }
       },
       "required": [

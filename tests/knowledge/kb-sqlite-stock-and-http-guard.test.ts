@@ -180,14 +180,12 @@ describe('sqlite path stays byte-identical (my-beads-db-0cd.8 criterion 1-2)', (
     expect(providers.project).toBeInstanceOf(SqliteProvider);
 
     const out = JSON.parse(await kbCapture({
-      repo_path: repoPath,
-      repo_remote_url: remoteUrl,
       type: 'user-directive',
       title: 'sqlite directive unchanged',
       summary: 'proves the fix did not move the choke point',
       content: 'The user said: never force-push to main.',
       confidence: 'CONFIRMED', // attempt to smuggle an active directive
-    } as any));
+    } as any, { folder: repoPath, remoteUrl: remoteUrl }));
 
     const entry = (await providers.project.query({ ids: [out.id] })).results[0];
     expect(entry.confidence).toBe('UNVERIFIED');
@@ -210,30 +208,30 @@ describe('eight SqliteProvider-only entrypoints fail fast and named under an htt
   const REFUSAL_SUFFIX = 'this operation is not supported when the KB is backed by a remote HTTP provider';
 
   it('kb_list', async () => {
-    await expect(kbList({ repo_path: makeRepoPath() } as any)).rejects.toThrow(`kb_list: ${REFUSAL_SUFFIX}`);
+    await expect(kbList({} as any, { folder: makeRepoPath() })).rejects.toThrow(`kb_list: ${REFUSAL_SUFFIX}`);
   });
 
   it('kb_feedback', async () => {
     await expect(
-      kbFeedback({ repo_path: makeRepoPath(), id: 'anything', reason: 'x' } as any),
+      kbFeedback({ id: 'anything', reason: 'x' } as any, { folder: makeRepoPath() }),
     ).rejects.toThrow(`kb_feedback: ${REFUSAL_SUFFIX}`);
   });
 
   it('kb_freshness_sweep', async () => {
-    await expect(kbFreshnessSweep({ repo_path: makeRepoPath() } as any)).rejects.toThrow(
+    await expect(kbFreshnessSweep({} as any, { folder: makeRepoPath() })).rejects.toThrow(
       `kb_freshness_sweep: ${REFUSAL_SUFFIX}`,
     );
   });
 
   it('kb_reconcile_prefilter', async () => {
-    await expect(kbReconcilePrefilter({ repo_path: makeRepoPath() } as any)).rejects.toThrow(
+    await expect(kbReconcilePrefilter({} as any, { folder: makeRepoPath() })).rejects.toThrow(
       `kb_reconcile_prefilter: ${REFUSAL_SUFFIX}`,
     );
   });
 
   it('kb_resolve_contradiction', async () => {
     await expect(
-      kbResolveContradiction({ repo_path: makeRepoPath(), winnerId: 'w', loserId: 'l', evidence: 'e' } as any),
+      kbResolveContradiction({ winnerId: 'w', loserId: 'l', evidence: 'e' } as any, { folder: makeRepoPath() }),
     ).rejects.toThrow(`kb_resolve_contradiction: ${REFUSAL_SUFFIX}`);
   });
 
@@ -241,11 +239,11 @@ describe('eight SqliteProvider-only entrypoints fail fast and named under an htt
     const importDir = makeRepoPath();
     fs.mkdirSync(path.join(importDir, '.fleet'), { recursive: true });
     fs.writeFileSync(path.join(importDir, '.fleet', 'kb-canonical.json'), '[]');
-    await expect(kbImport({ repo_path: importDir } as any)).rejects.toThrow(`kb_import: ${REFUSAL_SUFFIX}`);
+    await expect(kbImport({} as any, { folder: importDir })).rejects.toThrow(`kb_import: ${REFUSAL_SUFFIX}`);
   });
 
   it('kb_export', async () => {
-    await expect(kbExport({ repo_path: makeRepoPath() } as any)).rejects.toThrow(`kb_export: ${REFUSAL_SUFFIX}`);
+    await expect(kbExport({} as any, { folder: makeRepoPath() })).rejects.toThrow(`kb_export: ${REFUSAL_SUFFIX}`);
   });
 
   it('kb_directives CLI (list subcommand)', async () => {
@@ -265,9 +263,9 @@ describe('kb_stats is the deliberate exception: returns a not-computable bible i
 
   it('kb_stats returns supported:false and bible.computable:false, never throws, never reports a bare 0 drift', async () => {
     const repoPath = makeRepoPath();
-    await expect(kbStats({ repo_path: repoPath } as any)).resolves.toBeTypeOf('string');
+    await expect(kbStats({} as any, { folder: repoPath })).resolves.toBeTypeOf('string');
 
-    const raw = await kbStats({ repo_path: repoPath } as any);
+    const raw = await kbStats({} as any, { folder: repoPath });
     const parsed = JSON.parse(raw);
 
     expect(parsed.supported).toBe(false);
@@ -352,14 +350,12 @@ describe('operations MemorEYES X-1 depends on work over http: capture, query, co
     expect(providers.project).toBeInstanceOf(HttpKbProvider);
 
     const out = JSON.parse(await kbCapture({
-      repo_path: repoPath,
-      repo_remote_url: remoteUrl,
       type: 'user-directive',
       title: 'http directive quarantine',
       summary: 'proves the handler downgrades before the POST, not the remote',
       content: 'The user said: never force-push to main.',
       confidence: 'CONFIRMED', // attempt to smuggle an active directive over the wire
-    } as any));
+    } as any, { folder: repoPath, remoteUrl: remoteUrl }));
     expect(out.id).toBe('guard-e2e-server-id');
 
     // The assertion that matters: the mock remote above is a plain http.Server,

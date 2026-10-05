@@ -27,7 +27,11 @@ import { FLEET_DIR } from '../paths.js';
 import { extractWorkflowSubsystemAssets } from './workflow-assets.js';
 import { downloadAndExtractDolt, verifyDolt } from './dolt-install.js';
 import { BEADS_PACKAGE } from './beads-pin.js';
-import { classifyRunningServer, getInstallDataDir } from './install-guard.js';
+import { installBeads, type BeadsInstallDeps, type BeadsInstallResult } from './beads-install.js';
+import {
+  classifyRunningServer, relevantServerPids, getInstallDataDir, memberForceMayStop, fullInstallRefusalText,
+  writeMemberInstallMarker, clearMemberInstallMarker, FORCE_STOP_FULL_INSTALL_FLAG,
+} from './install-guard.js';
 import { getOrCreateKey, fleetKeyPath } from '../services/jwt.js';
 import { detectFleetSePrereqs, resolveFleetSeToolchainPaths, MIN_NODE_VERSION, FLEET_SE_PREREQ_FIX_LINE, type FleetSePrereqResult } from './fleet-se-prereqs.js';
 import { convertClaudeAllowToAgyPermissions, formatAgyPermissionRules } from '../providers/agy.js';
@@ -97,6 +101,33 @@ export function _resetFleetSeToolchainStepDeps(): void {
 function fleetSeToolchainStepEnabled(): boolean {
   if (process.env.NODE_ENV !== 'test') return true;
   return process.env.APRA_FLEET_ENABLE_FLEET_SE_TOOLCHAIN_SEED === '1';
+}
+
+/**
+ * The bd the supervisor records is the one the Beads step ACTUALLY left
+ * runnable (KB #605 vs v0.5 #561 recorded bdPath, resolved per the merge
+ * ruling): a bd that resolves on PATH (pre-existing or npm -g) keeps the PATH
+ * lookup's result; a bd the Beads step placed in, or found only in, BIN_DIR
+ * (the user-level install when npm -g is not writable) is recorded as
+ * <BIN_DIR>/bd[.exe] -- the NATIVE binary, which the supervisor runs directly
+ * (exec-bd.mjs's configured non-shim branch), never via the recorded node.
+ * bdPath is per-user (BIN_DIR is under this user's home). Exported for tests.
+ */
+export function recordedBdFromBeadsStep(
+  toolchain: ReturnType<typeof resolveFleetSeToolchainPaths>,
+  beadsResult: BeadsInstallResult | null,
+): ReturnType<typeof resolveFleetSeToolchainPaths> {
+  if (!beadsResult || beadsResult.state === 'missing') return toolchain;
+  if (beadsResult.location !== 'bin-dir' || !beadsResult.binPath) return toolchain;
+  return {
+    ...toolchain,
+    bd: {
+      path: beadsResult.binPath,
+      version: /\d+\.\d+\.\d+/.exec(beadsResult.version)?.[0] ?? null,
+      ok: true,
+      reason: null,
+    },
+  };
 }
 
 /**
@@ -170,6 +201,19 @@ export function _setDoltStepDeps(overrides: Partial<DoltStepDeps>): void {
 /** Test-only: restore the real (non-mocked) dolt step dependencies. */
 export function _resetDoltStepDeps(): void {
   doltStepDeps = realDoltStepDeps;
+}
+
+/** Real transports for the Beads step (execFileSync is mocked by the install tests). */
+function beadsStepDeps(): BeadsInstallDeps {
+  return {
+    platform: process.platform,
+    exec: (cmd, args, opts) => execFileSync(cmd, args, { stdio: 'pipe', encoding: 'utf-8', shell: opts.shell }) as unknown as string,
+    existsSync: p => fs.existsSync(p),
+    mkdirSync: p => { fs.mkdirSync(p, { recursive: true }); },
+    rmSync: p => { fs.rmSync(p, { recursive: true, force: true }); },
+    copyFileSync: (src, dest) => fs.copyFileSync(src, dest),
+    chmodSync: (p, mode) => fs.chmodSync(p, mode),
+  };
 }
 
 function doltStepEnabled(): boolean {
@@ -863,17 +907,16 @@ function isCommandAvailable(cmd: string): boolean {
 }
 
 /**
- * PIDs of every non-installer apra-fleet process currently running, as strings.
+ * PIDs of every apra-fleet process currently running other than this one, as
+ * strings.
  *
- * OS-global on purpose -- isApraFleetRunning() is defined in terms of this, and
- * waitForApraFleetToStop()/uninstall.ts depend on that scope. The current
- * process is always excluded so a self-update (the installed apra-fleet binary
- * running `install`) never sees itself.
- *
- * Exposed separately from the boolean so the install --force guard can tell
- * "the SAME process is refusing to die" from "the supervisor relaunched it
- * under a NEW pid" -- those need different remedies and different error text
- * (see the service-aware stop note below).
+ * OS-global on purpose -- isApraFleetRunning() is defined in terms of this and
+ * is the install guard's cheap first filter and uninstall.ts's running check.
+ * It is NOT what install --force stops or watches: that is scoped to
+ * relevantServerPids() (install-guard.ts). The current process is always
+ * excluded: the installer may itself be named apra-fleet (the fleet's member
+ * upgrade runs <home>/.apra-fleet/staging/apra-fleet, and a self-update runs
+ * the installed binary).
  */
 export function apraFleetPids(): string[] {
   try {
@@ -887,8 +930,8 @@ export function apraFleetPids(): string[] {
         .map(match => match[1])
         .filter(pid => pid !== currentPid);
     } else {
-      // -x = exact name match; installer is apra-fleet-installer-* so won't match;
-      // exclude current PID to handle self-update (installed apra-fleet binary running install)
+      // -x = exact name match; the installer itself may be named apra-fleet,
+      // so the current PID is excluded.
       const out = execSync('pgrep -x apra-fleet', { encoding: 'utf-8', stdio: 'pipe' });
       return out.split('\n')
         .map(line => line.trim())
@@ -903,16 +946,40 @@ export function isApraFleetRunning(): boolean {
   return apraFleetPids().length > 0;
 }
 
-export function killApraFleet(signal: 'SIGTERM' | 'SIGKILL' = 'SIGTERM'): void {
-  if (process.platform === 'win32') {
-    // taskkill /F is already forceful -- no softer signal to escalate from,
-    // so SIGKILL escalation on Windows just reissues the same command.
-    execSync('taskkill /F /IM apra-fleet.exe', { stdio: 'ignore' });
-  } else {
-    // -x = exact name match
-    const cmd = signal === 'SIGKILL' ? 'pkill -9 -x apra-fleet' : 'pkill -x apra-fleet';
-    execSync(cmd, { stdio: 'ignore' });
+/**
+ * Signal the given apra-fleet pids -- by PID, never by process name. A
+ * name-based kill (pkill -x apra-fleet / taskkill /IM apra-fleet.exe) also
+ * matches the installer when it is named apra-fleet, which killed the fleet's
+ * member upgrade mid-install (exit 143), and every unrelated apra-fleet server
+ * of the same user (apra-fleet-b4g.72). This process is never signalled, even
+ * when passed in. A pid that already exited is ignored.
+ */
+export function killApraFleet(pids: ReadonlyArray<number | string>, signal: 'SIGTERM' | 'SIGKILL' = 'SIGTERM'): void {
+  for (const raw of pids) {
+    const pid = Number(raw);
+    if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) continue;
+    try {
+      if (process.platform === 'win32') {
+        // taskkill /F is already forceful -- no softer signal to escalate from,
+        // so SIGKILL escalation on Windows just reissues the same command.
+        execSync(`taskkill /F /PID ${pid}`, { stdio: 'ignore' });
+      } else {
+        process.kill(pid, signal);
+      }
+    } catch {
+      // Already gone (ESRCH / taskkill "not found"): nothing to stop.
+    }
   }
+}
+
+/** Manual stop advice: the pids still running, plus the by-name fallback. */
+function manualStopHint(pids: string[]): string {
+  const byName = process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pkill -x apra-fleet';
+  if (pids.length === 0) return byName;
+  const byPid = process.platform === 'win32'
+    ? pids.map(pid => `    taskkill /F /PID ${pid}`).join('\n')
+    : `    kill ${pids.join(' ')}`;
+  return `${byPid}\n  or, when no other apra-fleet server of yours must keep running:\n${byName}`;
 }
 
 // --- install --force termination polling: bounded wait + SIGKILL escalation ---
@@ -920,10 +987,10 @@ export function killApraFleet(signal: 'SIGTERM' | 'SIGKILL' = 'SIGTERM'): void {
 // killApraFleet() above only sends SIGTERM (or the already-forceful Windows
 // taskkill /F). A singleton that is mid-request can take longer than a flat
 // sleep to exit, which previously produced ETXTBSY on fs.copyFileSync (the
-// old apra-fleet binary was still open). waitForApraFleetToStop() polls
-// isApraFleetRunning() over a grace window instead of sleeping a fixed
-// duration, and escalates to SIGKILL if a non-installer apra-fleet process
-// is still alive once that window elapses.
+// old apra-fleet binary was still open). waitForApraFleetToStop() polls the
+// pids relevant to this install over a grace window instead of sleeping a
+// fixed duration, and escalates to SIGKILL against those still alive once
+// that window elapses.
 export interface InstallForceTiming {
   pollIntervalMs: number;
   graceMs: number;
@@ -946,36 +1013,38 @@ function installForceTiming(): InstallForceTiming {
 }
 
 /**
- * Wait for any non-installer apra-fleet process to exit after killApraFleet()
- * sends SIGTERM. Polls isApraFleetRunning() over a grace window; if the
- * process is still alive once the window elapses, escalates to SIGKILL and
- * polls again over a second (shorter) window. Returns as soon as no
- * non-installer apra-fleet process is detected, or once both windows have
- * elapsed -- callers should not assume termination is guaranteed in the
- * latter case (see apra-fleet-l7n.3 for surfacing that failure to the
- * operator instead of asserting success).
+ * Wait for the relevant apra-fleet pids (`listPids`, re-evaluated on every
+ * poll; never this process) to exit after killApraFleet() sends SIGTERM. If
+ * any is still alive once the grace window elapses, escalates to SIGKILL
+ * against exactly those and polls again over a second (shorter) window.
+ * Returns as soon as none is detected, or once both windows have elapsed --
+ * callers should not assume termination is guaranteed in the latter case (see
+ * apra-fleet-l7n.3 for surfacing that failure to the operator instead of
+ * asserting success).
  */
-export async function waitForApraFleetToStop(): Promise<void> {
+export async function waitForApraFleetToStop(listPids: () => string[]): Promise<void> {
   const { pollIntervalMs, graceMs, killGraceMs } = installForceTiming();
 
   let deadline = Date.now() + graceMs;
-  while (isApraFleetRunning() && Date.now() < deadline) {
+  let pids = listPids();
+  while (pids.length > 0 && Date.now() < deadline) {
     await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+    pids = listPids();
   }
 
-  if (!isApraFleetRunning()) return;
+  if (pids.length === 0) return;
 
-  // Grace window elapsed and a non-installer apra-fleet process is still alive -- escalate.
-  killApraFleet('SIGKILL');
+  // Grace window elapsed and a relevant apra-fleet process is still alive -- escalate.
+  killApraFleet(pids, 'SIGKILL');
   deadline = Date.now() + killGraceMs;
-  while (isApraFleetRunning() && Date.now() < deadline) {
+  while (listPids().length > 0 && Date.now() < deadline) {
     await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
   }
 }
 
 // --- install --force service-aware stop ---
 //
-// killApraFleet() signals the server by process NAME. When the server is
+// killApraFleet() signals the server's pid directly. When the server is
 // registered with the platform service manager that is a race the installer
 // cannot win: the macOS LaunchAgent this installer writes declares
 // KeepAlive/SuccessfulExit=false (src/services/service-manager/macos.ts), so
@@ -1036,13 +1105,13 @@ function macosGuiUid(): string {
  * supervisor relaunch. Returns the pids still observed once the window closes
  * (empty when the service is down).
  */
-async function waitForServiceStop(): Promise<string[]> {
+async function waitForServiceStop(listPids: () => string[]): Promise<string[]> {
   const { pollIntervalMs, graceMs } = installForceTiming();
   const deadline = Date.now() + graceMs;
-  let pids = apraFleetPids();
+  let pids = listPids();
   while (pids.length > 0 && Date.now() < deadline) {
     await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
-    pids = apraFleetPids();
+    pids = listPids();
   }
   return pids;
 }
@@ -1105,6 +1174,7 @@ Usage:
   apra-fleet install --skill none      Skip skill installation
   apra-fleet install --no-skill        Same as --skill none
   apra-fleet install --workflows none  Skip installing the workflow runtime + built-in workflows
+  apra-fleet install --member          Member install: server + user-mode auto-start only (see below)
   apra-fleet install --force           Stop a running server before installing
   apra-fleet install --llm <provider>  Target LLM provider: claude (default), codex, copilot, agy, opencode
   apra-fleet install --transport http  Register MCP server with HTTP transport (default)
@@ -1119,6 +1189,10 @@ Options:
                           fleet server at http://localhost:7523/mcp. stdio runs fleet as a subprocess.
   --skill <mode>          Which skills to install: all (default), fleet, pm, or none.
   --no-skill              Alias for --skill none.
+  --member                Install only the server and its user-mode auto-start. Implies
+                          --skill none --workflows none; writes NO user-scope MCP entry,
+                          hooks/statusline/permissions settings or ~/.claude/CLAUDE.md block.
+                          Fails with E-MEMBER-AUTOSTART if the auto-start cannot be registered.
   --workflows <mode>      Which workflow assets to install: all (default) or none. Installs
                           ~/.apra-fleet/node_modules (workflow runtime), /schemas (agent role
                           schemas), and /workflows/{fleet-sprint,hello-world} (built-in workflows).
@@ -1134,6 +1208,11 @@ Options:
                           earlier (e.g. from the console) untouched; this can also be set later
                           from the console's Projects page or by re-running install with this flag.
   --force                 Stop a running apra-fleet server before installing (SEA mode only).
+                          With --member, only a server a previous member install left behind
+                          is stopped; anything else is refused (E-FULL-INSTALL-RUNNING).
+  --force-stop-full-install
+                          With --member --force: also stop a running server that was not started
+                          by a member install (e.g. a full install on a shared machine).
 
 Services (SEA + --transport http):
   Two OS services are registered, each with its own unit/task and its own
@@ -1221,6 +1300,7 @@ Services (SEA + --transport http):
 
   // Parse --force flag
   const force = args.includes('--force');
+  const forceStopFullInstall = args.includes(FORCE_STOP_FULL_INSTALL_FLAG);
 
   // Parse --transport flag (default: http)
   type TransportMode = 'http' | 'stdio';
@@ -1269,8 +1349,15 @@ Services (SEA + --transport http):
   }
 
   // Reject unknown flags to catch typos early
+  const memberMode = args.includes('--member');
+  if (memberMode) {
+    // A member install carries the server only: no skills, no workflows.
+    skillMode = 'none';
+    workflowsMode = 'none';
+  }
+
   const knownFlagPrefixes = ['--llm=', '--skill=', '--transport=', '--workflows=', '--project-dir='];
-  const knownFlagExact = new Set(['--llm', '--skill', '--no-skill', '--workflows', '--force', '--transport', '--project-dir', '--help', '-h']);
+  const knownFlagExact = new Set(['--member', '--llm', '--skill', '--no-skill', '--workflows', '--force', FORCE_STOP_FULL_INSTALL_FLAG, '--transport', '--project-dir', '--help', '-h']);
   for (const a of args) {
     if (knownFlagExact.has(a)) continue;
     if (knownFlagPrefixes.some(p => a.startsWith(p))) continue;
@@ -1310,6 +1397,9 @@ Services (SEA + --transport http):
   const installPm = skillMode === 'pm' || skillMode === 'all';
   const installAgents = installPm && paths.agentsDir !== undefined;
   const installWorkflows = workflowsMode === 'all';
+  // The Beads (bd) step runs for fleet-se (--workflows all) and for a --member
+  // install (KB #605/#618: sprint roles on a member need bd).
+  const installBeadsStep = installWorkflows || memberMode;
 
   // --- fleet-se prerequisite gate (apra-fleet-i9ag.13, apra-fleet-i9ag.12.15) ---
   // fleet-se (fleet-sprint engine, fleet supervisor, bd) requires Node.js
@@ -1342,6 +1432,20 @@ Services (SEA + --transport http):
   }
 
   const serviceStep = isSea() && transport === 'http';
+  // A member install exists to leave an auto-starting server behind. With no
+  // service step (stdio transport or non-SEA install) nothing would register
+  // the auto-start, so fail loudly before touching anything.
+  if (memberMode && !serviceStep) {
+    const why = transport !== 'http'
+      ? `--transport ${transport} has no auto-start (use --transport http)`
+      : 'a non-SEA (dev) install has no auto-start (use the SEA binary)';
+    console.error(`
+Error: E-MEMBER-AUTOSTART: --member requires the user-mode auto-start, but ${why}.
+Nothing was installed.
+`);
+    process.exitCode = 1;
+    return;
+  }
   // Base counts no longer bake in an always-on Beads slot (apra-fleet-i9ag.13.7.2):
   // bd is part of fleet-se under the owner re-scope on apra-fleet-i9ag.13, so its
   // step (like the workflow-runtime step) is only counted when installWorkflows.
@@ -1349,7 +1453,7 @@ Services (SEA + --transport http):
   if (installAgents) totalSteps++;
   if (installPm) totalSteps++; // cost.js extraction + workflow copy step
   if (installWorkflows) totalSteps++; // workflow-subsystem runtime/schemas/built-ins step
-  if (installWorkflows) totalSteps++; // Beads install step -- bd is part of fleet-se, only attempted with workflows
+  if (installBeadsStep) totalSteps++; // Beads install step -- fleet-se (workflows) or a --member install
   totalSteps++; // dolt CLI install step (apra-fleet-ire.3) -- unconditional
   totalSteps++; // KB + code intelligence setup -- unconditional, runs after Beads
   if (serviceStep) totalSteps++;
@@ -1359,18 +1463,18 @@ Services (SEA + --transport http):
   // prereq gate is deliberately NOT in this list: it runs before any step is
   // printed and consumes no step number.
   // kb is always second-to-last-or-last; dolt/beads/workflow-runtime step
-  // backward from kb. beads and workflow-runtime are only PRINTED when
-  // installWorkflows is true, so dolt sits one slot earlier than kb when
-  // beads is skipped, two slots earlier when it runs.
+  // backward from kb. workflow-runtime is only PRINTED when installWorkflows
+  // is true and beads only when installBeadsStep is, so dolt sits one slot
+  // earlier than kb when beads is skipped, two slots earlier when it runs.
   const kbStep = serviceStep ? totalSteps - 1 : totalSteps;
-  const doltStep = installWorkflows ? kbStep - 2 : kbStep - 1;
+  const doltStep = installBeadsStep ? kbStep - 2 : kbStep - 1;
   const beadsStep = kbStep - 1;
   const workflowsStepNum = doltStep - 1;
 
   // --- Running-process guard (SEA + npm modes -- dev mode runs via node, not a managed binary) ---
   //
-  // isApraFleetRunning() is OS-global on purpose (waitForApraFleetToStop() and
-  // uninstall.ts depend on that). It is only the cheap first filter here:
+  // isApraFleetRunning() is OS-global on purpose (uninstall.ts depends on
+  // that). It is only the cheap first filter here:
   // classifyRunningServer() then decides whether the running server is actually
   // relevant to THIS install -- recorded live in the target data dir, or running
   // from the install prefix we are about to overwrite (ETXTBSY). An unrelated
@@ -1403,9 +1507,19 @@ ${killHint}
 `);
       process.exit(1);
     }
+    // A member install (fleet's remote upgrade path) never stops a server it
+    // did not start unless explicitly told to: nothing has been stopped yet.
+    if (!memberForceMayStop({ memberMode, overridden: forceStopFullInstall })) {
+      console.error(fullInstallRefusalText(runningScope.detail));
+      process.exit(3);
+    }
+    // Only the pids relevant to THIS install are stopped or watched -- by pid,
+    // never by name, never this process (which may itself be named apra-fleet).
+    // Unrelated apra-fleet servers of the same user are left alone.
+    const relevantPids = (): string[] => relevantServerPids(BIN_DIR).map(String);
     // Snapshot BEFORE anything is stopped: a pid that is present afterwards but
     // absent here is a supervisor relaunch, not a process refusing to die.
-    const pidsBeforeStop = apraFleetPids();
+    const pidsBeforeStop = relevantPids();
     guardServiceMgr = await registeredServiceManager();
 
     if (guardServiceMgr) {
@@ -1417,22 +1531,22 @@ ${killHint}
       } catch (err) {
         console.warn(`    Service stop failed: ${(err as Error).message}`);
       }
-      const stillUp = await waitForServiceStop();
+      const stillUp = await waitForServiceStop(relevantPids);
       // Escalate ONLY when the very same pids are still there -- i.e. nothing
       // relaunched the server and there is no supervisor race to lose. If a NEW
-      // pid appeared, signalling by name is futile and is deliberately skipped
-      // so the relaunch is reported instead of retried forever.
+      // pid appeared, signalling is futile and is deliberately skipped so the
+      // relaunch is reported instead of retried forever.
       if (stillUp.length > 0 && stillUp.every(pid => pidsBeforeStop.includes(pid))) {
-        killApraFleet();
-        await waitForApraFleetToStop();
+        killApraFleet(stillUp);
+        await waitForApraFleetToStop(relevantPids);
       }
     } else {
-      // No service registered: historical path, unchanged.
-      killApraFleet();
-      await waitForApraFleetToStop();
+      // No service registered: signal the relevant pids directly.
+      killApraFleet(pidsBeforeStop);
+      await waitForApraFleetToStop(relevantPids);
     }
 
-    const pidsAfterStop = apraFleetPids();
+    const pidsAfterStop = relevantPids();
     if (pidsAfterStop.length > 0) {
       const relaunchedPids = pidsAfterStop.filter(pid => !pidsBeforeStop.includes(pid));
       if (relaunchedPids.length > 0) {
@@ -1440,7 +1554,7 @@ ${killHint}
 Error: the apra-fleet server was RELAUNCHED by its service supervisor while
 install --force was stopping it -- the observed pid changed between polls (was
 ${pidsBeforeStop.join(', ') || 'none'}, now ${pidsAfterStop.join(', ')}), so it did not merely refuse to die.
-Signalling the process by name cannot win that race. Stop the service itself,
+Signalling the process cannot win that race. Stop the service itself,
 then re-run the install:
     ${serviceStopCommand()}
 `);
@@ -1449,11 +1563,13 @@ then re-run the install:
       console.error(`
 Error: could not stop the running apra-fleet server (it is still running after
 SIGTERM and a SIGKILL escalation). Stop it manually before installing:
-${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pkill -x apra-fleet'}
+${manualStopHint(pidsAfterStop)}
 `);
       process.exit(1);
     }
-    console.log('  Stopped running server.');
+    console.log(pidsBeforeStop.length > 0 || guardStoppedService
+      ? '  Stopped running server.'
+      : '  No running server process of this install was found to stop.');
   }
 
   console.log(`\nInstalling Apra Fleet ${serverVersion} for ${paths.name}...\n`);
@@ -1561,7 +1677,9 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
   // --- Step 4: Configure hooks + statusline in settings.json ---
   console.log(`  [4/${totalSteps}] Configuring ${paths.name} settings...`);
   // OpenCode has a strict config schema -- hooks/statusLine/defaultModel are not valid keys
-  if (llm !== 'opencode') {
+  if (memberMode) {
+    console.log('    Skipped (--member): user-scope settings are left untouched.');
+  } else if (llm !== 'opencode') {
     const installedHooksConfig = JSON.parse(
       fs.readFileSync(path.join(HOOKS_DIR, 'hooks-config.json'), 'utf-8')
     );
@@ -1580,7 +1698,11 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
   const fleetPort = DEFAULT_PORT;
   const fleetUrl = `http://localhost:${fleetPort}/mcp`;
 
-  if (transport === 'http') {
+  if (memberMode) {
+    // The per-folder member entry is written by compose_permissions; a member
+    // install must never register apra-fleet in any provider's user-scope config.
+    console.log('    Skipped (--member): no user-scope MCP registration.');
+  } else if (transport === 'http') {
     if (llm === 'claude') {
       if (!isCommandAvailable('claude')) {
         console.warn(
@@ -1925,65 +2047,44 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
   }
 
   // --- Beads install step ---
-  // shell:true required on Windows - npm global packages install as .cmd wrappers
-  // that cannot be directly spawned by Node without a shell.
-  // bd is part of fleet-se under the owner re-scope on apra-fleet-i9ag.13, so
-  // this step is only attempted when --workflows all (installWorkflows), and
-  // only reached once the fleet-se prerequisite gate above has already passed
-  // (or was bypassed under NODE_ENV=test -- see fleetSePrereqCheckEnabled()).
-  // A genuine install failure here is now FATAL (apra-fleet-i9ag.13.7.2):
-  // silently skipping bd is exactly the defect apra-fleet-i9ag.13.7 fixes.
-  // beadsVersion stays null until something has actually probed bd, so the
-  // final summary can tell "the Beads step ran and this is what it found" from
-  // "the step never ran (--workflows none)" instead of re-probing and printing
-  // a version the step never saw.
-  let beadsVersion: string | null = null;
-  if (installWorkflows) {
+  // KB #605 Beads step (src/cli/beads-install.ts): a working bd on PATH, or one
+  // already in BIN_DIR, is left untouched; else `npm install -g` (kept only
+  // when bd then resolves); else a user-level `npm install --prefix` whose
+  // NATIVE bd binary is copied into BIN_DIR (no writable global prefix needed).
+  // dispatch/execute_command append BIN_DIR to PATH.
+  //
+  // When it runs: with --workflows all (bd is part of fleet-se, v0.5
+  // apra-fleet-i9ag.13 re-scope) AND for a --member install (sprint roles on a
+  // member need bd; KB #618 sets up the member's beads before dispatch).
+  //
+  // Failure: FATAL with --workflows all -- fleet-se without a runnable bd is a
+  // false success (apra-fleet-i9ag.13.7.2), so the reason and fix are printed
+  // and the install exits non-zero. LOUD but non-fatal for a --member install
+  // (the member's server is still useful for kb_*/code_*), and repeated in the
+  // summary. beadsResult stays null when the step did not run, so the summary
+  // can tell "ran and found X" from "never ran".
+  let beadsResult: BeadsInstallResult | null = null;
+  if (installBeadsStep) {
     console.log(`  [${beadsStep}/${totalSteps}] Installing Beads task tracker...`);
-    beadsVersion = probeBdVersion();
-    if (beadsVersion === null) {
-      // not installed - install it. The pin comes from BEADS_PACKAGE
-      // (src/cli/beads-pin.ts), never a literal here: a second copy of the
-      // version string in this file is how apra-fleet-i9ag.12.4's drift
-      // happened.
-      try {
-        // stdio 'pipe' + echo, NOT 'inherit': with 'inherit' npm's diagnostics
-        // go straight to the terminal and execFileSync's thrown error carries
-        // only 'Command failed: ...', so the error report below could not
-        // surface npm's own text (and could surface nothing at all when stderr
-        // is not a terminal, e.g. under a CI log capture or a wrapper script).
-        const out = execFileSync('npm', ['install', '-g', BEADS_PACKAGE], {
-          stdio: 'pipe',
-          encoding: 'utf-8',
-          shell: true,
-        });
-        if (out) process.stdout.write(String(out));
-      } catch (err) {
-        const e = err as Error & { stdout?: string | Buffer; stderr?: string | Buffer };
-        const npmOutput = [e.stdout, e.stderr]
-          .filter(v => v !== undefined && v !== null)
-          .map(v => String(v))
-          .join('')
-          .trim();
+    beadsResult = installBeads(BIN_DIR, beadsStepDeps());
+    if (beadsResult.state !== 'missing' && beadsResult.location === 'bin-dir') {
+      // Later steps of THIS install (the --project-dir check runs
+      // `bd config get sync.remote`) must find the BIN_DIR bd too.
+      process.env.PATH = `${BIN_DIR}${path.delimiter}${process.env.PATH ?? ''}`;
+    }
+    if (beadsResult.state === 'installed' && beadsResult.location === 'bin-dir') {
+      console.log(`  - bd installed for this user at ${beadsResult.binPath} (fleet commands find it there; add ${BIN_DIR} to your own shell PATH to use bd by hand)`);
+    } else if (beadsResult.state === 'missing') {
+      if (installWorkflows) {
         console.error(
-          `\nError: failed to install Beads (${BEADS_PACKAGE}):\n${npmOutput || e.message}\n`,
+          `\nError: failed to install Beads (${BEADS_PACKAGE}): ${beadsResult.reason}\n` +
+            `       Fix: ${beadsResult.fix}\n`,
         );
         process.exit(1);
       }
-      // npm exiting 0 does NOT mean bd is usable: the npm global bin directory
-      // is frequently not on PATH (nvm, volta, and most Windows setups). Left
-      // unchecked, the installer would go on to print 'fleet-se: ready (... bd
-      // not available)' and exit 0 -- a false success of exactly the shape
-      // apra-fleet-i9ag.13.7 exists to remove. Fail loudly instead.
-      beadsVersion = probeBdVersion();
-      if (beadsVersion === null) {
-        console.error(
-          `\nError: ${BEADS_PACKAGE} was installed but 'bd' cannot be run.\n` +
-            `       This usually means npm's global bin directory is not on PATH.\n` +
-            `       Add it (npm prefix -g) to PATH and re-run 'apra-fleet install'.\n`,
-        );
-        process.exit(1);
-      }
+      console.warn(`  [!] Beads (bd) NOT installed: ${beadsResult.reason}`);
+      console.warn(`  [!] Fix: ${beadsResult.fix}`);
+      console.warn('  - Sprint work on this member needs bd and will fail until it is installed');
     }
   }
 
@@ -2027,7 +2128,8 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
   }
 
   // Write code intelligence routing instruction to ~/.claude/CLAUDE.md
-  try {
+  // (never for a --member install: that file belongs to the member's user)
+  if (!memberMode) try {
     const claudeMdPath = path.join(os.homedir(), '.claude', 'CLAUDE.md');
     const sentinel = '<!-- apra-fleet:code-intelligence -->';
     const block = `\n${sentinel}\nWhen code_graph, code_impact, code_query, or code_context tools are available,\nuse them for symbol lookups, call chain tracing, and impact analysis.\nNever use grep or file reads for structural questions when these tools are present.\n<!-- /apra-fleet:code-intelligence -->\n`;
@@ -2043,7 +2145,7 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
 
   // OpenCode uses --dangerously-skip-permissions and per-agent permission: frontmatter;
   // a top-level "permissions" key is invalid in opencode.json
-  if (llm !== 'opencode') {
+  if (llm !== 'opencode' && !memberMode) {
     const extraPerms = (llm === 'claude' && installPm)
       ? ['Bash(*)', 'Skill(auto-sprint)', 'Workflow(auto-sprint)']
       : [];
@@ -2094,7 +2196,10 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
   // bdPath and this step continues, matching install's existing "bd not
   // available" tolerance elsewhere.
   if (installWorkflows && fleetSeToolchainStepEnabled()) {
-    const toolchain = fleetSeToolchainStepDeps.resolveFleetSeToolchainPaths();
+    const toolchain = recordedBdFromBeadsStep(
+      fleetSeToolchainStepDeps.resolveFleetSeToolchainPaths(),
+      beadsResult,
+    );
     const toolchainResult = seedSupervisorToolchain(toolchain);
     if (!toolchainResult.ok) {
       console.error(
@@ -2161,6 +2266,17 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
       }
     } catch (err) {
       console.warn(`    Service registration skipped: ${(err as Error).message}`);
+      // A member install exists to leave an auto-starting server behind; without
+      // the auto-start it is not a success, so say so with a typed status.
+      if (memberMode) {
+        console.error(`
+Error: E-MEMBER-AUTOSTART: the member install could not register the user-mode
+auto-start (${(err as Error).message}). The server binary is installed but will
+not start automatically.
+`);
+        process.exitCode = 1;
+        return;
+      }
       // --force stopped the server; reporting success would leave it down silently.
       if (force && (runningScope?.relevant || guardStoppedService)) {
         const restartHint = guardStoppedService
@@ -2209,15 +2325,21 @@ ${restartHint}
   }
 
   // --- Done ---
-  // When the Beads step ran (--workflows all) it has ALREADY probed bd and
-  // exited non-zero if bd was not runnable, so beadsVersion is a fact this
-  // install established, not a fresh guess -- 'ready ... bd not available' is
-  // therefore unreachable rather than merely unlikely (apra-fleet-i9ag.13.7.2).
-  // Only the --workflows none path, where the step was skipped by design,
-  // probes here -- and reports honestly, without failing, because bd is part
-  // of the fleet-se the user explicitly opted out of.
-  if (beadsVersion === null) beadsVersion = probeBdVersion();
-  const beadsSummary = beadsVersion === null ? 'not available' : beadsVersion || 'installed';
+  if (memberMode) writeMemberInstallMarker(serverVersion); else clearMemberInstallMarker();
+  // When the Beads step ran it has ALREADY established bd's state (and exited
+  // non-zero under --workflows all if bd was not runnable), so 'ready ... bd
+  // not available' is unreachable (apra-fleet-i9ag.13.7.2). Only when the step
+  // was skipped by design (--workflows none, not --member) is bd probed here,
+  // and reported honestly without failing.
+  let beadsSummary: string;
+  if (beadsResult === null) {
+    const probed = probeBdVersion();
+    beadsSummary = probed === null ? 'not available' : probed || 'installed';
+  } else if (beadsResult.state === 'missing') {
+    beadsSummary = `not available -- ${beadsResult.reason}. Fix: ${beadsResult.fix}`;
+  } else {
+    beadsSummary = `${beadsResult.version}${beadsResult.location === 'bin-dir' ? ` (${beadsResult.binPath})` : ''}`;
+  }
 
   const clientName = llm === 'claude' ? 'Claude Code' : paths.name;
   const instructions = llm === 'claude' ? 'Run /mcp in Claude Code to load the server.' : `Restart ${paths.name} to load the server.`;

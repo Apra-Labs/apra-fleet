@@ -116,7 +116,7 @@ describe('generator roster matches the registered kb_*/code_* tool surface (my-b
     expect([...roster].sort()).toEqual([...emitted].sort());
   });
 
-  it('baseline: 16 kb_* + 7 code_* = 23 registered tools, 46 emitted schema documents', async () => {
+  it('baseline: 17 kb_* + 9 code_* = 26 registered tools, 52 emitted schema documents', async () => {
     const registered = kbAndCodeToolNames(await registeredToolNames());
     const kbCount = [...registered].filter((n) => n.startsWith('kb_')).length;
     const codeCount = [...registered].filter((n) => n.startsWith('code_')).length;
@@ -126,12 +126,12 @@ describe('generator roster matches the registered kb_*/code_* tool surface (my-b
     // fails on the set-equality assertions above before this baseline check
     // is even reached for a wrong reason; this check exists to name the
     // number INVENTORY.md section 1 arbitrates, not to gate on it blindly.
-    expect(kbCount).toBe(16);
-    expect(codeCount).toBe(7);
-    expect(registered.size).toBe(23);
+    expect(kbCount).toBe(17);
+    expect(codeCount).toBe(9);
+    expect(registered.size).toBe(26);
 
     const emittedFiles = readdirSync(SCHEMAS_DIR).filter((f) => f.endsWith('.json'));
-    expect(emittedFiles.length).toBe(46);
+    expect(emittedFiles.length).toBe(52);
   });
 });
 

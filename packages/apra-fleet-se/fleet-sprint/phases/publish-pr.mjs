@@ -82,6 +82,8 @@ import { buildSprintPrBody, buildSprintPrTitle } from '../pr-body.mjs';
  *   return value -- it never overrides the sprint's own computed verdict.
  */
 export async function runPublishPrPhase({
+    // Lower-quality banner (lower-quality.mjs), or null when every member was verified.
+    lowerQualityBanner = null,
     // Presentation + command seams.
     phase,
     log,
@@ -250,6 +252,7 @@ export async function runPublishPrPhase({
             notes: finalVerdictResult.notes,
             details: [
                 validated.skipRegression ? 'Regression pass: skipped by launch option -- not run this sprint.' : null,
+                lowerQualityBanner || null,
             ],
             costAnalysis,
             previousBody,

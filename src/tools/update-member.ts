@@ -17,6 +17,8 @@ import { recheckProjectAgentShadows, invalidateProjectAgentShadowCache } from '.
 import { getStrategy } from '../services/strategy.js';
 import { seedWorkspaceTrust } from '../utils/workspace-trust.js';
 import { ensureAgyProject } from '../services/agy-project.js';
+import { beadsStatusNote, refreshMemberFleetMcp, getMemberFleetMcpDeps } from '../services/member-fleet-install.js';
+import { composePermissions, removeComposedMemberConfig } from './compose-permissions.js';
 import { isFullyQualifiedPath, workFolderNotAbsoluteError } from '../utils/work-folder-validation.js';
 import { validateEnvMap } from '../utils/env-map-validation.js';
 
@@ -80,6 +82,7 @@ export const updateMemberSchema = z.object({
   }).optional().describe('Which package/consumer owns this member for its own bookkeeping. Refused while the member is held (reservedBy set) -- the same refusal member_owner applies, so this cannot be used to bypass it.'),
   env: z.record(z.string(), z.string()).optional().describe('Replace this member\'s env map. Names must match the portable env-name pattern (letters, digits, underscore; cannot start with a digit); total size across all names+values is capped at 4096 characters. Exported into the processes execute_command and execute_prompt run on the member, including long_running tasks. Stored auth credentials win a name collision, so an entry here cannot shadow one. Pass {} to clear.'),
   llm_auth_expires_at: z.string().optional().describe('ISO 8601 expiry of this member\'s LLM auth (OAuth session / API key), when known.'),
+  fleet_install: z.enum(['auto', 'skip']).optional().describe('Upgrade or skip the member\'s own apra-fleet install. "auto": for a remote member, probe it and install/upgrade apra-fleet when it is missing or older than this orchestrator (build-aware), self-register and verify a MEMBER session, even when nothing else changed; local members only get the MEMBER-session probe. "skip": no install (a refresh triggered by another change runs with install off). Omit to keep the default: install only on a provider change. The result reports the recoverable fleetMcp status (re-probe with member_detail refresh:true).'),
 });
 
 export type UpdateMemberInput = z.infer<typeof updateMemberSchema>;
@@ -337,6 +340,70 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
     await seedWorkspaceTrust(updated, undefined, 'update_member');
   }
 
+  // Provider switch OR work-folder move: remove exactly what
+  // compose_permissions wrote for the member as it was BEFORE this update (old
+  // provider, old folder/host -- its permission files, its per-folder
+  // apra-fleet MCP entry and the exclude lines), then re-compose for the
+  // member as it is now, so the new folder gets its ?member= entry at once
+  // (until then a session there would see the FULL user-scope entry) and the
+  // old folder is left with no stale member entry. Skipped entirely when
+  // neither the provider nor the work folder changed.
+  const oldProvider = existing.llmProvider ?? 'claude';
+  const newProvider = updated.llmProvider ?? 'claude';
+  const providerChanged = oldProvider !== newProvider;
+  const workFolderMoved = updated.workFolder !== existing.workFolder;
+  if (providerChanged || workFolderMoved) {
+    const why = providerChanged
+      ? `Provider switch ${oldProvider} -> ${newProvider}`
+      : `Work folder move ${existing.workFolder} -> ${updated.workFolder}`;
+    const oldWhat = providerChanged ? `the old ${oldProvider} config` : `the config in the old work folder`;
+    try {
+      const removed = await removeComposedMemberConfig(existing);
+      logLine('update_member', `${why}: removed old config (${removed.join('; ') || 'nothing to remove'})`, updated);
+    } catch (e: any) {
+      warnings.push(`${why}: could not remove ${oldWhat}: ${e?.message ?? String(e)}`);
+    }
+    let composeResult: string;
+    try {
+      composeResult = await composePermissions({ member_id: updated.id, role: 'doer', tags: updated.tags });
+    } catch (e: any) {
+      composeResult = `compose_permissions threw: ${e?.message ?? String(e)}`;
+    }
+    if (!composeResult.startsWith('\u2705')) {
+      const asciiDetail = composeResult.replace(/^[^\x00-\x7F]+\s*/, '');
+      warnings.push(providerChanged
+        ? `ERROR: provider switched to ${newProvider} but compose_permissions failed -- the member has no ${newProvider} permission/MCP config: ${asciiDetail}`
+        : `ERROR: work folder moved to ${updated.workFolder} but compose_permissions failed -- the new folder has no member permission/MCP config: ${asciiDetail}`);
+    }
+  }
+
+  // fleetMcp: a provider change re-runs the member install with --llm <new
+  // provider>; a name or work-folder change re-runs `register-member --id` on
+  // the member's own install. Best-effort: the update itself already succeeded
+  // and the outcome is a recorded, recoverable status (apra-fleet-b4g.56).
+  const nameChanged = updated.friendlyName !== existing.friendlyName;
+  let fleetMcpLine: string | undefined;
+  const fleetInstallAuto = input.fleet_install === 'auto';
+  if (providerChanged || nameChanged || workFolderMoved || fleetInstallAuto) {
+    try {
+      // 'skip' disables the install; 'auto' installs a remote member (upgrading
+      // only when missing/older); omitted keeps the provider-change-only default.
+      const install = input.fleet_install === 'skip'
+        ? false
+        : (providerChanged || fleetInstallAuto) && updated.agentType !== 'local';
+      const status = await refreshMemberFleetMcp(updated, getMemberFleetMcpDeps(), {
+        install,
+        forceInstall: providerChanged && input.fleet_install !== 'skip',
+      });
+      fleetMcpLine = status.state === 'available'
+        ? `available${status.version ? ` (apra-fleet ${status.version})` : ''}${status.installFailure && status.detail ? ` -- warning: ${status.detail}` : ''}`
+        : `unavailable (${status.reason ?? 'unknown'})${status.detail ? ` -- ${status.detail}` : ''}`;
+      fleetMcpLine += beadsStatusNote(status);
+    } catch (e: any) {
+      fleetMcpLine = `unavailable (probe-failed) -- ${e?.message ?? String(e)}`;
+    }
+  }
+
   // Re-check project-level agent files that would shadow the managed role set
   // (the work folder or provider may have changed). The dispatch-time cache is
   // always invalidated; the check itself runs only when the member is reachable
@@ -384,6 +451,7 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
     const mt = updated.modelTiers;
     result += `  Model Tiers: cheap=${mt.cheap ?? '-'} standard=${mt.standard ?? '-'} premium=${mt.premium ?? '-'}\n`;
   }
+  if (fleetMcpLine) result += `  fleetMcp: ${fleetMcpLine}\n`;
 
   if (warnings.length > 0) {
     result += '\n';

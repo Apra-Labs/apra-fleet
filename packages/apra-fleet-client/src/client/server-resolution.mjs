@@ -47,7 +47,7 @@ import net from 'node:net';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { StdioTransport } from './transport.mjs';
+import { StdioTransport, StreamableHttpTransport } from './transport.mjs';
 import { McpClient } from './client.mjs';
 import { ApraFleet } from './api.mjs';
 import { autoStartFleetServer, readStoppedByUser, stoppedByUserError } from './auto-start.mjs';
@@ -385,4 +385,52 @@ export async function connectFleet(deps = {}) {
     }
 
     return { transport, mcpClient, fleetApi: new ApraFleet(mcpClient), mode: resolution.mode };
+}
+
+/**
+ * Resolve + connect a MEMBER session: the local HTTP singleton with
+ * `?member=<uuid>` appended, so the server scopes the session's tools to the
+ * member allowlist. A member session needs the HTTP singleton (the identity
+ * rides on the URL); a stdio self-spawn cannot carry one, so it is refused.
+ * An unregistered uuid is refused by the server with HTTP 403 at initialize;
+ * the rejection carries `.status === 403` and `.code === 'HTTP_403'`.
+ *
+ * `deps.origin === 'engine'` adds `origin=engine` to the URL: the session is
+ * the ENGINE acting as the member (memberCall, `apra-fleet call`), and the
+ * server excludes its kb_/code_ calls from the member's session_stats counts.
+ * Only those engine paths set it; any other origin value is refused.
+ *
+ * @param {string} memberId registered member uuid
+ * @param {object} [deps] same bag as resolveFleetServerConnection, plus `options`
+ *                        forwarded to the transport and optional
+ *                        `origin: 'engine'`.
+ * @returns {Promise<{transport: object, mcpClient: McpClient, mode: 'http', url: string, close: () => Promise<void>}>}
+ *          Always `await close()` when done: it DELETEs the server session so no
+ *          McpServer or registry entry is leaked (`transport.stop()` does not).
+ */
+export async function connectFleetMember(memberId, deps = {}) {
+    if (!memberId) throw new Error('connectFleetMember requires a member id.');
+    if (deps.origin !== undefined && deps.origin !== 'engine') {
+        throw new Error(`connectFleetMember: unsupported origin '${deps.origin}' (only 'engine' is accepted).`);
+    }
+    const resolution = await resolveFleetServerConnection(deps);
+    if (resolution.mode !== 'http') {
+        throw new Error(
+            'A member session requires the local apra-fleet HTTP server, but none was resolved ' +
+                `(${resolution.reason}). Start it with 'apra-fleet start'.`,
+        );
+    }
+    const url = new URL(resolution.url);
+    url.searchParams.set('member', memberId);
+    if (deps.origin === 'engine') url.searchParams.set('origin', 'engine');
+    const transport = new StreamableHttpTransport(url.toString(), deps.options || {});
+    await transport.start();
+    return {
+        transport,
+        mcpClient: new McpClient(transport),
+        mode: 'http',
+        url: url.toString(),
+        /** Release the server-side member session (HTTP DELETE) and stop the transport. */
+        close: () => transport.close(),
+    };
 }

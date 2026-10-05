@@ -90,7 +90,9 @@ const KB_CAPTURES_INSTRUCTION_RE = /\b(add|populate|emit|include|fill(?:\s+in)?|
 // vacuously. This second check scans the section BODY line by line for an
 // imperative verb (run/call/invoke) immediately preceding "ToolSearch" or an
 // "mcp__*__kb_*" tool name, on a line that carries no guarding conditional.
-const KB_TOOL_IMPERATIVE_RE = /\b(run|call|invoke)\b\s+(?:the\s+)?`?(ToolSearch|mcp__[\w-]+__kb_[\w-]+)/i;
+// The member allowlist exposes the tools under their bare names (kb_session_prime),
+// so a bare kb_* name counts as well as an mcp__<server>__kb_* one.
+const KB_TOOL_IMPERATIVE_RE = /\b(run|call|invoke)\b\s+(?:the\s+)?`?(ToolSearch|(?:mcp__[\w-]+__)?kb_[\w-]+)/i;
 const KB_CONDITIONAL_GUARD_RE = /\b(if|when|unless|where\s+(?:available|reachable)|opportunistically|bonus\s+path)\b/i;
 
 /**
@@ -120,11 +122,7 @@ function kbToolCallUnits(section) {
 
 // The tools-first contract's guard: a tool call is conditioned on the tools
 // being usable, not merely on some "if".
-const KB_AVAILABILITY_GUARD_RE = /\b(available|exposes|reachable)\b/i;
-
-// The provider-conditional ToolSearch gating (src/cli/agent-transform.ts):
-// [1] = if-branch (ToolSearch available), [2] = else-branch.
-const TOOLSEARCH_GATE_RE = /<!-- if-tool: ToolSearch -->([\s\S]*?)<!-- else-tool: ToolSearch -->([\s\S]*?)<!-- end-tool: ToolSearch -->/;
+const KB_AVAILABILITY_GUARD_RE = /\b(available|exposes|reachable|present)\b/i;
 
 function findUnconditionalKbToolCall(section) {
     const paragraphs = String(section || '').split(/\n\s*\n/);
@@ -193,29 +191,17 @@ test('wrapper-injection roles without a kb-apply step: their prompt files requir
             assert.ok(
                 KB_AVAILABILITY_GUARD_RE.test(unit),
                 `role(s) ${roleNames.join(', ')}: ${agentType}.md has a KB tool call not guarded by tool availability ` +
-                `(available/exposes/reachable): ${JSON.stringify(unit)}`
+                `(available/exposes/reachable/present): ${JSON.stringify(unit)}`
             );
         }
 
-        // Both provider branches of the ToolSearch gating must fall back to the
-        // pre-fetched block, and the shared text must say that block IS the
-        // knowledge when the tools are missing (never "no KB").
-        const branches = TOOLSEARCH_GATE_RE.exec(kb.section);
-        assert.ok(branches, `role(s) ${roleNames.join(', ')}: ${agentType}.md's Knowledge Bank step has no if-tool/else-tool ToolSearch gating`);
-        for (const [label, text] of [['if-tool (ToolSearch available)', branches[1]], ['else-tool (no ToolSearch)', branches[2]]]) {
-            const collapsed = text.replace(/\s+/g, ' ');
-            assert.ok(
-                collapsed.includes('use the pre-fetched block instead'),
-                `role(s) ${roleNames.join(', ')}: ${agentType}.md ${label} branch does not fall back to the pre-fetched block: ${JSON.stringify(collapsed)}`
-            );
-        }
-        const shared = kb.section.replace(TOOLSEARCH_GATE_RE, ' ').replace(/\s+/g, ' ');
+        // The tools-when-present / block-otherwise / conditional-fallback wording
+        // itself is pinned for every role by role-prompt-step0-contract.test.mjs.
+        // Here: no ToolSearch probing survives in the KB step.
         assert.ok(
-            shared.includes('Use the live KB tools when they are available; otherwise use the pre-fetched') &&
-                shared.includes('A missing or failing KB tool never means "no KB"') &&
-                shared.includes("the pre-fetched block IS this repo's knowledge"),
-            `role(s) ${roleNames.join(', ')}: ${agentType}.md's shared Knowledge Bank text must state tools-first, ` +
-            `block-as-fallback, and that a missing tool never means "no KB"`
+            !/ToolSearch/.test(kb.section),
+            `role(s) ${roleNames.join(', ')}: ${agentType}.md's Knowledge Bank step still mentions ToolSearch -- ` +
+            `the kb_* tools are used directly when present, no discovery step`
         );
 
         const captureMatch = content.match(KB_CAPTURES_INSTRUCTION_RE);
@@ -383,7 +369,7 @@ test('the agent() wrapper derives the capture channel from the dispatch agentTyp
     const runnerSrc = fs.readFileSync(path.join(__dirname, '..', 'fleet-sprint', 'runner.js'), 'utf8');
     assert.match(
         runnerSrc,
-        /kbKnowledgeBlock\(kbPriming\.knowledgeOf\(opts\.member_name\), \{\s*captureChannel: agentTypeAppliesKbCaptures\(opts\.agentType\),\s*\}\)/,
-        'runner.js agent() wrapper must pass captureChannel: agentTypeAppliesKbCaptures(opts.agentType)'
+        /const captureChannel = agentTypeAppliesKbCaptures\(opts\.agentType\);[\s\S]*?kbInjection\.blockFor\(\{[\s\S]*?\n\s*captureChannel,/,
+        'runner.js agent() wrapper must pass captureChannel (= agentTypeAppliesKbCaptures(opts.agentType)) to kbInjection.blockFor'
     );
 });

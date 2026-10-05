@@ -108,7 +108,7 @@ const GROUP_HTTP_STATUS = {
 // task (T1.3.3) adds under bindings/openapi/.
 const OPENAPI_ID_BASE = 'https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/bindings/openapi';
 
-// Same 23-tool roster the probe in tests/probe-generator-2020-12.mjs reads,
+// Same 24-tool roster the probe in tests/probe-generator-2020-12.mjs reads,
 // reproduced here rather than imported so this script has no runtime
 // dependency on a file owned by T1.2.1. Any drift between the two lists is
 // itself a signal INVENTORY.md's tool count (section 1) needs re-checking.
@@ -129,6 +129,7 @@ const KB_MODULES = [
   ['kb_export', 'kb-export.js', 'kbExportSchema'],
   ['kb_stats', 'kb-stats.js', 'kbStatsSchema'],
   ['kb_feedback', 'kb-feedback.js', 'kbFeedbackSchema'],
+  ['kb_bible_commit', 'kb-bible-commit.js', 'kbBibleCommitSchema'],
 ];
 const CODE_EXPORTS = [
   ['code_graph', 'codeGraphSchema'],
@@ -138,8 +139,10 @@ const CODE_EXPORTS = [
   ['code_map', 'codeMapSchema'],
   ['code_flow', 'codeFlowSchema'],
   ['code_tests', 'codeTestsSchema'],
+  ['code_reindex', 'codeReindexSchema'],
+  ['code_status', 'codeStatusSchema'],
 ];
-const EXPECTED_TOOL_COUNT = KB_MODULES.length + CODE_EXPORTS.length; // 23, per INVENTORY.md section 1
+const EXPECTED_TOOL_COUNT = KB_MODULES.length + CODE_EXPORTS.length; // 26 (24 per INVENTORY.md section 1, plus code_reindex/code_status)
 
 // Registration description text, byte-exact from src/services/tool-registry.ts
 // (verified against INVENTORY.md Appendix A, which states it was "captured
@@ -148,27 +151,37 @@ const EXPECTED_TOOL_COUNT = KB_MODULES.length + CODE_EXPORTS.length; // 23, per 
 // tool-registry.ts -- same rationale as KB_MODULES/CODE_EXPORTS above. This is
 // the "registration description text captured in INVENTORY.md" this task's
 // binding definitions embed per its acceptance criteria.
-const DESCRIPTIONS = {
+// Every kb_* registration appends KB_SELF_NOTE (src/services/knowledge/kb-self.ts),
+// reproduced byte-exact here for the same no-runtime-dependency reason.
+const KB_SELF_NOTE =
+  ' Scope: always the calling session\'s own KB -- a member session uses its registered work folder, any other session the fleet server\'s working folder; there is no repo/path scope argument (the removed repo_path, repo and repo_remote_url keys fail with E-SCOPE-KEY-REMOVED). Fails with E-SELF-NO-WORKFOLDER, E-SELF-NOT-A-REPO or E-SELF-NO-REMOTE (each with a one-line remediation) when that folder cannot carry a KB identity (it must be a git repository with an origin remote).';
+
+// Every code_* registration appends CODE_SELF_NOTE (src/tools/code-intelligence.ts),
+// reproduced byte-exact here for the same no-runtime-dependency reason.
+const CODE_SELF_NOTE =
+  ' Scope: always the calling session\'s own repo -- a member session uses its registered work folder, any other session the fleet server\'s working folder; there is no repo/path scope argument. Fails with E-SELF-NO-WORKFOLDER or E-SELF-NOT-A-REPO when that folder is missing or is not a git repository, E-CODE-INDEX-NOT-READY when it has no code index yet or the index is still building, and E-CODE-INTEL-DISABLED when code intelligence is off (each with a one-line remediation).';
+
+const BASE_DESCRIPTIONS = {
   kb_capture:
-    'Capture a learning, fact, or file summary into the knowledge bank. Confidence is capped at INFERRED: any CONFIRMED passed here is downgraded to INFERRED, and a user-directive is stored UNVERIFIED as a pending proposal until a human approves it; confidence_clamped:true whenever the stored confidence differs from the requested one (default INFERRED). CONFIRMED is minted ONLY via kb_promote. Returns {id, audn_decision, confidence_clamped}. audn_decision: add=new entry, none=duplicate skipped, update=same-topic predecessor linked (refines; both entries stay live), flagged=contradiction flagged for review. Pass supersedes:<id> to retire that entry instead (only takes effect if AUDN independently matched it).',
+    'Capture a learning, fact, or file summary into the knowledge bank. Confidence is capped at INFERRED: any CONFIRMED passed here is downgraded to INFERRED, and a user-directive is stored UNVERIFIED as a pending proposal until a human approves it; confidence_clamped:true whenever the stored confidence differs from the requested one (default INFERRED). CONFIRMED is minted ONLY via kb_promote. Returns {id, audn_decision, confidence_clamped}. audn_decision: add=new entry, none=duplicate skipped, update=same-topic predecessor linked (refines; both entries stay live), flagged=contradiction flagged for review. Pass supersedes:<id> to retire that entry instead (only takes effect if AUDN independently matched it). In a MEMBER session the entry is stored in the per-repo DB tagged member:<caller uuid>.',
   kb_invalidate:
-    'Mark context-cache entries stale for the given file paths. Call after modifying files to ensure the KB reflects the current state.',
+    'Mark context-cache entries stale for the given file paths (pass files), or discard entries by id (pass ids): discarding sets superseded_at so the entry drops out of every read. Exactly one of files or ids. ids returns {discarded, not_found, already_discarded}. In a MEMBER session both forms act only on entries tagged member:<caller uuid>: files leaves other entries for those files untouched, and with ids any other id is reported in not_found and changes nothing. Call after modifying files to ensure the KB reflects the current state.',
   kb_context:
-    'Check freshness of files against the knowledge bank. Returns {fresh, stale, missing} -- fresh files can be skipped, stale/missing files must be re-read.',
+    'Check freshness of files against the knowledge bank. Returns {fresh, stale, missing} -- fresh files can be skipped, stale/missing files must be re-read. With no confidence filter the default is confidence ["CONFIRMED","INFERRED"] plus exclude_disputed (a context-cache entry is verified by its content hash); UNVERIFIED only when listed explicitly. In a MEMBER session the default read merges the member\'s checkout bible (CONFIRMED) with the member\'s own CONFIRMED/INFERRED captures (tagged member:<caller uuid>).',
   kb_session_prime:
-    'Prime a session with KB context. Returns session_warm status, stale files needing re-read, top KB entries, and recommended GitNexus calls.',
+    'Prime a session with KB context. Returns session_warm status, stale files needing re-read, top KB entries, and recommended GitNexus calls. In a MEMBER session the entries come from the member\'s checkout bible.',
   kb_query:
-    'Two-level knowledge bank search. L1: FTS5 on title+summary (up to 20 results). L2: full content for top 5 hits (max 800 tokens each). Excludes stale/superseded by default. Optional tag filter (exact match) ANDs alongside other filters without touching FTS/OR-join logic, and may be used alone (no query) to list all entries carrying the tag. Pass flagged_only: true to list all contradiction-flagged entry pairs for resolution. Pass expand_related: true to also receive related_claims -- entries joined to the top hits by a refines or contradiction_of edge. Those record the KB own judgements about its contents (there is a newer framing of this; something disputes this) and cannot be reached by a text match. shares_file/shares_symbol edges are deliberately not traversed, since FTS over those same fields already surfaces them. Default false, in which case related_claims is absent and the result shape is unchanged. Pass confidence (a tier allow-list, e.g. ["CONFIRMED"]) and/or exclude_disputed: true to restrict every returned entry -- related_claims included -- to that tier and to entries outside any unresolved contradiction; both default off.',
+    'Two-level knowledge bank search. L1: FTS5 on title+summary (up to 20 results). L2: full content for top 5 hits (max 800 tokens each). Excludes stale/superseded by default. Optional tag filter (exact match) ANDs alongside other filters without touching FTS/OR-join logic, and may be used alone (no query) to list all entries carrying the tag. Pass flagged_only: true to list all contradiction-flagged entry pairs for resolution. Pass expand_related: true to also receive related_claims -- entries joined to the top hits by a refines or contradiction_of edge. Those record the KB own judgements about its contents (there is a newer framing of this; something disputes this) and cannot be reached by a text match. shares_file/shares_symbol edges are deliberately not traversed, since FTS over those same fields already surfaces them. Default false, in which case related_claims is absent and the result shape is unchanged. With no confidence filter the default is confidence ["CONFIRMED"] plus exclude_disputed: true, so only CONFIRMED entries outside any unresolved contradiction are returned (related_claims included). Pass an explicit confidence list (e.g. ["CONFIRMED","INFERRED","UNVERIFIED"]) to opt into other tiers; exclude_disputed then defaults off unless set true. flagged_only is exempt. In a MEMBER session the default (CONFIRMED) read comes from the member\'s checkout bible; an explicit INFERRED/UNVERIFIED read comes from the per-repo DB and returns only entries tagged member:<caller uuid>.',
   kb_list:
-    'List KB entries by confidence/type/module/symbol/tag -- audit the CONFIRMED set (or any tier) without touching FTS ranking or use_count telemetry. Excludes superseded/stale entries. Returns {results, total} with each entry as {id, type, confidence, title, summary, symbols, source_files}.',
+    'List KB entries by confidence/type/module/symbol/tag -- audit the KB. With no confidence filter, returns only CONFIRMED, undisputed entries; pass an explicit confidence list (e.g. ["INFERRED","UNVERIFIED"]; a single tier string such as "INFERRED" is accepted as a one-element list) to see other tiers without touching FTS ranking or use_count telemetry. Excludes superseded/stale entries. Returns {results, total} with each entry as {id, type, confidence, title, summary, symbols, source_files}. In a MEMBER session the default (CONFIRMED) list comes from the member\'s checkout bible; an explicit INFERRED/UNVERIFIED list comes from the per-repo DB, own-tagged entries only.',
   kb_harvest:
     'Scan a session transcript for learnings and capture them into the KB. Returns {entries_captured, entries_updated, entries_skipped}. Extracted entries are UNVERIFIED and author=harvest, source=harvest.',
   kb_promote:
-    'Upgrade KB entry confidence: UNVERIFIED -> INFERRED -> CONFIRMED. Appends promotion note to content as evidence trail. CONFIRMED entries are no-op.',
+    'Upgrade KB entry confidence: UNVERIFIED -> INFERRED -> CONFIRMED. Appends promotion note to content as evidence trail. CONFIRMED entries are no-op. In a MEMBER session only entries tagged member:<caller uuid> can be promoted; any other id returns not-found and changes nothing.',
   kb_freshness_sweep:
     'Bounded full-KB bidirectional freshness sweep: re-hash every entry that has a stored per-file basis against the CURRENT worktree, mark mismatches stale, and revive stale entries whose full basis matches again (superseded, feedback-downvoted, and invalidated entries stay retired). This is the branch-switch revival surface kb_session_prime cannot be (prime excludes stale entries). Returns {checked, staled, unstaled}.',
   kb_import:
-    'Import a merged bible (.fleet/kb-canonical.json) into the warm local KB -- the post-merge write path (the prime-time cold-seed is output-only). Reads the repo-resolved bible, or an explicit --path file. Each entry routes through the AUDN choke point (duplicate -> skipped, refinement -> linked, contradiction -> flagged); non-directive entries KEEP their bible confidence (the bible is a git-reviewed, human-merged artifact), stamped source="import"; type="user-directive" entries are FORCED to pending proposals (never active -- a bible cannot smuggle an active directive). Idempotent (re-import of the same bible adds nothing). Runs a freshness sweep after import so entries whose basis does not match this worktree are staled. Accepts BOTH bible shapes: a legacy bare JSON array and the v2 {version, provenance:{commit, branch, entry_count}, entries} envelope. Entries with no source_files, or citing files absent from this worktree, are REJECTED (an entry with no checkable basis can never be staled, so nothing could falsify it) -- re-importing a legacy bible deliberately drops those. Returns {imported, skipped, linked, flagged, rejected, sweep:{checked, staled, unstaled}}. Pass skip_sweep: true to skip the post-import freshness sweep -- the sweep re-judges EVERY entry against the given worktree, which is right for a deliberate audit but wrong for a routine warm-the-KB import (it mass-stales entries merely because unrelated files moved on, which in turn empties the promotion candidates kb_list returns). Accepts `repo_path` as an alias for `repo`, matching every other kb_* tool (the apra-fleet-src input-name trap: zod strips an unknown key silently, so the mismatched name resolved against the server cwd instead of erroring). TRUST BOUNDARY: importing the repo-resolved bible is the git-reviewed trusted channel; an explicit --path bible is caller-asserted trust, equivalent in power to kb_promote. Directives are quarantined either way; activation stays CLI-only.',
+    'Import a merged bible (.fleet/kb-canonical.json) into the warm local KB -- the post-merge write path (the prime-time cold-seed is output-only). Reads the repo-resolved bible, or an explicit --path file. Each entry routes through the AUDN choke point (duplicate -> skipped, refinement -> linked, contradiction -> flagged); non-directive entries KEEP their bible confidence (the bible is a git-reviewed, human-merged artifact), stamped source="import"; type="user-directive" entries are FORCED to pending proposals (never active -- a bible cannot smuggle an active directive). Idempotent (re-import of the same bible adds nothing). Runs a freshness sweep after import so entries whose basis does not match this worktree are staled. Accepts BOTH bible shapes: a legacy bare JSON array and the v2 {version, provenance:{commit, branch, entry_count}, entries} envelope. Entries with no source_files, or citing files absent from this worktree, are REJECTED (an entry with no checkable basis can never be staled, so nothing could falsify it) -- re-importing a legacy bible deliberately drops those. Returns {imported, skipped, linked, flagged, rejected, sweep:{checked, staled, unstaled}}. Pass skip_sweep: true to skip the post-import freshness sweep -- the sweep re-judges EVERY entry against the given worktree, which is right for a deliberate audit but wrong for a routine warm-the-KB import (it mass-stales entries merely because unrelated files moved on, which in turn empties the promotion candidates kb_list returns). `path` names only the bible file to read, never which KB is written. TRUST BOUNDARY: importing the repo-resolved bible is the git-reviewed trusted channel; an explicit --path bible is caller-asserted trust, equivalent in power to kb_promote. Directives are quarantined either way; activation stays CLI-only.',
   kb_resolve_contradiction:
     'Resolve a KB contradiction pair: {winnerId, loserId, evidence}. The SINGLE write path for reconcile resolutions (used by kb_reconcile_prefilter and the reconciler agent alike). Winner ends confidence=CONFIRMED with the evidence note appended and both flag fields cleared (flagged_for_review + contradiction_of); stale is cleared ONLY if the D2 un-stale predicate holds on the post-flag-clear row (so a downvoted or invalidated winner still stays retired -- it wins the contradiction, not its reputation). Loser ends superseded_at=now + stale=1 + flag cleared, never deleted. REFUSES (throws, writes nothing) when either id is missing, either entry is already superseded, the ids do not form a genuinely linked contradiction pair, or the pair involves an ACTIVE user-directive.',
   kb_reconcile_prefilter:
@@ -176,11 +189,13 @@ const DESCRIPTIONS = {
   kb_setup:
     'Set up KB: install git post-commit hook, write provider config, store remote credentials encrypted. Run once per repo.',
   kb_export:
-    'Export CONFIRMED, non-superseded, non-stale KB entries to a canonical bible file (stable field set, deterministic id order, ASCII-safe). scope="project" (default): reads the project KB and ADDITIVELY merges into <repo>/.fleet/kb-canonical.json. Only entries whose cited source_files each have a recorded per-file hash that matches the file currently in repo_path qualify (an empty or missing basis, or a missing cited file, excludes the entry). Entries already in the bible are never removed or rewritten (the existing bible entry wins on an id clash); only qualifying new ids are added, and when none qualify the file is left untouched and nothing is committed. exported is the entry count of the resulting bible. scope="global" is unchanged: it exports the full GLOBAL set with no basis filter. scope="global": reads the GLOBAL KB, writes <repo>/.fleet/kb-canonical-global.json (in practice the apra-fleet platform repo, committed there so the installer can distribute it to every project on the machine -- D8/F9). Run after kb_promote so the canonical set stays current. F6a: the tool itself auto-commits the bible file (pathspec-only, identity pm-kb) when the repo is a git repo and the content changed -- this is code, not agent discretion, so no manual git step is needed, and this applies to the global file too. Non-fatal on any git failure; push is not automatic. Writes the v2 format: {version:2, provenance:{commit, branch, entry_count}, entries:[...]}, recording the commit the entries were verified against (a commit, not a timestamp, so re-exports stay diff-free when nothing changed). An export whose entry set is unchanged rewrites nothing. Auto-commit defaults to ON (USER DIRECTIVE 2026-08-11 -- an export left uncommitted is knowledge nobody else ever sees): set FLEET_DIR/knowledge/config.json { bible: { autoCommit: false } } to opt out. A malformed config disables it.',
+    'Export CONFIRMED, non-superseded, non-stale KB entries to a canonical bible file (stable field set, deterministic id order, ASCII-safe). scope="project" (default): reads the project KB and ADDITIVELY merges into <repo>/.fleet/kb-canonical.json. Only entries whose cited source_files each have a recorded per-file hash that matches the file currently in the repo qualify (an empty or missing basis, or a missing cited file, excludes the entry). Entries already in the bible are never removed or rewritten (the existing bible entry wins on an id clash); only qualifying new ids are added, and when none qualify the file is left untouched and nothing is committed. exported is the entry count of the resulting bible. scope="global" is unchanged: it exports the full GLOBAL set with no basis filter. scope="global": reads the GLOBAL KB, writes <repo>/.fleet/kb-canonical-global.json (in practice the apra-fleet platform repo, committed there so the installer can distribute it to every project on the machine -- D8/F9). Run after kb_promote so the canonical set stays current. F6a: the tool itself auto-commits the bible file (pathspec-only, identity pm-kb) when the repo is a git repo and the content changed -- this is code, not agent discretion, so no manual git step is needed, and this applies to the global file too. Non-fatal on any git failure; push is not automatic. Writes the v2 format: {version:2, provenance:{commit, branch, entry_count}, entries:[...]}. provenance.branch is the target base branch (the branch the entries merge into) and provenance.commit the base commit the entries were verified against (a commit, not a timestamp, so re-exports stay diff-free when nothing changed): pass baseBranch and baseCommit to state them explicitly; when omitted they default to the export folder HEAD branch and commit. An export whose entry set is unchanged rewrites nothing. Auto-commit defaults to ON (USER DIRECTIVE 2026-08-11 -- an export left uncommitted is knowledge nobody else ever sees): set FLEET_DIR/knowledge/config.json { bible: { autoCommit: false } } to opt out. A malformed config disables it.',
+  kb_bible_commit:
+    'Commit one round of confirmed entries to the bible: { ids, baseBranch, baseCommit }. Merges exactly the given ids from this repository\'s KB into <repo>/.fleet/kb-canonical.json at ENTRY level -- every entry already in the file is kept, only the given ids are added or replaced, and an entry in the file but not in the KB is never dropped -- in kb_export\'s stable serialization (v2 envelope, id order, ASCII-safe). provenance.branch is baseBranch (the sprint\'s target base branch) and provenance.commit is baseCommit (the base commit the entries were verified against), never the working folder HEAD. Then makes a local commit scoped to that one path (identity pm-kb). It NEVER pushes. Re-running with the same ids after resetting to a newer HEAD re-merges at entry level, so a rejected push can be retried with no manual merge. Ids that are unknown, stale, superseded, or not CONFIRMED are SKIPPED (never an error) and reported in skipped. No ids, no mergeable ids, or an unchanged entry set: no write and no commit. Refuses (throws) when the existing bible file is unreadable, or when the local commit fails. Returns {path, merged, skipped, entry_count, committed}.',
   kb_stats:
-    'Read-only KB health aggregation: totals by confidence/type, stale/flagged/superseded counts, retrieval hit_rate, promote_ratio, canonical-bible presence/drift, and optional per-symbol coverage. Never bumps use_count/last_accessed (kb_list pattern). Bible drift is visibility for the machine that owns the KB -- CI cannot see the local kb.sqlite, so there is no CI gate on it.',
+    'Read-only KB health aggregation: totals by confidence/type, stale/flagged/superseded counts, retrieval hit_rate, promote_ratio, canonical-bible presence/drift, and optional per-symbol coverage. Never bumps use_count/last_accessed (kb_list pattern). Bible drift is visibility for the machine that owns the KB -- CI cannot see the local kb.sqlite, so there is no CI gate on it. In a MEMBER session the counts describe the member\'s checkout bible.',
   kb_feedback:
-    'Downvote a KB entry that proved wrong in practice: { id, reason, role? }. Marks the entry stale=1 + flagged_for_review=1 and appends an ASCII feedback note "[feedback <ISO>] <validated-role>: <reason>" (CONTENT_CAP respected). NEVER deletes and NEVER touches confidence -- a downvoted CONFIRMED entry stays CONFIRMED-but-stale-flagged; the human resolves it in kb-review, this tool only flags it for that review. Exception: an ACTIVE user-directive is flagged for review but NOT staled (directives outrank agent experience -- the human decides); a pending directive proposal stales normally.',
+    'Downvote a KB entry that proved wrong in practice: { id, reason, role? }. Marks the entry stale=1 + flagged_for_review=1 and appends an ASCII feedback note "[feedback <ISO>] <validated-role>: <reason>" (CONTENT_CAP respected). NEVER deletes and NEVER touches confidence -- a downvoted CONFIRMED entry stays CONFIRMED-but-stale-flagged; the human resolves it in kb-review, this tool only flags it for that review. Exception: an ACTIVE user-directive is flagged for review but NOT staled (directives outrank agent experience -- the human decides); a pending directive proposal stales normally. Not available in a MEMBER session: it returns E-MEMBER-VIEW-READ-ONLY and changes nothing.',
   code_graph:
     'Trace the call graph for a symbol. Returns callers and callees across the codebase. Prefer this over Glob/Grep/file reads for structural questions (symbol lookup, call chains, impact) -- the answer is pre-indexed.',
   code_impact:
@@ -195,16 +210,24 @@ const DESCRIPTIONS = {
     'Find process flows (entry -> steps -> exit) matching a name or endpoints. Prefer this over manually tracing call chains across files -- the flows are pre-indexed.',
   code_tests:
     'Find the test files and test functions that exercise a symbol (transitive callers, depth 2). Use this to run targeted tests for the code you changed instead of the full suite. Prefer this over Grep for test discovery -- the call graph is pre-indexed.',
+  code_reindex:
+    'Rebuild the code index of the calling session\'s own repo (runs gitnexus analyze detached; its output is captured to <data>/code-index/<slug>/analyze.log). Returns after the first tick -- outcome "started" (lock held, process alive, output seen), "up-to-date", "starting" (running, no tick yet), "already-running", or "not-started" with a typed reason (npx-not-found, gitnexus-not-found, analyze-failed, spawn-failed, remote-member, provider-not-supported). Only the gitnexus provider is supported: provider none fails with E-CODE-INTEL-DISABLED, any other provider (e.g. codebase-memory, which manages its own index) gets not-started with reason provider-not-supported naming the provider. Poll code_status for completion.',
+  code_status:
+    'Report the code index state of the calling session\'s own repo: the last analyze run (phase, result indexed|up-to-date|incomplete|failed, last log line, log path), live readiness (ready|building|missing) and the indexed commit. Only the gitnexus provider is supported: provider none fails with E-CODE-INTEL-DISABLED, any other provider gets {outcome: "not-started", reason: "provider-not-supported", provider, indexedCommit: null} instead of gitnexus readiness.',
 };
+
+const DESCRIPTIONS = Object.fromEntries(
+  Object.entries(BASE_DESCRIPTIONS).map(([tool, text]) => [tool, text + (tool.startsWith('kb_') ? KB_SELF_NOTE : CODE_SELF_NOTE)]),
+);
 
 // x-invariant stamping (GENERATOR-DECISION.md section 4): this is the "only
 // code that knows which tool a given document came from", so it is this
 // script's job -- not postprocess-2020-12.mjs's -- to apply the id -> tool
 // mapping from the Applies-to column of that table.
-const REQUEST_INVARIANTS = {
+// INV-05 (session-scoped KB, no scope field) applies to EVERY kb_* request and
+// is merged in below rather than repeated per tool.
+const REQUEST_INVARIANTS_BASE = {
   kb_capture: ['INV-01', 'INV-02', 'INV-03', 'INV-04', 'INV-07'],
-  kb_import: ['INV-05'],
-  kb_stats: ['INV-05'],
   kb_setup: ['INV-06'],
   // INV-08's second half is a request-side guard: "at least one of query, tag
   // or flagged_only MUST be supplied; the handler throws when all three are
@@ -213,6 +236,10 @@ const REQUEST_INVARIANTS = {
   // it is annotated on the request document too, not just the response.
   kb_query: ['INV-08'],
 };
+const REQUEST_INVARIANTS = Object.fromEntries(
+  KB_MODULES.map(([tool]) => [tool, [...(REQUEST_INVARIANTS_BASE[tool] ?? []), 'INV-05'].sort()]),
+);
+for (const [tool, ids] of Object.entries(REQUEST_INVARIANTS_BASE)) REQUEST_INVARIANTS[tool] ??= ids;
 // INV-09 ("no tool declares a response zod schema; shapes are OBSERVED, not
 // authoritative") applies to every response document. INV-08 (kb_query's two
 // mutually exclusive response shapes) additionally applies to kb_query's.
@@ -308,7 +335,7 @@ function loadTaxonomy() {
 function loadProjectableCodes(taxonomy) {
   const codes = [];
   for (const [group, body] of Object.entries(taxonomy.groups)) {
-    body.codes.forEach((entry, index) => {
+    body.codes.forEach((entry) => {
       if (entry.surfaced !== 'thrown' && entry.surfaced !== 'response-field') {
         if (entry.surfaced !== 'silent') {
           throw new Error(
@@ -318,8 +345,14 @@ function loadProjectableCodes(taxonomy) {
         }
         return;
       }
+      if (entry.$anchor !== entry.code) {
+        throw new Error(
+          `${entry.code}: taxonomy.json entry has $anchor "${entry.$anchor}" -- every groups code must carry ` +
+            '$anchor equal to its code (taxonomy.json _meta.ref_rule), because projections reference codes by id',
+        );
+      }
       const tools = [...new Set(entry.raising_methods.map((m) => m.tool))];
-      codes.push({ code: entry.code, group, index, meaning: entry.meaning, tools });
+      codes.push({ code: entry.code, group, meaning: entry.meaning, tools });
     });
   }
   return codes;
@@ -353,14 +386,19 @@ function checkDirectiveActivationAbsence(taxonomy, bindingDocs, openApiDoc) {
 }
 
 /**
- * The taxonomy.json reference URI for one projectable code -- a JSON Pointer
- * (RFC 6901) fragment appended to TAXONOMY_ID_BASE. This is how both
- * projections point AT taxonomy.json's own entry instead of inlining the code
- * string a second time: the pointer identifies the entry structurally (by
- * group + array index), so neither projection re-types `entry.code` anywhere.
+ * The taxonomy.json reference URI for one projectable code -- a plain-name
+ * fragment (the code's own `$anchor` in taxonomy.json, which always equals its
+ * `code` string; see taxonomy.json `_meta.ref_rule`) appended to
+ * TAXONOMY_ID_BASE. This is how both projections point AT taxonomy.json's own
+ * entry. The reference is BY ID, never a positional JSON Pointer
+ * (#/groups/<group>/codes/<index>): a positional pointer silently changes
+ * meaning when a code is inserted mid-array, whereas an id reference keeps
+ * meaning the same code under any insertion, removal or reorder.
+ * loadProjectableCodes refuses an entry whose `$anchor` is missing or differs
+ * from its code, so the fragment always resolves.
  */
 function taxonomyCodeRef(entry) {
-  return `${TAXONOMY_ID_BASE}#/groups/${entry.group}/codes/${entry.index}`;
+  return `${TAXONOMY_ID_BASE}#${entry.code}`;
 }
 
 /**

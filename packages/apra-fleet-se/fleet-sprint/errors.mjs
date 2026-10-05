@@ -478,6 +478,12 @@ export function isAuthDispatchError(err) {
 //                                 from the call, setup included) and was
 //                                 stopped. Before this reason existed the same
 //                                 kill surfaced as 'dispatch_failed'.
+//   - 'transport_failure'       -- the fleet tool call itself failed at the
+//                                 transport (e.g. the SSH channel to the member
+//                                 could not be opened) and the server reported
+//                                 it as a bare tool error, not a classified
+//                                 execute_prompt result (agent() in the
+//                                 workflow engine). No result envelope exists.
 //
 // For an integ-test-runner dispatch, all of these mean "no test verdict was
 // ever produced" -- the run never reported pass or fail. Treating them as a
@@ -486,7 +492,7 @@ export function isAuthDispatchError(err) {
 // check on an infra fault. Callers use this classifier to (a) retry once via a
 // session resume and (b) failing that, record the cycle as INCONCLUSIVE rather
 // than a test FAIL -- exactly as the part-2 stale-evidence path already does.
-const INFRA_DISPATCH_REASONS = new Set(['empty_response', 'dispatch_failed', 'orphan_recovery_timeout', 'stalled', 'agent_never_started', 'max_total_time', 'preflight_offline']);
+const INFRA_DISPATCH_REASONS = new Set(['empty_response', 'dispatch_failed', 'orphan_recovery_timeout', 'stalled', 'agent_never_started', 'max_total_time', 'preflight_offline', 'transport_failure']);
 
 /**
  * True when a dispatch error is an INFRASTRUCTURE failure (the member CLI never
@@ -898,8 +904,15 @@ export class PreSprintValidationError extends WorkflowError {
 
 export const BEADS_IDENTITY_FAILURE_REASONS = Object.freeze({
     MISMATCH: 'MISMATCH',
-    // The member cannot run bd at all (not installed / not on PATH).
+    // The member cannot run bd at all (not installed / not on PATH): every
+    // bd a role or the engine runs there would fail mid-sprint, so refuse up
+    // front.
     MISSING_TOOL: 'MISSING_TOOL',
+    // A beads-reading member had no usable beads database (or no
+    // sync.remote) and the preflight could not set one up from the sprint's
+    // expected beads remote -- dispatching would hand the role a database
+    // that does not hold the sprint's issues, so refuse up front.
+    BEADS_SETUP_FAILED: 'BEADS_SETUP_FAILED',
 });
 
 /**
@@ -910,7 +923,9 @@ export const BEADS_IDENTITY_FAILURE_REASONS = Object.freeze({
  * own identity) on a field that resolved on both sides (reason MISMATCH), or
  * when a member cannot run bd at all -- a bd probe failed because bd is not
  * installed or not on PATH (reason MISSING_TOOL), so every later bd command
- * there would fail too. Any other probe that fails or cannot be parsed is a
+ * there would fail too, or (reason BEADS_SETUP_FAILED) when a beads-reading
+ * member had no database / no sync.remote and setting it up from the
+ * expected remote failed. Any other probe that fails or cannot be parsed is a
  * logged warning, never this error.
  *
  * A WorkflowError so main()'s terminal record names the reason, but
