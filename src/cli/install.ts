@@ -1087,6 +1087,12 @@ function copyGlobalBible(repoCwd: string): void {
   }
 }
 
+/** The one next step a member install prints: the orchestrator registers the
+ *  member, which also writes its per-folder apra-fleet MCP entry. */
+export const MEMBER_INSTALL_NEXT_STEP =
+  'Next step (on the orchestrator): run update_member {member_id, fleet_install: "auto"} (or register_member) for this member; ' +
+  'it registers the member on this install and writes its per-folder apra-fleet MCP entry.';
+
 export async function runInstall(args: string[]): Promise<void> {
   // --help / -h guard - must come first, before any side effects (#142)
   if (args.includes('--help') || args.includes('-h')) {
@@ -1999,16 +2005,20 @@ ${restartHint}
     : `${beadsResult.version}${beadsResult.location === 'bin-dir' ? ` (${beadsResult.binPath})` : ''}`;
 
   const clientName = llm === 'claude' ? 'Claude Code' : paths.name;
-  const instructions = llm === 'claude' ? 'Run /mcp in Claude Code to load the server.' : `Restart ${paths.name} to load the server.`;
-  const forceNote = force ? `\nRestart ${clientName} to reload the MCP server.` : '';
+  // A member install touched no user-scope settings or MCP registration, so it
+  // names only what it did and the member's one next step (on the orchestrator).
+  const instructions = memberMode
+    ? MEMBER_INSTALL_NEXT_STEP
+    : llm === 'claude' ? 'Run /mcp in Claude Code to load the server.' : `Restart ${paths.name} to load the server.`;
+  const forceNote = force && !memberMode ? `\nRestart ${clientName} to reload the MCP server.` : '';
+  const settingsLine = memberMode ? '' : `\n  Settings:    ${paths.settingsFile}`;
   const serviceState = serviceHealthy === true ? 'registered and running' : serviceHealthy === false ? 'registered, but NOT answering /health (see the warning above)' : 'registered (health not checked)';
   const serviceLine = serviceStep ? `\n  Service:     ${serviceRegistered ? `${serviceState}${serviceReused ? ' (existing task reused)' : ''}${serviceRunKey ? ' (logon autostart via HKCU Run, no automatic restart)' : ''}` : 'registration skipped'}` : '';
   console.log(`
 Apra Fleet ${serverVersion} installed successfully for ${paths.name}.
   Binary:      ${BIN_DIR}
   Hooks:       ${HOOKS_DIR}
-  Scripts:     ${SCRIPTS_DIR}
-  Settings:    ${paths.settingsFile}${installFleet ? `\n  Fleet Skill: ${paths.fleetSkillsDir}` : ''}${installPm ? `\n  PM Skill:    ${paths.skillsDir}` : ''}${installAgents ? `\n  Agents:      ${paths.agentsDir}` : ''}
+  Scripts:     ${SCRIPTS_DIR}${settingsLine}${installFleet ? `\n  Fleet Skill: ${paths.fleetSkillsDir}` : ''}${installPm ? `\n  PM Skill:    ${paths.skillsDir}` : ''}${installAgents ? `\n  Agents:      ${paths.agentsDir}` : ''}
   Beads:       ${beadsVersion}
   Dolt:        ${doltVersion}${serviceLine}
 

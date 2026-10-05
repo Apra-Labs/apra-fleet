@@ -75,7 +75,7 @@ export const updateMemberSchema = z.object({
   unreservable: z.boolean().optional().describe('Mark this member as never exclusively reservable, so it can be shared by more than one sprint at once (e.g. a member filling fleet-sprint\'s shared "backlog" role). reserve/release/force_release become no-op successes and overlap guards skip it.'),
   shell: z.enum(['gitbash', 'pwsh7', 'powershell5']).optional().describe('Override the probed Windows shell for this member (gitbash, pwsh7, or powershell5). Windows members only -- ignored for non-windows members.'),
   vcs_provider: z.enum(['github', 'bitbucket', 'azure-devops', 'none']).optional().describe('Directly set (override) this member\'s VCS provider -- an explicit operator value, never auto-detected. Use this to correct a wrong auto-detect from register_member, or to set the provider for a member with no credentials to provision (so provision_vcs_auth is not required just to record it). Pass "none" to clear it, declaring the member deliberately has no VCS provider.'),
-  fleet_install: z.enum(['auto', 'skip']).optional().describe('Upgrade or skip the member\'s own apra-fleet install. "auto": for a remote member, probe it and install/upgrade apra-fleet when it is missing or older than this orchestrator (build-aware), self-register and verify a MEMBER session, even when nothing else changed; local members only get the MEMBER-session probe. "skip": no install (a refresh triggered by another change runs with install off). Omit to keep the default: install only on a provider change. The result reports the recoverable fleetMcp status (re-probe with member_detail refresh:true).'),
+  fleet_install: z.enum(['auto', 'skip']).optional().describe('Upgrade or skip the member\'s own apra-fleet install. "auto": for a remote member, probe it and install/upgrade apra-fleet when it is missing or older than this orchestrator (build-aware), self-register, write its per-folder apra-fleet MCP entry and verify a MEMBER session, even when nothing else changed; local members only get the MEMBER-session probe. "skip": no install (a refresh triggered by another change runs with install off). Omit to keep the default: install only on a provider change. The result reports the recoverable fleetMcp status (re-probe with member_detail refresh:true).'),
 });
 
 export type UpdateMemberInput = z.infer<typeof updateMemberSchema>;
@@ -371,6 +371,9 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
       const status = await refreshMemberFleetMcp(updated, getMemberFleetMcpDeps(), {
         install,
         forceInstall: providerChanged && input.fleet_install !== 'skip',
+        // An install also (re)writes the per-folder MCP entry before it is
+        // checked, so one fleet_install:"auto" call ends at fleetMcp=available.
+        writeMcpEntry: install,
       });
       fleetMcpLine = status.state === 'available'
         ? `available${status.version ? ` (apra-fleet ${status.version})` : ''}${status.installFailure && status.detail ? ` -- warning: ${status.detail}` : ''}`

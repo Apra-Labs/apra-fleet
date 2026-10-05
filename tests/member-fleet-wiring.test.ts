@@ -11,6 +11,7 @@ import { registerMember } from '../src/tools/register-member.js';
 import { updateMember, updateMemberSchema } from '../src/tools/update-member.js';
 import { removeMember } from '../src/tools/remove-member.js';
 import { memberDetail } from '../src/tools/member-detail.js';
+import { writeMemberMcpEntry } from '../src/tools/compose-permissions.js';
 import { fleetStatus } from '../src/tools/check-status.js';
 import { addAgent, getAgent, getAllAgents, recordFleetMcpStatus } from '../src/services/registry.js';
 import { __setMemberFleetMcpDeps, NO_INSTALL_SENTINEL, type MemberFleetMcpDeps, type MemberSession } from '../src/services/member-fleet-install.js';
@@ -547,5 +548,100 @@ describe('remove_member', () => {
     expect(result).toContain('has been removed');
     expect(result).toContain('remove-failed');
     expect(getAgent(a.id)).toBeUndefined();
+  });
+});
+
+// One update_member / register_member call with fleet_install must end at
+// fleetMcp=available: the probe writes the per-folder MCP entry itself (the
+// compose_permissions writer) after self-registration and before checking it.
+describe('fleet_install writes the per-folder MCP entry before checking it', () => {
+  /** Serve the member-side ~/.claude.json read from what the REAL writer put
+   *  there through the (mocked) member transport. */
+  function realWriterDeps(w: World): { d: MemberFleetMcpDeps; written: string[] } {
+    const configExec = makeConfigAwareExec();
+    const written: string[] = [];
+    mockExecCommand.mockImplementation(async (cmd: string) => {
+      const m = cmd.match(/^cat > "?([^"\n]*\.claude\.json[^"\n]*)"? << '(\w+)'\n([\s\S]*?)\n\2/);
+      if (m && m[3].includes('"apra-fleet"')) { w.log.push(`entry-write ${m[1]}`); written.push(m[3]); }
+      return configExec(cmd);
+    });
+    const d = fakeDeps(w);
+    const baseExec = d.exec;
+    d.exec = async (agent, command) => {
+      const c = plain(command);
+      if (c.includes('cat "') && c.includes('.claude.json') && written.length > 0) {
+        w.log.push(c);
+        return { stdout: written[written.length - 1], stderr: '', code: 0 };
+      }
+      return baseExec(agent, command);
+    };
+    d.writeMcpEntry = a => writeMemberMcpEntry(a);
+    return { d, written };
+  }
+
+  it('update_member fleet_install:auto on a member with no entry ends at fleetMcp=available in ONE call', async () => {
+    const w = newWorld({ entry: false });
+    const { d, written } = realWriterDeps(w);
+    __setMemberFleetMcpDeps(d);
+    const a = remoteMember();
+    const result = await updateMember({ member_id: a.id, fleet_install: 'auto' } as any);
+    expect(result).toContain(`fleetMcp: available (apra-fleet ${VERSION})`);
+    expect(result).not.toContain('mcp-entry-missing');
+    expect(getAgent(a.id)!.fleetMcp).toMatchObject({ state: 'available', version: VERSION });
+    expect(written[written.length - 1]).toContain(`?member=${a.id}`);
+    // Order: self-register, then write the entry, then the session check.
+    const registerAt = w.log.findIndex(c => c.includes("'register-member'"));
+    const writeAt = w.log.findIndex(c => c.startsWith('entry-write '));
+    const callAt = w.log.findIndex(c => c.includes("'call'"));
+    expect(registerAt).toBeGreaterThanOrEqual(0);
+    expect(writeAt).toBeGreaterThan(registerAt);
+    expect(callAt).toBeGreaterThan(writeAt);
+  });
+
+  it('register_member fleet_install:auto asks the probe to write the entry', async () => {
+    const w = newWorld({ entry: false });
+    const d = fakeDeps(w);
+    const calls: string[] = [];
+    d.writeMcpEntry = async a => { calls.push(a.id); w.entry = true; return { ok: true }; };
+    __setMemberFleetMcpDeps(d);
+    const result = await registerMember({ ...REMOTE, friendly_name: 'bella', fleet_install: 'auto', port: 22, cloud_region: 'us-east-1', cloud_idle_timeout_min: 30 } as any);
+    expect(result).toContain('fleetMcp: available');
+    expect(calls).toEqual([getAllAgents()[0].id]);
+  });
+
+  it('a member config the writer cannot safely edit is reported with its own reason', async () => {
+    const w = newWorld({ entry: false });
+    const d = fakeDeps(w);
+    d.writeMcpEntry = async () => ({ ok: false, reason: 'member-config-unparseable', detail: 'Member MCP config NOT edited: /home/bella/.claude.json is not strict JSON' });
+    __setMemberFleetMcpDeps(d);
+    const a = remoteMember();
+    const result = await updateMember({ member_id: a.id, fleet_install: 'auto' } as any);
+    expect(result).toContain('fleetMcp: unavailable (member-config-unparseable)');
+    expect(getAgent(a.id)!.fleetMcp).toMatchObject({ state: 'unavailable', reason: 'member-config-unparseable' });
+    expect(w.log.some(c => c.includes("'call'"))).toBe(false);
+  });
+
+  it('member_detail refresh stays read-only: it never writes the entry', async () => {
+    const w = newWorld({ entry: false });
+    const d = fakeDeps(w);
+    let called = false;
+    d.writeMcpEntry = async () => { called = true; return { ok: true }; };
+    __setMemberFleetMcpDeps(d);
+    const a = remoteMember();
+    const r = JSON.parse(await memberDetail({ member_id: a.id, format: 'json', refresh: true }));
+    expect(r.fleetMcp).toMatchObject({ state: 'unavailable', reason: 'mcp-entry-missing' });
+    expect(called).toBe(false);
+  });
+
+  it('agy keeps reporting no-per-project-mcp and nothing is written', async () => {
+    const w = newWorld({ entry: false });
+    const d = fakeDeps(w);
+    let called = false;
+    d.writeMcpEntry = async () => { called = true; return { ok: true }; };
+    __setMemberFleetMcpDeps(d);
+    const a = remoteMember({ llmProvider: 'agy' });
+    const result = await updateMember({ member_id: a.id, fleet_install: 'auto' } as any);
+    expect(result).toContain('fleetMcp: unavailable (no-per-project-mcp)');
+    expect(called).toBe(false);
   });
 });
