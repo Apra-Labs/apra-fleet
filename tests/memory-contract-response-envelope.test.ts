@@ -8,10 +8,10 @@
 // pin.
 //
 // CORRECTED SCOPE (the first version of this file got this wrong): no real
-// captured envelope from any of the 23 kb_*/code_* tools this contract
+// captured envelope from any of the 24 kb_*/code_* tools this contract
 // inventories can actually reach the three-block/annotated/structuredContent
 // shape. tool-registry.ts:99-101's `isJson = isJsonResponse(result)` is true
-// for every inventoried handler (all 16 kb_* handlers and all 7 code_*
+// for every inventoried handler (all 17 kb_* handlers and all 7 code_*
 // call sites JSON.stringify their result), which nulls both the preamble
 // (`getOnboardingPreamble` returns null when isJson) and the suffix
 // (`isJson ? null : getOnboardingNudge(...)`); `structuredContent` is only

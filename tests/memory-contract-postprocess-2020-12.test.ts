@@ -1,6 +1,6 @@
 // Regression coverage for memory-contract/v1/tests/postprocess-2020-12.mjs
 // edge cases that the generator bake-off probe (probe-generator-2020-12.mjs)
-// never exercises against the real 23-tool surface: nested `definitions`
+// never exercises against the real 24-tool surface: nested `definitions`
 // $ref pointers, a node carrying both `definitions` and `$defs`, and an
 // explicit draft-04 `exclusiveMinimum: false`.
 //

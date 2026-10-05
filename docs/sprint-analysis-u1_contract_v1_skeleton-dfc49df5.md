@@ -32,9 +32,9 @@ AC3 drift guard live in CI, proven by deliberate dry-run failure: I reproduced t
 
 AC4 degradation list + fixtures to T7, T2/T3 staged: DEGRADATION.md carries D-1..D-13 with explicit T7 ownership; SIGNOFF.md sections name T2/T3/T7 scope. AC4 met.
 
-AC5 existing surface-guard regression green: tool-registry.ts registers exactly 16 kb_* + 7 code_* = 23, matching the inventory-arbitrated count; tests/memory-contract-roster-guard.test.ts does a real three-way set equality (registerAllTools via a fake McpServer, generator KB_MODULES/CODE_EXPORTS, schemas on disk). AC5 met.
+AC5 existing surface-guard regression green: tool-registry.ts registers exactly 17 kb_* + 7 code_* = 24, matching the inventory-arbitrated count; tests/memory-contract-roster-guard.test.ts does a real three-way set equality (registerAllTools via a fake McpServer, generator KB_MODULES/CODE_EXPORTS, schemas on disk). AC5 met.
 
-DETERMINISM: npm run contract:generate rewrote all 70 files and git status --porcelain stayed empty -- byte-identical emit confirmed. probe-generator-2020-12.mjs PASSED and printed '0 of 23 also needed a structural fix'.
+DETERMINISM: npm run contract:generate rewrote all 70 files and git status --porcelain stayed empty -- byte-identical emit confirmed. probe-generator-2020-12.mjs PASSED and printed '0 of 24 also needed a structural fix'.
 
 TEST SUITE (Step 4): git status clean, npm run build exit 0, no lint script configured. Full npm test exit 0: vitest 308 files / 4231 tests passed, 8 files + 38 tests skipped, 0 failed; apra-fleet-se 1926 passed 0 failed; apra-pm 456 passed 0 failed. Notably the four files a KB entry says always fail on stock Windows all passed, and eft-41's symlink case skips via a real EPERM privilege probe that rethrows any other error (tests/eft-41-symlinked-entry.test.ts) -- gating, not disabling. No unconditional .skip anywhere in the stabilized files.
 
