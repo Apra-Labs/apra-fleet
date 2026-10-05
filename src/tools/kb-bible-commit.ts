@@ -4,6 +4,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { getKbProviders } from '../services/knowledge/kb-providers.js';
 import { resolveKbAnchor, type KbAnchor } from '../services/knowledge/kb-self.js';
+import { filterProjectBibleCandidates } from '../services/knowledge/bible-basis-filter.js';
+import { logWarn } from '../utils/log-helpers.js';
 import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
 import {
   asciiSafeStringify,
@@ -36,7 +38,7 @@ import {
 
 export const kbBibleCommitSchema = z.object({
   ids: z.array(z.string().min(1))
-    .describe('Ids of the entries confirmed this round. Each must be a live (non-stale, non-superseded) CONFIRMED entry in this repository\'s KB; any other id is skipped and reported in skipped. An empty list makes no commit.'),
+    .describe('Ids of the entries confirmed this round. Each must be a live (non-stale, non-superseded) CONFIRMED entry in this repository\'s KB whose recorded file basis still matches the files on disk (the same rule kb_export applies); any other id is skipped and reported in skipped (reason not_confirmed_or_unknown or basis_mismatch). An empty list makes no commit.'),
   baseBranch: z.string().min(1)
     .describe('The sprint\'s target base branch (the branch the work merges into). Written to provenance.branch.'),
   baseCommit: z.string().min(1)
@@ -50,7 +52,7 @@ export type KbBibleCommitInput = z.infer<typeof kbBibleCommitSchema>;
 
 export interface KbBibleCommitSkip {
   id: string;
-  reason: 'not_confirmed_or_unknown';
+  reason: 'not_confirmed_or_unknown' | 'basis_mismatch';
 }
 
 export interface KbBibleCommitResult {
@@ -75,16 +77,30 @@ export async function kbBibleCommit(input: KbBibleCommitInput, anchor?: KbAnchor
 
   const providers = await getKbProviders(repoPath, resolved.remoteUrl);
   const project = requireSqliteProject(providers.project, 'kb_bible_commit');
+  const confirmedEntries = await project.list({ confidence: ['CONFIRMED'] });
+  const requestedSet = new Set(requested);
+  // ONE admission rule with kb_export (scope=project): a CONFIRMED id is
+  // admitted only if it passes the shared bible basis predicate.
+  const requestedConfirmed = confirmedEntries.filter(e => requestedSet.has(e.id));
+  const qualifying = await filterProjectBibleCandidates(
+    requestedConfirmed,
+    project.getSourceFileBases(requestedConfirmed.map(e => e.id)),
+    repoPath,
+  );
+  const qualifyingIds = new Set(qualifying.map(e => e.id));
+  const confirmedIds = new Set(requestedConfirmed.map(e => e.id));
   const confirmed = new Map<string, CanonicalEntry>();
-  for (const e of await project.list({ confidence: ['CONFIRMED'] })) {
-    confirmed.set(e.id, toCanonicalEntry(e));
-  }
+  for (const e of qualifying) confirmed.set(e.id, toCanonicalEntry(e));
 
   const merged: string[] = [];
   const skipped: KbBibleCommitSkip[] = [];
   for (const id of requested) {
-    if (confirmed.has(id)) merged.push(id);
-    else skipped.push({ id, reason: 'not_confirmed_or_unknown' });
+    if (qualifyingIds.has(id)) merged.push(id);
+    else if (confirmedIds.has(id)) {
+      // An id already in the bible keeps its existing entry: the merge never drops entries.
+      logWarn('kb_bible_commit', 'skipping ' + id + ': basis_mismatch (cited files changed, missing, or basis absent)');
+      skipped.push({ id, reason: 'basis_mismatch' });
+    } else skipped.push({ id, reason: 'not_confirmed_or_unknown' });
   }
 
   // A bible file that exists but cannot be parsed must not be overwritten: its

@@ -292,8 +292,8 @@ describe('capture -> promote -> bible commit -> export round trip (basis filter)
     const result = JSON.parse(await kbExport({}, { folder: clone }));
     const ids = readBible(clone).entries.map(e => e.id);
     // `committed` is present because kb_bible_commit wrote it and the export is
-    // additive -- the basis predicate never admitted it. kb_bible_commit itself
-    // applies no basis check (a shared admission predicate is planned work).
+    // additive -- the basis predicate never admitted it. kb_bible_commit applies
+    // the same shared basis predicate on its own admission path.
     expect(ids).toContain(committed);
     expect(ids).toContain(unchanged);
     expect(ids).not.toContain(changed);

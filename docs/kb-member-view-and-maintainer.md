@@ -78,8 +78,11 @@ bible export. It merges at entry level, not by regenerating the bible:
 
 - Every entry already in the file is kept; only the given ids are added or
   replaced. An entry present in the file but absent from the DB is never
-  dropped. Each id must be a live CONFIRMED entry; others are reported in
-  `skipped`.
+  dropped. Each id must be a live CONFIRMED entry that also passes the same
+  basis rule as `kb_export` (every cited file's current hash equals the
+  recorded basis); others are reported in `skipped` with reason
+  `not_confirmed_or_unknown` or `basis_mismatch`, and a skipped id leaves any
+  existing bible entry unchanged.
 - An unreadable existing bible is never overwritten.
 - Provenance records the sprint's target base branch and base commit given by
   the caller, never the working folder's HEAD (usually a feature branch).
