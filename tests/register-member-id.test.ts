@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } 
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { pointHomeAt } from './helpers/isolated-home.mjs';
 
 // register-member --id: drives the real CLI entry (--type local, --llm none)
 // against a sandboxed APRA_FLEET_DATA_DIR and HOME, so the developer's real
@@ -35,7 +36,7 @@ beforeAll(() => {
   registryPath = path.join(dataDir, 'registry.json');
   for (const k of ['APRA_FLEET_DATA_DIR', 'HOME', 'USERPROFILE']) saved[k] = process.env[k];
   process.env.APRA_FLEET_DATA_DIR = dataDir;
-  process.env.HOME = sandbox;
+  pointHomeAt(sandbox);
   process.env.USERPROFILE = sandbox;
 });
 

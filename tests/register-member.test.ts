@@ -8,6 +8,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
+import { pointHomeAt } from './helpers/isolated-home.mjs';
+// Restores HOME after pointHomeAt (tests/helpers/isolated-home.mjs).
+let restoreHome: (() => void) | undefined;
 
 vi.mock('../src/services/statusline.js', () => ({
   writeStatusline: vi.fn(),
@@ -43,7 +46,7 @@ describe('register_member: auto-runs compose_permissions (apra-fleet-5oo.1 / apr
     // and trust seeding writes $HOME/.claude.json through the member shell,
     // whose clean env is built (and cached) from HOME. Point both at ONE
     // scratch home for the whole file so the real ~/.claude.json is never touched.
-    vi.stubEnv('HOME', scratchHome);
+    restoreHome = pointHomeAt(scratchHome);
     vi.stubEnv('USERPROFILE', scratchHome);
     vi.spyOn(os, 'homedir').mockReturnValue(scratchHome);
     mockComposePermissions.mockReset();
@@ -60,6 +63,7 @@ describe('register_member: auto-runs compose_permissions (apra-fleet-5oo.1 / apr
     // total) was not enough headroom -- widen it rather than let a timing race
     // fail the next test in the file.
     fs.rmSync(workFolder, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
+    restoreHome?.();
     vi.unstubAllEnvs();
     vi.restoreAllMocks();
     vi.resetModules();

@@ -30,6 +30,10 @@ import { execFileSync } from 'node:child_process';
 import { handleCodeReindex, handleCodeStatus } from '../src/tools/code-intelligence.js';
 import { codeStatus } from '../src/tools/code-intelligence-reindex.js';
 import { codeIndexReadiness } from '../src/tools/code-intelligence-readiness.js';
+// The REAL data dir code_reindex writes under. tests/setup.ts pins FLEET_DIR to
+// the per-run isolated dir before this file loads, so sandbox.data is not it.
+import { FLEET_DIR } from '../src/paths.js';
+import { resolveProjectSlug } from '../src/services/knowledge/project-slug.js';
 
 const isWin = process.platform === 'win32';
 const realPath = process.env.PATH ?? '';
@@ -97,8 +101,8 @@ function porcelain(dir: string): string {
 }
 
 function logOf(dir: string): string {
-  const d = path.join(sandbox.data, 'code-index');
-  const slug = fs.readdirSync(d)[0];
+  const d = path.join(FLEET_DIR, 'code-index');
+  const slug = resolveProjectSlug(dir);
   return fs.readFileSync(path.join(d, slug, 'analyze.log'), 'utf8');
 }
 

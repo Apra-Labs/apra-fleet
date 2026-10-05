@@ -2,6 +2,9 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { pointHomeAt } from './helpers/isolated-home.mjs';
+// Restores HOME after pointHomeAt (tests/helpers/isolated-home.mjs).
+let restoreHome: (() => void) | undefined;
 
 // LIVE POSIX case: a real temp HOME whose ~/.claude.json holds a user MCP
 // server + onboarding state is chmod 000 (unreadable), then compose_permissions
@@ -53,7 +56,7 @@ describe.skipIf(skip)('unreadable ~/.claude.json (POSIX, non-root only: chmod 00
 
     realHome = process.env.HOME;
     realUserProfile = process.env.USERPROFILE;
-    process.env.HOME = home;
+    restoreHome = pointHomeAt(home);
     delete process.env.CLAUDE_CONFIG_DIR;
     try {
       const { backupAndResetRegistry, restoreRegistry, makeTestLocalAgent } = await import('./test-helpers.js');
@@ -73,7 +76,7 @@ describe.skipIf(skip)('unreadable ~/.claude.json (POSIX, non-root only: chmod 00
         restoreRegistry();
       }
     } finally {
-      if (realHome === undefined) delete process.env.HOME; else process.env.HOME = realHome;
+      restoreHome?.();
       if (realUserProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = realUserProfile;
     }
   });

@@ -21,6 +21,9 @@ import { addAgent } from '../src/services/registry.js';
 import { composePermissions } from '../src/tools/compose-permissions.js';
 import { MEMBER_DENIED_TOOLS, MEMBER_ALLOWED_TOOLS } from '../src/services/member-tool-allowlist.js';
 import type { LlmProvider } from '../src/types.js';
+import { pointHomeAt } from './helpers/isolated-home.mjs';
+// Restores HOME after pointHomeAt (tests/helpers/isolated-home.mjs).
+let restoreHome: (() => void) | undefined;
 
 const HOST_OS: 'macos' | 'linux' = process.platform === 'darwin' ? 'macos' : 'linux';
 const AGY_PROJECT_ID = '1afd6dbb-498f-4918-a9d9-6da64b75a204';
@@ -99,7 +102,7 @@ beforeEach(() => {
   // One sandbox home for the whole file: LocalStrategy builds (and caches) the
   // member shell's clean env from HOME, and getMemberHomeDir resolves a local
   // member's home from os.homedir().
-  vi.stubEnv('HOME', home);
+  restoreHome = pointHomeAt(home);
   vi.stubEnv('USERPROFILE', home);
   vi.spyOn(os, 'homedir').mockReturnValue(home);
 });
@@ -107,6 +110,7 @@ beforeEach(() => {
 afterEach(() => {
   restoreRegistry();
   vi.restoreAllMocks();
+  restoreHome?.();
   vi.unstubAllEnvs();
 });
 

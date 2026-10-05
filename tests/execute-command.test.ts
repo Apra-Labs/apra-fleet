@@ -277,8 +277,11 @@ describe('execute_command: member.env at the dispatch sites (F14)', () => {
 
     await executeCommand({ member_id: member.id, command: 'ls', timeout_s: 5 });
     const dispatched = mockExecCommand.mock.calls[0][0] as string;
-    expect(dispatched).not.toContain('export ');
+    // The only export is the work-folder wrapper's BIN_DIR PATH append (KB
+    // #605); no env-prefix assignment and no staged-credential loader.
+    expect(dispatched.replace('export PATH="$PATH:$HOME/.apra-fleet/bin"', '')).not.toContain('export ');
     expect(dispatched).not.toContain('$env:');
+    expect(dispatched).not.toContain('.apra-fleet-env-');
   });
 
   it('long_running POSIX: run.sh carries member.env and NEVER the auth credential', async () => {

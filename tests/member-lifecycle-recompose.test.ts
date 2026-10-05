@@ -23,6 +23,9 @@ import { updateMember } from '../src/tools/update-member.js';
 import { removeMember } from '../src/tools/remove-member.js';
 import { getAgent } from '../src/services/registry.js';
 import type { LlmProvider } from '../src/types.js';
+import { pointHomeAt } from './helpers/isolated-home.mjs';
+// Restores HOME after pointHomeAt (tests/helpers/isolated-home.mjs).
+let restoreHome: (() => void) | undefined;
 
 vi.mock('../src/services/statusline.js', () => ({
   writeStatusline: vi.fn(),
@@ -87,7 +90,7 @@ afterAll(() => {
 
 beforeEach(() => {
   backupAndResetRegistry();
-  vi.stubEnv('HOME', home);
+  restoreHome = pointHomeAt(home);
   vi.stubEnv('USERPROFILE', home);
   vi.spyOn(os, 'homedir').mockReturnValue(home);
 });
@@ -95,6 +98,7 @@ beforeEach(() => {
 afterEach(() => {
   restoreRegistry();
   vi.restoreAllMocks();
+  restoreHome?.();
   vi.unstubAllEnvs();
 });
 

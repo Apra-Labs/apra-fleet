@@ -126,7 +126,8 @@ describe('install --member', () => {
   });
 
   it('--skill none WITHOUT --member still registers the user-scope MCP entry', async () => {
-    await runInstall(['--transport', 'http', '--skill', 'none']);
+    // --workflows none: v0.5 registers a fleet-supervisor service with workflows, which this test does not stub.
+    await runInstall(['--transport', 'http', '--skill', 'none', '--workflows', 'none']);
     expect(mcpAdds().length).toBe(1);
     expect(mcpAdds()[0]).toContain('apra-fleet');
   });

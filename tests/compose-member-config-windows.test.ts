@@ -3,6 +3,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { pointHomeAt } from './helpers/isolated-home.mjs';
+// Restores HOME after pointHomeAt (tests/helpers/isolated-home.mjs).
+let restoreHome: (() => void) | undefined;
 
 // Windows equivalents of two POSIX-only end-to-end cases:
 //   - tests/compose-opencode-config-safety.test.ts "tracked opencode.json"
@@ -73,7 +76,7 @@ describe.runIf(isWin)('compose on a Windows local member: tracked opencode.json,
     realHome = process.env.HOME;
     realUserProfile = process.env.USERPROFILE;
     realClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
-    process.env.HOME = home;
+    restoreHome = pointHomeAt(home);
     process.env.USERPROFILE = home;
     delete process.env.CLAUDE_CONFIG_DIR;
   });
@@ -95,7 +98,7 @@ describe.runIf(isWin)('compose on a Windows local member: tracked opencode.json,
   });
 
   afterAll(() => {
-    if (realHome === undefined) delete process.env.HOME; else process.env.HOME = realHome;
+    restoreHome?.();
     if (realUserProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = realUserProfile;
     if (realClaudeConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = realClaudeConfigDir;
     fs.rmSync(suiteScratch, { recursive: true, force: true });

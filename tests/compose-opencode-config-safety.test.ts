@@ -3,6 +3,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { pointHomeAt } from './helpers/isolated-home.mjs';
+// Restores HOME after pointHomeAt (tests/helpers/isolated-home.mjs).
+let restoreHome: (() => void) | undefined;
 
 // opencode compose against a REAL temp git repo as the member work folder and a
 // REAL temp HOME (no exec mocking; the real local strategy runs the commands):
@@ -42,11 +45,11 @@ beforeEach(() => {
   git('config', 'user.name', 'T');
   realHome = process.env.HOME;
   realUserProfile = process.env.USERPROFILE;
-  process.env.HOME = home;
+  restoreHome = pointHomeAt(home);
 });
 
 afterEach(() => {
-  if (realHome === undefined) delete process.env.HOME; else process.env.HOME = realHome;
+  restoreHome?.();
   if (realUserProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = realUserProfile;
   fs.rmSync(scratch, { recursive: true, force: true });
 });

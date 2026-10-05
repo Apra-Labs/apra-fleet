@@ -29,6 +29,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { makeTestAgent } from './test-helpers.js';
 import { buildSelfRegisterCommand, memberBinPath } from '../src/services/member-fleet-install.js';
+import { pointHomeAt } from './helpers/isolated-home.mjs';
 
 const MEMBER_ID = '5f0c2a3e-8d41-4b6a-9c3e-2b7d1e4f6a80';
 
@@ -77,7 +78,7 @@ beforeEach(async () => {
   fs.mkdirSync(work);
   for (const k of ['APRA_FLEET_DATA_DIR', 'HOME', 'USERPROFILE', 'CLAUDE_CONFIG_DIR']) saved[k] = process.env[k];
   process.env.APRA_FLEET_DATA_DIR = path.join(home, '.apra-fleet', 'data');
-  process.env.HOME = home;
+  pointHomeAt(home);
   process.env.USERPROFILE = home;
   delete process.env.CLAUDE_CONFIG_DIR;
   compose.calls = 0;

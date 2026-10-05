@@ -34,6 +34,9 @@ import { composePermissions } from '../src/tools/compose-permissions.js';
 import { updateMember } from '../src/tools/update-member.js';
 import { MEMBER_DENIED_TOOLS, MEMBER_ALLOWED_TOOLS, REGISTERED_TOOL_NAMES } from '../src/services/member-tool-allowlist.js';
 import type { Agent, LlmProvider } from '../src/types.js';
+import { pointHomeAt } from './helpers/isolated-home.mjs';
+// Restores HOME after pointHomeAt (tests/helpers/isolated-home.mjs).
+let restoreHome: (() => void) | undefined;
 
 vi.mock('../src/services/statusline.js', () => ({
   writeStatusline: vi.fn(),
@@ -244,7 +247,7 @@ beforeEach(() => {
   backupAndResetRegistry();
   // One sandbox home for the whole file (LocalStrategy caches the member
   // shell's clean env, built from HOME, per process).
-  vi.stubEnv('HOME', home);
+  restoreHome = pointHomeAt(home);
   vi.stubEnv('USERPROFILE', home);
   vi.spyOn(os, 'homedir').mockReturnValue(home);
 });
@@ -252,6 +255,7 @@ beforeEach(() => {
 afterEach(() => {
   restoreRegistry();
   vi.restoreAllMocks();
+  restoreHome?.();
   vi.unstubAllEnvs();
 });
 

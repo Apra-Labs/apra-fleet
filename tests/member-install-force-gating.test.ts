@@ -143,7 +143,8 @@ describe('install --member --force over a server it did not start', () => {
   });
 
   it('a full (non-member) install --force is unaffected', async () => {
-    await runInstall(['--skill', 'none', '--force']);
+    // --workflows none: v0.5's supervisor service step is not stubbed here and not under test.
+    await runInstall(['--skill', 'none', '--workflows', 'none', '--force']);
     expect(kills).toEqual(['SIGTERM:5678']);
   });
 

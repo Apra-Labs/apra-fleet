@@ -5,6 +5,9 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { mergeDenyRules } from '../src/tools/compose-permissions.js';
 import { claudeMemberDenyRules } from '../src/services/member-config-io.js';
+import { pointHomeAt } from './helpers/isolated-home.mjs';
+// Restores HOME after pointHomeAt (tests/helpers/isolated-home.mjs).
+let restoreHome: (() => void) | undefined;
 
 // compose_permissions engine robustness, against a REAL temp git work folder and
 // a REAL temp HOME (no exec mocking; the real local strategy runs the commands):
@@ -67,12 +70,12 @@ beforeEach(() => {
   realHome = process.env.HOME;
   realUserProfile = process.env.USERPROFILE;
   realClaudeDir = process.env.CLAUDE_CONFIG_DIR;
-  process.env.HOME = home;
+  restoreHome = pointHomeAt(home);
   delete process.env.CLAUDE_CONFIG_DIR;
 });
 
 afterEach(() => {
-  if (realHome === undefined) delete process.env.HOME; else process.env.HOME = realHome;
+  restoreHome?.();
   if (realUserProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = realUserProfile;
   if (realClaudeDir === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = realClaudeDir;
   try { fs.chmodSync(home, 0o755); } catch { /* ignore */ }

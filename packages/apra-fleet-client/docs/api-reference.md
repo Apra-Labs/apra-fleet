@@ -817,6 +817,19 @@ last run (`analyze.phase`, `analyze.result` = `indexed` | `up-to-date` |
 (`ready` | `building` | `missing`) and `indexedCommit`. Extract both with
 `parseToolJson()`.
 
+#### `sessionStats(options?: SessionStatsOptions)`
+
+Calls `session_stats` -- a member's kb_* / code_* tool call counts on this
+server, aggregated across that member's sessions (engine-origin sessions
+excluded). On a member session the calling member is reported and
+`member_id` may be omitted; a non-member session must pass it. Extract the
+JSON with `parseToolJson()`: a `SessionStatsResult` -- `{ member_id, since,
+kb, code, total, tools }` (`since` changes when the server restarts).
+
+| Field | Type | Notes |
+|---|---|---|
+| `member_id` | `string?` | Member uuid to read; required on a non-member session. |
+
 #### `doltPushMutex(options)`
 
 Calls `dolt_push_mutex` -- the fleet-server-hosted global dolt push mutex

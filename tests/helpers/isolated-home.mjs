@@ -177,6 +177,30 @@ export async function applyIsolatedHome(prefix = 'apra-fleet-isolated-home-') {
 }
 
 /**
+ * Points HOME at a caller-owned scratch directory, for a test that builds its
+ * OWN fixture layout under HOME (rather than taking applyIsolatedHome()'s fresh
+ * temp home). Refuses the real user home outright, so a test can never aim
+ * HOME back at the developer's profile through this helper. Only HOME is
+ * touched (callers that also redirect USERPROFILE/os.homedir keep doing so).
+ * Returns a restore function that puts HOME back exactly as it was.
+ * @param {string} dir
+ * @returns {() => void}
+ */
+export function pointHomeAt(dir) {
+  let realHome = null;
+  try { realHome = os.userInfo().homedir; } catch { /* no passwd entry: nothing to compare */ }
+  if (realHome && path.resolve(dir) === path.resolve(realHome)) {
+    throw new Error(`isolated-home guard: refusing to point HOME at the real user home "${realHome}".`);
+  }
+  const saved = process.env.HOME;
+  process.env.HOME = dir;
+  return () => {
+    if (saved === undefined) delete process.env.HOME;
+    else process.env.HOME = saved;
+  };
+}
+
+/**
  * Builds a child-process env object carrying the same isolated-home
  * variable set as applyIsolatedHome(), for spawn(..., { env }) callers that
  * need a fresh temp home of their own (rather than inheriting the current
