@@ -434,11 +434,6 @@ try {
       Rec L14b 'runner artifact: stop the High-integrity legacy server (elevated)' $(if ($hp.Count) { $RC } else { 0 }) $(if ($hp.Count) { Key $LOG @('SUCCESS', 'ERROR') } else { 'no apra-fleet process running' }) "pids: $($hp -join ',')"
       AsLimited L15 fix-install $AF @('install', '--force', '--workflows', 'none')
       Rec L15 'apra-fleet install --force --workflows none (not elevated)' $RC (Key $LOG @('installed successfully', '^Error')) "$($script:LimToken); exe present=$(YesNo (Test-Path $AF))"
-      # Diagnostics (advisory): which apra-fleet processes run at what integrity,
-      # and what the installer's own stop command does from the Medium token.
-      $procs = @(Get-Process apra-fleet -ErrorAction SilentlyContinue | ForEach-Object { "pid $($_.Id) start $($_.StartTime.ToString('HH:mm:ss'))" }) -join '; '
-      AsLimited L15d taskkill 'cmd.exe' @('/d', '/c', 'tasklist /NH /FO CSV | findstr /i apra-fleet & taskkill /F /IM apra-fleet.exe') 120
-      Rec L15d 'diag: apra-fleet processes; product taskkill from the Medium token' 0 (Head $LOG 300) "running before: $procs"
       TaskFormStep L16 $env:USERNAME
       $gone = -not (Test-Path $nf)
       Rec L17 'service-notice.json removed by the new task' ([int](-not $gone)) $(if ($gone) { 'notice cleared' } else { 'service-notice.json still present after the new task was installed' })
