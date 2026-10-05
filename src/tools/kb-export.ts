@@ -481,10 +481,17 @@ async function exportProjectBible(source: SqliteProvider, repoPath: string, outP
   };
   const fleetDir = path.dirname(outPath);
   if (!fs.existsSync(fleetDir)) fs.mkdirSync(fleetDir, { recursive: true });
-  const previousEntryCount = bibleEntryCount(outPath);
+  const previous = previousBible(outPath);
   fs.writeFileSync(outPath, asciiSafeStringify(bible) + '\n', 'utf-8');
 
-  const committed = maybeAutoCommitBible(repoPath, outPath, merged.length, 'project', previousEntryCount);
+  // The merge above is additive, so this export never shrinks and the shrink
+  // guard cannot fire here; it gets the same inputs as the global path so the
+  // guard stays correct if the merge policy ever changes.
+  const committed = maybeAutoCommitBible(repoPath, outPath, merged.length, 'project', {
+    previous,
+    currentIds: merged.map(e => String(e.id)),
+    demotedLocally: ids => source.demotedIds(ids, { belowConfirmedOnly: true }),
+  });
   return JSON.stringify({ exported: merged.length, path: outPath, scope: 'project', committed });
 }
 
@@ -514,7 +521,8 @@ export async function kbExport(input: KbExportInput): Promise<string> {
     return exportProjectBible(requireSqliteProject(providers.project, 'kb_export'), repoPath, outPath);
   }
 
-  const entries = await providers.global.list({ confidence: 'CONFIRMED' });
+  const source = providers.global;
+  const entries = await source.list({ confidence: 'CONFIRMED' });
 
   // Deterministic ordering by id so re-exports produce meaningful diffs.
   const canonical: CanonicalEntry[] = entries.map(toCanonical).sort(byId);
