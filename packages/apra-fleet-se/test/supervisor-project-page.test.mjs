@@ -285,6 +285,15 @@ describe('GET /ui/projects (apra-fleet-i9ag.17.2.2)', () => {
         assert.ok(html.includes('fleet-supervisor UI arrives in a later sprint'), 'GET /ui/panels/git must contain the placeholder text');
     });
 
+    test('placeholder page served at single-segment path /ui/sprints carries THEME_CSS (apra-fleet-i9ag.22.1.2)', async () => {
+        const handler = createProjectsPageHandler({ token: null });
+        const res = mockRes();
+        await handler({ method: 'GET', url: '/ui/sprints', headers: {} }, res, ctxFor('/ui/sprints'));
+        const html = res.body.toString('utf-8');
+        assert.ok(html.includes(THEME_CSS), 'GET /ui/sprints must carry THEME_CSS');
+        assert.ok(html.includes('fleet-supervisor UI arrives in a later sprint'), 'GET /ui/sprints must contain the placeholder text');
+    });
+
     test('placeholder page body applies background and text color vars (apra-fleet-i9ag.22.1.2)', () => {
         // The THEME_CSS itself includes the body rule with background: var(--bg) and color: var(--text),
         // plus a page-local body rule with padding. Verify the placeholder HTML includes both.
