@@ -189,7 +189,7 @@ flowchart LR
 - **Fleet server**: the control plane. Registers members, dispatches commands and prompts, moves files, brokers credentials. Speaks MCP, so any MCP-capable agent can drive a fleet. `execute_prompt` supports session forking (`fork`) on fork-capable providers -- branch a new, independent session from an existing one's context (e.g. a primed session reused across per-task dispatches) without continuing to write into the source session. See [docs/mcp-tools.md](docs/mcp-tools.md#execute_prompt) for the parameter contract.
 - **Members**: real machines running provider CLIs. Composes provider-native permissions before every dispatch; unattended modes are scoped, never blanket. A consumer package (e.g. a fleet-sprint project) can tag a member with its own `owner {package, ref}` binding (`member_owner`) and read live git status for a member's work folder -- branch, dirty files, ahead/behind, worktrees, origin identity -- without assuming the folder is even a checkout (`member_git_status`). A member's stored `env` name-value map is now actually injected at every dispatch site (synchronous exec, prompt launch and its retries, and the long-running task wrapper), merged with the member's own auth credentials and rendered for whichever shell the member is actually registered as speaking -- see [docs/cross-shell-command-construction.md](docs/cross-shell-command-construction.md). See [docs/mcp-tools.md](docs/mcp-tools.md#1-lifecycle-tools).
 - **Workflow engine**: runs workflow programs with phases, retries, turn budgets, resumable sessions, per-activity persistent state, and a cooperative pause/resume gate any workflow can hook into.
-- **Supervisor**: always-on layer -- launch, pause/resume, & stop sprints over HTTP, member reservation ledger (an object holder record with a process id and timestamp, lazily reaped once its holder's process is gone -- see [docs/member-reservation-design.md](docs/member-reservation-design.md)), crash watchdog (including a live "paused" state and base-branch-drift indicator), run history. Binds loopback-only (`127.0.0.1`) and guards its `/api/` surface and mutating live-sprint routes with a per-host bearer token (source is the shared `~/.apra-fleet/fleet.key` when present, falling back to a token minted under `<supervisor-data-root>/private/token` otherwise; the source is logged, the token value never is; sent as `Authorization: Bearer <token>`); read-only dashboard/live views stay open on loopback. See [packages/apra-fleet-se/docs/architecture.md](packages/apra-fleet-se/docs/architecture.md#supervisor-loopback-bind--bearer-token-auth-guard). It is also gaining a project domain -- binding a member to a console project, adding a new checkout on a machine, a health panel, a per-member git drawer, and a project export/import CLI -- built as domain logic and JSON routes ahead of the console UI that will render it. See [packages/apra-fleet-se/docs/project-overview-domain.md](packages/apra-fleet-se/docs/project-overview-domain.md). Separately, each supervisor instance now resolves a single persisted project folder (`supervisor.config.json`) -- an explicit `--beads-dir` flag, else that persisted setting, else the legacy `.beads` walk-up -- so an installed supervisor's Backlog/Sprints pages reach a real project instead of only whatever `.beads` happens to be found walking up from the service's own installed engine path; set it at install time (`apra-fleet install --project-dir <path>`) or later from the console's Projects page, and see it on Health. See [packages/apra-fleet-se/docs/project-model.md](packages/apra-fleet-se/docs/project-model.md) and [docs/install.md](docs/install.md)'s "Project folder" note.
+- **Supervisor**: always-on layer -- launch, pause/resume, & stop sprints over HTTP, member reservation ledger (an object holder record with a process id and timestamp, lazily reaped once its holder's process is gone -- see [docs/member-reservation-design.md](docs/member-reservation-design.md)), crash watchdog (including a live "paused" state and base-branch-drift indicator), run history, and a supervisor-owned LLM-less backlog member that every launch is pinned to. The dashboard and backlog read a cached, tip-checked beads view and show when it was last refreshed ("Beads as of"); launch always forces a fresh beads check and answers 503, without reserving members or starting a sprint, when beads cannot be verified. Binds loopback-only (`127.0.0.1`) and guards its `/api/` surface and mutating live-sprint routes with a per-host bearer token (source is the shared `~/.apra-fleet/fleet.key` when present, falling back to a token minted under `<supervisor-data-root>/private/token` otherwise; the source is logged, the token value never is; sent as `Authorization: Bearer <token>`); read-only dashboard/live views stay open on loopback. See [packages/apra-fleet-se/docs/architecture.md](packages/apra-fleet-se/docs/architecture.md#supervisor-loopback-bind--bearer-token-auth-guard). It is also gaining a project domain -- binding a member to a console project, adding a new checkout on a machine, a health panel, a per-member git drawer, and a project export/import CLI -- built as domain logic and JSON routes ahead of the console UI that will render it. See [packages/apra-fleet-se/docs/project-overview-domain.md](packages/apra-fleet-se/docs/project-overview-domain.md). Separately, each supervisor instance now resolves a single persisted project folder (`supervisor.config.json`) -- an explicit `--beads-dir` flag, else that persisted setting, else the legacy `.beads` walk-up -- so an installed supervisor's Backlog/Sprints pages reach a real project instead of only whatever `.beads` happens to be found walking up from the service's own installed engine path; set it at install time (`apra-fleet install --project-dir <path>`) or later from the console's Projects page, and see it on Health. See [packages/apra-fleet-se/docs/project-model.md](packages/apra-fleet-se/docs/project-model.md) and [docs/install.md](docs/install.md)'s "Project folder" note.
 
 ## Knowledge Layer
 
@@ -216,7 +216,7 @@ MCP tools that ship with the KB:
 | `kb_invalidate` | Mark files stale immediately (also called by the git hook) |
 | `kb_promote` | Advance confidence: UNVERIFIED -> INFERRED -> CONFIRMED |
 | `kb_harvest` | Extract learnings from a session transcript (auto-fires after execute_prompt) |
-| `kb_export` | Write live CONFIRMED entries to `.fleet/kb-canonical.json` -- the git-shareable team bible |
+| `kb_export` | Additively merge live CONFIRMED entries whose cited files still match their recorded hashes into `.fleet/kb-canonical.json` -- the git-shareable team bible |
 | `kb_setup` | Install git hook, write provider config, store remote token encrypted |
 
 `kb_setup --remote <url> --token <key>` takes effect immediately: the next
@@ -906,14 +906,14 @@ one resolution order used identically by `src/cli/workflow.ts` and
 
 1. `APRA_FLEET_TRANSPORT` forced override (`http` fails loud with no
    singleton rather than silently falling back to a private server; `stdio`
-   or a set `APRA_FLEET_SERVER_CMD`/`_BIN` goes straight to self-spawn).
+   or a set `APRA_FLEET_SERVER_CMD`/`_BIN` goes straight to a private stdio server).
 2. Probe for a healthy HTTP singleton (`checkRunningInstance()` -- the same
    pid + `/health` check the installed service already uses for
    startup-dedup) and attach with zero spawned processes. This is the
    default, steady-state path.
-3. Fall back to stdio self-spawn (the four-tier command resolution
-   `resolveFleetServerCommand()` already had) only when no healthy
-   singleton is found.
+3. If the singleton is verifiably gone, start the shared HTTP server by
+   running `apra-fleet start` (detached, lock-guarded, loop-guarded) and
+   attach over HTTP. Stdio is only the explicit `stdio` / CMD / BIN path.
 
 The rationale for one shared helper over two copies: a launcher that merely
 mirrored the old stdio-only `resolveFleetServerCommand()` would always
@@ -1518,7 +1518,7 @@ always separate processes. Set `APRA_FLEET_TRANSPORT=http` (the default) or
 `APRA_FLEET_TRANSPORT=stdio` to control how the launcher reaches that
 server: `http` (default) attaches to the already-running installed-service
 singleton at `http://localhost:${APRA_FLEET_PORT:-7523}/mcp` and spawns
-nothing; `stdio` self-spawns a private server as a subprocess. See `docs/adr-workflow-server-resolution.md` for the full
+nothing; `stdio` (explicit only) runs a private server as a subprocess; if no singleton is running, `http` mode starts the shared one. See `docs/adr-workflow-server-resolution.md` for the full
 resolution order (this same order also governs where role schemas resolve
 from in the installed-binary case: `APRA_FLEET_SE_SCHEMAS_DIR`, set by the
 launcher to `~/.apra-fleet/schemas`, is tier 1 of the schema resolution
@@ -3877,6 +3877,12 @@ For watch mode during development:
 ```bash
 npm run test:watch
 ```
+
+Every suite runs in a per-run sandbox (`scripts/test-sandbox.mjs`): HOME, USERPROFILE,
+APPDATA/LOCALAPPDATA, XDG dirs and `APRA_FLEET_DATA_DIR` point at a temp dir, and a guard
+preloaded into every node process refuses to run if the real profile would be used. Run package
+suites through their `npm test` scripts (or `node scripts/with-test-sandbox.mjs <cmd>`), never a bare
+`node --test`, so tests can never touch your real `~/.apra-fleet` (fleet.key, server.json, bin/).
 
 ## Branch Naming
 

@@ -5,6 +5,7 @@ import os from 'node:os';
 import type { RegisterOptions, ServiceDescriptor, ServiceId, ServiceManager, ServiceStatus } from './types.js';
 import { DEFAULT_SERVICE_ID, SERVICE_ENV_MARKER, getServiceDescriptor } from './types.js';
 import { gracefulStopByServerJson } from './index.js';
+import { clearServiceStartFailures } from '../service-start-guard.js';
 
 const PLIST_DIR = path.join(os.homedir(), 'Library', 'LaunchAgents');
 
@@ -137,6 +138,9 @@ export class MacOSServiceManager implements ServiceManager {
   }
 
   async start(): Promise<void> {
+    // An explicit start is never skipped by the MCP server's failed-start
+    // backoff (the backoff state belongs to the MCP server service only).
+    if (this.descriptor.gracefulStopViaServerJson) clearServiceStartFailures();
     execFileSync('launchctl', ['kickstart', this.target()]);
   }
 
@@ -148,7 +152,7 @@ export class MacOSServiceManager implements ServiceManager {
     // down through launchd itself. bootout also unloads the job, so a later
     // start() re-bootstraps via register(); callers that only want a pause
     // should use kickstart semantics instead.
-    try { execFileSync('launchctl', ['bootout', this.target()]); } catch {}
+    try { execFileSync('launchctl', ['bootout', this.target()], { stdio: 'pipe', timeout: 30_000 }); } catch {}
     return true;
   }
 

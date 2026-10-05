@@ -41,6 +41,26 @@ short-circuits before anything downstream runs:
    Any failure -> `400` naming the field. Note the split has to happen first:
    `ISSUE_ID_PATTERN` has no comma in its charset, so an un-split `"a,b"`
    would be rejected.
+1a. **Backlog hard pin** (only when `bin/serve.mjs` wired its backlog-member
+   handle -- `src/supervisor/backlog-member.mjs`; a controller built without
+   it keeps the unpinned behaviour). Every sprint a supervisor launches uses
+   THAT supervisor's own backlog member (the LLM-less, unreservable member
+   it ensures at startup for its project folder):
+   - backlog member degraded (fleet unreachable at startup, no `.beads`
+     found, ...) -> `503`, `error` = `this supervisor's backlog member is not
+     ready: <reason>`, nothing spawned;
+   - fleet member list unreadable at launch time -> `503`, `error` contains
+     `cannot verify backlog member`, nothing spawned (the check is never
+     skipped silently);
+   - `roleMap` absent, or without a `backlog` (or deprecated `orchestrator`)
+     key -> `backlog: [<supervisor member>]` is INJECTED into the role map
+     the child receives (other roles untouched);
+   - `roleMap.backlog` (or the alias) naming the supervisor member ->
+     accepted (the alias still produces its deprecation warning);
+   - naming any other member -> `400`, field `roleMap`, naming the
+     supervisor's backlog member.
+   The pinned member is `unreservable`, so it never enters the reserved
+   member union (step 3).
 2. **Relaunch gate** -- looks up
    `history.latestForIssueRoot(issue)`. If that prior incarnation's record
    is "deterministic" (see below) and the request did not pass
@@ -281,7 +301,7 @@ carries the reason and the fix, e.g.:
 
 ```json
 "beads": null,
-"beadsWarning": "no beads database found walking up from /some/dir. Backlog and scope-overlap checks are disabled and sprints will verify against the backlog member's beads instead. To fix: restart fleet-se from inside the project folder, or pass --beads-dir <project-or-.beads-path>, then GET /api/health?refresh=1."
+"beadsWarning": "no beads database found walking up from /some/dir. Backlog and scope-overlap checks are disabled, and this supervisor has no backlog member, so it cannot launch sprints. To fix: restart fleet-se from inside the project folder, or pass --beads-dir <project-or-.beads-path>, then GET /api/health?refresh=1."
 ```
 
 (a nonexistent `--beads-dir` is still a startup error, not a warning).
@@ -296,6 +316,23 @@ four fields are recorded as `beads` on each launched sprint's ledger entry
 backlog member's own identity), so a member whose own `bd where`
 disagrees is refused rather than dispatched at the wrong tracker. `dir` is
 display-only: it is a path on the supervisor's host.
+
+## GET /api/health: `backlogMember`
+
+When `bin/serve.mjs` wired its backlog-member handle, health also reports
+
+```json
+"backlogMember": { "status": "ready" | "degraded", "name": "<member name or null>", "reason": "<why degraded, or null>" }
+```
+
+At startup the supervisor adopts a local LLM-less member whose work folder
+is its project folder (adding the `backlog` tag and `unreservable` when
+missing), or registers one named `backlog-<camelCaseFolderName>` -- also
+when an LLM member already uses that folder (the registry allows one LLM and
+one LLM-less member per folder; the LLM member is left alone and logged). It
+REFUSES to start (exit 1) when the derived name is taken by a member for
+another folder. Fleet unreachable is not fatal: status is `degraded`, launches
+answer `503`, and a background retry flips it to `ready`.
 
 ## Status-code summary (cross-endpoint)
 
@@ -319,6 +356,8 @@ display-only: it is a path on the supervisor's host.
 - **502** -- reverse-proxy-specific (`/sprints/:id/live*`): the child was
   supposed to be reachable (port resolved) but the actual upstream
   connect/response failed.
-- **503** -- dolt-mutex acquire and id-allocator allocate failures (e.g. the
+- **503** -- `POST /api/sprints` while the supervisor's backlog member is
+  degraded or the fleet member list cannot be read (see step 1a), plus
+  dolt-mutex acquire and id-allocator allocate failures (e.g. the
   seam shutting down) -- distinct from 500 to signal "try again", not "this
   request is wrong".

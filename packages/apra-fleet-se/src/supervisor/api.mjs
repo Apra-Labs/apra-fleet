@@ -42,9 +42,9 @@ import { statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import { readJsonBody, sendJson } from './server.mjs';
-import { validateIssueId, validateBranchName } from '../../fleet-sprint/runner.js';
+import { validateIssueId, validateBranchName, validateBranchPair } from '../../fleet-sprint/runner.js';
 import { resolveRoleMap } from '../../bin/cli.mjs';
-import { resolveBacklogRoleAlias } from '../../fleet-sprint/backlog-role.mjs';
+import { resolveBacklogRoleAlias, ROLE_BACKLOG } from '../../fleet-sprint/backlog-role.mjs';
 import { normalizeRole } from '../../fleet-sprint/contracts.mjs';
 import { isDeterministicTerminalReason } from './history.mjs';
 import { defaultHasTerminalState } from './watchdog.mjs';
@@ -52,6 +52,7 @@ import { toBeadsSummary } from './beads-identity.mjs';
 import { isNoBeadsDirectoryError } from './backlog.mjs';
 import { SPRINT_SPAWN_FAILED } from './spawner.mjs';
 import { SprintRunnerResolutionError } from './node-runner.mjs';
+import { fleetMembersUnavailableReason, fleetMembersStoppedByUserReason } from './fleet-members.mjs';
 
 /** This module's own on-disk path -- the default build-version stamp's source (see defaultBuildVersion() below). */
 const API_MODULE_PATH = fileURLToPath(import.meta.url);
@@ -371,6 +372,12 @@ export function defaultBuildVersion() {
  *     src/supervisor/beads-identity.mjs's createBeadsIdentityState() handle.
  *     When present, launch() records toBeadsSummary(get()) as the ledger
  *     entry's `beads` field; absent (tests, older wiring) -> null.
+ *   backlogMember?: { get: () => { member: { name: string }|null, status: 'ready'|'degraded', reason: string|null } },
+ *     src/supervisor/backlog-member.mjs's ensureBacklogMember() handle. When
+ *     present, launch() HARD-PINS roleMap.backlog to that member (see
+ *     launch()): degraded -> 503 with the reason; member list unreadable ->
+ *     503; absent backlog role -> injected; a different member -> 400.
+ *     Absent (tests, older wiring) -> today's unpinned behaviour.
  * }} deps
  */
 export function createSprintController(deps = {}) {
@@ -393,6 +400,7 @@ export function createSprintController(deps = {}) {
     // cwd is an unusable project folder". A null beads identity is NOT a
     // refusal (sprints then verify against the backlog member's beads).
     const launchGuard = typeof deps.launchGuard === 'function' ? deps.launchGuard : () => null;
+    const backlogMemberHandle = deps.backlogMember && typeof deps.backlogMember.get === 'function' ? deps.backlogMember : null;
     const beadsSummaryForLaunch = () => {
         if (!beadsIdentity || typeof beadsIdentity.get !== 'function') return null;
         try {
@@ -455,6 +463,8 @@ export function createSprintController(deps = {}) {
         catch (err) { throw new ApiError(400, err.message, 'branch'); }
         try { validateBranchName(base, 'base'); }
         catch (err) { throw new ApiError(400, err.message, 'base'); }
+        try { validateBranchPair(branch, base); }
+        catch (err) { throw new ApiError(400, err.message, 'branch'); }
         if (members.length === 0) {
             throw new ApiError(400, 'members must be a non-empty list of member names', 'members');
         }
@@ -629,12 +639,40 @@ export function createSprintController(deps = {}) {
         // still protects a flagged member even if this can't see it) and
         // leaves membersListRaw undefined so beforeLaunch falls back to its
         // own (equally best-effort) fetch attempt.
+        // Backlog hard pin, part 1: a supervisor whose backlog member is
+        // not ready cannot launch at all (before any member read or spawn).
+        let pinnedBacklogName = null;
+        if (backlogMemberHandle) {
+            const st = backlogMemberHandle.get() ?? {};
+            if (st.status !== 'ready' || !st.member || !st.member.name) {
+                throw new ApiError(503, `this supervisor's backlog member is not ready: ${st.reason ?? 'unknown reason'}`);
+            }
+            pinnedBacklogName = st.member.name;
+        }
         let membersListRaw;
+        let membersListError = null;
         try {
             membersListRaw = await listMembers();
         } catch (err) {
-            console.error(`[unreservable] listMembers() failed while computing the unreservable-member exclude set (treating as none this launch): ${err.message}`);
+            membersListError = err && err.message ? err.message : String(err);
+            console.error(`[unreservable] listMembers() failed while computing the unreservable-member exclude set (treating as none this launch): ${membersListError}`);
             membersListRaw = undefined;
+        }
+        // The fleet server was stopped on purpose ('apra-fleet stop'): refuse
+        // the launch with that actionable message instead of spawning a
+        // sprint that could only fail at connect.
+        const stoppedByUser = fleetMembersStoppedByUserReason(membersListRaw);
+        if (stoppedByUser) throw new ApiError(503, stoppedByUser);
+        // Backlog hard pin, part 2: the pin is only enforceable against a
+        // member list that was actually read. listFleetMembers() never
+        // throws, so its unavailable marker (not the catch above) is the
+        // production signal; either one refuses the launch -- never a
+        // silent skip of the check.
+        if (pinnedBacklogName) {
+            const unavailable = membersListError ?? fleetMembersUnavailableReason(membersListRaw);
+            if (unavailable) {
+                throw new ApiError(503, `cannot verify backlog member '${pinnedBacklogName}': fleet member list unavailable (${unavailable})`);
+            }
         }
         const unreservable = membersListRaw !== undefined ? unreservableMemberNamesFromList(membersListRaw) : new Set();
         const union = memberUnion(members, roleMap, unreservable);
@@ -681,6 +719,30 @@ export function createSprintController(deps = {}) {
             );
         }
 
+        // Backlog hard pin, part 3: checked AFTER resolveBacklogRoleAlias, so
+        // the resolved `roleMap.backlog` already carries a deprecated
+        // `orchestrator` alias. Absent -> injected into the map the child
+        // actually receives (forwardRoleMap when set, else the resolved map);
+        // naming any other member -> 400. The pinned member is unreservable,
+        // so it stays out of `union` exactly as before.
+        let childRoleMap = forwardRoleMap ?? roleMap;
+        if (pinnedBacklogName) {
+            const raw = roleMap && typeof roleMap === 'object' ? roleMap[ROLE_BACKLOG] : undefined;
+            const requested = (Array.isArray(raw) ? raw : (raw === undefined || raw === null ? [] : [raw]))
+                .filter((m) => typeof m === 'string' && m.trim().length > 0)
+                .map((m) => m.trim());
+            if (requested.length === 0) {
+                childRoleMap = { ...(childRoleMap && typeof childRoleMap === 'object' ? childRoleMap : {}), [ROLE_BACKLOG]: [pinnedBacklogName] };
+            } else if (requested.some((m) => m !== pinnedBacklogName)) {
+                throw new ApiError(
+                    400,
+                    `[Arg Contract] roleMap.backlog must be this supervisor's backlog member '${pinnedBacklogName}' (or omitted, ` +
+                    `which assigns it automatically); got [${requested.join(', ')}].`,
+                    'roleMap',
+                );
+            }
+        }
+
         // eft.5.2 seam: reject overlapping launches (409) BEFORE spawning a child.
         await beforeLaunch({ members: union, issueRoots, membersList: membersListRaw });
 
@@ -711,7 +773,7 @@ export function createSprintController(deps = {}) {
             maxCycles: body.maxCycles,
             allowMissingMembers: body.allowMissingMembers,
             requirementsFile: body.requirementsFile,
-            roleMap: forwardRoleMap ?? roleMap,
+            roleMap: childRoleMap,
             budget: body.budget,
             runId: sprintId,
             skipRegression,

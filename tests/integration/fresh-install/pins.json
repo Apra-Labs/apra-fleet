@@ -1,5 +1,5 @@
 {
-  "_comment": "Pinned downloads for the fresh-install harness. run.mjs fetches each into the cache dir and refuses a sha256 mismatch; the box re-verifies. Bump deliberately.",
+  "_comment": "Pinned downloads for the fresh-install harness. run.mjs fetches each into the cache dir and refuses a sha256 mismatch; the box re-verifies. Bump deliberately. The upgrade passes (U, U2) default to the newest baselines key (semver order); run.mjs checks it against the latest GitHub release and reports INCONCLUSIVE when a newer release exists. Baseline sha256 values are the release API's asset digests.",
   "node": {
     "version": "v22.23.3",
     "windows": {
@@ -11,6 +11,11 @@
       "file": "node-v22.23.3-linux-x64.tar.gz",
       "url": "https://nodejs.org/dist/v22.23.3/node-v22.23.3-linux-x64.tar.gz",
       "sha256": "1084aa36196bba4c3a5e69a1ee388a6e4ff729dad09445fbcd434b28fe3c24af"
+    },
+    "macos": {
+      "file": "node-v22.23.3-darwin-arm64.tar.gz",
+      "url": "https://nodejs.org/dist/v22.23.3/node-v22.23.3-darwin-arm64.tar.gz",
+      "sha256": "23b25245dcfb9af7262f8ff142e9e2e0af025368117329e7a7458a51e5922f53"
     }
   },
   "baselines": {
@@ -24,6 +29,22 @@
       "linux": {
         "asset": "apra-fleet-installer-linux-x64",
         "sha256": "b39b79b36eb43c6a85f4ee91fc6f97e5f8abdf0f1916f050aa797783836a6bdb"
+      }
+    },
+    "v0.4.3": {
+      "repo": "Apra-Labs/apra-fleet",
+      "version": "v0.4.3_f390e2",
+      "windows": {
+        "asset": "apra-fleet-installer-win-x64.exe",
+        "sha256": "24fffea0570ffa78cd221a26946130809fc486e0d04e17c9713d63dd5ce9e00f"
+      },
+      "linux": {
+        "asset": "apra-fleet-installer-linux-x64",
+        "sha256": "4fb70abd47df62b732aabc6f5482d32d37a253961054bdb6915d77ab50547fd8"
+      },
+      "macos": {
+        "asset": "apra-fleet-installer-darwin-arm64",
+        "sha256": "592683ccb77d596a359dee9559949d54a9b30bc6ecf437f742d08d773b43d5c0"
       }
     }
   }

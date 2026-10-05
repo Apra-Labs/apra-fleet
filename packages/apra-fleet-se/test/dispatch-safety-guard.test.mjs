@@ -353,7 +353,7 @@ const DISPATCH_ROLE_PATH = path.join(__dirname, '../fleet-sprint/dispatch-role.m
 // below scans them, and each gets its own explicit baseline count below.
 // 15 -> 13 (apra-fleet-3swo.6.9): the LAST two phase() boundaries, Harvest and
 // Publish PR, were sliced out of runSprintCycle, completing the slice. Harvest
-// took NO command() site (its docs/changelog/sprint-analysis commits are made
+// took NO command() site (its docs/sprint-analysis commits are made
 // by the DISPATCHED harvester inside its own repo, and its pushes are the
 // 'harvester' policy row's pushCode/pushBeads bracket) and Publish PR took
 // exactly TWO -- the `git remote get-url origin` PR-capability probe on the
@@ -974,7 +974,7 @@ test('every command() call site in phases/regression-test.mjs passes member_name
 // them these two get DIFFERENT baselines, and the difference is the point.
 //
 // phases/harvest.mjs is a zero baseline: it issues no command() at all. The
-// docs/CHANGELOG/sprint-analysis commits it exists to produce are made by the
+// docs/sprint-analysis commits it exists to produce are made by the
 // DISPATCHED harvester inside its own repo, and they reach the remote through
 // the 'harvester' policy row's pushCode/pushBeads bracket -- never through an
 // orchestrator-side command() here. A command() appearing in this module would
@@ -1196,11 +1196,13 @@ test('every command() call site in member-provisioning.mjs passes member_name or
 // createChildBeadWithAllocatedId, verifyDoerStreakClosed and
 // claimBeadsBatched.
 //
-// Its baseline is SIX: createChildBeadWithAllocatedId owns THREE
+// Its baseline is EIGHT: createChildBeadWithAllocatedId owns THREE
 // (the explicit-id path's `bd show <childId> --json` collision probe, the
 // `bd create --body-file`, and the explicit-id path's `bd update --parent`
-// link) and computeChildFloor/verifyDoerStreakClosed/claimBeadsBatched own ONE
-// each, all verified compliant.
+// link), adoptLandedChild owns TWO (the post-failure `bd show` re-probe and
+// the adopted child's `bd update --parent` link, GitHub #615), and
+// computeChildFloor/verifyDoerStreakClosed/claimBeadsBatched own ONE each,
+// all verified compliant.
 //
 // Its agent() baseline is ZERO, same per-module baseline reasoning as the
 // other extracted helper modules above -- a raw `agent(` appearing in this
@@ -1208,7 +1210,7 @@ test('every command() call site in member-provisioning.mjs passes member_name or
 // helper, which is exactly what a zero baseline turns red.
 // =============================================================================
 const BEADS_CHILDREN_PATH = path.join(__dirname, '../fleet-sprint/beads-children.mjs');
-const EXPECTED_BEADS_CHILDREN_COMMAND_COUNT = 6;
+const EXPECTED_BEADS_CHILDREN_COMMAND_COUNT = 8;
 
 test('every command() call site in beads-children.mjs passes member_name or member_id', () => {
     const { sites, violations } = checkPath(BEADS_CHILDREN_PATH);

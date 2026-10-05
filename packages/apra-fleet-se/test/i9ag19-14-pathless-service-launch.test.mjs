@@ -123,6 +123,7 @@ import { writeSupervisorToolchain } from '../src/supervisor/project-config.mjs';
 import { pathEnvKey, prependToPathEnv } from './helpers/child-path-env.mjs';
 import { scaledTimeout } from './helpers/scaled-timeout.mjs';
 import { buildRecordedNode } from './helpers/recorded-node-fixture.mjs';
+import { startFakeFleet, writeProjectBeadsDir } from './helpers/fake-fleet-server.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SE_ROOT = path.resolve(__dirname, '..');
@@ -157,9 +158,17 @@ function track(pid) {
 // killed on EVERY exit path -- a passing run kills it in the test's own
 // `finally` via a clean POST /api/shutdown, and this hook is the backstop
 // for a thrown assertion, a timeout, or a crash before shutdown was reached.
+/** @type {Set<{ stop: () => Promise<void> }>} */
+const fakeFleets = new Set();
+
 after(async () => {
     for (const pid of spawnedPids) forceKill(pid);
     spawnedPids.clear();
+    for (const fleet of fakeFleets) {
+        // eslint-disable-next-line no-await-in-loop
+        await fleet.stop().catch(() => {});
+    }
+    fakeFleets.clear();
     for (const dir of tmpDirs) {
         // eslint-disable-next-line no-await-in-loop
         await fsp.rm(dir, { recursive: true, force: true }).catch(() => {});
@@ -594,11 +603,20 @@ async function startPathlessSupervisor(label, { toolchain, preload }) {
     const appDataDir = await mkTmp(`i9ag19-14-${label}-fleet-data-`);
     const homeDir = await mkTmp(`i9ag19-14-${label}-home-`);
     const emptyPathDir = await mkTmp(`i9ag19-14-${label}-empty-path-`);
-    // A cwd that is NOT a project: no .beads anywhere above it, mirroring a
-    // service whose working directory is the installed engine path. The
-    // supervisor still boots (beads identity unknown is a WARNING, never
-    // fatal) and -- importantly for this test -- runs no `bd` at startup.
+    // The project the supervisor serves: a `.beads` holding bd init's
+    // metadata.json, so it discovers a project and ensures its LLM-less
+    // backlog member for it (a supervisor with no project, or with no
+    // reachable fleet, refuses every launch 503 by design). Its own startup
+    // bd calls (the identity probe) go through the recorded npm-shaped shim
+    // under this same PATH-less environment.
     const cwd = await mkTmp(`i9ag19-14-${label}-cwd-`);
+    writeProjectBeadsDir(cwd);
+    // A real fleet server on the wire (test/helpers/fake-fleet-server.mjs),
+    // discovered the product's own way (server.json in APRA_FLEET_DATA_DIR):
+    // the supervisor registers its backlog member there and runs the
+    // backlog member's tip-checked D-pull over execute_command, unmodified.
+    const fleet = await startFakeFleet({ dataDir: appDataDir });
+    fakeFleets.add(fleet);
 
     // The recording itself, written through the product's own writer so this
     // fixture can never drift from the real on-disk shape.
@@ -645,6 +663,7 @@ async function startPathlessSupervisor(label, { toolchain, preload }) {
         token,
         dataDir,
         cwd,
+        fleet,
         getOutput: () => output,
         request: (pathname, method, body) => httpRequest(port, pathname, method, token, body),
     };
@@ -681,6 +700,7 @@ async function stopSupervisor(supervisor) {
         // to stop must still not survive this test.
     } finally {
         forceKill(supervisor.child.pid);
+        if (supervisor.fleet) await supervisor.fleet.stop().catch(() => {});
     }
 }
 

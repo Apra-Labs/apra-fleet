@@ -163,7 +163,11 @@ describe('createChildBeadWithAllocatedId -- a post-create link failure does not 
         assert.strictEqual(allocator.calls.release, 0, 'release must NOT be called -- the id is genuinely occupied');
     });
 
-    test('a genuine create-dispatch failure (the create itself never lands) still releases the reservation', async () => {
+    // GitHub #615: a DISPATCHED create that fails no longer releases -- the id
+    // may be occupied (bd refuses a duplicate --id) or the create may have
+    // landed behind a transport fault -- so each attempt's id is confirmed
+    // (consumed) and the creator retries with a fresh id, bounded.
+    test('a create-dispatch failure never releases: each attempt\'s id is consumed and retried, bounded', async () => {
         const parentId = 'parent-3';
         const calls = [];
         const command = async (cmd) => {
@@ -195,11 +199,13 @@ describe('createChildBeadWithAllocatedId -- a post-create link failure does not 
                 priority: 'P2',
                 parentId,
             }),
-            /simulated bd create dispatch fault/,
+            /failed on all 3 attempts .*last error: simulated bd create dispatch fault/,
         );
 
-        assert.strictEqual(allocator.calls.release, 1, 'release must be called -- the create never landed, no permanent id gap');
-        assert.strictEqual(allocator.calls.confirm, 0, 'confirm must NOT be called -- nothing durably exists at this id');
+        assert.strictEqual(allocator.calls.release, 0, 'release must NOT be called once bd create was dispatched');
+        assert.strictEqual(allocator.calls.allocate, 3, 'one fresh allocation per attempt');
+        assert.strictEqual(allocator.calls.confirm, 3, 'every dispatched attempt consumes its id');
+        assert.strictEqual(calls.filter((c) => c.startsWith('bd create ')).length, 3, 'bounded to three create dispatches');
     });
 
     test('a second create attempt after a link failure does not hit the id-already-exists refusal', async () => {

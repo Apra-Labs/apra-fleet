@@ -1,0 +1,213 @@
+name: Regression - nightly real-bd suite
+
+# Tier B of the regression revamp (apra-fleet-7f39): the unmocked apra-fleet-se
+# suite against the real bd CLI, plus the slow lane (real-time watchdog
+# tests). Moved here from the in-sprint regression playbook, where it took
+# ~18% of sprint wall-clock. Runs nightly and on demand (no push trigger).
+# Scheduled runs fire only from the default branch.
+#
+# Advisory: this job never puts a red X on a commit for a test outcome -- CI
+# is the verdict on main. The verdict (PASS / FAIL / BROKEN) is the headline
+# of the job summary and the job output `verdict`. Harness breakage (suite
+# crashed or timed out, no status file, headSha mismatch, slow lane missing)
+# is BROKEN, stated loudly, and still green. Only the runner setup steps
+# (checkout .. bootstrap beads DB) can fail the job.
+
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  actions: read     # previous nightly run's artifact, for the delta
+  contents: read
+
+jobs:
+  real-bd-suite:
+    runs-on: ubuntu-latest
+    timeout-minutes: 100
+    outputs:
+      verdict: ${{ steps.report.outputs.verdict || 'BROKEN' }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js 22.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      # Same pin the installer ships (src/cli/beads-pin.ts BEADS_VERSION on
+      # v0.5, an inline @beads/bd@X.Y.Z in src/cli/install.ts on main); fail
+      # loud if it cannot be found rather than silently testing some other bd.
+      # CI='' defeats @beads/bd's postinstall guard that skips the download in CI.
+      - name: Install pinned bd CLI
+        env:
+          CI: ''
+        run: |
+          BD_VER=""
+          if [ -f src/cli/beads-pin.ts ]; then
+            BD_VER="$(grep -oE "BEADS_VERSION = '[0-9]+\.[0-9]+\.[0-9]+'" src/cli/beads-pin.ts | grep -oE "[0-9]+\.[0-9]+\.[0-9]+" | head -n1)"
+          fi
+          if [ -n "$BD_VER" ]; then
+            BD_PIN="@beads/bd@$BD_VER"
+          else
+            BD_PIN="$(grep -oE "@beads/bd@[0-9]+\.[0-9]+\.[0-9]+" src/cli/install.ts | head -n1)"
+          fi
+          if [ -z "$BD_PIN" ]; then
+            echo "::error::could not find the @beads/bd@X.Y.Z pin in src/cli/beads-pin.ts or src/cli/install.ts"
+            exit 1
+          fi
+          echo "Installing $BD_PIN"
+          npm install -g "$BD_PIN" --foreground-scripts
+          bd --version
+
+      - name: Configure git identity (bd init commits)
+        run: |
+          git config --global user.name "regression-nightly"
+          git config --global user.email "regression-nightly@apra-fleet.invalid"
+
+      # Imports git-tracked .beads/issues.jsonl so dashboard/backlog tests
+      # have a queryable DB (the Dolt DB is gitignored). Same as ci.yml,
+      # including the retry for a concurrent `bd dolt push` moving the ref.
+      - name: Bootstrap this repo's own beads DB
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            if bd bootstrap --yes; then exit 0; fi
+            echo "::warning::bd bootstrap failed (attempt $attempt/3)"
+            rm -rf .beads/embeddeddolt
+            if [ "$attempt" -lt 3 ]; then sleep $((attempt * 15)); fi
+          done
+          echo "::error::bd bootstrap failed after 3 attempts"
+          exit 1
+
+
+      # Everything below never fails the job on a test outcome or harness
+      # breakage: the report step turns both into the verdict.
+      #
+      # --status exit codes: 0 pass, 1 failures, 3 still running, 2 infra
+      # fail-loud. Start and poll in one step so the detached run is ours.
+      # The exit code goes to an output for the report step; anything but
+      # 0/1 (or no output at all: step timed out) is BROKEN there.
+      - name: Run apra-fleet-se suite against real bd
+        id: integ
+        timeout-minutes: 45
+        continue-on-error: true
+        run: |
+          node scripts/run-integ-suites.mjs --start || echo "integ-suites --start exit=$?"
+          while :; do
+            rc=0
+            node scripts/run-integ-suites.mjs --status --wait=45 || rc=$?
+            if [ "$rc" -ne 3 ]; then break; fi
+          done
+          echo "integ-suites --status exit=$rc"
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+
+      # Same command as the package's test:slow script (same replay-mode env),
+      # plus the checkpoint reporter writing slow-suite-status.json so the
+      # report can apply the quarantine (slow/ fingerprints). node --test exits
+      # 1 on test failures; the report checks every slow file has a result.
+      - name: Run slow lane
+        id: slow
+        if: ${{ !cancelled() }}
+        timeout-minutes: 25
+        continue-on-error: true
+        working-directory: packages/apra-fleet-se
+        env:
+          INTEG_SUITES_STATUS_FILE: ${{ github.workspace }}/slow-suite-status.json
+          INTEG_SUITES_HEARTBEAT_FILE: ${{ runner.temp }}/slow-suite-heartbeat.json
+        run: |
+          rm -f "$INTEG_SUITES_STATUS_FILE"
+          rc=0
+          node --test \
+            --test-reporter=./test/helpers/timestamped-reporter.mjs --test-reporter-destination=stdout \
+            --test-reporter="$GITHUB_WORKSPACE/scripts/integ-file-results-reporter.mjs" --test-reporter-destination=stdout \
+            "$PWD"/test/slow/*.test.mjs || rc=$?
+          echo "slow lane exit=$rc"
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+
+      - name: Upload integ-suite status
+        id: upload
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: integ-suite-status
+          path: |
+            integ-suite-status.json
+            integ-suite-run.log
+            slow-suite-status.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      # Previous nightly run on main that has a status artifact (any
+      # conclusion), for the newly failing/passing delta. Best-effort: the
+      # report says "no previous run to compare" when this finds nothing.
+      - name: Fetch previous nightly status
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREV_DIR: ${{ runner.temp }}/prev-nightly
+        run: |
+          ids="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow regression-nightly.yml \
+            --branch main --status completed -L 10 --json databaseId --jq '.[].databaseId')" || ids=""
+          for id in $ids; do
+            [ "$id" = "$GITHUB_RUN_ID" ] && continue
+            rm -rf "$PREV_DIR"
+            if gh run download "$id" --repo "$GITHUB_REPOSITORY" -n integ-suite-status -D "$PREV_DIR"; then
+              gh run view "$id" --repo "$GITHUB_REPOSITORY" --json headSha,url \
+                --jq '{headSha: .headSha, runUrl: .url}' > "$PREV_DIR/meta.json" || true
+              echo "previous nightly run: $id"
+              exit 0
+            fi
+          done
+          rm -rf "$PREV_DIR"
+          echo "no previous nightly run with a status artifact"
+
+      # The verdict: PASS / FAIL (new or expired-quarantine failures, see
+      # tests/regression/quarantine.json) / BROKEN (harness). Written as the
+      # summary headline and the job output; never fails the job.
+      - name: Nightly verdict and summary
+        id: report
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        env:
+          INTEG_RC: ${{ steps.integ.outputs.rc }}
+          SLOW_RC: ${{ steps.slow.outputs.rc }}
+          ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
+          PREV_DIR: ${{ runner.temp }}/prev-nightly
+        run: |
+          node scripts/nightly-regression-summary.mjs \
+            --status=integ-suite-status.json \
+            --slow=slow-suite-status.json \
+            --quarantine \
+            --integ-rc="$INTEG_RC" \
+            --slow-rc="$SLOW_RC" \
+            --expected-sha="$GITHUB_SHA" \
+            --previous="$PREV_DIR" \
+            --summary="$GITHUB_STEP_SUMMARY" \
+            --github-output="$GITHUB_OUTPUT" \
+            --repo-url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+            --run-url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            --artifact-url="$ARTIFACT_URL" \
+          || {
+            echo "::error::nightly summary script crashed"
+            echo "verdict=BROKEN" >> "$GITHUB_OUTPUT"
+            echo "## BROKEN -- nightly summary script crashed (see the job log)" >> "$GITHUB_STEP_SUMMARY"
+          }

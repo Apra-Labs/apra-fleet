@@ -51,11 +51,15 @@ export async function persistNewTaskBestEffort({ createFn, command, member, pare
         const result = await createFn();
         return result ?? true;
     } catch (err) {
-        log(`[fleet-sprint] newTask bd create FAILED (non-fatal, ${stage}): ${err.message} -- falling back to parent-bead notes.`);
+        // Child ids the failed attempts consumed (never re-pooled), so the
+        // notes fallback names them alongside the finding.
+        const consumed = Array.isArray(err && err.consumedIds) ? err.consumedIds.filter(Boolean) : [];
+        const consumedNote = consumed.length > 0 ? ` [consumed child ids: ${consumed.join(', ')}]` : '';
+        log(`[fleet-sprint] newTask bd create FAILED (non-fatal, ${stage}): ${err.message}${consumedNote} -- falling back to parent-bead notes.`);
         try {
             await appendRejectedFindingToParentNotes({
                 command, member, parentId, newTask,
-                reason: `bd create failed (${stage}): ${err.message}`, cycle, log,
+                reason: `bd create failed (${stage}): ${err.message}${consumedNote}`, cycle, log,
             });
         } catch (err2) {
             log(`[fleet-sprint] newTask persistence FAILED at every level (non-fatal, ${stage}); finding preserved VERBATIM in this run log: ${JSON.stringify(newTask)} -- last error: ${err2.message}`);
@@ -283,7 +287,7 @@ export function isTypedAbortError(err) {
  *   member: string,
  *   command: (cmd: string, opts: object) => Promise<any>,
  *   log?: (msg: string) => void,
- *   onAuthFailure?: (info: { member: string, label: string, cmd?: string, error: string, kind: 'git'|'dolt' }) => Promise<void>,
+ *   onAuthFailure?: (info: { member: string, label: string, cmd?: string, error: string, source: 'git'|'dolt', failureKind: string }) => Promise<void>,
  *   callTool?: (name: string, args: object) => Promise<any>,
  * }} opts
  * @returns {Promise<{ prUrl: string|null, reason: string, pushed: boolean, commitCount: number }>}

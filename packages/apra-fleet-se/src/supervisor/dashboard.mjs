@@ -1020,6 +1020,14 @@ const sprintStackLiveScript = (mountPrefix) => `
     // script first.
     ${sprintCardAnchorId.toString()}
     ${renderSprintSection.toString()}
+    ${renderBeadsFreshnessHtml.toString()}
+
+    // Re-renders the "Beads as of" line from GET /state's beadsFreshness.
+    function renderBeadsFreshnessFromState(f) {
+        var el = document.getElementById('beads-freshness');
+        if (!el || !f) return;
+        el.outerHTML = renderBeadsFreshnessHtml(f);
+    }
 
     // Re-renders #sprint-stack's rows from a GET /state 'sprints' array,
     // in place, by data-sprint-id -- see this const's doc comment above.
@@ -1091,6 +1099,7 @@ const sprintStackLiveScript = (mountPrefix) => `
             if (finishedEl && Array.isArray(data.finished)) {
                 finishedEl.innerHTML = renderFinishedRunsHtml(data.finished, MOUNT_PREFIX);
             }
+            renderBeadsFreshnessFromState(data.beadsFreshness);
         } catch (e) {
             console.error('Poll Error:', e);
         }
@@ -1225,6 +1234,43 @@ export function renderToolchainHeaderHtml(toolchain) {
 }
 
 /**
+ * Normalize the cached beads view's snapshot into the wire/render freshness
+ * shape. ASCII only. `lastSkip` (a busy/lock round, rows kept) is carried
+ * separately from `lastError` (a real failure).
+ * @param {object|null} snap - beads-view snapshot()
+ * @returns {{ asOf: string|null, lastError: {message:string, at:string}|null, lastSkip: {reason:string, at:string}|null }|null}
+ */
+export function toBeadsFreshness(snap) {
+    if (!snap || typeof snap !== 'object') return null;
+    const iso = (t) => (typeof t === 'number' && Number.isFinite(t) ? new Date(t).toISOString() : null);
+    return {
+        asOf: iso(snap.asOf),
+        lastError: snap.lastError ? { message: String(snap.lastError.message ?? ''), at: iso(snap.lastError.at) } : null,
+        lastSkip: snap.lastSkip ? { reason: String(snap.lastSkip.reason ?? ''), at: iso(snap.lastSkip.at) } : null,
+    };
+}
+
+/**
+ * Renders the "Beads as of <time>" line plus a visible failure notice when the
+ * view's last refresh failed. A busy-skip renders as a muted note, NOT as an
+ * error. Returns '' when no freshness is supplied.
+ * @param {ReturnType<typeof toBeadsFreshness>} f
+ * @returns {string}
+ */
+export function renderBeadsFreshnessHtml(f) {
+    if (!f) return '';
+    const asOf = f.asOf ? 'Beads as of ' + escapeHtml(f.asOf) : 'Beads as of (not yet synced)';
+    let html = '<div id="beads-freshness" class="beads-freshness" style="font-size: 12px; color: #a1a1aa; padding: 4px 16px;">' + asOf;
+    if (f.lastSkip && !f.lastError) {
+        html += ' <span class="beads-refresh-busy" style="color:#a1a1aa;">(refresh deferred: ' + escapeHtml(f.lastSkip.reason) + '; will retry)</span>';
+    }
+    if (f.lastError) {
+        html += '<div class="beads-refresh-error" style="color: #ef4444;"><strong>Beads refresh failed:</strong> ' + escapeHtml(f.lastError.message) + '</div>';
+    }
+    return html + '</div>\n';
+}
+
+/**
  * Renders the full index page (`GET /` document): a header, then a Sprints
  * tab (Sprint Stack alone) and a separate Backlog tab (eft.6.2's cross-sprint
  * free-set view, followed by the Launch Sprint form -- launching starts from
@@ -1291,6 +1337,7 @@ export function renderIndexPageHtml(views, backlogHtml, launchFormHtml, opts = {
         '</div>\n' +
         renderBeadsHeaderHtml(opts && opts.beads, opts && opts.beadsWarning) +
         renderToolchainHeaderHtml(opts && opts.toolchain) +
+        renderBeadsFreshnessHtml(opts && opts.beadsFreshness) +
         '<div class="main-content"><div class="content-area">' +
         '<div class="tab-bar" id="tab-bar">' +
         '<button class="tab-btn active" onclick="switchTab(\'sprints\')">Sprints</button>' +
@@ -1374,11 +1421,18 @@ export function renderIndexPageHtml(views, backlogHtml, launchFormHtml, opts = {
  * @param {Array<object>} [finishedRuns]
  * @returns {{ generatedAt: string, runningCount: number, sprints: Array<object>, finished?: Array<object> }}
  */
-export function buildStatePayload(views, finishedRuns) {
+export function buildStatePayload(views, finishedRuns, opts = {}) {
+    // Back-compat with the main-side two-argument form buildStatePayload(views, { beadsFreshness }):
+    // a plain (non-array) object in the second slot is the options bag.
+    if (finishedRuns && typeof finishedRuns === 'object' && !Array.isArray(finishedRuns)) {
+        opts = finishedRuns;
+        finishedRuns = undefined;
+    }
     const list = Array.isArray(views) ? views : [];
     const payload = {
         generatedAt: new Date().toISOString(),
         runningCount: list.length,
+        beadsFreshness: (opts && opts.beadsFreshness) ?? null,
         sprints: list.map((v) => ({
             sprintId: v.sprintId,
             branch: v.branch ?? null,
@@ -1580,6 +1634,7 @@ export function classifyChildSummary(response, sprintId) {
  *   summaryTimeoutMs?: number, // per-row summary pull budget; defaults to DEFAULT_SUMMARY_TIMEOUT_MS
 
  *   listAllBeads?: () => Promise<Array<{ id: string, status: string }>>,
+ *   beadsView?: { snapshot: () => object }, // cached beads view; supplies the freshness shown on the page and in GET /state
  *   getSprintMeta?: (sprintId: string) => Promise<{ branch?: string, goal?: string, roles?: Record<string,string> }>|{ branch?: string, goal?: string, roles?: Record<string,string> },
  *   driftCheck?: (branch: string|null, base: string|null) => Promise<number|null>|number|null,
  *   backlog?: { renderHtml: () => Promise<string>|string },
@@ -1680,6 +1735,20 @@ export function createDashboard(deps = {}) {
         } catch (err) {
             logError('[dashboard] finished-sprints read failed:', err);
             return [];
+        }
+    }
+
+    // Optional cached beads view (beads-view.mjs): only its snapshot() is read
+    // here, for the "Beads as of" line / failure notice. Rows reach this seam
+    // through the injected `listAllBeads` (the snapshot reader), never bd.
+    const beadsView = deps.beadsView && typeof deps.beadsView.snapshot === 'function' ? deps.beadsView : null;
+    function beadsFreshness() {
+        if (!beadsView) return null;
+        try {
+            return toBeadsFreshness(beadsView.snapshot());
+        } catch (err) {
+            logError('[dashboard] beads view snapshot failed:', err);
+            return null;
         }
     }
 
@@ -1895,6 +1964,7 @@ export function createDashboard(deps = {}) {
         },
         buildSprintViews,
         buildFinishedRuns,
+        beadsFreshness,
         /**
          * (apra-fleet-siqi.1.1) Subscribe to the periodic "state may have
          * changed, go poll /state" signal GET /events (registerDashboardRoutes
@@ -1958,7 +2028,7 @@ export function createDashboard(deps = {}) {
                 }
             }
             const finished = await buildFinishedRuns();
-            return renderIndexPageHtml(await buildSprintViews(finished), backlogHtml, undefined, { beads, beadsWarning, consoleOrigin, mountPrefix, finishedRuns: finished, toolchain });
+            return renderIndexPageHtml(await buildSprintViews(finished), backlogHtml, undefined, { beads, beadsWarning, consoleOrigin, mountPrefix, finishedRuns: finished, toolchain, beadsFreshness: beadsFreshness() });
         },
     };
 }
@@ -2036,7 +2106,7 @@ export function registerDashboardRoutes(supervisor, dashboard, { extraIndexPaths
         // Optional on the seam so a minimal injected dashboard still works.
         const finished = typeof dashboard.buildFinishedRuns === 'function' ? await dashboard.buildFinishedRuns() : undefined;
         const views = await dashboard.buildSprintViews(finished);
-        const body = Buffer.from(JSON.stringify(buildStatePayload(views, finished)), 'utf-8');
+        const body = Buffer.from(JSON.stringify(buildStatePayload(views, finished, { beadsFreshness: typeof dashboard.beadsFreshness === 'function' ? dashboard.beadsFreshness() : null })), 'utf-8');
         res.writeHead(200, {
             'content-type': 'application/json; charset=utf-8',
             'content-length': body.length,

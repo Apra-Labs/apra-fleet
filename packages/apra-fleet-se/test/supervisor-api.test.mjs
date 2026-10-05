@@ -422,6 +422,28 @@ describe('api -- POST /api/sprints validation + goal forwarding', () => {
         await fsp.rm(dir, { recursive: true, force: true });
     });
 
+    test('branch == base (incl. origin/ spelling) => 400 naming the branch field, no child spawned', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const captured = [];
+        const supervisor = createSupervisor({ port: 0 });
+        registerSprintRoutes(supervisor, createSprintController({
+            ledger, history, spawner: recordingSpawner(captured),
+            listMembers: () => ({ members: [] }), getBacklog: () => ({}),
+        }));
+
+        const res = mockRes();
+        await supervisor.handleRequest(
+            mockReq('POST', '/api/sprints', { issue: 'PROJ-1', members: ['a'], branch: 'main', base: 'origin/main' }),
+            res,
+        );
+        assert.equal(res.statusCode, 400);
+        assert.equal(payloadOf(res).field, 'branch');
+        assert.match(JSON.stringify(payloadOf(res)), /must differ from base_branch/);
+        assert.equal(captured.length, 0);
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
     test('invalid base branch => 400 naming the base field', async () => {
         const dir = await tmpDir();
         const { ledger, history } = await stores(dir);
@@ -1708,7 +1730,7 @@ describe('api -- /api/health beads identity', () => {
 
     test('identity unknown: beads is null and beadsWarning carries the reason + fix; once refresh() recovers it the warning is gone', async () => {
         let current = null;
-        let warning = "no beads database found walking up from /x. Backlog and scope-overlap checks are disabled and sprints will verify against the backlog member's beads instead. To fix: restart fleet-se from inside the project folder, or pass --beads-dir <project-or-.beads-path>, then GET /api/health?refresh=1.";
+        let warning = "no beads database found walking up from /x. Backlog and scope-overlap checks are disabled, and this supervisor has no backlog member, so it cannot launch sprints. To fix: restart fleet-se from inside the project folder, or pass --beads-dir <project-or-.beads-path>, then GET /api/health?refresh=1.";
         const beadsIdentity = {
             get: () => current,
             getWarning: () => (current ? null : warning),

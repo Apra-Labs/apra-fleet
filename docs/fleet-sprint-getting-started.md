@@ -46,11 +46,11 @@ work is done or it hits a limit you set:
 
 When the loop ends, a finalization pass runs: a reviewer renders an
 evidence-based **PASS or FAIL verdict** for the whole sprint, a "harvester"
-writes durable documentation and a changelog entry (including a cost breakdown),
-an optional once-per-sprint regression pass runs your regression playbook, and
-the engine pushes the branch and **opens a pull request** whose title and body
-state the verdict plainly. It never merges the PR -- that is always a human
-decision.
+writes durable documentation and the sprint analysis, an optional
+once-per-sprint regression pass runs your regression playbook, and the engine
+pushes the branch and **opens a pull request** whose title and body state the
+verdict plainly, with a cost breakdown. It never merges the PR -- that is always
+a human decision.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="../assets/marketing/fleet-sprint-pipeline-dark.svg">
@@ -380,9 +380,9 @@ trail.
 A non-engineer can get real signal from a glance: how many sprints are running,
 whether any health badge is red, what the spend is so far, and -- once finished --
 PASS or FAIL and a PR link. The deliverable a human ultimately reviews is that PR:
-reviewed commits, a verdict stated plainly in the PR title/body, an updated
-changelog with a cost breakdown, and a written sprint analysis document committed
-under `sprint-logs/` on the branch.
+reviewed commits, a verdict and cost breakdown stated plainly in the PR title/body,
+and a written sprint analysis document (including the same cost block) committed
+under `docs/` on the branch.
 
 ---
 
@@ -452,7 +452,7 @@ ordered by reach:
 | Integration-verifies features with evidence, closes only what passes, files structured bugs for what fails | Writing `integ-test-playbook.md` (can start as manual verification steps) and deciding what "verified" means for your product |
 | Once-per-sprint regression pass with sandbox lifecycle and carry-over bug filing | Writing `regression-test-playbook.md`; accepting that with zero existing tests, early sprints have thin regression coverage |
 | Live dashboard: activity tree, cost in USD, health watchdog, stop control, raw logs | Watching it occasionally, and acting on a red badge or a FAIL verdict |
-| Cost governance: per-task model tiers, optional USD budget ceiling, cost block written into the changelog | Setting the budget; paying the bill |
+| Cost governance: per-task model tiers, optional USD budget ceiling, cost block rendered in the PR body | Setting the budget; paying the bill |
 | Opens the PR with a plain PASS/FAIL verdict and a committed sprint analysis | Merging (or not), and everything that happens after merge -- your CI, your release process |
 | Guards against operational foot-guns: member/scope reservation conflicts, deterministic-failure relaunch refusal, validated launches | Running the supervisor and fleet server; registering members; provisioning git and LLM credentials |
 

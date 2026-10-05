@@ -73,7 +73,7 @@ runs the full regression pass once (informational -- it files parent-less
 `[regression][carry-over]` bugs rather than blocking this sprint's already
 decided verdict); a `harvester` agent extracts durable knowledge into
 `docs/`, updates
-`README.md`/`CHANGELOG.md` (with a pre-computed cost block), and defers
+`README.md`, and defers
 low-priority open issues; then the runner pushes the sprint branch and opens
 (but never auto-merges) a PR whose title/body states the final verdict
 plainly.

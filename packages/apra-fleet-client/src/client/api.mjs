@@ -213,7 +213,7 @@
 /**
  * @typedef {Object} RegisterMemberOptions
  * @property {string} friendly_name - Human-friendly name for this member (required)
- * @property {string} work_folder - Working directory on the target machine (required). For remote members, must be a fully-qualified/absolute path -- "~" and relative paths are rejected.
+ * @property {string} work_folder - Working directory on the target machine (required). For remote members, must be a fully-qualified/absolute path -- "~" and relative paths are rejected. A folder may hold at most one LLM member and one LLM-less (llm_provider none) member.
  * @property {"local" | "remote"} [member_type] - Member type (default: "remote")
  * @property {string} [host] - IP address or hostname of the remote machine
  * @property {string} [username] - SSH username
@@ -251,7 +251,7 @@
  * @property {string} [member_id] - UUID of the member
  * @property {string} [member_name] - Friendly name of the member
  * @property {string} [friendly_name] - New friendly name
- * @property {string} [work_folder] - New working directory. For non-local (remote/relay) members, must be a fully-qualified/absolute path -- "~" and relative paths are rejected.
+ * @property {string} [work_folder] - New working directory. For non-local (remote/relay) members, must be a fully-qualified/absolute path -- "~" and relative paths are rejected. A folder may hold at most one LLM member and one LLM-less (llm_provider none) member.
  * @property {string} [host] - New host
  * @property {string} [username] - New SSH username
  * @property {number} [port] - New SSH port
@@ -1278,6 +1278,9 @@ export class ApraFleet {
      * src/tools/child-id-allocator.ts). Mints globally-distinct child ids under
      * a shared parent for sprints launched WITHOUT a supervisor, so two sprints
      * creating children under the same parent never derive the same id.
+     * `floor` (allocate) is the parent's highest existing child seq: the
+     * counter is never below it and released ids at or below it are dropped
+     * from the reuse pool on every allocate.
      *
      * @param {{ action: 'allocate'|'confirm'|'release'|'status',
      *           parent_id?: string, token?: string, sprint_id?: string,

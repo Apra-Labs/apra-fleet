@@ -513,6 +513,22 @@ export async function start(sprintId, { home = os.homedir() } = {}) {
   return values;
 }
 
+/**
+ * Members the sandbox supervisor sees OTHER than its own backlog member (named
+ * in its /api/health `backlogMember.name`; every supervisor registers one into
+ * the registry it is attached to at startup). null when /api/members is
+ * unreadable. A non-empty result means the sandbox is attached to a foreign
+ * (e.g. production) registry.
+ */
+export function foreignSandboxMembers(supHealth, membersResponse) {
+  const raw = Array.isArray(membersResponse?.members) ? membersResponse.members
+    : (Array.isArray(membersResponse) ? membersResponse : null);
+  if (!raw) return null;
+  const own = supHealth && supHealth.backlogMember && typeof supHealth.backlogMember.name === 'string'
+    ? supHealth.backlogMember.name : null;
+  return raw.filter((m) => !(own && m && m.name === own));
+}
+
 export async function verify(sprintId, { home = os.homedir() } = {}) {
   const values = requireValues(sprintId, home);
   const problems = [];
@@ -525,11 +541,13 @@ export async function verify(sprintId, { home = os.homedir() } = {}) {
   const supHealth = await getJson(`http://127.0.0.1:${supervisorPort}/api/health`, 2000, supervisorToken);
   if (!supHealth || String(supHealth.pid) !== values.SUPERVISOR_PID) problems.push(`sandbox supervisor: /api/health on ${supervisorPort} did not answer with pid ${values.SUPERVISOR_PID}`);
   // Isolation: the sandbox supervisor must see the sandbox's EMPTY registry,
-  // never production's members.
+  // never production's members. The one exception is the supervisor's OWN
+  // backlog member, which it registers into whatever registry it is attached
+  // to at startup and names in /api/health (backlogMember.name).
   const members = await getJson(`http://127.0.0.1:${supervisorPort}/api/members`, 10000, supervisorToken);
-  const list = Array.isArray(members?.members) ? members.members : (Array.isArray(members) ? members : null);
+  const list = foreignSandboxMembers(supHealth, members);
   if (!list) problems.push(`sandbox supervisor: /api/members unreadable (${JSON.stringify(members)})`);
-  else if (list.length !== 0) problems.push(`sandbox supervisor sees ${list.length} member(s) -- it is attached to a NON-empty registry (production?)`);
+  else if (list.length !== 0) problems.push(`sandbox supervisor sees ${list.length} member(s) besides its own backlog member -- it is attached to a NON-empty registry (production?)`);
   const sbInfo = readJsonFile(path.join(values.APRA_FLEET_DATA_DIR, 'server.json'));
   if (!sbInfo || String(sbInfo.pid) !== values.MCP_PID || Number(sbInfo.port) !== fleetPort) problems.push('sandbox server.json does not match the recorded pid/port');
   problems.push(...await checkProductionUnchanged(values, home));

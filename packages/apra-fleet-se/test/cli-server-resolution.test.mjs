@@ -250,23 +250,21 @@ describe('concurrent children share one fleet server (apra-fleet-eft.7.3)', () =
         assert.strictEqual(child1Result.url, child2Result.url);
     });
 
-    test('missing server config yields FleetServerUnreachableError, not self-spawn', async () => {
-        // When no healthy fleet singleton is running and no override env is
-        // set, resolveFleetServerConnection returns a non-http mode (not a
-        // stdio self-spawn descriptor). The caller (main() in cli.mjs) must
-        // treat this as a hard failure and throw FleetServerUnreachableError.
+    test('no singleton -> the shared HTTP server is started once and shared, not a private stdio self-spawn', async () => {
+        // GitHub #585 recovery: with no healthy singleton and no override, the
+        // resolver starts the SHARED HTTP server (as 'apra-fleet start' does)
+        // and returns mode 'http'; it never hands cli.mjs a stdio descriptor.
+        let autoStarts = 0;
         const result = await resolveFleetServerConnection({
             env: {}, // no APRA_FLEET_TRANSPORT or APRA_FLEET_SERVER_CMD
             dirname: 'anywhere',
             exists: (candidate) => candidate === path.join('anywhere', 'index.js'),
             checkRunningInstance: async () => ({ running: false }), // no singleton
+            autoStartFleetServer: async () => { autoStarts++; return { url: 'http://127.0.0.1:7523/mcp', pid: 5150 }; },
         });
-
-        // The shared resolver returns a non-http mode when no singleton is
-        // found (it does NOT create a self-spawn descriptor for cli.mjs).
-        // cli.mjs's main() will convert this to a FleetServerUnreachableError.
-        assert.notStrictEqual(result.mode, 'http');
-        assert.ok(result.reason, 'reason should explain why attachment failed');
+        assert.strictEqual(autoStarts, 1);
+        assert.strictEqual(result.mode, 'http');
+        assert.ok(result.reason, 'reason should explain the auto-start');
     });
 
     test('resolveFleetServerConnection exports are available for injection in tests', () => {

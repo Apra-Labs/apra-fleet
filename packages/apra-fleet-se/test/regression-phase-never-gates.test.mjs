@@ -318,8 +318,7 @@ describe('Regression Test phase can never gate or abort the sprint', () => {
                     );
                 }
                 assert.strictEqual(outcome.value.passed, false);
-                assert.strictEqual(outcome.value.suitePassed, false);
-                assert.strictEqual(outcome.value.smokePassed, false);
+                assert.deepStrictEqual(outcome.value.sections, []);
                 assert.deepStrictEqual(outcome.value.bugsFiled, []);
                 seen.add(outcome.value.summary);
             }

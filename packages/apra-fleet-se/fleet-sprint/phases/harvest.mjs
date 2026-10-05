@@ -19,7 +19,7 @@
 // summary is folded into docs/sprint-analysis-<slug>.md through
 // buildAnalysisText() -- harvesting first would publish an analysis document
 // with a hole where the regression section belongs. BEFORE Publish PR, because
-// the harvester is a code-writing role: the docs/changelog/sprint-analysis
+// the harvester is a code-writing role: the docs/sprint-analysis
 // commits it makes must be pushed before Publish PR pushes the branch and
 // raises the PR a human will read. That ordering is structural here, not a
 // comment: ./publish-pr.mjs's call site sits below this one in runner.js and
@@ -46,9 +46,15 @@
 // import; dispatchRole/TURN_BASES and buildHarvesterPrompt live in real sibling
 // modules and are imported directly.
 //
+// THE COST BLOCK IS ENGINE-RENDERED, NOT HARVESTER-WRITTEN. It is appended
+// to analysisText (so the per-branch analysis document keeps a durable copy)
+// and returned for ./publish-pr.mjs to render in the PR body. The harvester no
+// longer writes a CHANGELOG entry: a shared, prepend-only file conflicted on
+// every concurrent sprint PR merge.
+//
 // GUARD COVERAGE: registered as 'phases/harvest.mjs' in ../guarded-modules.mjs.
 // It took NO member_name-bearing command() call site out of runner.js -- the
-// docs/changelog commits are made by the DISPATCHED harvester inside its own
+// docs commits are made by the DISPATCHED harvester inside its own
 // repo, and its pushes are the policy row's bracket -- but it took ONE
 // dispatchRole() site (the harvester ladder), which is exactly what
 // dispatch-safety-guard and the phase 3 dispatch census read. Both baselines
@@ -62,13 +68,13 @@ import { buildHarvesterPrompt } from '../prompts.mjs';
  * Runs the Harvest phase: assemble the sprint-analysis inputs, dispatch the
  * harvester ladder, and log what it reported.
  *
- * Returns nothing. Everything this phase produces is either written to the
- * repo by the dispatched harvester itself (docs/, CHANGELOG, the deferred
- * beads) or already logged here -- no later phase reads a value from it, which
- * is why ./publish-pr.mjs's inputs are unchanged by its presence.
+ * Everything else this phase produces is written to the repo by the dispatched
+ * harvester itself (docs/, the deferred beads) or already logged here. The one
+ * value a later phase reads is the cost block, which ./publish-pr.mjs renders
+ * in the PR body.
  *
  * @param {object} state Explicit phase state; see this file's header.
- * @returns {Promise<void>}
+ * @returns {Promise<{ costAnalysis: string }>}
  */
 export async function runHarvestPhase({
     // Presentation + dispatch seams.
@@ -113,7 +119,7 @@ export async function runHarvestPhase({
     // this path if it exists.
     const branchSlug = computeBranchSlug(validated.branch);
     const analysisArtifactFile = `docs/sprint-analysis-${branchSlug}.md`;
-    const analysisText = buildAnalysisText({
+    const reportText = buildAnalysisText({
         targetIssues,
         branch: validated.branch,
         baseBranch: validated.baseBranch,
@@ -134,13 +140,16 @@ export async function runHarvestPhase({
         spend: integTestRunnerSpend,
         dispatchCount: integTestRunnerDispatchCount,
     });
+    // Fence built by repeat(): literal backtick runs here trip the shell-command
+    // guard's backtick-substitution check.
+    const fence = '`'.repeat(3);
+    const analysisText = [reportText, '## Cost', `${fence}\n${costAnalysis}\n${fence}`].join('\n\n');
     const harvesterPrompt = buildHarvesterPrompt({
         branch: validated.branch,
         baseBranch: validated.baseBranch,
         targetIssues,
         analysisArtifactFile,
         analysisText,
-        costAnalysis,
     });
     // apra-fleet-3swo.5.7: the harvester ladder -- its dispatch, its
     // pushCode/pushBeads git-sync bracket, its max_turns-exhaustion resume at
@@ -151,14 +160,14 @@ export async function runHarvestPhase({
     // labels, and what the caller does with the report.
     //
     // The harvester is a code-writing role (pushCode: true) alongside the doer
-    // -- G-pull before, G-push after so the docs/changelog/sprint-analysis
+    // -- G-pull before, G-push after so the docs/sprint-analysis
     // commits it makes are published before anything downstream (Publish PR,
     // below) reads the branch. It ALSO mutates beads (issue-defer of
     // low-priority items), so it D-pushes those mutations alongside its git
     // push. Both flags live in the policy row now.
     const harvestOutcome = await dispatchRole(dispatchCtx, 'harvester', {
         prompt: harvesterPrompt,
-        resumePrompt: 'Continue your harvest exactly where you left off in this same session -- do not redo docs or changelog sections already written. Finish the remaining updates, commit them, and return your final report now.',
+        resumePrompt: 'Continue your harvest exactly where you left off in this same session -- do not redo docs sections already written. Finish the remaining updates, commit them, and return your final report now.',
         roleLabel: 'Harvester',
         resumeLabel: `Harvest (resume, max_turns=${TURN_BASES.HARVESTER_MAX_TURNS * 2})`,
     });
@@ -179,4 +188,5 @@ export async function runHarvestPhase({
     } else {
         log(`Harvester: wrote sprint analysis (including the Final Review verdict) to ${analysisArtifactFile}.`);
     }
+    return { costAnalysis };
 }

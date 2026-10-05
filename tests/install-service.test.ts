@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import * as readline from 'node:readline/promises';
-import { runInstall, _setSeaOverride, _setManifestOverride } from '../src/cli/install.js';
+import { runInstall, _setSeaOverride, _setManifestOverride, _setServiceHealthWaitOverride } from '../src/cli/install.js';
 import { runUninstall } from '../src/cli/uninstall.js';
 import * as install from '../src/cli/install.js';
 
@@ -105,6 +105,7 @@ describe('install -- service lifecycle (T11)', () => {
   afterEach(() => {
     _setSeaOverride(null);
     _setManifestOverride(null);
+    _setServiceHealthWaitOverride(null);
   });
 
   it('registers and starts service in SEA + HTTP mode', async () => {
@@ -133,13 +134,26 @@ describe('install -- service lifecycle (T11)', () => {
     expect(mockSvcMgr.start).not.toHaveBeenCalled();
   });
 
-  it('shows "Service: registered and running" in done output when registered', async () => {
+  it('shows "Service: registered and running" only once the server answers /health', async () => {
     _setSeaOverride(true);
+    _setServiceHealthWaitOverride(async () => true);
     const logSpy = vi.mocked(console.log);
     await runInstall(['--transport', 'http', '--skill', 'none']);
     const allOutput = logSpy.mock.calls.flat().join('\n');
     expect(allOutput).toContain('Service:');
     expect(allOutput).toContain('registered and running');
+  });
+
+  it('registered but the server never answers /health -> warns and never claims "running"', async () => {
+    _setSeaOverride(true);
+    _setServiceHealthWaitOverride(async () => false);
+    const logSpy = vi.mocked(console.log);
+    const warnSpy = vi.mocked(console.warn);
+    await runInstall(['--transport', 'http', '--skill', 'none']);
+    const allOutput = logSpy.mock.calls.flat().join('\n');
+    expect(allOutput).not.toContain('registered and running');
+    expect(allOutput).toContain('NOT answering /health');
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('not answering /health'));
   });
 
   it('warns (non-fatal) when service registration fails', async () => {

@@ -407,7 +407,7 @@ runner-owned policy table, not a live read of fleet configuration):
 | `deployer` | `standard` | Mostly mechanical: follow `deploy.md` |
 | `integ-test-runner` | `standard` | Mostly mechanical: follow `integ-test-playbook.md` |
 | `regression-test-runner` | `standard` | Mostly mechanical: follow `regression-test-playbook.md` |
-| `harvester` | `standard` | Docs/CHANGELOG synthesis, not code-critical |
+| `harvester` | `standard` | Docs synthesis, not code-critical |
 | `streakAssignment` | `cheap` | This runner's own "group these ready bead ids" call -- a small, fully-specified classification task with no vendored persona |
 
 These tier keywords (`cheap`/`standard`/`premium`) are resolved to a concrete
@@ -453,7 +453,7 @@ in preference order:
 
 The harvester's `costAnalysis` block (`buildCostAnalysis()`) reports which
 of these sourced each run's total -- all real, all fallback, or a mixed
-count -- so the CHANGELOG cost note stays honest about precision rather than
+count -- so the PR-body cost note stays honest about precision rather than
 implying uniform accuracy. A dispatch using an entirely unpriced model id
 (no match in either source) is still excluded from the tracked total, not
 backfilled with a fabricated number -- the fleet does not currently echo
@@ -703,12 +703,11 @@ reach):
 #### itself must be probed, not trusted
 
 Two independent gaps let the allocator hand out an id that already belongs
-to an existing bead, and `bd create --id <id>` on an occupied id is not a
-safe no-op: it **silently overwrites** whatever bead already holds that id
-(open or closed), reusing the same row and clobbering its
-title/description/priority/type with no error. Both gaps had to close for
-the hazard to actually go away -- fixing only one leaves the other as a live
-path to the same silent-overwrite outcome:
+to an existing bead. Current bd refuses `bd create --id <id>` on an
+occupied id (open or closed); older bd releases silently overwrote the
+occupant. Either way an occupied id costs the newTask its create, and once
+re-pooled it is re-minted on every later allocation. Both gaps had to close
+for the hazard to actually go away:
 
 - **Floor computation must count closed children.** The allocator seeds its
   first allocation under a parent from a best-effort read of the parent's
@@ -733,8 +732,8 @@ path to the same silent-overwrite outcome:
   manually-created bead can leave an id occupied despite the allocator
   believing otherwise. On the explicit-id path, the creator therefore probes
   (`bd show <id> --json`) before ever calling `bd create --id`, and refuses
-  (releasing the reservation, throwing loudly) rather than proceeding into
-  an overwrite if the id is already occupied. The probe's failure mode is
+  (releasing the reservation, throwing loudly) rather than dispatching a
+  create that cannot succeed if the id is already occupied. The probe's failure mode is
   itself two-valued and must be told apart: `bd show <missing-id> --json`
   does not exit 0 with an empty result, it exits non-zero with a documented
   "no issues found" error payload -- so the probe's own catch block
@@ -744,6 +743,18 @@ path to the same silent-overwrite outcome:
   assuming an unrecognized failure means the id is free. The null-allocator
   fallback path (`bd create --parent`, no explicit id) needs no such probe:
   `bd` mints the id itself in that case and cannot collide.
+
+**A failed create dispatch consumes its id and retries.** `release()` is
+only called for a failure before `bd create` is dispatched (staging the
+description). Once the create was dispatched, its failure does not prove the
+id is free (bd refusing a duplicate id means it is occupied; a transport
+fault can hide a create that landed), so the id is `confirm()`ed -- consumed,
+never re-pooled -- and the creator retries with a freshly allocated id, up to
+`CHILD_CREATE_MAX_ATTEMPTS` dispatches in total, logging each. A newTask that
+still fails falls back to the parent's notes (then the run log), as before.
+Separately, every `allocate()` that carries a `floor` drops
+pooled ids at or below it, whether or not the floor raises the high-water, so
+an occupied id that did reach the pool is never handed out again.
 
 **Reservation lifecycle after the create lands is asymmetric, and that
 asymmetry is load-bearing, not an oversight.** `release()` returns a
@@ -1050,7 +1061,7 @@ After the cycle loop exits (goal met, or `max_cycles` reached):
    still-open-at-goal count, every deploy/integ failure, every rejected
    `newTask`. The prompt explicitly instructs the reviewer to never
    rubber-stamp `PASS` regardless of that evidence.
-2. **Harvest** -- a `harvester` dispatch is given five pre-computed,
+2. **Harvest** -- a `harvester` dispatch is given pre-computed,
    verbatim-insert inputs: `analysisArtifactFile` (a deterministic path
    `docs/sprint-analysis-<branchSlug>.md`, where `branchSlug` is
    `computeBranchSlug(branch)` -- a human-readable branch-name prefix plus an
@@ -1058,12 +1069,13 @@ After the cycle loop exits (goal met, or `max_cycles` reached):
    collide on slug, and no wall-clock timestamp is embedded so the path is
    stable across idempotent re-runs), `analysisText` (a markdown summary of
    the whole run: progress history, deploy/integ outcomes, rejected
-   newTasks, final verdict), and `costAnalysis` (a budget/spend summary,
-   honestly reporting "not tracked"/"unlimited" rather than fabricating a
-   number when the budget ceiling is unset or spend tracking is
-   unavailable). The harvester's own contract (`harvester.md`) says to write
-   `analysisText` verbatim and insert `costAnalysis` verbatim -- never
-   reformat or recompute either.
+   newTasks, final verdict, plus a `## Cost` section carrying the engine's
+   `costAnalysis` budget/spend summary, honestly reporting "not
+   tracked"/"unlimited" rather than fabricating a number when the budget
+   ceiling is unset or spend tracking is unavailable). The harvester's own
+   contract (`harvester.md`) says to write `analysisText` verbatim -- never
+   reformat or recompute it. The harvester writes no CHANGELOG entry; the
+   same cost block is rendered by the engine in the PR body (`### Cost`).
 3. **Publish PR** -- pushes the sprint branch (`git push -u origin
    <branch>`), then raises (never merges) a PR via `gh pr create`, whose
    title (`Auto-sprint [PASS|FAIL]: <branch>`) and body state the final

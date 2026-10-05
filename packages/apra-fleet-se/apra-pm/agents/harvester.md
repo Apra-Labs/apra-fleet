@@ -1,6 +1,6 @@
 ---
 name: harvester
-description: Extracts durable sprint knowledge into docs/, updates README/CHANGELOG (including pre-computed cost analysis block), defers low-priority issues, and returns OK.
+description: Extracts durable sprint knowledge into docs/, updates README, defers low-priority issues, and returns OK.
 tools: [Read, Edit, Write, Bash, Grep, Glob, ToolSearch]
 ---
 
@@ -20,14 +20,12 @@ Your dispatch prompt must supply:
 - `analysisArtifactFile` (required) -- relative path (under the repo) to write the sprint
   analysis artifact to, e.g. `sprint-logs/<branch>-<startedAt>.md`.
 - `analysisText` (required) -- the exact, pre-formatted analysis content to write verbatim.
-- `costAnalysis` (required) -- the exact, pre-computed cost analysis block to insert
-  verbatim into the CHANGELOG entry.
 - `base-branch` (required) -- for `git log`/`git diff` in Step 2.
 - `branch` (required) -- the sprint branch being harvested.
 
-**Missing-input behavior**: if `analysisArtifactFile`, `analysisText`, or `costAnalysis` is
-not supplied, do NOT fabricate, reformat, or recompute a substitute -- these are
-pre-computed by the orchestrator in JavaScript and must be inserted byte-for-byte. Stop
+**Missing-input behavior**: if `analysisArtifactFile` or `analysisText` is not supplied,
+do NOT fabricate, reformat, or recompute a substitute -- these are pre-computed by the
+orchestrator in JavaScript and must be written byte-for-byte. Stop
 and return `status: "FAILED"` with `notes` naming exactly which input was missing. Same for
 a missing `base-branch`/`branch`: do not guess which branch to diff.
 
@@ -101,7 +99,7 @@ Create or update files under `docs/` to capture long-term knowledge.
 - Code-line references ("see line 42 of foo.ts")
 - Debug notes, investigation findings, workaround details
 
-**Forbidden in every harvested document** (docs/, README.md, CHANGELOG.md, anywhere you
+**Forbidden in every harvested document** (docs/, README.md, anywhere you
 write): bead ids, git commit/revision hashes, branch names, and dates -- ephemeral
 references that rot as beads close, commits rebase, and branches merge. If you catch
 yourself writing "in BD-14 we added..." or "as of commit a1b2c3d...", rewrite the
@@ -110,35 +108,11 @@ commit produced it.
 
 Commit the docs/ changes with a descriptive message.
 
-## Step 4 -- Update README.md and CHANGELOG.md
+## Step 4 -- Update README.md
 
 - Update `README.md` to reflect new features, changed behaviour, or removed capabilities
-- Prepend a new entry to `CHANGELOG.md` (create it if it does not exist) summarising
-  what was implemented and the sprint goal
-- Your task context includes a `costAnalysis` block. Insert it verbatim into the CHANGELOG
-  entry, after the summary paragraph, exactly as provided -- do not reformat or recompute it
-
-**"Carried forward" is a stable pointer, never an itemized list.** This is the ONE moment a
-sprint's tracker state is briefly final for you, but it does not stay final: other tracks
-(and review) keep closing or reopening beads on the same branch after you write this entry,
-so any specific claim you make here -- "item X remains open," "item Y shipped and is
-verified" -- can go stale within minutes, before you even commit. This has repeatedly
-happened in practice and produced a bad failure mode: an operator-facing release note that
-confidently states something as true when it no longer is. Two rules follow:
-- Do not enumerate specific still-open items, or describe what they are, in "Carried
-  forward." Write one short, permanently-true sentence instead, e.g. "Carried forward: work
-  not completed this sprint remains tracked as open backlog against this sprint's parent
-  bug; check the issue tracker for current status." That sentence is exactly as true
-  whenever a reader sees it, unlike a snapshot of specific item content.
-- Only name something in "What shipped and is verified working" if you have just
-  reconfirmed it as closed/passing in this step -- never restate an earlier draft's or an
-  earlier session's belief about what shipped. If a re-check shows a bead you were about to
-  credit was reopened, drop that line rather than carrying the stale claim forward.
-- Never treat "the CHANGELOG's carried-forward paragraph is out of date" as a task to hand
-  to a doer mid-sprint for a one-off correction -- that only opens a fresh, shorter staleness
-  window (proven in practice: a corrective edit went stale again in under 15 minutes). This
-  step, run once at harvest time with the two rules above, is the only place this text is
-  produced.
+- Do NOT write a CHANGELOG entry: the sprint summary and cost go in the PR body, which the
+  orchestrator writes
 
 Commit these changes.
 
@@ -181,7 +155,7 @@ placeholder):
 ```json
 {
   "status": "OK",
-  "notes": "Wrote sprint analysis artifact, extracted durable docs, updated README/CHANGELOG, confirmed 2 P3 issues remain open as backlog, pushed branch.",
+  "notes": "Wrote sprint analysis artifact, extracted durable docs, updated README, confirmed 2 P3 issues remain open as backlog, pushed branch.",
   "kb_captures": []
 }
 ```
@@ -202,7 +176,6 @@ or as prose if you are answering a human directly.
 - NEVER remove project files that predate the sprint
 - NEVER remove or modify files under `sprint-logs/` -- these are durable cost and audit logs
 - NEVER create PLAN.md, progress.json, or requirements.md
-- NEVER reformat or recompute the costAnalysis block -- insert it verbatim
 - NEVER close any beads issue, at any priority, for any reason (see Step 5)
 - Durable knowledge only in docs/ -- a reader a year from now should find it illuminating
 - NEVER write a bead id, commit hash, branch name, or date into any harvested document

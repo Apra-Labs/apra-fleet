@@ -15,7 +15,9 @@
 //
 //   (b) supervisor-first, NO fleet.key at all  -> former branch (a)
 //   (e) supervisor-first, fleet.key PRESENT but no reachable server, with
-//       APRA_FLEET_TRANSPORT UNSET               -> former branch (c)
+//       APRA_FLEET_TRANSPORT UNSET               -> former branch (c); since
+//       main #629 the client auto-starts a gone server instead of a private
+//       stdio one, which the test sandbox refuses -> connection-error branch
 //   (c) server-first, everything already present -> registers immediately
 //
 // WHY (b) AND (e) ARE BOTH NEEDED, AND WHY EACH ASSERTS ITS OWN BRANCH TEXT.
@@ -36,10 +38,14 @@
 // That leaves consoleOrigin null and lands in the third former skip branch, not
 // the connection-error one. Forcing APRA_FLEET_TRANSPORT=http would route around
 // exactly the path this bug is about, so no test here sets it.
+// UPDATE (main #629): with the var unset a verifiably GONE server is now
+// auto-started (`apra-fleet start`) rather than resolved to stdio. Inside the
+// test sandbox (APRA_TEST_SANDBOX_ROOT) that auto-start refuses with
+// AUTOSTART_TEST_UNINJECTED, so case (e) now asserts the connection-error
+// retry, the auto-start refusal, and the ABSENCE of the stdio branch text.
 //
-// NOTHING IS SELF-SPAWNED. resolveFleetServerConnection() only COMPUTES the
-// stdio command descriptor; the spawn happens in connectFleet()/StdioTransport,
-// which this path never calls. So reaching the stdio tier starts no real server.
+// NOTHING IS SELF-SPAWNED: the sandbox refusal happens before any binary is
+// resolved, so this path starts no real server.
 //
 // ISOLATION. HOME/USERPROFILE, APRA_FLEET_DATA_DIR and FLEET_SE_DATA_DIR are all
 // redirected to temp dirs, and the subprocess runs in a temp cwd, so the
@@ -85,6 +91,11 @@ const CONVERGE_TIMEOUT_MS = scaledTimeout(45000, { concurrency: TEST_CONCURRENCY
  *  case can assert WHICH one it actually exercised. */
 const BRANCH_NO_FLEET_KEY = 'fleet.key is not available yet';
 const BRANCH_NO_HTTP_URL = 'no apra-fleet HTTP server URL yet';
+/** Since main #629 a gone server is auto-started by the client instead of
+ *  falling back to a private stdio server; inside the test sandbox that
+ *  auto-start refuses (it must never start a real installed binary), so the
+ *  unset-transport, server-down case lands in the connection-error branch. */
+const BRANCH_RESOLVE_ERROR = 'could not resolve the apra-fleet server connection';
 
 /** @type {string[]} */
 const tmpDirs = [];
@@ -405,12 +416,12 @@ describe('apra-fleet-i9ag.12: supervisor started BEFORE fleet.key exists converg
 // -----------------------------------------------------------------------------
 
 describe('apra-fleet-i9ag.12: supervisor started with fleet.key but BEFORE the server converges', () => {
-    test('connection resolves to stdio (former branch c, APRA_FLEET_TRANSPORT unset) -> retries, then registers once the server comes up', async () => {
+    test('server down, APRA_FLEET_TRANSPORT unset: client auto-start (main #629) cannot resolve a connection -> retries, then registers once the server comes up', async () => {
         const sv = await bootSupervisor({ withFleetKey: true, withServer: false });
         try {
             await waitFor(
-                async () => sv.output().includes(BRANCH_NO_HTTP_URL),
-                { label: `the no-http-url retry log (${BRANCH_NO_HTTP_URL})`, isAlive: sv.isAlive, describe: sv.describeState },
+                async () => sv.output().includes(BRANCH_RESOLVE_ERROR),
+                { label: `the connection-error retry log (${BRANCH_RESOLVE_ERROR})`, isAlive: sv.isAlive, describe: sv.describeState },
             );
             const early = sv.output();
             assert.match(early, /RETRYING/, 'the state must be reported as being retried');
@@ -423,12 +434,13 @@ describe('apra-fleet-i9ag.12: supervisor started with fleet.key but BEFORE the s
             // no-fleet.key branch is unreachable, so its text must be absent.
             assert.ok(
                 !early.includes(BRANCH_NO_FLEET_KEY),
-                `case (e) must land in the stdio branch, not the no-fleet.key branch -- a valid `
+                `case (e) must land in the connection branch, not the no-fleet.key branch -- a valid `
                 + `fleet.key was written before boot:\n${early}`,
             );
-            // Proof it really took the stdio-fallback tier (not a thrown
-            // resolution error): the log names the resolved mode.
-            assert.match(early, /connection mode 'stdio'/, `expected the stdio-resolved mode in the log:\n${early}`);
+            // Proof it really took #629's auto-start path (the unset-transport
+            // default no longer falls back to a private stdio server).
+            assert.match(early, /auto-start/i, `expected the client auto-start refusal in the log:\n${early}`);
+            assert.ok(!early.includes(BRANCH_NO_HTTP_URL), `no stdio fallback any more (main #629):\n${early}`);
             assert.equal(sv.stub.state.registerCalls.length, 0, 'no register attempt before an http url exists');
 
             await sv.bringServerUp();

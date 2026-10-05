@@ -99,6 +99,11 @@ function setupFsSpies() {
   vi.spyOn(fs, 'unlinkSync').mockReturnValue(undefined);
   vi.spyOn(fs, 'existsSync').mockReturnValue(true); // lets findProjectRoot() succeed
   vi.spyOn(fs, 'readFileSync').mockReturnValue(SERVER_INFO as any);
+  // runStop -> postShutdown -> getOrCreateKey() reads the fleet key through the
+  // readFileSync spy above (SERVER_INFO is not a 64-char key) and then WROTE a
+  // fresh key to ~/.apra-fleet/fleet.key with the real writeFileSync --
+  // rewriting the developer's real signing key and invalidating member JWTs.
+  vi.spyOn(fs, 'writeFileSync').mockReturnValue(undefined);
 }
 
 function setupHttpSpies() {
@@ -266,6 +271,28 @@ describe('runStart', () => {
       expect.arrayContaining(['--transport', 'http']),
       expect.objectContaining({ detached: true }),
     );
+  });
+
+  it('drops APRA_FLEET_AUTOSTART / APRA_FLEET_SERVICE: consumed from its own env, never passed to the spawned server', async () => {
+    mockCheckRunning.mockResolvedValueOnce(STOPPED).mockResolvedValueOnce(RUNNING);
+    const saved = process.env.APRA_FLEET_SERVICE;
+    process.env.APRA_FLEET_AUTOSTART = '1';
+    process.env.APRA_FLEET_SERVICE = '1';
+    try {
+      vi.useFakeTimers();
+      const p = runStart([]);
+      await vi.advanceTimersByTimeAsync(2001);
+      await p;
+      expect(process.env.APRA_FLEET_AUTOSTART).toBeUndefined();
+      const opts = vi.mocked(spawn).mock.calls[0][2] as { env?: Record<string, string> };
+      expect(opts.env).toBeDefined();
+      expect(opts.env!.APRA_FLEET_AUTOSTART).toBeUndefined();
+      expect(opts.env!.APRA_FLEET_SERVICE).toBeUndefined();
+      expect(opts.env!.PATH ?? opts.env!.Path).toBeDefined();
+    } finally {
+      delete process.env.APRA_FLEET_AUTOSTART;
+      if (saved === undefined) delete process.env.APRA_FLEET_SERVICE; else process.env.APRA_FLEET_SERVICE = saved;
+    }
   });
 
   it('logs success URL after server comes up', async () => {

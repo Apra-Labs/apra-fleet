@@ -11,8 +11,9 @@
 //     builder (module-private -- it is the body builder buildCostAnalysis
 //     and the PR text path share, so it moves with them rather than staying
 //     behind).
-//   - buildCostAnalysis: the Harvester dispatch's `costAnalysis` block
-//     builder, reporting budget/spend honestly from the live `budget` object.
+//   - buildCostAnalysis: the sprint cost block (appended to analysisText and
+//     rendered in the PR body), reporting budget/spend honestly from the live
+//     `budget` object.
 //   - computeBranchSlug: the collision-resistant filesystem slug for
 //     `docs/sprint-analysis-<slug>.md`.
 //
@@ -65,6 +66,61 @@ export function sanitizePrText(text) {
 // ---------------------------------------------------------------------------
 
 /**
+ * " (<part>: pass, <part>: fail)" from the playbook-defined `sections`, or
+ * from the deprecated two-part fields when an older runner returned those;
+ * '' when neither is present. The part names are the target playbook's own.
+ * @param {object} r regression-test-runner result
+ * @returns {string}
+ */
+export function formatRegressionParts(r) {
+    const pf = (v) => (v === true ? 'pass' : 'fail');
+    let parts = [];
+    if (Array.isArray(r.sections) && r.sections.length > 0) {
+        parts = r.sections.map((s) => `${s.name}: ${pf(s.passed)}`);
+    } else {
+        if (typeof r.suitePassed === 'boolean') parts.push(`part 1: ${pf(r.suitePassed)}`);
+        if (typeof r.smokePassed === 'boolean') parts.push(`part 2: ${pf(r.smokePassed)}`);
+    }
+    return parts.length ? ` (${parts.join(', ')})` : '';
+}
+
+const REGRESSION_VERDICTS = ['PASS', 'FAIL', 'INCONCLUSIVE'];
+
+/**
+ * The regression verdict, or null when the runner reported none. A verdict
+ * is copied verbatim from a machine-written verdict file (see
+ * agents/regression-test-runner.md), so it outranks the boolean `passed`:
+ * INCONCLUSIVE must never be rendered as a failure.
+ * @param {object} r regression-test-runner result
+ * @returns {'PASS'|'FAIL'|'INCONCLUSIVE'|null}
+ */
+export function regressionVerdictOf(r) {
+    return r && REGRESSION_VERDICTS.includes(r.verdict) ? r.verdict : null;
+}
+
+/**
+ * One-line headline for a regression result: "Regression: <VERDICT> @ <sha12>
+ * (parts) [evidence counts] <runUrl>" when a verdict is present, else the legacy
+ * "Regression pass: PASSED|FAILED (parts)". No trailing period.
+ * @param {object} r regression-test-runner result
+ * @returns {string}
+ */
+export function formatRegressionHeadline(r) {
+    const verdict = regressionVerdictOf(r);
+    if (verdict) {
+        const sha = typeof r.testedSha === 'string' && r.testedSha ? ` @ ${r.testedSha.slice(0, 12)}` : '';
+        const ev = r.evidence && typeof r.evidence === 'object' ? r.evidence : {};
+        const counts = [];
+        if (Array.isArray(ev.newFailures)) counts.push(`${ev.newFailures.length} new failure(s)`);
+        if (Array.isArray(ev.inventoryMissing)) counts.push(`${ev.inventoryMissing.length} inventory missing`);
+        const evText = counts.length ? ` [${counts.join(', ')}]` : '';
+        const url = typeof ev.runUrl === 'string' && ev.runUrl ? ` ${ev.runUrl}` : '';
+        return `Regression: ${verdict}${sha}${formatRegressionParts(r)}${evText}${url}`;
+    }
+    return `Regression pass: ${r.passed === true ? 'PASSED' : 'FAILED'}${formatRegressionParts(r)}`;
+}
+
+/**
  * Assembles the `analysisText` block for the Harvester dispatch from this
  * run's in-memory tracking state: cycle-by-cycle closed-bead progress,
  * deploy/integration outcomes, rejected reviewer newTasks, the final verdict,
@@ -98,9 +154,7 @@ export function buildAnalysisText({
         : regressionResult === null
         ? ['Regression pass: not run this sprint (no regression-test-playbook.md, or the probe failed).']
         : [
-            `Regression pass: ${regressionResult.passed === true ? 'PASSED' : 'FAILED'} `
-            + `(real-bd suite: ${regressionResult.suitePassed === true ? 'pass' : 'fail'}, `
-            + `smoke test: ${regressionResult.smokePassed === true ? 'pass' : 'fail'}).`,
+            `${formatRegressionHeadline(regressionResult)}.`,
             `Carry-over beads filed: ${(regressionResult.bugsFiled || []).join(', ') || 'none'}.`,
             `Summary: ${regressionResult.summary || '(none reported)'}`,
             'Informational only -- this pass ran after the final verdict and did not gate it; any bead '
@@ -151,11 +205,11 @@ export function buildAnalysisText({
 }
 
 /**
- * Builds the `costAnalysis` block for the Harvester dispatch from the live
- * `budget` object. Reports only what is known: an unset ceiling, an absent
- * spent() and an unpriced-model spend gap are each stated as such rather than
- * backfilled with a fabricated number, since harvester.md inserts this block
- * verbatim and never recomputes it. The remaining budget is derived from
+ * Builds the sprint cost block (appended to the analysis document and rendered
+ * in the PR body) from the live `budget` object. Reports only what is known:
+ * an unset ceiling, an absent spent() and an unpriced-model spend gap are each
+ * stated as such rather than backfilled with a fabricated number, since the
+ * block is published verbatim and never recomputed. The remaining budget is derived from
  * `total` and `spent()`, not read from the budget object.
  * @param {{ total: number|null, spent?: () => number, pricingSummary?: () => { real: number, fallback: number } }} budget
  * @param {{ spend?: number, dispatchCount?: number }} [integTestRunnerStats] -- apra-fleet-nwh.1:
