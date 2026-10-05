@@ -123,3 +123,73 @@ describe('global-state .beads is not a project (apra-fleet-i9ag.17.12)', () => {
         assert.equal(r.status, 500);
     });
 });
+
+// apra-fleet-i9ag.17.15 -- a .beads holding only a bd `redirect` file is a project.
+describe('redirect-only .beads is a project database (apra-fleet-i9ag.17.15)', () => {
+    /** outer/.beads = full project; outer/wt/.beads = redirect only; real/.beads = target. */
+    async function redirectLayout(content) {
+        const root = fs.realpathSync.native(await fsp.mkdtemp(path.join(os.tmpdir(), 'apra-redirect-beads-')));
+        tmpDirs.push(root);
+        const outer = path.join(root, 'outer');
+        const wt = path.join(outer, 'wt');
+        const real = path.join(root, 'real');
+        await fsp.mkdir(path.join(outer, '.beads'), { recursive: true });
+        await fsp.writeFile(path.join(outer, '.beads', 'metadata.json'), '{}');
+        await fsp.mkdir(path.join(real, '.beads'), { recursive: true });
+        await fsp.writeFile(path.join(real, '.beads', 'metadata.json'), '{}');
+        await fsp.mkdir(path.join(wt, '.beads'), { recursive: true });
+        await fsp.mkdir(path.join(wt, 'sub'), { recursive: true });
+        await fsp.writeFile(path.join(wt, '.beads', 'redirect'), content(real, wt));
+        return { root, outer, wt, real };
+    }
+
+    test('absolute redirect: project; discovery stops at the local .beads, not the outer parent', async () => {
+        const { wt, real } = await redirectLayout((r) => path.join(r, '.beads') + '\n');
+        assert.equal(isProjectBeadsDir(path.join(wt, '.beads')), true);
+        assert.deepEqual(discoverBeadsDir({ cwd: path.join(wt, 'sub') }), { beadsDir: path.join(wt, '.beads'), repoRoot: wt });
+    });
+
+    test('relative redirect resolves against the parent of .beads (bd rule)', async () => {
+        const { wt } = await redirectLayout((r, w) => path.relative(w, path.join(r, '.beads')));
+        assert.equal(isProjectBeadsDir(path.join(wt, '.beads')), true);
+    });
+
+    test('dangling redirect and redirect to a dir without metadata.json are not projects', async () => {
+        const { wt, root } = await redirectLayout((r) => path.join(r, 'missing', '.beads'));
+        assert.equal(isProjectBeadsDir(path.join(wt, '.beads')), false);
+        const empty = path.join(root, 'empty', '.beads');
+        await fsp.mkdir(empty, { recursive: true });
+        await fsp.writeFile(path.join(wt, '.beads', 'redirect'), empty);
+        assert.equal(isProjectBeadsDir(path.join(wt, '.beads')), false);
+    });
+
+    test('self-referential and two-hop redirects terminate false (single hop only)', async () => {
+        const { wt, root } = await redirectLayout((r, w) => path.join(w, '.beads'));
+        assert.equal(isProjectBeadsDir(path.join(wt, '.beads')), false);
+        const b = path.join(root, 'b', '.beads');
+        await fsp.mkdir(b, { recursive: true });
+        await fsp.writeFile(path.join(b, 'redirect'), path.join(wt, '.beads'));
+        await fsp.writeFile(path.join(wt, '.beads', 'redirect'), b);
+        assert.equal(isProjectBeadsDir(path.join(wt, '.beads')), false);
+        assert.equal(isProjectBeadsDir(b), false);
+    });
+
+    test('fs without readFileSync, or a read error, yields false', async () => {
+        const { wt } = await redirectLayout((r) => path.join(r, '.beads'));
+        const noRead = { existsSync: fs.existsSync, statSync: fs.statSync };
+        assert.equal(isProjectBeadsDir(path.join(wt, '.beads'), noRead), false);
+        const throwing = { ...noRead, readFileSync() { throw new Error('EIO'); } };
+        assert.equal(isProjectBeadsDir(path.join(wt, '.beads'), throwing), false);
+    });
+
+    test('GET /api/project reports hasBeadsDb true for the redirect folder', async () => {
+        const { wt, root } = await redirectLayout((r) => path.join(r, '.beads'));
+        const supervisor = createSupervisor({ token: 'tok' });
+        registerProjectFolderRoutes(supervisor, {
+            projectDir: wt, source: 'walk-up', flagActive: false, dataDir: path.join(root, 'data'),
+            readJsonBody, sendJson,
+        });
+        const r = await call(supervisor, 'GET', '/api/project');
+        assert.equal(r.body.hasBeadsDb, true);
+    });
+});
