@@ -14,6 +14,7 @@ import { memberDetail } from '../src/tools/member-detail.js';
 import { fleetStatus } from '../src/tools/check-status.js';
 import { addAgent, getAgent, getAllAgents, recordFleetMcpStatus } from '../src/services/registry.js';
 import { __setMemberFleetMcpDeps, NO_INSTALL_SENTINEL, type MemberFleetMcpDeps, type MemberSession } from '../src/services/member-fleet-install.js';
+import { memberMcpUrl } from '../src/services/member-config-io.js';
 import type { SSHExecResult } from '../src/types.js';
 import fs from 'node:fs';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -101,9 +102,10 @@ function fakeDeps(world: World, local?: () => Promise<MemberSession>, home = HOM
       if (c.includes('uname -m')) return ok(world.arch);
       if (c.includes("'install'")) { world.installed = VERSION; world.marker = true; return ok('installed'); }
       if (c.includes('CLAUDE_CONFIG_DIR')) return ok('');
-      if (c.includes('cat "') && c.includes('.claude.json')) {
+      if ((c.includes('cat "') || c.includes('Get-Content')) && c.includes('.claude.json')) {
+        const key = agent.workFolder.replace(/\\/g, '/').replace(/\/+$/, '');
         return ok(world.entry
-          ? JSON.stringify({ projects: { [WORK]: { mcpServers: { 'apra-fleet': { type: 'http', url: `http://localhost:7523/mcp?member=${agent.id}` } } } } })
+          ? JSON.stringify({ projects: { [key]: { mcpServers: { 'apra-fleet': { type: 'http', url: memberMcpUrl(agent) } } } } })
           : '');
       }
       return { stdout: '', stderr: `unexpected: ${c}`, code: 127 };
@@ -271,7 +273,7 @@ describe('register_member fleet_install', () => {
     expect(installCmds(w)).toEqual([]);
   });
 
-  it('local member: a direct MEMBER session is used, nothing is installed or exec\'d on a member host', async () => {
+  it('local member: a direct MEMBER session is used, nothing is installed or registered on a member host', async () => {
     const w = newWorld();
     const connect = vi.fn(async (): Promise<MemberSession> => ({
       mcpClient: {
@@ -289,7 +291,9 @@ describe('register_member fleet_install', () => {
       expect(result).toContain('Member registered successfully');
       expect(result).toContain('fleetMcp: available');
       expect(connect).toHaveBeenCalledTimes(1);
-      expect(w.log).toEqual([]);
+      // Only the per-folder MCP entry read (the path a dispatched CLI resolves).
+      expect(w.log.some(c => c.includes("'install'") || c.includes("'register-member'"))).toBe(false);
+      expect(w.log.some(c => c.includes('.claude.json'))).toBe(true);
       expect(w.transfers).toBe(0);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });

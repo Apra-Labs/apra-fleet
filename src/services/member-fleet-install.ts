@@ -50,7 +50,7 @@ import { parseVersion, isNewer } from './update-check.js';
 import { recordFleetMcpStatus } from './registry.js';
 import { probeMemberClaudeConfigDir, claudeLocalScopeConfigFile } from '../providers/claude.js';
 import { OPENCODE_PROJECT_CONFIG } from '../providers/opencode.js';
-import { readMemberJson, joinMemberPath, memberFileExists, MEMBER_MCP_SERVER_NAME } from './member-config-io.js';
+import { readMemberJson, joinMemberPath, memberFileExists, memberMcpUrl, MEMBER_MCP_SERVER_NAME } from './member-config-io.js';
 
 type MemberShell = ReturnType<typeof getAgentShell>;
 
@@ -1051,7 +1051,8 @@ const PER_FOLDER_PROVIDERS = new Set<LlmProvider>(['claude', 'opencode']);
  *
  *  - agy: unavailable(no-per-project-mcp), unverified; nothing is probed.
  *  - providers with no per-folder fleet entry: unavailable(provider-unsupported), unverified.
- *  - LOCAL members: no install; a direct MEMBER session to this server.
+ *  - LOCAL members: no install; a direct MEMBER session to this server, then
+ *    the per-folder MCP entry a dispatched CLI resolves must equal memberMcpUrl.
  *  - remote members: ensure the install (opts.install, default true; false
  *    only probes the version), register the member on its own install
  *    (`register-member --type local --id <uuid>`), check the per-folder MCP
@@ -1194,6 +1195,23 @@ function installFailureNote(f: { reason: string; detail?: string }, version: str
   return `the apra-fleet upgrade on the member failed (${f.reason}${f.detail ? `: ${f.detail.replace(/\.\s*$/, '')}` : ''}); the older apra-fleet ${version ?? '(unknown version)'} install is in use`;
 }
 
+/**
+ * The per-folder apra-fleet entry of a LOCAL member must be exactly the URL
+ * compose_permissions writes for it (memberMcpUrl): the member query AND this
+ * server's port. Returns a one-line problem, or null when the entry is right.
+ */
+async function checkLocalMemberEntry(agent: Agent, deps: MemberFleetMcpDeps): Promise<string | null> {
+  const expected = memberMcpUrl(agent);
+  const home = await deps.resolveHome(agent);
+  if (!home) return 'the member home directory could not be resolved, so its per-folder apra-fleet MCP entry could not be read';
+  const url = await readMemberMcpEntryUrl(agent, home, deps);
+  if (!url) {
+    return `no per-folder apra-fleet MCP entry for ${agent.workFolder}: a CLI session there falls back to an unscoped apra-fleet server, so its kb_*/code_* calls are not attributed to the member; run compose_permissions`;
+  }
+  if (url !== expected) return `per-folder apra-fleet entry points at ${url}, not ${expected}`;
+  return null;
+}
+
 async function probeLocal(agent: Agent, deps: MemberFleetMcpDeps, unavailable: Unavailable, checkedAt: () => string): Promise<FleetMcpStatus> {
   let session: MemberSession;
   try {
@@ -1209,7 +1227,16 @@ async function probeLocal(agent: Agent, deps: MemberFleetMcpDeps, unavailable: U
     const list = await session.mcpClient.listTools();
     const judged = judgeSession(versionResult, list);
     if (!judged.ok) return unavailable(judged.reason, judged.detail);
-    return { state: 'available', checkedAt: checkedAt(), ...(judged.version ? { version: judged.version } : {}) };
+    const version = judged.version ? { version: judged.version } : {};
+    // The session above is one this probe opened itself (?member=<uuid>). A
+    // dispatched CLI in the work folder resolves the apra-fleet server through
+    // its OWN config instead, where the local-scope entry outranks the project
+    // and user scopes. With no member entry there it falls back to an unscoped
+    // server and its calls are never attributed to the member. Verify the
+    // entry the CLI will actually use.
+    const entry = await checkLocalMemberEntry(agent, deps);
+    if (entry) return unavailable('mcp-entry-missing', entry, version);
+    return { state: 'available', checkedAt: checkedAt(), ...version };
   } catch (err: unknown) {
     return unavailable('member-session-failed', `member session call failed: ${err instanceof Error ? err.message : String(err)}`);
   } finally {

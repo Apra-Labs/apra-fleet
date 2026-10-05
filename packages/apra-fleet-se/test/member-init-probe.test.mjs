@@ -168,6 +168,23 @@ test('missing per-folder MCP entry -> unverified (mcp-entry-missing) even though
     assert.match(rec.fix, /\?member=<uuid>/);
 });
 
+test('LOCAL member whose work folder resolves to an unscoped fleet server (mcp-entry-missing) -> unverified with a loud WARN, although its own member session lists kb_* and code_*', async () => {
+    const f = fakeFleet({
+        type: 'local',
+        fleetMcp: { state: 'unavailable', reason: 'mcp-entry-missing', detail: 'no per-folder apra-fleet MCP entry for /w/m1: a CLI session there falls back to an unscoped apra-fleet server', checkedAt: 'x' },
+    });
+    const [rec] = await f.make(['m1']).probeAll();
+    assert.equal(rec.server, 'skipped');
+    assert.equal(rec.kbTools, true);
+    assert.equal(rec.codeTools, true);
+    assert.equal(rec.verified, false);
+    assert.equal(rec.reason, 'mcp-entry-missing');
+    assert.match(rec.problems.find((p) => p.reason === 'mcp-entry-missing').detail, /unscoped/);
+    assert.equal(f.logs.length, 1);
+    assert.match(f.logs[0], /WARN member 'm1': unverified -- reason: mcp-entry-missing; fix: run compose_permissions/);
+    assert.ok(!f.events.includes('cmd:status'));
+});
+
 test('an MCP entry lacking ?member=<uuid> (server reports mcp-entry-missing pointing elsewhere) -> unverified', async () => {
     const f = fakeFleet({ fleetMcp: { state: 'unavailable', reason: 'mcp-entry-missing', detail: 'per-folder apra-fleet entry points at http://h/mcp, not ?member=abc', checkedAt: 'x' } });
     const [rec] = await f.make(['m1']).probeAll();

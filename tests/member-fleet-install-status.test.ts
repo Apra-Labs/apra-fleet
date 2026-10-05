@@ -18,6 +18,7 @@ import {
   type MemberFleetMcpDeps,
   type MemberSession,
 } from '../src/services/member-fleet-install.js';
+import { memberMcpUrl } from '../src/services/member-config-io.js';
 import { addAgent, getAgent, recordFleetMcpStatus } from '../src/services/registry.js';
 import { runRemoveMember } from '../src/cli/remove-member.js';
 
@@ -54,6 +55,30 @@ interface World {
 
 function entryFor(agent: Agent): Record<string, unknown> {
   return { projects: { [WORK]: { mcpServers: { 'apra-fleet': { type: 'http', url: `http://localhost:7523/mcp?member=${agent.id}` } } } } };
+}
+
+function localEntry(agent: Agent, url: string): Record<string, unknown> {
+  return { projects: { [agent.workFolder]: { mcpServers: { 'apra-fleet': { type: 'http', url } } } } };
+}
+
+function localClaude(): Agent {
+  return makeTestLocalAgent({ llmProvider: 'claude', os: 'linux', workFolder: WORK });
+}
+
+/** A working direct MEMBER session to this server (local members). */
+function localSession(calls: string[], onClose: () => void = () => {}): { connect: (id: string) => Promise<MemberSession> } {
+  return {
+    connect: async id => {
+      calls.push(`connect:${id}`);
+      return {
+        mcpClient: {
+          callTool: async name => { calls.push(`call:${name}`); return { content: [{ type: 'text', text: 'apra-fleet v0.4.4_abc123' }] }; },
+          listTools: async () => { calls.push('list'); return { tools: [{ name: 'kb_query' }, { name: 'code_graph' }] }; },
+        },
+        close: async () => { onClose(); },
+      };
+    },
+  };
 }
 
 function text(cmd: string): string {
@@ -269,27 +294,53 @@ describe('agy and local members', () => {
   });
 
   it('local member gets its status from a direct MEMBER session with no install attempted', async () => {
-    const world = newWorld();
-    const agent = makeTestLocalAgent({ llmProvider: 'claude' });
+    const agent = localClaude();
+    const world = newWorld({ claudeJson: localEntry(agent, memberMcpUrl(agent)) });
     const calls: string[] = [];
     let closed = false;
-    const s = await probeMemberFleetMcp(agent, deps(world, {
-      connect: async id => {
-        calls.push(`connect:${id}`);
-        return {
-          mcpClient: {
-            callTool: async name => { calls.push(`call:${name}`); return { content: [{ type: 'text', text: 'apra-fleet v0.4.4_abc123' }] }; },
-            listTools: async () => { calls.push('list'); return { tools: [{ name: 'kb_query' }, { name: 'code_graph' }] }; },
-          },
-          close: async () => { closed = true; },
-        };
-      },
-    }));
+    const s = await probeMemberFleetMcp(agent, deps(world, localSession(calls, () => { closed = true; })));
     expect(s).toEqual({ state: 'available', version: 'v0.4.4_abc123', checkedAt: expect.any(String) });
     expect(calls).toEqual([`connect:${agent.id}`, 'call:version', 'list']);
     expect(closed).toBe(true);
-    expect(world.execLog).toEqual([]);
+    // Only the member-side config reads: nothing installed or registered.
+    expect(world.execLog.some(c => c.includes("'install'") || c.includes("'register-member'"))).toBe(false);
+    expect(world.execLog.some(c => c.includes('.claude.json'))).toBe(true);
     expect(world.transfers).toBe(0);
+  });
+
+  // A dispatched CLI resolves apra-fleet through the work folder's local-scope
+  // entry; without it the calls reach an unscoped server and are not attributed.
+  it('local member with no per-folder entry is unavailable(mcp-entry-missing) although its own member session works', async () => {
+    const agent = localClaude();
+    const world = newWorld({
+      claudeJson: { mcpServers: { 'apra-fleet': { type: 'http', url: 'http://localhost:7523/mcp' } }, projects: { [WORK]: {} } },
+    });
+    const s = await probeMemberFleetMcp(agent, deps(world, localSession([])));
+    expect(s).toMatchObject({ state: 'unavailable', reason: 'mcp-entry-missing', version: 'v0.4.4_abc123' });
+    expect(s.detail).toContain('not attributed to the member');
+    expect(s.detail).toContain('compose_permissions');
+  });
+
+  it('local member whose per-folder entry is unscoped is unavailable(mcp-entry-missing)', async () => {
+    const agent = localClaude();
+    const s = await probeMemberFleetMcp(agent, deps(newWorld({ claudeJson: localEntry(agent, 'http://localhost:7523/mcp') }), localSession([])));
+    expect(s).toMatchObject({ state: 'unavailable', reason: 'mcp-entry-missing' });
+    expect(s.detail).toContain(memberMcpUrl(agent));
+  });
+
+  it('local member whose per-folder entry targets another server port is unavailable(mcp-entry-missing)', async () => {
+    const agent = localClaude();
+    const wrong = memberMcpUrl(agent).replace(/localhost:\d+/, 'localhost:1');
+    const s = await probeMemberFleetMcp(agent, deps(newWorld({ claudeJson: localEntry(agent, wrong) }), localSession([])));
+    expect(s).toMatchObject({ state: 'unavailable', reason: 'mcp-entry-missing' });
+    expect(s.detail).toContain(wrong);
+  });
+
+  it('local member whose home cannot be resolved is unavailable(mcp-entry-missing), never available', async () => {
+    const agent = localClaude();
+    const d = deps(newWorld({ claudeJson: localEntry(agent, memberMcpUrl(agent)) }), localSession([]));
+    const s = await probeMemberFleetMcp(agent, { ...d, resolveHome: async () => null });
+    expect(s).toMatchObject({ state: 'unavailable', reason: 'mcp-entry-missing' });
   });
 
   it('a local member the server refuses (403) is unavailable(member-session-failed)', async () => {
