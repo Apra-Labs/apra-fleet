@@ -1,9 +1,9 @@
 {
   "version": 2,
   "provenance": {
-    "commit": "2e962a242779b2eea35bc4f388e9033a71b3d776",
+    "commit": "34ff160ff8ee9e2268e851270b911771d06fedca",
     "branch": "feat/kb-redesign",
-    "entry_count": 271
+    "entry_count": 272
   },
   "entries": [
     {
@@ -3602,6 +3602,25 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:10.894Z"
+    },
+    {
+      "id": "b8a4cb3f-db8e-42ee-a2f0-3691289c98b5",
+      "type": "knowledge",
+      "title": "Uninstall removes fleet-supervisor OS service only when its target references the installed tree",
+      "summary": "src/services/supervisor-service-cleanup.ts finds known-name supervisor registrations (systemd fleet-supervisor/apra-fleet-supervisor.service, launchd com.apra-fleet.supervisor, schtasks ApraFleetSupervisor) and removes them only if the target points at BIN_DIR/apra-fleet supervisor or FLEET_BASE/workflows/fleet-sprint/bin/serve.mjs.",
+      "symbols": [
+        "cleanupSupervisorService",
+        "findSupervisorRegistrations",
+        "targetIsInstalledTree",
+        "runUninstall"
+      ],
+      "source_files": [
+        "src/services/supervisor-service-cleanup.ts",
+        "src/cli/uninstall.ts",
+        "tests/uninstall.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T03:25:39.848Z"
     },
     {
       "id": "b8c8e412-3274-40fe-a166-7a9fcfcc89a2",
