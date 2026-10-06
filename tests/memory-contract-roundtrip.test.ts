@@ -178,7 +178,7 @@ describe('memory-contract/v1 round trip (sqlite provider)', () => {
   it('dispatched every committed fixture live (no case silently skipped)', () => {
     const undispatched = report.steps.filter((s) => !s.dispatched).map((s) => s.key);
     expect(undispatched).toEqual([]);
-    expect(report.steps.length).toBe(78); // + 5 kb_demote-lane cases (its own capture, two promotes, happy, not-CONFIRMED refusal); 73 = 64 + kb_list/happy-confidence-string + 4 E-SCOPE-KEY-REMOVED refusals (one per kb_* family); 63 + kb_feedback/happy (FULL, non-member session); 61 (code_reindex/code_status outcomes, kb + code (self) refusals, code_query/refusal-intel-disabled on top of 48 + kb_query/happy-confirmed-only) + kb_bible_commit happy and refusal
+    expect(report.steps.length).toBe(79); // + kb_bible_commit/tombstone (demoted_ids, chained off the kb_demote-lane entry above); 78 = + 5 kb_demote-lane cases (its own capture, two promotes, happy, not-CONFIRMED refusal); 73 = 64 + kb_list/happy-confidence-string + 4 E-SCOPE-KEY-REMOVED refusals (one per kb_* family); 63 + kb_feedback/happy (FULL, non-member session); 61 (code_reindex/code_status outcomes, kb + code (self) refusals, code_query/refusal-intel-disabled on top of 48 + kb_query/happy-confirmed-only) + kb_bible_commit happy and refusal
   });
 
   it('covers all 26 inventoried tools', () => {
