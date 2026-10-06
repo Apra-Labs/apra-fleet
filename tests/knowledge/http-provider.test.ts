@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import http from 'node:http';
 import { HttpKbProvider } from '../../src/services/knowledge/http-provider.js';
 import { SqliteProvider } from '../../src/services/knowledge/sqlite-provider.js';
@@ -60,6 +60,7 @@ beforeAll(async () => {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ invalidated: 1 }));
       } else {
+        if (url.startsWith('/api/kb/context')) contextProbes++;
         res.writeHead(404, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Not found' }));
       }
@@ -73,7 +74,10 @@ afterAll(async () => {
   await new Promise<void>(resolve => mockServer.close(() => resolve()));
 });
 
+let contextProbes = 0;
+
 beforeEach(() => {
+  contextProbes = 0;
   captureRequests.length = 0;
   queryUrls.length = 0;
 });
@@ -469,6 +473,64 @@ describe('HttpKbProvider', () => {
       }
     } finally {
       (process.stderr as any).write = origWrite;
+    }
+  });
+});
+
+describe('HttpKbProvider strict-mode reachability cache (apra-fleet-i9ag.15.21)', () => {
+  afterEach(() => { vi.useRealTimers(); });
+
+  async function makeStrict(): Promise<HttpKbProvider> {
+    const fallback = new SqliteProvider(':memory:');
+    await fallback.init();
+    return new HttpKbProvider(`http://127.0.0.1:${MOCK_PORT}`, MOCK_TOKEN, fallback, 'error');
+  }
+
+  it('a burst of getLinked/relatedClaims/promote within the TTL costs one probe; it re-probes after the TTL', async () => {
+    const provider = await makeStrict();
+    try {
+      contextProbes = 0;
+      vi.useFakeTimers({ toFake: ['Date'] });
+      await provider.getLinked('a');
+      await provider.relatedClaims(['a']);
+      await provider.promote('a', 'why').catch(() => {});
+      await provider.getLinked('b');
+      expect(contextProbes).toBe(1);
+
+      vi.setSystemTime(Date.now() + 6_000);
+      await provider.getLinked('a');
+      expect(contextProbes).toBe(2);
+    } finally {
+      provider.dispose();
+    }
+  });
+
+  it('markDegraded and markConnected invalidate the cache', async () => {
+    const provider = await makeStrict();
+    try {
+      contextProbes = 0;
+      await provider.getLinked('a');
+      expect(contextProbes).toBe(1);
+      (provider as any).markConnected();
+      await provider.getLinked('a');
+      expect(contextProbes).toBe(2);
+      (provider as any).markDegraded(new Error('x'));
+      await provider.getLinked('a');
+      expect(contextProbes).toBe(3);
+    } finally {
+      provider.dispose();
+    }
+  });
+
+  it('an unreachable server is never cached: every call still rejects', async () => {
+    const fallback = new SqliteProvider(':memory:');
+    await fallback.init();
+    const provider = new HttpKbProvider(OFFLINE_URL, MOCK_TOKEN, fallback, 'error');
+    try {
+      await expect(provider.getLinked('a')).rejects.toThrow(/unreachable/);
+      await expect(provider.getLinked('a')).rejects.toThrow(/unreachable/);
+    } finally {
+      provider.dispose();
     }
   });
 });
