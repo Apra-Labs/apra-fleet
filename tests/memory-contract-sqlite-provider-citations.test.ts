@@ -1,10 +1,12 @@
-// Guards against the class of rot fixed by the my-beads-db-xqp.7 cleanup:
-// memory-contract/v1/taxonomy.json, spec.md and INVENTORY.md cited
-// src/services/knowledge/sqlite-provider.ts by absolute file:line three
-// times running up to that cleanup -- SqliteProvider.demote's insertion
-// alone shifted every later line pin in taxonomy.json without anyone
-// noticing until a manual audit. A hand-maintained line number is not a
-// durable citation into a file that changes shape routinely.
+// Guards against the class of rot fixed by commit 17e7c904
+// (docs(memory-contract): replace stale sqlite-provider.ts line pins with
+// symbol anchors): memory-contract/v1/taxonomy.json, spec.md and
+// INVENTORY.md cited src/services/knowledge/sqlite-provider.ts by absolute
+// file:line three times running up to that cleanup -- SqliteProvider.
+// demote's insertion alone shifted every later line pin in taxonomy.json
+// without anyone noticing until a manual audit. A hand-maintained line
+// number is not a durable citation into a file that changes shape
+// routinely.
 //
 // This file enforces the two-part fix a token-checking guard gives (see bd
 // memory `memory-contract-citations-shift-with-sqlite-provider`): no more
