@@ -143,6 +143,21 @@
           "source": "src/tools/kb-import.ts:168",
           "surfaced": "thrown",
           "retryable": false
+        },
+        {
+          "$anchor": "E-BIBLE-MALFORMED",
+          "code": "E-BIBLE-MALFORMED",
+          "meaning": "A bible file exists but cannot be read as a bible (invalid JSON, or neither the legacy array nor the v2/v3 envelope). Raised by the shared bible reader, so it also fails a MEMBER session's read of its own checkout bible; it is never treated as an empty bible.",
+          "raising_methods": [
+            { "method_id": "P-2", "member": "capture", "tool": "kb_import", "position": "pre-provider" },
+            { "method_id": "P-3", "member": "query", "tool": "kb_query", "position": "pre-provider" },
+            { "method_id": "P-3", "member": "query", "tool": "kb_session_prime", "position": "pre-provider" },
+            { "method_id": "P-10", "member": "stats", "tool": "kb_stats", "position": "pre-provider" }
+          ],
+          "source": "src/services/knowledge/bible-import.ts (KbBibleError, readBibleEntries), src/services/knowledge/member-bible-view.ts",
+          "surfaced": "thrown",
+          "retryable": false,
+          "remediation": "Fix or regenerate the bible file (kb_export writes it), or restore it from git."
         }
       ]
     },
@@ -568,6 +583,35 @@
           "retryable": false,
           "remediation": "Run kb_feedback from a FULL session (no member identity), or flag the entry for review through the maintainer.",
           "group_decision": "PROVIDER_INTERNAL, not validation: the request is well formed; the session kind cannot perform the operation. Thrown before any KB is opened and writes nothing."
+        },
+        {
+          "$anchor": "E-MEMBER-VIEW-REMOTE",
+          "code": "E-MEMBER-VIEW-REMOTE",
+          "meaning": "A remote MEMBER session's checkout bible could not be read from the member host (unreachable member, or the read command failed). The member view never falls back to the per-repo DB, so the call fails loudly.",
+          "raising_methods": [
+            { "method_id": "P-3", "member": "query", "tool": "kb_query", "position": "pre-provider" },
+            { "method_id": "P-3", "member": "query", "tool": "kb_session_prime", "position": "pre-provider" },
+            { "method_id": "P-10", "member": "stats", "tool": "kb_stats", "position": "pre-provider" }
+          ],
+          "source": "src/services/knowledge/member-bible-view.ts (remoteFail)",
+          "surfaced": "thrown",
+          "retryable": false,
+          "remediation": "Check the member is reachable (member_detail / update_member), then retry; the member must have its checkout bible at <work folder>/.fleet/kb-canonical.json.",
+          "group_decision": "PROVIDER_INTERNAL, not validation: the request is well formed; the member host the view is read from is unavailable."
+        },
+        {
+          "$anchor": "E-BIBLE-BASIS-NOT-GIT",
+          "code": "E-BIBLE-BASIS-NOT-GIT",
+          "meaning": "The folder is not inside a git work tree, so file content at HEAD cannot be read and the bible's file hashes cannot be computed. Nothing is written.",
+          "raising_methods": [
+            { "method_id": "X-1", "member": "list", "tool": "kb_export", "position": "pre-provider" },
+            { "method_id": "X-1", "member": "list", "tool": "kb_bible_commit", "position": "pre-provider" }
+          ],
+          "source": "src/services/knowledge/file-hash.ts (KbHeadHashError)",
+          "surfaced": "thrown",
+          "retryable": false,
+          "remediation": "Run from a folder inside a git work tree with a resolvable HEAD.",
+          "group_decision": "PROVIDER_INTERNAL, not validation: the request is well formed; the environment cannot supply the git basis."
         }
       ]
     }

@@ -72,6 +72,11 @@
       "status": 400
     },
     {
+      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-BIBLE-MALFORMED",
+      "title": "A bible file exists but cannot be read as a bible (invalid JSON, or neither the legacy array nor the v2/v3 envelope). Raised by the shared bible reader, so it also fails a MEMBER session's read of its own checkout bible; it is never treated as an empty bible.",
+      "status": 400
+    },
+    {
       "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-NO-BASIS",
       "title": "The entry cites zero source files, so the freshness sweep can never stale it -- it is structurally unfalsifiable and is refused. Exempt: user-directive, which is not a claim about code.",
       "status": 422
@@ -169,6 +174,16 @@
     {
       "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-MEMBER-VIEW-READ-ONLY",
       "title": "kb_feedback was called in a MEMBER session. A member's reads come from the in-memory view of its own checkout bible, which is read-only; a downvote would flag an entry the member cannot see in the shared per-repo DB. Nothing is changed.",
+      "status": 500
+    },
+    {
+      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-MEMBER-VIEW-REMOTE",
+      "title": "A remote MEMBER session's checkout bible could not be read from the member host (unreachable member, or the read command failed). The member view never falls back to the per-repo DB, so the call fails loudly.",
+      "status": 500
+    },
+    {
+      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-BIBLE-BASIS-NOT-GIT",
+      "title": "The folder is not inside a git work tree, so file content at HEAD cannot be read and the bible's file hashes cannot be computed. Nothing is written.",
       "status": 500
     }
   ]

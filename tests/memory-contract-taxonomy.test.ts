@@ -14,7 +14,7 @@
 // because vitest.config.ts only discovers tests/**/*.test.ts and
 // packages/*/tests/**/*.test.ts -- the same reason as every other
 // memory-contract test at this path.
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import { describe, it, expect } from 'vitest';
@@ -353,5 +353,51 @@ describe('spec.md error model stays consistent with taxonomy.json', () => {
         expect(headings, `${entry.code} cross-references unknown spec.md section "${ref}"`).toContain(ref);
       }
     }
+  });
+});
+
+// Drift guard: every coded error the kb_* / code_* tool sources can raise must be
+// accounted for in taxonomy.json (a group code, a non-error outcome, or an
+// explicit exclusion). Scans source text for quoted 'E-...' literals, so a new
+// thrown code that is not registered fails here instead of drifting silently.
+describe('kb/code tool sources raise only codes taxonomy.json accounts for', () => {
+  const ROOT = fileURLToPath(new URL('../', import.meta.url));
+
+  function sourceFiles(): string[] {
+    const files: string[] = [];
+    for (const dir of ['src/tools', 'src/services/knowledge']) {
+      for (const name of readdirSync(ROOT + dir)) {
+        const isKbTool = dir === 'src/tools' && /^(kb|code)-.*\.ts$/.test(name);
+        const isKnowledge = dir === 'src/services/knowledge' && name.endsWith('.ts');
+        if (isKbTool || isKnowledge) files.push(dir + '/' + name);
+      }
+    }
+    return files;
+  }
+
+  /** Quoted code-shaped literals: 'E-FOO', "E-FOO", `E-FOO` (a full code, not a prefix). */
+  function quotedCodes(text: string): Set<string> {
+    return new Set([...text.matchAll(/['"`](E-[A-Z0-9]+(?:-[A-Z0-9]+)+)['"`]/g)].map((m) => m[1]));
+  }
+
+  it('scans a non-trivial source set', () => {
+    const files = sourceFiles();
+    expect(files.length).toBeGreaterThan(10);
+    const all = new Set(files.flatMap((f) => [...quotedCodes(readFileSync(ROOT + f, 'utf8'))]));
+    // Known anchors prove the scan actually finds codes.
+    expect(all.has('E-SCOPE-KEY-REMOVED')).toBe(true);
+    expect(all.has('E-BIBLE-MALFORMED')).toBe(true);
+  });
+
+  it('accounts for every quoted E- code with a taxonomy.json disposition', () => {
+    const unaccounted: string[] = [];
+    for (const file of sourceFiles()) {
+      for (const code of quotedCodes(readFileSync(ROOT + file, 'utf8'))) {
+        if (!codeNames.has(code) && !nonErrorNames.has(code) && !excludedNames.has(code)) {
+          unaccounted.push(`${code} (${file})`);
+        }
+      }
+    }
+    expect(unaccounted, `codes missing from taxonomy.json: add each to a group (with $anchor) or to excluded_from_closed_set`).toEqual([]);
   });
 });

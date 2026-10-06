@@ -528,6 +528,14 @@ exported). For direct `callTool` users: `kb_list` accepts `confidence` as a
 list or as one tier string, and `kb_context` defaults to
 `["CONFIRMED","INFERRED"]`.
 
+Bible-related refusals are part of the closed error vocabulary in
+`memory-contract/v1/taxonomy.json`: `E-BIBLE-MALFORMED` (a bible file that is
+not valid JSON or not a bible shape; raised by `kb_import` and by a member
+session's `kb_query` / `kb_session_prime` / `kb_stats`), `E-MEMBER-VIEW-REMOTE`
+(a remote member's checkout bible is unreachable; the same three read tools)
+and `E-BIBLE-BASIS-NOT-GIT` (`kb_export` / `kb_bible_commit` in a folder that is
+not a git work tree).
+
 #### `kbExport(options?: KbExportOptions)`
 
 Calls `kb_export` -- exports the calling session's CONFIRMED KB entries to the

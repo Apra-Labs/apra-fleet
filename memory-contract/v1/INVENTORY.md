@@ -408,6 +408,9 @@ throw sites are not part of the `kb_*` grep set above.
 | `E-BIBLE-NOT-FOUND` | `src/tools/kb-import.ts:143` | the resolved bible file does not exist |
 | `E-BIBLE-NOT-JSON` | `src/tools/kb-import.ts:150` | the bible file is not valid JSON |
 | `E-BIBLE-WRONG-SHAPE` | `src/tools/kb-import.ts:168` | the bible parses but is neither an entry array nor the v2/v3 envelope |
+| `E-BIBLE-MALFORMED` | `KbBibleError`, `src/services/knowledge/bible-import.ts` (also the member bible view, `src/services/knowledge/member-bible-view.ts`) | a bible file exists but is not valid JSON or not a bible shape; never treated as an empty bible |
+| `E-MEMBER-VIEW-REMOTE` | `remoteFail`, `src/services/knowledge/member-bible-view.ts` | a remote member's checkout bible could not be read from its host; never falls back to the per-repo DB |
+| `E-BIBLE-BASIS-NOT-GIT` | `KbHeadHashError`, `src/services/knowledge/file-hash.ts` | the folder is not inside a git work tree, so file content at HEAD cannot be read; writes nothing |
 
 Reconciliation: the 28 `throw new` hits map onto the 19 pre-existing names plus
 the 2 newly-added names above (`E-PROMOTE-REASON-REQUIRED`,
