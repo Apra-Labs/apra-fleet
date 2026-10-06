@@ -185,3 +185,81 @@ describe('apra-fleet-aolt.1: startup bd probe on win32 runs the recorded node pl
         assert.deepEqual(bdCall.options, { shell: true, timeout: TOOLCHAIN_PROBE_TIMEOUT_MS });
     });
 });
+
+// ---------------------------------------------------------------------------
+// apra-fleet-aolt.2: real-process case, Windows only. A stub npm-shaped
+// bd.cmd plus its wrapped bd.js script in a temp dir with no node beside
+// it, and PATH stripped of every directory holding node.exe. bd must still
+// run, because the supervisor now runs `<recorded node> <bd.js>` itself and
+// never asks the shim (or cmd.exe) to find node. Spawns real children, so
+// this file is registered in test/helpers/serial-process-suites.mjs.
+// ---------------------------------------------------------------------------
+
+const WIN32_ONLY_SKIP = process.platform === 'win32'
+    ? false
+    : 'Windows-only: needs a real cmd.exe/bd.cmd shim and Windows PATH semantics; the injected-platform cases above cover the logic on this host';
+
+const STUB_BD_VERSION = '9.8.7';
+
+/** Writes npm's Windows shim shape for bd plus the bd.js it wraps. Returns the shim path. */
+function writeStubBdShim(dir) {
+    const scriptDir = path.join(dir, 'node_modules', '@beads', 'bd', 'bin');
+    fs.mkdirSync(scriptDir, { recursive: true });
+    // Valid as both CommonJS and ESM, so module-type detection cannot matter.
+    fs.writeFileSync(
+        path.join(scriptDir, 'bd.js'),
+        `process.stdout.write(process.argv.includes('--version') ? 'bd version ${STUB_BD_VERSION}\\n' : 'bd-stub-ok ' + process.argv.slice(2).join(' ') + '\\n');\n`,
+    );
+    const shimPath = path.join(dir, 'bd.cmd');
+    fs.writeFileSync(
+        shimPath,
+        '@ECHO off\r\n'
+        + 'SETLOCAL\r\n'
+        + 'SET dp0=%~dp0\r\n'
+        + 'IF EXIST "%dp0%\\node.exe" (\r\n'
+        + '  SET "_prog=%dp0%\\node.exe"\r\n'
+        + ') ELSE (\r\n'
+        + '  SET "_prog=node"\r\n'
+        + '  SET PATHEXT=%PATHEXT:;.JS;=;%\r\n'
+        + ')\r\n'
+        + 'endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  "%dp0%\\node_modules\\@beads\\bd\\bin\\bd.js" %*\r\n',
+    );
+    return shimPath;
+}
+
+/** The current PATH with every directory that holds a node.exe removed. */
+function pathWithoutNode() {
+    const raw = process.env.Path ?? process.env.PATH ?? '';
+    return raw.split(path.delimiter).filter((d) => d && !fs.existsSync(path.join(d, 'node.exe'))).join(path.delimiter);
+}
+
+describe('apra-fleet-aolt.2: real bd.cmd shim on Windows with node absent from PATH', () => {
+    test('execBdAsync runs the stub bd through the recorded node', { skip: WIN32_ONLY_SKIP }, async () => {
+        const dir = await mkTmp('aolt-real-bd-');
+        const shimPath = writeStubBdShim(dir);
+        configureBdInvocation({ bdPath: shimPath, nodePath: process.execPath });
+        const env = { ...process.env };
+        delete env.PATH;
+        env.Path = pathWithoutNode();
+        const { stdout } = await execBdAsync(['list', '--json'], { env, encoding: 'utf-8' });
+        assert.equal(stdout.trim(), 'bd-stub-ok list --json');
+    });
+
+    test('the startup probe reports the stub bd ok through the recorded node', { skip: WIN32_ONLY_SKIP }, async () => {
+        const dir = await mkTmp('aolt-real-probe-');
+        const shimPath = writeStubBdShim(dir);
+        const filePath = supervisorConfigPath({ dataDir: dir });
+        await writeSupervisorToolchain({ nodePath: process.execPath, bdPath: shimPath }, { filePath });
+        // process.env is case-insensitive on Windows, so PATH reaches Path too.
+        const original = process.env.PATH;
+        process.env.PATH = pathWithoutNode();
+        let result;
+        try {
+            result = await validateRecordedToolchain({ filePath });
+        } finally {
+            process.env.PATH = original;
+        }
+        assert.equal(result.bdOk, true, `bd must probe ok with node off PATH: ${result.problems.join(' ')}`);
+        assert.equal(result.bdVersion, STUB_BD_VERSION);
+    });
+});

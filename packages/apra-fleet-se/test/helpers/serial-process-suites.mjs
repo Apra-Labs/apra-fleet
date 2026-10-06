@@ -82,4 +82,10 @@ export const SERIAL_PROCESS_TEST_FILES = [
     // whether a separate bug currently keeps it from doing real work.
     'phase0-seams-facade.test.mjs',
     'vcs-auth-extraction-facade.test.mjs',
+
+    // Windows-only real-process cases: a stub bd.cmd shim run through the
+    // real execBdAsync()/startup toolchain probe, i.e. real node children
+    // launched via a resolved node path rather than a literal
+    // process.execPath call (skipped off Windows).
+    'aolt-win32-recorded-node-bd.test.mjs',
 ];
