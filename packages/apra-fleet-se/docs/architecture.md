@@ -1290,6 +1290,25 @@ sets no cookie and answers 401. This closes the earlier gap where any loopback
 caller could harvest the token from `GET /`'s Set-Cookie. `bin/serve.mjs`
 logs the token FILE and port to build the link from, never the token.
 
+**The per-sprint viewer is guarded too, with the bearer only.** The spawner
+hands the child the service token through the `FLEET_SE_SERVICE_TOKEN`
+environment variable. When it is set, the per-sprint viewer
+(`viewer/index.mjs`) requires `Authorization: Bearer <token>` on its control
+POSTs (`/stop`, `/pause`, `/resume`, `/save_logs`); without a token the viewer
+stays open, as before. The route match is exact, identical to the dispatch
+match, so a query-string variant cannot dodge the check. The viewer ignores
+cookies entirely: it never sees the derived dashboard cookie. The supervisor's
+live proxy strips any browser credentials from the forwarded request and
+injects the supervisor's own bearer, so a signed-in browser reaches the child's
+controls only through the supervisor's `POST /sprints/:id/live/*` guard, never
+by presenting a credential the child would honor. All proxied GET routes remain
+open on the child, as they are read-only.
+
+**Deploy health probes must treat non-2xx as a finding.** `sandbox-deploy`'s
+check of the production supervisor throws or reports a problem on any non-2xx
+answer (401, no listener) instead of silently skipping, because a skipped check
+reads as a pass.
+
 **Tooling callers must be updated in lockstep with the guard, or they will
 falsely read a healthy supervisor as down.** Any script that polls
 `/api/health` or another `/api/` route to decide whether the supervisor is up
