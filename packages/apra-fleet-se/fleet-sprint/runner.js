@@ -156,7 +156,7 @@ import { runDevelopPhase } from './phases/develop.mjs';
 // around Deploy, and the dashboard/still-open loop control after Review,
 // stayed here.
 import { runReviewPhase } from './phases/review.mjs';
-import { runDeployPhase } from './phases/deploy.mjs';
+import { runDeployPhase, latestDeployFailure, formatDeployFailureReason, DEPLOY_RETRY_CYCLE_LIMIT } from './phases/deploy.mjs';
 // apra-fleet-3swo.6.8: the next two phase() boundaries -- the per-cycle Integ
 // Test and the Re-Review that Cycle Evaluation dispatches when the goal-
 // priority count already reads 0 but no review ran this cycle. Integ Test is
@@ -2404,6 +2404,14 @@ async function runSprintCycle(context) {
     // evidence-based prompt below -- never silently swallowed.
     const deployFailures = [];
     const integFailures = [];
+    // apra-fleet-b4g.102.1: the LATEST cycle's deploy outcome ({cycle, notes}
+    // when deploy.md exists and that cycle's deploy failed, else null), and
+    // how many consecutive cycles ended otherwise-satisfied but deploy-blocked.
+    // Cycle Evaluation never exits as satisfied while lastDeployFailure is
+    // set, and Final Review forces FAIL if it is still set when the loop ends
+    // (see the deploy-failure verdict gate in ./phases/deploy.mjs).
+    let lastDeployFailure = null;
+    let deployBlockedCycles = 0;
 
     // apra-fleet-nwh.1: integ-test-runner's own tracked spend, broken out of
     // the harvester's cost block so it is never silently folded into
@@ -2820,6 +2828,8 @@ async function runSprintCycle(context) {
         } else {
             log('Skipping Deploy Phase (no deploy.md found, or the probe itself failed -- see prior log line)');
         }
+        lastDeployFailure = latestDeployFailure({ hasDeploy, deployedThisCycle, cycle, deployFailures });
+        if (!lastDeployFailure) deployBlockedCycles = 0;
 
         // apra-fleet-66u.2: declared here, OUTSIDE the `if (hasPlaybook &&
         // deployedThisCycle)` block below, so Cycle Evaluation's
@@ -2968,7 +2978,13 @@ async function runSprintCycle(context) {
             staleCycles++;
         }
 
-        if (staleCycles >= STALL_CYCLE_LIMIT) {
+        // apra-fleet-b4g.102.1: a cycle spent re-attempting a failed deploy
+        // after the work itself was already satisfied is not a stall -- it is
+        // bounded separately (DEPLOY_RETRY_CYCLE_LIMIT and maxCycles) by the
+        // deploy-blocked exit below, which ends the sprint with a FAIL naming
+        // the deploy failure instead of a SPRINT_STALLED abort that would not.
+        const waitingOnDeployRetry = deployBlockedCycles > 0 && lastDeployFailure !== null && openAtGoal.length === 0;
+        if (staleCycles >= STALL_CYCLE_LIMIT && !waitingOnDeployRetry) {
             const thrashIds = thrashingBeadIds();
             // apra-fleet-mjo: counts alone ("history: [9, 14, 14, 14]") do not
             // tell an operator WHAT is holding the sprint open, which is
@@ -3113,13 +3129,35 @@ async function runSprintCycle(context) {
         // open/in_progress/blocked can never satisfy `.every()` here, so this
         // never fires for that case and every gate above/below runs exactly
         // as before.
-        if (targetIssues.length > 0 && targetIssues.every((id) => closedIdsNow.has(id))) {
+        // apra-fleet-b4g.102.1: neither "satisfied" exit below may fire while
+        // the LATEST cycle's deploy failed (Integration Test was skipped, so
+        // nothing verified the deployed build). Re-attempt the deploy in
+        // another cycle while the budget allows; otherwise exit to the finish
+        // phases, where Final Review forces a FAIL that names the failure. A
+        // sprint with no deploy.md never sets lastDeployFailure.
+        const rootsAllClosed = targetIssues.length > 0 && targetIssues.every((id) => closedIdsNow.has(id));
+        const goalSatisfied = openAtGoal.length === 0 && lastReviewVerdict === 'APPROVED' && stillOpenVerifyIds.length === 0;
+        if ((rootsAllClosed || goalSatisfied) && lastDeployFailure) {
+            deployBlockedCycles++;
+            const which = rootsAllClosed ? 'every configured sprint root/target bead is closed' : `goal priority ${validated.goal} (<=${goalMax}) is otherwise satisfied`;
+            if (cycle < MAX_CYCLES && deployBlockedCycles < DEPLOY_RETRY_CYCLE_LIMIT) {
+                log(`Cycle ${cycle}: ${which}, but NOT exiting as satisfied -- ${formatDeployFailureReason(lastDeployFailure)}. Re-attempting deploy next cycle (deploy-blocked cycle ${deployBlockedCycles} of at most ${DEPLOY_RETRY_CYCLE_LIMIT}).`);
+                cycle++;
+                endGroup();
+                continue;
+            }
+            log(`Cycle ${cycle}: ${which}, but the deploy re-attempt budget is exhausted (${deployBlockedCycles} consecutive deploy-blocked cycle(s), maxCycles ${MAX_CYCLES}) -- ${formatDeployFailureReason(lastDeployFailure)}. Exiting cycle loop; the sprint verdict will be FAIL.`);
+            endGroup();
+            break;
+        }
+
+        if (rootsAllClosed) {
             log(`Cycle ${cycle}: every configured sprint root/target bead is already closed (${targetIssues.join(', ')}) -- no further cycle can make progress. Exiting cycle loop straight into the finish phases.`);
             endGroup();
             break;
         }
 
-        if (openAtGoal.length === 0 && lastReviewVerdict === 'APPROVED' && stillOpenVerifyIds.length === 0) {
+        if (goalSatisfied) {
             // apra-fleet-rp7a.1: the deferred enumeration rides on the EXIT
             // line specifically, because this is the line that says the sprint
             // is finished -- a scope whose only remaining not-done beads were
@@ -3184,6 +3222,7 @@ async function runSprintCycle(context) {
         args, validated, targetIssues, backlogMember, finalCycleLabel, sprintState,
         gitSync,
         deployFailures, integFailures, rejectedNewTasks, verifyEverIds,
+        lastDeployFailure,
         bdListScoped, decomposedParentIds, goalMax, NOT_DONE_STATUSES,
         workedOnIds: workedOnBeadIds,
         kbPriming, kbWork, getMemberForRole,
