@@ -1829,6 +1829,23 @@ describe('max_turns classification (apra-fleet-p4f.2)', () => {
     expect(resultText(result)).toContain('/login');
   });
 
+  it('maps an expired-OAuth api_error result to structured reason "auth"', async () => {
+    const member = makeTestAgent({ friendlyName: 'oauth-expired' });
+    addAgent(member);
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockResolvedValueOnce({
+        stdout: '{"type":"result","is_error":true,"terminal_reason":"api_error","result":"Failed to authenticate: OAuth session expired and could not be refreshed"}\n',
+        stderr: '',
+        code: 1,
+      })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+
+    expect(result.structuredContent).toMatchObject({ isError: true, reason: 'auth' });
+  });
+
   // GitHub #585: a non-zero exit logs a capped, redacted stderr tail plus the
   // last result/error event; a success logs nothing extra.
   it('logs a capped, redacted prompt_failure_output on a non-zero exit, and nothing on success', async () => {
