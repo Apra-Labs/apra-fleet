@@ -2,19 +2,28 @@
 // The CLI documents (2.1.291, result field docs) that "a resumed or forked
 // session continues from the total its transcript saved ... (so the first
 // result already carries the earlier turns)", and that a /clear resets it.
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
-import { FLEET_DIR } from '../src/paths.js';
 import {
-  dispatchCostFromCumulative, lastSessionCost, recordSessionCost, _resetSessionCostCache,
+  dispatchCostFromCumulative, lastSessionCost, recordSessionCost, _resetSessionCostCache, _setSessionCostFileForTest,
 } from '../src/services/session-cost.js';
 
-const FILE = path.join(FLEET_DIR, 'session-costs.json');
+// A private file per test: the run's data dir is shared by every vitest
+// worker, and other workers' Claude dispatches write session-costs.json there.
+let dir: string;
+let FILE: string;
 
 beforeEach(() => {
-  try { fs.rmSync(FILE); } catch { /* absent */ }
-  _resetSessionCostCache();
+  dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-session-cost-'));
+  FILE = path.join(dir, 'nested', 'session-costs.json');
+  _setSessionCostFileForTest(FILE);
+});
+
+afterEach(() => {
+  _setSessionCostFileForTest(null);
+  fs.rmSync(dir, { recursive: true, force: true });
 });
 
 describe('dispatchCostFromCumulative', () => {

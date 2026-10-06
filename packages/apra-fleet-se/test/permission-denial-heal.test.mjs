@@ -266,6 +266,16 @@ test('no progress: the same call refused again after its grant landed stops inst
     assert.equal(fleet.writes().filter((c) => c.args.grant).length, 1);
 });
 
+test('no progress for agy too: its command/unsandboxed refusals match the Bash grant that landed', async () => {
+    const fleet = fakeFleet();
+    const heal = createPermissionDenialHeal({ callTool: fleet.callTool, memberRoles: () => ['doer'] });
+    const agyDenial = { actions: ['unsandboxed'], denials: [{ action: 'unsandboxed', target: 'npm test', suggestedGrants: ['Bash(npm:*)', 'Bash(npm test)'] }], suggestedGrants: ['Bash(npm:*)', 'Bash(npm test)'], hint: 'agy', signals: ['stderr'] };
+    assert.equal((await heal({ member: 'agy1', role: 'doer', denial: agyDenial })).healed, true);
+    const again = await heal({ member: 'agy1', role: 'doer', denial: agyDenial });
+    assert.equal(again.step, 'no_progress');
+    assert.match(again.reason, /refused again after Bash\(npm:\*\) was granted/);
+});
+
 test('no progress: a grant outside the composed policy is never sent, and is named for the operator', async () => {
     const fleet = fakeFleet();
     const heal = createPermissionDenialHeal({ callTool: fleet.callTool, memberRoles: () => ['doer'] });

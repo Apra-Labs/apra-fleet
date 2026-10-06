@@ -480,7 +480,10 @@ export function grantWithinPolicy(grant, policy) {
 /** True when an already-landed grant should have allowed this refused call. */
 function grantAllowsCall(grant, item) {
     const g = splitRule(grant);
-    if (g.tool !== item.action) return false;
+    // agy names a refused shell command 'command' or 'unsandboxed'; its
+    // grant is a Bash rule like Claude's.
+    const action = item.action === 'command' || item.action === 'unsandboxed' ? 'Bash' : item.action;
+    if (g.tool !== action) return false;
     if (g.payload === null) return true;
     if (typeof item.target !== 'string') return false;
     const call = item.target.trim().replace(/\s+/g, ' ');

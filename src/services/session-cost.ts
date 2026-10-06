@@ -24,9 +24,10 @@ const MAX_ENTRIES = 500;
 const fileName = 'session-costs.json';
 
 let cache: Map<string, number> | null = null;
+let fileOverride: string | null = null;
 
 function filePath(): string {
-  return path.join(FLEET_DIR, fileName);
+  return fileOverride ?? path.join(FLEET_DIR, fileName);
 }
 
 function load(): Map<string, number> {
@@ -45,7 +46,7 @@ function load(): Map<string, number> {
 
 function save(map: Map<string, number>): void {
   try {
-    fs.mkdirSync(FLEET_DIR, { recursive: true });
+    fs.mkdirSync(path.dirname(filePath()), { recursive: true });
     fs.writeFileSync(filePath(), JSON.stringify(Object.fromEntries(map)) + '\n');
   } catch { /* best effort: an unwritable data dir only loses the baseline */ }
 }
@@ -99,5 +100,12 @@ export function dispatchCostFromCumulative(
 
 /** Test-only: drop the in-memory cache (the file is re-read on next use). */
 export function _resetSessionCostCache(): void {
+  cache = null;
+}
+
+/** Test-only: keep the baselines in `p` instead of the shared data dir
+ *  (null restores the default); also drops the in-memory cache. */
+export function _setSessionCostFileForTest(p: string | null): void {
+  fileOverride = p;
   cache = null;
 }
