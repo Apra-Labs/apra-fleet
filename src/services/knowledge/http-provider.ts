@@ -284,6 +284,24 @@ export class HttpKbProvider implements MemoryProvider {
     return this.fallback.promote(id, reason);
   }
 
+  /**
+   * kb_demote is NOT delegated to the local fallback the way promote() is, and
+   * that asymmetry is deliberate. A demotion's whole value is its
+   * demoted_basis_hashes snapshot of the cited files as they are on disk at
+   * demote time; the fallback store is this host's local cache, not the remote
+   * KB that owns the entry, so a "successful" demote here would stamp a basis
+   * taken from the wrong tree onto a row nobody else ever sees. Refuse loudly
+   * and write NOTHING, as discard() does for the same class of operation.
+   */
+  async demote(
+    _id: string,
+    _reason: string,
+    _evidenceFiles?: string[],
+    _opts?: { ownerTag?: string },
+  ): Promise<{ id: string; confidence_before: Confidence; confidence_after: Confidence }> {
+    throw new Error('kb_demote is not supported for an HTTP KB: the remote provider has no demote route, and demoting against the local fallback store would snapshot the wrong tree. Nothing was changed.');
+  }
+
   async sync(_opts?: SyncOptions): Promise<SyncResult> {
     return { synced: false, reason: 'local-only provider' };
   }
