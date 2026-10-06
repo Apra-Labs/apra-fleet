@@ -196,11 +196,12 @@ const KB_RESPONSE_BODIES = {
     pairs: z.number(),
     resolved: z.array(z.unknown()),
     left_for_agent: z.array(z.unknown()),
-    // F-11 (my-beads-db-27m.9, caught by the live round-trip harness): a COUNT
-    // of directive pairs skipped, not a flag -- src/services/knowledge/
-    // sqlite-provider.ts:1635 declares `skipped_directive: number` and :1650
-    // increments it. kb_reconcile_prefilter/happy.json records 0, so the
-    // previous z.boolean() contradicted the implementation and the corpus.
+    // F-11 (caught by the live round-trip harness): a COUNT of directive
+    // pairs skipped, not a flag -- SqliteProvider.reconcilePrefilter declares
+    // `skipped_directive: number` in its return type and increments it in
+    // the directive-pair branch. kb_reconcile_prefilter/happy.json records
+    // 0, so the previous z.boolean() contradicted the implementation and the
+    // corpus.
     skipped_directive: z.number(),
   }),
   kb_setup: z.object({

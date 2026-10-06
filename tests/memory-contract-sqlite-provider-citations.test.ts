@@ -35,6 +35,7 @@ const DOCS = [
   { name: 'taxonomy.json', path: V1_DIR + 'taxonomy.json' },
   { name: 'spec.md', path: V1_DIR + 'spec.md' },
   { name: 'INVENTORY.md', path: V1_DIR + 'INVENTORY.md' },
+  { name: 'response-schemas.mjs', path: V1_DIR + 'response-schemas.mjs' },
 ];
 
 const SQLITE_PROVIDER_SRC = readFileSync(SRC_DIR + 'services/knowledge/sqlite-provider.ts', 'utf8');
