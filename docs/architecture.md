@@ -554,3 +554,21 @@ still be caught by the same bound that kills a genuinely hung process tree;
 splitting the budget in two would let a slow-but-alive serial lane silently
 eat into time the concurrent lane needed, or vice versa, without either
 phase ever individually appearing to exceed anything.
+
+## Fleet-owned paths resolve through one shared resolver
+
+Every fleet-owned path (the data dir, `fleet.key`, config, code-intelligence
+state, id allocator state, service logs) is derived by the resolver in
+`packages/apra-fleet-client/src/fleet-paths.mjs`, which honours
+`APRA_FLEET_DATA_DIR`. Callers must not recompute `~/.apra-fleet` themselves:
+a non-default instance (`apra-fleet install --data-dir <path>`) is only
+self-contained if nothing bypasses the resolver. The service definitions
+(systemd, launchd, Windows `.bat`) record the instance env so the service sees
+the same data dir; the Windows writer refuses quotes and newlines in values.
+Upgrade note: an existing `APRA_FLEET_DATA_DIR` install that previously used a
+different key location will mint a new `<dataDir>/fleet.key`; tokens derived
+from the old key stop matching.
+
+`register_member` refuses a work folder that git rejects for dubious ownership,
+and `member_detail` surfaces a `gitWarning` for such folders; pre-clone folders
+are still accepted.
