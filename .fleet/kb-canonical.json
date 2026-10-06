@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "12fbcf6bd3a5540e5e979715151986fa15c1291e",
     "branch": "main",
-    "entry_count": 272
+    "entry_count": 274
   },
   "entries": [
     {
@@ -301,6 +301,23 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:26.415Z"
+    },
+    {
+      "id": "0c3d4e98-0da6-4fbf-a7d8-0cd8491d2d09",
+      "type": "learning",
+      "title": "Shell-command guard flags braced vars on continuation lines of multi-line template literals",
+      "summary": "findShellCommandViolations segments per line, so a ${x} on the second line of a multi-line template literal reads as a quoted string and is flagged; single-line templates are not flagged.",
+      "symbols": [
+        "findShellCommandViolations",
+        "findLineViolations"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/shell-command-guard.mjs",
+        "packages/apra-fleet-se/fleet-sprint/guarded-modules.mjs",
+        "packages/apra-fleet-se/fleet-sprint/member-provisioning.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T06:25:51.585Z"
     },
     {
       "id": "0c864109-fb10-49de-8ecb-867a2c1b0c04",
@@ -1149,6 +1166,23 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:28.985Z"
+    },
+    {
+      "id": "3377795a-7d1a-4f6f-98b6-fd721581db37",
+      "type": "knowledge",
+      "title": "ssh2 1.17 sftp() leaves the session channel open when the sftp subsystem request is refused",
+      "summary": "Client.sftp() opens a session channel, and on a refused subsystem request calls back with only an error, without closing the channel or exposing it. Each failed attempt holds one sshd MaxSessions slot. exec() closes its channel on the equivalent failure.",
+      "symbols": [
+        "openSftp",
+        "closeRefusedSftpChannels",
+        "withSftpSession"
+      ],
+      "source_files": [
+        "src/services/sftp.ts",
+        "tests/sftp-subsystem-refusal.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T06:25:49.718Z"
     },
     {
       "id": "33c1189c-bf95-4cf3-b875-4b93620bea0f",
