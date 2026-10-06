@@ -353,7 +353,7 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
   }
 
   // -- Regular (synchronous) command path --
-  const authPrefix = buildAuthEnvPrefix(agent, getAgentOS(agent));
+  const authPrefix = buildAuthEnvPrefix(agent, getAgentOS(agent), getAgentShell(agent));
   // wrapPidCapture lets a timed-out ssh.ts/strategy.ts execCommand recover a
   // PID to tree-kill (apra-fleet-kwx precedent) -- without it, a command with
   // no PID protocol of its own (unlike a provider launch) leaves the remote

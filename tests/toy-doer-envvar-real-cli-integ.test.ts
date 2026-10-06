@@ -6,7 +6,7 @@ import { execFileSync } from 'node:child_process';
 import { runAuth } from '../src/cli/auth.js';
 import { addAgent, getAllAgents } from '../src/services/registry.js';
 import { buildAuthEnvPrefix } from '../src/utils/auth-env.js';
-import { getAgentOS } from '../src/utils/agent-helpers.js';
+import { getAgentOS, getAgentShell } from '../src/utils/agent-helpers.js';
 import {
   checkCleanEnvRealClaudeAuthViaEnvVar,
   defaultCredentialsPath,
@@ -162,7 +162,7 @@ describe.skipIf(!REAL_CLI_PROBE_OPTED_IN || !CLAUDE_CLI_AVAILABLE || !REAL_TOKEN
       addAgent(member);
       const stored = getAllAgents().find(a => a.friendlyName === member.friendlyName)!;
 
-      const prefix = buildAuthEnvPrefix(stored, getAgentOS(stored));
+      const prefix = buildAuthEnvPrefix(stored, getAgentOS(stored), getAgentShell(stored));
       expect(prefix).toBe('');
       expect(fs.existsSync(credPath())).toBe(false);
 
@@ -195,7 +195,7 @@ describe.skipIf(!REAL_CLI_PROBE_OPTED_IN || !CLAUDE_CLI_AVAILABLE || !REAL_TOKEN
       // buildAuthEnvPrefix() is what LocalStrategy's dispatch actually
       // prepends to every command for this member -- proves the real
       // wiring, not just the probe's own escaping.
-      const prefix = buildAuthEnvPrefix(updated, getAgentOS(updated));
+      const prefix = buildAuthEnvPrefix(updated, getAgentOS(updated), getAgentShell(updated));
       expect(prefix).toContain('export CLAUDE_CODE_OAUTH_TOKEN="');
       expect(prefix).toContain(REAL_TOKEN as string);
 
