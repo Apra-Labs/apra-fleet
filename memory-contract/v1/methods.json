@@ -155,6 +155,22 @@
       "see_also": ["Directive quarantine"]
     },
     {
+      "id": "P-13",
+      "member": "demote",
+      "kind": "interface-method",
+      "interface": "MemoryProvider",
+      "signature": "demote(id: string, reason: string, evidenceFiles?: string[], opts?: {ownerTag?: string}): Promise<{id, confidence_before, confidence_after}>",
+      "purpose": "Withdraw trust from a CONFIRMED entry, lowering it to INFERRED, appending the reason (and any evidence files) as an audit note and snapshotting the sha256 of each cited source file as it is on disk at demote time.",
+      "tools": [
+        { "name": "kb_demote", "request_schema_ref": "schemas/kb_demote.request.json", "response_schema_ref": "schemas/kb_demote.response.json", "anchor_validation": "self-validated" }
+      ],
+      "side_effect_class": "trust-mutating",
+      "idempotent": false,
+      "idempotent_note": "Not a ladder and never a no-op: only CONFIRMED is demotable, so a second call on the now-INFERRED entry is REFUSED with E-DEMOTE-NOT-CONFIRMED rather than returning unchanged.",
+      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-ENTRY-NOT-FOUND", "E-DEMOTE-SUPERSEDED", "E-DEMOTE-REFUSED-DIRECTIVE", "E-DEMOTE-NOT-CONFIRMED", "E-DEMOTE-REASON-REQUIRED", "E-DEMOTE-EVIDENCE-UNRESOLVED", "E-PROVIDER-UNINITIALIZED"],
+      "see_also": ["Directive quarantine"]
+    },
+    {
       "id": "P-9",
       "member": "sync",
       "kind": "interface-method",

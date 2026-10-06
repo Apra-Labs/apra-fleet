@@ -452,6 +452,50 @@ if (idFoo) {
   }
 }
 
+// --- kb_demote ------------------------------------------------------------
+// DELIBERATELY SELF-CONTAINED: its own capture plus its own two promotes,
+// rather than reusing idFoo. Every later bible/stats/CONFIRMED-read fixture
+// depends on idFoo still being CONFIRMED, and kb_demote's whole job is to take
+// that away -- demoting idFoo here would silently rewrite those fixtures.
+//
+// The refusal case lives in this block and NOT in the refusal section further
+// down for the same reason the ordering comment at the top of this file gives:
+// E-DEMOTE-NOT-CONFIRMED is only reachable on an entry kb_demote has ALREADY
+// demoted, so the two cases are one dependent sequence, not two independent
+// scenarios.
+{
+  fs.writeFileSync(path.join(repoA, 'src', 'demote-basis.ts'), 'export const demoteBasis = 1;\n');
+  const captureForDemote = await recordHappy('kb_capture', 'setup-for-demote', {
+    type: 'knowledge',
+    title: 'Entry walked up to CONFIRMED so it can be demoted',
+    summary: 'Set up to demonstrate the kb_demote happy path and its E-DEMOTE-NOT-CONFIRMED refusal.',
+    content: 'This entry cites src/demote-basis.ts and is promoted twice so kb_demote has a legal CONFIRMED target.',
+    source_files: ['src/demote-basis.ts'],
+  });
+  const idDemote = parseEnvelopeText(captureForDemote)?.id;
+  if (idDemote) {
+    await recordHappy('kb_promote', 'setup-first-promote-for-demote', {
+      id: idDemote,
+      reason: 'First promotion (UNVERIFIED -> INFERRED) of the entry the kb_demote fixtures act on.',
+    });
+    await recordHappy('kb_promote', 'setup-second-promote-for-demote', {
+      id: idDemote,
+      reason: 'Second promotion (INFERRED -> CONFIRMED) so kb_demote has a CONFIRMED entry to lower.',
+    });
+    await recordHappy('kb_demote', 'happy', {
+      id: idDemote,
+      reason: 'Re-read src/demote-basis.ts and the claim holds in fewer cases than the promotion note asserts.',
+      evidence_files: ['src/demote-basis.ts'],
+    });
+    // Now INFERRED: kb_demote is not a ladder, so this is a REFUSAL rather
+    // than a second step down or an unchanged no-op return.
+    await recordRefusal('kb_demote', 'refusal-not-confirmed', {
+      id: idDemote,
+      reason: 'Attempting to demote the same entry again, after the call above already lowered it to INFERRED.',
+    }, 'E-DEMOTE-NOT-CONFIRMED');
+  }
+}
+
 // --- kb_query trust filters (after kb_promote, so idFoo is CONFIRMED) -------
 // Same query as kb_query/happy, restricted to CONFIRMED and non-disputed
 // entries: the INFERRED context-cache entry that happy.json returns must be

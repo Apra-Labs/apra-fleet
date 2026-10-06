@@ -148,9 +148,9 @@ In a MEMBER session the default reads (`kb_query`, `kb_session_prime`,
 member's own checkout bible (`.fleet/kb-canonical.json`), rebuilt when the file
 changes. An explicit INFERRED/UNVERIFIED read comes from the per-repo DB and
 returns only entries tagged `member:<caller uuid>`. `kb_capture` tags the
-stored entry `member:<caller uuid>`; `kb_promote` and `kb_invalidate` act only
-on entries carrying that tag and report any other id as not found, changing
-nothing. `kb_invalidate` takes exactly one of `files` or `ids`; `ids` discards
+stored entry `member:<caller uuid>`; `kb_promote`, `kb_demote` and
+`kb_invalidate` act only on entries carrying that tag and report any other id
+as not found, changing nothing. `kb_invalidate` takes exactly one of `files` or `ids`; `ids` discards
 the entries (sets `superseded_at`, never deletes) and returns
 `{discarded, not_found, already_discarded}`. `kb_feedback` is refused with
 `E-MEMBER-VIEW-READ-ONLY`. A FULL session reads and writes the per-repo DB
@@ -369,7 +369,17 @@ the bracketed note (the note names kb_promote, which is not its remedy). CONFIRM
 promotion path (`kb_promote`) and MAY additionally survive on a dedicated
 bible-import path, because that path is a separately-trusted, human-reviewed
 channel -- but that exemption MUST be reachable only through an internal,
-non-serializable flag, never a field a caller can set on the request body. A
+non-serializable flag, never a field a caller can set on the request body. The
+inverse move, CONFIRMED -> INFERRED, MUST be available as a first-class
+operation (`kb_demote`) rather than as a re-capture: an entry whose grade
+outran its evidence has to be downgradable without destroying its id, its
+promotion history or its links. `kb_demote` MUST NOT be a ladder -- a target
+that is not CONFIRMED MUST be REFUSED (`E-DEMOTE-NOT-CONFIRMED`), never
+returned as an unchanged no-op -- MUST leave `promoted_at` and `source`
+untouched, and MUST record the basis it withdrew trust against by hashing the
+cited source files AS THEY ARE ON DISK AT DEMOTE TIME, never by copying the
+capture-time hash column (a capture-time copy cannot answer whether the tree
+has moved on since the demotion, which is the question the record exists for). A
 closed Author enum MUST gate `role` server-side even though the request
 schema leaves it open; any value outside it, including an absent hint, MUST
 be stamped as the literal `unknown`. `source` derivation is a handler-level

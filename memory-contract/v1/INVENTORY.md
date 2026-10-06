@@ -11,9 +11,13 @@ after merging main at `97877f5e` (kb_*/code_* surface unchanged; server total
 
 ## 1. Verified tool count
 
-**26 tools: 17 `kb_*` + 9 `code_*`.**
+**27 tools: 18 `kb_*` + 9 `code_*`.**
 
-Update: `code_reindex` and `code_status` (rebuild / report the calling
+Update: `kb_demote` (lower a CONFIRMED entry back to INFERRED, the inverse of
+`kb_promote`) was added as the 18th `kb_*` tool, taking the surface from 26 to
+27.
+
+Earlier update: `code_reindex` and `code_status` (rebuild / report the calling
 session's own code index) were added as the 8th and 9th `code_*` tools, taking
 the surface from 24 to 26.
 
@@ -54,7 +58,7 @@ Response column notation:
 
 No tool in this surface declares a response zod schema; see section 3.
 
-### 2.1 kb_* tools (17)
+### 2.1 kb_* tools (18)
 
 | # | Tool | Request schema | Request fields | Response (observed) | Description (summarized) |
 |---|------|----------------|----------------|---------------------|---------------------------|
@@ -66,15 +70,16 @@ No tool in this surface declares a response zod schema; see section 3.
 | 6 | `kb_list` | `kbListSchema` (`src/tools/kb-list.ts`) | confidence, type, module, symbol, tag, limit | `text(JSON): {results, total}` | List KB entries by confidence/type/module/symbol/tag, excluding superseded/stale, without touching FTS ranking or use_count telemetry. |
 | 7 | `kb_harvest` | `kbHarvestSchema` (`src/tools/kb-harvest.ts`) | session_transcript, session_id | `text(JSON): {entries_captured, entries_updated, entries_skipped, entries_rejected}` | Scan a session transcript for learnings and capture them into the KB. Extracted entries are UNVERIFIED with author/source=harvest. |
 | 8 | `kb_promote` | `kbPromoteSchema` (`src/tools/kb-promote.ts`) | id, reason | `text(JSON): {id, previous_confidence, new_confidence}` | Upgrade KB entry confidence UNVERIFIED -> INFERRED -> CONFIRMED, appending a promotion note as evidence trail. No-op on an already-CONFIRMED entry. |
-| 9 | `kb_freshness_sweep` | `kbFreshnessSweepSchema` (`src/tools/kb-freshness-sweep.ts`) | (none) | `text(JSON): {checked, staled, unstaled}` | Bounded full-KB bidirectional freshness sweep: re-hash every entry's stored basis against the current worktree, stale mismatches, revive stale entries whose basis matches again (superseded/downvoted/invalidated stay retired). |
-| 10 | `kb_import` | `kbImportSchema` (`src/tools/kb-import.ts`) | path, scope, skip_sweep | `text(JSON): KbImportReport {imported, skipped, linked, flagged, rejected, sweep:{checked, staled, unstaled}}` | Import a merged bible (`.fleet/kb-canonical.json`) into the warm local KB via the AUDN choke point (dup/refine/contradiction routing); directive entries are forced to pending proposals. Runs a freshness sweep after import unless `skip_sweep`. |
-| 11 | `kb_resolve_contradiction` | `kbResolveContradictionSchema` (`src/tools/kb-resolve-contradiction.ts`) | winnerId, loserId, evidence | `text(JSON): {winnerId, loserId}` | Resolve a KB contradiction pair: winner goes to CONFIRMED with evidence appended, loser is superseded+stale. Refuses (writes nothing) if either id is missing, already superseded, not a genuine pair, or involves an ACTIVE directive. |
-| 12 | `kb_reconcile_prefilter` | `kbReconcilePrefilterSchema` (`src/tools/kb-reconcile-prefilter.ts`) | (none) | `text(JSON): {pairs, resolved[], left_for_agent[], skipped_directive}` | Mechanical hash-basis prefilter over flagged contradiction pairs: a pair with exactly one side hash-matching the current worktree is auto-resolved via `kb_resolve_contradiction`; the rest are left for the reconciler agent. |
-| 13 | `kb_setup` | `kbSetupSchema` (`src/tools/kb-setup.ts`) | provider, remote, token | `text(JSON): {success, steps}` | Set up the KB: install the git post-commit hook, write provider config, store remote credentials encrypted. Run once per repo. |
-| 14 | `kb_export` | `kbExportSchema` (`src/tools/kb-export.ts`) | scope, baseBranch, baseCommit | `text(JSON): {exported, path, scope, committed}` | Export CONFIRMED/non-superseded/non-stale entries to a canonical bible file. Project scope: only entries whose cited files match their recorded hash basis, merged additively (existing entries never removed; nothing new -> no rewrite, no commit). Global scope: unchanged. Auto-commits the bible file by default when content changed. provenance.branch is the target base branch (baseBranch, else the export folder HEAD branch); provenance.commit is the base commit (baseCommit, else HEAD). |
-| 15 | `kb_stats` | `kbStatsSchema` (`src/tools/kb-stats.ts`) | symbols | `text(JSON): ProviderStats spread plus bible` -- `{supported?, reason?, totals, stale, flagged, superseded, retrieval, promote_ratio, coverage?, bible}` | Read-only KB health aggregation: totals by confidence/type, stale/flagged/superseded counts, retrieval hit_rate, promote_ratio, and canonical-bible presence/drift. Never bumps use_count/last_accessed. |
-| 16 | `kb_feedback` | `kbFeedbackSchema` (`src/tools/kb-feedback.ts`) | id, reason, role | `text(JSON): {id, stale, flagged_for_review, confidence}` | Downvote a KB entry that proved wrong in practice: marks stale+flagged_for_review and appends a feedback note. Never deletes or touches confidence, except an ACTIVE directive is flagged but not staled. |
-| 17 | `kb_bible_commit` | `kbBibleCommitSchema` (`src/tools/kb-bible-commit.ts`) | ids, baseBranch, baseCommit | `text(JSON): {path, merged, skipped, entry_count, committed}` | Merge exactly the given live CONFIRMED ids into the bible at ENTRY level (existing entries kept, never dropped), write provenance from baseBranch (the target base branch) and baseCommit, and make a local pathspec-scoped commit (pm-kb). Never pushes. Unknown/non-CONFIRMED ids are skipped (not_confirmed_or_unknown); CONFIRMED ids failing the shared kb_export basis predicate are skipped (basis_mismatch); no mergeable ids or an unchanged entry set makes no commit. |
+| 9 | `kb_demote` | `kbDemoteSchema` (`src/tools/kb-demote.ts`) | id, reason, evidence_files | `text(JSON): {id, previous_confidence, new_confidence}` | Lower a CONFIRMED KB entry back to INFERRED, appending a demotion note and snapshotting each cited source file's on-disk sha256. REFUSES a non-CONFIRMED entry (`E-DEMOTE-NOT-CONFIRMED`) rather than returning a no-op. |
+| 10 | `kb_freshness_sweep` | `kbFreshnessSweepSchema` (`src/tools/kb-freshness-sweep.ts`) | (none) | `text(JSON): {checked, staled, unstaled}` | Bounded full-KB bidirectional freshness sweep: re-hash every entry's stored basis against the current worktree, stale mismatches, revive stale entries whose basis matches again (superseded/downvoted/invalidated stay retired). |
+| 11 | `kb_import` | `kbImportSchema` (`src/tools/kb-import.ts`) | path, scope, skip_sweep | `text(JSON): KbImportReport {imported, skipped, linked, flagged, rejected, sweep:{checked, staled, unstaled}}` | Import a merged bible (`.fleet/kb-canonical.json`) into the warm local KB via the AUDN choke point (dup/refine/contradiction routing); directive entries are forced to pending proposals. Runs a freshness sweep after import unless `skip_sweep`. |
+| 12 | `kb_resolve_contradiction` | `kbResolveContradictionSchema` (`src/tools/kb-resolve-contradiction.ts`) | winnerId, loserId, evidence | `text(JSON): {winnerId, loserId}` | Resolve a KB contradiction pair: winner goes to CONFIRMED with evidence appended, loser is superseded+stale. Refuses (writes nothing) if either id is missing, already superseded, not a genuine pair, or involves an ACTIVE directive. |
+| 13 | `kb_reconcile_prefilter` | `kbReconcilePrefilterSchema` (`src/tools/kb-reconcile-prefilter.ts`) | (none) | `text(JSON): {pairs, resolved[], left_for_agent[], skipped_directive}` | Mechanical hash-basis prefilter over flagged contradiction pairs: a pair with exactly one side hash-matching the current worktree is auto-resolved via `kb_resolve_contradiction`; the rest are left for the reconciler agent. |
+| 14 | `kb_setup` | `kbSetupSchema` (`src/tools/kb-setup.ts`) | provider, remote, token | `text(JSON): {success, steps}` | Set up the KB: install the git post-commit hook, write provider config, store remote credentials encrypted. Run once per repo. |
+| 15 | `kb_export` | `kbExportSchema` (`src/tools/kb-export.ts`) | scope, baseBranch, baseCommit | `text(JSON): {exported, path, scope, committed}` | Export CONFIRMED/non-superseded/non-stale entries to a canonical bible file. Project scope: only entries whose cited files match their recorded hash basis, merged additively (existing entries never removed; nothing new -> no rewrite, no commit). Global scope: unchanged. Auto-commits the bible file by default when content changed. provenance.branch is the target base branch (baseBranch, else the export folder HEAD branch); provenance.commit is the base commit (baseCommit, else HEAD). |
+| 16 | `kb_stats` | `kbStatsSchema` (`src/tools/kb-stats.ts`) | symbols | `text(JSON): ProviderStats spread plus bible` -- `{supported?, reason?, totals, stale, flagged, superseded, retrieval, promote_ratio, coverage?, bible}` | Read-only KB health aggregation: totals by confidence/type, stale/flagged/superseded counts, retrieval hit_rate, promote_ratio, and canonical-bible presence/drift. Never bumps use_count/last_accessed. |
+| 17 | `kb_feedback` | `kbFeedbackSchema` (`src/tools/kb-feedback.ts`) | id, reason, role | `text(JSON): {id, stale, flagged_for_review, confidence}` | Downvote a KB entry that proved wrong in practice: marks stale+flagged_for_review and appends a feedback note. Never deletes or touches confidence, except an ACTIVE directive is flagged but not staled. |
+| 18 | `kb_bible_commit` | `kbBibleCommitSchema` (`src/tools/kb-bible-commit.ts`) | ids, baseBranch, baseCommit | `text(JSON): {path, merged, skipped, entry_count, committed}` | Merge exactly the given live CONFIRMED ids into the bible at ENTRY level (existing entries kept, never dropped), write provenance from baseBranch (the target base branch) and baseCommit, and make a local pathspec-scoped commit (pm-kb). Never pushes. Unknown/non-CONFIRMED ids are skipped (not_confirmed_or_unknown); CONFIRMED ids failing the shared kb_export basis predicate are skipped (basis_mismatch); no mergeable ids or an unchanged entry set makes no commit. |
 
 Scope-field note: no `kb_*` request schema declares a live scope field. The
 removed pre-redesign keys (`repo`, `repo_path`, `repo_remote_url`) are declared
@@ -112,13 +117,13 @@ over the shared `resolveSelfSession()` / `validateSelfRepoFolder()` in
 `E-SELF-NOT-A-REPO`. No origin remote is required. `code_context` enriches from
 the KB of that same resolved folder.
 
-Registration descriptions for all 26 tools are reproduced verbatim in Appendix A.
+Registration descriptions for all 27 tools are reproduced verbatim in Appendix A.
 
 ## 3. Decision rule: responses that are not schema-shaped
 
 Observed facts about the response side of this surface:
 
-- Every one of the 26 tools is registered through the shared `wrapTool` helper in
+- Every one of the 27 tools is registered through the shared `wrapTool` helper in
   `src/services/tool-registry.ts`, which converts the handler return value into
   MCP `content: [{type: 'text', text}]` blocks.
 - NO tool in this surface declares a response zod schema. The registration call
@@ -197,6 +202,7 @@ through it" column lists only the `kb_*`/`code_*` tools in this surface.
 | P-6 | `getLinked` | `getLinked(id: string): Promise<KBEntry[]>` | none in this surface (internal link inspection) | read | yes |
 | P-7 | `prime` | `prime(opts: PrimeOptions): Promise<PrimedContext>` | `kb_session_prime` | read | yes |
 | P-8 | `promote` | `promote(id, reason?): Promise<{id, confidence_before, confidence_after}>` | `kb_promote` | mutate-trust (confidence tier up, appends evidence note) | at the CONFIRMED ceiling yes (no-op); below it NO -- each call advances one tier |
+| P-13 | `demote` | `demote(id, reason, evidenceFiles?, opts?): Promise<{id, confidence_before, confidence_after}>` | `kb_demote` | mutate-trust (CONFIRMED -> INFERRED, appends an audit note, snapshots the on-disk basis) | no -- a second call is REFUSED with `E-DEMOTE-NOT-CONFIRMED`, never a no-op |
 | P-9 | `sync` | `sync(opts?: SyncOptions): Promise<SyncResult>` | none in this surface | read/write (remote transfer) | no |
 | P-10 | `stats` | `stats(opts?: {symbols?}): Promise<ProviderStats>` | `kb_stats` | read, explicitly NO telemetry bump | yes |
 | P-11 | `touch` | `touch(ids: string[]): Promise<number>` | `kb_session_prime` | telemetry write (`use_count`/`last_accessed`), existence-tolerant | no (counter advances) |
@@ -522,6 +528,12 @@ Scan a session transcript for learnings and capture them into the KB. Returns {e
 
 ```text
 Upgrade KB entry confidence: UNVERIFIED -> INFERRED -> CONFIRMED. Appends promotion note to content as evidence trail. CONFIRMED entries are no-op. Scope: always the calling session's own KB -- a member session uses its registered work folder, any other session the fleet server's working folder; there is no repo/path scope argument (the removed repo_path, repo and repo_remote_url keys fail with E-SCOPE-KEY-REMOVED). Fails with E-SELF-NO-WORKFOLDER, E-SELF-NOT-A-REPO or E-SELF-NO-REMOTE (each with a one-line remediation) when that folder cannot carry a KB identity (it must be a git repository with an origin remote).
+```
+
+### kb_demote
+
+```text
+Lower a CONFIRMED KB entry back to INFERRED: { id, reason, evidence_files? }. Returns {id, previous_confidence, new_confidence}. Appends a "[Demoted: <reason> | evidence: <files> -- <author>]" note to content as the audit trail; promoted_at and source are left untouched, and a stale entry may be demoted. WHEN TO USE WHICH: the entry is still broadly right but you are LESS CERTAIN than CONFIRMED claims (it did not hold in a case you checked, its evidence turned out thinner than the promotion note implies) -> kb_demote. The entry is PROVEN WRONG in practice -> kb_feedback (flags it stale for human review, never touches confidence). Two entries make opposing claims and you know which wins -> kb_resolve_contradiction. You are discarding an unconfirmed capture outright -> kb_invalidate {ids}. REFUSALS, all checked before any write, nothing changes: a non-CONFIRMED entry is refused with E-DEMOTE-NOT-CONFIRMED (never a silent no-op); a superseded entry E-DEMOTE-SUPERSEDED; a user-directive E-DEMOTE-REFUSED-DIRECTIVE (directive state is human-terminal in both directions); a reason under 20 characters after collapsing newlines and trimming E-DEMOTE-REASON-REQUIRED; an evidence path that does not resolve, is not a file, or traverses out of the repo E-DEMOTE-EVIDENCE-UNRESOLVED. In a MEMBER session only entries tagged member:<caller uuid> can be demoted; any other id returns not-found and changes nothing. Scope: always the calling session's own KB -- a member session uses its registered work folder, any other session the fleet server's working folder; there is no repo/path scope argument (the removed repo_path, repo and repo_remote_url keys fail with E-SCOPE-KEY-REMOVED). Fails with E-SELF-NO-WORKFOLDER, E-SELF-NOT-A-REPO or E-SELF-NO-REMOTE (each with a one-line remediation) when that folder cannot carry a KB identity (it must be a git repository with an origin remote).
 ```
 
 ### kb_freshness_sweep

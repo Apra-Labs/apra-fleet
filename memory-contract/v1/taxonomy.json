@@ -230,6 +230,55 @@
           "retryable": false,
           "group_decision": "AUTHORITY, not conflict. The refusal is about the target's standing to hold a higher tier, which is the same policy as the clamp; it is not about the semantics of a contradiction pair.",
           "see_also": ["Superseding and AUDN matching"]
+        },
+        {
+          "$anchor": "E-DEMOTE-NOT-CONFIRMED",
+          "code": "E-DEMOTE-NOT-CONFIRMED",
+          "meaning": "The target entry is not CONFIRMED. kb_demote is not a ladder: it lowers CONFIRMED to INFERRED and nothing else, so an INFERRED or UNVERIFIED target is REFUSED rather than returned as an unchanged no-op -- a caller must never believe it lowered trust that was already at the floor.",
+          "raising_methods": [
+            { "method_id": "P-13", "member": "demote", "tool": "kb_demote", "position": "provider" }
+          ],
+          "source": "src/services/knowledge/sqlite-provider.ts (SqliteProvider.demote, refusal 4 of 6)",
+          "surfaced": "thrown",
+          "retryable": false,
+          "see_also": ["Capture provenance and confidence clamp"]
+        },
+        {
+          "$anchor": "E-DEMOTE-REASON-REQUIRED",
+          "code": "E-DEMOTE-REASON-REQUIRED",
+          "meaning": "The demotion carries no non-trivial reason: shorter than MIN_DEMOTE_REASON_LENGTH once newlines are collapsed to spaces and the result trimmed (so a reason made only of whitespace or newlines collapses to empty and is refused). Withdrawing trust must record its evidence as strictly as granting it.",
+          "raising_methods": [
+            { "method_id": "P-13", "member": "demote", "tool": "kb_demote", "position": "provider" }
+          ],
+          "source": "src/services/knowledge/sqlite-provider.ts (SqliteProvider.demote, refusal 5 of 6; normalizeDemoteReason)",
+          "surfaced": "thrown",
+          "retryable": false,
+          "see_also": ["Capture provenance and confidence clamp"]
+        },
+        {
+          "$anchor": "E-DEMOTE-EVIDENCE-UNRESOLVED",
+          "code": "E-DEMOTE-EVIDENCE-UNRESOLVED",
+          "meaning": "A cited evidence file does not resolve in this worktree, is not a regular file, or contains a '..' segment that traverses out of the anchor. The traversal check runs FIRST, so a traversing path that happens to land on a real file outside the repo is refused too.",
+          "raising_methods": [
+            { "method_id": "P-13", "member": "demote", "tool": "kb_demote", "position": "provider" }
+          ],
+          "source": "src/services/knowledge/sqlite-provider.ts (SqliteProvider.assertResolvableDemoteEvidence, refusal 6 of 6)",
+          "surfaced": "thrown",
+          "retryable": false,
+          "see_also": ["Capture provenance and confidence clamp"]
+        },
+        {
+          "$anchor": "E-DEMOTE-SUPERSEDED",
+          "code": "E-DEMOTE-SUPERSEDED",
+          "meaning": "The target entry is already superseded, so it has dropped out of every read path and lowering its confidence would be a write with no observable meaning.",
+          "raising_methods": [
+            { "method_id": "P-13", "member": "demote", "tool": "kb_demote", "position": "provider" }
+          ],
+          "source": "src/services/knowledge/sqlite-provider.ts (SqliteProvider.demote, refusal 2 of 6)",
+          "surfaced": "thrown",
+          "retryable": false,
+          "group_decision": "AUTHORITY, not conflict -- the same reading as E-PROMOTE-SUPERSEDED: the refusal is about the target's standing to hold any tier at all, not about the semantics of a contradiction pair.",
+          "see_also": ["Superseding and AUDN matching"]
         }
       ]
     },
@@ -245,6 +294,18 @@
             { "method_id": "P-8", "member": "promote", "tool": "kb_promote", "position": "provider" }
           ],
           "source": "src/services/knowledge/sqlite-provider.ts:1353-1357",
+          "surfaced": "thrown",
+          "retryable": false,
+          "see_also": ["Directive quarantine"]
+        },
+        {
+          "$anchor": "E-DEMOTE-REFUSED-DIRECTIVE",
+          "code": "E-DEMOTE-REFUSED-DIRECTIVE",
+          "meaning": "Demotion of a user-directive entry is refused outright. Directive state is human-terminal in BOTH directions: promote() refuses them so an agent cannot forge an active directive, and demote() refuses them so an agent cannot deactivate one a human set.",
+          "raising_methods": [
+            { "method_id": "P-13", "member": "demote", "tool": "kb_demote", "position": "provider" }
+          ],
+          "source": "src/services/knowledge/sqlite-provider.ts (SqliteProvider.demote, refusal 3 of 6)",
           "surfaced": "thrown",
           "retryable": false,
           "see_also": ["Directive quarantine"]

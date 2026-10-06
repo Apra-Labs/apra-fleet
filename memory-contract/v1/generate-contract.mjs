@@ -121,6 +121,7 @@ const KB_MODULES = [
   ['kb_list', 'kb-list.js', 'kbListSchema'],
   ['kb_harvest', 'kb-harvest.js', 'kbHarvestSchema'],
   ['kb_promote', 'kb-promote.js', 'kbPromoteSchema'],
+  ['kb_demote', 'kb-demote.js', 'kbDemoteSchema'],
   ['kb_freshness_sweep', 'kb-freshness-sweep.js', 'kbFreshnessSweepSchema'],
   ['kb_import', 'kb-import.js', 'kbImportSchema'],
   ['kb_resolve_contradiction', 'kb-resolve-contradiction.js', 'kbResolveContradictionSchema'],
@@ -178,6 +179,8 @@ const BASE_DESCRIPTIONS = {
     'Scan a session transcript for learnings and capture them into the KB. Returns {entries_captured, entries_updated, entries_skipped}. Extracted entries are UNVERIFIED and author=harvest, source=harvest.',
   kb_promote:
     'Upgrade KB entry confidence: UNVERIFIED -> INFERRED -> CONFIRMED. Appends promotion note to content as evidence trail. CONFIRMED entries are no-op. In a MEMBER session only entries tagged member:<caller uuid> can be promoted; any other id returns not-found and changes nothing.',
+  kb_demote:
+    "Lower a CONFIRMED KB entry back to INFERRED: { id, reason, evidence_files? }. Returns {id, previous_confidence, new_confidence}. Appends a \"[Demoted: <reason> | evidence: <files> -- <author>]\" note to content as the audit trail; promoted_at and source are left untouched, and a stale entry may be demoted. WHEN TO USE WHICH: the entry is still broadly right but you are LESS CERTAIN than CONFIRMED claims (it did not hold in a case you checked, its evidence turned out thinner than the promotion note implies) -> kb_demote. The entry is PROVEN WRONG in practice -> kb_feedback (flags it stale for human review, never touches confidence). Two entries make opposing claims and you know which wins -> kb_resolve_contradiction. You are discarding an unconfirmed capture outright -> kb_invalidate {ids}. REFUSALS, all checked before any write, nothing changes: a non-CONFIRMED entry is refused with E-DEMOTE-NOT-CONFIRMED (never a silent no-op); a superseded entry E-DEMOTE-SUPERSEDED; a user-directive E-DEMOTE-REFUSED-DIRECTIVE (directive state is human-terminal in both directions); a reason under 20 characters after collapsing newlines and trimming E-DEMOTE-REASON-REQUIRED; an evidence path that does not resolve, is not a file, or traverses out of the repo E-DEMOTE-EVIDENCE-UNRESOLVED. In a MEMBER session only entries tagged member:<caller uuid> can be demoted; any other id returns not-found and changes nothing.",
   kb_freshness_sweep:
     'Bounded full-KB bidirectional freshness sweep: re-hash every entry that has a stored per-file basis against the CURRENT worktree, mark mismatches stale, and revive stale entries whose full basis matches again (superseded, feedback-downvoted, and invalidated entries stay retired). This is the branch-switch revival surface kb_session_prime cannot be (prime excludes stale entries). Returns {checked, staled, unstaled}.',
   kb_import:

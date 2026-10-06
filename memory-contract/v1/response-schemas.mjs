@@ -159,6 +159,18 @@ const KB_RESPONSE_BODIES = {
     previous_confidence: z.string(),
     new_confidence: z.string(),
   }),
+  // Same three fields as kb_promote, and deliberately so: kb_demote is the
+  // inverse operation on the same axis, so a consumer reading a confidence
+  // change off either tool parses one shape. previous_confidence is always
+  // CONFIRMED here (every other tier is refused with E-DEMOTE-NOT-CONFIRMED
+  // before any write) and new_confidence always INFERRED, but both stay plain
+  // strings to match kb_promote rather than narrowing to an enum only this
+  // tool would carry.
+  kb_demote: z.object({
+    id: z.string(),
+    previous_confidence: z.string(),
+    new_confidence: z.string(),
+  }),
   kb_freshness_sweep: z.object({
     checked: z.number(),
     staled: z.number(),

@@ -37,7 +37,7 @@ export const REGISTERED_TOOL_NAMES: readonly string[] = Object.freeze([
   'code_graph', 'code_impact', 'code_query', 'code_context', 'code_map',
   'code_flow', 'code_tests', 'code_reindex', 'code_status',
   'kb_capture', 'kb_invalidate', 'kb_context', 'kb_session_prime', 'kb_query',
-  'kb_list', 'kb_harvest', 'kb_promote', 'kb_freshness_sweep', 'kb_import',
+  'kb_list', 'kb_harvest', 'kb_promote', 'kb_demote', 'kb_freshness_sweep', 'kb_import',
   'kb_resolve_contradiction', 'kb_reconcile_prefilter', 'kb_setup', 'kb_export',
   'kb_stats', 'kb_feedback', 'kb_bible_commit',
 ]);
