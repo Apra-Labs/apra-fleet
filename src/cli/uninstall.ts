@@ -7,6 +7,7 @@ import { serverVersion } from '../version.js';
 import type { LlmProvider } from '../types.js';
 import { isApraFleetRunning } from './install.js';
 import { getServiceManager } from '../services/service-manager/index.js';
+import { cleanupSupervisorService, type SupervisorCleanupResult } from '../services/supervisor-service-cleanup.js';
 import {
   BIN_DIR,
   HOOKS_DIR,
@@ -421,7 +422,18 @@ Options:
 
   // Workflow subsystem removal (Phase 3 - Task 8): shared ~/.apra-fleet assets,
   // not tied to any specific --llm target.
+  let supervisorCleanup: SupervisorCleanupResult = { removed: [], kept: [], failed: [] };
   if (skillMode === 'all' || skillMode === 'workflows') {
+    // The fleet-sprint supervisor OS service runs serve.mjs out of
+    // workflows/fleet-sprint, so it is stopped and unregistered BEFORE that
+    // tree is deleted -- and unconditionally here, not inside
+    // cleanupWorkflows(), which returns early when the tree is already gone
+    // (a re-run after an uninstall that left the unit behind).
+    supervisorCleanup = cleanupSupervisorService(dryRun);
+    if (supervisorCleanup.removed.length > 0 || supervisorCleanup.failed.length > 0) anythingRemoved = true;
+    for (const reg of supervisorCleanup.kept) {
+      console.log(`  - Keeping fleet-supervisor service registration ${reg.name} (target: ${reg.target ?? 'unknown'}): not installed by apra-fleet, left in place`);
+    }
     if (cleanupWorkflows(dryRun)) anythingRemoved = true;
   }
 
@@ -454,5 +466,13 @@ Options:
     console.log('  Please review your provider settings files if you suspect residual config.');
   } else {
     console.log('\nNothing to remove — no apra-fleet installation found for the specified scope.');
+  }
+
+  if (supervisorCleanup.failed.length > 0) {
+    console.error('\nUninstall incomplete: the following fleet-supervisor service registration(s) could not be removed:');
+    for (const { reg, error } of supervisorCleanup.failed) {
+      console.error(`  - ${reg.name}: ${error}`);
+    }
+    process.exit(1);
   }
 }

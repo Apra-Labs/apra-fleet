@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { execSync } from 'node:child_process';
+import { execSync, execFileSync } from 'node:child_process';
 import * as readline from 'node:readline/promises';
 import { runUninstall } from '../src/cli/uninstall.js';
 import * as config from '../src/cli/config.js';
@@ -23,6 +23,15 @@ vi.mock('node:readline/promises', () => ({
   createInterface: vi.fn(),
 }));
 
+/** fleet-supervisor unit/plist/wrapper paths (any OS). */
+function isSupervisorRegistrationPath(p: unknown): boolean {
+  if (typeof p !== 'string') return false;
+  const s = p.replace(/\\/g, '/');
+  return /\/(fleet-supervisor|apra-fleet-supervisor)\.service$/.test(s)
+    || s.endsWith('/com.apra-fleet.supervisor.plist')
+    || /\/apra-fleet-supervisor-service\.(bat|js)$/.test(s);
+}
+
 describe('uninstall', () => {
   const home = '/home/user';
   const fleetBase = path.join(home, '.apra-fleet');
@@ -33,8 +42,16 @@ describe('uninstall', () => {
     vi.spyOn(os, 'homedir').mockReturnValue(home);
     vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit'); });
     
-    // Default mocks for fs
-    vi.spyOn(fs, 'existsSync').mockReturnValue(true);
+    // Default mocks for fs. Every path "exists" EXCEPT the fleet-supervisor
+    // service registrations, so the default scenario (and the byte-for-byte
+    // dry-run fixture) sees no supervisor unit on any host OS.
+    vi.spyOn(fs, 'existsSync').mockImplementation((p: any) => !isSupervisorRegistrationPath(p));
+    // ...and no ApraFleetSupervisor scheduled task on win32 (schtasks /Query
+    // exits non-zero for a missing task).
+    vi.mocked(execFileSync).mockImplementation(((cmd: string, args?: readonly string[]) => {
+      if (cmd === 'schtasks' && args?.includes('/Query')) throw new Error('ERROR: The system cannot find the file specified.');
+      return '' as any;
+    }) as any);
     vi.spyOn(fs, 'readFileSync').mockReturnValue(JSON.stringify({ providers: { claude: { skill: 'all' } } }));
     // No built-in/user workflow dirs by default; individual tests override this.
     vi.spyOn(fs, 'readdirSync').mockReturnValue([]);
