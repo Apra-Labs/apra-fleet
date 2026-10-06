@@ -176,6 +176,8 @@ for every option.
 
 **Component Docs:** [fleet-sprint](packages/apra-fleet-se/fleet-sprint/docs/README.md) | [auto-sprint.js](packages/apra-fleet-se/apra-pm/docs/sprint-workflow.md) | [apra-fleet-client](packages/apra-fleet-client/docs/overview.md) | [apra-pm](packages/apra-fleet-se/apra-pm/README.md) | [apra-fleet-mcp](docs/mcp-tools.md) | [Agent Roles](packages/apra-fleet-se/docs/role-contracts.md)
 
+**Backlog hygiene:** sprint roles must search the entire open backlog before filing a bead; reviewer proposals carry machine-checked dedup evidence and integ-test bugs without it are flagged. See [docs/newtask-dedup-evidence.md](docs/newtask-dedup-evidence.md).
+
 ### Fleet Dispatch Topology
 
 ```mermaid
