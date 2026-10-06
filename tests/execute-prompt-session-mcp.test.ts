@@ -64,8 +64,7 @@ function stubMember(opts: { failSessionWrite?: boolean; cliVersion?: string | nu
     // The member CLI version probe that gates the always-load option.
     if (/claude --version/.test(decoded(cmd))) {
       const v = opts.cliVersion === undefined ? '2.1.291 (Claude Code)' : opts.cliVersion;
-      return v === null ? { stdout: '', stderr: 'claude: command not found', code: 127 } : { stdout: `${v}
-`, stderr: '', code: 0 };
+      return v === null ? { stdout: '', stderr: 'claude: command not found', code: 127 } : { stdout: `${v}\n`, stderr: '', code: 0 };
     }
     // Not a repo: the best-effort exclude step is a no-op here (its own
     // behaviour is covered in session-mcp-config.test.ts).
@@ -213,6 +212,52 @@ describe('execute_prompt: per-session member MCP config', () => {
       const w = warnLines(spy).filter(l => /always-load/.test(l));
       expect(w).toHaveLength(1);
       expect(w[0]).toMatch(/version could not be determined/);
+    });
+
+    // Every member shell: the built dispatch command names the per-session
+    // file (and adds nothing the member shell could expand), and the file the
+    // member receives keeps the apra-fleet server out of tool-search deferral.
+    const SHELLS = [
+      { label: 'linux bash', os: 'linux' as const, shell: undefined, folder: '/home/u/repo', cfg: '/home/u/repo/.fleet-session-mcp.json' },
+      { label: 'windows PowerShell 7', os: 'windows' as const, shell: 'pwsh7' as const, folder: 'C:\\Users\\bella\\repo', cfg: 'C:\\Users\\bella\\repo\\.fleet-session-mcp.json' },
+      { label: 'windows PowerShell 5', os: 'windows' as const, shell: 'powershell5' as const, folder: 'C:\\Users\\bella\\repo', cfg: 'C:\\Users\\bella\\repo\\.fleet-session-mcp.json' },
+      { label: 'windows gitbash', os: 'windows' as const, shell: 'gitbash' as const, folder: 'C:/Users/bella/repo', cfg: 'C:/Users/bella/repo/.fleet-session-mcp.json' },
+    ];
+    it.each(SHELLS)('$label member: command names the config last; the config is the alwaysLoad apra-fleet entry', async ({ label, os, shell, folder, cfg }) => {
+      const member = makeTestAgent({ friendlyName: `smcp-al-${label.replace(/\W+/g, '-')}`, os, shell, workFolder: folder, fleetMcp: AVAILABLE });
+      addAgent(member);
+      const read = stubMember();
+      await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+
+      expect(JSON.parse(read())).toEqual({
+        mcpServers: { 'apra-fleet': { type: 'http', url: `http://localhost:${BUILTIN_DEFAULT_PORT}/mcp?member=${member.id}`, alwaysLoad: true } },
+      });
+      const main = mainCmd();
+      const flag = `--mcp-config "${cfg}"`;
+      expect(main).toContain(flag);
+      // last on the claude invocation: nothing after it but the shell's own output plumbing
+      const tail = main.slice(main.indexOf(flag) + flag.length);
+      expect(tail).not.toMatch(/ -p | --model | --agent /);
+      expect(flag).not.toMatch(/[$`~]/);
+      expect(main).not.toMatch(/ENABLE_TOOL_SEARCH/);
+      expect(main).not.toContain('--strict-mcp-config');
+    });
+
+    it('local member: the data-dir config carries alwaysLoad', async () => {
+      const member = makeTestLocalAgent({ friendlyName: 'smcp-al-local' });
+      fs.mkdirSync(member.workFolder, { recursive: true });
+      addAgent(member);
+      stubMember();
+      try {
+        await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+        const cfg = path.join(FLEET_DIR, 'session-mcp', `${member.id}.json`);
+        expect(JSON.parse(fs.readFileSync(cfg, 'utf-8')).mcpServers['apra-fleet']).toEqual({
+          type: 'http', url: `http://localhost:${DEFAULT_PORT}/mcp?member=${member.id}`, alwaysLoad: true,
+        });
+        expect(mainCmd()).toContain(`${member.id}.json"`);
+      } finally {
+        fs.rmSync(member.workFolder, { recursive: true, force: true });
+      }
     });
   });
 });
