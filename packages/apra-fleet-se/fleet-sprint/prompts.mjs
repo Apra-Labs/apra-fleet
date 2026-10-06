@@ -442,7 +442,12 @@ export function buildReviewerPrompt({ beadIds, acceptanceCriteriaJson, baseBranc
         // which of this sprint's captures earned CONFIRMED.
         ...(Array.isArray(kbBlock) ? kbBlock : kbKnowledgeBlock(kbKnowledge)),
         ...kbPromotionBlock(kbCandidates),
-        'Do NOT run any `bd` command yourself and do NOT mutate beads directly in any way ' +
+        'Before proposing ANY newTask, search the open beads across the ENTIRE backlog (not just this sprint\'s scope) for overlap. ' +
+        'Every newTask must carry `dedupCheck`: `{ query, candidateIds, verdict }` -- `query` is the non-empty search you actually ran, ' +
+        '`candidateIds` the existing bead ids that might overlap (may be empty), `verdict` either "no-overlap" or "overlap". ' +
+        'If an existing open bead already covers the finding, set verdict "overlap" and put that bead id FIRST in `candidateIds`: ' +
+        'the orchestrator appends your finding to that bead instead of creating a duplicate. A newTask without a valid `dedupCheck` is rejected.',
+        'Do NOT run any `bd` command yourself (other than the read-only `bd list`/`bd search`/`bd show` the dedup search above needs) and do NOT mutate beads directly in any way ' +
         '(no bd update, bd close, bd create, etc.) -- the orchestrator applies your ' +
         '`reopenIds` via `bd update <id> --status=open` and creates your `newTasks` via ' +
         '`bd create`. Optionally include `replanIds`: a SUBSET of the ids you also named in ' +
@@ -559,6 +564,13 @@ export function buildFinalVerdictPrompt({ targetIssues, branch, baseBranch, goal
         'that would otherwise be lost prose with no way for a future sprint to act on them. One task per ' +
         'distinct finding; reference concrete files/tests in each description. Omit newTasks or return ' +
         '[] only when you have nothing further to flag.'
+    );
+    lines.push(
+        'Before proposing ANY newTask, search the open beads across the ENTIRE backlog (not just this sprint\'s scope) for overlap. ' +
+        'Every newTask must carry `dedupCheck`: `{ query, candidateIds, verdict }` -- `query` is the non-empty search you actually ran, ' +
+        '`candidateIds` the existing bead ids that might overlap (may be empty), `verdict` either "no-overlap" or "overlap". ' +
+        'If an existing open bead already covers the finding, set verdict "overlap" and put that bead id FIRST in `candidateIds`: ' +
+        'the orchestrator appends your finding to that bead instead of creating a duplicate. A newTask without a valid `dedupCheck` is rejected.'
     );
     lines.push(
         'If any ALREADY-CLOSED bead should be reopened -- e.g. it was closed on insufficient evidence, ' +

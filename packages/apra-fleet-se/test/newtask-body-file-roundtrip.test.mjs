@@ -149,6 +149,7 @@ describe('createChildBeadWithAllocatedId / appendRejectedFindingToParentNotes --
             title: 'Run $(whoami) and report',
             description: 'Safe-looking description with = and & chars intact.',
             priority: 'P1',
+            dedupCheck: { query: 'q', candidateIds: [], verdict: 'no-overlap' },
         };
         const validation = validateNewTask(newTask);
         assert.strictEqual(validation.ok, false);
@@ -203,7 +204,7 @@ describe('createChildBeadWithAllocatedId / appendRejectedFindingToParentNotes --
         // Confirm the description-only allowlist gate (SAFE_DESCRIPTION_RE)
         // accepts this -- it is no longer shell-interpolated, so it is not an
         // injection risk at this layer; the title stays safe.
-        const validation = validateNewTask({ title, description, priority: 'P1' });
+        const validation = validateNewTask({ title, description, priority: 'P1', dedupCheck: { query: 'q', candidateIds: [], verdict: 'no-overlap' } });
         assert.strictEqual(validation.ok, true);
 
         const { command, calls, readBodyOf } = makeMemberEmulatingCommand();
