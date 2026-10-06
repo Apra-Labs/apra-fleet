@@ -339,6 +339,9 @@ export async function resolveFleetServerConnection(deps = {}) {
  */
 export function createFleetHttpTransport(connection, deps = {}) {
     const env = deps.env || process.env;
+    // Every /mcp session needs the install's access secret (a FULL session as
+    // much as a ?member= one); read from the data dir the server was resolved from.
+    const authedOptions = withFleetAccessSecret(deps.options || {}, env);
     const forcedHttp = (env.APRA_FLEET_TRANSPORT || '').trim().toLowerCase() === 'http';
     // Reconnecting must stay on HTTP: never let the resolver pick stdio here.
     const relocateEnv = { ...env };
@@ -346,7 +349,7 @@ export function createFleetHttpTransport(connection, deps = {}) {
     delete relocateEnv.APRA_FLEET_SERVER_BIN;
     if (!forcedHttp) delete relocateEnv.APRA_FLEET_TRANSPORT;
     return new ReconnectingHttpTransport(connection.url, {
-        options: deps.options || {},
+        options: authedOptions,
         createTransport: deps.createTransport,
         relocate: async () => {
             const r = await resolveFleetServerConnection({ ...deps, env: relocateEnv });
@@ -405,6 +408,22 @@ export function readMemberAccessSecret(env = process.env) {
     } catch {
         return null;
     }
+}
+
+/**
+ * `options` with the install's access secret added as a request header (an
+ * explicit header already in `options` wins). Every http connection to the
+ * local server needs it -- the server refuses a /mcp session without a member
+ * JWT or this secret with HTTP 401. A missing secret file leaves `options`
+ * unchanged (the server then answers 401 with its own clear message).
+ * @param {object} [options] StreamableHttpTransport options
+ * @param {NodeJS.ProcessEnv} [env]
+ * @returns {object}
+ */
+export function withFleetAccessSecret(options = {}, env = process.env) {
+    const secret = readMemberAccessSecret(env);
+    if (!secret) return options;
+    return { ...options, headers: { [MEMBER_SECRET_HEADER]: secret, ...(options.headers || {}) } };
 }
 
 /**

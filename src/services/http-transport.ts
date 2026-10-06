@@ -216,24 +216,28 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
       return;
     }
 
-    // The ?member= route: a session there acts as that member, so it must
-    // present this install's member access secret (an owner-only file in its
-    // data dir). The server binds loopback, where every local user can
-    // connect; the secret is what keeps another user's session -- or one
-    // configured for another install -- out. Read per request so a replaced
-    // secret takes effect at once; a missing one refuses (never fails open).
-    // A member JWT (Authorization: Bearer) is its own credential, checked below.
+    // Every /mcp request without a member JWT must present this install's
+    // member access secret (an owner-only file in its data dir). The server
+    // binds loopback, where every local user can connect; the secret is what
+    // keeps another user's session -- or one configured for another install --
+    // out. That covers the ?member= route (a session acting as that member)
+    // AND the no-member route (a FULL-scope session, which includes command
+    // execution on this install's local members). Read per request so a
+    // replaced secret takes effect at once; a missing one refuses (never fails
+    // open). A member JWT (Authorization: Bearer) is its own credential,
+    // checked below.
     {
       const memberRouteParam = new URL(url, 'http://localhost').searchParams.get('member');
-      if (memberRouteParam !== null && extractBearer(req) === null) {
+      if (extractBearer(req) === null) {
         const expected = readMemberAccessSecret(memberSecretPath);
         if (!memberAccessSecretMatches(req.headers[MEMBER_SECRET_HEADER.toLowerCase()], expected)) {
           const why = req.headers[MEMBER_SECRET_HEADER.toLowerCase()] === undefined ? 'missing' : 'wrong';
-          logLine('session', `rejected ${req.method} on member route: member access secret ${why} member_param=${memberRouteParam}`);
+          const route = memberRouteParam !== null ? 'member route' : 'full-scope route';
+          logLine('session', `rejected ${req.method} on ${route}: access secret ${why} member_param=${memberRouteParam ?? 'none'}`);
           res.writeHead(401, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({
-            error: 'member secret required',
-            detail: `A ?member= session must present this apra-fleet install's member access secret in the ${MEMBER_SECRET_HEADER} header (the secret was ${why}). It is in member-access.key in the install's data dir, readable only by the install's user; a session configured for another install or another user is refused. Re-run compose_permissions or update_member with fleet_install "auto" to rewrite the member's MCP config.`,
+            error: memberRouteParam !== null ? 'member secret required' : 'access secret required',
+            detail: `An /mcp session must present this apra-fleet install's access secret in the ${MEMBER_SECRET_HEADER} header (the secret was ${why}). It is in member-access.key in the install's data dir, readable only by the install's user; a session configured for another install or another user is refused. Re-run 'apra-fleet install' to rewrite this machine's MCP registration${memberRouteParam !== null ? ', or compose_permissions / update_member with fleet_install "auto" to rewrite the member MCP config' : ''}.`,
           }));
           return;
         }

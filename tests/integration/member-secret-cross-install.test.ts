@@ -235,4 +235,21 @@ describe('member installs on one host reject each other\'s sessions over loopbac
     expect(names.some(n => n.startsWith('code_'))).toBe(true);
     await client.close();
   }, 60_000);
+  it("a FULL (no ?member=) session: no credential or the other install's secret -> 401; its own secret -> full tool set", async () => {
+    const urlA = new URL(`http://127.0.0.1:${a.port}/mcp`);
+    const urlB = new URL(`http://127.0.0.1:${b.port}/mcp`);
+    const none = await postInitialize(urlA, {});
+    expect(none.status).toBe(401);
+    expect(JSON.parse(none.body).error).toBe('access secret required');
+    // B's secret presented to A, and A's to B, are refused.
+    expect((await postInitialize(urlA, { [MEMBER_SECRET_HEADER]: b.secret! })).status).toBe(401);
+    expect((await postInitialize(urlB, { [MEMBER_SECRET_HEADER]: a.secret! })).status).toBe(401);
+    // Own secret opens a FULL session (execute_command is in the FULL set only).
+    const client = new Client({ name: 'full-at-a', version: '1.0.0' }, { capabilities: {} });
+    clients.push(client);
+    await client.connect(new StreamableHTTPClientTransport(urlA, { reconnectionOptions: RECONNECT, requestInit: { headers: { [MEMBER_SECRET_HEADER]: a.secret! } } }));
+    const names = (await client.listTools()).tools.map(t => t.name);
+    expect(names).toContain('execute_command');
+    await client.close();
+  }, 60_000);
 });

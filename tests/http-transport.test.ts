@@ -30,7 +30,7 @@ function makeClient(port: number): Client {
 function makeTransport(port: number): StreamableHTTPClientTransport {
   return new StreamableHTTPClientTransport(
     new URL(`http://127.0.0.1:${port}/mcp`),
-    { reconnectionOptions: { maxRetries: 0, maxReconnectionDelay: 100, initialReconnectionDelay: 100, reconnectionDelayGrowFactor: 1 } }
+    { reconnectionOptions: { maxRetries: 0, maxReconnectionDelay: 100, initialReconnectionDelay: 100, reconnectionDelayGrowFactor: 1 }, requestInit: memberSecretRequestInit() }
   );
 }
 
@@ -678,10 +678,21 @@ describe("(k) ?member= route requires this install's member access secret", () =
     expect((await postMcpInitializeRaw(handle.port, { memberParam: memberId, headers: { [MEMBER_SECRET_HEADER]: replacement } })).status).toBe(401);
   });
 
-  it('a request without ?member= is not affected (FULL session)', async () => {
+  it('a FULL (no ?member=) request without the secret -> 401 with a clear error; no session', async () => {
     const { handle } = await memberServer();
-    const { status } = await postMcpInitializeRaw(handle.port);
-    expect(status).toBe(200);
+    const { status, body } = await postMcpInitializeRaw(handle.port);
+    expect(status).toBe(401);
+    const parsed = JSON.parse(body);
+    expect(parsed.error).toBe('access secret required');
+    expect(parsed.detail).toContain(MEMBER_SECRET_HEADER);
+    expect(handle.sessions.size).toBe(0);
+  });
+
+  it("a FULL request with another install's secret -> 401; with its own secret -> OK", async () => {
+    const { handle, secret } = await memberServer();
+    const other = getOrCreateMemberAccessSecret();
+    expect((await postMcpInitializeRaw(handle.port, { headers: { [MEMBER_SECRET_HEADER]: other } })).status).toBe(401);
+    expect((await postMcpInitializeRaw(handle.port, { headers: { [MEMBER_SECRET_HEADER]: secret } })).status).toBe(200);
   });
 });
 

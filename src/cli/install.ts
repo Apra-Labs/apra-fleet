@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { getOrCreateMemberAccessSecret, MEMBER_SECRET_HEADER } from '../services/member-access-secret.js';
 import path from 'node:path';
 import os from 'node:os';
 import { execSync, execFileSync } from 'node:child_process';
@@ -792,7 +793,7 @@ function mergeOpenCodeConfig(paths: ProviderInstallConfig, mcpConfig: any): void
   const settings = readConfig(paths);
   settings.mcp = settings.mcp || {};
   settings.mcp['apra-fleet'] = mcpConfig.url
-    ? { type: 'remote', url: mcpConfig.url, enabled: true }
+    ? { type: 'remote', url: mcpConfig.url, enabled: true, ...(mcpConfig.headers ? { headers: mcpConfig.headers } : {}) }
     : {
         type: 'local',
         command: [mcpConfig.command, ...(mcpConfig.args || [])],
@@ -805,7 +806,7 @@ function mergeCodexConfig(paths: ProviderInstallConfig, mcpConfig: any): void {
   const settings = readConfig(paths);
   settings.mcp_servers = settings.mcp_servers || {};
   if (mcpConfig.url) {
-    settings.mcp_servers['apra-fleet'] = { url: mcpConfig.url };
+    settings.mcp_servers['apra-fleet'] = { url: mcpConfig.url, ...(mcpConfig.headers ? { http_headers: mcpConfig.headers } : {}) };
   } else {
     settings.mcp_servers['apra-fleet'] = {
       command: mcpConfig.command.replace(/\\/g, '/'),
@@ -1544,6 +1545,10 @@ ${manualStopHint(pidsAfterStop)}
 
   const fleetPort = DEFAULT_PORT;
   const fleetUrl = `http://localhost:${fleetPort}/mcp`;
+  // The server refuses an /mcp session without this install's access secret
+  // (an owner-only file in its data dir), so every http registration carries
+  // it as a header. Re-running install rewrites existing registrations.
+  const fleetAccessHeaders = { [MEMBER_SECRET_HEADER]: getOrCreateMemberAccessSecret() };
 
   if (memberMode) {
     // The per-folder member entry is written by compose_permissions; a member
@@ -1556,22 +1561,22 @@ ${manualStopHint(pidsAfterStop)}
           `  Warning: the 'claude' CLI was not found on PATH -- skipping MCP server registration.\n` +
           `  Install Claude Code (https://claude.com/claude-code), then re-run 'apra-fleet install'\n` +
           `  to register apra-fleet with it, or register manually with:\n` +
-          `    claude mcp add --scope user --transport http apra-fleet ${fleetUrl}`
+          `    claude mcp add --scope user --transport http apra-fleet ${fleetUrl} --header "${MEMBER_SECRET_HEADER}: <contents of member-access.key in the data dir>"`
         );
       } else {
         try {
           run('claude mcp remove apra-fleet --scope user', { stdio: 'ignore' });
         } catch { /* not registered */ }
-        run(`claude mcp add --scope user --transport http apra-fleet ${fleetUrl}`);
+        run(`claude mcp add --scope user --transport http apra-fleet ${fleetUrl} --header "${MEMBER_SECRET_HEADER}: ${fleetAccessHeaders[MEMBER_SECRET_HEADER]}"`);
       }
     } else if (llm === 'codex') {
-      mergeCodexConfig(paths, { url: fleetUrl });
+      mergeCodexConfig(paths, { url: fleetUrl, headers: fleetAccessHeaders });
     } else if (llm === 'copilot') {
-      mergeCopilotConfig(paths, { url: fleetUrl, type: 'http' });
+      mergeCopilotConfig(paths, { url: fleetUrl, type: 'http', headers: fleetAccessHeaders });
     } else if (llm === 'agy') {
-      mergeAgyConfig(paths, { url: fleetUrl });
+      mergeAgyConfig(paths, { url: fleetUrl, headers: fleetAccessHeaders });
     } else if (llm === 'opencode') {
-      mergeOpenCodeConfig(paths, { url: fleetUrl });
+      mergeOpenCodeConfig(paths, { url: fleetUrl, headers: fleetAccessHeaders });
     }
   } else {
     // 'run --transport stdio' starts the stdio MCP server; passed as trailing args so
