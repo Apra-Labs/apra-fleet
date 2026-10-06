@@ -173,7 +173,8 @@ describe('install --member', () => {
   });
 
   it('a full install still prints the settings file and the /mcp step', async () => {
-    await runInstall(['--transport', 'http', '--skill', 'none']);
+    // --workflows none: v0.5 registers a fleet-supervisor service with workflows, which this test does not stub.
+    await runInstall(['--transport', 'http', '--skill', 'none', '--workflows', 'none']);
     const out = vi.mocked(console.log).mock.calls.flat().join('\n');
     expect(out).toContain('Settings:');
     expect(out).toContain('Run /mcp in Claude Code');
