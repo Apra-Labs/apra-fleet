@@ -283,8 +283,13 @@ for every accepted shape live in `bible/examples/`.
   EXACTLY that basis: the importing clone's files are never hashed for it, so
   an entry whose cited file differs on the importing clone is not admitted to
   that clone's bible and the post-import sweep stales it. An entry without a
-  valid carried map (every v1/v2 entry) imports with no basis, so the bible
-  predicate excludes it from re-export until it is re-verified.
+  valid carried map (every v1/v2 entry) gets a LOCAL freshness-only basis
+  hashed from the importing clone's files. Freshness checks use it, so the
+  entry goes stale when a cited file changes. It is never a verified basis:
+  it is never written to a bible, the bible admission predicate (kb_export,
+  kb_bible_commit) reads it as no basis, and the reconcile prefilter never
+  resolves a pair on it. The entry is therefore not re-exported until it is
+  re-verified.
 - No tool request or response shape changes with v3: the format change is
   confined to the bible file.
 

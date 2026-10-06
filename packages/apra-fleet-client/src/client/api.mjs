@@ -590,8 +590,9 @@
  * @property {Object<string, string>} [source_file_hashes] - v3: the per-file hash basis
  *   (repo-relative path -> hash) the entry was admitted against, copied from the
  *   exporting KB's stored basis. kb_import stores it as the entry's basis exactly
- *   (never re-hashing local files); an entry without it imports with no basis and
- *   is not re-published until re-verified.
+ *   (never re-hashing local files); an entry without it gets a local
+ *   freshness-only basis (it can go stale) that is never exported, so it is not
+ *   re-published until re-verified.
  */
 
 /**

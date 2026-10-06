@@ -62,7 +62,7 @@
         "updated_at": { "type": "string" },
         "source_file_hashes": {
           "type": "object",
-          "description": "v3 only: the per-file hash basis (repo-relative path -> hash) the entry was admitted against, copied verbatim (keys sorted) from the exporting KB's stored basis. Absent on an entry carried over from a v1/v2 bible. A reader stores a valid map (non-empty, covering every source_files entry) as the entry's basis exactly; anything else imports basis-less.",
+          "description": "v3 only: the per-file hash basis (repo-relative path -> hash) the entry was admitted against, copied verbatim (keys sorted) from the exporting KB's stored basis. Absent on an entry carried over from a v1/v2 bible. A reader stores a valid map (non-empty, covering every source_files entry) as the entry's basis exactly; anything else gets only a local freshness-only basis hashed from the reader's files, which is never exported and never admits the entry to a bible.",
           "minProperties": 1,
           "propertyNames": { "$ref": "#/$defs/repoRelativePath" },
           "additionalProperties": { "type": "string", "minLength": 1 }

@@ -116,8 +116,10 @@ export interface CaptureOpts {
   // importMode. When set (even to null), capture() stores exactly this map as
   // the entry's basis and does NOT hash local files: a basis must never be
   // laundered from the importing clone's tree. null (a v1/v2 entry, or an
-  // invalid carried map) stores no basis, so the bible predicate excludes the
-  // entry from re-export until it is re-verified. Left undefined, capture()
+  // invalid carried map) hashes this clone's files into a LOCAL freshness-only
+  // basis (local_basis_only): staleness checks use it, but the bible predicate,
+  // export and the reconcile prefilter read it as no basis, so the entry is not
+  // re-exported until it is re-verified. Left undefined, capture()
   // computes the basis from local files as for every normal capture.
   carriedBasis?: Record<string, string> | null;
 }

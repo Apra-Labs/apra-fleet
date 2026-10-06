@@ -86,8 +86,9 @@ interface BibleEntry {
  * The basis a v3 bible entry carries, or null when it carries none or an
  * invalid one. Valid means: a plain object, at least one key, every key
  * repo-relative (isRepoRelativePath), every value a non-empty string, and
- * every cited source_file present as a key. Anything else imports
- * basis-less -- never a partial or re-hashed basis.
+ * every cited source_file present as a key. Anything else gets no verified
+ * basis -- never a partial carried map: capture() then stores a LOCAL
+ * freshness-only basis that is never exported or used for bible admission.
  */
 export function carriedBasisOf(entry: { source_files?: unknown; source_file_hashes?: unknown }): Record<string, string> | null {
   const raw = entry.source_file_hashes;
@@ -212,9 +213,11 @@ export async function importBibleEntries(
     // it. Import mode exempts the confidence clamp, never the basis check.
     //
     // Bible format v3: the entry's carried basis is stored EXACTLY (capture
-    // does not hash this clone's files for it); a v1/v2 entry, or one whose
-    // carried map is invalid, stores no basis (carriedBasis null), so the
-    // bible predicate excludes it from re-export until it is re-verified.
+    // does not hash this clone's files for it). A v1/v2 entry, or one whose
+    // carried map is invalid (carriedBasis null), gets a LOCAL freshness-only
+    // basis hashed from this clone: it can go stale when code drifts, but the
+    // bible predicate never sees it, so the entry is not re-exported until it
+    // is re-verified.
     let audn_decision: AudnDecision;
     try {
       ({ audn_decision } = await provider.capture(kbInput, {

@@ -386,8 +386,10 @@ The SQLite database is one developer's private, warm working memory. The
   honours the repo's ASCII-only rule. `source_file_hashes` is the stored
   basis, so freshness travels with the knowledge across clones. Both writers
   refuse duplicate ids. `kb_import` keeps a carried basis verbatim; v1/v2
-  entries import with no basis and are never backfilled, so they cannot be
-  re-admitted until recaptured.
+  entries get a local freshness-only basis (`local_basis_only`) hashed from
+  the importing clone, so they still go stale when code drifts, but it is
+  never exported or used for admission, so they cannot be re-admitted until
+  recaptured.
 - A folder that is not a git work tree fails with `E-BIBLE-BASIS-NOT-GIT`. An
   entry citing no files is skipped as `no_source_files` (distinct from
   `basis_mismatch`); the engine keeps `basis_mismatch` ids queued for a

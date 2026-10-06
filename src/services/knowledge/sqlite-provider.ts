@@ -233,6 +233,17 @@ export class SqliteProvider implements MemoryProvider {
     try {
       this.db.exec('ALTER TABLE entries ADD COLUMN retired_reason TEXT');
     } catch {}
+
+    // Legacy bible import (v1/v2 entry, or a v3 entry without a valid carried
+    // map): source_file_hashes then holds THIS clone's file hashes, a
+    // freshness-only basis. 1 = that basis feeds staleness checks only and is
+    // never exported, never used for bible admission, never used for a
+    // mechanical contradiction win (getSourceFileBases / reconcile prefilter
+    // read it as no basis). Internal only: never surfaced on KBEntry. Existing
+    // rows default to 0.
+    try {
+      this.db.exec('ALTER TABLE entries ADD COLUMN local_basis_only INTEGER NOT NULL DEFAULT 0');
+    } catch {}
   }
 
   private getDb(): DatabaseSync {
@@ -274,7 +285,8 @@ export class SqliteProvider implements MemoryProvider {
     input: KBEntryInput,
     content: string,
     now: string,
-    sourceFileHashes: Record<string, string> = {}
+    sourceFileHashes: Record<string, string> = {},
+    localBasisOnly = false
   ): void {
     db.prepare(`
       INSERT INTO entries (
@@ -283,7 +295,7 @@ export class SqliteProvider implements MemoryProvider {
         content_hash, content_hash_type, stale,
         flagged_for_review, contradiction_of,
         author, source, confidence, scope, created_at,
-        source_file_hashes,
+        source_file_hashes, local_basis_only,
         superseded_at, promoted_at, use_count
       ) VALUES (
         ?, ?, ?, ?, ?,
@@ -291,7 +303,7 @@ export class SqliteProvider implements MemoryProvider {
         ?, ?, ?,
         ?, ?,
         ?, ?, ?, ?, ?,
-        ?,
+        ?, ?,
         NULL, NULL, 0
       )
     `).run(
@@ -314,7 +326,8 @@ export class SqliteProvider implements MemoryProvider {
       input.confidence,
       input.scope ?? 'project',
       now,
-      JSON.stringify(sourceFileHashes)
+      JSON.stringify(sourceFileHashes),
+      localBasisOnly ? 1 : 0
     );
   }
 
@@ -511,7 +524,11 @@ export class SqliteProvider implements MemoryProvider {
    * Read-only accessor for the stored per-file hash basis (source_file_hashes)
    * of the given entry ids. Each requested id maps to its parsed basis, or null
    * when the basis is empty/unparseable or the id is unknown. Used by kb_export's
-   * project-scope bible filter; internal to this provider, not an MCP surface.
+   * project-scope bible filter and kb_bible_commit admission; internal to this
+   * provider, not an MCP surface. A local freshness-only basis
+   * (local_basis_only = 1, a legacy bible import) maps to null: it was hashed
+   * from this clone, never verified, so it must never be exported or admit an
+   * entry to the bible.
    */
   getSourceFileBases(ids: string[]): Map<string, Record<string, string> | null> {
     const out = new Map<string, Record<string, string> | null>();
@@ -523,9 +540,9 @@ export class SqliteProvider implements MemoryProvider {
     for (let i = 0; i < ids.length; i += CHUNK) {
       const chunk = ids.slice(i, i + CHUNK);
       const rows = db.prepare(
-        `SELECT id, source_file_hashes FROM entries WHERE id IN (${chunk.map(() => '?').join(',')})`
-      ).all(...chunk) as { id: string; source_file_hashes: string | null }[];
-      for (const row of rows) out.set(row.id, this.parseBasis(row.source_file_hashes));
+        `SELECT id, source_file_hashes, local_basis_only FROM entries WHERE id IN (${chunk.map(() => '?').join(',')})`
+      ).all(...chunk) as { id: string; source_file_hashes: string | null; local_basis_only: number | null }[];
+      for (const row of rows) out.set(row.id, row.local_basis_only ? null : this.parseBasis(row.source_file_hashes));
     }
     return out;
   }
@@ -749,7 +766,8 @@ export class SqliteProvider implements MemoryProvider {
     candidates: KBEntry[],
     newContent: string,
     now: string,
-    sourceFileHashes: Record<string, string>
+    sourceFileHashes: Record<string, string>,
+    localBasisOnly = false
   ): { id: string; audn_decision: AudnDecision } | null {
     const decision = makeAudnDecision(input, candidates, newContent);
     if (!decision) return null;
@@ -761,7 +779,7 @@ export class SqliteProvider implements MemoryProvider {
     if (decision.decision === 'flagged') {
       db.prepare('UPDATE entries SET flagged_for_review = 1 WHERE id = ?').run(decision.matchedId);
       const newId = randomUUID();
-      this.insertEntry(db, newId, { ...input, ...decision.newEntryOverrides }, newContent, now, sourceFileHashes);
+      this.insertEntry(db, newId, { ...input, ...decision.newEntryOverrides }, newContent, now, sourceFileHashes, localBasisOnly);
       this.wireLinks(db, newId, input);
       return { id: newId, audn_decision: 'flagged' };
     }
@@ -780,7 +798,7 @@ export class SqliteProvider implements MemoryProvider {
         // difference (a kept entry stays listed under flagged_only).
         db.prepare("UPDATE entries SET superseded_at = ?, stale = 1, retired_reason = 'superseded' WHERE id = ?")
           .run(now, decision.matchedId);
-        this.insertEntry(db, newId, input, newContent, now, sourceFileHashes);
+        this.insertEntry(db, newId, input, newContent, now, sourceFileHashes, localBasisOnly);
         this.wireLinks(db, newId, input);
         return { id: newId, audn_decision: 'update' };
       }
@@ -789,7 +807,7 @@ export class SqliteProvider implements MemoryProvider {
       // That is a topicality signal, not consent to destroy -- two DISTINCT
       // facts about one symbol used to eat each other. Link and keep both;
       // curation retires what it means to retire, explicitly.
-      this.insertEntry(db, newId, input, newContent, now, sourceFileHashes);
+      this.insertEntry(db, newId, input, newContent, now, sourceFileHashes, localBasisOnly);
       this.wireLinks(db, newId, input);
       db.prepare(
         'INSERT OR IGNORE INTO links (from_id, to_id, link_type) VALUES (?, ?, ?)'
@@ -971,10 +989,15 @@ export class SqliteProvider implements MemoryProvider {
     // Bible format v3: an IMPORT carrying a basis (opts.carriedBasis, honoured
     // only under importMode, which no deserialized route can set) stores that
     // map verbatim instead -- the basis the entry was verified against on the
-    // exporting clone, never this clone's files. carriedBasis null stores no
-    // basis (v1/v2 entry). Normal captures are unaffected.
-    const sourceFileHashes = opts?.importMode === true && opts.carriedBasis !== undefined
-      ? { ...(opts.carriedBasis ?? {}) }
+    // exporting clone. carriedBasis null (a v1/v2 entry, or an invalid carried
+    // map) hashes this clone's files into a LOCAL freshness-only basis
+    // (local_basis_only = 1): it lets the entry go stale when code drifts, but
+    // is never exported, never admits it to the bible and never wins a
+    // contradiction mechanically. Normal captures are unaffected.
+    const carried = opts?.importMode === true && opts.carriedBasis !== undefined;
+    const localBasisOnly = carried && opts?.carriedBasis === null;
+    const sourceFileHashes = carried && !localBasisOnly
+      ? { ...(opts?.carriedBasis ?? {}) }
       : await this.computeSourceFileHashes(input.source_files ?? []);
 
     // Verbatim (member bible view): the bible was reviewed and merged as a
@@ -984,7 +1007,7 @@ export class SqliteProvider implements MemoryProvider {
     const verbatim = opts?.verbatim === true && opts.importMode === true && opts.preferredId !== undefined;
     const candidates = verbatim ? [] : this.findAudnCandidates(db, input);
     if (candidates.length > 0) {
-      const result = this.evaluateAudn(db, input, candidates, content, now, sourceFileHashes);
+      const result = this.evaluateAudn(db, input, candidates, content, now, sourceFileHashes, localBasisOnly);
       if (result) return result;
     }
 
@@ -995,7 +1018,7 @@ export class SqliteProvider implements MemoryProvider {
     // always mint a fresh randomUUID -- an id collision with different content is
     // resolved by AUDN under a new id, never by overwriting the preserved id.
     const id = opts?.preferredId ?? randomUUID();
-    this.insertEntry(db, id, input, content, now, sourceFileHashes);
+    this.insertEntry(db, id, input, content, now, sourceFileHashes, localBasisOnly);
     this.wireLinks(db, id, input);
     return { id, audn_decision: 'add' };
   }
@@ -1829,10 +1852,14 @@ export class SqliteProvider implements MemoryProvider {
     const allIds = liveTouchable.flatMap(p => [p.original.id, p.challenger.id]);
     const basisById = new Map<string, Record<string, string> | null>();
     if (allIds.length > 0) {
+      // A local freshness-only basis (legacy bible import) counts as no basis
+      // here: it was never verified, so it must not win a pair mechanically.
       const basisRows = db.prepare(
-        `SELECT id, source_file_hashes FROM entries WHERE id IN (${allIds.map(() => '?').join(',')})`
-      ).all(...allIds) as { id: string; source_file_hashes: string | null }[];
-      for (const row of basisRows) basisById.set(row.id, this.parseBasis(row.source_file_hashes));
+        `SELECT id, source_file_hashes, local_basis_only FROM entries WHERE id IN (${allIds.map(() => '?').join(',')})`
+      ).all(...allIds) as { id: string; source_file_hashes: string | null; local_basis_only: number | null }[];
+      for (const row of basisRows) {
+        basisById.set(row.id, row.local_basis_only ? null : this.parseBasis(row.source_file_hashes));
+      }
     }
 
     const fileSet = new Set<string>();

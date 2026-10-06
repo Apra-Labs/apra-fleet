@@ -304,11 +304,12 @@ describe('capture -> promote -> bible commit -> export round trip (basis filter)
     expect(result.exported).toBe(ids.length);
   });
 
-  // Bible format v3 decision: kb_import never takes a basis from this
+  // Bible format v3 decision: kb_import never takes a VERIFIED basis from this
   // checkout's files. The seeded bible here is v2 (no source_file_hashes), so
-  // its entries import basis-less and the bible predicate excludes them from
+  // its entries get only a local freshness-only basis, which the bible
+  // predicate reads as none, so it excludes them from
   // re-export until they are re-verified.
-  it('kb_import of a v2 bible stores no basis for its entries (never a local re-hash)', async () => {
+  it('kb_import of a v2 bible stores no verified basis for its entries (a local re-hash is freshness-only)', async () => {
     const report = JSON.parse(await kbImport({ skip_sweep: true }, { folder: clone }));
     expect(report.imported).toBe(2);
     const bases = provider.getSourceFileBases(['kb-existing-1', 'kb-existing-2']);
