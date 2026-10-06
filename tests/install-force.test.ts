@@ -207,7 +207,7 @@ describe('install --force (#96)', () => {
     const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit'); });
 
     await expect(runInstall(['--skill', 'none', '--force'])).resolves.toBeUndefined();
-    expect(killCalls).toContain('taskkill /F /IM apra-fleet.exe');
+    expect(killCalls).toContain(`taskkill /F /IM apra-fleet.exe /FI "PID ne ${process.pid}"`);
     expect(exitSpy).not.toHaveBeenCalled();
 
     exitSpy.mockRestore();
@@ -470,7 +470,8 @@ describe('isApraFleetRunning / killApraFleet helpers (#96)', () => {
     const calls: string[] = [];
     vi.mocked(execSync).mockImplementation((cmd: any) => { calls.push(cmd.toString()); return '' as any; });
     killApraFleet();
-    expect(calls).toContain('taskkill /F /IM apra-fleet.exe');
+    // Never the installer itself (`apra-fleet install --force` runs as apra-fleet.exe).
+    expect(calls).toEqual([`taskkill /F /IM apra-fleet.exe /FI "PID ne ${process.pid}"`]);
   });
 });
 

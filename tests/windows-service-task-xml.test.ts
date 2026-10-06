@@ -30,6 +30,7 @@ vi.mock('../src/services/service-start-guard.js', () => ({
 import {
   WindowsServiceManager, buildTaskXml, resolveTaskUserId, localStartBoundary, repeatMinutesFrom,
   RUN_KEY, RUN_VALUE, buildWrapperBat, buildLauncherJs, launcherPathFor, launcherArguments, wscriptPath, asciiJsString,
+  schtasksErrorReason,
 } from '../src/services/service-manager/windows.js';
 import { spawnSync } from 'node:child_process';
 import { formatServiceLabel } from '../src/cli/status.js';
@@ -308,6 +309,18 @@ describe('WindowsServiceManager lifecycle', () => {
       expect(fs.readFileSync(launcherPathFor(wrapper), 'utf8')).toContain(JSON.stringify(wrapper));
       expect(warn.mock.calls.join(' ')).not.toMatch(/Windows Script Host is unavailable/);
       warn.mockRestore();
+    });
+
+    it('says why the task could not be created before falling back to the Run entry', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      expect(await mgr().register('x.exe', [], 'l')).toBe('run-key');
+      expect(warn.mock.calls.join(' ')).toMatch(/schtasks \/create failed: ERROR: Access is denied\./);
+      warn.mockRestore();
+    });
+
+    it('drops the execFileSync command-line prefix from the reason', () => {
+      expect(schtasksErrorReason('Command failed: schtasks /create /tn ApraFleet /xml C:\\x.xml /f\nERROR: The task XML is malformed.\r\n(8,4):UserId:\r\n'))
+        .toBe('ERROR: The task XML is malformed. (8,4):UserId:');
     });
 
     it('XML create denied and no task to reuse -> per-user Run entry for the wrapper, result run-key', async () => {

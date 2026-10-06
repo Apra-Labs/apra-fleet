@@ -862,7 +862,10 @@ export function killApraFleet(signal: 'SIGTERM' | 'SIGKILL' = 'SIGTERM'): void {
   if (process.platform === 'win32') {
     // taskkill /F is already forceful -- no softer signal to escalate from,
     // so SIGKILL escalation on Windows just reissues the same command.
-    execSync('taskkill /F /IM apra-fleet.exe', { stdio: 'ignore' });
+    // Never this process: when the installer IS the installed apra-fleet.exe
+    // (`apra-fleet install --force`), killing by image name killed the
+    // installer itself -- silent exit 1, nothing installed.
+    execSync(`taskkill /F /IM apra-fleet.exe /FI "PID ne ${process.pid}"`, { stdio: 'ignore' });
   } else {
     // -x = exact name match
     const cmd = signal === 'SIGKILL' ? 'pkill -9 -x apra-fleet' : 'pkill -x apra-fleet';
@@ -1881,7 +1884,7 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
       // --force stopped the server; reporting success would leave it down silently.
       if (force && (runningScope?.relevant || guardStoppedService)) {
         const restartHint = guardStoppedService
-          ? `Start it with:\n    ${serviceRestartCommand()}\nor re-run the install from an elevated prompt.`
+          ? `Start it with:\n    ${serviceRestartCommand()}\nthen run 'apra-fleet status' for how to repair the service (apra-fleet never needs an elevated install).`
           : 'Start it with:\n    apra-fleet start';
         console.error(`
 Error: install --force stopped the running apra-fleet server, but the service

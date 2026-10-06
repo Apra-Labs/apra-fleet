@@ -50,6 +50,8 @@ export interface ServiceStatus {
   enabled?: boolean;
   /** Extra human-readable state for apra-fleet status (e.g. why it is disabled). */
   detail?: string;
+  /** Multi-line action the user should take (printed under the Service line by apra-fleet status). */
+  notice?: string;
 }
 
 /**

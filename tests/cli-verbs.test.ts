@@ -39,6 +39,8 @@ vi.mock('../src/services/singleton.js', async (importOriginal) => ({
 vi.mock('../src/services/service-manager/index.js', () => ({
   getServiceManager: mockGetSvcMgr,
 }));
+vi.mock('../src/services/service-notice.js', () => ({ showPendingServiceNotice: vi.fn() }));
+import { showPendingServiceNotice } from '../src/services/service-notice.js';
 
 // Auto-mock (no factory) so named imports get stubs -- auto-mocks clean up
 // between files in sequential mode; factory mocks do not.
@@ -361,6 +363,11 @@ describe('runStop', () => {
     expect(http.request).not.toHaveBeenCalled();
   });
 
+  it('shows guidance left by a detached install (apra-fleet update) once', async () => {
+    await runStop([]);
+    expect(showPendingServiceNotice).toHaveBeenCalledTimes(1);
+  });
+
   it('force-stops an unresponsive server instead of reporting it not running', async () => {
     mockCheckRunning.mockResolvedValue(UNRESPONSIVE);
     await runStop([]);
@@ -613,6 +620,23 @@ describe('runStatus', () => {
     mockSvcMgr.query.mockResolvedValue({ installed: true, running: false, enabled: false });
     await runStatus([]);
     expect(output()).toContain('installed (disabled)');
+  });
+
+  it('shows guidance left by a detached install (apra-fleet update) once', async () => {
+    await runStatus([]);
+    expect(showPendingServiceNotice).toHaveBeenCalledTimes(1);
+  });
+
+  it('prints the service notice (legacy task fix) under the Service line', async () => {
+    mockSvcMgr.query.mockResolvedValue({
+      installed: true, running: false, enabled: true,
+      detail: 'legacy task (upgrade needed: no automatic revive after a crash)',
+      notice: 'To upgrade it, run once from an elevated prompt (Run as administrator):\n    schtasks /delete /tn ApraFleet /f',
+    });
+    await runStatus([]);
+    expect(output()).toContain('installed (enabled -- legacy task (upgrade needed: no automatic revive after a crash))');
+    expect(output()).toMatch(/\n {12}To upgrade it, run once from an elevated prompt/);
+    expect(output()).toMatch(/\n {16}schtasks \/delete \/tn ApraFleet \/f/);
   });
 
   it('shows running state with URL when server is up', async () => {

@@ -4,7 +4,9 @@ name: Regression - install/upgrade proof
 # VMs: builds this commit's installers, then runs passes A (no Node), B
 # (Node), U (upgrade from the latest release via install --force) and U2
 # (upgrade along the 'apra-fleet update' path) through the host driver, one
-# fresh VM per OS x pass. A stale upgrade-baseline pin is INCONCLUSIVE (red).
+# fresh VM per OS x pass, plus Windows-only UL (the baseline's elevated legacy
+# task upgraded from a non-elevated shell). A stale upgrade-baseline pin is
+# INCONCLUSIVE (red).
 on:
   push:
     branches-ignore: [main]
@@ -114,8 +116,14 @@ jobs:
             binary: apra-fleet-installer-darwin-arm64
           - os: windows-2022
             binary: apra-fleet-installer-win-x64.exe
+          # Windows only: the baseline's elevated onlogon task, upgraded by a
+          # non-elevated shell that cannot replace it (tests/integration/fresh-install).
+          - os: windows-2022
+            pass: UL
+            binary: apra-fleet-installer-win-x64.exe
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    # UL runs in about two minutes; a hang must fail fast, not hold a runner.
+    timeout-minutes: ${{ matrix.pass == 'UL' && 20 || 60 }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
@@ -174,6 +182,8 @@ jobs:
           Write-Host "Machine PATH now: $($mp -join ';')"
 
       - name: Run pass ${{ matrix.pass }} through the host driver
+        # Leaves the job time to upload the report after a hang.
+        timeout-minutes: ${{ matrix.pass == 'UL' && 12 || 50 }}
         shell: bash
         run: >-
           node tests/integration/fresh-install/run.mjs

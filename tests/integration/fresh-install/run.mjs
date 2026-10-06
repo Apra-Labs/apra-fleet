@@ -3,7 +3,7 @@
 //
 //   node tests/integration/fresh-install/run.mjs --binary <installer> [--platform windows|linux|macos]
 //        [--driver sandbox|docker|host] [--i-am-disposable]
-//        [--passes A,B,U,U2] [--informational A] [--baseline-version v0.4.3]
+//        [--passes A,B,U,U2|UL] [--informational A] [--baseline-version v0.4.3]
 //        [--expect-version v0.4.4_78cefd] [--out <dir>] [--cache <dir>]
 //        [--timeout-min 45] [--keep-docker] [--report-only]
 //
@@ -31,13 +31,19 @@ import { baselineAsset, baselineStaleness, newestBaselineTag, releaseAssetUrl, r
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const BOX_DIR = path.join(HERE, 'box');
 const ALL_PASSES = ['A', 'B', 'U', 'U2'];
+// Opt-in passes (never in the default list), with the only platform they run on.
+// UL: a legacy (elevated, onlogon) task from the baseline, upgraded by a
+// non-elevated shell of the same user, which cannot replace it.
+const PLATFORM_PASSES = { UL: 'windows' };
+// Passes that start from the pinned upgrade baseline.
+const passNeedsBase = p => p === 'U' || p === 'U2' || p === 'UL';
 const DEFAULT_REPO = 'Apra-Labs/apra-fleet';
 // Passes that install the pinned Node.js (A and U2 run without Node).
 const passNeedsNode = p => p === 'B' || p === 'U';
 
 function usage(msg) {
   if (msg) console.error(`Error: ${msg}\n`);
-  console.error(`Usage: node tests/integration/fresh-install/run.mjs --binary <installer> [--platform windows|linux|macos] [--driver sandbox|docker|host] [${HOST_OPT_IN_FLAG}] [--passes A,B,U,U2] [--informational A] [--baseline-version <tag>] [--expect-version <v>] [--out <dir>] [--cache <dir>] [--timeout-min 45] [--keep-docker] [--report-only]`);
+  console.error(`Usage: node tests/integration/fresh-install/run.mjs --binary <installer> [--platform windows|linux|macos] [--driver sandbox|docker|host] [${HOST_OPT_IN_FLAG}] [--passes A,B,U,U2 (windows also: UL)] [--informational A] [--baseline-version <tag>] [--expect-version <v>] [--out <dir>] [--cache <dir>] [--timeout-min 45] [--keep-docker] [--report-only]`);
   process.exit(2);
 }
 
@@ -70,7 +76,11 @@ function parseArgs(argv, pins) {
   if (!o.reportOnly && (!o.binary || !fs.existsSync(o.binary))) usage('--binary must point to an existing installer');
   const list = s => s.split(',').map(x => x.trim().toUpperCase()).filter(Boolean);
   o.passList = list(o.passes);
-  for (const p of o.passList) if (!ALL_PASSES.includes(p)) usage(`unknown pass ${p}`);
+  for (const p of o.passList) {
+    if (PLATFORM_PASSES[p]) {
+      if (PLATFORM_PASSES[p] !== o.platform) usage(`pass ${p} runs only on ${PLATFORM_PASSES[p]}`);
+    } else if (!ALL_PASSES.includes(p)) usage(`unknown pass ${p}`);
+  }
   o.informationalSet = new Set(list(o.informational));
   o.baselineVersion ??= newestBaselineTag(pins);
   o.cache = path.resolve(o.cache ?? path.join(HERE, '.cache'));
@@ -108,7 +118,7 @@ async function fetchPinned(url, dest, want) {
 async function prepareCache(o, pins, notes) {
   const out = {};
   const needNode = o.passList.some(passNeedsNode);
-  const needBase = o.passList.some(p => p === 'U' || p === 'U2');
+  const needBase = o.passList.some(passNeedsBase);
   if (needNode) {
     const n = pins.node[o.platform];
     if (!n) throw new Error(`pins.json has no node entry for ${o.platform}`);
@@ -128,7 +138,7 @@ async function prepareCache(o, pins, notes) {
 }
 
 function runWindowsSandboxPass(o, pass, inputs, outDir) {
-  const needBase = pass === 'U' || pass === 'U2';
+  const needBase = passNeedsBase(pass);
   const args = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(HERE, 'drivers', 'windows-sandbox.ps1'),
     '-Pass', pass, '-BoxDir', BOX_DIR, '-CandPath', path.resolve(o.binary), '-CacheDir', o.cache, '-OutDir', outDir,
     '-TimeoutMin', String(o.timeoutMin)];
@@ -168,7 +178,7 @@ async function main() {
   const notes = [];
   const inconclusive = [];
   const startedAt = new Date().toISOString();
-  const needBase = o.passList.some(p => p === 'U' || p === 'U2');
+  const needBase = o.passList.some(passNeedsBase);
   const vars = { expectVersion: o.expectVersion ?? null, baselineVersion: needBase ? (pins.baselines[o.baselineVersion]?.version ?? null) : null };
   const driverErrors = {};
   let baseline = null;
@@ -200,7 +210,7 @@ async function main() {
         const outDir = path.join(o.out, `${o.platform}-${pass}`);
         log(`${o.platform}/${o.driver} pass ${pass}: start`);
         const t0 = Date.now();
-        const passBase = pass === 'U' || pass === 'U2';
+        const passBase = passNeedsBase(pass);
         const common = {
           pass, boxDir: BOX_DIR, candPath: path.resolve(o.binary), cacheDir: o.cache, outDir,
           baseRel: passBase ? inputs.baseRel : '', nodeRel: passNeedsNode(pass) ? inputs.nodeRel : '', nodeSha: inputs.nodeSha ?? '',

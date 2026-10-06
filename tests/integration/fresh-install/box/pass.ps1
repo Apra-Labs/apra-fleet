@@ -72,6 +72,8 @@ function Head($file, $n = 200) {
 # curl.exe ships with Windows 10 1803+; same semantics as the Linux dialect.
 function Http($method, $path, [string[]]$extra = @()) {
   $script:BODY = Join-Path $Logs ("http-" + (($method + $path) -replace '[^A-Za-z0-9]', '_') + '.body')
+  # A failed request must not leave an earlier response looking like this one's.
+  Remove-Item -LiteralPath $script:BODY -ErrorAction SilentlyContinue
   $a = @('-s', '-o', $script:BODY, '-w', '%{http_code}', '--max-time', '15', '-X', $method) + $extra + @("$BaseUrl$path")
   $code = (& curl.exe @a 2>$null | Out-String).Trim()
   if (-not $code -or $code -eq '000') { $code = 'ERR connection failed' }
@@ -129,6 +131,142 @@ function UpdateArgv {
   return @('install', '--force', '--llm', $llm, '--skill', $skill, '--workflows', $wf)
 }
 function Ok($rc) { return "$rc" -eq '0' }
+
+# Summary of the ApraFleet task XML: logon=<DOMAIN\user|ANY-USER|none>
+# repeat=<interval|none> policy=<...> action=<wscript-launcher|bat|other:...>.
+# Sets $script:TaskMiss to what the NEW form lacks (empty = new form).
+function TaskSummary($id) {
+  Run $id 'task-xml' 'schtasks.exe' @('/query', '/tn', 'ApraFleet', '/xml')
+  $x = Get-Content -LiteralPath $script:LOG -Raw -Encoding UTF8
+  $logon = 'none'
+  if ($x -match '(?s)<LogonTrigger>(.*?)</LogonTrigger>') { $lt = $Matches[1]; if ($lt -match '<UserId>([^<]+)</UserId>') { $logon = $Matches[1].Trim() } else { $logon = 'ANY-USER' } }
+  $repeat = 'none'
+  if ($x -match '(?s)<TimeTrigger>(.*?)</TimeTrigger>') { if ($Matches[1] -match '<Interval>([^<]+)</Interval>') { $repeat = $Matches[1].Trim() } }
+  $policy = if ($x -match '<MultipleInstancesPolicy>([^<]+)<') { $Matches[1].Trim() } else { 'default' }
+  $cmd = if ($x -match '<Command>([^<]+)</Command>') { $Matches[1].Trim() } else { '' }
+  $targs = if ($x -match '<Arguments>([^<]+)</Arguments>') { $Matches[1].Trim() } else { '' }
+  $action = "other:$cmd $targs"
+  if ($cmd -match 'wscript\.exe"?$' -and $targs -match 'apra-fleet-service\.js') { $action = 'wscript-launcher' }
+  if ($cmd -match 'apra-fleet-service\.bat"?$' -and -not $targs) { $action = 'bat' }
+  $miss = @()
+  if (-not (Ok $script:RC)) { $miss += "task query failed (exit $($script:RC))" }
+  if ($logon -notmatch '\\') { $miss += 'user-scoped LogonTrigger' }
+  if ($repeat -ne 'PT5M') { $miss += 'PT5M revive TimeTrigger' }
+  if ($policy -ne 'IgnoreNew') { $miss += 'IgnoreNew policy' }
+  if ($action -like 'other:*') { $miss += 'wscript launcher (or .bat) action' }
+  $script:TaskMiss = $miss
+  return "logon=$logon repeat=$repeat policy=$policy action=$action"
+}
+# The task is the NEW form (optionally scoped to $wantUser).
+function TaskFormStep($id, $wantUser = '') {
+  $k = TaskSummary $id
+  $miss = @($script:TaskMiss)
+  if ($wantUser -and $k -notmatch ('logon=\S*\\' + [regex]::Escape($wantUser) + ' ')) { $miss += "LogonTrigger scoped to $wantUser" }
+  $obs = if ($miss.Count) { 'NOT the new task form; missing: ' + ($miss -join ', ') } else { 'new form' }
+  Rec $id 'schtasks /query /tn ApraFleet /xml (new form?)' ([int]($miss.Count -gt 0)) $k $obs
+}
+# apra-fleet status output ($file) shows no legacy-task hint.
+function NoLegacyHintStep($id, $file) {
+  $hit = Get-Content -LiteralPath $file -Encoding UTF8 -ErrorAction SilentlyContinue | Where-Object { $_ -match 'legacy task|upgrade needed|schtasks /delete' } | Select-Object -First 1
+  $svc = FirstMatch $file 'Service:'
+  if ($hit) { Rec $id 'apra-fleet status: no legacy-task hint' 1 $hit.Trim() 'status still reports a legacy task' }
+  elseif (-not $svc) { Rec $id 'apra-fleet status: no legacy-task hint' 1 (Head $file 160) 'status printed no Service: line (status did not run?)' }
+  else { Rec $id 'apra-fleet status: no legacy-task hint' 0 $svc 'no legacy hint' }
+}
+# Exactly one process listens on the server port, and it is apra-fleet.
+function OneServerStep($id) {
+  $pids = @(Get-NetTCPConnection -LocalPort 7523 -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique)
+  $names = @($pids | ForEach-Object { (Get-Process -Id $_ -ErrorAction SilentlyContinue).ProcessName })
+  $all = @(Get-Process apra-fleet -ErrorAction SilentlyContinue).Count
+  $ok = ($pids.Count -eq 1) -and ($names -join ',') -eq 'apra-fleet'
+  Rec $id 'Get-NetTCPConnection -LocalPort 7523 -State Listen' ([int](-not $ok)) "listeners=$($pids.Count) pids=$($pids -join ',') names=$($names -join ',')" "apra-fleet processes=$all"
+}
+
+# --- pass UL: the same user, NOT elevated ------------------------------------
+# A 0.4.3 user's "normal shell": a real logon of the same account, which UAC
+# gives the filtered token (Medium, Administrators deny-only). The runner
+# account is the built-in Administrator (RID 500), which without Admin Approval
+# Mode is never filtered, and a token synthesized from the elevated one
+# (CreateRestrictedToken) is refused by Task Scheduler although a real filtered
+# logon is not. So UL turns Admin Approval Mode on for the built-in account and
+# runs each non-elevated step in a NEW logon of the same account (seclogon,
+# throwaway password): the token UAC really gives a normal shell. Only on a
+# disposable box (Windows Sandbox, or the host driver's --i-am-disposable).
+$UlDir = Join-Path $env:SystemDrive 'fi-ul'
+# Absolute: Git for Windows puts a GNU whoami on PATH that rejects /groups.
+$WhoAmI = Join-Path $env:SystemRoot 'System32\whoami.exe'
+$UacKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+$script:UlCred = $null
+$script:UlAamSet = $false
+$script:UlAamPrev = $null
+# Integrity level of the current context, e.g. "High Mandatory Level".
+function IntegrityLevel {
+  $row = (& $WhoAmI /groups /fo csv 2>$null) | ConvertFrom-Csv | Where-Object { $_.'Group Name' -like 'Mandatory Label\*' } | Select-Object -First 1
+  if ($row) { return ($row.'Group Name' -replace '^Mandatory Label\\', '') } else { return 'unknown' }
+}
+# Prepares the filtered logon of THIS account; returns what it changed.
+function EnableLimitedLogon {
+  $did = @()
+  if ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value -match '-500$') {
+    $script:UlAamPrev = (Get-ItemProperty $UacKey -Name FilterAdministratorToken -ErrorAction SilentlyContinue).FilterAdministratorToken
+    Set-ItemProperty $UacKey -Name FilterAdministratorToken -Value 1 -Type DWord
+    $script:UlAamSet = $true
+    $did += 'built-in Administrator: Admin Approval Mode on'
+  }
+  $pw = 'Fi9!' + ([guid]::NewGuid().ToString('N').Substring(0, 20))
+  & net.exe user $env:USERNAME $pw 2>&1 | Out-Null
+  $did += "throwaway password (net user exit $LASTEXITCODE)"
+  $script:UlCred = New-Object Management.Automation.PSCredential("$env:COMPUTERNAME\$env:USERNAME", (ConvertTo-SecureString $pw -AsPlainText -Force))
+  return ($did -join '; ')
+}
+function RestoreLimitedLogon {
+  if (-not $script:UlAamSet) { return }
+  if ($null -eq $script:UlAamPrev) { Remove-ItemProperty $UacKey -Name FilterAdministratorToken -ErrorAction SilentlyContinue }
+  else { Set-ItemProperty $UacKey -Name FilterAdministratorToken -Value $script:UlAamPrev -Type DWord }
+}
+# Run a command in a new logon of THIS user (the non-elevated token): output to
+# files, no TTY, so no prompt is possible. Sets $script:RC/$script:LOG/$script:LimToken.
+function AsLimited($id, $name, $exe, [string[]]$argv = @(), $timeoutSec = 300, $cred = $script:UlCred) {
+  $script:LOG = Join-Path $Logs "$id-$name.log"
+  $out = Join-Path $UlDir "$id-$name.out"; $rcf = Join-Path $UlDir "$id-$name.rc"; $cmdf = Join-Path $UlDir "$id-$name.cmd"
+  Remove-Item $out, $rcf, "$rcf.tmp" -ErrorAction SilentlyContinue
+  $line = (Quote $exe) + ' ' + (($argv | ForEach-Object { Quote $_ }) -join ' ')
+  # First the token this process really got (integrity level, Administrators
+  # state). Redirection before echo: "echo 1> f" would make 1 a stream number.
+  $ilf = "$out.il"; Remove-Item $ilf -ErrorAction SilentlyContinue
+  # stdin from NUL: a seclogon process gets its own console, and a console stdin
+  # would make this an interactive context (prompts would wait forever).
+  [IO.File]::WriteAllText($cmdf, "@echo off`r`n`"$WhoAmI`" /groups /fo csv > `"$ilf`" 2>&1`r`n$line < NUL > `"$out`" 2>&1`r`n>`"$rcf.tmp`" echo %ERRORLEVEL%`r`nmove /y `"$rcf.tmp`" `"$rcf`" >nul`r`n", [Text.Encoding]::ASCII)
+  $script:RC = 'ERR not run'
+  try {
+    if (-not $cred) { throw 'no limited logon prepared' }
+    # Every std handle redirected to a file: otherwise Start-Process hands the
+    # new logon THIS process's stdout pipe, a server started by the install
+    # inherits it, and the host driver never sees EOF (the runner hangs).
+    $nul = "$cmdf.stdin"; [IO.File]::WriteAllText($nul, '')
+    $p = Start-Process cmd.exe -ArgumentList @('/d', '/c', "`"$cmdf`"") -Credential $cred -LoadUserProfile -WorkingDirectory $UlDir -PassThru -ErrorAction Stop `
+      -RedirectStandardInput $nul -RedirectStandardOutput "$cmdf.stdout" -RedirectStandardError "$cmdf.stderr"
+    if (-not $p.WaitForExit($timeoutSec * 1000)) {
+      try { $p.Kill() } catch {}
+      $script:RC = "ERR timeout after ${timeoutSec}s (limited logon); procs: " + ((Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.ProcessName -match '^(cmd|apra-fleet|cand|base|schtasks|wscript|whoami)$' } | ForEach-Object { "$($_.ProcessName)#$($_.Id)" }) -join ' ')
+    }
+    elseif (Test-Path $rcf) { $script:RC = ([string](Get-Content $rcf -Raw)).Trim() }
+    else { $script:RC = "$($p.ExitCode)" }
+  } catch { $script:RC = "ERR limited-logon launch failed: $($_.Exception.Message)" }
+  $script:LimToken = 'token unknown (no whoami output)'
+  try {
+    $rows = Get-Content $ilf -ErrorAction Stop | ConvertFrom-Csv
+    $il = ($rows | Where-Object { $_.'Group Name' -like 'Mandatory Label\*' } | Select-Object -First 1).'Group Name' -replace '^Mandatory Label\\', ''
+    $adm = ($rows | Where-Object { $_.'Group Name' -eq 'BUILTIN\Administrators' } | Select-Object -First 1).Attributes
+    $script:LimToken = "IL=$il; Administrators=$adm"
+  } catch {}
+  $text = if (Test-Path $out) { Get-Content $out -Raw -Encoding UTF8 } else { '(no output file)' }
+  [IO.File]::WriteAllText($script:LOG, "$text`r`n=== TOKEN: $($script:LimToken) ===`r`n=== EXIT CODE: $($script:RC) ===`r`n", $Utf8)
+}
+function FirstMatch($file, $pattern) {
+  $m = Get-Content -LiteralPath $file -Encoding UTF8 -ErrorAction SilentlyContinue | Where-Object { $_ -match $pattern } | Select-Object -First 1
+  if ($m) { return $m.Trim() } else { return '' }
+}
 
 try {
   [IO.File]::WriteAllText($Res, '', $Utf8)
@@ -193,8 +331,12 @@ try {
       $keyAfter = FleetKeyHash; $kr = if ($keyBefore -eq $keyAfter -or $keyBefore -eq 'absent') { 0 } else { 1 }
       Rec U14 'sha256 ~\.apra-fleet\fleet.key before/after' $kr "before=$keyBefore after=$keyAfter"
       TaskStep U15 ApraFleet
-      Run U16 status $AF @('status'); Rec U16 'apra-fleet status' $RC (Key $LOG @('State:'))
+      Run U16 status $AF @('status'); Rec U16 'apra-fleet status' $RC (Key $LOG @('State:')); $StatusLog = $LOG
       Run U17 update-check $AF @('update', '--check'); Rec U17 'apra-fleet update --check' $RC (Key $LOG @('up to date', 'Update', 'Error'))
+      # The baseline's onlogon task was replaced by the new form (elevated runner: /create /xml /f allowed).
+      TaskFormStep U18
+      NoLegacyHintStep U19 $StatusLog
+      OneServerStep U20
     }
     'U2' {
       Run V01 base-version $BaseExe @('--version'); Rec V01 'base --version' $RC (Key $LOG @('apra-fleet v')) (VerOf $LOG)
@@ -215,13 +357,102 @@ try {
       $m = MemberHasDummy; $s = SecretHasDummy
       Rec V10 'registry.json fi-dummy + secret --list fi_dummy_secret' ([int](-not $m) + [int](-not $s)) "member=$(YesNo $m) secret=$(YesNo $s)"
       TaskStep V11 ApraFleet
-      Run V12 status $AF @('status'); Rec V12 'apra-fleet status' $RC (Key $LOG @('State:'))
+      Run V12 status $AF @('status'); Rec V12 'apra-fleet status' $RC (Key $LOG @('State:')); $StatusLog = $LOG
+      TaskFormStep V13
+      NoLegacyHintStep V14 $StatusLog
+      OneServerStep V15
+    }
+    'UL' {
+      # Probe (advisory): UAC policy and this context's integrity level -- would a
+      # RunAs elevation be auto-approved here, and is the runner elevated.
+      $pol = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -ErrorAction SilentlyContinue
+      Rec L00 'UAC policy + integrity level' 0 "EnableLUA=$($pol.EnableLUA) ConsentPromptBehaviorAdmin=$($pol.ConsentPromptBehaviorAdmin) PromptOnSecureDesktop=$($pol.PromptOnSecureDesktop) IL=$(IntegrityLevel) SESSIONNAME=$env:SESSIONNAME user=$(whoami)"
+      New-Item -ItemType Directory -Force $UlDir | Out-Null
+      # Created elevated (owner Administrators): let the filtered token write its results.
+      & icacls.exe $UlDir /grant '*S-1-5-11:(OI)(CI)M' | Out-Null
+      $prep = EnableLimitedLogon
+      # The same user's filtered token must be MEDIUM integrity (not elevated).
+      AsLimited L01 whoami $WhoAmI @('/groups', '/fo', 'csv') 120
+      $medium = $script:LimToken -match 'IL=Medium Mandatory Level' -and $script:LimToken -match 'Administrators=Group used for deny only'
+      Rec L01 'limited-token context of the same user is not elevated' ([int](-not ($medium -and (Ok $RC)))) "rc=$RC $($script:LimToken) | $prep" $(if ($medium) { 'medium integrity' } else { 'the new logon of this user did not run at Medium integrity with Administrators deny-only, so it cannot stand in for a normal shell' })
+
+      Run L02 base-version $BaseExe @('--version'); Rec L02 'base --version' $RC (Key $LOG @('apra-fleet v')) (VerOf $LOG)
+      # The baseline install from the ELEVATED runner context, as 0.4.3 users had to:
+      # its schtasks /sc onlogon registers the legacy task.
+      Run L03 base-install $BaseExe @('install', '--workflows', 'none'); Rec L03 'base install --workflows none (elevated)' $RC (Key $LOG @('installed successfully', '^Error'))
+      $k = TaskSummary L04
+      Rec L04 'legacy task registered by the baseline' $RC $k
+      HealthStep L05 120
+
+      # Upgrade from the non-elevated token: /create /xml /f must be denied -> legacy task reused.
+      AsLimited L06 upgrade $CandExe @('install', '--force', '--workflows', 'none')
+      $UpLog = $LOG
+      Rec L06 'cand install --force --workflows none (not elevated)' $RC (Key $LOG @('installed successfully', 'NOT running', '^Error')) $script:LimToken
+      $reused = FirstMatch $UpLog 'existing task reused'
+      $guid = FirstMatch $UpLog 'registered by an older apra-fleet from an elevated prompt'
+      $why = if (-not $reused) { "no 'existing task reused': the non-elevated /create was NOT denied, so the legacy precondition did not hold" } elseif (-not $guid) { 'reused, but no legacy-task guidance printed' } else { 'reused with guidance' }
+      Rec L07 'install output: legacy task reused + guidance' ([int](-not ($reused -and $guid))) "$reused | $guid" $why
+      $elev = FirstMatch $UpLog 'Requesting a one-time Windows elevation|Elevation declined|elevated step could not be started|elevated delete'
+      Rec L08 'no elevation attempted (non-interactive)' ([int][bool]$elev) $(if ($elev) { $elev } else { 'no elevation attempted' })
+      $k = TaskSummary L09
+      $kept = $k -match 'logon=ANY-USER repeat=none' -and $k -match 'action=bat'
+      Rec L09 'legacy task still in place (not replaced)' ([int](-not $kept)) $k $(if ($kept) { 'legacy task kept' } else { 'the legacy task changed although a non-elevated install cannot change it' })
+      $nf = Join-Path $FleetHome 'data\service-notice.json'
+      $nt = Get-Content $nf -Raw -ErrorAction SilentlyContinue
+      $nok = $nt -and $nt -match 'schtasks /delete /tn ApraFleet /f' -and $nt -match 'no automatic revive'
+      Rec L10 "notice file $nf" ([int](-not $nok)) $(if ($nt) { Head $nf 160 } else { 'service-notice.json missing' })
+      $fl = Join-Path $FleetHome 'data\fleet.log'
+      $ll = FirstMatch $fl 'apra-fleet install: The ApraFleet scheduled task was registered by an older apra-fleet'
+      Rec L11 'fleet.log has the legacy-task guidance' ([int](-not $ll)) $(if ($ll) { $ll } else { "no 'apra-fleet install: The ApraFleet scheduled task ...' line in $fl" })
+      # The server came back through the OLD task (started by the non-elevated install).
+      HealthStep L12 120
+      AsLimited L13 status $AF @('status')
+      $hint = FirstMatch $LOG 'legacy task \(upgrade needed:'; $fix = FirstMatch $LOG 'schtasks /delete /tn ApraFleet /f'
+      Rec L13 'apra-fleet status (not elevated) shows the legacy hint + fix' ([int](-not ($hint -and $fix))) "$hint | $fix" $(if (-not $hint) { 'no legacy task (upgrade needed: ...) hint' } elseif (-not $fix) { 'hint without the schtasks /delete fix' } else { 'hint + fix' })
+
+      # The documented fix: elevated delete, then a non-elevated install --force.
+      Run L14 fix-delete 'schtasks.exe' @('/delete', '/tn', 'ApraFleet', '/f'); Rec L14 'elevated: schtasks /delete /tn ApraFleet /f' $RC (Key $LOG @('SUCCESS', 'ERROR'))
+      # Runner artifact, NOT part of the documented fix: this account's desktop
+      # session logged on unfiltered (before Admin Approval Mode was turned on),
+      # so the legacy task ran the server at High integrity,
+      # which no Medium process may stop. On a real UAC machine the task
+      # (/rl limited, the user's interactive token) runs it at Medium and the
+      # install --force below stops it itself. Stop it elevated here instead.
+      $hp = @(Get-Process apra-fleet -ErrorAction SilentlyContinue | ForEach-Object Id)
+      Run L14b stop-high-server 'taskkill.exe' (@('/F') + ($hp | ForEach-Object { @('/PID', "$_") }))
+      Rec L14b 'runner artifact: stop the High-integrity legacy server (elevated)' $(if ($hp.Count) { $RC } else { 0 }) $(if ($hp.Count) { Key $LOG @('SUCCESS', 'ERROR') } else { 'no apra-fleet process running' }) "pids: $($hp -join ',')"
+      AsLimited L15 fix-install $AF @('install', '--force', '--workflows', 'none')
+      Rec L15 'apra-fleet install --force --workflows none (not elevated)' $RC (Key $LOG @('installed successfully', '^Error')) "$($script:LimToken); exe present=$(YesNo (Test-Path $AF)); $(FirstMatch $LOG 'schtasks /create failed')"
+      TaskFormStep L16 $env:USERNAME
+      $gone = -not (Test-Path $nf)
+      Rec L17 'service-notice.json removed by the new task' ([int](-not $gone)) $(if ($gone) { 'notice cleared' } else { 'service-notice.json still present after the new task was installed' })
+      AsLimited L18 status-after $AF @('status')
+      NoLegacyHintStep L18 $LOG
+      # The new task (created without elevation) runs the candidate.
+      HealthStep L19 120
+      OneServerStep L20
+      # Diagnostic (advisory): can this Medium token register ANY task of its own?
+      # Separates a token/runner limit from a product /create problem.
+      AsLimited L21 probe-task 'schtasks.exe' @('/create', '/tn', 'ApraFleetULProbe', '/sc', 'once', '/st', '23:59', '/tr', 'cmd.exe /c exit', '/rl', 'limited', '/f') 120
+      Rec L21 'diag: Medium token creates a plain probe task' $RC (Key $LOG @('SUCCESS', 'ERROR')) $script:LimToken
+      Run L21x probe-delete 'schtasks.exe' @('/delete', '/tn', 'ApraFleetULProbe', '/f')
+      # Diagnostic (advisory): the same launch path for a fresh, non-built-in
+      # admin -- separates the launch mechanism from the RID-500 account.
+      $apw = 'Fi9!' + ([guid]::NewGuid().ToString('N').Substring(0, 20))
+      & net.exe user fi-adm $apw /add /y 2>&1 | Out-Null
+      & net.exe localgroup Administrators fi-adm /add 2>&1 | Out-Null
+      $acred = New-Object Management.Automation.PSCredential("$env:COMPUTERNAME\fi-adm", (ConvertTo-SecureString $apw -AsPlainText -Force))
+      AsLimited L22 probe-task-fi-adm 'schtasks.exe' @('/create', '/tn', 'ApraFleetULProbe2', '/sc', 'once', '/st', '23:59', '/tr', 'cmd.exe /c exit', '/rl', 'limited', '/f') 120 $acred
+      Rec L22 'diag: a fresh admin (filtered logon, same launch path) creates a probe task' $RC (Key $LOG @('SUCCESS', 'ERROR')) $script:LimToken
+      & schtasks.exe /delete /tn ApraFleetULProbe2 /f 2>&1 | Out-Null
+      & net.exe user fi-adm /delete 2>&1 | Out-Null
     }
     default { Log "unknown pass $Pass" }
   }
 } catch {
   Log "UNHANDLED: $($_.Exception.Message) at $($_.InvocationInfo.PositionMessage)"
 } finally {
+  if ($Pass -eq 'UL') { RestoreLimitedLogon }
   # Evidence for service failures (Last Run Time / Last Result / Logon Mode).
   try { Run 'diag' 'schtasks-verbose' 'schtasks.exe' @('/query', '/tn', 'ApraFleet', '/v', '/fo', 'list') } catch {}
   Get-ChildItem (Join-Path $FleetHome 'data') -Filter *.log -ErrorAction SilentlyContinue | ForEach-Object { Copy-Item $_.FullName (Join-Path $Logs $_.Name) -ErrorAction SilentlyContinue }
