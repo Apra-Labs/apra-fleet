@@ -160,7 +160,11 @@ export const ENVIRONMENT = {
   // `remote` member's folder lives on another host, so its KB identity is its
   // recorded origin remote (`remote` names a key of `remotes`).
   sessions: {
-    A: { member: 'contract-a', kind: 'local', repo: 'A' },
+    // Session A is repo A's kb_maintainer member session (the engine's
+    // kb_maintainer grant): the only member session served kb_promote and
+    // kb_resolve_contradiction. kb_setup and kb_export are never served to a
+    // member session, so their fixtures run in FULL_A.
+    A: { member: 'contract-a', kind: 'local', repo: 'A', kbMaintainer: true },
     B: { member: 'contract-b', kind: 'local', repo: 'B' },
     IMPORT_REJECTED: { member: 'contract-import-rejected', kind: 'local', repo: 'IMPORT_REJECTED' },
     // code_* sessions pin their provider (codeIntelProvider) so the recorded
@@ -356,7 +360,6 @@ export const SCENARIO = [
   { tool: 'kb_export', case: 'refusal-scope-key-removed' },
   { tool: 'kb_freshness_sweep', case: 'refusal-scope-key-removed' },
   { tool: 'kb_context', case: 'refusal-path-traversal' },
-  { tool: 'kb_export', case: 'refusal-repo-path-invalid' },
   { tool: 'kb_bible_commit', case: 'refusal-repo-path-invalid' },
   { tool: 'kb_query', case: 'refusal-self-no-workfolder' },
   { tool: 'kb_stats', case: 'refusal-self-not-a-repo' },

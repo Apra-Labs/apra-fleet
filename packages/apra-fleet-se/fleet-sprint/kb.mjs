@@ -301,7 +301,7 @@ function memberNameOf(member) {
  * other skip reason drops the id at once.
  *
  * @param {{
- *   memberCall?: (member: object, name: string, args: object) => Promise<any>,
+ *   memberCall?: (member: object, name: string, args: object, opts?: { kbMaintainer?: boolean }) => Promise<any>,
  *   maintainers?: object|(() => object),
  *   gPull?: (memberName: string, options?: { resetToRemoteTip?: boolean }) => Promise<any>,
  *   gPush?: (memberName: string) => Promise<any>,
@@ -316,6 +316,13 @@ function memberNameOf(member) {
  *   log?: Function,
  * }} opts
  */
+/**
+ * memberCall options for a call made AS a repository's kb_maintainer: the
+ * session carries the kb_maintainer grant, so the server also serves it
+ * kb_promote and kb_resolve_contradiction (see member-call.mjs).
+ */
+export const KB_MAINTAINER_CALL = Object.freeze({ kbMaintainer: true });
+
 export function createKbWorkClient(opts = {}) {
     const { memberCall, gPull, gPush, abortRebase, bibleBase, canResetCheckout, checkedOutBranch, bibleUnpushed, unpushedOnlyBible, log = () => {} } = opts;
     /** The sprint's start time (ms since epoch) from the sprint state, or null when unknown. */
@@ -553,7 +560,9 @@ export function createKbWorkClient(opts = {}) {
                 break;
             }
             const spec = OPS[op.kind];
-            const call = memberCall(target.record, spec.tool, spec.args(op.payload));
+            // AS the kb_maintainer: the grant is what lets the session see
+            // kb_promote (no other member session is served it).
+            const call = memberCall(target.record, spec.tool, spec.args(op.payload), KB_MAINTAINER_CALL);
             inFlight.set(maintainer, call.then(() => {}, () => {}));
             let res;
             try {
@@ -635,7 +644,7 @@ export function createKbWorkClient(opts = {}) {
         if (!(await onSprintBranch(maintainer, repo, ids.length))) return { ok: false, stage: 'branch check', error: 'the maintainer is not on the sprint branch', branchBlocked: true };
         let res;
         try {
-            res = await memberCall(target.record, 'kb_bible_commit', { ids, baseBranch: base.baseBranch, baseCommit: base.baseCommit });
+            res = await memberCall(target.record, 'kb_bible_commit', { ids, baseBranch: base.baseBranch, baseCommit: base.baseCommit }, KB_MAINTAINER_CALL);
         } catch (err) {
             return { ok: false, stage: 'kb_bible_commit', error: errText(err) };
         }

@@ -36,7 +36,7 @@ function git(cwd, args) {
  * @param {(agent: object) => void} deps.addAgent
  * @param {(id: string) => boolean} deps.removeAgent
  * @param {(server: object, scope?: object) => Promise<void>} deps.registerAllTools  (no scope = FULL)
- * @param {(memberId: string, channelCapable: boolean) => object} deps.memberToolScope
+ * @param {(memberId: string, channelCapable: boolean, engineOrigin?: boolean, kbMaintainer?: boolean) => object} deps.memberToolScope
  */
 export async function materializeSessionWorld(env, root, deps) {
   const repoPaths = new Map();
@@ -115,7 +115,12 @@ export async function materializeSessionWorld(env, root, deps) {
       tool: (name, _description, _shape, handler) => { handlers.set(name, handler); },
       server: { sendLoggingMessage: async () => {} },
     };
-    await deps.registerAllTools(fakeServer, deps.memberToolScope(id, false));
+    // `kbMaintainer: true` is the engine's kb_maintainer grant (an origin=engine
+    // member session carrying kb_maintainer=1): the only member session served
+    // kb_promote and kb_resolve_contradiction. No member session is served
+    // kb_setup or kb_export; the corpus runs those in a FULL session.
+    const maintainer = session.kbMaintainer === true;
+    await deps.registerAllTools(fakeServer, deps.memberToolScope(id, false, maintainer, maintainer));
     sessionHandlers.set(key, handlers);
   }
 

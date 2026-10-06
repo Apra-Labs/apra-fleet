@@ -11,17 +11,19 @@
 //             (src/services/member-tool-allowlist.ts), plus
 //             MEMBER_CHANNEL_TOOLS when the client declared the claude/channel
 //             capability at initialize (an interactive session that answers
-//             execute_prompt via respond_to_message).
+//             execute_prompt via respond_to_message), plus
+//             MEMBER_MAINTAINER_TOOLS (kb_promote, kb_resolve_contradiction)
+//             when the session carries the kb_maintainer grant.
 //
 // The calling session's member id is also made available to tool handlers
 // while they run (getSessionMemberId), so handlers do not have to guess it.
 
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { isMemberAllowedTool, MEMBER_CHANNEL_TOOLS } from './member-tool-allowlist.js';
+import { isMemberAllowedTool, isMemberMaintainerTool, MEMBER_CHANNEL_TOOLS } from './member-tool-allowlist.js';
 
 export type ToolScope =
   | { kind: 'full' }
-  | { kind: 'member'; memberId: string; channelCapable: boolean; engineOrigin?: boolean };
+  | { kind: 'member'; memberId: string; channelCapable: boolean; engineOrigin?: boolean; kbMaintainer?: boolean };
 
 export const FULL_TOOL_SCOPE: ToolScope = Object.freeze({ kind: 'full' as const });
 
@@ -30,11 +32,27 @@ export const FULL_TOOL_SCOPE: ToolScope = Object.freeze({ kind: 'full' as const 
  * on the MCP URL: the memberCall local adapter and the `apra-fleet call` verb).
  * Same tool surface; its kb_/code_ calls are excluded from the member's
  * session_stats counts (src/services/member-call-counts.ts).
+ *
+ * `kbMaintainer` is the engine's kb_maintainer grant (kb_maintainer=1 on an
+ * origin=engine member URL): the engine opens it only for the member it chose
+ * as a repository's kb_maintainer, to apply promotions there. It adds
+ * MEMBER_MAINTAINER_TOOLS. It is honoured only together with engineOrigin --
+ * the per-folder ?member= entry an agent session uses never carries it. Like
+ * ?member= and origin=engine it is an unauthenticated loopback URL parameter:
+ * a routing guard that keeps agent sessions off CONFIRMED-minting tools, not a
+ * security boundary against a local process (which can open a FULL session).
  */
-export function memberToolScope(memberId: string, channelCapable: boolean, engineOrigin = false): ToolScope {
-  return engineOrigin
-    ? { kind: 'member', memberId, channelCapable, engineOrigin: true }
-    : { kind: 'member', memberId, channelCapable };
+export function memberToolScope(
+  memberId: string,
+  channelCapable: boolean,
+  engineOrigin = false,
+  kbMaintainer = false,
+): ToolScope {
+  const scope: { kind: 'member'; memberId: string; channelCapable: boolean; engineOrigin?: boolean; kbMaintainer?: boolean } =
+    { kind: 'member', memberId, channelCapable };
+  if (engineOrigin) scope.engineOrigin = true;
+  if (engineOrigin && kbMaintainer) scope.kbMaintainer = true;
+  return scope;
 }
 
 /** True for a member scope whose session was opened with origin=engine. */
@@ -46,6 +64,7 @@ export function scopeIsEngineOrigin(scope: ToolScope): boolean {
 export function isToolInScope(name: string, scope: ToolScope): boolean {
   if (scope.kind === 'full') return true;
   if (isMemberAllowedTool(name)) return true;
+  if (scope.kbMaintainer === true && isMemberMaintainerTool(name)) return true;
   return scope.channelCapable && MEMBER_CHANNEL_TOOLS.includes(name);
 }
 

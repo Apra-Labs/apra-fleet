@@ -12,5 +12,6 @@
         "text": "{\"success\":true,\"steps\":[\"Installed git post-commit hook for KB invalidation\",\"Wrote KB config to <SCRATCH_ROOT>/fleet-data/knowledge/config.json\"],\"warnings\":[]}"
       }
     ]
-  }
+  },
+  "session": "FULL_A"
 }

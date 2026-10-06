@@ -13,6 +13,12 @@ after merging main at `97877f5e` (kb_*/code_* surface unchanged; server total
 
 **26 tools: 17 `kb_*` + 9 `code_*`.**
 
+Update (member session exposure, count unchanged): a MEMBER session is never
+served `kb_setup` or `kb_export`, and is served `kb_promote` and
+`kb_resolve_contradiction` only with the engine's kb_maintainer grant
+(spec.md section 2.5a). The tool surface itself is still the 26 tools below;
+a FULL session lists all of them.
+
 Update: `code_reindex` and `code_status` (rebuild / report the calling
 session's own code index) were added as the 8th and 9th `code_*` tools, taking
 the surface from 24 to 26.

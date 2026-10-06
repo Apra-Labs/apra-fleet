@@ -221,17 +221,40 @@ global-KB fallback stays CONFIRMED-only.
 ### Member-session tool calls
 
 A member session sees a reduced tool list. The allowlist lives in one
-dependency-free module (`src/services/member-tool-allowlist.ts`) and is
-derived by rule from `REGISTERED_TOOL_NAMES`: every `kb_*` and `code_*` tool
-plus `version`, `report_status` and `session_stats`. A newly registered
-`kb_`/`code_` tool is therefore member-allowed automatically. Enforcement is
-deny-by-omission: the tool registry's proxy simply does not register tools
-outside the scope for that session, and an unregistered `?member=` id is
-rejected with 403 by the HTTP transport. The `agy` provider's member tool
-lists are derived from the same allowlist. Note the allowlist includes
-write/admin KB tools (`kb_setup`, `kb_promote`, `kb_resolve_contradiction`,
-`kb_export`), so a member session can mint CONFIRMED entries and reconfigure
-the KB; this matches the specification and is a known trust boundary.
+dependency-free module (`src/services/member-tool-allowlist.ts`) and is an
+explicit list (`MEMBER_BASE_TOOLS`), not a `kb_`/`code_` prefix rule: every
+`code_*` tool, `version`, `report_status`, `session_stats`, and the `kb_*`
+tools that do not mint CONFIRMED or administer the KB. A newly registered
+`kb_`/`code_` tool is NOT member-visible until it is added there on purpose.
+Enforcement is deny-by-omission: the tool registry's proxy simply does not
+register tools outside the scope for that session (calling one is an
+unknown-tool error), and an unregistered `?member=` id is rejected with 403
+by the HTTP transport. The `agy` provider's member tool lists and the Claude
+deny rules are derived from the same allowlist.
+
+The KB write policy for member sessions:
+
+| Tool | Member session |
+|------|----------------|
+| `kb_setup` | never (it writes the install-wide provider config and stores credentials) |
+| `kb_export` | never (it auto-commits into the work tree) |
+| `kb_promote`, `kb_resolve_contradiction` | only the kb_maintainer session (they mint CONFIRMED) |
+| every other `kb_*` (incl. `kb_bible_commit`, `kb_import`) | yes |
+
+The kb_maintainer session is a member session the sprint engine opens with
+its kb_maintainer grant: `origin=engine&kb_maintainer=1` on the member URL
+(`connectFleetMember(id, { origin: 'engine', kbMaintainer: true })` locally,
+`apra-fleet call --kb-maintainer` on a remote member). The engine opens it
+only for the member it chose as a repository's kb_maintainer, to apply the
+reviewer's promotions and the bible commit there. `kb_maintainer=1` without
+`origin=engine` is ignored. Agent sessions on a member -- including on the
+maintainer -- use the plain `?member=<uuid>` entry, so they never see
+`kb_promote` or `kb_resolve_contradiction`: a role reports promotions in its
+output and the engine applies them. The grant is an unauthenticated loopback
+URL parameter like `?member=` itself: it keeps agent sessions off the
+CONFIRMED-minting tools, it is not a security boundary against a local
+process, which can always open a FULL session. A FULL session (no member
+identity) sees every tool.
 
 The per-folder MCP entry that gives a member this scoped session, and its
 install/verification flow, are described in

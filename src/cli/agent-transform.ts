@@ -367,9 +367,9 @@ export function transformAgentForClaude(content: string, filename: string): stri
 
 /**
  * The fleet's member-session tools, in Claude's MCP tool-name form
- * (mcp__apra-fleet__kb_query, ...): every registered kb_* / code_* tool of the
- * member allowlist. Derived, never hand-listed, so a new kb_/code_ tool is
- * granted as soon as it is registered.
+ * (mcp__apra-fleet__kb_query, ...): every kb_* / code_* tool of the member
+ * allowlist (MEMBER_ALLOWED_TOOLS). Derived from that list, never hand-listed
+ * here; a new kb_/code_ tool is granted once it is added to the allowlist.
  */
 export function memberMcpToolGrants(): string[] {
   return MEMBER_ALLOWED_TOOLS

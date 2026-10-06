@@ -39,7 +39,7 @@ import { registerPending, __clearAllPending } from '../src/services/pending-resp
 import { addAgent } from '../src/services/registry.js';
 import { sendMessage } from '../src/tools/send-message.js';
 import { fleetEvents } from '../src/services/event-bus.js';
-import { MEMBER_ALLOWED_TOOLS, MEMBER_CHANNEL_TOOLS, REGISTERED_TOOL_NAMES } from '../src/services/member-tool-allowlist.js';
+import { MEMBER_ALLOWED_TOOLS, MEMBER_CHANNEL_TOOLS, MEMBER_MAINTAINER_TOOLS, REGISTERED_TOOL_NAMES } from '../src/services/member-tool-allowlist.js';
 import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
 
 const RECONNECT = { maxRetries: 0, maxReconnectionDelay: 100, initialReconnectionDelay: 100, reconnectionDelayGrowFactor: 1 };
@@ -74,10 +74,11 @@ async function startServer(): Promise<HttpTransportHandle> {
 
 async function connect(
   port: number,
-  opts: { member?: string; channel?: boolean; bearer?: string } = {},
+  opts: { member?: string; channel?: boolean; bearer?: string; params?: Record<string, string> } = {},
 ): Promise<Client> {
   const url = new URL(`http://127.0.0.1:${port}/mcp`);
   if (opts.member) url.searchParams.set('member', opts.member);
+  for (const [k, v] of Object.entries(opts.params ?? {})) url.searchParams.set(k, v);
   const client = new Client(
     { name: 'scope-e2e-client', version: '1.0.0' },
     { capabilities: opts.channel ? { experimental: { 'claude/channel': {} } } : {} },
@@ -252,5 +253,61 @@ describe('tool-only ?member= sessions leave the session registry alone', () => {
 
     await terminate(member, handle);
     expect(sessionRegistry.get(localWorkspaceId(), memberId)).toBeUndefined();
+  });
+});
+
+describe('member KB write policy: kb_setup / kb_export never, kb_promote / kb_resolve_contradiction only with the kb_maintainer grant', () => {
+  const NEVER = ['kb_setup', 'kb_export'];
+  const MAINTAINER_ONLY = ['kb_promote', 'kb_resolve_contradiction'];
+  const ARGS: Record<string, Record<string, unknown>> = {
+    kb_setup: { provider: 'sqlite' },
+    kb_export: {},
+    kb_promote: { id: 'no-such-entry', reason: 'scope test: never reaches a KB entry' },
+    kb_resolve_contradiction: { winnerId: 'no-such-a', loserId: 'no-such-b', evidence: 'scope test' },
+  };
+
+  it('a non-maintainer member session neither lists nor can call any of the four (unknown tool)', async () => {
+    const handle = await startServer();
+    for (const opts of [
+      { member: memberId },
+      { member: memberId, channel: true },
+      // origin=engine alone is not the grant.
+      { member: memberId, params: { origin: 'engine' } },
+      // The grant is engine-only: kb_maintainer=1 without origin=engine is ignored.
+      { member: memberId, params: { kb_maintainer: '1' } },
+    ]) {
+      const client = await connect(handle.port, opts);
+      const names = await toolNames(client);
+      for (const t of [...NEVER, ...MAINTAINER_ONLY]) {
+        expect(names, `${JSON.stringify(opts)} lists ${t}`).not.toContain(t);
+        expect(await callFailsAsUnknownTool(client, t, ARGS[t]), `${JSON.stringify(opts)} ${t}`).toBe(true);
+      }
+    }
+  });
+
+  it('the kb_maintainer member session lists and reaches kb_promote and kb_resolve_contradiction, but still not kb_setup or kb_export', async () => {
+    const handle = await startServer();
+    const maint = await connect(handle.port, { member: memberId, params: { origin: 'engine', kb_maintainer: '1' } });
+    const names = await toolNames(maint);
+    expect(names).toEqual(sorted([...MEMBER_ALLOWED_TOOLS, ...MEMBER_MAINTAINER_TOOLS]));
+    for (const t of MAINTAINER_ONLY) {
+      // Reaches the real handler: it refuses at kb (self) resolution (the
+      // test member has no KB identity) -- a handler error, not the SDK's
+      // unknown-tool error.
+      const result = await maint.callTool({ name: t, arguments: ARGS[t] });
+      const text = ((result.content as Array<{ text?: string }>)?.[0]?.text ?? '');
+      expect(text, t).toMatch(/^E-SELF-[A-Z-]+: /);
+      expect(text, t).not.toMatch(/Tool \S+ not found/);
+    }
+    for (const t of NEVER) {
+      expect(names).not.toContain(t);
+      expect(await callFailsAsUnknownTool(maint, t, ARGS[t]), t).toBe(true);
+    }
+  });
+
+  it('a FULL session still lists all four', async () => {
+    const handle = await startServer();
+    const names = await toolNames(await connect(handle.port));
+    for (const t of [...NEVER, ...MAINTAINER_ONLY]) expect(names).toContain(t);
   });
 });

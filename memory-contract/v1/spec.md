@@ -119,7 +119,9 @@ carry a KB identity is refused before the provider is reached
 (`E-SELF-NO-WORKFOLDER`, `E-SELF-NOT-A-REPO`, `E-SELF-NO-REMOTE`). A remote
 member's folder lives on another host: the read tools carry it verbatim and
 tolerate the missing anchor, while the writing tools (`kb_export`,
-`kb_bible_commit`, `kb_import`) refuse with `E-REPO-PATH-INVALID`. This is recorded in
+`kb_bible_commit`, `kb_import`) refuse with `E-REPO-PATH-INVALID` (for
+`kb_export` that path is defence in depth: no member session is served it, see
+section 2.5a). This is recorded in
 `methods.json`'s `_meta.kb_self_resolution` and per tool in each method
 entry's `tools[].anchor_validation` field.
 
@@ -155,6 +157,34 @@ the entries (sets `superseded_at`, never deletes) and returns
 `{discarded, not_found, already_discarded}`. `kb_feedback` is refused with
 `E-MEMBER-VIEW-READ-ONLY`. A FULL session reads and writes the per-repo DB
 unchanged.
+
+### 2.5a MEMBER-session tool exposure (KB write policy)
+
+A MEMBER session is served an explicit tool list
+(`src/services/member-tool-allowlist.ts`), not every `kb_*` tool:
+
+- `kb_setup` (writes the machine-wide provider config and stores credentials)
+  and `kb_export` (auto-commits into the work tree) are NEVER served to a
+  member session. Calling one is an unknown-tool error; they are available to
+  a FULL session.
+- `kb_promote` and `kb_resolve_contradiction` mint CONFIRMED. They are served
+  only to a member session carrying the kb_maintainer grant: an engine-opened
+  member session (`origin=engine`) with `kb_maintainer=1` on its URL, which the
+  engine opens only for the member it chose as a repository's kb_maintainer
+  (client `connectFleetMember(id, { origin: 'engine', kbMaintainer: true })`,
+  `apra-fleet call --kb-maintainer`). `kb_maintainer=1` without
+  `origin=engine` is ignored. Every other member session -- including an agent
+  session on the maintainer member, which connects through the plain
+  `?member=<uuid>` entry -- gets an unknown-tool error.
+- Every other `kb_*` tool (including `kb_bible_commit`, `kb_import` and
+  `kb_reconcile_prefilter`) and every `code_*` tool is served to every member
+  session.
+
+The grant is an unauthenticated loopback URL parameter, like `?member=` and
+`origin=engine`: it keeps agent sessions off the CONFIRMED-minting tools, it is
+not a security boundary against a local process (which can open a FULL
+session). The round-trip harness runs session A as the kb_maintainer session
+and records `kb_setup` and `kb_export` in `FULL_A`.
 
 ### 2.6 Bible provenance (target base branch) and entry-level commits
 
@@ -362,7 +392,9 @@ KB identity is its single known origin remote (`knownRepoRemoteUrl`) and the
 folder is passed verbatim; `kb_session_prime` and `kb_stats` tolerate that
 missing anchor (`taxonomy.json` non_error_outcomes
 `N-ANCHOR-VERBATIM-MISSING`), while `kb_export`, `kb_bible_commit` and
-`kb_import` refuse with `E-REPO-PATH-INVALID` (`requireLocalFolder`). In-process callers that already
+`kb_import` refuse with `E-REPO-PATH-INVALID` (`requireLocalFolder`; a member
+session is never served `kb_export`, section 2.5a, so for it this is defence in
+depth). In-process callers that already
 know the repo (the post-dispatch harvest in `src/tools/execute-prompt.ts`, the
 `kb commit` / `kb import` CLIs) pass an explicit anchor as the handler's second
 argument, which no MCP request can carry.

@@ -157,7 +157,11 @@ Resolves the local HTTP singleton, appends `?member=<memberId>` and connects,
 returning `{ transport, mcpClient, mode: 'http', url, close }`. `deps.origin:
 'engine'` also appends `origin=engine` (engine-origin session: its kb_/code_
 calls are excluded from the member's `session_stats` counts; only memberCall and
-`apra-fleet call` set it). Always `await close()` when done: it DELETEs the server session (`transport.stop()` alone leaks it). Refuses a stdio
+`apra-fleet call` set it). `deps.kbMaintainer: true` (only with `origin:
+'engine'`, else it throws) also appends `kb_maintainer=1`, the engine's
+kb_maintainer grant: the session is additionally served `kb_promote` and
+`kb_resolve_contradiction`, which no other member session sees. A member
+session is never served `kb_setup` or `kb_export`. Always `await close()` when done: it DELETEs the server session (`transport.stop()` alone leaks it). Refuses a stdio
 resolution (a member identity rides on the URL). An unregistered uuid rejects
 with `err.status === 403` / `err.code === 'HTTP_403'` (raised by
 `StreamableHttpTransport.start()` for any non-OK initialize response as

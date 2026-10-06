@@ -347,7 +347,9 @@ function parseEnvelopeText(response) {
 console.log('== PASS 1: happy-path corpus ==');
 
 // --- kb_setup -----------------------------------------------------------
-await recordHappy('kb_setup', 'happy', { provider: 'sqlite' });
+// No member session is served kb_setup (it writes the machine-wide provider
+// config), so it is recorded in the FULL session over repo A.
+await withSession('FULL_A', () => recordHappy('kb_setup', 'happy', { provider: 'sqlite' }));
 
 // --- kb_capture (two ordinary entries to build on) -----------------------
 const captureFoo = await recordHappy('kb_capture', 'happy', {
@@ -406,9 +408,11 @@ if (idFoo) {
 // --- kb_export --------------------------------------------------------
 // Before the CONFIRMED-only read and kb_stats: a member session's default
 // (CONFIRMED) reads come from its checkout bible, so the promoted entry is
-// visible to them once kb_export has written it there.
-await recordHappy('kb_export', 'happy', {
-});
+// visible to them once kb_export has written it there. No member session is
+// served kb_export (it auto-commits into the work tree), so it is recorded in
+// the FULL session over repo A, which shares repo A's KB.
+await withSession('FULL_A', () => recordHappy('kb_export', 'happy', {
+}));
 
 // --- kb_bible_commit -----------------------------------------------------
 // Entry-level merge of the promoted entry into repo A's bible, with explicit
@@ -618,9 +622,9 @@ await recordRefusal('kb_capture', 'refusal-scope-key-removed', {
   source_files: ['src/example.ts'],
   repo_remote_url: 'https://example.test/some-other-repo.git',
 }, 'E-SCOPE-KEY-REMOVED');
-await recordRefusal('kb_export', 'refusal-scope-key-removed', {
+await withSession('FULL_A', () => recordRefusal('kb_export', 'refusal-scope-key-removed', {
   repo_path: '/elsewhere/other-repo',
-}, 'E-SCOPE-KEY-REMOVED');
+}, 'E-SCOPE-KEY-REMOVED'));
 await recordRefusal('kb_freshness_sweep', 'refusal-scope-key-removed', {
   repo: '/elsewhere/other-repo',
 }, 'E-SCOPE-KEY-REMOVED');
@@ -629,9 +633,10 @@ await recordRefusal('kb_context', 'refusal-path-traversal', {
   files: ['../outside-the-repo.txt'],
 }, 'E-PATH-TRAVERSAL');
 
-// A remote member session: its folder lives on another host, so kb_export
-// (which writes the bible there) refuses.
-await withSession('REMOTE_UNREACHABLE', () => recordRefusal('kb_export', 'refusal-repo-path-invalid', {}, 'E-REPO-PATH-INVALID'));
+// A remote member session: its folder lives on another host, so
+// kb_bible_commit (which writes the bible there) refuses. (kb_export has no
+// such case: no member session is served it, and a FULL session's folder is
+// the server's own working folder.)
 await withSession('REMOTE_UNREACHABLE', () => recordRefusal('kb_bible_commit', 'refusal-repo-path-invalid', {
   ids: [],
   baseBranch: 'main',
