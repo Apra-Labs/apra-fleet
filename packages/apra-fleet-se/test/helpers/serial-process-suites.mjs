@@ -47,6 +47,7 @@ export const SERIAL_PROCESS_TEST_FILES = [
     'i9ag19-11-serve-startup-toolchain.test.mjs',
     'i9ag19-14-pathless-service-launch.test.mjs',
     'i9ag34-sprints-console-hop-e2e.test.mjs',
+    'i9ag3-10-launch-appears-on-sprints-page.test.mjs',
     'installed-supervisor.test.mjs',
     'registration-convergence.test.mjs',
     'registration.test.mjs',
