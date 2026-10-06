@@ -21,6 +21,7 @@ import { createHistoryView, registerHistoryViewRoutes } from '../src/supervisor/
 import { createReconciler, registerReservationRoutes } from '../src/supervisor/reconcile.mjs';
 import { createSupervisor } from '../src/supervisor/server.mjs';
 import { scaledTimeout } from './helpers/scaled-timeout.mjs';
+import { waitForChildUp } from './helpers/viewer-child-wait.mjs';
 
 // =============================================================================
 // apra-fleet-eft.6.6 -- dashboard integration: stack, backlog exclusion,
@@ -109,25 +110,6 @@ async function waitFor(pred, { timeoutMs = WAIT_BUDGET_MS, intervalMs = 50, labe
         // eslint-disable-next-line no-await-in-loop
         await sleep(intervalMs);
     }
-}
-
-/**
- * Waits for a just-spawned viewer-child fixture to answer GET /state -- and for
- * the answer to come from THAT child: the fixture reports its own pid, and only
- * a 200 whose body pid equals `expectedPid` (the pid POST /api/sprints
- * returned) counts, so a foreign process answering on the same (raced or
- * recycled) port is never mistaken for our child.
- */
-async function waitForChildUp(childPort, expectedPid, label) {
-    await waitFor(async () => {
-        try {
-            const r = await httpGet(childPort, '/state');
-            if (r.status !== 200) return false;
-            return JSON.parse(r.body).pid === expectedPid;
-        } catch {
-            return false;
-        }
-    }, { timeoutMs: WAIT_BUDGET_MS, label: `${label} (pid ${expectedPid}, port ${childPort})` });
 }
 
 /** GET a path against a given host:port, resolving the full body once ended. */
@@ -358,7 +340,7 @@ describe('dashboard integration (apra-fleet-eft.6.6) -- stack, backlog, launch, 
 
         // Wait for the real child to actually be answering before any later test
         // depends on it.
-        await waitForChildUp(childPort, childPid, 'viewer-child /state to answer');
+        await waitForChildUp(childPort, childPid, { timeoutMs: WAIT_BUDGET_MS, label: 'viewer-child /state to answer' });
     });
 
     // -------------------------------------------------------------------------
@@ -675,7 +657,7 @@ describe('dashboard integration auth (apra-fleet-50j6.2.2) -- Stop/force-release
         childPid = track(res.json.pid);
         childPort = res.json.port;
 
-        await waitForChildUp(childPort, childPid, 'auth-suite viewer-child /state to answer');
+        await waitForChildUp(childPort, childPid, { timeoutMs: WAIT_BUDGET_MS, label: 'auth-suite viewer-child /state to answer' });
     });
 
     // -------------------------------------------------------------------------

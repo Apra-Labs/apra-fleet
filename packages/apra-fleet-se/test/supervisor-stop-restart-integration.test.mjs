@@ -14,6 +14,7 @@ import { createSprintController, registerSprintRoutes } from '../src/supervisor/
 import { formatStopError } from '../src/supervisor/dashboard.mjs';
 import { formatLaunchError } from '../src/supervisor/launch-form.mjs';
 import { createSupervisor } from '../src/supervisor/server.mjs';
+import { waitForChildUp as waitForChildUpWithPid } from './helpers/viewer-child-wait.mjs';
 
 // =============================================================================
 // apra-fleet-3i3.4 -- Sprint Stack Stop/Restart, end to end against a REAL
@@ -143,21 +144,12 @@ function httpPostJson(port, urlPath, payload, host = '127.0.0.1') {
 }
 
 /**
- * Waits for a just-spawned viewer-child fixture to actually be answering --
- * and for the answer to come from THAT child: the fixture's GET /state reports
- * its own pid, and only a 200 whose body pid equals `expectedPid` (the pid POST
- * /api/sprints returned) counts. Any other process answering on the same port
- * (a raced or recycled port) is never mistaken for our child.
+ * Waits for a just-spawned viewer-child fixture to be answering GET /state AS
+ * ITSELF: only a 200 whose body pid equals `expectedPid` (the pid POST
+ * /api/sprints returned) counts -- see test/helpers/viewer-child-wait.mjs.
  */
-async function waitForChildUp(childPort, expectedPid) {
-    await waitFor(async () => {
-        try {
-            const r = await httpGet(childPort, '/state');
-            return r.status === 200 && r.json && r.json.pid === expectedPid;
-        } catch {
-            return false;
-        }
-    }, { label: `viewer-child pid ${expectedPid} to answer /state on port ${childPort}` });
+function waitForChildUp(childPort, expectedPid) {
+    return waitForChildUpWithPid(childPort, expectedPid, { timeoutMs: 10000 });
 }
 
 /** Finds a named member's row in a GET /api/members response body. */
