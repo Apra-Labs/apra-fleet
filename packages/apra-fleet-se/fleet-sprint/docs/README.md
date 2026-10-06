@@ -182,10 +182,19 @@ dead -- there is nothing left to proxy a stop to.
 Clear it directly, with no supervisor restart required:
 
 ```bash
-curl -X POST http://localhost:8787/api/reservations/<old-sprint-id>/force-release \
+curl -sf -X POST http://localhost:8787/api/reservations/<old-sprint-id>/force-release \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $(cat ~/.apra-fleet/fleet.key 2>/dev/null || cat <dataDir>/private/token)" \
   -d '{"by": "<your name/reason>", "reason": "sprint child crashed, pid confirmed dead"}'
 ```
+PowerShell:
+```powershell
+Invoke-RestMethod -Method Post -Headers @{ Authorization = 'Bearer ' + (Get-Content -Raw "$HOME\.apra-fleet\fleet.key").Trim() } -ContentType 'application/json' http://localhost:8787/api/reservations/<old-sprint-id>/force-release -Body '{"by":"<your name/reason>","reason":"sprint child crashed, pid confirmed dead"}'
+```
+The bearer token is `<home>/.apra-fleet/fleet.key` (primary); the supervisor falls back to
+`<dataDir>/private/token` only when `fleet.key` did not exist at boot. A `401 {"error":"unauthorized"}`
+means the token is missing or wrong -- it is NOT an empty result.
+With `-f` a 401 makes curl exit non-zero instead of looking like a successful release.
 
 This releases both of the supervisor ledger's axes (member set + issue-scope
 root) for that sprint id in one call and records an auditable

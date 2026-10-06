@@ -305,10 +305,13 @@ with your own Node. If `apra-fleet install` cannot register the service it fails
 loudly with a non-zero exit naming the reason, rather than reporting a successful
 install with no supervisor registered.
 
-Launching a sprint is one POST:
+Launching a sprint is one authenticated POST (send `Authorization: Bearer <token>`; the
+token is `~/.apra-fleet/fleet.key`, falling back to `<dataDir>/private/token` only when
+`fleet.key` did not exist when the supervisor booted -- a `401` means the token is missing or wrong):
 
 ```jsonc
 POST http://127.0.0.1:8787/api/sprints
+Authorization: Bearer <contents of ~/.apra-fleet/fleet.key>
 {
   "issue":   "myapp-epic-1",          // your epic bead id (comma-separate for multiple roots)
   "members": ["dev1"],                // registered member name(s)
