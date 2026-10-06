@@ -198,7 +198,7 @@ test('runPlanPhase called without publishState does not throw', async () => {
         validated: { goal: 'P1/P2', requirementsFile: null },
         targetIssues: ['bd-1'],
         requirementsContent: null,
-        orchestratorMember: 'local',
+        backlogMember: 'local',
         getMemberForRole: () => 'local',
         sprintState: {},
         gitSync: { syncBeadsBefore: async () => {}, syncBeadsAfter: async () => {} },
