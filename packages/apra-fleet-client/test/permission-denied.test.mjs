@@ -29,7 +29,7 @@ const recorded = {
             signals: ['result_json', 'stderr', 'transcript'],
         },
         sessionId: '48ae7611-290b-4396-90c6-c266d09c9473',
-        usage: { input_tokens: 17220, output_tokens: 68, total_tokens: 17288 },
+        usage: { input_tokens: 17220, output_tokens: 68, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, total_tokens: 17288 },
     },
 };
 

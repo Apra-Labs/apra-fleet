@@ -247,12 +247,30 @@ export function defaultUsageLimitSignal(output: string, now: number = Date.now()
   return guessedUsageLimitSignal(output, now);
 }
 
+/**
+ * Token counts one dispatch reported. input_tokens/output_tokens are required;
+ * the cache fields are provider-optional -- an adapter whose CLI reports
+ * prompt-cache traffic (Claude: cache_read_input_tokens /
+ * cache_creation_input_tokens on the result event's usage) fills them, every
+ * other adapter leaves them absent and consumers treat absent as 0. They are
+ * billed input tokens that are NOT included in input_tokens, so a cost figure
+ * that ignores them undercounts a cache-heavy dispatch several-fold.
+ */
+export interface TokenUsage {
+  input_tokens: number;
+  output_tokens: number;
+  /** Prompt tokens served from the provider's prompt cache. */
+  cache_read_input_tokens?: number;
+  /** Prompt tokens written into the provider's prompt cache. */
+  cache_creation_input_tokens?: number;
+}
+
 export interface ParsedResponse {
   result: string;
   sessionId?: string;
   isError: boolean;
   raw: string;
-  usage?: { input_tokens: number; output_tokens: number };
+  usage?: TokenUsage;
   /** e.g. 'error_max_turns' -- the CLI result event's own subtype, when present. */
   subtype?: string;
   /** e.g. 'max_turns' -- the CLI result event's own terminal_reason, when present. */

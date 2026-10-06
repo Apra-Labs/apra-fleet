@@ -227,6 +227,39 @@ describe('budget-awareness: estimateDispatchCost pricing', () => {
     expect(cost).toBeCloseTo(15 + 75);
   });
 
+  // A recorded cache-heavy Claude dispatch: cache reads dwarf fresh input.
+  const CACHE_USAGE = {
+    input_tokens: 2_000,
+    output_tokens: 10_000,
+    cache_read_input_tokens: 400_000,
+    cache_creation_input_tokens: 20_000,
+  };
+
+  it('a dollar budget prices cache-read and cache-write tokens at their own rates', () => {
+    // claude premium = opus. Hand-computed from Anthropic list prices ($/1M):
+    // prompt 15, completion 75, cache read 1.50 (0.1x), cache write 18.75 (1.25x).
+    //   input        2_000 * 15    / 1e6 = 0.03
+    //   output      10_000 * 75    / 1e6 = 0.75
+    //   cache read 400_000 * 1.50  / 1e6 = 0.60
+    //   cache write 20_000 * 18.75 / 1e6 = 0.375
+    //   total                             = 1.755
+    const cost = estimateDispatchCost(agent, providerWithoutUsage(), 'premium', CACHE_USAGE, 'dollars');
+    expect(cost).toBeCloseTo(1.755, 10);
+    // The old input+output-only figure (0.78) would undercount it.
+    expect(cost).toBeGreaterThan(0.78 + 0.5);
+  });
+
+  it('a token budget counts cache-read and cache-write tokens too', () => {
+    const cost = estimateDispatchCost(agent, providerWithoutUsage(), 'standard', CACHE_USAGE, 'tokens');
+    expect(cost).toBe(2_000 + 10_000 + 400_000 + 20_000);
+  });
+
+  it('recordAndEvaluate accumulates the cache-inclusive estimate against a dollar budget', async () => {
+    setBudget(SCOPE, { limit: 10, unit: 'dollars' });
+    await recordAndEvaluate({ scope: SCOPE, agent, provider: providerWithoutUsage(), tier: 'premium', usage: CACHE_USAGE });
+    expect(estimatedSpendFor(SCOPE)).toBeCloseTo(1.755, 10);
+  });
+
   it('an unpriceable tier contributes 0 rather than a fabricated cost', () => {
     const noneAgent = makeTestAgent({ id: 'm-none', llmProvider: 'none' });
     const cost = estimateDispatchCost(

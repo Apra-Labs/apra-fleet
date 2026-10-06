@@ -22,6 +22,26 @@ export interface ModelPrice {
   model: string;
   promptPrice: number;
   completionPrice: number;
+  /** $/1M prompt tokens served from the prompt cache (cache_read_input_tokens). */
+  cacheReadPrice: number;
+  /** $/1M prompt tokens written to the prompt cache (cache_creation_input_tokens). */
+  cacheWritePrice: number;
+}
+
+/**
+ * Anthropic list-pricing multipliers on the base input (prompt) price, from
+ * https://docs.anthropic.com/en/docs/about-claude/pricing (prompt caching):
+ * a cache read (hit) costs 0.1x the base input price and a 5-minute cache
+ * write costs 1.25x. They apply to every Claude model, whichever provider
+ * dispatches it. Fleet-dispatched sessions use the default 5-minute cache TTL.
+ */
+export const ANTHROPIC_CACHE_READ_MULTIPLIER = 0.1;
+export const ANTHROPIC_CACHE_WRITE_MULTIPLIER = 1.25;
+
+/** True for a Claude-family model id, under any provider's naming
+ *  (claude provider aliases haiku/sonnet/opus, copilot/agy 'claude-*' ids). */
+function isClaudeModel(model: string): boolean {
+  return /^(haiku|sonnet|opus)$/.test(model) || /(^|\/)claude-/.test(model);
 }
 
 export type MemberModelPricing = {
@@ -119,7 +139,24 @@ function priceModel(providerName: LlmProvider, model: string): ModelPrice | null
   if (!table) return null;
   const price = table[model];
   if (!price) return null;
-  return { model, promptPrice: price.prompt, completionPrice: price.completion };
+  // Claude models: Anthropic's published cache multipliers. Other models'
+  // adapters report no cache-token counts (always 0), so their cache rates
+  // never contribute; they are set to the plain prompt price -- the honest
+  // "billed as an input token, no known discount" figure -- rather than an
+  // invented discount.
+  const claude = isClaudeModel(model);
+  return {
+    model,
+    promptPrice: price.prompt,
+    completionPrice: price.completion,
+    cacheReadPrice: claude ? round6(price.prompt * ANTHROPIC_CACHE_READ_MULTIPLIER) : price.prompt,
+    cacheWritePrice: claude ? round6(price.prompt * ANTHROPIC_CACHE_WRITE_MULTIPLIER) : price.prompt,
+  };
+}
+
+/** Strip binary floating-point noise (15 * 0.1 = 1.5000000000000002). */
+function round6(n: number): number {
+  return Math.round(n * 1e6) / 1e6;
 }
 
 /**

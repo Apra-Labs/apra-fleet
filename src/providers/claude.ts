@@ -262,9 +262,18 @@ export class ClaudeProvider implements ProviderAdapter {
   parseResponse(result: SSHExecResult): ParsedResponse {
     const raw = result.stdout.trim();
 
+    // Claude reports prompt-cache traffic in two fields separate from (not
+    // included in) input_tokens; both are billed, so they are carried through
+    // (0 when the CLI omits them) for cost/budget accounting downstream.
+    const cacheCount = (n: unknown): number => (typeof n === 'number' && Number.isFinite(n) && n > 0 ? n : 0);
     const extractUsage = (u: any) =>
       u && typeof u.input_tokens === 'number' && typeof u.output_tokens === 'number'
-        ? { input_tokens: u.input_tokens, output_tokens: u.output_tokens }
+        ? {
+          input_tokens: u.input_tokens,
+          output_tokens: u.output_tokens,
+          cache_read_input_tokens: cacheCount(u.cache_read_input_tokens),
+          cache_creation_input_tokens: cacheCount(u.cache_creation_input_tokens),
+        }
         : undefined;
 
     // apra-fleet-eft.28.6: first non-blank string wins. Used so an EMPTY

@@ -41,10 +41,37 @@ import { registerPending } from '../services/pending-responses.js';
 import type { Agent, SSHExecResult } from '../types.js';
 import type { AgentStrategy } from '../services/strategy.js';
 import type { ProviderAdapter } from '../providers/index.js';
-import type { ParsedResponse, PermissionDenial, UsageLimitSignal } from '../providers/provider.js';
+import type { ParsedResponse, PermissionDenial, TokenUsage, UsageLimitSignal } from '../providers/provider.js';
 import { isMaxTurnsResponse } from '../providers/provider.js';
 import { preflightCheck } from '../services/preflight-check.js';
 import { ensureAgyProject } from '../services/agy-project.js';
+
+
+/**
+ * execute_prompt's structured `usage` block. The cache counts are billed
+ * prompt tokens reported separately from input_tokens (0 when the provider
+ * reports none). DECISION: total_tokens stays input_tokens + output_tokens --
+ * it is the context-window figure fleet-sprint's context admission reads, and
+ * cache tokens are not added to it so admission behaviour is unchanged. Cost
+ * consumers must price the cache counts themselves (see estimateDispatchCost).
+ */
+export interface StructuredUsage {
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_input_tokens: number;
+  cache_creation_input_tokens: number;
+  total_tokens: number;
+}
+
+export function toStructuredUsage(u: TokenUsage): StructuredUsage {
+  return {
+    input_tokens: u.input_tokens,
+    output_tokens: u.output_tokens,
+    cache_read_input_tokens: u.cache_read_input_tokens ?? 0,
+    cache_creation_input_tokens: u.cache_creation_input_tokens ?? 0,
+    total_tokens: u.input_tokens + u.output_tokens,
+  };
+}
 
 export interface ExecutePromptStructured {
   isError?: boolean;
@@ -54,7 +81,7 @@ export interface ExecutePromptStructured {
   // dropped when structuredContent is also present) -- this field exists so the
   // reply reaches them at all, rather than being stranded in the display text.
   response?: string;
-  usage?: { input_tokens: number; output_tokens: number; total_tokens: number };
+  usage?: StructuredUsage;
   sessionId?: string;
   /** Present on an 'insufficient_context_headroom' rejection (apra-fleet-eft.81.1). */
   detail?: { demand: number; headroom: number; window: number };
@@ -1498,7 +1525,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
 
   let _epExitCode: number | 'error' = 'error';
   let _epError: string | undefined;
-  let _epUsage: { input_tokens: number; output_tokens: number } | undefined;
+  let _epUsage: TokenUsage | undefined;
   let _epOffline = false;
   // GitHub #563: the typed result for a dispatch that ran out of max_total_s
   // (measured from handler entry), so callers never see a raw transport timeout.
@@ -1548,7 +1575,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
         reason: 'usage_limit',
         usageLimit: signal,
         ...(p.sessionId ? { sessionId: p.sessionId } : {}),
-        ...(p.usage ? { usage: { input_tokens: p.usage.input_tokens, output_tokens: p.usage.output_tokens, total_tokens: p.usage.input_tokens + p.usage.output_tokens } } : {}),
+        ...(p.usage ? { usage: toStructuredUsage(p.usage) } : {}),
       },
     };
   };
@@ -1688,7 +1715,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
           permissionDenied: denial,
           ...(partial ? { response: partial } : {}),
           ...(parsed.sessionId ? { sessionId: parsed.sessionId } : {}),
-          ...(_epUsage ? { usage: { input_tokens: _epUsage.input_tokens, output_tokens: _epUsage.output_tokens, total_tokens: _epUsage.input_tokens + _epUsage.output_tokens } } : {}),
+          ...(_epUsage ? { usage: toStructuredUsage(_epUsage) } : {}),
         },
       };
     }
@@ -1732,7 +1759,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
           // 10-hour run with dozens of max_turns exhaustions reporting
           // stats.totalCost of $0). Attach it here whenever it's available so
           // the caller can record the real partial cost instead of nothing.
-          ...(_epUsage ? { usage: { input_tokens: _epUsage.input_tokens, output_tokens: _epUsage.output_tokens, total_tokens: _epUsage.input_tokens + _epUsage.output_tokens } } : {}),
+          ...(_epUsage ? { usage: toStructuredUsage(_epUsage) } : {}),
         },
       };
     }
@@ -1881,7 +1908,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
             reason: 'session_not_found',
             sessionId: expectedSid,
             returnedSessionId: parsed.sessionId,
-            ...(parsed.usage ? { usage: { ...parsed.usage, total_tokens: parsed.usage.input_tokens + parsed.usage.output_tokens } } : {}),
+            ...(parsed.usage ? { usage: toStructuredUsage(parsed.usage) } : {}),
           },
         };
       }
@@ -2007,7 +2034,7 @@ session: ${parsed.sessionId}`;
       text: output,
       structuredContent: {
         response: parsed.result,
-        ...(_epUsage ? { usage: { input_tokens: _epUsage.input_tokens, output_tokens: _epUsage.output_tokens, total_tokens: _epUsage.input_tokens + _epUsage.output_tokens } } : {}),
+        ...(_epUsage ? { usage: toStructuredUsage(_epUsage) } : {}),
         ...(parsed.sessionId ? { sessionId: parsed.sessionId } : {}),
         ...(contextWarning ? { contextWarning } : {}),
         ...(budgetUsage ? { budgetUsage } : {}),
@@ -2046,7 +2073,7 @@ session: ${parsed.sessionId}`;
     };
   } finally {
     extra?.signal?.removeEventListener('abort', abortHandler);
-    const _epTok = _epUsage ? ` in=${_epUsage.input_tokens} out=${_epUsage.output_tokens}` : '';
+    const _epTok = _epUsage ? ` in=${_epUsage.input_tokens} out=${_epUsage.output_tokens} cache_read=${_epUsage.cache_read_input_tokens ?? 0} cache_write=${_epUsage.cache_creation_input_tokens ?? 0}` : '';
     if (_epExitCode === 'error') scope.abort(`${_epError ?? 'exception'}${_epTok}`);
     else if (_epExitCode !== 0) scope.fail(`exit=${_epExitCode}${_epTok}`);
     else scope.ok(`exit=0${_epTok}`);

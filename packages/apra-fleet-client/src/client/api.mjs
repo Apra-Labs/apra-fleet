@@ -116,7 +116,38 @@
  * @property {string} [sessionId] - The session id this dispatch landed on, when known --
  *   present on success AND on a 'usage_limit'/'max_turns_exhausted' failure so the SAME
  *   session can be resumed later instead of losing context to a fresh one.
- * @property {{input_tokens:number, output_tokens:number, total_tokens:number}} [usage]
+ * @property {ExecutePromptUsage} [usage]
+ */
+
+/**
+ * @typedef {Object} ExecutePromptUsage
+ * @property {number} input_tokens - Uncached prompt tokens.
+ * @property {number} output_tokens - Completion tokens.
+ * @property {number} cache_read_input_tokens - Prompt tokens served from the provider's
+ *   prompt cache; billed, and NOT included in input_tokens (0 when the provider reports none).
+ * @property {number} cache_creation_input_tokens - Prompt tokens written to the provider's
+ *   prompt cache; billed, and NOT included in input_tokens (0 when the provider reports none).
+ * @property {number} total_tokens - input_tokens + output_tokens only (the context-window
+ *   figure context admission reads); it deliberately EXCLUDES the cache counts, so a cost
+ *   figure must price all four counts rather than total_tokens.
+ */
+
+/**
+ * @typedef {Object} ModelPrice
+ * @property {string} model - Concrete model the tier resolves to.
+ * @property {number} promptPrice - $/1M input_tokens.
+ * @property {number} completionPrice - $/1M output_tokens.
+ * @property {number} cacheReadPrice - $/1M cache_read_input_tokens.
+ * @property {number} cacheWritePrice - $/1M cache_creation_input_tokens.
+ */
+
+/**
+ * @typedef {Object} MemberModelPricingResult
+ * @property {string} member_id
+ * @property {string} member_name
+ * @property {string} llm_provider
+ * @property {{cheap: ModelPrice|null, standard: ModelPrice|null, premium: ModelPrice|null}} pricing
+ *   - null for a tier whose resolved model has no known price.
  */
 
 /**
@@ -675,6 +706,7 @@ export class ApraFleet {
     /**
      * Get a member's cheap/standard/premium tier resolved to a concrete
      * model and its real per-1M-token price (apra-fleet-dv5.5/dv5.6).
+     * The tool result text is the JSON of a {@link MemberModelPricingResult}.
      * @param {{ member_id?: string, member_name?: string }} options
      */
     async getMemberModelPricing(options) {

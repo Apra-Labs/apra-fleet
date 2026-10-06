@@ -147,7 +147,7 @@ describe('execute_prompt -- permission_denied', () => {
     expect(result.structuredContent.permissionDenied.denials).toEqual([{ action: 'command', target: 'git status --short --branch' }]);
     expect(result.structuredContent.permissionDenied.suggestedGrants).toEqual(['Bash(git:*)', 'Bash(git status --short --branch)']);
     expect(result.structuredContent.sessionId).toBe(CONV);
-    expect(result.structuredContent.usage).toEqual({ input_tokens: 17220, output_tokens: 68, total_tokens: 17288 });
+    expect(result.structuredContent.usage).toEqual({ input_tokens: 17220, output_tokens: 68, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, total_tokens: 17288 });
     expect(result.text).toContain('permission denied');
     expect(result.text).toContain('git status --short --branch');
   });
