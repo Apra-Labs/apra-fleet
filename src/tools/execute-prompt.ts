@@ -1009,7 +1009,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   const cmds = getOsCommands(getAgentOS(agent), getAgentShell(agent));
   const provider = getProvider(agent.llmProvider);
 
-  const authPrefix = buildAuthEnvPrefix(agent, getAgentOS(agent));
+  const authPrefix = buildAuthEnvPrefix(agent, getAgentOS(agent), getAgentShell(agent));
 
   const tiers = provider.modelTiers();
   let resolvedModel = input.model || 'standard';

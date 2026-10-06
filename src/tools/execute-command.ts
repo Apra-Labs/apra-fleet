@@ -41,6 +41,13 @@ export type ExecuteCommandInput = z.infer<typeof executeCommandSchema>;
 // Best-effort heuristic — not a security boundary
 const NETWORK_TOOL_RE = /\b(curl|wget|ssh|sftp|scp|rsync|nc|netcat|http|fetch|Invoke-WebRequest|Invoke-RestMethod)\b/i;
 
+/**
+ * Longest command string Git for Windows' bin\bash.exe launcher passes through
+ * intact (measured by bisection: 8186 runs, 8187 is truncated, independent of
+ * quoting). Exported for tests.
+ */
+export const GIT_BASH_LAUNCHER_MAX_COMMAND_CHARS = 8186;
+
 // Matches raw sec:// credential handles that must never reach shell or LLM
 const SEC_RE = /sec:\/\/[a-zA-Z0-9_]+/;
 
@@ -353,13 +360,41 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
   }
 
   // -- Regular (synchronous) command path --
-  const authPrefix = buildAuthEnvPrefix(agent, getAgentOS(agent));
+  const authPrefix = buildAuthEnvPrefix(agent, getAgentOS(agent), getAgentShell(agent));
   // wrapPidCapture lets a timed-out ssh.ts/strategy.ts execCommand recover a
   // PID to tree-kill (apra-fleet-kwx precedent) -- without it, a command with
   // no PID protocol of its own (unlike a provider launch) leaves the remote
   // process running forever past the timeout, since ssh has no local child
   // handle to fall back on the way LocalStrategy does.
-  const wrapped = authPrefix + cmds.wrapPidCapture(cmds.wrapInWorkFolder(folder, resolvedCommand));
+  //
+  // POSIX members: the user command is passed to the wrapper as DATA
+  // (`eval '<single-quoted command>'`), never spliced in as raw syntax.
+  // Splicing it into `{ cd ... && CMD; } & ...` broke any command whose
+  // last token cannot be followed by `; }` on the same line -- a heredoc
+  // at the end (its terminator line became `EOF; } & ...`), a trailing
+  // `&`, `;`, `|`, `&&`, `#` comment, or an empty command -- and made `cd`
+  // cover only the first `&`-separated list. eval is a builtin, so it adds
+  // no process layer: FLEET_PID is still the parent of the user's
+  // processes. PowerShell members are unchanged.
+  const payload = isPosixShell(agentOs, agentShell)
+    ? 'eval ' + escapeShellArg(resolvedCommand)
+    : resolvedCommand;
+  const wrapped = authPrefix + cmds.wrapPidCapture(cmds.wrapInWorkFolder(folder, payload));
+
+  // A LOCAL Git Bash member is spawned through Git for Windows' bin\bash.exe
+  // launcher, which truncates its command line at GIT_BASH_LAUNCHER_MAX_COMMAND_CHARS
+  // and then runs the truncated (broken) command. Fail with an explicit error
+  // instead -- the eval payload's quoting makes quote-heavy commands longer.
+  if (agent.agentType === 'local' && agentOs === 'windows' && agentShell === 'gitbash'
+    && wrapped.length > GIT_BASH_LAUNCHER_MAX_COMMAND_CHARS) {
+    const msg = `Command too long for a local Git Bash member: the wrapped command is ${wrapped.length} characters, `
+      + `over the Git for Windows bash.exe launcher limit of ${GIT_BASH_LAUNCHER_MAX_COMMAND_CHARS}, which would truncate it and run a broken command. `
+      + 'Nothing was run. Write the command to a script file (e.g. with send_files) and run the script instead.';
+    return {
+      text: `[FAIL] ${msg}`,
+      structuredContent: { isError: true, reason: 'command_too_long', exitCode: -1, stdout: '', stderr: msg },
+    };
+  }
 
   // Mark agent as busy in statusline
   writeStatusline(new Map([[agent.id, 'busy']]));

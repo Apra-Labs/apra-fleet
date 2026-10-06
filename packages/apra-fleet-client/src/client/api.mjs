@@ -121,7 +121,12 @@
 
 /**
  * @typedef {Object} ExecuteCommandOptions
- * @property {string} command - The shell command to execute
+ * @property {string} command - The shell command to execute. Multi-line commands and heredocs
+ *   are supported. On POSIX members (linux, macos, windows Git Bash) the server passes it to its
+ *   wrapper as data (`eval '<command>'`), so the work-folder `cd` covers the whole command and a
+ *   syntax error in it surfaces on stderr as `eval: line N: ...` (not `-c: line N: ...`). On a
+ *   LOCAL Git Bash member a command whose wrapped form exceeds the Git for Windows launcher limit
+ *   (8186 chars) is refused unrun with structuredContent.reason 'command_too_long'.
  * @property {boolean} [long_running] - Run as background task. Supported on linux and windows
  *   members. Windows launches the task detached via `Invoke-CimMethod Win32_Process.Create`
  *   (WMI provider host / session 0), independent of the SSH session's job object, since a plain
