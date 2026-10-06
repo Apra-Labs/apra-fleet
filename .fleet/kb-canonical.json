@@ -1,9 +1,9 @@
 {
   "version": 2,
   "provenance": {
-    "commit": "7089d28145df9ebb88e42db63a3dacb38cee3f7d",
+    "commit": "4f1d90d5877af2cd2ac19cb250fc46b9f3b9c951",
     "branch": "v0.5_dashboard",
-    "entry_count": 422
+    "entry_count": 423
   },
   "entries": [
     {
@@ -4834,6 +4834,21 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:27.613Z"
+    },
+    {
+      "id": "9b2ccf39-219f-4d6e-9942-08b6592e17ee",
+      "type": "learning",
+      "title": "Nested beads-tree rows render a tree prefix before '#id', so '>#id<' never matches",
+      "summary": "In renderBeadsHtml output a child row's id cell is '<spacer span>' + the tree prefix (box-drawing chars + space) + '#' + id + '</td>', so a test assertion like includes('>#C<') is always false for nested rows and makes negative checks vacuous; match '#ID</td>' instead.",
+      "symbols": [
+        "renderBeadsHtml"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/viewer-extensions.mjs",
+        "packages/apra-fleet-se/test/viewer-extensions.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T00:05:23.933Z"
     },
     {
       "id": "9b6a3b63-5b02-4f1f-827e-e7bef31362af",
