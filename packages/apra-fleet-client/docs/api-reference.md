@@ -286,7 +286,7 @@ Calls `execute_command` -- runs a shell command on a member. Same
 
 | Field | Type | Notes |
 |---|---|---|
-| `command` | `string` | The shell command to execute. Multi-line commands and heredocs are supported; on POSIX members (linux, macos, windows Git Bash) the whole command runs inside the member work folder (or `run_from`), and a syntax error in it is reported as `eval: line N: ...` on stderr. |
+| `command` | `string` | The shell command to execute. Multi-line commands and heredocs are supported; on POSIX members (linux, macos, windows Git Bash) the whole command runs inside the member work folder (or `run_from`), and a syntax error in it is reported as `eval: line N: ...` on stderr. On a LOCAL Git Bash member a command whose wrapped form exceeds 8186 characters (the Git for Windows launcher limit) is refused unrun with `structuredContent.reason: 'command_too_long'`; put long commands in a script. |
 | `long_running` | `boolean?` | Run as a background task. Supported on linux and windows (windows launches detached via `Invoke-CimMethod Win32_Process.Create`, session 0); darwin gets an advisory warning only. |
 | `max_retries` | `number?` | Max crash retries (long-running only). |
 | `member_id` | `string?` | UUID of the member. |

@@ -363,7 +363,7 @@ Runs a shell command directly on a member without spinning up Claude. Use for qu
 
 1. Looks up the member.
 2. Resolves the working directory -- uses `run_from` if provided, otherwise the member's registered `workFolder`.
-3. Wraps the command with a `cd` (Unix) or `Set-Location` (Windows) into the resolved folder. On POSIX shells (Linux, macOS, Windows Git Bash) the command is passed to the wrapper as data (`eval '<command>'`), so multi-line commands, heredocs (including one at the very end), trailing `&`/`;`/`#` comments and empty commands all work, and the `cd` covers the whole command (a failed `cd` runs none of it). A syntax error in the command itself is reported as `eval: line N: ...` (previously `-c: line N: ...`).
+3. Wraps the command with a `cd` (Unix) or `Set-Location` (Windows) into the resolved folder. On POSIX shells (Linux, macOS, Windows Git Bash) the command is passed to the wrapper as data (`eval '<command>'`), so multi-line commands, heredocs (including one at the very end), trailing `&`/`;`/`#` comments and empty commands all work, and the `cd` covers the whole command (a failed `cd` runs none of it). A syntax error in the command itself is reported as `eval: line N: ...` (previously `-c: line N: ...`). On a local Git Bash member, a command whose wrapped form exceeds 8186 characters (the Git for Windows `bash.exe` launcher limit) is refused unrun with reason `command_too_long` instead of being truncated; run long commands from a script.
 4. Executes via `strategy.execCommand()` with the specified timeout.
 5. Returns stdout, stderr, and exit code.
 

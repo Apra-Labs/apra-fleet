@@ -5,7 +5,7 @@ import { spawnSync } from 'node:child_process';
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
 import { addAgent } from '../src/services/registry.js';
-import { executeCommand } from '../src/tools/execute-command.js';
+import { executeCommand, GIT_BASH_LAUNCHER_MAX_COMMAND_CHARS } from '../src/tools/execute-command.js';
 import type { Agent, SSHExecResult } from '../src/types.js';
 import { findRealBash } from './helpers/real-bash.js';
 
@@ -220,4 +220,62 @@ describe.skipIf(!shellcheck)('execute_command POSIX wrapper passes shellcheck', 
       expect(r.status).toBe(0);
     });
   }
+});
+
+// Local Git Bash members run through Git for Windows' bin\bash.exe launcher,
+// which truncates long command lines; execute_command must refuse explicitly
+// instead of running a truncated command.
+describe('execute_command refuses a command over the local Git Bash launcher limit', () => {
+  beforeEach(() => { backupAndResetRegistry(); vi.clearAllMocks(); captured.length = 0; });
+  afterEach(() => { restoreRegistry(); });
+
+  // 2000 single-quoted words: 6005 chars raw, far longer once eval-quoted.
+  const quoteHeavy = 'echo ' + Array.from({ length: 2000 }, () => "'a'").join('');
+
+  async function dispatch(overrides: Partial<Agent>, command: string) {
+    const member = makeTestAgent({ workFolder: '/tmp/w', ...overrides });
+    addAgent(member);
+    return executeCommand({ member_id: member.id, command, timeout_s: 5 } as any);
+  }
+
+  it('local gitbash: returns an actionable error and runs nothing', async () => {
+    const r = await dispatch({ agentType: 'local', os: 'windows', shell: 'gitbash' }, quoteHeavy);
+    expect(mockExecCommand).not.toHaveBeenCalled();
+    expect(typeof r).not.toBe('string');
+    const { text, structuredContent } = r as { text: string; structuredContent: any };
+    expect(text).toMatch(/^\[FAIL\] Command too long for a local Git Bash member/);
+    expect(text).toContain(String(GIT_BASH_LAUNCHER_MAX_COMMAND_CHARS));
+    expect(text).toContain('send_files');
+    expect(structuredContent).toMatchObject({ isError: true, reason: 'command_too_long', exitCode: -1, stdout: '' });
+  });
+
+  it('local gitbash: a command under the limit still runs', async () => {
+    await dispatch({ agentType: 'local', os: 'windows', shell: 'gitbash' }, 'echo short');
+    expect(mockExecCommand).toHaveBeenCalledTimes(1);
+  });
+
+  it('remote gitbash and local linux are not limited (no launcher in the path)', async () => {
+    await dispatch({ os: 'windows', shell: 'gitbash' }, quoteHeavy);
+    await dispatch({ agentType: 'local', os: 'linux' }, quoteHeavy);
+    expect(mockExecCommand).toHaveBeenCalledTimes(2);
+  });
+});
+
+// Pins the measured constant against the real launcher, when installed.
+const launcher = 'C:\\Program Files\\Git\\bin\\bash.exe';
+const haveLauncher = process.platform === 'win32' && fs.existsSync(launcher);
+if (!haveLauncher) console.warn('[execute-command-posix-wrapper.test] Git for Windows bin\\bash.exe launcher not present -- limit pin skipped');
+
+describe.skipIf(!haveLauncher)('GIT_BASH_LAUNCHER_MAX_COMMAND_CHARS matches the real launcher', () => {
+  const at = (len: number) => {
+    const prefix = 'printf %s ';
+    const suffix = ' | wc -c';
+    const n = len - prefix.length - suffix.length;
+    const r = spawnSync(prefix + 'a'.repeat(n) + suffix, { shell: launcher, encoding: 'utf8', windowsHide: true });
+    return r.status === 0 && r.stdout.trim() === String(n);
+  };
+  it('a command of exactly the limit runs intact; one char more does not', () => {
+    expect(at(GIT_BASH_LAUNCHER_MAX_COMMAND_CHARS)).toBe(true);
+    expect(at(GIT_BASH_LAUNCHER_MAX_COMMAND_CHARS + 1)).toBe(false);
+  });
 });
