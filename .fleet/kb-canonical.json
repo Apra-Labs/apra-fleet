@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "12fbcf6bd3a5540e5e979715151986fa15c1291e",
     "branch": "main",
-    "entry_count": 279
+    "entry_count": 281
   },
   "entries": [
     {
@@ -677,6 +677,22 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:27.578Z"
+    },
+    {
+      "id": "1c434eef-c9d6-4397-b70c-c6daf573fce0",
+      "type": "knowledge",
+      "title": "compose_permissions with grant merges into the existing config; it does not compose the role profile",
+      "summary": "A compose_permissions call that passes grant runs in reactive mode: it reads the member's current settings file (or {} if missing) and appends the grants, so a call with role+grant on a member whose config was dropped yields a config holding only the grants.",
+      "symbols": [
+        "composePermissions",
+        "createPermissionDenialHeal"
+      ],
+      "source_files": [
+        "src/tools/compose-permissions.ts",
+        "packages/apra-fleet-se/fleet-sprint/member-provisioning.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T09:16:42.473Z"
     },
     {
       "id": "1c4d6528-ced2-49d3-a737-84705e230f40",
@@ -4222,6 +4238,22 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:37.608Z"
+    },
+    {
+      "id": "d94ca346-3682-4441-9a48-d453758f56b2",
+      "type": "knowledge",
+      "title": "member-provisioning.mjs may not call .includes/.match/toLowerCase (phase5 prose-branching guard)",
+      "summary": "test/phase5-consumer-migration-end-state.test.mjs fails if member-provisioning.mjs or coordination.mjs contain any .includes(, .match( or toLowerCase call, even for non-prose structured lookups; use Set.has or RegExp.test instead.",
+      "symbols": [
+        "grantsWithinRolePolicy"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/test/phase5-consumer-migration-end-state.test.mjs",
+        "packages/apra-fleet-se/fleet-sprint/member-provisioning.mjs",
+        "packages/apra-fleet-se/fleet-sprint/coordination.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T09:16:44.427Z"
     },
     {
       "id": "d94caf49-8a04-4b0b-bf6f-82c3b47785ce",
