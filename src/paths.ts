@@ -132,3 +132,15 @@ export const LOG_FILE_PATH = path.join(FLEET_DIR, 'fleet.log');
  * interleave their output in one file.
  */
 export const SUPERVISOR_LOG_FILE_PATH = path.join(FLEET_DIR, 'fleet-supervisor.log');
+
+/**
+ * Lazy variants of the log paths: resolved from fleetDataDir() at call time so
+ * an install that sets APRA_FLEET_DATA_DIR from --data-dir after this module
+ * was imported still logs under the chosen instance, not the default data dir.
+ */
+export function fleetLogFilePath(): string {
+  return path.join(fleetDataDir(), 'fleet.log');
+}
+export function supervisorLogFilePath(): string {
+  return path.join(fleetDataDir(), 'fleet-supervisor.log');
+}

@@ -137,7 +137,15 @@ const ARGS = ['--transport', 'http', '--skill', 'none'];
 
 describe('non-default instance install is self-contained', () => {
   it('writes nothing under the default data dir, registers no MCP, and every service carries the data dir', async () => {
-    await runInstall([...ARGS, '--data-dir', DATA, '--mcp-scope', 'none']);
+    // Reproduce production import order: APRA_FLEET_DATA_DIR is unset when
+    // src/paths.ts is first evaluated (so its eager snapshots point at the
+    // default dir) and only --data-dir sets it afterwards.
+    delete process.env.APRA_FLEET_DATA_DIR;
+    vi.resetModules();
+    const fresh = await import('../src/cli/install.js');
+    fresh._setSeaOverride(true);
+    fresh._setManifestOverride({ version: '0.1.0', hooks: {}, scripts: {}, skills: {}, fleetSkills: {} });
+    await fresh.runInstall([...ARGS, '--data-dir', DATA, '--mcp-scope', 'none']);
 
     // 1. nothing under <home>/.apra-fleet/data; install-config under the instance.
     const touched = fsTouchedPaths();
@@ -151,6 +159,13 @@ describe('non-default instance install is self-contained', () => {
     const calls = [...mcpMgr.register.mock.calls, ...supervisorMgr.register.mock.calls];
     expect(calls.length).toBe(2);
     for (const c of calls) expect(c[3]?.env?.APRA_FLEET_DATA_DIR).toBe(DATA);
+
+    // 3b. every service's log output lands under the instance, never the default dir.
+    for (const c of calls) {
+      const logPath = String(c[2]);
+      expect(logPath.startsWith(DATA + path.sep)).toBe(true);
+      expect(logPath.startsWith(DEFAULT_DATA)).toBe(false);
+    }
   });
 
   it('baseline with no flags still adds the user-scope MCP entry and registers services with no env', async () => {

@@ -4,7 +4,7 @@ import os from 'node:os';
 import { execSync, execFileSync } from 'node:child_process';
 import { serverVersion } from '../version.js';
 import type { LlmProvider } from '../types.js';
-import { DEFAULT_PORT, DEFAULT_HOST, LOG_FILE_PATH } from '../paths.js';
+import { DEFAULT_PORT, DEFAULT_HOST, fleetLogFilePath } from '../paths.js';
 import { getServiceManager } from '../services/service-manager/index.js';
 import { registerSupervisorService } from '../services/supervisor-service.js';
 import { seedSupervisorProjectDir, validateProjectDirPreflight, seedSupervisorToolchain } from './supervisor.js';
@@ -2324,7 +2324,7 @@ ${manualStopHint(pidsAfterStop)}
     }
     const svcMgr = await getServiceManager();
     try {
-      const registered = await svcMgr.register(binaryPath, ['--transport', 'http'], LOG_FILE_PATH, ...(instanceEnv ? [{ env: instanceEnv }] : []));
+      const registered = await svcMgr.register(binaryPath, ['--transport', 'http'], fleetLogFilePath(), ...(instanceEnv ? [{ env: instanceEnv }] : []));
       serviceReused = registered === 'reused';
       serviceRunKey = registered === 'run-key';
       if (serviceReused) console.log('    Could not recreate the service task -- existing task reused.');
@@ -2339,7 +2339,7 @@ ${manualStopHint(pidsAfterStop)}
         // launcher that cannot run, a refused port, a crash): ask /health.
         serviceHealthy = await waitForServiceHealth();
         if (serviceHealthy === false) {
-          console.warn(`    Service registered, but the server is not answering /health. Check ${LOG_FILE_PATH} and run apra-fleet status.`);
+          console.warn(`    Service registered, but the server is not answering /health. Check ${fleetLogFilePath()} and run apra-fleet status.`);
         }
       } catch (startErr) {
         // Never delete a reused task: it predates this install (e.g. elevated).

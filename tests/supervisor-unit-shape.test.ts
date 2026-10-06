@@ -44,7 +44,7 @@ import { MacOSServiceManager } from '../src/services/service-manager/macos.js';
 import { WindowsServiceManager } from '../src/services/service-manager/windows.js';
 import { registerSupervisorService } from '../src/services/supervisor-service.js';
 import { SUPERVISOR_WORKING_DIR } from '../src/cli/supervisor.js';
-import { SUPERVISOR_LOG_FILE_PATH, LOG_FILE_PATH } from '../src/paths.js';
+import { supervisorLogFilePath, fleetLogFilePath } from '../src/paths.js';
 
 /** Installed binary path, and the same under a home directory with a space. */
 const BINARY = '/home/dev/.apra-fleet/bin/apra-fleet';
@@ -135,11 +135,11 @@ describe('registered supervisor unit -- Linux', () => {
     const unit = writtenContent();
     expect(unit).toContain(`WorkingDirectory=${SUPERVISOR_WORKING_DIR}`);
     expect(SUPERVISOR_WORKING_DIR.replace(/\\/g, '/')).toMatch(/\/workflows\/fleet-sprint$/);
-    expect(unit).toContain(`StandardOutput=append:${SUPERVISOR_LOG_FILE_PATH}`);
-    expect(unit).toContain(`StandardError=append:${SUPERVISOR_LOG_FILE_PATH}`);
+    expect(unit).toContain(`StandardOutput=append:${supervisorLogFilePath()}`);
+    expect(unit).toContain(`StandardError=append:${supervisorLogFilePath()}`);
     // Distinct from the MCP server's own log.
-    expect(SUPERVISOR_LOG_FILE_PATH).not.toBe(LOG_FILE_PATH);
-    expect(unit).not.toContain(`append:${LOG_FILE_PATH}`);
+    expect(supervisorLogFilePath()).not.toBe(fleetLogFilePath());
+    expect(unit).not.toContain(`append:${fleetLogFilePath()}`);
   });
 
   it('writes its own unit file, not the MCP server one', async () => {
@@ -176,8 +176,8 @@ describe('registered supervisor unit -- macOS', () => {
     await registerSupervisorService(BINARY);
     const plist = writtenContent();
     expect(plist).toContain(`<string>${SUPERVISOR_WORKING_DIR}</string>`);
-    expect(plist).toContain(`<string>${SUPERVISOR_LOG_FILE_PATH}</string>`);
-    expect(plist).not.toContain(`<string>${LOG_FILE_PATH}</string>`);
+    expect(plist).toContain(`<string>${supervisorLogFilePath()}</string>`);
+    expect(plist).not.toContain(`<string>${fleetLogFilePath()}</string>`);
   });
 });
 
@@ -203,8 +203,8 @@ describe('registered supervisor unit -- Windows', () => {
     await registerSupervisorService(BINARY_WIN);
     const bat = writtenContent();
     expect(bat).toContain(`cd /d "${SUPERVISOR_WORKING_DIR}"`);
-    expect(bat).toContain(`>> "${SUPERVISOR_LOG_FILE_PATH}"`);
-    expect(bat).not.toContain(`>> "${LOG_FILE_PATH}"`);
+    expect(bat).toContain(`>> "${supervisorLogFilePath()}"`);
+    expect(bat).not.toContain(`>> "${fleetLogFilePath()}"`);
   });
 
   it('writes the supervisor own wrapper .bat, not the MCP server one', async () => {

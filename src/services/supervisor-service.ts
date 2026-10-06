@@ -28,7 +28,7 @@
  * function.
  */
 import fs from 'node:fs';
-import { SUPERVISOR_LOG_FILE_PATH, isNonDefaultInstance } from '../paths.js';
+import { supervisorLogFilePath, isNonDefaultInstance } from '../paths.js';
 import { SUPERVISOR_SERVE_SCRIPT, SUPERVISOR_WORKING_DIR } from '../cli/supervisor.js';
 import { getServiceManager } from './service-manager/index.js';
 
@@ -112,7 +112,7 @@ export async function registerSupervisorService(
 
   const mgr = await getServiceManager('fleet-supervisor');
   try {
-    await mgr.register(binaryPath, [SUPERVISOR_SUBCOMMAND, SUPERVISOR_MANAGED_SERVICE_FLAG], SUPERVISOR_LOG_FILE_PATH, {
+    await mgr.register(binaryPath, [SUPERVISOR_SUBCOMMAND, SUPERVISOR_MANAGED_SERVICE_FLAG], supervisorLogFilePath(), {
       workingDirectory: SUPERVISOR_WORKING_DIR,
       ...(options.env ? { env: options.env } : {}),
     });
