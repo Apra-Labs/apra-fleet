@@ -184,11 +184,13 @@ describe('SEA_RELEVANT_GIT_PATHS covers bundled workspace packages (apra-fleet-v
     'packages/fleet-api-contract/package.json',
     'packages/apra-fleet-ui-kit/src/Wizard.tsx',
     'packages/apra-fleet-ui-kit/package.json',
+    'packages/fleet-api-contract/tsconfig.json',
+    'packages/apra-fleet-ui-kit/tsconfig.json',
   ])('matches %s', (file) => {
     expect(matched(file)).toBe(true);
   });
 
-  it.each(['docs/npm-packaging.md', 'packages/apra-fleet-client/test/x.test.ts', 'packages/apra-fleet-ui-kit/dist/Form.js'])(
+  it.each(['docs/npm-packaging.md', 'packages/fleet-api-contract/openapi.json', 'packages/apra-fleet-client/test/x.test.ts', 'packages/apra-fleet-ui-kit/dist/Form.js'])(
     'does not match unrelated path %s',
     (file) => {
       expect(matched(file)).toBe(false);

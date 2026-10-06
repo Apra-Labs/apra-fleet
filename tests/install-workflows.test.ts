@@ -110,21 +110,21 @@ describe('runInstall --workflows flag -> install-config.json (T: apra-fleet-7pm.
 
   it('a default install writes workflowsMode: "all"', async () => {
     await runInstall([]);
-    const call = vi.mocked(fs.writeFileSync).mock.calls.find(c => c[0] === path.join(mockHome, '.apra-fleet', 'data', 'install-config.json'));
+    const call = vi.mocked(fs.writeFileSync).mock.calls.find(c => c[0] === INSTALL_CONFIG_PATH);
     const data = JSON.parse(call![1] as string);
     expect(data.providers.claude.workflowsMode).toBe('all');
   });
 
   it('--workflows none writes workflowsMode: "none"', async () => {
     await runInstall(['--workflows', 'none']);
-    const call = vi.mocked(fs.writeFileSync).mock.calls.find(c => c[0] === path.join(mockHome, '.apra-fleet', 'data', 'install-config.json'));
+    const call = vi.mocked(fs.writeFileSync).mock.calls.find(c => c[0] === INSTALL_CONFIG_PATH);
     const data = JSON.parse(call![1] as string);
     expect(data.providers.claude.workflowsMode).toBe('none');
   });
 
   it('--workflows=none (equals form) writes workflowsMode: "none"', async () => {
     await runInstall(['--workflows=none']);
-    const call = vi.mocked(fs.writeFileSync).mock.calls.find(c => c[0] === path.join(mockHome, '.apra-fleet', 'data', 'install-config.json'));
+    const call = vi.mocked(fs.writeFileSync).mock.calls.find(c => c[0] === INSTALL_CONFIG_PATH);
     const data = JSON.parse(call![1] as string);
     expect(data.providers.claude.workflowsMode).toBe('none');
   });

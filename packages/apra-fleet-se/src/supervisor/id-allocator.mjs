@@ -55,7 +55,7 @@
 // =============================================================================
 
 import path from 'node:path';
-import os from 'node:os';
+import { supervisorIdDir } from '@apralabs/apra-fleet-client/fleet-paths';
 import fsp from 'node:fs/promises';
 
 import { isPidAlive } from './reconcile.mjs';
@@ -82,9 +82,11 @@ function nextToken(parentId) {
     return `${parentId}#${tokenSeq}#${Date.now().toString(36)}`;
 }
 
-/** Default per-user data dir shared with the ledger. */
+/** Default per-instance allocator dir: ~/.apra-fleet/supervisor, or
+ *  <APRA_FLEET_DATA_DIR>/supervisor for a non-default instance (shared
+ *  resolver, @apralabs/apra-fleet-client/fleet-paths, apra-fleet-q1ku). */
 function defaultDataDir() {
-    return path.join(os.homedir() || os.tmpdir(), '.apra-fleet', 'supervisor');
+    return supervisorIdDir();
 }
 
 /**

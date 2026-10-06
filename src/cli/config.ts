@@ -3,14 +3,22 @@ import path from 'node:path';
 import os from 'node:os';
 import { parse, stringify } from 'smol-toml';
 import type { LlmProvider } from '../types.js';
+import { fleetDataDir, installConfigPath } from '../paths.js';
 
 const home = os.homedir();
 export const FLEET_BASE = path.join(home, '.apra-fleet');
 export const BIN_DIR = path.join(FLEET_BASE, 'bin');
 export const HOOKS_DIR = path.join(FLEET_BASE, 'hooks');
 export const SCRIPTS_DIR = path.join(FLEET_BASE, 'scripts');
-export const DATA_DIR = path.join(FLEET_BASE, 'data');
-export const INSTALL_CONFIG_PATH = path.join(DATA_DIR, 'install-config.json');
+// apra-fleet-q1ku: the data dir and install-config are PER-INSTANCE paths, so
+// they come from the shared resolver (honours APRA_FLEET_DATA_DIR; see
+// packages/apra-fleet-client/src/fleet-paths.mjs). These two consts are
+// import-time snapshots kept for existing importers; readInstallConfig() and
+// writeInstallConfig() resolve lazily. FLEET_BASE and the bin/hooks/scripts/
+// node_modules/schemas/workflows dirs below are the machine-wide INSTALL tree,
+// shared by every instance, and stay home-rooted.
+export const DATA_DIR = fleetDataDir();
+export const INSTALL_CONFIG_PATH = installConfigPath();
 // Workflow subsystem (apra-fleet workflow <name>) -- see
 // docs/workflow-subsystem-plan.md Section 2.1 for the on-disk layout.
 export const NODE_MODULES_DIR = path.join(FLEET_BASE, 'node_modules');
@@ -178,12 +186,12 @@ export function writeConfig(paths: ProviderInstallConfig, config: any): void {
   fs.writeFileSync(paths.settingsFile, content);
 }
 
-export function readInstallConfig(installConfigPath = INSTALL_CONFIG_PATH): MultiProviderInstallConfig {
-  if (!fs.existsSync(installConfigPath)) {
+export function readInstallConfig(configPath = installConfigPath()): MultiProviderInstallConfig {
+  if (!fs.existsSync(configPath)) {
     return { providers: {} };
   }
   try {
-    const data = JSON.parse(fs.readFileSync(installConfigPath, 'utf-8'));
+    const data = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
     // Handle old format migration
     if (data.llm && data.skill) {
       return {
@@ -216,6 +224,7 @@ export function writeInstallConfig(
     workflowsMode,
     installedAt: new Date().toISOString()
   };
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-  fs.writeFileSync(INSTALL_CONFIG_PATH, JSON.stringify(config, null, 2), { mode: 0o600 });
+  const configPath = installConfigPath();
+  fs.mkdirSync(path.dirname(configPath), { recursive: true });
+  fs.writeFileSync(configPath, JSON.stringify(config, null, 2), { mode: 0o600 });
 }

@@ -149,6 +149,18 @@ export function repeatMinutesFrom(env: Record<string, string | undefined>): numb
 }
 
 /**
+ * A `set "NAME=value"` wrapper line. The whole assignment is quoted so a space
+ * or `&`, `|`, `<`, `>`, `^` in the value is literal; `%` is doubled so a batch
+ * file never expands it. A `"` or line break cannot be represented inside the
+ * quoted form, so it is refused rather than silently mangled.
+ */
+export function cmdSetLine(name: string, value: string): string {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) throw new Error(`Invalid environment variable name "${name}"`);
+  if (/["\r\n]/.test(value)) throw new Error(`Environment variable ${name} contains a double quote or line break, which a Windows wrapper cannot carry`);
+  return `set "${name}=${value.replace(/%/g, '%%')}"`;
+}
+
+/**
  * The service wrapper (.bat): sets the service-launch marker, makes sure the
  * log dir exists (a deleted data dir must not make every revive fail the
  * `>>` redirect before the server even starts), then runs the server with
@@ -156,7 +168,7 @@ export function repeatMinutesFrom(env: Record<string, string | undefined>): numb
  */
 export function buildWrapperBat(
   binaryPath: string, args: string[], logPath: string,
-  opts: { serviceMarker?: boolean; workingDirectory?: string } = {},
+  opts: { serviceMarker?: boolean; workingDirectory?: string; env?: Record<string, string> } = {},
 ): string {
   const logDir = path.win32.dirname(logPath);
   const quotedArgs = args.map(a => `"${a}"`).join(' ');
@@ -170,6 +182,7 @@ export function buildWrapperBat(
     // Only the server reads it; the supervisor must not leak the marker into
     // the processes it spawns (serviceMarker: false).
     ...(opts.serviceMarker === false ? [] : [`set ${SERVICE_ENV_MARKER}=1`]),
+    ...Object.entries(opts.env ?? {}).map(([k, v]) => cmdSetLine(k, v)),
     `if not exist "${logDir}\\" mkdir "${logDir}"`,
     // Scheduled tasks inherit no working directory from the operator's shell;
     // `cd /d` handles a drive change as well as the directory change.
@@ -464,6 +477,7 @@ export class WindowsServiceManager implements ServiceManager {
     fs.writeFileSync(this.wrapperPath, buildWrapperBat(binaryPath, args, logPath, {
       serviceMarker: this.isMcpServer,
       workingDirectory: options.workingDirectory,
+      env: options.env,
     }), 'utf8');
     const launcherPath = launcherPathFor(this.wrapperPath);
     fs.writeFileSync(launcherPath, buildLauncherJs(this.wrapperPath), 'utf8');

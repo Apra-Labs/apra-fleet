@@ -1,3 +1,4 @@
+import { classifyGitProbeOutput, gitRefusalGuidance } from '../services/git-access.js';
 import { spawn } from 'node:child_process';
 import { z } from 'zod';
 import { v4 as uuid } from 'uuid';
@@ -491,7 +492,21 @@ export async function registerMember(input: RegisterMemberInput, opts: RegisterM
           })
           .catch(() => { /* Best effort -- fall through to the warning below. */ });
 
-    await Promise.all([versionCheck, authCheck, mkdirCheck, vcsProviderCheck]);
+    // Ownership/access check (apra-fleet-wgpx): runs even when vcs_provider is
+    // explicit (the bug is usability, not provider detection), in parallel with
+    // the other probes. "Not a repo yet" stays fine; a git REFUSAL (dubious
+    // ownership, ...) fails registration below. The probe command itself never
+    // fails -- a transport error just skips the check.
+    let gitRefusal: ReturnType<typeof classifyGitProbeOutput> = { ok: true };
+    const gitAccessCheck = strategy.execCommand(cmds.gitRepoAccessProbe(input.work_folder), 15000)
+      .then(r => { gitRefusal = classifyGitProbeOutput(r.stdout); })
+      .catch(() => { /* best effort */ });
+
+    await Promise.all([versionCheck, authCheck, mkdirCheck, vcsProviderCheck, gitAccessCheck]);
+
+    if (!gitRefusal.ok) {
+      return `ERROR: ${gitRefusalGuidance(input.work_folder, gitRefusal)}\nMember "${input.friendly_name}" was NOT registered.`;
+    }
 
     // AGY: create the member's own agy project (`agy --new-project`) and bind
     // it by id; every dispatch passes --project <id> and compose_permissions

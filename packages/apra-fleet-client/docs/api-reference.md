@@ -1160,6 +1160,28 @@ parity), which is consistent with this path being unexercised. The `.`,
 and `./transport` exports are unaffected -- `ApraFleet`, `McpClient`, and
 the transports can be used standalone without going through this factory.
 
+## `src/fleet-paths.mjs` (subpath: `@apralabs/apra-fleet-client/fleet-paths`)
+
+The single resolver for every fleet-owned per-instance path (apra-fleet-q1ku),
+shared by the apra-fleet server (`src/paths.ts` re-exports it; `jwt.ts` signs
+with its `fleetKeyPath()`), `auth/local-token.mjs` and the fleet-sprint
+supervisor's id-allocator, so the fleet.key signer and every reader always
+agree. Every function takes `(env = process.env, opts = {})` and is lazy (reads
+env and home at call time).
+
+| Function | `APRA_FLEET_DATA_DIR` unset (default instance) | `APRA_FLEET_DATA_DIR=<D>` |
+|---|---|---|
+| `fleetDataDir()` | `~/.apra-fleet/data` | `<D>` |
+| `fleetKeyPath()` | `~/.apra-fleet/fleet.key` | `<D>/fleet.key` |
+| `supervisorIdDir()` | `~/.apra-fleet/supervisor` | `<D>/supervisor` |
+| `installConfigPath()` | `~/.apra-fleet/data/install-config.json` | `<D>/install-config.json` |
+| `codeIntelligenceDir()` | `~/.apra-fleet/data/code-intelligence` | `<D>/code-intelligence` |
+
+An empty `APRA_FLEET_DATA_DIR`, or one naming `~/.apra-fleet/data` itself,
+is the default instance. `opts.home` (tests only) roots the default layout at
+that dir and wins over `APRA_FLEET_DATA_DIR`. `dataDirOverride(env)` returns the
+raw override or `null`.
+
 ## `src/auth/local-token.mjs` (subpath: `@apralabs/apra-fleet-client/auth/local-token`)
 
 Shared local-credential helper (apra-fleet-iywi.1.1, C3/DQ-20/s4.4). Lifted
@@ -1174,9 +1196,11 @@ the supervisor 401ed an unauthenticated `GET /api/health`).
 
 ### `readLocalToken(dataDir, opts?)`
 
-Resolves a caller's local credential: prefers the shared
-`<home>/.apra-fleet/fleet.key` (the same file `src/services/jwt.ts`'s
-`getOrCreateKey()` reads/mints) over a `<dataDir>/private/token` file it
+Resolves a caller's local credential: prefers the shared fleet.key
+(`fleetKeyPath()` from `fleet-paths.mjs` -- `~/.apra-fleet/fleet.key`, or
+`<APRA_FLEET_DATA_DIR>/fleet.key` for a non-default instance; the same file
+`src/services/jwt.ts`'s `getOrCreateKey()` reads/mints) over a
+`<dataDir>/private/token` file it
 mints-or-reuses via `loadOrCreateToken()`. Never mints `fleet.key` itself. A
 present-but-malformed `fleet.key` is rejected (never used) and logged as a
 warning; resolution then falls through to the private/token fallback as if
@@ -1184,11 +1208,17 @@ warning; resolution then falls through to the private/token fallback as if
 
 | Option | Type | Notes |
 |---|---|---|
-| `home` | `string?` | Overrides where the fleet-key lookup is rooted. Defaults to `os.homedir()`. Tests MUST pass a temp dir. |
+| `env` | `object?` | Environment the fleet.key path is resolved against. Defaults to `process.env`; pass the target instance's env to probe another instance (e.g. a sandbox). |
+| `home` | `string?` | Test seam: roots the default-instance layout (`<home>/.apra-fleet/fleet.key`) at this dir, taking precedence over `APRA_FLEET_DATA_DIR`. |
 | `logger` | `{ warn?: Function }?` | Receives the malformed-key warning. Defaults to `console`. |
 | `createIfMissing` | `boolean?` | Default `true` (mint-or-reuse the private/token fallback). Pass `false` for a read-only probe: no mkdir, no write, no mode healing -- returns `null` if no well-formed token exists at either source. |
 
 Returns `{ token, path, source: 'fleet-key' | 'private-token', aclVerified, created } | null`.
+`aclVerified` is `true` only when the file's protection was proved: on POSIX,
+for the fleet-key source, a stat must show the key is owner-only (no
+group/other bits -- a 0644 `fleet.key` reports `false` and is never chmod-ed
+by this reader); for the private-token source, `loadOrCreateToken()`'s 0600
+enforcement. Always `false` on Windows.
 
 ### `loadOrCreateToken(dir)`
 

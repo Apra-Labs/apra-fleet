@@ -12,79 +12,64 @@ describe('CI build:ui step', () => {
     workflowContent = fs.readFileSync(ciYmlPath, 'utf-8');
   });
 
+  // Job slices by top-level job header (2-space indent), so every case below
+  // looks only at the job it names.
+  function jobSlice(startMarker: string, endMarker: string | null): string {
+    const start = workflowContent.indexOf(startMarker);
+    expect(start).toBeGreaterThan(-1);
+    if (endMarker === null) return workflowContent.substring(start);
+    const end = workflowContent.indexOf(endMarker, start + 1);
+    expect(end).toBeGreaterThan(start);
+    return workflowContent.substring(start, end);
+  }
+  const buildAndTestJob = () => jobSlice('\n  build-and-test:', '\n  package:');
+  const buildBinaryJob = () => jobSlice('\n  build-binary:', '\n  sign-windows:');
+
   describe('workflow file contains the build:ui step', () => {
     it('should have exactly one build:ui step run command', () => {
       const matches = workflowContent.match(/npm run build:ui --if-present/g);
-      expect(matches).toBeDefined();
-      expect(matches?.length).toBe(2); // One in build-and-test, one in build-binary
+      expect(matches?.length).toBe(1); // only in build-binary
     });
 
-    it('should have step named "Build UI workspaces (if present)" in the workflow', () => {
-      expect(workflowContent).toContain('- name: Build UI workspaces (if present)');
+    it('should have exactly one step named "Build UI workspaces (if present)"', () => {
+      const matches = workflowContent.match(/- name: Build UI workspaces \(if present\)/g);
+      expect(matches?.length).toBe(1);
     });
   });
 
   describe('build:ui step placement in build-and-test job', () => {
-    it('should place build:ui step after npm run build', () => {
-      // Extract build-and-test job
-      const buildAndTestStart = workflowContent.indexOf('build-and-test:');
-      const nextJobStart = workflowContent.indexOf('\n  package:', buildAndTestStart);
-      const buildAndTestJob = workflowContent.substring(buildAndTestStart, nextJobStart);
-
-      // Check that "npm run build" comes before "npm run build:ui --if-present"
-      const buildIndex = buildAndTestJob.indexOf('- name: Build\n        run: npm run build');
-      const buildUiIndex = buildAndTestJob.indexOf('- name: Build UI workspaces');
-
-      expect(buildIndex).toBeGreaterThan(-1);
-      expect(buildUiIndex).toBeGreaterThan(buildIndex);
+    it('should NOT contain a build:ui step (root pretest already builds the UI)', () => {
+      const job = buildAndTestJob();
+      expect(job).not.toContain('npm run build:ui');
+      expect(job).not.toContain('Build UI workspaces');
     });
 
-    it('should place build:ui step before npm test step', () => {
-      // Extract build-and-test job
-      const buildAndTestStart = workflowContent.indexOf('build-and-test:');
-      const nextJobStart = workflowContent.indexOf('\n  package:', buildAndTestStart);
-      const buildAndTestJob = workflowContent.substring(buildAndTestStart, nextJobStart);
-
-      // Check that "npm run build:ui" comes before "npm test"
-      const buildUiIndex = buildAndTestJob.indexOf('- name: Build UI workspaces');
-      const testIndex = buildAndTestJob.indexOf('- name: Run tests\n        run: npm test');
-
-      expect(buildUiIndex).toBeGreaterThan(-1);
-      expect(testIndex).toBeGreaterThan(buildUiIndex);
-    });
-
-    it('should have proper indentation (8 spaces for name)', () => {
-      // Check for proper step indentation in build-and-test
-      const buildAndTestStart = workflowContent.indexOf('build-and-test:');
-      const nextJobStart = workflowContent.indexOf('\n  package:', buildAndTestStart);
-      const buildAndTestJob = workflowContent.substring(buildAndTestStart, nextJobStart);
-
-      expect(buildAndTestJob).toContain('      - name: Build UI workspaces (if present)');
+    it('should still run npm test, whose pretest builds the UI', () => {
+      expect(buildAndTestJob()).toContain('run: npm test');
     });
   });
 
   describe('build:ui step placement in build-binary job', () => {
     it('should place build:ui step before Build SEA bundle', () => {
-      // Extract build-binary job
-      const buildBinaryStart = workflowContent.indexOf('build-binary:');
-      const signWindowsStart = workflowContent.indexOf('\n  sign-windows:', buildBinaryStart);
-      const buildBinaryJob = workflowContent.substring(buildBinaryStart, signWindowsStart);
-
-      // Check that "npm run build:ui" comes before "Build SEA bundle"
-      const buildUiIndex = buildBinaryJob.indexOf('- name: Build UI workspaces');
-      const seaBundleIndex = buildBinaryJob.indexOf('- name: Build SEA bundle');
+      const job = buildBinaryJob();
+      const buildUiIndex = job.indexOf('- name: Build UI workspaces');
+      const seaBundleIndex = job.indexOf('- name: Build SEA bundle');
 
       expect(buildUiIndex).toBeGreaterThan(-1);
       expect(seaBundleIndex).toBeGreaterThan(buildUiIndex);
+      expect(job.indexOf('npm run build:ui --if-present')).toBeGreaterThan(-1);
     });
 
     it('should have proper indentation in build-binary job', () => {
-      // Check for proper step indentation
-      const buildBinaryStart = workflowContent.indexOf('build-binary:');
-      const signWindowsStart = workflowContent.indexOf('\n  sign-windows:', buildBinaryStart);
-      const buildBinaryJob = workflowContent.substring(buildBinaryStart, signWindowsStart);
+      expect(buildBinaryJob()).toContain('      - name: Build UI workspaces (if present)');
+    });
 
-      expect(buildBinaryJob).toContain('      - name: Build UI workspaces (if present)');
+    it('should precede the step with a comment explaining why it is needed', () => {
+      const job = buildBinaryJob();
+      const stepIndex = job.indexOf('      - name: Build UI workspaces (if present)');
+      const preceding = job.substring(Math.max(0, stepIndex - 600), stepIndex);
+      const commentLines = preceding.split('\n').filter((l) => l.trim().startsWith('#'));
+      expect(commentLines.join('\n')).toContain('never runs');
     });
   });
 
@@ -98,36 +83,10 @@ describe('CI build:ui step', () => {
     });
   });
 
-  describe('comment explains the if-present contract', () => {
-    it('should have comments explaining the if-present behavior', () => {
-      // Count occurrences of the explanatory comment
-      const commentText = 'Build UI workspaces if they exist';
-      const matches = workflowContent.match(new RegExp(commentText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'));
-      expect(matches?.length).toBe(2); // One comment per job
-    });
-
-    it('should mention pack-size check is unaffected', () => {
-      const commentText = 'pack-size check';
-      const matches = workflowContent.match(new RegExp(commentText, 'g'));
-      expect(matches?.length).toBeGreaterThanOrEqual(2); // At least once per step comment
-    });
-  });
-
   describe('no other jobs gained the step', () => {
-    it('should only add step to build-and-test and build-binary jobs', () => {
-      // Extract job names and count the build:ui step in each
-      const jobNames = workflowContent.match(/^  (\w+(?:-\w+)*):/gm);
-      expect(jobNames).toBeDefined();
-
-      // For each job, check if it has the build:ui step
-      const packageJobStart = workflowContent.indexOf('\n  package:');
-      const packageJobEnd = workflowContent.indexOf('\n  build-binary:', packageJobStart);
-      const packageJob = workflowContent.substring(packageJobStart, packageJobEnd);
-      expect(packageJob).not.toContain('npm run build:ui --if-present');
-
-      const buildBinaryStart = workflowContent.indexOf('\n  build-binary:');
-      const signWindowsStart = workflowContent.indexOf('\n  sign-windows:', buildBinaryStart);
-      expect(workflowContent.substring(signWindowsStart)).not.toContain('npm run build:ui --if-present');
+    it('should not add the step to the package job or any job after build-binary', () => {
+      expect(jobSlice('\n  package:', '\n  build-binary:')).not.toContain('npm run build:ui --if-present');
+      expect(jobSlice('\n  sign-windows:', null)).not.toContain('npm run build:ui --if-present');
     });
   });
 
@@ -277,21 +236,6 @@ describe('CI build:ui step', () => {
           fs.rmSync(tempDir, { recursive: true });
         }
       }
-    });
-
-    it('should document proper positioning requirement', () => {
-      // Extract build-and-test job and verify step order
-      const buildAndTestStart = workflowContent.indexOf('build-and-test:');
-      const nextJobStart = workflowContent.indexOf('\n  package:', buildAndTestStart);
-      const buildAndTestJob = workflowContent.substring(buildAndTestStart, nextJobStart);
-
-      const buildIndex = buildAndTestJob.indexOf('- name: Build\n        run: npm run build');
-      const buildUiIndex = buildAndTestJob.indexOf('- name: Build UI workspaces');
-      const verifyIndex = buildAndTestJob.indexOf('- name: Verify build output');
-
-      // build:ui should be strictly between build and verify
-      expect(buildIndex).toBeLessThan(buildUiIndex);
-      expect(buildUiIndex).toBeLessThan(verifyIndex);
     });
   });
 });

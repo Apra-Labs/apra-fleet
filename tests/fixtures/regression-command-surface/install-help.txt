@@ -16,6 +16,8 @@ Usage:
   apra-fleet install --transport http  Register MCP server with HTTP transport (default)
   apra-fleet install --transport stdio Register MCP server with stdio transport (legacy)
   apra-fleet install --project-dir <path>  Seed the fleet-supervisor's project folder before it starts
+  apra-fleet install --data-dir <path> Install a non-default instance whose data lives under <path>
+  apra-fleet install --mcp-scope <s>   Claude MCP registration scope: user (default), project, none
   apra-fleet install --help            Show this help
 
 Options:
@@ -43,6 +45,19 @@ Options:
                           on PATH for this check. Omitting this leaves any project folder set
                           earlier (e.g. from the console) untouched; this can also be set later
                           from the console's Projects page or by re-running install with this flag.
+  --data-dir <path>       Install a non-default instance: <path> (resolved to an absolute path)
+                          becomes APRA_FLEET_DATA_DIR for this install, install-config.json is
+                          written under it, and it is recorded (APRA_FLEET_DATA_DIR, plus
+                          APRA_FLEET_PORT if set) in the OS service definitions the installer
+                          registers (MCP server and supervisor) so the services run against this
+                          instance, never ~/.apra-fleet/data. Note the OS service names are
+                          per-user and shared, so this REPLACES any existing registration of the
+                          same service. Use --mcp-scope none to leave Claude's MCP config alone.
+  --mcp-scope <scope>     Where "claude mcp add" registers apra-fleet: user (default), project, or
+                          none (skip the claude MCP registration entirely; also skips other
+                          providers' MCP registration). project is only valid with --llm claude.
+                          An invalid value is an error. The matching "claude mcp remove" uses the
+                          same scope.
   --force                 Stop a running apra-fleet server before installing (SEA mode only).
                           With --member, only a server a previous member install left behind
                           is stopped; anything else is refused (E-FULL-INSTALL-RUNNING).

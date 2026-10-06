@@ -15,19 +15,61 @@ import {
   parseWorkflowPackageManifest,
 } from '../../services/workflow-packages.js';
 
-function readJsonBody(req: http.IncomingMessage): Promise<unknown> {
+/** Hard ceiling on a register request body (64 KiB). A package manifest is a
+ *  few hundred bytes; this leaves generous headroom while keeping a runaway
+ *  client from buffering the server to death. */
+export const MAX_BODY_BYTES = 64 * 1024;
+
+/** A body that has not completed within this long is abandoned (408). */
+export const BODY_READ_TIMEOUT_MS = 10_000;
+
+export class BodyTooLargeError extends Error {
+  constructor(maxBytes: number = MAX_BODY_BYTES) { super(`request body exceeds ${maxBytes} bytes`); }
+}
+export class BodyTimeoutError extends Error {
+  constructor() { super('request body read timed out'); }
+}
+
+/** Read and parse a JSON body, never accumulating more than `maxBytes` and
+ *  never waiting longer than `timeoutMs`. On overrun it rejects with
+ *  BodyTooLargeError / BodyTimeoutError WITHOUT buffering the remainder. */
+export function readJsonBody(
+  req: http.IncomingMessage,
+  maxBytes: number = MAX_BODY_BYTES,
+  timeoutMs: number = BODY_READ_TIMEOUT_MS,
+): Promise<unknown> {
   return new Promise((resolve, reject) => {
-    let raw = '';
-    req.on('data', (chunk) => { raw += chunk; });
-    req.on('end', () => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    let settled = false;
+    const finish = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      req.removeListener('data', onData);
+      fn();
+    };
+    const timer = setTimeout(() => finish(() => reject(new BodyTimeoutError())), timeoutMs);
+    const onData = (chunk: Buffer | string) => {
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
+      size += buf.length;
+      if (size > maxBytes) {
+        finish(() => reject(new BodyTooLargeError(maxBytes)));
+        return;
+      }
+      chunks.push(buf);
+    };
+    req.on('data', onData);
+    req.on('end', () => finish(() => {
+      const raw = Buffer.concat(chunks).toString('utf8');
       if (!raw) { resolve({}); return; }
       try {
         resolve(JSON.parse(raw));
       } catch (err) {
         reject(err);
       }
-    });
-    req.on('error', reject);
+    }));
+    req.on('error', (err) => finish(() => reject(err)));
   });
 }
 
@@ -44,7 +86,15 @@ export const workflowPackagesRoutes: ConsoleRoute[] = [
       let body: unknown;
       try {
         body = await readJsonBody(req);
-      } catch {
+      } catch (err) {
+        if (err instanceof BodyTooLargeError || err instanceof BodyTimeoutError) {
+          const tooLarge = err instanceof BodyTooLargeError;
+          // Close the connection once the answer is flushed: the rest of
+          // the body is never read.
+          res.writeHead(tooLarge ? 413 : 408, { 'Content-Type': 'application/json', Connection: 'close' });
+          res.end(JSON.stringify({ error: tooLarge ? 'request body too large' : 'request body timed out' }), () => req.destroy());
+          return;
+        }
         jsonResponse(res, 400, { error: 'invalid JSON body' });
         return;
       }

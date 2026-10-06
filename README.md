@@ -111,6 +111,8 @@ apra-fleet install --llm agy # or --llm opencode / codex / copilot
 cd ~/.apra-fleet/bin && apra-fleet start             # start the apra-fleet
 ```
 
+To run a self-contained non-default instance, use `apra-fleet install --data-dir <path> [--mcp-scope user|project|none]`; see [docs/install.md](docs/install.md). `register_member` now refuses work folders git rejects for dubious ownership, and the console Secrets page has a masked entry form.
+
 The standalone installer binary needs no Node.js at all for the core console
 and MCP server. Sprint automation (`fleet-sprint`, the always-on supervisor,
 and `bd`) is the one part that needs Node.js 22.16+ and npm; `install` checks

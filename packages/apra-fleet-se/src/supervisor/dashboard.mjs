@@ -48,7 +48,7 @@ import { WATCHDOG_STATUS } from './watchdog.mjs';
 // with launch-form.mjs -- see run-outcome.mjs for why it is its own module.
 import { FAILED_VERDICTS, FAILED_RUN_STATUSES, isFailedRunOutcome } from './run-outcome.mjs';
 import { renderLaunchFormHtml, formatLaunchError } from './launch-form.mjs';
-import { handleTokenExchange, authNoticeHtml, injectAuthNotice } from './dashboard-session.mjs';
+import { handleTokenInUrl, authNoticeHtml, injectAuthNotice, registerSignInRoute } from './dashboard-session.mjs';
 import { renderBacklogPanelHtml, normalizeBead, expandScopeInMemory, buildChildIndex } from './backlog.mjs';
 // apra-fleet-72o0 (dashboard follow-up): the claimed-scope count needs CLOSED
 // beads present in the bulk fetch -- a closed intermediate parent must still
@@ -2080,12 +2080,11 @@ export function createDashboard(deps = {}) {
  */
 export function registerDashboardRoutes(supervisor, dashboard, { extraIndexPaths = [] } = {}) {
     const renderIndexRoute = async (req, res) => {
-        // apra-fleet-50j6.6: `?token=<service token>` is a token exchange --
-        // a match sets the DERIVED se_token cookie and 302s to this same
-        // path without the token; a mismatch answers 401 with no cookie.
-        // `supervisor.token` is null when auth was never configured, in
-        // which case there is nothing to exchange.
-        if (handleTokenExchange(req, res, supervisor.token)) return;
+        // apra-fleet-50j6.12: a `?token=` in the page URL is refused (400,
+        // no cookie, never compared) -- the long-lived token must not travel
+        // in a URL. Sign-in is the paste-token form posting to POST /signin
+        // (registerSignInRoute below).
+        if (handleTokenInUrl(req, res, () => supervisor.token)) return;
         // (apra-fleet-i9ag.3.2) The console's /ext/<id> proxy stamps this
         // request's mount path on it (mount-prefix.mjs's MOUNT_PATH_HEADER);
         // resolveMountPrefix() validates it and falls back to '' (serve-direct,
@@ -2098,7 +2097,7 @@ export function registerDashboardRoutes(supervisor, dashboard, { extraIndexPaths
         // handing out a credential let any local process harvest it (and the
         // service token may be the shared fleet key). An unauthenticated
         // view instead carries a short notice explaining how to sign in.
-        const body = Buffer.from(injectAuthNotice(html, authNoticeHtml(req, supervisor.token)), 'utf-8');
+        const body = Buffer.from(injectAuthNotice(html, authNoticeHtml(req, () => supervisor.token)), 'utf-8');
         const headers = {
             'content-type': 'text/html; charset=utf-8',
             'content-length': body.length,
@@ -2107,6 +2106,9 @@ export function registerDashboardRoutes(supervisor, dashboard, { extraIndexPaths
         res.end(body);
     };
     supervisor.route('GET', '/', renderIndexRoute);
+    // apra-fleet-50j6.12: the paste-token sign-in form's target (same-origin
+    // POST, derived SameSite=Strict cookie, 303 back to the page).
+    registerSignInRoute(supervisor);
     for (const extraPath of extraIndexPaths) {
         if (typeof extraPath === 'string' && extraPath !== '' && extraPath !== '/') {
             supervisor.route('GET', extraPath, renderIndexRoute);

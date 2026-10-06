@@ -356,6 +356,8 @@
  * @property {Object} [session] - Session info: { id, lastActivity, lastLlmActivityAt, status, idleSecs }
  * @property {Object} [resources] - System resource snapshot: { cpu, memory, disk, gpu }
  * @property {string} [branch] - Current git branch in `folder`, when it is a git repo
+ * @property {string} [gitWarning] - Set when git refuses `folder` from the member's context (e.g. "dubious ownership");
+ *   names the take-ownership and safe.directory remedies. Absent when git is fine or the folder is not a repo yet
  * @property {Object} [cloud] - Cloud instance details, for cloud-backed members only
  * @property {{cheap?: string, standard?: string, premium?: string}} [modelTiers] - Per-member model tier map
  * @property {string} [vcsTokenExpiresAt] - ISO 8601 expiry of this member's VCS credentials, when known

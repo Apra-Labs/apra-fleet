@@ -150,6 +150,15 @@ export interface RegisterOptions {
    * from its own install directory and does.
    */
   workingDirectory?: string;
+  /**
+   * Extra environment variables written into the service definition (systemd
+   * Environment=, launchd EnvironmentVariables, Windows wrapper `set` lines),
+   * e.g. APRA_FLEET_DATA_DIR for a non-default instance. Values must already be
+   * resolved to final text (absolute paths) by the caller -- no shell expansion
+   * ($VAR, ~/, %VAR%) is performed or relied on. Absent/empty -> the written
+   * definition is unchanged.
+   */
+  env?: Record<string, string>;
 }
 
 export interface ServiceManager {

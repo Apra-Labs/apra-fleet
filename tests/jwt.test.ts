@@ -22,8 +22,15 @@ const CLAIMS: JwtClaims = {
 let tmpHome: string;
 let jwtMod: typeof import('../src/services/jwt.js');
 
+// apra-fleet-q1ku: this suite pins the DEFAULT instance layout
+// (<home>/.apra-fleet/fleet.key), so APRA_FLEET_DATA_DIR (set per run by
+// tests/setup.ts, which would relocate fleet.key into that dir) is unset for
+// each test and restored afterwards.
+const ORIGINAL_DATA_DIR = process.env.APRA_FLEET_DATA_DIR;
+
 beforeEach(async () => {
   tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-jwt-test-'));
+  delete process.env.APRA_FLEET_DATA_DIR;
   vi.resetModules();
   vi.doMock('node:os', async (importOriginal) => {
     const actual = await importOriginal<typeof import('node:os')>();
@@ -33,6 +40,8 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+  if (ORIGINAL_DATA_DIR === undefined) delete process.env.APRA_FLEET_DATA_DIR;
+  else process.env.APRA_FLEET_DATA_DIR = ORIGINAL_DATA_DIR;
   vi.doUnmock('node:os');
   vi.resetModules();
   fs.rmSync(tmpHome, { recursive: true, force: true });

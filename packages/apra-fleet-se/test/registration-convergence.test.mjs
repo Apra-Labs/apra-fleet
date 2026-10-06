@@ -73,6 +73,8 @@ import { fileURLToPath } from 'node:url';
 import { scaledTimeout } from './helpers/scaled-timeout.mjs';
 import { TEST_CONCURRENCY } from './helpers/test-concurrency.mjs';
 import { buildIsolatedHomeEnv } from '../../../tests/helpers/isolated-home.mjs';
+import { deriveUpstreamCredential } from '@apralabs/apra-fleet-client/auth/local-token';
+import { PACKAGE_ID } from '../src/registration/manifest.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SERVE_BIN = path.join(__dirname, '../bin/serve.mjs');
@@ -235,7 +237,10 @@ async function bootSupervisor({ withFleetKey = false, withServer = false, env = 
     const workDir = await mkTmp('i9ag12-cwd-');
 
     const fleetKey = crypto.randomBytes(32).toString('hex');
-    const fleetKeyPath = path.join(homeDir, '.apra-fleet', 'fleet.key');
+    // apra-fleet-q1ku: the child runs with its own APRA_FLEET_DATA_DIR, so its
+    // fleet.key is <APRA_FLEET_DATA_DIR>/fleet.key (shared fleet-path resolver),
+    // not <home>/.apra-fleet/fleet.key.
+    const fleetKeyPath = path.join(dataDir, 'fleet.key');
     const serverJsonPath = path.join(dataDir, 'server.json');
     // Realistic on purpose: the url carries the /mcp suffix, exactly what the
     // real server writes. The registry hangs off the ORIGIN, so a fixture
@@ -286,6 +291,9 @@ async function bootSupervisor({ withFleetKey = false, withServer = false, env = 
         stub,
         fleetKey,
         homeDir,
+        /** The private/token fallback the supervisor minted under its own data
+         *  root (FLEET_SE_DATA_DIR) because no fleet.key existed at boot. */
+        readPrivateToken: async () => (await fsp.readFile(path.join(seDataDir, 'private', 'token'), 'utf-8')).trim(),
         output: () => output,
         isAlive,
         describeState,
@@ -306,17 +314,11 @@ async function bootSupervisor({ withFleetKey = false, withServer = false, env = 
         ),
         /**
          * Clean, in-band stop -- the path whose completion triggers
-         * unregister(). Only usable when fleet.key existed AT BOOT.
-         *
-         * WHY: the supervisor resolves its OWN api-guard credential once at
-         * startup (bin/serve.mjs ~line 292 -> createSupervisor({ token })) and
-         * never re-resolves it, and auth.mjs isAuthorized() checks requests
-         * against THAT value. A supervisor booted with no fleet.key is therefore
-         * guarded by the private/token fallback for its whole life, and a
-         * `Bearer <fleetKey>` shutdown is correctly rejected by it. That pinning
-         * is a real separate bug for the console hop (filed as apra-fleet-hwxd);
-         * it is NOT what this file asserts, so the no-fleet.key case below stops
-         * with stopHard() instead of pretending this route works there.
+         * unregister(): an authenticated POST /api/shutdown bearing the raw
+         * fleet key. Works whether or not fleet.key existed at boot: the
+         * supervisor's own api guard re-resolves its token (apra-fleet-hwxd),
+         * so a supervisor booted on the private/token fallback accepts the
+         * fleet-key credential once the key appears.
          */
         stopCleanly: async () => {
             try {
@@ -326,12 +328,6 @@ async function bootSupervisor({ withFleetKey = false, withServer = false, env = 
             } finally {
                 try { if (child.pid) process.kill(child.pid, 'SIGKILL'); } catch { /* gone */ }
             }
-        },
-        /** Unconditional stop, for cases whose startup credential is not the
-         *  fleet key (see stopCleanly's note). Asserts nothing about shutdown. */
-        stopHard: async () => {
-            try { if (child.pid) process.kill(child.pid, 'SIGKILL'); } catch { /* gone */ }
-            await waitFor(() => exited, { label: 'the supervisor subprocess to exit after SIGKILL' });
         },
     };
 }
@@ -368,7 +364,17 @@ function assertNoForeignCredential(sv) {
 describe('apra-fleet-i9ag.12: supervisor started BEFORE fleet.key exists converges', () => {
     test('no fleet.key -> retries (former branch a), then registers once the key and server appear, with no restart', async () => {
         const sv = await bootSupervisor({ withFleetKey: false, withServer: false });
+        let passed = false;
         try {
+            // apra-fleet-hwxd.2 (1): before fleet.key exists the supervisor's own
+            // guard is keyed to the private/token fallback -- a guarded /api
+            // route answers 200 to that bearer (and 401 to none).
+            const privateToken = await sv.readPrivateToken();
+            const preKey = await request(sv.port, 'GET', '/api/health', { headers: { authorization: `Bearer ${privateToken}` } });
+            assert.equal(preKey.status, 200, `private/token bearer before fleet.key: ${preKey.status} ${preKey.body}`);
+            assert.equal((await request(sv.port, 'GET', '/api/health')).status, 401,
+                'GET /api/health is a guarded route: no credential must be 401');
+
             // It must be WAITING on the key, and must say so as a retry.
             await waitFor(
                 async () => sv.output().includes(BRANCH_NO_FLEET_KEY),
@@ -392,6 +398,16 @@ describe('apra-fleet-i9ag.12: supervisor started BEFORE fleet.key exists converg
 
             // Now the machine converges: the key is minted and the server comes up.
             await sv.mintFleetKey();
+
+            // apra-fleet-hwxd.2 (2): the console's /ext/se hop credential --
+            // deriveUpstreamCredential(fleetKey, PACKAGE_ID), exactly what
+            // src/console/proxy.ts attaches -- now reaches the SAME process
+            // (no restart) on a guarded /api route.
+            const hop = await request(sv.port, 'GET', '/api/health', {
+                headers: { authorization: `Bearer ${deriveUpstreamCredential(sv.fleetKey, PACKAGE_ID)}` },
+            });
+            assert.equal(hop.status, 200,
+                `fleet-key-derived /ext/se bearer after fleet.key appeared, no restart: ${hop.status} ${hop.body}`);
             await sv.bringServerUp();
             await sv.waitForRegistration();
 
@@ -399,14 +415,19 @@ describe('apra-fleet-i9ag.12: supervisor started BEFORE fleet.key exists converg
             assertNoForeignCredential(sv);
             // The token value must never be logged.
             assert.ok(!sv.output().includes(sv.fleetKey), 'the fleet key value must never appear in a log line');
+            assert.ok(!sv.output().includes(privateToken), 'the private/token value must never appear in a log line');
+            passed = true;
         } finally {
-            // SIGKILL, not the in-band authenticated shutdown: this supervisor
-            // booted with no fleet.key, so its own guard is keyed to the
-            // private/token fallback (see stopHard/stopCleanly above and
-            // apra-fleet-hwxd). Unregister-on-shutdown is asserted by the
-            // server-first case, which boots with the key already present.
-            await sv.stopHard();
+            // apra-fleet-hwxd.2 (3): the authenticated in-band shutdown with
+            // the fleet-key credential, now that the guard follows fleet.key.
+            // stopCleanly() always kills the child; when an assertion above
+            // already failed, its own refusal must not mask that first error.
+            await sv.stopCleanly().catch((err) => { if (passed) throw err; });
         }
+        // (4) checked again after shutdown so the shutdown/unregister log
+        // lines are covered too.
+        assert.ok(!sv.output().includes(sv.fleetKey), 'the fleet key value must never appear in supervisor output');
+        assert.ok(!sv.output().includes(await sv.readPrivateToken()), 'the private/token value must never appear in supervisor output');
     });
 });
 

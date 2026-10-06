@@ -161,7 +161,13 @@ beforeAll(async () => {
   const tmpHome = isolatedHome.tempHome;
   tmpDirs.push(tmpHome);
   const seDataDir = await mkTmp('supervisor-subcommand-se-data-');
-  const fleetDataDir = await mkTmp('supervisor-subcommand-fleet-data-');
+  // apra-fleet-q1ku: fleet.key is per-instance, so the child must run in the
+  // SAME instance whose key is minted below -- the temp home's default data
+  // dir (<home>/.apra-fleet/data => fleet.key at <home>/.apra-fleet/fleet.key),
+  // not a separate data dir that would carry no fleet.key. Still inside the
+  // temp home, so nothing reaches the real profile.
+  const fleetDataDir = path.join(tmpHome, '.apra-fleet', 'data');
+  await fsp.mkdir(fleetDataDir, { recursive: true });
   const cwd = await mkTmp('supervisor-subcommand-cwd-');
 
   // Stage the "installed" tree the launcher is contracted to find.
@@ -201,8 +207,9 @@ beforeAll(async () => {
   const child = spawn(process.execPath, [DIST_INDEX, 'supervisor', '--port', String(port)], {
     cwd,
     stdio: ['ignore', 'pipe', 'pipe'],
-    // The same isolated home as the minting step above, but this child's OWN
-    // data dirs -- hence the explicit values AFTER the helper's spread.
+    // The same isolated home and fleet instance as the minting step above,
+    // but this child's OWN se data dir -- hence the explicit values AFTER the
+    // helper's spread.
     env: {
       ...buildIsolatedHomeEnv(tmpHome),
       FLEET_SE_DATA_DIR: seDataDir,

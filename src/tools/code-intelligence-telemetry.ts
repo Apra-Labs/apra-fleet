@@ -4,13 +4,23 @@
 // GitNexusProvider -- provider stays a pure proxy"). Do not import this from
 // code-intelligence-gitnexus.ts.
 import { appendFile, mkdir, rename, stat } from 'fs/promises';
-import { homedir } from 'os';
 import { join } from 'path';
+import { codeIntelligenceDir } from '../paths.js';
 
-const USAGE_DIR = join(homedir(), '.apra-fleet', 'data', 'code-intelligence');
+// apra-fleet-q1ku: the usage dir is per-instance (honours APRA_FLEET_DATA_DIR)
+// and resolved lazily on every write through the shared fleet-path resolver.
+/** Current usage.jsonl path (lazy). */
+export function usageLogPath(): string {
+  return join(codeIntelligenceDir(), 'usage.jsonl');
+}
+/** Current rotated usage.jsonl.1 path (lazy). */
+export function rotatedUsageLogPath(): string {
+  return join(codeIntelligenceDir(), 'usage.jsonl.1');
+}
 
-export const USAGE_LOG_PATH = join(USAGE_DIR, 'usage.jsonl');
-export const ROTATED_USAGE_LOG_PATH = join(USAGE_DIR, 'usage.jsonl.1');
+/** Import-time snapshots of usageLogPath()/rotatedUsageLogPath(). */
+export const USAGE_LOG_PATH = usageLogPath();
+export const ROTATED_USAGE_LOG_PATH = rotatedUsageLogPath();
 
 // Rotation threshold (design D8): 5 MB. Simple, lossy-by-design -- one
 // rotated file is kept, older history is discarded.
@@ -29,9 +39,9 @@ interface UsageRecord {
 // or unreadable file -> nothing to rotate, fall through to a fresh append.
 async function rotateIfNeeded(): Promise<void> {
   try {
-    const info = await stat(USAGE_LOG_PATH);
+    const info = await stat(usageLogPath());
     if (info.size > MAX_USAGE_LOG_BYTES) {
-      await rename(USAGE_LOG_PATH, ROTATED_USAGE_LOG_PATH);
+      await rename(usageLogPath(), rotatedUsageLogPath());
     }
   } catch {
     // Missing file (ENOENT) or any other stat failure -- treat as "nothing to
@@ -40,9 +50,9 @@ async function rotateIfNeeded(): Promise<void> {
 }
 
 async function writeUsageLine(record: UsageRecord): Promise<void> {
-  await mkdir(USAGE_DIR, { recursive: true });
+  await mkdir(codeIntelligenceDir(), { recursive: true });
   await rotateIfNeeded();
-  await appendFile(USAGE_LOG_PATH, JSON.stringify(record) + '\n', 'utf8');
+  await appendFile(usageLogPath(), JSON.stringify(record) + '\n', 'utf8');
 }
 
 // Record one usage event. Fire-and-forget: the write happens asynchronously

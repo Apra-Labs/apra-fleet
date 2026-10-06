@@ -376,6 +376,11 @@ export class LinuxCommands implements OsCommands {
     return `git -C "${f}" remote get-url origin 2>/dev/null || git -C "${f}" config --get remote.origin.url 2>/dev/null || true`;
   }
 
+  gitRepoAccessProbe(folder: string): string {
+    // stderr folded into stdout and echoed only on failure; exit code stays 0.
+    return `out=$(git -C "${escapeDoubleQuoted(folder)}" rev-parse --git-dir 2>&1) || printf '%s\\n' "$out"`;
+  }
+
   // --- Process management ---
 
   // apra-fleet-eft.13.3: `kill -9 <pid>` alone only signals that single

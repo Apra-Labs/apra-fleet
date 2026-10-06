@@ -3,7 +3,7 @@ import { Page, SelectField, Table, TextField, type TableColumn } from "@apralabs
 import {
   deleteCredential,
   listCredentials,
-  setCredential,
+  setCredentialValue,
   setupGitApp,
   updateCredential,
   type CredentialEntry
@@ -23,21 +23,50 @@ const columns: Array<TableColumn<CredentialEntry>> = [
 
 interface AddFormState {
   name: string;
-  prompt: string;
-  networkPolicy: "allow" | "confirm" | "deny";
-  members: string;
-  ttlSeconds: string;
+  value: string;
 }
 
-const ADD_FORM_INITIAL: AddFormState = {
-  name: "",
-  prompt: "",
-  networkPolicy: "confirm",
-  members: "*",
-  ttlSeconds: ""
-};
+const ADD_FORM_INITIAL: AddFormState = { name: "", value: "" };
+
+/** Masked value input with an eye toggle. The toggle only reveals what the
+ *  user is typing now -- a stored value is never loaded into this field. */
+function SecretValueField({
+  name,
+  label,
+  value,
+  onChange
+}: {
+  name: string;
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const [revealed, setRevealed] = useState(false);
+  return (
+    <div style={{ display: "flex", alignItems: "flex-end", gap: "8px" }}>
+      <TextField
+        label={label}
+        name={name}
+        type={revealed ? "text" : "password"}
+        autoComplete="off"
+        value={value}
+        onChange={onChange}
+        required
+      />
+      <button
+        type="button"
+        aria-label={revealed ? "Hide value" : "Show value"}
+        aria-pressed={revealed}
+        onClick={() => setRevealed((v) => !v)}
+      >
+        {revealed ? "\u{1F648}" : "\u{1F441}"}
+      </button>
+    </div>
+  );
+}
 
 interface UpdateFormState {
+  value: string;
   members: string;
   ttlSeconds: string;
   networkPolicy: "allow" | "confirm" | "deny";
@@ -52,18 +81,19 @@ interface GitAppFormState {
 const GIT_APP_INITIAL: GitAppFormState = { appId: "", privateKeyPath: "", installationId: "" };
 
 /** S2 screen: stored-credential metadata only (name/policy/members/expiry --
- *  never a value), out-of-band add (DQ-7: opens the collection url in a new
- *  tab), update, delete-behind-confirm and GitHub App setup, each against
+ *  never a value), direct masked-form add and value update (the value is
+ *  POSTed to the console and the field cleared; no new tab), metadata update, delete-behind-confirm and GitHub App setup, each against
  *  its own /api/fleet/ route. */
 export function Secrets() {
   const [state, setState] = useState<LoadState>({ kind: "loading" });
   const [addOpen, setAddOpen] = useState(false);
   const [addForm, setAddForm] = useState<AddFormState>(ADD_FORM_INITIAL);
-  const [addResult, setAddResult] = useState<{ url: string; expiresAt?: string } | null>(null);
+  const [addResult, setAddResult] = useState<string | null>(null);
   const [addError, setAddError] = useState<string | null>(null);
 
   const [editingName, setEditingName] = useState<string | null>(null);
   const [updateForm, setUpdateForm] = useState<UpdateFormState>({
+    value: "",
     members: "",
     ttlSeconds: "",
     networkPolicy: "confirm"
@@ -95,15 +125,8 @@ export function Secrets() {
   async function handleAddSubmit() {
     setAddError(null);
     try {
-      const result = await setCredential({
-        name: addForm.name,
-        prompt: addForm.prompt,
-        network_policy: addForm.networkPolicy,
-        members: addForm.members,
-        ttl_seconds: addForm.ttlSeconds.trim() ? Number(addForm.ttlSeconds) : undefined
-      });
-      setAddResult(result);
-      window.open(result.url, "_blank", "noopener");
+      await setCredentialValue({ name: addForm.name, value: addForm.value });
+      setAddResult(`Stored ${addForm.name}`);
       setAddOpen(false);
       setAddForm(ADD_FORM_INITIAL);
       await load();
@@ -116,16 +139,33 @@ export function Secrets() {
     setEditingName(entry.name);
     setUpdateError(null);
     setUpdateForm({
+      value: "",
       members: entry.members ?? "",
       ttlSeconds: "",
       networkPolicy: (entry.network_policy as UpdateFormState["networkPolicy"]) ?? "confirm"
     });
   }
 
-  async function submitUpdate() {
+  async function submitUpdate(entry: CredentialEntry) {
     if (!editingName) return;
     setUpdateError(null);
     try {
+      if (updateForm.value) {
+        // New value replaces the stored one; existing scope/policy/members
+        // are carried over so the replacement does not change them.
+        await setCredentialValue({
+          name: editingName,
+          value: updateForm.value,
+          persist: entry.scope !== "session",
+          network_policy: updateForm.networkPolicy,
+          members: updateForm.members || "*",
+          ttl_seconds: updateForm.ttlSeconds.trim() ? Number(updateForm.ttlSeconds) : undefined
+        });
+        setUpdateForm((f) => ({ ...f, value: "" }));
+        setEditingName(null);
+        await load();
+        return;
+      }
       await updateCredential({
         name: editingName,
         members: updateForm.members || undefined,
@@ -181,33 +221,14 @@ export function Secrets() {
       {addOpen ? (
         <div>
           <TextField label="Name" name="secretName" value={addForm.name} onChange={(v) => setAddForm((f) => ({ ...f, name: v }))} required />
-          <TextField label="Prompt" name="secretPrompt" value={addForm.prompt} onChange={(v) => setAddForm((f) => ({ ...f, prompt: v }))} required />
-          <SelectField
-            label="Network policy"
-            name="secretNetworkPolicy"
-            value={addForm.networkPolicy}
-            onChange={(v) => setAddForm((f) => ({ ...f, networkPolicy: v as AddFormState["networkPolicy"] }))}
-            options={[
-              { value: "allow", label: "Allow" },
-              { value: "confirm", label: "Confirm" },
-              { value: "deny", label: "Deny" }
-            ]}
-          />
-          <TextField label="Members" name="secretMembers" value={addForm.members} onChange={(v) => setAddForm((f) => ({ ...f, members: v }))} />
-          <TextField
-            label="TTL seconds"
-            name="secretTtl"
-            type="number"
-            value={addForm.ttlSeconds}
-            onChange={(v) => setAddForm((f) => ({ ...f, ttlSeconds: v }))}
-          />
+          <SecretValueField label="Value" name="secretValue" value={addForm.value} onChange={(v) => setAddForm((f) => ({ ...f, value: v }))} />
           <button type="button" onClick={() => void handleAddSubmit()}>
             Submit
           </button>
           {addError ? <p role="alert">{addError}</p> : null}
         </div>
       ) : null}
-      {addResult ? <p role="status">Collection url opened: {addResult.url}</p> : null}
+      {addResult ? <p role="status">{addResult}</p> : null}
 
       {gitAppOpen ? (
         <div>
@@ -269,6 +290,12 @@ export function Secrets() {
 
                 {editingName === entry.name ? (
                   <div>
+                    <SecretValueField
+                      label="New value"
+                      name={`update-value-${entry.name}`}
+                      value={updateForm.value}
+                      onChange={(v) => setUpdateForm((f) => ({ ...f, value: v }))}
+                    />
                     <TextField
                       label="Members"
                       name={`update-members-${entry.name}`}
@@ -293,7 +320,7 @@ export function Secrets() {
                         { value: "deny", label: "Deny" }
                       ]}
                     />
-                    <button type="button" onClick={() => void submitUpdate()}>
+                    <button type="button" onClick={() => void submitUpdate(entry)}>
                       Save
                     </button>
                     {updateError ? <p role="alert">{updateError}</p> : null}

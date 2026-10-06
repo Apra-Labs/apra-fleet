@@ -313,10 +313,12 @@ async function postJson(url, timeoutMs = 2000, token) {
 
 /** READ-ONLY resolve of the bearer token for a supervisor's data dir, through
  *  the SAME resolveServiceToken() bin/serve.mjs itself uses (apra-fleet-
- *  ky2l.1.2, DQ-20) -- deliberately called with NO `home` override, so it
- *  resolves against the real os.homedir() exactly like the supervisor
- *  process(es) this script spawns or snapshots (which also never receive a
- *  --home override). apra-fleet-ky2l.13: passes createIfMissing: false, so
+ *  ky2l.1.2, DQ-20). `opts` names WHICH instance's fleet.key to consider
+ *  (apra-fleet-q1ku): `{ env: sandboxEnv(values) }` for this sandbox's
+ *  supervisor (whose fleet.key lives under its own APRA_FLEET_DATA_DIR), or
+ *  `{ home }` for the production (default-instance) supervisor -- never this
+ *  script's own process.env, which need not match either.
+ *  apra-fleet-ky2l.13: passes createIfMissing: false, so
  *  this NEVER mints a fresh private/token as a side effect -- every call
  *  site reads against a dir whose token (if any) was already minted by an
  *  earlier, explicitly-minting call (e.g. start()'s pre-spawn resolve at
@@ -325,9 +327,9 @@ async function postJson(url, timeoutMs = 2000, token) {
  *  token existing at either source, just means "no snapshot/no auth",
  *  handled by the caller exactly like the pre-auth null/false it used to get
  *  from a bare 401. */
-function tryLoadToken(dir) {
+function tryLoadToken(dir, opts) {
   try {
-    const resolved = resolveServiceToken(dir, { createIfMissing: false });
+    const resolved = resolveServiceToken(dir, { ...opts, createIfMissing: false });
     return resolved ? resolved.token : undefined;
   } catch {
     return undefined;
@@ -340,7 +342,7 @@ const TOKEN_SHAPE = /^[0-9a-f]{64}$/;
  *
  *  Root cause this exists for: re-resolving the token later (tryLoadToken) is
  *  NOT guaranteed to return what start() resolved. readLocalToken() prefers
- *  <home>/.apra-fleet/fleet.key over <dataDir>/private/token, and under a
+ *  the instance fleet.key over <dataDir>/private/token, and under a
  *  fresh HOME with no fleet.key (vitest's sandboxed HOME, or any brand-new
  *  machine) start() and the spawned supervisor both resolve private/token --
  *  then the sandbox fleet MCP server lazily mints fleet.key (jwt.ts
@@ -361,7 +363,15 @@ function sandboxSupervisorToken(values) {
       if (TOKEN_SHAPE.test(token)) return token;
     } catch { /* gone/unreadable: fall back to the resolver */ }
   }
-  return tryLoadToken(values.FLEET_SE_DATA_DIR);
+  return tryLoadToken(values.FLEET_SE_DATA_DIR, { env: sandboxEnv(values) });
+}
+
+/** The env the sandbox's own processes resolve fleet-owned paths against:
+ *  this script's env with the sandbox's APRA_FLEET_DATA_DIR (apra-fleet-q1ku
+ *  -- the sandbox fleet.key is <APRA_FLEET_DATA_DIR>/fleet.key, never the
+ *  operator's real ~/.apra-fleet/fleet.key). */
+function sandboxEnv(values) {
+  return { ...process.env, APRA_FLEET_DATA_DIR: values.APRA_FLEET_DATA_DIR };
 }
 
 /** Production supervisor's data dir: same default bin/serve.mjs's
@@ -404,7 +414,7 @@ export async function snapshotProduction(home = os.homedir(), { supervisorPort =
     snap.PROD_MCP_PID = String(info.pid);
     snap.PROD_MCP_PORT = String(info.port ?? '');
   }
-  const prodToken = tryLoadToken(productionSeDataDir(home));
+  const prodToken = tryLoadToken(productionSeDataDir(home), { home });
   // Status-aware: only "no answer" (refused/timeout) means there is no
   // production supervisor. A supervisor that ANSWERED non-2xx (401 = wrong or
   // absent token) is present but unreadable; snapshotting nothing would make
@@ -431,7 +441,7 @@ export async function checkProductionUnchanged(values, home = os.homedir(), { su
     }
   }
   if (values.PROD_SUPERVISOR_PID) {
-    const prodToken = tryLoadToken(productionSeDataDir(home));
+    const prodToken = tryLoadToken(productionSeDataDir(home), { home });
     const probe = await probeJson(`http://127.0.0.1:${supervisorPort}/api/health`, 2000, prodToken);
     const health = probe.ok ? probe.body : null;
     if (!probe.ok && probe.status != null) {
@@ -554,15 +564,14 @@ export async function start(sprintId, { home = os.homedir() } = {}) {
     throw portConflictError('supervisor', supervisorPort, `supervisor port ${supervisorPort} is no longer free -- torn down; re-run 'init'`);
   }
   // Resolve (mint-or-reuse) the sandbox's own bearer token BEFORE spawning,
-  // through the SAME resolver (and the SAME real os.homedir(), no --home
-  // override on either side) the about-to-be-spawned child's own
-  // resolveServiceToken() call will use, so the child reuses this exact
-  // source rather than racing a concurrent first mint (same pattern as
-  // f34/serve-wiring's fix for this). apra-fleet-ky2l.1.2 (DQ-20): if a
-  // shared ~/.apra-fleet/fleet.key already exists, both this pre-check and
-  // the spawned child resolve it -- the sandbox supervisor intentionally
-  // shares one token with production, not a bug.
-  const resolvedSupervisorToken = resolveServiceToken(values.FLEET_SE_DATA_DIR);
+  // through the SAME resolver and the SAME env (the child's `env` above) the
+  // about-to-be-spawned child's own resolveServiceToken() call will use, so
+  // the child reuses this exact source rather than racing a concurrent first
+  // mint (same pattern as f34/serve-wiring's fix for this). apra-fleet-q1ku:
+  // because the child runs with the sandbox APRA_FLEET_DATA_DIR, its fleet.key
+  // is <APRA_FLEET_DATA_DIR>/fleet.key -- the sandbox no longer shares the
+  // operator's real ~/.apra-fleet/fleet.key with production.
+  const resolvedSupervisorToken = resolveServiceToken(values.FLEET_SE_DATA_DIR, { env });
   const supervisorToken = resolvedSupervisorToken.token;
   const serve = path.join(repoRoot, 'packages', 'apra-fleet-se', 'bin', 'serve.mjs');
   const supPid = spawnDetached([serve, '--port', String(supervisorPort)], env, path.join(root, 'supervisor.log'));
