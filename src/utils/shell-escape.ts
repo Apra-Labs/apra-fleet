@@ -50,7 +50,7 @@ export function escapeDoubleQuoted(s: string): string {
  */
 export function escapeForDoubleQuotes(s: string, powershell: boolean): string {
   return powershell
-    ? s.replace(/[`"$“-„]/g, '`$&')
+    ? s.replace(/[`"$\u201C-\u201E]/g, '`$&')
     : s.replace(/[\\"$`]/g, '\\$&');
 }
 
