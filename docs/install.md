@@ -237,7 +237,10 @@ apra-fleet uninstall --skill workflows
 ```
 
 If the fleet server is running, uninstall aborts and tells you to re-run with
-`--force`. Full detail: [docs/features/uninstall.md](features/uninstall.md).
+`--force`. A full uninstall also stops and removes a leftover supervisor OS service
+(systemd user unit, launchd agent, or Windows scheduled task) that runs the installed
+tree, and ends with a "Kept (intentionally)" list (`data/`, `fleet.key`, user workflows).
+Full detail: [docs/features/uninstall.md](features/uninstall.md).
 
 ## Customizing model tier mapping
 

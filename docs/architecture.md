@@ -268,6 +268,10 @@ share the exact same code path instead of re-implementing it:
   directories are left in place; `workflows/` itself is only removed if
   nothing user-authored remains, and the command prints which user
   workflows it kept.
+- A full `apra-fleet uninstall` also stops and removes the OS-level supervisor
+  service registration (systemd user unit, launchd agent, or Windows
+  scheduled task) when it points at the installed tree, before the workflows
+  runtime is deleted. See [docs/features/uninstall.md](features/uninstall.md).
 - `apra-fleet update` reads back the previously-persisted `--workflows` mode
   and threads it into the re-invoked install, so an update refreshes
   built-in workflow assets to the new version while preserving any
