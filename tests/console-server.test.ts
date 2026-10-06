@@ -12,8 +12,9 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { handleConsoleRequest, isConsolePath, isLoopbackRemoteAddress } from '../src/console/server.js';
+import { handleConsoleRequest, isConsolePath, isLoopbackRemoteAddress, __registerTestRouteModule } from '../src/console/server.js';
 import { getOrCreateKey } from '../src/services/jwt.js';
+import * as jwtModule from '../src/services/jwt.js';
 import { addAgent } from '../src/services/registry.js';
 import { workflowPackageService } from '../src/services/workflow-packages.js';
 import { createHttpTransport, nonLoopbackBindWarning, type HttpTransportHandle } from '../src/services/http-transport.js';
@@ -251,6 +252,82 @@ describe('console seam: dispatch is total (apra-fleet-iywi.10 / apra-fleet-iywi.
     const out2 = fakeRes();
     expect(await handleConsoleRequest(fakeReq('/ext/some-package/anything'), out2.res, {})).toBe(true);
     expect(out2.status).toBe(404);
+  });
+
+  it('guard region: getOrCreateKey throwing answers 500 with the message, and the same instance then serves normally', async () => {
+    const headers = authHeaders(); // minted BEFORE the spy so the key exists
+    const spy = vi.spyOn(jwtModule, 'getOrCreateKey').mockImplementation(() => {
+      throw new Error('simulated key read failure (guard)');
+    });
+    const out = fakeRes();
+    expect(await handleConsoleRequest(fakeReq('/api/fleet/members', 'GET', headers), out.res, {})).toBe(true);
+    expect(out.status).toBe(500);
+    expect(out.body).toContain('simulated key read failure (guard)');
+    spy.mockRestore();
+
+    const out2 = fakeRes();
+    expect(await handleConsoleRequest(fakeReq('/api/fleet/nope', 'GET', headers), out2.res, {})).toBe(true);
+    expect(out2.status).toBe(404);
+  });
+
+  it('/ui branch: a throw while issuing the console cookie answers 500 with the message, and the same instance then serves normally', async () => {
+    getOrCreateKey(); // make sure the key exists before the spy
+    const req = () => ({ url: '/ui/', method: 'GET', headers: {}, socket: { remoteAddress: '127.0.0.1' } }) as unknown as http.IncomingMessage;
+    const spy = vi.spyOn(jwtModule, 'getOrCreateKey').mockImplementation(() => {
+      throw new Error('simulated key read failure (ui)');
+    });
+    const out = fakeRes();
+    expect(await handleConsoleRequest(req(), out.res, { serveStatic: async () => true })).toBe(true);
+    expect(out.status).toBe(500);
+    expect(out.body).toContain('simulated key read failure (ui)');
+    spy.mockRestore();
+
+    const out2 = fakeRes();
+    let served = false;
+    expect(await handleConsoleRequest(req(), out2.res, { serveStatic: async () => { served = true; return true; } })).toBe(true);
+    expect(served).toBe(true);
+    expect(out2.status).not.toBe(500);
+  });
+
+  it('/ui branch: a throwing serveStatic hook is deliberately absorbed by the inner catch as a plain 404 (never an escaping throw), and the instance keeps serving', async () => {
+    getOrCreateKey();
+    const req = () => ({ url: '/ui/', method: 'GET', headers: {}, socket: { remoteAddress: '127.0.0.1' } }) as unknown as http.IncomingMessage;
+    const out = fakeRes();
+    expect(await handleConsoleRequest(req(), out.res, { serveStatic: async () => { throw new Error('broken dist'); } })).toBe(true);
+    expect(out.status).toBe(404);
+    const out2 = fakeRes();
+    expect(await handleConsoleRequest(req(), out2.res, { serveStatic: async () => true })).toBe(true);
+    expect(out2.status).not.toBe(500);
+  });
+
+  it('matchRoutes: a throw while matching routes answers 500 with the message, and the same instance then serves normally', async () => {
+    const headers = authHeaders();
+    let armed = false; // armed only AFTER registration, which itself reads route.path
+    const unregister = __registerTestRouteModule([
+      {
+        method: 'GET',
+        get path(): string {
+          if (armed) throw new Error('simulated route table failure');
+          return '/api/never-matched';
+        },
+        handler: async () => undefined,
+      } as never,
+    ]);
+    try {
+      armed = true;
+      const out = fakeRes();
+      expect(await handleConsoleRequest(fakeReq('/api/fleet/members', 'GET', headers), out.res, {})).toBe(true);
+      expect(out.status).toBe(500);
+      expect(out.body).toContain('simulated route table failure');
+
+      armed = false;
+      const out2 = fakeRes();
+      expect(await handleConsoleRequest(fakeReq('/api/fleet/nope', 'GET', headers), out2.res, {})).toBe(true);
+      expect(out2.status).toBe(404);
+    } finally {
+      armed = false;
+      unregister();
+    }
   });
 
   it('leaves the false-return contract intact: a non-console path still returns false with nothing written and no header set', async () => {
