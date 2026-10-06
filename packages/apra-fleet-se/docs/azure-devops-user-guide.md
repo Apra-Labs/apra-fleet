@@ -71,8 +71,9 @@ Through the supervisor's HTTP API (never the CLI directly -- see
 `overview.md`):
 
 ```bash
-curl -X POST http://localhost:8787/api/sprints \
+curl -sf -X POST http://localhost:8787/api/sprints \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $(cat ~/.apra-fleet/fleet.key 2>/dev/null || cat <dataDir>/private/token)" \
   -d '{
     "issue": "<a beads root id in your repo>",
     "branch": "<new-or-existing-branch>",
@@ -80,6 +81,13 @@ curl -X POST http://localhost:8787/api/sprints \
     "members": ["my-dev"]
   }'
 ```
+PowerShell:
+```powershell
+Invoke-RestMethod -Method Post -Headers @{ Authorization = 'Bearer ' + (Get-Content -Raw "$HOME\.apra-fleet\fleet.key").Trim() } -ContentType 'application/json' http://localhost:8787/api/sprints -Body '{"issue":"<a beads root id in your repo>","branch":"<branch>","base":"main","members":["my-dev"]}'
+```
+The bearer token is `<home>/.apra-fleet/fleet.key` (primary); the supervisor falls back to
+`<dataDir>/private/token` only when `fleet.key` did not exist at boot. A `401 {"error":"unauthorized"}`
+means the token is missing or wrong -- it is NOT an empty result.
 
 Watch it run at the supervisor's dashboard (`http://localhost:8787`) or
 the per-sprint dashboard URL the launch response returns.

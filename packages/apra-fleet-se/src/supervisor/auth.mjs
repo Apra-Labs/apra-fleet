@@ -50,6 +50,7 @@
 // The token itself is NEVER logged or included in a thrown Error message.
 // =============================================================================
 
+import crypto from 'node:crypto';
 import {
     PRIVATE_DIRNAME,
     TOKEN_FILENAME,
@@ -114,8 +115,13 @@ export function resolveServiceToken(dir, opts = {}) {
  * Does this request carry the service token?
  *
  * Accepts `Authorization: Bearer <token>` (scheme match is case-insensitive per
- * RFC 7235) or the `se_token=<token>` cookie, which is what lets a browser-based
- * dashboard reach the same guarded routes.
+ * RFC 7235) or the `se_token=<deriveDashboardCookie(token)>` cookie, which is
+ * what lets a browser-based dashboard reach the same guarded routes.
+ *
+ * apra-fleet-50j6.6: the cookie path accepts ONLY the derived value, never the
+ * raw token -- the raw token is bearer-only. A browser obtains the derived
+ * cookie through the token exchange in ./dashboard-session.mjs; no response to
+ * an unauthenticated request ever carries a value this function accepts.
  *
  * apra-fleet-iywi.1.1: delegates to the shared `isAuthorized()` helper with
  * this supervisor's own cookie name (`TOKEN_COOKIE_NAME`), so callers of this
@@ -137,12 +143,57 @@ export function resolveServiceToken(dir, opts = {}) {
  * @returns {boolean}
  */
 export function isAuthorized(req, token) {
-    if (isAuthorizedGeneric(req, token, { cookieName: TOKEN_COOKIE_NAME })) return true;
     if (typeof token !== 'string' || token.length === 0) return false;
-    const derived = deriveUpstreamCredential(token, PACKAGE_ID);
     const headers = (req && req.headers) || {};
+    // Each credential is checked against a request view carrying ONLY the one
+    // header it applies to: the shared helper accepts bearer OR cookie against
+    // a single expected value, and the raw token must never pass on the
+    // cookie path (apra-fleet-50j6.6).
     const bearerOnly = { headers: { authorization: headers.authorization ?? headers.Authorization } };
-    return isAuthorizedGeneric(bearerOnly, derived, { cookieName: TOKEN_COOKIE_NAME });
+    if (isAuthorizedGeneric(bearerOnly, token, { cookieName: TOKEN_COOKIE_NAME })) return true;
+    if (isAuthorizedGeneric(bearerOnly, deriveUpstreamCredential(token, PACKAGE_ID), { cookieName: TOKEN_COOKIE_NAME })) return true;
+    const cookieOnly = { headers: { cookie: headers.cookie ?? headers.Cookie } };
+    return isAuthorizedGeneric(cookieOnly, deriveDashboardCookie(token), { cookieName: TOKEN_COOKIE_NAME });
+}
+
+/**
+ * Fixed label HMAC'd under the service token to derive the browser cookie
+ * value. Domain-separated from UPSTREAM_CREDENTIAL_LABEL (the /ext upstream
+ * bearer) and from the console's own cookie label, so none of the three
+ * derived values can be replayed as another. Changing it logs every browser
+ * session out.
+ */
+export const DASHBOARD_COOKIE_LABEL = 'apra-fleet-se-dashboard-cookie-v1';
+
+/**
+ * apra-fleet-50j6.6: the value the supervisor stores in the `se_token`
+ * browser cookie. A keyed digest of a fixed label under the service token --
+ * verifiable here by recomputing it, but not reversible into the token (which
+ * may be the shared fleet key). The raw token is accepted as a bearer only;
+ * this derived value is accepted on the cookie path only.
+ *
+ * @param {string} token the service token
+ * @returns {string} hex-encoded sha256 HMAC
+ */
+export function deriveDashboardCookie(token) {
+    if (typeof token !== 'string' || token.length === 0) {
+        throw new TypeError('deriveDashboardCookie: token must be a non-empty string');
+    }
+    return crypto.createHmac('sha256', token).update(DASHBOARD_COOKIE_LABEL).digest('hex');
+}
+
+/**
+ * Constant-time string comparison (length is not secret).
+ * @param {unknown} a
+ * @param {unknown} b
+ * @returns {boolean}
+ */
+export function tokenEquals(a, b) {
+    if (typeof a !== 'string' || typeof b !== 'string') return false;
+    const left = Buffer.from(a, 'utf8');
+    const right = Buffer.from(b, 'utf8');
+    if (left.length !== right.length || left.length === 0) return false;
+    return crypto.timingSafeEqual(left, right);
 }
 
 /**

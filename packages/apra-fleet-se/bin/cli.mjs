@@ -963,6 +963,9 @@ async function main() {
     const server = createDashboardViewer(workflow, {
         port: viewerPort,
         name: 'Fleet-Sprint',
+        // (apra-fleet-4v8r.1) supervisor-spawned children get the service token
+        // via env; the viewer then requires it on its control POSTs.
+        serviceToken: process.env.FLEET_SE_SERVICE_TOKEN || undefined,
         // kbCodeIntelExtension: its own tab (per-member, per-dispatch kb_* and
         // code_* call counts), separate from the Tasks tab.
         dashboardExtensions: [beadsExtension, kbCodeIntelExtension],

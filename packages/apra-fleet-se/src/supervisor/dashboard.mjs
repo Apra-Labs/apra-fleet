@@ -48,7 +48,7 @@ import { WATCHDOG_STATUS } from './watchdog.mjs';
 // with launch-form.mjs -- see run-outcome.mjs for why it is its own module.
 import { FAILED_VERDICTS, FAILED_RUN_STATUSES, isFailedRunOutcome } from './run-outcome.mjs';
 import { renderLaunchFormHtml, formatLaunchError } from './launch-form.mjs';
-import { TOKEN_COOKIE_NAME } from './auth.mjs';
+import { handleTokenExchange, authNoticeHtml, injectAuthNotice } from './dashboard-session.mjs';
 import { renderBacklogPanelHtml, normalizeBead, expandScopeInMemory, buildChildIndex } from './backlog.mjs';
 // apra-fleet-72o0 (dashboard follow-up): the claimed-scope count needs CLOSED
 // beads present in the bulk fetch -- a closed intermediate parent must still
@@ -2080,6 +2080,12 @@ export function createDashboard(deps = {}) {
  */
 export function registerDashboardRoutes(supervisor, dashboard, { extraIndexPaths = [] } = {}) {
     const renderIndexRoute = async (req, res) => {
+        // apra-fleet-50j6.6: `?token=<service token>` is a token exchange --
+        // a match sets the DERIVED se_token cookie and 302s to this same
+        // path without the token; a mismatch answers 401 with no cookie.
+        // `supervisor.token` is null when auth was never configured, in
+        // which case there is nothing to exchange.
+        if (handleTokenExchange(req, res, supervisor.token)) return;
         // (apra-fleet-i9ag.3.2) The console's /ext/<id> proxy stamps this
         // request's mount path on it (mount-prefix.mjs's MOUNT_PATH_HEADER);
         // resolveMountPrefix() validates it and falls back to '' (serve-direct,
@@ -2087,29 +2093,16 @@ export function registerDashboardRoutes(supervisor, dashboard, { extraIndexPaths
         // Resolved PER REQUEST: one supervisor process answers both direct and
         // embedded hits, and nothing about the mount is process-wide state.
         const html = await dashboard.renderIndexPage({ mountPrefix: resolveMountPrefix(req) });
-        const body = Buffer.from(html, 'utf-8');
+        // apra-fleet-50j6.6: this route is open (read-only view on a
+        // loopback bind), so it NEVER sets a cookie: an unauthenticated GET
+        // handing out a credential let any local process harvest it (and the
+        // service token may be the shared fleet key). An unauthenticated
+        // view instead carries a short notice explaining how to sign in.
+        const body = Buffer.from(injectAuthNotice(html, authNoticeHtml(req, supervisor.token)), 'utf-8');
         const headers = {
             'content-type': 'text/html; charset=utf-8',
             'content-length': body.length,
         };
-        // apra-fleet-50j6.2.2: hand the shared bearer service token back to
-        // the browser as an HttpOnly cookie rather than embedding it inline
-        // in the page (e.g. a <script> global or data attribute). The
-        // supervisor binds loopback-only (server.mjs's bindHost), so this
-        // cookie never crosses a network boundary -- but an inline token
-        // would still be readable by any script running in the page (XSS,
-        // a future embedded 3rd-party widget), while an HttpOnly cookie is
-        // invisible to page JS and is attached AUTOMATICALLY by the browser
-        // to the page's own same-origin fetches (dashboard.mjs's /api/*,
-        // /sprints/:id/live/* calls) with zero script change -- the exact
-        // property auth.mjs's isAuthorized() relies on (it accepts the
-        // se_token cookie as an alternative to the Authorization header).
-        // `supervisor.token` is null when auth was never configured (no
-        // deps.token/deps.dataDir), in which case no cookie is needed since
-        // the per-request guard is skipped entirely.
-        if (typeof supervisor.token === 'string' && supervisor.token.length > 0) {
-            headers['set-cookie'] = `${TOKEN_COOKIE_NAME}=${supervisor.token}; Path=/; SameSite=Strict; HttpOnly`;
-        }
         res.writeHead(200, headers);
         res.end(body);
     };

@@ -16,6 +16,7 @@ import {
 } from '../src/supervisor/dashboard.mjs';
 import { WATCHDOG_STATUS } from '../src/supervisor/watchdog.mjs';
 import { createSupervisor } from '../src/supervisor/server.mjs';
+import { deriveDashboardCookie } from '../src/supervisor/auth.mjs';
 import { sprintCardAnchorId } from '../src/supervisor/sprint-anchor.mjs';
 import { TOOLCHAIN_FIX_LINE } from '../src/supervisor/toolchain.mjs';
 // apra-fleet-x8r.7: every `createDashboard({ listAllBeads })` fixture below is
@@ -1223,10 +1224,10 @@ describe('dashboard -- registerDashboardRoutes / GET /', () => {
         assert.ok(!('set-cookie' in res.headers), 'no Set-Cookie header when auth is not configured');
     });
 
-    // apra-fleet-50j6.2.2: dashboard.mjs GET / sets the se_token cookie so
-    // the page's own same-origin fetches (to /api/*, /sprints/:id/live/*)
-    // carry it automatically once auth IS configured.
-    test('GET / sets Set-Cookie: se_token=<token> when the supervisor is built with an auth token', async () => {
+    // apra-fleet-50j6.6: an unauthenticated GET / sets NO cookie (it used to
+    // hand out the raw token); the GET /?token= exchange sets the DERIVED
+    // se_token cookie the page's own same-origin fetches then carry.
+    test('GET / sets no cookie; GET /?token=<token> sets the derived se_token cookie and 302s', async () => {
         const dashboard = createDashboard({
             ledger: fakeLedger([]),
             watchdog: fakeWatchdog({}),
@@ -1238,7 +1239,17 @@ describe('dashboard -- registerDashboardRoutes / GET /', () => {
 
         const res = await request(supervisor, 'GET', '/');
         assert.equal(res.statusCode, 200);
-        assert.equal(res.headers['set-cookie'], 'se_token=test-token-abc123; Path=/; SameSite=Strict; HttpOnly');
+        assert.equal(res.headers['set-cookie'], undefined);
+        assert.ok(res.body.includes('auth-notice'), 'unauthenticated view shows the sign-in notice');
+
+        const ex = await request(supervisor, 'GET', '/?token=test-token-abc123&x=1');
+        assert.equal(ex.statusCode, 302);
+        assert.equal(ex.headers.location, '/?x=1');
+        assert.equal(ex.headers['set-cookie'], `se_token=${deriveDashboardCookie('test-token-abc123')}; Path=/; SameSite=Strict; HttpOnly`);
+
+        const bad = await request(supervisor, 'GET', '/?token=nope');
+        assert.equal(bad.statusCode, 401);
+        assert.equal(bad.headers['set-cookie'], undefined);
     });
 
     // apra-fleet-50j6.2.2 acceptance criterion (3): a wrong cookie value on a
@@ -1264,10 +1275,17 @@ describe('dashboard -- registerDashboardRoutes / GET /', () => {
         const supervisor = createSupervisor({ logger: { log() {}, error() {} }, token: 'the-real-token' });
         registerDashboardRoutes(supervisor, dashboard);
 
-        const req = { method: 'GET', url: '/api/health', headers: { cookie: 'se_token=the-real-token' }, on() {} };
+        const req = { method: 'GET', url: '/api/health', headers: { cookie: `se_token=${deriveDashboardCookie('the-real-token')}` }, on() {} };
         const res = { writeHead(status, headers) { this.statusCode = status; this.headers = headers; }, end() {} };
         await supervisor.handleRequest(req, res);
         assert.equal(res.statusCode, 200);
+
+        // apra-fleet-50j6.6: the RAW token on the cookie path is rejected --
+        // it is bearer-only.
+        const rawReq = { method: 'GET', url: '/api/health', headers: { cookie: 'se_token=the-real-token' }, on() {} };
+        const rawRes = { writeHead(status, headers) { this.statusCode = status; this.headers = headers; }, end() {} };
+        await supervisor.handleRequest(rawReq, rawRes);
+        assert.equal(rawRes.statusCode, 401);
     });
 
     // apra-fleet-siqi.1.1

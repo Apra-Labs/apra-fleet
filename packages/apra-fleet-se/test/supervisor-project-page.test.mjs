@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { createProjectsPageHandler } from '../src/registration/project-page.mjs';
 import { PROJECTS_UI_PATH } from '../src/registration/manifest.mjs';
 import { PLACEHOLDER_HTML } from '../src/registration/ui-placeholder.mjs';
-import { TOKEN_COOKIE_NAME } from '../src/supervisor/auth.mjs';
+import { TOKEN_COOKIE_NAME, deriveDashboardCookie } from '../src/supervisor/auth.mjs';
 import { THEME_CSS } from '../src/supervisor/theme.mjs';
 
 // =============================================================================
@@ -39,11 +39,11 @@ function ctxFor(pathname) {
 
 /** Renders the page (or, for a non-projects path, the delegated placeholder)
  *  through the ACTUAL createProjectsPageHandler(), never a hand-copy. */
-async function renderPath(pathname, { token } = {}) {
+async function renderPath(pathname, { token, query = '' } = {}) {
     const handler = createProjectsPageHandler({ token });
     const res = mockRes();
-    await handler({ method: 'GET', url: pathname, headers: {} }, res, ctxFor(pathname));
-    return { status: res.statusCode, headers: res.headers, html: res.body.toString('utf-8') };
+    await handler({ method: 'GET', url: pathname + query, headers: {} }, res, ctxFor(pathname));
+    return { status: res.statusCode, headers: res.headers, html: res.body ? res.body.toString('utf-8') : '' };
 }
 
 /** Extracts the embedded client script verbatim out of the real page HTML. */
@@ -112,12 +112,24 @@ describe('GET /ui/projects (apra-fleet-i9ag.17.2.2)', () => {
         }
     });
 
-    test('a supervisor token is handed back as an HttpOnly se_token cookie, never embedded in the HTML body', async () => {
+    // apra-fleet-50j6.6: a plain view sets no cookie; only the ?token=
+    // exchange sets one, carrying the DERIVED value, and 302s token-free.
+    test('an unauthenticated view sets no cookie and never embeds the token; the ?token= exchange sets the derived cookie', async () => {
         const token = 'x'.repeat(64);
-        const { headers, html } = await renderPath(PROJECTS_UI_PATH, { token });
-        assert.ok(headers['set-cookie'].startsWith(`${TOKEN_COOKIE_NAME}=${token};`), headers['set-cookie']);
-        assert.ok(headers['set-cookie'].includes('HttpOnly'));
+        const { status, headers, html } = await renderPath(PROJECTS_UI_PATH, { token });
+        assert.equal(status, 200);
+        assert.equal(headers['set-cookie'], undefined);
         assert.ok(!html.includes(token), 'the raw token must never appear in the HTML body');
+        assert.ok(html.includes('auth-notice'), 'unauthenticated view shows the sign-in notice');
+
+        const ex = await renderPath(PROJECTS_UI_PATH, { token, query: `?token=${token}` });
+        assert.equal(ex.status, 302);
+        assert.equal(ex.headers.location, PROJECTS_UI_PATH);
+        assert.equal(ex.headers['set-cookie'], `${TOKEN_COOKIE_NAME}=${deriveDashboardCookie(token)}; Path=/; SameSite=Strict; HttpOnly`);
+
+        const bad = await renderPath(PROJECTS_UI_PATH, { token, query: '?token=wrong' });
+        assert.equal(bad.status, 401);
+        assert.equal(bad.headers['set-cookie'], undefined);
     });
 
     test('no token configured -> no set-cookie header at all', async () => {

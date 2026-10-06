@@ -25,7 +25,9 @@ import {
 // apra-fleet-50j6.2.5 -- end-to-end verification of feature 50j6.2: with
 // loopback bind + the bearer/cookie auth guard live (50j6.1), every
 // pre-existing caller keeps working from the user's point of view:
-//   (a) dashboard cookie      -- GET / sets se_token; a subsequent POST to a
+//   (a) dashboard cookie      -- GET /?token=<token> (the token exchange,
+//                                 apra-fleet-50j6.6) sets se_token to a
+//                                 derived value; a subsequent POST to a
 //                                 live-mutating sub-route carrying ONLY that
 //                                 cookie succeeds (no dashboard script change
 //                                 needed).
@@ -163,18 +165,23 @@ async function buildAuthedSupervisor() {
 }
 
 // =============================================================================
-// (a) dashboard cookie -- GET / sets se_token; a POST to a live-mutating
+// (a) dashboard cookie -- the GET /?token= exchange sets se_token; a POST to a live-mutating
 // sub-route carrying ONLY that cookie succeeds; stripping the cookie 401s the
 // same request against the same route handler.
 // =============================================================================
 describe('mvp-a7 clients -- dashboard cookie keeps the page working', () => {
-    test('GET / sets se_token; POST .../live/stop with ONLY the cookie succeeds; stripped -> 401', async () => {
+    test('GET /?token= exchange sets se_token; POST .../live/stop with ONLY the cookie succeeds; stripped -> 401', async () => {
         const { port, token, liveStopCalls, stop } = await buildAuthedSupervisor();
         try {
             const root = await request(port, 'GET', '/');
             assert.notEqual(root.status, 401, 'GET / must stay open with no credential');
-            const cookieValue = extractSeTokenCookie(root.headers['set-cookie']);
-            assert.equal(cookieValue, token, 'GET / must set the se_token cookie to the real service token');
+            // apra-fleet-50j6.6: an unauthenticated GET / hands out nothing.
+            assert.equal(root.headers['set-cookie'], undefined, 'unauthenticated GET / must set no cookie');
+            const exchange = await request(port, 'GET', `/?token=${encodeURIComponent(token)}`);
+            assert.equal(exchange.status, 302);
+            const cookieValue = extractSeTokenCookie(exchange.headers['set-cookie']);
+            assert.ok(cookieValue, 'the token exchange must set the se_token cookie');
+            assert.notEqual(cookieValue, token, 'the cookie must carry a derived value, never the raw token');
 
             // The dashboard page needs no script change: only the cookie the
             // browser automatically attaches, no Authorization header.

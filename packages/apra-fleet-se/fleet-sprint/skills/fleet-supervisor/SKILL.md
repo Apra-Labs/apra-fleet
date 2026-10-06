@@ -35,6 +35,29 @@ Every `curl` example below carries it as
 `private/token` when it is absent, matching the supervisor's own resolution
 order.
 
+### Opening the dashboard in a browser
+
+A plain visit to `http://localhost:8787/` renders a read-only view with a
+sign-in notice and sets no cookie. To sign the browser in, open the page once
+with the service token appended as `?token=`. The supervisor checks it, sets
+an HttpOnly `se_token` cookie carrying a value DERIVED from the token (never
+the token itself), and redirects to the same page with the token removed from
+the address bar. A wrong token sets no cookie and answers 401. The cookie then
+authorizes the page's own Stop/Restart/launch controls. The raw token is only
+ever accepted as an `Authorization: Bearer` header, never as the cookie.
+
+Build and open the link (bash; macOS uses `open`, Linux `xdg-open`):
+```bash
+open "http://localhost:8787/?token=$(cat ~/.apra-fleet/fleet.key 2>/dev/null || cat <dataDir>/private/token)"
+```
+PowerShell:
+```powershell
+Start-Process "http://localhost:8787/?token=$(if (Test-Path "$HOME\.apra-fleet\fleet.key") { Get-Content "$HOME\.apra-fleet\fleet.key" } else { Get-Content <dataDir>\private\token })"
+```
+The supervisor's startup log line `dashboard sign-in: open
+http://localhost:<port>/?token=<contents of <file>>` names the exact port and
+token file in use; it never prints the token value.
+
 ## 0. Start the supervisor (if not already running)
 
 Check first (bash):
