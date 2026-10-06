@@ -485,7 +485,7 @@ error naming the key (the member is not updated) -- they are no longer silently 
 
 #### `removeMember(options: RemoveMemberOptions)`
 
-Calls `remove_member` -- removes a member from the fleet. Before the member is deleted (and before the fleet's own SSH key is removed from the member), it removes what `compose_permissions` wrote for the member (per-folder `apra-fleet` MCP entry, permission keys, `.git/info/exclude` lines); anything it could not remove, or could not reach, is reported as a warning in the result. A local member's per-session MCP config file (`session-mcp/<uuid>.json` in the server data dir) is deleted too.
+Calls `remove_member` -- removes a member from the fleet. Before the member is deleted (and before the fleet's own SSH key is removed from the member), it removes what `compose_permissions` wrote for the member (per-folder `apra-fleet` MCP entry, permission keys, `.git/info/exclude` lines); anything it could not remove, or could not reach, is reported as a warning in the result. The registration on the member's own apra-fleet install is removed only when that install carries the member-install marker; an unmarked install, or a failed marker probe, is skipped and the warning says so and why. A local member's per-session MCP config file (`session-mcp/<uuid>.json` in the server data dir) is deleted too.
 
 | Field | Type | Notes |
 |---|---|---|

@@ -874,7 +874,10 @@ export class ApraFleet {
     /**
      * Remove a member from the fleet. Member-side composed config (the
      * per-folder `apra-fleet` MCP entry, permission keys) is removed first;
-     * what could not be removed is reported as a warning.
+     * what could not be removed is reported as a warning. The member-side registration on the
+     * member's own apra-fleet install is removed only when that install carries the
+     * member-install marker; otherwise (unmarked, or the marker probe failed) it is
+     * skipped and the output says so and why.
      * @param {RemoveMemberOptions} options
      */
     async removeMember(options) {

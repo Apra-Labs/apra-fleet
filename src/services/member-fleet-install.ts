@@ -50,7 +50,7 @@ import { parseVersion, isNewer } from './update-check.js';
 import { recordFleetMcpStatus } from './registry.js';
 import { probeMemberClaudeConfigDir, claudeLocalScopeConfigFile } from '../providers/claude.js';
 import { OPENCODE_PROJECT_CONFIG } from '../providers/opencode.js';
-import { readMemberJson, joinMemberPath, memberFileExists, resolveClaudeProjectKey, MEMBER_MCP_SERVER_NAME } from './member-config-io.js';
+import { readMemberJson, joinMemberPath, memberFileExistsPosixCommand, memberFileExistsPwshCommand, resolveClaudeProjectKey, MEMBER_MCP_SERVER_NAME } from './member-config-io.js';
 
 type MemberShell = ReturnType<typeof getAgentShell>;
 
@@ -351,7 +351,7 @@ export function memberInstallArgs(provider: LlmProvider): string[] {
   // upgrade of a live member does not abort on the running-process guard.
   // --force-stop-full-install is NEVER added: the fleet cannot tell a human
   // full install from an unmarked older member install, so overriding a
-  // refusal is left to the owner on the member (see MEMBER_TAKEOVER_COMMAND).
+  // refusal is left to the owner on the member (see buildFullInstallReplaceHint).
   return ['install', '--llm', provider, '--member', '--workflows', 'none', '--transport', 'http', '--force'];
 }
 
@@ -547,19 +547,134 @@ async function probeMemberArch(agent: Agent, deps: MemberFleetInstallDeps): Prom
   }
 }
 
-/**
- * The one-time command an OWNER runs on the member to hand an unmarked install
- * (a full install, or a member install made by a build that predates the
- * member-install marker) to the fleet. It stops that install's running server
- * and reinstalls it as a member install, which writes the marker. The fleet
- * never sends it itself.
- */
-export const MEMBER_TAKEOVER_COMMAND = `apra-fleet install --member --force ${FORCE_STOP_FULL_INSTALL_FLAG}`;
+/** Where the installer for the replacement ended up (or why it did not). */
+export type ReplacementInstaller =
+  | { staged: true; path: string }
+  | { staged: false; why: string; target: string; fetchCommand?: string };
 
-/** Detail suffix naming the owner-only override (ASCII, one line). */
-const TAKEOVER_HINT =
-  'The fleet does not touch an apra-fleet install without the member-install marker (a full install, or a member install older than the marker). ' +
-  `To hand it to the fleet, its owner runs once on the member: ${MEMBER_TAKEOVER_COMMAND}; then update_member {member_id, fleet_install: "auto"}.`;
+/**
+ * The manual steps an OWNER runs on the member to replace an unmarked install
+ * (a full install, or a member install older than the marker) with a member
+ * install, which writes the marker. Every path is resolved here in JS from the
+ * probed home -- no ~ or $HOME -- and quoted for the member's shell. The fleet
+ * never runs these itself. Steps use the INSTALLED binary only for `uninstall`
+ * (present in old installs) and the freshly STAGED current installer for the
+ * install, so no flag the old binary predates is ever needed. ASCII, one line.
+ */
+export function buildFullInstallReplaceHint(opts: {
+  home: string;
+  targetOs: TargetOS;
+  shell: MemberShell;
+  provider: LlmProvider;
+  installer: ReplacementInstaller;
+}): string {
+  const { home, targetOs, shell, provider, installer } = opts;
+  const posix = isPosixShell(targetOs, shell);
+  const q = posix ? posixQuote : psQuote;
+  const j = (...parts: string[]) => memberJoin(targetOs, shell, home, ...parts);
+  const data = j('.apra-fleet', 'data');
+  const key = j('.apra-fleet', 'fleet.key');
+  const backup = j('.apra-fleet-data.full-install.bak');
+  const aside = j('.apra-fleet', 'data.replaced');
+  const bin = memberBinPath(home, targetOs, shell);
+  const installerPath = installer.staged ? installer.path : installer.target;
+  const steps: string[] = [];
+  if (!installer.staged) {
+    steps.push(
+      `(0) the current installer could not be staged on the member (${installer.why}); ` +
+      (installer.fetchCommand
+        ? `fetch it with: ${installer.fetchCommand}`
+        : `download the apra-fleet installer for this platform from the release page to ${installerPath}`),
+    );
+  }
+  steps.push(
+    posix
+      ? `(1) back up, including the signing key that lives outside data/: cp -R ${q(data)} ${q(backup)} && cp ${q(key)} ${q(backup + '/')}`
+      : `(1) back up, including the signing key that lives outside data/: Copy-Item -Recurse -LiteralPath ${q(data)} -Destination ${q(backup)}; Copy-Item -LiteralPath ${q(key)} -Destination ${q(backup + String.fromCharCode(92))}`,
+    `(2) uninstall with the INSTALLED binary (keeps data/): ${q(bin)} uninstall --force --yes`,
+    posix
+      ? `(3) move the old data aside (the backup stays as the rollback copy): mv ${q(data)} ${q(aside)}`
+      : `(3) move the old data aside (the backup stays as the rollback copy): Move-Item -LiteralPath ${q(data)} -Destination ${q(aside)}`,
+  );
+  if (targetOs === 'linux') {
+    const unit = j('.config', 'systemd', 'user', 'fleet-supervisor.service');
+    steps.push(
+      `(3b) linux only: uninstall leaves fleet-supervisor.service running with its serve.mjs deleted; stop it: ` +
+      `systemctl --user stop fleet-supervisor; systemctl --user disable fleet-supervisor; mv ${q(unit)} ${q(backup + '/')}; systemctl --user daemon-reload`,
+    );
+  }
+  steps.push(
+    posix
+      ? `(4) run the current installer: chmod +x ${q(installerPath)} && ${q(installerPath)} install --member --llm ${provider} --force`
+      : `(4) run the current installer: & ${q(installerPath)} install --member --llm ${provider} --force`,
+    '(5) on the orchestrator: update_member {member_id, fleet_install: "auto"} for every member on that Unix user (one member install per Unix user; each member self-registers its own uuid)',
+  );
+  return (
+    'The fleet does not touch an apra-fleet install without the member-install marker (a full install, or a member install older than the marker). ' +
+    `To replace it with a member install, its owner runs on the member: ${steps.join('; ')}.`
+  );
+}
+
+/**
+ * Stage the orchestrator's installer on the member (same staging dir and
+ * source logic as an upgrade) so the replacement hint can name a path that
+ * exists. When `stage` is false nothing is transferred or downloaded. A failure
+ * never throws: it is returned so the hint names it and gives the download
+ * command for the platform instead.
+ */
+async function stageReplacementInstaller(
+  agent: Agent,
+  deps: MemberFleetInstallDeps,
+  home: string,
+  source: InstallSource | null,
+  stage: boolean,
+): Promise<ReplacementInstaller> {
+  const targetOs = getAgentOS(agent) as TargetOS;
+  const shell = getAgentShell(agent);
+  const stagingDir = memberStagingDir(home, targetOs, shell);
+  const fallbackTarget = memberJoin(targetOs, shell, stagingDir, binaryNameFor(targetOs));
+  try {
+    if (!source) {
+      const arch = await probeMemberArch(agent, deps);
+      if (!arch) return { staged: false, why: 'the member CPU architecture could not be probed', target: fallbackTarget };
+      const chosen = chooseInstallSource({ os: targetOs, arch }, deps.orchestratorPlatform(), deps.orchestratorExecutable(), deps.orchestratorVersion());
+      if (chosen.kind === 'unavailable') return { staged: false, why: chosen.detail, target: fallbackTarget };
+      source = chosen;
+    }
+    const baseName = source.kind === 'release-asset' ? source.assetName : anyBasename(source.localPath);
+    const target = memberJoin(targetOs, shell, stagingDir, baseName);
+    const fetchCommand = source.kind === 'release-asset'
+      ? (isPosixShell(targetOs, shell)
+        ? `mkdir -p ${posixQuote(stagingDir)} && curl -fL -o ${posixQuote(target)} ${posixQuote(source.url)}`
+        : `New-Item -ItemType Directory -Force -Path ${psQuote(stagingDir)} | Out-Null; Invoke-WebRequest -Uri ${psQuote(source.url)} -OutFile ${psQuote(target)}`)
+      : undefined;
+    if (!stage) return { staged: false, why: 'not staged by this check; run update_member with fleet_install "auto" to stage it', target, fetchCommand };
+    let localPath: string;
+    let downloaded = false;
+    if (source.kind === 'orchestrator-executable') {
+      localPath = source.localPath;
+    } else {
+      try {
+        localPath = await deps.downloadReleaseAsset(source.url, source.assetName);
+        downloaded = true;
+      } catch (err: unknown) {
+        return { staged: false, why: `download failed: ${err instanceof Error ? err.message : String(err)}`, target, fetchCommand };
+      }
+    }
+    try {
+      const sent = await deps.transfer(agent, [localPath], stagingDir);
+      if (sent.failed.length > 0 || sent.success.length === 0) {
+        const why = sent.failed.map(f => `${f.path}: ${f.error}`).join('; ') || 'nothing was transferred';
+        return { staged: false, why: `transfer failed: ${why}`, target, fetchCommand };
+      }
+    } finally {
+      if (downloaded) deps.removeLocal(localPath);
+    }
+    return { staged: true, path: target };
+  } catch (err: unknown) {
+    return { staged: false, why: err instanceof Error ? err.message : String(err), target: fallbackTarget };
+  }
+}
 
 /** The member-install marker on the member: <home>/.apra-fleet/data/member-install.json
  *  (written by `install --member`, cleared by a full install; see
@@ -570,9 +685,16 @@ export function memberInstallMarkerPathFor(home: string, agent: Agent): string {
   return joinMemberPath(home, '.apra-fleet/data/member-install.json', targetOs === 'windows', getAgentShell(agent));
 }
 
+/** Outcome of the member-install marker probe: three-way, never a boolean. */
+export type MemberMarkerProbe =
+  | { kind: 'present' }
+  | { kind: 'absent' }
+  | { kind: 'probe-failed'; detail: string };
+
 /**
- * True when the member's apra-fleet install carries the member-install marker,
- * i.e. it is a member install the fleet may manage and self-register into.
+ * Probe whether the member's apra-fleet install carries the member-install
+ * marker, i.e. it is a member install the fleet may manage and self-register
+ * into.
  *
  * The marker is the SOLE fleet-ownership signal. An install without it is
  * either a human full install or a member install made before the marker
@@ -581,17 +703,28 @@ export function memberInstallMarkerPathFor(home: string, agent: Agent): string {
  * self-registered into any install), so the fleet treats both as not its own:
  * it never self-registers into them and never sends --force-stop-full-install.
  *
- * Existence check only, matching the member-side hasMemberInstallMarker. A
- * non-zero exit reads as absent (the safe direction); a transport error THROWS
- * so callers report it as probe-failed, not as a full install.
+ * Three outcomes: present (exit 0), cleanly absent (`test -f` / Test-Path exit
+ * 1) and probe-failed (a timeout or transport error, or any other non-zero
+ * exit such as 126/127/255) with the reason. A probe failure is never read as
+ * "absent": a slow or flaky member is not an unowned one. Never throws.
  */
-export async function memberHasInstallMarker(
+export async function probeMemberInstallMarker(
   agent: Agent,
   home: string,
   deps: Pick<MemberFleetInstallDeps, 'exec'>,
-): Promise<boolean> {
+): Promise<MemberMarkerProbe> {
   const posix = isPosixShell(getAgentOS(agent) as TargetOS, getAgentShell(agent));
-  return memberFileExists((cmd, t) => deps.exec(agent, cmd, t ?? PROBE_TIMEOUT_MS), memberInstallMarkerPathFor(home, agent), posix);
+  const markerPath = memberInstallMarkerPathFor(home, agent);
+  const cmd = posix ? memberFileExistsPosixCommand(markerPath) : memberFileExistsPwshCommand(markerPath);
+  let r: SSHExecResult;
+  try {
+    r = await deps.exec(agent, cmd, PROBE_TIMEOUT_MS);
+  } catch (err: unknown) {
+    return { kind: 'probe-failed', detail: `the member-install marker probe failed: ${err instanceof Error ? err.message : String(err)}` };
+  }
+  if (r.code === 0) return { kind: 'present' };
+  if (r.code === 1) return { kind: 'absent' };
+  return { kind: 'probe-failed', detail: `the member-install marker probe exited ${r.code}: ${r.stderr.trim().slice(0, 300)}` };
 }
 
 /**
@@ -667,13 +800,21 @@ async function ensureOnce(agent: Agent, deps: MemberFleetInstallDeps, force: boo
   // over: it may be a human full install whose server is simply not running
   // (no refusal would fire), and installing --member over it would hand it to
   // the fleet. Only a missing install, or a marked one, is (re)installed.
-  if (before.kind !== 'missing' && !(await memberHasInstallMarker(agent, home, deps))) {
-    return {
-      state: 'unavailable',
-      reason: 'full-install-running',
-      detail: `the apra-fleet at ${binPath} has no member-install marker, so the fleet did not install over it. ${TAKEOVER_HINT}`,
-      version: priorVersion,
-    };
+  if (before.kind !== 'missing') {
+    const marker = await probeMemberInstallMarker(agent, home, deps);
+    // A probe failure is never "a full install is present": report it as such.
+    if (marker.kind === 'probe-failed') {
+      return { state: 'unavailable', reason: 'probe-failed', detail: marker.detail, version: priorVersion };
+    }
+    if (marker.kind === 'absent') {
+      const installer = await stageReplacementInstaller(agent, deps, home, source, true);
+      return {
+        state: 'unavailable',
+        reason: 'full-install-running',
+        detail: `the apra-fleet at ${binPath} has no member-install marker, so the fleet did not install over it. ${buildFullInstallReplaceHint({ home, targetOs, shell, provider, installer })}`,
+        version: priorVersion,
+      };
+    }
   }
 
   let localPath: string;
@@ -707,12 +848,12 @@ async function ensureOnce(agent: Agent, deps: MemberFleetInstallDeps, force: boo
       const tail = (run.stderr.trim() || run.stdout.trim()).slice(-400);
       // A refusal means the running server has no member-install marker: a
       // human full install or an unmarked older member install. The fleet
-      // never overrides it (see memberHasInstallMarker); only the owner can.
+      // never overrides it (see probeMemberInstallMarker); only the owner can.
       if (`${run.stdout}\n${run.stderr}`.includes(FULL_INSTALL_RUNNING_CODE)) {
         return {
           state: 'unavailable',
           reason: 'full-install-running',
-          detail: `a running apra-fleet server on the member was not started by a member install and was left running: ${tail}. ${TAKEOVER_HINT}`,
+          detail: `a running apra-fleet server on the member was not started by a member install and was left running: ${tail}. ${buildFullInstallReplaceHint({ home, targetOs, shell, provider, installer: { staged: true, path: installerPath } })}`,
           version: priorVersion,
         };
       }
@@ -791,7 +932,7 @@ export const FLEET_MCP_FIX: Record<FleetMcpUnavailableReason | FleetMcpProviderR
   'download-timeout': 'The release download did not finish in time; check the network to the release host, then run update_member with fleet_install "auto".',
   'checksum-mismatch': 'The downloaded installer did not match its published SHA256SUMS; do not install it -- run update_member with fleet_install "auto" again, and report it if it repeats.',
   'checksum-unavailable': 'No published SHA256SUMS lists this installer (release missing or incomplete); publish the release assets, then run update_member with fleet_install "auto".',
-  'full-install-running': 'The member apra-fleet install has no member-install marker (a full install, or a member install older than the marker), so the fleet leaves it alone; its owner may hand it over once by running apra-fleet install --member --force --force-stop-full-install on the member, then update_member {member_id, fleet_install: "auto"}.',
+  'full-install-running': 'The member apra-fleet install has no member-install marker (a full install, or a member install older than the marker), so the fleet leaves it alone; its owner replaces it with a member install using the steps in the detail (back up data and fleet.key, uninstall with the installed binary, run the staged current installer with install --member), then update_member {member_id, fleet_install: "auto"}.',
   'transfer-failed': 'Check file transfer to the member works (disk space, permissions), then run update_member with fleet_install "auto".',
   'install-failed': 'Run the apra-fleet installer on the member by hand and read its error, then member_detail with refresh:true.',
   'install-unverified': 'Run update_member {member_id, fleet_install: "auto"} to upgrade apra-fleet on the member to the orchestrator version, then member_detail with refresh:true.',
@@ -1310,8 +1451,15 @@ async function probeRemote(
   // path, or an unmarked older member install -- is never written to: a LOCAL
   // entry for this uuid there would let a later run mistake it for the fleet's
   // own. An install this probe just ran (--member) wrote the marker itself.
-  if (!installedNow && !(await memberHasInstallMarker(agent, home, deps))) {
-    return fail('full-install-running', `the apra-fleet ${version} at ${binPath} has no member-install marker, so the member was not registered into it. ${TAKEOVER_HINT}`);
+  if (!installedNow) {
+    const marker = await probeMemberInstallMarker(agent, home, deps);
+    if (marker.kind === 'probe-failed') return fail('probe-failed', marker.detail);
+    if (marker.kind === 'absent') {
+      // Stage the current installer only when an install was requested; a plain
+      // status refresh must not copy or download a binary on every probe.
+      const installer = await stageReplacementInstaller(agent, deps, home, null, install);
+      return fail('full-install-running', `the apra-fleet ${version} at ${binPath} has no member-install marker, so the member was not registered into it. ${buildFullInstallReplaceHint({ home, targetOs, shell, provider: agent.llmProvider ?? 'claude', installer })}`);
+    }
   }
 
   // 2b. Register the member on its own install under the orchestrator's id.
@@ -1384,7 +1532,9 @@ export async function refreshMemberFleetMcp(
 
 export type SelfRemoveResult =
   | { removed: boolean; detail: string }
-  | { removed: false; reason: 'home-unresolved' | 'install-too-old' | 'remove-failed' | 'probe-failed'; detail: string };
+  | { removed: false; reason: 'home-unresolved' | 'install-too-old' | 'remove-failed' | 'probe-failed'; detail: string }
+  /** The member-side removal was deliberately not run: the install is not fleet-owned (marker absent) or ownership could not be established (marker probe failed). */
+  | { removed: false; skipped: true; reason: 'not-fleet-owned' | 'probe-failed'; detail: string };
 
 /**
  * Remove the member's self-registration from its OWN install (remove_member's
@@ -1406,6 +1556,15 @@ export async function removeMemberFromOwnInstall(
     const probe = await probeMemberFleetVersion(agent, binPath, deps);
     if (probe.kind === 'missing') return { removed: false, detail: 'apra-fleet is not installed on the member; nothing to remove' };
     if (probe.kind === 'probe-failed') return { removed: false, reason: 'probe-failed', detail: probe.detail };
+    // The marker is the sole ownership signal: never touch an install the fleet
+    // does not own, and never read a failed probe as ownership.
+    const marker = await probeMemberInstallMarker(agent, home, deps);
+    if (marker.kind === 'absent') {
+      return { removed: false, skipped: true, reason: 'not-fleet-owned', detail: `skipped the member-side registration removal: the apra-fleet install at ${binPath} has no member-install marker, so it is not fleet-owned` };
+    }
+    if (marker.kind === 'probe-failed') {
+      return { removed: false, skipped: true, reason: 'probe-failed', detail: `skipped the member-side registration removal: ownership of the member install could not be established (${marker.detail})` };
+    }
     const r = await deps.exec(agent, buildSelfRemoveCommand(binPath, agent.id, targetOs, shell), MEMBER_CALL_TIMEOUT_MS);
     const out = `${r.stdout}\n${r.stderr}`;
     if (r.code === 0) {
