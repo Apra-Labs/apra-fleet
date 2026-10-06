@@ -20,6 +20,7 @@ import { createLiveProxy, registerLiveRoutes } from '../src/supervisor/proxy.mjs
 import { createHistoryView, registerHistoryViewRoutes } from '../src/supervisor/history-view.mjs';
 import { createReconciler, registerReservationRoutes } from '../src/supervisor/reconcile.mjs';
 import { createSupervisor } from '../src/supervisor/server.mjs';
+import { scaledTimeout } from './helpers/scaled-timeout.mjs';
 
 // =============================================================================
 // apra-fleet-eft.6.6 -- dashboard integration: stack, backlog exclusion,
@@ -83,8 +84,13 @@ async function mkTmp(prefix) {
     return dir;
 }
 
+// Contention-aware default wait budget: 10s standalone, scaled (3x) under the
+// bounded runner's parallel lane, where a viewer child can take well over 10s
+// to answer /state while sibling suites load the machine.
+const WAIT_BUDGET_MS = scaledTimeout(10000);
+
 /** Poll until `pred()` is truthy or the deadline passes; throws on timeout. */
-async function waitFor(pred, { timeoutMs = 10000, intervalMs = 50, label = 'condition' } = {}) {
+async function waitFor(pred, { timeoutMs = WAIT_BUDGET_MS, intervalMs = 50, label = 'condition' } = {}) {
     const deadline = Date.now() + timeoutMs;
     for (;;) {
         // eslint-disable-next-line no-await-in-loop
@@ -652,7 +658,7 @@ describe('dashboard integration auth (apra-fleet-50j6.2.2) -- Stop/force-release
             } catch {
                 return false;
             }
-        }, { label: 'auth-suite viewer-child /state to answer' });
+        }, { timeoutMs: WAIT_BUDGET_MS, label: 'auth-suite viewer-child /state to answer' });
     });
 
     // -------------------------------------------------------------------------
