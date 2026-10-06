@@ -85,7 +85,12 @@ async function runScenario(tag, { owed }) {
         }),
         finalReviewHandler: passVerdict(owed
             ? [
-                { title: UNROUTED, description: 'Follow-up filed by the final reviewer.', priority: 'P3' },
+                {
+                    title: UNROUTED,
+                    description: 'Follow-up filed by the final reviewer.',
+                    priority: 'P3',
+                    dedupCheck: { query: 'unrouted follow-up with no lane', candidateIds: [], verdict: 'no-overlap' },
+                },
                 { title: REJECTED, description: 'Rejected because its priority is not a P-level.', priority: 'urgent' },
             ]
             : []),
