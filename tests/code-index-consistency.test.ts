@@ -294,6 +294,44 @@ describe('a lookup that resolves to a different symbol is flagged, never HIGH', 
     expect(resolvesToRequested('runUninstall', { id: 'uninstall.ts:runUninstall' })).toBe(true);
   });
 
+  it('gitnexus id tags (#arity, ~types, $const, ~shape:, ~c:, ~T) are not read as a different symbol', () => {
+    const f = 'src/services/knowledge/sqlite-provider.ts';
+    const tagged = [
+      'Method:src/services/knowledge/sqlite-provider.ts:SqliteProvider.computeSourceFileHashes#1',
+      'Method:src/services/knowledge/sqlite-provider.ts:SqliteProvider.computeSourceFileHashes#2~string,number',
+      'Method:src/services/knowledge/sqlite-provider.ts:SqliteProvider.computeSourceFileHashes#0$const',
+      'Function:src/services/knowledge/sqlite-provider.ts:computeSourceFileHashes~shape:T*|int',
+      'Method:src/services/knowledge/sqlite-provider.ts:SqliteProvider.computeSourceFileHashes#1~c:1x9ab',
+    ];
+    for (const id of tagged) {
+      expect(resolvesToRequested('computeSourceFileHashes', { name: 'computeSourceFileHashes', id, filePath: f }), id).toBe(true);
+      expect(resolvesToRequested('computeSourceFileHashes', { id }), `id-only ${id}`).toBe(true);
+      expect(resolvesToRequested('SqliteProvider.computeSourceFileHashes', { name: 'computeSourceFileHashes', id, filePath: f }), id).toBe(true);
+    }
+    expect(resolvesToRequested('Vec', { name: 'Vec', id: 'Class:src/v.cpp:Vec~T,U', filePath: 'src/v.cpp' })).toBe(true);
+    expect(resolvesToRequested('~Vec', { name: '~Vec', id: 'Method:src/v.cpp:Vec.~Vec#0', filePath: 'src/v.cpp' })).toBe(true);
+    expect(resolvesToRequested('fn', { name: 'fn', id: 'Function:src/~tmp/a.ts:fn', filePath: 'src/~tmp/a.ts' })).toBe(true);
+    // A tagged id that names another symbol (or file) is still a mismatch.
+    expect(resolvesToRequested('runUninstall', {
+      name: 'runUninstall', id: 'Method:scripts/beads-children.mjs:Claims.claimBeadsBatched#2', filePath: 'src/cli/uninstall.ts',
+    })).toBe(false);
+    expect(resolvesToRequested('runUninstall', {
+      name: 'runUninstall', id: 'Method:scripts/beads-children.mjs:Cli.runUninstall#1~c:abc', filePath: 'src/cli/uninstall.ts',
+    })).toBe(false);
+    expect(resolvesToRequested('runUninstall', { id: 'Method:scripts/beads-children.mjs:Claims.claimBeadsBatched#2' })).toBe(false);
+  });
+
+  it('code_impact on a method with an arity-tagged uid keeps HIGH and is not flagged', async () => {
+    const repo = newRepo(READY);
+    mockCallTool.mockResolvedValue(impactResult({
+      name: 'computeSourceFileHashes', filePath: 'src/services/knowledge/sqlite-provider.ts',
+      id: 'Method:src/services/knowledge/sqlite-provider.ts:SqliteProvider.computeSourceFileHashes#1',
+    }));
+    const out = await handleCodeImpact({ target: 'computeSourceFileHashes', direction: 'upstream' }, { repo, memberId: 'm' }) as Record<string, unknown>;
+    expect(out.resolution_mismatch).toBeUndefined();
+    expect(payloadOf(out).risk).toBe('HIGH');
+  });
+
   it('code_context: a different resolved symbol is flagged', async () => {
     const repo = newRepo(READY);
     mockCallTool.mockResolvedValue(contextResult('claimBeadsBatched'));

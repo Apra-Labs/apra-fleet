@@ -249,12 +249,36 @@ function endsWithSymbol(qualified: string, simple: string): boolean {
 }
 
 /**
+ * Drop the disambiguation tags gitnexus appends to an id AFTER the qualified
+ * name, so the symbol segment can be compared with a plain name:
+ * '#<arity>' (every Method, Constructor and class-nested Function), followed
+ * by optional collision tags ('~type1,type2', '$const'), '~shape:<...>'
+ * parameter-shape tags, '~T1,T2' class template arguments and '~c:<hash>'
+ * constraints. Several of these contain a single ':' themselves, so they must
+ * go before the id is split. Only the last path segment is scanned for a '~'
+ * tag (a '~' in a directory name is not a tag), and a '~' right after '.' or
+ * ':' starts a C++ destructor name ('Foo.~Foo'), not a tag.
+ */
+function stripIdTags(id: string): string {
+  const arity = id.search(/#\d/);
+  const head = arity >= 0 ? id.slice(0, arity) : id;
+  for (let i = head.lastIndexOf('/') + 1; i < head.length; i++) {
+    if (head[i] !== '~') continue;
+    const prev = i > 0 ? head[i - 1] : '';
+    if (prev === '.' || prev === ':') continue;
+    return head.slice(0, i);
+  }
+  return head;
+}
+
+/**
  * Split a gitnexus id/uid ("Function:src/a.ts:Svc.run", "a.mjs:fn",
  * "Function:src/a.rs:ns::fn") at its last SINGLE ':' (a '::' is part of the
  * symbol) into the file part before it and the symbol segment after it.
  * Returns null when the id has no single ':' -- nothing to cross-check.
  */
-function splitSymbolId(id: string): { file: string; symbol: string } | null {
+function splitSymbolId(rawId: string): { file: string; symbol: string } | null {
+  const id = stripIdTags(rawId);
   const singles: number[] = [];
   for (let i = 0; i < id.length; i++) {
     if (id[i] !== ':') continue;
