@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "12fbcf6bd3a5540e5e979715151986fa15c1291e",
     "branch": "main",
-    "entry_count": 285
+    "entry_count": 286
   },
   "entries": [
     {
@@ -3997,6 +3997,21 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:14.111Z"
+    },
+    {
+      "id": "c508933c-0e41-429e-8027-a8f10521fc3e",
+      "type": "learning",
+      "title": "path.win32.dirname keeps a POSIX path unchanged; only join/normalize turn it into a backslash cwd-relative path",
+      "summary": "On Linux, path.win32.dirname('/tmp/x/f.bat') returns '/tmp/x' unchanged, but path.win32.join('/tmp/x','f') returns '\\\\tmp\\\\x\\\\f', which fs treats as a single cwd-relative filename.",
+      "symbols": [
+        "launcherPathFor"
+      ],
+      "source_files": [
+        "src/services/service-manager/windows.ts",
+        "tests/windows-service-task-xml.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T10:51:15.984Z"
     },
     {
       "id": "c73a563f-06ee-4dff-8d4b-afa31d5de9f7",
