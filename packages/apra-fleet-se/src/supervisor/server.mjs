@@ -164,6 +164,13 @@ function sendUnauthorized(res) {
  * TOKEN: LIVE RE-RESOLUTION"). Bounded so a stale credential is never honoured
  * indefinitely; long enough to cover a typical browser session or sprint run.
  */
+/**
+ * apra-fleet-ky2l.25: logged once by createSupervisor() when it is given no
+ * token source at all, so an entry point that forgets the dep is visible.
+ */
+export const NO_TOKEN_SOURCE_WARNING = '[supervisor] WARNING: no service token source configured '
+    + '(deps.token, deps.resolveToken or deps.dataDir) -- the /api auth guard is DISABLED';
+
 export const RETIRED_TOKEN_GRACE_MS = 24 * 60 * 60 * 1000;
 
 /**
@@ -311,6 +318,14 @@ export function createSupervisor(deps = {}) {
         token = loadOrCreateToken(deps.dataDir).token;
     }
     const guardEnabled = token !== null || resolveTokenDep !== null;
+    // apra-fleet-ky2l.25: with no token source at all (no deps.token, no
+    // deps.resolveToken provider, no deps.dataDir) the whole /api surface is
+    // served unauthenticated. Kept for header-less unit tests, but never
+    // silently: exactly one loud line through the injected logger. Names
+    // the missing sources only -- there is no token value to leak.
+    if (!guardEnabled) {
+        logError(NO_TOKEN_SOURCE_WARNING);
+    }
     // { token, until } -- the previous token after a switch, honoured until
     // `until` (epoch ms). See the header section for the policy.
     let retired = null;
