@@ -251,6 +251,48 @@ export async function isGitTracked(
   return r.code === 0;
 }
 
+/**
+ * The command that prints the git repository root of `workFolder` on the
+ * member. Resolved path, quoted per shell (quotePosixPath / quotePwshPath), no
+ * $VAR, ~ or backtick expansion for the member shell to perform.
+ */
+export function memberRepoRootCommand(workFolder: string, isWindows: boolean, posix: boolean): string {
+  const wf = isWindows && !posix ? workFolder.replace(/\//g, '\\') : workFolder.replace(/\\/g, '/');
+  const q = posix ? quotePosixPath : quotePwshPath;
+  return `git -C ${q(wf)} rev-parse --show-toplevel`;
+}
+
+/** Forward-slash, no trailing slash: the form Claude's project keys take. */
+export function normalizeProjectKey(p: string): string {
+  return p.trim().replace(/\\/g, '/').replace(/\/+$/, '');
+}
+
+/**
+ * The key Claude Code files a work folder's LOCAL-scope MCP servers under in
+ * its config file (projects[<key>].mcpServers): the git repository root of the
+ * folder, or the exact folder outside a git repo (git missing, not a repo, an
+ * unusable answer). The ONE resolver for both the writer (syncMemberMcpEntry)
+ * and the fleetMcp probe, so they can never disagree on the key.
+ */
+export async function resolveClaudeProjectKey(
+  exec: MemberExecFn,
+  workFolder: string,
+  isWindows: boolean,
+  posix: boolean,
+): Promise<string> {
+  const fallback = normalizeProjectKey(workFolder);
+  try {
+    const r = await exec(memberRepoRootCommand(workFolder, isWindows, posix), FS_OP_TIMEOUT_MS);
+    if (r.code !== 0) return fallback;
+    const root = (r.stdout ?? '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean).pop();
+    if (!root) return fallback;
+    const absolute = root.startsWith('/') || /^[A-Za-z]:[\\/]/.test(root);
+    return absolute ? normalizeProjectKey(root) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 /** Reads and parses a member-side JSON file. Returns {} for a missing/empty
  *  file; THROWS a typed MemberConfigError for an unreadable file or a non-empty
  *  file that is not a JSON object, so a caller can never clobber a file it

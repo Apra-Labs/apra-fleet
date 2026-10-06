@@ -50,7 +50,7 @@ import { parseVersion, isNewer } from './update-check.js';
 import { recordFleetMcpStatus } from './registry.js';
 import { probeMemberClaudeConfigDir, claudeLocalScopeConfigFile } from '../providers/claude.js';
 import { OPENCODE_PROJECT_CONFIG } from '../providers/opencode.js';
-import { readMemberJson, joinMemberPath, memberFileExists, MEMBER_MCP_SERVER_NAME } from './member-config-io.js';
+import { readMemberJson, joinMemberPath, memberFileExists, resolveClaudeProjectKey, MEMBER_MCP_SERVER_NAME } from './member-config-io.js';
 
 type MemberShell = ReturnType<typeof getAgentShell>;
 
@@ -1035,7 +1035,7 @@ export async function readMemberMcpEntryUrl(agent: Agent, home: string, deps: Pi
       const configDir = await probeMemberClaudeConfigDir(exec, targetOs, shell);
       const file = claudeLocalScopeConfigFile(configDir, home, isWindows, shell).file;
       const config = await readMemberJson(exec, file, posix);
-      const key = agent.workFolder.replace(/\\/g, '/').replace(/\/+$/, '');
+      const key = await resolveClaudeProjectKey(exec, agent.workFolder, isWindows, posix);
       const entry = rec(rec(rec(rec(config.projects)?.[key])?.mcpServers)?.[MEMBER_MCP_SERVER_NAME]);
       return typeof entry?.url === 'string' ? entry.url : null;
     }

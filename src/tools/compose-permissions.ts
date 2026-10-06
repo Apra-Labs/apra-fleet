@@ -10,7 +10,7 @@ const __dirname = dirname(__filename);
 import { getStrategy } from '../services/strategy.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { getProvider } from '../providers/index.js';
-import { seedWorkspaceTrust, workspaceTrustTransportFor } from '../utils/workspace-trust.js';
+import { seedWorkspaceTrust, workspaceTrustTransportFor, memberSecretFileChannelFor } from '../utils/workspace-trust.js';
 import { perFolderMcpEntryNeeded, REMOTE_SESSION_MCP_FILE } from '../services/session-mcp-config.js';
 import {
   deleteMemberFile,
@@ -724,6 +724,7 @@ async function syncMemberMcpConfig(
         agentOs,
         shell,
         transport: workspaceTrustTransportFor(agent, strategy),
+        secretChannel: memberSecretFileChannelFor(agent),
         url: perFolder ? memberMcpUrl(agent) : null,
         ...(perFolder ? {} : { removeOnlyOwnEntry: true }),
       });
@@ -885,6 +886,7 @@ export async function removeComposedMemberConfig(agent: Agent): Promise<string[]
       agentOs,
       shell,
       transport: workspaceTrustTransportFor(agent, strategy),
+      secretChannel: memberSecretFileChannelFor(agent),
       url: null,
       // Only the entry fleet wrote for THIS member (?member=<uuid>): a human's
       // own apra-fleet entry for that folder is never removed.

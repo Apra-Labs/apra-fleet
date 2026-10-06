@@ -12,7 +12,9 @@ vi.mock('../src/services/strategy.js', () => ({
   getStrategy: () => ({
     execCommand: mockExecCommand,
     testConnection: mockTestConnection,
-    transferFiles: vi.fn(),
+    transferFiles: async (paths: string[]) => ({ success: paths, failed: [] }),
+    writeSecretFile: async () => '/home/testuser/.apra-fleet-secret',
+    removeSecretFile: async () => undefined,
     close: vi.fn(),
   }),
 }));

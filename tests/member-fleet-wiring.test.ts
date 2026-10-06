@@ -17,6 +17,7 @@ import { addAgent, getAgent, getAllAgents, recordFleetMcpStatus } from '../src/s
 import { __setMemberFleetMcpDeps, NO_INSTALL_SENTINEL, type MemberFleetMcpDeps, type MemberSession } from '../src/services/member-fleet-install.js';
 import type { SSHExecResult } from '../src/types.js';
 import fs from 'node:fs';
+import path from 'node:path';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
@@ -25,12 +26,20 @@ import { registerAllTools } from '../src/services/tool-registry.js';
 
 const mockExecCommand = vi.fn<(cmd: string, timeout?: number) => Promise<SSHExecResult>>();
 const mockTestConnection = vi.fn();
+const stagedFiles = new Map<string, string>();
 
 vi.mock('../src/services/strategy.js', () => ({
   getStrategy: () => ({
     execCommand: mockExecCommand,
     testConnection: mockTestConnection,
-    transferFiles: vi.fn(),
+    // The member file channel: ~/.claude.json content never rides a command line,
+    // so tests read what the writer staged here, keyed by file name.
+    transferFiles: async (paths: string[]) => {
+      for (const p of paths) stagedFiles.set(path.basename(p), fs.readFileSync(p, 'utf8'));
+      return { success: paths, failed: [] };
+    },
+    writeSecretFile: async () => '/home/testuser/.apra-fleet-secret',
+    removeSecretFile: async () => undefined,
     close: vi.fn(),
   }),
 }));
@@ -181,8 +190,9 @@ describe('register_member fleet_install', () => {
     mockExecCommand.mockImplementation(async (cmd: string) => {
       // Member-side writes of ~/.claude.json (staged as a .tmp heredoc, then
       // moved): keep each one that carries the per-folder apra-fleet entry.
-      const m = cmd.match(/^cat > "?([^"\n]*\.claude\.json[^"\n]*)"? << '(\w+)'\n([\s\S]*?)\n\2/);
-      if (m && m[3].includes('"apra-fleet"')) { w.log.push(`compose-write ${m[1]}`); written.push(m[3]); }
+      const m = cmd.match(/^(?:mv|Move-Item -Force) "([^"]*)" "([^"]*\.claude\.json)"$/);
+      const staged = m ? stagedFiles.get(path.basename(m[1].replace(/\\/g, '/'))) : undefined;
+      if (m && staged && staged.includes('"apra-fleet"')) { w.log.push(`compose-write ${m[2]}`); written.push(staged); }
       return configExec(cmd);
     });
     const d = fakeDeps(w);
@@ -561,8 +571,9 @@ describe('fleet_install writes the per-folder MCP entry before checking it', () 
     const configExec = makeConfigAwareExec();
     const written: string[] = [];
     mockExecCommand.mockImplementation(async (cmd: string) => {
-      const m = cmd.match(/^cat > "?([^"\n]*\.claude\.json[^"\n]*)"? << '(\w+)'\n([\s\S]*?)\n\2/);
-      if (m && m[3].includes('"apra-fleet"')) { w.log.push(`entry-write ${m[1]}`); written.push(m[3]); }
+      const m = cmd.match(/^(?:mv|Move-Item -Force) "([^"]*)" "([^"]*\.claude\.json)"$/);
+      const staged = m ? stagedFiles.get(path.basename(m[1].replace(/\\/g, '/'))) : undefined;
+      if (m && staged && staged.includes('"apra-fleet"')) { w.log.push(`entry-write ${m[2]}`); written.push(staged); }
       return configExec(cmd);
     });
     const d = fakeDeps(w);

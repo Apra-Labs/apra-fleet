@@ -1,6 +1,5 @@
-import { escapePowerShellArgInner } from '../utils/shell-escape.js';
 import { randomBytes } from 'node:crypto';
-import type { ProviderAdapter, PromptOptions, ParsedResponse, UsageLimitSignal, MemberMcpSyncContext, MemberMcpSyncResult, WorkspaceTrustExecFn, WorkspaceTrustTransport, EnsureWorkspaceTrustedResult, SessionIdStrategy, ExecTimeoutSource, TargetOS } from './provider.js';
+import type { ProviderAdapter, PromptOptions, ParsedResponse, UsageLimitSignal, MemberMcpSyncContext, MemberMcpSyncResult, WorkspaceTrustExecFn, WorkspaceTrustTransport, MemberSecretFileChannel, EnsureWorkspaceTrustedResult, SessionIdStrategy, ExecTimeoutSource, TargetOS } from './provider.js';
 import { buildResumeFlag, buildSessionIdFlag, buildForkFlag, encodeClaudeProjectDir, joinForOS, resolveHomeDir, guessedUsageLimitSignal } from './provider.js';
 import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
@@ -16,6 +15,7 @@ import {
   quotePosixPath,
   quotePwshPath,
   readMemberJson,
+  resolveClaudeProjectKey,
   LEGACY_MEMBER_MCP_SERVER_NAME,
   MEMBER_MCP_SERVER_NAME,
 } from '../services/member-config-io.js';
@@ -541,7 +541,7 @@ export class ClaudeProvider implements ProviderAdapter {
   }
 
   // The member's apra-fleet MCP entry is NOT written here: it lives in Claude's
-  // LOCAL scope (~/.claude.json projects[<workFolder>].mcpServers), written by
+  // LOCAL scope (~/.claude.json projects[<repo root of workFolder>].mcpServers), written by
   // syncMemberMcpEntry. This file only carries the client-side deny rules for
   // every registered fleet tool outside the member allowlist.
   composePermissionConfig(_role: 'doer' | 'reviewer', allow: string[] = []): Array<Record<string, unknown> | string> {
@@ -557,7 +557,10 @@ export class ClaudeProvider implements ProviderAdapter {
     const exec = checkedExec(ctx.execCommand);
 
     const config = await readMemberJson(ctx.execCommand, target.file, posix);
-    const key = agent.workFolder.replace(/\\/g, '/').replace(/\/+$/, '');
+    // Claude Code keys local-scope servers by the git repository ROOT of the
+    // folder (the exact folder only outside a git repo) -- the same resolver
+    // the fleetMcp probe reads back with.
+    const key = await resolveClaudeProjectKey(exec, agent.workFolder, isWindows, posix);
     let changed = false;
 
     // User-scope legacy entry (top-level mcpServers).
@@ -610,8 +613,8 @@ export class ClaudeProvider implements ProviderAdapter {
       transport: target.homeAnchored ? ctx.transport : undefined,
       homeFile: target.file,
       tmpFile: joinMemberPath(target.dir, staging.tmpRel, isWindows, ctx.shell),
-      b64File: joinMemberPath(target.dir, staging.b64Rel, isWindows, ctx.shell),
       staging,
+      secretChannel: ctx.secretChannel,
     });
     const what = url !== null ? `wrote ${MEMBER_MCP_SERVER_NAME} (local scope)` : `removed ${MEMBER_MCP_SERVER_NAME}`;
     return { workFolderFiles: [], detail: `claude: ${what} for ${key} in ${target.file}` };
@@ -688,7 +691,7 @@ export class ClaudeProvider implements ProviderAdapter {
     return `-p "${promptLiteral}"`;
   }
 
-  async ensureWorkspaceTrusted(workFolder: string, execCommand: WorkspaceTrustExecFn, agentOs: 'linux' | 'macos' | 'windows' = 'linux', shell?: MemberShell, transport?: WorkspaceTrustTransport, memberHomeDir?: string | null): Promise<EnsureWorkspaceTrustedResult> {
+  async ensureWorkspaceTrusted(workFolder: string, execCommand: WorkspaceTrustExecFn, agentOs: 'linux' | 'macos' | 'windows' = 'linux', shell?: MemberShell, transport?: WorkspaceTrustTransport, memberHomeDir?: string | null, secretChannel?: MemberSecretFileChannel): Promise<EnsureWorkspaceTrustedResult> {
     // apra-fleet-eft.40: Claude gates project-scoped permissions.allow entries on
     // projects[<key>].hasTrustDialogAccepted in the member-side ~/.claude.json -- an
     // untrusted workspace silently DROPS them (not merely a cosmetic warning), degrading
@@ -731,7 +734,6 @@ export class ClaudeProvider implements ProviderAdapter {
     const inHome = (rel: string) => (isWindows ? `${homeDir}\\${rel}` : `${homeDir}/${rel}`);
     const homeFile = inHome('.claude.json');
     const tmpFile = inHome(staging.tmpRel);
-    const b64File = inHome(staging.b64Rel);
 
     // apra-fleet-9oo: the project's .mcp.json lives in the MEMBER's work folder, not on
     // the orchestrator host, so it must be read through the same execCommand channel --
@@ -835,18 +837,12 @@ export class ClaudeProvider implements ProviderAdapter {
     // real file in one filesystem operation -- a crash or concurrent read mid-write can
     // never observe a partially-written ~/.claude.json.
     //
-    // GitHub #499: the staged content must NOT ride the command line on a Windows
-    // host. A real ~/.claude.json grows to tens of KB (84 KB in the report), and
-    // Windows caps a process command line at 32767 chars (cmd.exe at 8191) -- a
-    // single WriteAllText(...'<whole file>'...) or `bash -c '<heredoc>'` spawn fails
-    // with ENAMETOOLONG and trust is never seeded. Delivery order:
-    //   1. transport.writeHomeFile (node:fs for a local member, SFTP for SSH) --
-    //      no command line carries the content at all;
-    //   2. one exec when the command comfortably fits (unchanged behaviour);
-    //   3. otherwise base64 chunks appended with several small execs, then one
-    //      decode+move -- works for both PowerShell and gitbash members.
-    // Non-Windows POSIX hosts keep the heredoc: their ARG_MAX is far larger.
-    await deliverWorkspaceTrustFile(contentStr, { isWindows, agentOs, execCommand, transport, homeFile, tmpFile, b64File, staging });
+    // The merged content must NEVER ride a command line: ~/.claude.json can hold
+    // other MCP servers' headers/tokens and OAuth state, and a command line is
+    // visible in process listings (and is capped at 32767 chars on Windows).
+    // Delivery is the file channel (node:fs / SFTP) or the owner-only secret
+    // file, then a content-free move into place; with neither, it fails loudly.
+    await deliverWorkspaceTrustFile(contentStr, { isWindows, agentOs, execCommand, transport, homeFile, tmpFile, staging, secretChannel });
 
     const mcpNote = serversToAdd.length > 0 ? `; enabled MCP servers: ${serversToAdd.join(', ')}` : '';
     // eft.40.1 requires logging distinctly when trust is SEEDED vs already present --
@@ -866,7 +862,6 @@ export class ClaudeProvider implements ProviderAdapter {
  *  channel and the exec-based fallbacks so every path stages in the same place. */
 export interface WorkspaceTrustStagingNames {
   tmpRel: string;
-  b64Rel: string;
 }
 
 export function workspaceTrustStagingNames(): WorkspaceTrustStagingNames {
@@ -875,86 +870,27 @@ export function workspaceTrustStagingNames(): WorkspaceTrustStagingNames {
   const token = `${process.pid}-${randomBytes(4).toString('hex')}`;
   return {
     tmpRel: `.claude.json.fleet-trust-${token}.tmp`,
-    b64Rel: `.claude.json.fleet-trust-${token}.b64`,
   };
 }
 
-/** Longest single command string ensureWorkspaceTrusted will hand to execCommand on
- *  a Windows host. The hard caps are CreateProcess's 32767 chars (LocalStrategy
- *  spawns powershell.exe/bash.exe directly; a Windows sshd hands the command to
- *  its default shell the same way) and cmd.exe's 8191 (only when sshd's default
- *  shell is cmd.exe, where these PowerShell/bash commands would not run anyway).
- *  8000 is deliberately conservative: it is under BOTH caps with room for any
- *  wrapper a strategy may add, and the cost is only more round-trips on the
- *  chunked FALLBACK path (the file channel is the primary path), e.g. ~31 execs
- *  for a 128 KB file. */
-export const WORKSPACE_TRUST_MAX_COMMAND_CHARS = 8000;
-
-/** Base64 characters per chunk command: chunk + ~200 chars of PowerShell/bash
- *  scaffolding stays well under WORKSPACE_TRUST_MAX_COMMAND_CHARS. */
-const TRUST_CHUNK_CHARS = 6000;
-
 export interface WorkspaceTrustWritePlan {
   /** How the content reached the member. */
-  mechanism: 'file-channel' | 'single-exec' | 'chunked-exec';
-  /** Every command string handed to execCommand, in order. */
+  mechanism: 'file-channel' | 'secret-file';
+  /** Every command string handed to execCommand, in order. None of them carries
+   *  the delivered content: only a move of an already-staged file. */
   commands: string[];
 }
 
 /**
- * Build the command sequence that delivers `contentStr` to `homeFile` on a Windows
- * host without any single command exceeding the CreateProcess/cmd.exe limits:
- * base64 chunks appended to a staging file, then one decode + atomic move. Base64
- * keeps every chunk free of quotes/newlines, so no escaping can drift between the
- * PowerShell and gitbash flavours. Exported for tests (GitHub #499).
+ * Deliver `contentStr` (a merged ~/.claude.json) to `homeFile` on the member
+ * WITHOUT it ever appearing in an exec string -- not raw, not base64, not
+ * chunked, not inside -EncodedCommand. Two channels only:
+ *   1. transport.writeHomeFile (node:fs for a local member, SFTP for SSH)
+ *      stages it next to the target, then a content-free move lands it;
+ *   2. the owner-only secret file (opts.secretChannel), then the same move.
+ * Neither available (or both failing) -> throws an error naming the missing
+ * channel; there is no inline fallback.
  */
-export function buildChunkedTrustWriteCommands(contentStr: string, opts: { posix: boolean; homeFile: string; tmpFile: string; b64File: string; chunkChars?: number }): string[] {
-  const chunkChars = opts.chunkChars ?? TRUST_CHUNK_CHARS;
-  const b64 = Buffer.from(contentStr, 'utf8').toString('base64');
-  const chunks: string[] = [];
-  for (let i = 0; i < b64.length; i += chunkChars) chunks.push(b64.slice(i, i + chunkChars));
-  if (chunks.length === 0) chunks.push('');
-
-  const cmds: string[] = [];
-  if (opts.posix) {
-    // gitbash on a Windows host: bash.exe -c '<cmd>' is still one CreateProcess call.
-    chunks.forEach((chunk, i) => {
-      cmds.push(`printf '%s' '${chunk}' ${i === 0 ? '>' : '>>'} "${opts.b64File}"`);
-    });
-    cmds.push(`base64 -d "${opts.b64File}" > "${opts.tmpFile}" && rm -f "${opts.b64File}" && mv "${opts.tmpFile}" "${opts.homeFile}"`);
-  } else {
-    chunks.forEach((chunk, i) => {
-      const method = i === 0 ? 'WriteAllText' : 'AppendAllText';
-      cmds.push(`[System.IO.File]::${method}("${opts.b64File}", '${chunk}')`);
-    });
-    // WriteAllBytes of the decoded UTF-8 bytes: no BOM, no encoding round-trip.
-    // Error-gated (see psGated): a decode failure must never let the Move-Item run.
-    cmds.push(psGated(`[System.IO.File]::WriteAllBytes("${opts.tmpFile}", [System.Convert]::FromBase64String([System.IO.File]::ReadAllText("${opts.b64File}"))); Remove-Item -Force "${opts.b64File}"; Move-Item -Force "${opts.tmpFile}" "${opts.homeFile}"`));
-  }
-  return cmds;
-}
-
-/**
- * Gate a multi-statement PowerShell write so a failure in an earlier statement
- * aborts the whole command with exit 1. Without this, a .NET exception (e.g. in
- * WriteAllText/WriteAllBytes) is only STATEMENT-terminating: the trailing
- * Move-Item still runs, moves whatever stale tmp exists over the real
- * ~/.claude.json, and the command exits 0. The single-command write is the
- * cheapest path; it is still gated by the same helper.
- */
-function psGated(script: string): string {
-  return `$ErrorActionPreference = 'Stop'; try { ${script} } catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }`;
-}
-
-/** The single-exec write command ensureWorkspaceTrusted has always used -- still the
- *  cheapest path when it fits. The PowerShell form is error-gated (psGated); the
- *  POSIX heredoc form is unchanged. */
-export function buildSingleTrustWriteCommand(contentStr: string, opts: { isWindows: boolean; homeFile: string; tmpFile: string }): string {
-  return opts.isWindows
-    ? psGated(`[System.IO.File]::WriteAllText("${opts.tmpFile}", '${escapePowerShellArgInner(contentStr)}', (New-Object System.Text.UTF8Encoding($false))); Move-Item -Force "${opts.tmpFile}" "${opts.homeFile}"`)
-    : `cat > "${opts.tmpFile}" << 'FLEET_TRUST_EOF'\n${contentStr}\nFLEET_TRUST_EOF\nmv "${opts.tmpFile}" "${opts.homeFile}"`;
-}
-
 export async function deliverWorkspaceTrustFile(
   contentStr: string,
   opts: {
@@ -966,13 +902,14 @@ export async function deliverWorkspaceTrustFile(
     tmpFile: string;
     staging: WorkspaceTrustStagingNames;
     homeRel?: string;
-    /** Fully resolved member-side path for the chunked-delivery base64 staging
-     *  file, resolved in JS (never a shell home variable). */
-    b64File: string;
+    secretChannel?: MemberSecretFileChannel;
   },
 ): Promise<WorkspaceTrustWritePlan> {
-  const { isWindows, agentOs, execCommand, transport, homeFile, tmpFile, staging, homeRel } = opts;
-  const onWindowsHost = agentOs === 'windows';
+  const { isWindows, execCommand, transport, homeFile, tmpFile, staging, homeRel, secretChannel } = opts;
+  const moveCmd = (from: string) => (isWindows
+    ? `Move-Item -Force "${from}" "${homeFile}"`
+    : `mv "${from}" "${homeFile}"`);
+  const failures: string[] = [];
 
   // 1. Out-of-band file channel: content never touches a command line.
   if (transport?.writeHomeFile) {
@@ -982,42 +919,35 @@ export async function deliverWorkspaceTrustFile(
       if (homeRel) {
         return { mechanism: 'file-channel', commands: [] };
       }
-      const moveCmd = isWindows
-        ? `Move-Item -Force "${tmpFile}" "${homeFile}"`
-        : `mv "${tmpFile}" "${homeFile}"`;
-      const r = await execCommand(moveCmd, 10000);
+      const cmd = moveCmd(tmpFile);
+      const r = await execCommand(cmd, 10000);
       if (r.code !== 0) throw new Error(`move into place failed (exit ${r.code}): ${(r.stderr || r.stdout).trim().slice(0, 300)}`);
-      return { mechanism: 'file-channel', commands: [moveCmd] };
+      return { mechanism: 'file-channel', commands: [cmd] };
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error(`[claude] workspace trust: file channel failed (${msg}); falling back to exec delivery`);
+      failures.push(`file channel: ${err instanceof Error ? err.message : String(err)}`);
     }
+  } else {
+    failures.push('file channel (SFTP / local file copy): not available for this member');
   }
 
-  // 2. One exec when it fits. Non-Windows hosts always take this path (heredoc,
-  //    unchanged); a Windows host only when the whole command is under the limit.
-  const single = buildSingleTrustWriteCommand(contentStr, { isWindows, homeFile, tmpFile });
-  if (!onWindowsHost || single.length <= WORKSPACE_TRUST_MAX_COMMAND_CHARS) {
-    await execCommand(single, 10000);
-    return { mechanism: 'single-exec', commands: [single] };
+  // 2. Owner-only secret file, then a content-free move.
+  if (secretChannel) {
+    let staged: string | null = null;
+    try {
+      staged = await secretChannel.write(contentStr);
+      const cmd = moveCmd(staged);
+      const r = await execCommand(cmd, 10000);
+      if (r.code !== 0) throw new Error(`move into place failed (exit ${r.code}): ${(r.stderr || r.stdout).trim().slice(0, 300)}`);
+      return { mechanism: 'secret-file', commands: [cmd] };
+    } catch (err: unknown) {
+      if (staged) { try { await secretChannel.remove(staged); } catch { /* best-effort */ } }
+      failures.push(`secret-file channel: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  } else {
+    failures.push('secret-file channel: not available for this member');
   }
 
-  // 3. Chunked delivery for a Windows host (either shell flavour).
-  const b64File = opts.b64File;
-  const cmds = buildChunkedTrustWriteCommands(contentStr, { posix: !isWindows, homeFile, tmpFile, b64File });
-  for (const cmd of cmds) {
-    const r = await execCommand(cmd, 10000);
-    if (r.code !== 0) {
-      // Best-effort member-side cleanup of the partial staging files, mirroring
-      // the orchestrator-side temp-dir cleanup in the file channel.
-      const cleanup = isWindows
-        ? `Remove-Item -Force -ErrorAction SilentlyContinue "${b64File}", "${tmpFile}"`
-        : `rm -f "${b64File}" "${tmpFile}"`;
-      try { await execCommand(cleanup, 10000); } catch { /* best-effort */ }
-      throw new Error(`chunked write of ~/.claude.json failed on a Windows member (exit ${r.code}, ${cmds.length} commands of <=${WORKSPACE_TRUST_MAX_COMMAND_CHARS} chars): ${(r.stderr || r.stdout).trim().slice(0, 300)}`);
-    }
-  }
-  return { mechanism: 'chunked-exec', commands: cmds };
+  throw new Error(`E-MEMBER-CONFIG-NO-FILE-CHANNEL: cannot write ${homeFile} on the member without putting its content on a command line (it can carry other MCP servers' tokens); ${failures.join('; ')}. Enable the SFTP subsystem on the member's sshd, or use a member type with a file channel.`);
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
