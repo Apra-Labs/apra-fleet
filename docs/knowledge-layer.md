@@ -131,11 +131,17 @@ missing, not a git repository, or without an origin remote is refused with a
 typed error carrying a one-line remediation, never silently mapped to a
 directory-name or `default` KB:
 
-| Code | Meaning |
-|------|---------|
-| `E-SELF-NO-WORKFOLDER` | the work folder is unset, missing or not a directory |
-| `E-SELF-NOT-A-REPO` | the folder is not a git repository |
-| `E-SELF-NO-REMOTE` | no origin remote (or, for a remote member, no single known origin URL) |
+| Code | Meaning | Remediation (member session) |
+|------|---------|------------------------------|
+| `E-SELF-NO-WORKFOLDER` | the work folder is unset, missing or not a directory | create the folder, or re-register the member with an existing work folder (`register_member` / `update_member`) |
+| `E-SELF-NOT-A-REPO` | the folder is not a git repository | run `git init` (or clone the project) there and add an origin remote |
+| `E-SELF-NO-REMOTE` | no origin remote (or, for a remote member, no single known origin URL) | run `git remote add origin <url>` there; for a remote member, record the origin on the member (`update_member git_repos: ["<origin url>"]`) or call from a session on the member's own host |
+
+For a FULL session every remediation leads with the same fix: restart the
+fleet server with its working folder set to the intended repository, or call
+from a member session of a member registered on it (then, as applicable,
+make that folder a git repository with an origin remote). The error text is
+`<code>: <problem> Remediation: <fix>`, one line.
 
 **Remote members.** A remote member's work folder is a path on another host,
 so git cannot be shelled out for it. Its KB identity is the single origin URL
@@ -494,7 +500,9 @@ basis and are re-checked by content hash at prime (and by `freshnessSweep`),
 so changes are detected across commits, branch switches, and rebases alike --
 see [Bidirectional staleness](#bidirectional-staleness) above. Running
 `kb_setup` writes the provider config (and, for teams, encrypts the remote
-token); it is optional for the local SQLite default.
+token); it is optional for the local SQLite default. Run it from a FULL
+session (the orchestrator or the CLI): a member session is never served
+`kb_setup` -- see [Member-session tool calls](#member-session-tool-calls).
 
 ### 2. Central server (HTTP, team-shared)
 
