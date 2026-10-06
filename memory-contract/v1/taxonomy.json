@@ -136,7 +136,7 @@
         {
           "$anchor": "E-BIBLE-WRONG-SHAPE",
           "code": "E-BIBLE-WRONG-SHAPE",
-          "meaning": "The bible parses as JSON but is neither an entry array nor the v2 envelope.",
+          "meaning": "The bible parses as JSON but is neither an entry array nor the v2/v3 envelope.",
           "raising_methods": [
             { "method_id": "P-2", "member": "capture", "tool": "kb_import", "position": "pre-provider" }
           ],

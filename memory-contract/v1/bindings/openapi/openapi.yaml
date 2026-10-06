@@ -68,7 +68,7 @@
     },
     {
       "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-BIBLE-WRONG-SHAPE",
-      "title": "The bible parses as JSON but is neither an entry array nor the v2 envelope.",
+      "title": "The bible parses as JSON but is neither an entry array nor the v2/v3 envelope.",
       "status": 400
     },
     {

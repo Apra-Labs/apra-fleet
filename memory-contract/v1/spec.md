@@ -158,7 +158,7 @@ unchanged.
 
 ### 2.6 Bible provenance (target base branch) and entry-level commits
 
-The v2 bible (`.fleet/kb-canonical.json`) records `provenance.branch` and
+The bible (`.fleet/kb-canonical.json`, format v3, section 2.8) records `provenance.branch` and
 `provenance.commit`. `provenance.branch` is the TARGET BASE branch -- the
 branch the bible's entries merge into -- and `provenance.commit` the base
 commit those entries were verified against. Neither is the HEAD of the
@@ -210,6 +210,34 @@ pin the two (self) refusals; every `code_*` tool has a
 `refusal-index-not-ready` fixture run as the `CODE` member session (provider
 pinned to `gitnexus`, no index), and `code_query/refusal-intel-disabled` runs as
 the `CODE_OFF` member session (provider `none`).
+
+### 2.8 Bible file format (v3) and its hash basis
+
+The bible file is described by `bible/kb-canonical.schema.json`; example files
+for every accepted shape live in `bible/examples/`.
+
+- Format v3 (written by `kb_export` and `kb_bible_commit`) is the envelope
+  `{version: 3, provenance: {commit, branch, entry_count}, entries: [...]}`.
+  Each entry has the stable field set `{id, type, title, summary, symbols,
+  source_files, confidence, updated_at}` plus, in v3, an optional
+  `source_file_hashes`: a map from repo-relative path to file hash. A writer
+  copies it verbatim (keys sorted) from the exporting KB's STORED basis --
+  the basis the bible predicate admitted the entry against -- and never
+  re-hashes files at write time. An entry carried over from an older bible has
+  no `source_file_hashes`; a writer keeps it as it is and never invents one.
+- Every writer refuses (throws, file untouched) to write a bible holding two
+  entries with the same `id`.
+- Readers (`kb_import`, the member bible view) accept v1 (a bare JSON array of
+  entries), v2 (the same envelope with `version: 2` and no per-entry hashes)
+  and v3. A v3 entry whose `source_file_hashes` is a non-empty map with
+  repo-relative keys covering every `source_files` entry is stored with
+  EXACTLY that basis: the importing clone's files are never hashed for it, so
+  an entry whose cited file differs on the importing clone is not admitted to
+  that clone's bible and the post-import sweep stales it. An entry without a
+  valid carried map (every v1/v2 entry) imports with no basis, so the bible
+  predicate excludes it from re-export until it is re-verified.
+- No tool request or response shape changes with v3: the format change is
+  confined to the bible file.
 
 ## 3. Error model
 

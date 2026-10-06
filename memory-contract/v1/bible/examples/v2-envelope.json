@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "provenance": {
+    "commit": "0123456789abcdef0123456789abcdef01234567",
+    "branch": "main",
+    "entry_count": 1
+  },
+  "entries": [
+    {
+      "id": "0b4c3e1a-1111-4a6b-9c1d-000000000001",
+      "type": "knowledge",
+      "title": "exampleFn returns x + 1",
+      "summary": "exampleFn in src/example.ts is a trivial increment helper.",
+      "symbols": ["exampleFn"],
+      "source_files": ["src/example.ts"],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-01-01T00:00:00.000Z"
+    }
+  ]
+}

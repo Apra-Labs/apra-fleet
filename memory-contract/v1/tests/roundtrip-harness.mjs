@@ -201,6 +201,17 @@ function assertImportRejected(parsed) {
     : `expected parsed.rejected >= 1, got ${JSON.stringify(parsed?.rejected)}`;
 }
 
+// Bible v3 export -> import: repo A's bible (written by kb_export, format v3)
+// carries the entry's source_file_hashes; session B imports it with the cited
+// file present but DIFFERENT, so the stored basis is A's carried hash and the
+// post-import sweep stales the entry. A reader that re-hashed B's own file
+// would store a matching basis and stale nothing.
+function assertCarriedBasisStaled(parsed) {
+  return parsed?.imported === 1 && parsed?.rejected === 0 && parsed?.sweep?.staled === 1
+    ? null
+    : `expected imported 1, rejected 0, sweep.staled 1 (carried v3 basis kept), got ${JSON.stringify(parsed)}`;
+}
+
 function assertConfidenceClamped(parsed) {
   return parsed?.confidence_clamped === true
     ? null
@@ -285,6 +296,15 @@ export const SCENARIO = [
   { tool: 'kb_query', case: 'happy-confirmed-only', assertParsed: assertConfirmedOnly },
   { tool: 'kb_stats', case: 'happy' },
   { tool: 'kb_import', case: 'happy' },
+  // Bible v3 round trip: the basis carried in A's exported bible travels to B.
+  {
+    tool: 'kb_import',
+    case: 'happy-v3-carried-basis',
+    setup: [
+      { op: 'write', repo: 'B', rel: 'src/example.ts', contents: 'export function exampleFn(x: number): number {\n  return x + 2;\n}\n' },
+    ],
+    assertParsed: assertCarriedBasisStaled,
+  },
   { tool: 'kb_freshness_sweep', case: 'happy' },
   // A MEMBER session's kb_feedback is the typed E-MEMBER-VIEW-READ-ONLY
   // refusal (the member's bible view is read-only); the same request from a

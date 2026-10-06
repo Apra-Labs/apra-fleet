@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/bible/kb-canonical.schema.json#",
+  "title": "Knowledge bible file (.fleet/kb-canonical.json)",
+  "description": "The bible file written by kb_export and kb_bible_commit and read by kb_import and the member bible view. Writers emit format v3. Readers accept v1 (a bare array of entries), v2 (the envelope, no per-entry hashes) and v3 (the envelope; entries may carry source_file_hashes). See spec.md section 2.8. Hand-authored: the bible is a file format, not a tool request/response, so it is not generated from a Zod schema and does not live under schemas/.",
+  "anyOf": [
+    {
+      "title": "v1 (legacy): a bare array of entries",
+      "type": "array",
+      "items": { "$ref": "#/$defs/entryWithoutHashes" }
+    },
+    {
+      "title": "v2: envelope, entries carry no hash basis",
+      "type": "object",
+      "required": ["version", "provenance", "entries"],
+      "properties": {
+        "version": { "const": 2 },
+        "provenance": { "$ref": "#/$defs/provenance" },
+        "entries": { "type": "array", "items": { "$ref": "#/$defs/entryWithoutHashes" } }
+      }
+    },
+    {
+      "title": "v3: envelope, entries may carry source_file_hashes",
+      "type": "object",
+      "required": ["version", "provenance", "entries"],
+      "properties": {
+        "version": { "const": 3 },
+        "provenance": { "$ref": "#/$defs/provenance" },
+        "entries": { "type": "array", "items": { "$ref": "#/$defs/entry" } }
+      }
+    }
+  ],
+  "$defs": {
+    "provenance": {
+      "type": "object",
+      "description": "commit: the base commit the entries were verified against (null when unknown). branch: the target base branch the entries merge into. entry_count: the number of entries in the file.",
+      "required": ["commit", "branch", "entry_count"],
+      "properties": {
+        "commit": { "type": ["string", "null"] },
+        "branch": { "type": ["string", "null"] },
+        "entry_count": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "repoRelativePath": {
+      "type": "string",
+      "minLength": 1,
+      "description": "A path inside the repository: relative, no '..' segment, no POSIX, drive-letter or UNC root.",
+      "pattern": "^(?![\\\\/])(?![A-Za-z]:)(?!(?:.*[\\\\/])?\\.\\.(?:[\\\\/]|$)).+$"
+    },
+    "entry": {
+      "type": "object",
+      "description": "One bible entry. Writers emit the stable field set below; a human-edited extra field on an entry already in the file is kept as-is, so extra properties are allowed.",
+      "required": ["id", "type", "title", "summary", "confidence"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "type": { "enum": ["context-cache", "learning", "knowledge", "runbook", "user-directive"] },
+        "title": { "type": "string", "minLength": 1 },
+        "summary": { "type": "string", "minLength": 1 },
+        "symbols": { "type": "array", "items": { "type": "string" } },
+        "source_files": { "type": "array", "items": { "type": "string" } },
+        "confidence": { "enum": ["CONFIRMED", "INFERRED", "UNVERIFIED"] },
+        "updated_at": { "type": "string" },
+        "source_file_hashes": {
+          "type": "object",
+          "description": "v3 only: the per-file hash basis (repo-relative path -> hash) the entry was admitted against, copied verbatim (keys sorted) from the exporting KB's stored basis. Absent on an entry carried over from a v1/v2 bible. A reader stores a valid map (non-empty, covering every source_files entry) as the entry's basis exactly; anything else imports basis-less.",
+          "minProperties": 1,
+          "propertyNames": { "$ref": "#/$defs/repoRelativePath" },
+          "additionalProperties": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "entryWithoutHashes": {
+      "allOf": [
+        { "$ref": "#/$defs/entry" },
+        { "not": { "required": ["source_file_hashes"] } }
+      ]
+    }
+  }
+}

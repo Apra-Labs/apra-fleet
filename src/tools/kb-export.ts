@@ -145,7 +145,7 @@ export function compareById(a: { id: string }, b: { id: string }): number {
 
 /**
  * The entries of the bible already on disk, in either shape (legacy bare array
- * or v2 envelope). null when the file is absent or unparseable.
+ * or v2/v3 envelope). null when the file is absent or unparseable.
  */
 export function readBibleEntries(outPath: string): CanonicalEntry[] | null {
   if (!fs.existsSync(outPath)) return null;
@@ -316,7 +316,7 @@ function autoCommitEnabled(): boolean {
 }
 
 // The entry count of the bible ALREADY on disk, read before we overwrite it.
-// Accepts both shapes (legacy bare array, v2 envelope) like entriesUnchanged.
+// Accepts every shape (legacy bare array, v2/v3 envelope) like entriesUnchanged.
 // null means "no comparable prior bible" -- absent file, or unparseable -- in
 // which case there is no shrink to detect and the export is a first write.
 function bibleEntryCount(outPath: string): number | null {
@@ -420,7 +420,7 @@ function byId(a: { id?: unknown }, b: { id?: unknown }): number {
 
 /**
  * Entries of the bible already on disk, as raw objects (never re-shaped, so
- * they are written back byte-for-byte equivalent). Accepts the v2 envelope and
+ * they are written back byte-for-byte equivalent). Accepts the v2/v3 envelope and
  * the legacy bare array. An absent file is an empty bible. A file that exists
  * but cannot be parsed as either shape THROWS: the project export is additive
  * and must never overwrite (and so silently drop) a bible it cannot read.

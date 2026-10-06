@@ -478,6 +478,23 @@ await withSession('B', () => recordHappy('kb_import', 'happy', {
   path: bibleFromA,
 }));
 
+// --- kb_import of the v3 bible: the carried basis travels -------------------
+// Repo A's bible is format v3, so its entry carries source_file_hashes. Repo B
+// now has the cited file with DIFFERENT content: the import stores A's carried
+// hash (never a re-hash of B's file) and the post-import sweep stales it.
+{
+  fs.mkdirSync(path.join(repoB, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(repoB, 'src', 'example.ts'), 'export function exampleFn(x: number): number {\n  return x + 2;\n}\n');
+  const v3Import = await withSession('B', () => recordHappy('kb_import', 'happy-v3-carried-basis', {
+    path: bibleFromA,
+  }));
+  const report = parseEnvelopeText(v3Import);
+  if (!(report?.imported === 1 && report?.rejected === 0 && report?.sweep?.staled === 1)) {
+    failures++;
+    console.log(`  [FAIL] kb_import/happy-v3-carried-basis: expected imported 1, rejected 0, sweep.staled 1, got ${JSON.stringify(report)}`);
+  }
+}
+
 // --- kb_freshness_sweep ---------------------------------------------------
 await recordHappy('kb_freshness_sweep', 'happy', {
 });

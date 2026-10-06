@@ -569,6 +569,28 @@
  */
 
 /**
+ * One entry of the bible file (.fleet/kb-canonical.json) kb_export and
+ * kb_bible_commit write and kb_import reads -- bible format v3, described by
+ * memory-contract/v1/bible/kb-canonical.schema.json. The file itself is
+ * {version: 3, provenance: {commit, branch, entry_count}, entries: KbBibleEntry[]};
+ * readers also accept v2 (same envelope, no hashes) and v1 (a bare entry array).
+ * @typedef {Object} KbBibleEntry
+ * @property {string} id - Entry id (unique within the bible; writers refuse a duplicate id).
+ * @property {string} type - Content type (knowledge, learning, runbook, context-cache, user-directive).
+ * @property {string} title - Entry title.
+ * @property {string} summary - Entry summary.
+ * @property {string[]} symbols - Symbols the entry is about.
+ * @property {string[]} source_files - Repo-relative files the entry cites.
+ * @property {string} confidence - CONFIRMED, INFERRED or UNVERIFIED.
+ * @property {string} updated_at - Promotion (or creation) timestamp.
+ * @property {Object<string, string>} [source_file_hashes] - v3: the per-file hash basis
+ *   (repo-relative path -> hash) the entry was admitted against, copied from the
+ *   exporting KB's stored basis. kb_import stores it as the entry's basis exactly
+ *   (never re-hashing local files); an entry without it imports with no basis and
+ *   is not re-published until re-verified.
+ */
+
+/**
  * @typedef {Object} SetupSshKeyOptions
  * @property {string} [member_id] - UUID of the member
  * @property {string} [member_name] - Friendly name of the member
@@ -972,7 +994,9 @@ export class ApraFleet {
     /**
      * Export the calling session's CONFIRMED KB entries to the canonical bible
      * file and auto-commit it locally (never pushed). Pass baseBranch/baseCommit
-     * to record the target base branch and base commit in provenance.
+     * to record the target base branch and base commit in provenance. Writes
+     * bible format v3: each added project entry is a KbBibleEntry carrying its
+     * source_file_hashes basis; a bible holding a duplicate id is refused.
      * Result JSON: {exported, path, scope, committed}; extract with parseToolJson().
      * The removed scope keys (repo_path, repo, repo_remote_url) are refused
      * with E-SCOPE-KEY-REMOVED before anything is sent.
@@ -985,7 +1009,9 @@ export class ApraFleet {
 
     /**
      * Merge exactly the given confirmed entry ids into the bible at entry level
-     * (existing entries kept), write baseBranch/baseCommit provenance, and make a
+     * (existing entries kept; each merged entry is a v3 KbBibleEntry carrying its
+     * source_file_hashes basis; a bible holding a duplicate id is refused),
+     * write baseBranch/baseCommit provenance, and make a
      * local commit scoped to the bible path. Never pushes; re-running with the
      * same ids after resetting to a newer HEAD re-merges, so a rejected push can
      * be retried. Result JSON: {path, merged, skipped, entry_count, committed};
