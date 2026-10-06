@@ -50,6 +50,44 @@ export const MODEL_PRICING = {
     'fable': { prompt: 15.00, completion: 75.00 }    // Claude Fable 5 (estimate) -- treated as premium tier, same order of magnitude as opus
 };
 
+// Prompt-cache rates (apra-fleet cache-token accounting). Anthropic list
+// pricing (https://docs.anthropic.com/en/docs/about-claude/pricing, prompt
+// caching): a cache read costs 0.1x the base input price, a 5-minute cache
+// write 1.25x. Every row above is a Claude model or seeded from one EXCEPT the
+// gpt-*/gemini-* rows, whose usage never carries Claude's cache fields; those
+// price any cache token at the plain prompt rate (no invented discount).
+// Mirrors src/services/model-pricing.ts on the server.
+export const CACHE_READ_MULTIPLIER = 0.1;
+export const CACHE_WRITE_MULTIPLIER = 1.25;
+const NON_CLAUDE_KEY_RE = /^(gpt-|gemini-)/;
+
+/**
+ * @param {string} key a MODEL_PRICING key
+ * @returns {{ cacheRead: number, cacheWrite: number }} $/1M cache rates
+ */
+export function cacheRatesFor(key) {
+    const row = MODEL_PRICING[key];
+    if (NON_CLAUDE_KEY_RE.test(key)) return { cacheRead: row.prompt, cacheWrite: row.prompt };
+    return { cacheRead: row.prompt * CACHE_READ_MULTIPLIER, cacheWrite: row.prompt * CACHE_WRITE_MULTIPLIER };
+}
+
+/**
+ * Every billed token count in an execute_prompt usage block: input, output,
+ * and the two prompt-cache counts (reported separately from input_tokens;
+ * absent = 0). usage.total_tokens is deliberately NOT this -- it stays
+ * input+output for context admission.
+ * @param {{ input_tokens?: number, output_tokens?: number, total_tokens?: number, cache_read_input_tokens?: number, cache_creation_input_tokens?: number }|null|undefined} usage
+ * @returns {number}
+ */
+export function billedTokens(usage) {
+    if (!usage) return 0;
+    // total_tokens (input+output) when reported, else the two parts.
+    const base = typeof usage.total_tokens === 'number'
+        ? usage.total_tokens
+        : (usage.input_tokens || 0) + (usage.output_tokens || 0);
+    return base + (usage.cache_read_input_tokens || 0) + (usage.cache_creation_input_tokens || 0);
+}
+
 // Tier-band keys are exact-match only (see calculateCost()) -- excluded
 // from the substring scan so a near-miss string ('standard-tier') never
 // silently matches a real tier keyword ('standard').
@@ -57,16 +95,17 @@ const TIER_BAND_KEYS = new Set(['cheap', 'standard', 'premium']);
 
 /**
  * @param {string} modelName
- * @param {{ input_tokens?: number, output_tokens?: number }|null} usage
+ * @param {{ input_tokens?: number, output_tokens?: number, cache_read_input_tokens?: number, cache_creation_input_tokens?: number }|null} usage
  * @returns {number|null} the estimated cost in USD, or `null` when usage is
  *   missing/empty, or when `modelName` doesn't match any entry in
  *   MODEL_PRICING (unknown models are never silently priced with a default
  *   -- see apra-fleet-unw.4).
  */
 export function calculateCost(modelName, usage) {
-    if (!usage || (!usage.input_tokens && !usage.output_tokens)) return null;
+    if (!usage || (!usage.input_tokens && !usage.output_tokens && !usage.cache_read_input_tokens && !usage.cache_creation_input_tokens)) return null;
 
     let pricing = null;
+    let pricingKey = null;
     if (modelName) {
         const lower = modelName.toLowerCase();
         // Exact match first (apra-fleet-dv5.2): a tier band ('cheap',
@@ -79,21 +118,26 @@ export function calculateCost(modelName, usage) {
         // 'haiku'), where a caller legitimately passes a longer real model
         // string that happens to contain a known short concrete-id key.
         if (Object.prototype.hasOwnProperty.call(MODEL_PRICING, lower)) {
-            pricing = MODEL_PRICING[lower];
+            pricingKey = lower;
         } else {
-            const key = Object.keys(MODEL_PRICING)
+            pricingKey = Object.keys(MODEL_PRICING)
                 .filter((k) => !TIER_BAND_KEYS.has(k))
-                .find((k) => lower.includes(k));
-            if (key) pricing = MODEL_PRICING[key];
+                .find((k) => lower.includes(k)) || null;
         }
+        if (pricingKey) pricing = MODEL_PRICING[pricingKey];
     }
     if (!pricing) return null;
 
     const pTokens = usage.input_tokens || 0;
     const cTokens = usage.output_tokens || 0;
 
+    const crTokens = usage.cache_read_input_tokens || 0;
+    const cwTokens = usage.cache_creation_input_tokens || 0;
+    const { cacheRead, cacheWrite } = cacheRatesFor(pricingKey);
+
     const promptCost = (pTokens / 1000000) * pricing.prompt;
     const compCost = (cTokens / 1000000) * pricing.completion;
+    const cacheCost = (crTokens / 1000000) * cacheRead + (cwTokens / 1000000) * cacheWrite;
 
-    return promptCost + compCost;
+    return promptCost + compCost + cacheCost;
 }

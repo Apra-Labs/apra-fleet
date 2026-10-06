@@ -917,7 +917,18 @@ export class FleetWorkflow extends EventEmitter {
                 if (entry && typeof entry.promptPrice === 'number' && typeof entry.completionPrice === 'number') {
                     const pTokens = usage.input_tokens || 0;
                     const cTokens = usage.output_tokens || 0;
-                    const cost = (pTokens / 1_000_000) * entry.promptPrice + (cTokens / 1_000_000) * entry.completionPrice;
+                    // Prompt-cache tokens are billed separately from (not inside)
+                    // input_tokens and must be priced too, or a cache-heavy run
+                    // is undercounted several-fold. An older server whose
+                    // pricing entry has no cache rates prices them at the plain
+                    // prompt rate: an over- rather than under-estimate, so a
+                    // budget ceiling still holds.
+                    const crTokens = usage.cache_read_input_tokens || 0;
+                    const cwTokens = usage.cache_creation_input_tokens || 0;
+                    const cacheReadPrice = typeof entry.cacheReadPrice === 'number' ? entry.cacheReadPrice : entry.promptPrice;
+                    const cacheWritePrice = typeof entry.cacheWritePrice === 'number' ? entry.cacheWritePrice : entry.promptPrice;
+                    const cost = (pTokens / 1_000_000) * entry.promptPrice + (cTokens / 1_000_000) * entry.completionPrice
+                        + (crTokens / 1_000_000) * cacheReadPrice + (cwTokens / 1_000_000) * cacheWritePrice;
                     budget._pricedReal++;
                     return cost;
                 }
