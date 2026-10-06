@@ -114,6 +114,8 @@ describe('uninstall', () => {
       NODE_MODULES_DIR: config.NODE_MODULES_DIR,
       SCHEMAS_DIR: config.SCHEMAS_DIR,
       WORKFLOWS_DIR: config.WORKFLOWS_DIR,
+      FLEET_DATA_DIR: path.join(config.FLEET_BASE, 'data'),
+      FLEET_KEY_PATH: path.join(config.FLEET_BASE, 'fleet.key'),
     });
     expect(actual).toBe(normalizeCommandSurfaceOutput(expected));
   });
