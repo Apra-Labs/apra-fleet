@@ -67,13 +67,40 @@ function parentIdOf(bead) {
     return null;
 }
 
-/** Flatten to a single ASCII line so log and markdown rendering cannot break. */
+/**
+ * Flatten to a single ASCII line so log and markdown rendering cannot break,
+ * and neutralise shell-meaningful characters. Bead titles and especially
+ * rejected newTask titles are untrusted text -- a rejected finding was
+ * rejected precisely because it failed the safe-character allowlist -- and
+ * these lines end up inside the PR-body payload of a dispatched command. The
+ * body is JSON-encoded and quoted per shell there, but no rejected payload
+ * should reach a command string at all, so '$', backticks and backslashes are
+ * mapped away here rather than trusted to every downstream quoting layer.
+ */
 function oneLine(text, max = 160) {
     const flat = String(text ?? '')
         .replace(/[^\x20-\x7E]+/g, ' ')
+        .replace(/`/g, "'")
+        .replace(/\$/g, '')
+        .replace(/\\/g, '/')
         .replace(/\s+/g, ' ')
         .trim();
     return flat.length > max ? `${flat.slice(0, max - 3)}...` : flat;
+}
+
+/**
+ * A short, fixed-vocabulary reason for a rejected finding. The validator's own
+ * reason text embeds the rejected value verbatim (and its regex), so it is
+ * summarised by which field failed; the verbatim finding stays in the parent
+ * bead's notes and the run log, where the engine already parks it.
+ */
+function rejectionSummary(reason) {
+    const r = String(reason ?? '').trim().toLowerCase();
+    let what = 'failed newTask validation';
+    if (r.startsWith('priority')) what = 'invalid priority';
+    else if (r.startsWith('title')) what = 'title failed the safe-character check';
+    else if (r.startsWith('description')) what = 'description failed validation';
+    return `${what}; verbatim finding is in the parent bead notes`;
 }
 
 function toTime(v) {
@@ -201,7 +228,7 @@ export function computeOwedTriage({
             return {
                 id: null,
                 title: title || '(untitled finding)',
-                reason: oneLine(r.reason) || 'rejected by newTask validation',
+                reason: rejectionSummary(r.reason),
                 cycle: r.cycle ?? null,
             };
         });
@@ -224,14 +251,22 @@ const SECTIONS = [
 
 /**
  * Renders a triage as plain-text ASCII lines for the run log and a PR body.
- * An empty (or missing) triage renders as [].
+ * An empty (or missing) triage renders as [], unless it is flagged
+ * `incomplete`, which always renders a summary line.
  *
  * @param {ReturnType<typeof computeOwedTriage>} triage
  * @returns {string[]}
  */
 export function formatOwedTriageLines(triage) {
-    if (!triage || !(Number(triage.total) > 0)) return [];
-    const lines = [`owed triage: ${triage.total} item(s) need a human decision`];
+    if (!triage) return [];
+    // `incomplete` is set by a caller whose bead read failed: the lists then
+    // hold only what was knowable, so the summary must say so rather than let
+    // an empty list read as "nothing owed".
+    const incomplete = triage.incomplete === true;
+    if (!incomplete && !(Number(triage.total) > 0)) return [];
+    const lines = [incomplete
+        ? `owed triage: INCOMPLETE -- the sprint's beads could not be read; ${Number(triage.total) || 0} item(s) known, more may be owed`
+        : `owed triage: ${triage.total} item(s) need a human decision`];
     for (const [key, label] of SECTIONS) {
         const items = Array.isArray(triage[key]) ? triage[key] : [];
         if (items.length === 0) continue;

