@@ -435,6 +435,12 @@ $merged | ConvertTo-Json -Depth 99 | Set-Content -Path $p -NoNewline;
     return `try { $u = git -C "${f}" remote get-url origin 2>$null; if (-not $u) { $u = git -C "${f}" config --get remote.origin.url 2>$null }; if ($u) { Write-Output $u } } catch {}`;
   }
 
+  gitRepoAccessProbe(folder: string): string {
+    const f = escapeWindowsArg(folder);
+    // 2>&1 makes git's stderr observable; printed only on a non-zero exit.
+    return `try { $o = (git -C "${f}" rev-parse --git-dir 2>&1 | Out-String); if ($LASTEXITCODE -ne 0) { Write-Output $o } } catch {}`;
+  }
+
   // --- Process management ---
 
   killPid(pid: number): string {
