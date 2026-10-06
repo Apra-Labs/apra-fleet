@@ -1214,6 +1214,11 @@ warning; resolution then falls through to the private/token fallback as if
 | `createIfMissing` | `boolean?` | Default `true` (mint-or-reuse the private/token fallback). Pass `false` for a read-only probe: no mkdir, no write, no mode healing -- returns `null` if no well-formed token exists at either source. |
 
 Returns `{ token, path, source: 'fleet-key' | 'private-token', aclVerified, created } | null`.
+`aclVerified` is `true` only when the file's protection was proved: on POSIX,
+for the fleet-key source, a stat must show the key is owner-only (no
+group/other bits -- a 0644 `fleet.key` reports `false` and is never chmod-ed
+by this reader); for the private-token source, `loadOrCreateToken()`'s 0600
+enforcement. Always `false` on Windows.
 
 ### `loadOrCreateToken(dir)`
 

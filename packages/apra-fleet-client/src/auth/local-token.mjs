@@ -146,6 +146,23 @@ function enforcePosixTokenMode(file) {
 }
 
 /**
+ * Is `file` provably owner-only on POSIX? True only when a stat shows no
+ * group/other permission bits (0600, 0400, ...). Read-only: never chmods, so
+ * the shared fleet.key -- owned by src/services/jwt.ts, not this module -- is
+ * never modified by a reader. A file that vanished or cannot be stat'ed is
+ * unproven (false). Callers handle Windows separately (no POSIX mode bits).
+ * @param {string} file
+ * @returns {boolean}
+ */
+function isPosixOwnerOnly(file) {
+    try {
+        return (fs.statSync(file).mode & 0o077) === 0;
+    } catch {
+        return false;
+    }
+}
+
+/**
  * Mint the fallback token, or reuse the one already on disk.
  *
  * Idempotent: repeated calls against the same `dir` always return the same
@@ -295,7 +312,13 @@ export function readLocalToken(dataDir, opts = {}) {
     if (raw !== null) {
         const trimmed = raw.trim();
         if (TOKEN_PATTERN.test(trimmed)) {
-            return { token: trimmed, path: fleetKeyPath, source: 'fleet-key', aclVerified: !isWindows(), created: false };
+            // aclVerified is EARNED here exactly as loadOrCreateToken() earns it
+            // for private/token: only a stat proving the key is owner-only
+            // counts. A world/group-readable fleet.key (e.g. 0644) reports
+            // false so callers can surface TOKEN_ACL_UNVERIFIED_WARNING; the
+            // key is never chmod-healed from this reader. Windows: always false.
+            const aclVerified = !isWindows() && isPosixOwnerOnly(fleetKeyPath);
+            return { token: trimmed, path: fleetKeyPath, source: 'fleet-key', aclVerified, created: false };
         }
         logger.warn(
             `[local-token] WARNING: fleet.key at ${fleetKeyPath} is malformed (expected ${TOKEN_BYTES * 2} lowercase-hex chars) -- `

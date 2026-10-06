@@ -42,7 +42,9 @@
 // that inheritance from here, so we do NOT claim it: the returned descriptor
 // carries `aclVerified: false`, which GET /api/health surfaces later as the
 // TOKEN_ACL_UNVERIFIED_WARNING string. POSIX returns `aclVerified: true` because
-// the mode assertion below actually proved it.
+// the mode assertion below actually proved it. The fleet.key source earns it
+// the same way: true on POSIX only when a stat shows the key is owner-only (a
+// 0644 fleet.key reports false; the shared key is never chmod-ed by a reader).
 //
 // The platform branch is on `process.platform`, never on which shell/tools are
 // present: node under Git Bash on Windows still reports 'win32'.
