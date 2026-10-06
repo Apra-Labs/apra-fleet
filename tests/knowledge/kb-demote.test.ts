@@ -244,6 +244,25 @@ describe('kb_demote refuses before any write', () => {
     expect(snapshot(id)).toEqual(before);
   });
 
+  it('an ABSOLUTE evidence path pointing outside the provider\'s anchor', async () => {
+    const id = await confirmedEntry();
+    const before = snapshot(id);
+
+    // A real file OUTSIDE the anchor, named by an ABSOLUTE path. resolveBasisFile
+    // passes an absolute path through unchanged and it exists on disk, so if the
+    // guard were reverted to the old '..'-segment-only check (which an absolute
+    // path with no '..' segment never trips), this would resolve, pass the
+    // is-a-file check and demote would SUCCEED -- turning this .rejects into a
+    // failing assertion. That is the regression this case guards against.
+    const absoluteOutside = path.join(tmp, 'outside.ts');
+    expect(path.isAbsolute(absoluteOutside)).toBe(true);
+    expect(fs.existsSync(absoluteOutside)).toBe(true);
+
+    await expect(provider.demote(id, REASON, [absoluteOutside]))
+      .rejects.toThrow(/^E-DEMOTE-EVIDENCE-UNRESOLVED: .*is absolute or traverses out of the anchor/);
+    expect(snapshot(id)).toEqual(before);
+  });
+
   it('an evidence path that resolves to a directory, not a file', async () => {
     const id = await confirmedEntry();
     const before = snapshot(id);
