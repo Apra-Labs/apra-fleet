@@ -187,10 +187,15 @@ Additional response-shape findings on the `kb_*` side:
 
 ## 4. Provider method surface
 
-### 4.1 MemoryProvider interface -- declared methods (12)
+### 4.1 MemoryProvider interface -- declared methods (15 declared, 14 documented)
 
-Declared in `src/services/knowledge/types.ts` (line 230). The "tools routing
+Declared in `src/services/knowledge/types.ts` (line 276). The "tools routing
 through it" column lists only the `kb_*`/`code_*` tools in this surface.
+
+Count discipline: the interface declares FIFTEEN methods; the table below
+documents fourteen. The one undocumented declaration is `discard` -- a
+pre-existing gap in this inventory, not introduced by the tombstone lane, and
+recorded here rather than silently absorbed into the header count.
 
 | # | Method | Signature | Tools routing through it | Effect | Idempotent |
 |---|--------|-----------|--------------------------|--------|------------|
@@ -207,6 +212,7 @@ through it" column lists only the `kb_*`/`code_*` tools in this surface.
 | P-10 | `stats` | `stats(opts?: {symbols?}): Promise<ProviderStats>` | `kb_stats` | read, explicitly NO telemetry bump | yes |
 | P-11 | `touch` | `touch(ids: string[]): Promise<number>` | `kb_session_prime` | telemetry write (`use_count`/`last_accessed`), existence-tolerant | no (counter advances) |
 | P-12 | `relatedClaims` | `relatedClaims(ids: string[], limit?): Promise<KBEntry[]>` | `kb_query` (only when `expand_related` is true) | read | yes |
+| P-14 | `getLiveConfirmedState` | `getLiveConfirmedState(ids: string[]): Map<string, boolean>` -- SYNCHRONOUS (non-Promise); per id that EXISTS locally, whether the row is LIVE CONFIRMED (CONFIRMED and not stale, not superseded, not flagged_for_review). An id with NO local row is ABSENT from the map, so "I hold a row I no longer trust" is distinguishable from "I have never seen this id". Reads the row directly rather than through `list()`, for the same reason as X-9 | `kb_session_prime` (project-bible cold seed, `src/tools/kb-session-prime.ts:339`) | read, no telemetry bump | yes |
 
 ### 4.2 Provider members reached by tools but NOT declared on MemoryProvider (9 methods + 1 property)
 
@@ -272,9 +278,11 @@ back to select a provider class. So every one of the divergences below is
 currently **dead code**, not a live behavioral difference an agent can hit --
 this is itself the coverage finding this section exists to record (F-10).
 
-**4.4.1 -- The 12 `MemoryProvider` interface methods (section 4.1): both classes
-implement all 12 (TypeScript enforces this via `implements MemoryProvider`).
-Per-method comparison of what each one actually DOES:**
+**4.4.1 -- The `MemoryProvider` interface methods (section 4.1): both classes
+implement ALL of them (TypeScript enforces this via `implements MemoryProvider`).
+Per-method comparison of what each one actually DOES. Same count discipline as
+4.1: fifteen are declared, thirteen are compared below -- `demote` (P-13) and
+`discard` have no row here yet, a pre-existing gap recorded rather than hidden:**
 
 | # | Method | SqliteProvider (section 4.1) | HttpKbProvider (`src/services/knowledge/http-provider.ts`) | Divergence | Verdict class |
 |---|--------|-------------------------------|--------------------------------------------------------------|------------|----------------|
@@ -290,10 +298,11 @@ Per-method comparison of what each one actually DOES:**
 | P-10 | `stats` | read, full computation | hardcoded not-supported result (already documented as E-STATS-UNSUPPORTED in section 5.1) | confirmed consistent with section 5.1; no new finding | documented not-supported degradation (E-STATS-UNSUPPORTED, section 5.1) |
 | P-11 | `touch` | telemetry write | ALWAYS delegates to `this.fallback.touch(ids)`; catches and swallows any error, returning `0` | no remote telemetry route exists; comment in the source explicitly says a telemetry write must never fail a prime | different signature/behavior |
 | P-12 | `relatedClaims` | read | ALWAYS delegates to `this.fallback.relatedClaims(ids, limit)`; catches and swallows any error, returning `[]` | no remote route exists; same never-fail rationale as `touch` | different signature/behavior |
+| P-14 | `getLiveConfirmedState` | read, direct row lookup | ALWAYS delegates to `this.fallback.getLiveConfirmedState(ids)` (`http-provider.ts:262-264`) -- no remote route exists | same pure pass-through shape as P-6/P-8/P-11/P-12: the cold seed's liveness verdict is computed from the EMBEDDED local SQLite rows even when the remote server is reachable, so an HTTP-backed clone would judge trust against local state only | different signature/behavior |
 
-Pattern across P-6, P-8, P-11, P-12: four of the twelve interface methods on
-`HttpKbProvider` have NO remote code path whatsoever -- they are pure
-pass-throughs to the embedded `fallback: SqliteProvider`, connectivity
+Pattern across P-6, P-8, P-11, P-12, P-14: five of the thirteen interface methods
+compared above on `HttpKbProvider` have NO remote code path whatsoever -- they are
+pure pass-throughs to the embedded `fallback: SqliteProvider`, connectivity
 notwithstanding. Only `capture`, `query`, `context`, `invalidate`, and `prime`
 (five methods) actually attempt an HTTP request first.
 
