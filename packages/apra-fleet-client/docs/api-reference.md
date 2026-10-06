@@ -288,7 +288,12 @@ session is member-scoped whatever the folder or user config says; other MCP
 servers stay available (`--strict-mcp-config` is not used). A remote member
 gets it only while its recorded `fleetMcp` says its own server answers a
 member session; otherwise, or when the file cannot be written, the session
-runs with its own MCP config (the per-folder entry).
+runs with its own MCP config (the per-folder entry). The entry carries
+`alwaysLoad: true` when the member's claude CLI is at or above the provider's
+minimum version (probed per member, cached for 10 minutes), so the session's
+`kb_*`/`code_*` tools are loaded from the first turn instead of being deferred
+behind tool search. When the CLI is older or its version cannot be read, the
+file is written without the key and the dispatch logs a WARN naming the cause.
 
 | Field | Type | Notes |
 |---|---|---|

@@ -249,6 +249,22 @@ export class ClaudeProvider implements ProviderAdapter {
     return `--mcp-config ${posix ? quotePosixPath(absPath) : quotePwshPath(absPath.replace(/\//g, '\\'))}`;
   }
 
+  /**
+   * Claude Code defers MCP tools behind its tool-search tool, so a role
+   * session would have to discover kb_* / code_* before calling them. A
+   * `--mcp-config` server entry with `alwaysLoad: true` keeps that server's
+   * tools loaded from the first turn (per server, so other servers keep
+   * their deferral). The non-deferral mechanism therefore lives in the config
+   * file the --mcp-config flag names -- no env var or extra flag in the
+   * member command string. Relied on: Claude Code 2.1.291 (verified that its
+   * --mcp-config schema accepts alwaysLoad and that the key is present in
+   * 2.1.288-2.1.291); 2.1.288 is the oldest version verified, so it is the
+   * floor. Older CLIs get the config without the key and a dispatch WARN.
+   */
+  mcpAlwaysLoadMinVersion(): string {
+    return '2.1.288';
+  }
+
   skipPermissionsFlag(): string {
     return '--dangerously-skip-permissions';
   }

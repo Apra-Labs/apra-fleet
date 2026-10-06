@@ -405,6 +405,12 @@ export interface ProviderAdapter {
    *  is variadic and would swallow a following positional prompt. Optional:
    *  providers without one never get a session config. */
   mcpConfigFlag?(absPath: string, posix: boolean): string;
+  /** Minimum CLI version whose per-session MCP config accepts an always-load
+   *  option that keeps the server's tools out of tool-search deferral (Claude:
+   *  the `alwaysLoad` server key). The dispatcher probes the member's CLI
+   *  version and writes the option only at or above this, logging a WARN
+   *  otherwise. Optional: providers without one never get the option. */
+  mcpAlwaysLoadMinVersion?(): string;
 
   // Permission bypass flag
   skipPermissionsFlag(): string;

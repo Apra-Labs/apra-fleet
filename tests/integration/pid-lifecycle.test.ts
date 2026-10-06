@@ -4,6 +4,7 @@ import { makeTestLocalAgent, backupAndResetRegistry, restoreRegistry, resultText
 import { addAgent } from '../../src/services/registry.js';
 import { executePrompt } from '../../src/tools/execute-prompt.js';
 import { getStoredPid, clearStoredPid, setStoredPid } from '../../src/utils/agent-helpers.js';
+import { resetCliVersionCache } from '../../src/services/session-mcp-config.js';
 import type { Agent, SSHExecResult } from '../../src/types.js';
 
 const mockExecCommand = vi.fn<(cmd: string, timeout?: number, maxTotalMs?: number, onPidCaptured?: (pid: number) => void) => Promise<SSHExecResult>>();
@@ -42,6 +43,9 @@ vi.mock('../../src/services/strategy.js', async (importOriginal) => {
   };
 });
 
+/** The member CLI version probe's answer (a supported claude CLI). */
+const CLI_VERSION = { stdout: '2.1.291 (Claude Code)\n', stderr: '', code: 0 };
+
 describe('PID lifecycle — integration (T12)', () => {
   let memberId: string;
 
@@ -49,6 +53,7 @@ describe('PID lifecycle — integration (T12)', () => {
     backupAndResetRegistry();
     vi.clearAllMocks();
     vi.useFakeTimers();
+    resetCliVersionCache();
   });
 
   afterEach(() => {
@@ -64,6 +69,7 @@ describe('PID lifecycle — integration (T12)', () => {
 
     // First call: emits FLEET_PID:1111, then fails with a non-retryable error.
     // PID 1111 is stored by the real extractAndStorePid but NOT cleared (no success path).
+    mockExecCommand.mockResolvedValueOnce(CLI_VERSION); // member CLI version probe (cached after this)
     mockExecCommand.mockResolvedValueOnce({
       stdout: 'FLEET_PID:1111\n',
       stderr: 'something unexpected happened',
@@ -87,12 +93,13 @@ describe('PID lifecycle — integration (T12)', () => {
     const second = await executePrompt({ member_id: memberId, prompt: 'second', resume: false, timeout_s: 5 });
     expect(resultText(second)).toContain('ok');
 
-    // 3 total calls:
-    //   calls[0] = first executePrompt's main cmd (returns FLEET_PID:1111 + non-retryable error)
-    //   calls[1] = second executePrompt's kill cmd (kills 1111)
-    //   calls[2] = second executePrompt's main cmd (success)
-    expect(mockExecCommand).toHaveBeenCalledTimes(3);
-    expect(mockExecCommand.mock.calls[1][0]).toContain('1111');
+    // 4 total calls:
+    //   calls[0] = first executePrompt's member CLI version probe (session MCP config)
+    //   calls[1] = first executePrompt's main cmd (returns FLEET_PID:1111 + non-retryable error)
+    //   calls[2] = second executePrompt's kill cmd (kills 1111)
+    //   calls[3] = second executePrompt's main cmd (success; the version is cached)
+    expect(mockExecCommand).toHaveBeenCalledTimes(4);
+    expect(mockExecCommand.mock.calls[2][0]).toContain('1111');
   });
 
   it('PID is cleared after successful completion', async () => {
@@ -101,6 +108,7 @@ describe('PID lifecycle — integration (T12)', () => {
     addAgent(member);
 
     // Command emits FLEET_PID:2222 then succeeds; PID should be cleared on the success path
+    mockExecCommand.mockResolvedValueOnce(CLI_VERSION); // member CLI version probe
     mockExecCommand.mockResolvedValueOnce({
       stdout: 'FLEET_PID:2222\n' + JSON.stringify({ result: 'done', session_id: 's1' }),
       stderr: '',
@@ -122,6 +130,7 @@ describe('PID lifecycle — integration (T12)', () => {
 
     mockExecCommand
       .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })   // kill pre-stored 3333
+      .mockResolvedValueOnce(CLI_VERSION)                             // member CLI version probe
       .mockResolvedValueOnce({                                        // main cmd: emits FLEET_PID:4444 + 500
         stdout: 'FLEET_PID:4444\n',
         stderr: 'HTTP 500 Internal Server Error',
@@ -142,11 +151,13 @@ describe('PID lifecycle — integration (T12)', () => {
 
     // Call sequence:
     //   calls[0] = kill(3333)        — pre-stored PID from prior run
-    //   calls[1] = main cmd          — emits FLEET_PID:4444 + 500 error
-    //   calls[2] = kill(4444)        — PID from the failing main cmd, killed before retry
-    //   calls[3] = retry cmd         — success
-    expect(mockExecCommand).toHaveBeenCalledTimes(4);
+    //   calls[1] = version probe     -- member CLI version (session MCP config)
+    //   calls[2] = main cmd          -- emits FLEET_PID:4444 + 500 error
+    //   calls[3] = kill(4444)        -- PID from the failing main cmd, killed before retry
+    //   calls[4] = retry cmd         -- success
+    expect(mockExecCommand).toHaveBeenCalledTimes(5);
     expect(mockExecCommand.mock.calls[0][0]).toContain('3333');
-    expect(mockExecCommand.mock.calls[2][0]).toContain('4444');
+    expect(mockExecCommand.mock.calls[1][0]).toContain('--version');
+    expect(mockExecCommand.mock.calls[3][0]).toContain('4444');
   });
 });

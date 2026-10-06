@@ -128,6 +128,10 @@ function step0Violations(content, { heading, allowed, outputFields }) {
     if (!blockOtherwiseRe(heading).test(flat)) v.push(`missing block-otherwise instruction naming "${heading}"`);
     if (!FALLBACK_RE.test(flat)) v.push('missing conditional fallback (use the block if present, otherwise continue without KB)');
     if (!NEVER_BLOCKED_RE.test(flat)) v.push('missing never-report-blocked instruction');
+    // Claude Code may defer MCP tools behind its tool-search tool even when the
+    // session config asks for them to be always loaded (older CLI, per-folder
+    // fallback entry), so every role must say how to load deferred tools.
+    if (!DEFERRED_LOAD_RE.test(flat)) v.push('missing deferred-tool loading rule');
     if (/\bToolSearch\b/.test(stripFrontmatter(content))) v.push('instructs a ToolSearch tool-discovery probe');
 
     for (const s of sentences(content)) {
@@ -198,6 +202,7 @@ test('a pre-rewrite role prompt (fixture copy) fails the contract on every forbi
     assert.ok(has(/missing tools-when-present/), `expected missing tools-when-present, got ${JSON.stringify(violations)}`);
     assert.ok(has(/missing block-otherwise/), 'expected missing block-otherwise');
     assert.ok(has(/missing conditional fallback/), 'expected missing conditional fallback');
+    assert.ok(has(/missing deferred-tool loading rule/), 'expected missing deferred-tool loading rule');
     assert.ok(has(/instructs kb_feedback/), 'expected kb_feedback');
     assert.ok(has(/direct kb_capture/), 'expected direct kb_capture');
     assert.ok(has(/repo_path on a kb_\* call/), 'expected repo_path');

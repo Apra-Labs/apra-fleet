@@ -18,6 +18,11 @@ import {
   perFolderMcpEntryNeeded,
   writeSessionMcpConfig,
   removeLocalSessionMcpConfig,
+  resolveSessionMcpAlwaysLoad,
+  parseCliVersion,
+  cliVersionAtLeast,
+  resetCliVersionCache,
+  CLI_VERSION_CACHE_TTL_MS,
   REMOTE_SESSION_MCP_FILE,
 } from '../src/services/session-mcp-config.js';
 import { makeTestAgent, makeTestLocalAgent } from './test-helpers.js';
@@ -229,3 +234,117 @@ describe('writeSessionMcpConfig', () => {
   });
 });
 
+describe('non-deferral of the member kb/code tools (alwaysLoad)', () => {
+  const ok = (stdout: string, code = 0): SSHExecResult => ({ stdout, stderr: '', code });
+
+  it('config body carries alwaysLoad only when asked', () => {
+    const on = JSON.parse(sessionMcpConfigContent({ id: ID, agentType: 'remote' }, { alwaysLoad: true }));
+    expect(on.mcpServers['apra-fleet']).toEqual({ type: 'http', url: `http://localhost:${BUILTIN_DEFAULT_PORT}/mcp?member=${ID}`, alwaysLoad: true });
+    for (const off of [sessionMcpConfigContent({ id: ID, agentType: 'remote' }), sessionMcpConfigContent({ id: ID, agentType: 'remote' }, { alwaysLoad: false })]) {
+      expect(JSON.parse(off).mcpServers['apra-fleet']).not.toHaveProperty('alwaysLoad');
+    }
+  });
+
+  it('only claude names an always-load floor; codex, copilot, agy, opencode and none do not', () => {
+    expect(claude.mcpAlwaysLoadMinVersion?.()).toBe('2.1.288');
+    for (const name of ['codex', 'copilot', 'agy', 'opencode', 'none'] as const) {
+      expect(getProvider(name).mcpAlwaysLoadMinVersion).toBeUndefined();
+    }
+  });
+
+  it('the mechanism adds nothing to the command line but the --mcp-config flag: no $VAR, backtick or ~', () => {
+    const cfg = { linux: `/home/u/repo/${REMOTE_SESSION_MCP_FILE}`, pwsh7: `C:\\Users\\b\\repo\\${REMOTE_SESSION_MCP_FILE}`, gitbash: `C:/Users/b/repo/${REMOTE_SESSION_MCP_FILE}` };
+    for (const [os, shell, path_, folder] of [
+      ['linux', undefined, cfg.linux, '/home/u/repo'],
+      ['windows', 'pwsh7', cfg.pwsh7, 'C:\\Users\\b\\repo'],
+      ['windows', 'powershell5', cfg.pwsh7, 'C:\\Users\\b\\repo'],
+      ['windows', 'gitbash', cfg.gitbash, 'C:/Users/b/repo'],
+    ] as const) {
+      const cmds = getOsCommands(os, shell);
+      const without = cmds.buildAgentPromptCommand(claude, { ...baseOpts, folder });
+      const withCfg = cmds.buildAgentPromptCommand(claude, { ...baseOpts, folder, mcpConfigPath: path_ });
+      // the only difference is the flag naming the file that carries alwaysLoad
+      const flag = ` --mcp-config "${path_}"`;
+      expect(withCfg.replace(flag, '')).toBe(without);
+      expect(flag).not.toMatch(/[$`~]/);
+      expect(withCfg).not.toMatch(/ENABLE_TOOL_SEARCH|alwaysLoad/);
+    }
+  });
+
+  it('commands for the other providers are unchanged by mcpConfigPath (they have no session config flag)', () => {
+    for (const name of ['codex', 'copilot', 'agy', 'opencode'] as const) {
+      const p = getProvider(name);
+      for (const [os, shell, folder] of [['linux', undefined, '/x'], ['windows', 'pwsh7', 'C:\\x'], ['windows', 'gitbash', 'C:/x']] as const) {
+        const cmds = getOsCommands(os, shell);
+        const opts = { ...baseOpts, folder, projectId: 'proj-1' };
+        expect(cmds.buildAgentPromptCommand(p, { ...opts, mcpConfigPath: '/x/f.json' })).toBe(cmds.buildAgentPromptCommand(p, opts));
+      }
+    }
+  });
+
+  it('version parsing and comparison', () => {
+    expect(parseCliVersion('2.1.291 (Claude Code)\n')).toBe('2.1.291');
+    expect(parseCliVersion('claude: not found')).toBeUndefined();
+    expect(cliVersionAtLeast('2.1.291', '2.1.288')).toBe(true);
+    expect(cliVersionAtLeast('2.1.288', '2.1.288')).toBe(true);
+    expect(cliVersionAtLeast('2.1.100', '2.1.288')).toBe(false);
+    expect(cliVersionAtLeast('3.0.0', '2.1.288')).toBe(true);
+    expect(cliVersionAtLeast('2.0.999', '2.1.288')).toBe(false);
+  });
+
+  it('supported CLI: alwaysLoad, no warning; the version is probed once per member within the TTL, then again', async () => {
+    resetCliVersionCache();
+    let t = 1_000;
+    const calls: string[] = [];
+    const exec = async (cmd: string) => { calls.push(cmd); return ok('2.1.291 (Claude Code)\n'); };
+    expect(await resolveSessionMcpAlwaysLoad({ id: ID }, '2.1.288', 'claude --version 2>&1', exec, () => t)).toEqual({ alwaysLoad: true });
+    t += CLI_VERSION_CACHE_TTL_MS - 1;
+    await resolveSessionMcpAlwaysLoad({ id: ID }, '2.1.288', 'claude --version 2>&1', exec, () => t);
+    expect(calls).toEqual(['claude --version 2>&1']);
+    t += 2;
+    await resolveSessionMcpAlwaysLoad({ id: ID }, '2.1.288', 'claude --version 2>&1', exec, () => t);
+    expect(calls).toHaveLength(2);
+  });
+
+  it('WARN causes: CLI too old, version unreadable (non-zero exit, no version text, exec throws), no provider option', async () => {
+    const run = async (exec: (c: string) => Promise<SSHExecResult>, min: string | undefined = '2.1.288', noFloor = false) => {
+      resetCliVersionCache();
+      return resolveSessionMcpAlwaysLoad({ id: ID }, noFloor ? undefined : min, 'claude --version 2>&1', exec);
+    };
+    const old = await run(async () => ok('2.1.100 (Claude Code)'));
+    expect(old.alwaysLoad).toBe(false);
+    expect(old.warning).toMatch(/member CLI 2\.1\.100 is older than 2\.1\.288/);
+    for (const exec of [
+      async () => ok('2.1.291 (Claude Code)', 1),
+      async () => ok('command not found'),
+      async () => { throw new Error('ssh down'); },
+    ]) {
+      const r = await run(exec);
+      expect(r.alwaysLoad).toBe(false);
+      expect(r.warning).toMatch(/version could not be determined.*needs >= 2\.1\.288/);
+    }
+    const none = await run(async () => ok('2.1.291'), undefined, true);
+    expect(none.alwaysLoad).toBe(false);
+    expect(none.warning).toMatch(/no MCP always-load option/);
+  });
+
+  it('a failed probe is not cached: the next dispatch probes again', async () => {
+    resetCliVersionCache();
+    let n = 0;
+    const exec = async () => { n++; return n === 1 ? ok('', 1) : ok('2.1.291'); };
+    expect((await resolveSessionMcpAlwaysLoad({ id: ID }, '2.1.288', 'v', exec)).alwaysLoad).toBe(false);
+    expect((await resolveSessionMcpAlwaysLoad({ id: ID }, '2.1.288', 'v', exec)).alwaysLoad).toBe(true);
+  });
+
+  it('writeSessionMcpConfig writes alwaysLoad when asked (local member, through fs)', async () => {
+    const local = makeTestLocalAgent({ id: '99999999-2222-3333-4444-555555555555' });
+    const p = sessionMcpConfigPath(local, local.workFolder);
+    try {
+      const r = await writeSessionMcpConfig(local, p, async () => { throw new Error('no member command for a local write'); }, { alwaysLoad: true });
+      expect(r).toEqual({ ok: true });
+      expect(JSON.parse(fs.readFileSync(p, 'utf-8')).mcpServers['apra-fleet'].alwaysLoad).toBe(true);
+    } finally {
+      removeLocalSessionMcpConfig(local);
+    }
+  });
+});

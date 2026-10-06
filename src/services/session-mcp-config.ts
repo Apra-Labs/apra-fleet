@@ -63,9 +63,88 @@ export function perFolderMcpEntryNeeded(agent: Agent): boolean {
   return !(agent.agentType === 'local' && (agent.llmProvider ?? 'claude') === 'claude');
 }
 
-/** The config file body: exactly one http `apra-fleet` server at the member URL. */
-export function sessionMcpConfigContent(agent: Pick<Agent, 'id' | 'agentType'>): string {
-  return JSON.stringify({ mcpServers: { [MEMBER_MCP_SERVER_NAME]: { type: 'http', url: memberMcpUrl(agent) } } });
+/**
+ * The config file body: exactly one http `apra-fleet` server at the member URL.
+ *
+ * `alwaysLoad: true` (Claude Code MCP server option) keeps every tool of that
+ * server in the session's prompt instead of deferring it behind the
+ * tool-search tool, so a role session can call kb_* / code_* from its first
+ * turn without a discovery round-trip. Emitted only when the caller has
+ * established that the member's CLI accepts it (see resolveSessionMcpAlwaysLoad).
+ */
+export function sessionMcpConfigContent(
+  agent: Pick<Agent, 'id' | 'agentType'>,
+  opts: { alwaysLoad?: boolean } = {},
+): string {
+  const entry: Record<string, unknown> = { type: 'http', url: memberMcpUrl(agent) };
+  if (opts.alwaysLoad) entry.alwaysLoad = true;
+  return JSON.stringify({ mcpServers: { [MEMBER_MCP_SERVER_NAME]: entry } });
+}
+
+/** First `X.Y.Z` in a CLI's version output (e.g. "2.1.291 (Claude Code)"). */
+export function parseCliVersion(output: string): string | undefined {
+  return /(\d+)\.(\d+)\.(\d+)/.exec(output)?.[0];
+}
+
+/** Numeric dotted-version comparison: true when `version` >= `min`. */
+export function cliVersionAtLeast(version: string, min: string): boolean {
+  const a = version.split('.').map(Number);
+  const b = min.split('.').map(Number);
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const d = (a[i] ?? 0) - (b[i] ?? 0);
+    if (d !== 0) return d > 0;
+  }
+  return true;
+}
+
+/** How long a probed member CLI version is reused before it is probed again
+ *  (a CLI update on the member is picked up within this window). */
+export const CLI_VERSION_CACHE_TTL_MS = 10 * 60 * 1000;
+const cliVersionCache = new Map<string, { version: string; at: number }>();
+
+/** Test hook: forget every cached member CLI version. */
+export function resetCliVersionCache(): void {
+  cliVersionCache.clear();
+}
+
+/**
+ * Decides whether this dispatch's session config may carry `alwaysLoad`.
+ * The provider names the minimum CLI version that supports it
+ * (ProviderAdapter.mcpAlwaysLoadMinVersion); the member's CLI version is
+ * probed with `versionCmd` and cached per member. Never throws. When the
+ * mechanism cannot be applied the config is written WITHOUT the key (an
+ * unknown key could invalidate the entry on an older CLI, leaving the session
+ * with no apra-fleet server at all) and `warning` names the cause, so the
+ * dispatcher can log it -- the tools then stay deferred for that session.
+ */
+export async function resolveSessionMcpAlwaysLoad(
+  agent: Pick<Agent, 'id'>,
+  minVersion: string | undefined,
+  versionCmd: string,
+  exec: MemberExecFn,
+  now: () => number = Date.now,
+): Promise<{ alwaysLoad: boolean; warning?: string }> {
+  if (!minVersion) {
+    return { alwaysLoad: false, warning: 'the provider has no MCP always-load option; kb/code tools may stay deferred behind tool search' };
+  }
+  let version: string | undefined;
+  const cached = cliVersionCache.get(agent.id);
+  if (cached && now() - cached.at < CLI_VERSION_CACHE_TTL_MS) {
+    version = cached.version;
+  } else {
+    try {
+      const r = await exec(versionCmd, 30_000);
+      if (typeof r.code !== 'number' || r.code === 0) version = parseCliVersion(`${r.stdout}\n${r.stderr}`);
+    } catch { /* reported below */ }
+    if (version) cliVersionCache.set(agent.id, { version, at: now() });
+  }
+  if (!version) {
+    return { alwaysLoad: false, warning: `member CLI version could not be determined, so the MCP always-load option was not applied (needs >= ${minVersion}); kb/code tools may stay deferred behind tool search` };
+  }
+  if (!cliVersionAtLeast(version, minVersion)) {
+    return { alwaysLoad: false, warning: `member CLI ${version} is older than ${minVersion}, so the MCP always-load option was not applied; kb/code tools stay deferred behind tool search (update the member CLI)` };
+  }
+  return { alwaysLoad: true };
 }
 
 /** Absolute member-side path of the config file (see the header for the layout). */
@@ -98,8 +177,9 @@ export async function writeSessionMcpConfig(
   agent: Agent,
   absPath: string,
   exec: MemberExecFn,
+  opts: { alwaysLoad?: boolean } = {},
 ): Promise<{ ok: true } | { ok: false; detail: string }> {
-  const content = sessionMcpConfigContent(agent);
+  const content = sessionMcpConfigContent(agent, opts);
   try {
     if (agent.agentType === 'local') {
       fs.mkdirSync(path.dirname(absPath), { recursive: true });

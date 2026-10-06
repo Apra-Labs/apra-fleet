@@ -24,6 +24,7 @@ import {
 import { addAgent } from '../src/services/registry.js';
 import { executePrompt, provisionedRemoteAgents } from '../src/tools/execute-prompt.js';
 import { FLEET_DIR, DEFAULT_PORT, BUILTIN_DEFAULT_PORT } from '../src/paths.js';
+import { resetCliVersionCache } from '../src/services/session-mcp-config.js';
 import type { SSHExecResult } from '../src/types.js';
 
 vi.mock('../src/services/statusline.js', () => ({
@@ -57,9 +58,15 @@ const OK = JSON.stringify({ result: 'ok', session_id: 'sess-x' });
 const AVAILABLE = { state: 'available' as const, checkedAt: '2026-10-05T00:00:00Z' };
 
 /** Stub member: answers the read-back of the session config with what was written. */
-function stubMember(opts: { failSessionWrite?: boolean } = {}) {
+function stubMember(opts: { failSessionWrite?: boolean; cliVersion?: string | null } = {}) {
   let written = '';
   mockExecCommand.mockImplementation(async (cmd: string) => {
+    // The member CLI version probe that gates the always-load option.
+    if (/claude --version/.test(decoded(cmd))) {
+      const v = opts.cliVersion === undefined ? '2.1.291 (Claude Code)' : opts.cliVersion;
+      return v === null ? { stdout: '', stderr: 'claude: command not found', code: 127 } : { stdout: `${v}
+`, stderr: '', code: 0 };
+    }
     // Not a repo: the best-effort exclude step is a no-op here (its own
     // behaviour is covered in session-mcp-config.test.ts).
     if (cmd.includes('rev-parse --git-path')) return { stdout: '', stderr: 'not a repository', code: 128 };
@@ -87,10 +94,12 @@ describe('execute_prompt: per-session member MCP config', () => {
     vi.clearAllMocks();
     vi.useFakeTimers();
     provisionedRemoteAgents.clear();
+    resetCliVersionCache();
   });
   afterEach(() => {
     restoreRegistry();
     vi.useRealTimers();
+    vi.restoreAllMocks();
   });
 
   it('remote Linux bash member: writes the work-folder config, names it last on the command line, removes it after', async () => {
@@ -101,7 +110,7 @@ describe('execute_prompt: per-session member MCP config', () => {
     expect(resultText(r)).toContain('ok');
 
     const cfg = '/home/u/repo/.fleet-session-mcp.json';
-    expect(JSON.parse(read())).toEqual({ mcpServers: { 'apra-fleet': { type: 'http', url: `http://localhost:${BUILTIN_DEFAULT_PORT}/mcp?member=${member.id}` } } });
+    expect(JSON.parse(read())).toEqual({ mcpServers: { 'apra-fleet': { type: 'http', url: `http://localhost:${BUILTIN_DEFAULT_PORT}/mcp?member=${member.id}`, alwaysLoad: true } } });
     const main = mainCmd();
     expect(main).toContain(`--mcp-config "${cfg}"`);
     expect(main).not.toContain('--strict-mcp-config');
@@ -122,7 +131,7 @@ describe('execute_prompt: per-session member MCP config', () => {
     await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
 
     const cfg = 'C:\\Users\\bella\\repo\\.fleet-session-mcp.json';
-    expect(JSON.parse(read()).mcpServers['apra-fleet'].url).toBe(`http://localhost:${BUILTIN_DEFAULT_PORT}/mcp?member=${member.id}`);
+    expect(JSON.parse(read()).mcpServers['apra-fleet']).toEqual({ type: 'http', url: `http://localhost:${BUILTIN_DEFAULT_PORT}/mcp?member=${member.id}`, alwaysLoad: true });
     expect(mainCmd().endsWith(`--model "sonnet" --mcp-config "${cfg}"`)).toBe(true);
     const cleanup = decoded(allCmds()[allCmds().length - 1]);
     expect(cleanup).toContain(`Remove-Item -LiteralPath '${cfg}'`);
@@ -155,7 +164,7 @@ describe('execute_prompt: per-session member MCP config', () => {
 
     const cfg = path.join(FLEET_DIR, 'session-mcp', `${member.id}.json`);
     expect(JSON.parse(fs.readFileSync(cfg, 'utf-8'))).toEqual({
-      mcpServers: { 'apra-fleet': { type: 'http', url: `http://localhost:${DEFAULT_PORT}/mcp?member=${member.id}` } },
+      mcpServers: { 'apra-fleet': { type: 'http', url: `http://localhost:${DEFAULT_PORT}/mcp?member=${member.id}`, alwaysLoad: true } },
     });
     expect(mainCmd()).toContain('--mcp-config "');
     expect(mainCmd()).toContain(`${member.id}.json"`);
@@ -163,5 +172,47 @@ describe('execute_prompt: per-session member MCP config', () => {
     expect(fs.existsSync(path.join(member.workFolder, '.fleet-session-mcp.json'))).toBe(false);
     expect(allCmds().some(c => /FLEET_PERMS_EOF|WriteAllText|\.claude\.json/.test(decoded(c)))).toBe(false);
     fs.rmSync(member.workFolder, { recursive: true, force: true });
+  });
+
+  describe('non-deferral of the member kb/code tools (alwaysLoad)', () => {
+    const warnLines = (spy: ReturnType<typeof vi.spyOn>) =>
+      spy.mock.calls.map(c => String(c[0])).filter(l => l.startsWith('[fleet:warn]'));
+
+    it('a supported member CLI: alwaysLoad in the config, no always-load WARN, CLI probed once per member', async () => {
+      const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const member = makeTestAgent({ friendlyName: 'smcp-al-ok', os: 'linux', workFolder: '/home/u/repo', fleetMcp: AVAILABLE });
+      addAgent(member);
+      const read = stubMember({ cliVersion: '2.1.291 (Claude Code)' });
+      await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+      expect(JSON.parse(read()).mcpServers['apra-fleet'].alwaysLoad).toBe(true);
+      expect(warnLines(spy).filter(l => /always-load/.test(l))).toEqual([]);
+      await executePrompt({ member_id: member.id, prompt: 'hi again', resume: false, timeout_s: 5 });
+      expect(allCmds().filter(c => /claude --version/.test(decoded(c)))).toHaveLength(1);
+    });
+
+    it('a member CLI older than the floor: config attached WITHOUT alwaysLoad, WARN names the version', async () => {
+      const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const member = makeTestAgent({ friendlyName: 'smcp-al-old', os: 'linux', workFolder: '/home/u/repo', fleetMcp: AVAILABLE });
+      addAgent(member);
+      const read = stubMember({ cliVersion: '2.0.5 (Claude Code)' });
+      await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+      expect(JSON.parse(read()).mcpServers['apra-fleet']).not.toHaveProperty('alwaysLoad');
+      expect(mainCmd()).toContain('--mcp-config "/home/u/repo/.fleet-session-mcp.json"');
+      const w = warnLines(spy).filter(l => /always-load/.test(l));
+      expect(w).toHaveLength(1);
+      expect(w[0]).toMatch(/member CLI 2\.0\.5 is older than 2\.1\.288/);
+    });
+
+    it('a member CLI version that cannot be read: config attached WITHOUT alwaysLoad, WARN names the cause', async () => {
+      const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const member = makeTestAgent({ friendlyName: 'smcp-al-unk', os: 'windows', shell: 'pwsh7', workFolder: 'C:\\Users\\bella\\repo', fleetMcp: AVAILABLE });
+      addAgent(member);
+      const read = stubMember({ cliVersion: null });
+      await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+      expect(JSON.parse(read()).mcpServers['apra-fleet']).not.toHaveProperty('alwaysLoad');
+      const w = warnLines(spy).filter(l => /always-load/.test(l));
+      expect(w).toHaveLength(1);
+      expect(w[0]).toMatch(/version could not be determined/);
+    });
   });
 });
