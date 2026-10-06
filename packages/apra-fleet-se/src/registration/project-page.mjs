@@ -26,8 +26,9 @@
 // leaves UNGUARDED (../supervisor/auth.mjs) -- so the page itself must never
 // embed or echo the bearer token, and an unauthenticated view sets NO
 // cookie (apra-fleet-50j6.6). It shares ../supervisor/dashboard-session.mjs
-// with the GET / index route: `?token=<service token>` exchanges the token
-// for an HttpOnly `se_token` cookie carrying a DERIVED value (never the raw
+// with the GET / index route: the paste-token sign-in form POSTs the token
+// (in the body, never a URL -- apra-fleet-50j6.12) to /signin, which sets an
+// HttpOnly `se_token` cookie carrying a DERIVED value (never the raw
 // token), which the browser then attaches automatically to this page's own
 // same-origin fetch('/api/project') calls.
 //
@@ -46,7 +47,7 @@
 import { PROJECTS_UI_PATH } from './manifest.mjs';
 import { defaultPlaceholderHandler } from './ui-placeholder.mjs';
 import { resolveMountPrefix, mountHref } from '../supervisor/mount-prefix.mjs';
-import { handleTokenExchange, authNoticeHtml, injectAuthNotice } from '../supervisor/dashboard-session.mjs';
+import { handleTokenInUrl, authNoticeHtml, injectAuthNotice } from '../supervisor/dashboard-session.mjs';
 import { THEME_CSS } from '../supervisor/theme.mjs';
 
 function sendHtml(res, status, html, extraHeaders = {}) {
@@ -185,23 +186,30 @@ button:hover { opacity: 0.8; }
  * (./ui-placeholder.mjs): the real page at exactly PROJECTS_UI_PATH,
  * `defaultPlaceholderHandler` for every other manifest-declared path.
  *
- * @param {{ token?: string|null }} [deps] `token` is the supervisor's own
- *   shared bearer token (`supervisor.token`, null when auth was never
- *   configured) -- used only to verify a `?token=` exchange and to derive
- *   the session cookie; never embedded in the HTML/script body or a cookie.
+ * @param {{ token?: string|null|(() => string|null|undefined) }} [deps]
+ *   `token` is the supervisor's own shared bearer token, or a provider of it
+ *   (`() => supervisor.token`; null when auth was never configured) -- used
+ *   only to decide whether to show the sign-in form; never embedded in the
+ *   HTML/script body or a cookie.
  * @returns {(req: any, res: any, ctx: any) => Promise<void>}
  */
 export function createProjectsPageHandler(deps = {}) {
-    const token = typeof deps.token === 'string' && deps.token.length > 0 ? deps.token : null;
+    // A provider function is read per request, so the page follows the
+    // supervisor's LIVE token (server.mjs re-resolves it) instead of a
+    // startup snapshot.
+    const token = typeof deps.token === 'function'
+        ? deps.token
+        : (typeof deps.token === 'string' && deps.token.length > 0 ? deps.token : null);
 
     return async function projectsPageHandler(req, res, ctx) {
         const pathname = ctx && ctx.url ? ctx.url.pathname : null;
         if (pathname !== PROJECTS_UI_PATH) {
             return defaultPlaceholderHandler(req, res, ctx);
         }
-        // apra-fleet-50j6.6: `?token=` is the token exchange (derived cookie
-        // + 302); a plain view sets NO cookie and shows the sign-in notice.
-        if (handleTokenExchange(req, res, token)) return;
+        // apra-fleet-50j6.12: a `?token=` in the URL is refused (400, no
+        // cookie); a plain view sets NO cookie and shows the paste-token
+        // sign-in form, which posts to the supervisor's POST /signin.
+        if (handleTokenInUrl(req, res, token)) return;
         const mountPrefix = resolveMountPrefix(req);
         const html = renderProjectsPageHtml({ mountPrefix });
         sendHtml(res, 200, injectAuthNotice(html, authNoticeHtml(req, token)));

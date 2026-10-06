@@ -656,17 +656,33 @@ describe('dashboard integration auth (apra-fleet-50j6.2.2) -- Stop/force-release
     });
 
     // -------------------------------------------------------------------------
-    // apra-fleet-50j6.6: a plain GET / sets NO cookie; the GET /?token=
-    // exchange sets the se_token cookie to the DERIVED value (re-proved here
+    // apra-fleet-50j6.6 / 50j6.12: a plain GET / sets NO cookie; a GET
+    // /?token= is refused (400, no cookie); the paste-token form's POST
+    // /signin sets the se_token cookie to the DERIVED value (re-proved here
     // against a REAL running supervisor+sprint, not just the unit-level check
-    // in supervisor-dashboard.test.mjs).
+    // in supervisor-dashboard-cookie-harvest.test.mjs).
     // -------------------------------------------------------------------------
-    test('GET / sets no cookie; GET /?token= sets the derived se_token cookie', async () => {
+    test('GET / sets no cookie; GET /?token= is refused; POST /signin sets the derived se_token cookie', async () => {
         const plain = await httpGet(port, '/');
         assert.equal(plain.status, 200);
         assert.equal(plain.headers['set-cookie'], undefined);
-        const res = await httpGet(port, `/?token=${encodeURIComponent(token)}`);
-        assert.equal(res.status, 302);
+        const inUrl = await httpGet(port, `/?token=${encodeURIComponent(token)}`);
+        assert.equal(inUrl.status, 400);
+        assert.equal(inUrl.headers['set-cookie'], undefined);
+        const form = `token=${encodeURIComponent(token)}`;
+        const res = await new Promise((resolve, reject) => {
+            const req = http.request({
+                host: '127.0.0.1', port, path: '/signin', method: 'POST',
+                headers: {
+                    'content-type': 'application/x-www-form-urlencoded',
+                    'content-length': Buffer.byteLength(form),
+                    origin: `http://127.0.0.1:${port}`,
+                },
+            }, (r) => { r.resume(); r.on('end', () => resolve({ status: r.statusCode, headers: r.headers })); });
+            req.on('error', reject);
+            req.end(form);
+        });
+        assert.equal(res.status, 303);
         // Node's http client normalizes the (single) 'set-cookie' response
         // header into a one-element array, unlike every other header.
         const setCookie = Array.isArray(res.headers['set-cookie'])

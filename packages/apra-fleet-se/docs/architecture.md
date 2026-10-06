@@ -1280,15 +1280,24 @@ they make, the spawner passes the token to spawned children via env only
 makes and turns a 401 into an actionable exit-1 hint rather than a false
 "no live sprints" read.
 
-**Browser sign-in (token exchange).** The open pages (`GET /`, the extra index
-paths, the `/ui` project page) never set a cookie on a plain request -- they
-render a read-only view with a sign-in notice. `GET <page>?token=<token>`
-(`src/supervisor/dashboard-session.mjs`) is the exchange: a constant-time
-match sets the derived `se_token` cookie (`HttpOnly`, `SameSite=Strict`) and
-302-redirects to the same mount-aware path with the token removed; a mismatch
-sets no cookie and answers 401. This closes the earlier gap where any loopback
-caller could harvest the token from `GET /`'s Set-Cookie. `bin/serve.mjs`
-logs the token FILE and port to build the link from, never the token.
+**Browser sign-in (paste-token form).** The open pages (`GET /`, the extra
+index paths, the `/ui` project page) never set a cookie on a plain request --
+they render a read-only view with a sign-in notice carrying a paste-token form
+(`src/supervisor/dashboard-session.mjs`). The form POSTs
+`application/x-www-form-urlencoded` `token` (and a sanitised root-relative
+`next` path) to `POST /signin`, registered by `registerDashboardRoutes` and
+left open by `requiresAuth` because it is the way in. The handler first refuses
+a cross-origin request with 403 (`Sec-Fetch-Site` other than
+`same-origin`/`none`, `Origin: null`, or an `Origin` that is not an http
+loopback origin matching the `Host` header), then compares the token in
+constant time against the supervisor's LIVE token (`supervisor.token`, which
+re-resolves): a match sets the derived `se_token` cookie (`HttpOnly`,
+`SameSite=Strict`) and 303-redirects to the mount-aware `next` path; a
+mismatch sets no cookie and answers 401. The long-lived token never travels in
+a URL: a page request carrying `?token=` answers 400 with the sign-in form and
+no cookie, and the presented value is never compared. `bin/serve.mjs` logs the
+token FILE and port, never the token, and the docs copy the token to the
+clipboard by redirect/pipeline rather than a command-line argument.
 
 **The per-sprint viewer is guarded too, with the bearer only.** The spawner
 hands the child the service token through the `FLEET_SE_SERVICE_TOKEN`

@@ -644,10 +644,11 @@ export async function serveMain(argv = process.argv.slice(2), deps = {}) {
     const dataDir = defaultDataDir();
     const { token: serviceToken, source: serviceTokenSource, path: serviceTokenPath } = resolveServiceToken(dataDir);
     console.log(`[supervisor] service token source: ${serviceTokenSource}`);
-    // apra-fleet-50j6.6: how an operator signs the browser in. Names the token
-    // FILE only -- this output is teed to supervisor.log, so the token value
-    // (and therefore the tokenized link itself) must never be printed here.
-    console.log(`[supervisor] dashboard sign-in: open http://localhost:${port}/?token=<contents of ${serviceTokenPath}>`);
+    // apra-fleet-50j6.6 / 50j6.12: how an operator signs the browser in. Names
+    // the token FILE only -- this output is teed to supervisor.log, so the
+    // token value must never be printed here. The token goes into the page's
+    // paste-token form (a POST body), never into a URL or a command line.
+    console.log(`[supervisor] dashboard sign-in: open http://localhost:${port}/ and paste the contents of ${serviceTokenPath} into the sign-in form`);
 
     // The supervisor's OWN backlog member (src/supervisor/backlog-member.mjs):
     // an LLM-less, unreservable local member whose work folder is repoRoot.
@@ -1090,7 +1091,7 @@ export async function serveMain(argv = process.argv.slice(2), deps = {}) {
     // UI-bundle sprint can still replace this ONE call site again for the
     // remaining paths without touching server.mjs's routing table.
     registerUiRoutes(supervisor, {
-        staticHandler: createProjectsPageHandler({ token: supervisor.token }),
+        staticHandler: createProjectsPageHandler({ token: () => supervisor.token }),
     });
 
     // Explicit signals are the out-of-band way to stop cleanly, complementing
