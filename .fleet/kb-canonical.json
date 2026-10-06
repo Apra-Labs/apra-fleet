@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "4f1d90d5877af2cd2ac19cb250fc46b9f3b9c951",
     "branch": "v0.5_dashboard",
-    "entry_count": 429
+    "entry_count": 430
   },
   "entries": [
     {
@@ -3951,6 +3951,25 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:13.250Z"
+    },
+    {
+      "id": "77fcfad4-6c27-40b5-9de1-caa9d2e8394c",
+      "type": "knowledge",
+      "title": "runSprintCycle clears Integration Test skip reasons whenever the phase actually runs",
+      "summary": "strandedSkipReasons in runner.js is emptied at the start of the hasPlaybook && deployedThisCycle branch, so owed triage reports a 'skipped' reason only when the most recent cycle skipped Integration Test. This supersedes the earlier 'only added to, never cleared' entry.",
+      "symbols": [
+        "runSprintCycle",
+        "noteStrandedRollupsAtIntegSkip",
+        "computeOwedTriage",
+        "runIntegTestPhase"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/fleet-sprint/owed-triage.mjs",
+        "packages/apra-fleet-se/test/mock-sprint-integ-skip-stranded-rollups.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T01:37:40.124Z"
     },
     {
       "id": "78572a21-3fba-4d32-ac45-cd0523c600d8",
