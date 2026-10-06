@@ -44,11 +44,18 @@ export function Members({ refreshIntervalMs = REFRESH_INTERVAL_MS }: MembersProp
   const [state, setState] = useState<LoadState>({ kind: "loading" });
   const [selected, setSelected] = useState<FleetMember | null>(null);
   const [wizardOpen, setWizardOpen] = useState(false);
+  // Last successful refresh time, and whether the most recent background
+  // refresh failed: the table keeps its rows and a non-destructive note
+  // says how old they are.
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const [refreshFailed, setRefreshFailed] = useState(false);
 
   async function load(background: boolean) {
     try {
       const members = await fetchMembers();
       setState({ kind: "loaded", members });
+      setLastUpdated(new Date());
+      setRefreshFailed(false);
       // Re-point the open drawer's `selected` at its fresh row from THIS
       // refresh (apra-fleet-i9ag.6.4): MemberDrawer is keyed on `selected?.id`
       // (below), so it never remounts across a refresh -- but it still reads
@@ -71,6 +78,7 @@ export function Members({ refreshIntervalMs = REFRESH_INTERVAL_MS }: MembersProp
       if (!background) {
         setState((prev) => (prev.kind === "loaded" ? prev : { kind: "error", message }));
       }
+      setRefreshFailed(true);
     }
   }
 
@@ -94,6 +102,12 @@ export function Members({ refreshIntervalMs = REFRESH_INTERVAL_MS }: MembersProp
       {state.kind === "loading" ? <p>Loading members...</p> : null}
       {state.kind === "error" ? (
         <p role="alert">Failed to load members: {state.message}</p>
+      ) : null}
+      {state.kind === "loaded" && refreshFailed ? (
+        <p role="status">
+          Showing stale data: last updated {lastUpdated ? lastUpdated.toLocaleTimeString() : "unknown"}; the latest
+          refresh failed.
+        </p>
       ) : null}
       {state.kind === "loaded" ? (
         <Table
