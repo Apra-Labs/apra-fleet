@@ -365,6 +365,77 @@ describe('SSH layer closes every channel it opens', () => {
     expect(totalLive()).toBe(0);
   });
 
+  it('a timeout on the LAST channel of a retired connection: the connection ends on release and the kill still goes out on the fresh one', async () => {
+    const agent = makeTestAgent();
+    const running: Array<Promise<unknown>> = [];
+    for (let i = 0; i < 10; i++) {
+      const p = ssh.execCommand(agent, `long ${i}`, i === 0 ? 1000 : 60000);
+      p.catch(() => {});
+      running.push(p);
+      await flush();
+    }
+    clients[0].streams[0].emit('data', Buffer.from('FLEET_PID:5151\n'));
+    const eleventh = ssh.execCommand(agent, 'eleventh', 60000);
+    await flush();
+    expect(clients).toHaveLength(2);
+    // every other command on the retired connection finishes first
+    clients[0].streams.slice(1).forEach((s) => s.finish(0));
+    await Promise.allSettled(running.slice(1));
+    expect(clients[0].end).not.toHaveBeenCalled();
+
+    // the PID-carrying command is now the retired connection's only channel
+    await vi.advanceTimersByTimeAsync(1000);
+    await expect(running[0]).rejects.toThrow(/timed out/);
+    // its release ended the retired connection ...
+    expect(clients[0].end).toHaveBeenCalledTimes(1);
+    // ... and the kill was still sent, leased on the fresh connection
+    expect(clients[1].execCalls.filter((c) => c.includes('5151'))).toHaveLength(1);
+    expect(clients[0].execCalls.filter((c) => c.includes('5151'))).toHaveLength(0);
+
+    clients[1].streams.forEach((s) => s.finish(0));
+    await expect(eleventh).resolves.toMatchObject({ code: 0 });
+    expect(totalLive()).toBe(0);
+  });
+
+  it('update_llm_cli: an install that outlives its timeout is killed explicitly (FLEET_PID kill sent) and reported as a timeout kill', async () => {
+    const helpers = await import('./test-helpers.js');
+    const { addAgent } = await import('../src/services/registry.js');
+    const { updateAgentCli, INSTALL_INACTIVITY_TIMEOUT_MS } = await import('../src/tools/update-agent-cli.js');
+    helpers.backupAndResetRegistry();
+    try {
+      const agent = makeTestAgent({ friendlyName: 'install-hang', os: 'linux' });
+      addAgent(agent);
+      const report = updateAgentCli({ member_id: agent.id, install_if_missing: true });
+      await flush();
+      // version probe: CLI not installed
+      clients[0].streams[0].emit('data', Buffer.from(''));
+      clients[0].streams[0].finish(127);
+      await flush();
+
+      // the install runs under the FLEET_PID wrapper, reports its PID, then goes silent
+      const install = clients[0].streams[1];
+      expect(clients[0].execCalls[1]).toMatch(/_fleet_pid=\$!; printf 'FLEET_PID:%s\\n'/);
+      install.emit('data', Buffer.from('FLEET_PID:6161\n'));
+      await vi.advanceTimersByTimeAsync(60_000);
+      install.emit('data', Buffer.from('downloading...\n'));
+      await vi.advanceTimersByTimeAsync(INSTALL_INACTIVITY_TIMEOUT_MS);
+
+      const text = await report;
+      // the remote tree was killed on a fresh leased channel, not just cut
+      expect(clients[0].execCalls.filter((c) => c.includes('_fleet_kill_tree 6161'))).toHaveLength(1);
+      expect(install.close).toHaveBeenCalled();
+      expect(text).toContain(
+        `CLI install killed on timeout after running ${60 + INSTALL_INACTIVITY_TIMEOUT_MS / 1000}s: ` +
+        `it produced no output for ${INSTALL_INACTIVITY_TIMEOUT_MS / 1000}s; its remote process tree (PID 6161) was killed.`,
+      );
+      // the kill channel closes itself (safety timer) -- nothing leaks
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(totalLive()).toBe(0);
+    } finally {
+      helpers.restoreRegistry();
+    }
+  });
+
   it('refused again on the fresh connection: a transport error naming the member and the session-limit cause', async () => {
     const agent = makeTestAgent({ friendlyName: 'kbr-remote' });
     maxSessionsForNewClients = 0;
