@@ -5,6 +5,7 @@ import path from 'node:path';
 import { getSelfReadKb, type KbAnchor } from '../services/knowledge/kb-self.js';
 import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
 import { validateFilePaths } from '../services/knowledge/path-validation.js';
+import { extractBibleDemotions, tombstonedIds } from '../services/knowledge/bible-import.js';
 import { getProvider } from './code-intelligence.js';
 import type { KBEntry } from '../services/knowledge/types.js';
 import { FLEET_DIR } from '../paths.js';
@@ -310,16 +311,33 @@ export async function kbSessionPrime(input: KbSessionPrimeInput, anchor?: KbAnch
       const canonicalPath = repoRoot ? path.join(repoRoot, '.fleet', 'kb-canonical.json') : null;
       if (canonicalPath && fs.existsSync(canonicalPath)) {
         const raw = fs.readFileSync(canonicalPath, 'utf-8');
-        const entries = bibleEntries(JSON.parse(raw) as unknown);
+        const parsedBible = JSON.parse(raw) as unknown;
+        const entries = bibleEntries(parsedBible);
+        // The bible's EXPLICIT demotion tombstones, via the one shared reader.
+        const dropped = tombstonedIds(extractBibleDemotions(parsedBible));
 
         if (entries.length > 0) {
           const existingIds = new Set((result.top_entries ?? []).map(e => e.id));
           const hintSymbols = input.hint_symbols ?? [];
           const hintModules = input.hint_modules ?? [];
 
-          const valid = entries
+          const shaped = entries
             .filter(isCanonicalBibleEntry)
-            .filter(e => !existingIds.has(e.id));
+            .filter(e => !existingIds.has(e.id))
+            // A tombstoned id is demoted knowledge: never seed it, whatever the
+            // local row says (including when there is none).
+            .filter(e => !dropped.has(e.id));
+
+          // ONE skip predicate for the rest: seed a bible id only when this
+          // clone has NO row for it, or holds a LIVE CONFIRMED one. A row that
+          // exists but is INFERRED, stale, superseded or flagged_for_review is
+          // knowledge this clone has already stopped trusting, and re-seeding
+          // the bible's CONFIRMED copy of it would quietly undo that. Note what
+          // this deliberately is NOT: a demoted_at special case. Demotion is
+          // only one of the four ways a row stops being live CONFIRMED, and the
+          // single predicate covers it with no extra branch.
+          const liveness = providers.project.getLiveConfirmedState(shaped.map(e => e.id));
+          const valid = shaped.filter(e => liveness.get(e.id) !== false);
 
           let ordered = valid;
           if (hintSymbols.length > 0 || hintModules.length > 0) {

@@ -629,6 +629,47 @@ export class SqliteProvider implements MemoryProvider {
     return out;
   }
 
+  /**
+   * For each of the given ids that EXISTS locally, whether that row is LIVE
+   * CONFIRMED: confidence is CONFIRMED and the row is not stale, not superseded
+   * and not flagged_for_review.
+   *
+   * An id with NO local row is simply ABSENT from the map -- the caller must be
+   * able to tell "I hold a row and it is no longer trustworthy" (do not surface
+   * the bible's version of it) from "I have never seen this id" (the cold-seed
+   * case the bible exists to serve). A boolean-only return would conflate them.
+   *
+   * ONE predicate, deliberately not a demoted_at check. A demotion is only one
+   * of the ways a row stops being live CONFIRMED; staleness, supersession and a
+   * review flag are the others, and a cold seed that re-surfaced the bible's
+   * CONFIRMED copy of any of them would be re-asserting knowledge this clone has
+   * already stopped trusting. Reads the rows DIRECTLY rather than through list(),
+   * which filters stale and superseded rows out and so cannot report them.
+   */
+  getLiveConfirmedState(ids: string[]): Map<string, boolean> {
+    const out = new Map<string, boolean>();
+    if (ids.length === 0) return out;
+    const db = this.getDb();
+    // Chunk to stay well under SQLite's bound-parameter limit (as above).
+    const CHUNK = 500;
+    for (let i = 0; i < ids.length; i += CHUNK) {
+      const chunk = ids.slice(i, i + CHUNK);
+      const rows = db.prepare(
+        `SELECT id, confidence, stale, superseded_at, flagged_for_review FROM entries WHERE id IN (${chunk.map(() => '?').join(',')})`
+      ).all(...chunk) as {
+        id: string; confidence: string; stale: number;
+        superseded_at: string | null; flagged_for_review: number;
+      }[];
+      for (const row of rows) {
+        out.set(row.id, row.confidence === 'CONFIRMED'
+          && row.stale !== 1
+          && row.superseded_at === null
+          && row.flagged_for_review !== 1);
+      }
+    }
+    return out;
+  }
+
   // T1.3 (F2/D2 HARDENED): freshness check bounded to the primed set, now
   // BIDIRECTIONAL. Keyed off source_files with a per-file hash basis persisted
   // at capture time (source_file_hashes) -- NOT content_hash, which is only ever

@@ -77,6 +77,38 @@ export function extractBibleDemotions(parsed: unknown): BibleDemotion[] {
   return Array.from(byId.values()).sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 }
 
+/** The tombstoned ids of a parsed bible, as a set for membership tests. */
+export function tombstonedIds(demotions: BibleDemotion[]): Set<string> {
+  return new Set(demotions.map(d => d.id));
+}
+
+/**
+ * Drop every entry a tombstone names from a raw bible entry array.
+ *
+ * For the READ paths that build a view of the bible rather than merging it into
+ * an existing KB -- the member bible view, which imports into a FRESH empty
+ * in-memory provider. There is no local row there for a tombstone to demote, so
+ * the demotion can only be honoured by not listing the entry at all.
+ *
+ * Normally a committed bible holds no entry for a tombstoned id (kb_bible_commit
+ * removes it when it records the tombstone), so this is belt-and-braces against
+ * a hand-edited or partially merged bible -- the one place where "the file says
+ * both" must resolve to the demotion, because a view that lists a demoted entry
+ * is exactly the staleness the tombstone exists to stop.
+ *
+ * Entries too malformed to carry an id are left alone; importBibleEntries
+ * already tolerates and skips those.
+ */
+export function excludeTombstonedEntries(entries: unknown[], demotions: BibleDemotion[]): unknown[] {
+  if (demotions.length === 0) return entries;
+  const dropped = tombstonedIds(demotions);
+  return entries.filter(e => {
+    if (!e || typeof e !== 'object') return true;
+    const id = (e as { id?: unknown }).id;
+    return typeof id !== 'string' || !dropped.has(id);
+  });
+}
+
 /**
  * Read and parse a bible file into its raw entry array. Throws KbBibleError
  * when the file is not valid JSON or not a bible shape. `label` prefixes the

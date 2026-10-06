@@ -310,6 +310,14 @@ export interface MemoryProvider {
   // another machine's bible has no local row and is silently skipped. Returns
   // the number of rows actually bumped.
   touch(ids: string[]): Promise<number>;
+  // For each given id that EXISTS locally, whether that row is LIVE CONFIRMED
+  // (CONFIRMED and not stale, not superseded, not flagged_for_review). An id
+  // with no local row is ABSENT from the map, so a caller can tell "I hold a
+  // row I no longer trust" from "I have never seen this id" -- the cold-seed
+  // in kb_session_prime needs exactly that distinction. On the interface (like
+  // touch) because that cold seed runs on whichever project provider is
+  // configured, not only the SQLite one.
+  getLiveConfirmedState(ids: string[]): Map<string, boolean>;
   // KB audit 2026-08-11: one hop across the KB's own graph, limited to the two
   // edge kinds FTS cannot substitute for -- `refines` ("there is a newer
   // framing of this claim") and `contradiction_of` ("something disputes it").

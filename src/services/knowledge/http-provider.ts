@@ -254,6 +254,19 @@ export class HttpKbProvider implements MemoryProvider {
     }
   }
 
+  // Delegated to the local fallback store like touch: "is the row I hold still
+  // live CONFIRMED" is a question about the LOCAL store by definition, and
+  // there is no remote route for it. An unreadable local store degrades to an
+  // empty map, i.e. "no local row for any of these" -- the cold seed then
+  // behaves exactly as it did before this predicate existed.
+  getLiveConfirmedState(ids: string[]): Map<string, boolean> {
+    try {
+      return this.fallback.getLiveConfirmedState(ids);
+    } catch {
+      return new Map();
+    }
+  }
+
   // Delegated to the local store like getLinked: the graph lives alongside the
   // entries, and there is no remote route for it. Never throws -- a graph miss
   // must degrade to "no related claims", not fail a prime.
