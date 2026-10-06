@@ -90,4 +90,9 @@ export const SERIAL_PROCESS_TEST_FILES = [
     // launched via a resolved node path rather than a literal
     // process.execPath call (skipped off Windows).
     'aolt-win32-recorded-node-bd.test.mjs',
+
+    // apra-fleet-i9ag.19.49: spawns a real node child through the
+    // buildRecordedNode() path (not process.execPath) under a flat 15s probe
+    // SLA, so it is contention-sensitive like the suites above.
+    'i9ag19-9-toolchain.test.mjs',
 ];
