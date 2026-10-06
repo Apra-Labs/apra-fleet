@@ -99,7 +99,12 @@ describe.skipIf(process.platform === 'win32')('update_member -- provider switch 
     const member = addMember('claude', wf);
     writeJson(claudeJson(), { mcpServers: { deepwiki: DEEPWIKI }, projects: { [wf]: { mcpServers: { deepwiki: DEEPWIKI } } } });
     expect(await composePermissions({ member_id: member.id, role: 'doer' })).toContain('Permissions composed');
-    expect(readJson(claudeJson()).projects[wf].mcpServers['apra-fleet']).toBeDefined();
+    // A local claude member gets no folder entry from compose (per-session
+    // config instead); seed one as an older compose left it, so the switch
+    // cleanup is exercised.
+    const seeded = readJson(claudeJson());
+    seeded.projects[wf].mcpServers['apra-fleet'] = { type: 'http', url: `http://localhost:7523/mcp?member=${member.id}` };
+    writeJson(claudeJson(), seeded);
     expect(fs.existsSync(path.join(wf, '.claude', 'settings.local.json'))).toBe(true);
 
     const result = await updateMember({ member_id: member.id, llm_provider: 'opencode' });
@@ -119,7 +124,7 @@ describe.skipIf(process.platform === 'win32')('update_member -- provider switch 
     expect(git(wf, 'status', '--porcelain')).toBe('');
   }, 60000);
 
-  it('opencode -> claude: the compose-created opencode.json and its exclude line are removed, the claude entry exists', async () => {
+  it('opencode -> claude: the compose-created opencode.json and its exclude line are removed; a local claude member gets no folder entry', async () => {
     const wf = makeClone();
     const member = addMember('opencode', wf);
     expect(await composePermissions({ member_id: member.id, role: 'doer' })).toContain('Permissions composed');
@@ -134,7 +139,9 @@ describe.skipIf(process.platform === 'win32')('update_member -- provider switch 
     expect(excludeLines(wf)).not.toContain('/opencode.json');
     expect(excludeLines(wf)).not.toContain('/.opencode/settings.json');
 
-    expect(readJson(claudeJson()).projects[wf].mcpServers['apra-fleet'].url).toMatch(new RegExp(`\\?member=${member.id}$`));
+    const after = fs.existsSync(claudeJson()) ? readJson(claudeJson()) : {};
+    expect(after.projects?.[wf]?.mcpServers?.['apra-fleet']).toBeUndefined();
+    expect(fs.existsSync(path.join(wf, '.claude', 'settings.local.json'))).toBe(true);
     expect(git(wf, 'status', '--porcelain')).toBe('');
   }, 60000);
 
@@ -163,7 +170,8 @@ describe.skipIf(process.platform === 'win32')('update_member -- provider switch 
     const staleOc = { mcp: { 'apra-fleet': { type: 'remote', url: 'http://localhost:7523/mcp?member=stale', enabled: true } } };
     writeJson(path.join(wf, 'opencode.json'), staleOc);
     const settingsBefore = fs.readFileSync(path.join(wf, '.claude', 'settings.local.json'), 'utf-8');
-    const claudeEntryBefore = readJson(claudeJson()).projects[wf].mcpServers['apra-fleet'];
+    const claudeEntryOf = () => (fs.existsSync(claudeJson()) ? readJson(claudeJson()) : {}).projects?.[wf]?.mcpServers?.['apra-fleet'];
+    const claudeEntryBefore = claudeEntryOf();
 
     const result = await updateMember({ member_id: member.id, llm_provider: 'claude', friendly_name: `renamed-${seq}` });
     expect(result).toContain('updated');
@@ -171,6 +179,6 @@ describe.skipIf(process.platform === 'win32')('update_member -- provider switch 
     expect(readJson(path.join(wf, 'opencode.json'))).toEqual(staleOc);
     expect(fs.readFileSync(path.join(wf, '.claude', 'settings.local.json'), 'utf-8')).toBe(settingsBefore);
     expect(readJson(path.join(wf, '.claude', 'settings.local.json')).permissions.allow).toContain('Bash(custom-tool:*)');
-    expect(readJson(claudeJson()).projects[wf].mcpServers['apra-fleet']).toEqual(claudeEntryBefore);
+    expect(claudeEntryOf()).toEqual(claudeEntryBefore);
   }, 60000);
 });

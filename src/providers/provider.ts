@@ -187,6 +187,10 @@ export interface PromptOptions {
   /** Provider project the run is bound to (AGY: `--project <id>`, from
    *  Agent.agyProjectId). Ignored by providers without {@link ProviderAdapter.projectFlag}. */
   projectId?: string;
+  /** Absolute member-side path of a per-session MCP config file (Claude:
+   *  `--mcp-config <file>`), already written by the caller. Ignored by
+   *  providers without {@link ProviderAdapter.mcpConfigFlag}. */
+  mcpConfigPath?: string;
 }
 
 /**
@@ -331,6 +335,9 @@ export interface MemberMcpSyncContext {
   /** The per-folder apra-fleet entry URL (.../mcp?member=<uuid>) to write, or null to REMOVE
    *  the entry this provider wrote for the member's folder (provider switch cleanup). */
   url: string | null;
+  /** With url null: remove the folder's apra-fleet entry only when it points at
+   *  THIS member (?member=<uuid>), leaving any other apra-fleet entry alone. */
+  removeOnlyOwnEntry?: boolean;
 }
 
 export interface MemberMcpSyncResult {
@@ -392,6 +399,12 @@ export interface ProviderAdapter {
 
   // Prompt building
   buildPromptCommand(opts: PromptOptions): string;
+  /** The per-session MCP config flag for a resolved absolute member-side path,
+   *  quoted by the provider for the member's shell (`posix` false = PowerShell).
+   *  Callers append it after every positional argument: Claude's --mcp-config
+   *  is variadic and would swallow a following positional prompt. Optional:
+   *  providers without one never get a session config. */
+  mcpConfigFlag?(absPath: string, posix: boolean): string;
 
   // Permission bypass flag
   skipPermissionsFlag(): string;

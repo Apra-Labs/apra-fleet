@@ -160,12 +160,16 @@ describe.skipIf(process.platform === 'win32')(
 
     const onDisk = JSON.parse(fs.readFileSync(settingsPath(workFolder), 'utf-8'));
     // The retired url+bearer apra-fleet-member entry is pruned (no live
-    // bearer token left on disk); the member's own entry is the per-folder
-    // local-scope apra-fleet one in the Claude config, not this file.
+    // bearer token left on disk). A local claude member gets its member
+    // server per dispatch session (--mcp-config), so no per-folder entry is
+    // written into the Claude config either.
     expect(onDisk.mcpServers).toBeUndefined();
     expect(JSON.stringify(onDisk)).not.toContain('super-secret-jwt');
-    const claudeConfig = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.claude.json'), 'utf-8'));
-    expect(claudeConfig.projects[workFolder.replace(/\\/g, '/')].mcpServers['apra-fleet'].url).toMatch(new RegExp(`\\?member=${member.id}$`));
+    const claudeJsonPath = path.join(os.homedir(), '.claude.json');
+    if (fs.existsSync(claudeJsonPath)) {
+      const claudeConfig = JSON.parse(fs.readFileSync(claudeJsonPath, 'utf-8'));
+      expect(claudeConfig.projects?.[workFolder.replace(/\\/g, '/')]?.mcpServers?.['apra-fleet']).toBeUndefined();
+    }
     // Prior allow entries survive...
     expect(onDisk.permissions.allow).toEqual(expect.arrayContaining(['Read', 'Bash(git:*)']));
     // ...and the new grant (plus its co-occurrence expansion) is added.

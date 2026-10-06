@@ -11,6 +11,7 @@ import { getStrategy } from '../services/strategy.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { getProvider } from '../providers/index.js';
 import { seedWorkspaceTrust, workspaceTrustTransportFor } from '../utils/workspace-trust.js';
+import { perFolderMcpEntryNeeded, REMOTE_SESSION_MCP_FILE } from '../services/session-mcp-config.js';
 import {
   deleteMemberFile,
   ensureGitExcluded,
@@ -699,7 +700,18 @@ async function syncMemberMcpConfig(
   const shell = getAgentShell(agent);
   const exec = (cmd: string, t?: number) => strategy.execCommand(cmd, t);
   const workFolderFiles = permissionPaths.filter(p => !isHomeAnchored(p));
+  // A remote member's per-dispatch session MCP config lives in the work
+  // folder while a session runs: keep it out of `git status` (and out of a
+  // role's `git add -A`). Listed before the sync so the recoverable
+  // member-config error path below excludes it too.
+  if (agent.agentType !== 'local' && provider.mcpConfigFlag) workFolderFiles.push(REMOTE_SESSION_MCP_FILE);
   try {
+    // A local claude member gets the member config per dispatch session
+    // (--mcp-config), so no folder entry is written for it: the sync runs in
+    // remove mode instead, pruning legacy entries and a folder entry an older
+    // compose wrote for THIS member (so the human's own sessions in that
+    // clone get their user-scope server back), and nothing else.
+    const perFolder = perFolderMcpEntryNeeded(agent);
     if (provider.syncMemberMcpEntry) {
       // The member MCP wiring touches home-anchored files too (~/.claude.json,
       // agy/opencode global MCP configs), so resolve the home here when the
@@ -712,7 +724,8 @@ async function syncMemberMcpConfig(
         agentOs,
         shell,
         transport: workspaceTrustTransportFor(agent, strategy),
-        url: memberMcpUrl(agent),
+        url: perFolder ? memberMcpUrl(agent) : null,
+        ...(perFolder ? {} : { removeOnlyOwnEntry: true }),
       });
       workFolderFiles.push(...result.workFolderFiles);
     }
@@ -873,6 +886,9 @@ export async function removeComposedMemberConfig(agent: Agent): Promise<string[]
       shell,
       transport: workspaceTrustTransportFor(agent, strategy),
       url: null,
+      // Only the entry fleet wrote for THIS member (?member=<uuid>): a human's
+      // own apra-fleet entry for that folder is never removed.
+      removeOnlyOwnEntry: true,
     });
     workFolderFiles.push(...result.workFolderFiles);
     details.push(result.detail);

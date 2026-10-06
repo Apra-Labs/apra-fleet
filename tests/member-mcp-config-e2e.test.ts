@@ -9,8 +9,9 @@
  * No LLM CLI is ever invoked.
  *
  * Observable properties asserted:
- *  - claude: projects[<folder>].mcpServers.apra-fleet.url ends with
- *    ?member=<uuid>, and no {disabled:true} apra-fleet entry exists anywhere;
+ *  - claude (local member): no projects[<folder>].mcpServers.apra-fleet entry
+ *    (its dispatches get the member config per session), and no
+ *    {disabled:true} apra-fleet entry exists anywhere;
  *  - opencode: <workFolder>/opencode.json carries the ?member=<uuid> entry,
  *    .git/info/exclude lists opencode.json, and opencode has no MCP deny rules;
  *  - agy: no member MCP entry is written; deny rules = allowlist complement;
@@ -186,8 +187,11 @@ function assertCommonInvariants(wf: string, provider: 'claude' | 'agy' | 'openco
 
 function assertClaudeConfigured(wf: string, member: Agent): void {
   const cfgs = allConfigs(wf);
-  const entry = cfgs.claudeJson.projects[wf].mcpServers['apra-fleet'];
-  expect(entry).toEqual({ type: 'http', url: expect.stringMatching(memberUrlRe(member.id)) });
+  // Every member here is LOCAL: a local claude member gets the ?member=<uuid>
+  // server per dispatch session (--mcp-config), so compose writes no folder
+  // entry for it -- the human's own sessions in the clone are unaffected.
+  expect(member.agentType).toBe('local');
+  expect(cfgs.claudeJson.projects[wf].mcpServers['apra-fleet']).toBeUndefined();
   expect(cfgs.claudeJson.projects[wf].mcpServers.deepwiki).toEqual(DEEPWIKI);
   expect(cfgs.claudeSettings.permissions.deny).toEqual(COMPLEMENT.map(t => `mcp__apra-fleet__${t}`));
   expect(excludeLines(wf)).toContain('/.claude/settings.local.json');
@@ -263,7 +267,7 @@ describe.skipIf(process.platform === 'win32')('member per-folder apra-fleet MCP 
     expect(COMPLEMENT.some(t => t.includes('deepwiki'))).toBe(false);
   });
 
-  it('claude: compose writes the local-scope ?member=<uuid> entry and complement deny rules; legacy gone; clone clean', async () => {
+  it('claude: compose writes no folder entry for a local member, complement deny rules; legacy gone; clone clean', async () => {
     const wf = makeClone();
     seedLegacy(wf);
     const member = addMember('claude', wf);

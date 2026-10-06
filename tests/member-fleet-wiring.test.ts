@@ -255,12 +255,12 @@ describe('register_member fleet_install', () => {
     expect(result).toContain('fleetMcp: unavailable (E-FOLDER-TAKEN)');
   });
 
-  it('a missing per-folder MCP entry -> unavailable(mcp-entry-missing)', async () => {
+  it('claude: a missing per-folder MCP entry does not gate (dispatches get the member config per session)', async () => {
     const w = newWorld({ entry: false });
     __setMemberFleetMcpDeps(withRealRecord(fakeDeps(w)));
     const result = await registerMember({ ...REMOTE, friendly_name: 'bella', fleet_install: 'auto', port: 22, cloud_region: 'us-east-1', cloud_idle_timeout_min: 30 } as any);
     expect(result).toContain('Member registered successfully');
-    expect(result).toContain('fleetMcp: unavailable (mcp-entry-missing)');
+    expect(result).toContain('fleetMcp: available');
   });
 
   it('agy member -> unavailable(no-per-project-mcp), unverified; nothing installed', async () => {
@@ -300,13 +300,13 @@ describe('register_member fleet_install', () => {
 
 describe('recoverable: unavailable -> available on re-probe, no restart', () => {
   it('member_detail refresh:true flips the recorded status after the cause is fixed', async () => {
-    const w = newWorld({ entry: false });
+    const w = newWorld({ listTools: ['version'] });
     __setMemberFleetMcpDeps(withRealRecord(fakeDeps(w)));
     const a = remoteMember();
     const first = JSON.parse(await memberDetail({ member_id: a.id, format: 'json', refresh: true }));
-    expect(first.fleetMcp).toMatchObject({ state: 'unavailable', reason: 'mcp-entry-missing' });
+    expect(first.fleetMcp).toMatchObject({ state: 'unavailable', reason: 'member-tools-missing' });
     expect(getAgent(a.id)!.fleetMcp).toMatchObject({ state: 'unavailable' });
-    w.entry = true; // operator fixes the member
+    w.listTools = newWorld().listTools; // operator fixes the member
     const second = JSON.parse(await memberDetail({ member_id: a.id, format: 'json', refresh: true }));
     expect(second.fleetMcp).toMatchObject({ state: 'available', version: VERSION });
     expect(getAgent(a.id)!.fleetMcp).toMatchObject({ state: 'available' });
@@ -609,16 +609,27 @@ describe('fleet_install writes the per-folder MCP entry before checking it', () 
     expect(calls).toEqual([getAllAgents()[0].id]);
   });
 
-  it('a member config the writer cannot safely edit is reported with its own reason', async () => {
+  it('a member config the writer cannot safely edit is reported with its own reason (opencode: the entry gates)', async () => {
+    const w = newWorld({ entry: false });
+    const d = fakeDeps(w);
+    d.writeMcpEntry = async () => ({ ok: false, reason: 'member-config-unparseable', detail: 'Member MCP config NOT edited: /home/bella/repo/opencode.json is not strict JSON' });
+    __setMemberFleetMcpDeps(d);
+    const a = remoteMember({ llmProvider: 'opencode' });
+    const result = await updateMember({ member_id: a.id, fleet_install: 'auto' } as any);
+    expect(result).toContain('fleetMcp: unavailable (member-config-unparseable)');
+    expect(getAgent(a.id)!.fleetMcp).toMatchObject({ state: 'unavailable', reason: 'member-config-unparseable' });
+    expect(w.log.some(c => c.includes("'call'"))).toBe(false);
+  });
+
+  it('claude: a failed per-folder write does not gate (the entry is only the fallback of the per-session config)', async () => {
     const w = newWorld({ entry: false });
     const d = fakeDeps(w);
     d.writeMcpEntry = async () => ({ ok: false, reason: 'member-config-unparseable', detail: 'Member MCP config NOT edited: /home/bella/.claude.json is not strict JSON' });
     __setMemberFleetMcpDeps(d);
     const a = remoteMember();
     const result = await updateMember({ member_id: a.id, fleet_install: 'auto' } as any);
-    expect(result).toContain('fleetMcp: unavailable (member-config-unparseable)');
-    expect(getAgent(a.id)!.fleetMcp).toMatchObject({ state: 'unavailable', reason: 'member-config-unparseable' });
-    expect(w.log.some(c => c.includes("'call'"))).toBe(false);
+    expect(result).toContain('fleetMcp: available');
+    expect(w.log.some(c => c.includes("'call'"))).toBe(true);
   });
 
   it('member_detail refresh stays read-only: it never writes the entry', async () => {
@@ -629,7 +640,8 @@ describe('fleet_install writes the per-folder MCP entry before checking it', () 
     __setMemberFleetMcpDeps(d);
     const a = remoteMember();
     const r = JSON.parse(await memberDetail({ member_id: a.id, format: 'json', refresh: true }));
-    expect(r.fleetMcp).toMatchObject({ state: 'unavailable', reason: 'mcp-entry-missing' });
+    // claude: no entry needed (per-session config), and refresh writes nothing.
+    expect(r.fleetMcp).toMatchObject({ state: 'available' });
     expect(called).toBe(false);
   });
 

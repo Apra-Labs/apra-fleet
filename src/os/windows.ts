@@ -217,6 +217,11 @@ export class WindowsCommands implements OsCommands {
     if (model) {
       argList += ` ${provider.modelFlag(escapeWindowsArg(model))}`;
     }
+    // Per-session member MCP config, quoted by the provider for PowerShell.
+    // Appended LAST: Claude's --mcp-config is variadic.
+    if (opts.mcpConfigPath && provider.mcpConfigFlag) {
+      argList += ` ${provider.mcpConfigFlag(opts.mcpConfigPath, false)}`;
+    }
 
     return provider.wrapWindowsPrompt(setupCmd, filePath, argList, sessionId, model, opts.tier);
   }

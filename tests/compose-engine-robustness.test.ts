@@ -116,8 +116,14 @@ describe.skipIf(skipLive)('compose engine (live local member)', () => {
 
   it.skipIf(isRoot)('ledger records exactly what was written when the member MCP sync fails', async () => {
     await withMember('claude', async (h, id) => {
-      // HOME read-only: ~/.claude.json (the member MCP entry) cannot be written,
-      // while the work-folder permission file still can.
+      // A local claude member gets its member server per dispatch session, so
+      // compose's MCP sync only has to touch ~/.claude.json to REMOVE a folder
+      // entry an older compose wrote for it. Seed that entry, then make HOME
+      // read-only: the sync's write fails, while the work-folder permission
+      // file still lands.
+      const claudeJson = path.join(home, '.claude.json');
+      const seeded = JSON.stringify({ projects: { [work]: { mcpServers: { 'apra-fleet': { type: 'http', url: `http://localhost:7523/mcp?member=${id}` } } } } }, null, 2);
+      fs.writeFileSync(claudeJson, seeded);
       fs.chmodSync(home, 0o555);
       const result = await h.composePermissions({ member_id: id, role: 'doer', grant: ['Bash(custom-tool:*)'], project_folder: ledgerDir });
       fs.chmodSync(home, 0o755);
@@ -131,7 +137,8 @@ describe.skipIf(skipLive)('compose engine (live local member)', () => {
       // the ledger claims only permission grants that are on disk -- nothing about the MCP entry
       for (const p of granted) expect(onDisk).toContain(p);
       expect(Object.keys(ledger).sort()).toEqual(['granted', 'stacks']);
-      expect(fs.existsSync(path.join(home, '.claude.json'))).toBe(false);
+      // the member config was not changed behind the failure
+      expect(fs.readFileSync(claudeJson, 'utf8')).toBe(seeded);
       expect(result).toContain('the apra-fleet member MCP entry was NOT written');
     });
   }, 60000);

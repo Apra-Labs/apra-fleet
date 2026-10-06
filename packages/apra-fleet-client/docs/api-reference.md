@@ -280,6 +280,16 @@ fields are sent as the tool payload; `timeoutMs` is passed to
 `deriveTimeoutMs(payload)` when not given explicitly), and `signal` as
 `opts.signal`.
 
+A claude member's dispatched session is started with
+`--mcp-config <file>` naming one `apra-fleet` http server at
+`http://localhost:<port>/mcp?member=<member uuid>` (this server's port for a
+local member, the member install's default port for a remote one), so the
+session is member-scoped whatever the folder or user config says; other MCP
+servers stay available (`--strict-mcp-config` is not used). A remote member
+gets it only while its recorded `fleetMcp` says its own server answers a
+member session; otherwise, or when the file cannot be written, the session
+runs with its own MCP config (the per-folder entry).
+
 | Field | Type | Notes |
 |---|---|---|
 | `prompt` | `string` | The prompt to send to the LLM on the remote member. |
@@ -438,7 +448,7 @@ error naming the key (the member is not updated) -- they are no longer silently 
 |---|---|---|
 | `member_id` | `string?` | UUID of the member. |
 | `member_name` | `string?` | Friendly name of the member. |
-| `fleet_install` | `"auto" \| "skip"?` | `"auto"`: for a remote member, probe it and install/upgrade its own apra-fleet when missing or older than the orchestrator (build-aware: same-core different builds upgrade, newer cores never downgrade), self-register, write its per-folder apra-fleet MCP entry and verify, even when nothing else changed; the result includes the `fleetMcp` line (then `member_detail` with `refresh: true`). `"skip"`: no install. Omitted: install only on a provider change. |
+| `fleet_install` | `"auto" \| "skip"?` | `"auto"`: for a remote member, probe it and install/upgrade its own apra-fleet when missing or older than the orchestrator (build-aware: same-core different builds upgrade, newer cores never downgrade), self-register, write its per-folder apra-fleet MCP entry and verify (for a claude member the entry is only the fallback of the per-session `--mcp-config`, so neither its write nor its check gates `fleetMcp`), even when nothing else changed; the result includes the `fleetMcp` line (then `member_detail` with `refresh: true`). `"skip"`: no install. Omitted: install only on a provider change. |
 | `friendly_name` | `string?` | New friendly name. |
 | `work_folder` | `string?` | New working directory. For non-local (remote/relay) members, must be a fully-qualified/absolute path (e.g. `/home/bella/repo` or `C:\Users\bella\repo`) -- tilde and relative paths are rejected. A folder may hold at most one LLM member and one LLM-less (llm_provider none) member. A real change removes what `compose_permissions` wrote in the OLD folder (per-folder `apra-fleet` MCP entry, permission keys, `.git/info/exclude` lines) and re-runs `compose_permissions`, so the new folder gets its `?member=<uuid>` entry at once. |
 | `host` | `string?` | New host (remote members only). |
@@ -470,7 +480,7 @@ error naming the key (the member is not updated) -- they are no longer silently 
 
 #### `removeMember(options: RemoveMemberOptions)`
 
-Calls `remove_member` -- removes a member from the fleet. Before the member is deleted (and before the fleet's own SSH key is removed from the member), it removes what `compose_permissions` wrote for the member (per-folder `apra-fleet` MCP entry, permission keys, `.git/info/exclude` lines); anything it could not remove, or could not reach, is reported as a warning in the result.
+Calls `remove_member` -- removes a member from the fleet. Before the member is deleted (and before the fleet's own SSH key is removed from the member), it removes what `compose_permissions` wrote for the member (per-folder `apra-fleet` MCP entry, permission keys, `.git/info/exclude` lines); anything it could not remove, or could not reach, is reported as a warning in the result. A local member's per-session MCP config file (`session-mcp/<uuid>.json` in the server data dir) is deleted too.
 
 | Field | Type | Notes |
 |---|---|---|
@@ -562,7 +572,10 @@ containing a shell-chaining metacharacter (`|`, `;`, `&&`, backtick, `$()`)
 Every compose (proactive or `grant`) also wires the member's per-folder
 `apra-fleet` MCP entry, whose URL ends in `?member=<member uuid>`: claude
 writes it to Claude's local scope (`projects[<workFolder>].mcpServers` in the
-member's `~/.claude.json`), opencode to `<workFolder>/opencode.json`, and agy
+member's `~/.claude.json`) for a REMOTE member only (a local claude member gets
+the member server per dispatch session through `--mcp-config`, see
+`executePrompt`, so no folder entry is written for it; a folder entry an
+older compose wrote for that member is removed), opencode to `<workFolder>/opencode.json`, and agy
 gets none (it has no per-project MCP config). claude and agy also receive
 client-side deny rules for exactly the registered fleet tools outside the
 member allowlist; opencode gets none. The retired `apra-fleet-member`

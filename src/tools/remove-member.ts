@@ -23,6 +23,7 @@ import { logLine } from '../utils/log-helpers.js';
 import { removeMemberFromOwnInstall, getMemberFleetMcpDeps } from '../services/member-fleet-install.js';
 import { invalidatePreflightCache } from '../services/preflight-check.js';
 import { removeComposedMemberConfig } from './compose-permissions.js';
+import { removeLocalSessionMcpConfig } from '../services/session-mcp-config.js';
 
 const vcsProviders: Record<string, VcsProviderService> = {
   github: githubProvider,
@@ -225,6 +226,7 @@ export async function removeMember(input: RemoveMemberInput): Promise<string> {
   }
 
   const removed = removeFromRegistry(agent.id);
+  removeLocalSessionMcpConfig(agent);
   invalidatePreflightCache(agent.id);
   getStallDetector().remove(agent.id);
   writeStatusline();

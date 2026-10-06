@@ -18,20 +18,23 @@
 //   2. tools     -- listTools(member) on the MEMBER session must list kb_*
 //                   and code_* tools; then the member's recorded fleetMcp
 //                   status is refreshed server-side through member_detail
-//                   with refresh:true (the server re-probes the member session
-//                   and per-folder MCP entry and RECORDS the result -- the
-//                   chosen mechanism; see src/tools/member-detail.ts).
+//                   with refresh:true (the server re-probes the path a
+//                   dispatched session actually uses -- for a claude member
+//                   the per-session member config, so no per-folder entry is
+//                   required -- heals what it can (registration on the
+//                   member's own install, role-file grants) and RECORDS the
+//                   result; see src/tools/member-detail.ts).
 //   3. overrides -- the member is UNVERIFIED even when its member session
 //                   lists the tools when: provider opencode
 //                   (no-per-tool-deny: opencode cannot deny individual tools,
 //                   engine-side because the server reports opencode
 //                   available); provider agy (no-per-project-mcp); the
 //                   refreshed fleetMcp is unavailable or flagged unverified
-//                   (e.g. mcp-entry-missing: the per-folder MCP entry is
-//                   absent or does not end with ?member=<uuid>;
+//                   (e.g. mcp-entry-missing: a provider that reads the
+//                   per-folder MCP entry has none ending with ?member=<uuid>;
 //                   role-agents-hide-member-tools: the role files a
 //                   dispatched --agent <role> session loads filter the
-//                   member tools out).
+//                   member tools out and could not be healed).
 //   4. count     -- kb_stats AS the member: totals.by_confidence.CONFIRMED.
 //   5. code      -- code_reindex AS the member, then code_status polled until
 //                   the first tick or the bound (30 s by default) elapses.
@@ -87,7 +90,7 @@ export const MEMBER_INIT_FIXES = Object.freeze({
     'member-tools-missing': "the member session does not list kb_* and code_* tools: update the member's fleet install, then rerun the sprint",
     'fleet-mcp-refresh-failed': 'member_detail refresh:true failed for the member; fix the reported error and re-probe',
     'mcp-entry-missing': 'run compose_permissions for the member so its per-folder fleet MCP entry ends with ?member=<uuid>, then re-probe with member_detail refresh:true',
-    'role-agents-hide-member-tools': "the role agent files the member's CLI loads (--agent <role>) do not grant the kb_* and code_* tools: run update_member for a remote member, or re-install apra-fleet on the orchestrator for a local one, then re-probe with member_detail refresh:true",
+    'role-agents-hide-member-tools': "the role agent files the member's CLI loads (--agent <role>) do not grant the kb_* and code_* tools and the automatic rewrite failed: run update_member for a remote member, or make the role files writable (or re-install apra-fleet on the orchestrator) for a local one, then re-probe with member_detail refresh:true",
     'no-per-tool-deny': 'opencode cannot deny individual tools, so this member is never verified; use a claude member for verified knowledge-bank access',
     'no-per-project-mcp': 'agy has no per-project MCP config, so this member is never verified; use a claude member for verified knowledge-bank access',
     'fleet-mcp-unavailable': "fix the cause of the member's unavailable fleetMcp status, then re-probe with member_detail refresh:true",

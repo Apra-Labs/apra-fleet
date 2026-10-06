@@ -13,6 +13,8 @@ import { transformAgentForClaude } from '../cli/agent-transform.js';
 import {
   claudeMemberDenyRules,
   joinMemberPath,
+  quotePosixPath,
+  quotePwshPath,
   readMemberJson,
   LEGACY_MEMBER_MCP_SERVER_NAME,
   MEMBER_MCP_SERVER_NAME,
@@ -235,7 +237,16 @@ export class ClaudeProvider implements ProviderAdapter {
     if (model) {
       cmd += ` --model "${escapeDoubleQuoted(model)}"`;
     }
+    // Per-session member MCP config. Appended LAST: --mcp-config is variadic,
+    // so it must never precede the positional prompt.
+    if (opts.mcpConfigPath) {
+      cmd += ` ${this.mcpConfigFlag(opts.mcpConfigPath, true)}`;
+    }
     return cmd;
+  }
+
+  mcpConfigFlag(absPath: string, posix: boolean): string {
+    return `--mcp-config ${posix ? quotePosixPath(absPath) : quotePwshPath(absPath.replace(/\//g, '\\'))}`;
   }
 
   skipPermissionsFlag(): string {
@@ -556,8 +567,13 @@ export class ClaudeProvider implements ProviderAdapter {
           changed = true;
         }
       } else if (MEMBER_MCP_SERVER_NAME in servers) {
-        delete servers[MEMBER_MCP_SERVER_NAME];
-        changed = true;
+        const current = servers[MEMBER_MCP_SERVER_NAME];
+        const own = isRecord(current) && typeof current.url === 'string'
+          && current.url.endsWith(`?member=${encodeURIComponent(agent.id)}`);
+        if (!ctx.removeOnlyOwnEntry || own) {
+          delete servers[MEMBER_MCP_SERVER_NAME];
+          changed = true;
+        }
       }
       project.mcpServers = servers;
       projects[key] = project;
