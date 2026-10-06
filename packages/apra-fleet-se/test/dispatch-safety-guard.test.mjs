@@ -531,7 +531,11 @@ const DOLT_SYNC_PATH = path.join(__dirname, '../fleet-sprint/dolt-sync.mjs');
 // 3 -> 4 (apra-fleet-akuv, remote-tip fingerprint): readRemoteDoltTip() gained
 // one new `git ls-remote <url> refs/dolt/data` call site (member_name:
 // member, confirmed present) used to skip a provably no-op D-pull/D-push.
-const EXPECTED_DOLT_SYNC_COMMAND_COUNT = 4;
+// 4 -> 7 (D-push landed check): readTipForPushCheck()'s `git ls-remote <url>
+// refs/dolt/data`, and readUnpushedDoltChanges()'s `bd vc status --json` and
+// `bd diff remotes/origin/<branch> <branch> --json` -- each passes
+// member_name: member.
+const EXPECTED_DOLT_SYNC_COMMAND_COUNT = 7;
 
 test('every command() call site in dolt-sync.mjs passes member_name or member_id', () => {
     const { sites, violations } = checkPath(DOLT_SYNC_PATH);
@@ -1117,7 +1121,11 @@ test('every command() call site in git-topology.mjs passes member_name or member
 // what a zero baseline turns red.
 // =============================================================================
 const MEMBER_SYNC_PATH = path.join(__dirname, '../fleet-sprint/member-sync.mjs');
-const EXPECTED_MEMBER_SYNC_COMMAND_COUNT = 1;
+// 1 -> 2 (G-push landed check): checkGitPushLanded()'s single `run` helper,
+// which issues its read-only git reads (rev-parse, ls-remote, fetch,
+// rev-list) with member_name: member, outside runGitStep because each is a
+// best-effort verification read, not a sync step to retry or self-heal.
+const EXPECTED_MEMBER_SYNC_COMMAND_COUNT = 2;
 
 test('every command() call site in member-sync.mjs passes member_name or member_id', () => {
     const { sites, violations } = checkPath(MEMBER_SYNC_PATH);

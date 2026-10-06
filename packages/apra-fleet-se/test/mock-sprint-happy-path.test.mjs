@@ -157,16 +157,26 @@ test('mock sprint: happy path is deterministic across two independent runs', asy
         // earlier) makes provisionVcsAuthForMember skip its own internal
         // `git remote get-url origin` re-derivation -- eliminating what
         // used to be a second, redundant classification-shaped probe here.
-        const pushIdx = run1.commandLog.length - 3;
-        const originUrlIdx = run1.commandLog.length - 2;
-        const prIdx = run1.commandLog.length - 1;
+        // The G-push landed check's read-only reads (member-sync.mjs
+        // checkGitPushLanded: rev-parse/ls-remote/fetch/rev-list) follow the
+        // push; they are verification, not part of the publish sequence this
+        // tail pins, so they are skipped here.
+        const isLandedCheckRead = (c) => typeof c === 'string' && (c === 'git rev-parse HEAD' || /^git (ls-remote|fetch|rev-list --count) /.test(c));
+        const publishTail = run1.commandLog.filter((c) => !isLandedCheckRead(c));
+        const pushIdx = publishTail.length - 3;
+        const originUrlIdx = publishTail.length - 2;
+        const prIdx = publishTail.length - 1;
         check(
-            run1.commandLog[pushIdx] && run1.commandLog[pushIdx].startsWith(`git push -u origin ${RUN1_BRANCH}`),
-            `Expected third-to-last commandLog entry to be the branch push, got: ${JSON.stringify(run1.commandLog[pushIdx])}`
+            publishTail[pushIdx] && publishTail[pushIdx].startsWith(`git push -u origin ${RUN1_BRANCH}`),
+            `Expected third-to-last commandLog entry to be the branch push, got: ${JSON.stringify(publishTail[pushIdx])}`
         );
         check(
-            run1.commandLog[originUrlIdx] === 'git remote get-url origin',
-            `Expected second-to-last commandLog entry to be the origin-remote classification probe, got: ${JSON.stringify(run1.commandLog[originUrlIdx])}`
+            run1.commandLog.includes('git rev-parse HEAD'),
+            'Expected the G-push landed check to read the local HEAD after the push'
+        );
+        check(
+            publishTail[originUrlIdx] === 'git remote get-url origin',
+            `Expected second-to-last commandLog entry to be the origin-remote classification probe, got: ${JSON.stringify(publishTail[originUrlIdx])}`
         );
         // apra-fleet-3swo.7.6: replaces the retired "second-to-last entry is
         // the credential-token read" assertion. Strictly stronger than what it
@@ -178,8 +188,8 @@ test('mock sprint: happy path is deterministic across two independent runs', asy
             `Expected NO credential-token read to be dispatched by the orchestrator (the vcs_credential_exec handoff reads it server-side), got: ${JSON.stringify(run1.commandLog.filter((c) => typeof c === 'string' && c.startsWith('$HOME/.fleet-git-credential-')))}`
         );
         check(
-            run1.commandLog[prIdx] && run1.commandLog[prIdx].startsWith('curl -sS -X POST') && run1.commandLog[prIdx].includes('/pulls') && run1.commandLog[prIdx].includes('"base":"main"') && run1.commandLog[prIdx].includes(`"head":"${RUN1_BRANCH}"`),
-            `Expected last commandLog entry to be the VCSModule PR-raise (not merge) command, got: ${JSON.stringify(run1.commandLog[prIdx])}`
+            publishTail[prIdx] && publishTail[prIdx].startsWith('curl -sS -X POST') && publishTail[prIdx].includes('/pulls') && publishTail[prIdx].includes('"base":"main"') && publishTail[prIdx].includes(`"head":"${RUN1_BRANCH}"`),
+            `Expected last commandLog entry to be the VCSModule PR-raise (not merge) command, got: ${JSON.stringify(publishTail[prIdx])}`
         );
         // apra-fleet-eft.8.x (syncMemberBefore/G-pull) legitimately issues
         // `git merge --ff-only <remote>/<branch>` to bring a member's own
@@ -396,8 +406,8 @@ test('mock sprint: happy path is deterministic across two independent runs', asy
         // inside the `-d '{...}'` payload, not `gh pr create`'s `--title`/
         // `--body` flags -- match the new JSON shape.
         check(
-            run1.commandLog[prIdx] && /"title":"[^"]*PASS[^"]*"/.test(run1.commandLog[prIdx]) && /## Sprint verdict: PASS/.test(run1.commandLog[prIdx]),
-            `Expected the PR title AND body to include the PASS verdict, got: ${run1.commandLog[prIdx]}`
+            publishTail[prIdx] && /"title":"[^"]*PASS[^"]*"/.test(publishTail[prIdx]) && /## Sprint verdict: PASS/.test(publishTail[prIdx]),
+            `Expected the PR title AND body to include the PASS verdict, got: ${publishTail[prIdx]}`
         );
 
         // apra-fleet-eft.1.3 regression (folded in from the former
@@ -405,8 +415,8 @@ test('mock sprint: happy path is deterministic across two independent runs', asy
         // whole extra runOnce() sprint on this single negative): a successful
         // sprint's PR must never carry the abort path's [ABORTED] prefix.
         check(
-            run1.commandLog[prIdx] && !run1.commandLog[prIdx].includes('[ABORTED]'),
-            `A successful sprint's PR must NOT carry the [ABORTED] prefix, got: ${run1.commandLog[prIdx]}`
+            publishTail[prIdx] && !publishTail[prIdx].includes('[ABORTED]'),
+            `A successful sprint's PR must NOT carry the [ABORTED] prefix, got: ${publishTail[prIdx]}`
         );
     });
 });

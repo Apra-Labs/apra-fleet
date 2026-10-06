@@ -669,7 +669,11 @@ describe('runner.js mock-level execution', () => {
         // provisionVcsAuthForMember skip its own internal
         // `git remote get-url origin` re-derivation -- eliminating what
         // used to be a second, redundant classification-shaped probe here.
-        const last3 = spy.commandLog.slice(-3);
+        // The G-push landed check's read-only reads (member-sync.mjs
+        // checkGitPushLanded) follow the push; skip them -- they verify the
+        // push, they are not part of the publish sequence pinned here.
+        const isLandedCheckRead = (c) => typeof c === 'string' && (c === 'git rev-parse HEAD' || /^git (ls-remote|fetch|rev-list --count) /.test(c));
+        const last3 = spy.commandLog.filter((c) => !isLandedCheckRead(c)).slice(-3);
         assert.match(last3[0], /^git push -u origin auto-sprint\/reach-test/);
         assert.match(last3[1], /^git remote get-url origin\b/);
         assert.match(last3[2], /^curl -sS -X POST\b/);
