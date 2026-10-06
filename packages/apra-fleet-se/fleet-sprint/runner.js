@@ -1138,9 +1138,7 @@ async function runSprintCycle(context) {
     const warnWorkflowsPermissionMissing = context.warnWorkflowsPermissionMissing ?? (
         (args && typeof args.callTool === 'function')
             ? createWorkflowsPermissionPreflightCallback({ callTool: args.callTool, command, log })
-            : async (member) => {
-                log(`[Sync] preflight: provision_vcs_auth skipped for member '${member}': no callTool wired -- no proactive preflight (the reactive self-heal is the only auth recovery).`);
-            }
+            : async () => {}
     );
 
     // LLM-auth counterpart to onAuthFailure above, same precedence shape.
@@ -1169,9 +1167,7 @@ async function runSprintCycle(context) {
     const ensureUnattendedAuto = context.ensureUnattendedAuto ?? (
         (args && typeof args.callTool === 'function')
             ? createUnattendedAutoProvisioner({ callTool: args.callTool, log })
-            : async (member) => {
-                log(`[Sync] preflight: provision_vcs_auth skipped for member '${member}': no callTool wired -- no proactive preflight (the reactive self-heal is the only auth recovery).`);
-            }
+            : async () => {}
     );
 
     // The per-dispatch HARD elapsed-time ceiling (max_total_s). The integ-test
@@ -1470,9 +1466,7 @@ async function runSprintCycle(context) {
     const ensureDeployPermissions = context.ensureDeployPermissions ?? (
         (args && typeof args.callTool === 'function')
             ? createDeployPermissionsProvisioner({ callTool: args.callTool, command, log })
-            : async (member) => {
-                log(`[Sync] preflight: provision_vcs_auth skipped for member '${member}': no callTool wired -- no proactive preflight (the reactive self-heal is the only auth recovery).`);
-            }
+            : async () => {}
     );
 
     // ONE shared bracket wrapping EVERY role-identified agent() dispatch
