@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "85a04bf2d353ca960d30b447246bbe3a55ddb4b8",
     "branch": "v0.5_dashboard",
-    "entry_count": 441
+    "entry_count": 442
   },
   "entries": [
     {
@@ -4894,6 +4894,28 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:12.954Z"
+    },
+    {
+      "id": "96303321-b226-4015-b356-5371caa284db",
+      "type": "learning",
+      "title": "Viewer-child integration suites need their own spawner basePort or they race for 8081",
+      "summary": "Two test files that each build createSpawner() without basePort both allocate --viewer-port from DEFAULT_SPAWNER_BASE_PORT 8081; run concurrently, both pick 8081, one child dies on EADDRINUSE and the other suite's child answers its /state.",
+      "symbols": [
+        "allocateFreePort",
+        "DEFAULT_SPAWNER_BASE_PORT",
+        "createSpawner",
+        "waitForChildUp",
+        "isChildAnswering"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/src/supervisor/spawner.mjs",
+        "packages/apra-fleet-se/test/helpers/viewer-child-wait.mjs",
+        "packages/apra-fleet-se/test/fixtures/dashboard/viewer-child.mjs",
+        "packages/apra-fleet-se/test/supervisor-stop-restart-integration.test.mjs",
+        "packages/apra-fleet-se/test/supervisor-dashboard-integration.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T17:33:18.516Z"
     },
     {
       "id": "9633904f-dcfa-458c-8e41-8478792634a5",
