@@ -322,6 +322,7 @@ is rejected for them and `execute_command` should be used instead.
 - Automatically retries once with a 5-second backoff on transient server errors.
 - A `busy` rejection is not taken at face value: before rejecting, the tool verifies the locked session's backing process is actually still alive. If confirmed dead, the stale lock self-heals -- released with a warning -- and the dispatch proceeds instead of being rejected.
 - A Claude session that terminates because it hit the turn limit always classifies as `max_turns_exhausted`.
+- Claude: a result whose `permission_denials` is non-empty (tool calls refused with "requires approval", `is_error` still false) returns `reason: "permission_denied"` with the same `permissionDenied` block, even when the reply otherwise looks complete; any partial reply is in `response`.
 - AGY: a tool call refused for lack of a grant returns `reason: "permission_denied"` with a `permissionDenied` block (denied actions, targets, `suggestedGrants`, `hint`); heal it with `compose_permissions` `grant` and re-dispatch. An agy member whose own agy project cannot be created or verified is rejected with `dispatch_failed` and no LLM call. See [agy-provider.md](agy-provider.md).
 
 **Token accumulation:**

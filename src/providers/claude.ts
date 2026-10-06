@@ -12,6 +12,7 @@ import type { MemberShell } from '../os/os-commands.js';
 import { wrapPowerShellEncoded } from '../os/windows.js';
 import { isPosixShell } from '../utils/agent-helpers.js';
 import { transformAgentForClaude } from '../cli/agent-transform.js';
+import { detectClaudePermissionDenial } from './claude-permission-denial.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -259,7 +260,19 @@ export class ClaudeProvider implements ProviderAdapter {
     return this.workspaceEditPermissionFlag() ?? '';
   }
 
+  /** Parses the run's result and, when Claude refused tool calls for lack of
+   *  a grant (a non-empty permission_denials on the result event), attaches
+   *  the denial so execute_prompt fails with reason 'permission_denied'
+   *  instead of returning the refusal as an ordinary reply
+   *  (see detectClaudePermissionDenial). */
   parseResponse(result: SSHExecResult): ParsedResponse {
+    const parsed = this.parseResult(result);
+    const denial = detectClaudePermissionDenial(result.stdout);
+    if (denial) parsed.permissionDenial = denial;
+    return parsed;
+  }
+
+  private parseResult(result: SSHExecResult): ParsedResponse {
     const raw = result.stdout.trim();
 
     // Claude reports prompt-cache traffic in two fields separate from (not

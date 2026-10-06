@@ -6,6 +6,9 @@ import {
     isInfraDispatchFailure,
     isUsageLimitDispatchError,
     usageLimitOf,
+    isPermissionDeniedDispatchError,
+    permissionDeniedOf,
+    MemberPermissionDeniedError,
 } from './errors.mjs';
 import { AgentOutputError, AgentDispatchError, FleetTransportError, WorkflowError } from '@apralabs/apra-fleet-workflow';
 
@@ -725,9 +728,71 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
     // resume ladder. A usage-limit re-dispatch does NOT consume a ladder
     // attempt (see the hook below), so it also skips the retry backoff.
     let usageLimitRedispatch = null;
+    // A permission-refusal heal is granted ONCE per ladder run: its retry does
+    // not consume a ladder attempt (and skips the backoff), and a second
+    // refusal ends the sprint instead of being healed again.
+    let permissionHealUsed = false;
+    let permissionHealRedispatch = false;
+    // Resolves null when the heal succeeded (re-run the attempt), else the
+    // MemberPermissionDeniedError that ends the sprint.
+    const healPermissionDenial = async (err) => {
+        const denial = permissionDeniedOf(err);
+        const actions = denial && denial.denials.length
+            ? denial.denials.map((d) => (d.target ? `${d.action} "${d.target}"` : d.action))
+            : ((denial && denial.actions) || []);
+        const actionText = actions.length ? actions.join(', ') : 'unknown actions';
+        const suggested = (denial && denial.suggestedGrants) || [];
+        const fail = (step, why, heal) => {
+            const composeRole = (heal && heal.composeRole) || 'the role of its sprint roles';
+            const rejected = (heal && heal.rejectedGrants) || [];
+            const grantFix = rejected.length
+                ? ` and grant ${JSON.stringify(rejected)} if that role should have them (they are outside the role policy, so the sprint never auto-grants them)`
+                : (suggested.length ? ` (suggested grants: ${JSON.stringify(suggested)})` : '');
+            return new MemberPermissionDeniedError(
+                `${roleLabel} dispatch on member '${member}' was refused tool calls for lack of a permission grant: ${actionText}. ` +
+                `${why} This is a missing-permission failure, not a ${roleLabel} result. ` +
+                `To fix: run compose_permissions for member '${member}' with role ${composeRole}${grantFix}, then rerun the sprint.`,
+                {
+                    member,
+                    role: policy.role,
+                    actions,
+                    suggestedGrants: suggested,
+                    rejectedGrants: rejected,
+                    step,
+                    details: { hint: denial ? denial.hint : '' },
+                    cause: err,
+                },
+            );
+        };
+        if (permissionHealUsed) {
+            return fail('retry', 'The retried dispatch was refused again after compose_permissions re-composed the member.', lastPermissionHeal);
+        }
+        permissionHealUsed = true;
+        if (typeof ctx.onPermissionDenied !== 'function') {
+            return fail('heal', 'No permission heal is wired for this run, so nothing re-composed the member.', null);
+        }
+        let heal;
+        try {
+            heal = await ctx.onPermissionDenied({ member, role: policy.role, roleLabel, denial });
+        } catch (healErr) {
+            heal = { healed: false, reason: healErr && healErr.message ? healErr.message : String(healErr) };
+        }
+        lastPermissionHeal = heal || null;
+        if (!heal || !heal.healed) {
+            return fail('heal', `The permission heal failed: ${(heal && heal.reason) || 'no result'}.`, heal);
+        }
+        ctx.log(
+            `${roleLabel} dispatch: member '${member}' was refused ${actionText}; permissions re-composed ` +
+            `-- retrying once (not charged to the ladder).`
+        );
+        return null;
+    };
+    let lastPermissionHeal = null;
 
     for (let attempt = 1; attempt <= attempts; attempt++) {
-        if (!usageLimitRedispatch && backoffMs && backoffMs[attempt - 1] > 0) {
+        const skipBackoff = Boolean(usageLimitRedispatch) || permissionHealRedispatch;
+        permissionHealRedispatch = false;
+        if (!skipBackoff && backoffMs && backoffMs[attempt - 1] > 0) {
             ctx.log(
                 `${roleLabel} dispatch: waiting ${backoffMs[attempt - 1] / 1000}s before retry attempt ` +
                 `${attempt}/${backoffMs.length}...`
@@ -823,6 +888,26 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
             // pre-dispatch sync. Any other error re-arms it.
             if (!completedButSyncFailed && retry.skipPreDispatchSyncOnNoMutation) {
                 skipPreDispatchSyncNext = ctx.isNoMutationDispatchFailure(err);
+            }
+
+            // An agent permission refusal (reason 'permission_denied': the
+            // member CLI refused tool calls for lack of a grant) is a
+            // MISSING-PERMISSION failure, for every role -- never a role
+            // outcome. It is never degraded (a plan-reviewer's refusal text
+            // must not become a CHANGES_NEEDED verdict and charge a planning
+            // round), never retried blindly (the same config refuses the same
+            // call), and healed exactly once: ctx.onPermissionDenied re-composes
+            // the member's permissions (plus any suggested grant within its
+            // role policy), then the attempt is re-run without charging the
+            // ladder. A failed heal, no heal hook, or a second refusal ends the
+            // sprint with MemberPermissionDeniedError naming member, the denied
+            // actions and the fix.
+            if (!completedButSyncFailed && isPermissionDeniedDispatchError(err)) {
+                const healError = await healPermissionDenial(err);
+                if (healError) throw healError;
+                permissionHealRedispatch = true;
+                attempt -= 1;
+                continue;
             }
 
             // Usage-limit pause/resume (apra-fleet-hzeb.4.2). A provider

@@ -97,7 +97,9 @@
  *   'max_total_time' (max_total_s, measured from the call including setup, ran out) | ...
  * @property {PermissionDenied} [permissionDenied] - Present when `reason === 'permission_denied'`:
  *   the member CLI refused tool calls for lack of a grant (AGY headless mode auto-denies them
- *   and exits 0, which used to surface as 'empty_response'). Pass `suggestedGrants` to
+ *   and exits 0, which used to surface as 'empty_response'; Claude reports them in its result
+ *   event's non-empty `permission_denials` while is_error stays false, which used to surface as
+ *   an ordinary reply). A failure for every caller even when the reply looks complete. Pass `suggestedGrants` to
  *   compose_permissions `grant` to heal it; read it with {@link permissionDenialOf}. Any partial
  *   reply is in `response`.
  * @property {UsageLimitSignal} [usageLimit] - Present when `reason === 'usage_limit'`

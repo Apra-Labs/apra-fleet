@@ -377,6 +377,138 @@ export function createPermissionConfigPreflight(opts = {}) {
     };
 }
 
+// ---------------------------------------------------------------------------
+// Mid-sprint permission-refusal heal (dispatch reason 'permission_denied')
+// ---------------------------------------------------------------------------
+
+// The role policy a permission heal may auto-grant within, per
+// compose_permissions role. It mirrors the base profiles compose_permissions
+// itself composes for that role (skills/fleet/profiles/base-reviewer.json and
+// base-dev.json; test/permission-denial-heal.test.mjs fails if an entry here
+// is not in its profile). A suggested grant outside it is NEVER auto-added:
+// it is named in the failure for an operator to grant deliberately. Bash
+// grants are matched by command WORD, so `Bash(bd:*)` and the narrow
+// `Bash(bd show x)` are both in policy for a role whose profile allows bd.
+const AUTO_GRANT_POLICY = Object.freeze({
+    reviewer: Object.freeze({
+        commands: Object.freeze(['git', 'bd', 'which', 'ls', 'cat', 'head', 'tail', 'find', 'wc', 'sort', 'diff', 'echo', 'grep', 'gh', 'jq']),
+        tools: Object.freeze([
+            'Read', 'Glob', 'Grep',
+            'mcp__apra-fleet__kb_session_prime', 'mcp__apra-fleet__kb_query', 'mcp__apra-fleet__kb_feedback',
+            'mcp__apra-fleet__code_context', 'mcp__apra-fleet__code_graph', 'mcp__apra-fleet__code_impact', 'mcp__apra-fleet__code_query',
+        ]),
+    }),
+    doer: Object.freeze({
+        commands: Object.freeze([
+            'git', 'bd', 'which', 'ls', 'cat', 'head', 'tail', 'mkdir', 'cp', 'mv', 'rm', 'find', 'wc', 'sort', 'diff',
+            'echo', 'touch', 'chmod', 'curl', 'tar', 'unzip', 'grep', 'sed', 'awk', 'tee', 'xargs', 'sleep', 'kill', 'pkill',
+            'gh', 'jq',
+        ]),
+        tools: Object.freeze([
+            'Read', 'Write', 'Edit', 'Glob', 'Grep',
+            'mcp__apra-fleet__kb_session_prime', 'mcp__apra-fleet__kb_query', 'mcp__apra-fleet__kb_stats',
+            'mcp__apra-fleet__kb_capture', 'mcp__apra-fleet__kb_feedback',
+            'mcp__apra-fleet__code_context', 'mcp__apra-fleet__code_graph', 'mcp__apra-fleet__code_impact', 'mcp__apra-fleet__code_query',
+        ]),
+    }),
+});
+
+/** Exposed for the profile drift test only. */
+export const PERMISSION_HEAL_AUTO_GRANT_POLICY = AUTO_GRANT_POLICY;
+
+// A grant payload with any of these can chain or substitute another command,
+// so it is never in policy whatever its first word (compose_permissions
+// refuses the same set as NEVER_AUTO_GRANT).
+const GRANT_CHAIN_RE = /[|;&`<>]|\$\(/;
+
+/**
+ * Splits `suggestedGrants` into the ones within compose role `composeRole`'s
+ * auto-grant policy and the ones outside it. Pure; the code-level guard that
+ * keeps a heal from widening a member beyond what its role is composed with.
+ * @param {'doer'|'reviewer'} composeRole
+ * @param {string[]} suggestedGrants
+ * @returns {{ allowed: string[], rejected: string[] }}
+ */
+export function grantsWithinRolePolicy(composeRole, suggestedGrants) {
+    const policy = AUTO_GRANT_POLICY[composeRole] || AUTO_GRANT_POLICY.reviewer;
+    const commands = new Set(policy.commands);
+    const tools = new Set(policy.tools);
+    const allowed = [];
+    const rejected = [];
+    for (const raw of suggestedGrants || []) {
+        const g = String(raw || '').trim();
+        if (!g) continue;
+        let ok = false;
+        const bash = /^Bash\((.*)\)$/s.exec(g);
+        if (bash) {
+            const payload = bash[1].trim();
+            const word = payload.split(/[\s:]/)[0];
+            ok = !GRANT_CHAIN_RE.test(payload) && commands.has(word);
+        } else {
+            ok = tools.has(g);
+        }
+        (ok ? allowed : rejected).push(g);
+    }
+    return { allowed: [...new Set(allowed)], rejected: [...new Set(rejected)] };
+}
+
+/**
+ * Builds the dispatch engine's `onPermissionDenied` hook: one bounded heal of
+ * a member whose dispatch was refused tool calls for lack of a grant.
+ *
+ *   1. compose_permissions for the member with the compose role of ALL its
+ *      sprint roles (composeRoleForRoles over `memberRoles(member)`, so a
+ *      member that also serves doer is never narrowed to reviewer) -- this
+ *      restores a composed config a re-clone dropped;
+ *   2. when the denial's suggestedGrants include grants within that role's
+ *      policy (grantsWithinRolePolicy), a second compose_permissions call
+ *      merges just those. Grants outside the policy are never sent.
+ *
+ * Resolves `{ healed, composeRole, grants, rejectedGrants, reason }`; never
+ * throws -- the engine turns `healed: false` into MemberPermissionDeniedError.
+ *
+ * @param {{ callTool: Function, memberRoles?: (member: string) => string[], log?: Function }} opts
+ */
+export function createPermissionDenialHeal(opts = {}) {
+    const { callTool, memberRoles = () => [], log = () => {} } = opts;
+    if (typeof callTool !== 'function') throw new TypeError('createPermissionDenialHeal: callTool is required');
+    const fleetApi = new ApraFleet({ callTool });
+
+    const compose = async (args) => {
+        let res;
+        try {
+            res = await fleetApi.composePermissions(args);
+        } catch (err) {
+            return `compose_permissions failed: ${err && err.message ? err.message : err}`;
+        }
+        const failure = composeFailureText(res);
+        return failure ? `compose_permissions failed: ${failure.replace(/\s+/g, ' ').slice(0, 300)}` : null;
+    };
+
+    return async function onPermissionDenied({ member, role, denial }) {
+        const roles = [...new Set([...(memberRoles(member) || []), role].filter(Boolean))];
+        const composeRole = composeRoleForRoles(roles);
+        const { allowed, rejected } = grantsWithinRolePolicy(composeRole, denial ? denial.suggestedGrants : []);
+        if (rejected.length) {
+            log(`[permission-heal] member '${member}': NOT auto-granting ${rejected.join(', ')} -- outside the '${composeRole}' role policy; an operator must grant it deliberately.`);
+        }
+        log(`[permission-heal] member '${member}' (${role}) was refused tool calls (${(denial && denial.actions.join(', ')) || 'unknown actions'}); re-composing its permissions with role '${composeRole}'.`);
+        const recomposeErr = await compose({ member_name: member, role: composeRole });
+        if (recomposeErr) return { healed: false, composeRole, grants: [], rejectedGrants: rejected, reason: recomposeErr };
+        if (allowed.length) {
+            const grantErr = await compose({
+                member_name: member,
+                role: composeRole,
+                grant: allowed,
+                grant_reason: `sprint ${role} dispatch was refused these tool calls`,
+            });
+            if (grantErr) return { healed: false, composeRole, grants: [], rejectedGrants: rejected, reason: grantErr };
+        }
+        log(`[permission-heal] member '${member}': permissions re-composed${allowed.length ? ` with ${allowed.join(', ')}` : ''}.`);
+        return { healed: true, composeRole, grants: allowed, rejectedGrants: rejected, reason: null };
+    };
+}
+
 /**
  * Stage `content` to a fresh temp file ON THE MEMBER that will run the
  * subsequent `bd` command, and return that MEMBER-LOCAL absolute path.

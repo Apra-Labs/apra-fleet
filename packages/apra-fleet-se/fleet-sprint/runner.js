@@ -82,6 +82,7 @@ import {
     createMemberSessionGuard, createUnattendedAutoProvisioner,
     createDeployPermissionsProvisioner, stageCommandBodyMemberSide,
     createPermissionConfigPreflight,
+    createPermissionDenialHeal,
 } from './member-provisioning.mjs';
 import {
     parseOwnerRepoFromRemoteUrl, parseRepoScopeFromRemoteUrl, vcsCredentialLabelForProvider,
@@ -1459,6 +1460,25 @@ async function runSprintCycle(context) {
     );
     await verifyPermissionConfigs(permissionConfigMembers);
 
+    // Mid-sprint counterpart of the preflight above: a dispatch whose member
+    // CLI refused tool calls for lack of a grant (execute_prompt reason
+    // 'permission_denied') is healed ONCE by the dispatch engine through this
+    // hook -- compose_permissions for the member's roles plus any suggested
+    // grant within that role policy -- and retried once; see
+    // createPermissionDenialHeal. Same precedence: an injected
+    // `context.onPermissionDenied` (tests), else the real compose_permissions
+    // heal from `args.callTool`, else none (the engine then fails the sprint
+    // on the first refusal, naming member, actions and fix).
+    const onPermissionDenied = context.onPermissionDenied ?? (
+        (args && typeof args.callTool === 'function')
+            ? createPermissionDenialHeal({
+                callTool: args.callTool,
+                log,
+                memberRoles: (m) => permissionConfigMembers.get(m) || [],
+            })
+            : undefined
+    );
+
     // Self-heals deploy.md's declared Permissions onto the deployer /
     // integ-test-runner / regression-test-runner member before each of
     // those dispatches -- see createDeployPermissionsProvisioner's doc
@@ -1543,6 +1563,8 @@ async function runSprintCycle(context) {
         // apra-fleet-hzeb.4.2: the usage-limit pause/resume/re-probe hook the
         // engine arms for a role whose retry.usageLimitPause is set.
         onUsageLimit,
+        // The one bounded heal for a 'permission_denied' dispatch.
+        onPermissionDenied,
         fixedRoleTier: FIXED_ROLE_TIER,
         budgets: {
             DISPATCH_TIMEOUT_S,

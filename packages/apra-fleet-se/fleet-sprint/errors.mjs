@@ -1010,3 +1010,90 @@ export class MemberPermissionConfigError extends WorkflowError {
         this.role = role;
     }
 }
+
+// ---------------------------------------------------------------------------
+// Agent permission refusals during a dispatch (reason 'permission_denied')
+// ---------------------------------------------------------------------------
+//
+// execute_prompt reports a dispatch whose member CLI refused tool calls for
+// lack of a grant as a structured `reason: 'permission_denied'` with a
+// `permissionDenied` block ({ actions, denials, suggestedGrants, hint,
+// signals }); the workflow layer forwards both onto AgentDispatchError.details.
+// It is a MISSING-PERMISSION failure, healed by compose_permissions -- never a
+// role outcome. In particular the refusal text must never be fed to a caller
+// as a plan-review/review verdict. Keyed on the structured reason only, like
+// isUsageLimitDispatchError: never on the provider's prose.
+export const PERMISSION_DENIED_DISPATCH_REASON = 'permission_denied';
+
+/**
+ * True when a dispatch error is an agent permission refusal.
+ * @param {unknown} err
+ * @returns {boolean}
+ */
+export function isPermissionDeniedDispatchError(err) {
+    return err?.details?.reason === PERMISSION_DENIED_DISPATCH_REASON;
+}
+
+/**
+ * The permissionDenied block carried on a permission-refusal dispatch error,
+ * normalised to `{ actions: string[], denials: {action, target?}[],
+ * suggestedGrants: string[], hint: string }`, or null when the error carries
+ * none.
+ * @param {unknown} err
+ * @returns {{actions: string[], denials: Array<{action: string, target?: string}>, suggestedGrants: string[], hint: string}|null}
+ */
+export function permissionDeniedOf(err) {
+    const d = err?.details?.permissionDenied;
+    if (!d || typeof d !== 'object') return null;
+    const strings = (v) => (Array.isArray(v) ? v.filter((x) => typeof x === 'string') : []);
+    const denials = Array.isArray(d.denials)
+        ? d.denials.filter((x) => x && typeof x.action === 'string')
+            .map((x) => (typeof x.target === 'string' ? { action: x.action, target: x.target } : { action: x.action }))
+        : [];
+    return {
+        actions: strings(d.actions),
+        denials,
+        suggestedGrants: strings(d.suggestedGrants),
+        hint: typeof d.hint === 'string' ? d.hint : '',
+    };
+}
+
+/**
+ * Thrown by the dispatch engine (dispatch-role.mjs) when a role's dispatch
+ * was refused tool calls for lack of a grant and the one bounded heal --
+ * compose_permissions for that member's roles, then one retry -- did not
+ * clear it: the heal itself failed, or the retried dispatch was refused
+ * again. Ends the sprint naming the member, the denied actions and the fix;
+ * no plan-review or review round is ever charged for it.
+ *
+ * A WorkflowError (so the run records a terminal reason) but deliberately
+ * NOT a typed abort, like MemberPermissionConfigError: the fix is a member
+ * grant, after which the sprint is simply re-run.
+ *
+ * @property {string} member - the member whose tool calls were refused
+ * @property {string|null} role - the sprint role whose dispatch was refused
+ * @property {string[]} actions - the denied actions (e.g. 'Bash "bd show x"')
+ * @property {string[]} suggestedGrants - compose_permissions grants that would allow them
+ * @property {string[]} rejectedGrants - suggested grants outside the role policy, never auto-added
+ * @property {string} step - 'heal' (compose_permissions failed) or 'retry' (refused again after the heal)
+ */
+export class MemberPermissionDeniedError extends WorkflowError {
+    /**
+     * @param {string} message
+     * @param {{ member: string, role?: string|null, actions?: string[], suggestedGrants?: string[], rejectedGrants?: string[], step: string, details?: object, cause?: unknown }} opts
+     */
+    constructor(message, opts = {}) {
+        const { member, role = null, actions = [], suggestedGrants = [], rejectedGrants = [], step, details, cause } = opts;
+        super(message, {
+            code: 'MEMBER_PERMISSION_DENIED',
+            details: { member, role, actions, suggestedGrants, rejectedGrants, step, ...details },
+            cause,
+        });
+        this.member = member;
+        this.role = role;
+        this.actions = actions;
+        this.suggestedGrants = suggestedGrants;
+        this.rejectedGrants = rejectedGrants;
+        this.step = step;
+    }
+}
