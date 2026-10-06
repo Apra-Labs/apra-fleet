@@ -94,7 +94,7 @@ const OWNER_REPO = (cfg.toy.match(/github\.com[/:]([^/]+\/[^/.]+)/) || [])[1] ||
 
 function ghEnv(token) { return token ? { ...process.env, GH_TOKEN: token } : process.env; }
 
-// my-beads-db-qy8.9: bd resolves BEADS_DIR before it ever looks at cwd. On a
+// bd resolves BEADS_DIR before it ever looks at cwd. On a
 // host that exports BEADS_DIR globally (e.g. an operator's own beads
 // workspace), every real `bd` child this runner spawns into a throwaway e2e
 // clone (`repo`/`work` above) would otherwise inherit it verbatim and hit

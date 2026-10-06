@@ -1,14 +1,14 @@
 #!/usr/bin/env node
 /**
- * check-bd-env-strip.mjs -- guards the BEADS_DIR leak fixed in
- * my-beads-db-qy8.9 (and its follow-ups) from silently coming back.
+ * check-bd-env-strip.mjs -- guards the BEADS_DIR test-harness leak from
+ * silently coming back.
  *
  * `bd` resolves BEADS_DIR before it ever looks at cwd. On a host that
- * exports BEADS_DIR globally (this host does), any test harness that spawns
+ * exports BEADS_DIR globally, any test harness that spawns
  * the real `bd` CLI into a scratch/tempdir/toy-repo clone WITHOUT stripping
  * BEADS_DIR from the child env silently hits the operator's own ambient
  * beads workspace instead of the scratch dir the test built -- this already
- * rewrote a real beads remote twice via the f34 test before my-beads-db-qy8.9
+ * rewrote a real beads remote twice via the f34 test before the leak fix
  * fixed every site-by-site occurrence found at the time. Nothing stopped the
  * NEXT contributor from adding one more unstripped real-`bd` spawn -- this
  * scanner closes that gap mechanically.

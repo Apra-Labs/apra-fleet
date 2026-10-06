@@ -9,8 +9,7 @@ import {
   scanFile,
 } from '../scripts/check-bd-env-strip.mjs';
 
-// Guards the BEADS_DIR leak fixed in my-beads-db-qy8.9 (and its follow-ups,
-// my-beads-db-qy8.9.3): bd resolves BEADS_DIR before it ever looks at cwd, so
+// Guards the BEADS_DIR test-harness leak: bd resolves BEADS_DIR before it ever looks at cwd, so
 // any test harness that spawns the real bd CLI into a scratch/tempdir/toy-repo
 // clone without stripping BEADS_DIR from the child env silently hits the
 // operator's own ambient beads workspace instead -- this already rewrote a
@@ -69,7 +68,7 @@ describe('bd child-env strip check', () => {
       }
     });
 
-    it('REGRESSION (my-beads-db-qy8.9.3 review item 1/2): an ARGV-style callee passed a full shell command string plus shell:true is still a real bd spawn and must be flagged', () => {
+    it('REGRESSION: an ARGV-style callee passed a full shell command string plus shell:true is still a real bd spawn and must be flagged', () => {
       // Exactly the two shapes the previous version of this scanner missed:
       // packages/apra-fleet-se/test/bd-replay-read-cache.test.mjs's
       // `spawnSync('bd --version', { shell: true })` and the sibling

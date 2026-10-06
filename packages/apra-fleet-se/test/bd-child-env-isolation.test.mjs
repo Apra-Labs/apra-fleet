@@ -9,21 +9,19 @@ import { runCmd, bdChildEnv } from './helpers/bd-replay.mjs';
 import { scaledTimeout } from './helpers/scaled-timeout.mjs';
 
 // =============================================================================
-// my-beads-db-qy8.9.2 -- permanent regression protection for the BEADS_DIR
-// leak fixed by my-beads-db-qy8.9.1 in bd-replay.mjs's execCmd (the single
+// Permanent regression protection for the BEADS_DIR
+// leak fixed in bd-replay.mjs's execCmd (the single
 // real-bd-spawn choke point every mock-sprint/golden-transcript/f34 scenario
 // funnels through via runCmd(); see that function's own header comment).
 //
 // bd resolves BEADS_DIR before it ever looks at cwd. On a host that exports
-// it globally (this one does -- see the repo's bd_remember note
-// "this-host-exports-beads-dir-home-ushah-my"), a test harness `bd` spawn
+// it globally (e.g. via a shell profile), a test harness `bd` spawn
 // that hands the child process.env unmodified silently queries/mutates the
 // OPERATOR'S REAL workspace instead of the scratch tempDir the test built --
-// this already rewrote a real beads remote twice via the f34 test
-// (my-beads-db-qy8.9's own incident report).
+// this already rewrote a real beads remote twice via the f34 test.
 //
-// FALSIFIABILITY (confirmed by hand before closing this bead, per its
-// acceptance criteria): temporarily reverting execCmd in bd-replay.mjs back
+// FALSIFIABILITY (confirmed by hand when this was written):
+// temporarily reverting execCmd in bd-replay.mjs back
 // to `exec(cmd, { cwd, env: { ...process.env, BD_ALLOW_REMOTE_MIGRATE: '1' } })`
 // (i.e. removing `delete env.BEADS_DIR` and the `bdChildEnv()` export this
 // test imports) makes the integration-level test below FAIL at its
@@ -121,7 +119,7 @@ function sentinelSnapshot(sentinelDir) {
 }
 
 test(
-    'a polluted BEADS_DIR cannot redirect a bd command away from its real cwd workspace (my-beads-db-qy8.9.2)',
+    'a polluted BEADS_DIR cannot redirect a bd command away from its real cwd workspace',
     { skip: BD_SKIP, timeout: scaledTimeout(60000) },
     async () => {
         const prevMode = process.env.APRA_FLEET_BD_MOCK;
@@ -150,9 +148,8 @@ test(
             assert.equal(before.issueCount, 0);
 
             // Pollute BEADS_DIR to point at the sentinel -- exactly the
-            // ambient-env shape that caused the real incident (this host's
-            // shell profile exports BEADS_DIR globally; see my-beads-db-qy8.9's
-            // own NOTES for the two real-world occurrences).
+            // ambient-env shape that caused the real incident (a shell
+            // profile that exports BEADS_DIR globally).
             process.env.BEADS_DIR = path.join(sentinelDir, '.beads');
 
             // The exact damaging command SHAPE that actually corrupted a real
