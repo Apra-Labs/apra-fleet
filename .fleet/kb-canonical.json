@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "4f1d90d5877af2cd2ac19cb250fc46b9f3b9c951",
     "branch": "v0.5_dashboard",
-    "entry_count": 423
+    "entry_count": 428
   },
   "entries": [
     {
@@ -1518,6 +1518,24 @@
       "updated_at": "2026-09-25T22:26:29.432Z"
     },
     {
+      "id": "2b22ef51-83ca-4dc7-bb31-f93d532b84c9",
+      "type": "learning",
+      "title": "Wall-clock comparisons against bd timestamps break under bd replay fixtures",
+      "summary": "Recorded bd fixtures replay closed_at/started_at from recording time while Date.now() is replay time, so a 'closed during this sprint' clock filter silently drops beads in mock mode; compare bead state (ids closed at sprint start) instead.",
+      "symbols": [
+        "computeOwedTriage",
+        "runSprintCycle",
+        "replayBd"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/owed-triage.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/test/helpers/bd-replay.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T00:33:22.586Z"
+    },
+    {
       "id": "2bdd3084-be9f-4433-8525-dc32eac82784",
       "type": "knowledge",
       "title": "shell-command-guard misses shell expansions inside multi-line template literals",
@@ -2492,6 +2510,24 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-30T23:07:12.100Z"
+    },
+    {
+      "id": "4877dce5-a1ff-4b4c-b741-d9b48445c815",
+      "type": "knowledge",
+      "title": "beadsExtension throttles payload-driven beads-tree rebuilds client-side, not in core poll loop",
+      "summary": "fleet-sprint Tasks view skips beads-tree rebuilds for unchanged payloads and caps payload-driven rebuilds to one per 15000 ms with a trailing render; user-driven renders bypass the throttle.",
+      "symbols": [
+        "beadsExtension",
+        "renderBeadsHtml",
+        "schedulePayloadRender",
+        "renderBeadsPanel"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/viewer-extensions.mjs",
+        "packages/apra-fleet-se/test/beads-tree-refresh-state.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T00:33:23.896Z"
     },
     {
       "id": "4ab868ea-bb49-459a-b21e-f2b906d3cb58",
@@ -6711,6 +6747,25 @@
       "updated_at": "2026-09-29T06:13:53.820Z"
     },
     {
+      "id": "def050f4-f4c6-4a1f-9c8d-390d7e6ad2cd",
+      "type": "knowledge",
+      "title": "Rejected newTask text must never reach any command string, including the PR-body payload",
+      "summary": "mock-sprint-develop-injection asserts no dispatched command contains '$(', a backtick or the rejected payloads. Any feature that echoes rejected reviewer findings into a PR body or other command must strip those characters first.",
+      "symbols": [
+        "validateNewTask",
+        "computeOwedTriage",
+        "buildSprintPrBody"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/test/mock-sprint-develop-injection.test.mjs",
+        "packages/apra-fleet-se/fleet-sprint/owed-triage.mjs",
+        "packages/apra-fleet-se/fleet-sprint/abort.mjs",
+        "packages/apra-fleet-se/fleet-sprint/pr-body.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T00:33:22.073Z"
+    },
+    {
       "id": "df75818c-3208-4bb9-aa99-b65a866ff0a8",
       "type": "knowledge",
       "title": "Sandbox module imports in fleet-sprint tests must use pathToFileURL().href, not a raw absolute path",
@@ -7213,6 +7268,25 @@
       "updated_at": "2026-09-29T06:13:11.239Z"
     },
     {
+      "id": "eaed3e9c-1cd5-47b0-8295-96d06eca27bb",
+      "type": "knowledge",
+      "title": "Supervisor Backlog tab uses its own 30000 ms activation stale threshold and keeps view state across refetch",
+      "summary": "dashboard.mjs passes BACKLOG_TAB_ACTIVATION_STALE_MS (30000) to __fleetSeBacklog.refreshIfStale while Sprints keeps 3000; backlogPanelClientScript no longer clears collapsedBeadIds on applyFilters.",
+      "symbols": [
+        "backlogPanelClientScript",
+        "applyFilters",
+        "renderTable",
+        "switchTab"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/src/supervisor/dashboard.mjs",
+        "packages/apra-fleet-se/src/supervisor/backlog.mjs",
+        "packages/apra-fleet-se/test/supervisor-backlog.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T00:33:23.431Z"
+    },
+    {
       "id": "eb19a252-3928-47d3-b103-bfebd0d66929",
       "type": "knowledge",
       "title": "registerProjectRoutes keeps a narrow constructor and checks client methods per request",
@@ -7450,6 +7524,23 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:53.807Z"
+    },
+    {
+      "id": "f329096c-e875-47f3-a0b8-a9891dcc4d91",
+      "type": "knowledge",
+      "title": "The success-path terminal record is runSprintCycle's return value, persisted by the workflow viewer",
+      "summary": "Only the abort path calls publishState('terminal', ...). On success, the workflow viewer stores runSprintCycle's return value as state.result and moves it to old_runs/<runId>.json on 'end', so new result fields reach the terminal record without a separate write.",
+      "symbols": [
+        "runSprintCycle",
+        "main",
+        "moveStateToOldRuns"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-workflow/src/viewer/index.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T00:33:23.008Z"
     },
     {
       "id": "f34ed294-df0a-43fc-a138-fa5f773bcaa3",
