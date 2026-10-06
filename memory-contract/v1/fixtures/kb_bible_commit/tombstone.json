@@ -1,0 +1,22 @@
+{
+  "tool": "kb_bible_commit",
+  "case": "tombstone",
+  "kind": "happy",
+  "request": {
+    "ids": [],
+    "demoted_ids": [
+      "408fddf3-7a7b-4861-93bc-fcc3b6a8b0d6",
+      "f8e50e13-9843-4dd9-bd44-b7a405a46c90"
+    ],
+    "baseBranch": "main",
+    "baseCommit": "0123456789abcdef0123456789abcdef01234567"
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"path\":\"<SCRATCH_REPO_A>/.fleet/kb-canonical.json\",\"merged\":[],\"demoted\":[\"408fddf3-7a7b-4861-93bc-fcc3b6a8b0d6\"],\"skipped\":[{\"id\":\"f8e50e13-9843-4dd9-bd44-b7a405a46c90\",\"reason\":\"not_demoted_or_unknown\"}],\"entry_count\":1,\"committed\":true}"
+      }
+    ]
+  }
+}

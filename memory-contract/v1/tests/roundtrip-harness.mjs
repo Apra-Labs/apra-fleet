@@ -298,6 +298,10 @@ export const SCENARIO = [
   { tool: 'kb_promote', case: 'setup-second-promote-for-demote', derive: { id: 'DEMOTED' } },
   { tool: 'kb_demote', case: 'happy', derive: { id: 'DEMOTED' } },
   { tool: 'kb_demote', case: 'refusal-not-confirmed', derive: { id: 'DEMOTED' } },
+  // kb_bible_commit demoted_ids: DEMOTED (now INFERRED, just demoted above) is
+  // admitted and tombstoned; FOO (still CONFIRMED, never demoted) is skipped
+  // with not_demoted_or_unknown. ids is empty, so this round only tombstones.
+  { tool: 'kb_bible_commit', case: 'tombstone', derive: { demoted_ids: ['DEMOTED', 'FOO'] } },
   { tool: 'kb_query', case: 'happy-confirmed-only', assertParsed: assertConfirmedOnly },
   { tool: 'kb_stats', case: 'happy' },
   { tool: 'kb_import', case: 'happy' },
