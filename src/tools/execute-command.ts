@@ -359,7 +359,20 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
   // no PID protocol of its own (unlike a provider launch) leaves the remote
   // process running forever past the timeout, since ssh has no local child
   // handle to fall back on the way LocalStrategy does.
-  const wrapped = authPrefix + cmds.wrapPidCapture(cmds.wrapInWorkFolder(folder, resolvedCommand));
+  //
+  // POSIX members: the user command is passed to the wrapper as DATA
+  // (`eval '<single-quoted command>'`), never spliced in as raw syntax.
+  // Splicing it into `{ cd ... && CMD; } & ...` broke any command whose
+  // last token cannot be followed by `; }` on the same line -- a heredoc
+  // at the end (its terminator line became `EOF; } & ...`), a trailing
+  // `&`, `;`, `|`, `&&`, `#` comment, or an empty command -- and made `cd`
+  // cover only the first `&`-separated list. eval is a builtin, so it adds
+  // no process layer: FLEET_PID is still the parent of the user's
+  // processes. PowerShell members are unchanged.
+  const payload = isPosixShell(agentOs, agentShell)
+    ? 'eval ' + escapeShellArg(resolvedCommand)
+    : resolvedCommand;
+  const wrapped = authPrefix + cmds.wrapPidCapture(cmds.wrapInWorkFolder(folder, payload));
 
   // Mark agent as busy in statusline
   writeStatusline(new Map([[agent.id, 'busy']]));

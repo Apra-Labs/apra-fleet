@@ -55,6 +55,7 @@ vi.mock('../src/services/strategy.js', async (importOriginal) => {
 
 import { executeCommand } from '../src/tools/execute-command.js';
 import { credentialSet, credentialDelete } from '../src/services/credential-store.js';
+import { escapeShellArg } from '../src/utils/shell-escape.js';
 
 describe('execute-command.ts: credential-token substitution shell matrix', () => {
   beforeEach(() => {
@@ -92,8 +93,10 @@ describe('execute-command.ts: credential-token substitution shell matrix', () =>
 
     if (isPosixRow(shell)) {
       // POSIX single-quote escaping: internal single quote doubled via
-      // close-escape-reopen ('\'').
-      expect(calledCmd).toContain("'it'\\''s a \"test\" value'");
+      // close-escape-reopen ('\''). The substituted command is then handed
+      // to the POSIX wrapper as data (`eval '<command>'`), so it appears
+      // single-quoted once more.
+      expect(calledCmd).toContain('eval ' + escapeShellArg("echo 'it'\\''s a \"test\" value'"));
       // Not the PowerShell-style doubled single quote (no adjacent '' pair).
       expect(calledCmd).not.toMatch(/it''s/);
     } else {
