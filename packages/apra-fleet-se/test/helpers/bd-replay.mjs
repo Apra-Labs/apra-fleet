@@ -69,7 +69,7 @@ export function bdMode() {
     return 'replay';
 }
 
-// my-beads-db-qy8.9: on a host that exports BEADS_DIR globally (bd resolves
+// On a host that exports BEADS_DIR globally (bd resolves
 // it BEFORE looking at cwd), every real `bd` spawn below would otherwise
 // inherit it verbatim and hit that ambient workspace instead of the
 // scratch `cwd` tempDir this harness built for the scenario -- this already

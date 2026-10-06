@@ -9,10 +9,10 @@ import {
 } from '../scripts/lib/exec-bd.mjs';
 import { bdChildEnv } from './helpers/bd-child-env.js';
 
-// my-beads-db-qy8.9.3: on a host that exports BEADS_DIR globally, the real
+// On a host that exports BEADS_DIR globally, the real
 // (uninjected-impl) execBdSync/execBdAsync calls below would otherwise
 // inherit it verbatim and hit that ambient workspace instead of whatever bd
-// resolves from cwd -- same class of leak as my-beads-db-qy8.9. These calls
+// resolves from cwd -- same class of leak as the test-harness BEADS_DIR leak. These calls
 // only ever run `bd --version` / a bogus `bd list --parent`, so the blast
 // radius here was always read-only, but the static bd-env-strip guard
 // (scripts/check-bd-env-strip.mjs) flags any real bd invocation missing

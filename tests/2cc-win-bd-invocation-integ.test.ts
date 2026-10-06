@@ -32,7 +32,7 @@ const CHECK_TOY_DOER_CREDS_SCRIPT = path.join(SCRIPTS_DIR, 'check-toy-doer-crede
 // database as "already initialized" and abort, even though the toy-repo fixture
 // itself is a fresh, empty git repo. Strip it so every invocation here is
 // genuinely scoped to the fixture's own cwd, matching a real toy-repo checkout.
-// (shared helper: tests/helpers/bd-child-env.ts, per my-beads-db-qy8.9.1)
+// (shared helper: tests/helpers/bd-child-env.ts)
 const BD_CHILD_ENV: NodeJS.ProcessEnv = bdChildEnv();
 
 /** Runs a bd subcommand with BD_CHILD_ENV and surfaces real stderr on failure

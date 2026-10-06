@@ -2,7 +2,7 @@
  * Shared child-env builder for every test that spawns the real `bd` CLI into
  * a scratch/fixture directory (tempDir, toy-repo clone, sandbox, etc).
  *
- * my-beads-db-qy8.9 / my-beads-db-27m.14 / my-beads-db-27m.25: bd resolves
+ * bd resolves
  * BEADS_DIR before it ever looks at cwd. On a dev host that exports
  * BEADS_DIR globally (e.g. via a shell profile pointing at a real beads
  * workspace), a `bd` child that inherits process.env verbatim finds that

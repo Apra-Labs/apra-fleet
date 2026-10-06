@@ -40,7 +40,7 @@ import {
 // query the unrelated ambient database instead of the fixture, producing a
 // false result.ok===false. Mirrors the BD_CHILD_ENV pattern already proven in
 // tests/2cc-win-bd-invocation-integ.test.ts (apra-fleet-2cc.3 / my-beads-db-27m.14).
-// (shared helper: tests/helpers/bd-child-env.ts, per my-beads-db-qy8.9.1)
+// (shared helper: tests/helpers/bd-child-env.ts)
 const BD_CHILD_ENV: NodeJS.ProcessEnv = bdChildEnv();
 
 describe('defaultSandboxPath', () => {

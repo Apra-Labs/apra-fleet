@@ -231,7 +231,7 @@ describe.skipIf(!BD_AVAILABLE)(
     });
 
     function runGuard(repoPath: string, sandboxPath: string): { status: number; stdout: string; stderr: string } {
-      // my-beads-db-qy8.9: check-sandbox-sync-remote.mjs itself shells out to
+      // check-sandbox-sync-remote.mjs itself shells out to
       // the real `bd` CLI internally (e.g. `bd config get sync.remote`). This
       // spawn is a plain `node <script>` invocation, not a direct `bd` spawn,
       // so without an explicit env it silently inherits the ambient BEADS_DIR
