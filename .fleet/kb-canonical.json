@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "6c392d8af8963c1267052327b3a2ac519a6bb245",
     "branch": "u1_kb_redesign_base",
-    "entry_count": 277
+    "entry_count": 279
   },
   "entries": [
     {
@@ -868,6 +868,31 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:28.210Z"
+    },
+    {
+      "id": "21ed9f0f-8aa4-473b-873f-84ec3470b345",
+      "type": "learning",
+      "title": "INVENTORY.md section 4.1 and 4.4.1 count headers lag the MemoryProvider interface by several methods",
+      "summary": "The declared-method count in memory-contract/v1/INVENTORY.md drifts every time a method lands on MemoryProvider; as of the tombstone lane the interface declares 15 but 4.1 documents 14 and 4.4.1 compares 13.",
+      "symbols": [
+        "MemoryProvider",
+        "getLiveConfirmedState",
+        "applyBibleDemotion",
+        "discard",
+        "demote"
+      ],
+      "source_files": [
+        "memory-contract/v1/INVENTORY.md",
+        "src/services/knowledge/types.ts",
+        "src/services/knowledge/http-provider.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T23:03:54.128Z",
+      "source_file_hashes": {
+        "memory-contract/v1/INVENTORY.md": "69fb75aff96ba2ee596ef50d9cb4cb065c37977f",
+        "src/services/knowledge/http-provider.ts": "a553f755e5c097f3faeaa143e03ff6d74f1bb258",
+        "src/services/knowledge/types.ts": "646cf7843cd4fcc3cde9d5fadf031030cac49dca"
+      }
     },
     {
       "id": "2200c18a-8877-45cc-a0f3-64852b7baf9e",
@@ -4994,6 +5019,30 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-10-01T23:08:16.929Z"
+    },
+    {
+      "id": "ffa9d062-5867-42c0-99e6-571f0f89e36e",
+      "type": "runbook",
+      "title": "Run a single test file through run-all-tests.mjs with APRA_TEST_SUITES_JSON instead of bare vitest",
+      "summary": "APRA_TEST_SUITES_JSON overrides the suite list of scripts/run-all-tests.mjs, giving a single-file or single-folder run that still gets the wall-clock bound and the sandboxed HOME, which CLAUDE.md requires for a tracked task's verification step.",
+      "symbols": [
+        "ensureTestSandbox",
+        "defaultSuites",
+        "APRA_TEST_SUITES_JSON",
+        "APRA_TEST_TIMEOUT_MS"
+      ],
+      "source_files": [
+        "scripts/run-all-tests.mjs",
+        "scripts/test-sandbox.mjs",
+        "CLAUDE.md"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T23:03:55.956Z",
+      "source_file_hashes": {
+        "CLAUDE.md": "d0dad99a63c7cdc6b53510bb6064be9dc0b80811",
+        "scripts/run-all-tests.mjs": "417c4823d50bd28807c117c1b16cc01e3798cc2e",
+        "scripts/test-sandbox.mjs": "30cd05d2c2a46d9ced0287940db52cea1bc0f45a"
+      }
     }
   ]
 }
