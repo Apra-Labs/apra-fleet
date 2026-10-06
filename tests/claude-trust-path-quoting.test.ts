@@ -44,6 +44,22 @@ describe('escapeForDoubleQuotes', () => {
     expect(escapeForDoubleQuotes('a\u201Cb\u201Dc', true)).toBe('a`\u201Cb`\u201Dc');
   });
 
+  it.runIf(process.platform === 'win32')('PowerShell output round-trips through real powershell.exe double quotes', () => {
+    const values = [
+      'a$(Get-Date)b',
+      'x$env:USERPROFILEy',
+      'p`nq',
+      'say "hi"',
+      'curly \u201Cquoted\u201D here',
+      'C:\\Users\\a b\\.claude.json',
+    ];
+    for (const v of values) {
+      const script = `[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; [Console]::Out.Write("${escapeForDoubleQuotes(v, true)}")`;
+      const out = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { encoding: 'utf8' });
+      expect(out).toBe(v);
+    }
+  });
+
   it.runIf(hasBash)('POSIX output round-trips through real bash double quotes', () => {
     const v = 'a b\\c"d$HOME`id`e!f\'g';
     expect(bashEcho(v)).toBe(v);

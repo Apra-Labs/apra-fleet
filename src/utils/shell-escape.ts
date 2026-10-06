@@ -45,8 +45,7 @@ export function escapeDoubleQuoted(s: string): string {
  * literal backslash + `!` and corrupt the path. PowerShell: backtick, ", $ (and
  * the curly double quotes U+201C..U+201E, which PowerShell treats as quotes)
  * are live and are escaped with a backtick; backslash is literal there.
- * A literal newline cannot be made safe inside a one-line path and is left to
- * the caller to reject.
+ * A literal newline needs no escaping: it is inert inside "..." in both shells.
  */
 export function escapeForDoubleQuotes(s: string, powershell: boolean): string {
   return powershell
