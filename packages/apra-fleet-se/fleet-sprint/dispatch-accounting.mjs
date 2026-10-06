@@ -75,6 +75,23 @@ export function snapshotDelta(before, after) {
     return { kb, code, reason: null };
 }
 
+/**
+ * The reason text for a count that is unknown because the member's own tools
+ * were unavailable at sprint init: "member tools unavailable: <reason>" plus
+ * the short cause the init record carries (problem detail), when known.
+ * Returns null when the init record is absent or the member was verified.
+ *
+ * @param {{verified?: boolean, reason?: string|null, problems?: Array<{reason?: string, detail?: string}>}|null|undefined} init
+ * @returns {string|null}
+ */
+export function memberToolsReason(init) {
+    if (!init || typeof init !== 'object' || init.verified === true) return null;
+    const reason = init.reason ? String(init.reason) : 'unverified';
+    const p = Array.isArray(init.problems) ? init.problems.find((x) => x && x.reason === init.reason && x.detail) : null;
+    const cause = p ? String(p.detail).replace(/\s+/g, ' ').trim().slice(0, 120) : '';
+    return `member tools unavailable: ${reason}${cause ? ` -- ${cause}` : ''}`;
+}
+
 /** Format one count for text output: a number, or the literal 'unknown'. */
 export function formatCount(n) {
     return isCount(n) ? String(n) : UNKNOWN_COUNT;
@@ -93,12 +110,15 @@ export function memberTotals(records) {
         const name = String(r.member || '(unknown member)');
         let t = byMember.get(name);
         if (!t) {
-            t = { member: name, dispatches: 0, kb: 0, code: 0, unknownDispatches: 0 };
+            t = { member: name, dispatches: 0, kb: 0, code: 0, unknownDispatches: 0, unknownReason: null };
             byMember.set(name, t);
             out.push(t);
         }
         t.dispatches++;
-        if (!isCount(r.kb) || !isCount(r.code)) t.unknownDispatches++;
+        if (!isCount(r.kb) || !isCount(r.code)) {
+            t.unknownDispatches++;
+            if (!t.unknownReason && r.reason) t.unknownReason = String(r.reason);
+        }
         t.kb = isCount(t.kb) && isCount(r.kb) ? t.kb + r.kb : UNKNOWN_COUNT;
         t.code = isCount(t.code) && isCount(r.code) ? t.code + r.code : UNKNOWN_COUNT;
     }
@@ -112,6 +132,11 @@ export function memberTotals(records) {
  * @param {(member: object, tool: string, args: object) => Promise<object>} [deps.memberCall]
  *        the engine's memberCall (MEMBER-scoped, engine-origin); absent means
  *        every dispatch records 'unknown'.
+ * @param {(memberName: string) => object|null} [deps.getMemberInit]
+ *        the member-init record for a member NAME (verified, reason, problems);
+ *        an unknown count caused by a failed snapshot read or a missing member
+ *        session then carries the member-tools reason instead of the bare read
+ *        failure. Other unknowns (restart, counters backwards) keep their own.
  * @param {(memberName: string) => object|null} [deps.memberOf]
  *        resolves a dispatched member NAME to its member record ({id, name, type}).
  * @param {object[]} [deps.store] array records are appended to (sprint state).
@@ -124,6 +149,7 @@ export function createDispatchAccounting(deps = {}) {
     const {
         memberCall,
         memberOf,
+        getMemberInit,
         publishState,
         log = () => {},
         readTimeoutMs = SNAPSHOT_READ_TIMEOUT_MS,
@@ -198,6 +224,11 @@ export function createDispatchAccounting(deps = {}) {
                 const delta = skipReason
                     ? { kb: UNKNOWN_COUNT, code: UNKNOWN_COUNT, reason: skipReason }
                     : snapshotDelta(before, after);
+                if (delta.reason && (skipReason || /snapshot read failed$/.test(delta.reason)) && memberName && typeof getMemberInit === 'function') {
+                    let toolsReason = null;
+                    try { toolsReason = memberToolsReason(getMemberInit(memberName)); } catch { /* informational only */ }
+                    if (toolsReason) delta.reason = toolsReason;
+                }
                 store.push({
                     index,
                     member: memberName ? String(memberName) : '(unknown member)',
@@ -232,7 +263,7 @@ export function formatDispatchToolCalls(records) {
     lines.push('');
     lines.push('Per-member totals:');
     for (const t of memberTotals(list)) {
-        const unknown = t.unknownDispatches > 0 ? ` (${t.unknownDispatches} dispatch(es) with unknown counts)` : '';
+        const unknown = t.unknownDispatches > 0 ? ` (${t.unknownDispatches} dispatch(es) with unknown counts)${t.unknownReason ? ` (unknown: ${t.unknownReason})` : ''}` : '';
         lines.push(`- member '${t.member}': ${t.dispatches} dispatch(es), kb_* calls: ${formatCount(t.kb)}, code_* calls: ${formatCount(t.code)}${unknown}.`);
     }
     return lines;

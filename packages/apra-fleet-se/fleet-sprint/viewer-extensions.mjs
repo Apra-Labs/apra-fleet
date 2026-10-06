@@ -1162,6 +1162,16 @@ export function renderKbCodeIntelHtml(data, init) {
         function th(label) {
             return '<th style="padding: 2px 8px; font-size: 10px; color: #71717a; text-align: left;">' + escapeHtml(label) + '</th>';
         }
+        // Why a member's totals are unknown: the first unknown dispatch's reason,
+        // else the member-init record when that member's tools were unavailable.
+        function memberUnknownReason(name, firstReason) {
+            if (firstReason) return String(firstReason);
+            const ms = (init && typeof init === 'object' && Array.isArray(init.members)) ? init.members : [];
+            for (const m of ms) {
+                if (m && m.member === name && m.verified !== true) return 'member tools unavailable: ' + String(m.reason || 'unverified');
+            }
+            return 'at least one dispatch count is unknown';
+        }
         const records = (data && typeof data === 'object' && Array.isArray(data.dispatches))
             ? data.dispatches.filter(function (r) { return r && typeof r === 'object'; })
             : [];
@@ -1199,11 +1209,12 @@ export function renderKbCodeIntelHtml(data, init) {
         for (const r of records) {
             const name = String(r.member || '(unknown member)');
             if (!Object.prototype.hasOwnProperty.call(totals, name)) {
-                totals[name] = { dispatches: 0, kb: 0, code: 0 };
+                totals[name] = { dispatches: 0, kb: 0, code: 0, reason: null };
                 order.push(name);
             }
             const t = totals[name];
             t.dispatches++;
+            if (!t.reason && r.reason && (!isCount(r.kb) || !isCount(r.code))) t.reason = String(r.reason);
             t.kb = isCount(t.kb) && isCount(r.kb) ? t.kb + r.kb : 'unknown';
             t.code = isCount(t.code) && isCount(r.code) ? t.code + r.code : 'unknown';
         }
@@ -1212,9 +1223,16 @@ export function renderKbCodeIntelHtml(data, init) {
         for (const name of order) {
             const t = totals[name];
             html += '<tr data-member="' + escapeHtml(name) + '">' + textCell(name) + textCell(t.dispatches)
-                + countCell(t.kb, 'at least one dispatch count is unknown') + countCell(t.code, 'at least one dispatch count is unknown') + '</tr>';
+                + countCell(t.kb, memberUnknownReason(name, t.reason)) + countCell(t.code, memberUnknownReason(name, t.reason)) + '</tr>';
         }
         html += '</table>';
+        // Visible reason for every member whose totals are unknown.
+        for (const name of order) {
+            const t = totals[name];
+            if (isCount(t.kb) && isCount(t.code)) continue;
+            html += '<div data-kb-unknown-reason="' + escapeHtml(name) + '" style="font-size: 11px; color: #f59e0b; padding: 2px 8px;">'
+                + escapeHtml(name) + ': kb_* and code_* counts unknown (' + escapeHtml(memberUnknownReason(name, t.reason)) + ')</div>';
+        }
 
         html += '<div style="font-size: 11px; font-weight: 600; color: #a1a1aa; padding: 8px 8px 2px 8px;">Per dispatch</div>';
         html += '<table data-kb-panel-dispatches="true" style="border-collapse: collapse;"><tr>' + th('#') + th('member') + th('role') + th('label') + th('kb_* calls') + th('code_* calls') + '</tr>';

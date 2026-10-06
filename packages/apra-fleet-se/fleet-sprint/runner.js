@@ -1413,6 +1413,7 @@ async function runSprintCycle(context) {
         : undefined;
     const memberInitProbe = context.memberInitProbe ?? createMemberInitProbe({
         members: physicalMembers,
+        roleMap: validated.roleMap,
         callTool: (args && typeof args.callTool === 'function') ? args.callTool : undefined,
         memberCall: kbMemberCall,
         listTools: kbListTools,
@@ -1456,6 +1457,7 @@ async function runSprintCycle(context) {
     dispatchAccounting = context.dispatchAccounting ?? createDispatchAccounting({
         memberCall: kbMemberCall,
         memberOf: (name) => (typeof kbPriming.memberOf === 'function' ? kbPriming.memberOf(name) : null),
+        getMemberInit: (name) => sprintState.memberInit.find((r) => r && r.member === name) || null,
         store: sprintState.dispatchToolCalls,
         publishState,
         log,

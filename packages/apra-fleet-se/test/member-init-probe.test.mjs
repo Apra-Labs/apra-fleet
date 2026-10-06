@@ -4,6 +4,8 @@ import {
     createMemberInitProbe,
     CODE_INDEX_FIRST_TICK_BOUND_MS,
     formatMemberInitLine,
+    MEMBER_INIT_FIXES,
+    llmRoleMembersOf,
 } from '../fleet-sprint/member-init-probe.mjs';
 
 // =============================================================================
@@ -36,6 +38,7 @@ function fakeFleet(spec = {}) {
         status = () => ({ ready: true }),
         unresolved = [],
         fail = {},
+        fleetMcpFix = null,
     } = spec;
     const events = [];
     const orchestratorCalls = [];
@@ -48,7 +51,9 @@ function fakeFleet(spec = {}) {
         if (name !== 'member_detail') throw new Error(`unexpected orchestrator tool ${name}`);
         if (unresolved.includes(args.member_name)) return { content: [{ text: JSON.stringify({ vcsProvider: 'github' }) }] };
         if (fail.memberDetailRefresh && args.refresh) throw new Error('refresh exploded');
-        const body = { id: uuid(args.member_name), type, llmProvider: provider, folder: `/w/${args.member_name}` };
+        const memberProvider = typeof provider === 'function' ? provider(args.member_name) : provider;
+        const body = { id: uuid(args.member_name), type, llmProvider: memberProvider, folder: `/w/${args.member_name}` };
+        if (args.refresh && fleetMcpFix) body.fleetMcpFix = fleetMcpFix;
         if (args.refresh) body.fleetMcp = typeof fleetMcp === 'function' ? fleetMcp(args.member_name) : fleetMcp;
         return { content: [{ text: JSON.stringify(body) }] };
     };
@@ -296,4 +301,110 @@ test('local claude member whose role files could not be healed -> unverified, an
     assert.equal(rec.verified, false);
     assert.equal(rec.reason, 'role-agents-hide-member-tools');
     assert.match(rec.fix, /automatic rewrite failed/);
+});
+
+
+// ---- b4g.130: members that run no LLM role are neither probed nor counted ----
+
+import { lowerQuality } from '../fleet-sprint/lower-quality.mjs';
+
+const ROLE_MAP = { doer: ['worker'], reviewer: ['worker'], backlog: ['bl'] };
+
+test('130 (a): a provider-none backlog-only member is not probed, logs no WARN, and is excluded from the lower-quality count', async () => {
+    const f = fakeFleet({ provider: (n) => (n === 'bl' ? 'none' : 'claude') });
+    const recs = await f.make(['worker', 'bl'], { roleMap: ROLE_MAP }).probeAll();
+    assert.deepEqual(recs.map((r) => r.member), ['worker']);
+    assert.ok(!f.orchestratorCalls.some((c) => c.args.member_name === 'bl'), 'no member_detail for the backlog member');
+    assert.ok(!f.memberCalls.some((c) => c.member === 'bl'), 'no member-session call for the backlog member');
+    assert.ok(!f.commands.some((c) => c.member_id === uuid('bl')), 'no command for the backlog member');
+    assert.ok(!f.logs.some((l) => l.includes("'bl'")), `no log line for the backlog member: ${f.logs.join('|')}`);
+    assert.ok(!f.logs.some((l) => /WARN/.test(l)));
+    assert.equal(lowerQuality(recs).banner, null);
+    assert.equal(lowerQuality(recs).total, 1);
+});
+
+test('130: llmRoleMembersOf keeps a backlog member that also holds another role, and every member when there is no role map', () => {
+    assert.deepEqual(llmRoleMembersOf(['a', 'bl'], { doer: ['a'], backlog: ['bl'] }), ['a']);
+    assert.deepEqual(llmRoleMembersOf(['a', 'bl'], { doer: ['a', 'bl'], backlog: ['bl'] }), ['a', 'bl']);
+    assert.deepEqual(llmRoleMembersOf(['a', 'bl'], null), ['a', 'bl']);
+    assert.deepEqual(llmRoleMembersOf(['a', 'b'], { backlog: ['b'] }), ['a']);
+});
+
+test('130 (b): an agy member that runs a role is still probed and counted with no-per-project-mcp', async () => {
+    const f = fakeFleet({ provider: (n) => (n === 'agyw' ? 'agy' : 'claude') });
+    const recs = await f.make(['agyw', 'bl'], { roleMap: { doer: ['agyw'], backlog: ['bl'] } }).probeAll();
+    assert.equal(recs.length, 1);
+    assert.equal(recs[0].reason, 'no-per-project-mcp');
+    assert.equal(recs[0].fix, MEMBER_INIT_FIXES['no-per-project-mcp']);
+    const lq = lowerQuality(recs);
+    assert.equal(lq.unverified.length, 1);
+    assert.match(lq.banner, /unavailable on 1 of 1 members/);
+});
+
+test('130 (c): a provider-none member that IS assigned an LLM role is not silently skipped: it counts with an accurate reason', async () => {
+    const f = fakeFleet({ provider: 'none' });
+    const recs = await f.make(['w'], { roleMap: { doer: ['w'], backlog: ['w'] } }).probeAll();
+    assert.equal(recs.length, 1);
+    assert.equal(recs[0].verified, false);
+    assert.equal(recs[0].reason, 'no-llm-provider');
+    assert.match(recs[0].fix, /provider none/);
+    assert.equal(lowerQuality(recs).unverified.length, 1);
+    assert.ok(f.logs.some((l) => /WARN member 'w'/.test(l)));
+});
+
+// ---- b4g.121: real cause and product action ----
+
+test('121: no MEMBER_INIT_FIXES value is a bare "make X succeed" instruction', () => {
+    for (const [k, v] of Object.entries(MEMBER_INIT_FIXES)) {
+        assert.doesNotMatch(v, /^make '/, `${k}: ${v}`);
+        assert.doesNotMatch(v, /^make\b[^:]*succeed/i, `${k}: ${v}`);
+    }
+});
+
+test('121 cause: old apra-fleet without member mode (unknown option call) -> member-fleet-too-old naming update_member fleet_install auto and the version seen', async () => {
+    const f = fakeFleet({
+        fail: { listTools: new Error("Error: unknown option 'call'") },
+        fleetMcp: { state: 'available', version: 'v0.1.9', checkedAt: 'x' },
+    });
+    const [rec] = await f.make(['m1']).probeAll();
+    assert.equal(rec.verified, false);
+    assert.equal(rec.reason, 'member-fleet-too-old');
+    assert.match(rec.fix, /update_member/);
+    assert.match(rec.fix, /fleet_install "auto"/);
+    assert.match(rec.fix, /0\.1\.9/);
+});
+
+test('121 cause: install not fleet-owned -> the server reason full-install-running and its own remedy text are forwarded, not member-tools-failed', async () => {
+    const remedy = 'The member apra-fleet install has no member-install marker; run update_member {member_id, fleet_install: "auto"}.';
+    const f = fakeFleet({
+        fail: { listTools: new Error("Error: unknown option 'call'") },
+        fleetMcp: { state: 'unavailable', reason: 'full-install-running', detail: 'the apra-fleet 0.2.0 at /bin/apra-fleet has no member-install marker', checkedAt: 'x' },
+        fleetMcpFix: remedy,
+    });
+    const [rec] = await f.make(['m1']).probeAll();
+    assert.equal(rec.reason, 'full-install-running');
+    assert.equal(rec.fix, remedy);
+    assert.match(rec.problems.find((p) => p.reason === 'full-install-running').detail, /no member-install marker/);
+    assert.notEqual(rec.reason, 'member-tools-failed');
+});
+
+test('121 cause: no installer for the os/arch -> unsupported-platform forwarded with the server remedy', async () => {
+    const remedy = 'Install apra-fleet on the member by hand; no release asset exists for its OS/arch.';
+    const f = fakeFleet({
+        fail: { listTools: new Error("Error: unknown option 'call'") },
+        fleetMcp: { state: 'unavailable', reason: 'unsupported-platform', detail: 'no release asset for freebsd/riscv64', checkedAt: 'x' },
+        fleetMcpFix: remedy,
+    });
+    const [rec] = await f.make(['m1']).probeAll();
+    assert.equal(rec.reason, 'unsupported-platform');
+    assert.equal(rec.fix, remedy);
+    assert.match(rec.problems.find((p) => p.reason === 'unsupported-platform').detail, /freebsd\/riscv64/);
+});
+
+test('121 cause: member session refused by the member server -> member-session-refused with its own fix', async () => {
+    const f = fakeFleet({ fail: { listTools: new Error('server refused member 0b9d: not a registered member (HTTP 403)') } });
+    const [rec] = await f.make(['m1']).probeAll();
+    assert.equal(rec.reason, 'member-session-refused');
+    assert.equal(rec.fix, MEMBER_INIT_FIXES['member-session-refused']);
+    assert.match(rec.fix, /update_member/);
 });
