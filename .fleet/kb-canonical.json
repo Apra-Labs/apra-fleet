@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "85a04bf2d353ca960d30b447246bbe3a55ddb4b8",
     "branch": "v0.5_dashboard",
-    "entry_count": 439
+    "entry_count": 441
   },
   "entries": [
     {
@@ -5263,6 +5263,29 @@
       "updated_at": "2026-09-29T06:13:11.427Z"
     },
     {
+      "id": "a2634e8c-2f4c-485e-8438-0442933f4a6c",
+      "type": "knowledge",
+      "title": "Supervisor dashboard sign-in is a same-origin POST /signin paste-token form; ?token= URLs are refused",
+      "summary": "dashboard-session.mjs registers POST /signin (form body token+next) via registerDashboardRoutes; GET <page>?token= answers 400 with no cookie and never compares the value. The derived se_token cookie is still the only cookie credential.",
+      "symbols": [
+        "handleSignInPost",
+        "registerSignInRoute",
+        "handleTokenInUrl",
+        "isSameOriginRequest",
+        "sanitizeNextPath",
+        "authNoticeHtml",
+        "createProjectsPageHandler"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/src/supervisor/dashboard-session.mjs",
+        "packages/apra-fleet-se/src/supervisor/dashboard.mjs",
+        "packages/apra-fleet-se/src/registration/project-page.mjs",
+        "packages/apra-fleet-se/test/supervisor-dashboard-cookie-harvest.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T16:43:49.889Z"
+    },
+    {
       "id": "a2eec90a-dd1b-4606-af90-685179e6e471",
       "type": "knowledge",
       "title": "A sprint's own reservation is always in GET /api/sprints while it deploys",
@@ -6754,6 +6777,19 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:23.962Z"
+    },
+    {
+      "id": "db2820fa-5d08-4442-92c7-084695ffd7f7",
+      "type": "learning",
+      "title": "tests/ci-build-ui-step.test.ts pins the exact ci.yml UI build steps and comments",
+      "summary": "Any edit to the Build UI workspaces steps or their comments in .github/workflows/ci.yml must update tests/ci-build-ui-step.test.ts in the same change, or npm test fails.",
+      "symbols": [],
+      "source_files": [
+        ".github/workflows/ci.yml",
+        "tests/ci-build-ui-step.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T16:43:51.848Z"
     },
     {
       "id": "db30ec72-c3a7-4a1d-a11b-3d8dd42875bb",
