@@ -382,7 +382,10 @@ Every `execCommand` call site, checkable against `grep -rn "execCommand(" src`:
 | tools/execute-prompt.ts -> writePromptFile / deletePromptFile | write/delete prompt file | 30s default | Cut | small write; a failed write fails the dispatch before launch |
 | tools/execute-prompt.ts -> retryBudget | credential file checks | 10s | Cut | read-only probes |
 | providers/claude.ts -> ensureWorkspaceTrusted / deliverWorkspaceTrustFile | read/move/write `~/.claude.json` | 10s | Cut | small writes via temp file + move, cleanup on failure |
+| utils/workspace-trust.ts -> seedWorkspaceTrust | exec seam handed to the provider's `ensureWorkspaceTrusted` (the claude.ts row) | provider's (10s) | Cut | same commands as the providers/claude.ts row; failure is logged as non-fatal |
 | providers/agy.ts -> checkAgyMemberSkills | skills probe | 5s | Cut | read-only probe |
+| services/agy-project.ts -> probeAgyProject / removeAgyProject | node script: project file probe / delete | 30s | Cut | read-only probe and a best-effort idempotent delete |
+| services/agy-project.ts -> provisionAgyProject | node script that spawns `agy --new-project` | 240s | Cut | the member-side node script bounds the `agy` child itself (`spawnSync` timeout 180s, below the 240s exec budget), so the child is killed on the member before the channel is ever cut |
 | services/preflight-check.ts -> preflightCheck | OAuth file / API key check | 10s | Cut | read-only probes |
 | services/member-home.ts -> probeHomeDir | home dir probe | PROBE_TIMEOUT_MS | Cut | read-only probe |
 | services/agent-shadow.ts -> checkProjectAgentShadows | shadow probe, quarantine move | PROBE_TIMEOUT_MS | Cut | probe plus a small move whose output is parsed and checked |
