@@ -2120,6 +2120,10 @@ export async function runDevelopLoopScenario(tag, {
     // Optional executeCommand observer/override -- see buildMockFleetApi's
     // `onCommand` option comment.
     onCommand,
+    // Optional caller-owned array that receives every workflow
+    // `activity:end` record (command and agent activities, with `success`
+    // and `error`), so a scenario can assert how an activity was recorded.
+    activityEnds,
 }) {
     const { tempDir, epicBead, tasks } = await setupMinimal(tag, taskSpecs);
     if (withRunbooks) {
@@ -2209,6 +2213,7 @@ export async function runDevelopLoopScenario(tag, {
         // threading, real single-sprint CLI path unaffected.
         const workflow = new FleetWorkflow(mockFleetApi, { targetRepo: tempDir }, `[${tag}] `);
         workflow.on('log', (e) => logs.push(e.msg));
+        if (Array.isArray(activityEnds)) workflow.on('activity:end', (meta) => activityEnds.push(meta));
         // apra-fleet-eft.28.2: publishState() (runner.js's sprint-state
         // persistence, e.g. the main() typed-abort catch's
         // publishState('terminal', ...)) emits a 'state' event on the
