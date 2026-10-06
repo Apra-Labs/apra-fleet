@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "34ff160ff8ee9e2268e851270b911771d06fedca",
     "branch": "feat/kb-redesign",
-    "entry_count": 282
+    "entry_count": 284
   },
   "entries": [
     {
@@ -1112,6 +1112,24 @@
       "updated_at": "2026-09-25T22:26:33.666Z"
     },
     {
+      "id": "2ea9d9e6-cb0e-44d2-b436-4d5a76879a2e",
+      "type": "knowledge",
+      "title": "install refresh loop rewrites only existing http apra-fleet registrations of other providers",
+      "summary": "runInstall's http path refreshes every OTHER provider in install-config.json with the access-secret header, but only when registeredMcpTransport() reports an existing http (url) entry; stdio entries and providers with no entry are left untouched.",
+      "symbols": [
+        "registeredMcpTransport",
+        "registerHttpMcp",
+        "runInstall"
+      ],
+      "source_files": [
+        "src/cli/install.ts",
+        "tests/install-multi-provider.test.ts",
+        "tests/install-access-secret-registration.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T19:27:44.459Z"
+    },
+    {
       "id": "2eecfb71-ff41-4639-bf98-16d39de7ff4f",
       "type": "knowledge",
       "title": "The planner retry ladder's pessimistic backoff sum is 50s, not the full 110s ladder",
@@ -1650,6 +1668,26 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-30T23:07:12.100Z"
+    },
+    {
+      "id": "48ad2e50-277c-4ab6-bbc0-89a323ec979f",
+      "type": "knowledge",
+      "title": "FULL-scope /mcp sessions also require the install access secret header",
+      "summary": "Since 46c48b9f the http transport refuses ANY /mcp session (FULL as well as ?member=) without a member JWT or the X-Apra-Fleet-Member-Secret header matching <data dir>/member-access.key, so every orchestrator-side client must go through withFleetAccessSecret/connectFleet.",
+      "symbols": [
+        "withFleetAccessSecret",
+        "createWorkflowEngine",
+        "connectFleet",
+        "createFleetHttpTransport"
+      ],
+      "source_files": [
+        "src/services/http-transport.ts",
+        "packages/apra-fleet-client/src/client/server-resolution.mjs",
+        "packages/apra-fleet-client/src/client/factory.mjs",
+        "tests/http-transport.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T19:27:44.587Z"
     },
     {
       "id": "4ab868ea-bb49-459a-b21e-f2b906d3cb58",
