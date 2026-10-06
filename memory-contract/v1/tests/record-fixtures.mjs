@@ -880,6 +880,43 @@ await recordNonErrorOutcome('kb_capture', 'non-error-confidence-clamped', {
   confidence: 'CONFIRMED',
 }, 'authority group, non_error_outcomes: the silent clamp branch gets no taxonomy code by design (taxonomy.json _meta.group_definitions.authority). Observable via confidence_clamped:true in the response, not via a thrown/response-field error code.');
 
+// -- kb_bible_commit removes a bible entry the KB holds as invalidated -----
+// A CONFIRMED entry citing a committed seed file is merged into repo A's
+// bible, discarded by id (kb_invalidate), and the next kb_bible_commit with no
+// ids removes it and reports it in removed with reason invalidated.
+{
+  const captureRemoval = await recordHappy('kb_capture', 'setup-for-bible-removal', {
+    type: 'knowledge',
+    title: 'Entry merged into the bible and then invalidated',
+    summary: 'Set up to demonstrate kb_bible_commit removing an invalidated bible entry.',
+    content: 'This entry cites the committed src/helper.ts, is merged into the bible, then discarded by id.',
+    source_files: ['src/helper.ts'],
+    symbols: ['helperRemovalFixture'],
+  });
+  const idRemoval = parseEnvelopeText(captureRemoval)?.id;
+  if (idRemoval) {
+    await recordHappy('kb_promote', 'setup-first-promote-for-bible-removal', {
+      id: idRemoval,
+      reason: 'First promotion (UNVERIFIED -> INFERRED) of the entry used by the bible removal fixture.',
+    });
+    await recordHappy('kb_promote', 'setup-second-promote-for-bible-removal', {
+      id: idRemoval,
+      reason: 'Second promotion (INFERRED -> CONFIRMED) so the entry can be merged into the bible.',
+    });
+    await recordHappy('kb_bible_commit', 'setup-merge-for-bible-removal', {
+      ids: [idRemoval],
+      baseBranch: 'main',
+      baseCommit: '0123456789abcdef0123456789abcdef01234567',
+    });
+    await recordHappy('kb_invalidate', 'setup-invalidate-for-bible-removal', { ids: [idRemoval] });
+    await recordHappy('kb_bible_commit', 'happy-removes-invalidated', {
+      ids: [],
+      baseBranch: 'main',
+      baseCommit: '0123456789abcdef0123456789abcdef01234567',
+    });
+  }
+}
+
 // ===========================================================================
 // Summary + named T7 gaps
 // ===========================================================================

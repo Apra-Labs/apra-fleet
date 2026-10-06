@@ -202,9 +202,14 @@ working folder, which is typically a feature branch.
   not a git work tree is refused with `E-BIBLE-BASIS-NOT-GIT` and no bible is
   written.
 - `kb_bible_commit` takes `ids`, `baseBranch` and `baseCommit` (all required)
-  and merges at ENTRY level: every entry already in the bible is kept, only
-  the given ids are added or replaced, and an entry in the file but absent from
-  the KB is never dropped. Ids that are not live CONFIRMED entries are skipped
+  and merges at ENTRY level: only the given ids are added or replaced, and
+  every entry already in the bible is kept unless the KB holds it as
+  superseded or invalidated. Those are REMOVED at every call (also with no
+  ids) and listed in the response's `removed` as `{id, reason}` (reason
+  `superseded` or `invalidated`) and in the commit message. An entry in the
+  file but absent from the KB, one the KB holds as CONFIRMED and current, and
+  a merely stale one (freshness sweep) are never dropped. `kb_export` stays
+  additive-only: it never removes an entry. Ids that are not live CONFIRMED entries are skipped
   and reported in `skipped` with reason `not_confirmed_or_unknown` (never an
   error). A live CONFIRMED id is admitted only if it passes the same basis rule
   as `kb_export` (scope=project): every cited source file has a recorded hash
@@ -217,8 +222,8 @@ working folder, which is typically a feature branch.
   live CONFIRMED id that cites no source file has no checkable basis and is
   skipped with its own reason `no_source_files` (never `basis_mismatch`),
   likewise leaving any existing bible entry unchanged. It makes a local commit scoped to
-  the bible path (identity `pm-kb`) and never pushes. No ids, no mergeable
-  ids, or an unchanged entry set makes no write and no commit. Re-running with
+  the bible path (identity `pm-kb`) and never pushes. Nothing merged and
+  nothing removed, or an unchanged entry set, makes no write and no commit. Re-running with
   the same ids after resetting to a newer HEAD re-merges at entry level, so a
   rejected push can be retried with no manual merge. An existing bible that
   cannot be parsed is refused (thrown), never overwritten.

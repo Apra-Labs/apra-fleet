@@ -250,6 +250,25 @@ function assertBasisMismatchSkipped(parsed, ctx) {
     : `expected skipped[0].reason === 'basis_mismatch', got ${JSON.stringify(skipped[0]?.reason)}`;
 }
 
+function assertMergedForRemoval(parsed, ctx) {
+  const liveId = ctx.ids.get('REMOVAL')?.live;
+  return Array.isArray(parsed?.merged) && parsed.merged.length === 1 && parsed.merged[0] === liveId
+    ? null
+    : `expected merged to be exactly [${liveId}], got ${JSON.stringify(parsed?.merged)}`;
+}
+
+// The invalidated bible entry is removed with its reason, and the removal is
+// committed. A schema-valid response with an empty removed list would
+// otherwise pass.
+function assertRemovedInvalidated(parsed, ctx) {
+  const liveId = ctx.ids.get('REMOVAL')?.live;
+  const removed = parsed?.removed;
+  if (!Array.isArray(removed) || removed.length !== 1) return `expected exactly one removed entry, got ${JSON.stringify(removed)}`;
+  if (removed[0]?.id !== liveId) return `expected the removed id to be ${liveId}, got ${JSON.stringify(removed[0]?.id)}`;
+  if (removed[0]?.reason !== 'invalidated') return `expected removed[0].reason === 'invalidated', got ${JSON.stringify(removed[0]?.reason)}`;
+  return parsed?.committed === true ? null : `expected committed === true, got ${JSON.stringify(parsed?.committed)}`;
+}
+
 function assertConfidenceClamped(parsed) {
   return parsed?.confidence_clamped === true
     ? null
@@ -489,6 +508,14 @@ export const SCENARIO = [
   },
   { tool: 'kb_promote', case: 'refusal-promote-directive', derive: { id: 'DIRECTIVE' } },
   { tool: 'kb_capture', case: 'non-error-confidence-clamped', assertParsed: assertConfidenceClamped },
+  // kb_bible_commit removal: merge a CONFIRMED entry, discard it by id, then a
+  // commit with no ids removes it (reason invalidated).
+  { tool: 'kb_capture', case: 'setup-for-bible-removal', captureId: 'REMOVAL' },
+  { tool: 'kb_promote', case: 'setup-first-promote-for-bible-removal', derive: { id: 'REMOVAL' } },
+  { tool: 'kb_promote', case: 'setup-second-promote-for-bible-removal', derive: { id: 'REMOVAL' } },
+  { tool: 'kb_bible_commit', case: 'setup-merge-for-bible-removal', derive: { ids: ['REMOVAL'] }, assertParsed: assertMergedForRemoval },
+  { tool: 'kb_invalidate', case: 'setup-invalidate-for-bible-removal', derive: { ids: ['REMOVAL'] } },
+  { tool: 'kb_bible_commit', case: 'happy-removes-invalidated', assertParsed: assertRemovedInvalidated },
 ];
 
 // ---------------------------------------------------------------------------

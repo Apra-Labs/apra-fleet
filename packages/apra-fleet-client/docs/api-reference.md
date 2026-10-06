@@ -553,9 +553,14 @@ JSON (via `parseToolJson`): `{exported, path, scope, committed}`.
 #### `kbBibleCommit(options: KbBibleCommitOptions)`
 
 Calls `kb_bible_commit` -- merges exactly `ids` into the bible at entry level
-(every existing entry is kept; only the given ids are added or replaced),
-writes `baseBranch` / `baseCommit` into provenance, and makes a local commit
-scoped to the bible path. It never pushes. Ids that are not live CONFIRMED
+(only the given ids are added or replaced; every existing entry is kept unless
+the KB holds it as superseded or invalidated), writes `baseBranch` /
+`baseCommit` into provenance, and makes a local commit scoped to the bible
+path. It never pushes. Every bible entry the KB holds as superseded or
+invalidated is removed at each call (also with an empty `ids`) and listed in
+`removed` as `{id, reason}` (reason `superseded` or `invalidated`) and in the
+commit message; an entry unknown to the KB, or CONFIRMED and current, is never
+removed, nor is a merely stale one. `kbExport` never removes anything. Ids that are not live CONFIRMED
 entries are skipped and listed in `skipped` with reason
 `not_confirmed_or_unknown`; a CONFIRMED id that fails the same basis rule
 `kb_export` applies (a cited file changed or absent at the repo's HEAD commit --
@@ -563,9 +568,9 @@ uncommitted edits never change the verdict -- or no basis) is skipped
 with reason `basis_mismatch` and any existing bible entry for it is kept; a
 CONFIRMED id citing no source file is skipped with its own reason
 `no_source_files` (its existing bible entry is kept too); no mergeable ids or an unchanged
-entry set makes no commit. Re-running with the same ids after resetting to a
+entry set (nothing merged, nothing removed) makes no commit. Re-running with the same ids after resetting to a
 newer HEAD re-merges, so a rejected push can be retried without a manual
-merge. Result JSON: `{path, merged, skipped, entry_count, committed}`.
+merge. Result JSON: `{path, merged, skipped, removed, entry_count, committed}`.
 
 #### `composePermissions(options: ComposePermissionsOptions)`
 

@@ -24,7 +24,7 @@ const BASE = { baseBranch: 'main', baseCommit: 'a'.repeat(40) };
  * A fake maintainer: records every event in order. `pushFailures` is how many
  * G-pushes fail before one succeeds.
  */
-function harness({ pushFailures = 0, committed = true, unpushed = false, skipped = [], bibleSkipRetryRounds } = {}) {
+function harness({ pushFailures = 0, committed = true, unpushed = false, skipped = [], removed, bibleSkipRetryRounds } = {}) {
     const events = [];
     const logs = [];
     let pushesLeftToFail = pushFailures;
@@ -38,7 +38,7 @@ function harness({ pushFailures = 0, committed = true, unpushed = false, skipped
             // per-round answer); only skips for ids actually sent are returned.
             const all = typeof skipped === 'function' ? skipped(args.ids) : skipped;
             const sk = all.filter((s) => args.ids.includes(s.id));
-            return { content: [{ text: JSON.stringify({ path: '.fleet/kb-canonical.json', merged: args.ids.filter((id) => !sk.some((s) => s.id === id)), skipped: sk, entry_count: args.ids.length, committed }) }] };
+            return { content: [{ text: JSON.stringify({ path: '.fleet/kb-canonical.json', merged: args.ids.filter((id) => !sk.some((s) => s.id === id)), skipped: sk, ...(removed === undefined ? {} : { removed }), entry_count: args.ids.length, committed }) }] };
         }
         return {};
     };
@@ -152,6 +152,24 @@ describe('commitRound: the review-round bible commit on the kb_maintainer', () =
         assert.equal(warns.length, 1, logs.join('\n'));
         assert.match(warns[0], /basis_mismatch for 3 round\(s\) in a row/);
         assert.deepEqual(client.pendingConfirmations(), []);
+    });
+
+    test('bible entries the tool removed (superseded/invalidated) are named in the run log with their reasons', async () => {
+        const { client, logs } = harness({ removed: [{ id: 'old-1', reason: 'superseded' }, { id: 'old-2', reason: 'invalidated' }] });
+        await confirm(client, ['e1']);
+        await client.commitRound();
+        const line = logs.find((l) => /kb_bible_commit removed 2 superseded\/invalidated entry\(ies\)/.test(l));
+        assert.ok(line, logs.join('\n'));
+        assert.match(line, /old-1 \(superseded\), old-2 \(invalidated\)/);
+    });
+
+    test('no removal line when the tool removed nothing (or predates the removed field)', async () => {
+        for (const removed of [[], undefined]) {
+            const { client, logs } = harness({ removed });
+            await confirm(client, ['e1']);
+            await client.commitRound();
+            assert.ok(!logs.some((l) => /kb_bible_commit removed/.test(l)), logs.join('\n'));
+        }
     });
 
     test('the default retry bound is KB_BIBLE_SKIP_RETRY_ROUNDS', async () => {

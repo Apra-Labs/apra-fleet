@@ -1,0 +1,18 @@
+{
+  "tool": "kb_bible_commit",
+  "case": "happy-removes-invalidated",
+  "kind": "happy",
+  "request": {
+    "ids": [],
+    "baseBranch": "main",
+    "baseCommit": "0123456789abcdef0123456789abcdef01234567"
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"path\":\"<SCRATCH_REPO_A>/.fleet/kb-canonical.json\",\"merged\":[],\"skipped\":[],\"removed\":[{\"id\":\"f73a13d1-15d2-46c7-a319-84232fdf856b\",\"reason\":\"invalidated\"}],\"entry_count\":1,\"committed\":true}"
+      }
+    ]
+  }
+}

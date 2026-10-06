@@ -90,6 +90,29 @@
                 "additionalProperties": false
               }
             },
+            "removed": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": "string",
+                    "enum": [
+                      "superseded",
+                      "invalidated"
+                    ]
+                  }
+                },
+                "required": [
+                  "id",
+                  "reason"
+                ],
+                "additionalProperties": false
+              }
+            },
             "entry_count": {
               "type": "number"
             },
@@ -101,6 +124,7 @@
             "path",
             "merged",
             "skipped",
+            "removed",
             "entry_count",
             "committed"
           ],

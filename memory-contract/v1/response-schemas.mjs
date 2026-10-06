@@ -208,14 +208,20 @@ const KB_RESPONSE_BODIES = {
   // this KB and passing the shared bible basis predicate) or skipped with a
   // reason (not_confirmed_or_unknown; no_source_files for a CONFIRMED id that
   // cites no source file; or basis_mismatch for a CONFIRMED id whose cited-file
-  // basis does not match the files at HEAD); committed is true only when a local
-  // commit of the bible path was made (never pushed).
+  // basis does not match the files at HEAD); removed lists every bible entry
+  // dropped because this KB holds it as superseded or invalidated (always
+  // present, possibly empty); committed is true only when a local commit of
+  // the bible path was made (never pushed).
   kb_bible_commit: z.object({
     path: z.string(),
     merged: z.array(z.string()),
     skipped: z.array(z.object({
       id: z.string(),
       reason: z.enum(['not_confirmed_or_unknown', 'no_source_files', 'basis_mismatch']),
+    })),
+    removed: z.array(z.object({
+      id: z.string(),
+      reason: z.enum(['superseded', 'invalidated']),
     })),
     entry_count: z.number(),
     committed: z.boolean(),

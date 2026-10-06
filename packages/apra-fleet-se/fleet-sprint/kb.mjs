@@ -840,6 +840,13 @@ export function createKbWorkClient(opts = {}) {
             for (const x of exhausted) {
                 log(`[kb-work] WARN: dropping ${x.id} from the bible queue for ${repo}: kb_bible_commit skipped it with reason ${x.reason || 'unknown'} for ${x.rounds} round(s) in a row`);
             }
+            // Bible entries the maintainer KB holds as superseded or invalidated
+            // are removed by the tool at every call; name each one here so the
+            // removal is visible in the run log, not only in the commit message.
+            const removed = Array.isArray(outcome.result.removed) ? outcome.result.removed.filter((x) => x && typeof x.id === 'string') : [];
+            if (removed.length > 0) {
+                log(`[kb-work] kb_bible_commit removed ${removed.length} superseded/invalidated entry(ies) from the bible for ${repo}: ${describe(removed)}`);
+            }
             log(`[kb-work] bible commit for ${repo} on maintainer '${maintainer}': ${merged} confirmation(s) ${outcome.pushed ? 'committed and pushed' : 'already in the bible -- nothing to push'}`);
             return { committed: outcome.pushed ? merged : 0, pending: pending.size };
         } finally {

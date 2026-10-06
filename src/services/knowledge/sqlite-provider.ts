@@ -223,6 +223,16 @@ export class SqliteProvider implements MemoryProvider {
     try {
       this.db.exec("ALTER TABLE entries ADD COLUMN source_file_hashes TEXT NOT NULL DEFAULT '{}'");
     } catch {}
+
+    // Why a row was retired (superseded_at set): 'superseded' (a contradiction
+    // loser, or replaced by a capture naming it in supersedes) or 'invalidated'
+    // (discarded by id through kb_invalidate). superseded_at alone cannot tell
+    // the two apart, and kb_bible_commit reports the reason for each bible
+    // entry it removes. Internal only: never surfaced on KBEntry. Rows retired
+    // before this column existed read NULL and count as 'superseded'.
+    try {
+      this.db.exec('ALTER TABLE entries ADD COLUMN retired_reason TEXT');
+    } catch {}
   }
 
   private getDb(): DatabaseSync {
@@ -768,7 +778,7 @@ export class SqliteProvider implements MemoryProvider {
         // flagged_for_review is deliberately NOT cleared here; that is
         // resolveContradiction's behavior, and kb-review.md depends on the
         // difference (a kept entry stays listed under flagged_only).
-        db.prepare('UPDATE entries SET superseded_at = ?, stale = 1 WHERE id = ?')
+        db.prepare("UPDATE entries SET superseded_at = ?, stale = 1, retired_reason = 'superseded' WHERE id = ?")
           .run(now, decision.matchedId);
         this.insertEntry(db, newId, input, newContent, now, sourceFileHashes);
         this.wireLinks(db, newId, input);
@@ -1214,10 +1224,37 @@ export class SqliteProvider implements MemoryProvider {
         result.already_discarded.push(id);
         continue;
       }
-      db.prepare('UPDATE entries SET superseded_at = ?, stale = 1 WHERE id = ?').run(now, id);
+      db.prepare("UPDATE entries SET superseded_at = ?, stale = 1, retired_reason = 'invalidated' WHERE id = ?").run(now, id);
       result.discarded.push(id);
     }
     return result;
+  }
+
+  /**
+   * For each id this KB holds as RETIRED, why: 'superseded' or 'invalidated'.
+   * Ids that are unknown, or known and not retired, are absent from the map.
+   *
+   * Retired means superseded_at is set (reason from retired_reason; NULL, a
+   * row retired before that column existed, counts as 'superseded'), or
+   * content_hash = 'invalidated' (kb_invalidate by file) -> 'invalidated'.
+   *
+   * A merely STALE row (stale = 1 from the freshness sweep, superseded_at
+   * NULL, content_hash not 'invalidated') is NOT retired: staleness means the
+   * cited files moved, which the next capture or sweep can clear, while
+   * superseded and invalidated are explicit curation decisions. Only those two
+   * remove an entry from the bible (kb_bible_commit).
+   */
+  getRetirementReasons(ids: string[]): Map<string, 'superseded' | 'invalidated'> {
+    const db = this.getDb();
+    const out = new Map<string, 'superseded' | 'invalidated'>();
+    const stmt = db.prepare('SELECT superseded_at, retired_reason, content_hash FROM entries WHERE id = ?');
+    for (const id of new Set(ids)) {
+      const row = stmt.get(id) as { superseded_at: string | null; retired_reason: string | null; content_hash: string | null } | undefined;
+      if (!row) continue;
+      if (row.superseded_at) out.set(id, row.retired_reason === 'invalidated' ? 'invalidated' : 'superseded');
+      else if (row.content_hash === 'invalidated') out.set(id, 'invalidated');
+    }
+    return out;
   }
 
   async invalidate(files: string[], opts?: { ownerTag?: string }): Promise<{ invalidated: number }> {
@@ -1745,7 +1782,7 @@ export class SqliteProvider implements MemoryProvider {
     // was once part of for later inspection); only flagged_for_review is
     // cleared per the stated invariant.
     db.prepare(
-      'UPDATE entries SET superseded_at = ?, stale = 1, flagged_for_review = 0 WHERE id = ?'
+      "UPDATE entries SET superseded_at = ?, stale = 1, flagged_for_review = 0, retired_reason = 'superseded' WHERE id = ?"
     ).run(now, loserId);
 
     return { winnerId, loserId };

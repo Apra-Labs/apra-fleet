@@ -564,7 +564,9 @@
  *   same rule kb_export applies; uncommitted edits never change the verdict) is skipped
  *   with reason basis_mismatch, and a CONFIRMED id citing no source file is skipped with
  *   reason no_source_files. Skips are reported in the result's skipped list.
- *   An empty list makes no commit.
+ *   Independently of ids, bible entries the KB holds as superseded or invalidated are
+ *   removed and reported in the result's removed list; an empty list with nothing to
+ *   remove makes no commit.
  * @property {string} baseBranch - The target base branch, written to provenance.branch.
  * @property {string} baseCommit - The base commit the entries were verified against,
  *   written to provenance.commit.
@@ -1011,15 +1013,18 @@ export class ApraFleet {
 
     /**
      * Merge exactly the given confirmed entry ids into the bible at entry level
-     * (existing entries kept; each merged entry is a v3 KbBibleEntry carrying its
-     * source_file_hashes basis; a bible holding a duplicate id is refused),
-     * write baseBranch/baseCommit provenance, and make a
-     * local commit scoped to the bible path. Never pushes; re-running with the
+     * (existing entries kept unless this KB holds them as superseded or
+     * invalidated -- those are removed, also when ids is empty; each merged
+     * entry is a v3 KbBibleEntry carrying its source_file_hashes basis; a bible
+     * holding a duplicate id is refused), write baseBranch/baseCommit
+     * provenance, and make a local commit scoped to the bible path whose message
+     * lists each removal. Never pushes; re-running with the
      * same ids after resetting to a newer HEAD re-merges, so a rejected push can
-     * be retried. Result JSON: {path, merged, skipped, entry_count, committed};
-     * extract with parseToolJson(). Each skipped item is {id, reason} with reason
-     * not_confirmed_or_unknown, no_source_files (a CONFIRMED id citing no source
-     * file) or basis_mismatch.
+     * be retried. Result JSON: {path, merged, skipped, removed, entry_count,
+     * committed}; extract with parseToolJson(). Each skipped item is {id, reason}
+     * with reason not_confirmed_or_unknown, no_source_files (a CONFIRMED id
+     * citing no source file) or basis_mismatch. Each removed item is {id, reason}
+     * with reason superseded or invalidated.
      * A CONFIRMED id is admitted only if it passes the same basis rule as kb_export.
      * The removed scope keys (repo_path, repo, repo_remote_url) are refused
      * with E-SCOPE-KEY-REMOVED before anything is sent.
