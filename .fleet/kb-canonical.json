@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "85a04bf2d353ca960d30b447246bbe3a55ddb4b8",
     "branch": "v0.5_dashboard",
-    "entry_count": 436
+    "entry_count": 439
   },
   "entries": [
     {
@@ -990,6 +990,23 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-10T20:18:25.873Z"
+    },
+    {
+      "id": "1c57cb29-87dd-4289-b455-4056c1316ce4",
+      "type": "learning",
+      "title": "Proxy Set-Cookie filter still relays nameless cookies that serialize as the reserved name",
+      "summary": "filterResponseHeaders strips by parsed cookie name, so an upstream '=apra_console_token=x' (empty name) is relayed; browsers send it as apra_console_token=x, though it is now confined to Path=/ext/<id>.",
+      "symbols": [
+        "filterResponseHeaders",
+        "setCookieName",
+        "scopeSetCookie"
+      ],
+      "source_files": [
+        "src/console/proxy.ts",
+        "tests/console-proxy.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T16:18:29.443Z"
     },
     {
       "id": "1c9329b6-dadf-439f-afc7-4e96c1cc8341",
@@ -3108,6 +3125,26 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-10-05T20:59:08.941Z"
+    },
+    {
+      "id": "5b076a6a-1056-48c9-aa7f-ac107d51ae04",
+      "type": "knowledge",
+      "title": "Non-default instance relocates fleet.key and supervisor id dir inside APRA_FLEET_DATA_DIR",
+      "summary": "With APRA_FLEET_DATA_DIR=<D>, fleet.key is <D>/fleet.key and the id-allocator dir is <D>/supervisor; an override equal to ~/.apra-fleet/data is treated as the default instance and keeps ~/.apra-fleet/fleet.key.",
+      "symbols": [
+        "effectiveOverride",
+        "fleetKeyPath",
+        "supervisorIdDir",
+        "readLocalToken"
+      ],
+      "source_files": [
+        "packages/apra-fleet-client/src/fleet-paths.mjs",
+        "src/services/jwt.ts",
+        "packages/apra-fleet-client/src/auth/local-token.mjs",
+        "scripts/sandbox-deploy.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T16:18:27.554Z"
     },
     {
       "id": "5b0c0a37-6e58-4854-b1f4-b672ca0a6080",
@@ -7981,6 +8018,26 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-07T16:36:39.887Z"
+    },
+    {
+      "id": "ff84bf34-44f1-4cd8-8a0b-986414ae2efb",
+      "type": "knowledge",
+      "title": "Supervisor api guard re-resolves its token via deps.resolveToken with a bounded retired-token grace",
+      "summary": "createSupervisor takes a token provider (deps.resolveToken). It re-reads the provider only when a bearer check fails or the token getter is read. After a switch the old token stays accepted for 24h, then is dropped.",
+      "symbols": [
+        "createSupervisor",
+        "RETIRED_TOKEN_GRACE_MS",
+        "NO_TOKEN_SOURCE_WARNING",
+        "resolveServiceToken"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/src/supervisor/server.mjs",
+        "packages/apra-fleet-se/bin/serve.mjs",
+        "packages/apra-fleet-se/test/supervisor-token-reresolve.test.mjs",
+        "packages/apra-fleet-se/test/supervisor-no-token-warning.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T16:18:25.683Z"
     },
     {
       "id": "ff9ae373-4bc6-469c-8271-cbd101c9bb35",
