@@ -143,7 +143,7 @@
       "member": "promote",
       "kind": "interface-method",
       "interface": "MemoryProvider",
-      "signature": "promote(id: string, reason?: string): Promise<{id, confidence_before, confidence_after}>",
+      "signature": "promote(id: string, reason?: string, opts?: {ownerTag?: string}): Promise<{id, confidence_before, confidence_after}>",
       "purpose": "Upgrade an entry's confidence one tier (UNVERIFIED -> INFERRED -> CONFIRMED), appending the reason as an evidence note.",
       "tools": [
         { "name": "kb_promote", "request_schema_ref": "schemas/kb_promote.request.json", "response_schema_ref": "schemas/kb_promote.response.json", "anchor_validation": "self-validated" }
