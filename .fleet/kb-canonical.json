@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "4f1d90d5877af2cd2ac19cb250fc46b9f3b9c951",
     "branch": "v0.5_dashboard",
-    "entry_count": 428
+    "entry_count": 429
   },
   "entries": [
     {
@@ -2720,6 +2720,26 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-07T16:36:39.786Z"
+    },
+    {
+      "id": "4f099c9c-ab04-4410-9f5d-beb0da06f2a4",
+      "type": "learning",
+      "title": "Integration Test skip reasons in runSprintCycle are only added to, never cleared",
+      "summary": "runner.js strandedSkipReasons records the latest Integration-Test-skip reason per stranded rollup id but never removes an entry when a later cycle actually runs Integration Test, so Finalization can report a stale 'skipped' reason.",
+      "symbols": [
+        "runSprintCycle",
+        "noteStrandedRollupsAtIntegSkip",
+        "findStrandedRollups",
+        "computeOwedTriage",
+        "runIntegTestPhase"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/fleet-sprint/owed-triage.mjs",
+        "packages/apra-fleet-se/fleet-sprint/phases/integ-test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T01:10:54.786Z"
     },
     {
       "id": "4f62e71d-0544-49f1-863f-6bbc503604ac",
