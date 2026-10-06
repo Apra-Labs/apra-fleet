@@ -237,6 +237,9 @@ import {
     // moved here from runner.js; imported back and re-exported (facade region
     // below) so no importer of runner.js is edited by the move.
     parseBdJson, goalPriorityMax, partitionByGoalMembership,
+    // Develop-dispatch goal filter: below-goal ready leaves are excluded
+    // unless they block in-goal work or the sprint already worked on them.
+    partitionReadyByGoal, formatBelowGoalExclusionLog,
     // apra-fleet-rp7a.1: the deferred split the Cycle Evaluation completion
     // math and phases/final-review.mjs's closing count BOTH apply, so the two
     // cannot drift apart. See its own doc comment for why 'deferred' -- and
@@ -2307,6 +2310,28 @@ async function runSprintCycle(context) {
     // every verdict site: Review, Re-Review and Final Review.
     const workedOnBeadIds = new Set();
 
+    // The develop loop's ready set: readyLeafBeads() minus below-goal beads
+    // that neither (transitively) block an open in-goal bead nor were already
+    // dispatched by this sprint (see partitionReadyByGoal in beads-scope.mjs).
+    // Used by every Develop/Review-loop readiness read -- the per-cycle seed,
+    // the per-round streak input and the round-loop "still open" check -- so
+    // an excluded bead can neither be dispatched nor keep the loop spinning.
+    // The completion gate needs no change: it already counts only beads at or
+    // above goal priority, so an excluded bead never holds the sprint open.
+    // Pre-sprint validation keeps the unfiltered readyLeafBeads(): its
+    // deadlock diagnosis is about the graph, not about goal membership.
+    const loggedBelowGoalExclusions = new Set();
+    async function dispatchableReadyLeafBeads() {
+        const [ready, scopeAll] = await Promise.all([readyLeafBeads(), bdListScoped('')]);
+        const { dispatchable, excluded } = partitionReadyByGoal(ready, scopeAll, validated.goal, { workedOnIds: workedOnBeadIds });
+        const fresh = excluded.filter((e) => !loggedBelowGoalExclusions.has(e.id));
+        if (fresh.length > 0) {
+            for (const e of fresh) loggedBelowGoalExclusions.add(e.id);
+            log(formatBelowGoalExclusionLog(fresh, validated.goal));
+        }
+        return dispatchable;
+    }
+
     // Stall detection: abort with a typed StalledSprintError after two
     // consecutive cycles that made no forward progress, rather than burning
     // every remaining cycle on a develop/review loop that keeps reopening and
@@ -2507,7 +2532,7 @@ async function runSprintCycle(context) {
         // filter exists to stop NON-target parents/bugs from wasting doer
         // dispatches, never to make a sprint's own target unreachable.
         const targetIssueSet = new Set(targetIssues);
-        let readyBeads = (await readyLeafBeads())
+        let readyBeads = (await dispatchableReadyLeafBeads())
             .filter((b) => targetIssueSet.has(b.id) || !b.issue_type || b.issue_type === 'task')
             .slice().sort((a, b) => a.title.localeCompare(b.title) || a.id.localeCompare(b.id));
 
@@ -2528,7 +2553,7 @@ async function runSprintCycle(context) {
             });
             if (cycleReclaimedIds.length > 0) {
                 log(`Cycle ${cycle} self-heal: reclaimed ${cycleReclaimedIds.length} orphaned bead(s), re-checking readiness: ${cycleReclaimedIds.join(', ')}.`);
-                readyBeads = (await readyLeafBeads())
+                readyBeads = (await dispatchableReadyLeafBeads())
                     .filter((b) => targetIssueSet.has(b.id) || !b.issue_type || b.issue_type === 'task')
                     .slice().sort((a, b) => a.title.localeCompare(b.title) || a.id.localeCompare(b.id));
             }
@@ -2610,7 +2635,7 @@ async function runSprintCycle(context) {
             // after the plan phase (a reviewer newTask, an out-of-band filing)
             // would otherwise land in a doer streak and burn a dispatch on a
             // contract-bound refusal. Same target-issue exemption as above.
-            const currentReadyAll = (await readyLeafBeads())
+            const currentReadyAll = (await dispatchableReadyLeafBeads())
                 .filter((b) => targetIssueSet.has(b.id) || !b.issue_type || b.issue_type === 'task')
                 .slice().sort((a, b) => a.title.localeCompare(b.title) || a.id.localeCompare(b.id));
 
@@ -2745,7 +2770,7 @@ async function runSprintCycle(context) {
             // must not read as "work still pending" here -- it is never a
             // dispatchable leaf, so it must not keep this loop from
             // organically completing (apra-fleet-66u.1/66u.2 rework).
-            const stillOpen = await readyLeafBeads();
+            const stillOpen = await dispatchableReadyLeafBeads();
             lastStillOpenCount = stillOpen.length;  // Track for post-loop round-cap detection
 
             if (stillOpen.length === 0) {
