@@ -67,10 +67,10 @@ refs, side-effect class, idempotency and error codes; this section names every
 method it contains and nothing else, so the two never drift silently out of
 sync.
 
-### 2.1 `MemoryProvider` interface methods (`methods.json` ids P-1..P-12)
+### 2.1 `MemoryProvider` interface methods (`methods.json` ids P-1..P-13)
 
 `init`, `capture`, `query`, `context`, `invalidate`, `getLinked`, `prime`,
-`promote`, `sync`, `stats`, `touch`, `relatedClaims`.
+`promote`, `demote`, `sync`, `stats`, `touch`, `relatedClaims`.
 
 Side-effect classes used across this set: `append` (`init`, `query`, `sync`,
 `touch`), `trust-mutating` (`capture`, `invalidate`, `promote`), `pure read`
@@ -156,6 +156,16 @@ the entries (sets `superseded_at`, never deletes) and returns
 `E-MEMBER-VIEW-READ-ONLY`. A FULL session reads and writes the per-repo DB
 unchanged.
 
+A row imported from the bible (`kb_import`) carries NO `member:<uuid>` tag at
+all -- bible entries are not stamped with any one member's identity. The
+consequence for `kb_demote` follows directly from the own-scope rule above,
+but is easy to miss: inside a MEMBER session, only the entries that member
+itself captured and later promoted to CONFIRMED are demotable; a CONFIRMED
+entry the member's checkout holds only because it was imported from the bible
+is reported not found, same as an unknown id, and is left unchanged. A FULL
+session carries no ownerTag at all and may demote any CONFIRMED row,
+bible-imported or not.
+
 ### 2.6 Bible provenance (target base branch) and entry-level commits
 
 The v2 bible (`.fleet/kb-canonical.json`) records `provenance.branch` and
@@ -204,6 +214,20 @@ import, so withdrawal of trust is only ever carried by an explicit tombstone.
 - `kb_export` (scope=project) honours tombstones: it does not re-add a tombstoned
   id unless the local row was promoted AFTER the tombstone's `demoted_at`, in
   which case it re-adds the entry and clears the tombstone in the same write.
+- `kb_import` applies the same tombstones on the READ side, to a local row --
+  this is the counterpart of the `kb_export`/`kb_bible_commit` write-side rules
+  above, and it is the only place a bible import can lower an already-CONFIRMED
+  row's own confidence. For each tombstone in the imported bible's `demotions`,
+  the local row is lowered from CONFIRMED to INFERRED ONLY when it still exists,
+  is CONFIRMED, is not superseded, is not a `user-directive`, AND its own
+  `promoted_at` (or `created_at` when it was never promoted) is STRICTLY BEFORE
+  the tombstone's `demoted_at`; a local row re-promoted at or after the
+  tombstone's time is left untouched (it is newer evidence than the tombstone),
+  and a tombstoned id with no local row creates none. Either timestamp failing
+  to parse refuses the demotion rather than guessing. The demoted row gets the
+  same single-line content note as a local `kb_demote` (`BIBLE_DEMOTION_REASON`,
+  "demoted in the project bible", standing in for the caller-supplied reason),
+  and `promoted_at`/`source` stay untouched, exactly as a local demotion.
 
 ### 2.7 Every code_* call is scoped to the calling session (code constraint)
 
@@ -401,8 +425,39 @@ returned as an unchanged no-op -- MUST leave `promoted_at` and `source`
 untouched, and MUST record the basis it withdrew trust against by hashing the
 cited source files AS THEY ARE ON DISK AT DEMOTE TIME, never by copying the
 capture-time hash column (a capture-time copy cannot answer whether the tree
-has moved on since the demotion, which is the question the record exists for). A
-closed Author enum MUST gate `role` server-side even though the request
+has moved on since the demotion, which is the question the record exists for).
+Every refusal `kb_demote` can raise MUST be checked before the single write
+that lowers confidence, in this fixed order, so a partial demotion can never
+be observed: (1) the id does not exist, or -- in a MEMBER session -- exists but
+does not carry the caller's ownerTag, both reported as the identical "entry not
+found" (so a MEMBER session can never learn an entry it does not own exists by
+probing for a different refusal); (2) the entry is already superseded
+(`E-DEMOTE-SUPERSEDED`); (3) the entry is a `user-directive`, which is
+human-terminal in both directions (`E-DEMOTE-REFUSED-DIRECTIVE`); (4) the
+entry is not CONFIRMED (`E-DEMOTE-NOT-CONFIRMED`, the ladder refusal above);
+(5) the reason, with every newline collapsed to a space and the result
+trimmed, falls short of the demote reason floor (`E-DEMOTE-REASON-REQUIRED`);
+(6) a cited evidence file does not resolve anchor-relative to a regular file in
+this worktree (`E-DEMOTE-EVIDENCE-UNRESOLVED`). The eventual content note MUST
+use the one format shared with the bible tombstone path (2.6), so a demotion
+applied locally and one that crossed clones through an import read
+identically: exactly ONE leading newline (never two, which is the `kb_feedback`
+marker, so the two can never be mistaken for each other), then
+`[Demoted: <reason, newlines collapsed to spaces> -- <author>]`, with an
+optional ` | evidence: <evidence files, comma-joined>` clause inserted before
+the closing bracket only when evidence files were cited.
+
+The KB's confidence-lowering surface is a short, named ladder, and `kb_demote`
+is only one rung of it: an entry that is simply less certain than its tier
+claims -- still broadly right, but the evidence underneath it turned out
+thinner than the promotion implied -- is routed to `kb_demote`; an entry shown
+to be actively wrong is routed to `kb_feedback` (flags and stales it, but MUST
+NOT touch confidence) or, when it forms a genuine contradiction pair with
+another entry, `kb_resolve_contradiction`; discarding an UNVERIFIED/INFERRED
+capture that was never worth promoting in the first place is a `kb_discards`
+judgement, carried out through `kb_invalidate`. `kb_demote` is the only one of
+these four that can ever lower a CONFIRMED entry's stored confidence, and it
+can only ever lower it to INFERRED. A closed Author enum MUST gate `role` server-side even though the request
 schema leaves it open; any value outside it, including an absent hint, MUST
 be stamped as the literal `unknown`. `source` derivation is a handler-level
 guarantee, not a provider-level one: on the `kb_capture` tool path `source`
@@ -446,7 +501,12 @@ this check runs, overriding whatever the handler set. `!opts?.importMode` is
 excluded because a bible import keeps its stored confidence, including
 CONFIRMED (a comment on the same clamp block): the bible is a git-reviewed, human-merged
 artifact, and re-clamping would demote a whole team's already-earned trust on
-every import. `importMode` is the SECOND parameter of `capture()`, never a
+every import. This clamp is the only route by which `capture()` itself could
+mint or preserve CONFIRMED; it never LOWERS an existing CONFIRMED row. A local
+CONFIRMED row IS still lowered on import, but through a separate path outside
+this clamp entirely (2.6): `kb_import` applies the bible's tombstones to
+already-stored rows, and only when an explicit tombstone's `demoted_at`
+postdates that row's own `promoted_at`. `importMode` is the SECOND parameter of `capture()`, never a
 field of the deserialized request body, so no caller reaching `capture()`
 through a route can set it (same comment block). Provenance: `AUTHOR_VALUES`
 (`src/tools/kb-capture.ts:11`) and `validateAuthor`
