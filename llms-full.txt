@@ -940,6 +940,56 @@ The idle timer is reset by normal pool activity (`execCommand`/`getConnection`),
 
 Every SFTP transfer (`send_files`, `receive_files`, internal home-file writes) runs on its own SFTP session -- one channel on the member's pooled connection -- that is always ended afterwards (`withSftpSession`, `src/services/sftp.ts`). Each operation on it (session open, `mkdir`, `writeFile`, `fastPut`, `fastGet`) runs under an inactivity timeout, `SFTP_INACTIVITY_TIMEOUT_MS` (120s). It is inactivity-based, not a wall-clock ceiling: `fastPut`/`fastGet` progress callbacks re-arm it, so a large transfer that keeps moving is never cut. On expiry the session is ended, its pooled-channel lease released, and the whole transfer rejects with `SftpTimeoutError` naming the member, the path and the budget (never folded into a per-file failure). A session channel ssh2 leaves open after the member refuses the `sftp` subsystem request is closed too (`openSftp`), so a member without an SFTP subsystem cannot use up sshd's `MaxSessions` one attempt at a time.
 
+### Command Timeouts: Explicit Kill (FLEET_PID) vs Cut on Timeout
+
+`execCommand` (`src/services/ssh.ts`, and its `LocalStrategy` twin in `src/services/strategy.ts`) takes a rolling inactivity timeout and an optional hard ceiling. What a timeout does to the REMOTE command depends on whether the command reports its PID:
+
+- **FLEET_PID** -- the command runs under the member dialect's `wrapPidCapture` (POSIX subshell or PowerShell prefix, `src/os/*.ts`), or is a provider launch that emits the marker itself. On timeout, `execCommand` kills the remote process tree on a fresh leased channel (`killRemoteTree`) and rejects with `Command timed out ...` / `Command exceeded max total time ...`. The kill is explicit and the caller reports it.
+- **Cut** -- no PID is known, so all a timeout does is close the channel (it is always closed, so it never leaks a `MaxSessions` slot). The remote command loses its stdout/stderr and normally dies on its next write. One that never writes may keep running. This is acceptable only for the commands below: short probes, small writes that are idempotent or retried, and kills. Cutting them loses nothing a re-run does not restore.
+
+Every `execCommand` call site, checkable against `grep -rn "execCommand(" src`:
+
+| Caller (file -> function) | Command | Timeout | On timeout | Why acceptable |
+|---|---|---|---|---|
+| tools/execute-command.ts -> executeCommand (sync path) | user command | `timeout_s` | FLEET_PID | arbitrary user work: must be killed, not orphaned |
+| tools/execute-command.ts -> executeCommand (long_running launch) | detached-task launcher | `timeout_s` | Cut | only cuts the launcher. The detached task uses its own marker on purpose, so a launch timeout never kills it |
+| tools/execute-prompt.ts -> dispatchAttempt | provider CLI dispatch | per-provider inactivity + `max_total_s` | FLEET_PID | provider launch commands emit the marker themselves |
+| tools/update-agent-cli.ts -> runCliStep (install/update) | CLI install / update | 180s / 120s inactivity, 15 min ceiling | FLEET_PID | result says "killed on timeout after running Ns" plus the PID. Never a silent mid-install cut |
+| tools/vcs-credential-exec.ts -> vcsCredentialExec (dispatch) | user command with credential | `timeout_s` (120s) | FLEET_PID | git push/clone must be killed explicitly, like execute_command |
+| services/relay-executor.ts | relayed command | caller's | as relayed | runs the originating caller's command unchanged, so the original caller's wrapper choice applies |
+| tools/vcs-credential-exec.ts -> vcsCredentialExec (read) | read credential helper file | 15s | Cut | read-only |
+| tools/update-agent-cli.ts -> updateSingleAgent | `--version` before/after | 15s | Cut | read-only probe |
+| tools/register-member.ts | OS detect (`uname`/`ver`/`$env:OS`), CLI version (15s/60s), mkdir work folder, git remote | 10-60s | Cut | probes and an idempotent mkdir. Registration reports the failure |
+| tools/member-detail.ts -> memberDetail | version, credential/API-key checks, busy check, cpu/mem/disk/gpu, git branch | 10s | Cut | read-only probes. A missing field is reported as unknown |
+| tools/check-status.ts -> checkAgent | process check, GPU, busy check | 10s | Cut | read-only probes |
+| tools/list-members.ts -> getAuthStatus | credential file / API key check | 5s | Cut | read-only probes |
+| tools/monitor-task.ts -> monitorTask | task status, pid, gpu, log tail | 10s | Cut | read-only probes |
+| tools/cloud-control.ts, services/cloud/activity.ts | GPU / activity command / process check | 10s / ACTIVITY_TIMEOUT_MS | Cut | read-only probes. Timeout means "unknown" and blocks auto-stop |
+| tools/provision-auth.ts -> verifyWithClaudePrompt / verifyWithVersion | `claude -p hello` / `--version` | 60s / 30s | Cut | verification only. Timeout means "deployed, unverified" |
+| tools/provision-auth.ts -> provisionOAuthCopy / provisionApiKey | credential write, JSON deep-merge, env set/unset, API key check | 10-15s | Cut | small idempotent writes, re-run by re-provisioning. Failures are reported |
+| tools/provision-vcs-auth.ts, tools/revoke-vcs-auth.ts, services/credential-cleanup.ts | credential helper write/remove | 15s | Cut | small idempotent writes/removes |
+| tools/remove-member.ts | credential/key/project cleanup | 10-15s | Cut | best-effort idempotent removes |
+| tools/setup-ssh-key.ts -> setupSSHKey | install public key | 10s | Cut | small idempotent append, verified afterwards |
+| tools/compose-permissions.ts -> detectStacks / deliverConfigFile / provider delivery | `ls` markers, mkdir, read, write, verify settings | 10s / LOCAL_FS_OP_TIMEOUT_MS | Cut | small file ops. Delivery reads back and verifies |
+| tools/execute-prompt.ts -> writePromptFile / deletePromptFile | write/delete prompt file | 30s default | Cut | small write; a failed write fails the dispatch before launch |
+| tools/execute-prompt.ts -> retryBudget | credential file checks | 10s | Cut | read-only probes |
+| providers/claude.ts -> ensureWorkspaceTrusted / deliverWorkspaceTrustFile | read/move/write `~/.claude.json` | 10s | Cut | small writes via temp file + move, cleanup on failure |
+| providers/agy.ts -> checkAgyMemberSkills | skills probe | 5s | Cut | read-only probe |
+| services/preflight-check.ts -> preflightCheck | OAuth file / API key check | 10s | Cut | read-only probes |
+| services/member-home.ts -> probeHomeDir | home dir probe | PROBE_TIMEOUT_MS | Cut | read-only probe |
+| services/agent-shadow.ts -> checkProjectAgentShadows | shadow probe, quarantine move | PROBE_TIMEOUT_MS | Cut | probe plus a small move whose output is parsed and checked |
+| services/agent-provisioner.ts -> probeRemoteAgentHashes | hash agent files | 15s | Cut | read-only probe |
+| services/orphan-recovery.ts | liveness probe, durable output read, kill | PROBE_TIMEOUT_MS | Cut | probes, plus a kill command (cutting a kill is harmless) |
+| services/stall/* (stall-poller, read-log-tail, find-log-file) | mtime / tail / find | 5-10s | Cut | read-only polls, re-run on the next tick |
+| services/strategy.ts -> deleteFiles, services/relay-strategy.ts ping | `rm -f` / echo | 10s | Cut | best-effort idempotent |
+| utils/pid-helpers.ts -> tryKillPid | kill | 5s | Cut | a kill command itself |
+| utils/opencode-model-validation.ts | `opencode models` | 15s | Cut | read-only probe |
+| cli/watch.ts -> ensureRemoteTail | newest transcript probe | 8s | Cut | read-only probe |
+
+A new `execCommand` caller whose command does real work that is not idempotent must run under `wrapPidCapture`, as the FLEET_PID rows do, and must be added to this table.
+
+Host-key changes: when a member's host key changes, `connectWithTOFU` re-accepts it once (TOFU heal) and logs a `[fleet:warn] ssh Host key for host:port changed ...` line to the fleet log and stderr, on every path (exec, SFTP, test connection). It also still returns the `Host key updated ...` warning that `execCommand` prepends to stderr.
+
 ### Base64 Prompt Encoding
 
 Prompts sent to remote members are base64-encoded before being passed through SSH. This sidesteps the shell escaping nightmare of nested quoting across SSH -> bash -> claude CLI, across different operating systems. The remote member decodes before passing to Claude.

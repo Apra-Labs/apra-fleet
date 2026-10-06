@@ -372,7 +372,9 @@
  * @property {string} [label] - Credential label provision_vcs_auth deployed the helper under
  *   (it defaults to the provider name there, e.g. "github" or "azure-devops"). Omit for the
  *   unlabelled helper.
- * @property {number} [timeout_s] - Timeout in seconds for the command (default: 120).
+ * @property {number} [timeout_s] - Inactivity timeout in seconds for the command (default: 120).
+ *   On expiry the command's remote process tree is killed and the result is reason
+ *   'dispatch_failed' with a "Command timed out" message.
  */
 
 /**

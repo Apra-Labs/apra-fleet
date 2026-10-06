@@ -5,7 +5,22 @@ import { getOsCommands } from '../os/index.js';
 import { getProvider } from '../providers/index.js';
 import { getAgentOS, getAgentShell } from '../utils/agent-helpers.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
-import type { Agent } from '../types.js';
+import type { Agent, SSHExecResult } from '../types.js';
+import type { AgentStrategy } from '../services/strategy.js';
+import type { OsCommands } from '../os/os-commands.js';
+
+/**
+ * Budgets for the CLI install/update command. Both run under the FLEET_PID
+ * wrapper (cmds.wrapPidCapture), so when a budget binds, execCommand kills
+ * the remote process tree explicitly (ssh.ts killRemoteTree / the local
+ * tree-kill) and the result says it was a timeout kill and how long the
+ * step ran -- never a silent cut mid-install. The inactivity budget catches
+ * a hung installer; the ceiling bounds one that keeps printing but never
+ * finishes.
+ */
+export const INSTALL_INACTIVITY_TIMEOUT_MS = 180_000;
+export const UPDATE_INACTIVITY_TIMEOUT_MS = 120_000;
+export const INSTALL_MAX_TOTAL_MS = 15 * 60_000;
 
 export const updateAgentCliSchema = z.object({
   ...memberIdentifier,
@@ -21,6 +36,44 @@ interface UpdateResult {
   success: boolean;
   installed?: boolean;
   error?: string;
+}
+
+const TIMEOUT_RE = /^Command (timed out after \d+ms of inactivity|exceeded max total time of \d+ms)/;
+
+/**
+ * Run an install/update step under the FLEET_PID wrapper. Resolves with the
+ * command result, or with `{ timeoutError }` when a budget killed it: a
+ * message naming the step, how long it ran, which budget bound, and the
+ * remote PID whose tree was killed.
+ */
+async function runCliStep(
+  strategy: AgentStrategy,
+  cmds: OsCommands,
+  step: 'install' | 'update',
+  command: string,
+  inactivityMs: number,
+  maxTotalMs: number,
+): Promise<SSHExecResult | { timeoutError: string }> {
+  const started = Date.now();
+  let pid: number | undefined;
+  try {
+    return await strategy.execCommand(cmds.wrapPidCapture(command), inactivityMs, maxTotalMs, (p) => { pid = p; });
+  } catch (err: any) {
+    const msg = String(err?.message ?? err);
+    if (!TIMEOUT_RE.test(msg)) throw err;
+    const ranS = Math.round((Date.now() - started) / 1000);
+    const why = msg.includes('max total time')
+      ? `hit its ${Math.round(maxTotalMs / 1000)}s ceiling`
+      : `produced no output for ${Math.round(inactivityMs / 1000)}s`;
+    const killed = pid !== undefined
+      ? `its remote process tree (PID ${pid}) was killed`
+      : 'its SSH channel was closed (no PID was reported, so the remote process may still be running)';
+    return {
+      timeoutError:
+        `CLI ${step} killed on timeout after running ${ranS}s: it ${why}; ${killed}. ` +
+        `The CLI may be partially ${step === 'install' ? 'installed' : 'updated'} -- check the member and re-run update_llm_cli.`,
+    };
+  }
 }
 
 async function updateSingleAgent(agent: Agent, installIfMissing: boolean): Promise<UpdateResult> {
@@ -46,14 +99,22 @@ async function updateSingleAgent(agent: Agent, installIfMissing: boolean): Promi
     }
 
     if (!cliFound && installIfMissing) {
-      const installResult = await strategy.execCommand(cmds.installAgent(provider), 180000);
+      const installResult = await runCliStep(strategy, cmds, 'install', cmds.installAgent(provider), INSTALL_INACTIVITY_TIMEOUT_MS, INSTALL_MAX_TOTAL_MS);
+      if ('timeoutError' in installResult) {
+        result.error = installResult.timeoutError;
+        return result;
+      }
       if (installResult.code !== 0) {
         result.error = installResult.stderr || 'Install command failed';
         return result;
       }
       result.installed = true;
     } else {
-      const updateResult = await strategy.execCommand(cmds.updateAgent(provider), 120000);
+      const updateResult = await runCliStep(strategy, cmds, 'update', cmds.updateAgent(provider), UPDATE_INACTIVITY_TIMEOUT_MS, INSTALL_MAX_TOTAL_MS);
+      if ('timeoutError' in updateResult) {
+        result.error = updateResult.timeoutError;
+        return result;
+      }
       if (updateResult.code !== 0) {
         result.error = updateResult.stderr || 'Update command failed';
       }

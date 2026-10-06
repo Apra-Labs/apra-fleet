@@ -9,6 +9,7 @@ import { verifyHostKey, replaceKnownHost, HostKeyMismatchError } from './known-h
 import { setStoredPid, clearStoredPid, getAgentOS, getAgentShell } from '../utils/agent-helpers.js';
 import { getOsCommands } from '../os/index.js';
 import { completesOnProcessExit, exitDrainMs } from './exit-drain.js';
+import { logWarn } from '../utils/log-helpers.js';
 
 const MAX_OUTPUT_BYTES = 10 * 1024 * 1024; // 10 MB
 
@@ -275,6 +276,17 @@ export async function connectWithTOFU(agent: Agent): Promise<{ client: Client; w
       replaceKnownHost(err.host, err.port, err.newFingerprint);
       closeConnection(agent);
       const client = await getConnection(agent);
+      // The re-accept is logged here, at its one source, because most callers
+      // never surface the returned warning (execCommand folds it into stderr,
+      // which many callers ignore; SFTP transfers drop it entirely). A silently
+      // re-trusted host key is exactly what an operator must be able to see.
+      logWarn(
+        'ssh',
+        `Host key for ${err.host}:${err.port} changed (was ${err.oldFingerprint}, now ${err.newFingerprint}); ` +
+        `the new key was auto-accepted (TOFU) and the connection re-established. ` +
+        `If this member was not reinstalled, investigate a possible man-in-the-middle.`,
+        agent,
+      );
       return { client, warning: `Host key updated for ${err.host}:${err.port}` };
     }
     throw err;

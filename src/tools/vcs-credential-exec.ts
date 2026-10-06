@@ -84,7 +84,9 @@ export const vcsCredentialExecSchema = z.object({
     + 'provider name there, e.g. "github" or "azure-devops"). Omit to use the unlabelled helper.'
   ),
   timeout_s: z.number().int().positive().max(600).optional().describe(
-    'Timeout in seconds for the credential-requiring command (default: 120).'
+    'Inactivity timeout in seconds for the credential-requiring command (default: 120). '
+    + 'On expiry the command\'s remote process tree is killed and the result is reason dispatch_failed '
+    + 'with a "Command timed out" message.'
   ),
 });
 
@@ -257,7 +259,11 @@ export async function vcsCredentialExec(input: VcsCredentialExecInput): Promise<
   let stdout: string;
   let stderr: string;
   try {
-    const res = await strategy.execCommand(finalCommand, (input.timeout_s ?? 120) * 1000);
+    // Run under the FLEET_PID wrapper, as execute_command does: on timeout,
+    // execCommand kills the remote process tree explicitly and the caller
+    // gets "Command timed out ..." (reason dispatch_failed) -- a git push or
+    // clone is never left running, or cut mid-operation, unreported.
+    const res = await strategy.execCommand(cmds.wrapPidCapture(finalCommand), (input.timeout_s ?? 120) * 1000);
     code = res.code;
     stdout = res.stdout ?? '';
     stderr = res.stderr ?? '';
