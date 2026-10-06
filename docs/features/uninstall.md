@@ -47,7 +47,7 @@ If the fleet server is running when uninstall is invoked, the command aborts wit
 
 ### Supervisor service removal
 
-The fleet supervisor can be registered with the OS service manager (a user-level service that runs the installed tree). A full uninstall stops, disables and removes that registration before it deletes the workflows runtime; otherwise the service would keep running (or restart) against a tree that no longer exists.
+This product line does not register a supervisor OS service itself, but one can be left on a machine by an earlier release's install or by an operator following the fleet-supervisor skill's auto-start recipe. Uninstall deletes the installed workflows/fleet-sprint tree that such a service runs, so a registration left behind would keep a dead (or orphaned, still-running) supervisor across reboots. Uninstall therefore stops, disables and removes the registration before deleting that tree. This runs for the default and `--skill workflows` scopes.
 
 Registrations are found by their known names, not by scanning:
 
@@ -57,7 +57,7 @@ Registrations are found by their known names, not by scanning:
 | macOS | launchd label `com.apra-fleet.supervisor` |
 | Windows | scheduled task `ApraFleetSupervisor` |
 
-Ownership rule: a registration is removed only if the command it runs points at the installed tree -- either the installed binary with the `supervisor` argument, or the installed fleet-sprint `serve.mjs`. A registration with the same name that runs something else is left alone and reported under "Kept". Quotes around the executable in older unit files are stripped before matching, so older unit shapes are still recognised.
+Ownership rule: a registration is removed only if the command it runs points at the installed tree -- either the installed binary with the `supervisor` argument, or the installed fleet-sprint `serve.mjs`. A known name alone is not proof of ownership: the skill's recipe uses the same macOS and Windows names but points at a development checkout. A registration whose target runs something else, or cannot be read, is left alone and reported (in the Kept section on a full uninstall, or as an inline "Keeping" line otherwise). Quotes around the executable in older unit files are stripped before matching, so older unit shapes are still recognised.
 
 Removal per OS:
 
@@ -75,13 +75,13 @@ Invariants:
 
 A full uninstall ends by listing what it deliberately did not remove, so the user can tell "left on purpose" from "missed":
 
-- `data/` (credentials store and member registry)
-- `fleet.key`, with a warning to back it up separately because the encrypted data is unreadable without it
+- `data/` (registry, logs and credentials, kept so a reinstall keeps your fleet)
+- `fleet.key` (the JWT signing key), with a warning that it lives outside `data/`, so a backup of `data/` alone misses it
 - user-authored workflows
 - any other leftovers under the fleet base directory
 - supervisor registrations that are not ours (see ownership rule above)
 
-The section is printed on real and `--dry-run` runs alike. A partial uninstall (`--skill` or `--llm` scoped) does not print it, since most of the install is intentionally still present.
+The section is printed on real and `--dry-run` runs alike. It is printed only for a full uninstall (`--llm all` and `--skill all`, the defaults). Any narrower scope (`--llm <provider>` or `--skill <name>`) omits it, since most of the install is intentionally still present.
 
 ### anythingRemoved tracking
 
