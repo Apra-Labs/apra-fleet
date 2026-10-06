@@ -555,6 +555,39 @@ export class SqliteProvider implements MemoryProvider {
     return out;
   }
 
+  /**
+   * Read-only accessor for the demotion state of the given entry ids: the
+   * CURRENT confidence and demoted_at of each id that exists. An unknown id is
+   * simply absent from the map.
+   *
+   * Deliberately NOT routed through list(): list() excludes stale and superseded
+   * rows, and a demoted entry that later went stale is exactly the one whose
+   * tombstone other clones most need -- their bible still carries the entry.
+   * Policy (what counts as demoted enough to tombstone) lives in the caller
+   * (src/tools/kb-bible-commit.ts); this member only reports the two columns.
+   * Internal to this provider, not an MCP surface.
+   */
+  getDemotionState(ids: string[]): Map<string, { confidence: Confidence; demoted_at?: string }> {
+    const out = new Map<string, { confidence: Confidence; demoted_at?: string }>();
+    if (ids.length === 0) return out;
+    const db = this.getDb();
+    // Chunk to stay well under SQLite's bound-parameter limit (as above).
+    const CHUNK = 500;
+    for (let i = 0; i < ids.length; i += CHUNK) {
+      const chunk = ids.slice(i, i + CHUNK);
+      const rows = db.prepare(
+        `SELECT id, confidence, demoted_at FROM entries WHERE id IN (${chunk.map(() => '?').join(',')})`
+      ).all(...chunk) as { id: string; confidence: string; demoted_at: string | null }[];
+      for (const row of rows) {
+        out.set(row.id, {
+          confidence: row.confidence as Confidence,
+          demoted_at: row.demoted_at ?? undefined,
+        });
+      }
+    }
+    return out;
+  }
+
   // T1.3 (F2/D2 HARDENED): freshness check bounded to the primed set, now
   // BIDIRECTIONAL. Keyed off source_files with a per-file hash basis persisted
   // at capture time (source_file_hashes) -- NOT content_hash, which is only ever

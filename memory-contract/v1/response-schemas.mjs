@@ -222,12 +222,17 @@ const KB_RESPONSE_BODIES = {
   // reason (not_confirmed_or_unknown, or basis_mismatch for a CONFIRMED id whose
   // cited-file basis no longer matches); committed is true only when a local
   // commit of the bible path was made (never pushed).
+  // demoted names the ids admitted from demoted_ids: removed from entries and
+  // tombstoned in the bible's demotions array. OPTIONAL so bibles/fixtures
+  // recorded before tombstones existed still validate; the handler always emits
+  // it. entry_count counts ENTRIES only -- a tombstone is not an entry.
   kb_bible_commit: z.object({
     path: z.string(),
     merged: z.array(z.string()),
+    demoted: z.array(z.string()).optional(),
     skipped: z.array(z.object({
       id: z.string(),
-      reason: z.enum(['not_confirmed_or_unknown', 'basis_mismatch']),
+      reason: z.enum(['not_confirmed_or_unknown', 'basis_mismatch', 'not_demoted_or_unknown']),
     })),
     entry_count: z.number(),
     committed: z.boolean(),

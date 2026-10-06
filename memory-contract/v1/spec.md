@@ -183,6 +183,28 @@ working folder, which is typically a feature branch.
   rejected push can be retried with no manual merge. An existing bible that
   cannot be parsed is refused (thrown), never overwritten.
 
+The v2 envelope also carries an OPTIONAL top-level `demotions` array of
+`{id, demoted_at}` tombstones, sorted by id. It is absent when the bible holds
+none, so a reader that does not know the field -- and every bible written before
+it existed -- keeps working. `provenance.entry_count` counts ENTRIES only: a
+tombstone is not an entry.
+
+A demotion is NEVER inferred from an entry being absent from the bible. A clone
+legitimately holds CONFIRMED rows that were never exported (local-only
+promotions, `basis_mismatch` refusals), and those must not be demoted by an
+import, so withdrawal of trust is only ever carried by an explicit tombstone.
+
+- `kb_bible_commit` takes an optional `demoted_ids`. An id is admitted only when
+  the LOCAL row exists, carries a `demoted_at` and is now below CONFIRMED;
+  anything else is skipped with reason `not_demoted_or_unknown` and the file is
+  unchanged for that id. An admitted id is REMOVED from `entries` and its
+  tombstone upserted with the LOCAL row's `demoted_at`. Tombstones already in the
+  file are preserved when a later commit carries unrelated ids, and an id
+  re-admitted through `ids` (a re-promotion) has its tombstone CLEARED.
+- `kb_export` (scope=project) honours tombstones: it does not re-add a tombstoned
+  id unless the local row was promoted AFTER the tombstone's `demoted_at`, in
+  which case it re-adds the entry and clears the tombstone in the same write.
+
 ### 2.7 Every code_* call is scoped to the calling session (code constraint)
 
 No `code_*` tool takes a repo/scope argument either. The repo a call is about

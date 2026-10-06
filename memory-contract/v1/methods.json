@@ -354,6 +354,24 @@
       "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-REPO-PATH-INVALID", "E-PROVIDER-UNINITIALIZED"],
       "error_codes_note": "E-REPO-PATH-INVALID (a remote member session, whose folder is not on this host) and the E-SELF-* codes are thrown by kb_export before this member is reached.",
       "see_also": ["X-1"]
+    },
+    {
+      "id": "X-9",
+      "member": "getDemotionState",
+      "kind": "undeclared-member",
+      "interface": "SqliteProvider (not declared on MemoryProvider)",
+      "signature": "getDemotionState(ids: string[]): Map<string, {confidence: Confidence, demoted_at?: string}>",
+      "purpose": "Synchronous read of the current confidence and demoted_at of the given entry ids; an unknown id is simply absent from the map. kb_bible_commit admits a demoted_ids tombstone only when the local row really records a withdrawal of trust (demoted_at set, confidence now below CONFIRMED). Deliberately NOT routed through list(), which excludes stale and superseded rows: a demoted entry that later went stale is exactly the one whose tombstone other clones need, because their bible still carries the entry.",
+      "tools": [
+        { "name": "kb_bible_commit", "request_schema_ref": "schemas/kb_bible_commit.request.json", "response_schema_ref": "schemas/kb_bible_commit.response.json", "anchor_validation": "self-validated+local-folder-required" }
+      ],
+      "tools_note": "Called only on the demoted_ids half of kb_bible_commit; the ids half resolves entries through X-1 list as before.",
+      "side_effect_class": "pure read",
+      "idempotent": true,
+      "idempotent_note": "Synchronous (non-Promise) member; chunked SELECT, no writes.",
+      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-REPO-PATH-INVALID", "E-PROVIDER-UNINITIALIZED"],
+      "error_codes_note": "E-REPO-PATH-INVALID (a remote member session, whose folder is not on this host) and the E-SELF-* codes are thrown by kb_bible_commit before this member is reached.",
+      "see_also": ["X-1", "P-13"]
     }
   ],
   "properties": [

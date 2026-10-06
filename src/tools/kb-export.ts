@@ -10,6 +10,7 @@ import { requireSqliteProject } from '../services/knowledge/require-sqlite-proje
 import { KB_CONFIG_PATH } from '../services/knowledge/kb-config.js';
 import type { KbConfigFile } from '../services/knowledge/kb-config.js';
 import { filterProjectBibleCandidates } from '../services/knowledge/bible-basis-filter.js';
+import { extractBibleDemotions, type BibleDemotion } from '../services/knowledge/bible-import.js';
 import type { SqliteProvider } from '../services/knowledge/sqlite-provider.js';
 import type { KBEntry } from '../services/knowledge/types.js';
 
@@ -77,9 +78,25 @@ export interface CanonicalBible {
     /** 40-char HEAD sha, or null when the repo has no commits or git is absent. */
     commit: string | null;
     branch: string | null;
+    /**
+     * ENTRIES ONLY. A tombstone is not an entry, so recording a demotion never
+     * moves this number -- it still names how many entries the file carries.
+     */
     entry_count: number;
   };
   entries: CanonicalEntry[];
+  /**
+   * OPTIONAL demotion tombstones, sorted by id. Absent when the bible carries
+   * none, so a reader that does not know the field (and every bible written
+   * before it existed) keeps working unchanged.
+   */
+  demotions?: BibleDemotion[];
+}
+
+/** Entries AND tombstones of a bible already on disk. */
+export interface CanonicalBibleDocument {
+  entries: CanonicalEntry[];
+  demotions: BibleDemotion[];
 }
 
 /** Map a KB entry to the bible's stable field set. Shared with kb_bible_commit. */
@@ -104,15 +121,29 @@ export function compareById(a: { id: string }, b: { id: string }): number {
 /**
  * The entries of the bible already on disk, in either shape (legacy bare array
  * or v2 envelope). null when the file is absent or unparseable.
+ *
+ * Entries only, exactly as before: callers that do not care about tombstones are
+ * unchanged. readBibleDocument below is the sibling reader for callers that do.
  */
 export function readBibleEntries(outPath: string): CanonicalEntry[] | null {
+  return readBibleDocument(outPath)?.entries ?? null;
+}
+
+/**
+ * The entries AND the demotion tombstones of the bible already on disk. Same
+ * acceptance as readBibleEntries (both shapes; null when absent or unparseable);
+ * a bible with no demotions field yields an empty tombstone list, never a
+ * failure.
+ */
+export function readBibleDocument(outPath: string): CanonicalBibleDocument | null {
   if (!fs.existsSync(outPath)) return null;
   try {
     const parsed = JSON.parse(fs.readFileSync(outPath, 'utf-8'));
     const existing = Array.isArray(parsed)
       ? parsed
       : (parsed && Array.isArray(parsed.entries) ? parsed.entries : null);
-    return existing as CanonicalEntry[] | null;
+    if (existing === null) return null;
+    return { entries: existing as CanonicalEntry[], demotions: extractBibleDemotions(parsed) };
   } catch {
     return null;
   }
@@ -383,8 +414,10 @@ function byId(a: { id?: unknown }, b: { id?: unknown }): number {
  * but cannot be parsed as either shape THROWS: the project export is additive
  * and must never overwrite (and so silently drop) a bible it cannot read.
  */
-function readExistingBibleEntries(outPath: string): Array<Record<string, unknown>> {
-  if (!fs.existsSync(outPath)) return [];
+function readExistingBibleDocument(
+  outPath: string,
+): { entries: Array<Record<string, unknown>>; demotions: BibleDemotion[] } {
+  if (!fs.existsSync(outPath)) return { entries: [], demotions: [] };
   let parsed: unknown;
   try {
     parsed = JSON.parse(fs.readFileSync(outPath, 'utf-8'));
@@ -400,7 +433,21 @@ function readExistingBibleEntries(outPath: string): Array<Record<string, unknown
   if (list === null) {
     throw new Error('kb_export: existing bible has no entries array, refusing to overwrite it: ' + outPath);
   }
-  return list as Array<Record<string, unknown>>;
+  return { entries: list as Array<Record<string, unknown>>, demotions: extractBibleDemotions(parsed) };
+}
+
+/**
+ * Is `later` strictly after `earlier`? Both are ISO-8601 instants written by
+ * this codebase (toISOString), but a bible is edited by humans and merged across
+ * clones, so an unparseable value degrades to a plain string comparison rather
+ * than silently answering "no".
+ */
+function isStrictlyAfter(later: string | undefined, earlier: string): boolean {
+  if (!later) return false;
+  const a = Date.parse(later);
+  const b = Date.parse(earlier);
+  if (Number.isNaN(a) || Number.isNaN(b)) return later > earlier;
+  return a > b;
 }
 
 // PROJECT-SCOPE EXPORT: basis filter + additive merge.
@@ -429,11 +476,23 @@ async function exportProjectBible(
   outPath: string,
   input: KbExportInput,
 ): Promise<string> {
-  const existing = readExistingBibleEntries(outPath);
+  const { entries: existing, demotions } = readExistingBibleDocument(outPath);
   const existingIds = new Set(existing.map(e => String(e.id)));
+  const tombstones = new Map(demotions.map(d => [d.id, d]));
 
   const confirmed = await source.list({ confidence: ['CONFIRMED'] });
-  const newCandidates = confirmed.filter(e => !existingIds.has(e.id));
+  // TOMBSTONE GATE, before the basis filter. An id another clone demoted is not
+  // re-added just because this clone still holds it CONFIRMED -- that is how a
+  // demotion would be silently undone on the next export. The ONE exception is a
+  // local row promoted AFTER the tombstone was recorded: that is a deliberate
+  // re-promotion on newer evidence, so the entry comes back and its tombstone is
+  // cleared in the same write.
+  const newCandidates = confirmed.filter(e => {
+    if (existingIds.has(e.id)) return false;
+    const tombstone = tombstones.get(e.id);
+    if (!tombstone) return true;
+    return isStrictlyAfter(e.promoted_at, tombstone.demoted_at);
+  });
   const bases = source.getSourceFileBases(newCandidates.map(e => e.id));
   const qualifying = await filterProjectBibleCandidates(newCandidates, bases, repoPath);
 
@@ -441,15 +500,22 @@ async function exportProjectBible(
     return JSON.stringify({ exported: existing.length, path: outPath, scope: 'project', committed: false });
   }
 
+  for (const e of qualifying) tombstones.delete(e.id);
+
   const merged = [...existing, ...qualifying.map(toCanonicalEntry)].sort(byId);
+  const nextDemotions = Array.from(tombstones.values()).sort(compareById);
   const bible = {
     version: 2 as const,
     provenance: {
       commit: input.baseCommit ?? resolveHeadCommit(repoPath),
       branch: input.baseBranch ?? resolveBranch(repoPath),
+      // Entries only: the tombstones below are deliberately not counted.
       entry_count: merged.length,
     },
     entries: merged,
+    // Omitted entirely when there are none, so a bible that never saw a
+    // demotion is byte-identical to one written before the field existed.
+    ...(nextDemotions.length > 0 ? { demotions: nextDemotions } : {}),
   };
   const fleetDir = path.dirname(outPath);
   if (!fs.existsSync(fleetDir)) fs.mkdirSync(fleetDir, { recursive: true });

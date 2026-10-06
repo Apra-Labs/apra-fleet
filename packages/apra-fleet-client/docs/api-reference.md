@@ -550,7 +550,19 @@ entries are skipped and listed in `skipped` with reason
 with reason `basis_mismatch` and any existing bible entry for it is kept; no mergeable ids or an unchanged
 entry set makes no commit. Re-running with the same ids after resetting to a
 newer HEAD re-merges, so a rejected push can be retried without a manual
-merge. Result JSON: `{path, merged, skipped, entry_count, committed}`.
+merge.
+
+Optional `demoted_ids` records DEMOTIONS explicitly. An id is admitted only when
+its local row carries a `demoted_at` and is now below CONFIRMED (`kb_demote` ran
+on it); any other id is skipped with reason `not_demoted_or_unknown` and nothing
+changes for it. An admitted id is removed from `entries` and upserted into the
+bible's optional top-level `demotions` array as `{id, demoted_at}`, so another
+clone applies the demotion explicitly instead of inferring it from an absence.
+Tombstones already in the file survive a later commit carrying unrelated ids, and
+re-committing a tombstoned id through `ids` (a re-promotion) restores its entry
+and clears its tombstone. `provenance.entry_count` counts entries only.
+
+Result JSON: `{path, merged, demoted, skipped, entry_count, committed}`.
 
 #### `composePermissions(options: ComposePermissionsOptions)`
 

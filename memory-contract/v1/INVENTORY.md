@@ -76,10 +76,10 @@ No tool in this surface declares a response zod schema; see section 3.
 | 12 | `kb_resolve_contradiction` | `kbResolveContradictionSchema` (`src/tools/kb-resolve-contradiction.ts`) | winnerId, loserId, evidence | `text(JSON): {winnerId, loserId}` | Resolve a KB contradiction pair: winner goes to CONFIRMED with evidence appended, loser is superseded+stale. Refuses (writes nothing) if either id is missing, already superseded, not a genuine pair, or involves an ACTIVE directive. |
 | 13 | `kb_reconcile_prefilter` | `kbReconcilePrefilterSchema` (`src/tools/kb-reconcile-prefilter.ts`) | (none) | `text(JSON): {pairs, resolved[], left_for_agent[], skipped_directive}` | Mechanical hash-basis prefilter over flagged contradiction pairs: a pair with exactly one side hash-matching the current worktree is auto-resolved via `kb_resolve_contradiction`; the rest are left for the reconciler agent. |
 | 14 | `kb_setup` | `kbSetupSchema` (`src/tools/kb-setup.ts`) | provider, remote, token | `text(JSON): {success, steps}` | Set up the KB: install the git post-commit hook, write provider config, store remote credentials encrypted. Run once per repo. |
-| 15 | `kb_export` | `kbExportSchema` (`src/tools/kb-export.ts`) | scope, baseBranch, baseCommit | `text(JSON): {exported, path, scope, committed}` | Export CONFIRMED/non-superseded/non-stale entries to a canonical bible file. Project scope: only entries whose cited files match their recorded hash basis, merged additively (existing entries never removed; nothing new -> no rewrite, no commit). Global scope: unchanged. Auto-commits the bible file by default when content changed. provenance.branch is the target base branch (baseBranch, else the export folder HEAD branch); provenance.commit is the base commit (baseCommit, else HEAD). |
+| 15 | `kb_export` | `kbExportSchema` (`src/tools/kb-export.ts`) | scope, baseBranch, baseCommit | `text(JSON): {exported, path, scope, committed}` | Export CONFIRMED/non-superseded/non-stale entries to a canonical bible file. Project scope: only entries whose cited files match their recorded hash basis, merged additively (existing entries never removed; nothing new -> no rewrite, no commit). Global scope: unchanged. Project scope HONOURS the bible's demotion tombstones: a tombstoned id is not re-added unless the local row was promoted after the tombstone's demoted_at, in which case the entry is re-added and the tombstone cleared. Auto-commits the bible file by default when content changed. provenance.branch is the target base branch (baseBranch, else the export folder HEAD branch); provenance.commit is the base commit (baseCommit, else HEAD). |
 | 16 | `kb_stats` | `kbStatsSchema` (`src/tools/kb-stats.ts`) | symbols | `text(JSON): ProviderStats spread plus bible` -- `{supported?, reason?, totals, stale, flagged, superseded, retrieval, promote_ratio, coverage?, bible}` | Read-only KB health aggregation: totals by confidence/type, stale/flagged/superseded counts, retrieval hit_rate, promote_ratio, and canonical-bible presence/drift. Never bumps use_count/last_accessed. |
 | 17 | `kb_feedback` | `kbFeedbackSchema` (`src/tools/kb-feedback.ts`) | id, reason, role | `text(JSON): {id, stale, flagged_for_review, confidence}` | Downvote a KB entry that proved wrong in practice: marks stale+flagged_for_review and appends a feedback note. Never deletes or touches confidence, except an ACTIVE directive is flagged but not staled. |
-| 18 | `kb_bible_commit` | `kbBibleCommitSchema` (`src/tools/kb-bible-commit.ts`) | ids, baseBranch, baseCommit | `text(JSON): {path, merged, skipped, entry_count, committed}` | Merge exactly the given live CONFIRMED ids into the bible at ENTRY level (existing entries kept, never dropped), write provenance from baseBranch (the target base branch) and baseCommit, and make a local pathspec-scoped commit (pm-kb). Never pushes. Unknown/non-CONFIRMED ids are skipped (not_confirmed_or_unknown); CONFIRMED ids failing the shared kb_export basis predicate are skipped (basis_mismatch); no mergeable ids or an unchanged entry set makes no commit. |
+| 18 | `kb_bible_commit` | `kbBibleCommitSchema` (`src/tools/kb-bible-commit.ts`) | ids, baseBranch, baseCommit, demoted_ids | `text(JSON): {path, merged, demoted, skipped, entry_count, committed}` | Merge exactly the given live CONFIRMED ids into the bible at ENTRY level (existing entries kept, never dropped), write provenance from baseBranch (the target base branch) and baseCommit, and make a local pathspec-scoped commit (pm-kb). Never pushes. Unknown/non-CONFIRMED ids are skipped (not_confirmed_or_unknown); CONFIRMED ids failing the shared kb_export basis predicate are skipped (basis_mismatch). demoted_ids records EXPLICIT demotion tombstones: an id whose local row has a demoted_at and is now below CONFIRMED is removed from entries and upserted into the bible's optional top-level demotions array as {id, demoted_at} (existing tombstones preserved, a re-admitted CONFIRMED id's tombstone cleared); any other id is skipped (not_demoted_or_unknown). provenance.entry_count counts entries only. No mergeable ids and no admitted demotions, or an unchanged entry and tombstone set, makes no commit. |
 
 Scope-field note: no `kb_*` request schema declares a live scope field. The
 removed pre-redesign keys (`repo`, `repo_path`, `repo_remote_url`) are declared
@@ -208,7 +208,7 @@ through it" column lists only the `kb_*`/`code_*` tools in this surface.
 | P-11 | `touch` | `touch(ids: string[]): Promise<number>` | `kb_session_prime` | telemetry write (`use_count`/`last_accessed`), existence-tolerant | no (counter advances) |
 | P-12 | `relatedClaims` | `relatedClaims(ids: string[], limit?): Promise<KBEntry[]>` | `kb_query` (only when `expand_related` is true) | read | yes |
 
-### 4.2 Provider members reached by tools but NOT declared on MemoryProvider (7 methods + 1 property)
+### 4.2 Provider members reached by tools but NOT declared on MemoryProvider (8 methods + 1 property)
 
 These are `SqliteProvider` members (`src/services/knowledge/sqlite-provider.ts`)
 that registered tools call directly. They are part of the real contract surface
@@ -224,6 +224,7 @@ against `MemoryProvider` would not cover them.
 | X-5 | `reconcilePrefilter` | `reconcilePrefilter(): Promise<{pairs, resolved[], left_for_agent[], skipped_directive}>` | `kb_reconcile_prefilter` | mutate-trust (writes only via `resolveContradiction`) | yes in effect (resolved pairs are no longer flagged) |
 | X-6 | `hasEntry` | `hasEntry(id: string): boolean` -- SYNCHRONOUS (non-Promise) | `kb_import` | read | yes |
 | X-8 | `getSourceFileBases` | `getSourceFileBases(ids: string[]): Map<string, Record<string, string> \| null>` -- SYNCHRONOUS (non-Promise); stored per-file hash basis per id, null when unknown/empty | `kb_export` (project-scope bible filter) | read | yes |
+| X-9 | `getDemotionState` | `getDemotionState(ids: string[]): Map<string, {confidence, demoted_at?}>` -- SYNCHRONOUS (non-Promise); current confidence and `demoted_at` per id, id absent from the map when unknown. Deliberately NOT `list()`: it reads the row directly, so a demoted entry that has since gone stale or been superseded still reports its demotion | `kb_bible_commit` (`demoted_ids` tombstone admission) | read | yes |
 | X-7 | `repoPath` | property, not a method | NOT read by `kb_freshness_sweep` -- `src/tools/kb-freshness-sweep.ts:30` calls `providers.project.freshnessSweep()` with NO argument; the tool only names `repoPath` in a comment at line 27, and the sweep root defaults inside `freshnessSweep()` itself (`SqliteProvider`'s own stored anchor), not from a value the tool passes in | read (by the provider internally, not by this tool) | n/a |
 
 Also off-interface and reachable, but CLI-only rather than tool-reachable (listed
@@ -295,7 +296,7 @@ pass-throughs to the embedded `fallback: SqliteProvider`, connectivity
 notwithstanding. Only `capture`, `query`, `context`, `invalidate`, and `prime`
 (five methods) actually attempt an HTTP request first.
 
-**4.4.2 -- The 7 methods + 1 property reachable-but-undeclared on `MemoryProvider`
+**4.4.2 -- The 8 methods + 1 property reachable-but-undeclared on `MemoryProvider`
 (section 4.2): none of them exist on `HttpKbProvider` at all.**
 
 | # | Member | On `HttpKbProvider`? | Consequence | Verdict class |
@@ -307,6 +308,7 @@ notwithstanding. Only `capture`, `query`, `context`, `invalidate`, and `prime`
 | X-5 | `reconcilePrefilter` | absent | `kb_reconcile_prefilter` -> `SqliteProvider.reconcilePrefilter` only | missing member |
 | X-6 | `hasEntry` | absent | `kb_import` -> `SqliteProvider.hasEntry` only | missing member |
 | X-8 | `getSourceFileBases` | absent | `kb_export` -> `SqliteProvider.getSourceFileBases` only | missing member |
+| X-9 | `getDemotionState` | absent | `kb_bible_commit` -> `SqliteProvider.getDemotionState` only | missing member |
 | X-7 | `repoPath` | absent (property) | `kb_freshness_sweep` reads `SqliteProvider.repoPath` directly; no analogous property on `HttpKbProvider` | missing member |
 
 None of these are "missing" in the sense of an incomplete HTTP implementation
