@@ -144,7 +144,7 @@ describe('maybeScheduleReindex()', () => {
     expect(mockSpawn).toHaveBeenCalledTimes(1);
     const [cmd, args, options] = mockSpawn.mock.calls[0] as [string, string[], Record<string, unknown>];
     expect(cmd).toBe('npx');
-    expect(args).toEqual(['gitnexus', 'analyze', '--index-only']);
+    expect(args).toEqual(['gitnexus@>=1.6.5', 'analyze', '--index-only']);
     expect(options.cwd).toBe('/repo/path');
     expect(options.detached).toBe(true);
     expect(options.stdio).toEqual(['ignore', expect.any(Number), expect.any(Number)]);

@@ -1065,7 +1065,12 @@ export class ApraFleet {
      * is 'started' | 'up-to-date' | 'starting' | 'already-running' |
      * 'not-started'; a not-started result carries a typed `reason`
      * ('npx-not-found' | 'gitnexus-not-found' | 'analyze-failed' |
-     * 'spawn-failed' | 'remote-member' | 'provider-not-supported'). Only the
+     * 'spawn-failed' | 'remote-member' | 'gitnexus-too-old' |
+     * 'provider-not-supported'); 'gitnexus-too-old' means the installed
+     * gitnexus rejects --index-only and its `detail` names the upgrade fix.
+     * Every result also carries `injectedBlockFiles` (repo-relative agent docs
+     * still holding a gitnexus block injected by an earlier plain analyze run;
+     * detection only, the work tree is never edited). Only the
      * gitnexus provider is supported: provider 'none' makes the tool fail with
      * E-CODE-INTEL-DISABLED, and any other provider (e.g. codebase-memory)
      * yields { outcome: 'not-started', reason: 'provider-not-supported',
@@ -1087,7 +1092,11 @@ export class ApraFleet {
      * when no analyze log exists yet), and `autoReindexPaused` (null, or the
      * { result, lastLine, logPath, finished } of a failed automatic run --
      * automatic rebuilds stay paused until codeReindex() or a server
-     * restart). A remote work folder returns { remote: true, repo,
+     * restart), `injectedBlockFiles` / `injectedBlockWarning` (agent docs still
+     * holding a previously injected gitnexus block, and the one-line WARN with
+     * the fix; [] / null when clean), and on a failed run
+     * `analyze.failureCause` ('gitnexus-too-old' when gitnexus rejected
+     * --index-only). A remote work folder returns { remote: true, repo,
      * indexedCommit: null, detail }. Same provider gate as codeReindex():
      * provider 'none' fails with E-CODE-INTEL-DISABLED; a non-gitnexus
      * provider returns the not-supported shape { outcome: 'not-started',

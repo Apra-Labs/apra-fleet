@@ -630,7 +630,7 @@ detached `gitnexus analyze`, captures its output to
 `<data>/code-index/<slug>/analyze.log`, and returns after the first tick; its
 `outcome` is `started`, `up-to-date`, `starting`, `already-running` or
 `not-started` (with a typed `reason`: `npx-not-found`, `gitnexus-not-found`,
-`analyze-failed`, `spawn-failed`, `remote-member`, `provider-not-supported`). Both tools are
+`analyze-failed`, `spawn-failed`, `remote-member`, `gitnexus-too-old` (the installed gitnexus rejects `--index-only`; `detail` names the upgrade fix), `provider-not-supported`); every result also carries `injectedBlockFiles` (agent docs still holding a gitnexus block from an earlier plain analyze run; detection only). Both tools are
 gated on the member's code-intel provider: `none` fails with
 `E-CODE-INTEL-DISABLED` (nothing is spawned); any non-gitnexus provider (e.g.
 `codebase-memory`) returns `{ outcome: 'not-started', reason:
@@ -643,7 +643,7 @@ is marked incomplete and no analyze is running), `indexedCommit`, `logPath`
 (the last run's `analyze.log`, or `null` when no analyze has written one yet)
 and `autoReindexPaused` (`null`, or `{ result, lastLine, logPath, finished }`
 of the automatic run that failed: automatic rebuilds of that folder stay
-paused until `codeReindex()` or a server restart). A code_* call on a local
+paused until `codeReindex()` or a server restart), `injectedBlockFiles` / `injectedBlockWarning` (agent docs still holding a previously injected gitnexus block and the one-line WARN with the fix; `[]` / `null` when clean) and, on a failed run, `analyze.failureCause` (`gitnexus-too-old`). A code_* call on a local
 folder whose index is `missing` or `interrupted` requests a background build
 automatically (unless `autoReindex.enabled` is false in the code-intelligence
 config.json) and fails with `E-CODE-INDEX-NOT-READY` saying so. Extract both

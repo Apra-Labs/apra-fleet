@@ -5,7 +5,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import type { CodeIntelligenceProvider } from './code-intelligence.js';
 import { freshnessNote } from './code-intelligence-freshness.js';
-import { maybeScheduleReindex } from './code-intelligence-reindex.js';
+import { maybeScheduleReindex, GITNEXUS_PACKAGE_SPEC } from './code-intelligence-reindex.js';
 import { isTestPath } from './code-intelligence-tests.js';
 import { ensureGitNexusIndexReady } from './code-intelligence-readiness.js';
 import { logError } from '../utils/log-helpers.js';
@@ -44,7 +44,7 @@ async function getGitNexusClient(): Promise<Client> {
     if (npxReason) throw new Error(npxReason); // callGitNexus resets the connection
     const transport = new StdioClientTransport({
       command: 'npx',
-      args: ['-y', 'gitnexus', 'mcp'],
+      args: ['-y', GITNEXUS_PACKAGE_SPEC, 'mcp'],
       stderr: 'pipe',
     });
 
