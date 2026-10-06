@@ -688,11 +688,12 @@ export async function smoke(sprintId, { home = os.homedir(), shellDist } = {}) {
  *  string, or null when the process is gone. */
 async function stopOwned({ label, pid, port, healthPath, expectedPid, token }) {
   if (!pid || !isPidAlive(pid)) return null;
-  const health = port ? await getJson(`http://127.0.0.1:${port}${healthPath}`, 2000, token) : null;
+  const probe = port ? await probeJson(`http://127.0.0.1:${port}${healthPath}`, 2000, token) : null;
+  const health = probe && probe.ok ? probe.body : null;
   const answersAsSelf = health && String(health.pid) === String(pid);
   const isRecorded = expectedPid && String(pid) === String(expectedPid);
   if (!answersAsSelf && !isRecorded) {
-    return `${label}: pid ${pid} is alive but is neither the pid this recipe launched nor answering ${healthPath} on ${port} -- not killing a process that may not be ours`;
+    return `${label}: pid ${pid} is alive but is neither the pid this recipe launched nor answering ${healthPath} on ${port}${probe && !probe.ok && probe.status != null ? ` (${describeProbeFailure(probe)})` : ''} -- not killing a process that may not be ours`;
   }
   if (await stopPid(pid)) return null;
   return `${label}: pid ${pid} is still alive after SIGTERM/SIGKILL`;
@@ -715,7 +716,13 @@ export async function teardown(sprintId, { home = os.homedir(), foreignPorts = [
   // 1. Supervisor: graceful shutdown only if the port answers with OUR pid.
   if (values.SUPERVISOR_PID && isPidAlive(values.SUPERVISOR_PID)) {
     const supervisorToken = sandboxSupervisorToken(values);
-    const h = await getJson(`http://127.0.0.1:${supervisorPort}/api/health`, 2000, supervisorToken);
+    const hp = await probeJson(`http://127.0.0.1:${supervisorPort}/api/health`, 2000, supervisorToken);
+    const h = hp.ok ? hp.body : null;
+    // The server ANSWERED non-2xx (a rejected bearer above all): name it
+    // instead of silently skipping the graceful /api/shutdown.
+    if (!hp.ok && hp.status != null) {
+      problems.push(`sandbox supervisor: /api/health on ${supervisorPort} failed: ${describeProbeFailure(hp)}; graceful /api/shutdown skipped`);
+    }
     if (h && String(h.pid) === values.SUPERVISOR_PID) {
       await postJson(`http://127.0.0.1:${supervisorPort}/api/shutdown`, 2000, supervisorToken);
       await waitForExit(values.SUPERVISOR_PID, 5000);

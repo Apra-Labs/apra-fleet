@@ -613,6 +613,17 @@ npm install && npm run build && npm test
 workspace and is otherwise only reachable via an explicit `--prefix`
 invocation) -- so a green local run and a green CI run see the same tests.
 
+On a fresh clone, `npm test` first builds what the tests need (the API contract
+and the console UI workspaces) via its `pretest` step, so no manual
+`build:ui` is required.
+
+The root vitest run is split into `APRA_TEST_VITEST_SHARDS` shards (default 3,
+via vitest's `--shard=i/N`), each a separately bounded suite with its own
+`APRA_TEST_TIMEOUT_MS` budget, so one slow runner (notably Windows CI) does not
+exhaust a single budget. Set it to `1` for the legacy single run; an invalid
+value fails loudly. The summary prints `name=status(elapsed/budget)` per suite
+and a WARNING for any suite above 70% of its budget.
+
 See [CONTRIBUTING.md](CONTRIBUTING.md) to contribute.
 
 ## License

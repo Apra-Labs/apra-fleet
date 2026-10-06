@@ -61,8 +61,8 @@ jobs:
 
       # Build UI workspaces if they exist (root script lands with the UI shell
       # sprint; until then this is a no-op that exits 0). The pack-size check
-      # (check-pack-size.mjs in npm-publish job) is unaffected because a UI dist
-      # is not in the root files list.
+      # (check-pack-size.mjs in prepublishOnly) counts the shell-ui dist, since
+      # packages/apra-fleet-shell-ui/dist/ is in the package.json files list.
       - name: Build UI workspaces (if present)
         run: npm run build:ui --if-present
 
@@ -245,8 +245,8 @@ jobs:
 
       # Build UI workspaces if they exist (root script lands with the UI shell
       # sprint; until then this is a no-op that exits 0). The pack-size check
-      # (check-pack-size.mjs in npm-publish job) is unaffected because a UI dist
-      # is not in the root files list.
+      # (check-pack-size.mjs in prepublishOnly) counts the shell-ui dist, since
+      # packages/apra-fleet-shell-ui/dist/ is in the package.json files list.
       - name: Build UI workspaces (if present)
         run: npm run build:ui --if-present
 

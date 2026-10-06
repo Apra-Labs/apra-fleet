@@ -198,8 +198,12 @@ usage telemetry records, and (for `code_context`) whose KB enriches the result.
 Owned by `resolveCodeSelf()` in `src/tools/code-intelligence.ts`, over the
 shared `resolveSelfSession()` / `validateSelfRepoFolder()` in
 `src/services/knowledge/kb-self.ts`. Past resolution, a folder with no ready
-code index (none yet, or one still being built) is refused with
-`E-CODE-INDEX-NOT-READY`, and provider `none` with `E-CODE-INTEL-DISABLED` --
+code index (none yet, one marked incomplete with no analyze running, or one
+still being built) is refused with `E-CODE-INDEX-NOT-READY`; for a missing or
+interrupted index on this host the gitnexus pre-flight first requests a
+background build and the message says so (retry shortly) -- after an automatic
+build that ends without a ready index, automatic builds for that folder pause
+until `code_reindex` and the message says so -- and provider `none` with `E-CODE-INTEL-DISABLED` --
 an error result, never an ok payload that says "disabled". Fixtures
 `code_query/refusal-self-no-workfolder` and `code_map/refusal-self-not-a-repo`
 pin the two (self) refusals; every `code_*` tool has a

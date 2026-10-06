@@ -259,7 +259,7 @@
  * @property {string[]} [tags] - Optional list of free-form labels
  * @property {"false" | "auto" | "dangerous"} [unattended] - Permission mode for unattended execution
  * @property {boolean} [unreservable] - Mark this member as never exclusively reservable, so it can be shared by more than one sprint at once (e.g. fleet-sprint's shared "backlog" role)
- * @property {"auto" | "skip"} [fleet_install] - Whether registration installs/updates apra-fleet on the member (default "auto"; local members only get the MEMBER-session probe). "skip" performs no install and reports the probe result only. Registration succeeds either way; the result reports fleetMcp.
+ * @property {"auto" | "skip"} [fleet_install] - Whether registration installs/updates apra-fleet on the member, writes its per-folder apra-fleet MCP entry and verifies it (default "auto"; local members only get the MEMBER-session probe). "skip" performs no install and reports the probe result only. Registration succeeds either way; the result reports fleetMcp.
  * @property {"gitbash" | "pwsh7" | "powershell5"} [shell] - Override the probed Windows shell for this member. Windows members only -- ignored for non-windows members.
  * @property {{package: string, ref: string}} [owner] - Which package/consumer owns this member for its own bookkeeping (e.g. a fleet-sprint project binding it to a checkout). Not a project/repo/group field.
  * @property {Object<string, string>} [env] - Free-form name -> value map for this member. Names must match the portable env-name pattern; total size across all names+values is capped at 4096 characters. Exported into the processes execute_command and execute_prompt run on the member, including long_running tasks. Stored auth credentials win a name collision.
@@ -270,7 +270,7 @@
  * @typedef {Object} UpdateMemberOptions
  * @property {string} [member_id] - UUID of the member
  * @property {string} [member_name] - Friendly name of the member
- * @property {"auto" | "skip"} [fleet_install] - "auto": for a remote member, install/upgrade the member's own apra-fleet when missing or older (build-aware), self-register and verify, even when nothing else changed. "skip": never install. Omit: install only on a provider change. Unknown input keys are rejected by the server.
+ * @property {"auto" | "skip"} [fleet_install] - "auto": for a remote member, install/upgrade the member's own apra-fleet when missing or older (build-aware), self-register, write its per-folder apra-fleet MCP entry and verify, even when nothing else changed. "skip": never install. Omit: install only on a provider change. Unknown input keys are rejected by the server.
  * @property {string} [friendly_name] - New friendly name
  * @property {string} [work_folder] - New working directory. For non-local (remote/relay) members, must be a fully-qualified/absolute path -- "~" and relative paths are rejected. A folder may hold at most one LLM member and one LLM-less (llm_provider none) member.
  * @property {string} [host] - New host
@@ -1452,8 +1452,13 @@ export class ApraFleet {
      * code_status -- the calling session's own code index state: the last
      * analyze run (`analyze`: phase, result 'indexed' | 'up-to-date' |
      * 'incomplete' | 'failed', lastLine, ...), live `readiness`
-     * ('ready' | 'building' | 'missing'), `indexedCommit`, `lockHeld`, and
-     * `logPath`. A remote work folder returns { remote: true, repo,
+     * ('ready' | 'building' | 'interrupted' | 'missing'; 'interrupted' = an
+     * analyze died mid-write and none is running -- the next code_* call
+     * starts a rebuild), `indexedCommit`, `lockHeld`, and `logPath` (null
+     * when no analyze log exists yet), and `autoReindexPaused` (null, or the
+     * { result, lastLine, logPath, finished } of a failed automatic run --
+     * automatic rebuilds stay paused until codeReindex() or a server
+     * restart). A remote work folder returns { remote: true, repo,
      * indexedCommit: null, detail }. Same provider gate as codeReindex():
      * provider 'none' fails with E-CODE-INTEL-DISABLED; a non-gitnexus
      * provider returns the not-supported shape { outcome: 'not-started',

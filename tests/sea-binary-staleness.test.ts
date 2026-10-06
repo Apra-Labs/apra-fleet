@@ -15,6 +15,7 @@ import {
   evaluateSeaBinaryStaleness,
   findUiDistFilesNotEmbedded,
   parseBuildHash,
+  SEA_RELEVANT_GIT_PATHS,
 } from './helpers/sea-binary-staleness.js';
 
 describe('evaluateSeaBinaryStaleness (apra-fleet-v6t7.17.1 staleness predicate)', () => {
@@ -168,5 +169,37 @@ describe('findUiDistFilesNotEmbedded (apra-fleet-v6t7.20 content comparison)', (
 
     expect(findUiDistFilesNotEmbedded({ binaryPath, shellDistDir: path.join(shellDistDir, 'nope') })).toEqual([]);
     expect(findUiDistFilesNotEmbedded({ binaryPath: `${binaryPath}.missing`, shellDistDir })).toEqual([]);
+  });
+});
+
+describe('SEA_RELEVANT_GIT_PATHS covers bundled workspace packages (apra-fleet-v6t7.21)', () => {
+  // Mirrors git pathspec prefix semantics: equal to an entry or under entry + '/'.
+  const matched = (file: string) =>
+    SEA_RELEVANT_GIT_PATHS.some((entry) => file === entry || file.startsWith(`${entry}/`));
+
+  it.each([
+    'packages/apra-fleet-client/src/auth/local-token.ts',
+    'packages/apra-fleet-client/package.json',
+    'packages/fleet-api-contract/src/index.ts',
+    'packages/fleet-api-contract/package.json',
+    'packages/apra-fleet-ui-kit/src/Wizard.tsx',
+    'packages/apra-fleet-ui-kit/package.json',
+  ])('matches %s', (file) => {
+    expect(matched(file)).toBe(true);
+  });
+
+  it.each(['docs/npm-packaging.md', 'packages/apra-fleet-client/test/x.test.ts', 'packages/apra-fleet-ui-kit/dist/Form.js'])(
+    'does not match unrelated path %s',
+    (file) => {
+      expect(matched(file)).toBe(false);
+    },
+  );
+
+  it('stale: a change under packages/apra-fleet-client reports stale and names the file', () => {
+    const file = 'packages/apra-fleet-client/src/auth/local-token.ts';
+    const verdict = evaluateSeaBinaryStaleness({ buildHash: 'abc123', hashResolvable: true, changedRelevantFiles: [file] });
+
+    expect(verdict.stale).toBe(true);
+    expect(verdict.message).toContain(file);
   });
 });

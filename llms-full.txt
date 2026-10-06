@@ -190,6 +190,7 @@ flowchart LR
 - **Members**: real machines running provider CLIs. Composes provider-native permissions before every dispatch; unattended modes are scoped, never blanket. A consumer package (e.g. a fleet-sprint project) can tag a member with its own `owner {package, ref}` binding (`member_owner`) and read live git status for a member's work folder -- branch, dirty files, ahead/behind, worktrees, origin identity -- without assuming the folder is even a checkout (`member_git_status`). A member's stored `env` name-value map is now actually injected at every dispatch site (synchronous exec, prompt launch and its retries, and the long-running task wrapper), merged with the member's own auth credentials and rendered for whichever shell the member is actually registered as speaking -- see [docs/cross-shell-command-construction.md](docs/cross-shell-command-construction.md). See [docs/mcp-tools.md](docs/mcp-tools.md#1-lifecycle-tools).
 - **Workflow engine**: runs workflow programs with phases, retries, turn budgets, resumable sessions, per-activity persistent state, and a cooperative pause/resume gate any workflow can hook into.
 - **Supervisor**: always-on layer -- launch, pause/resume, & stop sprints over HTTP, member reservation ledger (an object holder record with a process id and timestamp, lazily reaped once its holder's process is gone -- see [docs/member-reservation-design.md](docs/member-reservation-design.md)), crash watchdog (including a live "paused" state and base-branch-drift indicator), run history, and a supervisor-owned LLM-less backlog member that every launch is pinned to. The dashboard and backlog read a cached, tip-checked beads view and show when it was last refreshed ("Beads as of"); launch always forces a fresh beads check and answers 503, without reserving members or starting a sprint, when beads cannot be verified. Binds loopback-only (`127.0.0.1`) and guards its `/api/` surface and mutating live-sprint routes with a per-host bearer token (source is the shared `~/.apra-fleet/fleet.key` when present, falling back to a token minted under `<supervisor-data-root>/private/token` otherwise; the source is logged, the token value never is; sent as `Authorization: Bearer <token>`); read-only dashboard/live views stay open on loopback. See [packages/apra-fleet-se/docs/architecture.md](packages/apra-fleet-se/docs/architecture.md#supervisor-loopback-bind--bearer-token-auth-guard). It is also gaining a project domain -- binding a member to a console project, adding a new checkout on a machine, a health panel, a per-member git drawer, and a project export/import CLI -- built as domain logic and JSON routes ahead of the console UI that will render it. See [packages/apra-fleet-se/docs/project-overview-domain.md](packages/apra-fleet-se/docs/project-overview-domain.md). Separately, each supervisor instance now resolves a single persisted project folder (`supervisor.config.json`) -- an explicit `--beads-dir` flag, else that persisted setting, else the legacy `.beads` walk-up -- so an installed supervisor's Backlog/Sprints pages reach a real project instead of only whatever `.beads` happens to be found walking up from the service's own installed engine path; set it at install time (`apra-fleet install --project-dir <path>`) or later from the console's Projects page, and see it on Health. See [packages/apra-fleet-se/docs/project-model.md](packages/apra-fleet-se/docs/project-model.md) and [docs/install.md](docs/install.md)'s "Project folder" note.
+- **Owed triage**: a PASS verdict is not the same as clean. The sprint PR body lists what is still owed (unclaimed follow-ups, all-children-closed rollups still open, rejected findings, `blocked:` closures, and features stranded when Integration Test is skipped) and says "PASS is NOT clean" when anything is. It only reports; it never closes beads. The Tasks view and Backlog keep opened descriptions and collapsed nodes across refreshes. See [docs/owed-triage-report.md](docs/owed-triage-report.md).
 
 ## Knowledge Layer
 
@@ -614,6 +615,17 @@ npm install && npm run build && npm test
 `apra-fleet-se` workspace suite, and the `apra-pm` suite (which is not an npm
 workspace and is otherwise only reachable via an explicit `--prefix`
 invocation) -- so a green local run and a green CI run see the same tests.
+
+On a fresh clone, `npm test` first builds what the tests need (the API contract
+and the console UI workspaces) via its `pretest` step, so no manual
+`build:ui` is required.
+
+The root vitest run is split into `APRA_TEST_VITEST_SHARDS` shards (default 3,
+via vitest's `--shard=i/N`), each a separately bounded suite with its own
+`APRA_TEST_TIMEOUT_MS` budget, so one slow runner (notably Windows CI) does not
+exhaust a single budget. Set it to `1` for the legacy single run; an invalid
+value fails loudly. The summary prints `name=status(elapsed/budget)` per suite
+and a WARNING for any suite above 70% of its budget.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) to contribute.
 

@@ -394,7 +394,9 @@ SEA-binary smoke test parses the short git hash `build-sea.mjs` bakes into
 the binary's own `--version` output, then diffs the tracked SEA-relevant
 paths (`scripts/gen-sea-config.mjs`, `scripts/build-sea.mjs`,
 `packages/apra-fleet-shell-ui/src`, `packages/apra-fleet-shell-ui/package.json`,
-`src`) between that hash and HEAD, including anything currently uncommitted.
+the `src` and `package.json` of the bundled workspace packages
+`packages/apra-fleet-client`, `packages/fleet-api-contract` and
+`packages/apra-fleet-ui-kit`, and `src`) between that hash and HEAD, including anything currently uncommitted.
 Because `packages/apra-fleet-shell-ui/dist` is gitignored, a git diff can
 never see a change there, so the check separately compares that dist's
 contents against the binary: a SEA blob stores its assets verbatim, so every
@@ -407,17 +409,29 @@ build with no git info) is treated as staleness-unknown, which counts as
 stale rather than being assumed fresh. This is deliberate: an actually-stale
 binary must fail loudly and name the reason, never silently pass a smoke test
 against assets that no longer match the source tree. The tracked-path list
-(`SEA_RELEVANT_GIT_PATHS`) does not include `packages/apra-fleet-ui-kit` --
-the shell's Vite build pulls it in as a dependency, so a `ui-kit` change is
-caught only through this content comparison on the built dist, not through
-the git-diff half of the check. Never drop or weaken that half of the guard:
-it is the only thing that catches a `ui-kit` change at all. It used to be an
+(`SEA_RELEVANT_GIT_PATHS`) includes the `src` and `package.json` of the
+workspace packages the esbuild SEA bundle inlines (`apra-fleet-client`,
+`fleet-api-contract`) and of `apra-fleet-ui-kit`, which feeds the shell's Vite
+build; their gitignored `dist/` and their test/docs trees are deliberately
+excluded so an unrelated change does not mark the binary stale. Never drop or
+weaken the dist content-comparison half of the guard: it is the only thing
+that catches non-git-visible dist drift (a gitignored built tree a git diff
+can never see). It used to be an
 mtime comparison (`dist/index.html` newer than the binary), which could not
 tell a meaningful rebuild from a byte-identical one and so fired on a no-op
 `npm run build:ui`; apra-fleet-v6t7.20 replaced it with the byte comparison
 above, which still catches a real `ui-kit`-driven change (Vite's output
 filenames are content-hashed and are named in `index.html`) but no longer
 fires on a no-op rebuild.
+
+**`npm test` builds its own prerequisites on a fresh clone.** The root
+`pretest` runs `build:contract && build:ui:checked`. `scripts/build-ui-checked.mjs`
+builds `apra-fleet-ui-kit` first and then the console shell UI (the shell
+imports ui-kit's built output, so the order matters), and exits non-zero if
+`packages/apra-fleet-shell-ui/dist/index.html` is missing. Tests that read the
+built shell dist therefore never depend on a developer having run `build:ui`
+by hand. CI also runs an explicit UI build step ahead of the tests, so the UI
+is built twice there; this is redundant but harmless.
 
 ### 7.2 Other package.json fields
 
