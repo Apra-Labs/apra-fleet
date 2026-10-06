@@ -97,7 +97,7 @@ test('mock sprint: a plan-reviewer permission refusal is healed by compose_permi
         assert.equal(recompose.length, 1, `expected one re-compose, got ${JSON.stringify(composeCalls)}`);
         assert.equal(recompose[0].member_name, 'local');
         assert.equal(recompose[0].role, 'doer');
-        assert.match(String(recompose[0].project_folder), /permission-ledgers[\\/]local$/);
+        assert.match(String(recompose[0].project_folder), /permission-ledgers[\\/]local-[0-9a-f]{12}$/);
         const grants = composeCalls.filter((c) => c.grant);
         assert.equal(grants.length, 1);
         assert.deepEqual(grants[0].grant, ['Bash(bd:*)']);

@@ -381,8 +381,18 @@ test('grantWithinPolicy: wildcard coverage, bare tools, chained payloads', () =>
 });
 
 test('permissionLedgerFolder: one folder per member, under a given base or the fleet data dir', () => {
-    assert.equal(permissionLedgerFolder('dev', '/base'), path.join('/base', 'dev'));
-    assert.equal(permissionLedgerFolder('a/b c', '/base'), path.join('/base', 'a_b_c'));
-    assert.match(permissionLedgerFolder('dev'), /permission-ledgers[\\/]dev$/);
+    assert.match(permissionLedgerFolder('dev', '/base'), /^[\\/]base[\\/]dev-[0-9a-f]{12}$/);
+    assert.match(permissionLedgerFolder('dev'), /permission-ledgers[\\/]dev-[0-9a-f]{12}$/);
     assert.equal(permissionLedgerFolder(''), undefined);
+    // Distinct names that sanitize alike still get distinct folders.
+    assert.notEqual(permissionLedgerFolder('a/b', '/base'), permissionLedgerFolder('a_b', '/base'));
+});
+
+test('permissionLedgerFolder: no member name can escape the ledger root (dot-only and traversal names)', () => {
+    const root = path.resolve('/base/permission-ledgers');
+    for (const name of ['..', '.', '...', '../..', '..\\..', '../etc', 'a/../../b', '/abs', 'C:\\x', '.hidden']) {
+        const folder = path.resolve(permissionLedgerFolder(name, root));
+        assert.equal(path.dirname(folder), root, `${JSON.stringify(name)} -> ${folder}`);
+        assert.ok(!path.basename(folder).includes('.'), `${JSON.stringify(name)} -> ${folder}`);
+    }
 });

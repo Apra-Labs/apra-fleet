@@ -325,6 +325,10 @@ export class ClaudeProvider implements ProviderAdapter {
       denial.permissionMode = mode;
       denial.healable = mode === 'acceptEdits';
       if (!denial.healable) {
+        // A classifier or deny-rule refusal must never come with a
+        // ready-to-paste grant: blank every suggestion, overall and per call.
+        denial.suggestedGrants = [];
+        for (const d of denial.denials) d.suggestedGrants = [];
         const what = denial.denials.map(d => (d.target ? `${d.action} "${d.target}"` : d.action)).join(', ');
         denial.hint = `claude (${mode} mode) refused ${what}: in this mode a refusal comes from the safety classifier or a deny rule, not from a missing grant, so no grant is ever added for it automatically. Review the refused calls; change the member's permissions by hand only if the action is really intended.`;
       }

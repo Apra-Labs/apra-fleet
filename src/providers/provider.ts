@@ -313,8 +313,9 @@ export interface PermissionDenial {
   actions: string[];
   denials: PermissionDenialItem[];
   /** compose_permissions `grant` values that would allow the denied calls
-   *  (empty when there is no canonical mapping for an action). The primary
-   *  suggestion comes first; a narrower alternative may follow it. */
+   *  (empty when there is no canonical mapping for an action, and always
+   *  empty when healable is false). The primary suggestion comes first; a
+   *  narrower alternative may follow it. */
   suggestedGrants: string[];
   /** One-line remediation for a human or an orchestrator. */
   hint: string;

@@ -45,6 +45,7 @@
 // from a validated literal work-folder-relative path (no environment reads).
 
 import os from 'node:os';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { ApraFleet } from '@apralabs/apra-fleet-client';
 import { resultText } from './mcp-result.mjs';
@@ -403,7 +404,14 @@ export function createPermissionConfigPreflight(opts = {}) {
 export function permissionLedgerFolder(member, baseDir) {
     if (!member) return undefined;
     const root = baseDir || path.join(process.env.APRA_FLEET_DATA_DIR || path.join(os.homedir(), '.apra-fleet', 'data'), 'permission-ledgers');
-    return path.join(root, String(member).replace(/[^\w.-]/g, '_'));
+    // Member names may contain dots, even be all dots ('..'). The folder name
+    // therefore keeps only [A-Za-z0-9_-] -- no dot, no separator, so it can
+    // never traverse out of `root` -- plus a hash of the raw name, so two
+    // names that sanitize alike still get distinct folders.
+    const raw = String(member);
+    const safe = raw.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 64);
+    const hash = createHash('sha256').update(raw).digest('hex').slice(0, 12);
+    return path.join(root, `${safe}-${hash}`);
 }
 
 /** Heals per member per sprint. Each heal re-runs a whole role dispatch, and

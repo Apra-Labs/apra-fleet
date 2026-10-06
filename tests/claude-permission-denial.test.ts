@@ -103,6 +103,18 @@ describe('ClaudeProvider.parseResponse', () => {
     expect(claude.parseResponse(run(RESULT), { unattended: false, model: 'opus' }).permissionDenial)
       .toMatchObject({ permissionMode: 'acceptEdits', healable: true });
   });
+
+  it('a healable:false denial carries NO suggested grant, overall or per call; a healable one keeps them', () => {
+    for (const unattended of ['auto', 'dangerous'] as const) {
+      const d = claude.parseResponse(run(RESULT), { unattended, model: 'opus' }).permissionDenial!;
+      expect(d.healable).toBe(false);
+      expect(d.suggestedGrants).toEqual([]);
+      for (const item of d.denials) expect(item.suggestedGrants).toEqual([]);
+      expect(d.hint).not.toMatch(/Bash\(/);
+    }
+    const healable = claude.parseResponse(run(RESULT), { unattended: 'auto', model: 'haiku' }).permissionDenial!;
+    expect(healable.suggestedGrants).toEqual(EXPECTED_GRANTS);
+  });
 });
 
 describe('Claude permission mode is model-aware (auto falls back to acceptEdits)', () => {
@@ -196,6 +208,7 @@ describe('execute_prompt -- Claude permission_denied', () => {
     expect(result.structuredContent.response).toContain('requires approval');
     expect(result.structuredContent.permissionWarning.permissionMode).toBe('auto');
     expect(result.structuredContent.permissionWarning.healable).toBe(false);
+    expect(result.structuredContent.permissionWarning.suggestedGrants).toEqual([]);
     expect(result.structuredContent.permissionWarning.hint).toContain('no grant is ever added');
     expect(result.text).toContain('[WARN]');
     // The dispatch ran with the auto flag.
@@ -209,7 +222,9 @@ describe('execute_prompt -- Claude permission_denied', () => {
     const result: any = await executePrompt({ member_id: member.id, prompt: 'review the plan', resume: false, timeout_s: 5 });
     expect(result.structuredContent.reason).toBe('permission_denied');
     expect(result.structuredContent.permissionDenied.healable).toBe(false);
+    expect(result.structuredContent.permissionDenied.suggestedGrants).toEqual([]);
     expect(permissionDenialOf(result).healable).toBe(false);
+    expect(result.text).not.toMatch(/Bash\(bd/);
   });
 
   it('auto requested on haiku (no auto support): runs acceptEdits, and its denial is healable', async () => {

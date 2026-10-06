@@ -80,6 +80,17 @@ Fleet can configure member permissions. Ask it to, for example, "Grant
 | Codex | `.codex/config.toml` (approval mode) |
 | Copilot | `.github/copilot/settings.local.json` |
 
+**A Claude dispatch reports `permissionWarning`, or `permission_denied` with `healable: false`**
+
+The member runs Claude in auto (or bypass) permission mode, and the safety
+classifier or a deny rule refused a tool call. That is a deliberate block, not a
+missing grant: `suggestedGrants` is empty and fleet-sprint never grants it.
+With a complete reply the dispatch succeeds and only warns (`permissionWarning`);
+with an incomplete one it fails. Review the refused call in the hint. Grant it
+by hand with `compose_permissions` `grant` only if the action is really
+intended. A `healable: true` denial (acceptEdits mode, e.g. Haiku) is a missing
+allow rule: grant from its `suggestedGrants`.
+
 **Permission granted but still denied on Claude**
 
 Claude Code only honors `.claude/settings.local.json` permissions once the

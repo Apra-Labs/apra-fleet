@@ -78,7 +78,7 @@
  * @property {string[]} suggestedGrants - compose_permissions `grant` values that would allow the
  *   denied calls, primary first (for an agy command or unsandboxed denial, on any OS, a
  *   `Bash(<cmd>:*)` prefix grant, then the exact command as the narrow alternative); empty when no
- *   canonical mapping exists.
+ *   canonical mapping exists, and always empty when `healable` is false (never grant those).
  * @property {string} hint - One-line remediation.
  * @property {Array<'result_json'|'stderr'|'transcript'>} signals - Which CLI signals reported it.
  * @property {string} [permissionMode] - The permission mode the session ran in, when the
