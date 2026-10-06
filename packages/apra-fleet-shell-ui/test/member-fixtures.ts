@@ -70,3 +70,15 @@ export const LOCAL_MEMBER: FleetMember = {
 };
 
 export const MEMBERS_LOCAL: { members: FleetMember[] } = { members: [LOCAL_MEMBER] };
+
+// A local member whose payload carries `unattended` (LOCAL_MEMBER deliberately
+// omits it, exercising the empty-string sentinel path). Used by the Unattended
+// mode select tests in test/member-edit.test.tsx.
+export const UNATTENDED_MEMBER: FleetMember = {
+  ...LOCAL_MEMBER,
+  id: "member-unattended-1",
+  name: "unattended-one",
+  unattended: "dangerous"
+};
+
+export const MEMBERS_UNATTENDED: { members: FleetMember[] } = { members: [UNATTENDED_MEMBER] };

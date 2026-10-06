@@ -173,6 +173,11 @@ function buildUpdateBody(
     body.tags = newTags;
     sent.push("tagsText");
   }
+  // Icon semantics (apra-fleet-i9ag.6.8): an icon can be SET or CHANGED here
+  // but NOT cleared. update_member's server side only applies a truthy resolved
+  // icon (an empty string is dropped, unlike category's documented
+  // "empty string clears"), so emptying the field is deliberately treated as
+  // no change; the input's label says so ("Icon (cannot be cleared)").
   const trimmedIcon = state.icon.trim();
   if (touched.has("icon") && trimmedIcon && trimmedIcon !== baseline.icon) {
     body.icon = trimmedIcon;
@@ -310,6 +315,13 @@ export function MemberDrawer({ member, onClose, onUpdated }: MemberDrawerProps) 
   }
 
   async function handleEditSubmit() {
+    // apra-fleet-i9ag.6.9: update_member ignores an empty friendly_name
+    // (`if (input.friendly_name)`), so posting one would render a success
+    // message for a no-op. Block it here with an inline error and send nothing.
+    if (editTouched.has("friendlyName") && editState.friendlyName.trim() === "") {
+      setEditResult({ message: "Friendly name cannot be empty.", isError: true });
+      return;
+    }
     const built = buildUpdateBody(currentMember, editState, editTouched);
     if (!built) {
       setEditResult({ message: "No changes to submit.", isError: true });
@@ -428,7 +440,7 @@ export function MemberDrawer({ member, onClose, onUpdated }: MemberDrawerProps) 
           onChange={(v) => updateEditField("tagsText", v)}
         />
         <TextField
-          label="Icon"
+          label="Icon (cannot be cleared)"
           name="edit-icon"
           value={editState.icon}
           onChange={(v) => updateEditField("icon", v)}
