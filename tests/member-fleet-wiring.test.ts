@@ -96,6 +96,8 @@ function fakeDeps(world: World, local?: () => Promise<MemberSession>, home = HOM
       const c = plain(command);
       world.log.push(c);
       world.lastId = agent.id;
+      // The member access secret read: an install without one (older than the secret).
+      if (c.includes('member-access.key')) return ok('');
       if (c.includes('member-install.json')) return world.marker ? ok('') : { stdout: '', stderr: '', code: 1 };
       if (c.includes("'register-member'")) {
         world.probes++;

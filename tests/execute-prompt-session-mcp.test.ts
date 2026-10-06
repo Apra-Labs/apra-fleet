@@ -20,6 +20,7 @@ import {
   restoreRegistry,
   resultText,
   decodePowerShellEncodedCommand,
+  memberSecretHeaders,
 } from './test-helpers.js';
 import { addAgent } from '../src/services/registry.js';
 import { executePrompt, provisionedRemoteAgents } from '../src/tools/execute-prompt.js';
@@ -163,7 +164,7 @@ describe('execute_prompt: per-session member MCP config', () => {
 
     const cfg = path.join(FLEET_DIR, 'session-mcp', `${member.id}.json`);
     expect(JSON.parse(fs.readFileSync(cfg, 'utf-8'))).toEqual({
-      mcpServers: { 'apra-fleet': { type: 'http', url: `http://localhost:${DEFAULT_PORT}/mcp?member=${member.id}`, alwaysLoad: true } },
+      mcpServers: { 'apra-fleet': { type: 'http', url: `http://localhost:${DEFAULT_PORT}/mcp?member=${member.id}`, headers: memberSecretHeaders(), alwaysLoad: true } },
     });
     expect(mainCmd()).toContain('--mcp-config "');
     expect(mainCmd()).toContain(`${member.id}.json"`);
@@ -252,7 +253,7 @@ describe('execute_prompt: per-session member MCP config', () => {
         await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
         const cfg = path.join(FLEET_DIR, 'session-mcp', `${member.id}.json`);
         expect(JSON.parse(fs.readFileSync(cfg, 'utf-8')).mcpServers['apra-fleet']).toEqual({
-          type: 'http', url: `http://localhost:${DEFAULT_PORT}/mcp?member=${member.id}`, alwaysLoad: true,
+          type: 'http', url: `http://localhost:${DEFAULT_PORT}/mcp?member=${member.id}`, headers: memberSecretHeaders(), alwaysLoad: true,
         });
         expect(mainCmd()).toContain(`${member.id}.json"`);
       } finally {

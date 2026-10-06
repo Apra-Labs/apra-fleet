@@ -39,7 +39,7 @@ import { registerPending, __clearAllPending } from '../src/services/pending-resp
 import { addAgent } from '../src/services/registry.js';
 import { fleetEvents } from '../src/services/event-bus.js';
 import { MEMBER_ALLOWED_TOOLS, MEMBER_CHANNEL_TOOLS, REGISTERED_TOOL_NAMES } from '../src/services/member-tool-allowlist.js';
-import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
+import { makeTestAgent, backupAndResetRegistry, restoreRegistry, memberSecretHeaders, memberSecretRequestInit } from './test-helpers.js';
 
 const RECONNECT = { maxRetries: 0, maxReconnectionDelay: 100, initialReconnectionDelay: 100, reconnectionDelayGrowFactor: 1 };
 
@@ -84,7 +84,7 @@ async function connect(
   clients.push(client);
   await client.connect(new StreamableHTTPClientTransport(url, {
     reconnectionOptions: RECONNECT,
-    ...(opts.bearer ? { requestInit: { headers: { Authorization: `Bearer ${opts.bearer}` } } } : {}),
+    requestInit: opts.bearer ? { headers: { Authorization: `Bearer ${opts.bearer}` } } : memberSecretRequestInit(),
   }));
   return client;
 }
@@ -114,7 +114,7 @@ function postInitializeRaw(port: number, member: string): Promise<number> {
   return new Promise((resolve, reject) => {
     const req = http.request({
       hostname: '127.0.0.1', port, method: 'POST', path: `/mcp?member=${encodeURIComponent(member)}`,
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', 'Content-Length': Buffer.byteLength(body) },
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', 'Content-Length': Buffer.byteLength(body), ...memberSecretHeaders() },
     }, res => { res.resume(); res.on('end', () => resolve(res.statusCode ?? 0)); });
     req.on('error', reject);
     req.end(body);

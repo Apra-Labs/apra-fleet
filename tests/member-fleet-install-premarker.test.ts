@@ -89,6 +89,8 @@ function deps(
         m.installed = orch;
         return ok('installed');
       }
+      // The member access secret read: an install without one (older than the secret).
+      if (c.includes('member-access.key')) return ok('');
       if (isMarkerCheck(c)) return m.marker ? ok('') : { stdout: '', stderr: '', code: 1 };
       if (c.includes('registry.json')) {
         return ok(JSON.stringify({ version: '1', agents: m.poisonedRegistry ? [{ id: agent.id, friendlyName: 'bella', agentType: 'local' }] : [] }));

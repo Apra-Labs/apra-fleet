@@ -16,6 +16,7 @@ import type { MemberShell } from '../src/os/os-commands.js';
 import type { MemberSecretFileChannel, WorkspaceTrustTransport } from '../src/providers/provider.js';
 import type { SSHExecResult } from '../src/types.js';
 import { makeTestAgent } from './test-helpers.js';
+import { findSentinel as scanForSentinel } from './helpers/sentinel-scan.js';
 
 const SENTINEL = 'SENTINEL-TOKEN-7f3a9c1e-do-not-leak';
 
@@ -27,24 +28,9 @@ const SEED = JSON.stringify({
   projects: {},
 }, null, 2);
 
-/** Every way the sentinel could be hidden in a command string. */
+/** Every way the sentinel could be hidden in a command string (shared scanner). */
 export function findSentinel(command: string, sentinel = SENTINEL): string | null {
-  const raw = command;
-  if (raw.includes(sentinel)) return 'raw';
-  const decodeCandidates = (b64: string): Array<[string, string]> => {
-    let buf: Buffer;
-    try { buf = Buffer.from(b64, 'base64'); } catch { return []; }
-    return [['base64-utf8', buf.toString('utf8')], ['base64-utf16le', buf.toString('utf16le')]];
-  };
-  // Every base64-looking run, decoded both ways (a UTF-8-only decode would miss UTF-16LE).
-  for (const run of command.match(/[A-Za-z0-9+/]{16,}={0,2}/g) ?? []) {
-    for (const [how, text] of decodeCandidates(run)) if (text.includes(sentinel)) return how;
-  }
-  // Every -EncodedCommand payload, decoded as UTF-16LE (and, belt and braces, UTF-8).
-  for (const m of command.matchAll(/-EncodedCommand\s+([A-Za-z0-9+/=]+)/gi)) {
-    for (const [how, text] of decodeCandidates(m[1])) if (text.includes(sentinel)) return `encoded-command(${how})`;
-  }
-  return null;
+  return scanForSentinel(command, sentinel);
 }
 
 describe('sentinel scanner negative controls', () => {

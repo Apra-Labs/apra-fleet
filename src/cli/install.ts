@@ -1993,6 +1993,18 @@ ${manualStopHint(pidsAfterStop)}
   // "auto" recognises its own half-finished install and retries.
   if (memberMode) writeMemberInstallMarker(serverVersion, memberPort);
 
+  // Every install holds a member access secret (owner-only, in its data dir):
+  // its server accepts a ?member= session only with it, so another local
+  // user's session cannot use this install. Created once, kept on reinstall
+  // (sessions configured with it keep working). Best effort here -- the server
+  // creates it at start too.
+  try {
+    const { getOrCreateMemberAccessSecret, memberAccessSecretPath } = await import('../services/member-access-secret.js');
+    getOrCreateMemberAccessSecret(memberAccessSecretPath(getInstallDataDir()));
+  } catch (err) {
+    console.warn('    [!] member access secret not created:', err instanceof Error ? err.message : String(err));
+  }
+
   // --- Step N: Register and start service (SEA + HTTP mode only) ---
   let serviceRegistered = false;
   let serviceHealthy: boolean | null = null;

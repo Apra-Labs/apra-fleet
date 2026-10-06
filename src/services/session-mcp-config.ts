@@ -18,6 +18,12 @@
 //  - remote members: <workFolder>/.fleet-session-mcp.json, written next to the
 //    prompt file and removed with it when the dispatch ends. The name is not
 //    `.mcp.json`, so no Claude session picks it up on its own.
+//
+// The entry carries the member install's access secret as an http header
+// (member-access-secret.ts): its server refuses a `?member=` session without
+// it. So the file is owner-only -- local: written with mode 0600; remote:
+// staged through the owner-only secret-file channel and moved into place by
+// a content-free command, never written through a command string.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -25,6 +31,8 @@ import type { Agent } from '../types.js';
 import { FLEET_DIR } from '../paths.js';
 import { getAgentOS, getAgentShell, isPosixShell } from '../utils/agent-helpers.js';
 import { ensureGitExcluded, joinMemberPath, memberMcpUrl, writeMemberFile, MEMBER_MCP_SERVER_NAME, type MemberExecFn } from './member-config-io.js';
+import { deliverMemberFileViaSecretChannel, memberMcpHeaders, type StageSecretFileFn } from './member-access-secret.js';
+import { removeMemberSecretFile, writeMemberSecretFile } from './member-secret-env.js';
 
 /** Work-folder-relative name of a remote member's per-dispatch config file. */
 export const REMOTE_SESSION_MCP_FILE = '.fleet-session-mcp.json';
@@ -73,10 +81,12 @@ export function perFolderMcpEntryNeeded(agent: Agent): boolean {
  * established that the member's CLI accepts it (see resolveSessionMcpAlwaysLoad).
  */
 export function sessionMcpConfigContent(
-  agent: Pick<Agent, 'id' | 'agentType' | 'memberMcpPort'>,
+  agent: Pick<Agent, 'id' | 'agentType' | 'memberMcpPort' | 'encryptedMemberMcpSecret'>,
   opts: { alwaysLoad?: boolean } = {},
 ): string {
   const entry: Record<string, unknown> = { type: 'http', url: memberMcpUrl(agent) };
+  const headers = memberMcpHeaders(agent);
+  if (headers) entry.headers = headers;
   if (opts.alwaysLoad) entry.alwaysLoad = true;
   return JSON.stringify({ mcpServers: { [MEMBER_MCP_SERVER_NAME]: entry } });
 }
@@ -168,26 +178,34 @@ export function sessionMcpConfigIsPerDispatch(agent: Agent): boolean {
 }
 
 /**
- * Writes the config file. Local: through fs. Remote: through the member's
- * shell with the shared member file writer (quoted resolved path, read back).
- * Never throws: a failure returns its detail so the caller falls back to a
- * dispatch without the flag.
+ * Writes the config file. Local: through fs, owner-only. Remote: a config
+ * carrying the access secret goes through the owner-only secret-file channel
+ * plus a content-free move (never a command string); one without a secret (an
+ * install older than the secret) through the shared member file writer
+ * (quoted resolved path, read back). Never throws: a failure returns its
+ * detail so the caller falls back to a dispatch without the flag.
  */
 export async function writeSessionMcpConfig(
   agent: Agent,
   absPath: string,
   exec: MemberExecFn,
-  opts: { alwaysLoad?: boolean } = {},
+  opts: { alwaysLoad?: boolean; stage?: StageSecretFileFn } = {},
 ): Promise<{ ok: true } | { ok: false; detail: string }> {
   const content = sessionMcpConfigContent(agent, opts);
   try {
     if (agent.agentType === 'local') {
       fs.mkdirSync(path.dirname(absPath), { recursive: true });
-      fs.writeFileSync(absPath, content, 'utf-8');
+      fs.writeFileSync(absPath, content, { encoding: 'utf-8', mode: 0o600 });
+      try { fs.chmodSync(absPath, 0o600); } catch { /* Windows */ }
       return { ok: true };
     }
     const posix = isPosixShell(getAgentOS(agent), getAgentShell(agent));
-    await writeMemberFile(exec, absPath, content, posix);
+    if (memberMcpHeaders(agent)) {
+      const stage = opts.stage ?? ((a: Agent, c: string) => writeMemberSecretFile(a, c, 'session-mcp'));
+      await deliverMemberFileViaSecretChannel(agent, exec, absPath, content, stage, removeMemberSecretFile);
+    } else {
+      await writeMemberFile(exec, absPath, content, posix);
+    }
     // Keep the file out of `git status` (and a role's `git add -A`) even when
     // compose never ran for this clone. Best effort: a non-repo or a failed
     // exclude never blocks the dispatch.

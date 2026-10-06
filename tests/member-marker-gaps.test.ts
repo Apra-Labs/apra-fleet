@@ -60,6 +60,8 @@ function deps(w: World): MemberFleetMcpDeps {
     exec: async (agent: Agent, raw: string) => {
       const c = decodePowerShellEncodedCommand(raw);
       w.log.push(c);
+      // The member access secret read: an install without one (older than the secret).
+      if (c.includes('member-access.key')) return ok('');
       if (isMarkerCheck(c)) {
         switch (w.marker) {
           case 'present': return ok('');

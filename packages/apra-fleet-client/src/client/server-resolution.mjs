@@ -387,6 +387,26 @@ export async function connectFleet(deps = {}) {
     return { transport, mcpClient, fleetApi: new ApraFleet(mcpClient), mode: resolution.mode };
 }
 
+/** Header a `?member=` request carries the install's member access secret in
+ *  (mirrors MEMBER_SECRET_HEADER in src/services/member-access-secret.ts). */
+export const MEMBER_SECRET_HEADER = 'X-Apra-Fleet-Member-Secret';
+
+/**
+ * The member access secret of the install whose data dir `env` names
+ * (<data dir>/member-access.key, owner-only), or null when there is none
+ * (an install older than the secret, whose server does not check it).
+ * @param {NodeJS.ProcessEnv} [env]
+ * @returns {string|null}
+ */
+export function readMemberAccessSecret(env = process.env) {
+    try {
+        const v = fs.readFileSync(path.join(getFleetDataDir(env), 'member-access.key'), 'utf8').trim();
+        return /^[0-9a-f]{64}$/.test(v) ? v : null;
+    } catch {
+        return null;
+    }
+}
+
 /**
  * Resolve + connect a MEMBER session: the local HTTP singleton with
  * `?member=<uuid>` appended, so the server scopes the session's tools to the
@@ -399,6 +419,11 @@ export async function connectFleet(deps = {}) {
  * the ENGINE acting as the member (memberCall, `apra-fleet call`), and the
  * server excludes its kb_/code_ calls from the member's session_stats counts.
  * Only those engine paths set it; any other origin value is refused.
+ *
+ * The server accepts a `?member=` session only with its install's member
+ * access secret: it is read from the same data dir the server was resolved
+ * from (readMemberAccessSecret) and sent in the MEMBER_SECRET_HEADER header
+ * on every request. Without it the server answers HTTP 401.
  *
  * @param {string} memberId registered member uuid
  * @param {object} [deps] same bag as resolveFleetServerConnection, plus `options`
@@ -423,7 +448,10 @@ export async function connectFleetMember(memberId, deps = {}) {
     const url = new URL(resolution.url);
     url.searchParams.set('member', memberId);
     if (deps.origin === 'engine') url.searchParams.set('origin', 'engine');
-    const transport = new StreamableHttpTransport(url.toString(), deps.options || {});
+    const options = { ...(deps.options || {}) };
+    const secret = readMemberAccessSecret(deps.env || process.env);
+    if (secret) options.headers = { ...(options.headers || {}), [MEMBER_SECRET_HEADER]: secret };
+    const transport = new StreamableHttpTransport(url.toString(), options);
     await transport.start();
     return {
         transport,

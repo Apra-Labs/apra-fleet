@@ -25,7 +25,7 @@ import {
   CLI_VERSION_CACHE_TTL_MS,
   REMOTE_SESSION_MCP_FILE,
 } from '../src/services/session-mcp-config.js';
-import { makeTestAgent, makeTestLocalAgent } from './test-helpers.js';
+import { makeTestAgent, makeTestLocalAgent, memberSecretHeaders } from './test-helpers.js';
 import type { SSHExecResult } from '../src/types.js';
 
 const ID = '11111111-2222-3333-4444-555555555555';
@@ -118,7 +118,8 @@ describe('--mcp-config on the dispatch command line, per OS and shell', () => {
 describe('session MCP config body, path and availability', () => {
   it('local member: this server port; remote member: the member install default port', () => {
     const local = JSON.parse(sessionMcpConfigContent({ id: ID, agentType: 'local' }));
-    expect(local).toEqual({ mcpServers: { 'apra-fleet': { type: 'http', url: `http://localhost:${DEFAULT_PORT}/mcp?member=${ID}` } } });
+    // A local member shares this server: its config carries this install's member access secret.
+    expect(local).toEqual({ mcpServers: { 'apra-fleet': { type: 'http', url: `http://localhost:${DEFAULT_PORT}/mcp?member=${ID}`, headers: memberSecretHeaders() } } });
     const remote = JSON.parse(sessionMcpConfigContent({ id: ID, agentType: 'remote' }));
     expect(remote.mcpServers['apra-fleet'].url).toBe(`http://localhost:${BUILTIN_DEFAULT_PORT}/mcp?member=${ID}`);
     expect(Object.keys(remote.mcpServers)).toEqual(['apra-fleet']);

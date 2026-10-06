@@ -44,7 +44,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { createHttpTransport, type HttpTransportHandle } from '../src/services/http-transport.js';
 import { registerAllTools } from '../src/services/tool-registry.js';
 import { addAgent } from '../src/services/registry.js';
-import { makeTestLocalAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
+import { makeTestLocalAgent, backupAndResetRegistry, restoreRegistry, memberSecretRequestInit } from './test-helpers.js';
 
 const RECONNECT = { maxRetries: 0, maxReconnectionDelay: 100, initialReconnectionDelay: 100, reconnectionDelayGrowFactor: 1 };
 const TOOLS = ['code_status', 'code_reindex'] as const;
@@ -73,7 +73,7 @@ async function call(member: string, name: string): Promise<{ isError: boolean; t
   url.searchParams.set('member', member);
   const client = new Client({ name: 'provider-gate', version: '1.0.0' }, { capabilities: {} });
   clients.push(client);
-  await client.connect(new StreamableHTTPClientTransport(url, { reconnectionOptions: RECONNECT }));
+  await client.connect(new StreamableHTTPClientTransport(url, { reconnectionOptions: RECONNECT, requestInit: memberSecretRequestInit() }));
   const result = await client.callTool({ name, arguments: {} });
   const text = ((result.content as Array<{ text?: string }>) ?? []).map(c => c.text ?? '').join('\n');
   return { isError: result.isError === true, text };

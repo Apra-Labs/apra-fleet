@@ -48,7 +48,10 @@ import { serverVersion } from '../version.js';
 import { BUILTIN_DEFAULT_PORT, validPort } from '../paths.js';
 import { FULL_INSTALL_RUNNING_CODE, FORCE_STOP_FULL_INSTALL_FLAG } from '../cli/install-guard.js';
 import { parseVersion, isNewer } from './update-check.js';
-import { recordFleetMcpStatus } from './registry.js';
+import { recordFleetMcpStatus, updateAgent } from './registry.js';
+import { encryptPassword } from '../utils/crypto.js';
+import { ensureRemoteMemberAccessSecret, type StageSecretFileFn } from './member-access-secret.js';
+import { removeMemberSecretFile, writeMemberSecretFile } from './member-secret-env.js';
 import { probeMemberClaudeConfigDir, claudeLocalScopeConfigFile } from '../providers/claude.js';
 import { OPENCODE_PROJECT_CONFIG } from '../providers/opencode.js';
 import { readMemberJson, joinMemberPath, memberFileExistsPosixCommand, memberFileExistsPwshCommand, resolveClaudeProjectKey, MEMBER_MCP_SERVER_NAME } from './member-config-io.js';
@@ -926,7 +929,10 @@ export type FleetMcpUnavailableReason =
   /** A MEMBER session could not be opened or its version call failed. */
   | 'member-session-failed'
   /** The MEMBER session answered but did not list kb_* and code_* tools. */
-  | 'member-tools-missing';
+  | 'member-tools-missing'
+  /** The member install's member access secret (which its server requires on
+   *  a ?member= session) could not be read, or created when missing. */
+  | 'member-secret-unavailable';
 
 /** Reasons the sprint init (not the server probe) records for providers it treats as unverified. */
 export type FleetMcpProviderReason = 'no-per-tool-deny' | 'no-per-project-mcp';
@@ -963,6 +969,7 @@ export const FLEET_MCP_FIX: Record<FleetMcpUnavailableReason | FleetMcpProviderR
   'opencode-config-unparseable': 'Make the work folder opencode.json strict JSON (no comments), then re-run compose_permissions.',
   'member-session-failed': 'Check the member apra-fleet server is running (apra-fleet status / start on the member), then member_detail with refresh:true.',
   'member-tools-missing': 'Run update_member {member_id, fleet_install: "auto"} to upgrade apra-fleet on the member so its session lists kb_* and code_* tools, then member_detail with refresh:true.',
+  'member-secret-unavailable': 'Check the member access secret file named in the detail is readable by the member user (and that SFTP works on the member, which creates it), then run update_member {member_id, fleet_install: "auto"}.',
   'no-per-tool-deny': 'opencode cannot deny individual tools, so its roles get injected knowledge only. Use another provider for KB/code tools.',
 };
 
@@ -1008,6 +1015,12 @@ export interface MemberFleetMcpDeps extends MemberFleetInstallDeps {
    *  writer). Optional: absent means the probe only checks the entry. `reason`
    *  is set when a member config could not be safely edited. */
   writeMcpEntry?(agent: Agent): Promise<{ ok: true } | { ok: false; reason?: string; detail: string }>;
+  /** Stage content in a fresh owner-only file on the member (the secret-file
+   *  channel); used to create a missing member access secret there. Optional:
+   *  absent means a missing secret cannot be created. */
+  stageSecretFile?: StageSecretFileFn;
+  /** Persist the member install's access secret (encrypted) on the registry entry. */
+  recordMemberSecret?(memberId: string, secret: string): void;
 }
 
 
@@ -1040,6 +1053,8 @@ export function defaultMemberFleetMcpDeps(): MemberFleetMcpDeps {
       const m = await import('../tools/compose-permissions.js');
       return m.writeMemberMcpEntry(agent);
     },
+    stageSecretFile: (agent: Agent, content: string) => writeMemberSecretFile(agent, content, 'member-access'),
+    recordMemberSecret: (memberId: string, secret: string) => { updateAgent(memberId, { encryptedMemberMcpSecret: encryptPassword(secret) }); },
   };
 }
 
@@ -1549,6 +1564,24 @@ async function probeRemote(
     portAgent = { ...agent, memberMcpPort: portRes.source === 'marker' ? portRes.port : undefined };
   } else {
     portNote = portRes.detail;
+  }
+
+  // 2d. The member install's access secret: its server refuses a ?member=
+  // session without it, so the per-folder entry written below and every
+  // session config carry it. An install older than the secret has none; when
+  // an install was requested (fleet_install "auto") it is created there
+  // through the secret-file channel, never a command string.
+  const secretRes = await ensureRemoteMemberAccessSecret(
+    agent, home,
+    { exec: (cmd, t) => deps.exec(agent, cmd, t ?? PROBE_TIMEOUT_MS), stage: deps.stageSecretFile, removeStaged: removeMemberSecretFile },
+    install,
+  );
+  if (secretRes.kind === 'failed') return fail('member-secret-unavailable', secretRes.detail);
+  // 'absent' (read-only probe of an install older than the secret): its
+  // server does not check one, so sessions there work without it.
+  if (secretRes.kind === 'found' || secretRes.kind === 'created') {
+    deps.recordMemberSecret?.(agent.id, secretRes.secret);
+    portAgent = { ...portAgent, encryptedMemberMcpSecret: encryptPassword(secretRes.secret) };
   }
 
   // 2b. Register the member on its own install under the orchestrator's id.

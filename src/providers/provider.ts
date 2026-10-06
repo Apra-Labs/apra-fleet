@@ -338,6 +338,11 @@ export interface MemberMcpSyncContext {
   /** The per-folder apra-fleet entry URL (.../mcp?member=<uuid>) to write, or null to REMOVE
    *  the entry this provider wrote for the member's folder (provider switch cleanup). */
   url: string | null;
+  /** HTTP headers the entry carries with `url` -- the member install's access
+   *  secret (member-access-secret.ts), without which its server refuses the
+   *  `?member=` session. A config carrying it is written only through a file
+   *  channel, never a command string. Absent when no secret is known. */
+  headers?: Record<string, string>;
   /** With url null: remove the folder's apra-fleet entry only when it points at
    *  THIS member (?member=<uuid>), leaving any other apra-fleet entry alone. */
   removeOnlyOwnEntry?: boolean;

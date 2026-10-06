@@ -12,6 +12,7 @@ import { DEFAULT_HOST, resolveServerPort } from '../paths.js';
 import { serverVersion } from '../version.js';
 import { logLine } from '../utils/log-helpers.js';
 import { recordShutdown } from './server-lifecycle.js';
+import { getOrCreateMemberAccessSecret, memberAccessSecretMatches, memberAccessSecretPath, readMemberAccessSecret, MEMBER_SECRET_HEADER } from './member-access-secret.js';
 
 interface Session {
   server: McpServer;
@@ -29,6 +30,9 @@ export interface HttpTransportOptions {
    *  implementation that ignores it registers whatever it always did. */
   registerTools: (server: McpServer, scope: ToolScope) => void | Promise<void>;
   preferredPort?: number;
+  /** The member access secret file a `?member=` request is checked against
+   *  (default: <data dir>/member-access.key; created when missing). */
+  memberSecretPath?: string;
 }
 
 /** Thrown by createHttpTransport when the configured (non-zero) port is already bound. */
@@ -142,6 +146,10 @@ function extractBearer(req: http.IncomingMessage): string | null {
 export async function createHttpTransport(options: HttpTransportOptions): Promise<HttpTransportHandle> {
   const { registerTools, preferredPort } = options;
   const sessions = new Map<string, Session>();
+  // Every install has its member access secret from the first server start
+  // (install creates it too): a `?member=` request must present it.
+  const memberSecretPath = options.memberSecretPath ?? memberAccessSecretPath();
+  getOrCreateMemberAccessSecret(memberSecretPath);
   const startedAt = Date.now();
 
   // LOW-1: Track event listener references for cleanup in close()
@@ -206,6 +214,30 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
       res.writeHead(404);
       res.end();
       return;
+    }
+
+    // The ?member= route: a session there acts as that member, so it must
+    // present this install's member access secret (an owner-only file in its
+    // data dir). The server binds loopback, where every local user can
+    // connect; the secret is what keeps another user's session -- or one
+    // configured for another install -- out. Read per request so a replaced
+    // secret takes effect at once; a missing one refuses (never fails open).
+    // A member JWT (Authorization: Bearer) is its own credential, checked below.
+    {
+      const memberRouteParam = new URL(url, 'http://localhost').searchParams.get('member');
+      if (memberRouteParam !== null && extractBearer(req) === null) {
+        const expected = readMemberAccessSecret(memberSecretPath);
+        if (!memberAccessSecretMatches(req.headers[MEMBER_SECRET_HEADER.toLowerCase()], expected)) {
+          const why = req.headers[MEMBER_SECRET_HEADER.toLowerCase()] === undefined ? 'missing' : 'wrong';
+          logLine('session', `rejected ${req.method} on member route: member access secret ${why} member_param=${memberRouteParam}`);
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            error: 'member secret required',
+            detail: `A ?member= session must present this apra-fleet install's member access secret in the ${MEMBER_SECRET_HEADER} header (the secret was ${why}). It is in member-access.key in the install's data dir, readable only by the install's user; a session configured for another install or another user is refused. Re-run compose_permissions or update_member with fleet_install "auto" to rewrite the member's MCP config.`,
+          }));
+          return;
+        }
+      }
     }
 
     if (req.method === 'POST') {

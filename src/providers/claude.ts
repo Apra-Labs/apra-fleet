@@ -581,8 +581,9 @@ export class ClaudeProvider implements ProviderAdapter {
       }
       if (url !== null) {
         const current = servers[MEMBER_MCP_SERVER_NAME];
-        if (!isRecord(current) || current.type !== 'http' || current.url !== url || Object.keys(current).length !== 2) {
-          servers[MEMBER_MCP_SERVER_NAME] = { type: 'http', url };
+        const wanted: Record<string, unknown> = { type: 'http', url, ...(ctx.headers ? { headers: ctx.headers } : {}) };
+        if (!isRecord(current) || JSON.stringify(current) !== JSON.stringify(wanted)) {
+          servers[MEMBER_MCP_SERVER_NAME] = wanted;
           changed = true;
         }
       } else if (MEMBER_MCP_SERVER_NAME in servers) {

@@ -48,6 +48,8 @@ function deps(w: World): MemberFleetMcpDeps {
       const c = decodePowerShellEncodedCommand(raw);
       w.log.push(c);
       // Marker existence probe (test -f / Test-Path -PathType Leaf).
+      // The member access secret read: an install without one (older than the secret).
+      if (c.includes('member-access.key')) return ok('');
       if (c.includes('member-install.json') && !c.includes('cat ') && !c.includes('Get-Content')) return ok('');
       if (c.includes('member-install.json')) return ok(w.marker);
       if (c.includes('server.json')) return ok(w.serverJson ?? '');

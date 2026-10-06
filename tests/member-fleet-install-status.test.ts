@@ -68,6 +68,8 @@ function deps(world: World, local?: { connect: (id: string) => Promise<MemberSes
       const c = text(command);
       world.execLog.push(c);
       // Marker read (cat / Get-Content): a current member install records its port.
+      // The member access secret read: an install without one (older than the secret).
+      if (c.includes('member-access.key')) return ok('');
       if (c.includes('member-install.json') && (c.includes('cat ') || c.includes('Get-Content'))) {
         return world.marker ? ok(JSON.stringify({ version: VERSION, port: 7523 })) : ok('');
       }

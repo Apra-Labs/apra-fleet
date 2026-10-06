@@ -10,6 +10,33 @@ and how the orchestrator keeps that wiring truthful.
 uses the uuid to scope the session to that member (reduced tool list, own work
 folder; an unregistered uuid gets 403).
 
+### Member access secret
+
+The server binds loopback, so every local user can reach it. A `?member=`
+session is therefore accepted only with the install's member access secret in
+the `X-Apra-Fleet-Member-Secret` header; without it, or with another install's
+secret, the server answers 401 before any member lookup. The secret is a
+random 64-hex value in `<data dir>/member-access.key` (mode 0600; created by
+`apra-fleet install` and at server start; `src/services/member-access-secret.ts`).
+
+- Local members: the per-session `--mcp-config` (owner-only file under the
+  data dir) carries the orchestrator's own secret.
+- Remote members: the fleetMcp probe reads the member install's secret (and,
+  for an older install without one, creates it there when `fleet_install
+  "auto"` runs) and stores it encrypted on the member record
+  (`encryptedMemberMcpSecret`). The per-folder entry (Claude, OpenCode
+  `headers`) and the per-dispatch session config carry it.
+- It never appears in a member command string: files that carry it are staged
+  through the owner-only secret-file channel and moved into place by a
+  content-free command. No such channel (relay members, SSH without SFTP)
+  fails loudly; an unreadable secret file is fleetMcp reason
+  `member-secret-unavailable`.
+- `apra-fleet call` and the client's `connectFleetMember` read it from their
+  own data dir, so they work only as the install's user (401 is
+  `E-MEMBER-SECRET`).
+- Providers with no per-folder entry (agy, codex, copilot, none) are
+  unchanged: they report `no-per-project-mcp` / `provider-unsupported`.
+
 | Provider | Where the entry goes |
 |---|---|
 | Claude | LOCAL scope (keyed by work folder) in `~/.claude.json`, or `$CLAUDE_CONFIG_DIR/.claude.json`; the path is probed on the member, never shell-expanded |

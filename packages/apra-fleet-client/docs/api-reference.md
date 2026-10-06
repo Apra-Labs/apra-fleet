@@ -161,7 +161,12 @@ calls are excluded from the member's `session_stats` counts; only memberCall and
 resolution (a member identity rides on the URL). An unregistered uuid rejects
 with `err.status === 403` / `err.code === 'HTTP_403'` (raised by
 `StreamableHttpTransport.start()` for any non-OK initialize response as
-`HTTP_<status>`).
+`HTTP_<status>`). The server accepts a `?member=` session only with its
+install's member access secret: `connectFleetMember` reads it from
+`<data dir>/member-access.key` (`readMemberAccessSecret(env)`, the same data dir
+the server was resolved from) and sends it in the `X-Apra-Fleet-Member-Secret`
+header (`MEMBER_SECRET_HEADER`) on every request. A missing or wrong secret
+rejects with `err.status === 401` (`HTTP_401`).
 
 ## `src/client/errors.mjs`
 

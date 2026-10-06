@@ -84,6 +84,12 @@ export interface Agent {
    *  Set by the fleetMcp probe (recordFleetMcpStatus) and kept separate from
    *  fleetMcp so a later status overwrite never silently drops it. */
   memberMcpPort?: number;
+  /** Remote members: the member install's member access secret
+   *  (<data dir>/member-access.key there), encrypted like encryptedPassword.
+   *  Its server accepts a `?member=` session only with this secret in the
+   *  X-Apra-Fleet-Member-Secret header (src/services/member-access-secret.ts).
+   *  Set by the fleetMcp probe; absent until it read the secret. */
+  encryptedMemberMcpSecret?: string;
 }
 
 /** Observation of a member's apra-fleet MCP server (see Agent.fleetMcp). */
