@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "12fbcf6bd3a5540e5e979715151986fa15c1291e",
     "branch": "main",
-    "entry_count": 284
+    "entry_count": 285
   },
   "entries": [
     {
@@ -1565,6 +1565,24 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:29.732Z"
+    },
+    {
+      "id": "44d154ae-2927-443c-bdae-fa7aa15f8f1f",
+      "type": "knowledge",
+      "title": "Only the Dolt sync path rewrites the Windows CreateProcess spawn-limit error text",
+      "summary": "surfaceDoltFailureText is applied only in dolt-sync.mjs runDoltStep. Other git spawn paths that hit the same Windows 'Not enough memory resources' refusal still surface raw output with any credential hints.",
+      "symbols": [
+        "surfaceDoltFailureText",
+        "WINDOWS_SPAWN_LIMIT_MESSAGE",
+        "runDoltStep"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/dolt-sync.mjs",
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/dolt.mjs",
+        "packages/apra-fleet-se/fleet-sprint/git-sync.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T09:57:31.784Z"
     },
     {
       "id": "45d5d161-53e7-4b40-8d2f-ce2282615ca2",
