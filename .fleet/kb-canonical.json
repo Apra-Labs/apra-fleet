@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "85a04bf2d353ca960d30b447246bbe3a55ddb4b8",
     "branch": "v0.5_dashboard",
-    "entry_count": 439
+    "entry_count": 440
   },
   "entries": [
     {
@@ -7890,6 +7890,25 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:14.250Z"
+    },
+    {
+      "id": "fc458d8d-5959-4636-87cc-1a5ca81babfc",
+      "type": "knowledge",
+      "title": "RegistrationTimer stops waiting for a timed-out step but never cancels it",
+      "summary": "In register_member a step that exceeds its bound is abandoned, not aborted: its promise keeps running in the background. A compose-permissions timeout is a hard registration error, not a Degraded line.",
+      "symbols": [
+        "RegistrationTimer",
+        "registerMember",
+        "probeLocal",
+        "DEFAULT_STEP_BOUNDS_MS"
+      ],
+      "source_files": [
+        "src/services/registration-steps.ts",
+        "src/tools/register-member.ts",
+        "src/services/member-fleet-install.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T18:49:10.626Z"
     },
     {
       "id": "fc4f7390-e183-420b-b518-5d9fe2bd56c2",
