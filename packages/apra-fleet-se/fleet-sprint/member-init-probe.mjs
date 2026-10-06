@@ -101,7 +101,7 @@ export const MEMBER_INIT_FIXES = Object.freeze({
     'code-intel-disabled': 'code intelligence is off for this member; enable the gitnexus provider to get a code index',
     'code-provider-not-supported': "the member's code-intelligence provider manages its own index; nothing to do unless gitnexus is wanted",
     'code-index-timeout': 'the first code-index tick did not arrive within the bound; check code_status on the member (the index keeps building)',
-    'code-intel-npx-missing': "npx or node is not on the apra-fleet service PATH, so code intelligence is unavailable: reinstall the service so it records node/npx (re-run 'apra-fleet install' on the host), or add node and npx to the service PATH and restart the server, then rerun code_reindex",
+    'code-intel-npx-missing': "npx or node is not on the apra-fleet service PATH, so code intelligence is unavailable: reinstall the service so it records node/npx (re-run the fleet installer on the host), or add node and npx to the service PATH and restart the server, then rerun code_reindex",
     'code-index-failed': 'code_reindex failed on the member: read its analyze log (code_status logPath) and rerun code_reindex',
     'code-index-unrecognized': 'code_reindex returned an unrecognized answer: run update_member with fleet_install "auto" for the member so its fleet install is current',
 });
