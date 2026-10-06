@@ -47,8 +47,12 @@ export const DEFAULT_HOST = process.env.APRA_FLEET_HOST?.trim() || '127.0.0.1';
  * return_url) needs an EXPLICIT, operator-declared origin rather than a
  * guess. APRA_FLEET_CONSOLE_BASE_URL is that explicit opt-in; unset, this
  * falls back to the server's own bound origin (DEFAULT_HOST:DEFAULT_PORT),
- * which is at least correct for an on-box/loopback reader even if it is not
- * reachable off-box.
+ * which is correct for an on-box/loopback reader even if it is not reachable
+ * off-box. A WILDCARD bind (0.0.0.0, ::, ::0, [::]) is not an address a
+ * browser can open, so it is normalized to the loopback origin an on-box
+ * reader can use: 127.0.0.1 for 0.0.0.0, [::1] for the IPv6 wildcards
+ * (apra-fleet-i9ag.11.22). Off-box readers still need
+ * APRA_FLEET_CONSOLE_BASE_URL.
  *
  * A SET-BUT-INVALID value fails loudly (ok: false) rather than silently
  * falling back -- an operator who mistyped the variable needs to know their
@@ -72,7 +76,17 @@ export function resolveConsoleBaseUrl(): { ok: true; baseUrl: string } | { ok: f
     }
     return { ok: true, baseUrl: stripped };
   }
-  return { ok: true, baseUrl: `http://${DEFAULT_HOST}:${DEFAULT_PORT}` };
+  return { ok: true, baseUrl: `http://${openableHostFor(DEFAULT_HOST)}:${DEFAULT_PORT}` };
+}
+
+/** Map a wildcard bind address to the loopback host a browser can open;
+ *  any other host (incl. a specific LAN IP) is returned unchanged, with IPv6
+ *  literals bracketed for use in a URL authority. */
+export function openableHostFor(host: string): string {
+  const h = host.replace(/^\[|\]$/g, '');
+  if (h === '0.0.0.0') return '127.0.0.1';
+  if (h === '::' || h === '::0') return '[::1]';
+  return h.includes(':') ? `[${h}]` : host;
 }
 
 /**
