@@ -1,9 +1,9 @@
 {
   "version": 2,
   "provenance": {
-    "commit": "4f1d90d5877af2cd2ac19cb250fc46b9f3b9c951",
+    "commit": "85a04bf2d353ca960d30b447246bbe3a55ddb4b8",
     "branch": "v0.5_dashboard",
-    "entry_count": 434
+    "entry_count": 436
   },
   "entries": [
     {
@@ -1272,6 +1272,23 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:32.535Z"
+    },
+    {
+      "id": "22acaf96-84dc-4815-ac4f-cb822b20677d",
+      "type": "knowledge",
+      "title": "probeVersion misclassifies a real execFileSync timeout as a genuine failure",
+      "summary": "node-version.mjs classifyIncompleteProbe only treats err.killed === true as a timeout. A synchronous execFileSync timeout gives { code: 'ETIMEDOUT', killed: undefined, signal: 'SIGTERM' }, so node-runner's sync probes get incomplete:null after one attempt and no retry.",
+      "symbols": [
+        "classifyIncompleteProbe",
+        "probeVersion",
+        "resolveSprintRunnerCommand"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/src/supervisor/node-version.mjs",
+        "packages/apra-fleet-se/src/supervisor/node-runner.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T15:32:12.537Z"
     },
     {
       "id": "22dd4e68-3702-4ecd-a500-df6e9b27f4b3",
