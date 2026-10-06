@@ -859,6 +859,37 @@ export function registerHttpMcp(provider: LlmProvider, paths: ProviderInstallCon
   else if (provider === 'opencode') mergeOpenCodeConfig(paths, { url, headers });
 }
 
+function readJsonOrEmpty(file: string): any {
+  try {
+    return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf-8')) : {};
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * The transport of the apra-fleet MCP entry `provider` currently has
+ * registered, read from the provider's own config (install-config.json
+ * records no transport): 'stdio' (a command entry), 'http' (a url entry), or
+ * undefined (no entry / unreadable config). Never throws.
+ */
+export function registeredMcpTransport(provider: LlmProvider, paths: ProviderInstallConfig): 'http' | 'stdio' | undefined {
+  const classify = (e: any): 'http' | 'stdio' | undefined =>
+    !e || typeof e !== 'object' ? undefined : e.url ? 'http' : e.command ? 'stdio' : undefined;
+  try {
+    if (provider === 'claude') return classify(readJsonOrEmpty(claudeUserConfigPath()).mcpServers?.['apra-fleet']);
+    if (provider === 'agy') return classify(readJsonOrEmpty(path.join(os.homedir(), '.gemini', 'config', 'mcp_config.json')).mcpServers?.['apra-fleet']);
+    const settings = readConfig(paths);
+    if (provider === 'codex') return classify(settings.mcp_servers?.['apra-fleet']);
+    if (provider === 'copilot') return classify(settings.mcpServers?.['apra-fleet']);
+    if (provider === 'opencode') {
+      const e = settings.mcp?.['apra-fleet'];
+      return e?.type === 'remote' || e?.url ? 'http' : e?.type === 'local' || e?.command ? 'stdio' : undefined;
+    }
+  } catch { /* unreadable -> unknown */ }
+  return undefined;
+}
+
 function run(cmd: string, opts?: Record<string, unknown>): void {
   // Windows needs a shell for .cmd executables (e.g. claude.cmd)
   const shellOpt = process.platform === 'win32' ? { shell: 'cmd.exe' } : {};
@@ -1599,11 +1630,20 @@ ${manualStopHint(pidsAfterStop)}
   } else if (transport === 'http') {
     registerHttpMcp(llm, paths, fleetUrl, fleetAccessHeaders);
     // Upgrade path: every OTHER provider this install registered earlier holds a
-    // header-less http entry the server now refuses; rewrite those too.
+    // header-less http entry the server now refuses; rewrite those too. Each
+    // provider keeps its own transport: a stdio entry (its own server process,
+    // not gated by the access secret) is left untouched, and a provider with
+    // no apra-fleet entry is not given one by another provider's install.
     for (const other of Object.keys(readInstallConfig().providers) as LlmProvider[]) {
       if (other === llm || !INSTALLABLE_LLM_PROVIDERS.includes(other)) continue;
       try {
-        registerHttpMcp(other, getProviderInstallConfig(other), fleetUrl, fleetAccessHeaders);
+        const otherPaths = getProviderInstallConfig(other);
+        const existing = registeredMcpTransport(other, otherPaths);
+        if (existing !== 'http') {
+          console.log(`    ${other}: ${existing === 'stdio' ? 'stdio registration kept as is' : 'no apra-fleet registration, skipped'}`);
+          continue;
+        }
+        registerHttpMcp(other, otherPaths, fleetUrl, fleetAccessHeaders);
       } catch (err) {
         console.warn(`    [!] could not refresh the ${other} MCP registration with the access secret: ${err instanceof Error ? err.message : String(err)}`);
       }

@@ -875,22 +875,16 @@ Behavior:
    config.workflowArgs || {})`, and `new WorkflowEngine(fleetWorkflow)`.
 6. Resolves with `{ transport, mcpClient, apraFleet, fleetWorkflow, engine }`.
 
-**Known issue.** Steps 4-5 import `FleetWorkflow` from
-`'../workflow/index.mjs'` and `WorkflowEngine` from
-`'../workflow/engine.mjs'` -- paths relative to
-`packages/apra-fleet-client/src/client/`, which would resolve to
-`packages/apra-fleet-client/src/workflow/*`. That directory does not exist
-in this package; the real `FleetWorkflow`/`WorkflowEngine` implementation
-lives in the separate `@apralabs/apra-fleet-workflow` package
-(`packages/apra-fleet-workflow/src/workflow/index.mjs` and `engine.mjs`).
-`apra-fleet-workflow` depends on `apra-fleet-client` (see its
-`package.json`), not the reverse, so an import in the other direction from
-inside `apra-fleet-client` would in any case create a circular package
-dependency. As written, calling `createWorkflowEngine()` (or importing
-`./factory` at all) will fail to resolve these two imports. There is no
-test file covering `factory.mjs` (the suite under `test/` covers `api.mjs`,
-`client.mjs`, `transport.mjs`, and the api.mjs/server-schema typedef
-parity), which is consistent with this path being unexercised. The `.`,
-`./client`,
-and `./transport` exports are unaffected -- `ApraFleet`, `McpClient`, and
-the transports can be used standalone without going through this factory.
+**Access secret.** For `'http'`, `config.options` is passed through
+`withFleetAccessSecret(options, config.env || process.env)`, so every request
+carries the local install's `X-Apra-Fleet-Member-Secret` header (read from
+`<data dir>/member-access.key`; `config.env.APRA_FLEET_DATA_DIR` selects the
+data dir). An explicit header in `config.options.headers` wins. Without it the
+server refuses the session with HTTP 401.
+
+**Workflow classes.** `FleetWorkflow` and `WorkflowEngine` live in
+`@apralabs/apra-fleet-workflow`, which depends on this package. The factory
+imports them lazily (dynamic `import()` before `transport.start()`), so
+importing `./factory` never needs that package; calling
+`createWorkflowEngine()` does. Covered by
+`test/factory-access-secret.test.mjs`.

@@ -1189,26 +1189,45 @@ describe('runInstall multi-provider', () => {
     expect(calls.some(c => c.includes('claude mcp add') || c.includes(reg.entry.headers['X-Apra-Fleet-Member-Secret']))).toBe(false);
   });
 
-  it('upgrade path: an http install also rewrites the other registered providers\' header-less entries with the access secret', async () => {
+  /** Run an http claude install with install-config recording claude+codex and codex's config.toml holding `codexToml`; returns the codex config writes. */
+  async function installWithRecordedCodex(codexToml: string) {
     const prevExists = vi.mocked(fs.existsSync).getMockImplementation()!;
     const prevRead = vi.mocked(fs.readFileSync).getMockImplementation()!;
-    const isCfg = (p: any) => p.toString().replace(/\\/g, '/').endsWith('/data/install-config.json');
-    vi.mocked(fs.existsSync).mockImplementation((p: any) => isCfg(p) ? true : prevExists(p));
+    const norm = (p: any) => p.toString().replace(/\\/g, '/');
+    const isCfg = (p: any) => norm(p).endsWith('/data/install-config.json');
+    const isCodex = (p: any) => norm(p).endsWith('/.codex/config.toml');
+    vi.mocked(fs.existsSync).mockImplementation((p: any) => isCfg(p) || isCodex(p) ? true : prevExists(p));
     vi.mocked(fs.readFileSync).mockImplementation(((p: any, ...rest: any[]) => isCfg(p)
       ? JSON.stringify({ providers: { claude: { skill: 'all', installedAt: 'x' }, codex: { skill: 'all', installedAt: 'x' } } })
+      : isCodex(p) ? codexToml
       : (prevRead as any)(p, ...rest)) as any);
     try {
       await runInstall(['--llm', 'claude']);
-      const codexWrites = vi.mocked(fs.writeFileSync).mock.calls.filter(c => c[0].toString().replace(/\\/g, '/').endsWith('/.codex/config.toml'));
-      expect(codexWrites.length).toBeGreaterThan(0);
-      const toml = parseToml(String(codexWrites[codexWrites.length - 1][1])) as any;
-      expect(toml.mcp_servers['apra-fleet'].url).toBe('http://localhost:7523/mcp');
-      expect(toml.mcp_servers['apra-fleet'].http_headers['X-Apra-Fleet-Member-Secret']).toMatch(/^[0-9a-f]{64}$/);
-      expect((codexWrites[codexWrites.length - 1][2] as any)?.mode).toBe(0o600);
+      return vi.mocked(fs.writeFileSync).mock.calls.filter(c => isCodex(c[0]));
     } finally {
       vi.mocked(fs.existsSync).mockImplementation(prevExists);
       vi.mocked(fs.readFileSync).mockImplementation(prevRead);
     }
+  }
+
+  it('upgrade path: an http install also rewrites the other registered providers\' header-less entries with the access secret', async () => {
+    // a legacy http registration from before the access secret existed
+    const codexWrites = await installWithRecordedCodex('[mcp_servers.apra-fleet]\nurl = "http://localhost:7523/mcp"\n');
+    expect(codexWrites.length).toBeGreaterThan(0);
+    const toml = parseToml(String(codexWrites[codexWrites.length - 1][1])) as any;
+    expect(toml.mcp_servers['apra-fleet'].url).toBe('http://localhost:7523/mcp');
+    expect(toml.mcp_servers['apra-fleet'].http_headers['X-Apra-Fleet-Member-Secret']).toMatch(/^[0-9a-f]{64}$/);
+    expect((codexWrites[codexWrites.length - 1][2] as any)?.mode).toBe(0o600);
+  });
+
+  it('upgrade path preserves transport: a stdio-registered second provider is not rewritten as http', async () => {
+    const codexWrites = await installWithRecordedCodex('[mcp_servers.apra-fleet]\ncommand = "/opt/apra-fleet"\nargs = ["run", "--transport", "stdio"]\n');
+    expect(codexWrites).toEqual([]);
+  });
+
+  it('upgrade path does not add an apra-fleet registration to a recorded provider that has none', async () => {
+    const codexWrites = await installWithRecordedCodex('model = "x"\n');
+    expect(codexWrites).toEqual([]);
   });
 
   it('--transport stdio uses command+args Claude MCP registration', async () => {

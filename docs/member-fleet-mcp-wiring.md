@@ -50,7 +50,11 @@ this install's secret gets 401. Consequences:
   written directly, never via `claude mcp add --header`, so the secret is not
   in argv. Re-running install (what `apra-fleet update` does) rewrites the
   entry for every provider recorded in `install-config.json`, not just the
-  first.
+  first. Each provider keeps its own transport: the refresh reads the
+  provider's existing apra-fleet entry (`install-config.json` records no
+  transport) and rewrites only an http (url) entry; a stdio (command) entry is
+  left as is (its own server process, not gated by the secret), and a provider
+  with no entry is not given one.
 - A checked-in, project-scope `.mcp.json` / `mcp.json` cannot carry the secret:
   do not list apra-fleet there with a URL (the repo's own `.mcp.json` relies on
   the user-scope registration instead). A project that needs a project-scope
