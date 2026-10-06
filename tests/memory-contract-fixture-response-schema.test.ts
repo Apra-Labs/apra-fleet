@@ -93,14 +93,10 @@ describe('memory-contract/v1 recorded response fixtures validate against their s
       }
     }
 
-    // Non-vacuous: the 32-fixture population the original ajv sweep measured
-    // (48 committed fixtures total, 16 carry `error` instead), plus
-    // kb_query/happy-confirmed-only (trust filters), minus the 7 code_*
-    // happy-no-index fixtures that became refusal-index-not-ready (a missing
-    // index is now a thrown E-CODE-INDEX-NOT-READY, never an ok response), plus the 2 code_reindex/code_status provider-not-supported outcomes,
-    // minus kb_feedback/happy (a MEMBER-session kb_feedback is now the
-    // E-MEMBER-VIEW-READ-ONLY refusal), plus kb_bible_commit/happy.
-    expect(keys.length).toBe(35); // + kb_feedback/happy (FULL session), kb_list/happy-confidence-string, kb_import/happy-v3-carried-basis
+    // Non-vacuous: 35 of the 74 committed fixtures carry a `response` (the
+    // other 39 record a thrown refusal). Update this count, and the 74 in
+    // tests/memory-contract-roundtrip.test.ts, whenever the corpus changes.
+    expect(keys.length).toBe(35); // 35 response fixtures of 74 committed (39 are thrown refusals)
     expect(failures).toEqual([]);
   });
 
@@ -127,7 +123,7 @@ describe('memory-contract/v1 recorded response fixtures validate against their s
       }
     }
 
-    expect(keys.length).toBe(35); // + kb_feedback/happy (FULL session), kb_list/happy-confidence-string, kb_import/happy-v3-carried-basis
+    expect(keys.length).toBe(35); // 35 response fixtures of 74 committed (39 are thrown refusals)
     expect(failures).toEqual([]);
   });
 

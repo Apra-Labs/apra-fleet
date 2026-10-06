@@ -212,6 +212,22 @@ function assertCarriedBasisStaled(parsed) {
     : `expected imported 1, rejected 0, sweep.staled 1 (carried v3 basis kept), got ${JSON.stringify(parsed)}`;
 }
 
+// kb_bible_commit basis-mismatch: the response schema accepts any skip reason
+// and any merged list, so a provider that ADMITS the drifted entry would still
+// validate. The step's evidence is the response itself: nothing merged, and the
+// one requested id skipped with exactly reason basis_mismatch.
+function assertBasisMismatchSkipped(parsed, ctx) {
+  const driftId = ctx.ids.get('DRIFT')?.live;
+  const merged = parsed?.merged;
+  const skipped = parsed?.skipped;
+  if (!Array.isArray(merged) || merged.length !== 0) return `expected merged to be empty (the drifted entry must not be admitted), got ${JSON.stringify(merged)}`;
+  if (!Array.isArray(skipped) || skipped.length !== 1) return `expected exactly one skipped id, got ${JSON.stringify(skipped)}`;
+  if (skipped[0]?.id !== driftId) return `expected the skipped id to be the drifted entry ${driftId}, got ${JSON.stringify(skipped[0]?.id)}`;
+  return skipped[0]?.reason === 'basis_mismatch'
+    ? null
+    : `expected skipped[0].reason === 'basis_mismatch', got ${JSON.stringify(skipped[0]?.reason)}`;
+}
+
 function assertConfidenceClamped(parsed) {
   return parsed?.confidence_clamped === true
     ? null
@@ -274,7 +290,10 @@ export const SCENARIO = [
   // level with explicit base-branch provenance (local commit only, no push).
   { tool: 'kb_bible_commit', case: 'happy', derive: { ids: ['FOO'] } },
   // basis-mismatch: a CONFIRMED entry whose cited file is edited after capture is
-  // skipped by kb_bible_commit (same basis rule as kb_export).
+  // skipped by kb_bible_commit (same basis rule as kb_export). The rule reads
+  // cited files at HEAD; this file is never committed in the scratch repo, so it
+  // is absent at HEAD -- a mismatch either way. assertParsed pins the outcome:
+  // a schema-valid response that admitted the entry would otherwise pass.
   {
     tool: 'kb_capture',
     case: 'setup-for-bible-commit-basis-mismatch',
@@ -289,6 +308,7 @@ export const SCENARIO = [
     tool: 'kb_bible_commit',
     case: 'basis-mismatch',
     derive: { ids: ['DRIFT'] },
+    assertParsed: assertBasisMismatchSkipped,
     setup: [
       { op: 'write', repo: 'A', rel: 'src/basis-drift.ts', contents: 'export const drift = 2;\n' },
     ],
