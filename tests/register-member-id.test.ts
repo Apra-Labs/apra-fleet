@@ -82,7 +82,9 @@ describe('register-member --id', () => {
     const { agents } = readRegistry();
     expect(agents).toHaveLength(1);
     expect(agents[0]).toMatchObject({ id: ID_A, friendlyName: 'm1-renamed', workFolder: f2, llmProvider: 'claude', createdAt: created });
-  });
+  // The claude switch runs real member commands (a shell spawn each on Windows: the
+  // config probe, the repo-root resolver, the content-free move), so it needs more than the 5 s default.
+  }, 30000);
 
   it('a folder registered under another id fails with E-FOLDER-TAKEN and the registry is byte-identical', async () => {
     const f = folder('w1');
