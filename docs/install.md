@@ -242,6 +242,123 @@ apra-fleet uninstall --skill workflows
 If the fleet server is running, uninstall aborts and tells you to re-run with
 `--force`. Full detail: [docs/features/uninstall.md](features/uninstall.md).
 
+## Replace a full install on a member
+
+A fleet member machine needs a **member install only** (`apra-fleet install
+--member`: the server plus its user-mode auto-start, no skills, no workflows, no
+user-scope MCP entry). There is one member install per Unix user (per Windows
+user); members that share a user share it and each one self-registers its own
+uuid. A member that already has a *full* install (or a member install older than
+the `data/member-install.json` marker) is left alone by the fleet and reported as
+`fleetMcp` `unavailable(full-install-running)`; its owner replaces it with a
+member install using the steps below. The takeover flag
+`--force-stop-full-install` is no longer needed for KB or code-tool access:
+replacing the install supersedes it. The `full-install-running` detail prints
+these same steps with this member's paths already resolved, after staging the
+orchestrator's current installer in `<home>/.apra-fleet/staging/`.
+
+### Pre-check
+
+- No sprint is using the member.
+- Installed version: `<home>/.apra-fleet/bin/apra-fleet --version`.
+- Port 7523 on 127.0.0.1 is free or held by THIS user's apra-fleet:
+  `ss -ltnp | grep 7523` or `lsof -iTCP:7523 -sTCP:LISTEN` (Windows:
+  `Get-NetTCPConnection -LocalPort 7523`).
+- Linux: is a `fleet-supervisor` user unit present?
+  `systemctl --user status fleet-supervisor`.
+
+### Steps
+
+Replace `<home>` with the member user's home directory (spelled out, not `~`),
+and `<provider>` with the member's LLM provider (`claude`, `agy`, `codex`,
+`copilot`, `opencode`). `<staged>` is the installer the fleet staged (or that you
+downloaded from the release page) for this OS/arch, normally
+`<home>/.apra-fleet/staging/apra-fleet` (`apra-fleet.exe` on Windows).
+
+a. Back up the data directory AND the signing key, which lives outside `data/`:
+
+   ```bash
+   # posix (Linux, macOS)
+   cp -R '<home>/.apra-fleet/data' '<home>/.apra-fleet-data.full-install.bak'
+   cp '<home>/.apra-fleet/fleet.key' '<home>/.apra-fleet-data.full-install.bak/'
+   ```
+
+   ```powershell
+   # Windows (PowerShell)
+   Copy-Item -Recurse -LiteralPath '<home>\.apra-fleet\data' -Destination '<home>\.apra-fleet-data.full-install.bak'
+   Copy-Item -LiteralPath '<home>\.apra-fleet\fleet.key' -Destination '<home>\.apra-fleet-data.full-install.bak\'
+   ```
+
+b. Uninstall with the INSTALLED binary (old full installs have it). This stops
+   the server and removes the service unit or scheduled task, the binary, hooks,
+   skills, agents and the user-scope MCP registration; it keeps `data/`:
+
+   ```bash
+   '<home>/.apra-fleet/bin/apra-fleet' uninstall --force --yes
+   ```
+
+   ```powershell
+   & '<home>\.apra-fleet\bin\apra-fleet.exe' uninstall --force --yes
+   ```
+
+c. Move the old data aside (the backup from step a stays as the rollback copy):
+
+   ```bash
+   mv '<home>/.apra-fleet/data' '<home>/.apra-fleet/data.replaced'
+   ```
+
+   ```powershell
+   Move-Item -LiteralPath '<home>\.apra-fleet\data' -Destination '<home>\.apra-fleet\data.replaced'
+   ```
+
+d. Linux only: uninstall leaves `fleet-supervisor.service` RUNNING with its
+   `serve.mjs` deleted. Stop and remove it:
+
+   ```bash
+   systemctl --user stop fleet-supervisor
+   systemctl --user disable fleet-supervisor
+   mv '<home>/.config/systemd/user/fleet-supervisor.service' '<home>/.apra-fleet-data.full-install.bak/'
+   systemctl --user daemon-reload
+   ```
+
+e. Run the STAGED current installer (not the old binary, which predates the
+   `--member` flags):
+
+   ```bash
+   chmod +x '<staged>' && '<staged>' install --member --llm <provider> --force
+   ```
+
+   ```powershell
+   & '<staged>' install --member --llm <provider> --force
+   ```
+
+f. On the orchestrator, for every member on that Unix user run `update_member`
+   with `fleet_install: "auto"`. Each member self-registers its own uuid on the
+   new member install.
+
+### Verify
+
+- `<home>/.apra-fleet/bin/apra-fleet --version` shows the orchestrator version.
+- `<home>/.apra-fleet/data/member-install.json` exists (a member install writes
+  it before the auto-start step, so it is present even if the auto-start failed;
+  the exit is then non-zero with `E-MEMBER-AUTOSTART`, and re-running step f
+  retries).
+- `apra-fleet call --member <uuid> --list-tools` lists the `kb_*` and `code_*`
+  tools and none of `execute_*`, `register_*` or `credential_*`.
+- `member_detail` with `refresh: true` shows `fleetMcp` `available`.
+
+### Rollback
+
+Run `apra-fleet uninstall --force --yes` for the member install, restore the
+backed-up data directory (`<home>/.apra-fleet-data.full-install.bak` back to
+`<home>/.apra-fleet/data`, plus `fleet.key` to `<home>/.apra-fleet/fleet.key`),
+and re-run the old full installer.
+
+### Evidence
+
+Done by hand on a Linux member and an Intel Mac member on 2026-10-05; both ended
+with `session_stats` showing kb 1 / code 1.
+
 ## Customizing model tier mapping
 
 By default, each provider maps the three tiers (`cheap`, `standard`, `premium`)

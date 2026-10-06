@@ -99,8 +99,9 @@ called with `fleet_install: "auto"`), at least as new as the orchestrator, insta
   nothing unverified is installed.
 - A member install (`install --member`) with `--force` stops only a server a
   previous member install left behind; a running full-install server it did not
-  start is refused with `E-FULL-INSTALL-RUNNING` unless `--force-stop-full-install`
-  is also given.
+  start is refused with `E-FULL-INSTALL-RUNNING`. The fleet never overrides that
+  refusal; the owner replaces the full install with a member install (see
+  "Replace a full install on a member" in install.md).
 - After install the member registers itself, and a MEMBER-session is opened to
   verify the tools are really reachable.
 - Self-registration design: the member-side `register-member --id <uuid>`
@@ -157,8 +158,17 @@ PowerShell `Test-Path -LiteralPath ... -PathType Leaf` per the member's shell):
   to, so the fleet cannot plant a registry entry in a human's install.
 - The fleet never sends `--force-stop-full-install`. A refused member install
   leaves the running server alone.
+- The marker probe has three outcomes: present, cleanly absent, and probe
+  failed (timeout, transport error, unexpected non-zero exit). Only a clean
+  absence is `full-install-running`; a probe failure is `probe-failed` with the
+  reason. `remove_member` likewise skips the member-side registration removal
+  when the marker is absent or the probe failed, and its output says why.
+- `install --member` writes the marker before the auto-start registration, so a
+  failed auto-start (`E-MEMBER-AUTOSTART`) still leaves it and the next
+  `fleet_install` "auto" retries.
 - Either case records `fleetMcp` `unavailable(full-install-running)` with a
-  detail naming the takeover command below.
+  detail that stages the current installer on the member and gives the manual
+  replacement steps below.
 
 Why no other signal: an unmarked install is either a human full install or a
 member install made by a build older than the marker, and nothing on the member
@@ -171,16 +181,17 @@ check, on every same-core orchestrator rebuild. `fleetInstalledAt` is still
 recorded (and carried across probes and `compose_permissions` writes) as an
 observation only.
 
-One-time takeover: an owner who wants the fleet to manage an unmarked install
-(a pre-marker member install on a dogfood host, or a full install they give
-up) runs once on the member
-
-    apra-fleet install --member --force --force-stop-full-install
-
-which stops its running server and writes the marker, then calls
-`update_member` `{member_id, fleet_install: "auto"}` and `member_detail` with
-`refresh: true`. No released build shipped member installs, so only dogfood
-hosts can hold an unmarked member install.
+Replacing an unmarked install: members need a member install only, so an owner
+who wants the fleet to manage a full install (or a pre-marker member install)
+replaces it with a member install: back up `data/` and `fleet.key`, uninstall
+with the installed binary, move `data/` aside, on Linux stop and remove
+`fleet-supervisor`, run the staged current installer with
+`install --member --llm <provider> --force`, then call `update_member`
+`{member_id, fleet_install: "auto"}` and `member_detail` with `refresh: true`.
+The full steps (posix and PowerShell), verification and rollback are in
+[install.md](install.md#replace-a-full-install-on-a-member). The earlier
+`--force-stop-full-install` takeover is superseded and is not needed for KB
+access.
 
 ## Compose and member lifecycle invariants
 
