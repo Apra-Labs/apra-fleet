@@ -1,9 +1,9 @@
 {
   "version": 2,
   "provenance": {
-    "commit": "2e962a242779b2eea35bc4f388e9033a71b3d776",
+    "commit": "34ff160ff8ee9e2268e851270b911771d06fedca",
     "branch": "feat/kb-redesign",
-    "entry_count": 271
+    "entry_count": 272
   },
   "entries": [
     {
@@ -845,6 +845,21 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:29.247Z"
+    },
+    {
+      "id": "2209f37c-c65d-4ddf-9ca4-dbde8ef2e698",
+      "type": "knowledge",
+      "title": "memory-contract/v1/schemas accepts only generator output; hand-authored schemas live elsewhere",
+      "summary": "generate-contract.mjs --check fails on any extra or untracked file under schemas/ or bindings/, so a hand-authored schema (e.g. the bible file format) must live outside those dirs, as memory-contract/v1/bible/ does.",
+      "symbols": [],
+      "source_files": [
+        "memory-contract/v1/generate-contract.mjs",
+        "memory-contract/v1/bible/kb-canonical.schema.json",
+        "memory-contract/v1/README.md",
+        "tests/memory-contract-bible-format.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T05:59:28.053Z"
     },
     {
       "id": "2267a58e-cee4-4a04-9674-f440db94c22a",
