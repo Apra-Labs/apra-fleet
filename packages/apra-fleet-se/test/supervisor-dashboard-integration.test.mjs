@@ -89,6 +89,15 @@ async function mkTmp(prefix) {
 // to answer /state while sibling suites load the machine.
 const WAIT_BUDGET_MS = scaledTimeout(10000);
 
+// Port note: each describe's REAL spawner gets a --viewer-port band of its own
+// (basePort 19681 for the main suite, 19691 for the auth suite). With the
+// shared default base (DEFAULT_SPAWNER_BASE_PORT 8081) this file and
+// supervisor-stop-restart-integration.test.mjs, running concurrently under the
+// bounded runner, both allocated 8081: the loser's child died on EADDRINUSE
+// while the OTHER file's child answered /state on that port. The two describes
+// here run in sequence, but separate bands keep them independent too. Keep
+// these distinct from every other basePort under test/.
+
 /** Poll until `pred()` is truthy or the deadline passes; throws on timeout. */
 async function waitFor(pred, { timeoutMs = WAIT_BUDGET_MS, intervalMs = 50, label = 'condition' } = {}) {
     const deadline = Date.now() + timeoutMs;
@@ -100,6 +109,25 @@ async function waitFor(pred, { timeoutMs = WAIT_BUDGET_MS, intervalMs = 50, labe
         // eslint-disable-next-line no-await-in-loop
         await sleep(intervalMs);
     }
+}
+
+/**
+ * Waits for a just-spawned viewer-child fixture to answer GET /state -- and for
+ * the answer to come from THAT child: the fixture reports its own pid, and only
+ * a 200 whose body pid equals `expectedPid` (the pid POST /api/sprints
+ * returned) counts, so a foreign process answering on the same (raced or
+ * recycled) port is never mistaken for our child.
+ */
+async function waitForChildUp(childPort, expectedPid, label) {
+    await waitFor(async () => {
+        try {
+            const r = await httpGet(childPort, '/state');
+            if (r.status !== 200) return false;
+            return JSON.parse(r.body).pid === expectedPid;
+        } catch {
+            return false;
+        }
+    }, { timeoutMs: WAIT_BUDGET_MS, label: `${label} (pid ${expectedPid}, port ${childPort})` });
 }
 
 /** GET a path against a given host:port, resolving the full body once ended. */
@@ -232,6 +260,8 @@ describe('dashboard integration (apra-fleet-eft.6.6) -- stack, backlog, launch, 
             // this suite's ledger/history, distinct from the child fixture's own
             // APRA_FLEET_DATA_DIR above.
             dataDir,
+            // A --viewer-port band of its own (see the port note at the top).
+            basePort: 19681,
         });
 
         // Mirrors proxy.mjs's own defaultResolvePort: sprintId -> ledger childPid
@@ -328,14 +358,7 @@ describe('dashboard integration (apra-fleet-eft.6.6) -- stack, backlog, launch, 
 
         // Wait for the real child to actually be answering before any later test
         // depends on it.
-        await waitFor(async () => {
-            try {
-                const r = await httpGet(childPort, '/state');
-                return r.status === 200;
-            } catch {
-                return false;
-            }
-        }, { label: 'viewer-child /state to answer' });
+        await waitForChildUp(childPort, childPid, 'viewer-child /state to answer');
     });
 
     // -------------------------------------------------------------------------
@@ -542,6 +565,7 @@ describe('dashboard integration auth (apra-fleet-50j6.2.2) -- Stop/force-release
             env: { ...process.env, APRA_FLEET_DATA_DIR: dataDir },
             logger: silentLogger,
             dataDir,
+            basePort: 19691,
         });
 
         function resolvePort(id) {
@@ -651,14 +675,7 @@ describe('dashboard integration auth (apra-fleet-50j6.2.2) -- Stop/force-release
         childPid = track(res.json.pid);
         childPort = res.json.port;
 
-        await waitFor(async () => {
-            try {
-                const r = await httpGet(childPort, '/state');
-                return r.status === 200;
-            } catch {
-                return false;
-            }
-        }, { timeoutMs: WAIT_BUDGET_MS, label: 'auth-suite viewer-child /state to answer' });
+        await waitForChildUp(childPort, childPid, 'auth-suite viewer-child /state to answer');
     });
 
     // -------------------------------------------------------------------------
