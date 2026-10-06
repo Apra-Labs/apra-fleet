@@ -106,7 +106,7 @@ describe('kb_export writes the v2 envelope with its export commit', () => {
 
     const bible = readBible();
 
-    expect(bible.version).toBe(2);
+    expect(bible.version).toBe(3);
     expect(bible.provenance.commit).toBe(head);
     expect(bible.provenance.commit).toMatch(/^[0-9a-f]{40}$/);
     expect(bible.provenance.entry_count).toBe(2);
@@ -147,7 +147,7 @@ describe('kb_export writes the v2 envelope with its export commit', () => {
     await kbExport({}, { folder: repo });
 
     const bible = readBible();
-    expect(bible.version).toBe(2);
+    expect(bible.version).toBe(3);
     expect(bible.provenance.commit).toBeNull();
     expect(bible.entries).toHaveLength(1);
   }, 20000);
@@ -269,7 +269,7 @@ describe('a v2 export round-trips back through import', () => {
     await kbExport({}, { folder: repo });
 
     const exported = readBible();
-    expect(exported.version).toBe(2);
+    expect(exported.version).toBe(3);
     const exportedIds = exported.entries.map((e: any) => e.id).sort();
 
     // Re-import into a fresh KB and confirm the same ids land.

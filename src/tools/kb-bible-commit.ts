@@ -9,6 +9,8 @@ import { logWarn } from '../utils/log-helpers.js';
 import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
 import {
   asciiSafeStringify,
+  assertNoDuplicateBibleIds,
+  BIBLE_FORMAT_VERSION,
   bibleContentChanged,
   commitBiblePath,
   compareById,
@@ -82,15 +84,14 @@ export async function kbBibleCommit(input: KbBibleCommitInput, anchor?: KbAnchor
   // ONE admission rule with kb_export (scope=project): a CONFIRMED id is
   // admitted only if it passes the shared bible basis predicate.
   const requestedConfirmed = confirmedEntries.filter(e => requestedSet.has(e.id));
-  const qualifying = await filterProjectBibleCandidates(
-    requestedConfirmed,
-    project.getSourceFileBases(requestedConfirmed.map(e => e.id)),
-    repoPath,
-  );
+  const bases = project.getSourceFileBases(requestedConfirmed.map(e => e.id));
+  const qualifying = await filterProjectBibleCandidates(requestedConfirmed, bases, repoPath);
   const qualifyingIds = new Set(qualifying.map(e => e.id));
   const confirmedIds = new Set(requestedConfirmed.map(e => e.id));
   const confirmed = new Map<string, CanonicalEntry>();
-  for (const e of qualifying) confirmed.set(e.id, toCanonicalEntry(e));
+  // Format v3: each merged entry carries the exact stored basis it was just
+  // admitted against (never re-hashed here).
+  for (const e of qualifying) confirmed.set(e.id, toCanonicalEntry(e, bases.get(e.id)));
 
   const merged: string[] = [];
   const skipped: KbBibleCommitSkip[] = [];
@@ -114,10 +115,15 @@ export async function kbBibleCommit(input: KbBibleCommitInput, anchor?: KbAnchor
     return done({ merged, skipped, entry_count: existing?.length ?? 0, committed: false });
   }
 
+  // Duplicate-id guard: an existing file holding one id twice would otherwise
+  // be silently collapsed by the id map below (dropping an entry). Refuse
+  // before anything is written.
+  assertNoDuplicateBibleIds(existing ?? [], 'kb_bible_commit');
   const byId = new Map<string, CanonicalEntry>();
   for (const e of existing ?? []) byId.set(e.id, e);
   for (const id of merged) byId.set(id, confirmed.get(id)!);
   const entries = Array.from(byId.values()).sort(compareById);
+  assertNoDuplicateBibleIds(entries, 'kb_bible_commit');
 
   // Entries unchanged is a no-op: no rewrite, no commit (provenance alone never
   // counts as a change, matching kb_export).
@@ -126,7 +132,7 @@ export async function kbBibleCommit(input: KbBibleCommitInput, anchor?: KbAnchor
   }
 
   const bible: CanonicalBible = {
-    version: 2,
+    version: BIBLE_FORMAT_VERSION,
     provenance: {
       commit: input.baseCommit,
       branch: input.baseBranch,

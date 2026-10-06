@@ -112,7 +112,7 @@ describe('kb_export (T3.4, F8b, D8)', () => {
     expect(written[0].title).toBe('Entry A knowledge');
   });
 
-  it('field set is exact: id, type, title, summary, symbols, source_files, confidence, updated_at', async () => {
+  it('field set is exact: id, type, title, summary, symbols, source_files, confidence, updated_at, source_file_hashes (v3)', async () => {
     const { id } = await provider.capture(makeInput({ title: 'Field set entry' }));
     await provider.promote(id, 'confirmed for test: basis checked in fixture');
 
@@ -121,7 +121,7 @@ describe('kb_export (T3.4, F8b, D8)', () => {
 
     expect(written).toHaveLength(1);
     expect(Object.keys(written[0]).sort()).toEqual(
-      ['confidence', 'id', 'source_files', 'summary', 'symbols', 'title', 'type', 'updated_at'].sort()
+      ['confidence', 'id', 'source_file_hashes', 'source_files', 'summary', 'symbols', 'title', 'type', 'updated_at'].sort()
     );
     expect(written[0].confidence).toBe('CONFIRMED');
     expect(typeof written[0].updated_at).toBe('string');
