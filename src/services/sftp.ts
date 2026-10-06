@@ -2,7 +2,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import type { Client } from 'ssh2';
 import type { Agent } from '../types.js';
-import { getConnection } from './ssh.js';
+import { openPooledChannel } from './ssh.js';
 import { resolveRemotePath } from '../utils/platform.js';
 
 function getSFTP(client: Client): Promise<import('ssh2').SFTPWrapper> {
@@ -12,6 +12,37 @@ function getSFTP(client: Client): Promise<import('ssh2').SFTPWrapper> {
       else resolve(sftp);
     });
   });
+}
+
+/**
+ * Run one transfer on its own SFTP session and ALWAYS end it afterwards --
+ * on success, error and abort. Each session is a channel (one sftp-server
+ * process) on the member's pooled SSH connection; one left open per transfer
+ * exhausts sshd's per-connection MaxSessions (default 10), after which every
+ * command on that member fails with "Channel open failure". An abort ends
+ * the session immediately, which fails any in-flight operation.
+ */
+async function withSftpSession<T>(
+  agent: Agent,
+  abortSignal: AbortSignal | undefined,
+  fn: (sftp: import('ssh2').SFTPWrapper) => Promise<T>,
+): Promise<T> {
+  const { channel: sftp, release } = await openPooledChannel(agent, getSFTP);
+  let closed = false;
+  const close = (): void => {
+    if (closed) return;
+    closed = true;
+    try { sftp.end(); } catch { /* best-effort */ }
+    release();
+  };
+  abortSignal?.addEventListener('abort', close, { once: true });
+  try {
+    if (abortSignal?.aborted) throw new Error('Aborted by client');
+    return await fn(sftp);
+  } finally {
+    abortSignal?.removeEventListener('abort', close);
+    close();
+  }
 }
 
 function sftpMkdir(sftp: import('ssh2').SFTPWrapper, remotePath: string): Promise<void> {
@@ -70,31 +101,30 @@ export async function uploadViaSFTP(
   destinationPath?: string,
   abortSignal?: AbortSignal
 ): Promise<{ success: string[]; failed: { path: string; error: string }[] }> {
-  const client = await getConnection(agent);
-  const sftp = await getSFTP(client);
+  return withSftpSession(agent, abortSignal, async (sftp) => {
+    const remoteBase = destinationPath
+      ? resolveRemotePath(agent.workFolder, destinationPath)
+      : agent.workFolder.replace(/\\/g, '/');
 
-  const remoteBase = destinationPath
-    ? resolveRemotePath(agent.workFolder, destinationPath)
-    : agent.workFolder.replace(/\\/g, '/');
+    await sftpMkdirRecursive(sftp, remoteBase);
 
-  await sftpMkdirRecursive(sftp, remoteBase);
+    const success: string[] = [];
+    const failed: { path: string; error: string }[] = [];
 
-  const success: string[] = [];
-  const failed: { path: string; error: string }[] = [];
-
-  for (const localPath of localPaths) {
-    if (abortSignal?.aborted) throw new Error('Aborted by client');
-    const fileName = path.basename(localPath);
-    const remotePath = `${remoteBase}/${fileName}`;
-    try {
-      await sftpPut(sftp, localPath, remotePath);
-      success.push(fileName);
-    } catch (err: any) {
-      failed.push({ path: fileName, error: err.message });
+    for (const localPath of localPaths) {
+      if (abortSignal?.aborted) throw new Error('Aborted by client');
+      const fileName = path.basename(localPath);
+      const remotePath = `${remoteBase}/${fileName}`;
+      try {
+        await sftpPut(sftp, localPath, remotePath);
+        success.push(fileName);
+      } catch (err: any) {
+        failed.push({ path: fileName, error: err.message });
+      }
     }
-  }
 
-  return { success, failed };
+    return { success, failed };
+  });
 }
 
 /**
@@ -107,25 +137,24 @@ export async function uploadContentToHome(
   files: Array<{ relPath: string; content: string }>,
   baseDir: string
 ): Promise<{ success: string[]; failed: { path: string; error: string }[] }> {
-  const client = await getConnection(agent);
-  const sftp = await getSFTP(client);
+  return withSftpSession(agent, undefined, async (sftp) => {
+    const base = baseDir.replace(/\\/g, '/').replace(/\/$/, '');
+    const success: string[] = [];
+    const failed: { path: string; error: string }[] = [];
 
-  const base = baseDir.replace(/\\/g, '/').replace(/\/$/, '');
-  const success: string[] = [];
-  const failed: { path: string; error: string }[] = [];
-
-  for (const file of files) {
-    const remotePath = `${base}/${file.relPath}`;
-    try {
-      await sftpMkdirRecursive(sftp, path.posix.dirname(remotePath));
-      await sftpWriteFile(sftp, remotePath, Buffer.from(file.content, 'utf-8'));
-      success.push(file.relPath);
-    } catch (err: any) {
-      failed.push({ path: file.relPath, error: err.message });
+    for (const file of files) {
+      const remotePath = `${base}/${file.relPath}`;
+      try {
+        await sftpMkdirRecursive(sftp, path.posix.dirname(remotePath));
+        await sftpWriteFile(sftp, remotePath, Buffer.from(file.content, 'utf-8'));
+        success.push(file.relPath);
+      } catch (err: any) {
+        failed.push({ path: file.relPath, error: err.message });
+      }
     }
-  }
 
-  return { success, failed };
+    return { success, failed };
+  });
 }
 
 export async function downloadViaSFTP(
@@ -134,26 +163,25 @@ export async function downloadViaSFTP(
   localDestination: string,
   abortSignal?: AbortSignal
 ): Promise<{ success: string[]; failed: { path: string; error: string }[] }> {
-  const client = await getConnection(agent);
-  const sftp = await getSFTP(client);
+  return withSftpSession(agent, abortSignal, async (sftp) => {
+    fs.mkdirSync(localDestination, { recursive: true });
 
-  fs.mkdirSync(localDestination, { recursive: true });
+    const success: string[] = [];
+    const failed: { path: string; error: string }[] = [];
 
-  const success: string[] = [];
-  const failed: { path: string; error: string }[] = [];
-
-  for (const remotePath of remotePaths) {
-    if (abortSignal?.aborted) throw new Error('Aborted by client');
-    const resolvedRemote = resolveRemotePath(agent.workFolder, remotePath);
-    const fileName = path.posix.basename(resolvedRemote);
-    const localPath = path.join(localDestination, fileName);
-    try {
-      await sftpGet(sftp, resolvedRemote, localPath);
-      success.push(fileName);
-    } catch (err: any) {
-      failed.push({ path: fileName, error: err.message });
+    for (const remotePath of remotePaths) {
+      if (abortSignal?.aborted) throw new Error('Aborted by client');
+      const resolvedRemote = resolveRemotePath(agent.workFolder, remotePath);
+      const fileName = path.posix.basename(resolvedRemote);
+      const localPath = path.join(localDestination, fileName);
+      try {
+        await sftpGet(sftp, resolvedRemote, localPath);
+        success.push(fileName);
+      } catch (err: any) {
+        failed.push({ path: fileName, error: err.message });
+      }
     }
-  }
 
-  return { success, failed };
+    return { success, failed };
+  });
 }

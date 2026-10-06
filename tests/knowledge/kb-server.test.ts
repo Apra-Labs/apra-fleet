@@ -162,6 +162,40 @@ describe('kb-server', () => {
     expect(res.body.code).toBe('PATH_TRAVERSAL');
   });
 
+  // kb_query trust filters over REST: the route must parse confidence (a
+  // comma-separated tier list) and exclude_disputed and apply them, or a
+  // remote HttpKbProvider forwarding them would be silently ignored.
+  it('GET /api/kb/query applies confidence and exclude_disputed', async () => {
+    const capture = (title: string, extra: Record<string, unknown> = {}) => request('POST', '/api/kb/capture', {
+      body: {
+        type: 'learning', title, summary: 'trustroute summary', content: `trustroute ${title}`,
+        source_files: ['src/commands/kb-server.ts'], symbols: [], tags: [],
+        content_hash: '', content_hash_type: 'sha256', flagged_for_review: false,
+        author: 'test', source: 'doer', confidence: 'INFERRED', ...extra,
+      },
+    });
+    expect((await capture('Trustroute plain inferred')).status).toBe(201);
+    expect((await capture('Trustroute flagged inferred', { flagged_for_review: true })).status).toBe(201);
+
+    const titles = async (qs: string) => {
+      const res = await request('GET', `/api/kb/query?query=trustroute&limit=50${qs}`);
+      expect(res.status).toBe(200);
+      return res.body.results.map((e: { title: string }) => e.title);
+    };
+
+    const unfiltered = await titles('');
+    expect(unfiltered).toContain('Trustroute plain inferred');
+    expect(unfiltered).toContain('Trustroute flagged inferred');
+
+    expect(await titles('&confidence=CONFIRMED')).toEqual([]);
+    const inferred = await titles('&confidence=CONFIRMED,INFERRED');
+    expect(inferred).toContain('Trustroute plain inferred');
+
+    const undisputed = await titles('&exclude_disputed=true');
+    expect(undisputed).toContain('Trustroute plain inferred');
+    expect(undisputed).not.toContain('Trustroute flagged inferred');
+  });
+
   it('returns 429 after rate limit exceeded', async () => {
     // We need to exhaust the rate limit -- send 100+ requests fast
     const promises: Promise<any>[] = [];

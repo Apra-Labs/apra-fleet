@@ -39,7 +39,7 @@ vi.mock('../src/services/workspace-trust.js', () => ({
   seedWorkspaceTrust: vi.fn().mockResolvedValue(undefined),
 }));
 
-import { executePrompt, provisionedRemoteAgents, type ExecutePromptInput } from '../src/tools/execute-prompt.js';
+import { executePrompt, provisionedRemoteAgents, EXECUTE_PROMPT_CLEANUP_RESERVE_MS, type ExecutePromptInput } from '../src/tools/execute-prompt.js';
 
 // AGY project binding (src/services/agy-project.ts) is covered by
 // tests/agy-project.test.ts and tests/tool-provider.test.ts; here it is
@@ -146,9 +146,13 @@ describe('execute_prompt per-provider exec-level rolling timeout matrix (apra-fl
     const calls = dispatchCalls();
     expect(calls.length).toBe(1);
     const [, timeoutMs, maxTotalMs] = calls[0];
-    expect(timeoutMs).toBe(3_600_000);
+    // GitHub #563: max_total_s is anchored at handler entry and the first
+    // attempt keeps back the cleanup reserve, so it mirrors max_total_s minus
+    // EXECUTE_PROMPT_CLEANUP_RESERVE_MS minus the (tiny, real-clock) setup time.
+    expect(timeoutMs).toBeLessThanOrEqual(3_600_000 - EXECUTE_PROMPT_CLEANUP_RESERVE_MS);
+    expect(timeoutMs).toBeGreaterThan(3_600_000 - EXECUTE_PROMPT_CLEANUP_RESERVE_MS - 10_000);
     expect(timeoutMs).not.toBe(60_000);
-    expect(maxTotalMs).toBe(3_600_000);
+    expect(maxTotalMs).toBe(timeoutMs);
   });
 
   it('[agy] with timeout_s=60/max_total_s=3600, the recorded exec timeoutMs mirrors 3600s, NOT 60_000', async () => {
@@ -163,9 +167,13 @@ describe('execute_prompt per-provider exec-level rolling timeout matrix (apra-fl
     const calls = dispatchCalls();
     expect(calls.length).toBe(1);
     const [, timeoutMs, maxTotalMs] = calls[0];
-    expect(timeoutMs).toBe(3_600_000);
+    // GitHub #563: max_total_s is anchored at handler entry and the first
+    // attempt keeps back the cleanup reserve, so it mirrors max_total_s minus
+    // EXECUTE_PROMPT_CLEANUP_RESERVE_MS minus the (tiny, real-clock) setup time.
+    expect(timeoutMs).toBeLessThanOrEqual(3_600_000 - EXECUTE_PROMPT_CLEANUP_RESERVE_MS);
+    expect(timeoutMs).toBeGreaterThan(3_600_000 - EXECUTE_PROMPT_CLEANUP_RESERVE_MS - 10_000);
     expect(timeoutMs).not.toBe(60_000);
-    expect(maxTotalMs).toBe(3_600_000);
+    expect(maxTotalMs).toBe(timeoutMs);
   });
 
   it('[codex] with the SAME timeout_s=60/max_total_s=3600 inputs, the recorded exec timeoutMs IS 60_000 -- the exec timer is NOT disabled for Codex', async () => {
@@ -298,11 +306,12 @@ describe('execute_prompt per-provider exec-level rolling timeout matrix (apra-fl
       expect(calls.length).toBe(2);
       const [, originalTimeoutMs, originalMaxTotalMs] = calls[0];
       const [, retryTimeoutMs, retryMaxTotalMs] = calls[1];
-      expect(originalMaxTotalMs).toBe(3_600_000);
-      expect(originalTimeoutMs).toBe(3_600_000);
+      // GitHub #563: the first attempt is capped by the shared budget minus the cleanup reserve.
+      expect(originalMaxTotalMs).toBe(3_600_000 - EXECUTE_PROMPT_CLEANUP_RESERVE_MS);
+      expect(originalTimeoutMs).toBe(3_600_000 - EXECUTE_PROMPT_CLEANUP_RESERVE_MS);
       // Exactly the remaining budget since dispatchStartedAt -- not the full
       // original ceiling (that would let original-plus-retry exceed 3_600_000s).
-      expect(retryMaxTotalMs).toBe(3_600_000 - ORIGINAL_ATTEMPT_ELAPSED_MS);
+      expect(retryMaxTotalMs).toBe(3_600_000 - EXECUTE_PROMPT_CLEANUP_RESERVE_MS - ORIGINAL_ATTEMPT_ELAPSED_MS);
       expect(retryMaxTotalMs).toBeLessThan(3_600_000);
       expect(retryTimeoutMs).toBe(retryMaxTotalMs);
     } finally {

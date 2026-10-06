@@ -7,17 +7,20 @@
 // a sprint mutates. Nothing else in the engine verifies that the database a
 // member resolves to is the project the supervisor launched the sprint for.
 // This module runs the three read-only probes from beads-identity.mjs on the
-// orchestrator member first and then on every other distinct member, and
+// backlog member first and then on every other distinct member, and
 // compares each answer against the expected identity. The expected identity
 // is either the supervisor's (`--expect-beads`, args.expectBeads) or, absent
-// that, the orchestrator member's own probed identity -- in which case only
+// that, the backlog member's own probed identity -- in which case only
 // the OTHER members are compared and the log says so.
 //
 // Severity model (deliberate):
 //   - MISMATCH is FATAL: a field that resolved on BOTH sides and differs
 //     means the member's bd points at a different project. Throws
 //     BeadsIdentityError (reason MISMATCH) before any bd mutation.
-//   - an UNRESOLVED probe is a WARNING: a probe that failed, or answered
+//   - bd MISSING is FATAL: a bd probe whose failure classifies as a
+//     missing-tool failure for bd itself (not installed / not on PATH) throws
+//     BeadsIdentityError (reason MISSING_TOOL) naming the member and the fix.
+//   - any other UNRESOLVED probe is a WARNING: a probe that failed, or answered
 //     something unparseable/empty, leaves that field out of the comparison.
 //     The warning names the member, the field, the probe, the error and the
 //     fix, so the operator can repair it; the first real bd on that member
@@ -38,7 +41,8 @@ import {
     compareIdentity,
     formatBeadsIdentity,
 } from './beads-identity.mjs';
-import { BeadsIdentityError, BEADS_IDENTITY_FAILURE_REASONS } from './errors.mjs';
+import { BeadsIdentityError, BEADS_IDENTITY_FAILURE_REASONS, VCS_FAILURE_KINDS } from './errors.mjs';
+import { classifyFailure, commandBinary } from './vcs-module.mjs';
 
 // Short: three cheap local reads per member. A member that cannot answer
 // `bd where` inside a minute is not a member this sprint should mutate.
@@ -151,18 +155,39 @@ function unresolvedFieldWarning(member, field, probed) {
 // One compared field is empty on the EXPECTED side (the supplied
 // --expect-beads carries no value for it, or the orchestrator it was derived
 // from could not report it), so no member can be checked on it.
-function unresolvedExpectedWarning(field, expectedFrom, orchestratorMember) {
-    const source = expectedFrom === 'orchestrator'
-        ? `the orchestrator member '${orchestratorMember}' it was derived from could not report ${field}`
+function unresolvedExpectedWarning(field, expectedFrom, backlogMember) {
+    const source = expectedFrom === 'backlog'
+        ? `the backlog member '${backlogMember}' it was derived from could not report ${field}`
         : `the supplied expected beads identity carries no ${field}`;
     return `${source}; ${field} is not compared on any member this sprint. ` +
-        `To fix: ${BEADS_IDENTITY_FIELD_FIX[field]}${expectedFrom === 'orchestrator' ? ' (on the orchestrator member), or launch via the supervisor so --expect-beads is supplied' : ''}.`;
+        `To fix: ${BEADS_IDENTITY_FIELD_FIX[field]}${expectedFrom === 'backlog' ? ' (on the backlog member), or launch via the supervisor so --expect-beads is supplied' : ''}.`;
 }
 
-function noExpectationWarning(orchestratorMember, probed) {
-    return `no expected beads identity was supplied and the orchestrator member '${orchestratorMember}' could not report its beads database ` +
+function noExpectationWarning(backlogMember, probed) {
+    return `no expected beads identity was supplied and the backlog member '${backlogMember}' could not report its beads database ` +
         `('${BEADS_IDENTITY_PROBES.where}' -> ${probeDetail(probed, 'where')}); no cross-member beads identity check will happen this sprint. ` +
-        `To restore it: fix the orchestrator member's beads (${BEADS_IDENTITY_FIELD_FIX.prefix}), or launch via the supervisor so --expect-beads is supplied.`;
+        `To restore it: fix the backlog member's beads (${BEADS_IDENTITY_FIELD_FIX.prefix}), or launch via the supervisor so --expect-beads is supplied.`;
+}
+
+// GitHub #616: the one probe outcome that is fatal besides a mismatch -- the
+// member cannot run bd AT ALL (not installed / not on PATH). Every later bd
+// command on it would fail, and the sync self-heal cannot fix a missing
+// binary, so the sprint stops here with the fix named. Only a failure of a bd
+// probe that classifies as missing-tool FOR bd counts; every other probe
+// failure (no database, unset field, unrelated profile noise) stays a warning.
+function assertBdPresent(member, probed) {
+    for (const f of probed.failures) {
+        const tool = commandBinary(f.probe);
+        if (tool !== 'bd') continue;
+        const c = classifyFailure(f.error, { tool });
+        if (c.kind !== VCS_FAILURE_KINDS.MISSING_TOOL) continue;
+        throw new BeadsIdentityError(
+            `Beads identity check failed: 'bd' is not installed or not on PATH on member '${member}' ` +
+            `('${f.probe}' -> ${summarizeRaw(f.error)}). Install bd on that member (or fix that member's PATH) and relaunch; ` +
+            'no bd command can run there, and re-provisioning credentials cannot fix a missing binary.',
+            { reason: BEADS_IDENTITY_FAILURE_REASONS.MISSING_TOOL, member, details: { tool: 'bd', probe: f.probe, error: f.error } }
+        );
+    }
 }
 
 function assertMatches(member, expected, actual, cmp) {
@@ -176,30 +201,31 @@ function assertMatches(member, expected, actual, cmp) {
 }
 
 /**
- * The precondition itself. Probes the orchestrator member, then every other
+ * The precondition itself. Probes the backlog member, then every other
  * distinct member. Throws BeadsIdentityError (reason MISMATCH) before
- * returning when a field that resolved on both sides differs; every probe
- * that could not resolve a field is a logged + published warning instead.
+ * returning when a field that resolved on both sides differs, and (reason
+ * MISSING_TOOL) when a member cannot run bd at all; every other probe that
+ * could not resolve a field is a logged + published warning instead.
  *
  * @param {{
  *   command: Function, log?: Function, publishState?: Function,
- *   orchestratorMember: string, members: string[],
+ *   backlogMember: string, members: string[],
  *   expected?: object|null, prober?: object, timeoutS?: number,
  * }} opts
  * @returns {Promise<{
- *   expected: object|null, expectedFrom: 'args'|'orchestrator'|'none',
+ *   expected: object|null, expectedFrom: 'args'|'backlog'|'none',
  *   members: Record<string, object>, warnings: string[],
  * }>}
  *   `members[name]` is that member's probed identity record plus
  *   `unresolved: string[]` (the compared fields it could not report). A
  *   member with no beads database at all has NO entry -- only a warning.
  */
-export async function verifyBeadsIdentity({ command, log = () => {}, publishState, orchestratorMember, members, expected = null, prober, timeoutS }) {
-    if (typeof orchestratorMember !== 'string' || !orchestratorMember) {
-        throw new TypeError('verifyBeadsIdentity: orchestratorMember must be a non-empty string');
+export async function verifyBeadsIdentity({ command, log = () => {}, publishState, backlogMember, members, expected = null, prober, timeoutS }) {
+    if (typeof backlogMember !== 'string' || !backlogMember) {
+        throw new TypeError('verifyBeadsIdentity: backlogMember must be a non-empty string');
     }
     const p = prober || createBeadsIdentityProber({ command, timeoutS });
-    const ordered = [orchestratorMember, ...(Array.isArray(members) ? members : [])]
+    const ordered = [backlogMember, ...(Array.isArray(members) ? members : [])]
         .filter((m, i, arr) => typeof m === 'string' && m && arr.indexOf(m) === i);
 
     const warnings = [];
@@ -209,18 +235,19 @@ export async function verifyBeadsIdentity({ command, log = () => {}, publishStat
     };
     const result = { expected: null, expectedFrom: 'args', members: {}, warnings };
 
-    const orchestratorProbe = await p.probe(orchestratorMember);
-    const orchestratorHasDb = !!orchestratorProbe.identity.beadsDir;
+    const backlogProbe = await p.probe(backlogMember);
+    assertBdPresent(backlogMember, backlogProbe);
+    const backlogHasDb = !!backlogProbe.identity.beadsDir;
 
     let expectedIdentity = expected;
     if (!expectedIdentity) {
-        if (orchestratorHasDb) {
-            result.expectedFrom = 'orchestrator';
-            expectedIdentity = { ...orchestratorProbe.identity };
-            log(`[beads-identity] no expected beads identity was supplied; taking the expectation from the orchestrator member '${orchestratorMember}'.`);
+        if (backlogHasDb) {
+            result.expectedFrom = 'backlog';
+            expectedIdentity = { ...backlogProbe.identity };
+            log(`[beads-identity] no expected beads identity was supplied; taking the expectation from the backlog member '${backlogMember}'.`);
         } else {
             result.expectedFrom = 'none';
-            warn(noExpectationWarning(orchestratorMember, orchestratorProbe));
+            warn(noExpectationWarning(backlogMember, backlogProbe));
         }
     }
     result.expected = expectedIdentity;
@@ -232,7 +259,7 @@ export async function verifyBeadsIdentity({ command, log = () => {}, publishStat
         for (const field of COMPARED_FIELDS) {
             if (!String(expectedIdentity[field] ?? '').trim()) {
                 expectedUnresolved.add(field);
-                warn(unresolvedExpectedWarning(field, result.expectedFrom, orchestratorMember));
+                warn(unresolvedExpectedWarning(field, result.expectedFrom, backlogMember));
             }
         }
     }
@@ -262,11 +289,12 @@ export async function verifyBeadsIdentity({ command, log = () => {}, publishStat
         log(formatBeadsIdentity(probed.identity, { label: `beads ok: ${member}` }));
     }
 
-    settle(orchestratorMember, orchestratorProbe, !!expected);
+    settle(backlogMember, backlogProbe, !!expected);
 
     for (const member of ordered) {
-        if (member === orchestratorMember) continue;
+        if (member === backlogMember) continue;
         const probed = await p.probe(member);
+        assertBdPresent(member, probed);
         settle(member, probed, !!expectedIdentity);
     }
 

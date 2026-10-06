@@ -13,6 +13,7 @@ import type { Agent } from '../types.js';
 import { CURATED_CHEAP_MODELS, CURATED_STANDARD_MODELS, CURATED_PREMIUM_MODELS } from '../cli/config.js';
 import { validateOpenCodeModelTiers } from '../utils/opencode-model-validation.js';
 import { provisionAgents, remoteAgentsDir } from '../services/agent-provisioner.js';
+import { recheckProjectAgentShadows, invalidateProjectAgentShadowCache } from '../services/agent-shadow.js';
 import { getStrategy } from '../services/strategy.js';
 import { seedWorkspaceTrust } from '../utils/workspace-trust.js';
 import { ensureAgyProject } from '../services/agy-project.js';
@@ -41,7 +42,7 @@ export const updateMemberSchema = z.object({
   work_folder: z.string()
     .regex(/^[^<>\n\r]+$/, 'work_folder must not contain angle brackets or newlines')
     .optional()
-    .describe('New working directory on target machine. For non-local (remote/relay) members, must be a fully-qualified/absolute path (e.g. "/home/bella/repo" or "C:\\Users\\bella\\repo") -- "~" and relative paths are rejected, since they are never resolved for a non-local member.'),
+    .describe('New working directory on target machine. For non-local (remote/relay) members, must be a fully-qualified/absolute path (e.g. "/home/bella/repo" or "C:\\Users\\bella\\repo") -- "~" and relative paths are rejected, since they are never resolved for a non-local member. A folder may hold at most one LLM member and one LLM-less (llm_provider none) member.'),
   git_access: z.enum(['read', 'push', 'admin', 'issues', 'full']).optional().describe('Git access level for this member'),
   git_repos: z.array(z.string()).optional().describe('Git repositories this member can access (e.g. ["Apra-Labs/ApraPipes"])'),
   icon: z.string().optional().describe('Override the auto-assigned emoji icon. Use named aliases: blue-circle, green-square, red-circle, etc. (8 colors × 2 shapes: circle, square). Or pass raw emoji.'),
@@ -69,7 +70,7 @@ export const updateMemberSchema = z.object({
     .optional()
     .describe('Free-form labels for this member (max 10 tags, each max 64 chars). Empty array clears all tags; non-empty array replaces existing tags.'),
   code_intel_provider: z.enum(['codebase-memory', 'gitnexus', 'none']).optional().describe('Change the code-intelligence provider for this member.'),
-  unreservable: z.boolean().optional().describe('Mark this member as never exclusively reservable, so it can be shared by more than one sprint at once (e.g. a member filling fleet-sprint\'s shared "orchestrator" role). reserve/release/force_release become no-op successes and overlap guards skip it.'),
+  unreservable: z.boolean().optional().describe('Mark this member as never exclusively reservable, so it can be shared by more than one sprint at once (e.g. a member filling fleet-sprint\'s shared "backlog" role). reserve/release/force_release become no-op successes and overlap guards skip it.'),
   shell: z.enum(['gitbash', 'pwsh7', 'powershell5']).optional().describe('Override the probed Windows shell for this member (gitbash, pwsh7, or powershell5). Windows members only -- ignored for non-windows members.'),
   vcs_provider: z.enum(['github', 'bitbucket', 'azure-devops', 'none']).optional().describe('Directly set (override) this member\'s VCS provider -- an explicit operator value, never auto-detected. Use this to correct a wrong auto-detect from register_member, or to set the provider for a member with no credentials to provision (so provision_vcs_auth is not required just to record it). Pass "none" to clear it, declaring the member deliberately has no VCS provider.'),
 });
@@ -111,17 +112,21 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
     return '❌ "unreservable" requires llm_provider: "none" -- it is reserved for plain command-executor members that never receive an agent dispatch. Member was NOT updated.';
   }
 
+  // A change of LLM kind can create a same-kind clash in an unchanged folder,
+  // since a folder may hold one LLM member and one LLM-less member.
+  const llmKindChanged = ((existing.llmProvider ?? 'claude') === 'none') !== (resultingLlmProvider === 'none');
   const needsUniquenessCheck = existing.agentType === 'remote'
-    ? (hostChanged || portChanged || folderChanged)
-    : folderChanged;
+    ? (hostChanged || portChanged || folderChanged || llmKindChanged)
+    : (folderChanged || llmKindChanged);
 
   if (needsUniquenessCheck) {
     const newHost = input.host ?? existing.host;
     const newPort = input.port ?? existing.port;
     const newFolder = input.work_folder ?? existing.workFolder;
-    if (hasDuplicateFolder(existing.agentType, newFolder, newHost, newPort, existing.id)) {
+    if (hasDuplicateFolder(existing.agentType, newFolder, newHost, newPort, existing.id, resultingLlmProvider)) {
       const scope = existing.agentType === 'local' ? 'this machine' : `host ${newHost}:${newPort}`;
-      return `❌ Another member already uses folder "${newFolder}" on ${scope}. Update rejected.`;
+      const kind = resultingLlmProvider === 'none' ? 'LLM-less' : 'LLM';
+      return `❌ Another ${kind} member already uses folder "${newFolder}" on ${scope} (a folder may hold one LLM member and one LLM-less member). Update rejected.`;
     }
   }
 
@@ -307,6 +312,18 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
   } else if (updated.agentType !== 'remote') {
     // Local members have no connectivity concept -- always attempt (best-effort/non-fatal).
     await seedWorkspaceTrust(updated, undefined, 'update_member');
+  }
+
+  // Re-check project-level agent files that would shadow the managed role set
+  // (the work folder or provider may have changed). The dispatch-time cache is
+  // always invalidated; the check itself runs only when the member is reachable
+  // (local members always). Never throws.
+  invalidateProjectAgentShadowCache(updated.id);
+  const shadowReachable = updated.agentType !== 'remote' || agentProvisionResult !== undefined
+    || remoteAgentsDir(updated.llmProvider ?? 'claude') === null;
+  if (shadowReachable) {
+    const shadowWarning = await recheckProjectAgentShadows(updated);
+    if (shadowWarning) warnings.push(shadowWarning);
   }
 
   let result = `✅ Member "${updated.friendlyName}" updated.\n\n`;

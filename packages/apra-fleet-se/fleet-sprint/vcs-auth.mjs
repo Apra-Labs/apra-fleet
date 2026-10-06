@@ -10,7 +10,7 @@
 // (provisionOutcome below), keeping the prose regexes only as a fallback for
 // a result with no structuredContent at all.
 import { ApraFleet } from '@apralabs/apra-fleet-client';
-import { buildCreatePrCommand, resolveProvider, capabilities as vcsCapabilities, parseProviderRepoRef, getVcsProvider, resolveVcsAuthProviderForHost, isAuthBackend, VCS_NO_REGISTERED_PROVIDER, DEFAULT_VCS_PROVIDER } from './vcs-module.mjs';
+import { buildCreatePrCommand, buildFindPrCommand, buildUpdatePrCommand, resolveProvider, capabilities as vcsCapabilities, parseProviderRepoRef, getVcsProvider, resolveVcsAuthProviderForHost, isAuthBackend, VCS_NO_REGISTERED_PROVIDER, DEFAULT_VCS_PROVIDER } from './vcs-module.mjs';
 import { getSeCommands } from './se-os-commands.mjs';
 import { resolveMemberTarget } from './member-target.mjs';
 import { resultText } from './mcp-result.mjs';
@@ -273,7 +273,7 @@ async function provisionVcsAuthForMember({ fleetApi, command, member, log = () =
     // origin remote via a real git-capable member (e.g. Publish PR's
     // publishGitMember) passes it here instead of making THIS function shell
     // out its own 'git remote get-url origin' to `member` -- which matters
-    // when `member` is orchestratorMember and may be a git-less/shared member
+    // when `member` is backlogMember and may be a git-less/shared member
     // with no checkout to read a remote from at all. Skips the read entirely,
     // never the parse below.
     if (remoteUrlOverride) {
@@ -670,11 +670,24 @@ function isPrAuthFailure(status, errorText) {
 // server-side. If the retry still fails, the failure (auth or not) is
 // returned as-is; the raw token is never logged (and is never even held
 // here), only `built.logSafeCommand`.
+//
+// EXISTING-PR UPDATE (optional `updateExisting`). A sprint relaunched on a
+// branch that already has a PR must not leave the old run's verdict in the
+// title/body. When the caller passes `updateExisting(old) -> { title, body }`
+// and creation reports already-exists, this finds the open PR for
+// head -> base (provider 'find-pull-request' builder -- the create response
+// carries neither the PR id nor its current body), hands the old title/body
+// to `updateExisting`, and PATCHes the result ('update-pull-request'
+// builder), with the same placeholder handoff, body cap and one-shot auth
+// self-heal as creation. It never throws: any failure (including a provider
+// with no such builder) comes back as `updated: false` + `updateError` for
+// the caller to log as a WARNING, leaving the PR as it was. Without
+// `updateExisting` the returned shape is exactly the historical one.
 /**
- * @param {{ fleetApi: object, command: Function, member: string, base: string, head: string, title: string, body?: string, log?: Function, logPrefix: string, azdevopsPatSecretName?: string }} opts
- * @returns {Promise<{ ok: boolean, alreadyExists: boolean, prUrl: string|null, error: string|null, authFailure: boolean }>}
+ * @param {{ fleetApi: object, command: Function, member: string, base: string, head: string, title: string, body?: string, log?: Function, logPrefix: string, azdevopsPatSecretName?: string, updateExisting?: Function }} opts
+ * @returns {Promise<{ ok: boolean, alreadyExists: boolean, prUrl: string|null, error: string|null, authFailure: boolean, updated?: boolean, updateError?: string|null }>}
  */
-export async function raiseVcsPrForMember({ fleetApi, command, member, base, head, title, body, log = () => {}, logPrefix, remoteUrlOverride, azdevopsPatSecretName }) {
+export async function raiseVcsPrForMember({ fleetApi, command, member, base, head, title, body, log = () => {}, logPrefix, remoteUrlOverride, azdevopsPatSecretName, updateExisting }) {
     let repo;
     try {
         ({ repo } = await provisionPrCapableAuthForMember({ fleetApi, command, member, log, logPrefix, remoteUrlOverride, azdevopsPatSecretName }));
@@ -777,6 +790,73 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
     }
     const repoRef = providerRef ? providerRef.ref : null;
 
+    // One REST round trip for the existing-PR update path (see the header
+    // note): placeholder handoff, 2xx check, one-shot auth self-heal. Returns
+    // { ok, built, body } or { ok: false, error } -- never throws on an HTTP
+    // or handoff failure.
+    const runUpdatePathCall = async (buildFn, what) => {
+        let healed = false;
+        // eslint-disable-next-line no-constant-condition
+        while (true) {
+            const b = buildFn();
+            const res = await fleetApi.vcsCredentialExec({ member_name: member, label: credentialLabel, command: b.command });
+            const h = (res && res.structuredContent) || {};
+            if (!h.ok || (typeof h.exitCode === 'number' && h.exitCode !== 0)) {
+                return { ok: false, error: `${what} dispatch failed (${h.reason || 'nonzero exit'}): ${h.stderr || resultText(res) || '(no detail)'}` };
+            }
+            const parsed = parseVcsCurlOutput(h.stdout);
+            const [lo, hi] = b.interpret.successStatusRange;
+            if (parsed.status !== null && parsed.status >= lo && parsed.status <= hi) return { ok: true, built: b, body: parsed.body };
+            const msg = (parsed.body && typeof parsed.body.message === 'string') ? parsed.body.message : (parsed.bodyText || '');
+            if (isPrAuthFailure(parsed.status, msg) && !healed) {
+                healed = true;
+                log(`${logPrefix}: ${what} returned an auth-classified failure (HTTP ${parsed.status ?? '(unknown)'}) for member '${member}'; re-provisioning a push+pr credential and retrying once (command: ${b.logSafeCommand}): ${msg}`);
+                try {
+                    // The operator's secret name, like every other provisioning
+                    // call here: without it the retry mints the provider default
+                    // and overwrites the member's working credential.
+                    const reprov = await provisionPrCapableAuthForMember({ fleetApi, command, member, log, logPrefix, remoteUrlOverride, azdevopsPatSecretName });
+                    if (reprov.repo) repo = reprov.repo;
+                } catch (healErr) {
+                    return { ok: false, error: `${what} auth self-heal failed: ${healErr.message}` };
+                }
+                continue;
+            }
+            return { ok: false, error: `${what} failed: HTTP ${parsed.status ?? '(unknown)'}: ${msg}` };
+        }
+    };
+    const updateExistingPr = async () => {
+        try {
+            const coords = () => ({ provider, ...(repoRef ? { repoRef } : { repo }), token, os, shell });
+            const found = await runUpdatePathCall(() => buildFindPrCommand({ ...coords(), base, head }), 'find-pull-request');
+            if (!found.ok) return { updated: false, updateError: found.error, prUrl: null };
+            const prs = found.built.mapResponse(found.body);
+            if (!prs.length) {
+                return { updated: false, updateError: `no open pull request found for '${head}' -> '${base}'`, prUrl: null };
+            }
+            const pr = prs[0];
+            const next = updateExisting({ title: pr.title, body: pr.body }) || {};
+            let warned = false;
+            const upd = await runUpdatePathCall(() => {
+                const b = buildUpdatePrCommand({
+                    ...coords(),
+                    pull_request_id: pr.id,
+                    title: next.title || title,
+                    body: next.body !== undefined ? next.body : body,
+                });
+                if (b.descriptionTruncated && !warned) {
+                    warned = true;
+                    log(`${logPrefix}: WARNING: updated PR description for member '${member}' was ${b.descriptionTruncated.originalLength} chars, exceeding the ${b.descriptionTruncated.maxLength}-char limit; truncated.`);
+                }
+                return b;
+            }, 'update-pull-request');
+            if (!upd.ok) return { updated: false, updateError: upd.error, prUrl: pr.url };
+            return { updated: true, updateError: null, prUrl: pr.url };
+        } catch (err) {
+            return { updated: false, updateError: (err && err.message) ? err.message : String(err), prUrl: null };
+        }
+    };
+
     let authHealAttempted = false;
     // apra-fleet PR-body length fix: buildCreatePrCommand deterministically
     // truncates `body` to PR_DESCRIPTION_MAX_LENGTH and reports it back via
@@ -866,7 +946,10 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
         if (status === built.interpret.alreadyExistsStatus && new RegExp(built.interpret.alreadyExistsPattern, 'i').test(errorText)) {
             const urlMatch = /https?:\/\/\S+/.exec(errorText);
             const existingUrl = urlMatch ? urlMatch[0].replace(/[.,)]+$/, '') : null;
-            return { ok: true, alreadyExists: true, prUrl: existingUrl, error: null, authFailure: false };
+            const existing = { ok: true, alreadyExists: true, prUrl: existingUrl, error: null, authFailure: false };
+            if (typeof updateExisting !== 'function') return existing;
+            const upd = await updateExistingPr();
+            return { ...existing, prUrl: upd.prUrl || existingUrl, updated: upd.updated, updateError: upd.updateError };
         }
 
         if (isPrAuthFailure(status, errorText) && !authHealAttempted) {
@@ -948,14 +1031,44 @@ export function createMemberVcsProviderResolver(opts = {}) {
  * transport-agnostic and unit-testable without a live fleet server.
  *
  * @param {{ callTool: (name: string, args: object) => Promise<any>, command: Function, log?: Function }} opts
- * @returns {(info: { member: string, label: string, cmd?: string, error: string, kind: 'git'|'dolt' }) => Promise<void>}
+ * @returns {((info: { member: string, label: string, cmd?: string, error: string, source?: 'git'|'dolt', failureKind?: string }) => Promise<void>) & { recordHealOutcome: (info: { member: string, label: string, error: string, recovered: boolean }) => Promise<void> }}
  */
 export function createVcsAuthSelfHealCallback(opts = {}) {
-    const { callTool, command, log = () => {}, azdevopsPatSecretName } = opts;
+    const { callTool, command, log = () => {}, azdevopsPatSecretName, now = () => Date.now(), futileHealTtlMs = FUTILE_HEAL_TTL_MS } = opts;
     const fleetApi = new ApraFleet({ callTool });
+    // GitHub #616: last-resort heals of UNCLASSIFIED failures that ran and did
+    // NOT recover, keyed by member + normalised error, so the same futile
+    // re-provisioning is not repeated on every D-pull. Only 'unknown' failures
+    // are remembered -- a genuine auth failure is always healed -- and each
+    // entry expires after futileHealTtlMs, so a later, different cause behind
+    // the same text still gets a heal.
+    /** @type {Map<string, { label: string, at: number }>} */
+    const futileHeals = new Map();
 
-    return async function onAuthFailure({ member, label, error }) {
-        log(`[Sync] self-heal: auth failure detected for member '${member}' (${label}); calling provision_vcs_auth to re-provision credentials: ${error}`);
+    function rememberedFutileHeal(key) {
+        const entry = futileHeals.get(key);
+        if (!entry) return null;
+        if (now() - entry.at >= futileHealTtlMs) {
+            futileHeals.delete(key);
+            return null;
+        }
+        return entry;
+    }
+
+    async function onAuthFailure({ member, label, error, source, failureKind }) {
+        if (failureKind === 'unknown') {
+            const entry = rememberedFutileHeal(selfHealMemoryKey(member, error));
+            if (entry) {
+                throw new Error(
+                    `skipping self-heal for member '${member}' (${label}): re-provisioning credentials already failed to recover ` +
+                    `this same unclassified failure earlier in this run (${entry.label}); fix the cause on the member instead.`,
+                );
+            }
+        }
+        const isAuth = failureKind === undefined || failureKind === 'auth';
+        log(isAuth
+            ? `[Sync] self-heal: auth failure detected for member '${member}' (${label}${source ? `, ${source}` : ''}); calling provision_vcs_auth to re-provision credentials: ${error}`
+            : `[Sync] self-heal: unclassified failure for member '${member}' (${label}${source ? `, ${source}` : ''}); re-provisioning credentials as a last resort via provision_vcs_auth: ${error}`);
 
         // apra-fleet-5co8.4.2: some providers (e.g. Azure DevOps PATs) can
         // never be fixed by this reactive re-provisioning call alone -- it
@@ -987,8 +1100,47 @@ export function createVcsAuthSelfHealCallback(opts = {}) {
 
         await provisionVcsAuthForMember({ fleetApi, command, member, log, logPrefix: '[Sync] self-heal', azdevopsPatSecretName, resolvedProvider: resolved });
 
-        log(`[Sync] self-heal: provision_vcs_auth succeeded for member '${member}' (${label}); the failed command will be retried once.`);
+        log(`[Sync] self-heal: credentials re-provisioned for member '${member}' (${label}); the failed command will be retried once.`);
+    }
+
+    /**
+     * Called by runGitStep/runDoltStep after the post-heal retry; a heal that
+     * did not recover is remembered so it is not attempted again this run.
+     * @param {{ member: string, label: string, error: string, recovered: boolean, failureKind?: string }} info
+     */
+    onAuthFailure.recordHealOutcome = async function recordHealOutcome({ member, label, error, recovered, failureKind }) {
+        if (recovered || failureKind !== 'unknown') return;
+        futileHeals.set(selfHealMemoryKey(member, error), { label, at: now() });
     };
+
+    return onAuthFailure;
+}
+
+/** How long a futile unclassified self-heal is remembered (30 minutes). */
+export const FUTILE_HEAL_TTL_MS = 30 * 60 * 1000;
+
+/**
+ * Key for remembering a futile self-heal: the member plus the failure's
+ * DISTINGUISHING text. Warning/hint lines (shell-profile noise, git hints) are
+ * dropped and the fatal/error lines kept (else the TAIL of what remains), so
+ * two failures sharing a long common prefix never collapse into one key. The
+ * run-varying parts (pids, counts, hex ids, whitespace runs) are normalised
+ * away, but the number after "exit code"/"exit status" is kept, so distinct
+ * exit codes stay distinct.
+ * @param {string} member
+ * @param {string} error
+ * @returns {string}
+ */
+export function selfHealMemoryKey(member, error) {
+    const lines = String(error || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean)
+        .filter((l) => !/^(?:remote:\s*)?(?:warning|hint)\b/i.test(l));
+    const decisive = lines.filter((l) => /\b(?:fatal|error)\b/i.test(l));
+    let text = (decisive.length > 0 ? decisive : lines).join(' ');
+    text = text.replace(/(\bexit (?:code|status)\s*:?\s*)(\d+)|\b[0-9a-f]{7,}\b|\d+/gi,
+        (m, prefix, code) => (prefix ? `${prefix}${code}` : (/^\d+$/.test(m) ? '<n>' : '<hex>')));
+    text = text.toLowerCase().replace(/\s+/g, ' ').trim();
+    if (text.length > 500) text = text.slice(-500);
+    return `${member}|${text}`;
 }
 
 // How far ahead of a credential's known expiry the preflight treats it as
@@ -1166,7 +1318,11 @@ export function createWorkflowsPermissionPreflightCallback(opts = {}) {
     // provider checks and operator-referral log name GitHub. Not agent-dispatch text.
     return async function warnIfWorkflowsPermissionMissing(member, branch, baseBranch) {
         try {
-            if (!branch || !baseBranch || branch === baseBranch) return;
+            // branch === baseBranch is rejected at launch (sprint-args.mjs
+            // validateBranchPair), so it is no longer tolerated as a silent no-op
+            // here: a same-named pair falls through to the ahead-count check,
+            // which still returns early when nothing is ahead of origin.
+            if (!branch || !baseBranch) return;
             if (silentMembers.has(member)) return;
 
             const { provider, authMode } = await resolveProvider(member, { fleetApi });

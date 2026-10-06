@@ -72,7 +72,7 @@ Required:
 - `target_issues` (non-empty string array) OR legacy `target_issue` (string) -- at least one of the two; `target_issues` is preferred. Each entry validated with `validateIssueId`.
 - `members` (non-empty string array, every entry a non-empty string).
 - `branch` (string, `validateBranchName`).
-- `base_branch` (string, `validateBranchName`).
+- `base_branch` (string, `validateBranchName`). Must differ from `branch` (`validateBranchPair`; `refs/heads/` and `origin/` prefixes are ignored when comparing).
 
 Optional (defaults applied inside `validateArgs()`):
 - `goal` -- default `'P1/P2'`; must match `GOAL_PATTERN`.
@@ -81,16 +81,18 @@ Optional (defaults applied inside `validateArgs()`):
 `expect_beads` (raw `--expect-beads` JSON, forwarded verbatim) is parsed by
 `validateArgs()` via `validateExpectBeads` -- bad JSON is rejected at
 validation, before any dispatch. Argv resolution order: `--expect-beads`
-flag, then env `FLEET_SPRINT_EXPECT_BEADS`, then unset (the orchestrator
+flag, then env `FLEET_SPRINT_EXPECT_BEADS`, then unset (the backlog
 member's own `bd where` becomes the expectation). Before any `bd` mutation,
-`verifyBeadsIdentity()` probes the orchestrator member then every other
+`verifyBeadsIdentity()` probes the backlog member then every other
 member (`bd where --json`, `bd config get sync.remote --json`, `git remote
 get-url origin`) and throws `BeadsIdentityError` (reason `MISMATCH`) -- text:
 `Beads identity check failed: member '<member>' resolves to a different beads
 database than expected (...) -- <field>: expected '<x>', actual '<y>'.
 Refusing to mutate beads on it.` -- on the first field that resolved on BOTH
-sides and differs. No bypass flag. A probe that fails or resolves nothing is
-NOT fatal: it logs `[beads-identity] WARNING: member '<m>' could not report
+sides and differs. It also throws (reason `MISSING_TOOL`) when a `bd` probe
+fails because `bd` itself is not installed or not on PATH on a member,
+naming the member and the fix. No bypass flag. Any other probe that fails or
+resolves nothing is NOT fatal: it logs `[beads-identity] WARNING: member '<m>' could not report
 <field> ('<probe>' -> <error>); not compared. To fix: ...` (or `... reports
 no beads database in its workFolder ...` when `bd where` itself fails, in
 which case that member has no identity entry at all), leaves that field out

@@ -236,6 +236,32 @@ Usage:
   process.exit(1);
 }
 
+/**
+ * Exit code for "refusing to start because another/foreign server holds the
+ * port or data dir" (GitHub #584). Under a service manager (systemd
+ * Restart=on-failure, launchd KeepAlive SuccessfulExit=false) a non-zero exit
+ * restarts the server every few seconds -- each attempt a new fleet-<pid>.log
+ * that `apra-fleet watch` then follows -- while the cause persists. Only a
+ * launch by such a service manager (launchedByServiceManager: the
+ * APRA_FLEET_SERVICE marker, systemd INVOCATION_ID, launchd XPC_SERVICE_NAME)
+ * exits 0, like the already-running case. Every other launch (terminal, CI,
+ * nohup, containers, scripts) exits 1 so the refusal stays visible.
+ */
+// Captured once by startHttpServer (which also strips our markers from the
+// env so children never inherit them). Still "any service-manager hint":
+// installs predating the APRA_FLEET_SERVICE marker rely on systemd/launchd
+// vars, and for a refusal the only cost of a false positive (a hand-run shell
+// under systemd) is exit code 0 instead of 1 -- the refusal is still printed.
+let serviceManagedLaunch: boolean | null = null;
+
+async function refusalExitCode(): Promise<number> {
+  if (serviceManagedLaunch === null) {
+    const { launchedByServiceManager } = await import('./services/service-manager/types.js');
+    serviceManagedLaunch = launchedByServiceManager();
+  }
+  return serviceManagedLaunch ? 0 : 1;
+}
+
 function resolveTransport(args: string[]): 'http' | 'stdio' | 'invalid' {
   if (args.length === 0) return 'http';
   if (args[0] === '--stdio') return 'stdio';
@@ -321,20 +347,72 @@ async function startStdioServer() {
   purgeExpiredCredentials();
   void checkForUpdate();
 
+  // GitHub #562: leave a trace when the event loop freezes.
+  const { startEventLoopWatchdog } = await import('./services/event-loop-watchdog.js');
+  const { getActiveLogFile } = await import('./utils/log-helpers.js');
+  const watchdog = startEventLoopWatchdog({ logFile: getActiveLogFile() });
+
   const { cleanupAuthSocket } = await import('./services/auth-socket.js');
-  process.on('SIGINT', () => { cleanupAuthSocket().then(() => { closeAllConnections(); stallDetector.stop(); process.exit(0); }); });
-  process.on('SIGTERM', () => { cleanupAuthSocket().then(() => { closeAllConnections(); stallDetector.stop(); process.exit(0); }); });
+  // GitHub #585: every exit path (SIGINT/SIGTERM/SIGHUP/SIGBREAK, crashes)
+  // writes one synchronous shutdown record before the process exits.
+  const { installShutdownHandlers } = await import('./services/server-lifecycle.js');
+  let stdioStopping = false;
+  installShutdownHandlers(() => {
+    if (stdioStopping) return;
+    stdioStopping = true;
+    void watchdog.stop();
+    cleanupAuthSocket().then(() => { closeAllConnections(); stallDetector.stop(); process.exit(0); });
+  });
 }
 
 async function startHttpServer() {
+  // GitHub #585 recovery: a service launch (logon, the Windows task's repeating
+  // revive trigger) that keeps failing backs off instead of retrying -- and
+  // writing a new fleet-<pid>.log -- every interval. See service-start-guard.ts.
+  const { consumeLaunchMarkers } = await import('./services/service-manager/types.js');
+  const launch = consumeLaunchMarkers();
+  serviceManagedLaunch = launch.managed;
+  // The stopped-by-user skip and the start backoff decide whether to start at
+  // all, so they apply ONLY to our own service templates (APRA_FLEET_SERVICE=1,
+  // set by the task wrapper, the plist and the unit) -- never to a hand-run
+  // `apra-fleet run` in a shell that merely inherited INVOCATION_ID or
+  // XPC_SERVICE_NAME (systemd-run --shell, tmux from a user unit, CI runners).
+  const startGuard = launch.service ? await import('./services/service-start-guard.js') : null;
+  if (startGuard) {
+    // A deliberate `apra-fleet stop` must stick across logon/boot on every OS:
+    // launchd RunAtLoad, an enabled systemd unit, the Windows HKCU Run
+    // fallback, or an old task that could not be disabled all launch us here.
+    // Exit 0 (launchd SuccessfulExit=false / systemd Restart=on-failure do not
+    // restart it) and KEEP the marker -- only `apra-fleet start`/install clear it.
+    const { readStoppedMarker, describeStoppedMarker } = await import('./services/stopped-marker.js');
+    const stopped = readStoppedMarker();
+    if (stopped) {
+      const line = `${new Date().toISOString()} apra-fleet service launch skipped: ${describeStoppedMarker(stopped)}`;
+      // Someone is watching (a console, or stderr on a mintty/Git Bash tty
+      // while stdout is piped): always say why.
+      if (process.stdout.isTTY || process.stderr.isTTY) console.error(line);
+      else if (startGuard.shouldLogServiceNotice('stopped-by-user')) console.log(line);
+      process.exit(0);
+    }
+    const skip = startGuard.serviceStartBackoff();
+    if (skip) {
+      console.log(`${new Date().toISOString()} ${skip}`);
+      process.exit(0);
+    }
+    startGuard.recordServiceStartAttempt();
+  }
+
   const { loadOnboardingState, resetSessionFlags } = await import('./services/onboarding.js');
   const { getAllAgents: getAgentsForStartup } = await import('./services/registry.js');
   // Pass current member count so upgrade detection works: existing registry + no onboarding.json -> skip banner
   loadOnboardingState(getAgentsForStartup().length);
   resetSessionFlags();
 
-  const { checkRunningInstance, claimStartupLock } = await import('./services/singleton.js');
-  const { createHttpTransport } = await import('./services/http-transport.js');
+  const {
+    checkRunningInstance, claimStartupLock, unresponsiveInstanceMessage, portInUseMessage, readServerInfoPid,
+    describePreviousServer,
+  } = await import('./services/singleton.js');
+  const { createHttpTransport, PortInUseError } = await import('./services/http-transport.js');
   const { registerAllTools } = await import('./services/tool-registry.js');
   const { FLEET_DIR, SERVER_INFO_PATH } = await import('./paths.js');
   const { closeAllConnections } = await import('./services/ssh.js');
@@ -349,8 +427,29 @@ async function startHttpServer() {
   // Detect already-running instance before starting
   const instance = await checkRunningInstance();
   if (instance.running) {
-    logLine('startup', `apra-fleet already running at ${instance.url} pid=${instance.pid} -- exiting`);
+    const msg = `apra-fleet already running at ${instance.url} pid=${instance.pid} -- exiting`;
+    if (startGuard) {
+      // Service launches (a revive-trigger tick) go to the service log only,
+      // not a fresh fleet-<pid>.log per tick, and at most once an hour (a
+      // server running outside the task would otherwise log ~288 lines/day).
+      if (startGuard.shouldLogServiceNotice('already-running')) {
+        console.log(`${new Date().toISOString()} ${msg}`);
+      }
+      startGuard.clearServiceStartFailures();
+    } else {
+      logLine('startup', msg);
+    }
     process.exit(0);
+  }
+  if (instance.state === 'gone') {
+    const previousNote = describePreviousServer(instance.previous);
+    if (previousNote) logLine('startup', `${previousNote}; removed its stale server.json`);
+  }
+  if (instance.state === 'unresponsive') {
+    // A live server with a blocked event loop is not dead: starting a second
+    // one would split the fleet (GitHub #584). Refuse; the operator stops it.
+    logError('startup', unresponsiveInstanceMessage(instance));
+    process.exit(await refusalExitCode());
   }
 
   // Atomic startup lock to prevent concurrent double-start race
@@ -360,7 +459,17 @@ async function startHttpServer() {
     process.exit(0);
   }
 
-  const handle = await createHttpTransport({ registerTools: registerAllTools });
+  let handle: Awaited<ReturnType<typeof createHttpTransport>>;
+  try {
+    handle = await createHttpTransport({ registerTools: registerAllTools });
+  } catch (err) {
+    lock.release();
+    if (err instanceof PortInUseError) {
+      logError('startup', portInUseMessage(err.port, readServerInfoPid()));
+      process.exit(await refusalExitCode());
+    }
+    throw err;
+  }
 
   // Write server.json so other processes can detect this instance
   fs.mkdirSync(FLEET_DIR, { recursive: true });
@@ -377,6 +486,12 @@ async function startHttpServer() {
 
   // Release startup lock now that server.json is written (server.json is the long-lived detection mechanism)
   lock.release();
+  // The stopped-by-user marker is NOT cleared here: only an explicit
+  // `apra-fleet start` / `apra-fleet install` ends a deliberate stop. (A
+  // service launch never gets this far while it exists; a manual `run`
+  // leaves it, so if this server later dies clients still do not
+  // auto-start -- the conservative side.)
+  startGuard?.clearServiceStartFailures();
 
   // Make HTTP handle available to shutdown_server tool
   setHttpHandle(handle);
@@ -397,9 +512,15 @@ async function startHttpServer() {
   purgeExpiredCredentials();
   void checkForUpdate();
 
+  // GitHub #562: leave a trace when the event loop freezes.
+  const { startEventLoopWatchdog } = await import('./services/event-loop-watchdog.js');
+  const { getActiveLogFile } = await import('./utils/log-helpers.js');
+  const watchdog = startEventLoopWatchdog({ logFile: getActiveLogFile() });
+
   async function shutdown() {
     try { lock.release(); } catch {}
     try { fs.unlinkSync(SERVER_INFO_PATH); } catch {}
+    try { await watchdog.stop(); } catch {}
     try { await handle.close(); } catch {}
     try { await cleanupAuthSocket(); } catch {}
     try { closeAllConnections(); } catch {}
@@ -407,6 +528,14 @@ async function startHttpServer() {
     process.exit(0);
   }
 
-  process.on('SIGINT', () => void shutdown());
-  process.on('SIGTERM', () => void shutdown());
+  // GitHub #585: every exit path (SIGINT/SIGTERM/SIGHUP/SIGBREAK, POST
+  // /shutdown, shutdown_server, crashes) writes one synchronous shutdown
+  // record to fleet-<pid>.log before the process exits.
+  const { installShutdownHandlers } = await import('./services/server-lifecycle.js');
+  let stopping = false;
+  installShutdownHandlers(() => {
+    if (stopping) return;
+    stopping = true;
+    void shutdown();
+  });
 }

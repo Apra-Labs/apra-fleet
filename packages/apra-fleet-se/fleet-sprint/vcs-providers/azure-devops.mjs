@@ -695,6 +695,103 @@ const pullRequestResponse = Object.freeze({
     map: mapPullRequestResponse,
 });
 
+/** Map one Azure DevOps pull request object to the provider-neutral
+ *  { id, title, body, url } shape the existing-PR update path reads. */
+function mapAzureDevOpsPull(pr, coords) {
+    const src = (pr && typeof pr === 'object') ? pr : {};
+    const { id, url } = mapPullRequestResponse(src, coords);
+    return {
+        id,
+        title: typeof src.title === 'string' ? src.title : '',
+        body: typeof src.description === 'string' ? src.description : '',
+        url,
+    };
+}
+
+/**
+ * Build the Azure DevOps REST "find the active pull request for source ->
+ * target" curl command, used on the already-exists (409 TF401179) path to
+ * learn the existing PR's id and current description.
+ * GET .../pullrequests?searchCriteria.sourceRefName=..&searchCriteria.targetRefName=..
+ *     &searchCriteria.status=active&api-version=7.1
+ * -- see https://learn.microsoft.com/rest/api/azure/devops/git/pull-requests/get-pull-requests
+ * The URL carries '&', so it is quoted like every other argument.
+ */
+function buildAzureDevOpsFindPrCommand(params) {
+    const { base, head, token, os, shell } = params || {};
+    const coords = assertRepoCoords(params, 'find-pull-request');
+    const safeToken = assertToken(token);
+    if (!base) throw new Error('ERROR: VCSModule: "base" branch is required to build a find-pull-request command.');
+    if (!head) throw new Error('ERROR: VCSModule: "head" branch is required to build a find-pull-request command.');
+    const query = [
+        `searchCriteria.sourceRefName=${encodeURIComponent(toFullRef(head))}`,
+        `searchCriteria.targetRefName=${encodeURIComponent(toFullRef(base))}`,
+        'searchCriteria.status=active',
+        `api-version=${API_VERSION}`,
+    ].join('&');
+    const url = `${repoApiBase(coords)}/pullrequests?${query}`;
+
+    const buildCurl = (authToken) => [
+        `${curlBinary(os)} -sS -X GET`,
+        `-u ${shQuote(`:${authToken}`, os, shell)}`,
+        `-H ${shQuote('Accept: application/json', os, shell)}`,
+        `-w ${shQuote('\n%{http_code}', os, shell)}`,
+        shQuote(url, os, shell),
+    ].join(' ');
+
+    return {
+        provider: 'azure-devops',
+        action: 'find-pull-request',
+        command: buildCurl(safeToken),
+        logSafeCommand: buildCurl(REDACTED),
+        interpret: { successStatusRange: [200, 299] },
+        /** 2xx body ({ value: [...] }) -> [{ id, title, body, url }]. */
+        mapResponse: (respBody) => {
+            const list = respBody && Array.isArray(respBody.value) ? respBody.value : [];
+            return list.map((pr) => mapAzureDevOpsPull(pr, coords)).filter((p) => p.id !== null);
+        },
+    };
+}
+
+/**
+ * Build the Azure DevOps REST "update a pull request" curl command (title +
+ * description).
+ * PATCH .../pullrequests/{id}?api-version=7.1
+ * -- see https://learn.microsoft.com/rest/api/azure/devops/git/pull-requests/update
+ */
+function buildAzureDevOpsUpdatePrCommand(params) {
+    const { pull_request_id: pullRequestId, title, body, token, os, shell } = params || {};
+    const coords = assertRepoCoords(params, 'update-pull-request');
+    const safeToken = assertToken(token);
+    const id = String(pullRequestId ?? '').trim();
+    if (!/^\d+$/.test(id)) throw new Error('ERROR: VCSModule: a numeric "pull_request_id" is required to build an update-pull-request command.');
+    if (!title) throw new Error('ERROR: VCSModule: "title" is required to build an update-pull-request command.');
+
+    const payload = { title };
+    if (body !== undefined) payload.description = body;
+    const payloadJson = JSON.stringify(payload);
+    const url = `${repoApiBase(coords)}/pullrequests/${id}?api-version=${API_VERSION}`;
+
+    const buildCurl = (authToken) => [
+        `${curlBinary(os)} -sS -X PATCH`,
+        `-u ${shQuote(`:${authToken}`, os, shell)}`,
+        `-H ${shQuote('Content-Type: application/json', os, shell)}`,
+        `-H ${shQuote('Accept: application/json', os, shell)}`,
+        `-d ${shQuoteJson(payloadJson, os, shell)}`,
+        `-w ${shQuote('\n%{http_code}', os, shell)}`,
+        url,
+    ].join(' ');
+
+    return {
+        provider: 'azure-devops',
+        action: 'update-pull-request',
+        command: buildCurl(safeToken),
+        logSafeCommand: buildCurl(REDACTED),
+        interpret: { successStatusRange: [200, 299] },
+        mapResponse: (respBody) => mapAzureDevOpsPull(respBody, coords),
+    };
+}
+
 // ---------------------------------------------------------------------------
 // Auth self-heal remedy (apra-fleet-5co8.4.2)
 // ---------------------------------------------------------------------------
@@ -766,6 +863,8 @@ export const AzureDevOpsVCS = Object.freeze({
     builders: Object.freeze({
         'create-pull-request': buildAzureDevOpsCreatePrCommand,
         comment: buildAzureDevOpsCommentCommand,
+        'find-pull-request': buildAzureDevOpsFindPrCommand,
+        'update-pull-request': buildAzureDevOpsUpdatePrCommand,
     }),
 });
 

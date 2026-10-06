@@ -7,6 +7,7 @@
  *       activityIntervalSec while the main PID is alive — keeps idle manager from
  *       stopping the instance during active work.
  */
+import { escapePowerShellArgInner } from '../../utils/shell-escape.js';
 
 export interface TaskConfig {
   taskId: string;
@@ -145,7 +146,7 @@ export function generateTaskWrapper(config: TaskConfig): string {
 export function generateTaskWrapperWindows(config: TaskConfig): string {
   const cmdB64 = Buffer.from(config.command, 'utf-8').toString('base64');
   const restartB64 = Buffer.from(config.restartCommand ?? config.command, 'utf-8').toString('base64');
-  const taskId = config.taskId.replace(/'/g, "''");
+  const taskId = escapePowerShellArgInner(config.taskId);
 
   const lines: string[] = [
     "$ErrorActionPreference = 'Continue'",

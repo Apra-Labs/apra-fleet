@@ -184,7 +184,7 @@ flowchart LR
 - **Fleet server**: the control plane. Registers members, dispatches commands and prompts, moves files, brokers credentials. Speaks MCP, so any MCP-capable agent can drive a fleet. `execute_prompt` supports session forking (`fork`) on fork-capable providers -- branch a new, independent session from an existing one's context (e.g. a primed session reused across per-task dispatches) without continuing to write into the source session. See [docs/mcp-tools.md](docs/mcp-tools.md#execute_prompt) for the parameter contract.
 - **Members**: real machines running provider CLIs. Composes provider-native permissions before every dispatch; unattended modes are scoped, never blanket.
 - **Workflow engine**: runs workflow programs with phases, retries, turn budgets, resumable sessions, per-activity persistent state, and a cooperative pause/resume gate any workflow can hook into.
-- **Supervisor**: always-on layer -- launch, pause/resume, & stop sprints over HTTP, member reservation ledger, crash watchdog (including a live "paused" state and base-branch-drift indicator), run history.
+- **Supervisor**: always-on layer -- launch, pause/resume, & stop sprints over HTTP, member reservation ledger, crash watchdog (including a live "paused" state and base-branch-drift indicator), run history, and a supervisor-owned LLM-less backlog member that every launch is pinned to. The dashboard and backlog read a cached, tip-checked beads view and show when it was last refreshed ("Beads as of"); launch always forces a fresh beads check and answers 503, without reserving members or starting a sprint, when beads cannot be verified.
 
 ## Knowledge Layer
 
@@ -211,7 +211,7 @@ MCP tools that ship with the KB:
 | `kb_invalidate` | Mark files stale immediately (also called by the git hook) |
 | `kb_promote` | Advance confidence: UNVERIFIED -> INFERRED -> CONFIRMED |
 | `kb_harvest` | Extract learnings from a session transcript (auto-fires after execute_prompt) |
-| `kb_export` | Write live CONFIRMED entries to `.fleet/kb-canonical.json` -- the git-shareable team bible |
+| `kb_export` | Additively merge live CONFIRMED entries whose cited files still match their recorded hashes into `.fleet/kb-canonical.json` -- the git-shareable team bible |
 | `kb_setup` | Install git hook, write provider config, store remote token encrypted |
 
 `kb_setup --remote <url> --token <key>` takes effect immediately: the next
@@ -466,6 +466,7 @@ third-party verticals.
 | Shared hub/dashboard API contract package | [packages/fleet-api-contract/README.md](packages/fleet-api-contract/README.md) |
 | Workflow engine internals (`agent()`/`parallel()`/`pipeline()`, journal, budget, pause/resume) | [packages/apra-fleet-workflow/docs/apra-fleet-workflow-architecture.md](packages/apra-fleet-workflow/docs/apra-fleet-workflow-architecture.md) |
 | Cooperative workflow pause/resume (engine, viewer, supervisor, fleet-sprint) | [docs/features/workflow-pause-resume.md](docs/features/workflow-pause-resume.md) |
+| Sprint run summary (`GET /state?summary=1`, published once per state, pulled by supervisor rows) | [docs/sprint-run-summary.md](docs/sprint-run-summary.md) |
 | Supervisor dashboard live-refresh (`/state` + `/events` SSE, tab-activation refresh, in-memory scope expansion) | [docs/features/supervisor-dashboard-live-refresh.md](docs/features/supervisor-dashboard-live-refresh.md) |
 | Writing and running workflow scripts | [packages/apra-fleet-workflow/docs/workflow-guide.md](packages/apra-fleet-workflow/docs/workflow-guide.md) |
 | Authoring a SEA-embedded `apra-fleet workflow` (manifest, entry contract, launcher env vars) | [docs/authoring-workflows.md](docs/authoring-workflows.md) |
@@ -476,6 +477,7 @@ third-party verticals.
 | Auto-sprint internals (cycle loop, stall detection, budget, topology) | [packages/apra-fleet-se/docs/architecture.md](packages/apra-fleet-se/docs/architecture.md) |
 | Auto-sprint agent role contracts | [packages/apra-fleet-se/docs/role-contracts.md](packages/apra-fleet-se/docs/role-contracts.md) |
 | fleet-supervisor skill (start/stop/restart/auto-start-on-boot, sprint launch via HTTP API) | [packages/apra-fleet-se/fleet-sprint/skills/fleet-supervisor/SKILL.md](packages/apra-fleet-se/fleet-sprint/skills/fleet-supervisor/SKILL.md) |
+| Scoped in-cycle replan findings threading, and the wrapper-injection role KB contract | [docs/scoped-replan-and-planner-kb-contract.md](docs/scoped-replan-and-planner-kb-contract.md) |
 | MCP client SDK overview (transports, `ApraFleet` API) | [packages/apra-fleet-client/docs/overview.md](packages/apra-fleet-client/docs/overview.md) |
 | MCP client SDK API reference | [packages/apra-fleet-client/docs/api-reference.md](packages/apra-fleet-client/docs/api-reference.md) |
 | MCP client SDK getting started | [packages/apra-fleet-client/docs/getting-started.md](packages/apra-fleet-client/docs/getting-started.md) |
@@ -765,12 +767,12 @@ The `apra-fleet-se` fleet-sprint runner (`packages/apra-fleet-se/fleet-sprint/ru
 
 Two topology modes are supported, selected explicitly when a sprint starts:
 
-- **`legacy` mode** -- no cross-member sync layer. Every `bd` command the orchestrator issues runs against the orchestrator member's beads DB, while each doer's own `bd close` runs against **its** member's DB; the sprint git branch is only meaningful if all members operate on the same working state. This coheres in exactly two topologies: **single-member** (one member does everything) or a **verified shared-workspace fleet** (every configured member resolves to the same checkout/beads DB). Independent per-member checkouts are **not supported** in this mode -- non-orchestrator members would silently work against a beads DB and git branch the orchestrator never sees.
+- **`legacy` mode** -- no cross-member sync layer. Every `bd` command the orchestrator issues runs against the backlog member's beads DB, while each doer's own `bd close` runs against **its** member's DB; the sprint git branch is only meaningful if all members operate on the same working state. This coheres in exactly two topologies: **single-member** (one member does everything) or a **verified shared-workspace fleet** (every configured member resolves to the same checkout/beads DB). Independent per-member checkouts are **not supported** in this mode -- non-backlog members would silently work against a beads DB and git branch the backlog member never sees.
 - **`synced` mode** -- an orchestrator-bracketed git+Dolt sync layer wraps every dispatch that reads or writes git-tracked or beads state, reconciling each member's state explicitly instead of assuming it is already shared. This is what makes genuinely independent per-member checkouts safe. The sync layer includes a scripted-first escalation ladder for both git and Dolt conflicts (mechanical detection and resolution first, an agent dispatched with an explicit conflict runbook only as a documented last resort), plus supervisor-owned global coordination (a Dolt push mutex and a child-id allocator) so concurrent cross-member Dolt writes never silently corrupt each other's beads clone.
 
 Guards enforcing whichever mode is selected:
 
-1. **Branch-ensure everywhere** (both modes): before the first doer round, the runner git-ensures the sprint branch (`fetch` + `checkout -B`) on **every** member in the union of the orchestrator/doer/reviewer pools -- not just the orchestrator -- and non-destructively re-checks-out the branch on each member at the start of later cycles (it never resets to base once work is committed).
+1. **Branch-ensure everywhere** (both modes): before the first doer round, the runner git-ensures the sprint branch (`fetch` + `checkout -B`) on **every** member in the union of the backlog/doer/reviewer pools -- not just the backlog member -- and non-destructively re-checks-out the branch on each member at the start of later cycles (it never resets to base once work is committed).
 2. **Topology precondition**: `bin/cli.mjs` calls `checkMemberTopology()` before starting a multi-member sprint. In `legacy` mode it compares an identity signal (`git rev-parse HEAD`) across the configured members and **refuses to start with a clear error** if they disagree (or if a member's signal can't be obtained); in `synced` mode HEADs are allowed to differ, but every member must share the same git remote origin and pass a live beads-Dolt-pull probe. Single-member sprints trivially pass either check.
 
 See `packages/apra-fleet-se/docs/architecture.md` for the full internals of both modes, including the escalation ladders and the always-on supervisor service that launches and tracks sprints.
@@ -800,14 +802,14 @@ one resolution order used identically by `src/cli/workflow.ts` and
 
 1. `APRA_FLEET_TRANSPORT` forced override (`http` fails loud with no
    singleton rather than silently falling back to a private server; `stdio`
-   or a set `APRA_FLEET_SERVER_CMD`/`_BIN` goes straight to self-spawn).
+   or a set `APRA_FLEET_SERVER_CMD`/`_BIN` goes straight to a private stdio server).
 2. Probe for a healthy HTTP singleton (`checkRunningInstance()` -- the same
    pid + `/health` check the installed service already uses for
    startup-dedup) and attach with zero spawned processes. This is the
    default, steady-state path.
-3. Fall back to stdio self-spawn (the four-tier command resolution
-   `resolveFleetServerCommand()` already had) only when no healthy
-   singleton is found.
+3. If the singleton is verifiably gone, start the shared HTTP server by
+   running `apra-fleet start` (detached, lock-guarded, loop-guarded) and
+   attach over HTTP. Stdio is only the explicit `stdio` / CMD / BIN path.
 
 The rationale for one shared helper over two copies: a launcher that merely
 mirrored the old stdio-only `resolveFleetServerCommand()` would always
@@ -1092,7 +1094,7 @@ always separate processes. Set `APRA_FLEET_TRANSPORT=http` (the default) or
 `APRA_FLEET_TRANSPORT=stdio` to control how the launcher reaches that
 server: `http` (default) attaches to the already-running installed-service
 singleton at `http://localhost:${APRA_FLEET_PORT:-7523}/mcp` and spawns
-nothing; `stdio` self-spawns a private server as a subprocess. See `docs/adr-workflow-server-resolution.md` for the full
+nothing; `stdio` (explicit only) runs a private server as a subprocess; if no singleton is running, `http` mode starts the shared one. See `docs/adr-workflow-server-resolution.md` for the full
 resolution order (this same order also governs where role schemas resolve
 from in the installed-binary case: `APRA_FLEET_SE_SCHEMAS_DIR`, set by the
 launcher to `~/.apra-fleet/schemas`, is tier 1 of the schema resolution
@@ -1675,7 +1677,7 @@ The fleet server creates a socket at `~/.apra-fleet/data/auth.sock` (Linux/macOS
 - Spawn succeeds -> process exits immediately -> **"[FAIL] Password entry cancelled"** error fires.
 - The error implies the user cancelled, not that the environment is headless.
 
-The same issue on Windows: `start /wait cmd.exe` opens a window on the physical console, invisible to the SSH user.
+The same issue on Windows: the credential console (a hidden PowerShell launcher running `Start-Process -Wait`; cmd.exe is never used, so prompt text is never parsed by it) opens a window on the physical console, invisible to the SSH user.
 
 ### Solution
 
@@ -1697,7 +1699,7 @@ export function hasInteractiveDesktop(): boolean {
 `launchAuthTerminal` checks these **before** attempting any terminal emulator:
 
 - **Linux, `$DISPLAY` and `$WAYLAND_DISPLAY` both unset:** Skip all GUI terminal emulators. Return actionable fallback message.
-- **Windows, `SESSIONNAME !== 'Console'`:** Skip `cmd.exe start /wait`. Return actionable fallback message.
+- **Windows, `SESSIONNAME !== 'Console'`:** Skip the console launch. Return actionable fallback message.
 - **GUI desktop (display available):** Unchanged -- auto-launches terminal as before.
 
 ### Why check env vars rather than probing the socket
@@ -3396,6 +3398,12 @@ For watch mode during development:
 ```bash
 npm run test:watch
 ```
+
+Every suite runs in a per-run sandbox (`scripts/test-sandbox.mjs`): HOME, USERPROFILE,
+APPDATA/LOCALAPPDATA, XDG dirs and `APRA_FLEET_DATA_DIR` point at a temp dir, and a guard
+preloaded into every node process refuses to run if the real profile would be used. Run package
+suites through their `npm test` scripts (or `node scripts/with-test-sandbox.mjs <cmd>`), never a bare
+`node --test`, so tests can never touch your real `~/.apra-fleet` (fleet.key, server.json, bin/).
 
 ## Branch Naming
 

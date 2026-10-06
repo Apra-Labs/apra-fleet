@@ -66,6 +66,7 @@ export const GUARDED_MODULES = [
     'prompts.mjs',
     'worklists.mjs',
     'sprint-args.mjs',
+    'backlog-role.mjs',
     'git-sync.mjs',
     'coordination.mjs',
     'kb.mjs',
@@ -197,7 +198,7 @@ export const GUARDED_MODULES = [
     // guard's `files` output against guardedModuleBasenames().
     //
     // harvest.mjs took NO member_name-bearing command() call site out of
-    // runner.js -- the docs/changelog/sprint-analysis commits are made by the
+    // runner.js -- the docs/sprint-analysis commits are made by the
     // DISPATCHED harvester inside its own repo and published by the 'harvester'
     // policy row's pushCode/pushBeads bracket -- but it took ONE dispatchRole()
     // site (the harvester ladder), which is what dispatch-safety-guard and the
@@ -303,6 +304,11 @@ export const GUARDED_MODULES = [
     // not a formality: it is what turns a future raw command()/agent() landing
     // in either file into a red test instead of a silently unguarded site.
     'sprint-report.mjs',
+    // The sprint PR title/body builder (markdown, run-history block) shared by
+    // the Publish PR phase and the [ABORTED] PR path. Pure text: no command(),
+    // no agent(), no push -- registered so a future dispatch landing here is
+    // caught rather than silently unguarded.
+    'pr-body.mjs',
     'newtask-text.mjs',
     // apra-fleet-fsxg: the parent-NOTES staleness signal. Its pure core is text
     // formatting, but collectParentNotesStalenessNotes carries TWO member_name-
@@ -376,6 +382,10 @@ export const GUARDED_MODULES = [
     // exactly what dispatch-safety-guard must keep scanning.
     'beads-identity.mjs',
     'beads-identity-check.mjs',
+    // The sprint-start token-usage memory sweep: TWO member_name-bearing
+    // command() sites (the memory list and the per-key forget), no agent(),
+    // and its push goes through an injected bracketed callback.
+    'beads-memory-hygiene.mjs',
     'vcs-module.mjs',
     'viewer-extensions.mjs',
     // GENERIC-BOUNDARY-EXCEPTION: these basenames are this facade-pin list

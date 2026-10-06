@@ -50,6 +50,15 @@ import { WorkflowError } from '@apralabs/apra-fleet-workflow';
 //   UNSUPPORTED_OPERATION The requested action is not implemented for this
 //                         provider. A programming/config error; retrying and
 //                         re-authenticating are both pointless.
+//   MISSING_TOOL          The command's binary (bd, dolt, git, ...) could not
+//                         be found on the member at all: PowerShell's "is not
+//                         recognized as the name of a cmdlet", cmd.exe's "is
+//                         not recognized as an internal or external command",
+//                         POSIX "command not found" / ": not found", exit code
+//                         127, spawn ENOENT. Checked BEFORE every provider
+//                         rule (GitHub #616). Never retried and never routed
+//                         to the credential self-heal -- re-provisioning
+//                         cannot install a binary or fix a PATH.
 //   UNKNOWN               Explicitly unrecognized. Never retried, never
 //                         self-healed -- an unmatched stderr must surface, not
 //                         be guessed at.
@@ -68,6 +77,7 @@ export const VCS_FAILURE_KINDS = Object.freeze({
     EMPTY_REMOTE: 'EMPTY_REMOTE',
     REMOTE_UNREACHABLE: 'REMOTE_UNREACHABLE',
     UNSUPPORTED_OPERATION: 'UNSUPPORTED_OPERATION',
+    MISSING_TOOL: 'MISSING_TOOL',
     UNKNOWN: 'UNKNOWN',
 });
 
@@ -460,6 +470,14 @@ export function isAuthDispatchError(err) {
 //                                 remote pid and aborted the in-flight dispatch
 //                                 (apra-fleet-3c9.1). Like the others, no test
 //                                 verdict was ever produced.
+//   - 'agent_never_started'     -- the member's session log never appeared at
+//                                 its authoritative path within the inactivity
+//                                 threshold; the process was killed before it
+//                                 ever ran the task.
+//   - 'max_total_time'          -- the dispatch ran out of max_total_s (measured
+//                                 from the call, setup included) and was
+//                                 stopped. Before this reason existed the same
+//                                 kill surfaced as 'dispatch_failed'.
 //
 // For an integ-test-runner dispatch, all of these mean "no test verdict was
 // ever produced" -- the run never reported pass or fail. Treating them as a
@@ -468,7 +486,7 @@ export function isAuthDispatchError(err) {
 // check on an infra fault. Callers use this classifier to (a) retry once via a
 // session resume and (b) failing that, record the cycle as INCONCLUSIVE rather
 // than a test FAIL -- exactly as the part-2 stale-evidence path already does.
-const INFRA_DISPATCH_REASONS = new Set(['empty_response', 'dispatch_failed', 'orphan_recovery_timeout', 'stalled', 'preflight_offline']);
+const INFRA_DISPATCH_REASONS = new Set(['empty_response', 'dispatch_failed', 'orphan_recovery_timeout', 'stalled', 'agent_never_started', 'max_total_time', 'preflight_offline']);
 
 /**
  * True when a dispatch error is an INFRASTRUCTURE failure (the member CLI never
@@ -786,12 +804,12 @@ export class ConcurrentSyncBracketError extends WorkflowError {
 // closed machine-readable vocabulary. Before this existed the block threw bare
 // `Error`s whose only discriminator was their prose, so a caller could not
 // tell "there is genuinely no ready work" (an operator-facing, often benign
-// outcome) from "this orchestrator's bd clone cannot see the target beads at
+// outcome) from "this backlog member's bd clone cannot see the target beads at
 // all" (a sync fault) or "the scope is deadlocked" (a graph fault) without
 // substring-matching a human-readable sentence.
 //
 //   TARGET_NOT_VISIBLE   One or more target issue ids are not present in the
-//                        orchestrator member's own bd clone AT ALL. NOT the
+//                        backlog member's own bd clone AT ALL. NOT the
 //                        same as those beads being closed: they are invisible
 //                        here, usually because they were created/mutated on a
 //                        different clone that was never dolt-pushed to the
@@ -838,7 +856,7 @@ export const PRE_SPRINT_REFUSAL_REASONS = Object.freeze({
  * @property {string} reason - one of PRE_SPRINT_REFUSAL_REASONS
  * @property {string|null} scope - the sprint filter the refusal was raised for
  * @property {string[]} [invisibleTargets] - TARGET_NOT_VISIBLE: the ids missing
- *   from the orchestrator member's clone
+ *   from the backlog member's clone
  * @property {Array<{blockedIssue: string, blockedBy: string}>} [cyclePairs] -
  *   CYCLE_REPAIR_FAILED: the parent-child + blocks edge pairs whose removal
  *   was attempted
@@ -880,16 +898,20 @@ export class PreSprintValidationError extends WorkflowError {
 
 export const BEADS_IDENTITY_FAILURE_REASONS = Object.freeze({
     MISMATCH: 'MISMATCH',
+    // The member cannot run bd at all (not installed / not on PATH).
+    MISSING_TOOL: 'MISSING_TOOL',
 });
 
 /**
  * Thrown by verifyBeadsIdentity (beads-identity-check.mjs) BEFORE any
  * mutating bd command when a member's probed identity (`bd where` / `bd
  * config get sync.remote` / `git remote get-url origin`) DIFFERS from the
- * expected one (the supervisor's expectation, or the orchestrator member's
- * own identity) on a field that resolved on both sides. A probe that fails
- * or cannot be parsed is a logged warning, never this error: only a proven
- * mismatch is a data-corruption risk worth refusing the sprint for.
+ * expected one (the supervisor's expectation, or the backlog member's
+ * own identity) on a field that resolved on both sides (reason MISMATCH), or
+ * when a member cannot run bd at all -- a bd probe failed because bd is not
+ * installed or not on PATH (reason MISSING_TOOL), so every later bd command
+ * there would fail too. Any other probe that fails or cannot be parsed is a
+ * logged warning, never this error.
  *
  * A WorkflowError so main()'s terminal record names the reason, but
  * deliberately NOT a typed abort: nothing has been dispatched or mutated, so

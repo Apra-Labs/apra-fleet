@@ -1,9 +1,9 @@
 import { defaultWindowsPidWrapper } from './windows-wrapper.js';
 export { defaultWindowsPidWrapper as pidWrapWindows };
-﻿import { execSync } from 'node:child_process';
+﻿import { execFileSync } from 'node:child_process';
 import type { OsCommands, ProviderAdapter, PromptOptions } from './os-commands.js';
 import { escapeWindowsArg, sanitizeSessionId } from './os-commands.js';
-import { escapeBatchMetachars } from '../utils/shell-escape.js';
+import { escapeBatchMetachars, escapePowerShellArgInner } from '../utils/shell-escape.js';
 
 /**
  * Wrap a PowerShell script as a base64 `-EncodedCommand` invocation.
@@ -52,6 +52,9 @@ const CLI_PATH = '$env:Path = "$env:USERPROFILE\\.local\\bin;$env:Path"; \'ANTIG
  * the parent's file handles (including the stdout pipe fleet's Node.js set up).
  * This works in both interactive and headless (GitHub Actions) environments.
  */
+// Normally ~1s; generous headroom for AV-scanned or loaded hosts.
+const CLEAN_ENV_TIMEOUT_MS = 30_000;
+
 const MEMINFO_CMD = [
   'Add-Type -TypeDefinition \'using System;using System.Runtime.InteropServices;public class MI{[DllImport("kernel32.dll")]public static extern bool GlobalMemoryStatusEx(ref MS m);[StructLayout(LayoutKind.Sequential)]public struct MS{public uint dwLength;public uint dwMemoryLoad;public ulong ullTotalPhys;public ulong ullAvailPhys;public ulong ullTotalPageFile;public ulong ullAvailPageFile;public ulong ullTotalVirtual;public ulong ullAvailVirtual;public ulong ullAvailExtendedVirtual;}}\'',
   '$m=New-Object MI+MS',
@@ -84,7 +87,23 @@ export class WindowsCommands implements OsCommands {
       sessionBlock,
       '$a|ConvertTo-Json -Compress',
     ].join('; ');
-    const result = execSync(script, { encoding: 'utf-8', shell: 'powershell.exe', windowsHide: true });
+    // -EncodedCommand, not an inline `-c` string: on some hosts PowerShell 5.1
+    // hangs forever (0 CPU) on an inline command of ~2000+ chars, and this
+    // script is ~2300. A blocking execSync with no timeout then freezes the
+    // whole fleet server. -NoProfile keeps profile output out of the JSON.
+    const encoded = Buffer.from(script, 'utf16le').toString('base64');
+    let result: string;
+    try {
+      result = execFileSync(
+        'powershell.exe',
+        ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded],
+        { encoding: 'utf-8', windowsHide: true, timeout: CLEAN_ENV_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'] },
+      );
+    } catch (err) {
+      const e = err as NodeJS.ErrnoException;
+      const reason = e.code === 'ETIMEDOUT' ? `timed out after ${CLEAN_ENV_TIMEOUT_MS}ms` : e.message;
+      throw new Error(`Failed to read the Windows environment via powershell.exe: ${reason}`);
+    }
     this.cachedEnv = JSON.parse(result.trim());
     return this.cachedEnv!;
   }
@@ -211,7 +230,7 @@ export class WindowsCommands implements OsCommands {
   }
 
   writeTextFile(destPath: string, content: string): string {
-    const psScript = `$d='${content.replace(/'/g, "''")}'; $p="${escapeWindowsArg(destPath)}"; New-Item -Path (Split-Path -Path $p -Parent) -ItemType Directory -Force | Out-Null; Set-Content -Path $p -Value $d -NoNewline`;
+    const psScript = `$d='${escapePowerShellArgInner(content)}'; $p="${escapeWindowsArg(destPath)}"; New-Item -Path (Split-Path -Path $p -Parent) -ItemType Directory -Force | Out-Null; Set-Content -Path $p -Value $d -NoNewline`;
     return wrapPowerShellEncoded(psScript);
   }
 
@@ -222,7 +241,7 @@ export class WindowsCommands implements OsCommands {
 
   deepMergeJson(destPath: string, newObj: Record<string, unknown>): string {
     const escapedPath = escapeWindowsArg(destPath);
-    const newJson = JSON.stringify(newObj).replace(/'/g, "''");
+    const newJson = escapePowerShellArgInner(JSON.stringify(newObj));
 
     const psScript = `
 $p = '${escapedPath}';
@@ -270,7 +289,7 @@ $merged | ConvertTo-Json -Depth 99 | Set-Content -Path $p -NoNewline;
   }
 
   credentialFileWrite(content: string, destPath: string): string {
-    const psScript = `$d='${content.replace(/'/g, "''")}'; $p="${escapeWindowsArg(destPath)}"; New-Item -Path (Split-Path -Path $p -Parent) -ItemType Directory -Force | Out-Null; Set-Content -Path $p -Value $d -NoNewline`;
+    const psScript = `$d='${escapePowerShellArgInner(content)}'; $p="${escapeWindowsArg(destPath)}"; New-Item -Path (Split-Path -Path $p -Parent) -ItemType Directory -Force | Out-Null; Set-Content -Path $p -Value $d -NoNewline`;
     return wrapPowerShellEncoded(psScript);
   }
 
@@ -286,7 +305,7 @@ $merged | ConvertTo-Json -Depth 99 | Set-Content -Path $p -NoNewline;
 
   setEnv(name: string, value: string): string[] {
     if (!/^[A-Z_][A-Z0-9_]*$/i.test(name)) throw new Error('Invalid env var name: ' + name);
-    const escaped = value.replace(/'/g, "''");
+    const escaped = escapePowerShellArgInner(value);
     return [`[Environment]::SetEnvironmentVariable('${name}', '${escaped}', 'User')`];
   }
 
@@ -296,20 +315,20 @@ $merged | ConvertTo-Json -Depth 99 | Set-Content -Path $p -NoNewline;
   }
 
   envPrefix(name: string, value: string): string {
-    const escaped = value.replace(/'/g, "''");
+    const escaped = escapePowerShellArgInner(value);
     return `$env:${name}='${escaped}';`;
   }
 
   // --- Git credential helper ---
 
   gitCredentialHelperWrite(host: string, username: string, token: string, label?: string, scopeUrl?: string): string {
-    const escapedHost = escapeWindowsArg(host).replace(/'/g, "''");
-    const escapedUser = escapeWindowsArg(username).replace(/'/g, "''");
+    const escapedHost = escapePowerShellArgInner(escapeWindowsArg(host));
+    const escapedUser = escapePowerShellArgInner(escapeWindowsArg(username));
     const batchToken = escapeBatchMetachars(token);
-    const escapedToken = batchToken.replace(/'/g, "''");
-    const credFileName = label ? `.fleet-git-credential-${escapeWindowsArg(label).replace(/'/g, "''")}` : '.fleet-git-credential';
+    const escapedToken = escapePowerShellArgInner(batchToken);
+    const credFileName = label ? `.fleet-git-credential-${escapePowerShellArgInner(escapeWindowsArg(label))}` : '.fleet-git-credential';
     // scope_url is passed through escapeWindowsArg (single-quote escaped) and embedded in a single-quoted git config arg — safe against injection.
-    const credUrl = scopeUrl ? escapeWindowsArg(scopeUrl).replace(/'/g, "''") : `https://${escapedHost}`;
+    const credUrl = scopeUrl ? escapePowerShellArgInner(escapeWindowsArg(scopeUrl)) : `https://${escapedHost}`;
     return [
       `$script = ('@echo off','echo protocol=https','echo host=${escapedHost}','echo username=${escapedUser}','echo password=${escapedToken}') -join [Environment]::NewLine`,
       `Set-Content -Path "$env:USERPROFILE\\${credFileName}.bat" -Value $script -NoNewline`,
@@ -340,16 +359,16 @@ $merged | ConvertTo-Json -Depth 99 | Set-Content -Path $p -NoNewline;
   }
 
   gitCredentialHelperRemove(host: string, label?: string, scopeUrl?: string): string {
-    const escapedHost = escapeWindowsArg(host).replace(/'/g, "''");
-    const credFileName = label ? `.fleet-git-credential-${escapeWindowsArg(label).replace(/'/g, "''")}` : '.fleet-git-credential';
+    const escapedHost = escapePowerShellArgInner(escapeWindowsArg(host));
+    const credFileName = label ? `.fleet-git-credential-${escapePowerShellArgInner(escapeWindowsArg(label))}` : '.fleet-git-credential';
     // scope_url is passed through escapeWindowsArg (single-quote escaped) and embedded in a single-quoted git config arg — safe against injection.
-    const credUrl = scopeUrl ? escapeWindowsArg(scopeUrl).replace(/'/g, "''") : `https://${escapedHost}`;
+    const credUrl = scopeUrl ? escapePowerShellArgInner(escapeWindowsArg(scopeUrl)) : `https://${escapedHost}`;
     return `Remove-Item "$env:USERPROFILE\\${credFileName}.bat" -Force -ErrorAction SilentlyContinue; git config --global --unset-all 'credential.${credUrl}.helper' 2>$null`;
   }
 
   ghAuthLogin(token: string, hostname = 'github.com'): string {
-    const escapedToken = escapeWindowsArg(token).replace(/'/g, "''");
-    const escapedHostname = escapeWindowsArg(hostname).replace(/'/g, "''");
+    const escapedToken = escapePowerShellArgInner(escapeWindowsArg(token));
+    const escapedHostname = escapePowerShellArgInner(escapeWindowsArg(hostname));
     // gh CLI has its own credential store, entirely separate from the git
     // credential helper written above -- gh never reads that file.
     // `gh auth login --with-token` is gh's own non-interactive enrollment
@@ -361,7 +380,7 @@ $merged | ConvertTo-Json -Depth 99 | Set-Content -Path $p -NoNewline;
   // --- SSH key deployment ---
 
   deploySSHPublicKey(publicKeyLine: string): string[] {
-    const escaped = publicKeyLine.replace(/'/g, "''");
+    const escaped = escapePowerShellArgInner(publicKeyLine);
     return [
       // Deploy to user's authorized_keys (force UTF-8 no BOM — OpenSSH requires it)
       'New-Item -Path "$env:USERPROFILE\\.ssh" -ItemType Directory -Force | Out-Null',
@@ -431,7 +450,7 @@ $merged | ConvertTo-Json -Depth 99 | Set-Content -Path $p -NoNewline;
   // --- Agent provisioning ---
 
   hashFilesRecursive(dir: string): string {
-    const winDir = dir.replace(/\//g, '\\').replace(/'/g, "''");
+    const winDir = escapePowerShellArgInner(dir.replace(/\//g, '\\'));
     // Hash via .NET's SHA256 directly rather than the Get-FileHash cmdlet:
     // on a host where PSModulePath lists a PowerShell-7 Microsoft.PowerShell.Utility
     // module ahead of the Windows PowerShell 5.1 one (common on windows-latest

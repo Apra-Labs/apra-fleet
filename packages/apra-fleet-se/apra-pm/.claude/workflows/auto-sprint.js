@@ -24,7 +24,7 @@ export const meta = {
 //                        suite + toy-sprint smoke test, sandbox setup/reset/teardown);
 //                        informational only, files parent-less [regression][carry-over] bugs
 //   ci-watcher        -- polls CI; creates beads task if not configured
-//   harvester         -- docs, CHANGELOG, token summary, PR
+//   harvester         -- docs, token summary, PR
 //
 // Beads owns all work items and is the exit signal.
 // JS workflow owns all routing. No LLM ever decides whether to continue.
@@ -1827,27 +1827,49 @@ const REGRESSION_RUN_SCHEMA = {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "apra-pm/regression-test-runner-output@1",
   "title": "regression-test-runner output",
-  "description": "Canonical machine-readable output contract for the regression-test-runner role. See agents/regression-test-runner.md Step 4 for the prose contract this mirrors. This result is informational: it never gates the current sprint's PASS/FAIL verdict -- failures carry over to a future sprint as parent-less [regression][carry-over] beads.",
+  "description": "Canonical machine-readable output contract for the regression-test-runner role. See agents/regression-test-runner.md Step 4 for the prose contract this mirrors. This result is informational: it never gates the current sprint's PASS/FAIL verdict -- failures carry over to a future sprint as parent-less [regression][carry-over] beads. The target repo's regression-test-playbook.md defines what the pass consists of; this contract does not assume any particular structure.",
   "type": "object",
   "required": [
     "passed",
-    "suitePassed",
-    "smokePassed",
     "bugsFiled",
     "summary"
   ],
   "properties": {
     "passed": {
       "type": "boolean",
-      "description": "True only if BOTH suitePassed and smokePassed are true AND no carry-over bug was filed this run."
+      "description": "True only if every part of the pass the playbook defines passed AND no carry-over bug was filed this run."
+    },
+    "sections": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "passed"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The part's name exactly as the playbook names it."
+          },
+          "passed": {
+            "type": "boolean"
+          },
+          "detail": {
+            "type": "string",
+            "description": "Optional one-line result detail (counts, failing step)."
+          }
+        }
+      },
+      "description": "Per-part results, one entry per part the playbook defines (a playbook with a single part yields one entry). Omit only if the pass stopped before running any part."
     },
     "suitePassed": {
       "type": "boolean",
-      "description": "Result of playbook Part 1 -- the real-bd functional suite."
+      "description": "Deprecated legacy field from the earlier two-part contract; still accepted, never required. Report per-part results in sections instead."
     },
     "smokePassed": {
       "type": "boolean",
-      "description": "Result of playbook Part 2 -- the sandbox smoke test."
+      "description": "Deprecated legacy field from the earlier two-part contract; still accepted, never required. Report per-part results in sections instead."
     },
     "bugsFiled": {
       "type": "array",
@@ -1860,10 +1882,53 @@ const REGRESSION_RUN_SCHEMA = {
       "type": "string",
       "description": "One paragraph describing what was tested, what passed, what failed, and reiterating that the result is informational."
     },
+    "verdict": {
+      "type": "string",
+      "enum": [
+        "PASS",
+        "FAIL",
+        "INCONCLUSIVE"
+      ],
+      "description": "Optional. Present only when the playbook names a machine-written verdict file: copied from it verbatim, never authored by the runner. When present, passed must equal (verdict == \"PASS\"). INCONCLUSIVE means the pass could not prove anything either way; it is not a failure."
+    },
+    "testedSha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$",
+      "description": "Optional. The full commit sha the verdict file says was tested, copied verbatim from it."
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "verdictRef": {
+          "type": "string",
+          "description": "Where the verdict file lives (path or URL)."
+        },
+        "runUrl": {
+          "type": "string",
+          "description": "URL of the run that produced the verdict file."
+        },
+        "newFailures": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "New failure fingerprints, copied from the verdict file."
+        },
+        "inventoryMissing": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Required coverage items the run did not cover, copied from the verdict file."
+        }
+      },
+      "description": "Optional. Pointers to and key lists from the machine-written verdict file, copied verbatim from it."
+    },
     "smokeEvidence": {
       "type": "object",
       "additionalProperties": true,
-      "description": "Optional structured evidence from Part 2 (the target repo's own smoke test), so the result is machine-checkable instead of self-reported prose. This schema does not define its shape -- the target repo's regression-test-playbook.md (Part 2 / smoke test section) does. Omit if that playbook defines no structured evidence."
+      "description": "Optional structured evidence, so the result is machine-checkable instead of self-reported prose. This schema does not define its shape -- the target repo's regression-test-playbook.md does (the field name is kept for compatibility). Omit if that playbook defines no structured evidence."
     }
   }
 };
@@ -2003,7 +2068,7 @@ const PLANNER_SCHEMA = {
     },
     "kb_captures": {
       "type": "array",
-      "description": "Durable knowledge this role verified during its run. The engine makes the kb_capture calls; the role only decides. Optional -- omit or send [] to capture nothing.",
+      "description": "IGNORED FOR THIS ROLE -- the planner has no apply path, so anything sent here is silently dropped rather than captured. Declared only for forward compatibility and shape-parity with the roles that do capture; always omit it or send []. Do not spend planning effort producing entries for it.",
       "items": {
         "type": "object",
         "required": [
@@ -2170,6 +2235,8 @@ const KB_PRIMER_SCHEMA = {
           title:        { type: 'string' },
           summary:      { type: 'string' },
           confidence:   { type: 'string' },
+          flagged_for_review: { type: 'boolean' },
+          contradiction_of:   { type: ['string', 'null'] },
           symbols:      { type: 'array', items: { type: 'string' } },
           source_files: { type: 'array', items: { type: 'string' } },
           type:         { type: 'string' },
@@ -2203,7 +2270,7 @@ async function primeKB(repoPath) {
       `Step ${stepNum}: Call mcp__apra-fleet__kb_session_prime with:\n` +
       `  repo_path: "${repoPath}"\n` +
       `Step ${stepNum + 1}: Parse the JSON string result. Extract the top_entries array.\n` +
-      `  For each entry return: title, summary, confidence, symbols, source_files, type.\n` +
+      `  For each entry return: title, summary, confidence, flagged_for_review, contradiction_of, symbols, source_files, type.\n` +
       `  Do NOT return the content field.\n` +
       `  Set sessionWarm from the result. Set imported to true if you ran kb_import successfully.\n\n` +
       `If ToolSearch returns no KB tools, return {entries:[], sessionWarm:false, imported:false}.\n` +
@@ -2369,15 +2436,30 @@ async function runKbWork(repoPath, role, result) {
 
 const KB_CHAR_BUDGET = 4000;
 
+// Only CONFIRMED entries outside any unresolved contradiction are injected --
+// the same rule as the fleet-sprint engine's KNOWLEDGE BANK block. INFERRED and
+// UNVERIFIED entries are unreviewed captures, and a flagged / contradiction_of
+// entry is one the KB itself marks as disputed. A missing tier is NOT treated as
+// CONFIRMED: the primer is an LLM relay, so an omitted field proves nothing.
+function isInjectableKbEntry(e) {
+  return Boolean(e)
+    && String(e.confidence || '').toUpperCase() === 'CONFIRMED'
+    && !e.flagged_for_review
+    && !e.contradiction_of;
+}
+
 function buildKBContext(kbResult) {
-  if (!kbResult || !Array.isArray(kbResult.entries) || kbResult.entries.length === 0) {
+  const entries = (kbResult && Array.isArray(kbResult.entries))
+    ? kbResult.entries.filter(isInjectableKbEntry)
+    : [];
+  if (entries.length === 0) {
     return '';
   }
-  let block = `\n--- Project Knowledge Bank (${kbResult.entries.length} entries) ---\n` +
-    `Trust CONFIRMED entries fully. Use INFERRED entries as hints, not facts.\n\n`;
+  let block = `\n--- Project Knowledge Bank (${entries.length} entries) ---\n` +
+    `Only CONFIRMED entries are included. If one contradicts what you observe in the code now, the code wins.\n\n`;
   let len = block.length;
-  for (const e of kbResult.entries) {
-    const line = `- [${(e.confidence || 'CONFIRMED').toUpperCase()}] ${e.title}: ${e.summary}` +
+  for (const e of entries) {
+    const line = `- [CONFIRMED] ${e.title}: ${e.summary}` +
       (e.symbols && e.symbols.length ? ` (symbols: ${e.symbols.join(', ')})` : '') + '\n';
     if (len + line.length > KB_CHAR_BUDGET) break;
     block += line;
@@ -3761,7 +3843,7 @@ if (!approved(finalReview)) {
 // Placed deliberately AFTER the final-review verdict is decided (and after its early
 // return) and BEFORE harvest: the verdict is already computed, so a regression result
 // structurally CANNOT perturb the sprint's PASS/FAIL, and running it before harvest lets
-// the harvester mention it in the CHANGELOG. This is the ONLY dispatch of this role in a
+// the harvester mention it in the sprint docs. This is the ONLY dispatch of this role in a
 // sprint -- the per-cycle Test phase does feature closure only.
 //
 // SOFT FAIL, ALWAYS: a null / failed / schema-invalid / thrown result is logged and
@@ -3777,12 +3859,10 @@ if (regressionTestEnabled) {
       `Repo: ${repo}\nBranch: ${branch}\nCycles completed: ${cycleCount}\n` +
       `Sprint goals: ${rootSummary}\n\n` +
       `Follow your runbook (agents/regression-test-runner.md) and regression-test-playbook.md.\n` +
-      `This is the ONCE-PER-SPRINT regression pass. Run BOTH parts:\n` +
-      `  Part 1: the full functional suite against the real bd CLI, at branch HEAD.\n` +
-      `  Part 2: the toy-sprint smoke test -- bring the sandbox up with the playbook's\n` +
-      `          ## Setup section, run its ## Test scenario, and ALWAYS run the playbook's\n` +
-      `          ## Teardown before returning, pass or fail.\n\n` +
-      `File EVERY failure from either part as a STANDALONE bead: "bd create" with NO\n` +
+      `This is the ONCE-PER-SPRINT regression pass. Run every part the playbook defines,\n` +
+      `in its order, at branch HEAD; if it defines a ## Teardown, ALWAYS run it before\n` +
+      `returning, pass or fail.\n\n` +
+      `File EVERY failure from any part as a STANDALONE bead: "bd create" with NO\n` +
       `--parent flag, and do NOT "bd dep add" it to sprint root ${rootIds[0]}, to any\n` +
       `feature, or to any other bead in this sprint. Title each one\n` +
       `"[regression][carry-over] <short description>". The parent-less shape is the point:\n` +
@@ -3792,9 +3872,9 @@ if (regressionTestEnabled) {
       `carry-over bug rather than filing a second one for the same failure.\n\n` +
       `This sprint's verdict is ALREADY DECIDED (final review: APPROVED). Your result is\n` +
       `INFORMATIONAL and does not gate it -- do not present it as a gate.\n\n` +
-      `Return the full contract: passed (boolean), suitePassed (boolean), smokePassed\n` +
-      `(boolean), bugsFiled (array of the parent-less carry-over bead ids, [] if none),\n` +
-      `summary (one paragraph).`,
+      `Return the full contract: passed (boolean), sections (one {name, passed} per part\n` +
+      `the playbook defines, named as the playbook names it), bugsFiled (array of the\n` +
+      `parent-less carry-over bead ids, [] if none), summary (one paragraph).`,
       { model: MODEL_SONNET, label: 'regression-test-runner', phase: 'Harvest',
         schema: REGRESSION_RUN_SCHEMA, agentType: 'regression-test-runner' }
     );
@@ -3805,10 +3885,13 @@ if (regressionTestEnabled) {
   }
   if (regressionResult && typeof regressionResult.passed === 'boolean') {
     const _bugs = Array.isArray(regressionResult.bugsFiled) ? regressionResult.bugsFiled : [];
-    log(`Regression: suitePassed=${regressionResult.suitePassed}, smokePassed=${regressionResult.smokePassed}, passed=${regressionResult.passed}, carry-over bugs filed: ${_bugs.length}${_bugs.length ? ` [${_bugs.join(', ')}]` : ''}`);
+    const _parts = Array.isArray(regressionResult.sections) && regressionResult.sections.length
+      ? ` (${regressionResult.sections.map(s => `${s.name}: ${s.passed === true ? 'pass' : 'fail'}`).join(', ')})`
+      : '';
+    log(`Regression: passed=${regressionResult.passed}${_parts}, carry-over bugs filed: ${_bugs.length}${_bugs.length ? ` [${_bugs.join(', ')}]` : ''}`);
     log(`Regression summary: ${regressionResult.summary}`);
     regressionSummaryLine =
-      `passed=${regressionResult.passed} (suite=${regressionResult.suitePassed}, smoke=${regressionResult.smokePassed})` +
+      `passed=${regressionResult.passed}${_parts}` +
       `${_bugs.length ? `; carry-over beads filed: ${_bugs.join(', ')}` : '; no carry-over beads filed'}`;
   } else {
     log('Regression pass returned no usable result -- ignored (informational only; the sprint is unaffected)');
@@ -3857,10 +3940,6 @@ const harvestResult = await dispatch(
   `to "${repo}/${analysisArtifactFile}" and commit it before doing anything else.\n\n` +
   `analysisText (write this verbatim to ${analysisArtifactFile}):\n` +
   sprintSummary.summaryText + `\n\n` +
-  `costAnalysis (insert this block verbatim into CHANGELOG.md after the summary paragraph):\n` +
-  `${sprintAnalysis.analysisText}\n` +
-  `Final review notes to include in CHANGELOG:\n` +
-  `${(finalReview && finalReview.notes) || '(none)'}\n\n` +
   `Regression pass (once-per-sprint, informational -- does not gate this sprint):\n` +
   `${regressionSummaryLine}\n\n` +
   `Return status "OK" if successful, "FAILED" with notes otherwise.`,
@@ -3995,7 +4074,8 @@ const harvestPr = await dispatch(
   `  - Sprint goal: ${goal} -- ${goalMet ? 'MET' : 'NOT MET (partial delivery)'}\n` +
   `  - Cycles run: ${cycleCount}\n` +
   `  - Open items carried forward (if any): bd list --status=open and summarise\n` +
-  `  - Final review notes: ${(finalReview && finalReview.notes) || '(none)'}\n\n` +
+  `  - Final review notes: ${(finalReview && finalReview.notes) || '(none)'}\n` +
+  `  - Cost analysis (verbatim, in a fenced code block):\n${sprintAnalysis.analysisText}\n\n` +
   `After creating the PR, return its number as prNumber (integer).`,
   { model: MODEL_SONNET, label: 'harvest-pr', phase: 'Harvest',
     schema: { type: 'object', required: ['prNumber'], properties: { prNumber: { type: 'number' }, prUrl: { type: 'string' } } } }

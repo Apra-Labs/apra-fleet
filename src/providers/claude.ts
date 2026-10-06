@@ -1,4 +1,6 @@
+import { escapePowerShellArgInner } from '../utils/shell-escape.js';
 import { execFile } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { promisify } from 'node:util';
 import type { ProviderAdapter, PromptOptions, ParsedResponse, UsageLimitSignal, RegisterMcpEndpointOptions, RegisterMcpEndpointResult, WorkspaceTrustExecFn, WorkspaceTrustTransport, EnsureWorkspaceTrustedResult, SessionIdStrategy, ExecTimeoutSource, TargetOS } from './provider.js';
 import { buildResumeFlag, buildSessionIdFlag, buildForkFlag, encodeClaudeProjectDir, joinForOS, resolveHomeDir, guessedUsageLimitSignal } from './provider.js';
@@ -447,14 +449,14 @@ export class ClaudeProvider implements ProviderAdapter {
   resolveSessionLogPath(sessionId: string, workFolder: string, homeDir?: string | null, targetOs?: TargetOS): string {
     const home = resolveHomeDir(homeDir);
     if (!home) return '';
-    const encoded = encodeClaudeProjectDir(workFolder);
+    const encoded = encodeClaudeProjectDir(workFolder, targetOs ? targetOs === 'windows' : process.platform === 'win32');
     return joinForOS(targetOs, home, '.claude', 'projects', encoded, `${sessionId}.jsonl`);
   }
 
   resolveSessionLogDir(workFolder: string, homeDir?: string | null, targetOs?: TargetOS): string | null {
     const home = resolveHomeDir(homeDir);
     if (!home) return null;
-    const encoded = encodeClaudeProjectDir(workFolder);
+    const encoded = encodeClaudeProjectDir(workFolder, targetOs ? targetOs === 'windows' : process.platform === 'win32');
     return joinForOS(targetOs, home, '.claude', 'projects', encoded);
   }
 
@@ -737,7 +739,9 @@ export interface WorkspaceTrustStagingNames {
 }
 
 export function workspaceTrustStagingNames(): WorkspaceTrustStagingNames {
-  const token = `${process.pid}-${Math.random().toString(36).slice(2, 10)}`;
+  // CSPRNG, not Math.random: the names sit in the member's home next to
+  // .claude.json, so they should not be predictable.
+  const token = `${process.pid}-${randomBytes(4).toString('hex')}`;
   return {
     tmpRel: `.claude.json.fleet-trust-${token}.tmp`,
     b64Rel: `.claude.json.fleet-trust-${token}.b64`,
@@ -816,7 +820,7 @@ function psGated(script: string): string {
  *  POSIX heredoc form is unchanged. */
 export function buildSingleTrustWriteCommand(contentStr: string, opts: { isWindows: boolean; homeFile: string; tmpFile: string }): string {
   return opts.isWindows
-    ? psGated(`[System.IO.File]::WriteAllText("${opts.tmpFile}", '${contentStr.replace(/'/g, "''")}', (New-Object System.Text.UTF8Encoding($false))); Move-Item -Force "${opts.tmpFile}" "${opts.homeFile}"`)
+    ? psGated(`[System.IO.File]::WriteAllText("${opts.tmpFile}", '${escapePowerShellArgInner(contentStr)}', (New-Object System.Text.UTF8Encoding($false))); Move-Item -Force "${opts.tmpFile}" "${opts.homeFile}"`)
     : `cat > "${opts.tmpFile}" << 'FLEET_TRUST_EOF'\n${contentStr}\nFLEET_TRUST_EOF\nmv "${opts.tmpFile}" "${opts.homeFile}"`;
 }
 

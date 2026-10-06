@@ -398,3 +398,63 @@ describe('ensureCloudReady - F5 re-provisioning after start', () => {
     expect(warnings[0]).toContain('provision_llm_auth warning for ' + member.friendlyName);
   });
 });
+
+// GitHub #584 review: execute_prompt can give up on a slow cloud start (its
+// max_total_s budget) while the start keeps running; a retry must join that
+// in-flight bring-up instead of racing a second startInstance against it.
+describe('ensureCloudReady - per-member in-flight dedupe', () => {
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+    mockGetPublicIp.mockResolvedValue('1.2.3.4');
+    mockProvisionAuth.mockResolvedValue(authOk());
+    mockProvisionVcsAuth.mockResolvedValue(vcsOk());
+    mockSshReady();
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+  });
+
+  it('a concurrent call joins the in-flight start; a later call starts afresh', async () => {
+    mockGetInstanceState.mockResolvedValue('stopped');
+    let releaseRunning!: () => void;
+    mockStartInstance.mockResolvedValue(undefined);
+    mockWaitForRunning.mockImplementationOnce(() => new Promise<void>((r) => { releaseRunning = r; }));
+    const member = makeStoppedCloudAgent();
+    addAgent(member);
+
+    const { ensureCloudReady } = await import('../src/services/cloud/lifecycle.js');
+    const first = ensureCloudReady(member);
+    const retry = ensureCloudReady(member);
+    expect(retry).toBe(first);
+    await vi.waitFor(() => expect(mockWaitForRunning).toHaveBeenCalledTimes(1));
+    releaseRunning();
+    const [a, b] = await Promise.all([first, retry]);
+    expect(a).toBe(b);
+    expect(mockStartInstance).toHaveBeenCalledTimes(1);
+
+    // Settled -> cleared: the next call is a new bring-up.
+    mockWaitForRunning.mockResolvedValue(undefined);
+    const next = ensureCloudReady(member);
+    expect(next).not.toBe(first);
+    await next;
+    expect(mockStartInstance).toHaveBeenCalledTimes(2);
+  });
+
+  it('a rejected bring-up is cleared too, and different members do not share', async () => {
+    mockGetInstanceState.mockResolvedValueOnce('terminated');
+    const m1 = makeStoppedCloudAgent();
+    addAgent(m1);
+    const { ensureCloudReady } = await import('../src/services/cloud/lifecycle.js');
+    await expect(ensureCloudReady(m1)).rejects.toThrow(/terminated/);
+
+    mockGetInstanceState.mockResolvedValue('running');
+    const m2 = makeStoppedCloudAgent();
+    addAgent(m2);
+    const p1 = ensureCloudReady(m1);
+    const p2 = ensureCloudReady(m2);
+    expect(p1).not.toBe(p2);
+    await Promise.all([p1, p2]);
+  });
+});

@@ -15,12 +15,12 @@
     "./server-resolution": "./src/client/server-resolution.mjs"
   },
   "scripts": {
-    "test": "node --test test/*.test.mjs"
+    "test": "node ../../scripts/with-test-sandbox.mjs node --test test/*.test.mjs"
   },
   "type": "module",
   "author": "Apra Labs",
   "license": "Apache-2.0",
   "dependencies": {
-    "undici": "^7.29.0"
+    "undici": "^7.30.0"
   }
 }

@@ -1,17 +1,17 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import http from 'node:http';
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 
 // ---------------------------------------------------------------------------
-// Hoisted mock refs — local modules only (these are safe; factory mocks for
+// Hoisted mock refs -- local modules only (these are safe; factory mocks for
 // built-in node modules leak in fileParallelism:false mode, so we use spies)
 // ---------------------------------------------------------------------------
 const { mockCheckRunning, mockGetSvcMgr, mockSvcMgr } = vi.hoisted(() => {
   const mockSvcMgr = {
     isInstalled: vi.fn<() => Promise<boolean>>().mockResolvedValue(false),
     start: vi.fn<() => Promise<void>>().mockResolvedValue(undefined),
-    stop: vi.fn<() => Promise<void>>().mockResolvedValue(undefined),
+    stop: vi.fn<() => Promise<boolean | void>>().mockResolvedValue(undefined),
     query: vi.fn<() => Promise<{ installed: boolean; running: boolean; enabled?: boolean }>>()
       .mockResolvedValue({ installed: false, running: false }),
     register: vi.fn<() => Promise<void>>().mockResolvedValue(undefined),
@@ -25,15 +25,22 @@ const { mockCheckRunning, mockGetSvcMgr, mockSvcMgr } = vi.hoisted(() => {
   };
 });
 
-vi.mock('../src/services/singleton.js', () => ({
+const { mockPortInUse } = vi.hoisted(() => ({
+  mockPortInUse: vi.fn<(port: number, host?: string) => Promise<boolean>>().mockResolvedValue(false),
+}));
+
+vi.mock('../src/services/singleton.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/services/singleton.js')>()),
   checkRunningInstance: mockCheckRunning,
+  isPortInUse: mockPortInUse,
+  readServerInfoPid: () => undefined,
 }));
 
 vi.mock('../src/services/service-manager/index.js', () => ({
   getServiceManager: mockGetSvcMgr,
 }));
 
-// Auto-mock (no factory) so named imports get stubs — auto-mocks clean up
+// Auto-mock (no factory) so named imports get stubs -- auto-mocks clean up
 // between files in sequential mode; factory mocks do not.
 vi.mock('node:child_process');
 
@@ -49,13 +56,14 @@ import { serverVersion } from '../src/version.js';
 // ---------------------------------------------------------------------------
 // Shared fixtures
 // ---------------------------------------------------------------------------
-const RUNNING = { running: true as const, url: 'http://127.0.0.1:7523/mcp', pid: 1234 };
-const STOPPED = { running: false as const };
+const RUNNING = { running: true as const, state: 'running' as const, url: 'http://127.0.0.1:7523/mcp', pid: 1234 };
+const STOPPED = { running: false as const, state: 'gone' as const };
+const UNRESPONSIVE = { running: false as const, state: 'unresponsive' as const, url: 'http://127.0.0.1:7523/mcp', pid: 1234, port: 7523 };
 const SERVER_INFO = JSON.stringify({ pid: 1234, port: 7523, url: 'http://127.0.0.1:7523/mcp' });
 const HEALTH_BODY = JSON.stringify({ version: 'v0.1', uptime: 30, sessions: 1 });
 
 // ---------------------------------------------------------------------------
-// Per-test spy helpers (vi.spyOn restores cleanly in afterEach — no leakage)
+// Per-test spy helpers (vi.spyOn restores cleanly in afterEach -- no leakage)
 // ---------------------------------------------------------------------------
 function setupFsSpies() {
   vi.spyOn(fs, 'mkdirSync').mockReturnValue(undefined as any);
@@ -64,6 +72,11 @@ function setupFsSpies() {
   vi.spyOn(fs, 'unlinkSync').mockReturnValue(undefined);
   vi.spyOn(fs, 'existsSync').mockReturnValue(true); // lets findProjectRoot() succeed
   vi.spyOn(fs, 'readFileSync').mockReturnValue(SERVER_INFO as any);
+  // runStop -> postShutdown -> getOrCreateKey() reads the fleet key through the
+  // readFileSync spy above (SERVER_INFO is not a 64-char key) and then WROTE a
+  // fresh key to ~/.apra-fleet/fleet.key with the real writeFileSync --
+  // rewriting the developer's real signing key and invalidating member JWTs.
+  vi.spyOn(fs, 'writeFileSync').mockReturnValue(undefined);
 }
 
 function setupHttpSpies() {
@@ -99,6 +112,7 @@ describe('runStart', () => {
     vi.clearAllMocks();
     setupFsSpies();
     mockCheckRunning.mockResolvedValue(STOPPED);
+    mockPortInUse.mockResolvedValue(false);
     mockSvcMgr.isInstalled.mockResolvedValue(false);
     vi.mocked(spawn).mockReturnValue({ unref: vi.fn() } as any);
     logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -109,6 +123,45 @@ describe('runStart', () => {
   afterEach(() => {
     vi.restoreAllMocks();
     vi.useRealTimers();
+  });
+
+  // GitHub #584: a live-but-unresponsive server is not "stopped".
+  it('refuses with pid/port and a stop hint when the server is unresponsive', async () => {
+    mockCheckRunning.mockResolvedValue(UNRESPONSIVE);
+    await runStart([]);
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    const msg = errSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n');
+    expect(msg).toContain('pid 1234');
+    expect(msg).toContain('port 7523');
+    expect(msg).toContain('apra-fleet stop');
+    expect(vi.mocked(spawn)).not.toHaveBeenCalled();
+    expect(mockGetSvcMgr).not.toHaveBeenCalled();
+  });
+
+  // GitHub #585: start reports an unclean previous exit before starting.
+  it('prints the previous-server note before starting a new server', async () => {
+    mockCheckRunning
+      .mockResolvedValueOnce({ ...STOPPED, previous: { pid: 778, startedAt: 'T1', lastLogAt: 'T2' } })
+      .mockResolvedValueOnce(RUNNING);
+    vi.useFakeTimers();
+    const p = runStart([]);
+    await vi.advanceTimersByTimeAsync(2001);
+    await p;
+    const lines = logSpy.mock.calls.map((c: unknown[]) => String(c[0]));
+    expect(lines[0]).toContain('previous server pid 778 (started T1, last log T2) exited without a shutdown record');
+    expect(vi.mocked(spawn)).toHaveBeenCalled();
+  });
+
+  // GitHub #584: no random-port fallback -- a taken port is a clear error.
+  it('refuses with a message naming the port and APRA_FLEET_PORT when the configured port is taken', async () => {
+    mockPortInUse.mockResolvedValue(true);
+    await runStart([]);
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    const msg = errSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n');
+    expect(msg).toContain('Port 7523');
+    expect(msg).toContain('APRA_FLEET_PORT');
+    expect(vi.mocked(spawn)).not.toHaveBeenCalled();
+    expect(mockGetSvcMgr).not.toHaveBeenCalled();
   });
 
   it('reports already running and skips service manager when server is up', async () => {
@@ -191,6 +244,28 @@ describe('runStart', () => {
       expect.arrayContaining(['--transport', 'http']),
       expect.objectContaining({ detached: true }),
     );
+  });
+
+  it('drops APRA_FLEET_AUTOSTART / APRA_FLEET_SERVICE: consumed from its own env, never passed to the spawned server', async () => {
+    mockCheckRunning.mockResolvedValueOnce(STOPPED).mockResolvedValueOnce(RUNNING);
+    const saved = process.env.APRA_FLEET_SERVICE;
+    process.env.APRA_FLEET_AUTOSTART = '1';
+    process.env.APRA_FLEET_SERVICE = '1';
+    try {
+      vi.useFakeTimers();
+      const p = runStart([]);
+      await vi.advanceTimersByTimeAsync(2001);
+      await p;
+      expect(process.env.APRA_FLEET_AUTOSTART).toBeUndefined();
+      const opts = vi.mocked(spawn).mock.calls[0][2] as { env?: Record<string, string> };
+      expect(opts.env).toBeDefined();
+      expect(opts.env!.APRA_FLEET_AUTOSTART).toBeUndefined();
+      expect(opts.env!.APRA_FLEET_SERVICE).toBeUndefined();
+      expect(opts.env!.PATH ?? opts.env!.Path).toBeDefined();
+    } finally {
+      delete process.env.APRA_FLEET_AUTOSTART;
+      if (saved === undefined) delete process.env.APRA_FLEET_SERVICE; else process.env.APRA_FLEET_SERVICE = saved;
+    }
   });
 
   it('logs success URL after server comes up', async () => {
@@ -286,10 +361,96 @@ describe('runStop', () => {
     expect(http.request).not.toHaveBeenCalled();
   });
 
+  it('force-stops an unresponsive server instead of reporting it not running', async () => {
+    mockCheckRunning.mockResolvedValue(UNRESPONSIVE);
+    await runStop([]);
+    expect(logSpy).not.toHaveBeenCalledWith('Server is not running.');
+    expect(http.request).toHaveBeenCalled();
+    expect(logSpy).toHaveBeenCalledWith('Server stopped.');
+  });
+
   it('posts /shutdown when server is running', async () => {
     mockCheckRunning.mockResolvedValue(RUNNING);
     await runStop([]);
     expect(http.request).toHaveBeenCalled();
+  });
+
+  // GitHub #584 review: never force-kill a reused pid that is not apra-fleet.
+  describe('force-kill guard', () => {
+    function pidStaysAlive() {
+      killSpy.mockImplementation(() => true); // kill(pid, 0) succeeds -> alive
+    }
+    function forceKillCalls(): number {
+      const taskkills = vi.mocked(execFileSync).mock.calls.filter((c) => c[0] === 'taskkill').length;
+      const sigkills = killSpy.mock.calls.filter((c: unknown[]) => c[1] === 'SIGKILL').length;
+      return taskkills + sigkills;
+    }
+
+    it('refuses to force-kill a surviving pid whose command line is not apra-fleet', async () => {
+      mockCheckRunning.mockResolvedValue(UNRESPONSIVE);
+      pidStaysAlive();
+      vi.mocked(execFileSync).mockReturnValue('C:\\Windows\\System32\\notepad.exe' as any);
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      vi.useFakeTimers();
+      try {
+        const p = runStop([]);
+        await vi.advanceTimersByTimeAsync(6000);
+        await p;
+      } finally {
+        vi.useRealTimers();
+      }
+      expect(forceKillCalls()).toBe(0);
+      expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('not force-killing'));
+      expect(logSpy).not.toHaveBeenCalledWith('Server stopped.');
+      expect(fs.unlinkSync).not.toHaveBeenCalled();
+      process.exitCode = 0;
+    });
+
+    it('force-kills a surviving pid that is verifiably apra-fleet', async () => {
+      mockCheckRunning.mockResolvedValue(UNRESPONSIVE);
+      pidStaysAlive();
+      vi.mocked(execFileSync).mockReturnValue('"C:\\Users\\u\\bin\\apra-fleet.exe" --transport http' as any);
+      vi.useFakeTimers();
+      try {
+        const p = runStop([]);
+        await vi.advanceTimersByTimeAsync(6000);
+        await p;
+      } finally {
+        vi.useRealTimers();
+      }
+      expect(forceKillCalls()).toBe(1);
+      expect(logSpy).toHaveBeenCalledWith('Server stopped.');
+    });
+  });
+
+  describe('registered OS service', () => {
+    // tests/setup.ts sets APRA_FLEET_DATA_DIR; clear it (and any port override)
+    // so this is the default instance that owns the registered service.
+    const saved = { dir: process.env.APRA_FLEET_DATA_DIR, port: process.env.APRA_FLEET_PORT };
+    beforeEach(() => { delete process.env.APRA_FLEET_DATA_DIR; delete process.env.APRA_FLEET_PORT; });
+    afterEach(() => {
+      if (saved.dir !== undefined) process.env.APRA_FLEET_DATA_DIR = saved.dir;
+      if (saved.port !== undefined) process.env.APRA_FLEET_PORT = saved.port;
+      mockSvcMgr.isInstalled.mockResolvedValue(false);
+      process.exitCode = 0;
+    });
+
+    it('reports "Server stopped." when the service stop succeeds', async () => {
+      mockSvcMgr.isInstalled.mockResolvedValue(true);
+      mockSvcMgr.stop.mockResolvedValueOnce(true);
+      await runStop([]);
+      expect(mockSvcMgr.stop).toHaveBeenCalled();
+      expect(logSpy).toHaveBeenCalledWith('Server stopped.');
+      expect(process.exitCode ?? 0).toBe(0);
+    });
+
+    it('propagates a force-kill refusal: no success line, exit code 1', async () => {
+      mockSvcMgr.isInstalled.mockResolvedValue(true);
+      mockSvcMgr.stop.mockResolvedValueOnce(false);
+      await runStop([]);
+      expect(logSpy).not.toHaveBeenCalledWith('Server stopped.');
+      expect(process.exitCode).toBe(1);
+    });
   });
 
   it('reports "Server stopped." after shutdown', async () => {
@@ -302,6 +463,61 @@ describe('runStop', () => {
     mockCheckRunning.mockResolvedValue(RUNNING);
     await runStop([]);
     expect(fs.unlinkSync).toHaveBeenCalledTimes(2);
+  });
+
+  // Sandboxed (non-default) instance: stop must never touch registered OS
+  // services -- symmetric with runStart's isNonDefaultInstance() guard.
+  describe('non-default instance', () => {
+    const saved = { dir: process.env.APRA_FLEET_DATA_DIR, port: process.env.APRA_FLEET_PORT };
+    afterEach(() => {
+      if (saved.dir === undefined) delete process.env.APRA_FLEET_DATA_DIR; else process.env.APRA_FLEET_DATA_DIR = saved.dir;
+      if (saved.port === undefined) delete process.env.APRA_FLEET_PORT; else process.env.APRA_FLEET_PORT = saved.port;
+      mockSvcMgr.isInstalled.mockResolvedValue(false);
+    });
+
+    function expectNoServiceTouched() {
+      expect(mockGetSvcMgr).not.toHaveBeenCalled();
+      expect(mockSvcMgr.isInstalled).not.toHaveBeenCalled();
+      expect(mockSvcMgr.stop).not.toHaveBeenCalled();
+      for (const call of vi.mocked(execFileSync).mock.calls) {
+        const [cmd, args] = call as [string, string[] | undefined];
+        expect(cmd).not.toBe('schtasks');
+        expect(args ?? []).not.toContain('/T');
+      }
+    }
+
+    it('APRA_FLEET_DATA_DIR set: never stops the registered service, stops own server', async () => {
+      process.env.APRA_FLEET_DATA_DIR = '/tmp/sandbox-data';
+      delete process.env.APRA_FLEET_PORT;
+      mockSvcMgr.isInstalled.mockResolvedValue(true);
+      mockCheckRunning.mockResolvedValue(RUNNING);
+      await runStop([]);
+      expectNoServiceTouched();
+      expect(http.request).toHaveBeenCalled();
+      expect(logSpy).toHaveBeenCalledWith('Server stopped.');
+    });
+
+    it('non-7523 APRA_FLEET_PORT: never stops the registered service, stops own server', async () => {
+      delete process.env.APRA_FLEET_DATA_DIR;
+      process.env.APRA_FLEET_PORT = '18800';
+      mockSvcMgr.isInstalled.mockResolvedValue(true);
+      mockCheckRunning.mockResolvedValue({ ...RUNNING, url: 'http://127.0.0.1:18800/mcp' });
+      await runStop([]);
+      expectNoServiceTouched();
+      expect(http.request).toHaveBeenCalled();
+      expect(logSpy).toHaveBeenCalledWith('Server stopped.');
+    });
+
+    it('non-7523 APRA_FLEET_PORT: does not shut down a different-port server from the shared server.json', async () => {
+      delete process.env.APRA_FLEET_DATA_DIR;
+      process.env.APRA_FLEET_PORT = '18800';
+      mockSvcMgr.isInstalled.mockResolvedValue(true);
+      mockCheckRunning.mockResolvedValue(RUNNING); // production on 7523
+      await runStop([]);
+      expectNoServiceTouched();
+      expect(http.request).not.toHaveBeenCalled();
+      expect(process.kill).not.toHaveBeenCalledWith(1234, 'SIGKILL');
+    });
   });
 });
 
@@ -420,5 +636,26 @@ describe('runStatus', () => {
     expect(out).not.toContain('PID');
     expect(out).not.toContain('Port');
     expect(out).not.toContain('URL');
+  });
+
+  // GitHub #585: an unclean previous exit is reported before anything else.
+  it('prints the previous-server note first when the probe cleaned up a stale server.json', async () => {
+    mockCheckRunning.mockResolvedValue({ ...STOPPED, previous: { pid: 777, startedAt: 'T1', lastLogAt: 'T2' } });
+    await runStatus([]);
+    const lines = logSpy.mock.calls.map(c => c.join(' '));
+    expect(lines[0]).toContain('previous server pid 777 (started T1, last log T2) exited without a shutdown record');
+    expect(lines[1]).toBe('apra-fleet status');
+  });
+
+  // GitHub #584: alive-but-silent is reported as such, never as "stopped".
+  it('shows State: unresponsive with pid/port and a stop hint when the server is unresponsive', async () => {
+    mockCheckRunning.mockResolvedValue(UNRESPONSIVE);
+    await runStatus([]);
+    const out = output();
+    expect(out).toContain('State:    unresponsive');
+    expect(out).toContain('1234');
+    expect(out).toContain('7523');
+    expect(out).toContain('apra-fleet stop');
+    expect(out).not.toContain('stopped');
   });
 });

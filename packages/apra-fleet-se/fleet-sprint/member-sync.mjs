@@ -47,7 +47,7 @@
 // =============================================================================
 
 import { GitDivergedError, GitSyncError } from './errors.mjs';
-import { runGitStep, resolveGitProviderForClassification } from './git-topology.mjs';
+import { runGitStep, resolveGitProviderForClassification, isMissingRemoteRefError } from './git-topology.mjs';
 import { parseUnmergedPaths, detectAndAbortRebaseConflict, dispatchConflictResolutionAgent } from './conflict-ladder.mjs';
 import { DoltSync } from './dolt-sync.mjs';
 import { buildSettleCallback } from './dolt-settle.mjs';
@@ -83,22 +83,10 @@ import { resolveSettleShell } from './runner.js';
 // each dispatch. `command` is dependency-injected so unit tests can drive these
 // helpers with a mock command() and no live fleet.
 
-/**
- * True when `error` is git's exact "the named ref does not exist on the
- * remote" message (`fatal: couldn't find remote ref <branch>`), as opposed to
- * any other fetch/pull/rebase failure. This is the ONE place that text is
- * matched (apra-fleet-ta3.3): syncMemberBefore's pre-dispatch fetch and
- * syncMemberAfter's post-push pull-rebase both hit this exact message for the
- * identical underlying reason -- a brand-new local branch that has never been
- * pushed to `remote` yet, so there is nothing there to fetch/rebase against --
- * and both treat it as a benign no-op / retry-directly signal via this shared
- * predicate rather than each carrying its own copy of the regex.
- * @param {string} error - the raw git stderr/stdout of a failed command
- * @returns {boolean}
- */
-export function isMissingRemoteRefError(error) {
-    return /couldn't find remote ref/i.test(error || '');
-}
+// isMissingRemoteRefError() moved to ./git-topology.mjs so runGitStep can skip
+// the auth self-heal for a missing remote ref (apra-fleet-ta3); re-exported
+// here for existing importers.
+export { isMissingRemoteRefError };
 
 /**
  * G-pull: bring `member` up to the shared branch tip before it does any work --

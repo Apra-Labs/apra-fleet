@@ -51,7 +51,7 @@ vi.mock('../src/utils/agent-helpers.js', () => ({
   isPosixShell: (os: string, shell?: string) => os !== 'windows' || shell === 'gitbash',
 }));
 
-import { pollLogFile, pollDirectoryActivity } from '../src/services/stall/stall-poller.js';
+import { pollLogFile, pollDirectoryActivity, pollRecentProjectTranscript } from '../src/services/stall/stall-poller.js';
 import { getProvider } from '../src/providers/index.js';
 import { clearMemberHomeDirCache } from '../src/services/member-home.js';
 
@@ -381,10 +381,8 @@ describe('pollLogFile', () => {
       mockGetAgentOS.mockReturnValue('windows');
       mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
       await pollLogFile('member-1', 'C:\\logs\\log.jsonl');
-      expect(mockExecCommand).toHaveBeenCalledWith(
-        expect.stringContaining('Get-Content -Tail'),
-        5000
-      );
+      const scripts = mockExecCommand.mock.calls.map(c => decodePowerShellEncodedCommand(c[0]));
+      expect(scripts.some(s => s.includes('Get-Content -Tail'))).toBe(true);
     });
   });
 
@@ -411,6 +409,31 @@ describe('pollLogFile', () => {
       const result = await pollLogFile('member-1', '/log.jsonl');
       expect(result.lastTimestamp).toBeNull();
       expect(result.error).toContain('Permission denied');
+    });
+
+    // apra-fleet-uob4: a broken PowerShell command is a read failure, not "file not yet created".
+    it('surfaces a PowerShell command-not-found/parse error as a read failure', async () => {
+      mockExecCommand.mockResolvedValue({
+        stdout: '',
+        stderr: "= : The term '=' is not recognized as the name of a cmdlet, function, script file, or operable program.\n    + CategoryInfo          : ObjectNotFound: (=:String) [], CommandNotFoundException",
+        code: 1,
+      });
+
+      const result = await pollLogFile('member-1', '/log.jsonl');
+      expect(result.lastTimestamp).toBeNull();
+      expect(result.error).toContain('not recognized');
+    });
+
+    it('treats a CLIXML-wrapped PowerShell missing-file error as not-yet-created', async () => {
+      mockExecCommand.mockResolvedValue({
+        stdout: '',
+        stderr: '#< CLIXML\r\n<Objs Version="1.1.0.1"><S S="Error">... : Cannot find _x000D__x000A_</S><S S="Error">path \'C:\\l\\x.jsonl\' because it does not _x000D__x000A_</S><S S="Error">exist._x000D__x000A_</S></Objs>',
+        code: 1,
+      });
+
+      const result = await pollLogFile('member-1', '/log.jsonl');
+      expect(result.lastTimestamp).toBeNull();
+      expect(result.error).toBeUndefined();
     });
 
     it('returns error when execCommand throws', async () => {
@@ -441,7 +464,7 @@ describe('pollLogFile', () => {
     it('parses mtimeMs from the PowerShell LastWriteTimeUtc command on Windows (already ms)', async () => {
       mockGetAgentOS.mockReturnValue('windows');
       mockExecCommand.mockImplementation(async (cmd: string) => {
-        if (cmd.includes('LastWriteTimeUtc')) {
+        if (decodePowerShellEncodedCommand(cmd).includes('LastWriteTimeUtc')) {
           return { stdout: '1700000000000\n', stderr: '', code: 0 };
         }
         return { stdout: '', stderr: '', code: 0 };
@@ -505,6 +528,46 @@ describe('pollLogFile', () => {
 
       const result = await pollLogFile('member-1', '/brain/session-1/logs/transcript.jsonl');
       expect(result.lastTimestamp).toBe('2026-08-05T05:02:30.000Z');
+    });
+  });
+
+  // GitHub #562 review: the second signal behind agent_never_started.
+  describe('pollRecentProjectTranscript', () => {
+    it('true when a recent transcript exists anywhere under the projects root', async () => {
+      mockGetAgent.mockReturnValue(makeAgent());
+      mockExecCommand.mockResolvedValue({ stdout: '/home/x/.claude/projects/-other/abc.jsonl\nFLEET_ROOT_OK\n', stderr: '', code: 0 });
+      expect(await pollRecentProjectTranscript('member-1', Date.now() - 120_000)).toBe(true);
+      const cmd = mockExecCommand.mock.calls[0][0];
+      expect(cmd).toContain('.claude');
+      expect(cmd).toContain('-mmin -');
+      expect(cmd).not.toMatch(/-home-user-project/); // the ROOT, not this member's own project dir
+    });
+
+    it('false when the root exists and holds no recent transcript', async () => {
+      mockGetAgent.mockReturnValue(makeAgent());
+      mockExecCommand.mockResolvedValue({ stdout: 'FLEET_ROOT_OK\n', stderr: '', code: 0 });
+      expect(await pollRecentProjectTranscript('member-1', Date.now() - 120_000)).toBe(false);
+    });
+
+    it('Windows: probes the root with -LiteralPath (a [ or ] in the home path is not a wildcard)', async () => {
+      mockGetAgent.mockReturnValue(makeAgent({ os: 'windows' }));
+      mockGetAgentOS.mockReturnValue('windows');
+      mockExecCommand.mockResolvedValue({ stdout: 'FLEET_ROOT_OK\r\n', stderr: '', code: 0 });
+      expect(await pollRecentProjectTranscript('member-1', Date.now() - 120_000)).toBe(false);
+      const cmd = decodePowerShellEncodedCommand(mockExecCommand.mock.calls[0][0]);
+      expect(cmd).toContain('Test-Path -LiteralPath');
+      expect(cmd).toContain('Get-ChildItem -LiteralPath');
+      expect(cmd).not.toMatch(/-Path '/);
+    });
+
+    it('null (unknown) when the root is missing, the probe fails, or the provider has no log dir', async () => {
+      mockGetAgent.mockReturnValue(makeAgent());
+      mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
+      expect(await pollRecentProjectTranscript('member-1', Date.now())).toBeNull();
+      mockExecCommand.mockRejectedValue(new Error('ssh down'));
+      expect(await pollRecentProjectTranscript('member-1', Date.now())).toBeNull();
+      mockGetAgent.mockReturnValue(makeAgent({ llmProvider: 'none' }));
+      expect(await pollRecentProjectTranscript('member-1', Date.now())).toBeNull();
     });
   });
 
@@ -595,7 +658,7 @@ describe('pollLogFile', () => {
       it('the generated scan command really finds the transcript nested under the brain dir', async () => {
         const activity = await pollDirectoryActivity('member-1');
 
-        const scanCmd = mockExecCommand.mock.calls.map(c => c[0]).find(c => c.includes('find ') || c.includes('Get-ChildItem'));
+        const scanCmd = mockExecCommand.mock.calls.map(c => decodePowerShellEncodedCommand(c[0])).find(c => c.includes('find ') || c.includes('Get-ChildItem'));
         expect(scanCmd).toBeDefined();
         expect(scanCmd).toContain(logDir);
 
@@ -609,7 +672,7 @@ describe('pollLogFile', () => {
 
       it('the depth bound in the generated command covers the full AGY transcript layout', async () => {
         await pollDirectoryActivity('member-1');
-        const scanCmd = mockExecCommand.mock.calls.map(c => c[0]).find(c => c.includes('find ') || c.includes('Get-ChildItem'))!;
+        const scanCmd = mockExecCommand.mock.calls.map(c => decodePowerShellEncodedCommand(c[0])).find(c => c.includes('find ') || c.includes('Get-ChildItem'))!;
 
         // How far below the polled root the transcript actually lives, derived
         // from the provider (currently brain/<sessionId>/.system_generated/
@@ -694,7 +757,7 @@ describe('pollLogFile', () => {
       it('reports activity from a plain non-jsonl log file, never scored as no progress', async () => {
         const activity = await pollDirectoryActivity('member-1');
 
-        const scanCmd = mockExecCommand.mock.calls.map(c => c[0]).find(c => c.includes('find ') || c.includes('Get-ChildItem'));
+        const scanCmd = mockExecCommand.mock.calls.map(c => decodePowerShellEncodedCommand(c[0])).find(c => c.includes('find ') || c.includes('Get-ChildItem'));
         expect(scanCmd).toBeDefined();
         expect(scanCmd).toContain(logDir);
 

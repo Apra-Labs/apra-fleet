@@ -151,15 +151,13 @@ const FIXTURES = {
     regressionReport: {
         valid: {
             passed: false,
-            suitePassed: true,
-            smokePassed: false,
+            sections: [{ name: 'Unit suite', passed: true }, { name: 'Scenario', passed: false, detail: 'canary failed' }],
             bugsFiled: ['BD-42'],
-            summary: 'Suite passed; smoke test canary assertion failed, filed BD-42 as a carry-over bug.',
+            summary: 'Unit suite passed; scenario canary assertion failed, filed BD-42 as a carry-over bug.',
         },
         invalid: {
             passed: false,
-            suitePassed: 'true', // wrong type
-            smokePassed: false,
+            sections: [{ name: 'Unit suite', passed: 'true' }], // wrong type
             bugsFiled: ['BD-42'],
             summary: 'x',
         },
@@ -215,6 +213,33 @@ describe('verdict schemas', () => {
             });
         });
     }
+
+    test('regressionReport still accepts the deprecated two-part fields (older runners)', () => {
+        const legacy = { passed: false, suitePassed: true, smokePassed: false, bugsFiled: [], summary: 'x' };
+        assert.strictEqual(validateVerdict('regressionReport', legacy).valid, true);
+        const bad = { ...legacy, suitePassed: 'true' };
+        assert.strictEqual(validateVerdict('regressionReport', bad).valid, false);
+    });
+
+    test('regressionReport accepts the optional verdict fields and rejects a bad enum or sha', () => {
+        const base = { passed: false, bugsFiled: [], summary: 'x' };
+        const withVerdict = {
+            ...base,
+            verdict: 'INCONCLUSIVE',
+            testedSha: 'a'.repeat(40),
+            evidence: { verdictRef: 'out/verdict.json', runUrl: 'https://ci.example/run/1', newFailures: [], inventoryMissing: ['INV-1'], extra: 1 },
+        };
+        assert.strictEqual(validateVerdict('regressionReport', withVerdict).valid, true);
+        assert.strictEqual(validateVerdict('regressionReport', base).valid, true, 'verdict fields stay optional');
+        for (const bad of [
+            { ...withVerdict, verdict: 'PASSED' },
+            { ...withVerdict, testedSha: 'abc1234' },
+            { ...withVerdict, testedSha: 'A'.repeat(40) },
+            { ...withVerdict, evidence: { newFailures: 'x' } },
+        ]) {
+            assert.strictEqual(validateVerdict('regressionReport', bad).valid, false, JSON.stringify(bad));
+        }
+    });
 
     test('validateVerdict throws on an unknown schema name', () => {
         assert.throws(() => validateVerdict('notARealSchema', {}), /Unknown verdict schema/);

@@ -42,12 +42,15 @@ import { statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import { readJsonBody, sendJson } from './server.mjs';
-import { validateIssueId, validateBranchName } from '../../fleet-sprint/runner.js';
+import { validateIssueId, validateBranchName, validateBranchPair } from '../../fleet-sprint/runner.js';
 import { validateCredentialStoreName } from '../../fleet-sprint/contracts.mjs';
 import { resolveRoleMap } from '../../bin/cli.mjs';
+import { resolveBacklogRoleAlias, ROLE_BACKLOG } from '../../fleet-sprint/backlog-role.mjs';
+import { normalizeRole } from '../../fleet-sprint/contracts.mjs';
 import { isDeterministicTerminalReason } from './history.mjs';
 import { defaultHasTerminalState, defaultReadFinalState } from './watchdog.mjs';
 import { toBeadsSummary } from './beads-identity.mjs';
+import { fleetMembersUnavailableReason, fleetMembersStoppedByUserReason } from './fleet-members.mjs';
 
 /** This module's own on-disk path -- the default build-version stamp's source (see defaultBuildVersion() below). */
 const API_MODULE_PATH = fileURLToPath(import.meta.url);
@@ -136,7 +139,7 @@ function normalizeMembers(value) {
  * The full member set a reservation covers: the union of --members and every
  * roleMap value. `exclude` (unreservable member names -- see
  * unreservableMemberNamesFromList() below) is subtracted from the union: a shared
- * orchestrator member is never part of a sprint's exclusive reservation, so it
+ * backlog member is never part of a sprint's exclusive reservation, so it
  * never reaches `beforeLaunch` or `ledger.claim`.
  */
 function memberUnion(members, roleMap, exclude) {
@@ -193,7 +196,7 @@ export function formatMemberConflict(conflicts) {
  * apra-fleet-eft.5.2 (extended by eft.26.2, Hole 2): the DEFAULT member-axis
  * overlap guard used as `beforeLaunch` when the caller does not inject its
  * own. All-or-nothing: ANY member in the incoming union (members + every
- * roleMap value, INCLUDING the orchestrator role UNLESS that member is
+ * roleMap value, INCLUDING the backlog role UNLESS that member is
  * flagged `unreservable` -- memberUnion() already folds roleMap values in and
  * subtracts unreservable names) that is also held by any OTHER active
  * reservation rejects
@@ -401,6 +404,12 @@ export function defaultBuildVersion() {
  *     src/supervisor/beads-identity.mjs's createBeadsIdentityState() handle.
  *     When present, launch() records toBeadsSummary(get()) as the ledger
  *     entry's `beads` field; absent (tests, older wiring) -> null.
+ *   backlogMember?: { get: () => { member: { name: string }|null, status: 'ready'|'degraded', reason: string|null } },
+ *     src/supervisor/backlog-member.mjs's ensureBacklogMember() handle. When
+ *     present, launch() HARD-PINS roleMap.backlog to that member (see
+ *     launch()): degraded -> 503 with the reason; member list unreadable ->
+ *     503; absent backlog role -> injected; a different member -> 400.
+ *     Absent (tests, older wiring) -> today's unpinned behaviour.
  * }} deps
  */
 export function createSprintController(deps = {}) {
@@ -418,6 +427,7 @@ export function createSprintController(deps = {}) {
     const proxyStop = deps.proxyStop ?? proxyChildStop;
     const roleMapResolver = deps.resolveRoleMap ?? resolveRoleMap;
     const beadsIdentity = deps.beadsIdentity ?? null;
+    const backlogMemberHandle = deps.backlogMember && typeof deps.backlogMember.get === 'function' ? deps.backlogMember : null;
     const beadsSummaryForLaunch = () => {
         if (!beadsIdentity || typeof beadsIdentity.get !== 'function') return null;
         try {
@@ -481,6 +491,8 @@ export function createSprintController(deps = {}) {
         catch (err) { throw new ApiError(400, err.message, 'branch'); }
         try { validateBranchName(base, 'base'); }
         catch (err) { throw new ApiError(400, err.message, 'base'); }
+        try { validateBranchPair(branch, base); }
+        catch (err) { throw new ApiError(400, err.message, 'branch'); }
         if (members.length === 0) {
             throw new ApiError(400, 'members must be a non-empty list of member names', 'members');
         }
@@ -505,11 +517,29 @@ export function createSprintController(deps = {}) {
             try { validateCredentialStoreName(vcsPatSecretName.value, vcsPatSecretName.field); }
             catch (err) { throw new ApiError(400, err.message, vcsPatSecretName.field); }
         }
+        // phases (optional): per-launch phase settings. Only `regression` is
+        // supported: "run" (default) or "skip". Anything else is rejected here,
+        // before any spawn, so a typo can never silently run or skip a phase.
+        let skipRegression = false;
+        if (body.phases !== undefined) {
+            const phases = body.phases;
+            if (phases === null || typeof phases !== 'object' || Array.isArray(phases)) {
+                throw new ApiError(400, 'phases must be an object, e.g. {"regression":"skip"}', 'phases');
+            }
+            const unknownPhaseKeys = Object.keys(phases).filter((k) => k !== 'regression');
+            if (unknownPhaseKeys.length > 0) {
+                throw new ApiError(400, `phases has unknown key(s): ${unknownPhaseKeys.join(', ')}; only "regression" is supported`, 'phases');
+            }
+            if (phases.regression !== undefined && phases.regression !== 'run' && phases.regression !== 'skip') {
+                throw new ApiError(400, `phases.regression must be "run" or "skip", got ${JSON.stringify(phases.regression)}`, 'phases');
+            }
+            skipRegression = phases.regression === 'skip';
+        }
         // `issue` stays a single comma-joined string (the exact shape
         // buildSprintArgv/cli.mjs's --issue flag expects, and byte-identical
         // to the input for the single-id case); `issueIds` is the split array
         // callers use for issueRoots / per-root history lookups.
-        return { issue: issueIds.join(','), issueIds, branch, base, members };
+        return { issue: issueIds.join(','), issueIds, branch, base, members, skipRegression };
     }
 
     // -- GET /api/members : list_members + live-reservation overlay -----------
@@ -550,11 +580,43 @@ export function createSprintController(deps = {}) {
 
     // -- POST /api/sprints : validated, goal-forwarding launch ----------------
     async function launch(body = {}) {
-        const { issue, issueIds, branch, base, members } = validateLaunchRequest(body);
+        const { issue, issueIds, branch, base, members, skipRegression } = validateLaunchRequest(body);
+        // An '@file' roleMap is a CLI-only convenience: over HTTP it would make
+        // the supervisor read an arbitrary server-side path named by the request
+        // body, and the alias warning could not be computed from it. Reject it.
+        if (typeof body.roleMap === 'string' && body.roleMap.trim().startsWith('@')) {
+            throw new ApiError(400, "[Arg Contract] roleMap '@file' references are not accepted over HTTP; send the role map as a JSON object or JSON string", 'roleMap');
+        }
         const rawRoleMap = body.roleMap === undefined
             ? undefined
             : (typeof body.roleMap === 'string' ? body.roleMap : JSON.stringify(body.roleMap));
-        const roleMap = await roleMapResolver(rawRoleMap);
+        // Backlog-role alias: a conflicting deprecated-alias/backlog
+        // pair is a 400 on field 'roleMap' (before any child spawns); the
+        // deprecation warning for the alias is surfaced in the response. The
+        // operator's ORIGINAL (key-normalized, alias intact) map is what the
+        // child CLI receives, so its run log carries the warning too.
+        let aliasWarnings = [];
+        let forwardRoleMap;
+        if (rawRoleMap !== undefined) {
+            let parsedRaw;
+            try { parsedRaw = JSON.parse(rawRoleMap); } catch { parsedRaw = undefined; }
+            if (parsedRaw && typeof parsedRaw === 'object' && !Array.isArray(parsedRaw)) {
+                const normalizedRaw = {};
+                for (const [k, v] of Object.entries(parsedRaw)) normalizedRaw[normalizeRole(k)] = v;
+                try {
+                    aliasWarnings = resolveBacklogRoleAlias(normalizedRaw).warnings;
+                } catch (err) {
+                    throw new ApiError(400, `[Arg Contract] Invalid roleMap: ${err.message}`, 'roleMap');
+                }
+                forwardRoleMap = normalizedRaw;
+            }
+        }
+        let roleMap;
+        try {
+            roleMap = await roleMapResolver(rawRoleMap);
+        } catch (err) {
+            throw new ApiError(400, err.message, 'roleMap');
+        }
         // apra-fleet: ONE listMembers() read, shared with beforeLaunch below
         // (via ctx.membersList) -- both need to know which members are
         // currently flagged unreservable, and issuing two separate fetches
@@ -565,12 +627,40 @@ export function createSprintController(deps = {}) {
         // still protects a flagged member even if this can't see it) and
         // leaves membersListRaw undefined so beforeLaunch falls back to its
         // own (equally best-effort) fetch attempt.
+        // Backlog hard pin, part 1: a supervisor whose backlog member is
+        // not ready cannot launch at all (before any member read or spawn).
+        let pinnedBacklogName = null;
+        if (backlogMemberHandle) {
+            const st = backlogMemberHandle.get() ?? {};
+            if (st.status !== 'ready' || !st.member || !st.member.name) {
+                throw new ApiError(503, `this supervisor's backlog member is not ready: ${st.reason ?? 'unknown reason'}`);
+            }
+            pinnedBacklogName = st.member.name;
+        }
         let membersListRaw;
+        let membersListError = null;
         try {
             membersListRaw = await listMembers();
         } catch (err) {
-            console.error(`[unreservable] listMembers() failed while computing the unreservable-member exclude set (treating as none this launch): ${err.message}`);
+            membersListError = err && err.message ? err.message : String(err);
+            console.error(`[unreservable] listMembers() failed while computing the unreservable-member exclude set (treating as none this launch): ${membersListError}`);
             membersListRaw = undefined;
+        }
+        // The fleet server was stopped on purpose ('apra-fleet stop'): refuse
+        // the launch with that actionable message instead of spawning a
+        // sprint that could only fail at connect.
+        const stoppedByUser = fleetMembersStoppedByUserReason(membersListRaw);
+        if (stoppedByUser) throw new ApiError(503, stoppedByUser);
+        // Backlog hard pin, part 2: the pin is only enforceable against a
+        // member list that was actually read. listFleetMembers() never
+        // throws, so its unavailable marker (not the catch above) is the
+        // production signal; either one refuses the launch -- never a
+        // silent skip of the check.
+        if (pinnedBacklogName) {
+            const unavailable = membersListError ?? fleetMembersUnavailableReason(membersListRaw);
+            if (unavailable) {
+                throw new ApiError(503, `cannot verify backlog member '${pinnedBacklogName}': fleet member list unavailable (${unavailable})`);
+            }
         }
         const unreservable = membersListRaw !== undefined ? unreservableMemberNamesFromList(membersListRaw) : new Set();
         const union = memberUnion(members, roleMap, unreservable);
@@ -617,6 +707,30 @@ export function createSprintController(deps = {}) {
             );
         }
 
+        // Backlog hard pin, part 3: checked AFTER resolveBacklogRoleAlias, so
+        // the resolved `roleMap.backlog` already carries a deprecated
+        // `orchestrator` alias. Absent -> injected into the map the child
+        // actually receives (forwardRoleMap when set, else the resolved map);
+        // naming any other member -> 400. The pinned member is unreservable,
+        // so it stays out of `union` exactly as before.
+        let childRoleMap = forwardRoleMap ?? roleMap;
+        if (pinnedBacklogName) {
+            const raw = roleMap && typeof roleMap === 'object' ? roleMap[ROLE_BACKLOG] : undefined;
+            const requested = (Array.isArray(raw) ? raw : (raw === undefined || raw === null ? [] : [raw]))
+                .filter((m) => typeof m === 'string' && m.trim().length > 0)
+                .map((m) => m.trim());
+            if (requested.length === 0) {
+                childRoleMap = { ...(childRoleMap && typeof childRoleMap === 'object' ? childRoleMap : {}), [ROLE_BACKLOG]: [pinnedBacklogName] };
+            } else if (requested.some((m) => m !== pinnedBacklogName)) {
+                throw new ApiError(
+                    400,
+                    `[Arg Contract] roleMap.backlog must be this supervisor's backlog member '${pinnedBacklogName}' (or omitted, ` +
+                    `which assigns it automatically); got [${requested.join(', ')}].`,
+                    'roleMap',
+                );
+            }
+        }
+
         // eft.5.2 seam: reject overlapping launches (409) BEFORE spawning a child.
         await beforeLaunch({ members: union, issueRoots, membersList: membersListRaw });
 
@@ -639,7 +753,7 @@ export function createSprintController(deps = {}) {
             maxCycles: body.maxCycles,
             allowMissingMembers: body.allowMissingMembers,
             requirementsFile: body.requirementsFile,
-            roleMap,
+            roleMap: childRoleMap,
             budget: body.budget,
             runId: sprintId,
             // Forwarded straight from the request body (via the same
@@ -655,6 +769,7 @@ export function createSprintController(deps = {}) {
             // provider's default secret name and can install the WRONG
             // credential onto the member, clobbering a working one.
             vcsPatSecretName: resolveVcsPatSecretName(body).value,
+            skipRegression,
         };
         const spawned = await spawner.spawnSprint(spawnOpts);
         // apra-fleet-gey.2: best-effort stale-process detection -- compare
@@ -712,6 +827,10 @@ export function createSprintController(deps = {}) {
             // name sees the migration notice on every launch, not just in a
             // log line it may not be watching.
             vcsPatSecretNameDeprecationWarning: resolveVcsPatSecretName(body).deprecationWarning,
+            // Every launch-time deprecation notice, in the one list callers read.
+            warnings: resolveVcsPatSecretName(body).deprecationWarning
+                ? [...aliasWarnings, resolveVcsPatSecretName(body).deprecationWarning]
+                : aliasWarnings,
         };
     }
 

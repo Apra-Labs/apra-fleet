@@ -23,6 +23,7 @@ import { writeAgyWorkspaceOverlays } from '../cli/install.js';
 import { validateOpenCodeModelTiers } from '../utils/opencode-model-validation.js';
 import { checkRunningInstance } from '../services/singleton.js';
 import { provisionAgents, type ProvisionResult } from '../services/agent-provisioner.js';
+import { recheckProjectAgentShadows } from '../services/agent-shadow.js';
 import { seedWorkspaceTrust } from '../utils/workspace-trust.js';
 import { composePermissions } from './compose-permissions.js';
 import { isFullyQualifiedPath, workFolderNotAbsoluteError } from '../utils/work-folder-validation.js';
@@ -42,7 +43,7 @@ export const registerMemberSchema = z.object({
   auth_type: z.enum(['password', 'key']).optional().describe('Authentication method (required for non-cloud remote members; cloud members default to "key")'),
   password: z.string().optional().describe('SSH password. Omit for out-of-band entry — a password prompt will open in a separate terminal window. Supports {{secret.NAME}} token — value is resolved from the credential store before use.'),
   key_path: z.string().optional().describe('Path to SSH private key. Used for both regular SSH connections and cloud instance lifecycle.'),
-  work_folder: z.string().regex(/^[^<>\n\r]+$/, 'work_folder must not contain angle brackets or newlines').describe('Working directory on the target machine. For remote members, must be a fully-qualified/absolute path (e.g. "/home/bella/repo" or "C:\\Users\\bella\\repo") -- "~" and relative paths are rejected, since they are never resolved for a remote member.'),
+  work_folder: z.string().regex(/^[^<>\n\r]+$/, 'work_folder must not contain angle brackets or newlines').describe('Working directory on the target machine. For remote members, must be a fully-qualified/absolute path (e.g. "/home/bella/repo" or "C:\\Users\\bella\\repo") -- "~" and relative paths are rejected, since they are never resolved for a remote member. A folder may hold at most one LLM member and one LLM-less (llm_provider none) member.'),
   git_access: z.enum(['read', 'push', 'admin', 'issues', 'full']).optional().describe('Git access level for this member'),
   git_repos: z.array(z.string()).optional().describe('Git repositories this member can access (e.g. ["Apra-Labs/ApraPipes"])'),
   vcs_provider: z.enum(['github', 'bitbucket', 'azure-devops', 'none']).optional().describe('VCS provider this member pushes to and opens pull requests against. Omit to auto-detect it from the member\'s git "origin" remote; pass "none" to record that this member deliberately has no VCS provider (suppresses the auto-detect warning). A member with no VCS provider CANNOT push or open a PR.'),
@@ -74,7 +75,7 @@ export const registerMemberSchema = z.object({
     premium: z.string().optional(),
   }).optional().describe('Per-member model tier map. Keys: cheap, standard, premium. Values: model IDs (e.g. "ollama/qwen3-coder:30b"). A single model fills all tiers. At least one model recommended for opencode members.'),
   code_intel_provider: z.enum(['codebase-memory', 'gitnexus', 'none']).optional().describe('Code-intelligence provider for this member (default: fleet-wide config).'),
-  unreservable: z.boolean().optional().describe('Mark this member as never exclusively reservable, so it can be shared by more than one sprint at once (e.g. a member filling fleet-sprint\'s shared "orchestrator" role). reserve/release/force_release become no-op successes and overlap guards skip it. Default: false.'),
+  unreservable: z.boolean().optional().describe('Mark this member as never exclusively reservable, so it can be shared by more than one sprint at once (e.g. a member filling fleet-sprint\'s shared "backlog" role). reserve/release/force_release become no-op successes and overlap guards skip it. Default: false.'),
   shell: z.enum(['gitbash', 'pwsh7', 'powershell5']).optional().describe('Override the probed Windows shell for this member (gitbash, pwsh7, or powershell5). Windows members only -- ignored for non-windows members.'),
 });
 
@@ -141,7 +142,7 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
   }
 
   // unreservable is reserved for members that never receive a real agent
-  // dispatch (e.g. a beads-only fleet-sprint orchestrator shared across
+  // dispatch (e.g. a beads-only fleet-sprint backlog member shared across
   // concurrent sprints). Without this constraint, an ordinary dispatch
   // member flagged unreservable would let two sprints dispatch to it
   // concurrently -- interleaving prompts into one working tree -- and any
@@ -223,9 +224,10 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
   }
 
   // --- Duplicate folder check ---
-  if (hasDuplicateFolder(input.member_type, input.work_folder, input.host, input.port)) {
+  if (hasDuplicateFolder(input.member_type, input.work_folder, input.host, input.port, undefined, input.llm_provider ?? 'claude')) {
     const scope = isLocal ? 'this machine' : `host ${input.host}:${input.port}`;
-    return `❌ Another member already uses folder "${input.work_folder}" on ${scope}. Member was NOT registered.`;
+    const kind = (input.llm_provider ?? 'claude') === 'none' ? 'LLM-less' : 'LLM';
+    return `❌ Another ${kind} member already uses folder "${input.work_folder}" on ${scope} (a folder may hold one LLM member and one LLM-less member). Member was NOT registered.`;
   }
 
   // --- Cloud: get instance state and resolve host ---
@@ -467,6 +469,11 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
     if (connResult.ok) {
       agentProvisionResult = await provisionAgents(tempAgent);
       if (agentProvisionResult.warning) warnings.push(agentProvisionResult.warning);
+
+      // Project-level agent files in the work folder shadow the managed role
+      // set (local and remote members alike). Never throws.
+      const shadowWarning = await recheckProjectAgentShadows(tempAgent);
+      if (shadowWarning) warnings.push(shadowWarning);
 
       // apra-fleet-eft.40.2: seed Claude workspace trust for this member's work folder
       // so composed project-scoped permissions are honored on the first dispatch,

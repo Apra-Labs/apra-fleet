@@ -25,9 +25,42 @@ short-circuits before anything downstream runs:
    (both imported from `fleet-sprint/runner.js` -- the SAME regexes the CLI
    and the engine itself re-check, single source of truth); `members` (a
    string array or a comma-separated string) non-empty after normalization.
+   Optional `phases` is validated too: only `{ "regression": "run" | "skip" }`
+   is accepted (anything else -> `400`, field `phases`); `"skip"` forwards
+   `--skip-regression` to the child.
+   Optional `roleMap` (object or JSON string) is resolved too. The
+   `roleMap.orchestrator` key is a DEPRECATED alias of `roleMap.backlog`:
+   using it still works, and the response carries a top-level
+   `warnings: string[]` (empty `[]` when no alias was used; one deprecation
+   message per alias use otherwise). The operator's original map (alias
+   intact) is forwarded to the child, so its run log warns too. A `roleMap`
+   holding BOTH keys with different members, any `roleMap` that fails to
+   resolve (bad JSON, bad shape), and a string `'@file'` reference (a
+   CLI-only form; never read from a request body) are all `400`, field
+   `roleMap`.
    Any failure -> `400` naming the field. Note the split has to happen first:
    `ISSUE_ID_PATTERN` has no comma in its charset, so an un-split `"a,b"`
    would be rejected.
+1a. **Backlog hard pin** (only when `bin/serve.mjs` wired its backlog-member
+   handle -- `src/supervisor/backlog-member.mjs`; a controller built without
+   it keeps the unpinned behaviour). Every sprint a supervisor launches uses
+   THAT supervisor's own backlog member (the LLM-less, unreservable member
+   it ensures at startup for its project folder):
+   - backlog member degraded (fleet unreachable at startup, no `.beads`
+     found, ...) -> `503`, `error` = `this supervisor's backlog member is not
+     ready: <reason>`, nothing spawned;
+   - fleet member list unreadable at launch time -> `503`, `error` contains
+     `cannot verify backlog member`, nothing spawned (the check is never
+     skipped silently);
+   - `roleMap` absent, or without a `backlog` (or deprecated `orchestrator`)
+     key -> `backlog: [<supervisor member>]` is INJECTED into the role map
+     the child receives (other roles untouched);
+   - `roleMap.backlog` (or the alias) naming the supervisor member ->
+     accepted (the alias still produces its deprecation warning);
+   - naming any other member -> `400`, field `roleMap`, naming the
+     supervisor's backlog member.
+   The pinned member is `unreservable`, so it never enters the reserved
+   member union (step 3).
 2. **Relaunch gate** -- looks up
    `history.latestForIssueRoot(issue)`. If that prior incarnation's record
    is "deterministic" (see below) and the request did not pass
@@ -39,7 +72,7 @@ short-circuits before anything downstream runs:
 3. **Member-overlap guard** (`defaultMemberOverlapGuard`) -- runs
    only if step 2 passed. Computes the full member UNION (the request's
    `members` PLUS every value in every `roleMap` role list, including the
-   `orchestrator` pseudo-role) and rejects with `409` (field `members`) if
+   `backlog` pseudo-role) and rejects with `409` (field `members`) if
    that union intersects ANY other active reservation, from either of two
    sources merged into one conflict set:
    - this supervisor's own ledger (`ledger.list()`);
@@ -268,7 +301,7 @@ carries the reason and the fix, e.g.:
 
 ```json
 "beads": null,
-"beadsWarning": "no beads database found walking up from /some/dir. Backlog and scope-overlap checks are disabled and sprints will verify against the orchestrator member's beads instead. To fix: restart fleet-se from inside the project folder, or pass --beads-dir <project-or-.beads-path>, then GET /api/health?refresh=1."
+"beadsWarning": "no beads database found walking up from /some/dir. Backlog and scope-overlap checks are disabled and sprints will verify against the backlog member's beads instead. To fix: restart fleet-se from inside the project folder, or pass --beads-dir <project-or-.beads-path>, then GET /api/health?refresh=1."
 ```
 
 (a nonexistent `--beads-dir` is still a startup error, not a warning).
@@ -280,9 +313,26 @@ a failed one updates `beadsWarning` to the current probe error. The same
 four fields are recorded as `beads` on each launched sprint's ledger entry
 (`null` while unknown) and the engine receives them as `--expect-beads`
 (omitted while unknown; the engine then verifies members against the
-orchestrator member's own identity), so a member whose own `bd where`
+backlog member's own identity), so a member whose own `bd where`
 disagrees is refused rather than dispatched at the wrong tracker. `dir` is
 display-only: it is a path on the supervisor's host.
+
+## GET /api/health: `backlogMember`
+
+When `bin/serve.mjs` wired its backlog-member handle, health also reports
+
+```json
+"backlogMember": { "status": "ready" | "degraded", "name": "<member name or null>", "reason": "<why degraded, or null>" }
+```
+
+At startup the supervisor adopts a local LLM-less member whose work folder
+is its project folder (adding the `backlog` tag and `unreservable` when
+missing), or registers one named `backlog-<camelCaseFolderName>` -- also
+when an LLM member already uses that folder (the registry allows one LLM and
+one LLM-less member per folder; the LLM member is left alone and logged). It
+REFUSES to start (exit 1) when the derived name is taken by a member for
+another folder. Fleet unreachable is not fatal: status is `degraded`, launches
+answer `503`, and a background retry flips it to `ready`.
 
 ## Status-code summary (cross-endpoint)
 
@@ -306,6 +356,8 @@ display-only: it is a path on the supervisor's host.
 - **502** -- reverse-proxy-specific (`/sprints/:id/live*`): the child was
   supposed to be reachable (port resolved) but the actual upstream
   connect/response failed.
-- **503** -- dolt-mutex acquire and id-allocator allocate failures (e.g. the
+- **503** -- `POST /api/sprints` while the supervisor's backlog member is
+  degraded or the fleet member list cannot be read (see step 1a), plus
+  dolt-mutex acquire and id-allocator allocate failures (e.g. the
   seam shutting down) -- distinct from 500 to signal "try again", not "this
   request is wrong".

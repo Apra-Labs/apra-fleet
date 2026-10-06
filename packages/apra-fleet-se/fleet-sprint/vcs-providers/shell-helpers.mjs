@@ -112,8 +112,10 @@ function shQuote(value, os, shell) {
         // above (what the NATIVE child parses), then PowerShell's own
         // single-quoted-string escape (what PowerShell parses to get the
         // value it hands the binder) -- a lone `'` inside a `'...'` string
-        // is written as `''`.
-        return `'${escapeForWindowsArgv(value).replace(/'/g, "''")}'`;
+        // is written as `''`. PowerShell also ends a single-quoted string on
+        // U+2018..U+201B (common in LLM-written PR text), so each of those is
+        // doubled as itself too.
+        return `'${escapeForWindowsArgv(value).replace(/['\u2018-\u201B]/g, '$&$&')}'`;
     }
     return `'${String(value).replace(/'/g, `'\\''`)}'`;
 }
@@ -129,7 +131,9 @@ function shQuote(value, os, shell) {
  *  exact JSON the caller built. Whitespace cannot appear outside a string
  *  in JSON.stringify() output, so the rewrite is always inside a string. */
 function shQuoteJson(json, os, shell) {
-    const text = String(json);
+    // A raw backtick can only occur inside a JSON string here; ` decodes
+    // back to it, and keeps backticks out of the dispatched command text.
+    const text = String(json).replace(/`/g, '\\u0060');
     if (!usesPowerShellQuoting(os, shell)) return shQuote(text, os, shell);
     const noWhitespace = text.replace(/\s/g, (ch) => `\\u${ch.charCodeAt(0).toString(16).padStart(4, '0')}`);
     return shQuote(noWhitespace, os, shell);

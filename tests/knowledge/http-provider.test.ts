@@ -30,6 +30,7 @@ function makeInput(overrides: Partial<KBEntryInput> = {}): KBEntryInput {
 // Lightweight mock server that records capture requests
 let mockServer: http.Server;
 const captureRequests: KBEntryInput[] = [];
+const queryUrls: string[] = [];
 
 beforeAll(async () => {
   mockServer = http.createServer((req, res) => {
@@ -52,6 +53,7 @@ beforeAll(async () => {
         res.writeHead(201, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ id: 'server-id-123', audn_decision: 'add' }));
       } else if (url.startsWith('/api/kb/query') && method === 'GET') {
+        queryUrls.push(url);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ results: [], total: 0, l1_only: false }));
       } else if (url === '/api/kb/invalidate' && method === 'POST') {
@@ -73,9 +75,31 @@ afterAll(async () => {
 
 beforeEach(() => {
   captureRequests.length = 0;
+  queryUrls.length = 0;
 });
 
 describe('HttpKbProvider', () => {
+  it('forwards the kb_query trust filters to the server, and only when set', async () => {
+    const fallback = new SqliteProvider(':memory:');
+    await fallback.init();
+    const provider = new HttpKbProvider(`http://127.0.0.1:${MOCK_PORT}`, MOCK_TOKEN, fallback);
+    await provider.init();
+
+    try {
+      await provider.query({ query: 'x', confidence: ['CONFIRMED', 'INFERRED'], exclude_disputed: true });
+      await provider.query({ query: 'x' });
+      expect(queryUrls).toHaveLength(2);
+      const filtered = new URL(queryUrls[0], 'http://h').searchParams;
+      expect(filtered.get('confidence')).toBe('CONFIRMED,INFERRED');
+      expect(filtered.get('exclude_disputed')).toBe('true');
+      const plain = new URL(queryUrls[1], 'http://h').searchParams;
+      expect(plain.has('confidence')).toBe(false);
+      expect(plain.has('exclude_disputed')).toBe(false);
+    } finally {
+      provider.dispose();
+    }
+  });
+
   it('proxy success: capture forwarded to server', async () => {
     const fallback = new SqliteProvider(':memory:');
     await fallback.init();

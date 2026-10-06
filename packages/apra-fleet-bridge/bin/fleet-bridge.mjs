@@ -123,10 +123,9 @@ import {
 import { execBdSync, execBdAsync } from '@apralabs/apra-fleet-se/src/supervisor/lib/exec-bd.mjs';
 import { getSeCommands } from '@apralabs/apra-fleet-se/fleet-sprint/se-os-commands.mjs';
 import { beadsExtension } from '@apralabs/apra-fleet-se/fleet-sprint/viewer-extensions.mjs';
-import { StreamableHttpTransport } from '@apralabs/apra-fleet-client/transport';
 import { McpClient } from '@apralabs/apra-fleet-client/client';
 import { ApraFleet, parseToolJson } from '@apralabs/apra-fleet-client';
-import { resolveFleetServerConnection, getFleetDataDir, getServerInfoPath } from '@apralabs/apra-fleet-client/server-resolution';
+import { resolveFleetServerConnection, createFleetHttpTransport, getFleetDataDir, getServerInfoPath } from '@apralabs/apra-fleet-client/server-resolution';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -276,7 +275,11 @@ export function createRealContext({ env = process.env } = {}) {
             { reason: connection.reason, mode: connection.mode },
           );
         }
-        const transport = new StreamableHttpTransport(connection.url);
+        // Reconnecting: a long-lived daemon outlives fleet server restarts (a
+        // redeploy invalidates every session). On a lost session or refused
+        // connection the server is re-probed and the session re-opened; a
+        // request is re-sent once, only when it provably never reached a tool.
+        const transport = createFleetHttpTransport(connection, { env, dirname: __dirname });
         await transport.start();
         const mcpClient = new McpClient(transport);
         const fleetApi = new ApraFleet(mcpClient);

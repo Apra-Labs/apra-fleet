@@ -52,9 +52,16 @@ const KB_CONFIG_PATH = path.join(FLEET_DIR, 'knowledge', 'config.json');
 let priorConfigContent: string | null = null;
 
 beforeEach(async () => {
-  provider = new SqliteProvider(':memory:');
-  await provider.init();
   repoDir = initTempGitRepo();
+  // The project export only publishes entries whose per-file hash basis matches
+  // the files in repo_path: the cited file must exist under the anchored repo.
+  // It is git-excluded (not committed) so these tests still see exactly one
+  // commit and a clean status after the bible commit.
+  fs.mkdirSync(path.join(repoDir, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(repoDir, 'src', 'default.ts'), 'export const d = 1;');
+  fs.appendFileSync(path.join(repoDir, '.git', 'info', 'exclude'), 'src/' + String.fromCharCode(10));
+  provider = new SqliteProvider(':memory:', repoDir);
+  await provider.init();
   vi.spyOn(kbProvidersModule, 'getKbProviders').mockResolvedValue({
     project: provider,
     global: provider,

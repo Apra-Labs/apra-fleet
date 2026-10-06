@@ -95,6 +95,16 @@ paths:
                   beadsRefreshError:
                     type: string
                     description: present only when ?refresh=1 was requested and the re-probe failed (beads then holds the last good identity, or stays null with an updated beadsWarning)
+                  backlogMember:
+                    type: object
+                    description: >
+                      present only when the supervisor wired its backlog-member
+                      handle (bin/serve.mjs). degraded means launches answer
+                      503 until a background retry makes it ready.
+                    properties:
+                      status: { type: string, enum: [ready, degraded] }
+                      name: { type: [string, "null"] }
+                      reason: { type: [string, "null"] }
 
   /api/shutdown:
     post:
@@ -341,7 +351,18 @@ paths:
                   type: string
                   description: forwarded into the child's --requirements-file argv
                 roleMap:
-                  description: JSON object OR a JSON string / "@path" resolved via the shared resolveRoleMap() (same resolver bin/cli.mjs uses)
+                  description: >
+                    JSON object (or a JSON string of one) mapping role -> member[].
+                    The "@path" file form is rejected over HTTP (400, field roleMap);
+                    send the map inline. The backlog role key is "backlog";
+                    "orchestrator" is accepted as a deprecated alias and adds an
+                    entry to the 201 response's warnings[]. Giving both keys with
+                    different values -> 400 (field roleMap). Backlog hard pin:
+                    when the supervisor runs with its own backlog member, an
+                    absent backlog role (no "backlog" and no "orchestrator"
+                    key) is injected as [<supervisor backlog member>] into
+                    the map the child receives; naming that member is
+                    accepted; naming any other member -> 400 (field roleMap).
                   type: object
                   additionalProperties:
                     type: array
@@ -349,6 +370,20 @@ paths:
                 budget:
                   type: number
                   description: USD ceiling forwarded into the child's --budget argv
+                phases:
+                  type: object
+                  additionalProperties: false
+                  description: >
+                    Per-launch phase settings. regression "skip" forwards
+                    --skip-regression: the once-per-sprint regression pass is
+                    skipped and the log, sprint analysis and PR body say
+                    "skipped by launch option". Unknown keys or values -> 400
+                    (field phases). Integration tests are not affected.
+                  properties:
+                    regression:
+                      type: string
+                      enum: [run, skip]
+                      default: run
                 overrideRelaunchGate:
                   type: boolean
                   description: >
@@ -376,8 +411,15 @@ paths:
                   members:
                     type: array
                     items: { type: string }
-                    description: the full member UNION (members + every roleMap value, including the orchestrator role), not just the request's `members` field
+                    description: the full member UNION (members + every roleMap value, including the backlog role), not just the request's `members` field
                   goal: { type: string, nullable: true }
+                  warnings:
+                    type: array
+                    items: { type: string }
+                    description: >
+                      Non-fatal launch warnings, e.g. the roleMap used the
+                      deprecated "orchestrator" key instead of "backlog".
+                      Empty when there is nothing to warn about.
                   buildVersionWarning:
                     type: string
                     nullable: true
@@ -388,7 +430,12 @@ paths:
                       on-disk build right now. Advisory only -- never blocks
                       the launch.
         "400":
-          description: request-shape validation failed
+          description: >
+            request-shape validation failed, including (field roleMap) a
+            roleMap that gives both "backlog" and the deprecated
+            "orchestrator" key with different values, the "@path" file
+            form, or a backlog role (or its alias) naming a member other
+            than this supervisor's own backlog member (the error names it)
           content:
             application/json:
               schema: { $ref: "#/components/schemas/FieldError" }
@@ -402,6 +449,16 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/FieldError" }
+        "503":
+          description: >
+            Backlog hard pin cannot be enforced, nothing spawned: the
+            supervisor's backlog member is degraded (error "this
+            supervisor's backlog member is not ready: <reason>"), or the
+            fleet member list cannot be read at launch time (error contains
+            "cannot verify backlog member").
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
   /api/sprints/{id}:
     get:

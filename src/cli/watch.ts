@@ -233,7 +233,7 @@ export async function runWatch(args: string[]): Promise<void> {
     const provider = ctx.agent.llmProvider ?? 'claude';
     const txDir = isLocal ? resolveSessionLogDir(provider as any, ctx.agent.workFolder) : null;
     // Remote Claude members: tail the transcript over SSH (it lives on their disk).
-    const rtEnc = !isLocal && provider === 'claude' ? encodeClaudeProjectDir(ctx.agent.workFolder) : null;
+    const rtEnc = !isLocal && provider === 'claude' ? encodeClaudeProjectDir(ctx.agent.workFolder, getAgentOS(ctx.agent) === 'windows') : null;
     const f: Follower = {
       agent: ctx.agent,
       provider,

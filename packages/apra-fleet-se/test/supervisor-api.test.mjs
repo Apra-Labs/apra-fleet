@@ -513,6 +513,28 @@ describe('api -- POST /api/sprints validation + goal forwarding', () => {
         await fsp.rm(dir, { recursive: true, force: true });
     });
 
+    test('branch == base (incl. origin/ spelling) => 400 naming the branch field, no child spawned', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const captured = [];
+        const supervisor = createSupervisor({ port: 0 });
+        registerSprintRoutes(supervisor, createSprintController({
+            ledger, history, spawner: recordingSpawner(captured),
+            listMembers: () => ({ members: [] }), getBacklog: () => ({}),
+        }));
+
+        const res = mockRes();
+        await supervisor.handleRequest(
+            mockReq('POST', '/api/sprints', { issue: 'PROJ-1', members: ['a'], branch: 'main', base: 'origin/main' }),
+            res,
+        );
+        assert.equal(res.statusCode, 400);
+        assert.equal(payloadOf(res).field, 'branch');
+        assert.match(JSON.stringify(payloadOf(res)), /must differ from base_branch/);
+        assert.equal(captured.length, 0);
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
     test('invalid base branch => 400 naming the base field', async () => {
         const dir = await tmpDir();
         const { ledger, history } = await stores(dir);
@@ -605,7 +627,7 @@ describe('api -- apra-fleet-eft.5.2 member-axis overlap check (default beforeLau
         await fsp.rm(dir, { recursive: true, force: true });
     });
 
-    test('an unreservable orchestrator member is NOT caught by an existing overlap -- the launch succeeds and the ledger never claims it', async () => {
+    test('an unreservable backlog member is NOT caught by an existing overlap -- the launch succeeds and the ledger never claims it', async () => {
         const dir = await tmpDir();
         const { ledger, history } = await stores(dir);
         // s-active already claims 'supervisor' (e.g. from an earlier sprint that
@@ -625,6 +647,84 @@ describe('api -- apra-fleet-eft.5.2 member-axis overlap check (default beforeLau
         // The ledger's own reservation for the NEW sprint never includes the
         // unreservable member -- it is subtracted from the union entirely.
         assert.deepEqual([...r.members].sort(), ['dave']);
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('roleMap.backlog launches with no deprecation warning and forwards the backlog key', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const captured = [];
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner(captured),
+            listMembers: () => ({ members: [] }), getBacklog: () => ({}),
+        });
+        const r = await controller.launch({
+            issue: 'PROJ-2', members: ['dave'], branch: 'feat/y', base: 'main',
+            roleMap: { backlog: ['supervisor'] },
+        });
+        assert.equal(captured.length, 1);
+        assert.deepEqual(r.warnings, []);
+        const rm = JSON.parse(captured[0].args[captured[0].args.indexOf('--role-map') + 1]);
+        assert.deepEqual(rm, { backlog: ['supervisor'] });
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('roleMap.orchestrator (deprecated alias) launches, response warns, and the child argv keeps the alias key so its run log warns too', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const captured = [];
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner(captured),
+            listMembers: () => ({ members: [] }), getBacklog: () => ({}),
+        });
+        const r = await controller.launch({
+            issue: 'PROJ-2', members: ['dave'], branch: 'feat/y', base: 'main',
+            roleMap: { Orchestrator: ['supervisor'] },
+        });
+        assert.equal(captured.length, 1);
+        assert.equal(r.warnings.length, 1);
+        assert.match(r.warnings[0], /roleMap.orchestrator/);
+        assert.match(r.warnings[0], /v0.5/);
+        const rm = JSON.parse(captured[0].args[captured[0].args.indexOf('--role-map') + 1]);
+        assert.deepEqual(rm, { orchestrator: ['supervisor'] });
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('roleMap with both backlog and orchestrator holding different members => 400 naming roleMap, no child spawned', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const captured = [];
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner(captured),
+            listMembers: () => ({ members: [] }), getBacklog: () => ({}),
+        });
+        await assert.rejects(
+            () => controller.launch({
+                issue: 'PROJ-2', members: ['dave'], branch: 'feat/y', base: 'main',
+                roleMap: { backlog: ['a'], orchestrator: ['b'] },
+            }),
+            (err) => err instanceof ApiError && err.status === 400 && err.field === 'roleMap',
+        );
+        assert.equal(captured.length, 0);
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test("a string '@file' roleMap is rejected over HTTP => 400 naming roleMap, no child spawned", async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const captured = [];
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner(captured),
+            listMembers: () => ({ members: [] }), getBacklog: () => ({}),
+        });
+        await assert.rejects(
+            () => controller.launch({
+                issue: 'PROJ-2', members: ['dave'], branch: 'feat/y', base: 'main',
+                roleMap: '@/etc/roles.json',
+            }),
+            (err) => err instanceof ApiError && err.status === 400 && err.field === 'roleMap',
+        );
+        assert.equal(captured.length, 0);
         await fsp.rm(dir, { recursive: true, force: true });
     });
 
@@ -1520,7 +1620,7 @@ describe('api -- /api/health beads identity', () => {
 
     test('identity unknown: beads is null and beadsWarning carries the reason + fix; once refresh() recovers it the warning is gone', async () => {
         let current = null;
-        let warning = "no beads database found walking up from /x. Backlog and scope-overlap checks are disabled and sprints will verify against the orchestrator member's beads instead. To fix: restart fleet-se from inside the project folder, or pass --beads-dir <project-or-.beads-path>, then GET /api/health?refresh=1.";
+        let warning = "no beads database found walking up from /x. Backlog and scope-overlap checks are disabled and sprints will verify against the backlog member's beads instead. To fix: restart fleet-se from inside the project folder, or pass --beads-dir <project-or-.beads-path>, then GET /api/health?refresh=1.";
         const beadsIdentity = {
             get: () => current,
             getWarning: () => (current ? null : warning),

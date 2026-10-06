@@ -3,8 +3,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import type { ServiceManager, ServiceStatus } from './types.js';
-import { LINUX_UNIT_NAME } from './types.js';
+import { LINUX_UNIT_NAME, SERVICE_ENV_MARKER } from './types.js';
 import { gracefulStopByServerJson } from './index.js';
+import { clearServiceStartFailures } from '../service-start-guard.js';
 
 const UNIT_DIR = path.join(os.homedir(), '.config', 'systemd', 'user');
 const UNIT_PATH = path.join(UNIT_DIR, LINUX_UNIT_NAME);
@@ -29,6 +30,8 @@ export class LinuxServiceManager implements ServiceManager {
       'Type=simple',
       `ExecStart=${binaryPath} ${args.join(' ')}`,
       'Restart=on-failure',
+      // Lets the server tell it runs under a restarting service manager.
+      `Environment=${SERVICE_ENV_MARKER}=1`,
       `StandardOutput=append:${logPath}`,
       `StandardError=append:${logPath}`,
       '',
@@ -50,20 +53,22 @@ export class LinuxServiceManager implements ServiceManager {
   async unregister(): Promise<void> {
     await gracefulStopByServerJson();
     checkSystemd();
-    try { execFileSync('systemctl', ['--user', 'disable', SERVICE_NAME]); } catch {}
-    try { execFileSync('systemctl', ['--user', 'stop', SERVICE_NAME]); } catch {}
+    try { execFileSync('systemctl', ['--user', 'disable', SERVICE_NAME], { stdio: 'pipe' }); } catch {}
+    try { execFileSync('systemctl', ['--user', 'stop', SERVICE_NAME], { stdio: 'pipe' }); } catch {}
     try { fs.unlinkSync(UNIT_PATH); } catch {}
-    try { execFileSync('systemctl', ['--user', 'daemon-reload']); } catch {}
+    try { execFileSync('systemctl', ['--user', 'daemon-reload'], { stdio: 'pipe' }); } catch {}
   }
 
   async start(): Promise<void> {
+    // An explicit start is never skipped by the failed-start backoff.
+    clearServiceStartFailures();
     checkSystemd();
     execFileSync('systemctl', ['--user', 'start', SERVICE_NAME]);
   }
 
-  async stop(): Promise<void> {
+  async stop(): Promise<boolean> {
     checkSystemd();
-    await gracefulStopByServerJson();
+    return gracefulStopByServerJson();
   }
 
   async query(): Promise<ServiceStatus> {
@@ -75,13 +80,13 @@ export class LinuxServiceManager implements ServiceManager {
     let enabled: boolean | undefined;
     try {
       const active = execFileSync(
-        'systemctl', ['--user', 'is-active', SERVICE_NAME], { encoding: 'utf8' },
+        'systemctl', ['--user', 'is-active', SERVICE_NAME], { encoding: 'utf8', stdio: 'pipe' },
       ).trim();
       running = active === 'active';
     } catch {}
     try {
       const enabledOut = execFileSync(
-        'systemctl', ['--user', 'is-enabled', SERVICE_NAME], { encoding: 'utf8' },
+        'systemctl', ['--user', 'is-enabled', SERVICE_NAME], { encoding: 'utf8', stdio: 'pipe' },
       ).trim();
       enabled = enabledOut === 'enabled';
     } catch {}

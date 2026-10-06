@@ -80,7 +80,7 @@ method in this surface is classified `consent-gated` on its own (the
 consent-gated CLI-only surface -- `approveDirective`, `rejectDirective`,
 `addDirective` -- is not tool-reachable; see `methods.json`'s `not_in_scope`).
 
-### 2.2 Undeclared members reached by tools but absent from `MemoryProvider` (`methods.json` ids X-1..X-6, plus the X-7 property)
+### 2.2 Undeclared members reached by tools but absent from `MemoryProvider` (`methods.json` ids X-1..X-6 and X-8, plus the X-7 property)
 
 `list`, `feedback`, `freshnessSweep`, `resolveContradiction`,
 `reconcilePrefilter`, `hasEntry` (methods), and `repoPath` (property, not a
@@ -674,6 +674,21 @@ the generator is built to catch -- and a consumer MUST dispatch on response
 shape using ITS OWN request (did it send `flagged_only`?), never by
 attempting discriminator-style dispatch against the emitted schema, since the
 emitted `anyOf` carries no machine-readable discriminant mapping.
+
+**TRUST FILTERS.** The default (non-`flagged_only`) branch accepts two
+optional, default-off filters: `confidence`, a non-empty allow-list of tiers
+(`CONFIRMED`/`INFERRED`/`UNVERIFIED`), and `exclude_disputed`, which drops any
+entry on either side of an unresolved contradiction (`flagged_for_review`
+true, or `contradiction_of` set). When supplied, an implementation MUST apply
+them to every entry the response carries -- `l1_results`, `l2_expanded` AND
+`related_claims` -- so a filtered caller is never handed an excluded entry
+through the graph expansion instead. When both are absent the response MUST
+be exactly what it was without them. The `flagged_only` branch ignores both
+(listing disputed entries is its purpose). An implementation backed by a
+store that cannot filter MUST filter the merged result itself before
+responding (`src/tools/kb-query.ts` `passesTrustFilter` does this on top of
+the sqlite provider's SQL filter). Test hook: the `kb_query`
+`happy-confirmed-only` fixture and `tests/knowledge/kb-query-trust-filter.test.ts`.
 
 **THE TEST HOOK.** The selector guard and both response shapes are checked
 by the round-trip harness at the request/happy-path level

@@ -33,7 +33,7 @@ starts, but logs `[supervisor] WARNING: no beads database found walking up
 from <cwd> ... To fix: ...`, reports `beads: null` plus `beadsWarning` on
 `/api/health`, shows an amber `Beads: NOT RESOLVED -- ...` header on the
 dashboard, and launches sprints WITHOUT `--expect-beads` (they then verify
-members against the orchestrator member's own beads). Treat that as
+members against the backlog member's own beads). Treat that as
 "restart from the right folder / with `--beads-dir`", or fix the
 environment and hit `GET /api/health?refresh=1` to recover without a
 restart. `--port <n>` overrides the default (8787). Self-logs to
@@ -302,7 +302,7 @@ Field names, exactly as the API expects them:
 | Field | Required | Notes |
 |---|---|---|
 | `issue` | yes | comma-separated bead root IDs (parent/epic OR a standalone leaf bead). Alias: `target_issue`. |
-| `branch` | yes | created from `base` if it doesn't exist yet. |
+| `branch` | yes | created from `base` if it doesn't exist yet. Must differ from `base` (an equal pair is a 400). |
 | `base` | yes | alias: `base_branch`. This is what the sprint branches FROM -- pass the branch you actually want, not always `main`. |
 | `members` | yes | array of registered member names. One member = safest default. |
 | `goal` | no | `P1`, `P1/P2` (default), or `P1/P2/P3`. |

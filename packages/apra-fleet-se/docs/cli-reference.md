@@ -41,22 +41,23 @@ allowed.
 |---|---|---|---|---|---|
 | `--issue <ids>` | `-i` | yes | comma-separated string | -- | Target beads issue id(s) that scope the sprint (e.g. `epic-1,epic-2`). Split on commas, trimmed, and forwarded to the runner as `target_issues`. Scope is the full descendant subtree of every id, resolved in memory by `bdListScoped()` -- see `docs/fleet-sprint-cli-contract.md`. |
 | `--members <ids>` | `-m` | yes | comma-separated string | -- | Fleet member id(s)/name(s) available to the sprint. Members are the pool doers/reviewer round-robin across (see `docs/architecture.md` "Role -> member resolution"). |
-| `--branch <name>` | `-b` | yes | string | -- | Sprint branch to develop on. Created from `--base` if it does not already exist. |
+| `--branch <name>` | `-b` | yes | string | -- | Sprint branch to develop on. Created from `--base` if it does not already exist. Must differ from `--base` (prefixes `refs/heads/`/`origin/` are ignored when comparing). |
 | `--base <name>` | `-B` | yes | string | -- | Base branch the sprint branch is created from, and the branch the eventual PR targets. |
 | `--goal <goal>` | `-g` | no | string | `P1/P2` | Priority-tier goal constraint. Must match `P1`, `P1/P2`, or `P1/P2/P3` (pattern `^P[1-3](/P[1-3]){0,2}$`). Determines the exit condition -- see `docs/architecture.md`. |
 | `--max-cycles <n>` | `-c` | no | positive integer | `5` | Hard ceiling on plan/develop/review cycles. |
 | `--allow-missing-members` | | no | boolean flag | off | Without this flag, ANY `--members` entry not registered with the fleet aborts the sprint before it starts. With it, missing members are dropped with a warning and the sprint proceeds with whatever members remain (at least one valid member is still required). |
 | `--requirements-file <path>` | | no | string | -- | Path to a file whose content is read once, up front, and threaded verbatim into every Plan-phase planner prompt this sprint. A missing/unreadable file only logs a warning; the sprint continues without it. |
-| `--role-map <json\|@file>` | | no | JSON object or `@path/to/file.json` | -- | Maps role name -> array of member names, e.g. `'{"doer":["m1","m2"]}'`. Overrides the default member-pool resolution for that role (see `docs/architecture.md`). Also accepts the application-level pseudo-role key `orchestrator` (which member issues the sprint's own `bd`/`git` commands). Keys are normalized (trimmed + lowercased) on load; two keys that normalize to the same value are rejected as ambiguous. |
+| `--role-map <json\|@file>` | | no | JSON object or `@path/to/file.json` | -- | Maps role name -> array of member names, e.g. `'{"doer":["m1","m2"]}'`. Overrides the default member-pool resolution for that role (see `docs/architecture.md`). Also accepts the application-level pseudo-role key `backlog` (which member issues the sprint's own `bd`/`git` commands). `orchestrator` is a deprecated alias of `backlog`: accepted in 0.4.4 (with a deprecation warning in the run log) and removed in v0.5; giving both keys with different values is an arg-contract error. Keys are normalized (trimmed + lowercased) on load; two keys that normalize to the same value are rejected as ambiguous. |
 | `--viewer-port <port>` | | no | integer 1-65535 | `8080` | Port for the local dashboard viewer HTTP server. |
 | `--budget <usd>` | | no | non-negative finite number | unset (unlimited) | USD ceiling for this run's total *estimated* spend. When set, `agent()` dispatches abort the run with a budget-exceeded error once tracked spend reaches the ceiling. Omitted means unlimited -- identical to not having this flag at all. See the budget-tracking caveats in `docs/architecture.md`. |
 | `--dispatch-timeout-s <s>` | | no | integer >= 60 | `9000` (applied by the runner) | Per-dispatch time budget in seconds, used as both the inactivity timeout and the hard elapsed-time ceiling on every agent dispatch. The integ-test dispatch ceiling is 2x this value and the regression-test ceiling is 3x. Omitting the flag leaves it unset at the CLI; `runner.js` then applies its own `9000` default. |
 | `--usage-limit-max-wait-s <s>` | | no | integer >= 60 | runner default (`USAGE_LIMIT_BUDGET_DEFAULTS.USAGE_LIMIT_MAX_WAIT_S`) | Total wall-clock seconds a single dispatch may stay paused across all usage-limit reprobes before the controller gives up with a typed `UsageLimitWaitExhaustedError` (routed through `finalizeAbort()`/an `[ABORTED]` PR). Omitting the flag leaves it unset at the CLI; the runner uses `role-policies.mjs`'s default. See `docs/architecture.md` "A provider usage/rate limit pauses the run". |
 | `--usage-limit-max-reprobes <n>` | | no | integer >= 1 | runner default (`USAGE_LIMIT_BUDGET_DEFAULTS.USAGE_LIMIT_MAX_REPROBES`) | Maximum usage-limit reprobe attempts before the controller gives up, independent of elapsed wait. Omitting the flag leaves it unset at the CLI; the runner uses `role-policies.mjs`'s default. |
+| `--skip-regression` | | no | boolean flag | off | Skips the once-per-sprint regression pass. Logged, and stated in the sprint analysis and the PR body ("skipped by launch option"). Integration tests still run. The supervisor sets it from `phases: { regression: "skip" }`. |
 | `--sync` | | no | boolean flag | off | Selects `synced` topology mode (orchestrator-bracketed git + Dolt sync brackets) instead of the default shared-workspace/`legacy` mode. See `docs/architecture.md` "Multi-member topology". |
 | `--service-url <url>` | | no | string | -- | Base HTTP URL of the supervisor that launched this sprint. Forwarded as `serviceUrl`, which switches the dolt-push mutex and the child-id allocator over to their HTTP clients. Set by the supervisor's spawner; not normally passed by hand. |
 | `--run-id <id>` | | no | string | `--branch`'s value | Identifier used for this run's state/viewer keying. Defaults to the branch name when omitted. |
-| `--expect-beads <json>` | | no | JSON string | -- | Beads identity (`{"beadsDir","prefix","syncRemote","repoRemote"}`) every member must resolve to. Set by the supervisor's spawner; falls back to env `FLEET_SPRINT_EXPECT_BEADS` when omitted, and to the orchestrator member's own `bd where` when neither is set. A mismatched member aborts the sprint before any `bd` mutation; an unprobeable member/field is a logged warning (with the fix) and is not compared. |
+| `--expect-beads <json>` | | no | JSON string | -- | Beads identity (`{"beadsDir","prefix","syncRemote","repoRemote"}`) every member must resolve to. Set by the supervisor's spawner; falls back to env `FLEET_SPRINT_EXPECT_BEADS` when omitted, and to the backlog member's own `bd where` when neither is set. A mismatched member, or one that cannot run `bd` at all, aborts the sprint before any `bd` mutation; any other unprobeable member/field is a logged warning (with the fix) and is not compared. |
 | `--vcs-pat-secret-name <name>` | | no | string | provider's own default | Credential-store secret name holding the VCS provider's PAT/token to provision, for operators whose credential for this project is not stored under the provider's default secret name (e.g. because that name is already committed to a different project). Forwarded to `runner.js`'s `args.azdevops_pat_secret_name` (see "Runner arguments" below for why that internal key keeps its pre-existing name). |
 | `--help` | `-h` | no | boolean flag | -- | Prints usage text and exits 0. |
 
@@ -99,11 +100,12 @@ call sites this rename deliberately left alone; see bin/cli.mjs's
 Before any `bd` mutation, the CLI prints a `Beads:` banner naming the expected
 identity, then logs `beads ok: <member> ...` per member as each one's probe
 passes. Severity: a MISMATCH (a field that resolved on both sides and
-differs) raises `BeadsIdentityError` and aborts; a probe that fails or
-resolves nothing is a `[beads-identity] WARNING: ...` line naming the member,
+differs) raises `BeadsIdentityError` and aborts, and so does `bd` itself
+being missing on a member (not installed / not on PATH, reason
+`MISSING_TOOL`); any other probe that fails or resolves nothing is a `[beads-identity] WARNING: ...` line naming the member,
 the field, the probe, the error and the fix -- that field is simply not
 compared and the sprint proceeds. The banner's own pre-flight probe of the
-orchestrator member prints `Warning: ...` (with the fix) on failure instead of
+backlog member prints `Warning: ...` (with the fix) on failure instead of
 exiting.
 
 ### Exit codes
@@ -124,7 +126,8 @@ In order, `main()` in `bin/cli.mjs` performs:
 1. **Required-flag check** -- see above.
 2. **Issue id / branch name shape validation** -- every `--issue` id is
    checked against `validateIssueId` and both `--branch`/`--base` against
-   `validateBranchName` (both imported from `fleet-sprint/runner.js`, the same
+   `validateBranchName`, and the pair against `validateBranchPair` (branch
+   must differ from base) (all imported from `fleet-sprint/runner.js`, the same
    validators the runner itself re-applies -- single source of truth, and
    defense-in-depth if the runner is ever invoked directly, bypassing the
    CLI). Issue ids must match `^[A-Za-z0-9._-]+$`; branch names must match
@@ -153,9 +156,9 @@ In order, `main()` in `bin/cli.mjs` performs:
    passed (in which case missing members are dropped with a warning). If
    *no* valid members remain, the sprint aborts regardless.
 9. **Target-issue existence check** -- runs `bd show <id>` for every
-   `--issue` id, on the **orchestrator member** specifically (not the local
-   machine -- see `checkIssuesExistOnMember()`). The orchestrator member is
-   `roleMap.orchestrator[0]` if configured, else the first valid `--members`
+   `--issue` id, on the **backlog member** specifically (not the local
+   machine -- see `checkIssuesExistOnMember()`). The backlog member is
+   `roleMap.backlog[0]` if configured, else the first valid `--members`
    entry.
 10. **Multi-member topology check** -- `checkMemberTopology()` (see
     `docs/architecture.md` "Multi-member topology") compares `git rev-parse
@@ -218,9 +221,9 @@ call:
    (`src/services/singleton.ts`) checks `~/.apra-fleet/data/server.json`
    for a live pid + a passing `/health` GET; on success, attach via
    `StreamableHttpTransport` and spawn nothing.
-3. **stdio self-spawn fallback** -- only when no healthy HTTP singleton is
-   found: the four-tier `resolveFleetServerCommand()` resolution above,
-   feeding `StdioTransport`.
+3. **Start the shared HTTP server** -- when the singleton is verifiably
+   gone: run `apra-fleet start`, wait for `/health`, attach over HTTP
+   (stdio only via the explicit `stdio`/CMD/BIN path).
 
 See `docs/adr-workflow-server-resolution.md` for the full rationale; this
 is binding on any future change to `resolveFleetServerCommand()`.

@@ -51,6 +51,7 @@ import fsp from 'node:fs/promises';
 import { escapeHtml } from '@apralabs/apra-fleet-workflow/viewer/html-utils';
 import { getTerminalRunStatePath } from '@apralabs/apra-fleet-workflow/viewer/run-state-paths';
 import { withTimestamps } from './log-timestamp.mjs';
+import { createChildPortResolver } from './child-port.mjs';
 
 /** Hop-by-hop headers that must never be forwarded verbatim across a proxy. */
 export const HOP_BY_HOP = Object.freeze([
@@ -327,20 +328,13 @@ export function createLiveProxy(deps = {}) {
     const logger = withTimestamps(deps.logger ?? console);
     const logError = (...a) => (logger.error ?? logger.log)?.(...a);
 
-    // Default port resolution: sprintId -> ledger childPid -> spawner live port.
-    // The ledger deliberately does NOT persist ports; the spawner is the live
+    // Default port resolution: sprintId -> ledger childPid -> spawner live port
+    // (child-port.mjs, shared with the dashboard's per-row summary pull). The
+    // ledger deliberately does NOT persist ports; the spawner is the live
     // pid->port bookkeeping (freshly spawned OR re-adopted across a restart), so
     // a finished/crashed child (no live entry) resolves to `undefined` and the
     // request falls through to history.
-    function defaultResolvePort(sprintId) {
-        if (!ledger || typeof ledger.get !== 'function') return undefined;
-        const entry = ledger.get(sprintId);
-        const pid = entry && entry.childPid;
-        if (!Number.isInteger(pid)) return undefined;
-        if (!spawner || typeof spawner.getLiveEntry !== 'function') return undefined;
-        const live = spawner.getLiveEntry(pid);
-        return live && Number.isInteger(live.port) ? live.port : undefined;
-    }
+    const defaultResolvePort = createChildPortResolver({ ledger, spawner });
     const resolvePort = deps.resolvePort ?? defaultResolvePort;
 
     const renderHistory = deps.renderHistory

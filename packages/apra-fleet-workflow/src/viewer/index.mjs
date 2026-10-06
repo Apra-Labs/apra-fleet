@@ -9,6 +9,7 @@ import { buildListStatePayload, resolveStringRefs } from './lean-state.mjs';
 import { capCommandActivityMeta, getFullOutput } from './command-output-cap.mjs';
 import { buildRunTitle } from './run-title.mjs';
 import { resolveBlobDataUrls, blobDataUrl } from './blob-urls.mjs';
+import { createRunSummary, refreshSummaryCore, applyExtensionSummary, backfillExtensionSummaries } from './run-summary.mjs';
 
 // apra-fleet-eft.6.5: the SAME template serves both the live view and the
 // process-free History view -- `opts.history` (true) feeds a FROZEN state
@@ -45,7 +46,7 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
     // live under beside the page. Supplied by whoever publishes the page.
     const blobRunsPrefix = typeof opts.blobRunsPrefix === 'string' && /^[A-Za-z0-9._-]+$/.test(opts.blobRunsPrefix) ? opts.blobRunsPrefix : 'runs';
     const frozenStateLiteral = isHistory
-        ? JSON.stringify(opts.state ?? null).replace(/</g, '\\u003c')
+        ? JSON.stringify(backfillExtensionSummaries(opts.state ?? null, dashboardExtensions) ?? null).replace(/</g, '\\u003c')
         : 'null';
     return `<!DOCTYPE html>
 <html lang="en">
@@ -261,7 +262,7 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
     <div class="content-area">
       <div class="tab-bar" id="tab-bar">
         <button class="tab-btn active" onclick="switchTab('core')">Activity Tree</button>
-        ${dashboardExtensions.map(ext => `<button class="tab-btn" onclick="switchTab('${ext.id}')">${ext.title}</button>`).join('\\n')}
+        ${dashboardExtensions.map(ext => `<button class="tab-btn" onclick="switchTab('${ext.id}')">${ext.title}</button>`).join('\n')}
       </div>
       <div id="tab-core" class="tab-content active panel">
         <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center;">
@@ -278,10 +279,10 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
           </div>
           <div id="extension-${ext.id}" style="flex: 1; min-height: 0; padding: 12px; overflow-y: auto;"></div>
         </div>
-      `).join('\\n')}
+      `).join('\n')}
     </div>
   </div>
-  ${dashboardExtensions.map(ext => `<script>\n${ext.js}\n</script>`).join('\\n')}
+  ${dashboardExtensions.map(ext => `<script>\n${ext.js}\n</script>`).join('\n')}
   <script>
     let globalState = null;
     function switchTab(id) {
@@ -701,6 +702,8 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
     source.onmessage = (e) => {
         const ev = JSON.parse(e.data);
         if (ev.type === 'state') {
+            // Summary first, then state (same order as renderState's hand-off).
+            document.dispatchEvent(new CustomEvent('workflow:summary:' + ev.payload.namespace, { detail: ev.payload.summary ?? null }));
             const extEvent = new CustomEvent('workflow:state:' + ev.payload.namespace, { detail: ev.payload.data });
             document.dispatchEvent(extEvent);
         }
@@ -1106,6 +1109,17 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
 
         renderTreeIncremental(state.tree);
 
+        // Generic per-namespace summary hand-off (GET /state?summary=1's
+        // extensions map, computed server-side once per publish): dispatched
+        // BEFORE the matching workflow:state:NS event so an extension can
+        // cache it and render from it on that event. detail is null when
+        // the namespace has no summary yet.
+        const summaryExts = (state.summary && state.summary.extensions) || {};
+        const summaryNamespaces = new Set([...Object.keys(state.extensions || {}), ...Object.keys(summaryExts)]);
+        for (const ns of summaryNamespaces) {
+            document.dispatchEvent(new CustomEvent('workflow:summary:' + ns, { detail: summaryExts[ns] || null }));
+        }
+
         if (state.extensions) {
             for (const [ns, data] of Object.entries(state.extensions)) {
                 const extEvent = new CustomEvent('workflow:state:' + ns, { detail: data });
@@ -1172,6 +1186,17 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
 // module). Reads from the LIVE, full-fidelity in-memory `state.tree` (never
 // the leaned /state payload), which is where an uncapped activity's complete
 // output/error text still lives.
+// True for GET /state?summary=1 (any extra query params, e.g. a _t
+// cache-buster, allowed); false for plain /state and /state?_t=....
+function isSummaryRequest(url) {
+    try {
+        const u = new URL(url, 'http://localhost');
+        return u.pathname === '/state' && u.searchParams.get('summary') === '1';
+    } catch {
+        return false;
+    }
+}
+
 function findActivityById(state, id) {
     for (const g of state.tree || []) {
         for (const p of g.phases || []) {
@@ -1298,7 +1323,11 @@ export function createDashboardViewer(workflow, opts = {}) {
         // any workflow -- no fleet-sprint-specific fields.
         pause: { status: 'none', reason: null, since: null, phase: null, group: null, resumeAt: null },
         tree: [],
-        extensions: {}
+        extensions: {},
+        // Small, fixed-shape progress summary served at GET /state?summary=1
+        // (run-summary.mjs). Core fields are refreshed on every broadcast;
+        // extensions.<ns> is recomputed only when <ns> is published.
+        summary: createRunSummary(runId)
     };
 
     // Note: group/phase tracking is single-run by design (single-tenant usage).
@@ -1315,6 +1344,8 @@ export function createDashboardViewer(workflow, opts = {}) {
     let currentPhase = { title: 'Initialization', phaseStartedAt: startedAtIso, phaseEndedAt: null, events: [] };
     currentGroup.phases.push(currentPhase);
     state.tree.push(currentGroup);
+    const refreshSummary = () => refreshSummaryCore(state.summary, state, currentPhase ? currentPhase.title : null);
+    refreshSummary();
 
     const clients = new Set();
     const broadcast = (data) => {
@@ -1326,6 +1357,10 @@ export function createDashboardViewer(workflow, opts = {}) {
         // mid-run read of the persisted file reflects in-progress state
         // rather than only the terminal snapshot.
         state.updatedAt = nowIso();
+        // Every lifecycle change (end, pause events, phase, activity
+        // stats) reaches here, so the summary's core fields stay current
+        // without any extension hook being called.
+        refreshSummary();
         debouncedWriter.schedule();
     };
 
@@ -1442,6 +1477,7 @@ export function createDashboardViewer(workflow, opts = {}) {
         }
         state.endedAt = nowIso();
         state.terminalReason = state.terminalReason || 'SIGINT';
+        refreshSummary();
         persistState();
         // apra-fleet-eft.2.1: flush any coalesced-but-not-yet-written
         // debounced state synchronously before the process actually exits,
@@ -1462,6 +1498,7 @@ export function createDashboardViewer(workflow, opts = {}) {
         }
         state.endedAt = nowIso();
         state.terminalReason = state.terminalReason || 'SIGTERM';
+        refreshSummary();
         persistState();
         debouncedWriter.flushSync();
         moveStateToOldRuns();
@@ -1539,7 +1576,11 @@ export function createDashboardViewer(workflow, opts = {}) {
 
     workflow.on('state', (stateData) => {
         state.extensions[stateData.namespace] = stateData.data;
-        broadcast({ type: 'state', payload: stateData });
+        // Once-per-publish: only the extension registered for THIS
+        // namespace (if it opts in with summarize()) is asked to summarize;
+        // a throwing hook is logged and its previous summary kept.
+        applyExtensionSummary(state.summary, dashboardExtensions, stateData.namespace, stateData.data, nowIso());
+        broadcast({ type: 'state', payload: { ...stateData, summary: state.summary.extensions[stateData.namespace] ?? null } });
     });
 
     // (apra-fleet-p2to.2.1) Generic pause lifecycle wiring, mirroring how
@@ -1627,6 +1668,12 @@ export function createDashboardViewer(workflow, opts = {}) {
             res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Connection': 'keep-alive', 'Cache-Control': 'no-cache' });
             clients.add(res);
             req.on('close', () => clients.delete(res));
+        } else if (req.url.startsWith('/state') && isSummaryRequest(req.url)) {
+            // GET /state?summary=1: the small precomputed run summary only
+            // (run-summary.mjs) -- no tree, no string table, no raw
+            // extension data. Never calls any summarize() hook.
+            res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate' });
+            res.end(JSON.stringify(state.summary));
         } else if (req.url.startsWith('/state')) {
             // apra-fleet-eft.27.1: GET /state is the RECURRING poll endpoint
             // (every ~250ms-400ms while a run is live) -- it must never
@@ -1641,7 +1688,12 @@ export function createDashboardViewer(workflow, opts = {}) {
             // the configured snapshot dir and running/<runId>.json, and what
             // the process-free History view embeds) is never mutated by this.
             res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate' });
-            res.end(JSON.stringify(buildListStatePayload(state)));
+            // The small top-level `summary` is attached AFTER the
+            // leanify/dedupe pass: it repeats short top-level strings
+            // (runId, updatedAt, ...) and must not turn them into $ref
+            // markers for consumers that read the plain payload unresolved.
+            const { summary, ...rest } = state;
+            res.end(JSON.stringify({ ...buildListStatePayload(rest), summary }));
         } else if (req.method === 'GET' && /^\/extensions\/[^/]+\/detail\/[^/]+$/.test(req.url)) {
             // apra-fleet-eft.37.4 (M3): the GENERIC on-demand-detail route.
             // Any dashboard extension may register a `detailLookup(state, id)`

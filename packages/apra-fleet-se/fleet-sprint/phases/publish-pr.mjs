@@ -40,24 +40,23 @@
 // WHICH MEMBER DOES WHAT, AND WHY IT MATTERS. The branch push and the
 // `git remote get-url origin` read run on publishGitMember -- the role-resolved
 // 'harvester' member, a real dispatch member with an actual git checkout --
-// NEVER orchestratorMember, which may be a shared/unreservable, git-less member
+// NEVER backlogMember, which may be a shared/unreservable, git-less member
 // (docs/design-orchestrator-worktree-model-v2.md section 4.3/4.5).
 // raiseVcsPrForMember() and the direct `bd close` calls stay on
-// orchestratorMember: a credential-file read plus a REST call, and beads
+// backlogMember: a credential-file read plus a REST call, and beads
 // mutations, neither of which needs a git checkout (section 4.6).
 //
-// WHY ITS HELPERS ARE INJECTED RATHER THAN IMPORTED. sanitizePrText is defined
-// in ../runner.js, so importing it would be a circular import back into the
-// file this module was sliced out of -- it is injected exactly as
-// ./final-review.mjs injects it. command, gitSync, getMemberForRole and args
-// are runSprintCycle-scoped, so there is nothing to import; vcsCapabilities,
-// raiseVcsPrForMember, ApraFleet and CommandError live in real modules and are
-// imported directly.
+// WHY ITS HELPERS ARE INJECTED RATHER THAN IMPORTED. command, gitSync,
+// getMemberForRole and args are runSprintCycle-scoped, so there is nothing to
+// import; vcsCapabilities, raiseVcsPrForMember, the ../pr-body.mjs builders,
+// ApraFleet and CommandError live in real modules and are imported directly.
+// (sanitizePrText used to be injected for the notes; the body no longer uses
+// it -- see the PR body comment below.)
 //
 // GUARD COVERAGE: registered as 'phases/publish-pr.mjs' in
 // ../guarded-modules.mjs. It took TWO member_name-bearing command() call sites
 // out of runner.js -- the `git remote get-url origin` capability probe on
-// publishGitMember and the per-target-issue `bd close` on orchestratorMember --
+// publishGitMember and the per-target-issue `bd close` on backlogMember --
 // plus the branch push and the beads D-push described above, and NO
 // dispatchRole() site (it dispatches no agent; raiseVcsPrForMember is a REST
 // call). That is exactly what dispatch-safety-guard, unbracketed-push-guard
@@ -70,6 +69,7 @@ import { CommandError } from '@apralabs/apra-fleet-workflow';
 import { ApraFleet } from '@apralabs/apra-fleet-client';
 import { capabilities as vcsCapabilities } from '../vcs-module.mjs';
 import { raiseVcsPrForMember } from '../vcs-auth.mjs';
+import { buildSprintPrBody, buildSprintPrTitle } from '../pr-body.mjs';
 
 /**
  * Runs the Publish PR phase: push the sprint branch, then either raise a PR on
@@ -90,7 +90,7 @@ export async function runPublishPrPhase({
     args,
     validated,
     targetIssues,
-    orchestratorMember,
+    backlogMember,
     finalCycleLabel,
     // The sync brackets this phase's branch push and beads D-push go through.
     gitSync,
@@ -98,8 +98,8 @@ export async function runPublishPrPhase({
     getMemberForRole,
     // The verdict this phase publishes but must never change.
     finalVerdictResult,
-    // Exported BY runner.js; injected to avoid a circular import (see header).
-    sanitizePrText,
+    // Engine-computed cost block from ./harvest.mjs, rendered in the PR body.
+    costAnalysis = '',
 }) {
     phase(`Publish PR C${finalCycleLabel}`);
     // The branch push is the LAST step of a sprint that has already done all of
@@ -122,10 +122,10 @@ export async function runPublishPrPhase({
     // apra-fleet: this push and the origin-remote read just below it run on
     // publishGitMember -- a real dispatch member with an actual git checkout
     // (harvester, falling back to the fallback pool like every other role
-    // resolution in ../runner.js) -- NEVER orchestratorMember, which may be a
+    // resolution in ../runner.js) -- NEVER backlogMember, which may be a
     // shared/unreservable, git-less member (docs/design-orchestrator-
     // worktree-model-v2.md section 4.3/4.5). raiseVcsPrForMember() below
-    // stays on orchestratorMember: it is a credential-file read + REST call,
+    // stays on backlogMember: it is a credential-file read + REST call,
     // not git, and is explicitly designed to stay there (section 4.6).
     const publishGitMember = getMemberForRole('harvester');
     let pushed = false;
@@ -212,7 +212,7 @@ export async function runPublishPrPhase({
         if (finalVerdictResult.verdict === 'PASS') {
             for (const id of targetIssues) {
                 const closeRes = await command(`bd close ${id}`, {
-                    member_name: orchestratorMember,
+                    member_name: backlogMember,
                     silent: true,
                     failSoft: true,
                     label: `Close target issue '${id}' directly (non-hosted remote, no PR gate)`,
@@ -223,33 +223,44 @@ export async function runPublishPrPhase({
                     log(`Publish PR: failed to close target issue '${id}' directly (non-fatal, continuing): ${closeRes.error}`);
                 }
             }
-            await gitSync.syncBeadsAfter(orchestratorMember, { pushBeads: true });
+            await gitSync.syncBeadsAfter(backlogMember, { pushBeads: true });
         } else {
             log('Publish PR: final verdict is FAIL -- leaving target issue(s) open (not closing on a non-PASS verdict).');
         }
     } else {
-        // finalVerdictResult.notes is LLM-authored free text -- sanitize with
-        // sanitizePrText() (see the comment above its definition) BEFORE it is
-        // ever embedded in the VCSModule-built create-pull-request command()
-        // string below. validated.goal/validated.branch need no sanitization
-        // here: both are already validated against shell-injection-safe patterns
-        // (GOAL_PATTERN/BRANCH_NAME_PATTERN) at arg-validation time.
-        const prTitle = `Auto-sprint [${finalVerdictLabel}]: ${validated.branch}`;
-        const safeNotes = sanitizePrText(finalVerdictResult.notes);
-        const prBody = [
-            `Automated apra-fleet-se sprint (goal: ${validated.goal}).`,
-            '',
-            `Final Verdict: ${finalVerdictLabel}`,
-            safeNotes ? `Notes: ${safeNotes}` : null,
-            '',
-            'Do NOT auto-merge -- see pm skill R12; a human must review and merge this PR.',
-        ].filter((line) => line !== null).join('\n');
+        // finalVerdictResult.notes is LLM-authored free text. It used to go
+        // through sanitizePrText() (a single-line shell-argument sanitizer
+        // that maps every newline to a space), which is what flattened the
+        // reviewer's paragraphs and bullets into one line. The body never
+        // reaches a shell as raw text -- every provider builder JSON-encodes
+        // it and quotes the JSON per member shell -- so ../pr-body.mjs now
+        // applies markdown/transport hygiene instead (no raw HTML, no
+        // credential-placeholder spelling, balanced fences, ASCII, capped)
+        // while keeping the line structure.
+        const prTitle = buildSprintPrTitle({ verdict: finalVerdictLabel, branch: validated.branch });
+        const runId = validated.runId || (args && args.run_id) || '';
+        const now = new Date();
+        const buildBody = (previousBody = '') => buildSprintPrBody({
+            verdict: finalVerdictLabel,
+            goal: validated.goal,
+            branch: validated.branch,
+            baseBranch: validated.baseBranch,
+            runId,
+            now,
+            notes: finalVerdictResult.notes,
+            details: [
+                validated.skipRegression ? 'Regression pass: skipped by launch option -- not run this sprint.' : null,
+            ],
+            costAnalysis,
+            previousBody,
+        });
+        const prBody = buildBody();
 
         // Idempotent PR creation via VCSModule (apra-fleet-tfx.8: the reverted
         // gh-based path is gone). A push+pr credential is minted just-in-time immediately
         // before this one call (never at sprint setup, never for any other
         // phase), VCSModule builds the orchestrator-side curl command, and
-        // `orchestratorMember` dispatches it via execute_command -- no gh, no
+        // `backlogMember` dispatches it via execute_command -- no gh, no
         // server-side fallback. A re-run of finalization against a branch
         // that ALREADY has an open PR from a prior, otherwise-successful run
         // can be told apart from a genuine failure: the REST create-PR call
@@ -275,12 +286,12 @@ export async function runPublishPrPhase({
             // MCP dependency for callers that legitimately have none. A genuine
             // PR-creation FAILURE (auth, network, a real API error) still
             // throws below -- only the callTool-absent case is degraded.
-            log(`[Publish PR Skipped] no MCP callTool available to mint a push+pr credential for member '${orchestratorMember}' -- branch '${validated.branch}' is pushed but the PR was not raised.`);
+            log(`[Publish PR Skipped] no MCP callTool available to mint a push+pr credential for member '${backlogMember}' -- branch '${validated.branch}' is pushed but the PR was not raised.`);
         } else {
             const prResult = await raiseVcsPrForMember({
                 fleetApi: fleetApiForPr,
                 command,
-                member: orchestratorMember,
+                member: backlogMember,
                 base: validated.baseBranch,
                 head: validated.branch,
                 title: prTitle,
@@ -290,7 +301,7 @@ export async function runPublishPrPhase({
                 // Already resolved above via publishGitMember (a real
                 // git-capable member) for the PR-capability gate -- skip
                 // re-deriving it a second time by shelling out to
-                // orchestratorMember, which may have no git checkout of its
+                // backlogMember, which may have no git checkout of its
                 // own to read a remote from (docs/design-orchestrator-
                 // worktree-model-v2.md section 4.6: this call stays workspace-
                 // independent by design, credential-file-read + REST only).
@@ -305,6 +316,10 @@ export async function runPublishPrPhase({
                 // git credential on disk. Undefined when unset -- provisioning
                 // then falls back to the provider default, unchanged.
                 azdevopsPatSecretName: validated.azdevopsPatSecretName,
+                // A relaunch on a branch that already has a PR rewrites that
+                // PR's title and body for THIS run's verdict, carrying the
+                // earlier runs forward from the old body's history block.
+                updateExisting: ({ body: oldBody }) => ({ title: prTitle, body: buildBody(oldBody) }),
             });
             if (!prResult.ok) {
                 if (prResult.authFailure) {
@@ -324,7 +339,11 @@ export async function runPublishPrPhase({
                     );
                 }
             } else if (prResult.alreadyExists) {
-                log(`Publish PR: a PR for branch '${validated.branch}' already exists -- treating as idempotent success.`);
+                if (prResult.updated) {
+                    log(`Publish PR: a PR for branch '${validated.branch}' already exists -- updated its title and body to this run's verdict (${finalVerdictLabel})${prResult.prUrl ? `: ${prResult.prUrl}` : ''}.`);
+                } else {
+                    log(`[Publish PR] WARNING: a PR for branch '${validated.branch}' already exists but could NOT be updated to this run's verdict (${finalVerdictLabel}) -- its title/body may still show an earlier run's verdict; update it by hand. Cause: ${prResult.updateError || '(unknown)'}`);
+                }
             }
         }
     }

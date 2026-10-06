@@ -89,12 +89,12 @@ not a member of that enum -- this exists specifically to prevent a
 casing/typo mismatch from silently collapsing the doer/reviewer pool back to
 a single member.
 
-`orchestrator` is a deliberately **non-vendored, application-level
-pseudo-role** (the constant `ROLE_ORCHESTRATOR = 'orchestrator'`): it names
+`backlog` is a deliberately **non-vendored, application-level
+pseudo-role** (`orchestrator` is its deprecated alias, removed in v0.5): it names
 which physical member the orchestrating process itself (this script, issuing
 every `bd`/`git` command directly) runs as. It has no
 `packages/apra-fleet-se/apra-pm/agents/*.md` definition, no schema, and is never passed to
-`agent()`. `getMemberForRole(ROLE_ORCHESTRATOR)` resolves the orchestrator
+`agent()`. `getMemberForRole()` for this role resolves the backlog
 member the same way any other role resolves via `roleMap`/fallback.
 
 ## The cycle loop
@@ -197,7 +197,7 @@ carve-out, not a change to the general failure-handling path.
 ### Batched bead claiming is a dormant contract, not yet live behavior
 
 `claimBeadsBatched()` exists to replace a per-id claim loop with one `bd
-update <ids...> --claim --json` call issued by the orchestrator member before
+update <ids...> --claim --json` call issued by the backlog member before
 a streak is dispatched, but it only activates when a streak carries an
 `assignee` -- which no current caller sets (`validated.assignee` is always
 unset), so today it is dead code exercised only by its own unit tests, not a
@@ -242,7 +242,7 @@ are malformed.
 
 Runbook presence is checked via `probeFileExists()`, which shells out `node
 -e "console.log(require('fs').existsSync('<file>') ? 'found' : 'not
-found')"` on the orchestrator member with `failSoft: true` -- a probe failure
+found')"` on the backlog member with `failSoft: true` -- a probe failure
 (transient error, member-side quirk) is treated as "not found" (skip the
 phase) and logged as a warning, never fatal.
 
@@ -370,7 +370,7 @@ runner-owned policy table, not a live read of fleet configuration):
 | `deployer` | `standard` | Mostly mechanical: follow `deploy.md` |
 | `integ-test-runner` | `standard` | Mostly mechanical: follow `integ-test-playbook.md` |
 | `regression-test-runner` | `standard` | Mostly mechanical: follow `regression-test-playbook.md` |
-| `harvester` | `standard` | Docs/CHANGELOG synthesis, not code-critical |
+| `harvester` | `standard` | Docs synthesis, not code-critical |
 | `streakAssignment` | `cheap` | This runner's own "group these ready bead ids" call -- a small, fully-specified classification task with no vendored persona |
 
 These tier keywords (`cheap`/`standard`/`premium`) are resolved to a concrete
@@ -416,7 +416,7 @@ in preference order:
 
 The harvester's `costAnalysis` block (`buildCostAnalysis()`) reports which
 of these sourced each run's total -- all real, all fallback, or a mixed
-count -- so the CHANGELOG cost note stays honest about precision rather than
+count -- so the PR-body cost note stays honest about precision rather than
 implying uniform accuracy. A dispatch using an entirely unpriced model id
 (no match in either source) is still excluded from the tracked total, not
 backfilled with a fabricated number -- the fleet does not currently echo
@@ -430,7 +430,7 @@ Two distinct topology modes are supported, selected explicitly (never
 inferred) when the sprint starts:
 
 - **`legacy` mode** -- no cross-member sync layer. Every orchestrator `bd`
-  command runs against the orchestrator member's beads DB; a doer's own
+  command runs against the backlog member's beads DB; a doer's own
   `bd close` runs against its own member's DB; the sprint git branch is only
   coherent if every member operates on the same working state. This mode
   only coheres for **single-member** sprints (one member does everything) or
@@ -465,7 +465,7 @@ start rather than silently degrading:
 
 **Branch-ensure everywhere** (both modes) -- before the first doer round, the
 sprint branch is `git fetch`+`checkout -B`'d on every member in the union of
-the orchestrator/doer/reviewer pools (not just the orchestrator). At the top
+the backlog/doer/reviewer pools (not just the backlog member). At the top
 of every subsequent cycle, a non-destructive `git checkout <branch>`
 (`failSoft: true`) re-ensures each member is still on the sprint branch --
 deliberately not a `checkout -B ... origin/<base>`, which would discard any
@@ -666,12 +666,11 @@ reach):
 #### itself must be probed, not trusted
 
 Two independent gaps let the allocator hand out an id that already belongs
-to an existing bead, and `bd create --id <id>` on an occupied id is not a
-safe no-op: it **silently overwrites** whatever bead already holds that id
-(open or closed), reusing the same row and clobbering its
-title/description/priority/type with no error. Both gaps had to close for
-the hazard to actually go away -- fixing only one leaves the other as a live
-path to the same silent-overwrite outcome:
+to an existing bead. Current bd refuses `bd create --id <id>` on an
+occupied id (open or closed); older bd releases silently overwrote the
+occupant. Either way an occupied id costs the newTask its create, and once
+re-pooled it is re-minted on every later allocation. Both gaps had to close
+for the hazard to actually go away:
 
 - **Floor computation must count closed children.** The allocator seeds its
   first allocation under a parent from a best-effort read of the parent's
@@ -696,8 +695,8 @@ path to the same silent-overwrite outcome:
   manually-created bead can leave an id occupied despite the allocator
   believing otherwise. On the explicit-id path, the creator therefore probes
   (`bd show <id> --json`) before ever calling `bd create --id`, and refuses
-  (releasing the reservation, throwing loudly) rather than proceeding into
-  an overwrite if the id is already occupied. The probe's failure mode is
+  (releasing the reservation, throwing loudly) rather than dispatching a
+  create that cannot succeed if the id is already occupied. The probe's failure mode is
   itself two-valued and must be told apart: `bd show <missing-id> --json`
   does not exit 0 with an empty result, it exits non-zero with a documented
   "no issues found" error payload -- so the probe's own catch block
@@ -707,6 +706,18 @@ path to the same silent-overwrite outcome:
   assuming an unrecognized failure means the id is free. The null-allocator
   fallback path (`bd create --parent`, no explicit id) needs no such probe:
   `bd` mints the id itself in that case and cannot collide.
+
+**A failed create dispatch consumes its id and retries.** `release()` is
+only called for a failure before `bd create` is dispatched (staging the
+description). Once the create was dispatched, its failure does not prove the
+id is free (bd refusing a duplicate id means it is occupied; a transport
+fault can hide a create that landed), so the id is `confirm()`ed -- consumed,
+never re-pooled -- and the creator retries with a freshly allocated id, up to
+`CHILD_CREATE_MAX_ATTEMPTS` dispatches in total, logging each. A newTask that
+still fails falls back to the parent's notes (then the run log), as before.
+Separately, every `allocate()` that carries a `floor` drops
+pooled ids at or below it, whether or not the floor raises the high-water, so
+an occupied id that did reach the pool is never handed out again.
 
 **Reservation lifecycle after the create lands is asymmetric, and that
 asymmetry is load-bearing, not an oversight.** `release()` returns a
@@ -1013,7 +1024,7 @@ After the cycle loop exits (goal met, or `max_cycles` reached):
    still-open-at-goal count, every deploy/integ failure, every rejected
    `newTask`. The prompt explicitly instructs the reviewer to never
    rubber-stamp `PASS` regardless of that evidence.
-2. **Harvest** -- a `harvester` dispatch is given five pre-computed,
+2. **Harvest** -- a `harvester` dispatch is given pre-computed,
    verbatim-insert inputs: `analysisArtifactFile` (a deterministic path
    `docs/sprint-analysis-<branchSlug>.md`, where `branchSlug` is
    `computeBranchSlug(branch)` -- a human-readable branch-name prefix plus an
@@ -1021,12 +1032,13 @@ After the cycle loop exits (goal met, or `max_cycles` reached):
    collide on slug, and no wall-clock timestamp is embedded so the path is
    stable across idempotent re-runs), `analysisText` (a markdown summary of
    the whole run: progress history, deploy/integ outcomes, rejected
-   newTasks, final verdict), and `costAnalysis` (a budget/spend summary,
-   honestly reporting "not tracked"/"unlimited" rather than fabricating a
-   number when the budget ceiling is unset or spend tracking is
-   unavailable). The harvester's own contract (`harvester.md`) says to write
-   `analysisText` verbatim and insert `costAnalysis` verbatim -- never
-   reformat or recompute either.
+   newTasks, final verdict, plus a `## Cost` section carrying the engine's
+   `costAnalysis` budget/spend summary, honestly reporting "not
+   tracked"/"unlimited" rather than fabricating a number when the budget
+   ceiling is unset or spend tracking is unavailable). The harvester's own
+   contract (`harvester.md`) says to write `analysisText` verbatim -- never
+   reformat or recompute it. The harvester writes no CHANGELOG entry; the
+   same cost block is rendered by the engine in the PR body (`### Cost`).
 3. **Publish PR** -- pushes the sprint branch (`git push -u origin
    <branch>`), then raises (never merges) a PR via `gh pr create`, whose
    title (`Auto-sprint [PASS|FAIL]: <branch>`) and body state the final
@@ -1092,7 +1104,7 @@ claim and release together.
 
 **Member-axis overlap** (`src/supervisor/api.mjs`, `defaultMemberOverlapGuard`):
 `POST /api/sprints` computes the full member union (`--members` plus every
-`roleMap` value, including the orchestrator role) and rejects the whole launch
+`roleMap` value, including the backlog role) and rejects the whole launch
 with a 409 if that union intersects any other active reservation's members,
 naming the conflicting sprint id and the specific overlapping member names.
 The check runs strictly before `ledger.claim()`, so a rejected launch never

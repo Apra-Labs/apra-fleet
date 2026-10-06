@@ -5,6 +5,7 @@ import { getAgent } from '../registry.js';
 import { getStrategy } from '../strategy.js';
 import { getAgentOS, getAgentShell, isPosixShell } from '../../utils/agent-helpers.js';
 import { logLine, logWarn } from '../../utils/log-helpers.js';
+import { wrapStallPowerShell, psQuote } from './read-log-tail.js';
 
 const RETRY_INTERVAL_MS = 10_000;
 const MAX_ATTEMPTS = 4; // initial + 3 retries = 30s total
@@ -15,8 +16,14 @@ function toFindNewermt(t0: number): string {
   return new Date(t0).toISOString().slice(0, 19).replace('T', ' ');
 }
 
-function toPsDateTime(t0: number): string {
-  return new Date(t0).toISOString().slice(0, 19);
+/**
+ * apra-fleet-uob4: a PowerShell expression for the UTC instant t0, compared
+ * against LastWriteTimeUtc. The old Z-less ISO string was parsed as LOCAL
+ * time and compared with local LastWriteTime, skewing the cutoff by the
+ * host's UTC offset.
+ */
+function toPsUtcDateTime(t0: number): string {
+  return `[DateTimeOffset]::Parse('${new Date(t0).toISOString().slice(0, 19)}Z', [Globalization.CultureInfo]::InvariantCulture).UtcDateTime`;
 }
 
 // --- Local helpers ---
@@ -96,7 +103,7 @@ async function findRemoteMtimeCandidates(agent: Agent, dir: string, t0: number):
   const shell = getAgentShell(agent);
   const cmd = isPosixShell(os, shell)
     ? `find "${dir}" -maxdepth 1 -name "*.jsonl" -newermt "${toFindNewermt(t0)}" 2>/dev/null`
-    : `powershell -c "Get-ChildItem -Path '${dir}' -Filter '*.jsonl' -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt [DateTime]::Parse('${toPsDateTime(t0)}') } | ForEach-Object { $_.FullName }"`;
+    : wrapStallPowerShell(`Get-ChildItem -Path '${psQuote(dir)}' -Filter '*.jsonl' -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTimeUtc -gt ${toPsUtcDateTime(t0)} } | ForEach-Object { $_.FullName }`);
 
   const lines = await execLines(agent, cmd, 10_000);
   return lines.filter(l => l.endsWith('.jsonl'));
@@ -107,7 +114,7 @@ async function checkRemoteInvToken(agent: Agent, candidates: string[], inv: stri
   const shell = getAgentShell(agent);
   const cmd = isPosixShell(os, shell)
     ? `grep -l "\\[${inv}\\]" ${candidates.map(c => `"${c}"`).join(' ')} 2>/dev/null`
-    : `powershell -c "Select-String -Pattern '\\[${inv}\\]' -Path @(${candidates.map(c => `'${c}'`).join(',')}) -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Path -Unique"`;
+    : wrapStallPowerShell(`Select-String -Pattern '\\[${psQuote(inv)}\\]' -Path @(${candidates.map(c => `'${psQuote(c)}'`).join(',')}) -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Path -Unique`);
 
   const lines = await execLines(agent, cmd, 5_000);
   return lines.length > 0 ? lines[0] : null;
@@ -147,7 +154,7 @@ async function tryFindRemote(
     const directPath = `${logDir}${sep}${sessionId}.jsonl`;
     const cmd = posix
       ? `find "${directPath}" -newermt "${toFindNewermt(t0)}" 2>/dev/null`
-      : `powershell -c "Get-Item -Path '${directPath}' -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt [DateTime]::Parse('${toPsDateTime(t0)}') } | ForEach-Object { $_.FullName }"`;
+      : wrapStallPowerShell(`Get-Item -Path '${psQuote(directPath)}' -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTimeUtc -gt ${toPsUtcDateTime(t0)} } | ForEach-Object { $_.FullName }`);
     const lines = await execLines(agent, cmd, 5_000);
     return lines.length > 0 ? lines[0] : null;
   }

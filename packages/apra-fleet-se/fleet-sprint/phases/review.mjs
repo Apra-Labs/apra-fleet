@@ -93,7 +93,7 @@ export async function runReviewPhase({
     cycle,
     validated,
     targetIssues,
-    orchestratorMember,
+    backlogMember,
     // The git/beads sync bracket this phase's post-mutation D-push goes
     // through.
     gitSync,
@@ -139,7 +139,7 @@ export async function runReviewPhase({
             return ta.localeCompare(tb) || a.localeCompare(b);
         });
     const acceptanceCriteriaJson = assignedBeadIds.length > 0
-        ? await command(`bd show ${assignedBeadIds.join(' ')} --json`, { member_name: orchestratorMember, silent: true })
+        ? await command(`bd show ${assignedBeadIds.join(' ')} --json`, { member_name: backlogMember, silent: true })
         : '[]';
 
     // Empty-guard: when EVERY streak this round failed, assignedBeadIds
@@ -196,7 +196,7 @@ export async function runReviewPhase({
     const reopenedIds = new Set(await applyGuardedReopens({
         entries: verdict.reopenIds,
         bdListScoped, goalMax, goal: validated.goal, log, command,
-        member: orchestratorMember,
+        member: backlogMember,
         logPrefix: 'Reviewer reopenIds',
         buildReopenCommand: ({ id }) => ({
             cmd: `bd update ${id} --status=open`,
@@ -255,7 +255,7 @@ export async function runReviewPhase({
             // never an abort).
             try {
                 await appendRejectedFindingToParentNotes({
-                    command, member: orchestratorMember, parentId: targetIssues[0],
+                    command, member: backlogMember, parentId: targetIssues[0],
                     newTask, reason: validation.reason, cycle, log,
                 });
             } catch (noteErr) {
@@ -272,12 +272,12 @@ export async function runReviewPhase({
         // parent never derive the same child id. Under the null client
         // (lone sprint) childId is null and bd derives the id as before.
         const persisted = await persistNewTaskBestEffort({
-            command, member: orchestratorMember, parentId: targetIssues[0],
+            command, member: backlogMember, parentId: targetIssues[0],
             newTask, cycle, log, stage: 'develop-review',
             createFn: async () => {
-                const floor = await computeChildFloor({ command, member: orchestratorMember, parentId: targetIssues[0], log });
+                const floor = await computeChildFloor({ command, member: backlogMember, parentId: targetIssues[0], log });
                 await createChildBeadWithAllocatedId({
-                    command, allocator: childIdAllocator, member: orchestratorMember,
+                    command, allocator: childIdAllocator, member: backlogMember,
                     title, description, priority, parentId: targetIssues[0],
                     sprintId: sprintMutexId, floor, log,
                     label: `Create follow-up task from reviewer newTasks: ${title}`,
@@ -298,7 +298,7 @@ export async function runReviewPhase({
     // The orchestrator just MUTATED beads (reopens + newTask creates) in
     // its own clone -- D-push so members observe them on their next
     // dispatch's D-pull.
-    await gitSync.syncBeadsAfter(orchestratorMember, { pushBeads: true });
+    await gitSync.syncBeadsAfter(backlogMember, { pushBeads: true });
     } // end assignedBeadIds.length > 0 (Review dispatch + orchestrator-applied transitions)
 
     return { lastReviewVerdict, reviewedThisCycle, pendingRejectedNewTasks };

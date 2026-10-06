@@ -30,6 +30,15 @@ vi.mock('../src/services/strategy.js', () => ({
   }),
 }));
 
+// The project-level agent shadow check runs before the interactive split (so
+// interactive dispatches are covered); its own member commands are exercised
+// in tests/agent-shadow*.test.ts. Stubbed here so "never touches execCommand"
+// keeps meaning the dispatch itself.
+const mockShadowCheck = vi.fn(async () => undefined as string | undefined);
+vi.mock('../src/services/agent-shadow.js', () => ({
+  ensureNoProjectAgentShadows: (...args: any[]) => mockShadowCheck(...(args as [])),
+}));
+
 describe('executePrompt -- interactive routing (apra-fleet-2xs.8)', () => {
   let memberId: string;
 
@@ -79,6 +88,30 @@ describe('executePrompt -- interactive routing (apra-fleet-2xs.8)', () => {
     expect(resultText(result)).toContain('all done, here is the summary');
     expect(inFlightAgents.has(memberId)).toBe(false);
     expect(mockExecCommand).not.toHaveBeenCalled();
+  });
+
+  it('runs the project-level agent shadow check on interactive dispatches and surfaces its warning', async () => {
+    mockShadowCheck.mockResolvedValueOnce('Project-level agent file(s) shadow test warning');
+    const member = makeTestAgent({ friendlyName: 'interactive-shadow-member' });
+    memberId = member.id;
+    addAgent(member);
+    const notification = vi.fn().mockResolvedValue(undefined);
+    sessionRegistry.register({
+      member_id: memberId,
+      workspace_id: getTokenIssuer().workspaceId(),
+      role: 'doer',
+      work_folder: member.workFolder,
+      server: { server: { notification } } as any,
+      status: 'online',
+      channelCapable: true,
+    });
+    const promptPromise = executePrompt({ member_id: memberId, prompt: 'x', resume: false, timeout_s: 5 });
+    await vi.waitFor(() => expect(notification).toHaveBeenCalledTimes(1));
+    const msgid = notification.mock.calls[0][0].params.meta.msgid;
+    await respondToMessage({ reply_to: msgid, content: 'ok' });
+    const text = resultText(await promptPromise);
+    expect(mockShadowCheck).toHaveBeenCalledWith(expect.objectContaining({ id: memberId }));
+    expect(text).toContain('[WARN] Project-level agent file(s) shadow test warning');
   });
 
   it('the busy status set by the interactive push is cleared once respond_to_message resolves it', async () => {

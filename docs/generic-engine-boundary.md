@@ -82,6 +82,7 @@ content belongs instead.
 | `apra-fleet-env-var` | `APRA_FLEET_*`, `FLEET_SE_*` | the target's `deploy.md` (runtime configuration) |
 | `apra-fleet-service-endpoint` | `localhost:8787`, `127.0.0.1:8787`, `port 8787` | the target's `deploy.md` / `integ-test-playbook.md` |
 | `apra-fleet-repo-internals` | `packages/apra-fleet-se`, `packages/apra-fleet-client`, `apra-pm/agents`, `apra-pm/skills`, `src/tools/`, `feat/pm-reorg` | the target's `CLAUDE.md` / `AGENTS.md` |
+| `apra-fleet-regression-structure` | `real-bd`, `real functional suite`, `sandbox smoke`, `smoke sprint`, `toy-sprint` (apra-fleet's own two-part regression pass) | the target's `regression-test-playbook.md` |
 | `bead-id-in-llm-text` | a `bd` issue id of this repo (`apra-fleet-417.5`, `apra-fleet-eft.37.5`, `apra-fleet-5co8`) | a code comment beside the logic, or `docs/` |
 | `vcs-provider-branding` | `azdevops`, `azure-devops`/`Azure DevOps`, `github`, `bitbucket`, `gitlab` (case-insensitive, whole word) | a provider's OWN implementation module (`fleet-sprint/vcs-providers/<provider>.mjs`); everywhere else, phrase it generically ("the VCS provider") |
 

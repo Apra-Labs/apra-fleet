@@ -619,16 +619,43 @@ const FALLBACK_regressionReport = {
     type: 'object',
     properties: {
         passed: { type: 'boolean' },
+        sections: {
+            type: 'array',
+            items: {
+                type: 'object',
+                properties: {
+                    name: { type: 'string' },
+                    passed: { type: 'boolean' },
+                    detail: { type: 'string' },
+                },
+                required: ['name', 'passed'],
+            },
+        },
+        // Deprecated two-part fields: still accepted, never required.
         suitePassed: { type: 'boolean' },
         smokePassed: { type: 'boolean' },
         bugsFiled: { type: 'array', items: { type: 'string' } },
         summary: { type: 'string' },
+        // Optional verdict fields, copied verbatim from a machine-written
+        // verdict file when the target playbook names one.
+        verdict: { type: 'string', enum: ['PASS', 'FAIL', 'INCONCLUSIVE'] },
+        testedSha: { type: 'string', pattern: '^[0-9a-f]{40}$' },
+        evidence: {
+            type: 'object',
+            additionalProperties: true,
+            properties: {
+                verdictRef: { type: 'string' },
+                runUrl: { type: 'string' },
+                newFailures: { type: 'array', items: { type: 'string' } },
+                inventoryMissing: { type: 'array', items: { type: 'string' } },
+            },
+        },
         smokeEvidence: {
             type: 'object',
             additionalProperties: true,
         },
     },
-    required: ['passed', 'suitePassed', 'smokePassed', 'bugsFiled', 'summary'],
+    required: ['passed', 'bugsFiled', 'summary'],
 };
 
 // Fallback for role "ci-watcher". Canonical source:

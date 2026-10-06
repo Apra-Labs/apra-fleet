@@ -2,7 +2,8 @@
  * @typedef {Object} ExecutePromptOptions
  * @property {string} prompt - The prompt to send to the LLM on the remote member
  * @property {string} [agent] - Optional agent name to activate
- * @property {number} [max_total_s] - Hard ceiling in seconds
+ * @property {number} [max_total_s] - Hard ceiling in seconds, measured from when the server
+ *   receives the call (setup counts); exceeding it returns reason 'max_total_time'
  * @property {number} [max_turns] - Max turns for claude -p (default: 50)
  * @property {string} [member_id] - UUID of the member
  * @property {string} [member_name] - Friendly name of the member
@@ -89,7 +90,11 @@
  * @property {boolean} [isError] - true on any failure path; absent/false on success.
  * @property {string} [reason] - Machine-readable failure/status classification, e.g.
  *   'busy' | 'nonzero_exit' | 'max_turns_exhausted' | 'empty_response' | 'overloaded' |
- *   'usage_limit' | 'workspace_not_trusted' | 'session_not_found' | 'permission_denied' | ...
+ *   'usage_limit' | 'workspace_not_trusted' | 'session_not_found' | 'permission_denied' |
+ *   'stalled' (transcript froze past the stall threshold) |
+ *   'agent_never_started' (session log never appeared at its authoritative path within
+ *   timeout_s; the process was killed) |
+ *   'max_total_time' (max_total_s, measured from the call including setup, ran out) | ...
  * @property {PermissionDenied} [permissionDenied] - Present when `reason === 'permission_denied'`:
  *   the member CLI refused tool calls for lack of a grant (AGY headless mode auto-denies them
  *   and exits 0, which used to surface as 'empty_response'). Pass `suggestedGrants` to
@@ -102,6 +107,11 @@
  *   paths. Read `usageLimit.resumeAt`/`resumeAtSource` to schedule a resume rather than
  *   re-parsing the failure text; `packages/apra-fleet-workflow` forwards this unchanged onto
  *   `AgentDispatchError.details.usageLimit`.
+ * @property {false} [dispatched] - false when nothing was sent to the member: a
+ *   'max_total_time' failure whose budget ran out during setup (cloud start, before the first
+ *   attempt). No agent ran, so there is no partial work to publish. Absent on every other
+ *   result (including a 'max_total_time' that stopped a running dispatch);
+ *   `packages/apra-fleet-workflow` forwards it onto `AgentDispatchError.details.dispatched`.
  * @property {string} [response] - The LLM's actual reply text on success.
  * @property {string} [sessionId] - The session id this dispatch landed on, when known --
  *   present on success AND on a 'usage_limit'/'max_turns_exhausted' failure so the SAME
@@ -163,7 +173,7 @@
 /**
  * @typedef {Object} RegisterMemberOptions
  * @property {string} friendly_name - Human-friendly name for this member (required)
- * @property {string} work_folder - Working directory on the target machine (required). For remote members, must be a fully-qualified/absolute path -- "~" and relative paths are rejected.
+ * @property {string} work_folder - Working directory on the target machine (required). For remote members, must be a fully-qualified/absolute path -- "~" and relative paths are rejected. A folder may hold at most one LLM member and one LLM-less (llm_provider none) member.
  * @property {"local" | "remote"} [member_type] - Member type (default: "remote")
  * @property {string} [host] - IP address or hostname of the remote machine
  * @property {string} [username] - SSH username
@@ -189,7 +199,7 @@
  * @property {string} [category] - Optional group label
  * @property {string[]} [tags] - Optional list of free-form labels
  * @property {"false" | "auto" | "dangerous"} [unattended] - Permission mode for unattended execution
- * @property {boolean} [unreservable] - Mark this member as never exclusively reservable, so it can be shared by more than one sprint at once (e.g. fleet-sprint's shared "orchestrator" role)
+ * @property {boolean} [unreservable] - Mark this member as never exclusively reservable, so it can be shared by more than one sprint at once (e.g. fleet-sprint's shared "backlog" role)
  * @property {"gitbash" | "pwsh7" | "powershell5"} [shell] - Override the probed Windows shell for this member. Windows members only -- ignored for non-windows members.
  */
 
@@ -198,7 +208,7 @@
  * @property {string} [member_id] - UUID of the member
  * @property {string} [member_name] - Friendly name of the member
  * @property {string} [friendly_name] - New friendly name
- * @property {string} [work_folder] - New working directory. For non-local (remote/relay) members, must be a fully-qualified/absolute path -- "~" and relative paths are rejected.
+ * @property {string} [work_folder] - New working directory. For non-local (remote/relay) members, must be a fully-qualified/absolute path -- "~" and relative paths are rejected. A folder may hold at most one LLM member and one LLM-less (llm_provider none) member.
  * @property {string} [host] - New host
  * @property {string} [username] - New SSH username
  * @property {number} [port] - New SSH port
@@ -871,6 +881,9 @@ export class ApraFleet {
      * src/tools/child-id-allocator.ts). Mints globally-distinct child ids under
      * a shared parent for sprints launched WITHOUT a supervisor, so two sprints
      * creating children under the same parent never derive the same id.
+     * `floor` (allocate) is the parent's highest existing child seq: the
+     * counter is never below it and released ids at or below it are dropped
+     * from the reuse pool on every allocate.
      *
      * @param {{ action: 'allocate'|'confirm'|'release'|'status',
      *           parent_id?: string, token?: string, sprint_id?: string,

@@ -124,6 +124,7 @@ export function sendJson(res, status, payload) {
  *   watchdog?: object,
  *   dashboard?: object,
  *   beadsIdentity?: { get: () => object|null, refresh: () => Promise<object> },
+ *   backlogMember?: { get: () => { member: object|null, status: string, reason: string|null } },
  *   logger?: { log?: Function, error?: Function },
  *   createServer?: (handler: (req: any, res: any) => void) => import('http').Server,
  * }} [deps]
@@ -148,6 +149,14 @@ export function createSupervisor(deps = {}) {
     // The "identity unknown" warning (getWarning() is optional on the handle
     // so an older/test-only { get, refresh } stub still works).
     const beadsWarningOf = (h) => (h && typeof h.getWarning === 'function' && !h.get() ? (h.getWarning() || null) : null);
+    // Optional backlog-member state handle (src/supervisor/backlog-member.mjs,
+    // wired by bin/serve.mjs); surfaced on GET /api/health as `backlogMember`
+    // only when wired, so an unwired health answer is unchanged.
+    const backlogMember = deps.backlogMember && typeof deps.backlogMember.get === 'function' ? deps.backlogMember : null;
+    const backlogMemberSummary = () => {
+        const st = backlogMember.get();
+        return { status: st.status, name: st.member ? st.member.name : null, reason: st.reason ?? null };
+    };
 
     // Module seams -- inert stubs unless a real collaborator was injected.
     const seams = {
@@ -296,6 +305,7 @@ export function createSupervisor(deps = {}) {
             beads: beadsIdentity ? toBeadsSummary(beadsIdentity.get()) : null,
             ...(beadsWarningOf(beadsIdentity) ? { beadsWarning: beadsWarningOf(beadsIdentity) } : {}),
             ...(beadsRefreshError !== undefined ? { beadsRefreshError } : {}),
+            ...(backlogMember ? { backlogMember: backlogMemberSummary() } : {}),
         });
     });
 

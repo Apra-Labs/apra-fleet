@@ -7,6 +7,7 @@
 // error message text are all deliberately unchanged from the pre-move code.
 import { normalizeRole, validateCredentialStoreName } from './contracts.mjs';
 import { parseExpectedIdentity } from './beads-identity.mjs';
+import { resolveBacklogRoleAlias } from './backlog-role.mjs';
 
 // ---------------------------------------------------------------------------
 // CLI -> runner argument contract
@@ -33,7 +34,7 @@ const GOAL_PATTERN = /^P[1-3](\/P[1-3]){0,2}$/;
 
 const KNOWN_ARG_KEYS = new Set([
     'target_issues', 'target_issue', 'members', 'branch', 'base_branch',
-    'goal', 'max_cycles', 'requirementsFile', 'roleMap', 'budget',
+    'goal', 'max_cycles', 'requirementsFile', 'roleMap', 'roleMapWarnings', 'budget',
     // Per-dispatch time budget (timeout_s == max_total_s at every dispatch
     // site; integ ceiling = 2x), bounding the cost of a hung dispatch.
     'dispatch_timeout_s',
@@ -91,6 +92,11 @@ const KNOWN_ARG_KEYS = new Set([
     // itself -- see docs/fleet-sprint-cli-contract.md's "Dormant argument
     // audit" section for the full record.
     'assignee',
+    // Explicitly skip the once-per-sprint regression pass (launch option:
+    // the CLI's --skip-regression, the supervisor's phases.regression:"skip").
+    // Never silent: the engine logs it and the sprint report and PR body say
+    // "skipped by launch option". The integration-test phase is unaffected.
+    'skip_regression',
     // Multi-streak worklist dispatch mode when a develop round has more ready
     // streaks than doers. 'resume' (default): per-streak dispatches that resume
     // the SAME doer session by explicit session id (warm-context carryover,
@@ -144,7 +150,7 @@ const KNOWN_ARG_KEYS = new Set([
     // `--expect-beads`, env fallback FLEET_SPRINT_EXPECT_BEADS, or an already
     // parsed record from a programmatic caller). Consumed by the
     // verifyBeadsIdentity precondition (beads-identity-check.mjs); absent, the
-    // orchestrator member's own probed identity becomes the expectation.
+    // backlog member's own probed identity becomes the expectation.
     'expect_beads',
 ]);
 
@@ -196,6 +202,36 @@ export function validateBranchName(name, label) {
         throw new Error(`[Arg Contract] Invalid ${label} "${name}": must match ${BRANCH_NAME_PATTERN} (letters, digits, '.', '_', '-', '/' only).`);
     }
     return name;
+}
+
+// Strip the ref prefixes a caller may legitimately pass for the same branch
+// (refs/heads/<b>, origin/<b>, refs/remotes/origin/<b>) so "main",
+// "origin/main" and "refs/heads/main" all compare equal. Compared
+// case-insensitively: a pair differing only in case is never a legitimate
+// sprint (case-insensitive filesystems and hosts treat them as one branch).
+function normalizeBranchForCompare(name) {
+    let n = String(name).toLowerCase();
+    for (const prefix of ['refs/remotes/origin/', 'refs/heads/', 'origin/']) {
+        if (n.startsWith(prefix)) { n = n.slice(prefix.length); break; }
+    }
+    return n;
+}
+
+/**
+ * Rejects a sprint whose working branch is its base branch (GitHub #613):
+ * the review range base..branch would be empty, doer commits would land
+ * directly on the base, and the closing PR could never be opened (head ==
+ * base). Shared by validateArgs, bin/cli.mjs and the supervisor launch API so
+ * every entry point refuses the same pairs with the same message.
+ *
+ * @param {string} branch
+ * @param {string} base
+ */
+export function validateBranchPair(branch, base) {
+    if (typeof branch !== 'string' || typeof base !== 'string') return;
+    if (normalizeBranchForCompare(branch) === normalizeBranchForCompare(base)) {
+        throw new Error(`[Arg Contract] Invalid branch "${branch}": must differ from base_branch "${base}" (the sprint works on its own branch and opens a PR into the base).`);
+    }
 }
 
 /**
@@ -254,6 +290,7 @@ export function validateArgs(args) {
         throw new Error('[Arg Contract] Missing required arg: base_branch (branch the sprint branch is created from and the PR targets).');
     }
     validateBranchName(args.base_branch, 'base_branch');
+    validateBranchPair(args.branch, args.base_branch);
 
     // --- goal (optional, default 'P1/P2'; the priority band this sprint aims
     // to clear, consumed by the exit-condition logic) ---
@@ -296,6 +333,26 @@ export function validateArgs(args) {
                 );
             }
             normalizedRoleMap[key] = value;
+        }
+    }
+    // Backlog-role alias: the deprecated 'orchestrator' key is folded into
+    // 'backlog' here (downstream readers only ever see 'backlog'); a conflict
+    // is an arg-contract error. Warnings -- plus any the CLI already collected
+    // (args.roleMapWarnings, since the CLI rewrites the key before the runner
+    // sees it) -- are surfaced on the validated object for the runner to log.
+    const roleMapWarnings = [];
+    if (normalizedRoleMap !== undefined) {
+        try {
+            const resolved = resolveBacklogRoleAlias(normalizedRoleMap);
+            normalizedRoleMap = resolved.roleMap;
+            roleMapWarnings.push(...resolved.warnings);
+        } catch (err) {
+            throw new Error(`[Arg Contract] Invalid roleMap: ${err.message}`);
+        }
+    }
+    if (Array.isArray(args.roleMapWarnings)) {
+        for (const w of args.roleMapWarnings) {
+            if (typeof w === 'string' && !roleMapWarnings.includes(w)) roleMapWarnings.push(w);
         }
     }
 
@@ -379,6 +436,12 @@ export function validateArgs(args) {
         throw new Error(`[Arg Contract] Invalid doer_worklist_mode "${doerWorklistMode}": must be 'resume' (default) or 'batch'.`);
     }
 
+    // --- skip_regression (optional, default false) -------------------------
+    const skipRegression = args.skip_regression === undefined ? false : args.skip_regression;
+    if (typeof skipRegression !== 'boolean') {
+        throw new Error(`[Arg Contract] Invalid skip_regression "${skipRegression}": must be a boolean.`);
+    }
+
     // --- resume_model_switch (optional, default false) ---------------------
     const resumeModelSwitch = args.resume_model_switch === undefined ? false : args.resume_model_switch;
     if (typeof resumeModelSwitch !== 'boolean') {
@@ -438,6 +501,7 @@ export function validateArgs(args) {
         maxCycles,
         requirementsFile: args.requirementsFile,
         roleMap: normalizedRoleMap,
+        roleMapWarnings,
         budget: args.budget,
         serviceUrl: args.serviceUrl,
         runId: args.run_id,
@@ -446,6 +510,7 @@ export function validateArgs(args) {
         azdevopsPatSecretName: args.azdevops_pat_secret_name,
         doerWorklistMode,
         resumeModelSwitch,
+        skipRegression,
         worklistEffortBudget: args.worklist_effort_budget,
         usageLimitMaxWaitS: args.usage_limit_max_wait_s,
         usageLimitMaxReprobes: args.usage_limit_max_reprobes,

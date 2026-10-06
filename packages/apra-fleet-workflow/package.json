@@ -19,7 +19,7 @@
     "./viewer/blob-urls": "./src/viewer/blob-urls.mjs"
   },
   "scripts": {
-    "test": "node --test --test-timeout=60000 test/*.test.mjs"
+    "test": "node ../../scripts/with-test-sandbox.mjs node --test --test-timeout=60000 test/*.test.mjs"
   },
   "type": "module",
   "dependencies": {

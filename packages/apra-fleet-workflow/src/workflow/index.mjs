@@ -1289,8 +1289,10 @@ export class FleetWorkflow extends EventEmitter {
                     // the fleet-sprint pause/resume policy can read
                     // err.details.usageLimit.resumeAt / err.details.sessionId directly
                     // instead of re-parsing the failure text. A permission_denied
-                    // result forwards its permissionDenied block the same way.
-                    throw new AgentDispatchError(`[Workflow Error] Agent dispatch failed (${structured.reason || 'unknown'}): ${text}`, { details: { text, reason: structured.reason, member: opts.member_name || opts.member_id, ...(structured.usageLimit ? { usageLimit: structured.usageLimit } : {}), ...(structured.permissionDenied ? { permissionDenied: structured.permissionDenied } : {}), ...(structured.sessionId ? { sessionId: structured.sessionId } : {}) } });
+                    // result forwards its permissionDenied block the same way, and
+                    // dispatched:false (nothing was sent to the member) is kept so a
+                    // caller can tell a setup-time failure from one where the agent ran.
+                    throw new AgentDispatchError(`[Workflow Error] Agent dispatch failed (${structured.reason || 'unknown'}): ${text}`, { details: { text, reason: structured.reason, member: opts.member_name || opts.member_id, ...(structured.usageLimit ? { usageLimit: structured.usageLimit } : {}), ...(structured.permissionDenied ? { permissionDenied: structured.permissionDenied } : {}), ...(structured.sessionId ? { sessionId: structured.sessionId } : {}), ...(structured.dispatched === false ? { dispatched: false } : {}) } });
                 }
 
                 // apra-fleet-eft.78.3: surface the resumable session id

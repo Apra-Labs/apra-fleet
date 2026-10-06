@@ -181,7 +181,7 @@ flowchart LR
 - **Fleet server**: the control plane. Registers members, dispatches commands and prompts, moves files, brokers credentials. Speaks MCP, so any MCP-capable agent can drive a fleet. `execute_prompt` supports session forking (`fork`) on fork-capable providers -- branch a new, independent session from an existing one's context (e.g. a primed session reused across per-task dispatches) without continuing to write into the source session. See [docs/mcp-tools.md](docs/mcp-tools.md#execute_prompt) for the parameter contract.
 - **Members**: real machines running provider CLIs. Composes provider-native permissions before every dispatch; unattended modes are scoped, never blanket.
 - **Workflow engine**: runs workflow programs with phases, retries, turn budgets, resumable sessions, per-activity persistent state, and a cooperative pause/resume gate any workflow can hook into.
-- **Supervisor**: always-on layer -- launch, pause/resume, & stop sprints over HTTP, member reservation ledger, crash watchdog (including a live "paused" state and base-branch-drift indicator), run history.
+- **Supervisor**: always-on layer -- launch, pause/resume, & stop sprints over HTTP, member reservation ledger, crash watchdog (including a live "paused" state and base-branch-drift indicator), run history, and a supervisor-owned LLM-less backlog member that every launch is pinned to. The dashboard and backlog read a cached, tip-checked beads view and show when it was last refreshed ("Beads as of"); launch always forces a fresh beads check and answers 503, without reserving members or starting a sprint, when beads cannot be verified.
 
 ## Knowledge Layer
 
@@ -208,7 +208,7 @@ MCP tools that ship with the KB:
 | `kb_invalidate` | Mark files stale immediately (also called by the git hook) |
 | `kb_promote` | Advance confidence: UNVERIFIED -> INFERRED -> CONFIRMED |
 | `kb_harvest` | Extract learnings from a session transcript (auto-fires after execute_prompt) |
-| `kb_export` | Write live CONFIRMED entries to `.fleet/kb-canonical.json` -- the git-shareable team bible |
+| `kb_export` | Additively merge live CONFIRMED entries whose cited files still match their recorded hashes into `.fleet/kb-canonical.json` -- the git-shareable team bible |
 | `kb_setup` | Install git hook, write provider config, store remote token encrypted |
 
 `kb_setup --remote <url> --token <key>` takes effect immediately: the next
@@ -463,6 +463,7 @@ third-party verticals.
 | Shared hub/dashboard API contract package | [packages/fleet-api-contract/README.md](packages/fleet-api-contract/README.md) |
 | Workflow engine internals (`agent()`/`parallel()`/`pipeline()`, journal, budget, pause/resume) | [packages/apra-fleet-workflow/docs/apra-fleet-workflow-architecture.md](packages/apra-fleet-workflow/docs/apra-fleet-workflow-architecture.md) |
 | Cooperative workflow pause/resume (engine, viewer, supervisor, fleet-sprint) | [docs/features/workflow-pause-resume.md](docs/features/workflow-pause-resume.md) |
+| Sprint run summary (`GET /state?summary=1`, published once per state, pulled by supervisor rows) | [docs/sprint-run-summary.md](docs/sprint-run-summary.md) |
 | Supervisor dashboard live-refresh (`/state` + `/events` SSE, tab-activation refresh, in-memory scope expansion) | [docs/features/supervisor-dashboard-live-refresh.md](docs/features/supervisor-dashboard-live-refresh.md) |
 | Writing and running workflow scripts | [packages/apra-fleet-workflow/docs/workflow-guide.md](packages/apra-fleet-workflow/docs/workflow-guide.md) |
 | Authoring a SEA-embedded `apra-fleet workflow` (manifest, entry contract, launcher env vars) | [docs/authoring-workflows.md](docs/authoring-workflows.md) |
@@ -473,6 +474,7 @@ third-party verticals.
 | Auto-sprint internals (cycle loop, stall detection, budget, topology) | [packages/apra-fleet-se/docs/architecture.md](packages/apra-fleet-se/docs/architecture.md) |
 | Auto-sprint agent role contracts | [packages/apra-fleet-se/docs/role-contracts.md](packages/apra-fleet-se/docs/role-contracts.md) |
 | fleet-supervisor skill (start/stop/restart/auto-start-on-boot, sprint launch via HTTP API) | [packages/apra-fleet-se/fleet-sprint/skills/fleet-supervisor/SKILL.md](packages/apra-fleet-se/fleet-sprint/skills/fleet-supervisor/SKILL.md) |
+| Scoped in-cycle replan findings threading, and the wrapper-injection role KB contract | [docs/scoped-replan-and-planner-kb-contract.md](docs/scoped-replan-and-planner-kb-contract.md) |
 | MCP client SDK overview (transports, `ApraFleet` API) | [packages/apra-fleet-client/docs/overview.md](packages/apra-fleet-client/docs/overview.md) |
 | MCP client SDK API reference | [packages/apra-fleet-client/docs/api-reference.md](packages/apra-fleet-client/docs/api-reference.md) |
 | MCP client SDK getting started | [packages/apra-fleet-client/docs/getting-started.md](packages/apra-fleet-client/docs/getting-started.md) |

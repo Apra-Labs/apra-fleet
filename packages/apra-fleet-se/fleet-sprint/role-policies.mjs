@@ -1227,7 +1227,7 @@ const regressionTestRunner = policy('regression-test-runner', {
         classifiesUnrecognisedErrors: true,
         // A REPORT shape, like the deployer's: the answer is `passed` and the
         // failure text goes in `summary`.
-        synthesized: { passed: false, suitePassed: false, smokePassed: false, bugsFiled: [] },
+        synthesized: { passed: false, sections: [], bugsFiled: [] },
         verdictField: 'passed',
         notesField: 'summary',
         paths: 4,
@@ -1378,6 +1378,24 @@ export function policyFor(role, table = ROLE_POLICIES) {
         throw new Error(`role-policies: no policy for role '${role}' (known roles: ${Object.keys(table).join(', ')})`);
     }
     return found;
+}
+
+/**
+ * True when a dispatch of agent persona `agentType` has a working KB-capture
+ * channel: at least one row uses that agentType, and EVERY such row applies
+ * a returned `kb_captures` field via a 'kb-apply' postResult step. Several
+ * roles share one persona (scoped-replan-planner reuses planner), so a mixed
+ * persona counts as having no channel -- the KNOWLEDGE BANK block must never
+ * promise a capture path that some dispatch of that persona silently drops.
+ * An agentType with no row at all has no channel either.
+ * @param {string|null|undefined} agentType
+ * @param {object} [table]
+ * @returns {boolean}
+ */
+export function agentTypeAppliesKbCaptures(agentType, table = ROLE_POLICIES) {
+    if (typeof agentType !== 'string' || !agentType) return false;
+    const rows = Object.values(table).filter((row) => row.agentType === agentType);
+    return rows.length > 0 && rows.every((row) => Array.isArray(row.postResult) && row.postResult.includes('kb-apply'));
 }
 
 /**

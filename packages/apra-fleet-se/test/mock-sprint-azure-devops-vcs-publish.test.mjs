@@ -45,7 +45,7 @@ const AZ_REPO_REF = { org: 'mock-org', project: 'mock-project', repo: 'mock-repo
 // Azure DevOps member, whose credential provision_vcs_auth deploys under
 // `label = input.provider` = 'azure-devops') hid behind exactly such a
 // permissive mock match.
-function buildMockCommand({ originUrl, credentialFiles, prResponder }) {
+function buildMockCommand({ originUrl, credentialFiles, prResponder, findResponder, updateResponder }) {
     const log = [];
     const command = async (cmd, opts = {}) => {
         log.push(cmd);
@@ -67,6 +67,13 @@ function buildMockCommand({ originUrl, credentialFiles, prResponder }) {
         }
         if (/^curl(?:\.exe)? -sS -X POST\b/.test(cmd) && (/\/pulls\b/.test(cmd) || /\/pullrequests\?/.test(cmd))) {
             return ok(prResponder(cmd));
+        }
+        // Existing-PR update path (find + PATCH), only when a scenario opts in.
+        if (findResponder && /^curl(?:\.exe)? -sS -X GET\b/.test(cmd) && /\/pullrequests\?searchCriteria\./.test(cmd)) {
+            return ok(findResponder(cmd));
+        }
+        if (updateResponder && /^curl(?:\.exe)? -sS -X PATCH\b/.test(cmd) && /\/pullrequests\/\d+\?api-version=/.test(cmd)) {
+            return ok(updateResponder(cmd));
         }
         throw new Error(`buildMockCommand: unexpected command dispatched in this scenario: '${cmd}'`);
     };
@@ -193,6 +200,60 @@ test('finalizeAbort (Azure DevOps): a canned 409 body carrying TF401179 is treat
     );
     const prCmd = log.find((c) => c.startsWith('curl') && /\/pullrequests\?/.test(c));
     check(!!prCmd, `Expected the Azure DevOps create-pull-request curl to have actually been dispatched (not skipped), command log: ${JSON.stringify(log)}`);
+});
+
+// -----------------------------------------------------------------------
+// (2b) Azure DevOps relaunch: 409/TF401179 -> find the active PR -> PATCH its
+// title/description to the new verdict, keeping the old run in history.
+// -----------------------------------------------------------------------
+test('finalizeAbort (Azure DevOps): an existing PR is found and rewritten to the ABORTED verdict', async () => {
+    const branch = 'auto-sprint/abort-ado-relaunch';
+    const oldBody = [
+        '## Sprint verdict: PASS',
+        '',
+        '<!-- fleet-sprint:run-history v1',
+        '[{"run":"run-earlier","date":"2026-09-30T08:00Z","verdict":"PASS"}]',
+        '-->',
+    ].join('\n');
+    let patched = null;
+    const { command, log } = buildMockCommand({
+        originUrl: AZ_ORIGIN,
+        credentialFiles: ADO_ONLY_FILES,
+        prResponder: () => `${JSON.stringify({ message: 'TF401179: An active pull request for the source and target branch already exists.' })}\n409`,
+        findResponder: () => `${JSON.stringify({ value: [{ pullRequestId: 777, title: `Auto-sprint [PASS]: ${branch}`, description: oldBody }] })}\n200`,
+        updateResponder: (cmd) => {
+            const m = /-d '((?:[^']|'\\'')*)' -w/.exec(cmd);
+            patched = { url: cmd.trim().split(' ').pop(), payload: JSON.parse(m[1].replace(/'\\''/g, "'")) };
+            return `${JSON.stringify({ pullRequestId: 777 })}\n200`;
+        },
+    });
+    const logs = [];
+    const result = await finalizeAbort({
+        error: new SprintPlanRejectedError('Plan rejected after 3 rounds', { notes: null }),
+        branch,
+        baseBranch: 'main',
+        member: 'local',
+        command,
+        log: (m) => logs.push(m),
+        callTool: mockCallTool('azure-devops', { availableSecrets: ['azdevops_pat'] }, command),
+        runId: 'run-now',
+    });
+
+    check(result.reason === 'already-exists', `Expected reason 'already-exists', got: ${JSON.stringify(result)}`);
+    check(
+        result.prUrl === 'https://dev.azure.com/mock-org/mock-project/_git/mock-repo/pullrequest/777',
+        `Expected the found PR's constructed web URL, got: ${result.prUrl}`,
+    );
+    const findCmd = log.find((c) => /^curl -sS -X GET\b/.test(c));
+    check(!!findCmd && findCmd.includes('searchCriteria.sourceRefName=refs%2Fheads%2Fauto-sprint%2Fabort-ado-relaunch'), `Expected the find to search by source ref, got: ${findCmd}`);
+    check(!!patched && /\/pullrequests\/777\?api-version=7\.1$/.test(patched.url), `Expected a PATCH of PR 777, got: ${JSON.stringify(patched)}`);
+    check(patched.payload.title === `Auto-sprint [ABORTED]: ${branch}`, `Expected the ABORTED title, got: ${patched.payload.title}`);
+    check(
+        patched.payload.description.startsWith('## Sprint verdict: ABORTED')
+            && patched.payload.description.includes('- `run-earlier` (2026-09-30T08:00Z): PASS'),
+        `Expected the rewritten description with the earlier run carried forward, got: ${patched.payload.description}`,
+    );
+    check(logs.some((m) => m.includes('updated the existing PR') && m.includes('(ABORTED)')), `Expected an update log line, logs: ${JSON.stringify(logs)}`);
 });
 
 // -----------------------------------------------------------------------

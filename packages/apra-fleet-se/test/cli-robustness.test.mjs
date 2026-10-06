@@ -4,11 +4,14 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 import {
     parseCliArgs,
     resolveMemberValidation,
     resolveRoleMap,
+    resolveRoleMapWithWarnings,
     buildRunnerArgs,
     checkIssuesExistOnMember,
     formatViewerListenError,
@@ -22,7 +25,7 @@ import { validateArgs } from '../fleet-sprint/runner.js';
 //
 // (a) strict flag parsing; (b) missing-member abort/allow-list; (c)
 // --requirements-file/--role-map reach the runner's validated args; (d) the
-// `bd show` issue precondition targets the orchestrator MEMBER via the fleet
+// `bd show` issue precondition targets the backlog MEMBER via the fleet
 // transport, not the local machine; (e) --viewer-port + a clean port-
 // collision error instead of an unhandled crash.
 
@@ -193,13 +196,13 @@ describe('resolveRoleMap + buildRunnerArgs -> runner.js validateArgs (c)', () =>
     // N15 (apra-fleet-unw2.11): resolveRoleMap() normalizes keys via
     // contracts.normalizeRole() -- this is where roleMap keys first enter
     // the system from a user-supplied --role-map value, so downstream
-    // consumers (this CLI's own orchestratorMember lookup, and
+    // consumers (this CLI's own backlogMember lookup, and
     // runner.js's validateArgs()) can rely on canonical lowercase keys.
     // -------------------------------------------------------------------
 
     test('normalizes mixed-case/whitespace-variant --role-map keys to canonical lowercase', async () => {
         const roleMap = await resolveRoleMap('{"  Doer  ":["m1"],"REVIEWER":["m2"],"Orchestrator":["m3"]}');
-        assert.deepStrictEqual(roleMap, { doer: ['m1'], reviewer: ['m2'], orchestrator: ['m3'] });
+        assert.deepStrictEqual(roleMap, { doer: ['m1'], reviewer: ['m2'], backlog: ['m3'] });
         // The normalized roleMap must reach validateArgs() unchanged (it's
         // already canonical) and must not throw.
         const args = buildRunnerArgs({
@@ -207,7 +210,30 @@ describe('resolveRoleMap + buildRunnerArgs -> runner.js validateArgs (c)', () =>
             goal: 'P1', maxCycles: 1, requirementsFile: undefined, roleMap,
         });
         const validated = validateArgs(args);
-        assert.deepStrictEqual(validated.roleMap, { doer: ['m1'], reviewer: ['m2'], orchestrator: ['m3'] });
+        assert.deepStrictEqual(validated.roleMap, { doer: ['m1'], reviewer: ['m2'], backlog: ['m3'] });
+    });
+
+    test('--role-map {"orchestrator":[...]} resolves to the backlog key (deprecated alias) and carries the warning', async () => {
+        const { roleMap, warnings } = await resolveRoleMapWithWarnings('{"orchestrator":["m"],"doer":["d"]}');
+        assert.deepStrictEqual(roleMap, { backlog: ['m'], doer: ['d'] });
+        assert.equal(warnings.length, 1);
+        assert.match(warnings[0], /v0.5/);
+        assert.deepStrictEqual(await resolveRoleMap('{"orchestrator":["m"]}'), { backlog: ['m'] });
+        const args = buildRunnerArgs({
+            targetIssues: ['bd-1'], members: ['m', 'd'], branch: 'b', baseBranch: 'main',
+            goal: 'P1', maxCycles: 1, requirementsFile: undefined, roleMap, roleMapWarnings: warnings,
+        });
+        const validated = validateArgs(args);
+        assert.deepStrictEqual(validated.roleMap, { backlog: ['m'], doer: ['d'] });
+        assert.deepStrictEqual(validated.roleMapWarnings, warnings);
+    });
+
+    test('--role-map with backlog and orchestrator holding different members is rejected (equal members are accepted)', async () => {
+        await assert.rejects(
+            () => resolveRoleMap('{"backlog":["a"],"orchestrator":["b"]}'),
+            /"backlog".*"orchestrator"/
+        );
+        assert.deepStrictEqual(await resolveRoleMap('{"backlog":["a"],"orchestrator":["a"]}'), { backlog: ['a'] });
     });
 
     test('rejects a --role-map whose keys collide once normalized', async () => {
@@ -219,7 +245,7 @@ describe('resolveRoleMap + buildRunnerArgs -> runner.js validateArgs (c)', () =>
 });
 
 // ---------------------------------------------------------------------------
-// (d) bd show precondition targets the orchestrator MEMBER via the fleet
+// (d) bd show precondition targets the backlog MEMBER via the fleet
 // transport, not the local machine
 // ---------------------------------------------------------------------------
 
@@ -580,5 +606,21 @@ describe('formatViewerListenError / attachViewerErrorHandler (e: viewer port)', 
         } finally {
             await new Promise((resolve) => blocker.close(resolve));
         }
+    });
+});
+
+// GitHub #613: the CLI refuses branch == base before any fleet connection or
+// dispatch (exit 1, the shared [Arg Contract] message naming both values).
+describe('CLI branch/base pair', () => {
+    test('--branch equal to --base (origin/ spelling) exits 1 before connecting to anything', () => {
+        const cliPath = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'cli.mjs');
+        // Inherits the per-run test sandbox env from the test runner; only
+        // NODE_TEST_CONTEXT is dropped, since cli.mjs refuses to self-execute
+        // when it sees it.
+        const env = { ...process.env };
+        delete env.NODE_TEST_CONTEXT;
+        const r = spawnSync(process.execPath, [cliPath, '--issue', 'bd-1', '--members', 'local', '--branch', 'main', '--base', 'origin/main'], { env, encoding: 'utf8', timeout: 60000 });
+        assert.equal(r.status, 1, `stdout=${r.stdout} stderr=${r.stderr}`);
+        assert.ok(r.stderr.includes('[Arg Contract] Invalid branch "main": must differ from base_branch "origin/main"'), r.stderr);
     });
 });

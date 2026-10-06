@@ -470,7 +470,7 @@ export function classifyVerifySet(allBeads, targetIssues) {
  * or `phase`, so every direct call -- and every helper that receives
  * `command` via an options object -- transparently goes through them.
  *
- * `getOrchestratorMember` is a getter, not a value, because the orchestrator
+ * `getBacklogMember` is a getter, not a value, because the orchestrator
  * member is resolved from the role->member mapping well after this client is
  * constructed (the snapshot must exist before the `command` wrapper does,
  * and the wrapper must exist before anything can resolve members). No fetch
@@ -481,18 +481,18 @@ export function classifyVerifySet(allBeads, targetIssues) {
  * @param {string[]} opts.targetIssues - the sprint's target issue root id(s)
  * @param {string|null} [opts.assignee] - `--assignee` narrowing for filtered queries
  * @param {(raw: string, label: string) => any} opts.parseBdJson - bd JSON parser (injected to avoid an import cycle back into runner.js)
- * @param {() => string} opts.getOrchestratorMember - resolves the member every read is dispatched to
+ * @param {() => string} opts.getBacklogMember - resolves the member every read is dispatched to
  */
 export function createBeadsScope(opts = {}) {
     const targetIssues = opts.targetIssues || [];
     const assignee = opts.assignee || null;
     const parseBdJson = opts.parseBdJson;
-    const getOrchestratorMember = opts.getOrchestratorMember;
+    const getBacklogMember = opts.getBacklogMember;
     if (typeof parseBdJson !== 'function') {
         throw new TypeError('createBeadsScope({ parseBdJson }): parseBdJson must be a function');
     }
-    if (typeof getOrchestratorMember !== 'function') {
-        throw new TypeError('createBeadsScope({ getOrchestratorMember }): getOrchestratorMember must be a function');
+    if (typeof getBacklogMember !== 'function') {
+        throw new TypeError('createBeadsScope({ getBacklogMember }): getBacklogMember must be a function');
     }
 
     let allBeadsSnapshot = null; // { beads } -- cleared by invalidateAllBeadsCache()
@@ -575,7 +575,7 @@ export function createBeadsScope(opts = {}) {
         }
         if (!allBeadsInFlight) {
             const allLabel = 'bd list --all --limit 0 --json';
-            allBeadsInFlight = command(allLabel, { member_name: getOrchestratorMember(), silent: true })
+            allBeadsInFlight = command(allLabel, { member_name: getBacklogMember(), silent: true })
                 .then((raw) => parseBdJson(raw, allLabel))
                 .then((beads) => {
                     allBeadsSnapshot = { beads };
@@ -623,7 +623,7 @@ export function createBeadsScope(opts = {}) {
             filterArgs = `${rest} --assignee ${assignee}`;
         }
         const filterLabel = `bd list ${filterArgs} --limit 0`;
-        const filterRaw = await command(filterLabel, { member_name: getOrchestratorMember(), silent: true });
+        const filterRaw = await command(filterLabel, { member_name: getBacklogMember(), silent: true });
         return parseBdJson(filterRaw, filterLabel).filter((b) => b && scopeIds.has(b.id));
     }
 

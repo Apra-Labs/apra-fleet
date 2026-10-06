@@ -329,6 +329,18 @@ export function redactNetworkCommandForLog(command) {
 // substituting an empty token, and this mock must fail the same way (that is
 // exactly the label-mismatch bug those two exact-match executeCommand
 // branches exist to catch).
+// Reads the POSIX-quoted `-d '<json>'` payload back out of a VCSModule curl
+// command (the mock member is POSIX). Returns null when absent/unparseable.
+function extractMockCurlJson(cmd) {
+    const m = /-d '((?:[^']|'\\'')*)' -w/.exec(cmd);
+    if (!m) return null;
+    try {
+        return JSON.parse(m[1].replace(/'\\''/g, "'"));
+    } catch {
+        return null;
+    }
+}
+
 const MOCK_VCS_CREDENTIAL_TOKENS = {
     github: 'mock-vcs-module-token',
     'azure-devops': 'mock-azure-devops-pat',
@@ -819,14 +831,14 @@ export async function setupMinimal(tempDirSuffix, taskSpecs, runCmdFn = runCmd) 
  */
 // apra-fleet-unw2.22 (N12 follow-up): the harvester contract check must
 // genuinely validate that runner.js supplied real, non-trivial CONTENT for
-// analysisText/costAnalysis -- not merely that the prompt contains the
+// analysisText -- not merely that the prompt contains the
 // static instructional label text buildHarvesterPrompt() always emits
 // regardless of the underlying value. It previously used
 // `/analysisText \(pre-computed by the orchestrator/.test(p)` etc., which
 // is proven to still pass even when runner.js's buildAnalysisText()/
 // buildCostAnalysis() silently return an empty string (see this bead's
 // description). This helper extracts the actual fenced VALUE for
-// analysisText/costAnalysis (the fence chars are a variable-length run of
+// analysisText (the fence chars are a variable-length run of
 // backticks per buildHarvesterPrompt's collision-safe `fence()`, so the
 // regex captures whatever fence length was actually used) and requires it
 // to be non-trivially long once trimmed.
@@ -852,11 +864,6 @@ export function checkHarvesterContract(prompt) {
     const analysisTextMatch = /analysisText \(pre-computed by the orchestrator[^\n]*\):\n(`{3,})\n([\s\S]*?)\n\1/.exec(prompt);
     if (!analysisTextMatch || analysisTextMatch[2].trim().length < MIN_NONTRIVIAL_LEN) {
         missing.push('analysisText');
-    }
-
-    const costAnalysisMatch = /costAnalysis \(pre-computed by the orchestrator[^\n]*\):\n(`{3,})\n([\s\S]*?)\n\1/.exec(prompt);
-    if (!costAnalysisMatch || costAnalysisMatch[2].trim().length < MIN_NONTRIVIAL_LEN) {
-        missing.push('costAnalysis');
     }
 
     if (!/Branch:\s*\S+\s*\(base:\s*\S+\)/.test(prompt)) {
@@ -1018,6 +1025,12 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
         // default simulation when provided; omitted (the default), the
         // existing 201/already-exists-422 behavior is completely unchanged.
         prCurlResponseQueue = null,
+        // Existing-PR update path (find + PATCH on the already-exists
+        // path): a Map branch -> { number, title, body } that the GitHub
+        // create-PR mock records into and the find (GET .../pulls?head=) /
+        // update (PATCH .../pulls/<n>) mocks read and rewrite. Share one Map
+        // across scenarios (like prExistsState) to simulate a relaunch.
+        prRecordState = new Map(),
         // Per-member beads identity overrides for the runner's beads identity
         // precondition (fleet-sprint/beads-identity-check.mjs), which probes
         // every member with `bd where --json`, `bd config get sync.remote
@@ -1030,8 +1043,21 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
         // `{ fail: '<stderr>' }` for a nonzero exit. Only the members/probes
         // named are intercepted; everything else keeps the default answer.
         beadsIdentity = null,
+        // Seeded beads memories for the sprint-start memory sweep
+        // (fleet-sprint/beads-memory-hygiene.mjs). DEFAULT (omitted):
+        // bd-replay.mjs answers `bd memories --json` with `{}`. Shape:
+        // `{ [key]: value }`; when given, this mock answers the list from a
+        // live copy, and each `bd forget <key>` deletes from it and appends
+        // the key to `forgottenMemories` (an array the caller owns).
+        beadsMemories = null,
+        forgottenMemories = null,
+        // Caller-owned object; receives `.live` (the live memory Map) so a
+        // test can assert what is still stored after the sprint.
+        memoriesSink = null,
     } = options;
     const prCurlResponseQueueLocal = prCurlResponseQueue ? [...prCurlResponseQueue] : null;
+    const liveMemories = beadsMemories ? new Map(Object.entries(beadsMemories)) : null;
+    if (memoriesSink && liveMemories) memoriesSink.live = liveMemories;
 
     let planRound = 0;
     let reviewRound = 0;
@@ -1141,6 +1167,21 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
                 if (override) return override;
             }
 
+            // Seeded memories for the sprint-start memory sweep (see the
+            // `beadsMemories` option comment above).
+            if (liveMemories) {
+                if (/^bd memories --json$/.test(opts.command)) {
+                    return mockCmdResult(0, JSON.stringify(Object.fromEntries(liveMemories)), '');
+                }
+                const forgetMatch = /^bd forget (\S+)$/.exec(opts.command);
+                if (forgetMatch) {
+                    if (!liveMemories.has(forgetMatch[1])) return mockCmdResult(1, '', `Error: no memory with key "${forgetMatch[1]}"`);
+                    liveMemories.delete(forgetMatch[1]);
+                    if (forgottenMemories) forgottenMemories.push(forgetMatch[1]);
+                    return mockCmdResult(0, `Forgot ${forgetMatch[1]}`, '');
+                }
+            }
+
             // apra-fleet-9te.4.1: Ensure Sprint Branch probes for a
             // pre-existing local branch via this exact rev-parse before
             // deciding whether to reuse it as-is or reset it to base.
@@ -1205,6 +1246,32 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
             }
             if (/^\$HOME\/\.fleet-git-credential-azure-devops$/.test(opts.command)) {
                 return mockCmdResult(0, 'protocol=https\nhost=dev.azure.com\nusername=\npassword=mock-azure-devops-pat\n', '');
+            }
+            // Existing-PR update path: find (GET) and update (PATCH). Always
+            // intercepted so these never fall through to a real exec().
+            if (/^curl(?:\.exe)? -sS -X (?:GET|PATCH)\b/.test(opts.command) && /\/(?:pulls|pullrequests)\b/.test(opts.command)) {
+                if (/\/pullrequests\b/.test(opts.command)) {
+                    // Azure DevOps: hermetic default -- no recorded PRs.
+                    return mockCmdResult(0, `${JSON.stringify(/-X GET/.test(opts.command) ? { value: [] } : {})}\n200`, '');
+                }
+                const findMatch = /[?&]head=([^&']+)/.exec(opts.command);
+                if (/-X GET/.test(opts.command) && findMatch) {
+                    const ownerBranch = decodeURIComponent(findMatch[1]);
+                    const branch = ownerBranch.slice(ownerBranch.indexOf(':') + 1);
+                    const rec = prRecordState.get(branch);
+                    const list = rec ? [{ number: rec.number, title: rec.title, body: rec.body, html_url: `https://github.com/mock-org/mock-repo/pull/${rec.number}` }] : [];
+                    return mockCmdResult(0, `${JSON.stringify(list)}\n200`, '');
+                }
+                const patchMatch = /\/pulls\/(\d+)$/.exec(opts.command.trim());
+                const payload = extractMockCurlJson(opts.command);
+                if (patchMatch && payload) {
+                    for (const [branch, rec] of prRecordState) {
+                        if (String(rec.number) !== patchMatch[1]) continue;
+                        prRecordState.set(branch, { ...rec, title: payload.title ?? rec.title, body: payload.body ?? rec.body });
+                        return mockCmdResult(0, `${JSON.stringify({ number: rec.number, html_url: `https://github.com/mock-org/mock-repo/pull/${rec.number}` })}\n200`, '');
+                    }
+                }
+                return mockCmdResult(0, `${JSON.stringify({ message: 'Not Found' })}\n404`, '');
             }
             const isAzureDevOpsCreatePr = /\/pullrequests\?/.test(opts.command);
             if (/^curl(?:\.exe)? -sS -X POST\b/.test(opts.command) && (/\/pulls\b/.test(opts.command) || isAzureDevOpsCreatePr)) {
@@ -1271,6 +1338,8 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
                     return mockCmdResult(0, `${body}\n422`, '');
                 }
                 if (branch) prExistsState.add(branch);
+                const created = extractMockCurlJson(opts.command);
+                if (branch && created) prRecordState.set(branch, { number: 101, title: created.title, body: created.body });
                 const body = JSON.stringify({ number: 101, html_url: 'https://github.com/mock-org/mock-repo/pull/101' });
                 return mockCmdResult(0, `${body}\n201`, '');
             }
@@ -1680,10 +1749,9 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
                     content: [{
                         text: JSON.stringify({
                             passed: true,
-                            suitePassed: true,
-                            smokePassed: true,
+                            sections: [{ name: 'Mock suite', passed: true }],
                             bugsFiled: [],
-                            summary: 'Mock regression pass: full suite and sandbox smoke test both green.',
+                            summary: 'Mock regression pass: every playbook part green.',
                         })
                     }]
                 };
@@ -1693,8 +1761,7 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
             //     apra-fleet-unw2.10, N12: contract enforcement) ---
             //
             // The vendored harvester-input.json requires
-            // analysisArtifactFile/analysisText/costAnalysis/base-branch/
-            // branch (see agents/harvester.md's own "Missing-input
+            // analysisArtifactFile/analysisText/base-branch/branch (see agents/harvester.md's own "Missing-input
             // behavior": a contract-obeying harvester returns FAILED, never
             // fabricates a substitute, if any of these is absent from its
             // dispatch). This mock now enforces that for real -- it is NOT
@@ -1976,6 +2043,9 @@ export async function runDevelopLoopScenario(tag, {
     // separate scenario runs against the exact SAME branch to simulate a
     // re-run of finalization.
     gitGhFailurePattern, gitGhFailureMessage, prExistsState, branchOverride,
+    // Existing-PR update path record store -- see buildMockFleetApi's
+    // `prRecordState` option comment.
+    prRecordState,
     // apra-fleet-647.1.1.3: see buildMockFleetApi's `prCurlResponseQueue`
     // option comment above.
     prCurlResponseQueue,
@@ -2022,11 +2092,21 @@ export async function runDevelopLoopScenario(tag, {
     // pushCode gating) against a member that provably never receives a
     // code-writing dispatch.
     roleMap,
+    // Backlog-alias warnings the CLI forwards as `args.roleMapWarnings`
+    // (bin/cli.mjs resolveRoleMapWithWarnings -> buildRunnerArgs).
+    roleMapWarnings,
     // Beads identity precondition passthroughs: `beadsIdentity` is
     // buildMockFleetApi's per-member probe override map (see its option
     // comment); `expectBeads` is the raw `args.expect_beads` value (a JSON
     // string or record) the supervisor would pass as `--expect-beads`.
     beadsIdentity, expectBeads,
+    // Optional passthrough for args.skip_regression (the --skip-regression
+    // launch option), so a scenario can prove the regression phase is skipped.
+    skipRegression,
+    // Seeded beads memories for the sprint-start memory sweep -- see
+    // buildMockFleetApi's `beadsMemories` option comment. The keys the
+    // sweep forgot come back as `forgottenMemories` on the result.
+    beadsMemories,
 }) {
     const { tempDir, epicBead, tasks } = await setupMinimal(tag, taskSpecs);
     if (withRunbooks) {
@@ -2039,12 +2119,24 @@ export async function runDevelopLoopScenario(tag, {
     if (beforeSprint) {
         await beforeSprint({ tempDir, runCmd, epicBead, tasks });
     }
+    // The issue-id prefix of the DB this scenario actually created: the fixed
+    // 'mock' under replay, a template/dir-derived name under real bd. Resolved
+    // via the same `bd where --json` probe the sprint runs, so a scenario can
+    // assert on it in both modes. `expectBeads` may be a function of
+    // `{ prefix }` for scenarios that need to build the expectation from it.
+    let dbPrefix;
+    try {
+        dbPrefix = JSON.parse((await runCmd('bd where --json', tempDir)).stdout || '{}').prefix;
+    } catch { /* leave undefined */ }
+    if (typeof expectBeads === 'function') expectBeads = expectBeads({ prefix: dbPrefix });
     const dispatched = [];
     const commandLog = [];
     const commandLogDetailed = [];
     const memberGitState = new Map();
     const logs = [];
     const states = [];
+    const forgottenMemories = [];
+    const memoriesSink = {};
     // apra-fleet-eft.60.3: opt this hermetic run into the runner's zero-wait
     // Planner-dispatch retry backoff. The ~110s of real PLANNER_DISPATCH_RETRY_
     // DELAYS_MS backoff only models a real fleet member's execute_prompt
@@ -2093,9 +2185,11 @@ export async function runDevelopLoopScenario(tag, {
             gitGhFailurePattern,
             gitGhFailureMessage,
             prExistsState,
+            ...(prRecordState !== undefined ? { prRecordState } : {}),
             ...(originUrl !== undefined ? { originUrl } : {}),
             ...(prCurlResponseQueue !== undefined ? { prCurlResponseQueue } : {}),
             ...(beadsIdentity !== undefined ? { beadsIdentity } : {}),
+            ...(beadsMemories !== undefined ? { beadsMemories, forgottenMemories, memoriesSink } : {}),
         });
         // apra-fleet-20i.1.2: see runOnce() above -- same tag-as-logPrefix
         // threading, real single-sprint CLI path unaffected.
@@ -2133,7 +2227,9 @@ export async function runDevelopLoopScenario(tag, {
                 ...(resumeModelSwitch !== undefined ? { resume_model_switch: resumeModelSwitch } : {}),
                 ...(worklistEffortBudget !== undefined ? { worklist_effort_budget: worklistEffortBudget } : {}),
                 ...(roleMap !== undefined ? { roleMap } : {}),
+                ...(roleMapWarnings !== undefined ? { roleMapWarnings } : {}),
                 ...(expectBeads !== undefined ? { expect_beads: expectBeads } : {}),
+                ...(skipRegression !== undefined ? { skip_regression: skipRegression } : {}),
             }, true);
         } catch (err) {
             error = err;
@@ -2172,7 +2268,8 @@ export async function runDevelopLoopScenario(tag, {
         // as intended by callers that deliberately induce one (e.g. a doer
         // throw or a typed sprint-abort) to verify error handling.
         passed = (error === null);
-        return { dispatched, commandLog, commandLogDetailed, memberGitState, logs, states, error, result, tasks, epicBeadId: epicBead.id, finalBeadsById, branch, tempDir };
+        return { dispatched, commandLog, commandLogDetailed, memberGitState, logs, states, error, result, tasks, epicBeadId: epicBead.id, finalBeadsById, branch, tempDir, dbPrefix, forgottenMemories,
+            remainingMemories: memoriesSink.live ? Object.fromEntries(memoriesSink.live) : undefined };
     } finally {
         // apra-fleet-20i.1.2: see runOnce() above.
         console.log(`=== END scenario: ${tag} (${passed ? 'PASS' : 'FAIL'}) ===`);
@@ -2221,11 +2318,13 @@ export async function runDevelopLoopScenario(tag, {
 // created the whole DAG). In both cases this harness's own post-run bead-state
 // read still needs to reflect real state -- the same exclusion set runner.js's
 // own isNoMutationDispatchFailure makes.
-const AGENT_RAN_DISPATCH_REASONS = new Set(['max_turns_exhausted', 'watchdog_timeout']);
+// 'max_total_time' too, unless the server marked it dispatched:false (the
+// budget ran out during setup, before anything was sent) -- mirrors runner.js.
+const AGENT_RAN_DISPATCH_REASONS = new Set(['max_turns_exhausted', 'watchdog_timeout', 'max_total_time']);
 
 export function isNoMutationTerminalDispatchError(err) {
     if (!err) return false;
-    if (err instanceof AgentDispatchError && err.details && AGENT_RAN_DISPATCH_REASONS.has(err.details.reason)) {
+    if (err instanceof AgentDispatchError && err.details && AGENT_RAN_DISPATCH_REASONS.has(err.details.reason) && err.details.dispatched !== false) {
         return false;
     }
     return err instanceof AgentDispatchError || err instanceof FleetTransportError;

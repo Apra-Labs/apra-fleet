@@ -5,6 +5,87 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { resolveFleetServerCommand, resolveRunnerScriptPath, resolveFleetServerConnection } from '../bin/cli.mjs';
+import { checkRunningInstance } from '@apralabs/apra-fleet-client/server-resolution';
+
+// GitHub #584: the client probe mirrors src/services/singleton.ts -- tri-state,
+// and server.json is removed only for a dead pid or a refused port.
+describe('client checkRunningInstance tri-state', () => {
+    const info = JSON.stringify({ pid: 4242, url: 'http://127.0.0.1:7523/mcp', port: 7523 });
+    function deps(overrides) {
+        const unlinked = [];
+        return {
+            unlinked,
+            d: {
+                env: { APRA_FLEET_DATA_DIR: path.join(os.tmpdir(), 'no-such-fleet-dir') },
+                readFile: () => info,
+                unlink: (p) => unlinked.push(p),
+                pidAlive: () => true,
+                health: async () => false,
+                tcpProbe: async () => 'open',
+                ...overrides,
+            },
+        };
+    }
+
+    test('live pid + silent /health + open port -> unresponsive, server.json kept', async () => {
+        const { unlinked, d } = deps({});
+        const r = await checkRunningInstance(d);
+        assert.strictEqual(r.state, 'unresponsive');
+        assert.strictEqual(r.running, false);
+        assert.strictEqual(r.pid, 4242);
+        assert.strictEqual(r.port, 7523);
+        assert.deepStrictEqual(unlinked, []);
+    });
+
+    test('live pid + refused port -> gone, server.json removed', async () => {
+        const { unlinked, d } = deps({ tcpProbe: async () => 'refused' });
+        const r = await checkRunningInstance(d);
+        assert.strictEqual(r.state, 'gone');
+        assert.strictEqual(unlinked.length, 1);
+    });
+
+    test("non-200 /health (foreign port owner) -> gone, server.json removed", async () => {
+        const { unlinked, d } = deps({ health: async () => 'foreign' });
+        const r = await checkRunningInstance(d);
+        assert.strictEqual(r.state, 'gone');
+        assert.strictEqual(unlinked.length, 1);
+    });
+
+    test('dead pid -> gone, server.json removed', async () => {
+        const { unlinked, d } = deps({ pidAlive: () => false });
+        const r = await checkRunningInstance(d);
+        assert.strictEqual(r.state, 'gone');
+        assert.strictEqual(unlinked.length, 1);
+    });
+
+    test('resolveFleetServerConnection refuses to self-spawn stdio beside an unresponsive HTTP server', async () => {
+        await assert.rejects(
+            resolveFleetServerConnection({
+                env: {},
+                dirname: 'anywhere',
+                exists: () => true,
+                checkRunningInstance: async () => ({ running: false, state: 'unresponsive', pid: 4242, url: 'http://127.0.0.1:7523/mcp', port: 7523 }),
+            }),
+            /alive but not answering \/health[\s\S]*apra-fleet stop/,
+        );
+        // An explicit stdio request is still honoured (no probe at all).
+        const forced = await resolveFleetServerConnection({
+            env: { APRA_FLEET_TRANSPORT: 'stdio' },
+            dirname: 'anywhere',
+            exists: (c) => c === path.join('anywhere', 'index.js'),
+            checkRunningInstance: async () => { throw new Error('must not probe'); },
+        });
+        assert.strictEqual(forced.mode, 'stdio');
+    });
+
+    test('healthy -> running', async () => {
+        const { unlinked, d } = deps({ health: async () => true });
+        const r = await checkRunningInstance(d);
+        assert.strictEqual(r.state, 'running');
+        assert.strictEqual(r.running, true);
+        assert.deepStrictEqual(unlinked, []);
+    });
+});
 
 // apra-fleet-3ns.1 -- layout-aware fleet-server + runner-script resolution.
 // Same-class bug as apra-fleet-bun: cli.mjs's defaults assumed a dev
@@ -169,23 +250,21 @@ describe('concurrent children share one fleet server (apra-fleet-eft.7.3)', () =
         assert.strictEqual(child1Result.url, child2Result.url);
     });
 
-    test('missing server config yields FleetServerUnreachableError, not self-spawn', async () => {
-        // When no healthy fleet singleton is running and no override env is
-        // set, resolveFleetServerConnection returns a non-http mode (not a
-        // stdio self-spawn descriptor). The caller (main() in cli.mjs) must
-        // treat this as a hard failure and throw FleetServerUnreachableError.
+    test('no singleton -> the shared HTTP server is started once and shared, not a private stdio self-spawn', async () => {
+        // GitHub #585 recovery: with no healthy singleton and no override, the
+        // resolver starts the SHARED HTTP server (as 'apra-fleet start' does)
+        // and returns mode 'http'; it never hands cli.mjs a stdio descriptor.
+        let autoStarts = 0;
         const result = await resolveFleetServerConnection({
             env: {}, // no APRA_FLEET_TRANSPORT or APRA_FLEET_SERVER_CMD
             dirname: 'anywhere',
             exists: (candidate) => candidate === path.join('anywhere', 'index.js'),
             checkRunningInstance: async () => ({ running: false }), // no singleton
+            autoStartFleetServer: async () => { autoStarts++; return { url: 'http://127.0.0.1:7523/mcp', pid: 5150 }; },
         });
-
-        // The shared resolver returns a non-http mode when no singleton is
-        // found (it does NOT create a self-spawn descriptor for cli.mjs).
-        // cli.mjs's main() will convert this to a FleetServerUnreachableError.
-        assert.notStrictEqual(result.mode, 'http');
-        assert.ok(result.reason, 'reason should explain why attachment failed');
+        assert.strictEqual(autoStarts, 1);
+        assert.strictEqual(result.mode, 'http');
+        assert.ok(result.reason, 'reason should explain the auto-start');
     });
 
     test('resolveFleetServerConnection exports are available for injection in tests', () => {

@@ -106,6 +106,10 @@ const MOVED_PRIVATE_SYMBOLS = [
     // level, not a constant). Module-private for the same reason as the rest
     // of this group -- only the preflight above consumes it.
     'readRegisteredGitAccess',
+    // GitHub #616: the self-heal callback's futile-heal memory key. Added
+    // after the extraction; vcs-auth.mjs-only, never exported by runner.js.
+    'selfHealMemoryKey',
+    'FUTILE_HEAL_TTL_MS',
 ];
 
 const declaresTopLevel = (src, name) =>
@@ -151,7 +155,7 @@ describe('(1) the runner.js facade re-exports every symbol the vcs-auth extracti
         });
     }
 
-    test('every moved symbol is accounted for: the two lists cover all 26 top-level declarations in vcs-auth.mjs', () => {
+    test('every moved symbol is accounted for: the two lists cover all 28 top-level declarations in vcs-auth.mjs', () => {
         const declared = [...VCS_AUTH_SRC.matchAll(/^(?:export )?(?:async )?(?:function|const) ([A-Za-z_][A-Za-z0-9_]*)/gm)]
             .map((m) => m[1]);
         const enumerated = new Set([...MOVED_PUBLIC_SYMBOLS, ...MOVED_PRIVATE_SYMBOLS]);
@@ -205,11 +209,19 @@ describe('(2) golden transcripts reproduce with the fixture directory untouched'
         // spawn's `env` option two statements down.
         assert.equal(env.NODE_TEST_CONTEXT, undefined, 'NODE_TEST_CONTEXT must be unset in the env object handed to the nested golden-transcript spawn, or the child silently no-ops instead of genuinely running');
 
-        const childOut = execFileSync(
-            process.execPath,
-            ['--test', 'test/golden-transcript.test.mjs', 'test/golden-transcript-3bead.test.mjs'],
-            { cwd: SE_DIR, env, encoding: 'utf8', stdio: 'pipe', timeout: 60_000 },
-        );
+        let childOut;
+        try {
+            childOut = execFileSync(
+                process.execPath,
+                ['--test', 'test/golden-transcript.test.mjs', 'test/golden-transcript-3bead.test.mjs'],
+                { cwd: SE_DIR, env, encoding: 'utf8', stdio: 'pipe', timeout: 60_000 },
+            );
+        } catch (err) {
+            // Surface the child's own output: a bare "Command failed" gives
+            // no clue which golden test failed or why.
+            const tail = (s) => String(s ?? '').slice(-4000);
+            assert.fail(`nested golden-transcript run failed (status=${err.status} signal=${err.signal})\n--- child stdout (tail) ---\n${tail(err.stdout)}\n--- child stderr (tail) ---\n${tail(err.stderr)}`);
+        }
 
         // apra-fleet-j918.13.2: falsifiable pin against the vacuous no-op
         // child (j918.13) recurring -- a bare non-throw/exit-0 is NOT

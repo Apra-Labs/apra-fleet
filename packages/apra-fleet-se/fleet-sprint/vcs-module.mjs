@@ -43,7 +43,8 @@ import {
 
 /**
  * Provider-dispatched command build step. `action` is one of
- * 'create-pull-request' | 'comment'; `params.provider` selects the REST
+ * 'create-pull-request' | 'comment' | 'find-pull-request' |
+ * 'update-pull-request'; `params.provider` selects the REST
  * dispatch. Pure and deterministic -- no network I/O, no filesystem access,
  * no randomness (beyond whatever caller-supplied fields it is handed).
  *
@@ -101,6 +102,12 @@ export const PR_DESCRIPTION_MAX_LENGTH = 3500;
  * log/emit the warning through its own logging convention.
  */
 export function buildCreatePrCommand(params) {
+    return buildCappedBodyCommand('create-pull-request', params);
+}
+
+/** Shared PR_DESCRIPTION_MAX_LENGTH enforcement for every action that sends a
+ *  PR description (create-pull-request, update-pull-request). */
+function buildCappedBodyCommand(action, params) {
     const { body } = params || {};
     let effectiveBody = body;
     let descriptionTruncated = null;
@@ -108,8 +115,29 @@ export function buildCreatePrCommand(params) {
         descriptionTruncated = { originalLength: body.length, maxLength: PR_DESCRIPTION_MAX_LENGTH };
         effectiveBody = body.slice(0, PR_DESCRIPTION_MAX_LENGTH);
     }
-    const built = buildVcsCommand('create-pull-request', { ...params, body: effectiveBody });
+    const built = buildVcsCommand(action, { ...params, body: effectiveBody });
     return descriptionTruncated ? { ...built, descriptionTruncated } : { ...built, descriptionTruncated: null };
+}
+
+/**
+ * Build a "find the open PR for head -> base" command for the given provider.
+ * The returned object carries `mapResponse(body)` -> [{ id, title, body, url }]
+ * so a caller reads the provider's list dialect without knowing it. A
+ * provider with no such builder fails with the same typed "ERROR: ... does
+ * not yet implement action" as every other missing action.
+ */
+export function buildFindPrCommand(params) {
+    return buildVcsCommand('find-pull-request', params);
+}
+
+/**
+ * Build an "update an existing PR's title/description" command for the given
+ * provider (`params.pull_request_id` from buildFindPrCommand's mapping). Same
+ * deterministic PR_DESCRIPTION_MAX_LENGTH cap and `descriptionTruncated`
+ * report as buildCreatePrCommand.
+ */
+export function buildUpdatePrCommand(params) {
+    return buildCappedBodyCommand('update-pull-request', params);
 }
 
 // ---------------------------------------------------------------------------
@@ -238,6 +266,7 @@ export function buildCommentCommand(params) {
 //   TRANSIENT              | true      | network / server / lock blip             | retry, bounded
 //   NO_REMOTE              | false     | no remote configured; nothing to sync    | none; benign no-op
 //   UNSUPPORTED_OPERATION  | false     | action not implemented for this provider | fix the call/config
+//   MISSING_TOOL           | false     | the binary is not installed / not on PATH| install it / fix PATH
 //   UNKNOWN                | false     | unrecognized -- must surface, not guess  | operator triage
 //
 // `retryable` is true ONLY for TRANSIENT, and means "safe to re-run the same
@@ -268,6 +297,89 @@ export function buildCommentCommand(params) {
 // possibly help" apart from every other AUTH_DENIED, WITHOUT re-reading
 // stderr at the call site.
 
+// MISSING TOOL (GitHub #616). Provider-agnostic shell/spawn wording for "a
+// binary could not be found on this member". It is decided BEFORE the
+// permission-scope and provider rules, but ONLY when the binary the wording
+// names is the binary the failing step itself ran (`opts.tool`, see
+// commandBinary). A member's shell profile routinely prints unrelated "not
+// found" noise (`.bashrc: line 12: pyenv: command not found`, PowerShell
+// "conda : The term 'conda' is not recognized ...", a git hook's `npx: command
+// not found`, a server-side `git-receive-pack: command not found`) ahead of
+// the real failure; that noise must never outrank the real classification
+// (a diverged pull, an auth refusal, a lock). Unnamed signals (exit code 127,
+// the generic "is not recognized" tails) count only when the step's binary is
+// known and the text names no other binary. Without step context the named
+// binary must be one of the sync tools (DEFAULT_MISSING_TOOL_TARGETS).
+// Windows (PowerShell, cmd.exe) and POSIX (bash, zsh, dash/sh) wordings are
+// covered, plus exit code 127 and Node's spawn ENOENT.
+const MISSING_TOOL_NAMED_RULES = Object.freeze([
+    // PowerShell: "bd : The term 'bd' is not recognized as the name of a cmdlet, function, ..."
+    /The term '([^']+)' is not recognized as the name of a cmdlet/i,
+    // cmd.exe: "'bd' is not recognized as an internal or external command,"
+    /'([^']+)' is not recognized as an internal or external command/i,
+    // zsh: "zsh: command not found: bd" (checked before the bash form so the
+    // "zsh:" prefix is never read as the tool)
+    /command not found: ([^\s'"]+)/i,
+    // bash: "bash: bd: command not found", "bash: line 1: bd: command not found"
+    /([^\s:'"]+): command not found/i,
+    // dash/sh: "sh: 1: bd: not found"
+    /(?:^|\n|\s)(?:\/bin\/)?(?:sh|dash|bash): (?:line )?\d+: ([^\s:'"]+): not found/i,
+    // Node child_process: "spawn bd ENOENT"
+    /spawn ([^\s'"]+) ENOENT/,
+]);
+const MISSING_TOOL_UNNAMED_RULES = Object.freeze([
+    /is not recognized as (?:the )?name of a cmdlet/i,
+    /is not recognized as an internal or external command/i,
+    // The shell's own "not found" exit status, as the fleet transport reports it.
+    /\bexit (?:code|status) 127\b/i,
+]);
+
+/** The sync binaries a context-free classification may report as missing. */
+const DEFAULT_MISSING_TOOL_TARGETS = Object.freeze(['bd', 'dolt', 'git']);
+
+/** Bare, lower-case binary name: no directory, no Windows executable suffix. */
+function normalizeToolName(name) {
+    const base = String(name || '').trim().replace(/^["']|["']$/g, '').split(/[\\/]/).pop() || '';
+    return base.replace(/\.(exe|cmd|bat|ps1)$/i, '').toLowerCase();
+}
+
+/**
+ * Detects a missing-binary failure OF THE STEP'S OWN BINARY. Returns
+ * `{ tool }` or null (not a missing-tool failure for this step -- the
+ * normal classification rules decide).
+ * @param {string} raw
+ * @param {{ exitCode?: number|null, tool?: string|null }} [ctx]
+ * @returns {{ tool: string }|null}
+ */
+function detectMissingTool(raw, ctx = {}) {
+    const stepTool = ctx.tool ? normalizeToolName(ctx.tool) : '';
+    const targets = stepTool ? [stepTool] : DEFAULT_MISSING_TOOL_TARGETS;
+    const named = [];
+    for (const rule of MISSING_TOOL_NAMED_RULES) {
+        // A fresh global copy per call keeps the module-level rules stateless.
+        for (const m of raw.matchAll(new RegExp(rule.source, `${rule.flags}g`))) {
+            if (m[1]) named.push(normalizeToolName(m[1]));
+        }
+    }
+    const hit = named.find((n) => targets.includes(n));
+    if (hit) return { tool: hit };
+    const unnamed = ctx.exitCode === 127 || MISSING_TOOL_UNNAMED_RULES.some((re) => re.test(raw));
+    if (stepTool && unnamed && named.length === 0) return { tool: stepTool };
+    return null;
+}
+
+/**
+ * The binary a command string invokes (its first whitespace-separated token,
+ * quotes stripped) -- the fallback name for a MISSING_TOOL failure whose
+ * wording names no binary (e.g. a bare exit code 127).
+ * @param {string} cmd
+ * @returns {string}
+ */
+export function commandBinary(cmd) {
+    const first = String(cmd || '').trim().split(/\s+/)[0] || '';
+    return first.replace(/^["']|["']$/g, '') || '(unknown command)';
+}
+
 const KIND_PRECEDENCE = Object.freeze([
     VCS_FAILURE_KINDS.DIVERGED,
     VCS_FAILURE_KINDS.AUTH_EXPIRED,
@@ -294,10 +406,11 @@ const KIND_PRECEDENCE = Object.freeze([
  * self-healed, so a mis-fallback degrades to "surface it", not to a guess.
  *
  * @param {string} rawStderr - the raw stderr/stdout of the failed command
- * @param {{ provider?: string }} [opts] - provider selects the rule chain;
+ * @param {{ provider?: string, exitCode?: number|null, tool?: string|null }} [opts] - provider selects the rule chain; tool is the binary the failing step ran (see detectMissingTool -- MISSING_TOOL is only reported for that binary);
  *   defaults to DEFAULT_VCS_PROVIDER ('github'), which reproduces runner.js's
  *   full auth pattern set exactly.
- * @returns {{ kind: string, providerCode: string|null, retryable: boolean, permissionScope: boolean, operatorReferral: string|null, raw: string }}
+ * @returns {{ kind: string, providerCode: string|null, retryable: boolean, permissionScope: boolean, operatorReferral: string|null, missingTool: string|null, raw: string }}
+ *   `missingTool` is the binary name a MISSING_TOOL failure names (null when the wording names none, and for every other kind).
  *   `kind` is the ONLY field control flow may branch on, with ONE declared
  *   exception: `permissionScope` (see below), which is a REFINEMENT of
  *   AUTH_DENIED, not a parallel vocabulary. `providerCode` is the
@@ -316,6 +429,16 @@ export function classifyFailure(rawStderr, opts = {}) {
     const raw = String(rawStderr == null ? '' : rawStderr);
     const providerName = (opts && opts.provider) || DEFAULT_VCS_PROVIDER;
     const chain = resolveVcsProviderChain(providerName);
+
+    // MISSING TOOL first, ahead of permission-scope and provider rules (see
+    // MISSING_TOOL_RULES above).
+    const missing = detectMissingTool(raw, { exitCode: opts && opts.exitCode, tool: opts && opts.tool });
+    if (missing) {
+        return {
+            kind: VCS_FAILURE_KINDS.MISSING_TOOL, providerCode: null, retryable: false,
+            permissionScope: false, operatorReferral: null, missingTool: missing.tool, raw,
+        };
+    }
 
     // PERMISSION-SCOPE RULES ARE CHECKED FIRST, ahead of KIND_PRECEDENCE.
     //
@@ -380,7 +503,7 @@ export function classifyFailure(rawStderr, opts = {}) {
         }
     }
 
-    return { kind, providerCode, retryable: VCS_RETRYABLE_KINDS.has(kind), permissionScope, operatorReferral, raw };
+    return { kind, providerCode, retryable: VCS_RETRYABLE_KINDS.has(kind), permissionScope, operatorReferral, missingTool: null, raw };
 }
 
 /**
@@ -394,7 +517,7 @@ export function classifyFailure(rawStderr, opts = {}) {
  * preserving parity, not inventing behavior.
  *
  * @param {string} kind - a VCS_FAILURE_KINDS member
- * @returns {'diverged'|'auth'|'transient'|'unknown'}
+ * @returns {'diverged'|'auth'|'transient'|'missing-tool'|'unknown'}
  */
 export function toGitVerdict(kind) {
     switch (kind) {
@@ -402,6 +525,7 @@ export function toGitVerdict(kind) {
         case VCS_FAILURE_KINDS.AUTH_EXPIRED:
         case VCS_FAILURE_KINDS.AUTH_DENIED: return 'auth';
         case VCS_FAILURE_KINDS.TRANSIENT: return 'transient';
+        case VCS_FAILURE_KINDS.MISSING_TOOL: return 'missing-tool';
         default: return 'unknown';
     }
 }
@@ -420,7 +544,7 @@ export function toGitVerdict(kind) {
  * dolt auth literal, including the publickey-refusal one; see dolt.mjs).
  *
  * @param {string} kind - a VCS_FAILURE_KINDS member
- * @returns {'no-remote'|'empty-remote'|'remote-unreachable'|'auth'|'diverged'|'transient'|'unknown'}
+ * @returns {'no-remote'|'empty-remote'|'remote-unreachable'|'auth'|'diverged'|'transient'|'missing-tool'|'unknown'}
  */
 export function toDoltVerdict(kind) {
     switch (kind) {
@@ -431,6 +555,7 @@ export function toDoltVerdict(kind) {
         case VCS_FAILURE_KINDS.AUTH_EXPIRED:
         case VCS_FAILURE_KINDS.AUTH_DENIED: return 'auth';
         case VCS_FAILURE_KINDS.TRANSIENT: return 'transient';
+        case VCS_FAILURE_KINDS.MISSING_TOOL: return 'missing-tool';
         default: return 'unknown';
     }
 }
@@ -572,6 +697,8 @@ export function parseProviderRepoRef(remoteUrl) {
 
 export const VCSModule = {
     buildCreatePrCommand,
+    buildFindPrCommand,
+    buildUpdatePrCommand,
     parseProviderRepoRef,
     buildCommentCommand,
     classifyFailure,

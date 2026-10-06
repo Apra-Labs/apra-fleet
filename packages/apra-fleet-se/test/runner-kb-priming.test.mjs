@@ -293,12 +293,15 @@ describe('KB priming reaches the agent (audit 2026-08-11)', () => {
         assert.deepEqual(kbKnowledgeBlock(undefined), []);
     });
 
-    test('kbKnowledgeBlock states the trust ladder and wraps the entries as untrusted', () => {
-        const [block] = kbKnowledgeBlock([ENTRY, { ...ENTRY, id: 'def456', confidence: 'INFERRED' }]);
+    // Only CONFIRMED entries are injected (kb-inject-confirmed-only.test.mjs), so
+    // the block states that rule instead of the old CONFIRMED/INFERRED ladder.
+    test('kbKnowledgeBlock states the CONFIRMED-only rule and wraps the entries as untrusted', () => {
+        const [block] = kbKnowledgeBlock([ENTRY, { ...ENTRY, id: 'def456', title: 'an inferred claim', confidence: 'INFERRED' }]);
 
         assert.match(block, /KNOWLEDGE BANK/);
-        assert.match(block, /CONFIRMED/);
-        assert.match(block, /INFERRED/);
+        assert.match(block, /Only CONFIRMED entries are included/);
+        assert.doesNotMatch(block, /INFERRED/);
+        assert.ok(!block.includes('an inferred claim'), 'an INFERRED entry is not rendered');
         assert.ok(block.includes('resolveZoneBinding returns a discriminated union'));
         // The entries are agent-authored text from a prior sprint: they must
         // arrive labelled as data, exactly like the promotion-candidate block.
@@ -536,7 +539,7 @@ describe('createKbWorkClient (KB trust pipeline Phase 2, fleet-sprint half)', ()
     });
 
     test('relevantKnowledge appends related claims below the direct hits', async () => {
-        const related = { id: 'zzz999', title: 'A claim that disputes the above', summary: 'x', confidence: 'UNVERIFIED' };
+        const related = { id: 'zzz999', title: 'A newer framing of the above', summary: 'x', confidence: 'CONFIRMED' };
         const callTool = async () => ({
             content: [{ text: JSON.stringify({ l1_results: [ENTRY], related_claims: [related] }) }],
         });

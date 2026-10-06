@@ -137,6 +137,22 @@ export function synthesizeBdWhere(cmd, cwd) {
     return { err: null, stdout: `${beadsDir}\n  prefix: mock\n`, stderr: '' };
 }
 
+// The sprint-start memory sweep (fleet-sprint/beads-memory-hygiene.mjs)
+// lists memories with `bd memories --json` and forgets matches with
+// `bd forget <key>`. A scratch `bd init` clone has no memories, so the mocked
+// (replay/record) modes synthesize an empty list and a clean forget instead
+// of requiring (or drifting) a recorded response. A scenario that seeds
+// memories intercepts both commands in its own executeCommand first (see the
+// mock-sprint harness's `beadsMemories` option). Real mode runs real bd.
+const isBdMemoriesListCommand = (cmd) => /^\s*bd\s+memories\s+--json\s*$/.test(cmd);
+const isBdForgetCommand = (cmd) => /^\s*bd\s+forget\s+\S+\s*$/.test(cmd);
+
+export function synthesizeBdMemoryCommand(cmd) {
+    if (isBdMemoriesListCommand(cmd)) return { err: null, stdout: '{}\n', stderr: '' };
+    if (isBdForgetCommand(cmd)) return { err: null, stdout: '', stderr: '' };
+    return null;
+}
+
 // The same precondition also issues `bd config get sync.remote --json` once
 // per member. Every committed recording answers that command with an unset
 // value (a scratch `bd init` clone has no sync remote), so replay mode
@@ -157,7 +173,12 @@ const SYNC_REMOTE_UNSET_STDOUT = '{\n  "key": "sync.remote",\n  "location": "con
 // behavior changed. Normalize the quoted path argument to a stable
 // placeholder for MATCHING purposes only -- record/real mode still executes
 // the real, unmodified `cmd` (with the real path bd must actually read).
-const normalizeCommandForMatching = (cmd) => cmd.replace(/(--body-file|--file)\s+"[^"]*"/g, '$1 "<TMPFILE>"');
+// `bd init --database <name>` (bdInitCommandForClone, for long scenario keys)
+// differs from a bare `bd init` only in the dolt db name, which replay ignores;
+// fold both to `bd init` so a recording made with either form matches the other.
+const normalizeCommandForMatching = (cmd) => cmd
+    .replace(/(--body-file|--file)\s+"[^"]*"/g, '$1 "<TMPFILE>"')
+    .replace(/^(\s*bd\s+init)\s+--database\s+\S+\s*$/, '$1');
 
 // ---------------------------------------------------------------------------
 // real-mode D-pull/D-push bracket caching (apra-fleet-eft.17.1)
@@ -708,6 +729,9 @@ export function runCmd(cmd, cwd) {
     // synthesized in both mocked modes; the sync.remote probe only in replay
     // (record mode captures the real answer, exactly as it always did).
     if (isBdWhereCommand(cmd)) return Promise.resolve(synthesizeBdWhere(cmd, cwd));
+    // The memory sweep (see synthesizeBdMemoryCommand above).
+    const memoryAnswer = synthesizeBdMemoryCommand(cmd);
+    if (memoryAnswer) return Promise.resolve(memoryAnswer);
     if (mode === 'record') return recordBd(cmd, cwd);
     if (isStableConfigProbe(cmd)) return Promise.resolve({ err: null, stdout: SYNC_REMOTE_UNSET_STDOUT, stderr: '' });
     return replayBd(cmd, cwd);

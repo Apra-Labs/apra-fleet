@@ -2,6 +2,17 @@
 
 How to cut a release. That's it.
 
+## 0. Pre-release check: Windows standard (non-admin) account
+
+Windows CI runners are admin, so the user-level service path is verified by hand before every
+release that touches install/start/stop/status or `src/services/service-manager/windows.ts`: on a
+real STANDARD account (Windows Sandbox or a standard user on a fleet member), with the release
+candidate binary, run `apra-fleet install` (no elevation; status `installed (enabled)`), kill the
+server tree (`taskkill /F /T`) and confirm the task revives it within the trigger interval with no
+console window, `apra-fleet stop` keeps it stopped across two intervals (status shows stopped by
+user), `apra-fleet start` re-enables and starts it, and `apra-fleet uninstall` removes the task.
+Attach the evidence to the release PR.
+
 ## 1. Bump the version -- in both package.json AND version.json
 
 Both files must be bumped together, in the same commit. This is not

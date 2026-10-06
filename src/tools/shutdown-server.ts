@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import { closeAllConnections } from '../services/ssh.js';
 import type { HttpTransportHandle } from '../services/http-transport.js';
 import { SERVER_INFO_PATH } from '../paths.js';
+import { recordShutdown } from '../services/server-lifecycle.js';
 
 export const shutdownServerSchema = z.object({});
 
@@ -49,6 +50,10 @@ export async function shutdownServer(): Promise<string> {
     try { fs.unlinkSync(SERVER_INFO_PATH); } catch {}
   }
   closeAllConnections();
+  // GitHub #585: one synchronous shutdown record before the deferred exit --
+  // written only once close() succeeded, so a failed close (the process stays
+  // up) never leaves a false first reason behind.
+  recordShutdown('shutdown_server');
   scheduleProcessExit();
   return 'Server shutting down. Run /mcp to start a fresh instance.';
 }

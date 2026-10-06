@@ -37,7 +37,7 @@
 // classifyGitFailure() delegates to VCSModule -- the ONE place VCS stderr is
 // parsed (vcs-module.mjs's own header comment). These two names were imported
 // by runner.js for exactly this call before the move.
-import { classifyFailure, toGitVerdict } from './vcs-module.mjs';
+import { classifyFailure, toGitVerdict, commandBinary } from './vcs-module.mjs';
 import { VCS_FAILURE_KINDS } from './errors.mjs';
 
 // ---------------------------------------------------------------------------
@@ -371,23 +371,37 @@ export function classifyGitFailure(output, provider) {
  * No existing AUTH_DENIED producer changes verdict or self-heal treatment;
  * only a provider that OPTS IN via `permissionScope` does.
  *
- * @returns {Promise<{ ok: boolean, output: string, error: string|null, kind?: 'diverged'|'auth'|'transient'|'unknown', permissionScope?: boolean }>}
+ * @returns {Promise<{ ok: boolean, output: string, error: string|null, kind?: 'diverged'|'auth'|'transient'|'missing-tool'|'unknown', permissionScope?: boolean, missingTool?: string }>}
  */
 export async function runGitStep({ command, member, cmd, label, log, maxTransientRetries, onAuthFailure, provider }) {
     let attempt = 0;
     let authHealAttempted = false;
+    /** The info the self-heal was invoked with, reported back on a failed retry. */
+    let healTrigger = null;
     // eslint-disable-next-line no-constant-condition
     while (true) {
         const res = await command(cmd, { member_name: member, silent: true, failSoft: true, label });
-        if (res && res.ok) return res;
+        if (res && res.ok) {
+            if (authHealAttempted) log(`[Sync] self-heal recovered: ${label} succeeded for member '${member}' on the retry after re-provisioning credentials.`);
+            return res;
+        }
         const error = res ? res.error : 'unknown command failure';
         // ONE classification per attempt, read both ways: the neutral kind
         // (for the permission-scope gate) and this module's legacy verdict
         // (for the transient/auth routing below). classifyGitFailure() is
         // exactly toGitVerdict(classifyFailure(...).kind), so the two readings
-        // can never disagree -- see that function's own doc comment.
-        const classified = classifyFailure(error, provider ? { provider } : undefined);
+        // can never disagree -- see that function's own doc comment. The step's
+        // own binary is passed so a missing-tool verdict is only ever about it,
+        // never about shell-profile noise naming some other binary.
+        const classified = classifyFailure(error, provider ? { provider, tool: commandBinary(cmd) } : { tool: commandBinary(cmd) });
         const kind = toGitVerdict(classified.kind);
+        if (kind === 'missing-tool') {
+            // GitHub #616: a missing binary is never retried and never sent to
+            // the credential self-heal -- neither can install it.
+            const tool = classified.missingTool || commandBinary(cmd);
+            log(`[Sync] ${label} FAILED (missing-tool): '${tool}' was not found on member '${member}' -- install it on that member or put it on that member's PATH. Not retrying and not re-provisioning credentials. Raw: ${error}`);
+            return { ok: false, output: res ? res.output : '', error, kind, missingTool: tool, selfHealed: false };
+        }
         if (classified.kind === VCS_FAILURE_KINDS.AUTH_DENIED && classified.permissionScope) {
             const referral =
                 `[Sync] permission-scope git failure for member '${member}' (${label}): the command "${cmd}" was refused because the ` +
@@ -407,11 +421,19 @@ export async function runGitStep({ command, member, cmd, label, log, maxTransien
             log(`[Sync] transient git failure for member '${member}' (${label}); retry ${attempt}/${maxTransientRetries}: ${error}`);
             continue;
         }
+        // A missing remote ref means the branch was never pushed, not a bad
+        // credential: re-provisioning cannot fix it. Return it immediately so
+        // the caller's own missing-ref handling runs without a wasted
+        // self-heal (apra-fleet-ta3).
+        if (isMissingRemoteRefError(error)) {
+            return { ok: false, output: res ? res.output : '', error, kind, missingRemoteRef: true };
+        }
         if ((kind === 'auth' || kind === 'unknown') && typeof onAuthFailure === 'function' && !authHealAttempted) {
             authHealAttempted = true;
             log(`[Sync] ${kind} git failure for member '${member}' (${label}); invoking self-heal (provision_vcs_auth) once before a single bounded retry: ${error}`);
+            healTrigger = { member, label, cmd, error, source: 'git', failureKind: kind };
             try {
-                await onAuthFailure({ member, label, cmd, error, kind: 'git' });
+                await onAuthFailure(healTrigger);
             } catch (healErr) {
                 log(`[Sync] self-heal for member '${member}' (${label}) failed; not retrying further: ${healErr.message}`);
                 return { ok: false, output: res ? res.output : '', error, kind };
@@ -419,8 +441,31 @@ export async function runGitStep({ command, member, cmd, label, log, maxTransien
             log(`[Sync] self-heal for member '${member}' (${label}) completed; retrying the failed git command once.`);
             continue;
         }
+        if (authHealAttempted) {
+            log(`[Sync] self-heal did not recover: ${label} still failed for member '${member}' after re-provisioning credentials.`);
+            // Let the self-heal remember this futile heal for the rest of the
+            // run, so the next step failing the same way is not re-healed.
+            if (typeof onAuthFailure.recordHealOutcome === 'function') {
+                try { await onAuthFailure.recordHealOutcome({ ...healTrigger, recovered: false }); }
+                catch (recordErr) { log(`[Sync] could not record the failed self-heal for member '${member}': ${recordErr.message}`); }
+            }
+        }
         return { ok: false, output: res ? res.output : '', error, kind };
     }
+}
+
+/**
+ * True when `error` is git's exact "the named ref does not exist on the
+ * remote" message (`fatal: couldn't find remote ref <branch>`): a branch never
+ * pushed to the remote, so there is nothing there to fetch/rebase against.
+ * The ONE place that text is matched (apra-fleet-ta3): runGitStep skips the
+ * auth self-heal on it, and the sync brackets (member-sync.mjs, which
+ * re-exports this) treat it as a benign no-op / retry-directly signal.
+ * @param {string} error - the raw git stderr/stdout of a failed command
+ * @returns {boolean}
+ */
+export function isMissingRemoteRefError(error) {
+    return /couldn't find remote ref/i.test(error || '');
 }
 
 /**

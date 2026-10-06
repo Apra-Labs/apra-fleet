@@ -107,9 +107,11 @@ export function normalizeMsysPathForPlatform(value, platform = process.platform)
     return `${drive.toUpperCase()}:\\${rest.replace(/\//g, '\\')}`;
 }
 
-/** Quote a value for embedding in a PowerShell single-quoted string literal. */
+/** Quote a value for embedding in a PowerShell single-quoted string literal.
+ *  PowerShell also treats U+2018..U+201B as single quotes; each quote
+ *  character is doubled as itself. */
 function psQuote(value) {
-    return `'${String(value).replace(/'/g, "''")}'`;
+    return `'${String(value).replace(/['\u2018-\u201B]/g, '$&$&')}'`;
 }
 
 /** Escape PowerShell -like wildcard metacharacters so a path is matched

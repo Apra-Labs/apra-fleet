@@ -20,7 +20,7 @@ while (open issues above goal threshold > 0):
 
 Finalize -- one regression pass over regression-test-playbook.md (informational:
             failures carry over as beads, they do not gate this sprint)
-Harvest  -- update documentation, CHANGELOG, raise PR
+Harvest  -- update documentation, sprint analysis, raise PR
 ```
 
 The workflow never writes code or makes decisions. It dispatches agents,
@@ -444,7 +444,7 @@ When the sprint goal is met:
   missing remote logs a warning but does not abort harvest)
 - A reviewed pull request is open against `base_branch`
 - `docs/` is updated with architecture decisions and feature documentation
-- `CHANGELOG.md` has a new entry summarising the sprint
+- `docs/sprint-analysis-<slug>.md` summarises the sprint (with its cost block)
 - `sprint-logs/<branch>-<timestamp>.jsonl` is written locally with per-dispatch cost
   data (gitignored -- see the sprint-log note above)
 - `sprint-logs/calibration.json` is committed with the updated historical averages

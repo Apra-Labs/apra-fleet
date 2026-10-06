@@ -42,6 +42,7 @@
 
 import { escapeHtml } from '@apralabs/apra-fleet-workflow/viewer/html-utils';
 import { ROLES } from '../../fleet-sprint/contracts.mjs';
+import { ROLE_BACKLOG } from '../../fleet-sprint/backlog-role.mjs';
 
 /**
  * The goal selector offers EXACTLY these three values (acceptance criterion).
@@ -56,14 +57,14 @@ import { ROLES } from '../../fleet-sprint/contracts.mjs';
 export const GOAL_OPTIONS = Object.freeze(['P1', 'P1/P2', 'P1/P2/P3']);
 
 /**
- * `roleMap`'s application-level pseudo-role (see fleet-sprint/runner.js's
- * ROLE_ORCHESTRATOR doc comment) -- not a vendored contracts.ROLES member, but
- * still a valid --role-map key the operator may want to assign.
+ * `roleMap`'s application-level pseudo-role is ROLE_BACKLOG (imported from
+ * fleet-sprint/backlog-role.mjs) -- not a vendored contracts.ROLES member, but
+ * still a valid --role-map key the operator may want to assign. The deprecated
+ * 'orchestrator' spelling is deliberately not offered.
  */
-const ORCHESTRATOR_ROLE = 'orchestrator';
 
 /** Every role assignable from the form's per-member role <select>. */
-export const FORM_ROLE_OPTIONS = Object.freeze([...ROLES, ORCHESTRATOR_ROLE]);
+export const FORM_ROLE_OPTIONS = Object.freeze([...ROLES, ROLE_BACKLOG]);
 
 /** Characters used for the random suffix of an auto-generated branch name. */
 const BRANCH_SUFFIX_CHARS = 'abcdefghijklmnopqrstuvwxyz0123456789';

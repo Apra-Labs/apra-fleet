@@ -102,6 +102,8 @@ COPILOT-INSTRUCTIONS.md
 /integ-suite-status.json.tmp
 /integ-suite-heartbeat.json
 /integ-suite-run.log
+/slow-suite-status.json
+/slow-suite-status.json.tmp
 
 # (The per-run sprint state dumps bin/cli.mjs writes on every sprint exit are
 # covered by the scoped '**/sprint-logs/sprint_*.json' rule above. The blanket

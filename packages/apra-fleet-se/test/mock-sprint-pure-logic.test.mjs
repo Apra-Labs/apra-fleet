@@ -176,26 +176,24 @@ test('checkMemberTopology: an unknown mode is an explicit hard refusal, not a si
 
 // =============================================================================
 // apra-fleet-unw2.22 (N12 follow-up) regression 1: the harvester
-// contract check must genuinely fail when analysisText/costAnalysis/
+// contract check must genuinely fail when analysisText/
 // analysisArtifactFile are blank, not merely check for the STATIC
 // instructional label text buildHarvesterPrompt() always emits. This
 // is a scratch-edit-and-revert proof against the REAL, exported
 // buildHarvesterPrompt() from runner.js (not a hand-rolled
 // reimplementation of its format in the test) -- mirroring how the
-// original finding proved the pre-fix regex was weak by forcing
-// costAnalysis = '' in runner.js and observing the mock still reported
-// OK.
+// original finding proved the pre-fix regex was weak by forcing a
+// blank input in runner.js and observing the mock still reported OK.
 // =============================================================================
-test('checkHarvesterContract: hardened check catches blank analysisText/costAnalysis/analysisArtifactFile', async () => {
+test('checkHarvesterContract: hardened check catches blank analysisText/analysisArtifactFile', async () => {
     await withScenarioMarkers('harvester-contract-check hardening regression', async () => {
-        console.log('Running harvester-contract-check hardening regression (blank analysisText/costAnalysis/analysisArtifactFile)...');
+        console.log('Running harvester-contract-check hardening regression (blank analysisText/analysisArtifactFile)...');
         const realArgs = {
             branch: 'auto-sprint/regression-check',
             baseBranch: 'main',
             targetIssues: ['bd-1'],
             analysisArtifactFile: 'docs/sprint-analysis-auto-sprint-regression-check-deadbeef.md',
             analysisText: '# Sprint Analysis: auto-sprint/regression-check\n\nCycles run: 3.\n\nFinal verdict: PASS.',
-            costAnalysis: 'Budget ceiling: $5.0000. Tracked spend: $1.2500. Remaining budget: $3.7500.',
         };
 
         // "Revert" case first (real, non-trivial content): the hardened check
@@ -204,15 +202,6 @@ test('checkHarvesterContract: hardened check catches blank analysisText/costAnal
         check(
             checkHarvesterContract(realPrompt).length === 0,
             `Hardened harvester contract check must PASS a real, non-blank prompt, got missing: ${JSON.stringify(checkHarvesterContract(realPrompt))}`
-        );
-
-        // Scratch-edit: force costAnalysis blank, as the original finding did
-        // directly in runner.js. Everything else stays real/non-trivial.
-        const blankCostAnalysis = buildHarvesterPrompt({ ...realArgs, costAnalysis: '' });
-        const blankCostAnalysisMissing = checkHarvesterContract(blankCostAnalysis);
-        check(
-            blankCostAnalysisMissing.includes('costAnalysis'),
-            `Hardened harvester contract check must report 'costAnalysis' as missing when runner.js emits a blank costAnalysis, got: ${JSON.stringify(blankCostAnalysisMissing)}`
         );
 
         // Scratch-edit: force analysisText blank.
@@ -257,22 +246,22 @@ test('checkHarvesterContract: hardened check catches blank analysisText/costAnal
 
         // Also confirm the LIVE mock (buildMockFleetApi's 'harvester' branch, as
         // actually wired into a real sprint dispatch) reports FAILED -- not
-        // OK -- for a blank costAnalysis. This is the literal "mock now reports
+        // OK -- for a blank analysisText. This is the literal "mock now reports
         // FAILED" acceptance criterion, driven through buildMockFleetApi rather
         // than the checkHarvesterContract() helper directly.
         const regressionTempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'apra-fleet-harvester-regression-'));
         try {
             const dispatched = [];
             const mockFleetApi = buildMockFleetApi(regressionTempDir, { id: 'bd-1' }, dispatched, []);
-            const harvesterResult = await mockFleetApi.executePrompt({ agent: 'harvester', label: 'Harvest', prompt: blankCostAnalysis });
+            const harvesterResult = await mockFleetApi.executePrompt({ agent: 'harvester', label: 'Harvest', prompt: blankAnalysisText });
             const parsed = JSON.parse(harvesterResult.content[0].text);
             check(
                 parsed.status === 'FAILED',
-                `Expected the live mock's harvester branch to report status FAILED for a blank costAnalysis, got: ${JSON.stringify(parsed)}`
+                `Expected the live mock's harvester branch to report status FAILED for a blank analysisText, got: ${JSON.stringify(parsed)}`
             );
             check(
-                typeof parsed.notes === 'string' && parsed.notes.includes('costAnalysis'),
-                `Expected the live mock's FAILED notes to name costAnalysis as the missing input, got: ${JSON.stringify(parsed)}`
+                typeof parsed.notes === 'string' && parsed.notes.includes('analysisText'),
+                `Expected the live mock's FAILED notes to name analysisText as the missing input, got: ${JSON.stringify(parsed)}`
             );
 
             // "Revert": the same live mock must report OK for the real,
