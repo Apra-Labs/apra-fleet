@@ -240,19 +240,69 @@ export interface ResolutionMismatch {
   resolved: ResolvedSymbol;
 }
 
+const QUALIFIER_SEPS = ['.', '::', '#', ':', '/'];
+
+/** True when `qualified` is `simple` or a qualified form ending in it. */
+function endsWithSymbol(qualified: string, simple: string): boolean {
+  if (qualified === '' || simple === '') return false;
+  return qualified === simple || QUALIFIER_SEPS.some((sep) => qualified.endsWith(sep + simple));
+}
+
+/**
+ * Split a gitnexus id/uid ("Function:src/a.ts:Svc.run", "a.mjs:fn",
+ * "Function:src/a.rs:ns::fn") at its last SINGLE ':' (a '::' is part of the
+ * symbol) into the file part before it and the symbol segment after it.
+ * Returns null when the id has no single ':' -- nothing to cross-check.
+ */
+function splitSymbolId(id: string): { file: string; symbol: string } | null {
+  const singles: number[] = [];
+  for (let i = 0; i < id.length; i++) {
+    if (id[i] !== ':') continue;
+    if (id[i + 1] === ':') { i++; continue; }
+    singles.push(i);
+  }
+  if (singles.length === 0) return null;
+  const last = singles[singles.length - 1];
+  const prev = singles.length > 1 ? singles[singles.length - 2] + 1 : 0;
+  return { file: id.slice(prev, last), symbol: id.slice(last + 1) };
+}
+
+function sameFile(a: string, b: string): boolean {
+  return a === b || a.endsWith('/' + b) || b.endsWith('/' + a);
+}
+
 /**
  * True when `resolved` is the symbol `requested` names: equal to its name,
  * id (uid) or file path, or a qualified form ending in the name
  * (Class.method, ns::fn, Class#method, file.ts:fn, dir/file.ts). A response
  * that resolved nothing (no name and no id) has nothing to contradict.
+ *
+ * A matching name alone is not proof: a corrupt index can return the
+ * requested name on a node whose id names an unrelated symbol (name
+ * 'runUninstall', id 'beads-children.mjs:claimBeadsBatched'). So when an id
+ * is present its symbol segment must agree with the name (or, with no name,
+ * with the request), and a file part that looks like a path must agree with
+ * filePath; any disagreement is a mismatch even if the name matches.
  */
 export function resolvesToRequested(requested: string, resolved: ResolvedSymbol): boolean {
   const req = requested.trim();
   const name = resolved.name ?? '';
   const id = resolved.id ?? '';
   if (req === '' || (name === '' && id === '')) return true;
+
+  const parts = id !== '' ? splitSymbolId(id) : null;
+  if (parts) {
+    // The id's own symbol must be the symbol the response names.
+    if (name !== '' && !endsWithSymbol(parts.symbol, name)) return false;
+    // A path-like file part must be the file the response names.
+    const filePath = resolved.filePath ?? '';
+    if (filePath !== '' && /[./]/.test(parts.file) && !sameFile(parts.file, filePath)) return false;
+  }
+
   if (req === name || req === id || req === resolved.filePath) return true;
-  return name !== '' && ['.', '::', '#', ':', '/'].some((sep) => req.endsWith(sep + name));
+  if (name !== '') return endsWithSymbol(req, name);
+  // No name: compare the request with the id's symbol segment.
+  return parts !== null && (endsWithSymbol(req, parts.symbol) || endsWithSymbol(parts.symbol, req));
 }
 
 function resolvedFrom(value: unknown): ResolvedSymbol | null {
@@ -291,7 +341,8 @@ export function flagResolutionMismatch(result: unknown, requested: unknown, kind
   if (!resolved || resolvesToRequested(requested, resolved)) return result;
 
   const mismatch: ResolutionMismatch = { requested, resolved };
-  const what = `${resolved.name ?? resolved.id}${resolved.filePath ? ` (${resolved.filePath})` : ''}`;
+  const what = `${resolved.name ?? resolved.id}${resolved.filePath ? ` (${resolved.filePath})` : ''}` +
+    (resolved.name && resolved.id ? `, id ${resolved.id}` : '');
   const warning = `[code-intelligence] RESOLUTION MISMATCH: '${requested}' resolved to a different symbol, ${what}. ` +
     'This answer is about that symbol, not the one requested; confidence is LOW. ' +
     'Check the name (or pass file_path), and run code_status -- an index rebuilt or left inconsistent can map a name to an unrelated symbol.';

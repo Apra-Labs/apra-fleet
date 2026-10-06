@@ -261,6 +261,39 @@ describe('a lookup that resolves to a different symbol is flagged, never HIGH', 
     expect(texts).toContain('**Next:**');
   });
 
+  it('incident shape: name equals the request but the id names another symbol -> flagged, risk UNKNOWN', async () => {
+    const repo = newRepo(READY);
+    mockCallTool.mockResolvedValue(impactResult({ name: 'runUninstall', id: 'beads-children.mjs:claimBeadsBatched', filePath: 'src/cli/uninstall.ts' }));
+    const out = await handleCodeImpact({ target: 'runUninstall', direction: 'upstream' }, { repo, memberId: 'm' }) as Record<string, unknown>;
+    expect(out.resolution_mismatch).toEqual({
+      requested: 'runUninstall',
+      resolved: { name: 'runUninstall', id: 'beads-children.mjs:claimBeadsBatched', filePath: 'src/cli/uninstall.ts' },
+    });
+    expect(out.confidence).toBe('LOW');
+    const payload = payloadOf(out);
+    expect(payload.risk).toBe('UNKNOWN');
+    expect(payload.unverified_risk).toBe('HIGH');
+    const texts = (out.content as Array<{ text: string }>).map((c) => c.text).join('\n');
+    expect(texts).toContain('id beads-children.mjs:claimBeadsBatched');
+  });
+
+  it('a uid whose symbol matches but whose file disagrees with filePath is flagged', () => {
+    expect(resolvesToRequested('runUninstall', {
+      name: 'runUninstall', id: 'Function:scripts/beads-children.mjs:claimBeadsBatched', filePath: 'scripts/beads-children.mjs',
+    })).toBe(false);
+    expect(resolvesToRequested('runUninstall', {
+      name: 'runUninstall', id: 'Function:scripts/beads-children.mjs:runUninstall', filePath: 'src/cli/uninstall.ts',
+    })).toBe(false);
+    expect(resolvesToRequested('runUninstall', { id: 'beads-children.mjs:claimBeadsBatched' })).toBe(false);
+    // Consistent forms still pass: matching uid, '::' symbols, file nodes, id-only.
+    expect(resolvesToRequested('runUninstall', {
+      name: 'runUninstall', id: 'Function:src/cli/uninstall.ts:runUninstall', filePath: 'src/cli/uninstall.ts',
+    })).toBe(true);
+    expect(resolvesToRequested('fn', { name: 'fn', id: 'Function:src/a.rs:ns::fn', filePath: 'src/a.rs' })).toBe(true);
+    expect(resolvesToRequested('a.ts', { name: 'a.ts', id: 'File:src/a.ts', filePath: 'src/a.ts' })).toBe(true);
+    expect(resolvesToRequested('runUninstall', { id: 'uninstall.ts:runUninstall' })).toBe(true);
+  });
+
   it('code_context: a different resolved symbol is flagged', async () => {
     const repo = newRepo(READY);
     mockCallTool.mockResolvedValue(contextResult('claimBeadsBatched'));
