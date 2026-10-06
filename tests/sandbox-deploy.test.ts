@@ -682,6 +682,58 @@ describe('apra-fleet-ky2l.13/16: production token probes are read-only (never mi
 
     expect(fs.existsSync(path.join(prodSeDataDir(home), 'private'))).toBe(false);
   });
+
+  // The production-untouched guarantee must not pass vacuously: a supervisor
+  // that ANSWERS 401 is present-but-unreadable, never "no production supervisor".
+  async function withStubHealth(status: number, body: unknown, fn: (port: number) => Promise<void>) {
+    const srv = http.createServer((_req, res) => {
+      res.writeHead(status, { 'content-type': 'application/json' });
+      res.end(JSON.stringify(body));
+    });
+    await new Promise<void>((r) => srv.listen(0, '127.0.0.1', r));
+    try {
+      await fn((srv.address() as net.AddressInfo).port);
+    } finally {
+      await new Promise<void>((r) => srv.close(() => r()));
+    }
+  }
+
+  it('snapshotProduction throws loudly when the production supervisor answers 401', async () => {
+    const home = mkHome(); homes.push(home);
+    await withStubHealth(401, { error: 'unauthorized' }, async (port) => {
+      await expect(withRealFleetKeyForcedAbsent(() => snapshotProduction(home, { supervisorPort: port })))
+        .rejects.toThrow(/HTTP 401/);
+    });
+  });
+
+  it('snapshotProduction with no listener yields no PROD_SUPERVISOR_* keys and no error', async () => {
+    const home = mkHome(); homes.push(home);
+    const probe = net.createServer();
+    await new Promise<void>((r) => probe.listen(0, '127.0.0.1', r));
+    const port = (probe.address() as net.AddressInfo).port;
+    await new Promise<void>((r) => probe.close(() => r()));
+    const snap = await withRealFleetKeyForcedAbsent(() => snapshotProduction(home, { supervisorPort: port }));
+    expect(snap.PROD_SUPERVISOR_PID).toBeUndefined();
+    expect(snap.PROD_SUPERVISOR_UPTIME).toBeUndefined();
+  });
+
+  it('snapshotProduction records pid/uptime from a 200 health answer', async () => {
+    const home = mkHome(); homes.push(home);
+    await withStubHealth(200, { pid: 4242, uptimeSeconds: 17 }, async (port) => {
+      const snap = await withRealFleetKeyForcedAbsent(() => snapshotProduction(home, { supervisorPort: port }));
+      expect(snap.PROD_SUPERVISOR_PID).toBe('4242');
+      expect(snap.PROD_SUPERVISOR_UPTIME).toBe('17');
+    });
+  });
+
+  it('checkProductionUnchanged reports a problem naming HTTP 401 when the recorded supervisor now answers 401', async () => {
+    const home = mkHome(); homes.push(home);
+    await withStubHealth(401, { error: 'unauthorized' }, async (port) => {
+      const problems = await withRealFleetKeyForcedAbsent(() =>
+        checkProductionUnchanged({ PROD_SUPERVISOR_PID: '4242', PROD_SUPERVISOR_UPTIME: '17' }, home, { supervisorPort: port }));
+      expect(problems.join('\n')).toMatch(/HTTP 401/);
+    });
+  });
 });
 
 // verify() must name an HTTP status the sandbox supervisor ANSWERED with (401
