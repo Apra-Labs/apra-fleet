@@ -118,6 +118,7 @@ export function vetKbWork(role, result) {
     const captures = [];
     const promotions = [];
     const refused = [];
+    const demotions = [];
 
     const rawCaptures = (result && Array.isArray(result.kb_captures)) ? result.kb_captures : [];
     for (const c of rawCaptures) {
@@ -188,22 +189,64 @@ export function vetKbWork(role, result) {
         }
     }
 
-    // One output may not both CONFIRM and DISCARD the same entry: the two
-    // judgements contradict each other, so neither is executed and both sides
-    // are logged.
+    // kb_demotions: the reviewer's DEMOTE judgement -- a CONFIRMED entry whose
+    // basis is unchanged but a re-check shows the claim no longer holds, sent
+    // back to INFERRED for a fresh look. Same role gate and evidence bar as
+    // kb_promotions and kb_discards.
+    const rawDemotions = (result && Array.isArray(result.kb_demotions)) ? result.kb_demotions : [];
+    if (rawDemotions.length > 0 && !KB_PROMOTER_ROLES.has(role)) {
+        refused.push(`${role}: kb_demotions refused -- demotion is reviewer-only`);
+    } else {
+        for (const d of rawDemotions) {
+            if (!d || typeof d.id !== 'string' || d.id.length === 0) {
+                refused.push(`${role}: demotion missing id`);
+                continue;
+            }
+            if (typeof d.reason !== 'string' || d.reason.trim().length < KB_MIN_PROMOTE_REASON) {
+                refused.push(`${role}: demotion ${d.id} has no recorded evidence`);
+                continue;
+            }
+            const entry = { id: d.id, reason: d.reason.trim() };
+            if (Array.isArray(d.evidence_files)) entry.evidence_files = d.evidence_files;
+            demotions.push(entry);
+        }
+    }
+
+    // One output may not judge the same entry more than one way: an id in
+    // more than one of kb_promotions, kb_discards and kb_demotions is refused
+    // in EVERY list it appears in, with a refusal logged per side naming the
+    // other judgements. The pre-existing two-way promote/discard behaviour is
+    // preserved exactly for the cases it already covered.
+    const promotionIds = new Set(promotions.map((p) => p.id));
     const discardIds = new Set(discards.map((d) => d.id));
-    const conflicted = new Set(promotions.filter((p) => discardIds.has(p.id)).map((p) => p.id));
+    const demotionIds = new Set(demotions.map((d) => d.id));
+    const conflicted = new Set();
+    for (const id of promotionIds) if (discardIds.has(id) || demotionIds.has(id)) conflicted.add(id);
+    for (const id of discardIds) if (promotionIds.has(id) || demotionIds.has(id)) conflicted.add(id);
+    for (const id of demotionIds) if (promotionIds.has(id) || discardIds.has(id)) conflicted.add(id);
+
+    const otherSidesFor = (id, excludeKind) => {
+        const sides = [];
+        if (excludeKind !== 'promotion' && promotionIds.has(id)) sides.push('promotes');
+        if (excludeKind !== 'discard' && discardIds.has(id)) sides.push('discards');
+        if (excludeKind !== 'demotion' && demotionIds.has(id)) sides.push('demotes');
+        return sides;
+    };
     for (const p of promotions) {
-        if (conflicted.has(p.id)) refused.push(`${role}: promotion ${p.id} refused -- the same output also discards it (promote reason: ${p.reason})`);
+        if (conflicted.has(p.id)) refused.push(`${role}: promotion ${p.id} refused -- the same output also ${otherSidesFor(p.id, 'promotion').join(' and ')} it (promote reason: ${p.reason})`);
     }
     for (const d of discards) {
-        if (conflicted.has(d.id)) refused.push(`${role}: discard ${d.id} refused -- the same output also promotes it (discard reason: ${d.reason})`);
+        if (conflicted.has(d.id)) refused.push(`${role}: discard ${d.id} refused -- the same output also ${otherSidesFor(d.id, 'discard').join(' and ')} it (discard reason: ${d.reason})`);
+    }
+    for (const d of demotions) {
+        if (conflicted.has(d.id)) refused.push(`${role}: demotion ${d.id} refused -- the same output also ${otherSidesFor(d.id, 'demotion').join(' and ')} it (demote reason: ${d.reason})`);
     }
 
     return {
         captures,
         promotions: promotions.filter((p) => !conflicted.has(p.id)),
         discards: discards.filter((d) => !conflicted.has(d.id)),
+        demotions: demotions.filter((d) => !conflicted.has(d.id)),
         refused,
     };
 }
