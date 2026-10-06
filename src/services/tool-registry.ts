@@ -310,7 +310,7 @@ export async function registerAllTools(baseServer: McpServer, scope: ToolScope =
     recordUsage('code_reindex', '', self.repo);
     return JSON.stringify(await handleCodeReindex(input, self));
   }));
-  server.tool('code_status', 'Report the code index state of the calling session\'s own repo: the last analyze run (phase, result indexed|up-to-date|incomplete|failed, last log line, log path), live readiness (ready|building|missing) and the indexed commit. Only the gitnexus provider is supported: provider none fails with E-CODE-INTEL-DISABLED, any other provider gets {outcome: "not-started", reason: "provider-not-supported", provider, indexedCommit: null} instead of gitnexus readiness.' + CODE_SELF_NOTE, codeStatusSchema.shape, wrapTool('code_status', async (input) => {
+  server.tool('code_status', 'Report the code index state of the calling session\'s own repo: the last analyze run (phase, result indexed|up-to-date|incomplete|failed, last log line, log path), live readiness (ready|building|interrupted|missing; interrupted = marked incomplete with no analyze running), the indexed commit, and autoReindexPaused (a failed automatic run that paused automatic rebuilds until code_reindex). Only the gitnexus provider is supported: provider none fails with E-CODE-INTEL-DISABLED, any other provider gets {outcome: "not-started", reason: "provider-not-supported", provider, indexedCommit: null} instead of gitnexus readiness.' + CODE_SELF_NOTE, codeStatusSchema.shape, wrapTool('code_status', async (input) => {
     const self = resolveCodeSelf();
     recordUsage('code_status', '', self.repo);
     return JSON.stringify(await handleCodeStatus(input, self));

@@ -209,6 +209,8 @@ describe('maybeScheduleReindex()', () => {
     expect(mockLogWarn).toHaveBeenCalledTimes(1);
     const [, msg] = mockLogWarn.mock.calls[0] as [string, string];
     expect(msg).toContain('exit 1');
+    // An automatic run that failed pauses automatic rebuilds; the one warning says so.
+    expect(msg).toContain('automatic rebuilds paused until code_reindex or a server restart');
     const { readFileSync: realRead } = await vi.importActual<typeof import('fs')>('fs');
     const status = JSON.parse(realRead(`${sandbox.dir}/code-index/slug/status.json`, 'utf8'));
     expect(status).toMatchObject({ phase: 'done', result: 'failed', exitCode: 1 });

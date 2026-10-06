@@ -58,6 +58,14 @@ describe('member_detail fleetMcp fix line', () => {
     expect(json.fleetMcpFix).toBeNull();
   });
 
+  it('the fleetMcp version line has exactly one v, whether or not the recorded version carries one', async () => {
+    for (const version of ['v0.4.4_abc123', '0.4.4_abc123']) {
+      const text = await detail({ state: 'available', version, checkedAt: 'x' }, 'compact');
+      expect(text).toContain('fleetMcp=available | v0.4.4_abc123');
+      expect(text).not.toContain('vv0.4.4');
+    }
+  });
+
   it('every fix is a single ASCII line and an unknown reason still gets a generic fix', () => {
     for (const [reason, fix] of Object.entries(FLEET_MCP_FIX)) {
       expect(fix, reason).toMatch(/^[\x20-\x7e]+$/);
