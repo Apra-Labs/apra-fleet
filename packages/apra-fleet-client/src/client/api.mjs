@@ -575,6 +575,19 @@
  */
 
 /**
+ * @typedef {Object} KbDemoteOptions
+ * @property {string} id - ID of the KB entry to demote.
+ * @property {string} reason - Why trust is being withdrawn -- at least 20 characters
+ *   after newlines are collapsed to spaces and the result trimmed. Appended to the
+ *   entry content as the audit trail; a reason made only of whitespace or newlines
+ *   is refused.
+ * @property {string[]} [evidence_files] - Optional repo-relative files backing the
+ *   demotion. Each must resolve to a real file inside the calling session's repo; a
+ *   path that does not resolve, names a directory, is ABSOLUTE, or contains a ".."
+ *   segment is refused with E-DEMOTE-EVIDENCE-UNRESOLVED and nothing is written.
+ */
+
+/**
  * @typedef {Object} SetupSshKeyOptions
  * @property {string} [member_id] - UUID of the member
  * @property {string} [member_name] - Friendly name of the member
@@ -1007,6 +1020,22 @@ export class ApraFleet {
     async kbBibleCommit(options) {
         assertNoRemovedKbScopeKeys('kb_bible_commit', options);
         return this.mcpClient.callTool('kb_bible_commit', options);
+    }
+
+    /**
+     * Withdraw trust from a CONFIRMED entry, lowering it to INFERRED (the
+     * inverse of kb_promote). Not a ladder: an INFERRED/UNVERIFIED target is
+     * REFUSED with E-DEMOTE-NOT-CONFIRMED rather than returned as a no-op.
+     * Appends the reason (and any evidence files) as an audit note; promoted_at
+     * and source are left untouched. Result JSON:
+     * {id, previous_confidence, new_confidence}; extract with parseToolJson().
+     * The removed scope keys (repo_path, repo, repo_remote_url) are refused
+     * with E-SCOPE-KEY-REMOVED before anything is sent.
+     * @param {KbDemoteOptions} options
+     */
+    async kbDemote(options) {
+        assertNoRemovedKbScopeKeys('kb_demote', options);
+        return this.mcpClient.callTool('kb_demote', options);
     }
 
     /**

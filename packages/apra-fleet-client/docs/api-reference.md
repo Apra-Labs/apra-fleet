@@ -522,7 +522,7 @@ Every `kb_*` call acts on the calling session's own KB (a member session's
 registered work folder; a FULL session's fleet server working folder). The
 pre-redesign scope keys `repo_path`, `repo` and `repo_remote_url` are removed:
 the server refuses a call carrying any of them with `E-SCOPE-KEY-REMOVED`,
-and `kbExport` / `kbBibleCommit` refuse them client-side with the same code
+and `kbExport` / `kbBibleCommit` / `kbDemote` refuse them client-side with the same code
 before sending (`assertNoRemovedKbScopeKeys`, `KB_REMOVED_SCOPE_KEYS` are
 exported). For direct `callTool` users: `kb_list` accepts `confidence` as a
 list or as one tier string, and `kb_context` defaults to
@@ -563,6 +563,22 @@ re-committing a tombstoned id through `ids` (a re-promotion) restores its entry
 and clears its tombstone. `provenance.entry_count` counts entries only.
 
 Result JSON: `{path, merged, demoted, skipped, entry_count, committed}`.
+
+#### `kbDemote(options: KbDemoteOptions)`
+
+Calls `kb_demote` -- withdraws trust from a CONFIRMED entry, lowering it to
+INFERRED (the inverse of `kbPromote`). Options: `id` (required), `reason`
+(required; at least 20 characters once newlines are collapsed to spaces and
+the result trimmed; appended to the entry content as the audit trail),
+`evidence_files?` (repo-relative files backing the demotion; each must resolve
+to a real file inside the calling session's repo). Not a ladder: calling it on
+an entry that is not CONFIRMED is REFUSED with `E-DEMOTE-NOT-CONFIRMED` rather
+than returned as an unchanged no-op. `promoted_at` and `source` are left
+untouched. Like `kbExport` / `kbBibleCommit`, the removed scope keys
+(`repo_path`, `repo`, `repo_remote_url`) are refused client-side with
+`E-SCOPE-KEY-REMOVED` before anything is sent.
+
+Result JSON: `{id, previous_confidence, new_confidence}`.
 
 #### `composePermissions(options: ComposePermissionsOptions)`
 
