@@ -64,6 +64,10 @@ export function buildPlist(
       : []),
     '        <key>PATH</key>',
     `        <string>${xmlEscape(servicePath)}</string>`,
+    ...Object.entries(options.env ?? {}).flatMap(([k, v]) => [
+      `        <key>${xmlEscape(k)}</key>`,
+      `        <string>${xmlEscape(v)}</string>`,
+    ]),
     '    </dict>',
   ];
   return [
