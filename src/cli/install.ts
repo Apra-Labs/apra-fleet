@@ -1159,6 +1159,12 @@ function copyGlobalBible(repoCwd: string): void {
   }
 }
 
+/** The one next step a member install prints: the orchestrator registers the
+ *  member, which also writes its per-folder apra-fleet MCP entry. */
+export const MEMBER_INSTALL_NEXT_STEP =
+  'Next step (on the orchestrator): run update_member {member_id, fleet_install: "auto"} (or register_member) for this member; ' +
+  'it registers the member on this install and writes its per-folder apra-fleet MCP entry.';
+
 export async function runInstall(args: string[]): Promise<void> {
   // --help / -h guard - must come first, before any side effects (#142)
   if (args.includes('--help') || args.includes('-h')) {
@@ -2342,12 +2348,20 @@ ${restartHint}
   }
 
   const clientName = llm === 'claude' ? 'Claude Code' : paths.name;
-  const instructions = llm === 'claude' ? 'Run /mcp in Claude Code to load the server.' : `Restart ${paths.name} to load the server.`;
-  const forceNote = force ? `\nRestart ${clientName} to reload the MCP server.` : '';
+  // A member install touched no user-scope settings or MCP registration, so it
+  // names only what it did and the member's one next step (on the orchestrator).
+  const instructions = memberMode
+    ? MEMBER_INSTALL_NEXT_STEP
+    : llm === 'claude' ? 'Run /mcp in Claude Code to load the server.' : `Restart ${paths.name} to load the server.`;
+  const forceNote = force && !memberMode ? `
+Restart ${clientName} to reload the MCP server.` : '';
+  const settingsLine = memberMode ? '' : `
+  Settings:    ${paths.settingsFile}`;
   const supervisorLine = supervisorServiceAttempted
     // "started", never "running": like the server line (main #629), "running"
     // is reserved for a state this install actually verified.
-    ? `\n  Supervisor:  ${supervisorServiceRegistered ? 'registered and started' : 'registration skipped'}`
+    ? `
+  Supervisor:  ${supervisorServiceRegistered ? 'registered and started' : 'registration skipped'}`
     : '';
   // fleet-se summary line (apra-fleet-i9ag.13.7.2): "ready" with the detected
   // node/npm/bd versions when --workflows all, else NOT INSTALLED with the
@@ -2356,16 +2370,20 @@ ${restartHint}
   // without the opt-in env var), fleetSePrereqs is null and node/npm versions
   // are reported as 'n/a' rather than fabricated.
   const fleetSeLine = installWorkflows
-    ? `\n  fleet-se:    ready (node ${fleetSePrereqs?.node.version ?? 'n/a'}, npm ${fleetSePrereqs?.npm.version ?? 'n/a'}, bd ${formatFleetSeBdPart(beadsSummary)})`
-    : `\n  fleet-se:    NOT INSTALLED -- ${FLEET_SE_PREREQ_FIX_LINE}`;
+    ? `
+  fleet-se:    ready (node ${fleetSePrereqs?.node.version ?? 'n/a'}, npm ${fleetSePrereqs?.npm.version ?? 'n/a'}, bd ${formatFleetSeBdPart(beadsSummary)})`
+    : `
+  fleet-se:    NOT INSTALLED -- ${FLEET_SE_PREREQ_FIX_LINE}`;
   const serviceState = serviceHealthy === true ? 'registered and running' : serviceHealthy === false ? 'registered, but NOT answering /health (see the warning above)' : 'registered (health not checked)';
   const serviceLine = serviceStep ? `\n  Service:     ${serviceRegistered ? `${serviceState}${serviceReused ? ' (existing task reused)' : ''}${serviceRunKey ? ' (logon autostart via HKCU Run, no automatic restart)' : ''}` : 'registration skipped'}` : '';
   console.log(`
 Apra Fleet ${serverVersion} installed successfully for ${paths.name}.
   Binary:      ${BIN_DIR}
   Hooks:       ${HOOKS_DIR}
-  Scripts:     ${SCRIPTS_DIR}
-  Settings:    ${paths.settingsFile}${installFleet ? `\n  Fleet Skill: ${paths.fleetSkillsDir}` : ''}${installPm ? `\n  PM Skill:    ${paths.skillsDir}` : ''}${installAgents ? `\n  Agents:      ${paths.agentsDir}` : ''}
+  Scripts:     ${SCRIPTS_DIR}${settingsLine}${installFleet ? `
+  Fleet Skill: ${paths.fleetSkillsDir}` : ''}${installPm ? `
+  PM Skill:    ${paths.skillsDir}` : ''}${installAgents ? `
+  Agents:      ${paths.agentsDir}` : ''}
   Beads:       ${beadsSummary}
   Dolt:        ${doltVersion}${serviceLine}${supervisorLine}${fleetSeLine}
 

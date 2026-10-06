@@ -6,6 +6,7 @@ import type { RegisterOptions, ServiceDescriptor, ServiceId, ServiceManager, Ser
 import { DEFAULT_SERVICE_ID, SERVICE_ENV_MARKER, getServiceDescriptor } from './types.js';
 import { gracefulStopByServerJson } from './index.js';
 import { clearServiceStartFailures } from '../service-start-guard.js';
+import { computeServicePath, systemdEnvironmentLine } from './service-path.js';
 
 const UNIT_DIR = path.join(os.homedir(), '.config', 'systemd', 'user');
 
@@ -55,6 +56,10 @@ export class LinuxServiceManager implements ServiceManager {
       // (GitHub #584). Only the server reads it; the supervisor is Restart=no
       // and must not leak the marker into the processes it spawns.
       ...(this.descriptor.gracefulStopViaServerJson ? [`Environment=${SERVICE_ENV_MARKER}=1`] : []),
+      // systemd --user's default PATH lacks nvm/custom node dirs; npx needs both
+      // npx and node (#651). Written for BOTH services: the supervisor also spawns
+      // node-based tooling (fleet-sprint, bd npm shim).
+      systemdEnvironmentLine('PATH', computeServicePath({ platform: 'linux' })),
       `StandardOutput=append:${logPath}`,
       `StandardError=append:${logPath}`,
       '',

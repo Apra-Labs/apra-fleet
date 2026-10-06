@@ -6,6 +6,7 @@ import type { RegisterOptions, ServiceDescriptor, ServiceId, ServiceManager, Ser
 import { DEFAULT_SERVICE_ID, SERVICE_ENV_MARKER, getServiceDescriptor } from './types.js';
 import { gracefulStopByServerJson } from './index.js';
 import { clearServiceStartFailures } from '../service-start-guard.js';
+import { computeServicePath } from './service-path.js';
 
 const PLIST_DIR = path.join(os.homedir(), 'Library', 'LaunchAgents');
 
@@ -21,12 +22,14 @@ function xmlEscape(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-function buildPlist(
+/** servicePath: PATH for the service (launchd's default lacks Homebrew/nvm node and npx; #651). */
+export function buildPlist(
   descriptor: ServiceDescriptor,
   binaryPath: string,
   args: string[],
   logPath: string,
   options: RegisterOptions,
+  servicePath: string,
 ): string {
   const argElements = [binaryPath, ...args]
     .map(a => `        <string>${xmlEscape(a)}</string>`)
@@ -51,16 +54,18 @@ function buildPlist(
     : [];
   // Lets the MCP server tell it runs under a restarting service manager
   // (GitHub #584). Only the server reads it; the supervisor (no KeepAlive) must
-  // not leak the marker into the processes it spawns.
-  const serviceEnv = descriptor.gracefulStopViaServerJson
-    ? [
-        '    <key>EnvironmentVariables</key>',
-        '    <dict>',
-        `        <key>${SERVICE_ENV_MARKER}</key>`,
-        '        <string>1</string>',
-        '    </dict>',
-      ]
-    : [];
+  // not leak the marker into the processes it spawns. PATH (#651) is written for
+  // BOTH services: the supervisor also spawns node-based tooling.
+  const serviceEnv = [
+    '    <key>EnvironmentVariables</key>',
+    '    <dict>',
+    ...(descriptor.gracefulStopViaServerJson
+      ? [`        <key>${SERVICE_ENV_MARKER}</key>`, '        <string>1</string>']
+      : []),
+    '        <key>PATH</key>',
+    `        <string>${xmlEscape(servicePath)}</string>`,
+    '    </dict>',
+  ];
   return [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
@@ -126,7 +131,11 @@ export class MacOSServiceManager implements ServiceManager {
     binaryPath: string, args: string[], logPath: string, options: RegisterOptions = {},
   ): Promise<void> {
     fs.mkdirSync(PLIST_DIR, { recursive: true });
-    fs.writeFileSync(this.plistPath, buildPlist(this.descriptor, binaryPath, args, logPath, options), 'utf8');
+    fs.writeFileSync(
+      this.plistPath,
+      buildPlist(this.descriptor, binaryPath, args, logPath, options, computeServicePath({ platform: 'darwin' })),
+      'utf8',
+    );
     // Bootout first to make register idempotent
     try { execFileSync('launchctl', ['bootout', this.target()]); } catch {}
     execFileSync('launchctl', ['bootstrap', domain(), this.plistPath]);

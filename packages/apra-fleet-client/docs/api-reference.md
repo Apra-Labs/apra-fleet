@@ -452,7 +452,7 @@ Calls `register_member` -- adds a machine to the fleet.
 | `tags` | `string[]?` | Optional list of free-form labels (max 10 tags, each max 64 chars). Used for filtering and grouping. |
 | `code_intel_provider` | `"codebase-memory" \| "gitnexus" \| "none"?` | Code-intelligence provider for this member. Omit for fleet-wide default. |
 | `unreservable` | `boolean?` | Mark this member as never exclusively reservable, so it can be shared by more than one sprint (e.g. fleet-sprint's shared "backlog" role). Default: `false`. |
-| `fleet_install` | `"auto" \| "skip"?` | Install/update apra-fleet on the member and verify its own MCP (default `"auto"`); `"skip"` only reports the probe result. Registration succeeds either way; the result reports `fleetMcp`. |
+| `fleet_install` | `"auto" \| "skip"?` | Install/update apra-fleet on the member, write its per-folder apra-fleet MCP entry and verify its own MCP (default `"auto"`); `"skip"` only reports the probe result. Registration succeeds either way; the result reports `fleetMcp`. |
 | `shell` | `"gitbash" \| "pwsh7" \| "powershell5"?` | Override the probed Windows shell for this member. Windows members only -- ignored for non-Windows members. |
 | `owner` | `{package: string, ref: string}?` | Which package/consumer owns this member for its own bookkeeping (e.g. a fleet-sprint project binding it to a checkout). Not a project/repo/group field. |
 | `env` | `Record<string, string>?` | Free-form name -> value map for this member. Names must match the portable env-name pattern (letters, digits, underscore; cannot start with a digit); total size across all names+values is capped at 4096 characters. Exported into the processes execute_command and execute_prompt run on the member, including long_running tasks. Stored auth credentials win a name collision, so an entry here cannot shadow one. |
@@ -470,7 +470,7 @@ error naming the key (the member is not updated) -- they are no longer silently 
 |---|---|---|
 | `member_id` | `string?` | UUID of the member. |
 | `member_name` | `string?` | Friendly name of the member. |
-| `fleet_install` | `"auto" \| "skip"?` | `"auto"`: for a remote member, probe it and install/upgrade its own apra-fleet when missing or older than the orchestrator (build-aware: same-core different builds upgrade, newer cores never downgrade), self-register and verify, even when nothing else changed; the result includes the `fleetMcp` line (then `member_detail` with `refresh: true`). `"skip"`: no install. Omitted: install only on a provider change. |
+| `fleet_install` | `"auto" \| "skip"?` | `"auto"`: for a remote member, probe it and install/upgrade its own apra-fleet when missing or older than the orchestrator (build-aware: same-core different builds upgrade, newer cores never downgrade), self-register, write its per-folder apra-fleet MCP entry and verify, even when nothing else changed; the result includes the `fleetMcp` line (then `member_detail` with `refresh: true`). `"skip"`: no install. Omitted: install only on a provider change. |
 | `friendly_name` | `string?` | New friendly name. |
 | `work_folder` | `string?` | New working directory. For non-local (remote/relay) members, must be a fully-qualified/absolute path (e.g. `/home/bella/repo` or `C:\Users\bella\repo`) -- tilde and relative paths are rejected. A folder may hold at most one LLM member and one LLM-less (llm_provider none) member. A real change removes what `compose_permissions` wrote in the OLD folder (per-folder `apra-fleet` MCP entry, permission keys, `.git/info/exclude` lines) and re-runs `compose_permissions`, so the new folder gets its `?member=<uuid>` entry at once. |
 | `host` | `string?` | New host (remote members only). |
@@ -817,8 +817,16 @@ gated on the member's code-intel provider: `none` fails with
 tools instead of gitnexus readiness. `codeStatus()` returns the
 last run (`analyze.phase`, `analyze.result` = `indexed` | `up-to-date` |
 `incomplete` | `failed`, `analyze.lastLine`), live `readiness`
-(`ready` | `building` | `missing`) and `indexedCommit`. Extract both with
-`parseToolJson()`.
+(`ready` | `building` | `interrupted` | `missing`; `interrupted` = the index
+is marked incomplete and no analyze is running), `indexedCommit`, `logPath`
+(the last run's `analyze.log`, or `null` when no analyze has written one yet)
+and `autoReindexPaused` (`null`, or `{ result, lastLine, logPath, finished }`
+of the automatic run that failed: automatic rebuilds of that folder stay
+paused until `codeReindex()` or a server restart). A code_* call on a local
+folder whose index is `missing` or `interrupted` requests a background build
+automatically (unless `autoReindex.enabled` is false in the code-intelligence
+config.json) and fails with `E-CODE-INDEX-NOT-READY` saying so. Extract both
+with `parseToolJson()`.
 
 #### `sessionStats(options?: SessionStatsOptions)`
 

@@ -28,12 +28,15 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { handleCodeReindex, handleCodeStatus } from '../src/tools/code-intelligence.js';
-import { codeStatus } from '../src/tools/code-intelligence-reindex.js';
-import { codeIndexReadiness } from '../src/tools/code-intelligence-readiness.js';
+import { autoReindexPause, codeStatus, DEFAULT_COOLDOWN_MS } from '../src/tools/code-intelligence-reindex.js';
+import { codeIndexReadiness, ensureGitNexusIndexReady } from '../src/tools/code-intelligence-readiness.js';
 // The REAL data dir code_reindex writes under. tests/setup.ts pins FLEET_DIR to
 // the per-run isolated dir before this file loads, so sandbox.data is not it.
 import { FLEET_DIR } from '../src/paths.js';
 import { resolveProjectSlug } from '../src/services/knowledge/project-slug.js';
+
+// Exercise the real self-heal scheduler here (tests/setup.ts fakes it globally).
+vi.unmock('../src/tools/code-index-heal.js');
 
 const isWin = process.platform === 'win32';
 const realPath = process.env.PATH ?? '';
@@ -163,7 +166,7 @@ describe.skipIf(isWin)('code_reindex / code_status with a fake gitnexus', () => 
     expect(codeIndexReadiness('gitnexus', repo).ready).toBe(false);
 
     const done = await waitFor(() => {
-      const s = codeStatus(repo);
+      const s = codeStatus(repo, codeIndexReadiness('gitnexus', repo));
       return s.analyze?.phase === 'done' ? s : undefined;
     });
     const viaTool = await handleCodeStatus({}, { repo, memberId: 'm' });
@@ -176,7 +179,7 @@ describe.skipIf(isWin)('code_reindex / code_status with a fake gitnexus', () => 
   it('analyze.log holds the analyze output', async () => {
     process.env.FAKE_MODE = 'index';
     await handleCodeReindex({}, { repo, memberId: 'm' });
-    await waitFor(() => (codeStatus(repo).analyze?.phase === 'done' ? true : undefined));
+    await waitFor(() => (codeStatus(repo, codeIndexReadiness('gitnexus', repo)).analyze?.phase === 'done' ? true : undefined));
     const log = logOf(repo);
     expect(log).toContain('Analyzing repository');
     expect(log).toContain('Indexed ok');
@@ -186,7 +189,7 @@ describe.skipIf(isWin)('code_reindex / code_status with a fake gitnexus', () => 
     process.env.FAKE_MODE = 'uptodate';
     const r = await handleCodeReindex({}, { repo, memberId: 'm' });
     expect(r.outcome).toBe('up-to-date');
-    const s = await waitFor(() => (codeStatus(repo).analyze?.phase === 'done' ? codeStatus(repo) : undefined));
+    const s = await waitFor(() => (codeStatus(repo, codeIndexReadiness('gitnexus', repo)).analyze?.phase === 'done' ? codeStatus(repo, codeIndexReadiness('gitnexus', repo)) : undefined));
     expect(s.analyze?.result).toBe('up-to-date');
   });
 
@@ -211,7 +214,7 @@ describe.skipIf(isWin)('code_reindex / code_status with a fake gitnexus', () => 
     if (first.outcome === 'started' && first.pid) pids.add(first.pid);
     const second = await handleCodeReindex({}, { repo, memberId: 'm' });
     expect(second.outcome).toBe('already-running');
-    await waitFor(() => (codeStatus(repo).analyze?.phase === 'done' ? true : undefined));
+    await waitFor(() => (codeStatus(repo, codeIndexReadiness('gitnexus', repo)).analyze?.phase === 'done' ? true : undefined));
   });
 
   it('a code index build leaves the target work tree unchanged (index-only, .gitnexus/ excluded)', async () => {
@@ -221,7 +224,7 @@ describe.skipIf(isWin)('code_reindex / code_status with a fake gitnexus', () => 
     process.env.FAKE_MODE = 'index';
     const r = await handleCodeReindex({}, { repo, memberId: 'm' });
     if (r.outcome === 'started' && r.pid) pids.add(r.pid);
-    const done = await waitFor(() => (codeStatus(repo).analyze?.phase === 'done' ? codeStatus(repo) : undefined));
+    const done = await waitFor(() => (codeStatus(repo, codeIndexReadiness('gitnexus', repo)).analyze?.phase === 'done' ? codeStatus(repo, codeIndexReadiness('gitnexus', repo)) : undefined));
     expect(done.analyze?.result).toBe('indexed');
     expect(fs.existsSync(path.join(repo, '.gitnexus', 'meta.json'))).toBe(true);
     expect(porcelain(repo)).toBe(before);
@@ -256,6 +259,86 @@ describe.skipIf(isWin)('code_reindex / code_status with a fake gitnexus', () => 
   it('a remote member folder is a typed not-started', async () => {
     const r = await handleCodeReindex({}, { repo: '/elsewhere', memberId: 'm', remote: true });
     expect(r).toMatchObject({ outcome: 'not-started', reason: 'remote-member' });
+  });
+});
+
+// The code_* pre-flight self-heal with the REAL scheduler (the global fake in
+// tests/setup.ts is unmocked for this file) against the fake npx.
+describe.skipIf(isWin)('pre-flight self-heal of an interrupted index (fake gitnexus)', () => {
+  function interrupt(dir: string): void {
+    fs.mkdirSync(path.join(dir, '.gitnexus'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.gitnexus', 'meta.json'), JSON.stringify({ lastCommit: 'old', incrementalInProgress: { startedAt: 1 } }));
+  }
+
+  it('starts one rebuild; code_status shows it building, then the index is ready', async () => {
+    process.env.FAKE_MODE = 'index';
+    interrupt(repo);
+    expect(codeIndexReadiness('gitnexus', repo)).toEqual({ ready: false, state: 'interrupted' });
+    expect(() => ensureGitNexusIndexReady(repo)).toThrow(/An index build was requested automatically\./);
+    const running = await handleCodeStatus({}, { repo, memberId: 'm' }) as { readiness: string; analyze: { pid: number | null; phase: string } | null };
+    if (running.analyze?.pid) pids.add(running.analyze.pid);
+    expect(running.readiness).toBe('building');
+    expect(['starting', 'running']).toContain(running.analyze?.phase);
+    // While it runs, the next call does not start a second analyze.
+    expect(() => ensureGitNexusIndexReady(repo)).toThrow(/still being built\./);
+    await waitFor(() => codeIndexReadiness('gitnexus', repo).ready);
+    expect(() => ensureGitNexusIndexReady(repo)).not.toThrow();
+  });
+
+  async function untilDone(): Promise<ReturnType<typeof codeStatus>> {
+    const done = await waitFor(() => {
+      const s = codeStatus(repo, codeIndexReadiness('gitnexus', repo));
+      return s.analyze?.phase === 'done' ? s : undefined;
+    });
+    if (done.analyze?.pid) pids.add(done.analyze.pid);
+    return done;
+  }
+
+  /** Run `fn` with the clock moved past the auto-reindex cooldown. */
+  function pastCooldown<T>(fn: () => T): T {
+    const later = Date.now() + DEFAULT_COOLDOWN_MS + 60_000;
+    const spy = vi.spyOn(Date, 'now').mockReturnValue(later);
+    try { return fn(); } finally { spy.mockRestore(); }
+  }
+
+  it('a failed automatic rebuild pauses automatic rebuilds: no respawn even past the cooldown', async () => {
+    process.env.FAKE_MODE = 'notfound';
+    interrupt(repo);
+    expect(() => ensureGitNexusIndexReady(repo)).toThrow(/requested automatically/);
+    const done = await untilDone();
+    expect(done.analyze?.result).toBe('failed');
+    expect(done.readiness).toBe('interrupted');
+    expect(done.autoReindexPaused).toMatchObject({ result: 'failed' });
+    for (let i = 0; i < 3; i++) {
+      const err = pastCooldown(() => {
+        try { ensureGitNexusIndexReady(repo); } catch (e) { return e as Error; }
+        return null;
+      });
+      expect(err?.message).toMatch(/Automatic rebuilds for this folder are paused: the last automatic analyze ended 'failed'/);
+      expect(err?.message).toContain('analyze.log');
+      expect(err?.message).toMatch(/call code_reindex/);
+    }
+    const after = codeStatus(repo, codeIndexReadiness('gitnexus', repo));
+    expect(after.analyze?.started).toBe(done.analyze?.started);
+  });
+
+  it('an explicit code_reindex re-arms automatic rebuilds', async () => {
+    process.env.FAKE_MODE = 'notfound';
+    interrupt(repo);
+    expect(() => ensureGitNexusIndexReady(repo)).toThrow(/requested automatically/);
+    await untilDone();
+    expect(autoReindexPause(repo)).not.toBeNull();
+
+    const explicit = await handleCodeReindex({}, { repo, memberId: 'm' });
+    expect(explicit).toMatchObject({ outcome: 'not-started', reason: 'gitnexus-not-found' });
+    const first = await untilDone();
+    expect(autoReindexPause(repo)).toBeNull();
+
+    // Armed again: past the cooldown the pre-flight starts a new automatic run.
+    pastCooldown(() => expect(() => ensureGitNexusIndexReady(repo)).toThrow(/requested automatically/));
+    const second = await untilDone();
+    expect(second.analyze?.started).not.toBe(first.analyze?.started);
+    expect(autoReindexPause(repo)).not.toBeNull();
   });
 });
 

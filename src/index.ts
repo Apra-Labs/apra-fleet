@@ -42,7 +42,7 @@ Usage:
   apra-fleet install --no-skill        Same as --skill none
   apra-fleet register-member --name <name> --path <folder> [options]  Register a fleet member from the shell (see 'register-member --help')
   apra-fleet remove-member --id <uuid> [--force]   Remove a member registration from this install (see 'remove-member --help')
-  apra-fleet call --member <uuid> <tool> --args-file <path>   Call a tool as a member session (see 'call --help')
+  apra-fleet call --member <uuid> <tool> [--args-file <path>] Call a tool as a member session (see 'call --help')
   apra-fleet call --member <uuid> --list-tools                List the member session's tools
   apra-fleet uninstall                 Remove binary, hooks, and MCP registration
   apra-fleet secret --set <name>       Deliver a secret to a waiting request

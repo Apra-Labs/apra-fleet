@@ -82,7 +82,7 @@ export const updateMemberSchema = z.object({
   }).optional().describe('Which package/consumer owns this member for its own bookkeeping. Refused while the member is held (reservedBy set) -- the same refusal member_owner applies, so this cannot be used to bypass it.'),
   env: z.record(z.string(), z.string()).optional().describe('Replace this member\'s env map. Names must match the portable env-name pattern (letters, digits, underscore; cannot start with a digit); total size across all names+values is capped at 4096 characters. Exported into the processes execute_command and execute_prompt run on the member, including long_running tasks. Stored auth credentials win a name collision, so an entry here cannot shadow one. Pass {} to clear.'),
   llm_auth_expires_at: z.string().optional().describe('ISO 8601 expiry of this member\'s LLM auth (OAuth session / API key), when known.'),
-  fleet_install: z.enum(['auto', 'skip']).optional().describe('Upgrade or skip the member\'s own apra-fleet install. "auto": for a remote member, probe it and install/upgrade apra-fleet when it is missing or older than this orchestrator (build-aware), self-register and verify a MEMBER session, even when nothing else changed; local members only get the MEMBER-session probe. "skip": no install (a refresh triggered by another change runs with install off). Omit to keep the default: install only on a provider change. The result reports the recoverable fleetMcp status (re-probe with member_detail refresh:true).'),
+  fleet_install: z.enum(['auto', 'skip']).optional().describe('Upgrade or skip the member\'s own apra-fleet install. "auto": for a remote member, probe it and install/upgrade apra-fleet when it is missing or older than this orchestrator (build-aware), self-register, write its per-folder apra-fleet MCP entry and verify a MEMBER session, even when nothing else changed; local members only get the MEMBER-session probe. "skip": no install (a refresh triggered by another change runs with install off). Omit to keep the default: install only on a provider change. The result reports the recoverable fleetMcp status (re-probe with member_detail refresh:true).'),
 });
 
 export type UpdateMemberInput = z.infer<typeof updateMemberSchema>;
@@ -394,6 +394,9 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
       const status = await refreshMemberFleetMcp(updated, getMemberFleetMcpDeps(), {
         install,
         forceInstall: providerChanged && input.fleet_install !== 'skip',
+        // An install also (re)writes the per-folder MCP entry before it is
+        // checked, so one fleet_install:"auto" call ends at fleetMcp=available.
+        writeMcpEntry: install,
       });
       fleetMcpLine = status.state === 'available'
         ? `available${status.version ? ` (apra-fleet ${status.version})` : ''}${status.installFailure && status.detail ? ` -- warning: ${status.detail}` : ''}`
