@@ -1,4 +1,4 @@
-import { escapePowerShellArgInner } from '../utils/shell-escape.js';
+import { escapePowerShellArgInner, escapeForDoubleQuotes } from '../utils/shell-escape.js';
 import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { promisify } from 'node:util';
@@ -599,18 +599,25 @@ export class ClaudeProvider implements ProviderAdapter {
     const staging = workspaceTrustStagingNames();
 
     const resolvedHome = memberHomeDir ? memberHomeDir.trim() : null;
-    const homeFile = resolvedHome
-      ? (isWindows
-          ? `${resolvedHome.replace(/\//g, '\\').replace(/\\+$/, '')}\\.claude.json`
-          : `${resolvedHome.replace(/\\/g, '/').replace(/\/+$/, '')}/.claude.json`)
+    // Every path below is embedded inside "..." in a member-bound command. A
+    // resolved home (os.homedir() for a local member) is environment-derived, so
+    // escape what is live inside double quotes; the unresolved '$HOME' /
+    // '$env:USERPROFILE' forms intentionally stay expandable.
+    const homeDir = resolvedHome
+      ? escapeForDoubleQuotes(
+          isWindows
+            ? resolvedHome.replace(/\//g, '\\').replace(/\\+$/, '')
+            : resolvedHome.replace(/\\/g, '/').replace(/\/+$/, ''),
+          isWindows)
+      : null;
+    const homeFile = homeDir
+      ? (isWindows ? `${homeDir}\\.claude.json` : `${homeDir}/.claude.json`)
       : (isWindows
           ? '$env:USERPROFILE\\.claude.json'
           : '$HOME/.claude.json');
 
-    const tmpFile = resolvedHome
-      ? (isWindows
-          ? `${resolvedHome.replace(/\//g, '\\').replace(/\\+$/, '')}\\${staging.tmpRel}`
-          : `${resolvedHome.replace(/\\/g, '/').replace(/\/+$/, '')}/${staging.tmpRel}`)
+    const tmpFile = homeDir
+      ? (isWindows ? `${homeDir}\\${staging.tmpRel}` : `${homeDir}/${staging.tmpRel}`)
       : (isWindows
           ? `$env:USERPROFILE\\${staging.tmpRel}`
           : `$HOME/${staging.tmpRel}`);
@@ -620,7 +627,7 @@ export class ClaudeProvider implements ProviderAdapter {
     // never local node:fs. It rides along in the SAME read command as ~/.claude.json:
     // one round-trip, and (crucially) the already-satisfied case still costs exactly one
     // exec, so the "no write when nothing to do" contract is observable as before.
-    const mcpFile = `${key}/.mcp.json`;
+    const mcpFile = `${escapeForDoubleQuotes(key, isWindows)}/.mcp.json`;
     const SPLIT = '---FLEET_MCP_SPLIT---';
 
     const readCmd = isWindows
