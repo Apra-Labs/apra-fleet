@@ -4,10 +4,12 @@
 // GitNexusProvider -- provider stays a pure proxy"). Do not import this from
 // code-intelligence-gitnexus.ts.
 import { appendFile, mkdir, rename, stat } from 'fs/promises';
-import { homedir } from 'os';
 import { join } from 'path';
+import { FLEET_DIR } from '../paths.js';
 
-const USAGE_DIR = join(homedir(), '.apra-fleet', 'data', 'code-intelligence');
+// FLEET_DIR is ~/.apra-fleet/data unless APRA_FLEET_DATA_DIR redirects it, so
+// a sandboxed server (or test) never writes the real usage log.
+const USAGE_DIR = join(FLEET_DIR, 'code-intelligence');
 
 export const USAGE_LOG_PATH = join(USAGE_DIR, 'usage.jsonl');
 export const ROTATED_USAGE_LOG_PATH = join(USAGE_DIR, 'usage.jsonl.1');
@@ -21,6 +23,16 @@ interface UsageRecord {
   tool: string;
   target: string;
   repo: string | null;
+  // Present only on rows from a member session (omitted, never null-filled, for
+  // FULL sessions and for every row written before attribution existed).
+  memberId?: string;
+  sessionId?: string;
+}
+
+/** Who made the call; both fields are absent for a non-member session. */
+export interface UsageAttribution {
+  memberId?: string;
+  sessionId?: string;
 }
 
 // If usage.jsonl exceeds the size threshold, rename it to usage.jsonl.1
@@ -50,9 +62,15 @@ async function writeUsageLine(record: UsageRecord): Promise<void> {
 // must await. A telemetry failure (disk full, permission denied, whatever)
 // must NEVER surface to the caller or block a tool call (design D8) -- every
 // failure path, sync or async, is swallowed here.
-export function recordUsage(tool: string, target: string, repo: string | null): void {
+export function recordUsage(tool: string, target: string, repo: string | null, who: UsageAttribution = {}): void {
   try {
     const record: UsageRecord = { ts: new Date().toISOString(), tool, target, repo };
+    // Attribute only member-session calls; a session id on its own (FULL
+    // session) keeps today's row shape.
+    if (who.memberId) {
+      record.memberId = who.memberId;
+      if (who.sessionId) record.sessionId = who.sessionId;
+    }
     void writeUsageLine(record).catch(() => {
       // Swallow -- see function comment above.
     });
