@@ -358,6 +358,53 @@ function extractNpmShimScriptName(content) {
 }
 
 /**
+ * Generalized form of `extractNpmShimScriptName()` (apra-fleet-i9ag.15.19):
+ * the `%dp0%`-relative target of ANY npm cmd-shim, whatever its extension.
+ * npm's shim for a `.js` bin runs it through `"%_prog%"` (node); for a native
+ * target (e.g. the `node` npm package's `node.exe`) it runs the target
+ * itself -- both end in `"%dp0%\<target>" %*`.
+ * @param {string} content
+ * @returns {string|null}
+ */
+function extractNpmShimTargetName(content) {
+    const match = content.match(/"%dp0%\\([^"]+)"\s*%\*/);
+    return match ? match[1] : null;
+}
+
+/**
+ * Resolves the absolute target an npm-generated Windows `.cmd` shim at
+ * `cmdPath` wraps -- a `.js` script, or a native `.exe` -- using the same
+ * shim-shape parsing as `resolveConfiguredWindowsBdScript()`. Used by
+ * node-runner.mjs to turn a `.cmd` shim that resolution accepted (its probe
+ * goes through a shell) into the real binary behind it, which spawn can run
+ * without a shell. Returns `null` (never throws) when not on win32, the file
+ * is missing or unreadable, or its content is not npm's shim shape.
+ * @param {string} cmdPath
+ * @param {{
+ *   platform?: NodeJS.Platform,
+ *   existsFn?: (p: string) => boolean,
+ *   readFileFn?: (p: string, enc: string) => string,
+ * }} [deps]
+ * @returns {string|null}
+ */
+export function resolveWindowsShimTarget(cmdPath, deps = {}) {
+    const platform = deps.platform ?? process.platform;
+    const existsFn = deps.existsFn ?? existsSync;
+    const readFileFn = deps.readFileFn ?? readFileSync;
+    if (platform !== 'win32') return null;
+    if (typeof cmdPath !== 'string' || cmdPath.length === 0 || !existsFn(cmdPath)) return null;
+    let content;
+    try {
+        content = readFileFn(cmdPath, 'utf-8');
+    } catch {
+        return null;
+    }
+    const targetName = extractNpmShimTargetName(String(content));
+    if (!targetName) return null;
+    return path.win32.join(path.win32.dirname(cmdPath), targetName);
+}
+
+/**
  * Resolves the `.../bin/bd.js` script a SPECIFIC configured `bdPath` wraps,
  * when that `bdPath` is an npm-generated Windows `.cmd` shim -- the
  * configured-invocation counterpart to `resolveWindowsBdScript()`'s PATH

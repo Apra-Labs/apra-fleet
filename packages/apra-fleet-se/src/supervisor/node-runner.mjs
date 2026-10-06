@@ -106,6 +106,10 @@ import {
     knownSelfNodeVersion,
     defaultIsSea,
 } from './node-version.mjs';
+import { existsSync, readFileSync } from 'node:fs';
+import path from 'node:path';
+
+import { resolveWindowsShimTarget } from './lib/exec-bd.mjs';
 
 /**
  * Minimum Node.js version fleet-se requires (major.minor.patch).
@@ -190,11 +194,117 @@ function defaultExec(file, args, options = {}) {
  *   platform?: NodeJS.Platform,
  *   configuredNodePath?: string,
  *   configuredNodeVersion?: string,
- * }} [deps]
- * @returns {{ command: string, source: string, version: string }}
- * @throws {SprintRunnerResolutionError} when no tier resolves to a usable Node.js runtime
+ *   existsFn?: (p: string) => boolean,
+ *   readFileFn?: (p: string, enc: string) => string,
+ * }} [deps] `existsFn`/`readFileFn` are injectable for the win32 shim
+ *   resolution step (see toSpawnableRunnerCommand()).
+ * @returns {{ command: string, source: string, version: string, resolvedFrom?: string }}
+ *   `command` is always spawnable as returned, with no shell. On win32, when
+ *   the tier's command was an npm `.cmd` shim, `command` is the node.exe
+ *   behind it and `resolvedFrom` names the shim.
+ * @throws {SprintRunnerResolutionError} when no tier resolves to a usable Node.js runtime,
+ *   or the resolved runtime is a win32 shim whose node.exe cannot be found
  */
 export function resolveSprintRunnerCommand(deps = {}) {
+    const resolved = resolveSprintRunnerTier(deps);
+    const spawnable = resolveSpawnableRunner(resolved.command, {
+        platform: deps.platform ?? process.platform,
+        env: deps.env ?? process.env,
+        existsFn: deps.existsFn,
+        readFileFn: deps.readFileFn,
+    });
+    if (spawnable.shim === null) return resolved;
+    return { ...resolved, command: spawnable.command, resolvedFrom: spawnable.shim };
+}
+
+/**
+ * Makes a resolved runner command spawnable WITHOUT a shell
+ * (apra-fleet-i9ag.15.19). Every tier's probe runs through probeVersion(),
+ * which uses `{ shell: true }` on win32, so cmd.exe happily accepts `node`
+ * or an override that is really an npm `.cmd` shim. spawner.mjs's
+ * spawnSprint() then spawns with no shell, and Node refuses a `.cmd`
+ * (EINVAL) or cannot find an extension-less `node` that exists only as
+ * `node.cmd` (ENOENT) -- a silent launch failure after resolution said yes.
+ *
+ * On win32 this resolves the real binary behind the shim with the same npm
+ * shim parser exec-bd.mjs uses for bd (`resolveWindowsShimTarget()`):
+ *   - a `.cmd`/`.bat` path -> the `.exe` it wraps; if it wraps no `.exe`
+ *     (or cannot be read), resolution fails LOUDLY here, naming the shim.
+ *   - a bare name (the PATH tier's `node`) -> scanned along PATH in order,
+ *     `.exe` before `.cmd` within a directory (cmd.exe's PATHEXT order, so
+ *     this agrees with what the probe ran): a `node.exe` hit is returned
+ *     unchanged (spawn finds it too); a `node.cmd` hit is resolved as
+ *     above. Nothing found on PATH leaves the name unchanged.
+ * Every other command, and every non-win32 platform, is returned unchanged.
+ *
+ * @param {string} command
+ * @param {{
+ *   platform?: NodeJS.Platform,
+ *   env?: NodeJS.ProcessEnv,
+ *   existsFn?: (p: string) => boolean,
+ *   readFileFn?: (p: string, enc: string) => string,
+ * }} [deps]
+ * @returns {string}
+ * @throws {SprintRunnerResolutionError}
+ */
+export function toSpawnableRunnerCommand(command, deps = {}) {
+    return resolveSpawnableRunner(command, deps).command;
+}
+
+/**
+ * toSpawnableRunnerCommand() plus the shim it went through, if any.
+ * @param {string} command
+ * @param {Parameters<typeof toSpawnableRunnerCommand>[1]} [deps]
+ * @returns {{ command: string, shim: string|null }}
+ */
+function resolveSpawnableRunner(command, deps = {}) {
+    const unchanged = { command, shim: null };
+    const platform = deps.platform ?? process.platform;
+    if (platform !== 'win32' || typeof command !== 'string' || command.length === 0) return unchanged;
+    const env = deps.env ?? process.env;
+    const existsFn = deps.existsFn ?? existsSync;
+    const readFileFn = deps.readFileFn ?? readFileSync;
+    const shimDeps = { platform, existsFn, readFileFn };
+
+    const resolveShim = (shimPath) => {
+        const target = resolveWindowsShimTarget(shimPath, shimDeps);
+        if (target && /\.exe$/i.test(target)) return { command: target, shim: shimPath };
+        throw new SprintRunnerResolutionError(
+            `The Node.js runtime resolved for sprint launches, ${JSON.stringify(shimPath)}, is a Windows .cmd/.bat shim. `
+            + 'A sprint is spawned without a shell, which cannot run a shim, and the node.exe it wraps could not be found '
+            + `(${target ? `it wraps ${JSON.stringify(target)}, not a .exe` : 'not an npm-generated shim, or unreadable'}). `
+            + `Point FLEET_SE_NODE at node.exe itself. ${SPRINT_RUNNER_FIX_LINE}`,
+        );
+    };
+
+    const isShimName = /\.(cmd|bat)$/i.test(command);
+    // A bare name (no directory part) is looked up along PATH.
+    if (!/[\\/]/.test(command)) {
+        const pathDirs = String(env.PATH ?? env.Path ?? '').split(path.win32.delimiter).filter(Boolean);
+        if (isShimName) {
+            for (const dir of pathDirs) {
+                const shimPath = path.win32.join(dir, command);
+                if (existsFn(shimPath)) return resolveShim(shimPath);
+            }
+            return resolveShim(command);
+        }
+        if (/\.[A-Za-z0-9]+$/.test(command)) return unchanged;
+        for (const dir of pathDirs) {
+            if (existsFn(path.win32.join(dir, `${command}.exe`))) return unchanged;
+            const shimPath = path.win32.join(dir, `${command}.cmd`);
+            if (existsFn(shimPath)) return resolveShim(shimPath);
+        }
+        return unchanged;
+    }
+    return isShimName ? resolveShim(command) : unchanged;
+}
+
+/**
+ * The 4-tier resolution itself (see resolveSprintRunnerCommand()).
+ * @param {Parameters<typeof resolveSprintRunnerCommand>[0]} deps
+ * @returns {{ command: string, source: string, version: string }}
+ */
+function resolveSprintRunnerTier(deps = {}) {
     const env = deps.env ?? process.env;
     const execPath = deps.execPath ?? process.execPath;
     const isSea = deps.isSea ?? defaultIsSea;

@@ -393,7 +393,8 @@ export function createSpawner(deps = {}) {
         });
         cachedRunner = resolved;
         logger.log?.(
-            `[spawner] resolved sprint runner: ${resolved.command} (source: ${resolved.source}, version: ${resolved.version})`,
+            `[spawner] resolved sprint runner: ${resolved.command} (source: ${resolved.source}, version: ${resolved.version}`
+            + `${resolved.resolvedFrom ? `, behind Windows shim ${resolved.resolvedFrom}` : ''})`,
         );
         return resolved.command;
     }
