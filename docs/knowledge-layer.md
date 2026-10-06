@@ -371,12 +371,27 @@ The SQLite database is one developer's private, warm working memory. The
   empty basis or a file absent at HEAD excludes it. Uncommitted edits in the
   work tree never change the verdict, and a folder that is not a git work
   tree is refused (no fallback to hashing disk).
-  `kb_bible_commit` applies the same rule. Entries already in the bible are never removed or rewritten
-  (the bible entry wins on an id clash); when nothing new qualifies the file is
-  left byte-identical and nothing is committed. (a stable field set --
-  `{id, type, title, summary, symbols, source_files, confidence, updated_at}`
-  -- id-sorted for meaningful diffs, ASCII-escaped so it honours the repo's
-  ASCII-only rule).
+  `kb_bible_commit` applies the same rule. `kb_export` is purely additive:
+  entries already in the bible are never removed or rewritten (the bible
+  entry wins on an id clash); when nothing new qualifies the file is left
+  byte-identical and nothing is committed.
+- `kb_bible_commit` additionally removes bible entries that the maintainer's
+  KB holds as superseded or invalidated, and lists each removal in both its
+  response and the commit message. Removals therefore land only when the
+  engine runs a commit round; a round with no new confirmations is skipped, so
+  a removal waits for the next promotion round.
+- Format v3: each entry carries a stable field set -- `{id, type, title,
+  summary, symbols, source_files, source_file_hashes, confidence,
+  updated_at}` -- id-sorted for meaningful diffs and ASCII-escaped so it
+  honours the repo's ASCII-only rule. `source_file_hashes` is the stored
+  basis, so freshness travels with the knowledge across clones. Both writers
+  refuse duplicate ids. `kb_import` keeps a carried basis verbatim; v1/v2
+  entries import with no basis and are never backfilled, so they cannot be
+  re-admitted until recaptured.
+- A folder that is not a git work tree fails with `E-BIBLE-BASIS-NOT-GIT`. An
+  entry citing no files is skipped as `no_source_files` (distinct from
+  `basis_mismatch`); the engine keeps `basis_mismatch` ids queued for a
+  bounded number of rounds because a transient mismatch can clear.
 - With `scope='global'` it exports the GLOBAL KB to
   `.fleet/kb-canonical-global.json` (committed in the platform repo so the
   installer can distribute team-wide conventions).
