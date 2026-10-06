@@ -370,10 +370,14 @@ function statusFromProbedState(value: string | null): ServiceStatus | null {
 export function defaultProbeTaskState(taskName: string): string | null {
   const needle = taskName.replace(/'/g, "''");
   const script = [
-    "$ErrorActionPreference = 'SilentlyContinue'",
-    `$t = Get-ScheduledTask -TaskName '${needle}'`,
-    "if ($t) { [int]$t.State } else { 'NOTFOUND' }",
-  ].join('; ');
+    // NOTFOUND only after a successful cmdlet run that found no task. A
+    // missing cmdlet (no ScheduledTasks module, Server Core) or a failed or
+    // denied query emits PROBEFAIL so query() falls through to the schtasks
+    // CSV read instead of claiming 'not installed' for a registered task.
+    "if (-not (Get-Command Get-ScheduledTask -ErrorAction SilentlyContinue)) { 'PROBEFAIL' } else {",
+    "try { $t = Get-ScheduledTask -TaskName '" + needle + "' -ErrorAction Stop; [int]$t.State }",
+    "catch { if ($_.CategoryInfo.Category -eq 'ObjectNotFound') { 'NOTFOUND' } else { 'PROBEFAIL' } } }",
+  ].join('\n');
   const encoded = Buffer.from(script, 'utf16le').toString('base64');
   try {
     // GitHub #585: pipe all stdio and hide the window, like every other

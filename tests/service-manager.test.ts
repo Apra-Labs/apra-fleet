@@ -251,6 +251,26 @@ describe('WindowsServiceManager', () => {
           .toEqual({ installed: true, running: true, enabled: true });
       });
 
+      it('uses the CSV fallback when the probe exits 0 printing PROBEFAIL', async () => {
+        mockHost({ probe: 'PROBEFAIL\r\n', csv: '"ApraFleet","N/A","Running"\r\n' });
+        expect(await new WindowsServiceManager().query())
+          .toEqual({ installed: true, running: true, enabled: true });
+        expect(vi.mocked(execFileSync).mock.calls.some(([cmd]) => cmd === 'schtasks')).toBe(true);
+      });
+
+      it('a cmdlet-missing host with a registered task is installed, not "not installed"', async () => {
+        // The probe script must guard on the cmdlet's presence and emit
+        // PROBEFAIL (never NOTFOUND) for that case.
+        mockHost({ probe: 'PROBEFAIL\r\n', csv: '"ApraFleet","N/A","Ready"\r\n' });
+        const status = await new WindowsServiceManager().query();
+        expect(status.installed).toBe(true);
+        const script = decodedProbeScripts()[0];
+        expect(script).toMatch(/Get-Command Get-ScheduledTask[^\n]*PROBEFAIL/);
+        expect(script).toContain("-ErrorAction Stop");
+        expect(script).toMatch(/ObjectNotFound'\s*\)\s*\{\s*'NOTFOUND'/);
+        expect(script).not.toMatch(/SilentlyContinue'\s*\n?.*NOTFOUND/);
+      });
+
       it('returns not installed when neither probe nor schtasks can answer', async () => {
         mockHost({});
         expect(await new WindowsServiceManager().query())
