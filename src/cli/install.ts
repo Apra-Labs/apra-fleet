@@ -23,7 +23,7 @@ import {
   ProviderInstallConfig
 } from './config.js';
 import { transformAgentForOpenCode, transformAgentForAgy, transformAgentForClaude } from './agent-transform.js';
-import { FLEET_DIR, codeIntelligenceDir } from '../paths.js';
+import { fleetDataDir, codeIntelligenceDir } from '../paths.js';
 import { extractWorkflowSubsystemAssets } from './workflow-assets.js';
 import { downloadAndExtractDolt, verifyDolt } from './dolt-install.js';
 import { BEADS_PACKAGE } from './beads-pin.js';
@@ -1149,7 +1149,7 @@ function copyGlobalBible(repoCwd: string): void {
     const srcPath = path.join(repoCwd, '.fleet', 'kb-canonical-global.json');
     if (!fs.existsSync(srcPath)) return;
 
-    const destDir = path.join(FLEET_DIR, 'knowledge', 'global');
+    const destDir = path.join(fleetDataDir(), 'knowledge', 'global');
     fs.mkdirSync(destDir, { recursive: true });
     const destPath = path.join(destDir, 'kb-canonical-global.json');
     fs.copyFileSync(srcPath, destPath);
@@ -1178,6 +1178,30 @@ export function writeCodeIntelligenceConfig(): string {
   return file;
 }
 
+const MCP_SCOPES = ['user', 'project', 'none'] as const;
+type McpScope = typeof MCP_SCOPES[number];
+
+/**
+ * Value of `--name <v>` or `--name=<v>`. undefined when the flag is absent; a
+ * missing/empty value (or a following flag) is a hard error.
+ */
+function parseValueFlag(args: string[], name: string, what: string): string | undefined {
+  const eq = args.find(a => a.startsWith(`${name}=`));
+  let value: string | undefined;
+  if (eq !== undefined) {
+    value = eq.slice(name.length + 1);
+  } else {
+    const idx = args.indexOf(name);
+    if (idx < 0) return undefined;
+    value = idx < args.length - 1 ? args[idx + 1] : undefined;
+  }
+  if (!value || value.startsWith('--')) {
+    console.error(`Error: ${name} requires ${what}.`);
+    process.exit(1);
+  }
+  return value;
+}
+
 export async function runInstall(args: string[]): Promise<void> {
   // --help / -h guard - must come first, before any side effects (#142)
   if (args.includes('--help') || args.includes('-h')) {
@@ -1199,6 +1223,8 @@ Usage:
   apra-fleet install --transport http  Register MCP server with HTTP transport (default)
   apra-fleet install --transport stdio Register MCP server with stdio transport (legacy)
   apra-fleet install --project-dir <path>  Seed the fleet-supervisor's project folder before it starts
+  apra-fleet install --data-dir <path> Install a non-default instance whose data lives under <path>
+  apra-fleet install --mcp-scope <s>   Claude MCP registration scope: user (default), project, none
   apra-fleet install --help            Show this help
 
 Options:
@@ -1226,6 +1252,19 @@ Options:
                           on PATH for this check. Omitting this leaves any project folder set
                           earlier (e.g. from the console) untouched; this can also be set later
                           from the console's Projects page or by re-running install with this flag.
+  --data-dir <path>       Install a non-default instance: <path> (resolved to an absolute path)
+                          becomes APRA_FLEET_DATA_DIR for this install, install-config.json is
+                          written under it, and it is recorded (APRA_FLEET_DATA_DIR, plus
+                          APRA_FLEET_PORT if set) in the OS service definitions the installer
+                          registers (MCP server and supervisor) so the services run against this
+                          instance, never ~/.apra-fleet/data. Note the OS service names are
+                          per-user and shared, so this REPLACES any existing registration of the
+                          same service. Use --mcp-scope none to leave Claude's MCP config alone.
+  --mcp-scope <scope>     Where "claude mcp add" registers apra-fleet: user (default), project, or
+                          none (skip the claude MCP registration entirely; also skips other
+                          providers' MCP registration). project is only valid with --llm claude.
+                          An invalid value is an error. The matching "claude mcp remove" uses the
+                          same scope.
   --force                 Stop a running apra-fleet server before installing (SEA mode only).
                           With --member, only a server a previous member install left behind
                           is stopped; anything else is refused (E-FULL-INSTALL-RUNNING).
@@ -1367,6 +1406,30 @@ Services (SEA + --transport http):
     }
   }
 
+  // Parse --data-dir (apra-fleet-oqk7): a non-default instance's data dir.
+  // Resolved to an absolute path in JS (never shell expansion) and applied as
+  // APRA_FLEET_DATA_DIR for the rest of this install.
+  const dataDirArg = parseValueFlag(args, '--data-dir', 'a path');
+  let instanceEnv: Record<string, string> | undefined;
+  if (dataDirArg !== undefined) {
+    const abs = path.resolve(dataDirArg);
+    process.env.APRA_FLEET_DATA_DIR = abs;
+    instanceEnv = { APRA_FLEET_DATA_DIR: abs };
+    if (process.env.APRA_FLEET_PORT) instanceEnv.APRA_FLEET_PORT = process.env.APRA_FLEET_PORT;
+  }
+
+  // Parse --mcp-scope (apra-fleet-oqk7): default 'user' = historical behaviour.
+  const mcpScopeArg = parseValueFlag(args, '--mcp-scope', `one of: ${MCP_SCOPES.join(', ')}`);
+  if (mcpScopeArg !== undefined && !(MCP_SCOPES as readonly string[]).includes(mcpScopeArg)) {
+    console.error(`Error: --mcp-scope value must be one of: ${MCP_SCOPES.join(', ')} (got "${mcpScopeArg}")`);
+    process.exit(1);
+  }
+  const mcpScope: McpScope = (mcpScopeArg as McpScope | undefined) ?? 'user';
+  if (mcpScope === 'project' && llm !== 'claude') {
+    console.error(`Error: --mcp-scope project is only supported with --llm claude (got "${llm}"). Use user or none.`);
+    process.exit(1);
+  }
+
   // Reject unknown flags to catch typos early
   const memberMode = args.includes('--member');
   if (memberMode) {
@@ -1375,8 +1438,8 @@ Services (SEA + --transport http):
     workflowsMode = 'none';
   }
 
-  const knownFlagPrefixes = ['--llm=', '--skill=', '--transport=', '--workflows=', '--project-dir='];
-  const knownFlagExact = new Set(['--member', '--llm', '--skill', '--no-skill', '--workflows', '--force', FORCE_STOP_FULL_INSTALL_FLAG, '--transport', '--project-dir', '--help', '-h']);
+  const knownFlagPrefixes = ['--llm=', '--skill=', '--transport=', '--workflows=', '--project-dir=', '--data-dir=', '--mcp-scope='];
+  const knownFlagExact = new Set(['--member', '--llm', '--skill', '--no-skill', '--workflows', '--force', FORCE_STOP_FULL_INSTALL_FLAG, '--transport', '--project-dir', '--data-dir', '--mcp-scope', '--help', '-h']);
   for (const a of args) {
     if (knownFlagExact.has(a)) continue;
     if (knownFlagPrefixes.some(p => a.startsWith(p))) continue;
@@ -1721,6 +1784,8 @@ ${manualStopHint(pidsAfterStop)}
     // The per-folder member entry is written by compose_permissions; a member
     // install must never register apra-fleet in any provider's user-scope config.
     console.log('    Skipped (--member): no user-scope MCP registration.');
+  } else if (mcpScope === 'none') {
+    console.log('    Skipped (--mcp-scope none): no MCP registration.');
   } else if (transport === 'http') {
     if (llm === 'claude') {
       if (!isCommandAvailable('claude')) {
@@ -1728,13 +1793,13 @@ ${manualStopHint(pidsAfterStop)}
           `  Warning: the 'claude' CLI was not found on PATH -- skipping MCP server registration.\n` +
           `  Install Claude Code (https://claude.com/claude-code), then re-run 'apra-fleet install'\n` +
           `  to register apra-fleet with it, or register manually with:\n` +
-          `    claude mcp add --scope user --transport http apra-fleet ${fleetUrl}`
+          `    claude mcp add --scope ${mcpScope} --transport http apra-fleet ${fleetUrl}`
         );
       } else {
         try {
-          run('claude mcp remove apra-fleet --scope user', { stdio: 'ignore' });
+          run(`claude mcp remove apra-fleet --scope ${mcpScope}`, { stdio: 'ignore' });
         } catch { /* not registered */ }
-        run(`claude mcp add --scope user --transport http apra-fleet ${fleetUrl}`);
+        run(`claude mcp add --scope ${mcpScope} --transport http apra-fleet ${fleetUrl}`);
       }
     } else if (llm === 'codex') {
       mergeCodexConfig(paths, { url: fleetUrl });
@@ -1759,7 +1824,7 @@ ${manualStopHint(pidsAfterStop)}
       // Build the claude MCP command from the actual mcpConfig structure.
       // All args are quoted and joined so paths with spaces (e.g. Windows "Program Files") work.
       const quotedArgs = mcpConfig.args.map((a: string) => `"${a.replace(/"/g, '\\"')}"`).join(' ');
-      const cmd = `claude mcp add --scope user apra-fleet -- "${mcpConfig.command}" ${quotedArgs}`;
+      const cmd = `claude mcp add --scope ${mcpScope} apra-fleet -- "${mcpConfig.command}" ${quotedArgs}`;
       if (!isCommandAvailable('claude')) {
         console.warn(
           `  Warning: the 'claude' CLI was not found on PATH -- skipping MCP server registration.\n` +
@@ -1769,7 +1834,7 @@ ${manualStopHint(pidsAfterStop)}
         );
       } else {
         try {
-          run('claude mcp remove apra-fleet --scope user', { stdio: 'ignore' });
+          run(`claude mcp remove apra-fleet --scope ${mcpScope}`, { stdio: 'ignore' });
         } catch { /* not registered */ }
         run(cmd);
       }
@@ -2259,7 +2324,7 @@ ${manualStopHint(pidsAfterStop)}
     }
     const svcMgr = await getServiceManager();
     try {
-      const registered = await svcMgr.register(binaryPath, ['--transport', 'http'], LOG_FILE_PATH);
+      const registered = await svcMgr.register(binaryPath, ['--transport', 'http'], LOG_FILE_PATH, ...(instanceEnv ? [{ env: instanceEnv }] : []));
       serviceReused = registered === 'reused';
       serviceRunKey = registered === 'run-key';
       if (serviceReused) console.log('    Could not recreate the service task -- existing task reused.');
@@ -2320,7 +2385,7 @@ ${restartHint}
     // and leaves the install successful.
     if (installWorkflows) {
       supervisorServiceAttempted = true;
-      const result = await registerSupervisorService(binaryPath);
+      const result = await registerSupervisorService(binaryPath, instanceEnv ? { env: instanceEnv } : undefined);
       supervisorServiceRegistered = result.registered;
       if (result.registered) {
         console.log('    [OK] fleet-supervisor service registered and started');
