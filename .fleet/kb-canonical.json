@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "85a04bf2d353ca960d30b447246bbe3a55ddb4b8",
     "branch": "v0.5_dashboard",
-    "entry_count": 442
+    "entry_count": 443
   },
   "entries": [
     {
@@ -6055,6 +6055,18 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-07T16:36:39.597Z"
+    },
+    {
+      "id": "bf6bbfe0-f5bd-4a93-9351-7acda444e9af",
+      "type": "learning",
+      "title": "i9ag19-7 CONTROL tests fail on hosts with node in /usr/bin",
+      "summary": "The two CONTROL cases in packages/apra-fleet-se/test/i9ag19-7-exec-bd-configured.test.mjs expect a node-shebang script to fail under a node-less PATH. They fail with 'Missing expected exception' when node is installed system-wide (/usr/bin/node).",
+      "symbols": [],
+      "source_files": [
+        "packages/apra-fleet-se/test/i9ag19-7-exec-bd-configured.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T17:53:44.288Z"
     },
     {
       "id": "c0024b35-9a58-47b1-a735-6b3ae5056326",
