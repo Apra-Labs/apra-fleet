@@ -127,6 +127,7 @@ export const RECORDED_REMOTE_B = 'https://example.test/memory-contract-fixtures-
  * that repo at exactly that name under its own scratch root.
  */
 export const RECORDED_REMOTE_IMPORT_REJECTED = 'https://example.test/memory-contract-fixtures-import-rejected.git';
+export const RECORDED_REMOTE_BARE = 'https://example.test/memory-contract-fixtures-bare.git';
 
 export const ENVIRONMENT = {
   repos: [
@@ -153,8 +154,20 @@ export const ENVIRONMENT = {
     { key: 'PLAIN', dir: 'repo-plain', placeholder: null, files: {} },
     // E-SELF-NO-REMOTE: a git repository with no origin remote.
     { key: 'NO_REMOTE', dir: 'repo-no-remote', placeholder: null, git: true, remote: null, files: {} },
+    // E-BIBLE-BASIS-NOT-GIT: a BARE git repository with an origin remote. It
+    // passes kb (self) resolution (git rev-parse --git-dir succeeds, origin is
+    // set) but is not a git work tree, so bible admission cannot read the
+    // cited files at HEAD and kb_export / kb_bible_commit refuse. (Its dir
+    // name must not start with another repo's dir name, e.g. repo-b: the
+    // recorder's path sanitiser would rewrite that prefix.)
+    { key: 'BARE', dir: 'bare-repo', placeholder: null, git: true, bare: true, remote: 'BARE', files: {} },
   ],
-  remotes: { A: RECORDED_REMOTE_A, B: RECORDED_REMOTE_B, IMPORT_REJECTED: RECORDED_REMOTE_IMPORT_REJECTED },
+  remotes: {
+    A: RECORDED_REMOTE_A,
+    B: RECORDED_REMOTE_B,
+    IMPORT_REJECTED: RECORDED_REMOTE_IMPORT_REJECTED,
+    BARE: RECORDED_REMOTE_BARE,
+  },
   // Each session is one registered member. `repo` names a scratch repo above;
   // `dir` names a folder under the scratch root that is never created. A
   // `remote` member's folder lives on another host, so its KB identity is its
@@ -176,6 +189,11 @@ export const ENVIRONMENT = {
     NO_REMOTE: { member: 'contract-no-remote', kind: 'local', repo: 'NO_REMOTE' },
     NO_WORKFOLDER: { member: 'contract-no-workfolder', kind: 'local', dir: 'no-such-work-folder' },
     REMOTE_UNREACHABLE: { member: 'contract-remote', kind: 'remote', dir: 'this-directory-does-not-exist', remote: 'A' },
+    // The bare repository's kb_maintainer member session (it captures and
+    // promotes the entry kb_bible_commit is then refused for) and its FULL
+    // session twin (kb_export is never served to a member session).
+    BARE: { member: 'contract-bare', kind: 'local', repo: 'BARE', kbMaintainer: true },
+    FULL_BARE: { kind: 'full', repo: 'BARE' },
     // A FULL session (no member identity): its (self) is the fleet server's
     // working folder, which the provider points at repo A for each call. It
     // shares repo A's KB with session A (same origin remote), but its reads and
@@ -361,6 +379,20 @@ export const SCENARIO = [
   { tool: 'kb_freshness_sweep', case: 'refusal-scope-key-removed' },
   { tool: 'kb_context', case: 'refusal-path-traversal' },
   { tool: 'kb_bible_commit', case: 'refusal-repo-path-invalid' },
+  // E-BIBLE-BASIS-NOT-GIT: a CONFIRMED entry in the bare repository's KB makes
+  // bible admission run, and admission refuses a folder with no work tree.
+  {
+    tool: 'kb_capture',
+    case: 'setup-for-bible-basis-not-git',
+    captureId: 'BARE_ENTRY',
+    setup: [
+      { op: 'write', repo: 'BARE', rel: 'src/bare-basis.ts', contents: 'export const bare = 1;\n' },
+    ],
+  },
+  { tool: 'kb_promote', case: 'setup-first-promote-for-bible-basis-not-git', derive: { id: 'BARE_ENTRY' } },
+  { tool: 'kb_promote', case: 'setup-second-promote-for-bible-basis-not-git', derive: { id: 'BARE_ENTRY' } },
+  { tool: 'kb_export', case: 'refusal-bible-basis-not-git' },
+  { tool: 'kb_bible_commit', case: 'refusal-bible-basis-not-git', derive: { ids: ['BARE_ENTRY'] } },
   { tool: 'kb_query', case: 'refusal-self-no-workfolder' },
   { tool: 'kb_stats', case: 'refusal-self-not-a-repo' },
   { tool: 'code_query', case: 'refusal-self-no-workfolder' },

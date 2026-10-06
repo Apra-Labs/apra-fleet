@@ -197,7 +197,10 @@ working folder, which is typically a feature branch.
 - `kb_export` accepts optional `baseBranch` and `baseCommit` and writes them
   into provenance. When omitted, provenance falls back to the export folder's
   HEAD branch and commit (the pre-existing behaviour). It regenerates the whole
-  bible from the KB.
+  bible from the KB. Its project-scope admission is the basis rule described
+  for `kb_bible_commit` below (cited files compared at HEAD); a folder that is
+  not a git work tree is refused with `E-BIBLE-BASIS-NOT-GIT` and no bible is
+  written.
 - `kb_bible_commit` takes `ids`, `baseBranch` and `baseCommit` (all required)
   and merges at ENTRY level: every entry already in the bible is kept, only
   the given ids are added or replaced, and an entry in the file but absent from
@@ -207,7 +210,9 @@ working folder, which is typically a feature branch.
   as `kb_export` (scope=project): every cited source file has a recorded hash
   matching that file's content at the repo's HEAD commit (uncommitted edits
   never change the verdict; a file absent at HEAD is a mismatch; a folder that
-  is not a git work tree is refused, never hashed from disk); otherwise it is skipped with reason
+  is not a git work tree -- e.g. a bare repository, which still passes (self)
+  resolution -- is refused with `E-BIBLE-BASIS-NOT-GIT`, never hashed from
+  disk, and nothing is written); otherwise it is skipped with reason
   `basis_mismatch` and any existing bible entry for it is left unchanged. A
   live CONFIRMED id that cites no source file has no checkable basis and is
   skipped with its own reason `no_source_files` (never `basis_mismatch`),

@@ -32,6 +32,7 @@ import {
   RECORDED_REMOTE_A,
   RECORDED_REMOTE_B,
   RECORDED_REMOTE_IMPORT_REJECTED,
+  RECORDED_REMOTE_BARE,
 } from '../memory-contract/v1/tests/roundtrip-harness.mjs';
 import { materializeSessionWorld } from '../memory-contract/v1/tests/session-world.mjs';
 import { KB_MODULES, CODE_EXPORTS } from '../memory-contract/v1/generate-contract.mjs';
@@ -64,6 +65,7 @@ const RECORDED_REMOTES: Record<string, string> = {
   A: RECORDED_REMOTE_A,
   B: RECORDED_REMOTE_B,
   IMPORT_REJECTED: RECORDED_REMOTE_IMPORT_REJECTED,
+  BARE: RECORDED_REMOTE_BARE,
 };
 
 /**
@@ -96,7 +98,10 @@ class SqliteContractProvider {
   }
 
   async prepareEnvironment(env: EnvironmentSpec) {
-    this.root = fs.mkdtempSync(path.join(os.tmpdir(), 'memory-contract-roundtrip-'));
+    // realpath: a FULL session's (self) is process.cwd(), reported with
+    // symlinks resolved (macOS /var -> /private/var), so substitutions must
+    // use that same spelling.
+    this.root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'memory-contract-roundtrip-')));
     const world = await materializeSessionWorld(env, this.root, {
       remoteUrl: (key: string) => this.liveRemote(key),
       addAgent,
@@ -178,7 +183,7 @@ describe('memory-contract/v1 round trip (sqlite provider)', () => {
   it('dispatched every committed fixture live (no case silently skipped)', () => {
     const undispatched = report.steps.filter((s) => !s.dispatched).map((s) => s.key);
     expect(undispatched).toEqual([]);
-    expect(report.steps.length).toBe(73); // one SCENARIO step per committed fixture: 73 (35 responses + 38 thrown refusals)
+    expect(report.steps.length).toBe(78); // one SCENARIO step per committed fixture: 78 (38 responses + 40 thrown refusals)
   });
 
   it('covers all 26 inventoried tools', () => {

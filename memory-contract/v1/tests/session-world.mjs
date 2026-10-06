@@ -50,7 +50,8 @@ export async function materializeSessionWorld(env, root, deps) {
       fs.writeFileSync(target, contents, 'utf-8');
     }
     if (repo.git) {
-      git(dir, ['init', '-q']);
+      // `bare: true` makes a bare repository: a git dir with no work tree.
+      git(dir, repo.bare ? ['init', '-q', '--bare'] : ['init', '-q']);
       // A local identity so kb_export's auto-commit never depends on host config.
       git(dir, ['config', 'user.email', 'contract@example.test']);
       git(dir, ['config', 'user.name', 'contract']);
@@ -59,7 +60,7 @@ export async function materializeSessionWorld(env, root, deps) {
       // only when its basis matches the cited file at HEAD, not on disk.
       // Files written later by a step's setup ops stay uncommitted (absent at
       // HEAD), which the admission rule treats as a basis mismatch.
-      if (Object.keys(repo.files).length > 0) {
+      if (!repo.bare && Object.keys(repo.files).length > 0) {
         git(dir, ['add', '-A']);
         git(dir, ['-c', 'commit.gpgsign=false', 'commit', '-q', '--no-verify', '-m', 'seed']);
       }

@@ -105,7 +105,10 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 // ---------------------------------------------------------------------------
 // 0. Scratch environment -- MUST run before any dist/* import.
 // ---------------------------------------------------------------------------
-const SCRATCH_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'memory-contract-fixtures-'));
+// realpath: a FULL session's (self) is process.cwd(), which the OS reports
+// with symlinks resolved (macOS /var -> /private/var); the sanitiser must see
+// that same spelling or a FULL-session message leaks a half-substituted path.
+const SCRATCH_ROOT = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'memory-contract-fixtures-')));
 process.env.APRA_FLEET_DATA_DIR = path.join(SCRATCH_ROOT, 'fleet-data');
 fs.mkdirSync(process.env.APRA_FLEET_DATA_DIR, { recursive: true });
 
@@ -116,14 +119,19 @@ const FIXTURES_DIR = path.join(REPO_ROOT, 'memory-contract', 'v1', 'fixtures');
 
 // Synthetic scratch repos -- no real BluSKY code, credentials, or customer
 // text anywhere below. repoA/repoB are deliberately NOT git repos (no .git).
-const { ENVIRONMENT, RECORDED_REMOTE_A, RECORDED_REMOTE_B, RECORDED_REMOTE_IMPORT_REJECTED } =
+const { ENVIRONMENT, RECORDED_REMOTE_A, RECORDED_REMOTE_B, RECORDED_REMOTE_IMPORT_REJECTED, RECORDED_REMOTE_BARE } =
   await import(pathToFileURL(path.join(HERE, 'roundtrip-harness.mjs')).href);
 const { materializeSessionWorld } = await import(pathToFileURL(path.join(HERE, 'session-world.mjs')).href);
 const { registerAllTools } = await import(pathToFileURL(path.join(DIST, 'services', 'tool-registry.js')).href);
 const { memberToolScope } = await import(pathToFileURL(path.join(DIST, 'services', 'tool-scope.js')).href);
 const { addAgent, removeAgent } = await import(pathToFileURL(path.join(DIST, 'services', 'registry.js')).href);
 
-const RECORDED_REMOTES = { A: RECORDED_REMOTE_A, B: RECORDED_REMOTE_B, IMPORT_REJECTED: RECORDED_REMOTE_IMPORT_REJECTED };
+const RECORDED_REMOTES = {
+  A: RECORDED_REMOTE_A,
+  B: RECORDED_REMOTE_B,
+  IMPORT_REJECTED: RECORDED_REMOTE_IMPORT_REJECTED,
+  BARE: RECORDED_REMOTE_BARE,
+};
 
 const world = await materializeSessionWorld(ENVIRONMENT, SCRATCH_ROOT, {
   remoteUrl: (key) => RECORDED_REMOTES[key],
@@ -642,6 +650,40 @@ await withSession('REMOTE_UNREACHABLE', () => recordRefusal('kb_bible_commit', '
   baseBranch: 'main',
   baseCommit: '0123456789abcdef0123456789abcdef01234567',
 }, 'E-REPO-PATH-INVALID'));
+
+// E-BIBLE-BASIS-NOT-GIT: the BARE session's folder is a bare git repository
+// with an origin remote -- a valid KB identity, but not a git work tree, so
+// bible admission cannot read cited files at HEAD. A CONFIRMED entry must
+// exist first: admission (and so the git check) only runs for candidates.
+{
+  const repoBare = world.repoPaths.get('BARE');
+  fs.mkdirSync(path.join(repoBare, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(repoBare, 'src', 'bare-basis.ts'), 'export const bare = 1;\n');
+  const captureBare = await withSession('BARE', () => recordHappy('kb_capture', 'setup-for-bible-basis-not-git', {
+    type: 'knowledge',
+    title: 'Entry in a bare repository with no work tree',
+    summary: 'Set up to demonstrate the E-BIBLE-BASIS-NOT-GIT refusal of kb_export and kb_bible_commit.',
+    content: 'This entry cites src/bare-basis.ts in a bare repository, where no file can be read at HEAD of a work tree.',
+    source_files: ['src/bare-basis.ts'],
+  }));
+  const idBare = parseEnvelopeText(captureBare)?.id;
+  if (idBare) {
+    await withSession('BARE', () => recordHappy('kb_promote', 'setup-first-promote-for-bible-basis-not-git', {
+      id: idBare,
+      reason: 'First promotion (UNVERIFIED -> INFERRED) of the entry used by the E-BIBLE-BASIS-NOT-GIT fixtures.',
+    }));
+    await withSession('BARE', () => recordHappy('kb_promote', 'setup-second-promote-for-bible-basis-not-git', {
+      id: idBare,
+      reason: 'Second promotion (INFERRED -> CONFIRMED) so bible admission runs for this entry.',
+    }));
+    await withSession('FULL_BARE', () => recordRefusal('kb_export', 'refusal-bible-basis-not-git', {}, 'E-BIBLE-BASIS-NOT-GIT'));
+    await withSession('BARE', () => recordRefusal('kb_bible_commit', 'refusal-bible-basis-not-git', {
+      ids: [idBare],
+      baseBranch: 'main',
+      baseCommit: '0123456789abcdef0123456789abcdef01234567',
+    }, 'E-BIBLE-BASIS-NOT-GIT'));
+  }
+}
 
 // kb (self) resolution refusals: the calling member's folder cannot carry a KB identity.
 await withSession('NO_WORKFOLDER', () => recordRefusal('kb_query', 'refusal-self-no-workfolder', {
