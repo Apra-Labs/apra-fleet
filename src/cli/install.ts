@@ -30,6 +30,7 @@ import {
   writeMemberInstallMarker, clearMemberInstallMarker, FORCE_STOP_FULL_INSTALL_FLAG,
 } from './install-guard.js';
 import { convertClaudeAllowToAgyPermissions, formatAgyPermissionRules } from '../providers/agy.js';
+import { codeIntelPathWarning } from '../utils/find-on-path.js';
 
 // --- Dolt CLI install step: injectable deps + explicit gate ---
 //
@@ -1900,6 +1901,11 @@ ${manualStopHint(pidsAfterStop)}
   } catch (err) {
     console.warn('    [!] Code intelligence config skipped:', err instanceof Error ? err.message : String(err));
   }
+
+  // Code intelligence runs through npx: warn now (inside this step, no new
+  // numbered step) when node/npx cannot be resolved from the installer PATH.
+  const codeIntelPathWarn = codeIntelPathWarning();
+  if (codeIntelPathWarn) console.warn(`    [!] ${codeIntelPathWarn}`);
 
   // Write code intelligence routing instruction to ~/.claude/CLAUDE.md
   // (never for a --member install: that file belongs to the member's user)
