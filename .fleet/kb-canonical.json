@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "34ff160ff8ee9e2268e851270b911771d06fedca",
     "branch": "feat/kb-redesign",
-    "entry_count": 281
+    "entry_count": 285
   },
   "entries": [
     {
@@ -3801,6 +3801,18 @@
       "updated_at": "2026-09-25T22:26:36.600Z"
     },
     {
+      "id": "bf01098e-a143-43ae-9dee-857382e24d07",
+      "type": "learning",
+      "title": "windows-service-task-xml test leaks backslash-named files into the repo root on POSIX",
+      "summary": "Running tests/windows-service-task-xml.test.ts on macOS leaves untracked files named like a Windows temp path (with fleet-wintask-*) in the repo root, so git status is not clean after npm test.",
+      "symbols": [],
+      "source_files": [
+        "tests/windows-service-task-xml.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T13:59:42.547Z"
+    },
+    {
       "id": "c0024b35-9a58-47b1-a735-6b3ae5056326",
       "type": "learning",
       "title": "Measure a source-text guard's coverage by line-by-line injection, and count only the before/after delta",
@@ -4086,6 +4098,23 @@
       "updated_at": "2026-09-25T22:26:37.280Z"
     },
     {
+      "id": "cf249b70-5c8d-43bb-81f5-d2051cbaba57",
+      "type": "knowledge",
+      "title": "Engine only calls kb_bible_commit when confirmations are queued, so removals wait for a promotion round",
+      "summary": "createKbWorkClient.commitRepo returns early when a repo has no pending confirmations, so a supersede or invalidate on the maintainer reaches the bible only in a round that also promotes something.",
+      "symbols": [
+        "createKbWorkClient",
+        "commitRepo",
+        "kbBibleCommit"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs",
+        "src/tools/kb-bible-commit.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T13:59:43.038Z"
+    },
+    {
       "id": "d1963b85-b03a-4da7-85c0-ce433768c615",
       "type": "knowledge",
       "title": "scaledTimeout treats an empty APRA_FLEET_TEST_CONCURRENCY exactly like unset: unscaled base budget",
@@ -4150,6 +4179,27 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:37.343Z"
+    },
+    {
+      "id": "d3f48dc7-5172-4f00-94cf-5aba670fe6c4",
+      "type": "knowledge",
+      "title": "Ungated member kb_invalidate plus kb_bible_commit can prune bible entries without the maintainer grant",
+      "summary": "kb_invalidate and kb_bible_commit are both in MEMBER_BASE_TOOLS. Since kb_bible_commit now removes invalidated entries, an agent session on the maintainer member can retire a maintainer-tagged CONFIRMED entry and drop it from the bible.",
+      "symbols": [
+        "MEMBER_BASE_TOOLS",
+        "MEMBER_MAINTAINER_TOOLS",
+        "discard",
+        "getRetirementReasons",
+        "kbBibleCommit"
+      ],
+      "source_files": [
+        "src/services/member-tool-allowlist.ts",
+        "src/services/knowledge/sqlite-provider.ts",
+        "src/tools/kb-bible-commit.ts",
+        "src/tools/kb-invalidate.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T13:59:43.869Z"
     },
     {
       "id": "d4d1a321-9465-4713-ac98-83155ff6f619",
@@ -4845,6 +4895,19 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:53.807Z"
+    },
+    {
+      "id": "f2fb3b12-c3e9-46a0-8063-fa9565083b73",
+      "type": "learning",
+      "title": "APRA_TEST_SUITES_JSON scoping makes run-all-tests-suite-enumeration fail",
+      "summary": "Running a scoped vitest through scripts/run-all-tests.mjs with APRA_TEST_SUITES_JSON leaks the override into tests/run-all-tests-suite-enumeration.test.ts, which then sees 1 suite instead of 5 and fails.",
+      "symbols": [],
+      "source_files": [
+        "scripts/run-all-tests.mjs",
+        "tests/run-all-tests-suite-enumeration.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T13:59:44.305Z"
     },
     {
       "id": "f34ed294-df0a-43fc-a138-fa5f773bcaa3",
