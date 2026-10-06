@@ -31,7 +31,6 @@ import {
   // @ts-expect-error -- plain .mjs helper, no type declarations
 } from '../scripts/sandbox-deploy.mjs';
 // @ts-expect-error -- plain .mjs helper, no type declarations
-import { resolveServiceToken } from '../packages/apra-fleet-se/src/supervisor/auth.mjs';
 
 // deploy.md's "## Sandbox Deploy" lifecycle (scripts/sandbox-deploy.mjs):
 // the values-file discovery channel, the pid-checked teardown order, and
@@ -391,14 +390,15 @@ describe.skipIf(!fs.existsSync(DIST))('live: up / env / teardown across separate
       expect(Number(v.SUPERVISOR_PORT)).not.toBe(squatterPort);
       const health = await getJson(`http://127.0.0.1:${v.APRA_FLEET_PORT}/health`);
       expect(String(health?.pid)).toBe(v.MCP_PID);
-      // apra-fleet-ky2l.1.2 (DQ-20): resolved with NO `home` override here,
-      // deliberately -- the spawned bin/serve.mjs child inherits this test
-      // process's real, un-overridden HOME (sandbox-deploy.mjs's own env for
-      // the child is `{...process.env, ...}` with no HOME override, matching
-      // production), so it resolves its token against the REAL os.homedir()
-      // too; this precompute must resolve the SAME way or the poll below
-      // sends the wrong bearer and every health check 401s.
-      const supervisorToken = resolveServiceToken(v.FLEET_SE_DATA_DIR).token;
+      // apra-fleet-q1ku: the bearer start() proved against /api/health, read
+      // from the path it recorded (SUPERVISOR_TOKEN_PATH) -- the same source
+      // sandbox-deploy.mjs's own verify() uses. A fresh re-resolve is NOT
+      // equivalent: the supervisor pins the token it resolved at boot (often
+      // private/token), while the sandbox fleet server lazily mints its own
+      // <sandbox APRA_FLEET_DATA_DIR>/fleet.key afterwards, so a later
+      // resolve can pick a token the running supervisor never loaded.
+      expect(v.SUPERVISOR_TOKEN_PATH).toBeTruthy();
+      const supervisorToken = fs.readFileSync(v.SUPERVISOR_TOKEN_PATH, 'utf8').trim();
       const supHealth = await getJson(`http://127.0.0.1:${v.SUPERVISOR_PORT}/api/health`, 2000, supervisorToken);
       expect(String(supHealth?.pid)).toBe(v.SUPERVISOR_PID);
     } finally {

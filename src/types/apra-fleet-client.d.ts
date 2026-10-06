@@ -84,3 +84,22 @@ declare module '@apralabs/apra-fleet-client/auth/local-token' {
    */
   export function deriveUpstreamCredential(fleetKey: string, packageId: string): string;
 }
+
+/**
+ * apra-fleet-q1ku: the single resolver for every fleet-owned per-instance path
+ * (fleet.key, supervisor id-allocator dir, install-config, code-intelligence).
+ * See packages/apra-fleet-client/src/fleet-paths.mjs for the documented
+ * layout; src/paths.ts re-exports these for the server.
+ */
+declare module '@apralabs/apra-fleet-client/fleet-paths' {
+  type Env = Record<string, string | undefined>;
+  interface FleetPathOpts { home?: string }
+  export const FLEET_HOME_DIRNAME: string;
+  export const FLEET_KEY_FILENAME: string;
+  export function dataDirOverride(env?: Env): string | null;
+  export function fleetDataDir(env?: Env, opts?: FleetPathOpts): string;
+  export function fleetKeyPath(env?: Env, opts?: FleetPathOpts): string;
+  export function supervisorIdDir(env?: Env, opts?: FleetPathOpts): string;
+  export function installConfigPath(env?: Env, opts?: FleetPathOpts): string;
+  export function codeIntelligenceDir(env?: Env, opts?: FleetPathOpts): string;
+}

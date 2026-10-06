@@ -1,22 +1,22 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import crypto from 'node:crypto';
+import { fleetKeyPath as resolveFleetKeyPath } from '@apralabs/apra-fleet-client/fleet-paths';
 
 /**
  * Resolved lazily on every call (never cached at module load) so that
- * changing `os.homedir()` -- e.g. a test pointing `process.env.HOME` at a
- * temp directory before calling `getOrCreateKey()` -- actually takes effect.
- * A module-load-time constant would freeze whatever home directory was
- * current at first import, which on POSIX is read from `process.env.HOME`
- * (`os.homedir()`'s own resolution order): a test that sets `HOME` in
- * `beforeEach` (after the module has already been imported once) would
- * silently keep reading/writing the real developer's `~/.apra-fleet/fleet.key`
- * instead of the temp one it thinks it isolated to (apra-fleet-iywi.2.2 review
- * finding).
+ * changing the env -- e.g. a test pointing `HOME`/`USERPROFILE` or
+ * `APRA_FLEET_DATA_DIR` at a temp directory before calling
+ * `getOrCreateKey()` -- actually takes effect (apra-fleet-iywi.2.2 review
+ * finding). The path itself comes from the shared fleet-path resolver
+ * (packages/apra-fleet-client/src/fleet-paths.mjs, apra-fleet-q1ku): the
+ * default instance keeps ~/.apra-fleet/fleet.key, an APRA_FLEET_DATA_DIR
+ * instance uses <APRA_FLEET_DATA_DIR>/fleet.key. local-token.mjs (supervisor
+ * and console readers) resolves through the SAME function, so the signer
+ * and every reader always agree.
  */
 export function fleetKeyPath(): string {
-  return path.join(os.homedir(), '.apra-fleet', 'fleet.key');
+  return resolveFleetKeyPath();
 }
 
 export function getOrCreateKey(): string {

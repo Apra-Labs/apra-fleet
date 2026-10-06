@@ -235,7 +235,10 @@ async function bootSupervisor({ withFleetKey = false, withServer = false, env = 
     const workDir = await mkTmp('i9ag12-cwd-');
 
     const fleetKey = crypto.randomBytes(32).toString('hex');
-    const fleetKeyPath = path.join(homeDir, '.apra-fleet', 'fleet.key');
+    // apra-fleet-q1ku: the child runs with its own APRA_FLEET_DATA_DIR, so its
+    // fleet.key is <APRA_FLEET_DATA_DIR>/fleet.key (shared fleet-path resolver),
+    // not <home>/.apra-fleet/fleet.key.
+    const fleetKeyPath = path.join(dataDir, 'fleet.key');
     const serverJsonPath = path.join(dataDir, 'server.json');
     // Realistic on purpose: the url carries the /mcp suffix, exactly what the
     // real server writes. The registry hangs off the ORIGIN, so a fixture

@@ -37,9 +37,9 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { execSync } from 'node:child_process';
 import { isPidAlive, isApraFleetProcess } from '../utils/process-utils.js';
+import { fleetDataDir } from '../paths.js';
 
 export interface RunningApraFleetProcess {
   pid: number;
@@ -57,7 +57,7 @@ export interface RunningServerScope {
 
 /** Data dir this process would use -- mirrors services/singleton.ts getFleetDir(). */
 export function getInstallDataDir(): string {
-  return process.env.APRA_FLEET_DATA_DIR ?? path.join(os.homedir(), '.apra-fleet', 'data');
+  return fleetDataDir();
 }
 
 function runCapture(cmd: string): string | null {

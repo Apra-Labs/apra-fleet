@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { runInstall, _setSeaOverride, _setManifestOverride } from '../src/cli/install.js';
+import { INSTALL_CONFIG_PATH } from '../src/cli/config.js';
 
 vi.mock('node:os', () => ({
   default: {
@@ -15,7 +16,9 @@ vi.mock('node:fs');
 vi.mock('node:child_process');
 
 const mockHome = '/mock/home';
-const configPath = path.join(mockHome, '.apra-fleet', 'data', 'install-config.json');
+// apra-fleet-q1ku: install-config follows APRA_FLEET_DATA_DIR (set per run by
+// tests/setup.ts) via the shared fleet-path resolver.
+const configPath = INSTALL_CONFIG_PATH;
 
 function makeFsMock() {
   vi.mocked(fs.existsSync).mockImplementation((p: any) => {

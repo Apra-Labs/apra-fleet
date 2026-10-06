@@ -1,7 +1,24 @@
 import path from 'node:path';
-import os from 'node:os';
+import {
+  fleetDataDir,
+  fleetKeyPath,
+  supervisorIdDir,
+  installConfigPath,
+  codeIntelligenceDir,
+} from '@apralabs/apra-fleet-client/fleet-paths';
 
-export const FLEET_DIR = process.env.APRA_FLEET_DATA_DIR ?? path.join(os.homedir(), '.apra-fleet', 'data');
+// apra-fleet-q1ku: every fleet-owned per-instance path (data dir, fleet.key,
+// supervisor id-allocator dir, install-config, code-intelligence) is derived
+// from APRA_FLEET_DATA_DIR by ONE resolver,
+// packages/apra-fleet-client/src/fleet-paths.mjs, shared with the JS
+// packages (local-token.mjs, the supervisor's id-allocator.mjs) so signer and
+// readers can never disagree. Its header documents the layout. The functions
+// are lazy (read env at call time); use them rather than the eager FLEET_DIR
+// wherever the env may change after import.
+export { fleetDataDir, fleetKeyPath, supervisorIdDir, installConfigPath, codeIntelligenceDir };
+
+/** Eager snapshot of fleetDataDir() at first import (see tests/setup.ts). */
+export const FLEET_DIR = fleetDataDir();
 
 const RAW_DEFAULT_PORT = 7523;
 

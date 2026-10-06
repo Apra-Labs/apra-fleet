@@ -39,6 +39,7 @@ import { scheduleIndexBuild } from '../src/tools/code-index-heal.js';
 import { missingOnServerPathMessage } from '../src/utils/find-on-path.js';
 import { codeIndexDir, isRecordedAnalyzeAlive, scheduleReindex, RECORDED_ANALYZE_MAX_AGE_MS } from '../src/tools/code-intelligence-reindex.js';
 import { GitNexusProvider } from '../src/tools/code-intelligence-gitnexus.js';
+import { codeIntelligenceDir } from '../src/paths.js';
 import { handleCodeStatus, handleCodeQuery } from '../src/tools/code-intelligence.js';
 
 const DEAD_PID = 2147483646;
@@ -252,7 +253,9 @@ describe('wiring', () => {
 
 describe('scheduleReindex (real) reports why it did not start', () => {
   it('autoReindex.enabled=false => disabled, nothing spawned', () => {
-    const cfgDir = path.join(fakeHome.dir, '.apra-fleet', 'data', 'code-intelligence');
+    // apra-fleet-q1ku: the config dir follows APRA_FLEET_DATA_DIR (set per
+    // run by tests/setup.ts), resolved through the shared fleet-path resolver.
+    const cfgDir = codeIntelligenceDir();
     fs.mkdirSync(cfgDir, { recursive: true });
     fs.writeFileSync(path.join(cfgDir, 'config.json'), JSON.stringify({ autoReindex: { enabled: false } }));
     try {

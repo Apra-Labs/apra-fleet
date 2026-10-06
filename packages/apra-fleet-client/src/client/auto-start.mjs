@@ -24,6 +24,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { fleetDataDir } from '../fleet-paths.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -76,7 +77,7 @@ export class FleetAutoStartError extends Error {
 }
 
 function dataDirOf(env) {
-    return env.APRA_FLEET_DATA_DIR ?? path.join(os.homedir(), '.apra-fleet', 'data');
+    return fleetDataDir(env);
 }
 
 function nodeCommand() {

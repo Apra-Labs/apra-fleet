@@ -33,6 +33,7 @@ import { ensureAgyProject } from '../services/agy-project.js';
 import { getMemberHomeDir } from '../services/member-home.js';
 import { recordFleetMcpStatus, getAgent, updateAgent } from '../services/registry.js';
 import { getProviderInstallConfig, INSTALLABLE_LLM_PROVIDERS, readInstallConfig } from '../cli/config.js';
+import { installConfigPath } from '../paths.js';
 
 export const composePermissionsSchema = z.object({
   ...memberIdentifier,
@@ -281,7 +282,12 @@ function isCompleteProfilesDir(profilesDir: string): boolean {
 
 export function findProfilesDir(homeDir = os.homedir(), startDir = __dirname): string {
   const searched: string[] = [];
-  const installConfig = readInstallConfig(path.join(homeDir, '.apra-fleet', 'data', 'install-config.json'));
+  // apra-fleet-q1ku: install-config is per-instance -- resolve it through the
+  // shared resolver (honours APRA_FLEET_DATA_DIR). An explicitly passed,
+  // non-real homeDir (tests) roots the default layout at that dir instead.
+  const installConfig = readInstallConfig(
+    installConfigPath(process.env, homeDir === os.homedir() ? {} : { home: homeDir }),
+  );
   const providerIndex = new Map<string, number>(
     INSTALLABLE_LLM_PROVIDERS.map((provider, index) => [provider, index] as const),
   );

@@ -2,12 +2,12 @@ import fs from 'node:fs';
 import http from 'node:http';
 import net from 'node:net';
 import path from 'node:path';
-import os from 'node:os';
 import { isPidAlive } from '../utils/process-utils.js';
+import { fleetDataDir } from '../paths.js';
 
 // Paths are computed at call time (not module load) so tests can override APRA_FLEET_DATA_DIR
 function getFleetDir(): string {
-  return process.env.APRA_FLEET_DATA_DIR ?? path.join(os.homedir(), '.apra-fleet', 'data');
+  return fleetDataDir();
 }
 
 function getServerInfoPath(): string {

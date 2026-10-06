@@ -1801,7 +1801,12 @@ pointing these env vars at throwaway locations before running
 - `HOME` (or `USERPROFILE` on Windows) -- so the default data dir and install
   prefix resolve under a temp directory instead of your real home.
 - `APRA_FLEET_DATA_DIR` -- overrides the data dir directly if you want it
-  separate from `HOME`.
+  separate from `HOME`. Every per-instance file then lives inside it:
+  `fleet.key`, the supervisor id-allocator dir (`supervisor/`),
+  `install-config.json` and `code-intelligence/` (unset, they stay at
+  `~/.apra-fleet/fleet.key`, `~/.apra-fleet/supervisor` and
+  `~/.apra-fleet/data/...`). The resolver and its full layout are in
+  `packages/apra-fleet-client/src/fleet-paths.mjs`.
 - The install prefix (where the packed CLI is installed) -- point it at a
   clean temp directory distinct from any prefix an existing server was
   installed into.

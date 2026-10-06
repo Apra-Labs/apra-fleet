@@ -23,7 +23,7 @@ import {
   ProviderInstallConfig
 } from './config.js';
 import { transformAgentForOpenCode, transformAgentForAgy, transformAgentForClaude } from './agent-transform.js';
-import { FLEET_DIR } from '../paths.js';
+import { FLEET_DIR, codeIntelligenceDir } from '../paths.js';
 import { extractWorkflowSubsystemAssets } from './workflow-assets.js';
 import { downloadAndExtractDolt, verifyDolt } from './dolt-install.js';
 import { BEADS_PACKAGE } from './beads-pin.js';
@@ -2125,7 +2125,7 @@ ${manualStopHint(pidsAfterStop)}
 
   // Write code intelligence provider config (provider-agnostic; fleet serves code intelligence tools)
   try {
-    const ciConfigDir = path.join(os.homedir(), '.apra-fleet', 'data', 'code-intelligence');
+    const ciConfigDir = codeIntelligenceDir();
     fs.mkdirSync(ciConfigDir, { recursive: true });
     fs.writeFileSync(path.join(ciConfigDir, 'config.json'), JSON.stringify({ provider: 'gitnexus' }, null, 2));
     console.log('    [OK] Code intelligence provider config written');
