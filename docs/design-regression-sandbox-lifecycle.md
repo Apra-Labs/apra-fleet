@@ -190,6 +190,16 @@ operators can tell an auth problem from a dead supervisor. The legacy
 is status-blind, so new probes that must distinguish auth failures should use
 the status-aware probe instead.
 
+Teardown applies the same classification. Its graceful `/api/shutdown` step
+uses the status-aware probe, so a rejected token is recorded as a teardown
+problem ("HTTP 401 (bearer token rejected); graceful /api/shutdown skipped")
+instead of being mistaken for a dead supervisor. No shutdown POST is sent in
+that case, but the recorded supervisor pid is still killed by the owned-stop
+path, and its not-ours message carries the probe failure description. Known
+trade-off: because a 401 makes teardown report failure, the sandbox root and
+values file are kept, and inside the port-bind retry loop this abandons the
+retry even though the old supervisor was already killed.
+
 ## Windows service launcher path
 
 The Windows service manager derives the launcher (`.bat`) path from the

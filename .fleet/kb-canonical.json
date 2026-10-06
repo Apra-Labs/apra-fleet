@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "7089d28145df9ebb88e42db63a3dacb38cee3f7d",
     "branch": "v0.5_dashboard",
-    "entry_count": 423
+    "entry_count": 425
   },
   "entries": [
     {
@@ -3017,6 +3017,24 @@
       "updated_at": "2026-09-11T23:22:47.052Z"
     },
     {
+      "id": "5ac0acf9-8f78-49b1-b784-b10f197601d8",
+      "type": "knowledge",
+      "title": "sandbox-deploy teardown now fails on a supervisor non-2xx health answer even after killing the recorded pid",
+      "summary": "teardown() step 1 pushes a problem when /api/health answers non-2xx (e.g. 401). The run then throws SandboxDeployError and keeps the sandbox root and values file, even though stopOwned killed the recorded SUPERVISOR_PID. A second teardown succeeds.",
+      "symbols": [
+        "teardown",
+        "stopOwned",
+        "probeJson",
+        "describeProbeFailure"
+      ],
+      "source_files": [
+        "scripts/sandbox-deploy.mjs",
+        "tests/sandbox-deploy.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-05T20:59:08.941Z"
+    },
+    {
       "id": "5b0c0a37-6e58-4854-b1f4-b672ca0a6080",
       "type": "knowledge",
       "title": "A crossing sync-bracket close can never be the last open bracket, so the pause-guard poke is unreachable there",
@@ -3124,6 +3142,24 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-08T00:08:13.314Z"
+    },
+    {
+      "id": "5c44ea0d-798a-43fd-b5ba-76a211a0d1e9",
+      "type": "knowledge",
+      "title": "vitest 4 list --shard does not shard; only vitest run applies --shard",
+      "summary": "In the pinned vitest 4.1.x, `vitest list --filesOnly --shard=i/N` prints every spec file for every shard; sharding is applied only inside the run pool (createPool -> executeTests -> BaseSequencer.shard), over the combined spec list of all projects, by sha1 of root-relative path.",
+      "symbols": [
+        "vitestShardSuites",
+        "resolveVitestShardCount",
+        "BaseSequencer"
+      ],
+      "source_files": [
+        "scripts/run-all-tests.mjs",
+        "tests/run-all-tests-vitest-shards.test.ts",
+        "vitest.config.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-05T20:37:58.936Z"
     },
     {
       "id": "5e0c2cfc-48af-4be2-b4e5-63af3f35366d",

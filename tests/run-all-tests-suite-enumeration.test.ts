@@ -91,6 +91,10 @@ describe('scripts/run-all-tests.mjs suite enumeration and failure semantics', ()
   let logSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
+    // The default (unset) shard count is what this file pins; a caller's own
+    // APRA_TEST_VITEST_SHARDS / APRA_TEST_SUITES_JSON must not leak in.
+    vi.stubEnv('APRA_TEST_VITEST_SHARDS', undefined);
+    vi.stubEnv('APRA_TEST_SUITES_JSON', undefined);
     vi.mocked(spawn).mockReset();
     vi.mocked(spawnSync).mockReset();
     vi.mocked(spawn).mockImplementation(() => createMockChildProcess(0));
@@ -99,18 +103,23 @@ describe('scripts/run-all-tests.mjs suite enumeration and failure semantics', ()
   });
 
   afterEach(() => {
+    vi.unstubAllEnvs();
     vi.restoreAllMocks();
   });
 
-  it('enumerates exactly the vitest, apra-fleet-client, apra-fleet-workflow, apra-fleet-se, and apra-pm suites with their real argv', async () => {
+  it('enumerates exactly the 3 vitest shards, apra-fleet-client, apra-fleet-workflow, apra-fleet-se, and apra-pm suites with their real argv', async () => {
     vi.mocked(spawn).mockImplementation(() => createMockChildProcess(0));
 
     await runScript();
 
     const byName = extractSuiteRuns(logSpy);
-    expect(byName.size).toBe(6);
+    // apra-fleet-3604.1: the root vitest run is split into 3 bounded shards.
+    expect(byName.size).toBe(8);
     expect(byName.get('contract:check')).toEqual([npmCmd, 'run', 'contract:check']);
-    expect(byName.get('vitest')).toEqual([npmCmd, 'exec', '--', 'vitest', 'run']);
+    expect(byName.has('vitest')).toBe(false);
+    for (const i of [1, 2, 3]) {
+      expect(byName.get(`vitest-shard-${i}-of-3`)).toEqual([npmCmd, 'exec', '--', 'vitest', 'run', `--shard=${i}/3`]);
+    }
     expect(byName.get('apra-fleet-client')).toEqual([npmCmd, 'test', '--workspace=@apralabs/apra-fleet-client']);
     expect(byName.get('apra-fleet-workflow')).toEqual([npmCmd, 'test', '--workspace=@apralabs/apra-fleet-workflow']);
     expect(byName.get('apra-fleet-se')).toEqual([npmCmd, 'test', '--workspace=@apralabs/apra-fleet-se']);
@@ -124,8 +133,8 @@ describe('scripts/run-all-tests.mjs suite enumeration and failure semantics', ()
 
     const { exitSpy } = await runScript();
 
-    // All six suites still ran -- the first failure did not skip the rest.
-    expect(vi.mocked(spawn).mock.calls).toHaveLength(6);
+    // All eight suites still ran -- the first failure did not skip the rest.
+    expect(vi.mocked(spawn).mock.calls).toHaveLength(8);
     expect(exitSpy).toHaveBeenCalledWith(1);
   });
 
@@ -134,7 +143,7 @@ describe('scripts/run-all-tests.mjs suite enumeration and failure semantics', ()
 
     const { exitSpy } = await runScript();
 
-    expect(vi.mocked(spawn).mock.calls).toHaveLength(6);
+    expect(vi.mocked(spawn).mock.calls).toHaveLength(8);
     expect(exitSpy).toHaveBeenCalledWith(0);
   });
 });
