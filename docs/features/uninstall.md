@@ -45,6 +45,44 @@ For Claude, MCP removal uses the CLI command `claude mcp remove apra-fleet --sco
 
 If the fleet server is running when uninstall is invoked, the command aborts with a clear error suggesting `--force`. With `--force`, the server is stopped automatically before proceeding. With `--dry-run --force`, the server-running state is reported but the server is not actually stopped -- dry-run is purely observational.
 
+### Supervisor service removal
+
+The fleet supervisor can be registered with the OS service manager (a user-level service that runs the installed tree). A full uninstall stops, disables and removes that registration before it deletes the workflows runtime; otherwise the service would keep running (or restart) against a tree that no longer exists.
+
+Registrations are found by their known names, not by scanning:
+
+| OS | Registration looked up |
+|----|------------------------|
+| Linux | systemd user units `fleet-supervisor.service` and `apra-fleet-supervisor.service` |
+| macOS | launchd label `com.apra-fleet.supervisor` |
+| Windows | scheduled task `ApraFleetSupervisor` |
+
+Ownership rule: a registration is removed only if the command it runs points at the installed tree -- either the installed binary with the `supervisor` argument, or the installed fleet-sprint `serve.mjs`. A registration with the same name that runs something else is left alone and reported under "Kept". Quotes around the executable in older unit files are stripped before matching, so older unit shapes are still recognised.
+
+Removal per OS:
+
+- Linux: `systemctl --user disable --now`, delete the unit file, `daemon-reload`.
+- macOS: `launchctl bootout` (a plist that is not loaded is tolerated), delete the plist.
+- Windows: locate the running process with a PowerShell `-EncodedCommand` query, kill its whole tree, delete the scheduled task, delete the wrapper script.
+
+Invariants:
+
+- All external commands are passed as argument arrays; nothing is built by shell interpolation, because the Windows side may be PowerShell rather than POSIX.
+- The cleanup runs before, and independently of, workflows cleanup. A re-run after the tree is already gone still removes a leftover registration.
+- A failed removal is named in the output and the command exits 1. It never reports success while a service is left behind.
+
+### Kept (intentionally) section
+
+A full uninstall ends by listing what it deliberately did not remove, so the user can tell "left on purpose" from "missed":
+
+- `data/` (credentials store and member registry)
+- `fleet.key`, with a warning to back it up separately because the encrypted data is unreadable without it
+- user-authored workflows
+- any other leftovers under the fleet base directory
+- supervisor registrations that are not ours (see ownership rule above)
+
+The section is printed on real and `--dry-run` runs alike. A partial uninstall (`--skill` or `--llm` scoped) does not print it, since most of the install is intentionally still present.
+
 ### anythingRemoved tracking
 
 The footer message is gated on whether the command actually found and removed anything. If no fleet installation is found for the specified scope, the command reports "Nothing to remove" rather than a misleading "Uninstall complete".
