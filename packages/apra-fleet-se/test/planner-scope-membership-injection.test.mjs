@@ -153,7 +153,7 @@ describe('planner / plan-reviewer prompts carry the every-depth scope', () => {
     });
 
     test('block caps at 300 non-closed entries, states the omitted count, strips non-ASCII', () => {
-        const many = Array.from({ length: 305 }, (_, i) => ({ id: `b${String(i).padStart(3, "0")}`, issue_type: 'task', status: 'open', title: i === 0 ? 'café — x' : 't' }));
+        const many = Array.from({ length: 305 }, (_, i) => ({ id: `b${String(i).padStart(3, "0")}`, issue_type: 'task', status: 'open', title: i === 0 ? 'caf\u00e9 \u2014 x' : 't' }));
         const block = formatScopeMembershipBlock(many);
         assert.ok(block.includes("b299 |") && !block.includes("b300 |"));
         assert.ok(block.includes('5 further non-closed bead(s) omitted'));
