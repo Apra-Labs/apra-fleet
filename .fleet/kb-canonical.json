@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "85a04bf2d353ca960d30b447246bbe3a55ddb4b8",
     "branch": "v0.5_dashboard",
-    "entry_count": 440
+    "entry_count": 442
   },
   "entries": [
     {
@@ -5441,6 +5441,26 @@
       "updated_at": "2026-09-29T06:13:24.852Z"
     },
     {
+      "id": "a7e340f8-ba1a-471c-b91f-480d357b4b40",
+      "type": "knowledge",
+      "title": "register_member probe steps are bounded by RegistrationTimer and reported as Degraded",
+      "summary": "Each register_member probe runs through RegistrationTimer.run with a per-step wall-clock bound (DEFAULT_STEP_BOUNDS_MS); a timeout adds a 'Degraded: <step> (timed out after X)' result line and warning, and opts.stepBoundsMs overrides bounds in tests.",
+      "symbols": [
+        "RegistrationTimer",
+        "DEFAULT_STEP_BOUNDS_MS",
+        "registerMember",
+        "RegisterMemberOptions"
+      ],
+      "source_files": [
+        "src/services/registration-steps.ts",
+        "src/tools/register-member.ts",
+        "tests/registration-steps.test.ts",
+        "tests/register-member-local-probe-bounds.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T19:32:14.533Z"
+    },
+    {
       "id": "a8b20071-c096-4ad4-8ce5-7defb5db33be",
       "type": "knowledge",
       "title": "guarded-modules-coverage's isAccountedFor() must compare full relative paths, not basenames, to avoid a nested-module collision",
@@ -7244,6 +7264,25 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:11.619Z"
+    },
+    {
+      "id": "e47bb3a2-e8b9-498f-830e-2ee9b59077f6",
+      "type": "knowledge",
+      "title": "Shell UI resolves every API and ext URL through apiUrl() for sub-path mounts",
+      "summary": "packages/apra-fleet-shell-ui/src/api/base-path.ts derives the console mount prefix from window.location.pathname (the part before /ui) at call time; every fetch and extSrc must go through apiUrl(), and a grep test fails on a root-relative fetch literal.",
+      "symbols": [
+        "consoleBasePath",
+        "apiUrl",
+        "extSrc"
+      ],
+      "source_files": [
+        "packages/apra-fleet-shell-ui/src/api/base-path.ts",
+        "packages/apra-fleet-shell-ui/test/no-root-relative-fetch.test.ts",
+        "packages/apra-fleet-shell-ui/test/subpath-mount.test.ts",
+        "docs/console-architecture.md"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T19:32:13.540Z"
     },
     {
       "id": "e61e7193-182c-47cf-bce4-8c71d3d45177",
