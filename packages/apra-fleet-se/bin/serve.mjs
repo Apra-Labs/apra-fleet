@@ -876,7 +876,13 @@ export async function serveMain(argv = process.argv.slice(2), deps = {}) {
     });
 
     const supervisor = createSupervisor({
-        port, token: serviceToken, ledger, spawner, watchdog, dashboard, idAllocator,
+        port, token: serviceToken,
+        // apra-fleet-hwxd: the guard re-resolves through this READ-ONLY
+        // provider (never mints) on a failed bearer check, so a supervisor
+        // booted on the private/token fallback converges on fleet.key once
+        // it appears -- no restart. See server.mjs's header section.
+        resolveToken: () => resolveServiceToken(dataDir, { createIfMissing: false }),
+        ledger, spawner, watchdog, dashboard, idAllocator,
         doltMutex, doltOrphanSweep, beadsIdentity,
         // The project-folder resolution decided at the top of serveMain, so
         // GET /api/health can report the folder AND which source won it.
