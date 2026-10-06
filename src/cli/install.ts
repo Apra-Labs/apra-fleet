@@ -2008,7 +2008,19 @@ ${manualStopHint(pidsAfterStop)}
       const probe = await checkRunningInstance();
       const serverPort = resolveServerPort();
       if (probe.state === 'gone' && await isPortInUse(serverPort, DEFAULT_HOST)) {
-        console.warn(`    Warning: ${portInUseMessage(serverPort, readServerInfoPid())}`);
+        const { findPortHolder, describePortConflict } = await import('../services/port-holder.js');
+        const conflict = describePortConflict(serverPort, portInUseMessage(serverPort, readServerInfoPid()), await findPortHolder(serverPort));
+        // Another user's process holds this install's port (a second member
+        // install on this host): the server can never start here, so fail
+        // now with who holds it and the remedy, not after a dead service.
+        if (conflict.foreign) {
+          console.error(`
+Error: ${conflict.message}
+`);
+          process.exitCode = 1;
+          return;
+        }
+        console.warn(`    Warning: ${conflict.message}`);
       }
     }
     const svcMgr = await getServiceManager();

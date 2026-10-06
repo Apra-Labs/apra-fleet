@@ -106,7 +106,12 @@ export async function runStart(_args: string[]): Promise<void> {
   // instead of spawning a server that exits immediately.
   const serverPort = resolveServerPort();
   if (await isPortInUse(serverPort, DEFAULT_HOST)) {
-    console.error(portInUseMessage(serverPort, readServerInfoPid()));
+    // Name who holds it: another user's process (a second member install on
+    // this host) gets its own refusal with the remedy; otherwise the holder
+    // pid is appended when it is visible.
+    const { findPortHolder, describePortConflict } = await import('../services/port-holder.js');
+    const conflict = describePortConflict(serverPort, portInUseMessage(serverPort, readServerInfoPid()), await findPortHolder(serverPort));
+    console.error(conflict.message);
     process.exit(1);
     return;
   }
