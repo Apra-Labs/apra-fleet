@@ -155,10 +155,23 @@ export function injectLiveViewBackLink(html, backLinkHtml) {
     return injectViewerBackLink(html, backLinkHtml);
 }
 
-/** Copy request headers for the upstream call, dropping host/encoding/hop-by-hop. */
-function upstreamRequestHeaders(req) {
+/**
+ * Copy request headers for the upstream call, dropping host/encoding/hop-by-hop.
+ *
+ * (apra-fleet-4v8r.1) When the supervisor holds a service token the child viewer
+ * guards its control POSTs with, the browser's own credentials (Authorization
+ * and the se_token cookie) are dropped and the supervisor's bearer is set
+ * instead -- the child must not depend on whatever value the browser cookie
+ * carries. With no token the headers pass through as before.
+ */
+function upstreamRequestHeaders(req, token) {
     const headers = { ...req.headers };
     delete headers.host;
+    if (typeof token === 'string' && token.length > 0) {
+        delete headers.authorization;
+        delete headers.cookie;
+        headers.authorization = 'Bearer ' + token;
+    }
     // SSE passthrough must stay uncompressed and unbuffered -- never let the
     // child gzip a stream we need to flush event-by-event.
     delete headers['accept-encoding'];
@@ -190,10 +203,10 @@ function sendPlain(res, status, text) {
  * is written to the client as it arrives; a client disconnect destroys the
  * upstream request so the child sees the subscription drop.
  */
-function proxyStream({ host, port, childPath, req, res, logError }) {
+function proxyStream({ host, port, childPath, req, res, logError, token }) {
     let settled = false;
     const upstream = http.request(
-        { host, port, path: childPath, method: req.method || 'GET', headers: upstreamRequestHeaders(req) },
+        { host, port, path: childPath, method: req.method || 'GET', headers: upstreamRequestHeaders(req, token) },
         (up) => {
             settled = true;
             res.writeHead(up.statusCode || 502, downstreamResponseHeaders(up.headers));
@@ -235,7 +248,7 @@ function proxyStream({ host, port, childPath, req, res, logError }) {
  * (apra-fleet-i9ag.5.2). A pre-response connection failure invokes
  * `onConnectError` so the base handler can fall through to history.
  */
-function proxyHtml({ host, port, req, res, prefix, sprintId, mountPrefix, logError, onConnectError }) {
+function proxyHtml({ host, port, req, res, prefix, sprintId, mountPrefix, logError, onConnectError, token }) {
     let settled = false;
     const fail = (err) => {
         if (settled) return;
@@ -246,7 +259,7 @@ function proxyHtml({ host, port, req, res, prefix, sprintId, mountPrefix, logErr
         try { res.end(); } catch { /* gone */ }
     };
     const upstream = http.request(
-        { host, port, path: '/', method: 'GET', headers: upstreamRequestHeaders(req) },
+        { host, port, path: '/', method: 'GET', headers: upstreamRequestHeaders(req, token) },
         (up) => {
             const chunks = [];
             up.on('data', (c) => chunks.push(c));
@@ -402,6 +415,9 @@ export function createLiveProxy(deps = {}) {
     const spawner = deps.spawner ?? null;
     const host = deps.host ?? '127.0.0.1';
     const env = deps.env ?? process.env;
+    // (apra-fleet-4v8r.1) supervisor service token injected as the bearer on
+    // every upstream request to a child viewer.
+    const token = deps.token ?? null;
     // apra-fleet-k7b.2: ISO-timestamp-prefix every log line from this module.
     const logger = withTimestamps(deps.logger ?? console);
     const logError = (...a) => (logger.error ?? logger.log)?.(...a);
@@ -493,6 +509,7 @@ export function createLiveProxy(deps = {}) {
             sprintId,
             mountPrefix,
             logError,
+            token,
             // A live entry existed but the child is unreachable (raced with exit):
             // fall through to history rather than serve a dead proxy.
             onConnectError: () => { serveHistory(sprintId, res, mountPrefix).catch((e) => logError(e)); },
@@ -511,7 +528,7 @@ export function createLiveProxy(deps = {}) {
                 sendPlain(res, 404, `sprint '${sprintId}' is no longer live`);
                 return;
             }
-            proxyStream({ host, port, childPath: childPathFor(ctx?.url), req, res, logError });
+            proxyStream({ host, port, childPath: childPathFor(ctx?.url), req, res, logError, token });
         };
     }
 
@@ -542,7 +559,7 @@ export function createLiveProxy(deps = {}) {
         }
         const childPath = '/extensions/' + encodeURIComponent(ctx?.params?.extId ?? '')
             + '/detail/' + encodeURIComponent(ctx?.params?.itemId ?? '');
-        proxyStream({ host, port, childPath, req, res, logError });
+        proxyStream({ host, port, childPath, req, res, logError, token });
     }
 
     async function handleActivityOutput(req, res, ctx) {
@@ -554,7 +571,7 @@ export function createLiveProxy(deps = {}) {
             return;
         }
         const childPath = '/activities/' + encodeURIComponent(ctx?.params?.activityId ?? '') + '/output';
-        proxyStream({ host, port, childPath, req, res, logError });
+        proxyStream({ host, port, childPath, req, res, logError, token });
     }
 
     return {

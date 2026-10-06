@@ -997,6 +997,9 @@ export async function serveMain(argv = process.argv.slice(2), deps = {}) {
     // this dashboard's pages do, instead of silently dropping it here.
     const liveProxy = createLiveProxy({
         ledger, spawner,
+        // (apra-fleet-4v8r.1) the same token the spawner hands each child as
+        // FLEET_SE_SERVICE_TOKEN; sent as the bearer on every upstream call.
+        token: supervisor.token,
         renderHistory: (sprintId, mountPrefix) => historyView.renderForSprint(sprintId, mountPrefix),
     });
     registerLiveRoutes(supervisor, liveProxy);
