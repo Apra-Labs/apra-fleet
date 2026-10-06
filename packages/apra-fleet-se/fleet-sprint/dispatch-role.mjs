@@ -899,12 +899,18 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
                 }
                 ctx.log(
                     `${roleLabel} dispatch threw a non-retryable error (auth/trust): ${err.message}. Aborting ` +
-                    "retries -- fix the member's credentials/trust and re-run."
+                    `retries -- fix member '${member}' credentials/trust and re-run (for an LLM auth failure: re-login on the source machine with /login, then provision_llm_auth; or provision an API key).`
                 );
                 // A ladder whose own failure legitimately fails the whole
                 // sprint propagates instead of degrading: with the dispatch
                 // channel walled off there is no judgement to fabricate.
-                if (retry.rethrowsUnhealedNonRetryable) throw err;
+                if (retry.rethrowsUnhealedNonRetryable) {
+                    if (isAuthDispatchError(err) && err && typeof err.message === 'string'
+                        && !err.message.includes('provision_llm_auth')) {
+                        err.message += ` [LLM auth heal failed for member '${member}': re-login on the source machine with /login, then provision_llm_auth; or provision an API key]`;
+                    }
+                    throw err;
+                }
                 break;
             }
 

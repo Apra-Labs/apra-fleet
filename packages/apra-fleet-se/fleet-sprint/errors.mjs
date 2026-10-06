@@ -412,7 +412,7 @@ export class DoltBinaryUnavailableError extends WorkflowError {
 // AgentDispatchError -- checked FIRST below since it can't be fooled by
 // auth-like noise in an unrelated failure's message text; the regex remains
 // as a fallback for older/mocked errors that only ever set `.message`.
-const NON_RETRYABLE_DISPATCH_RE = /authentication failed|not logged in|workspace not trusted|has not been trusted/i;
+const NON_RETRYABLE_DISPATCH_RE = /authentication failed|failed to authenticate|oauth session expired|could not be refreshed|not logged in|workspace not trusted|has not been trusted/i;
 
 /**
  * True when a dispatch error can NEVER be fixed by retrying (auth /
@@ -432,7 +432,7 @@ export function isNonRetryableDispatchError(err) {
 // LLM credential failure (as opposed to workspace-trust, which
 // provision_llm_auth cannot fix -- that needs an operator to run `claude
 // --dangerously-skip-permissions` or trust the folder interactively).
-const AUTH_DISPATCH_RE = /authentication failed|not logged in/i;
+const AUTH_DISPATCH_RE = /authentication failed|failed to authenticate|oauth session expired|could not be refreshed|not logged in/i;
 
 /**
  * True when a dispatch error is specifically an LLM auth/credential failure

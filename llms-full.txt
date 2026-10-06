@@ -2970,6 +2970,16 @@ your credentials to the member. For the API-key flow, pass the key as the
 access token with a live refresh token still deploys, and the member's CLI
 refreshes on first use.
 
+**`Failed to authenticate: OAuth session expired and could not be refreshed`**
+
+`execute_prompt` reports this as reason `auth`, and fleet-sprint runs
+`provision_llm_auth` for the member once and retries once (no generic server
+retries). If the heal fails, re-login on the source machine with `/login`, then
+run `provision_llm_auth`, or provision an API key. Copied OAuth sessions are
+shared and refresh-token-rotated across every holder, so a refresh on one
+machine can invalidate the copies elsewhere; use an API key for unattended
+members.
+
 **Auth error (401 / 403)**
 
 - GitHub App tokens: re-mint with `provision_vcs_auth`.
