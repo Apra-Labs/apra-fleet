@@ -96,10 +96,13 @@ test('mock sprint: happy path is deterministic across two independent runs', asy
         const IDENTITY_PROBES = ['bd where --json', 'bd config get sync.remote --json', 'git remote get-url origin'];
         const identityEnd = IDENTITY_PROBES.length;
         assert.deepEqual(run1.commandLog.slice(0, identityEnd), IDENTITY_PROBES, `Expected the beads identity probes to open the commandLog, got: ${JSON.stringify(run1.commandLog.slice(0, 4))}`);
-        const firstGitIdx = run1.commandLog.findIndex((c, i) => i >= identityEnd && /^git /.test(c));
+        // The backlog member's VCS-credential preflight (before its first
+        // beads D-pull) adds one `git remote get-url origin` repo probe.
+        const PREFLIGHT_PROBE = 'git remote get-url origin';
+        const firstGitIdx = run1.commandLog.findIndex((c, i) => i >= identityEnd && /^git /.test(c) && c !== PREFLIGHT_PROBE);
         check(firstGitIdx > identityEnd, `Expected at least one pre-flight beads-health-gate command before the first git command, got commandLog: ${JSON.stringify(run1.commandLog)}`);
         check(
-            run1.commandLog.slice(identityEnd, firstGitIdx).every((c) => c === 'bd config get sync.remote --json' || c === 'bd dolt pull'),
+            run1.commandLog.slice(identityEnd, firstGitIdx).every((c) => c === 'bd config get sync.remote --json' || c === 'bd dolt pull' || c === PREFLIGHT_PROBE),
             `Expected only the pre-flight beads-health gate's own bd command(s) before the first git command, got: ${JSON.stringify(run1.commandLog.slice(identityEnd, firstGitIdx))}`
         );
         // apra-fleet-co4: the branch-fetch succeeded (this mock's git/gh

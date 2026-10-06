@@ -357,6 +357,25 @@ export class DoltSyncError extends WorkflowError {
 }
 
 /**
+ * Thrown by preflightBeadsHealthGate() when the backlog member's beads clone
+ * holds local schema migrations bd auto-applied but never published (the
+ * pre-dispatch D-pull fails "local changes would be stomped by merge") AND the
+ * publish-and-retry heal could not recover. A DoltSyncError subtype, so every
+ * existing DoltSyncError handler still applies; the message names the cause
+ * and the exact fix commands.
+ */
+export class UnpublishedSchemaMigrationsError extends DoltSyncError {
+    /**
+     * @param {string} message
+     * @param {{ member?: string|null, doltOutput?: string|null, details?: object, cause?: unknown }} [opts]
+     */
+    constructor(message, opts = {}) {
+        super(message, { ...opts, details: { kind: 'unpublished-schema-migrations', ...opts.details } });
+        this.name = 'UnpublishedSchemaMigrationsError';
+    }
+}
+
+/**
  * apra-fleet dolt-settle redesign (see fleet-sprint/docs/dolt-sync-redesign.md
  * Part 5) -- thrown by settleDoltConflicts() when a member has no usable,
  * correctly-pinned `dolt` binary and settle's own install/repair ladder

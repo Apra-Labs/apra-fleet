@@ -85,7 +85,7 @@
  * ASCII only.
  */
 
-import { DoltDivergedError, DoltSyncError } from './errors.mjs';
+import { DoltDivergedError, DoltSyncError, UnpublishedSchemaMigrationsError } from './errors.mjs';
 import { classifyFailure, toDoltVerdict, commandBinary } from './vcs-module.mjs';
 import { buildSettleCallback } from './dolt-settle.mjs';
 
@@ -1407,6 +1407,42 @@ export function extractConflictingTables(doltOutput) {
 }
 
 /**
+ * True when a failed D-pull carries the signature of a clone whose bd
+ * auto-applied schema migrations were never published: dolt refuses the merge
+ * because uncommitted local changes (the migrated `events` table) would be
+ * stomped. Only a DoltSyncError (not a divergence/auth classification, which
+ * keep their own handling) can match.
+ */
+export function isUnpublishedMigrationPullFailure(err) {
+    if (!(err instanceof DoltSyncError) || err instanceof DoltDivergedError) return false;
+    if (err.details && err.details.kind === 'auth') return false;
+    return /local changes would be stomped by merge/i.test(String(err.doltOutput || err.message || ''));
+}
+
+/**
+ * Heal for the signature above: publish the migrations with `bd dolt push`
+ * (through doltPushAfter, so it takes the global push mutex when one is
+ * supplied) and retry the pull exactly once. Any failure becomes an
+ * UnpublishedSchemaMigrationsError naming the cause and the fix commands.
+ */
+async function publishMigrationsAndRetryPull(member, opts, firstErr) {
+    const { log = () => {} } = opts;
+    log(`[Dolt] D-pull for member '${member}' failed because its beads clone holds unpublished local schema migrations (bd auto-applied them); publishing with 'bd dolt push' and retrying the pull once.`);
+    try {
+        await doltPushAfter(member, { ...opts, pushBeads: true });
+        // The pull must really run: a fingerprint skip would claim freshness.
+        clearLastSyncedTip(member);
+        return await doltPullBefore(member, opts);
+    } catch (healErr) {
+        throw new UnpublishedSchemaMigrationsError(
+            `[Dolt] member '${member}' beads clone has unpublished local schema migrations (bd auto-applied them), so the D-pull fails with "local changes would be stomped by merge" -- and publishing them failed: ${healErr.message}. ` +
+            `Fix: give '${member}' a valid VCS credential (provision_vcs_auth), then run 'bd dolt push' in its beads workspace to publish the migration, then 'bd dolt pull', and relaunch.`,
+            { member, doltOutput: firstErr.doltOutput, cause: healErr },
+        );
+    }
+}
+
+/**
  * Pre-flight beads-health gate: the same D-pull probe as doltPullBefore(),
  * run before a sprint issues any mutating git or PR command, so a diverged
  * beads clone aborts the run before setup has changed anything.
@@ -1430,7 +1466,12 @@ export function extractConflictingTables(doltOutput) {
 export async function preflightBeadsHealthGate(member, opts = {}) {
     const { command, log = () => {} } = opts;
     try {
-        return await doltPullBefore(member, opts);
+        try {
+            return await doltPullBefore(member, opts);
+        } catch (firstErr) {
+            if (!isUnpublishedMigrationPullFailure(firstErr)) throw firstErr;
+            return await publishMigrationsAndRetryPull(member, opts, firstErr);
+        }
     } catch (err) {
         if (!(err instanceof DoltDivergedError)) {
             throw err;

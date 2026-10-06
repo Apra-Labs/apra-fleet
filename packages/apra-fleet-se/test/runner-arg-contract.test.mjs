@@ -615,9 +615,14 @@ describe('runner.js mock-level execution', () => {
         const IDENTITY_PROBES = ['bd where --json', 'bd config get sync.remote --json', 'git remote get-url origin'];
         const identityEnd = IDENTITY_PROBES.length;
         assert.deepStrictEqual(spy.commandLog.slice(0, identityEnd), IDENTITY_PROBES, 'the beads identity probes must open the command log');
-        const firstGitIdx = spy.commandLog.findIndex((c, i) => i >= identityEnd && /^git /.test(c));
+        // The backlog member's VCS-credential preflight (ensureVcsAuthFresh,
+        // run before its first beads D-pull) resolves the repo with one more
+        // `git remote get-url origin`; it is not a branch-ensure git command.
+        const PREFLIGHT_PROBE = 'git remote get-url origin';
+        const firstGitIdx = spy.commandLog.findIndex((c, i) => i >= identityEnd && /^git /.test(c) && c !== PREFLIGHT_PROBE);
         assert.ok(firstGitIdx >= 0, 'expected at least one git command in the log');
         for (const pre of spy.commandLog.slice(identityEnd, firstGitIdx)) {
+            if (pre === PREFLIGHT_PROBE) continue;
             assert.match(
                 pre,
                 /^bd /,
