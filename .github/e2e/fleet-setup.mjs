@@ -333,6 +333,25 @@ async function runSetup(suiteId, runDir) {
     }
     writeCheckpoint('T2', 'PASS', 'echo + file roundtrip verified on both members');
 
+    // T2-exec-wrapper: execute_command wrapper behaviour over each member's
+    // REAL transport (remote linux ssh, remote macOS zsh, remote Git Bash over
+    // Windows OpenSSH, or the local members of s1.x/s8.x): heredoc at end,
+    // `a & pwd` cd coverage, exit-code propagation, timeout tree-kill.
+    const { runExecWrapperChecks } = await import('./exec-wrapper-checks.mjs');
+    const wrapperFailures = [];
+    for (const member of memberList) {
+      const results = await runExecWrapperChecks(fleetApi, member);
+      for (const r of results) {
+        process.stdout.write(`exec-wrapper ${member.name} (${member.type} ${member.os}) ${r.id}: ${r.status} -- ${r.notes}\n`);
+        if (r.status === 'FAIL') wrapperFailures.push(`${member.name}/${r.id}: ${r.notes}`);
+      }
+    }
+    if (wrapperFailures.length > 0) {
+      writeCheckpoint('T2-exec-wrapper', 'FAIL', wrapperFailures.join('; '));
+      throw new Error(`execute_command wrapper checks failed: ${wrapperFailures.join('; ')}`);
+    }
+    writeCheckpoint('T2-exec-wrapper', 'PASS', 'heredoc/bg-pwd/exit-code/timeout-kill checks on both members');
+
     // T2.5: Toy repo + beads bootstrap -- deterministic clone + `bd init` on
     // BOTH members independently (see bootstrapToyRepo's comment for why this
     // no longer needs an alice-initializes/bella-replicates approach).
