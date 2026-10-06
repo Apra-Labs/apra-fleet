@@ -22,17 +22,8 @@
     },
     "dedupChecks": {
       "type": "array",
-      "description": "One entry per bead id in bugsFiled: the dedup evidence for that bug. query is the search actually run over the open backlog before filing (non-blank); candidateIds are existing beads that might overlap (may be empty); verdict is 'no-overlap' or 'overlap'. Required (an empty array is valid when nothing was filed). The orchestrator flags every filed bug without a no-overlap entry with a non-blank query for human review; it does not fail the sprint.",
-      "items": {
-        "type": "object",
-        "required": ["beadId", "query", "candidateIds", "verdict"],
-        "properties": {
-          "beadId": { "type": "string" },
-          "query": { "type": "string" },
-          "candidateIds": { "type": "array", "items": { "type": "string" } },
-          "verdict": { "type": "string", "enum": ["no-overlap", "overlap"] }
-        }
-      }
+      "description": "One entry per bead id in bugsFiled: the dedup evidence for that bug. query is the search actually run over the open backlog before filing (non-blank); candidateIds are existing beads that might overlap (may be empty); verdict is 'no-overlap' or 'overlap'. Required (an empty array is valid when nothing was filed). The orchestrator flags every filed bug without a no-overlap entry with a non-blank query for human review; it does not fail the sprint. Items are declared loosely (deliberate): a single malformed entry must never make ajv reject/retry the WHOLE report and lose its passed/bugsFiled; flagUnverifiedBugDedup() is the sole enforcer and flags a malformed entry's bead as unverified. Expected item shape: { beadId: string, query: non-blank string, candidateIds: string[], verdict: 'no-overlap' | 'overlap' }.",
+      "items": {}
     },
     "summary": {
       "type": "string"

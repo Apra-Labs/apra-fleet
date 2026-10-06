@@ -170,11 +170,15 @@ export async function flagUnverifiedBugDedup({ command, member, bugsFiled, dedup
     const entries = Array.isArray(dedupChecks) ? dedupChecks : [];
     const flagged = [];
     for (const id of ids) {
-        const entry = entries.find((e) => e && e.beadId === id);
+        // Items are schema-loose (one bad entry must not fail the report), so
+        // any malformed shape lands here and is flagged as unverified.
+        const entry = entries.find((e) => e && typeof e === 'object' && e.beadId === id);
         let why = null;
         if (!entry) why = 'no dedupChecks entry';
         else if (typeof entry.query !== 'string' || entry.query.trim() === '') why = 'blank dedup query';
-        else if (entry.verdict !== 'no-overlap') why = `dedup verdict '${entry.verdict}' (bead filed despite a found overlap)`;
+        else if (!Array.isArray(entry.candidateIds) || entry.candidateIds.some((c) => typeof c !== 'string')) why = 'malformed dedup candidateIds';
+        else if (entry.verdict === 'overlap') why = "dedup verdict 'overlap' (bead filed despite a found overlap)";
+        else if (entry.verdict !== 'no-overlap') why = `malformed dedup verdict ${JSON.stringify(entry.verdict ?? null).slice(0, 40)}`;
         if (!why) continue;
         flagged.push(id);
         log(`WARN: integ-test bug ${id} is dedup-unverified (${why}) -- flagged for human review.`);

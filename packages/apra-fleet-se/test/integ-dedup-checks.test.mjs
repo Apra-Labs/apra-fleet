@@ -35,8 +35,14 @@ describe('integ-test-runner schema', () => {
         assert.strictEqual(validate({ ...BASE, bugsFiled: ['X'], dedupChecks: [ok('X')] }), true);
     });
 
-    test("a verdict outside the enum is rejected", () => {
-        assert.strictEqual(validate({ ...BASE, bugsFiled: ['X'], dedupChecks: [{ ...ok('X'), verdict: 'dup' }] }), false);
+    test('one malformed dedupChecks entry does not fail the whole report (passed/bugsFiled survive)', () => {
+        const report = {
+            ...BASE, passed: true, bugsFiled: ['X', 'Y'],
+            dedupChecks: [{ ...ok('X'), verdict: 'maybe' }, { beadId: 'Y', query: 'q', candidateIds: 'not-an-array', verdict: 'no-overlap' }, 'junk'],
+        };
+        assert.strictEqual(validate(report), true, JSON.stringify(validate.errors));
+        assert.strictEqual(report.passed, true);
+        assert.deepStrictEqual(report.bugsFiled, ['X', 'Y']);
     });
 
     test('the synthesized fallback result stays schema-valid', () => {
@@ -72,6 +78,19 @@ describe('flagUnverifiedBugDedup', () => {
         });
         assert.deepStrictEqual(flagged, ['bug-x']);
         assert.ok(h.logs.some((l) => /overlap/.test(l)));
+    });
+
+    test('malformed entries (bad verdict, non-array candidateIds, non-object) flag their bead as unverified', async () => {
+        const h = harness();
+        const flagged = await flagUnverifiedBugDedup({
+            command: h.command, member: 'm', bugsFiled: ['bug-x', 'bug-y', 'bug-z'],
+            dedupChecks: [{ ...ok('bug-x'), verdict: 'maybe' }, { ...ok('bug-y'), candidateIds: 'old-1' }, 'bug-z'],
+            log: h.log,
+        });
+        assert.deepStrictEqual(flagged, ['bug-x', 'bug-y', 'bug-z']);
+        assert.ok(h.logs.some((l) => /bug-x/.test(l) && /malformed dedup verdict/.test(l)));
+        assert.ok(h.logs.some((l) => /bug-y/.test(l) && /malformed dedup candidateIds/.test(l)));
+        assert.ok(h.logs.some((l) => /bug-z/.test(l) && /no dedupChecks entry/.test(l)));
     });
 
     test('blank query is flagged; fully covered ids and an empty bugsFiled flag nothing', async () => {

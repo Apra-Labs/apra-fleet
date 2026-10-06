@@ -49,11 +49,13 @@ The integ-test-runner files bug beads directly, so creation cannot be
 intercepted. Instead its report must include `dedupChecks`, one entry per filed
 bug (`beadId` plus the evidence fields). The field is required in the runner's
 output schema, its fallback, the auto-sprint workflow's schema copy and the
-synthesized infra-failure stub.
+synthesized infra-failure stub. Its items are declared loosely (like the
+reviewer `dedupCheck`), so one malformed entry never fails the whole integ
+report and loses its `passed`/`bugsFiled`.
 
 After the report is parsed, `flagUnverifiedBugDedup` checks every id in
-`bugsFiled`. An id is flagged when it has no entry, a blank query, or an
-`overlap` verdict (a bead filed despite a found overlap). A flag is a WARN log
+`bugsFiled`. An id is flagged when it has no entry, a blank query, malformed
+`candidateIds` or verdict, or an `overlap` verdict (a bead filed despite a found overlap). A flag is a WARN log
 line plus an appended note beginning `[dedup-unverified]` on that bead, for
 human review. It never fails the sprint and is skipped for an infra-inconclusive
 stub, which files nothing.
@@ -66,8 +68,3 @@ stub, which files nothing.
 - Bead ids and bodies reach the member shell only through validated ids and
   staged files.
 
-## Known gap
-
-A single malformed `dedupChecks` entry can still degrade the whole integ report
-because the runner-side schema is stricter than the per-item handling; this is
-tracked in the backlog.

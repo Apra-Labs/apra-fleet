@@ -583,18 +583,15 @@ const FALLBACK_integReport = {
         bugsFiled: { type: 'array', items: { type: 'string' } },
         // One dedup-evidence entry per filed bug (REQUIRED, [] when none filed).
         // Mirrors integ-test-runner-output.json; keep the two in sync.
+        // Items declared loosely (like reviewer newTasks' dedupCheck): one
+        // malformed entry must never fail the WHOLE report (repair retry ->
+        // synthesized passed:false, bugsFiled lost). flagUnverifiedBugDedup()
+        // is the sole enforcer. Expected item shape: { beadId: string,
+        // query: string, candidateIds: string[], verdict: 'no-overlap' |
+        // 'overlap' }.
         dedupChecks: {
             type: 'array',
-            items: {
-                type: 'object',
-                properties: {
-                    beadId: { type: 'string' },
-                    query: { type: 'string' },
-                    candidateIds: { type: 'array', items: { type: 'string' } },
-                    verdict: { type: 'string', enum: ['no-overlap', 'overlap'] },
-                },
-                required: ['beadId', 'query', 'candidateIds', 'verdict'],
-            },
+            items: {},
         },
         summary: { type: 'string' },
         deployedSha: {
