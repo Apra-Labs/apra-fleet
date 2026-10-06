@@ -4,6 +4,8 @@ export { defaultWindowsPidWrapper as pidWrapWindows };
 import type { OsCommands, ProviderAdapter, PromptOptions } from './os-commands.js';
 import { escapeWindowsArg, sanitizeSessionId } from './os-commands.js';
 import { escapeBatchMetachars, escapePowerShellArgInner } from '../utils/shell-escape.js';
+import { boundChildEnv, describeBoundedEnv } from './child-env-bound.js';
+import { logWarn } from '../utils/log-helpers.js';
 
 /**
  * Wrap a PowerShell script as a base64 `-EncodedCommand` invocation.
@@ -104,8 +106,14 @@ export class WindowsCommands implements OsCommands {
       const reason = e.code === 'ETIMEDOUT' ? `timed out after ${CLEAN_ENV_TIMEOUT_MS}ms` : e.message;
       throw new Error(`Failed to read the Windows environment via powershell.exe: ${reason}`);
     }
-    this.cachedEnv = JSON.parse(result.trim());
-    return this.cachedEnv!;
+    // Machine Path + ';' + User Path above routinely duplicates entries, and
+    // every spawn copies the whole block into the child (and git copies it
+    // again from bd/dolt). Bound it -- see child-env-bound.ts and
+    // docs/troubleshooting.md ("Not enough memory resources").
+    const { env, report } = boundChildEnv(JSON.parse(result.trim()) as Record<string, string>);
+    if (report.dropped.length || report.overCap) logWarn('clean_env', describeBoundedEnv(report));
+    this.cachedEnv = env;
+    return this.cachedEnv;
   }
 
   // --- Resources ---

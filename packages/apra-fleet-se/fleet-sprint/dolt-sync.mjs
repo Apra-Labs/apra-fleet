@@ -614,6 +614,40 @@ export function isSpawnOutageFailure(output) {
     return DOLT_SPAWN_OUTAGE_PATTERNS.some((re) => re.test(text));
 }
 
+/** The Windows CreateProcess ERROR_NOT_ENOUGH_MEMORY wording. */
+const WINDOWS_SPAWN_LIMIT_RE = /Not enough memory resources are available/i;
+
+/** Lines Dolt/git append after a failed git spawn that point at credentials
+ *  (`hint: dolt does not support interactive credential prompts`, Git
+ *  Credential Manager notes). After a CreateProcess refusal git never ran, so
+ *  no credential was ever consulted and these lines only mislead. */
+const MISLEADING_CREDENTIAL_HINT_RE = /^\s*hint:|credential manager|\bgcm\b/i;
+
+/** Prefix naming the real cause of a Windows spawn refusal. Deliberately free
+ *  of any wording the 'dolt' provider's rule tables match (auth, remote,
+ *  divergence), so re-classifying the surfaced text gives the same verdict as
+ *  the raw text. */
+export const WINDOWS_SPAWN_LIMIT_MESSAGE =
+    'Windows refused to start a child process (CreateProcess ERROR_NOT_ENOUGH_MEMORY): this is the Windows process-creation resource limit, '
+    + 'NOT a credential or remote problem, and free RAM does not rule it out. The usual causes are an oversized environment block handed to the '
+    + 'child (duplicated PATH, oversized inherited variables) or desktop-heap exhaustion in a non-interactive session; it is retried as a transient spawn outage.';
+
+/**
+ * The text a failed `bd dolt` step surfaces (logs, DoltSyncError messages).
+ * Identity for every failure except the Windows process-creation limit, which
+ * gets WINDOWS_SPAWN_LIMIT_MESSAGE prepended and its misleading credential
+ * hint lines removed. Classification must still run on the RAW text.
+ *
+ * @param {string} output - raw stderr/stdout of the failed command
+ * @returns {string}
+ */
+export function surfaceDoltFailureText(output) {
+    const text = String(output == null ? '' : output);
+    if (!WINDOWS_SPAWN_LIMIT_RE.test(text)) return text;
+    const kept = text.split(/\r?\n/).filter((line) => !MISLEADING_CREDENTIAL_HINT_RE.test(line)).join('\n').trim();
+    return `${WINDOWS_SPAWN_LIMIT_MESSAGE} Original output (credential hints removed): ${kept}`;
+}
+
 // apra-fleet-jxdf.2: every `bd dolt pull`/`bd dolt push` this module issues
 // used to inherit whatever generic default the injected command() primitive
 // falls back to when no timeout is specified (120s, sized for an ordinary
@@ -697,11 +731,15 @@ async function runDoltStep({ command, member, cmd, label, log, maxTransientRetri
             if (authHealAttempted) log(`[Dolt] self-heal recovered: ${label} succeeded for member '${member}' on the retry after re-provisioning credentials.`);
             return res;
         }
-        const error = res ? res.error : 'unknown command failure';
+        const rawError = res ? res.error : 'unknown command failure';
         // Same verdict classifyDoltFailure() returns, read once here so a
-        // missing-tool failure can also name the binary.
-        const classified = classifyFailure(error, { provider: 'dolt', tool: commandBinary(cmd) });
+        // missing-tool failure can also name the binary. Classified on the
+        // RAW text; everything surfaced below uses `error`, which names the
+        // real cause of a Windows process-creation refusal instead of the
+        // credential hints dolt appends to it (surfaceDoltFailureText).
+        const classified = classifyFailure(rawError, { provider: 'dolt', tool: commandBinary(cmd) });
         const kind = toDoltVerdict(classified.kind);
+        const error = surfaceDoltFailureText(rawError);
         if (kind === 'missing-tool') {
             // GitHub #616: a missing binary is never retried and never sent to
             // the credential self-heal -- neither can install it.
@@ -713,7 +751,7 @@ async function runDoltStep({ command, member, cmd, label, log, maxTransientRetri
             // Sub-classify WITHIN the transient verdict: only the spawn-outage
             // class gets the long wall-clock budget (see the constants block
             // above for why the count-based ladder was replaced).
-            if (isSpawnOutageFailure(error)) {
+            if (isSpawnOutageFailure(rawError)) {
                 const elapsedMs = now() - startedAt;
                 // The attempt ceiling is a backstop, not the policy: at the 30s
                 // backoff cap a 3-minute budget spends itself in ~10 retries, so
