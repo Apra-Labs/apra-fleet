@@ -5,6 +5,7 @@ import { AsyncLocalStorage } from 'async_hooks';
 import { calculateCost } from './pricing.mjs';
 import { WorkflowError, MemberNotFoundError, AgentOutputError, AgentDispatchError, CommandError, FleetTransportError, BudgetExceededError, CancelledError } from './errors.mjs';
 import { hashText, computeActivityKey } from './journal.mjs';
+import { commandFailureOf } from '@apralabs/apra-fleet-client';
 
 export { WorkflowError, MemberNotFoundError, AgentOutputError, AgentDispatchError, CommandError, FleetTransportError, BudgetExceededError, CancelledError } from './errors.mjs';
 
@@ -1700,8 +1701,17 @@ export class FleetWorkflow extends EventEmitter {
                 throw new MemberNotFoundError(`[Workflow Error] ${outText}`, { details: { text: outText, member: opts.member_name || opts.member_id } });
             }
 
-            if (result.isError) {
-                const err = new CommandError(`[Command Failed] ${outText}`, { details: { text: outText, command: finalCmd } });
+            // A command that never produced an exit code -- the exec timed
+            // out, the transport failed, the member could not be started --
+            // is a failure, never a success. The server flags it with
+            // structuredContent.isError + reason (exitCode -1); older servers
+            // sent only the bare "Failed to execute command on ..." text, which
+            // commandFailureOf() also recognizes. The MCP-level result.isError
+            // flag is covered by the same helper. The reason rides on
+            // err.details so callers can tell a timeout from a transport error.
+            const failure = commandFailureOf(result);
+            if (failure) {
+                const err = new CommandError(`[Command Failed] ${failure.message}`, { details: { text: outText, command: finalCmd, reason: failure.reason } });
                 this.emit('activity:end', { ...activityMeta, error: err.message, duration, success: false });
                 throw err;
             }

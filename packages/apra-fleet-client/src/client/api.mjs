@@ -174,6 +174,32 @@
  */
 
 /**
+ * Result-side shape of execute_command's `structuredContent`. Mirrors
+ * src/tools/execute-command.ts's ExecuteCommandStructured. A command that ran
+ * reports its real `exitCode` (isError absent). A command that never produced an
+ * exit code -- the exec timed out, the transport failed, a cloud member could
+ * not be started, or the pre-dispatch check failed -- reports `isError: true`,
+ * a `reason`, and `exitCode: -1` (never a fake 0). Read it with
+ * {@link commandFailureOf}.
+ * @typedef {Object} ExecuteCommandStructured
+ * @property {number} exitCode - Exit code of the command; -1 when it never produced one.
+ * @property {string} stdout - Command stdout (credential values redacted).
+ * @property {string} stderr - Command stderr, or the failure detail when isError is true.
+ * @property {boolean} [isError] - true when the command did not run to an exit code.
+ * @property {string} [reason] - Present with isError: 'timeout' (inactivity timeout) |
+ *   'max_total_time' (hard total-time cap) | 'transport_error' (connection/channel failure) |
+ *   'cloud_start_failed' | 'preflight_offline' | 'preflight_auth_expired' |
+ *   'preflight_auth_missing'.
+ */
+
+/**
+ * @typedef {Object} ExecuteCommandFailure
+ * @property {string} reason - The structured reason, or 'unflagged_failure' for a failure
+ *   recognized only from the text of an older server that sent no structuredContent.
+ * @property {string} message - Human-readable failure text.
+ */
+
+/**
  * @typedef {Object} ListMembersOptions
  * @property {"compact" | "json"} [format] - Output format
  * @property {string[]} [tags] - Filter members by tags (AND semantics)
@@ -648,6 +674,43 @@ export function permissionDenialOf(result) {
     };
 }
 
+// Older servers (before execute_command carried isError on its failure
+// paths) returned a bare text with no structuredContent for a command that
+// never ran. These are that text's two shapes.
+const UNFLAGGED_COMMAND_FAILURE_RE = /^Failed to (execute command|launch task) on "/;
+
+/**
+ * Typed read of an execute_command failure that never produced an exit code.
+ * Accepts the raw executeCommand() result. Returns `{ reason, message }` when the
+ * result is an isError failure (structuredContent.isError, or the MCP-level
+ * isError flag), or when an older server sent the bare "Failed to execute
+ * command on ..." / "Failed to launch task on ..." text with no
+ * structuredContent. Returns null for a command that ran (any exit code --
+ * callers check a non-zero exitCode separately).
+ *
+ * @param {{content?: {text?: string}[], structuredContent?: ExecuteCommandStructured, isError?: boolean} | null | undefined} result
+ * @returns {ExecuteCommandFailure | null}
+ */
+export function commandFailureOf(result) {
+    if (!result || typeof result !== 'object') return null;
+    const text = Array.isArray(result.content) && result.content.length > 0 && typeof result.content[0]?.text === 'string'
+        ? result.content[0].text
+        : '';
+    const sc = result.structuredContent;
+    if (sc && typeof sc === 'object' && sc.isError) {
+        const reason = typeof sc.reason === 'string' && sc.reason ? sc.reason : 'unknown';
+        const detail = typeof sc.stderr === 'string' ? sc.stderr : '';
+        return { reason, message: text || detail || `execute_command failed (${reason})` };
+    }
+    if (result.isError) {
+        return { reason: 'unknown', message: text || 'execute_command failed' };
+    }
+    if (!sc && UNFLAGGED_COMMAND_FAILURE_RE.test(text)) {
+        return { reason: 'unflagged_failure', message: text };
+    }
+    return null;
+}
+
 export class ApraFleet {
     /**
      * @param {{ callTool: (name: string, args: Record<string, any>, opts?: { timeoutMs?: number, signal?: AbortSignal }) => Promise<any> }} mcpClient
@@ -674,6 +737,9 @@ export class ApraFleet {
     /**
      * Run a shell command on a member.
      * @param {ExecuteCommandOptions} options
+     * @returns {Promise<{content?: {type: string, text: string}[], structuredContent?: ExecuteCommandStructured}>}
+     *   the raw callTool() result. A command that never produced an exit code carries
+     *   `structuredContent.isError` and `reason` -- read it with {@link commandFailureOf}.
      */
     async executeCommand(options) {
         const { timeoutMs, signal, ...payload } = options;
