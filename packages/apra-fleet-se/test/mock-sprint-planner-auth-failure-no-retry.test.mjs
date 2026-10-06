@@ -37,6 +37,14 @@ test('unit: isNonRetryableDispatchError matches auth/trust signatures and nothin
     assert.equal(isNonRetryableDispatchError({}), false);
 });
 
+test('unit: a command refused as too long (command_too_long) is non-retryable', () => {
+    // Structured reason, and the message signature for errors that only carry text.
+    assert.equal(isNonRetryableDispatchError({ message: 'refused', details: { reason: 'command_too_long' } }), true);
+    assert.equal(isNonRetryableDispatchError(new Error('[Command Failed] Exit code -1: [FAIL] Command too long for a local member: the wrapped command is 18149 characters, over the limit of 8186. Nothing was run.')), true);
+    // An ordinary non-zero exit stays retryable.
+    assert.equal(isNonRetryableDispatchError(new Error('[Command Failed] Exit code 1: build failed')), false);
+});
+
 // apra-fleet-eft.54.2: regression pin, run under real bd
 // (APRA_FLEET_BD_MOCK=off -- see scripts/run-tests.mjs's `real` mode / repro:
 // `APRA_FLEET_BD_MOCK=off node --test test/mock-sprint-planner-auth-failure-

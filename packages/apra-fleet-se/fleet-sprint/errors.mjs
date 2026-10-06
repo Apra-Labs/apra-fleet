@@ -412,11 +412,13 @@ export class DoltBinaryUnavailableError extends WorkflowError {
 // AgentDispatchError -- checked FIRST below since it can't be fooled by
 // auth-like noise in an unrelated failure's message text; the regex remains
 // as a fallback for older/mocked errors that only ever set `.message`.
-const NON_RETRYABLE_DISPATCH_RE = /authentication failed|not logged in|workspace not trusted|has not been trusted/i;
+// A command the server refuses as too long to run (reason 'command_too_long')
+// is equally deterministic: the same command is refused on every attempt.
+const NON_RETRYABLE_DISPATCH_RE = /authentication failed|not logged in|workspace not trusted|has not been trusted|command too long/i;
 
 /**
  * True when a dispatch error can NEVER be fixed by retrying (auth /
- * workspace-trust failures). Callers must abort their retry loop and surface
+ * workspace-trust failures, a command refused as too long). Callers must abort their retry loop and surface
  * the error immediately, with remediation left to the operator.
  * @param {unknown} err
  * @returns {boolean}
@@ -424,7 +426,8 @@ const NON_RETRYABLE_DISPATCH_RE = /authentication failed|not logged in|workspace
 export function isNonRetryableDispatchError(err) {
     const reason = err?.details?.reason;
     if (reason === 'auth' || reason === 'workspace_not_trusted'
-        || reason === 'preflight_auth_missing' || reason === 'preflight_auth_expired') return true;
+        || reason === 'preflight_auth_missing' || reason === 'preflight_auth_expired'
+        || reason === 'command_too_long') return true;
     return NON_RETRYABLE_DISPATCH_RE.test(String(err?.message ?? ''));
 }
 
