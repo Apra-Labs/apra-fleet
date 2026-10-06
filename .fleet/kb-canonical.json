@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "34ff160ff8ee9e2268e851270b911771d06fedca",
     "branch": "feat/kb-redesign",
-    "entry_count": 280
+    "entry_count": 282
   },
   "entries": [
     {
@@ -2589,6 +2589,22 @@
       "updated_at": "2026-10-01T22:08:20.217Z"
     },
     {
+      "id": "7991cba8-26fc-4a6a-9f8a-95c168253838",
+      "type": "learning",
+      "title": "wrapPowerShellEncoded already sets Stop and propagates native exit codes",
+      "summary": "wrapPowerShellEncoded wraps every script in $ErrorActionPreference='Stop'; try { ...; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; exit 0 } catch { exit 1 }, so member PowerShell steps need no inner try/catch or explicit exit $LASTEXITCODE.",
+      "symbols": [
+        "wrapPowerShellEncoded",
+        "memberCommandFor"
+      ],
+      "source_files": [
+        "src/os/windows.ts",
+        "src/services/member-fleet-install.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T17:05:07.467Z"
+    },
+    {
       "id": "7cc58351-c7f9-4f14-99b0-cdd04cf83d7c",
       "type": "knowledge",
       "title": "Member OS resolution: always via agent.os",
@@ -4830,6 +4846,28 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:53.807Z"
+    },
+    {
+      "id": "f33011e2-8ae6-4388-95d4-5e21f1716d0f",
+      "type": "knowledge",
+      "title": "fleet_install replace-full is decided in ensureOnce before the up-to-date gates",
+      "summary": "ensureMemberFleetInstall(opts.replaceFull) probes the member-install marker before the version short-circuits, so a same-version full install is replaced too. Only a clean 'absent' marker answer on an installed binary triggers replaceFullInstall; probe-failed refuses with no destructive command.",
+      "symbols": [
+        "ensureMemberFleetInstall",
+        "replaceFullInstall",
+        "buildReplaceFullInstallPlan",
+        "probeRemote",
+        "INSTALL_FAIL_CLOSED"
+      ],
+      "source_files": [
+        "src/services/member-fleet-install.ts",
+        "src/tools/update-member.ts",
+        "src/tools/register-member.ts",
+        "tests/member-fleet-replace-full.test.ts",
+        "tests/member-replace-full-scenarios.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T17:05:07.548Z"
     },
     {
       "id": "f34ed294-df0a-43fc-a138-fa5f773bcaa3",
