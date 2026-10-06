@@ -132,7 +132,10 @@ test('a stale skip reason is dropped once a later cycle actually runs Integratio
         assert.ok(run.logs.some((l) => /Integration Test|integ-test-runner/i.test(l) && !l.includes('Skipping')), 'cycle 2 did not run Integration Test');
         const t = run.result && run.result.owedTriage;
         const entry = t && t.strandedRollups.find((x) => x.id === ids.rollup);
-        if (entry) assert.doesNotMatch(entry.reason, /skipped/, `stale skip reason survived: ${entry.reason}`);
+        // Integration Test ran but closed nothing, so the rollup must still be
+        // listed -- just without the cycle-1 skip reason.
+        assert.ok(entry, `rollup not listed: ${JSON.stringify(t && t.strandedRollups)}`);
+        assert.doesNotMatch(entry.reason, /skipped/, `stale skip reason survived: ${entry.reason}`);
         const bead = run.finalBeadsById.get(ids.rollup);
         assert.ok(bead && bead.status !== 'closed', 'rollup was closed');
         assert.deepEqual([...tempDirs()].filter((n) => !before.has(n)), [], 'scenario temp dirs were left behind');

@@ -1,7 +1,8 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { buildSprintPrBody } from '../fleet-sprint/pr-body.mjs';
+import { buildSprintPrBody, RUN_HISTORY_MARKER } from '../fleet-sprint/pr-body.mjs';
+import { PR_DESCRIPTION_MAX_LENGTH } from '../fleet-sprint/vcs-module.mjs';
 import { runPublishPrPhase } from '../fleet-sprint/phases/publish-pr.mjs';
 import { computeOwedTriage, formatOwedTriageLines } from '../fleet-sprint/owed-triage.mjs';
 
@@ -78,6 +79,30 @@ describe('buildSprintPrBody owed triage section', () => {
         assert.equal(withEmpty, without, 'an empty triage must not change the body at all');
         assert.ok(!withEmpty.includes('Owed triage'));
         assert.ok(withEmpty.startsWith('## Sprint verdict: PASS\n'));
+    });
+
+    test('a large triage is capped with a not-shown count and the body keeps its footer and history block', () => {
+        const scopeBeads = [{ id: 'ROOT', title: 'Sprint root', status: 'open', issue_type: 'epic' }];
+        for (let i = 1; i <= 40; i++) {
+            scopeBeads.push({ id: `ROOT.${i}`, title: `Follow-up number ${i} that no dispatcher lane will ever pick up on its own`, status: 'open', issue_type: 'task', parent: 'ROOT' });
+        }
+        const triage = computeOwedTriage({ targetIds: ['ROOT'], scopeBeads });
+        assert.equal(triage.total, 40);
+        const body = buildSprintPrBody({
+            verdict: 'PASS', branch: 'feat/x', baseBranch: 'main', now: NOW, notes: 'n'.repeat(3000),
+            costAnalysis: 'Total $1.00',
+            owedTriageLines: formatOwedTriageLines(triage), owedTriageTotal: triage.total,
+        });
+        assert.ok(body.length <= PR_DESCRIPTION_MAX_LENGTH, `body is ${body.length} chars`);
+        assert.ok(body.startsWith('## Sprint verdict: PASS (owed triage: 40 item(s) -- PASS is NOT clean)'), body.split('\n')[0]);
+        assert.ok(body.includes('ROOT.1:'), 'the first items are still listed');
+        assert.ok(!body.includes('ROOT.40:'), 'the list was not capped');
+        const m = /- (\d+) more item\(s\) not shown/.exec(body);
+        assert.ok(m, `no not-shown line:\n${body}`);
+        const shown = (body.match(/^ {2}- ROOT\.\d+:/gm) || []).length;
+        assert.equal(shown + Number(m[1]), 40, 'shown + not-shown must account for every item');
+        assert.ok(body.includes('Do NOT auto-merge'), 'review footer was cut');
+        assert.ok(body.includes(`<!-- ${RUN_HISTORY_MARKER}`), 'run-history block was cut');
     });
 });
 

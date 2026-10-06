@@ -35,6 +35,14 @@ export const RUN_HISTORY_MAX_ENTRIES = 8;
  *  (PR_DESCRIPTION_MAX_LENGTH) is even considered. */
 export const PR_NOTES_MAX_LENGTH = 2000;
 
+/** Upper bound on the rendered 'Owed triage' list. The section sits in the
+ *  body's tail, which the notes budget cannot shrink, so an uncapped list
+ *  pushed the body past PR_DESCRIPTION_MAX_LENGTH and the downstream cut
+ *  dropped the rest of the list, the review footer and the run-history block.
+ *  Items past this budget are counted in a 'not shown' line instead; the run
+ *  log and the sprint result's owedTriage carry the full list. */
+export const PR_OWED_TRIAGE_MAX_LENGTH = 1500;
+
 const VERDICTS = new Set(['PASS', 'FAIL', 'ABORTED']);
 const RUN_ID_UNSAFE_RE = /[^A-Za-z0-9._:/-]/g;
 const RUN_ID_MAX = 64;
@@ -183,6 +191,29 @@ function inline(text) {
 }
 
 /**
+ * Keeps rendered owed-triage list lines (category headers '- Label (n):' and
+ * indented items '  - id: ...') within PR_OWED_TRIAGE_MAX_LENGTH. Stops at the
+ * first line that does not fit, drops a category header left with no item
+ * under it, and appends a line counting the items not shown.
+ */
+function capOwedTriageList(lines, max = PR_OWED_TRIAGE_MAX_LENGTH) {
+    const isItem = (l) => l.startsWith('  - ');
+    const kept = [];
+    let used = 0;
+    let i = 0;
+    for (; i < lines.length; i++) {
+        if (used + lines[i].length + 1 > max) break;
+        kept.push(lines[i]);
+        used += lines[i].length + 1;
+    }
+    if (i === lines.length) return kept;
+    if (kept.length > 0 && !isItem(kept[kept.length - 1])) kept.pop();
+    const omitted = lines.slice(i).filter(isItem).length;
+    kept.push(`- ${omitted} more item(s) not shown; the sprint run log and the sprint result (owedTriage) list every item.`);
+    return kept;
+}
+
+/**
  * Builds the sprint PR body as markdown.
  *
  * @param {object} opts
@@ -259,7 +290,7 @@ export function buildSprintPrBody({
             `This sprint finished with work a human still has to triage${v === 'PASS' ? ' -- the PASS verdict carries owed triage and is not clean' : ''}:`,
             '',
             ...(owedIncomplete ? ['- The sprint\'s beads could not be read at finalization, so this list may be incomplete.'] : []),
-            ...owedItems.map((l) => (l.startsWith('- ') ? `  ${l}` : `- ${l}`)),
+            ...capOwedTriageList(owedItems.map((l) => (l.startsWith('- ') ? `  ${l}` : `- ${l}`))),
             '',
         ].join('\n')
         : null;
