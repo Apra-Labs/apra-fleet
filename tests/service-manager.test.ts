@@ -1157,3 +1157,63 @@ describe('MacOSServiceManager', () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// macOS: stop() then start() must leave the job running (launchd bootout unloads it)
+// ---------------------------------------------------------------------------
+describe('MacOSServiceManager -- stop then start cycle', () => {
+  let loaded: boolean;
+  const seq: string[] = [];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    seq.length = 0;
+    loaded = true;
+    vi.mocked(fs.existsSync).mockReturnValue(true);
+    vi.mocked(execFileSync).mockImplementation(((cmd: string, args: string[]) => {
+      if (cmd !== 'launchctl') return '' as any;
+      const sub = args[0];
+      if (sub === 'bootout') { seq.push('bootout'); loaded = false; return '' as any; }
+      if (sub === 'print') { if (!loaded) throw new Error('Could not find service'); return '' as any; }
+      if (sub === 'bootstrap') {
+        seq.push('bootstrap');
+        expect(args[1]).toMatch(/^gui\/\d+$/);
+        expect(args[2]).toContain('com.apra-fleet.supervisor.plist');
+        loaded = true;
+        return '' as any;
+      }
+      if (sub === 'kickstart') {
+        if (!loaded) throw new Error('Could not find service');
+        seq.push('kickstart');
+        return '' as any;
+      }
+      return '' as any;
+    }) as any);
+  });
+
+  it('fleet-supervisor: start() after stop() re-bootstraps before kickstart, ending running', async () => {
+    const mgr = new MacOSServiceManager('fleet-supervisor');
+    await mgr.stop();
+    expect(loaded).toBe(false);
+    await mgr.start();
+    expect(seq).toEqual(['bootout', 'bootstrap', 'kickstart']);
+    expect(loaded).toBe(true);
+  });
+
+  it('fleet-supervisor: start() on an already-loaded job only kickstarts', async () => {
+    await new MacOSServiceManager('fleet-supervisor').start();
+    expect(seq).toEqual(['kickstart']);
+  });
+
+  it('mcp-server: stop() is the graceful path and start() only kickstarts (unchanged)', async () => {
+    const mgr = new MacOSServiceManager('mcp-server');
+    await mgr.stop();
+    expect(mockGracefulStop).toHaveBeenCalled();
+    await mgr.start();
+    expect(seq).toEqual(['kickstart']);
+    const subs = vi.mocked(execFileSync).mock.calls.map(c => (c[1] as string[])[0]);
+    expect(subs).not.toContain('bootout');
+    expect(subs).not.toContain('bootstrap');
+    expect(subs).not.toContain('print');
+  });
+});
