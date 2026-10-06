@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "12fbcf6bd3a5540e5e979715151986fa15c1291e",
     "branch": "main",
-    "entry_count": 271
+    "entry_count": 272
   },
   "entries": [
     {
@@ -258,6 +258,19 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:39.791Z"
+    },
+    {
+      "id": "0afc6c5d-5e2c-423d-92b7-6f8f3f763fd1",
+      "type": "learning",
+      "title": "Local dist/agents/schemas staleness fails apra-fleet-se npm test independent of branch",
+      "summary": "contracts-schema-dist-staleness-guard compares gitignored dist/agents/schemas to package-local apra-pm schemas; npm run build does not refresh them, so a stale local dist fails the suite until npm run dist-pm is run.",
+      "symbols": [],
+      "source_files": [
+        "packages/apra-fleet-se/test/contracts-schema-dist-staleness-guard.test.mjs",
+        "packages/apra-fleet-se/apra-pm/agents/schemas/reviewer-output.json"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T05:51:30.141Z"
     },
     {
       "id": "0b6a7734-3224-4b5e-b407-6353af651e29",
