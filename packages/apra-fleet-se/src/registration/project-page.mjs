@@ -24,13 +24,12 @@
 //
 // AUTH: this page is served under /ui, which requiresAuth() deliberately
 // leaves UNGUARDED (../supervisor/auth.mjs) -- so the page itself must never
-// embed or echo the bearer token. It reuses the SAME mechanism
-// ../supervisor/dashboard.mjs's GET / index route already established: hand
-// the token back as an HttpOnly `se_token` cookie (auth.mjs's
-// TOKEN_COOKIE_NAME), which the browser then attaches AUTOMATICALLY to this
-// page's own same-origin fetch('/api/project') calls with no script-visible
-// credential at all -- auth.mjs's isAuthorized() accepts that cookie as a
-// bearer alternative for exactly this reason.
+// embed or echo the bearer token, and an unauthenticated view sets NO
+// cookie (apra-fleet-50j6.6). It shares ../supervisor/dashboard-session.mjs
+// with the GET / index route: `?token=<service token>` exchanges the token
+// for an HttpOnly `se_token` cookie carrying a DERIVED value (never the raw
+// token), which the browser then attaches automatically to this page's own
+// same-origin fetch('/api/project') calls.
 //
 // MOUNT-AWARE FETCH TARGETS: this page is reached either directly (the
 // supervisor's own origin) or through the console's /ext/<id>/* reverse
@@ -47,7 +46,7 @@
 import { PROJECTS_UI_PATH } from './manifest.mjs';
 import { defaultPlaceholderHandler } from './ui-placeholder.mjs';
 import { resolveMountPrefix, mountHref } from '../supervisor/mount-prefix.mjs';
-import { TOKEN_COOKIE_NAME } from '../supervisor/auth.mjs';
+import { handleTokenExchange, authNoticeHtml, injectAuthNotice } from '../supervisor/dashboard-session.mjs';
 import { THEME_CSS } from '../supervisor/theme.mjs';
 
 function sendHtml(res, status, html, extraHeaders = {}) {
@@ -188,8 +187,8 @@ button:hover { opacity: 0.8; }
  *
  * @param {{ token?: string|null }} [deps] `token` is the supervisor's own
  *   shared bearer token (`supervisor.token`, null when auth was never
- *   configured) -- handed back to the browser as an HttpOnly cookie exactly
- *   once per page load, never embedded in the HTML/script body itself.
+ *   configured) -- used only to verify a `?token=` exchange and to derive
+ *   the session cookie; never embedded in the HTML/script body or a cookie.
  * @returns {(req: any, res: any, ctx: any) => Promise<void>}
  */
 export function createProjectsPageHandler(deps = {}) {
@@ -200,11 +199,11 @@ export function createProjectsPageHandler(deps = {}) {
         if (pathname !== PROJECTS_UI_PATH) {
             return defaultPlaceholderHandler(req, res, ctx);
         }
+        // apra-fleet-50j6.6: `?token=` is the token exchange (derived cookie
+        // + 302); a plain view sets NO cookie and shows the sign-in notice.
+        if (handleTokenExchange(req, res, token)) return;
         const mountPrefix = resolveMountPrefix(req);
         const html = renderProjectsPageHtml({ mountPrefix });
-        const headers = token
-            ? { 'set-cookie': `${TOKEN_COOKIE_NAME}=${token}; Path=/; SameSite=Strict; HttpOnly` }
-            : {};
-        sendHtml(res, 200, html, headers);
+        sendHtml(res, 200, injectAuthNotice(html, authNoticeHtml(req, token)));
     };
 }

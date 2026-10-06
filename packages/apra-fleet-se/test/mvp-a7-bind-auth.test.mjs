@@ -7,7 +7,7 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 
 import { createSupervisor, sendJson } from '../src/supervisor/server.mjs';
-import { loadOrCreateToken } from '../src/supervisor/auth.mjs';
+import { loadOrCreateToken, deriveDashboardCookie } from '../src/supervisor/auth.mjs';
 import { createLedger, LEDGER_FILENAME } from '../src/supervisor/ledger.mjs';
 import { createWatchdog } from '../src/supervisor/watchdog.mjs';
 import { createBacklog } from '../src/supervisor/backlog.mjs';
@@ -161,11 +161,18 @@ describe('server.mjs -- 401 bearer-token guard', () => {
             assert.equal(withHeader.status, 200);
             assert.deepEqual(withHeader.json, { sprints: [] });
 
+            // apra-fleet-50j6.6: the cookie path accepts the DERIVED value;
+            // the raw token is bearer-only.
             const withCookie = await request(port, 'GET', '/api/sprints', {
-                headers: { cookie: `se_token=${TOKEN}` },
+                headers: { cookie: `se_token=${deriveDashboardCookie(TOKEN)}` },
             });
             assert.equal(withCookie.status, 200);
             assert.deepEqual(withCookie.json, { sprints: [] });
+
+            const rawCookie = await request(port, 'GET', '/api/sprints', {
+                headers: { cookie: `se_token=${TOKEN}` },
+            });
+            assert.equal(rawCookie.status, 401, 'the raw token on the cookie path must be rejected');
 
             // apra-fleet-50j6.1.3: a WRONG credential (either shape) must be
             // rejected exactly like no credential at all -- neither shape
@@ -349,7 +356,7 @@ describe('server.mjs -- the service token never leaks (apra-fleet-50j6.1.3)', ()
 
             record(await request(port, 'GET', '/api/sprints')); // no credential -> 401 body
             record(await request(port, 'GET', '/api/sprints', { headers: { authorization: `Bearer ${token}` } })); // right header -> 200
-            record(await request(port, 'GET', '/api/sprints', { headers: { cookie: `se_token=${token}` } })); // right cookie -> 200
+            record(await request(port, 'GET', '/api/sprints', { headers: { cookie: `se_token=${deriveDashboardCookie(token)}` } })); // right cookie -> 200
             record(await request(port, 'GET', '/api/sprints', { headers: { authorization: `Bearer ${'c'.repeat(64)}` } })); // wrong header -> 401
             record(await request(port, 'GET', '/api/sprints', { headers: { cookie: `se_token=${'c'.repeat(64)}` } })); // wrong cookie -> 401
             record(await request(port, 'POST', '/sprints/x/live/stop')); // no credential -> 401

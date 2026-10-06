@@ -339,8 +339,26 @@ so point-and-click and API launches can never diverge.
 
 ## 4. How do I know what's happening
 
-Open the supervisor's page in a browser (`http://localhost:8787`). It renders
-three things, and they answer the three questions stakeholders actually ask:
+Open the supervisor's page in a browser (`http://localhost:8787`). A plain
+visit is a read-only view: to use the Stop, Restart and launch controls, sign
+the browser in once by opening the page with the supervisor's service token
+appended as `?token=` -- the token is the contents of `~/.apra-fleet/fleet.key`,
+or of `private/token` under the supervisor data directory when that file does
+not exist (the supervisor's startup log names the file and port in use). For
+example:
+
+```bash
+open "http://localhost:8787/?token=$(cat ~/.apra-fleet/fleet.key 2>/dev/null || cat ~/.apra-fleet-se/private/token)"
+```
+
+```powershell
+Start-Process "http://localhost:8787/?token=$(if (Test-Path "$HOME\.apra-fleet\fleet.key") { Get-Content "$HOME\.apra-fleet\fleet.key" } else { Get-Content "$HOME\.apra-fleet-se\private\token" })"
+```
+
+The supervisor swaps the token for an HttpOnly session cookie that carries a
+derived value (never the token itself) and redirects to the same page with the
+token stripped from the address bar. The page renders three things, and they
+answer the three questions stakeholders actually ask:
 
 - **What is running right now?** One section per live sprint: branch, goal, a
   four-state health badge from the supervisor's watchdog, the members and issue

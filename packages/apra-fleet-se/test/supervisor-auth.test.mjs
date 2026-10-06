@@ -14,6 +14,7 @@ import {
     TOKEN_COOKIE_NAME,
     TOKEN_FILE_MODE,
     TOKEN_ACL_UNVERIFIED_WARNING,
+    deriveDashboardCookie,
 } from '../src/supervisor/auth.mjs';
 
 // =============================================================================
@@ -257,17 +258,33 @@ describe('isAuthorized', () => {
         assert.equal(isAuthorized(req({ authorization: `bearer ${TOKEN}` }), TOKEN), true);
     });
 
-    test('accepts the se_token cookie', () => {
-        assert.equal(isAuthorized(req({ cookie: `${TOKEN_COOKIE_NAME}=${TOKEN}` }), TOKEN), true);
+    // apra-fleet-50j6.6: the cookie path carries the DERIVED value only.
+    test('accepts the se_token cookie carrying the derived value', () => {
+        assert.equal(isAuthorized(req({ cookie: `${TOKEN_COOKIE_NAME}=${deriveDashboardCookie(TOKEN)}` }), TOKEN), true);
+    });
+
+    test('rejects the RAW token on the cookie path (bearer-only)', () => {
+        assert.equal(isAuthorized(req({ cookie: `${TOKEN_COOKIE_NAME}=${TOKEN}` }), TOKEN), false);
+    });
+
+    test('rejects the derived cookie value presented as a bearer', () => {
+        assert.equal(isAuthorized(req({ authorization: `Bearer ${deriveDashboardCookie(TOKEN)}` }), TOKEN), false);
+    });
+
+    test('the derived cookie value differs from the token and the upstream credential', () => {
+        const derived = deriveDashboardCookie(TOKEN);
+        assert.notEqual(derived, TOKEN);
+        assert.ok(!derived.includes(TOKEN));
+        assert.match(derived, /^[0-9a-f]{64}$/);
     });
 
     test('accepts se_token among other cookies', () => {
-        const header = `theme=dark; ${TOKEN_COOKIE_NAME}=${TOKEN}; other=1`;
+        const header = `theme=dark; ${TOKEN_COOKIE_NAME}=${deriveDashboardCookie(TOKEN)}; other=1`;
         assert.equal(isAuthorized(req({ cookie: header }), TOKEN), true);
     });
 
     test('rejects a cookie whose name merely ends in se_token', () => {
-        assert.equal(isAuthorized(req({ cookie: `foo_${TOKEN_COOKIE_NAME}=${TOKEN}` }), TOKEN), false);
+        assert.equal(isAuthorized(req({ cookie: `foo_${TOKEN_COOKIE_NAME}=${deriveDashboardCookie(TOKEN)}` }), TOKEN), false);
     });
 
     test('rejects a wrong token of the same length', () => {
@@ -298,7 +315,7 @@ describe('isAuthorized', () => {
     test('accepts the freshly minted token end to end', () => {
         const { token } = loadOrCreateToken(dir);
         assert.equal(isAuthorized(req({ authorization: `Bearer ${token}` }), token), true);
-        assert.equal(isAuthorized(req({ cookie: `${TOKEN_COOKIE_NAME}=${token}` }), token), true);
+        assert.equal(isAuthorized(req({ cookie: `${TOKEN_COOKIE_NAME}=${deriveDashboardCookie(token)}` }), token), true);
     });
 });
 

@@ -642,8 +642,12 @@ export async function serveMain(argv = process.argv.slice(2), deps = {}) {
     // reuses the same token across restarts. The resolved source is logged
     // once at startup; the token value itself is never logged.
     const dataDir = defaultDataDir();
-    const { token: serviceToken, source: serviceTokenSource } = resolveServiceToken(dataDir);
+    const { token: serviceToken, source: serviceTokenSource, path: serviceTokenPath } = resolveServiceToken(dataDir);
     console.log(`[supervisor] service token source: ${serviceTokenSource}`);
+    // apra-fleet-50j6.6: how an operator signs the browser in. Names the token
+    // FILE only -- this output is teed to supervisor.log, so the token value
+    // (and therefore the tokenized link itself) must never be printed here.
+    console.log(`[supervisor] dashboard sign-in: open http://localhost:${port}/?token=<contents of ${serviceTokenPath}>`);
 
     // The supervisor's OWN backlog member (src/supervisor/backlog-member.mjs):
     // an LLM-less, unreservable local member whose work folder is repoRoot.

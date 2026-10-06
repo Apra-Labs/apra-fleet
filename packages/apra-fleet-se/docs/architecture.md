@@ -1268,9 +1268,11 @@ unparseable path fails closed (treated as guarded).
 
 **Two credential channels, one guard.** A request is authorized if it carries
 `Authorization: Bearer <token>` (case-insensitive scheme match per RFC 7235,
-compared with `crypto.timingSafeEqual`) or the `se_token=<token>` cookie set
-by `GET /` for the dashboard's own same-origin fetches (`HttpOnly`,
-`SameSite=Strict`). Every other client speaks the header: the coordination
+compared with `crypto.timingSafeEqual`) or the `se_token` cookie carrying
+`deriveDashboardCookie(token)` -- an HMAC-SHA256 of a fixed label under the
+token, verifiable by recomputation but not reversible into the token (which
+may be the shared fleet key). The raw token is accepted as a bearer only; the
+derived value as a cookie only. Every other client speaks the header: the coordination
 HTTP clients (`fleet-sprint/coordination.mjs`) send the bearer on both calls
 they make, the spawner passes the token to spawned children via env only
 (never argv, which would leak it into `ps`/process listings), and
@@ -1278,12 +1280,15 @@ they make, the spawner passes the token to spawned children via env only
 makes and turns a 401 into an actionable exit-1 hint rather than a false
 "no live sprints" read.
 
-**Known criteria gap, tracked as a follow-on rather than fixed here:** `GET /`
-must stay open (unauthenticated dashboard shell) AND must hand the token to
-the browser via the `se_token` cookie for same-origin fetches to work -- those
-two requirements together mean any loopback caller can hit `GET /` and harvest
-the token. Closing that gap needs a design decision (e.g. a first-use pairing
-flow) beyond this guard's scope.
+**Browser sign-in (token exchange).** The open pages (`GET /`, the extra index
+paths, the `/ui` project page) never set a cookie on a plain request -- they
+render a read-only view with a sign-in notice. `GET <page>?token=<token>`
+(`src/supervisor/dashboard-session.mjs`) is the exchange: a constant-time
+match sets the derived `se_token` cookie (`HttpOnly`, `SameSite=Strict`) and
+302-redirects to the same mount-aware path with the token removed; a mismatch
+sets no cookie and answers 401. This closes the earlier gap where any loopback
+caller could harvest the token from `GET /`'s Set-Cookie. `bin/serve.mjs`
+logs the token FILE and port to build the link from, never the token.
 
 **Tooling callers must be updated in lockstep with the guard, or they will
 falsely read a healthy supervisor as down.** Any script that polls
