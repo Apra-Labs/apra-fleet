@@ -1,3 +1,4 @@
+import { apiUrl } from "./base-path";
 // Thin fetch wrapper over the /api/fleet/ console routes the Secrets screen
 // (S2) needs. Deliberately its own module (apra-fleet-9h9j.3.1) -- members.ts
 // (lane s4-members) and health.ts each get their own, so no two lanes ever
@@ -49,7 +50,7 @@ export interface ActionResult {
 }
 
 async function postJson<T>(path: string, body: unknown): Promise<T> {
-  const response = await fetch(path, {
+  const response = await fetch(apiUrl(path), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body ?? {})
