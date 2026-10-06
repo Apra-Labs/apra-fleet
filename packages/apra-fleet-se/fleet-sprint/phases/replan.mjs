@@ -56,6 +56,7 @@
 
 import { dispatchRole } from '../dispatch-role.mjs';
 import { buildPlannerPrompt, buildPlanReviewerPrompt } from '../prompts.mjs';
+import { fetchScopeSnapshot } from '../scope-snapshot.mjs';
 
 /**
  * Runs the in-cycle scoped Replan phase for ONE develop round.
@@ -94,6 +95,9 @@ export async function runReplanPhase({
     replanIds,
     replannedThisCycle,
     perBeadFeedback,
+    // Every-depth scope snapshot seams (optional; absent -> no block).
+    bdListScoped,
+    invalidateAllBeadsCache,
 }) {
     const replanScopeIds = eligibleReplan.map((b) => b.id);
     phase(`Replan C${cycle} R${devRounds}`);
@@ -154,6 +158,7 @@ export async function runReplanPhase({
     // resumed develop round) must see those mutations, not the
     // pre-replan snapshot taken when this phase() started. The
     // engine runs it only on success, exactly as this ladder did.
+    const replanPlannerSnapshot = await fetchScopeSnapshot({ bdListScoped, invalidateAllBeadsCache, log, label: `scoped replan planner C${cycle} R${devRounds}` });
     const scopedPlannerOutcome = await dispatchRole(dispatchCtx, 'scoped-replan-planner', {
         prompt: buildPlannerPrompt({
             isDeltaCycle: true,
@@ -169,6 +174,7 @@ export async function runReplanPhase({
             // resurface here too.
             rejectedNewTasksToResubmit: pendingRejectedNewTasks,
             verifyExcluded: verifySetThisCycle,
+            scopeSnapshot: replanPlannerSnapshot,
         }),
         label: 'Scoped Replan Plan (interactive)',
         roleLabel: 'Scoped Replan Plan',
@@ -192,8 +198,9 @@ export async function runReplanPhase({
         // failed dispatch is a FAILED scoped review, never an
         // approval, and never an abort, the same discipline as the
         // main plan loop.
+        const replanReviewerSnapshot = await fetchScopeSnapshot({ bdListScoped, invalidateAllBeadsCache, log, invalidate: true, label: `scoped replan reviewer C${cycle} R${devRounds}` });
         const scopedReviewOutcome = await dispatchRole(dispatchCtx, 'scoped-replan-plan-reviewer', {
-            prompt: buildPlanReviewerPrompt({ targetIssues, goal: validated.goal, replanScope: replanScopeIds, verifyExcluded: verifySetThisCycle }),
+            prompt: buildPlanReviewerPrompt({ targetIssues, goal: validated.goal, replanScope: replanScopeIds, verifyExcluded: verifySetThisCycle, scopeSnapshot: replanReviewerSnapshot }),
             label: 'Scoped Replan Review',
             roleLabel: 'Scoped Replan Review',
         });

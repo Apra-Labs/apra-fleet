@@ -75,8 +75,8 @@ trust CONFIRMED entries fully and use INFERRED entries as hints, not facts.
 ```bash
 bd list --parent <scope> --status=open --json
 ```
-(run once per supplied scope root -- do NOT use a bare `bd list --status=open`, which
-lists the whole database, not just these sprint goals)
+`bd list --parent <id>` returns DIRECT children only (one level), never grandchildren. When your dispatch prompt carries a SPRINT SCOPE MEMBERSHIP block, that block is the authoritative every-depth list of the sprint's non-closed beads. Use that block as the membership list; `bd list --parent` (run once per supplied scope root) is only a direct-children view. When the block is absent, walk `--parent` transitively. Do NOT use a bare `bd list --status=open`, which
+lists the whole database, not just these sprint goals.
 
 For each open feature and its tasks, run `bd show <id>` to read the full description and metadata.
 
@@ -104,11 +104,13 @@ For each open feature and its tasks, run `bd show <id>` to read the full descrip
 7. **No duplicate work**: no two tasks do the same thing
 8. **Feasibility**: no task assumes something that has not been built yet
 9. **Ready-work check -- scoped to the UNION of this review's roots** (see the
-   graph-semantics section): run `bd list --parent <scope> --ready --type=task --json`
-   for EACH sprint root and reason over the COMBINED result. The invariant: the UNION of
+   graph-semantics section): run the project-wide `bd ready --type=task --json` once and keep only
+   ids present in the SPRINT SCOPE MEMBERSHIP block of your dispatch prompt (or, when the block is
+   absent, ids reached by walking `--parent` transitively from EACH sprint root -- `bd list --parent`
+   returns direct children only), then reason over the COMBINED result. The invariant: the UNION of
    ready work across all roots is non-empty whenever open tasks remain anywhere in
    scope -- NOT that every root independently has ready work. Do NOT use bare
-   `bd ready` (whole-database output, not a signal about this DAG).
+   `bd ready` unfiltered (whole-database output, not a signal about this DAG).
    - A single root whose scoped `--ready` list is EMPTY is NOT a failure when its open
      tasks are blocked (directly or transitively) by an open task in a DIFFERENT root
      reachable from the union ready-set -- legitimate cross-goal sequencing, not a
@@ -116,8 +118,8 @@ For each open feature and its tasks, run `bd show <id>` to read the full descrip
    - Hard CHANGES_NEEDED only when EITHER (a) the union of `--ready` across every root
      is empty while open tasks remain anywhere in scope (true deadlock), OR (b) a
      root's blocked chain traces back into its OWN subtree (a self-cycle -- a `blocks`
-     edge to a `--parent` ancestor/descendant). Diagnose with `bd blocked --parent
-     <scope>` and `bd dep list <id>`; list every ID in the cycle. Do NOT assume a
+     edge to a `--parent` ancestor/descendant). Diagnose with `bd blocked --json`
+     (filtered to the scope membership) and `bd dep list <id>`; list every ID in the cycle. Do NOT assume a
      self-cycle is structurally impossible except for `epic` scope roots -- bd's
      protection is narrower than that.
    Epic-level completion tracking is separate -- use `bd epic status <scope>` ONLY when

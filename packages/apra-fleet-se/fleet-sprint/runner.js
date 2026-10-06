@@ -2716,6 +2716,7 @@ async function runSprintCycle(context) {
             reconcilePendingRejectedNewTasks,
             stageCommandBodyMemberSide,
             updateDashboard,
+            bdListScoped, invalidateAllBeadsCache,
         });
         pendingRejectedNewTasks = planOutcome.pendingRejectedNewTasks;
         const { planCapDeferredIds, lastVerdict, planningRounds } = planOutcome;
@@ -2891,6 +2892,7 @@ async function runSprintCycle(context) {
                     gitSync, updateDashboard,
                     verifySetThisCycle, pendingRejectedNewTasks,
                     devRounds, eligibleReplan, replanIds, replannedThisCycle, perBeadFeedback,
+                    bdListScoped, invalidateAllBeadsCache,
                 });
                 continue;
             }

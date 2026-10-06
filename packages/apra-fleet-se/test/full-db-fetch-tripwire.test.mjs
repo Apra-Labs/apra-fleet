@@ -72,6 +72,21 @@ test('checker: a re-fetch within the SAME phase is allowed when an intervening b
     assert.deepEqual(checkFullDbFetchLog(log), []);
 });
 
+test('checker: a planning phase allows exactly two full fetches (planner + plan-reviewer scope snapshots); a third is a violation', () => {
+    const two = [
+        { phase: 'Plan C1 R1', command: FULL_DB_FETCH_CMD },
+        { phase: 'Plan C1 R1', command: FULL_DB_FETCH_CMD },
+    ];
+    assert.deepEqual(checkFullDbFetchLog(two), []);
+    const three = [...two, { phase: 'Plan C1 R1', command: FULL_DB_FETCH_CMD }];
+    assert.equal(checkFullDbFetchLog(three).length, 1);
+    // A non-planning phase gets no such allowance.
+    assert.equal(checkFullDbFetchLog([
+        { phase: 'Develop C1 R1', command: FULL_DB_FETCH_CMD },
+        { phase: 'Develop C1 R1', command: FULL_DB_FETCH_CMD },
+    ]).length, 1);
+});
+
 test('checker: a fresh full-DB fetch is allowed once per DISTINCT phase step (not a violation)', () => {
     const log = [
         { phase: 'Plan', command: FULL_DB_FETCH_CMD },

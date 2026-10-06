@@ -65,6 +65,16 @@ const FULL_DB_SHAPE_RE = /^bd\s+list\b(?=.*(?:^|\s)--all(?:\s|$))(?=.*(?:^|\s)--
 // dep/dolt pull/etc -- an unrecognized subcommand is conservatively assumed
 // to mutate) does invalidate it. Non-`bd` commands (git, node probes) never
 // touch beads state and are ignored entirely.
+// A planning phase ("Plan C1 R1", "Replan C1 R1") legitimately takes TWO full
+// fetches: one for the planner's SPRINT SCOPE MEMBERSHIP snapshot and one,
+// after the cache is invalidated, for the plan-reviewer's. The planner
+// dispatch between them mutates beads on the member's own clone, which never
+// shows up as a `bd` command in the orchestrator's activity log, so the
+// generic "no mutation seen" rule cannot tell the second fetch is warranted.
+// A THIRD fetch in the same planning phase is still a coalescing regression.
+const PLANNING_PHASE_RE = /^(Plan|Replan) C\d+ R\d+$/;
+const PLANNING_PHASE_MAX_FETCHES = 2;
+
 const BD_READ_ONLY_RE = /^bd\s+(list|show|ready|config)\b/i;
 
 /**
@@ -90,6 +100,7 @@ export function checkFullDbFetchLog(entries) {
     let cacheValid = false;
     const NO_PHASE_YET = Symbol('no-phase-seen-yet');
     let lastPhase = NO_PHASE_YET;
+    let fetchesThisPhase = 0;
 
     entries.forEach((entry, idx) => {
         const command = entry && entry.command;
@@ -99,6 +110,7 @@ export function checkFullDbFetchLog(entries) {
         // wrapper calls invalidateAllBeadsCache() before every rawPhase()).
         if (lastPhase !== NO_PHASE_YET && entry.phase !== lastPhase) {
             cacheValid = false;
+            fetchesThisPhase = 0;
         }
         lastPhase = entry.phase;
 
@@ -109,7 +121,9 @@ export function checkFullDbFetchLog(entries) {
                     `(expected the single documented "${FULL_DB_FETCH_CMD}")`
                 );
             }
-            if (cacheValid) {
+            fetchesThisPhase += 1;
+            const planningRefetchOk = PLANNING_PHASE_RE.test(String(entry.phase)) && fetchesThisPhase <= PLANNING_PHASE_MAX_FETCHES;
+            if (cacheValid && !planningRefetchOk) {
                 violations.push(
                     `duplicate full-DB fetch at entry ${idx} (phase ${JSON.stringify(entry.phase)}, command "${command}") -- ` +
                     `no phase transition or beads-mutating bd command occurred since the previous full fetch, so this snapshot ` +
