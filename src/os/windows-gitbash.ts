@@ -302,7 +302,19 @@ export class WindowsGitBashCommands extends LinuxCommands {
     // -- a non-leader whose parent IS its group leader (the `{ ...; } &`
     // subshell of a non-interactive bash). An interactive shell's job is its
     // own group leader, so a recycled pid there falls through to killing
-    // just that pid, the same exposure LinuxCommands.killPid has.
+    // just that pid, the same exposure LinuxCommands.killPid has. The shape
+    // is NOT unique to fleet wrappers, though: a recycled pid that lands on
+    // any non-leader child of a non-interactive script (a background job of
+    // some unrelated `bash script.sh`) matches it too, and then that
+    // script's whole group is killed -- broader than Linux's tree-kill of
+    // the pid's own descendants.
+    //
+    // Orphan shape: once the wrapper's leader bash has died (channel
+    // teardown -- the orphan-recovery case), the FLEET_PID subshell is
+    // reparented to 1 while its pgid still names the dead leader. A pid
+    // whose parent is 1 and whose group has no live leader is that remnant,
+    // so its group is killed too; otherwise only the subshell would die and
+    // its children would survive.
     //
     // Pure bash builtins over /proc (no pgrep in Git bash). Doubled slashes
     // stop MSYS from path-mangling taskkill's switches. Best-effort: every
@@ -312,7 +324,7 @@ export class WindowsGitBashCommands extends LinuxCommands {
     return [
       `_fleet_pg=; _fleet_pp=; _fleet_self=; _fleet_w=`,
       `{ read -r _fleet_pg < /proc/${p}/pgid; read -r _fleet_pp < /proc/${p}/ppid; read -r _fleet_self < /proc/$$/pgid; } 2>/dev/null`,
-      `if [ -n "$_fleet_pg" ] && [ "$_fleet_pg" -gt 1 ] && [ "$_fleet_pg" != "$_fleet_self" ] && [ "$_fleet_pg" != "${p}" ] && [ "$_fleet_pp" = "$_fleet_pg" ]; then `
+      `if [ -n "$_fleet_pg" ] && [ "$_fleet_pg" -gt 1 ] && [ "$_fleet_pg" != "$_fleet_self" ] && [ "$_fleet_pg" != "${p}" ] && { [ "$_fleet_pp" = "$_fleet_pg" ] || { [ "$_fleet_pp" = 1 ] && [ ! -e "/proc/$_fleet_pg" ]; }; }; then `
         + `for _fleet_d in /proc/[0-9]*; do _fleet_g=; _fleet_x=; { read -r _fleet_g < "$_fleet_d/pgid"; } 2>/dev/null; `
         + `if [ "$_fleet_g" = "$_fleet_pg" ]; then { read -r _fleet_x < "$_fleet_d/winpid"; } 2>/dev/null; [ -n "$_fleet_x" ] && _fleet_w="$_fleet_w //PID $_fleet_x"; fi; done; `
         + `[ -n "$_fleet_w" ] && taskkill //F //T $_fleet_w >/dev/null 2>&1; `

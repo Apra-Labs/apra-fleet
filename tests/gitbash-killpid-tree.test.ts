@@ -77,6 +77,48 @@ describe.skipIf(!bash.path)('gitbash killPid kills the whole timed-out command t
     }
   }, 60000);
 
+  it('orphaned wrapper (leader bash already dead): the whole remnant group still dies', async () => {
+    // Channel-teardown / orphan-recovery shape: the wrapper's leader bash is
+    // gone, so the FLEET_PID subshell is reparented to 1 while its pgid still
+    // names the dead leader. Its children must die with it.
+    const cmds = getOsCommands('windows', 'gitbash');
+    const payload = [
+      'sleep 3021 & p1=$!',
+      'sleep 3022 & p2=$!',
+      'sleep 1',
+      // The wrapper's leader bash is this subshell's parent.
+      'read -r l < /proc/$BASHPID/ppid; echo "LEADER:$l"',
+      'for p in $p1 $p2; do read -r w < /proc/$p/winpid; echo "W:$w"; done',
+      'wait',
+    ].join('\n');
+    const wrapped = cmds.wrapPidCapture(cmds.wrapInWorkFolder(process.cwd(), 'eval ' + escapeShellArg(payload)));
+    const wrapper = spawn(bash.path!, ['-c', wrapped], { windowsHide: true });
+    let out = '';
+    wrapper.stdout!.on('data', (d) => { out += d.toString(); });
+    const winpids: number[] = [];
+    try {
+      expect(await waitFor(() => (out.match(/^W:\d+/gm) ?? []).length === 2, 15000), out).toBe(true);
+      const fleetPid = Number(/^FLEET_PID:(\d+)/m.exec(out)![1]);
+      const leader = Number(/^LEADER:(\d+)/m.exec(out)![1]);
+      for (const m of out.matchAll(/^W:(\d+)/gm)) winpids.push(Number(m[1]));
+      // Kill only the leader bash, leaving the subshell orphaned.
+      expect(runBash(bash.path!, `kill -9 ${leader}`).status).toBe(0);
+      const orphaned = await waitFor(() => {
+        const r = runBash(bash.path!, `cat /proc/${fleetPid}/ppid`);
+        return r.stdout.trim() === '1';
+      }, 10000);
+      expect(orphaned, 'FLEET_PID subshell reparented to 1').toBe(true);
+      for (const w of winpids) expect(alive(w)).toBe(true);
+
+      expect(runBash(bash.path!, cmds.killPid(fleetPid)).status).toBe(0);
+      const allDead = await waitFor(() => winpids.every((w) => !alive(w)), 10000);
+      expect(allDead, `still alive: ${winpids.filter(alive).join(',')}`).toBe(true);
+    } finally {
+      for (const w of winpids) { try { process.kill(w, 'SIGKILL'); } catch { /* gone */ } }
+      if (wrapper.pid) spawnSync('taskkill.exe', ['/F', '/T', '/PID', String(wrapper.pid)], { stdio: 'ignore', windowsHide: true });
+    }
+  }, 60000);
+
   it('a recycled pid that is its own group leader kills only that pid, not its group', async () => {
     // Shape of an unrelated process that may have inherited a stale stored
     // pid: a group leader (here a bash with a child in its group). Only the

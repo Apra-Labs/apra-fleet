@@ -138,6 +138,8 @@ describe('WindowsGitBashCommands Windows-native overrides stay Windows-appropria
     // Stale-pid guard: only a non-leader whose parent is its group leader.
     expect(cmd).toContain('"$_fleet_pg" != "4242"');
     expect(cmd).toContain('"$_fleet_pp" = "$_fleet_pg"');
+    // Orphan remnant: reparented to 1 and its group leader is gone.
+    expect(cmd).toContain('[ "$_fleet_pp" = 1 ] && [ ! -e "/proc/$_fleet_pg" ]');
     expect(cmd.endsWith('; true')).toBe(true);
   });
 
