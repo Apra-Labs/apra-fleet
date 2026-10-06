@@ -249,7 +249,23 @@ export async function importBibleEntries(
   let rejected = 0;
   let demoted = 0;
 
-  for (const candidate of bibleEntries) {
+  // A bible that carries BOTH an entry and a tombstone for the same id is
+  // self-contradictory, and "the file says both" must resolve to the DEMOTION
+  // -- the same rule the member bible view applies (excludeTombstonedEntries is
+  // called at member-bible-view.ts buildView for the local and the remote path).
+  // Without this filter a tombstoned id with NO local row is CREATED by the
+  // entry loop below, because the tombstone loop never creates a row: the import
+  // would resurrect, as a fresh CONFIRMED row, exactly the entry the tombstone
+  // withdrew trust from. A freshly imported row's created_at is import time, not
+  // evidence that the id was re-promoted after the tombstone, so the tombstone
+  // loop cannot undo it either.
+  //
+  // For every bible kb_bible_commit actually writes this is a no-op: recording a
+  // tombstone removes the entry. It is belt-and-braces against a hand-edited or
+  // partially merged bible.
+  const importable = excludeTombstonedEntries(bibleEntries, options.demotions ?? []);
+
+  for (const candidate of importable) {
     // Malformed entry -> tolerate and skip individually.
     if (!isValidBibleEntry(candidate)) {
       skipped++;
@@ -315,9 +331,10 @@ export async function importBibleEntries(
     else if (audn_decision === 'flagged') flagged++;
   }
 
-  // TOMBSTONES, applied AFTER the entry loop so an id the bible lists as a live
-  // entry is loaded first and judged on its own merits (its fresh created_at is
-  // newer than any tombstone, so it correctly stays CONFIRMED). The provider
+  // TOMBSTONES, applied AFTER the entry loop. The entry loop can no longer have
+  // introduced a row for any id named here -- those entries were filtered out
+  // above -- so this loop only ever judges rows that ALREADY existed locally,
+  // which is the only population a tombstone is allowed to act on. The provider
   // holds every rule -- never create, promotion-time comparison, no ownerTag
   // check -- in applyBibleDemotion; this loop only counts what it changed.
   //

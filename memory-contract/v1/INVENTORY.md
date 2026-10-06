@@ -72,7 +72,7 @@ No tool in this surface declares a response zod schema; see section 3.
 | 8 | `kb_promote` | `kbPromoteSchema` (`src/tools/kb-promote.ts`) | id, reason | `text(JSON): {id, previous_confidence, new_confidence}` | Upgrade KB entry confidence UNVERIFIED -> INFERRED -> CONFIRMED, appending a promotion note as evidence trail. No-op on an already-CONFIRMED entry. |
 | 9 | `kb_demote` | `kbDemoteSchema` (`src/tools/kb-demote.ts`) | id, reason, evidence_files | `text(JSON): {id, previous_confidence, new_confidence}` | Lower a CONFIRMED KB entry back to INFERRED, appending a demotion note and snapshotting each cited source file's on-disk sha256. REFUSES a non-CONFIRMED entry (`E-DEMOTE-NOT-CONFIRMED`) rather than returning a no-op. |
 | 10 | `kb_freshness_sweep` | `kbFreshnessSweepSchema` (`src/tools/kb-freshness-sweep.ts`) | (none) | `text(JSON): {checked, staled, unstaled}` | Bounded full-KB bidirectional freshness sweep: re-hash every entry's stored basis against the current worktree, stale mismatches, revive stale entries whose basis matches again (superseded/downvoted/invalidated stay retired). |
-| 11 | `kb_import` | `kbImportSchema` (`src/tools/kb-import.ts`) | path, scope, skip_sweep | `text(JSON): KbImportReport {imported, skipped, linked, flagged, rejected, sweep:{checked, staled, unstaled}}` | Import a merged bible (`.fleet/kb-canonical.json`) into the warm local KB via the AUDN choke point (dup/refine/contradiction routing); directive entries are forced to pending proposals. Runs a freshness sweep after import unless `skip_sweep`. |
+| 11 | `kb_import` | `kbImportSchema` (`src/tools/kb-import.ts`) | path, scope, skip_sweep | `text(JSON): KbImportReport {imported, skipped, linked, flagged, rejected, demoted, sweep:{checked, staled, unstaled}}` | Import a merged bible (`.fleet/kb-canonical.json`) into the warm local KB via the AUDN choke point (dup/refine/contradiction routing); directive entries are forced to pending proposals. Applies the bible's EXPLICIT demotion tombstones to local rows and reports `demoted` = rows actually taken CONFIRMED -> INFERRED (not tombstones read); absence from the bible never demotes, and a tombstoned id is never imported as a new row. Runs a freshness sweep after import unless `skip_sweep`. |
 | 12 | `kb_resolve_contradiction` | `kbResolveContradictionSchema` (`src/tools/kb-resolve-contradiction.ts`) | winnerId, loserId, evidence | `text(JSON): {winnerId, loserId}` | Resolve a KB contradiction pair: winner goes to CONFIRMED with evidence appended, loser is superseded+stale. Refuses (writes nothing) if either id is missing, already superseded, not a genuine pair, or involves an ACTIVE directive. |
 | 13 | `kb_reconcile_prefilter` | `kbReconcilePrefilterSchema` (`src/tools/kb-reconcile-prefilter.ts`) | (none) | `text(JSON): {pairs, resolved[], left_for_agent[], skipped_directive}` | Mechanical hash-basis prefilter over flagged contradiction pairs: a pair with exactly one side hash-matching the current worktree is auto-resolved via `kb_resolve_contradiction`; the rest are left for the reconciler agent. |
 | 14 | `kb_setup` | `kbSetupSchema` (`src/tools/kb-setup.ts`) | provider, remote, token | `text(JSON): {success, steps}` | Set up the KB: install the git post-commit hook, write provider config, store remote credentials encrypted. Run once per repo. |
@@ -208,7 +208,7 @@ through it" column lists only the `kb_*`/`code_*` tools in this surface.
 | P-11 | `touch` | `touch(ids: string[]): Promise<number>` | `kb_session_prime` | telemetry write (`use_count`/`last_accessed`), existence-tolerant | no (counter advances) |
 | P-12 | `relatedClaims` | `relatedClaims(ids: string[], limit?): Promise<KBEntry[]>` | `kb_query` (only when `expand_related` is true) | read | yes |
 
-### 4.2 Provider members reached by tools but NOT declared on MemoryProvider (8 methods + 1 property)
+### 4.2 Provider members reached by tools but NOT declared on MemoryProvider (9 methods + 1 property)
 
 These are `SqliteProvider` members (`src/services/knowledge/sqlite-provider.ts`)
 that registered tools call directly. They are part of the real contract surface
@@ -225,6 +225,7 @@ against `MemoryProvider` would not cover them.
 | X-6 | `hasEntry` | `hasEntry(id: string): boolean` -- SYNCHRONOUS (non-Promise) | `kb_import` | read | yes |
 | X-8 | `getSourceFileBases` | `getSourceFileBases(ids: string[]): Map<string, Record<string, string> \| null>` -- SYNCHRONOUS (non-Promise); stored per-file hash basis per id, null when unknown/empty | `kb_export` (project-scope bible filter) | read | yes |
 | X-9 | `getDemotionState` | `getDemotionState(ids: string[]): Map<string, {confidence, demoted_at?}>` -- SYNCHRONOUS (non-Promise); current confidence and `demoted_at` per id, id absent from the map when unknown. Deliberately NOT `list()`: it reads the row directly, so a demoted entry that has since gone stale or been superseded still reports its demotion | `kb_bible_commit` (`demoted_ids` tombstone admission) | read | yes |
+| X-10 | `applyBibleDemotion` | `applyBibleDemotion(id: string, tombstoneDemotedAt: string): boolean` -- SYNCHRONOUS (non-Promise); applies ONE explicit bible tombstone to the local row for `id`, returning whether that row actually changed. Refuses (returns false) when no local row exists -- it NEVER creates one -- when the row is not CONFIRMED, when the row's promotion time (`promoted_at`, else `created_at`) is not STRICTLY BEFORE `tombstoneDemotedAt` (an unparseable timestamp on either side means do not act), and on the inherited superseded / active-user-directive refusals. Sets `demoted_at` to the TOMBSTONE's value, not `now()`. Deliberately applies NO `ownerTag` check: bible-imported rows carry no member tag, so an owner check here would make every imported row undemotable | `kb_import` (via `importBibleEntries`, `src/services/knowledge/bible-import.ts`) | mutate-trust (CONFIRMED -> INFERRED, appends the bible demotion note) | yes -- a second import is a no-op, because the row is no longer CONFIRMED |
 | X-7 | `repoPath` | property, not a method | NOT read by `kb_freshness_sweep` -- `src/tools/kb-freshness-sweep.ts:30` calls `providers.project.freshnessSweep()` with NO argument; the tool only names `repoPath` in a comment at line 27, and the sweep root defaults inside `freshnessSweep()` itself (`SqliteProvider`'s own stored anchor), not from a value the tool passes in | read (by the provider internally, not by this tool) | n/a |
 
 Also off-interface and reachable, but CLI-only rather than tool-reachable (listed
@@ -296,7 +297,7 @@ pass-throughs to the embedded `fallback: SqliteProvider`, connectivity
 notwithstanding. Only `capture`, `query`, `context`, `invalidate`, and `prime`
 (five methods) actually attempt an HTTP request first.
 
-**4.4.2 -- The 8 methods + 1 property reachable-but-undeclared on `MemoryProvider`
+**4.4.2 -- The 9 methods + 1 property reachable-but-undeclared on `MemoryProvider`
 (section 4.2): none of them exist on `HttpKbProvider` at all.**
 
 | # | Member | On `HttpKbProvider`? | Consequence | Verdict class |
@@ -309,6 +310,7 @@ notwithstanding. Only `capture`, `query`, `context`, `invalidate`, and `prime`
 | X-6 | `hasEntry` | absent | `kb_import` -> `SqliteProvider.hasEntry` only | missing member |
 | X-8 | `getSourceFileBases` | absent | `kb_export` -> `SqliteProvider.getSourceFileBases` only | missing member |
 | X-9 | `getDemotionState` | absent | `kb_bible_commit` -> `SqliteProvider.getDemotionState` only | missing member |
+| X-10 | `applyBibleDemotion` | absent | `kb_import` -> `importBibleEntries` -> `SqliteProvider.applyBibleDemotion` only. `importBibleEntries` is typed against `SqliteProvider` directly, so an HTTP-backed project provider could not reach this path at all | missing member |
 | X-7 | `repoPath` | absent (property) | `kb_freshness_sweep` reads `SqliteProvider.repoPath` directly; no analogous property on `HttpKbProvider` | missing member |
 
 None of these are "missing" in the sense of an incomplete HTTP implementation

@@ -45,6 +45,9 @@ import type { KBEntryInput, KBEntry } from '../../src/services/knowledge/types.j
 //     tombstone upserts -> scenario 3 fails (the ghost id gains a row).
 //   - replace isStrictlyBefore with `true` in applyBibleDemotion -> scenario 2
 //     fails (the re-promoted row is demoted anyway).
+//   - drop the excludeTombstonedEntries call in importBibleEntries -> scenario
+//     3b fails (a bible carrying both an entry and a tombstone for one id
+//     imports it as a fresh CONFIRMED row, resurrecting what was withdrawn).
 //   - drop the excludeTombstonedEntries call in member-bible-view's buildView
 //     -> the HAND-EDITED-FILE member-view test fails (the view lists gone-1).
 //     Note which test that is, and which it is NOT: after a normal
@@ -315,6 +318,46 @@ describe('a demotion crosses clones through the committed bible', () => {
 
     expect(row(providerB, y)).toBeUndefined();
     expect(rowCount(providerB)).toBe(before);
+    expect(report.demoted).toBe(0);
+  });
+
+  it('scenario 3b: a bible carrying BOTH an entry and a tombstone for an id does not import it', async () => {
+    // kb_bible_commit removes an entry when it records that entry's tombstone,
+    // so "the file says both" only arises from a hand-edited or partially merged
+    // bible. It must resolve to the DEMOTION on the IMPORT path too, not just in
+    // the member view: the tombstone loop never creates a row, so if the entry
+    // loop imported this id the import would RESURRECT, as a fresh CONFIRMED
+    // row, exactly the entry trust was withdrawn from -- and the tombstone could
+    // not undo it, because the new row's created_at is import time.
+    const bible = {
+      version: 2,
+      entries: [
+        { id: 'keep-1', type: 'knowledge', title: 'Kept fact', summary: 'A kept summary.', symbols: [], source_files: ['src/k.ts'], confidence: 'CONFIRMED' },
+        { id: 'zombie-1', type: 'knowledge', title: 'Withdrawn fact', summary: 'A withdrawn summary.', symbols: [], source_files: ['src/k.ts'], confidence: 'CONFIRMED' },
+      ],
+      demotions: [{ id: 'zombie-1', demoted_at: '2026-01-01T00:00:00.000Z' }],
+    };
+    // The cited file must exist in the IMPORTING checkout or capture's basis
+    // check rejects the entry, and `keep-1` would not prove anything.
+    writeSrc(cloneB, 'src/k.ts', 'export const k = 1;\n');
+    fs.mkdirSync(path.dirname(biblePathOf(cloneB)), { recursive: true });
+    fs.writeFileSync(biblePathOf(cloneB), JSON.stringify(bible), 'utf-8');
+
+    const before = rowCount(providerB);
+    const report = JSON.parse(await kbImport({ skip_sweep: true }, { folder: cloneB }));
+
+    // The tombstoned id gained NO row at all -- not a CONFIRMED one, not a
+    // demoted one. Dropping the excludeTombstonedEntries filter in
+    // importBibleEntries makes these three assertions fail (the id comes back as
+    // a CONFIRMED row with demoted_at null, and imported is 2).
+    expect(row(providerB, 'zombie-1')).toBeUndefined();
+    expect(report.imported).toBe(1);
+    expect(rowCount(providerB)).toBe(before + 1);
+
+    // ...and the filter is surgical: the un-tombstoned sibling still imports.
+    expect(row(providerB, 'keep-1')!.confidence).toBe('CONFIRMED');
+    // No local row existed for the tombstoned id, so nothing was DEMOTED either:
+    // the entry was excluded, not demoted into existence.
     expect(report.demoted).toBe(0);
   });
 
