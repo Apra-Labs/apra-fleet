@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "12fbcf6bd3a5540e5e979715151986fa15c1291e",
     "branch": "main",
-    "entry_count": 278
+    "entry_count": 279
   },
   "entries": [
     {
@@ -4864,6 +4864,26 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:14.498Z"
+    },
+    {
+      "id": "f76a103e-797e-4606-b224-bc130e8243e0",
+      "type": "knowledge",
+      "title": "A failed last-cycle deploy forces the sprint verdict to FAIL in the orchestrator, not the LLM",
+      "summary": "runner.js keeps lastDeployFailure for the latest cycle. Both satisfied exits (root-closed and goal-priority) refuse to fire while it is set and re-attempt the deploy, bounded by maxCycles and DEPLOY_RETRY_CYCLE_LIMIT. Final Review then overrides any PASS to FAIL with a reason naming the cycle and deployer notes.",
+      "symbols": [
+        "latestDeployFailure",
+        "applyDeployFailureVerdictGate",
+        "DEPLOY_RETRY_CYCLE_LIMIT",
+        "runFinalReviewPhase"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/phases/deploy.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/fleet-sprint/phases/final-review.mjs",
+        "packages/apra-fleet-se/test/mock-sprint-deploy-failure-verdict.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T08:11:44.370Z"
     },
     {
       "id": "f8604414-0bbf-4850-88bd-6a67e5539341",
