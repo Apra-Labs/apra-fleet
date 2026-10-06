@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "34ff160ff8ee9e2268e851270b911771d06fedca",
     "branch": "feat/kb-redesign",
-    "entry_count": 273
+    "entry_count": 275
   },
   "entries": [
     {
@@ -3207,6 +3207,24 @@
       "updated_at": "2026-09-30T23:07:12.100Z"
     },
     {
+      "id": "a42a1209-e65a-49b2-890e-451547482116",
+      "type": "learning",
+      "title": "Claude --mcp-config entry wins over a same-name local-scope MCP server entry",
+      "summary": "On claude 2.1.291, with both a projects[cwd].mcpServers apra-fleet entry and an --mcp-config apra-fleet entry, only the --mcp-config entry's URL is initialized. So the session entry's alwaysLoad is not shadowed by the per-folder entry on remote members.",
+      "symbols": [
+        "sessionMcpConfigContent",
+        "perFolderMcpEntryNeeded",
+        "MEMBER_MCP_SERVER_NAME"
+      ],
+      "source_files": [
+        "src/services/session-mcp-config.ts",
+        "src/providers/claude.ts",
+        "src/tools/execute-prompt.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T10:15:58.471Z"
+    },
+    {
       "id": "a4663ebf-bce1-440a-a776-1ba2d1c30497",
       "type": "knowledge",
       "title": "openSyncBracketCount is a pure aggregate counter; cross-owner bracket overlap is legitimate except the opt-in code-write key",
@@ -3737,6 +3755,26 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:42.831Z"
+    },
+    {
+      "id": "c020df38-adf3-4618-9030-de857b6a2e9d",
+      "type": "knowledge",
+      "title": "Member claude.json delivery has no inline fallback: file channel or secret file, else E-MEMBER-CONFIG-NO-FILE-CHANNEL",
+      "summary": "deliverWorkspaceTrustFile writes ~/.claude.json only via the file channel or the owner-only secret file, then a move command that carries no content. With neither it throws E-MEMBER-CONFIG-NO-FILE-CHANNEL, so relay members and SSH members without SFTP now fail loudly.",
+      "symbols": [
+        "deliverWorkspaceTrustFile",
+        "memberSecretFileChannelFor",
+        "writeMemberSecretFile"
+      ],
+      "source_files": [
+        "src/providers/claude.ts",
+        "src/utils/workspace-trust.ts",
+        "src/services/member-secret-env.ts",
+        "src/services/relay-strategy.ts",
+        "tests/claude-config-sentinel.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T10:15:58.405Z"
     },
     {
       "id": "c0c940f9-8e0a-4772-89e6-f0961e094adc",
