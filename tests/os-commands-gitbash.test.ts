@@ -124,14 +124,18 @@ describe('WindowsGitBashCommands command-string generation (bash for a gitbash W
 describe('WindowsGitBashCommands Windows-native overrides stay Windows-appropriate', () => {
   const gitbash = getOsCommands('windows', 'gitbash');
 
-  it('killPid uses taskkill (no bash-native process tree kill exists in Git bash)', () => {
+  it('killPid treats the pid as an MSYS pid: kills its process group plus each member\'s Windows tree', () => {
     const cmd = gitbash.killPid(4242);
-    expect(cmd).toContain('taskkill');
-    expect(cmd).toContain('4242');
+    // Resolves the MSYS pid's process group from /proc, never taskkills the raw number.
+    expect(cmd).toContain('/proc/4242/pgid');
+    expect(cmd).not.toContain('//PID 4242');
+    expect(cmd).toContain('kill -9 -- -"$_fleet_pg"');
+    expect(cmd).toContain('/winpid');
     // Doubled slashes so MSYS does not path-mangle the switches (see class doc comment).
-    expect(cmd).toContain('//F');
-    expect(cmd).toContain('//T');
-    expect(cmd).toContain('//PID');
+    expect(cmd).toContain('taskkill //F //T $_fleet_w');
+    // Never targets its own process group, and always exits 0.
+    expect(cmd).toContain('"$_fleet_pg" != "$_fleet_self"');
+    expect(cmd.endsWith('; true')).toBe(true);
   });
 
   it('disk queries via df -h against the bash-normalized member path (still a real Windows drive query)', () => {

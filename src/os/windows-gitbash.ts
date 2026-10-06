@@ -277,11 +277,41 @@ export class WindowsGitBashCommands extends LinuxCommands {
   // --- Process management ---
 
   override killPid(pid: number): string {
-    // taskkill /T kills the whole process tree, which is what LinuxCommands
-    // hand-rolls with pgrep -P (absent from Git bash). The doubled slashes stop
-    // MSYS from path-mangling the switches; taskkill exits non-zero when the
-    // pid is already gone, so swallow that the way LinuxCommands does.
-    return `taskkill //F //T //PID ${pid} >/dev/null 2>&1; true`;
+    // Every pid this receives is an MSYS pid: the FLEET_PID marker is emitted
+    // by bash's `$!` (pidWrapUnix), and every caller -- ssh.ts killRemoteTree,
+    // tryKillPid, orphan recovery -- passes that marker value. (LocalStrategy's
+    // own timeout kill uses Node's child.pid and taskkill directly on win32;
+    // it never runs this string.) An MSYS pid is NOT a Windows pid, so the old
+    // `taskkill //PID <msys pid>` missed the tree -- or hit an unrelated
+    // Windows process that happened to own that number.
+    //
+    // Why kill the PROCESS GROUP and not just the Windows tree of the pid's
+    // winpid: when MSYS bash forks and execs an MSYS binary (sleep, git, ...),
+    // the forked Windows process exits and the exec'd one is left with a dead
+    // Windows parent, so `taskkill /T` from the winpid cannot reach it.
+    // Membership in the bash process group survives that. Native Windows
+    // descendants (node.exe, cmd.exe) are outside the MSYS group, so each
+    // group member's winpid is also handed to `taskkill //T` to take its
+    // Windows subtree. Bash job control is off in the non-interactive
+    // wrapper, so the group is exactly the wrapper invocation; the group of
+    // the shell running THIS kill is never targeted, nor pgid <= 1.
+    //
+    // Pure bash builtins over /proc (no pgrep in Git bash). Doubled slashes
+    // stop MSYS from path-mangling taskkill's switches. Best-effort: every
+    // step tolerates an already-dead process and the trailing `true` keeps
+    // the exit code 0, matching LinuxCommands.killPid.
+    const p = Math.trunc(pid);
+    return [
+      `_fleet_pg=; _fleet_self=; _fleet_w=`,
+      `{ read -r _fleet_pg < /proc/${p}/pgid; read -r _fleet_self < /proc/$$/pgid; } 2>/dev/null`,
+      `if [ -n "$_fleet_pg" ] && [ "$_fleet_pg" -gt 1 ] && [ "$_fleet_pg" != "$_fleet_self" ]; then `
+        + `for _fleet_d in /proc/[0-9]*; do _fleet_g=; _fleet_x=; { read -r _fleet_g < "$_fleet_d/pgid"; } 2>/dev/null; `
+        + `if [ "$_fleet_g" = "$_fleet_pg" ]; then { read -r _fleet_x < "$_fleet_d/winpid"; } 2>/dev/null; [ -n "$_fleet_x" ] && _fleet_w="$_fleet_w //PID $_fleet_x"; fi; done; `
+        + `[ -n "$_fleet_w" ] && taskkill //F //T $_fleet_w >/dev/null 2>&1; `
+        + `kill -9 -- -"$_fleet_pg" 2>/dev/null; fi`,
+      `kill -9 ${p} 2>/dev/null`,
+      `true`,
+    ].join('; ');
   }
 
   // --- GPU activity ---
