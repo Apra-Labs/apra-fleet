@@ -110,6 +110,38 @@ function toTime(v) {
 }
 
 /**
+ * Lists the open beads whose children are ALL closed (rollups that only the
+ * integration verifier would close), excluding the sprint's own targets. Used
+ * at the Integration Test skip point to name what is left unverified. Pure;
+ * closes nothing.
+ *
+ * @param {{scopeBeads?: object[], targetIds?: string[]}} input
+ * @returns {Array<{id: string, title: string}>}
+ */
+export function findStrandedRollups({ scopeBeads = [], targetIds = [] } = {}) {
+    const byId = new Map();
+    for (const b of (Array.isArray(scopeBeads) ? scopeBeads : [])) {
+        if (b && hasValue(b.id)) byId.set(String(b.id), b);
+    }
+    const childrenOf = new Map();
+    for (const b of byId.values()) {
+        const p = parentIdOf(b);
+        if (!p) continue;
+        if (!childrenOf.has(p)) childrenOf.set(p, []);
+        childrenOf.get(p).push(b);
+    }
+    const targets = new Set((Array.isArray(targetIds) ? targetIds : []).map(String));
+    const out = [];
+    for (const [id, b] of byId) {
+        const kids = childrenOf.get(id) || [];
+        if (!targets.has(id) && isOpen(b) && kids.length > 0 && kids.every(isClosed)) {
+            out.push({ id, title: oneLine(b.title) || '(untitled)' });
+        }
+    }
+    return out;
+}
+
+/**
  * Computes the four owed-triage lists.
  *
  * @param {object} input

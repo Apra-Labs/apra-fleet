@@ -202,7 +202,7 @@ import { runHarvestPhase } from './phases/harvest.mjs';
 import { runPublishPrPhase } from './phases/publish-pr.mjs';
 // apra-fleet-5u79.2: the pure owed-triage collector. runSprintCycle does the
 // bead read; the module only classifies and formats.
-import { computeOwedTriage, formatOwedTriageLines } from './owed-triage.mjs';
+import { computeOwedTriage, formatOwedTriageLines, findStrandedRollups } from './owed-triage.mjs';
 // The dolt-push-mutex/child-id-allocator clients (HTTP + MCP transport) and
 // the fleet server's own per-member reservation-ledger client. Moved
 // verbatim out of runner.js (apra-fleet-3swo.4.3).
@@ -2639,6 +2639,8 @@ async function runSprintCycle(context) {
     // This is a cumulative AUDIT TRAIL -- every rejection ever seen this run,
     // never cleared -- distinct from pendingRejectedNewTasks below.
     const rejectedNewTasks = [];
+    // Latest Integration-Test-skip reason per stranded rollup id, across cycles; fed to computeOwedTriage at Finalization.
+    const strandedSkipReasons = {};
 
     // The CURRENT set of not-yet-resubmitted rejected newTasks, resurfaced
     // verbatim into the next planning dispatch (buildPlannerPrompt's
@@ -3041,6 +3043,20 @@ async function runSprintCycle(context) {
         // playbook, or Deploy failed) correctly counts as "no verify
         // dispatch attempt", not a crash.
         let verifySetForIntegTest = [];
+        // Names in-scope open beads whose children are all closed at an
+        // Integration Test skip and remembers the latest reason per id for the
+        // Finalization owed-triage report. Read-only: it closes nothing.
+        const noteStrandedRollupsAtIntegSkip = async (reason) => {
+            try {
+                const stranded = findStrandedRollups({ scopeBeads: await bdListScoped(''), targetIds: targetIssues });
+                for (const r of stranded) {
+                    strandedSkipReasons[r.id] = `not verified because integration test was skipped: ${reason}`;
+                    log(`Integration Test skipped: ${r.id} "${r.title}" has all children closed but is still open and unverified (${reason}).`);
+                }
+            } catch (e) {
+                log(`WARN could not list stranded rollups at the Integration Test skip: ${e && e.message ? e.message : String(e)}`);
+            }
+        };
         if (hasPlaybook && deployedThisCycle) {
             // The phase body lives in ./phases/integ-test.mjs
             // (apra-fleet-3swo.6.8), which receives its state explicitly
@@ -3064,8 +3080,12 @@ async function runSprintCycle(context) {
             }));
         } else if (hasPlaybook && !deployedThisCycle) {
             log('Skipping Integration Test Phase (deploy did not succeed this cycle, or no deploy.md was present to attempt)');
+            await noteStrandedRollupsAtIntegSkip(hasDeploy
+                ? 'deploy did not succeed, so the integration test did not run'
+                : 'no deploy.md was present to deploy, so the integration test did not run');
         } else {
             log('Skipping Integration Test Phase (no playbook found, or the probe itself failed -- see prior log line)');
+            await noteStrandedRollupsAtIntegSkip('no integ-test-playbook.md was found (or the playbook probe failed), so the integration test did not run');
         }
 
         // =======================
@@ -3421,6 +3441,7 @@ async function runSprintCycle(context) {
             closedAtStartIds: closedAtSprintStartIds,
             sprintStartedAt: sprintState.startedAtMs,
             targetIds: targetIssues,
+            strandedReasons: strandedSkipReasons,
         });
     } catch (triageErr) {
         log(`owed triage: WARN could not read the sprint's beads (${triageErr && triageErr.message ? triageErr.message : String(triageErr)}); listing rejected findings only and reporting this run as not clean.`);
