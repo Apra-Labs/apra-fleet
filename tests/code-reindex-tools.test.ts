@@ -134,9 +134,22 @@ afterAll(() => {
   for (const pid of pids) {
     try { process.kill(pid, 0); leaked++; try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } } catch { /* gone */ }
   }
-  fs.rmSync(sandbox.root, { recursive: true, force: true });
+  rmTolerant(sandbox.root);
   expect(leaked).toBe(0);
 });
+
+// Windows can briefly hold a just-exited child's cwd or log handle open, so
+// rmdir fails with EBUSY/EPERM. Retry with backoff (rmSync's maxRetries),
+// then warn and leave the temp dir rather than fail the suite on cleanup.
+function rmTolerant(dir: string): void {
+  try {
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== 'EBUSY' && code !== 'EPERM' && code !== 'ENOTEMPTY') throw err;
+    console.warn(`code-reindex-tools: could not remove ${dir} (${code}); leaving it for the OS temp cleanup`);
+  }
+}
 
 function collectPids(): void {
   const d = path.join(sandbox.data, 'code-index');
@@ -151,7 +164,7 @@ function collectPids(): void {
 
 beforeEach(() => {
   collectPids();
-  fs.rmSync(path.join(sandbox.data, 'code-index'), { recursive: true, force: true });
+  rmTolerant(path.join(sandbox.data, 'code-index'));
   repo = newRepo();
 });
 
@@ -409,13 +422,15 @@ describe('client exports and sandbox hygiene', () => {
 describe('detectInjectedGitnexusBlocks (previously polluted clones)', () => {
   const BLOCK = '# Mine\n<!-- gitnexus:start -->\n# GitNexus\n<!-- gitnexus:end -->\n';
 
-  it('reports a work tree carrying an injected block with the file name and the fix, and never edits it', async () => {
-    process.env.FAKE_MODE = 'uptodate';
+  function pollute(): { before: string; contentBefore: string } {
     fs.writeFileSync(path.join(repo, 'CLAUDE.md'), BLOCK);
     execFileSync('git', ['add', 'CLAUDE.md'], { cwd: repo });
     execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'polluted'], { cwd: repo });
-    const before = porcelain(repo);
-    const contentBefore = fs.readFileSync(path.join(repo, 'CLAUDE.md'), 'utf8');
+    return { before: porcelain(repo), contentBefore: fs.readFileSync(path.join(repo, 'CLAUDE.md'), 'utf8') };
+  }
+
+  it('reports a work tree carrying an injected block with the file name and the fix, and never edits it', async () => {
+    const { before, contentBefore } = pollute();
 
     expect(detectInjectedGitnexusBlocks(repo)).toEqual(['CLAUDE.md']);
     const status = await handleCodeStatus({}, { repo, memberId: 'm' }) as { injectedBlockFiles: string[]; injectedBlockWarning: string };
@@ -423,10 +438,23 @@ describe('detectInjectedGitnexusBlocks (previously polluted clones)', () => {
     expect(status.injectedBlockWarning).toMatch(/^WARN: CLAUDE\.md /);
     expect(status.injectedBlockWarning).toContain('remove the block');
     expect(status.injectedBlockWarning).toContain('commit');
+
+    // detection only: git status and the file are untouched
+    expect(porcelain(repo)).toBe(before);
+    expect(fs.readFileSync(path.join(repo, 'CLAUDE.md'), 'utf8')).toBe(contentBefore);
+  });
+
+  // code_reindex spawns `npx`, which this file fakes with a POSIX shell
+  // script on PATH. On Windows spawn goes through cmd.exe, which cannot run
+  // that script, so the call reaches a real npx and hangs -- skipped there
+  // like the other fake-npx tests in this file.
+  it.skipIf(isWin)('code_reindex also reports the injected block files', async () => {
+    process.env.FAKE_MODE = 'uptodate';
+    const { before, contentBefore } = pollute();
+
     const reindex = await handleCodeReindex({}, { repo, memberId: 'm' }) as { injectedBlockFiles?: string[] };
     expect(reindex.injectedBlockFiles).toEqual(['CLAUDE.md']);
 
-    // detection only: git status and the file are untouched
     expect(porcelain(repo)).toBe(before);
     expect(fs.readFileSync(path.join(repo, 'CLAUDE.md'), 'utf8')).toBe(contentBefore);
   });

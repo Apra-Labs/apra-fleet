@@ -289,7 +289,8 @@ for every accepted shape live in `bible/examples/`.
   it is never written to a bible, the bible admission predicate (kb_export,
   kb_bible_commit) reads it as no basis, and the reconcile prefilter never
   resolves a pair on it. The entry is therefore not re-exported until it is
-  re-verified.
+  recaptured (kb_promote and kb_resolve_contradiction do not give it a
+  verified basis).
 - No tool request or response shape changes with v3: the format change is
   confined to the bible file.
 

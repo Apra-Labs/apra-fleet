@@ -592,7 +592,7 @@
  *   exporting KB's stored basis. kb_import stores it as the entry's basis exactly
  *   (never re-hashing local files); an entry without it gets a local
  *   freshness-only basis (it can go stale) that is never exported, so it is not
- *   re-published until re-verified.
+ *   re-published until recaptured.
  */
 
 /**

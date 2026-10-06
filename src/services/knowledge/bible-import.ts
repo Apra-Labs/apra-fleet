@@ -217,7 +217,7 @@ export async function importBibleEntries(
     // carried map is invalid (carriedBasis null), gets a LOCAL freshness-only
     // basis hashed from this clone: it can go stale when code drifts, but the
     // bible predicate never sees it, so the entry is not re-exported until it
-    // is re-verified.
+    // is recaptured.
     let audn_decision: AudnDecision;
     try {
       ({ audn_decision } = await provider.capture(kbInput, {

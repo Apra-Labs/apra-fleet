@@ -308,7 +308,7 @@ describe('capture -> promote -> bible commit -> export round trip (basis filter)
   // checkout's files. The seeded bible here is v2 (no source_file_hashes), so
   // its entries get only a local freshness-only basis, which the bible
   // predicate reads as none, so it excludes them from
-  // re-export until they are re-verified.
+  // re-export until they are recaptured.
   it('kb_import of a v2 bible stores no verified basis for its entries (a local re-hash is freshness-only)', async () => {
     const report = JSON.parse(await kbImport({ skip_sweep: true }, { folder: clone }));
     expect(report.imported).toBe(2);
