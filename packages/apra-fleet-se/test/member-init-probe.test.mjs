@@ -408,3 +408,20 @@ test('121 cause: member session refused by the member server -> member-session-r
     assert.equal(rec.fix, MEMBER_INIT_FIXES['member-session-refused']);
     assert.match(rec.fix, /update_member/);
 });
+
+test('code step: npx/node missing on the service PATH is recorded with that cause, not the analyze-log fix', async () => {
+    const cause = "npx was not found on the apra-fleet server's PATH (searched: /usr/bin). Install Node.js (which provides node and npx), then re-run 'apra-fleet install' to refresh the service PATH and restart the server.";
+    const f = fakeFleet({ reindex: { outcome: 'not-started', reason: 'npx-not-found', detail: cause } });
+    const [rec] = await f.make(['m1']).probeAll();
+    assert.equal(rec.codeIndex, 'unavailable');
+    assert.equal(rec.codeIndexReason, 'code-intel-npx-missing');
+    const problem = rec.problems.find((p) => p.step === 'code');
+    assert.ok(problem.detail.includes("npx was not found on the apra-fleet server's PATH"));
+    assert.match(problem.fix, /service PATH/);
+    assert.doesNotMatch(problem.fix, /analyze log/);
+
+    // The same cause surfacing as a thrown per-call error is classified the same way.
+    const g = fakeFleet({ fail: { code_reindex: new Error(cause) } });
+    const [r2] = await g.make(['m1']).probeAll();
+    assert.equal(r2.codeIndexReason, 'code-intel-npx-missing');
+});

@@ -12,6 +12,7 @@ import { awsProvider } from '../services/cloud/aws.js';
 import { estimateCost, formatUptimeDuration, uptimeHoursFromLaunch } from '../services/cloud/cost.js';
 import { serverVersion } from '../version.js';
 import { refreshMemberFleetMcp, getMemberFleetMcpDeps, fleetMcpFixLine } from '../services/member-fleet-install.js';
+import { codeIntelAvailability, resolveProviderKey } from './code-intelligence.js';
 import { knownRepoRemoteUrl } from '../services/member-remote-url.js';
 
 export const memberDetailSchema = z.object({
@@ -79,6 +80,17 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
   // One-line fix when the member's KB/code tools are not usable; null otherwise.
   const fleetMcpFix = fleetMcpFixLine(fleetMcp);
   result.fleetMcpFix = fleetMcpFix;
+
+  // -- codeIntel: provider, availability and (when unavailable) the cause and remedy --
+  // Checked against THIS server's PATH, so it only describes a member whose
+  // code tools run here; a remote member's own fleet MCP runs them on its host
+  // (null here; member-init's code step exercises that path).
+  result.codeIntel = null;
+  if (isLocal) try {
+    result.codeIntel = codeIntelAvailability(await resolveProviderKey(agent.id));
+  } catch (e: unknown) {
+    result.codeIntel = { provider: agent.codeIntelProvider ?? null, available: false, cause: e instanceof Error ? e.message : String(e), remedy: "run 'apra-fleet install' to configure a code intelligence provider, or update_member code_intel_provider" };
+  }
 
   // -- Cloud Info (parallel with connectivity check) --
   let cloudSection: Record<string, unknown> | undefined;
@@ -320,6 +332,13 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
     if (fleetMcpFix) t += `  fleetMcp fix: ${fleetMcpFix}\n`;
     if (fleetMcp.beads) t += `  bd=${fleetMcp.beads.state}: ${fleetMcp.beads.detail}\n  bd fix: ${fleetMcp.beads.fix}\n`;
   }
+
+  const codeIntel = result.codeIntel as null | { provider: string | null; available: boolean; cause?: string; remedy?: string };
+  if (codeIntel) t += `  codeIntel=${codeIntel.available ? 'available' : 'unavailable'} (${codeIntel.provider ?? 'unknown'})
+`;
+  if (codeIntel && !codeIntel.available) t += `  codeIntel cause: ${codeIntel.cause}
+  codeIntel fix: ${codeIntel.remedy}
+`;
 
   if (cloudSection) {
     const cs = cloudSection as Record<string, unknown>;

@@ -273,6 +273,15 @@
  */
 
 /**
+ * Code intelligence availability reported by member_detail.
+ * @typedef {Object} CodeIntelStatus
+ * @property {string|null} provider - 'gitnexus' | 'codebase-memory' | 'none' (null when it could not be resolved)
+ * @property {boolean} available
+ * @property {string} [cause] - Why it is unavailable; absent when available
+ * @property {string} [remedy] - What to do about the cause; absent when available
+ */
+
+/**
  * Structured result returned by memberDetail() when called with format: 'json'
  * (src/tools/member-detail.ts). When format is 'compact' (the default), memberDetail()
  * instead returns a plain multi-line text summary, not this shape.
@@ -305,6 +314,9 @@
  *   server (null when never probed). Recoverable: `member_detail { refresh: true }` re-probes and records.
  * @property {string|null} [fleetMcpFix] - One-line operator fix for `fleetMcp` when the member's KB/code tools are
  *   not usable (state "unavailable" or `unverified`); null when available and verified
+ * @property {CodeIntelStatus|null} [codeIntel] - Whether code intelligence (code_* tools) can run for this member,
+ *   with the cause and remedy when it cannot (e.g. npx/node missing from the apra-fleet service PATH). null for
+ *   remote members: their code tools run on the member host, not on this server.
  * @property {Object} [llm_cli] - LLM CLI info: { version, auth }
  * @property {Object|string} [tokenUsage] - Cumulative token usage, or "compute only" for llmProvider "none"
  * @property {Object} [session] - Session info: { id, lastActivity, lastLlmActivityAt, status, idleSecs }

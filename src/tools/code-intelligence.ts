@@ -7,6 +7,7 @@ import { CodebaseMemoryProvider } from './code-intelligence-codebase-memory.js';
 import { getAgent } from '../services/registry.js';
 import { resolveSelfSession, validateSelfRepoFolder } from '../services/knowledge/kb-self.js';
 import { knownRepoRemoteUrl } from '../services/member-remote-url.js';
+import { npxUnavailableReason } from '../utils/find-on-path.js';
 import { codeIndexReadiness, codeIntelDisabledError, ensureGitNexusIndexReady, indexedCommitOf } from './code-intelligence-readiness.js';
 import { codeReindex, codeStatus, type CodeReindexResult, type CodeStatusResult } from './code-intelligence-reindex.js';
 
@@ -242,18 +243,22 @@ export async function handleCodeStatus(_input: Record<string, unknown>, self: Co
   return codeStatus(self.repo, codeIndexReadiness('gitnexus', self.repo));
 }
 
-export async function getProvider(memberId?: string): Promise<CodeIntelligenceProvider> {
+/**
+ * The provider key code tools resolve to for a member: the member's own
+ * override, else the global config, else 'codebase-memory'. Throws when the
+ * resolved key names no provider.
+ */
+export async function resolveProviderKey(memberId?: string): Promise<string> {
   // When a memberId is supplied, check the agent's per-member override first.
   if (memberId) {
     const agent = getAgent(memberId);
     if (agent?.codeIntelProvider) {
-      const memberProvider = PROVIDERS[agent.codeIntelProvider];
-      if (!memberProvider) {
+      if (!PROVIDERS[agent.codeIntelProvider]) {
         throw new Error(
           `Code intelligence provider '${agent.codeIntelProvider}' is not configured. Run 'apra-fleet install' to set up.`,
         );
       }
-      return memberProvider;
+      return agent.codeIntelProvider;
     }
   }
 
@@ -267,11 +272,50 @@ export async function getProvider(memberId?: string): Promise<CodeIntelligencePr
     // Config absent -- default to codebase-memory
   }
 
-  const provider = PROVIDERS[providerKey];
-  if (!provider) {
+  if (!PROVIDERS[providerKey]) {
     throw new Error(
       `Code intelligence provider '${providerKey}' is not configured. Run 'apra-fleet install' to set up.`,
     );
   }
-  return provider;
+  return providerKey;
+}
+
+export async function getProvider(memberId?: string): Promise<CodeIntelligenceProvider> {
+  return PROVIDERS[await resolveProviderKey(memberId)];
+}
+
+export interface CodeIntelAvailability {
+  provider: string;
+  available: boolean;
+  /** Why code intelligence is unavailable; absent when available. */
+  cause?: string;
+  /** What to do about the cause; absent when available. */
+  remedy?: string;
+}
+
+/**
+ * Whether code intelligence can run for provider `key` on this server. The
+ * gitnexus provider runs through npx (and the node it needs), so a missing
+ * npx/node on the server's PATH makes it unavailable -- the same detector
+ * (npxUnavailableReason) the code_* errors and code_reindex use. Provider
+ * 'none' is a deliberate off switch.
+ */
+export function codeIntelAvailability(key: string): CodeIntelAvailability {
+  if (key === 'none') {
+    return {
+      provider: key, available: false,
+      cause: 'code intelligence is disabled for this member (provider none)',
+      remedy: "update_member code_intel_provider to 'gitnexus' or 'codebase-memory' to enable it",
+    };
+  }
+  if (key === 'gitnexus') {
+    const reason = npxUnavailableReason();
+    if (reason) {
+      return {
+        provider: key, available: false, cause: reason,
+        remedy: "reinstall the apra-fleet service so it records node/npx (re-run 'apra-fleet install'), or add node and npx to the service PATH, then restart the server",
+      };
+    }
+  }
+  return { provider: key, available: true };
 }
