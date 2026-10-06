@@ -1464,6 +1464,9 @@ const REVIEW_SCHEMA = {
           },
           "priority": {
             "type": "string"
+          },
+          "dedupCheck": {
+            "description": "Machine-checkable dedup evidence: the search you actually ran over the open backlog before proposing this task. NOT in the item's required list (deliberate): enforcement is PER ITEM in validateNewTask() after parsing, so a single newTask missing or malformed dedupCheck is rejected on its own and never makes ajv reject/retry the WHOLE verdict with its reopenIds and other newTasks -- the same rationale as the title allowlist. A newTask without a valid dedupCheck is rejected and no bead is created for it. If verdict is 'overlap', put the overlapping existing bead id FIRST in candidateIds: the orchestrator then appends this finding to that bead instead of creating a new one. Expected shape (NOT enforced by the schema; validateDedupCheck is the sole enforcer): { query: non-empty string, candidateIds: array of bead id strings (may be empty), verdict: 'no-overlap' or 'overlap' }."
           }
         }
       }
@@ -1834,6 +1837,7 @@ const INTEG_RUN_SCHEMA = {
     "issuesCreated",
     "passed",
     "bugsFiled",
+    "dedupChecks",
     "summary"
   ],
   "properties": {
@@ -1851,6 +1855,11 @@ const INTEG_RUN_SCHEMA = {
       "items": {
         "type": "string"
       }
+    },
+    "dedupChecks": {
+      "type": "array",
+      "description": "One entry per bead id in bugsFiled: the dedup evidence for that bug. query is the search actually run over the open backlog before filing (non-blank); candidateIds are existing beads that might overlap (may be empty); verdict is 'no-overlap' or 'overlap'. Required (an empty array is valid when nothing was filed). The orchestrator flags every filed bug without a no-overlap entry with a non-blank query for human review; it does not fail the sprint. Items are declared loosely (deliberate): a single malformed entry must never make ajv reject/retry the WHOLE report and lose its passed/bugsFiled; flagUnverifiedBugDedup() is the sole enforcer and flags a malformed entry's bead as unverified. Expected item shape: { beadId: string, query: non-blank string, candidateIds: string[], verdict: 'no-overlap' | 'overlap' }.",
+      "items": {}
     },
     "summary": {
       "type": "string"

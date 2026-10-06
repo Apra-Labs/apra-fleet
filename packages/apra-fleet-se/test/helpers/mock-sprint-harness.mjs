@@ -1750,6 +1750,7 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
                             issuesCreated: 0,
                             passed: true,
                             bugsFiled: [],
+                            dedupChecks: [],
                             summary: verifyIds.length > 0
                                 ? `All vitest e2e specs passed successfully. Verified and closed: ${verifyIds.join(', ')}.`
                                 : 'All vitest e2e specs passed successfully.',

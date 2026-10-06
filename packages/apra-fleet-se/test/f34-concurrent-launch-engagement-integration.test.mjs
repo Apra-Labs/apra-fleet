@@ -219,6 +219,7 @@ async function approveWithNewTask() {
                     title: `[f34.3] concurrent-engagement follow-up ${newTaskSeq}-${process.pid}`,
                     description: 'Created by the apra-fleet-f34.3 concurrent-launch-engagement integration test.',
                     priority: 'P2',
+                    dedupCheck: { query: 'f34.3 concurrent-engagement follow-up', candidateIds: [], verdict: 'no-overlap' },
                 }],
             }),
         }],

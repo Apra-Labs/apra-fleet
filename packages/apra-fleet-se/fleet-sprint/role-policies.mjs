@@ -1142,7 +1142,7 @@ const integTestRunner = policy('integ-test-runner', {
         classifiesInfraFailures: true,
         classes: ['schema', 'dispatch'],
         noteTemplates: degradeNotes('Integ test runner', 'report'),
-        synthesized: { featuresClosed: 0, issuesCreated: 0, passed: false, bugsFiled: [] },
+        synthesized: { featuresClosed: 0, issuesCreated: 0, passed: false, bugsFiled: [], dedupChecks: [] },
         verdictField: 'passed',
         notesField: 'summary',
         paths: 2,

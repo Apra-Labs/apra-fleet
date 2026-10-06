@@ -546,7 +546,7 @@ function buildSpyFleetApi(overrides = {}) {
                 return { content: [{ text: JSON.stringify({ deployed: true, notes: 'Deployed.' }) }] };
             }
             if (opts.agent === 'integ-test-runner') {
-                return { content: [{ text: JSON.stringify({ featuresClosed: 0, issuesCreated: 0, passed: true, bugsFiled: [], summary: 'OK.' }) }] };
+                return { content: [{ text: JSON.stringify({ featuresClosed: 0, issuesCreated: 0, passed: true, bugsFiled: [], dedupChecks: [], summary: 'OK.' }) }] };
             }
             if (opts.agent === 'harvester') {
                 return { content: [{ text: JSON.stringify({ status: 'OK', notes: 'Harvested.' }) }] };

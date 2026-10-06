@@ -498,6 +498,14 @@ const FALLBACK_reviewerVerdict = {
                     title: { type: 'string' },
                     description: { type: 'string' },
                     priority: { type: 'string' },
+                    // Per-item dedup evidence; enforced per item in
+                    // validateNewTask(), deliberately NOT in `required` so one
+                    // bad newTask never makes ajv reject the whole verdict.
+                    // Declared loosely (no type/enum) like `title`: shape is
+                    // enforced only by validateDedupCheck. Expected shape:
+                    // { query: string, candidateIds: string[], verdict:
+                    // 'no-overlap' | 'overlap' }.
+                    dedupCheck: {},
                 },
                 required: ['title', 'description', 'priority'],
             },
@@ -573,6 +581,18 @@ const FALLBACK_integReport = {
         issuesCreated: { type: 'number' },
         passed: { type: 'boolean' },
         bugsFiled: { type: 'array', items: { type: 'string' } },
+        // One dedup-evidence entry per filed bug (REQUIRED, [] when none filed).
+        // Mirrors integ-test-runner-output.json; keep the two in sync.
+        // Items declared loosely (like reviewer newTasks' dedupCheck): one
+        // malformed entry must never fail the WHOLE report (repair retry ->
+        // synthesized passed:false, bugsFiled lost). flagUnverifiedBugDedup()
+        // is the sole enforcer. Expected item shape: { beadId: string,
+        // query: string, candidateIds: string[], verdict: 'no-overlap' |
+        // 'overlap' }.
+        dedupChecks: {
+            type: 'array',
+            items: {},
+        },
         summary: { type: 'string' },
         deployedSha: {
             type: 'string',
@@ -607,7 +627,7 @@ const FALLBACK_integReport = {
             },
         },
     },
-    required: ['featuresClosed', 'issuesCreated', 'passed', 'bugsFiled', 'summary'],
+    required: ['featuresClosed', 'issuesCreated', 'passed', 'bugsFiled', 'dedupChecks', 'summary'],
 };
 
 // Fallback for role "regression-test-runner". Canonical source:
@@ -712,6 +732,14 @@ export const finalVerdict = {
                     title: { type: 'string' },
                     description: { type: 'string' },
                     priority: { type: 'string' },
+                    // Per-item dedup evidence; enforced per item in
+                    // validateNewTask(), deliberately NOT in `required` so one
+                    // bad newTask never makes ajv reject the whole verdict.
+                    // Declared loosely (no type/enum) like `title`: shape is
+                    // enforced only by validateDedupCheck. Expected shape:
+                    // { query: string, candidateIds: string[], verdict:
+                    // 'no-overlap' | 'overlap' }.
+                    dedupCheck: {},
                 },
                 required: ['title', 'description', 'priority'],
             },

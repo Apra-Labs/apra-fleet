@@ -83,6 +83,10 @@ scripts/sandbox-deploy.mjs, ci.yml, CLAUDE.md) are edited only by their owner
 track or the groundwork sprint. Tests run through the bounded runner (npm test),
 never raw vitest over the whole tree. Staging ports 7601 and 8801 are reserved.
 
+## Creating beads: dedup first
+
+Before creating a new bead, search existing OPEN items across the ENTIRE backlog (not just the current sprint's scope) for overlap. It is better to refine an existing item's text, or add a child under it, than to create a duplicate.
+
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:970c3bf2 -->
 ## Beads Issue Tracker
 

@@ -1,6 +1,11 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
-import { validateNewTask } from '../fleet-sprint/runner.js';
+import { validateNewTask as validateNewTaskRaw } from '../fleet-sprint/runner.js';
+
+const VALID_DEDUP = { query: 'open bead search', candidateIds: [], verdict: 'no-overlap' };
+// Existing cases predate dedupCheck; default valid evidence so they keep testing
+// the field they were written for. Dedup cases live in newtask-dedup-check.test.mjs.
+const validateNewTask = (t) => validateNewTaskRaw({ dedupCheck: VALID_DEDUP, ...t });
 
 // apra-fleet-unw2.3 (N3): reviewer-authored newTasks (title/description/
 // priority) are LLM output whose own context includes the diff under

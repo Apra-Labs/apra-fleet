@@ -235,6 +235,16 @@ applies the reopen/create transitions:
   backtick-wrapped command) -- a title outside this set is silently dropped as its own
   task and only survives as a note on the parent bead. `description` has no such
   restriction; put command/code formatting there.
+  Before proposing any newTask, search existing OPEN items across the ENTIRE backlog (not
+  just the current sprint's scope) for overlap with read-only `bd search`/`bd list`. It is
+  better to refine an existing item's text, or add a child under it, than to create a
+  duplicate. Every newTask also carries `dedupCheck`: `{ query, candidateIds, verdict }` --
+  `query` is the (non-empty) search you actually ran, `candidateIds` the ids of existing
+  beads that might overlap (may be empty), `verdict` is `"no-overlap"` or `"overlap"`. On
+  overlap set verdict `"overlap"` and put the existing bead id FIRST in `candidateIds`: the
+  orchestrator then appends your finding to that bead instead of creating a new one. A
+  newTask with a missing or malformed `dedupCheck` is rejected on its own (no bead is
+  created for it).
 
 **APPROVED** means all acceptance criteria met, tests pass, no regressions, no hygiene issues.
 `reopenIds` and `newTasks` are both empty on APPROVED.
@@ -255,7 +265,7 @@ placeholder):
   "notes": "auth_test.ts line 42: no test for expired token path",
   "reopenIds": ["BD-14"],
   "newTasks": [
-    { "title": "Add expired-token test", "description": "Cover the expired-token rejection path in auth_test.ts", "priority": "P2" }
+    { "title": "Add expired-token test", "description": "Cover the expired-token rejection path in auth_test.ts", "priority": "P2", "dedupCheck": { "query": "expired token test", "candidateIds": [], "verdict": "no-overlap" } }
   ],
   "kb_promotions": [
     { "id": "kb-0042", "reason": "verified against src/auth/token.ts:88 and the expired-token test" }

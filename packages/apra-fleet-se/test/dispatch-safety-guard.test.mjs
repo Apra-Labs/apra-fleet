@@ -623,9 +623,10 @@ test('every command() call site in vcs-auth.mjs passes member_name or member_id'
 // rather than at runtime on a real fleet dispatch.
 const ABORT_PATH = path.join(__dirname, '../fleet-sprint/abort.mjs');
 // finalizeAbort()'s `git remote get-url origin` PR-capability probe and
-// appendRejectedFindingToParentNotes()'s `bd note <id> --file ...` call --
-// exactly the two that left runner.js.
-const EXPECTED_ABORT_COMMAND_COUNT = 2;
+// appendRejectedFindingToParentNotes()'s `bd note <id> --file ...` call (the
+// two that left runner.js), plus flagUnverifiedBugDedup()'s `bd note` and
+// validateNewTaskWithDedup()'s `bd show --json` probe and `bd note` append.
+const EXPECTED_ABORT_COMMAND_COUNT = 5;
 
 test('every command() call site in abort.mjs passes member_name or member_id', () => {
     const { sites, violations } = checkPath(ABORT_PATH);

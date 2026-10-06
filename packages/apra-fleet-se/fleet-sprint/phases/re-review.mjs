@@ -72,7 +72,7 @@
 
 import { applyGuardedReopens } from '../beads-transitions.mjs';
 import {
-    validateNewTask, appendRejectedFindingToParentNotes, persistNewTaskBestEffort,
+    validateNewTaskWithDedup, appendRejectedFindingToParentNotes, persistNewTaskBestEffort,
 } from '../abort.mjs';
 
 /**
@@ -171,7 +171,7 @@ export async function runReReviewPhase({
         onReopened: ({ id }) => recordReopen(id),
     });
     for (const newTask of reReviewVerdict.newTasks) {
-        const validation = validateNewTask(newTask);
+        const validation = await validateNewTaskWithDedup({ newTask, command, member: backlogMember, cycle, log });
         if (!validation.ok) {
             log(`Re-review newTasks: REJECTED (not sent to bd create) -- ${validation.reason}`);
             rejectedNewTasks.push({ cycle, reason: validation.reason, raw: newTask });
@@ -195,6 +195,7 @@ export async function runReReviewPhase({
             }
             continue;
         }
+        if (validation.merged) continue; // overlap: appended to the existing bead, no create
         const { title, description, priority } = validation;
         // A bead can only have one parent -- when multiple sprint-root
         // target issues are given, file follow-up work under the first
