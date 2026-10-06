@@ -66,7 +66,7 @@ function buildCallTool({ down = [], executeCommand } = {}) {
             return { content: [{ type: 'text', text: 'sent' }] };
         }
         if (name === 'execute_command' && typeof args.command === 'string' && args.command.includes('apra-fleet call')) {
-            const m = /apra-fleet call --member (\S+) (\w+) --args-file/.exec(args.command);
+            const m = /apra-fleet call --member (\S+) (?:--kb-maintainer )?(\w+) --args-file/.exec(args.command);
             const member = m && byId.get(m[1]);
             const tool = m && m[2];
             if (tool === 'kb_stats') {

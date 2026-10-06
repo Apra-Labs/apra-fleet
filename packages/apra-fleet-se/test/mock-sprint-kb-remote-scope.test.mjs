@@ -58,7 +58,7 @@ test('mock sprint: a kb_* call made during a dispatch runs as the member, with n
                 return { content: [{ type: 'text', text: 'sent' }] };
             }
             if (name === 'execute_command' && typeof args.command === 'string' && args.command.includes('apra-fleet call')) {
-                const m = /apra-fleet call --member (\S+) (\w+) --args-file/.exec(args.command);
+                const m = /apra-fleet call --member (\S+) (?:--kb-maintainer )?(\w+) --args-file/.exec(args.command);
                 const tool = m && m[2];
                 kbCalls.push({ name: tool, member: m && m[1], args: deliveredArgs[deliveredArgs.length - 1], via: 'member' });
                 const body = tool === 'kb_session_prime' ? { top_entries: [] }

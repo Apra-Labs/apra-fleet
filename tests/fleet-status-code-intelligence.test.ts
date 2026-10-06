@@ -198,6 +198,14 @@ describe('computeTopSymbols()', () => {
     rmSync(usageDir, { recursive: true, force: true });
   });
 
+  it('reads old-shape and member-attributed rows together', () => {
+    const ts = new Date(NOW - 24 * 60 * 60 * 1000).toISOString();
+    const old = JSON.stringify({ ts, tool: 'code_query', target: 'sym', repo: null });
+    const attributed = JSON.stringify({ ts, tool: 'code_query', target: 'sym', repo: '/r', memberId: 'm-1', sessionId: 's-1' });
+    writeFileSync(usagePath, [old, attributed].join('\n') + '\n');
+    expect(computeTopSymbols(NOW, usagePath, rotatedPath)).toEqual([{ target: 'sym', count: 2 }]);
+  });
+
   it('returns undefined when neither usage file exists', () => {
     expect(computeTopSymbols(NOW, usagePath, rotatedPath)).toBeUndefined();
   });

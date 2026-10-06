@@ -25,7 +25,7 @@
     "projection_rule": "Only 'thrown' and 'response-field' codes are projectable into a wire error payload. A 'silent' code MUST NOT be projected into a wire enum: the server never emits it, so a consumer branching on it would branch on something unreachable. Silent codes are documented-only until a task gives them a real signal.",
     "retryable_semantics": "true means retrying the IDENTICAL request unchanged can succeed. Changing the request (fixing a path, supplying a reason) is not a retry.",
     "retryable_finding": "No code in this closed set is retryable. Every transient failure in this surface is degraded to a non-error outcome rather than propagated as an error: the code_* adapters convert connect and dead-client failures into a structured offline result (see non_error_outcomes N-CODE-PROVIDER-OFFLINE), kb_stats swallows bible read failures, and kb_query swallows relatedClaims failures. There is therefore no retry-with-backoff class in v1.",
-    "anchor_policy_note": "KB constraint, verified against source: the KB a kb_* call reads/writes is the CALLING SESSION's own (src/services/knowledge/kb-self.ts) -- there is no repo/scope request argument. ONE policy, THREE branches, and the closed set accounts for all three. (1) The session's folder cannot carry a KB identity (missing, not a git repository, no origin remote): every kb_* tool refuses before getKbProviders with E-SELF-NO-WORKFOLDER / E-SELF-NOT-A-REPO / E-SELF-NO-REMOTE. (2) A remote member's folder is on another host and its identity is its known origin remote: the READ tools (kb_session_prime, kb_stats) carry the folder verbatim and it stays honestly missing -- a non-error outcome, no code (non_error_outcomes N-ANCHOR-VERBATIM-MISSING). (3) The WRITING tools kb_export, kb_bible_commit and kb_import need that folder on this host and refuse with E-REPO-PATH-INVALID, before getKbProviders, so they never anchor anywhere else.",
+    "anchor_policy_note": "KB constraint, verified against source: the KB a kb_* call reads/writes is the CALLING SESSION's own (src/services/knowledge/kb-self.ts) -- there is no repo/scope request argument. ONE policy, THREE branches, and the closed set accounts for all three. (1) The session's folder cannot carry a KB identity (missing, not a git repository, no origin remote): every kb_* tool refuses before getKbProviders with E-SELF-NO-WORKFOLDER / E-SELF-NOT-A-REPO / E-SELF-NO-REMOTE. (2) A remote member's folder is on another host and its identity is its known origin remote: the READ tools (kb_session_prime, kb_stats) carry the folder verbatim and it stays honestly missing -- a non-error outcome, no code (non_error_outcomes N-ANCHOR-VERBATIM-MISSING). (3) The WRITING tools kb_export, kb_bible_commit and kb_import need that folder on this host and refuse with E-REPO-PATH-INVALID, before getKbProviders, so they never anchor anywhere else (no member session is served kb_export -- spec.md section 2.5a -- so for it this is defence in depth).",
     "directive_activation_absence": {
       "constraint": "The quarantine of directive activation is expressed by ABSENCE, not by a refusal shape. Any consumer of this file MUST NOT emit a path, an operation, a code, or a schema shape for approving, rejecting or activating a user-directive -- not even one that always refuses. A documented-but-forbidden route is still a route.",
       "consequence_for_this_file": "The three CLI-only activation error codes named in INVENTORY.md 5.2 are in excluded_from_closed_set, not in any group. They are the error vocabulary OF the activation operations, so publishing them would document that those operations exist.",
@@ -136,13 +136,28 @@
         {
           "$anchor": "E-BIBLE-WRONG-SHAPE",
           "code": "E-BIBLE-WRONG-SHAPE",
-          "meaning": "The bible parses as JSON but is neither an entry array nor the v2 envelope.",
+          "meaning": "The bible parses as JSON but is neither an entry array nor the v2/v3 envelope.",
           "raising_methods": [
             { "method_id": "P-2", "member": "capture", "tool": "kb_import", "position": "pre-provider" }
           ],
           "source": "src/tools/kb-import.ts:168",
           "surfaced": "thrown",
           "retryable": false
+        },
+        {
+          "$anchor": "E-BIBLE-MALFORMED",
+          "code": "E-BIBLE-MALFORMED",
+          "meaning": "A bible file exists but cannot be read as a bible (invalid JSON, or neither the legacy array nor the v2/v3 envelope). Raised by the shared bible reader, so it also fails a MEMBER session's read of its own checkout bible; it is never treated as an empty bible.",
+          "raising_methods": [
+            { "method_id": "P-2", "member": "capture", "tool": "kb_import", "position": "pre-provider" },
+            { "method_id": "P-3", "member": "query", "tool": "kb_query", "position": "pre-provider" },
+            { "method_id": "P-3", "member": "query", "tool": "kb_session_prime", "position": "pre-provider" },
+            { "method_id": "P-10", "member": "stats", "tool": "kb_stats", "position": "pre-provider" }
+          ],
+          "source": "src/services/knowledge/bible-import.ts (KbBibleError, readBibleEntries), src/services/knowledge/member-bible-view.ts",
+          "surfaced": "thrown",
+          "retryable": false,
+          "remediation": "Fix or regenerate the bible file (kb_export writes it), or restore it from git."
         }
       ]
     },
@@ -413,7 +428,7 @@
           "surfaced": "thrown",
           "retryable": false,
           "remediation": "Retry the same call in a minute or so when the message says an index build was started or is running; otherwise follow the message (call code_reindex, or fix what stops the server from building the index), then retry.",
-          "note": "Thrown by the adapter's pre-flight before the child process is ever spawned, so it is never converted into an offline result. Readiness states: building (an analyze is live), interrupted (meta.json flagged incrementalInProgress with no live analyze found) and missing. For a local gitnexus folder the pre-flight requests a background build for missing/interrupted (config-, cooldown- and single-flight-gated) before throwing, and the message says whether it was requested or why not; an automatic build that ends without a ready index pauses automatic builds for that folder until code_reindex or a server restart, and the message then names the failed result and its log; a remote member's folder is never built from this host. retryable stays false in the v1 sense (section 3.3): the caller cannot observe when the background build finishes, which the remediation states as wait-then-retry guidance rather than a backoff class."
+          "note": "Thrown by the adapter's pre-flight before the child process is ever spawned, so it is never converted into an offline result. Readiness states: building (an analyze is live -- including one rewriting an index whose meta.json still looks complete, which is never served meanwhile), interrupted (meta.json flagged incrementalInProgress with no live analyze found), inconsistent (the gitnexus registry, or the fleet record of its last finished build, names a different commit than meta.json) and missing. An answer is also discarded with this error when the index changed while the call ran (re-checked after the child answers). For a local gitnexus folder the pre-flight requests a background build for missing/interrupted/inconsistent (config-, cooldown- and single-flight-gated) before throwing, and the message says whether it was requested or why not; an automatic build that ends without a ready index pauses automatic builds for that folder until code_reindex or a server restart, and the message then names the failed result and its log; a remote member's folder is never built from this host. retryable stays false in the v1 sense (section 3.3): the caller cannot observe when the background build finishes, which the remediation states as wait-then-retry guidance rather than a backoff class."
         },
         {
           "$anchor": "E-CODE-INTEL-DISABLED",
@@ -568,6 +583,35 @@
           "retryable": false,
           "remediation": "Run kb_feedback from a FULL session (no member identity), or flag the entry for review through the maintainer.",
           "group_decision": "PROVIDER_INTERNAL, not validation: the request is well formed; the session kind cannot perform the operation. Thrown before any KB is opened and writes nothing."
+        },
+        {
+          "$anchor": "E-MEMBER-VIEW-REMOTE",
+          "code": "E-MEMBER-VIEW-REMOTE",
+          "meaning": "A remote MEMBER session's checkout bible could not be read from the member host (unreachable member, or the read command failed). The member view never falls back to the per-repo DB, so the call fails loudly.",
+          "raising_methods": [
+            { "method_id": "P-3", "member": "query", "tool": "kb_query", "position": "pre-provider" },
+            { "method_id": "P-3", "member": "query", "tool": "kb_session_prime", "position": "pre-provider" },
+            { "method_id": "P-10", "member": "stats", "tool": "kb_stats", "position": "pre-provider" }
+          ],
+          "source": "src/services/knowledge/member-bible-view.ts (remoteFail)",
+          "surfaced": "thrown",
+          "retryable": false,
+          "remediation": "Check the member is reachable (member_detail / update_member), then retry; the member must have its checkout bible at <work folder>/.fleet/kb-canonical.json.",
+          "group_decision": "PROVIDER_INTERNAL, not validation: the request is well formed; the member host the view is read from is unavailable."
+        },
+        {
+          "$anchor": "E-BIBLE-BASIS-NOT-GIT",
+          "code": "E-BIBLE-BASIS-NOT-GIT",
+          "meaning": "The folder is not inside a git work tree, so file content at HEAD cannot be read and the bible's file hashes cannot be computed. Nothing is written.",
+          "raising_methods": [
+            { "method_id": "X-1", "member": "list", "tool": "kb_export", "position": "pre-provider" },
+            { "method_id": "X-1", "member": "list", "tool": "kb_bible_commit", "position": "pre-provider" }
+          ],
+          "source": "src/services/knowledge/file-hash.ts (KbHeadHashError)",
+          "surfaced": "thrown",
+          "retryable": false,
+          "remediation": "Run from a folder inside a git work tree with a resolvable HEAD.",
+          "group_decision": "PROVIDER_INTERNAL, not validation: the request is well formed; the environment cannot supply the git basis."
         }
       ]
     }

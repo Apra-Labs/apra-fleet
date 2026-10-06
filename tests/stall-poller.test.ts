@@ -608,6 +608,12 @@ describe('pollLogFile', () => {
      * depth-bound failure.
      */
     describe.skipIf(process.platform === 'darwin')('AGY brain-dir depth bound (SF-14)', () => {
+      // These tests really spawn the host shell (execAsync, capped at
+      // SHELL_EXEC_CAP_MS), so the default 5000ms vitest budget can be eaten by a
+      // slow runner's process-spawn latency (seen on Windows CI). Budget the
+      // cap plus headroom instead of a bare constant; assertions are unchanged.
+      const SHELL_EXEC_CAP_MS = 30_000;
+      const TEST_BUDGET_MS = SHELL_EXEC_CAP_MS * 2;
       const targetOs: 'windows' | 'linux' = process.platform === 'win32' ? 'windows' : 'linux';
       const agy = getProvider('agy');
       let fixtureHome: string;
@@ -645,10 +651,10 @@ describe('pollLogFile', () => {
           if (decodedCmd.includes('$HOME') || decodedCmd.includes('USERPROFILE')) {
             return { stdout: fixtureHome, stderr: '', code: 0 };
           }
-          const { stdout, stderr } = await execAsync(cmd, { timeout: 30_000, maxBuffer: 1024 * 1024 });
+          const { stdout, stderr } = await execAsync(cmd, { timeout: SHELL_EXEC_CAP_MS, maxBuffer: 1024 * 1024 });
           return { stdout: String(stdout), stderr: String(stderr), code: 0 };
         });
-      });
+      }, TEST_BUDGET_MS);
 
       afterEach(() => {
         fs.rmSync(fixtureHome, { recursive: true, force: true });
@@ -668,7 +674,7 @@ describe('pollLogFile', () => {
         const actualMtime = fs.statSync(transcriptPath).mtimeMs;
         // POSIX branch reports whole seconds, so allow a 1s truncation window.
         expect(Math.abs(activity.mtimeMs! - actualMtime)).toBeLessThan(1500);
-      });
+      }, TEST_BUDGET_MS);
 
       it('the depth bound in the generated command covers the full AGY transcript layout', async () => {
         await pollDirectoryActivity('member-1');
@@ -694,7 +700,7 @@ describe('pollLogFile', () => {
           const bound = Number(/-maxdepth (\d+)/.exec(scanCmd)![1]);
           expect(bound).toBeGreaterThanOrEqual(requiredDepth);
         }
-      });
+      }, TEST_BUDGET_MS);
     });
 
     /**

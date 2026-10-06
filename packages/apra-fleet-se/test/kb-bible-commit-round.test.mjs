@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { createKbWorkClient } from '../fleet-sprint/kb.mjs';
+import { createKbWorkClient, KB_BIBLE_SKIP_RETRY_ROUNDS } from '../fleet-sprint/kb.mjs';
 import { selfMaintainer } from './helpers/kb-maintainer-fakes.mjs';
 import { createSyncBrackets, createGitSync } from '../fleet-sprint/git-sync.mjs';
 import { syncMemberBefore, syncMemberAfter, syncMemberAfterOrdered, isNoMutationDispatchFailure } from '../fleet-sprint/runner.js';
@@ -24,7 +24,7 @@ const BASE = { baseBranch: 'main', baseCommit: 'a'.repeat(40) };
  * A fake maintainer: records every event in order. `pushFailures` is how many
  * G-pushes fail before one succeeds.
  */
-function harness({ pushFailures = 0, committed = true, unpushed = false, skipped = [] } = {}) {
+function harness({ pushFailures = 0, committed = true, unpushed = false, skipped = [], removed, bibleSkipRetryRounds } = {}) {
     const events = [];
     const logs = [];
     let pushesLeftToFail = pushFailures;
@@ -34,7 +34,11 @@ function harness({ pushFailures = 0, committed = true, unpushed = false, skipped
         if (tool === 'kb_query') return { l1_results: offeredEntries.map((id) => ({ id })) };
         events.push({ ev: tool, member: member.name, args });
         if (tool === 'kb_bible_commit') {
-            return { content: [{ text: JSON.stringify({ path: '.fleet/kb-canonical.json', merged: args.ids.filter((id) => !skipped.some((s) => s.id === id)), skipped, entry_count: args.ids.length, committed }) }] };
+            // `skipped` is a fixed list, or a function of the call's ids (a
+            // per-round answer); only skips for ids actually sent are returned.
+            const all = typeof skipped === 'function' ? skipped(args.ids) : skipped;
+            const sk = all.filter((s) => args.ids.includes(s.id));
+            return { content: [{ text: JSON.stringify({ path: '.fleet/kb-canonical.json', merged: args.ids.filter((id) => !sk.some((s) => s.id === id)), skipped: sk, ...(removed === undefined ? {} : { removed }), entry_count: args.ids.length, committed }) }] };
         }
         return {};
     };
@@ -59,6 +63,7 @@ function harness({ pushFailures = 0, committed = true, unpushed = false, skipped
             return unpushed === null ? { unpushed: null, reason: 'git failed in the test' } : { unpushed };
         },
         log: (m) => logs.push(m),
+        ...(bibleSkipRetryRounds === undefined ? {} : { bibleSkipRetryRounds }),
     });
     return { client, events, logs };
 }
@@ -89,18 +94,90 @@ describe('commitRound: the review-round bible commit on the kb_maintainer', () =
         assert.deepEqual(client.pendingConfirmations(), []);
     });
 
-    test('a skipped id is logged with the reason the tool returned and leaves the pending queue', async () => {
-        const { client, logs } = harness({ skipped: [{ id: 'e2', reason: 'basis_mismatch' }] });
-        await confirm(client, ['e1', 'e2']);
+    test('a skip that cannot succeed on a retry (not_confirmed_or_unknown, no_source_files) is logged with its reason and leaves the queue', async () => {
+        const { client, logs } = harness({ skipped: [{ id: 'e2', reason: 'not_confirmed_or_unknown' }, { id: 'e3', reason: 'no_source_files' }] });
+        await confirm(client, ['e1', 'e2', 'e3']);
 
         const out = await client.commitRound();
 
-        const line = logs.find((l) => /kb_bible_commit skipped/.test(l));
+        const line = logs.find((l) => /kb_bible_commit skipped .* cannot succeed on a retry/.test(l));
         assert.ok(line, logs.join('\n'));
-        assert.match(line, /e2 \(basis_mismatch\)/);
-        assert.ok(!/not CONFIRMED in the maintainer's KB/.test(line), line);
+        assert.match(line, /e2 \(not_confirmed_or_unknown\)/);
+        assert.match(line, /e3 \(no_source_files\)/);
         assert.deepEqual(out, { committed: 1, pending: 0 });
         assert.deepEqual(client.pendingConfirmations(), []);
+    });
+
+    test('a basis_mismatch id stays queued, is re-offered at the next round and leaves the queue once merged', async () => {
+        // Round 1 skips e2 (its cited files at HEAD do not match yet); round 2
+        // finds them matching (e.g. the maintainer pulled the commits) and merges.
+        let round = 0;
+        const { client, events, logs } = harness({ skipped: () => (round === 1 ? [{ id: 'e2', reason: 'basis_mismatch' }] : []) });
+        await confirm(client, ['e1', 'e2']);
+
+        round = 1;
+        const first = await client.commitRound('review C1');
+        assert.deepEqual(first, { committed: 1, pending: 1 });
+        assert.deepEqual(client.pendingConfirmations(), ['e2']);
+        const kept = logs.find((l) => /kept queued for the next round/.test(l));
+        assert.ok(kept, logs.join('\n'));
+        assert.match(kept, /e2 \(basis_mismatch\)/);
+        assert.ok(!logs.some((l) => /WARN/.test(l)), 'a first transient skip is not a warning');
+
+        round = 2;
+        const mark = events.length;
+        const second = await client.commitRound('review C2');
+        const commits = events.slice(mark).filter((e) => e.ev === 'kb_bible_commit');
+        assert.deepEqual(commits.map((c) => c.args.ids), [['e2']], 'the skipped id is offered again');
+        assert.deepEqual(second, { committed: 1, pending: 0 });
+        assert.deepEqual(client.pendingConfirmations(), []);
+    });
+
+    test('the retry bound drops a permanently drifted id with a WARN naming the id and the reason', async () => {
+        const { client, events, logs } = harness({ skipped: [{ id: 'e2', reason: 'basis_mismatch' }], bibleSkipRetryRounds: 3 });
+        await confirm(client, ['e1', 'e2']);
+
+        const outs = [];
+        for (const label of ['C1', 'C2', 'C3', 'C4']) outs.push(await client.commitRound(label));
+
+        assert.deepEqual(outs, [
+            { committed: 1, pending: 1 },
+            { committed: 0, pending: 1 },
+            { committed: 0, pending: 0 },
+            { committed: 0, pending: 0 },
+        ]);
+        const offers = events.filter((e) => e.ev === 'kb_bible_commit').map((e) => e.args.ids);
+        assert.deepEqual(offers, [['e1', 'e2'], ['e2'], ['e2']], 'offered for exactly 3 rounds, then never again');
+        const warns = logs.filter((l) => /WARN: dropping e2 from the bible queue/.test(l));
+        assert.equal(warns.length, 1, logs.join('\n'));
+        assert.match(warns[0], /basis_mismatch for 3 round\(s\) in a row/);
+        assert.deepEqual(client.pendingConfirmations(), []);
+    });
+
+    test('bible entries the tool removed (superseded/invalidated) are named in the run log with their reasons', async () => {
+        const { client, logs } = harness({ removed: [{ id: 'old-1', reason: 'superseded' }, { id: 'old-2', reason: 'invalidated' }] });
+        await confirm(client, ['e1']);
+        await client.commitRound();
+        const line = logs.find((l) => /kb_bible_commit removed 2 superseded\/invalidated entry\(ies\)/.test(l));
+        assert.ok(line, logs.join('\n'));
+        assert.match(line, /old-1 \(superseded\), old-2 \(invalidated\)/);
+    });
+
+    test('no removal line when the tool removed nothing (or predates the removed field)', async () => {
+        for (const removed of [[], undefined]) {
+            const { client, logs } = harness({ removed });
+            await confirm(client, ['e1']);
+            await client.commitRound();
+            assert.ok(!logs.some((l) => /kb_bible_commit removed/.test(l)), logs.join('\n'));
+        }
+    });
+
+    test('the default retry bound is KB_BIBLE_SKIP_RETRY_ROUNDS', async () => {
+        const { client, events } = harness({ skipped: [{ id: 'e1', reason: 'basis_mismatch' }] });
+        await confirm(client, ['e1']);
+        for (let i = 0; i < KB_BIBLE_SKIP_RETRY_ROUNDS + 2; i++) await client.commitRound();
+        assert.equal(events.filter((e) => e.ev === 'kb_bible_commit').length, KB_BIBLE_SKIP_RETRY_ROUNDS);
+        assert.ok(KB_BIBLE_SKIP_RETRY_ROUNDS >= 2, 'a transient mismatch gets at least one retry');
     });
 
     test('a round with no confirmations makes no kb_bible_commit call and touches no git', async () => {

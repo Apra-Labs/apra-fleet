@@ -9,6 +9,8 @@ import { logWarn } from '../utils/log-helpers.js';
 import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
 import {
   asciiSafeStringify,
+  assertNoDuplicateBibleIds,
+  BIBLE_FORMAT_VERSION,
   bibleContentChanged,
   commitBiblePath,
   compareById,
@@ -21,13 +23,22 @@ import {
 } from './kb-export.js';
 
 // kb_bible_commit: the kb_maintainer commits one review round's confirmations
-// to the bible. Unlike kb_export (which regenerates the WHOLE bible from the
-// DB), this merges at ENTRY level: every entry already in
-// <self>/.fleet/kb-canonical.json is kept, only the given ids are added or
-// replaced, and an entry in the file but absent from the DB is never dropped.
-// That is what makes a retry after a rejected push safe: the engine resets to
-// the new remote HEAD (which may carry another clone's entries) and calls this
-// again with the same ids -- the result holds both sets with no manual merge.
+// to the bible, merging at ENTRY level: the given ids are added or replaced,
+// and every entry already in <self>/.fleet/kb-canonical.json is kept UNLESS
+// this (the maintainer's) KB holds it as superseded or invalidated -- those
+// are removed, and each removal (id + reason) is listed in the response and in
+// the commit message. Removal runs at every call, also with no ids. An entry
+// in the file but absent from the DB is never dropped, nor is one the DB holds
+// as CONFIRMED and current. That keeps a retry after a rejected push safe: the
+// engine resets to the new remote HEAD (which may carry another clone's
+// entries, unknown to this DB) and calls this again with the same ids -- the
+// result holds both sets with no manual merge.
+//
+// A merely STALE entry (freshness sweep: its cited files moved) is NOT removed:
+// the owner decision names only superseded and invalidated, and staleness can
+// clear on its own (see SqliteProvider.getRetirementReasons).
+//
+// kb_export is untouched by this: it stays additive-only.
 //
 // Provenance records the sprint's TARGET BASE branch and the base commit the
 // entries were verified against, as given by the caller -- never the HEAD of
@@ -38,7 +49,7 @@ import {
 
 export const kbBibleCommitSchema = z.object({
   ids: z.array(z.string().min(1))
-    .describe('Ids of the entries confirmed this round. Each must be a live (non-stale, non-superseded) CONFIRMED entry in this repository\'s KB whose recorded file basis still matches the files on disk (the same rule kb_export applies); any other id is skipped and reported in skipped (reason not_confirmed_or_unknown or basis_mismatch). An empty list makes no commit.'),
+    .describe('Ids of the entries confirmed this round. Each must be a live (non-stale, non-superseded) CONFIRMED entry in this repository\'s KB whose recorded file basis still matches the cited files at the repo\'s HEAD commit (the same rule kb_export applies; uncommitted edits are ignored); any other id is skipped and reported in skipped (reason not_confirmed_or_unknown, no_source_files for a CONFIRMED entry citing no source file, or basis_mismatch). Independently of the ids, every bible entry this KB holds as superseded or invalidated is removed and reported in removed; an empty list with no such entry makes no commit.'),
   baseBranch: z.string().min(1)
     .describe('The sprint\'s target base branch (the branch the work merges into). Written to provenance.branch.'),
   baseCommit: z.string().min(1)
@@ -50,15 +61,34 @@ export const kbBibleCommitSchema = z.object({
 
 export type KbBibleCommitInput = z.infer<typeof kbBibleCommitSchema>;
 
+/**
+ * Why a requested id was not merged:
+ *  - not_confirmed_or_unknown: not a live CONFIRMED entry in this KB;
+ *  - no_source_files: CONFIRMED but cites no source file, so it has no basis
+ *    that could ever be checked (retrying cannot change this);
+ *  - basis_mismatch: CONFIRMED and cites files, but its recorded basis does not
+ *    match those files at HEAD (can clear once the files or the basis agree).
+ */
+export type KbBibleCommitSkipReason = 'not_confirmed_or_unknown' | 'no_source_files' | 'basis_mismatch';
+
 export interface KbBibleCommitSkip {
   id: string;
-  reason: 'not_confirmed_or_unknown' | 'basis_mismatch';
+  reason: KbBibleCommitSkipReason;
+}
+
+/** Why a bible entry was removed: the maintainer KB holds it as retired. */
+export type KbBibleCommitRemovalReason = 'superseded' | 'invalidated';
+
+export interface KbBibleCommitRemoval {
+  id: string;
+  reason: KbBibleCommitRemovalReason;
 }
 
 export interface KbBibleCommitResult {
   path: string;
   merged: string[];
   skipped: KbBibleCommitSkip[];
+  removed: KbBibleCommitRemoval[];
   entry_count: number;
   committed: boolean;
 }
@@ -71,8 +101,11 @@ export async function kbBibleCommit(input: KbBibleCommitInput, anchor?: KbAnchor
   const requested = Array.from(new Set(input.ids));
   const done = (r: Omit<KbBibleCommitResult, 'path'>): string => JSON.stringify({ path: outPath, ...r });
 
-  if (requested.length === 0) {
-    return done({ merged: [], skipped: [], entry_count: readBibleEntries(outPath)?.length ?? 0, committed: false });
+  // No ids and no bible entry that could be removed: nothing to do, and the
+  // KB is not opened.
+  const existingAtStart = readBibleEntries(outPath);
+  if (requested.length === 0 && (existingAtStart === null || existingAtStart.length === 0)) {
+    return done({ merged: [], skipped: [], removed: [], entry_count: existingAtStart?.length ?? 0, committed: false });
   }
 
   const providers = await getKbProviders(repoPath, resolved.remoteUrl);
@@ -80,53 +113,76 @@ export async function kbBibleCommit(input: KbBibleCommitInput, anchor?: KbAnchor
   const confirmedEntries = await project.list({ confidence: ['CONFIRMED'] });
   const requestedSet = new Set(requested);
   // ONE admission rule with kb_export (scope=project): a CONFIRMED id is
-  // admitted only if it passes the shared bible basis predicate.
+  // admitted only if it passes the shared bible basis predicate. (With no
+  // requested ids this is empty and admission, including its git check, is
+  // not run.)
   const requestedConfirmed = confirmedEntries.filter(e => requestedSet.has(e.id));
-  const qualifying = await filterProjectBibleCandidates(
-    requestedConfirmed,
-    project.getSourceFileBases(requestedConfirmed.map(e => e.id)),
-    repoPath,
-  );
+  const bases = project.getSourceFileBases(requestedConfirmed.map(e => e.id));
+  const qualifying = await filterProjectBibleCandidates(requestedConfirmed, bases, repoPath);
   const qualifyingIds = new Set(qualifying.map(e => e.id));
   const confirmedIds = new Set(requestedConfirmed.map(e => e.id));
+  const noSourceIds = new Set(requestedConfirmed
+    .filter(e => !Array.isArray(e.source_files) || e.source_files.length === 0)
+    .map(e => e.id));
   const confirmed = new Map<string, CanonicalEntry>();
-  for (const e of qualifying) confirmed.set(e.id, toCanonicalEntry(e));
+  // Format v3: each merged entry carries the exact stored basis it was just
+  // admitted against (never re-hashed here).
+  for (const e of qualifying) confirmed.set(e.id, toCanonicalEntry(e, bases.get(e.id)));
 
   const merged: string[] = [];
   const skipped: KbBibleCommitSkip[] = [];
   for (const id of requested) {
     if (qualifyingIds.has(id)) merged.push(id);
-    else if (confirmedIds.has(id)) {
+    else if (noSourceIds.has(id)) {
       // An id already in the bible keeps its existing entry: the merge never drops entries.
-      logWarn('kb_bible_commit', 'skipping ' + id + ': basis_mismatch (cited files changed, missing, or basis absent)');
+      logWarn('kb_bible_commit', 'skipping ' + id + ': no_source_files (a CONFIRMED entry citing no source file has no checkable basis)');
+      skipped.push({ id, reason: 'no_source_files' });
+    } else if (confirmedIds.has(id)) {
+      // An id already in the bible keeps its existing entry: the merge never drops entries.
+      logWarn('kb_bible_commit', 'skipping ' + id + ': basis_mismatch (cited files at HEAD changed or absent, or basis absent)');
       skipped.push({ id, reason: 'basis_mismatch' });
     } else skipped.push({ id, reason: 'not_confirmed_or_unknown' });
   }
 
   // A bible file that exists but cannot be parsed must not be overwritten: its
   // entries are unknown, and writing over it would drop all of them.
-  const existing = readBibleEntries(outPath);
+  const existing = existingAtStart;
   if (existing === null && fs.existsSync(outPath)) {
     throw new Error('kb_bible_commit: existing bible is not a readable bible file, refusing to overwrite it: ' + outPath);
   }
 
-  if (merged.length === 0) {
-    return done({ merged, skipped, entry_count: existing?.length ?? 0, committed: false });
+  // Removals: a bible entry this KB holds as superseded or invalidated. An id
+  // unknown to this KB, or known and not retired, is kept. A merged id is never
+  // retired (merging requires a live CONFIRMED entry), so the two never clash.
+  const retired = project.getRetirementReasons((existing ?? []).map(e => e.id));
+  const removed: KbBibleCommitRemoval[] = (existing ?? [])
+    .filter(e => retired.has(e.id))
+    .map(e => ({ id: e.id, reason: retired.get(e.id)! }))
+    .sort(compareById);
+
+  if (merged.length === 0 && removed.length === 0) {
+    return done({ merged, skipped, removed, entry_count: existing?.length ?? 0, committed: false });
   }
 
+  // Duplicate-id guard: an existing file holding one id twice would otherwise
+  // be silently collapsed by the id map below (dropping an entry). Refuse
+  // before anything is written.
+  assertNoDuplicateBibleIds(existing ?? [], 'kb_bible_commit');
   const byId = new Map<string, CanonicalEntry>();
   for (const e of existing ?? []) byId.set(e.id, e);
+  for (const r of removed) byId.delete(r.id);
   for (const id of merged) byId.set(id, confirmed.get(id)!);
   const entries = Array.from(byId.values()).sort(compareById);
+  assertNoDuplicateBibleIds(entries, 'kb_bible_commit');
 
   // Entries unchanged is a no-op: no rewrite, no commit (provenance alone never
   // counts as a change, matching kb_export).
   if (existing !== null && asciiSafeStringify(existing) === asciiSafeStringify(entries)) {
-    return done({ merged, skipped, entry_count: entries.length, committed: false });
+    return done({ merged, skipped, removed, entry_count: entries.length, committed: false });
   }
 
   const bible: CanonicalBible = {
-    version: 2,
+    version: BIBLE_FORMAT_VERSION,
     provenance: {
       commit: input.baseCommit,
       branch: input.baseBranch,
@@ -139,8 +195,7 @@ export async function kbBibleCommit(input: KbBibleCommitInput, anchor?: KbAnchor
 
   let committed = false;
   if (isGitRepo(repoPath) && bibleContentChanged(repoPath, outPath)) {
-    const message = 'chore(kb): commit ' + merged.length + ' confirmed entries to the knowledge bible -- '
-      + entries.length + ' total';
+    const message = bibleCommitMessage(merged.length, removed, entries.length);
     try {
       commitBiblePath(repoPath, outPath, message);
     } catch (err) {
@@ -150,5 +205,25 @@ export async function kbBibleCommit(input: KbBibleCommitInput, anchor?: KbAnchor
     committed = true;
   }
 
-  return done({ merged, skipped, entry_count: entries.length, committed });
+  return done({ merged, skipped, removed, entry_count: entries.length, committed });
+}
+
+/**
+ * The bible commit message. The subject counts merged and removed entries;
+ * when entries were removed, the body lists each one as '- <id> (<reason>)'.
+ * With no removals the message is the single pre-existing subject line.
+ */
+export function bibleCommitMessage(mergedCount: number, removed: KbBibleCommitRemoval[], total: number): string {
+  let subject: string;
+  if (removed.length === 0) {
+    subject = 'chore(kb): commit ' + mergedCount + ' confirmed entries to the knowledge bible -- ' + total + ' total';
+  } else if (mergedCount === 0) {
+    subject = 'chore(kb): remove ' + removed.length + ' superseded/invalidated entries from the knowledge bible -- '
+      + total + ' total';
+  } else {
+    subject = 'chore(kb): commit ' + mergedCount + ' confirmed entries to the knowledge bible, remove '
+      + removed.length + ' superseded/invalidated -- ' + total + ' total';
+  }
+  if (removed.length === 0) return subject;
+  return subject + '\n\nRemoved:\n' + removed.map(r => '- ' + r.id + ' (' + r.reason + ')').join('\n');
 }

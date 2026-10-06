@@ -223,6 +223,27 @@ export class SqliteProvider implements MemoryProvider {
     try {
       this.db.exec("ALTER TABLE entries ADD COLUMN source_file_hashes TEXT NOT NULL DEFAULT '{}'");
     } catch {}
+
+    // Why a row was retired (superseded_at set): 'superseded' (a contradiction
+    // loser, or replaced by a capture naming it in supersedes) or 'invalidated'
+    // (discarded by id through kb_invalidate). superseded_at alone cannot tell
+    // the two apart, and kb_bible_commit reports the reason for each bible
+    // entry it removes. Internal only: never surfaced on KBEntry. Rows retired
+    // before this column existed read NULL and count as 'superseded'.
+    try {
+      this.db.exec('ALTER TABLE entries ADD COLUMN retired_reason TEXT');
+    } catch {}
+
+    // Legacy bible import (v1/v2 entry, or a v3 entry without a valid carried
+    // map): source_file_hashes then holds THIS clone's file hashes, a
+    // freshness-only basis. 1 = that basis feeds staleness checks only and is
+    // never exported, never used for bible admission, never used for a
+    // mechanical contradiction win (getSourceFileBases / reconcile prefilter
+    // read it as no basis). Internal only: never surfaced on KBEntry. Existing
+    // rows default to 0.
+    try {
+      this.db.exec('ALTER TABLE entries ADD COLUMN local_basis_only INTEGER NOT NULL DEFAULT 0');
+    } catch {}
   }
 
   private getDb(): DatabaseSync {
@@ -264,7 +285,8 @@ export class SqliteProvider implements MemoryProvider {
     input: KBEntryInput,
     content: string,
     now: string,
-    sourceFileHashes: Record<string, string> = {}
+    sourceFileHashes: Record<string, string> = {},
+    localBasisOnly = false
   ): void {
     db.prepare(`
       INSERT INTO entries (
@@ -273,7 +295,7 @@ export class SqliteProvider implements MemoryProvider {
         content_hash, content_hash_type, stale,
         flagged_for_review, contradiction_of,
         author, source, confidence, scope, created_at,
-        source_file_hashes,
+        source_file_hashes, local_basis_only,
         superseded_at, promoted_at, use_count
       ) VALUES (
         ?, ?, ?, ?, ?,
@@ -281,7 +303,7 @@ export class SqliteProvider implements MemoryProvider {
         ?, ?, ?,
         ?, ?,
         ?, ?, ?, ?, ?,
-        ?,
+        ?, ?,
         NULL, NULL, 0
       )
     `).run(
@@ -304,7 +326,8 @@ export class SqliteProvider implements MemoryProvider {
       input.confidence,
       input.scope ?? 'project',
       now,
-      JSON.stringify(sourceFileHashes)
+      JSON.stringify(sourceFileHashes),
+      localBasisOnly ? 1 : 0
     );
   }
 
@@ -392,15 +415,21 @@ export class SqliteProvider implements MemoryProvider {
   // absent from the returned map (not an error). Bounded to the caller's own
   // source_files list. Non-fatal: any hashing error yields an empty basis
   // rather than failing the capture.
+  /**
+   * The ONLY way this provider hashes source files: relative paths anchor at
+   * the provider repo (never process.cwd()) when one is set. Every call site
+   * goes through here so a new call cannot forget the anchor.
+   */
+  private hashAnchored(files: string[], anchor: string | undefined = this.repoPath): ReturnType<typeof computeFileHashBatch> {
+    return computeFileHashBatch(files, anchor !== undefined ? { cwd: anchor } : undefined);
+  }
+
   private async computeSourceFileHashes(files: string[]): Promise<Record<string, string>> {
     if (files.length === 0) return {};
     try {
       // Anchor relative basis paths at this provider's repo, the same root the
       // capture gate checked them against and the one freshnessSweep(root) uses.
-      const hashes = await computeFileHashBatch(
-        files,
-        this.repoPath !== undefined ? { cwd: this.repoPath } : undefined
-      );
+      const hashes = await this.hashAnchored(files);
       const map: Record<string, string> = {};
       for (const file of Object.keys(hashes)) {
         const result = hashes[file];
@@ -495,7 +524,11 @@ export class SqliteProvider implements MemoryProvider {
    * Read-only accessor for the stored per-file hash basis (source_file_hashes)
    * of the given entry ids. Each requested id maps to its parsed basis, or null
    * when the basis is empty/unparseable or the id is unknown. Used by kb_export's
-   * project-scope bible filter; internal to this provider, not an MCP surface.
+   * project-scope bible filter and kb_bible_commit admission; internal to this
+   * provider, not an MCP surface. A local freshness-only basis
+   * (local_basis_only = 1, a legacy bible import) maps to null: it was hashed
+   * from this clone, never verified, so it must never be exported or admit an
+   * entry to the bible.
    */
   getSourceFileBases(ids: string[]): Map<string, Record<string, string> | null> {
     const out = new Map<string, Record<string, string> | null>();
@@ -507,9 +540,9 @@ export class SqliteProvider implements MemoryProvider {
     for (let i = 0; i < ids.length; i += CHUNK) {
       const chunk = ids.slice(i, i + CHUNK);
       const rows = db.prepare(
-        `SELECT id, source_file_hashes FROM entries WHERE id IN (${chunk.map(() => '?').join(',')})`
-      ).all(...chunk) as { id: string; source_file_hashes: string | null }[];
-      for (const row of rows) out.set(row.id, this.parseBasis(row.source_file_hashes));
+        `SELECT id, source_file_hashes, local_basis_only FROM entries WHERE id IN (${chunk.map(() => '?').join(',')})`
+      ).all(...chunk) as { id: string; source_file_hashes: string | null; local_basis_only: number | null }[];
+      for (const row of rows) out.set(row.id, row.local_basis_only ? null : this.parseBasis(row.source_file_hashes));
     }
     return out;
   }
@@ -566,10 +599,7 @@ export class SqliteProvider implements MemoryProvider {
     // whenever the process cwd is not the repo -- which is the normal case in
     // the long-lived fleet server -- so every relative basis path would re-hash
     // to a different value and prime would stale healthy entries on sight.
-    const currentHashes = await computeFileHashBatch(
-      [...fileSet],
-      this.repoPath !== undefined ? { cwd: this.repoPath } : undefined
-    );
+    const currentHashes = await this.hashAnchored([...fileSet]);
 
     const staleIds: string[] = [];
     const unstaleIds: string[] = [];
@@ -670,7 +700,7 @@ export class SqliteProvider implements MemoryProvider {
     for (const basis of basisById.values()) {
       for (const file of Object.keys(basis)) fileSet.add(file);
     }
-    const currentHashes = await computeFileHashBatch([...fileSet], anchor ? { cwd: anchor } : undefined);
+    const currentHashes = await this.hashAnchored([...fileSet], anchor || undefined);
 
     const staleIds: string[] = [];
     const unstaleIds: string[] = [];
@@ -736,7 +766,8 @@ export class SqliteProvider implements MemoryProvider {
     candidates: KBEntry[],
     newContent: string,
     now: string,
-    sourceFileHashes: Record<string, string>
+    sourceFileHashes: Record<string, string>,
+    localBasisOnly = false
   ): { id: string; audn_decision: AudnDecision } | null {
     const decision = makeAudnDecision(input, candidates, newContent);
     if (!decision) return null;
@@ -748,7 +779,7 @@ export class SqliteProvider implements MemoryProvider {
     if (decision.decision === 'flagged') {
       db.prepare('UPDATE entries SET flagged_for_review = 1 WHERE id = ?').run(decision.matchedId);
       const newId = randomUUID();
-      this.insertEntry(db, newId, { ...input, ...decision.newEntryOverrides }, newContent, now, sourceFileHashes);
+      this.insertEntry(db, newId, { ...input, ...decision.newEntryOverrides }, newContent, now, sourceFileHashes, localBasisOnly);
       this.wireLinks(db, newId, input);
       return { id: newId, audn_decision: 'flagged' };
     }
@@ -765,9 +796,9 @@ export class SqliteProvider implements MemoryProvider {
         // flagged_for_review is deliberately NOT cleared here; that is
         // resolveContradiction's behavior, and kb-review.md depends on the
         // difference (a kept entry stays listed under flagged_only).
-        db.prepare('UPDATE entries SET superseded_at = ?, stale = 1 WHERE id = ?')
+        db.prepare("UPDATE entries SET superseded_at = ?, stale = 1, retired_reason = 'superseded' WHERE id = ?")
           .run(now, decision.matchedId);
-        this.insertEntry(db, newId, input, newContent, now, sourceFileHashes);
+        this.insertEntry(db, newId, input, newContent, now, sourceFileHashes, localBasisOnly);
         this.wireLinks(db, newId, input);
         return { id: newId, audn_decision: 'update' };
       }
@@ -776,7 +807,7 @@ export class SqliteProvider implements MemoryProvider {
       // That is a topicality signal, not consent to destroy -- two DISTINCT
       // facts about one symbol used to eat each other. Link and keep both;
       // curation retires what it means to retire, explicitly.
-      this.insertEntry(db, newId, input, newContent, now, sourceFileHashes);
+      this.insertEntry(db, newId, input, newContent, now, sourceFileHashes, localBasisOnly);
       this.wireLinks(db, newId, input);
       db.prepare(
         'INSERT OR IGNORE INTO links (from_id, to_id, link_type) VALUES (?, ?, ?)'
@@ -954,7 +985,20 @@ export class SqliteProvider implements MemoryProvider {
     // T2.2 (F3 PART A): capture() is the single choke point every caller
     // (kb_capture, kb_harvest, future paths) goes through, so every entry
     // gets a hash basis here regardless of type.
-    const sourceFileHashes = await this.computeSourceFileHashes(input.source_files ?? []);
+    //
+    // Bible format v3: an IMPORT carrying a basis (opts.carriedBasis, honoured
+    // only under importMode, which no deserialized route can set) stores that
+    // map verbatim instead -- the basis the entry was verified against on the
+    // exporting clone. carriedBasis null (a v1/v2 entry, or an invalid carried
+    // map) hashes this clone's files into a LOCAL freshness-only basis
+    // (local_basis_only = 1): it lets the entry go stale when code drifts, but
+    // is never exported, never admits it to the bible and never wins a
+    // contradiction mechanically. Normal captures are unaffected.
+    const carried = opts?.importMode === true && opts.carriedBasis !== undefined;
+    const localBasisOnly = carried && opts?.carriedBasis === null;
+    const sourceFileHashes = carried && !localBasisOnly
+      ? { ...(opts?.carriedBasis ?? {}) }
+      : await this.computeSourceFileHashes(input.source_files ?? []);
 
     // Verbatim (member bible view): the bible was reviewed and merged as a
     // whole; AUDN against its own sibling entries would flag, re-id and
@@ -963,7 +1007,7 @@ export class SqliteProvider implements MemoryProvider {
     const verbatim = opts?.verbatim === true && opts.importMode === true && opts.preferredId !== undefined;
     const candidates = verbatim ? [] : this.findAudnCandidates(db, input);
     if (candidates.length > 0) {
-      const result = this.evaluateAudn(db, input, candidates, content, now, sourceFileHashes);
+      const result = this.evaluateAudn(db, input, candidates, content, now, sourceFileHashes, localBasisOnly);
       if (result) return result;
     }
 
@@ -974,7 +1018,7 @@ export class SqliteProvider implements MemoryProvider {
     // always mint a fresh randomUUID -- an id collision with different content is
     // resolved by AUDN under a new id, never by overwriting the preserved id.
     const id = opts?.preferredId ?? randomUUID();
-    this.insertEntry(db, id, input, content, now, sourceFileHashes);
+    this.insertEntry(db, id, input, content, now, sourceFileHashes, localBasisOnly);
     this.wireLinks(db, id, input);
     return { id, audn_decision: 'add' };
   }
@@ -1152,7 +1196,7 @@ export class SqliteProvider implements MemoryProvider {
       }
     }
 
-    const hashes = await computeFileHashBatch(files);
+    const hashes = await this.hashAnchored(files);
 
     for (const file of files) {
       const entry = fileEntries.get(file);
@@ -1203,10 +1247,37 @@ export class SqliteProvider implements MemoryProvider {
         result.already_discarded.push(id);
         continue;
       }
-      db.prepare('UPDATE entries SET superseded_at = ?, stale = 1 WHERE id = ?').run(now, id);
+      db.prepare("UPDATE entries SET superseded_at = ?, stale = 1, retired_reason = 'invalidated' WHERE id = ?").run(now, id);
       result.discarded.push(id);
     }
     return result;
+  }
+
+  /**
+   * For each id this KB holds as RETIRED, why: 'superseded' or 'invalidated'.
+   * Ids that are unknown, or known and not retired, are absent from the map.
+   *
+   * Retired means superseded_at is set (reason from retired_reason; NULL, a
+   * row retired before that column existed, counts as 'superseded'), or
+   * content_hash = 'invalidated' (kb_invalidate by file) -> 'invalidated'.
+   *
+   * A merely STALE row (stale = 1 from the freshness sweep, superseded_at
+   * NULL, content_hash not 'invalidated') is NOT retired: staleness means the
+   * cited files moved, which the next capture or sweep can clear, while
+   * superseded and invalidated are explicit curation decisions. Only those two
+   * remove an entry from the bible (kb_bible_commit).
+   */
+  getRetirementReasons(ids: string[]): Map<string, 'superseded' | 'invalidated'> {
+    const db = this.getDb();
+    const out = new Map<string, 'superseded' | 'invalidated'>();
+    const stmt = db.prepare('SELECT superseded_at, retired_reason, content_hash FROM entries WHERE id = ?');
+    for (const id of new Set(ids)) {
+      const row = stmt.get(id) as { superseded_at: string | null; retired_reason: string | null; content_hash: string | null } | undefined;
+      if (!row) continue;
+      if (row.superseded_at) out.set(id, row.retired_reason === 'invalidated' ? 'invalidated' : 'superseded');
+      else if (row.content_hash === 'invalidated') out.set(id, 'invalidated');
+    }
+    return out;
   }
 
   async invalidate(files: string[], opts?: { ownerTag?: string }): Promise<{ invalidated: number }> {
@@ -1721,7 +1792,7 @@ export class SqliteProvider implements MemoryProvider {
       if (revivable) {
         const basis = this.parseBasis((refreshedRow as { source_file_hashes?: string | null }).source_file_hashes ?? null);
         if (basis) {
-          const currentHashes = await computeFileHashBatch(Object.keys(basis));
+          const currentHashes = await this.hashAnchored(Object.keys(basis));
           if (this.basisFullyMatches(basis, currentHashes)) {
             db.prepare('UPDATE entries SET stale = 0 WHERE id = ?').run(winnerId);
           }
@@ -1734,7 +1805,7 @@ export class SqliteProvider implements MemoryProvider {
     // was once part of for later inspection); only flagged_for_review is
     // cleared per the stated invariant.
     db.prepare(
-      'UPDATE entries SET superseded_at = ?, stale = 1, flagged_for_review = 0 WHERE id = ?'
+      "UPDATE entries SET superseded_at = ?, stale = 1, flagged_for_review = 0, retired_reason = 'superseded' WHERE id = ?"
     ).run(now, loserId);
 
     return { winnerId, loserId };
@@ -1781,17 +1852,21 @@ export class SqliteProvider implements MemoryProvider {
     const allIds = liveTouchable.flatMap(p => [p.original.id, p.challenger.id]);
     const basisById = new Map<string, Record<string, string> | null>();
     if (allIds.length > 0) {
+      // A local freshness-only basis (legacy bible import) counts as no basis
+      // here: it was never verified, so it must not win a pair mechanically.
       const basisRows = db.prepare(
-        `SELECT id, source_file_hashes FROM entries WHERE id IN (${allIds.map(() => '?').join(',')})`
-      ).all(...allIds) as { id: string; source_file_hashes: string | null }[];
-      for (const row of basisRows) basisById.set(row.id, this.parseBasis(row.source_file_hashes));
+        `SELECT id, source_file_hashes, local_basis_only FROM entries WHERE id IN (${allIds.map(() => '?').join(',')})`
+      ).all(...allIds) as { id: string; source_file_hashes: string | null; local_basis_only: number | null }[];
+      for (const row of basisRows) {
+        basisById.set(row.id, row.local_basis_only ? null : this.parseBasis(row.source_file_hashes));
+      }
     }
 
     const fileSet = new Set<string>();
     for (const basis of basisById.values()) {
       if (basis) for (const file of Object.keys(basis)) fileSet.add(file);
     }
-    const currentHashes = await computeFileHashBatch([...fileSet]);
+    const currentHashes = await this.hashAnchored([...fileSet]);
 
     for (const pair of liveTouchable) {
       const originalBasis = basisById.get(pair.original.id) ?? null;

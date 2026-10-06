@@ -69,3 +69,24 @@ test('connectFleetMember adds origin=engine only when asked, and refuses any oth
         );
     } finally { await stopServer(s); }
 });
+
+test('connectFleetMember adds kb_maintainer=1 only with origin engine', async () => {
+    const s = await startServer(200);
+    try {
+        const deps = { env: {}, checkRunningInstance: async () => ({ running: true, url: s.url, pid: process.pid }) };
+        const engine = await connectFleetMember('abcdef12-0000-4000-8000-000000000000', { ...deps, origin: 'engine' });
+        assert.ok(!engine.url.includes('kb_maintainer'), engine.url);
+        await engine.close();
+        const maint = await connectFleetMember('abcdef12-0000-4000-8000-000000000000', { ...deps, origin: 'engine', kbMaintainer: true });
+        assert.ok(maint.url.endsWith('?member=abcdef12-0000-4000-8000-000000000000&origin=engine&kb_maintainer=1'), maint.url);
+        await maint.close();
+        await assert.rejects(
+            () => connectFleetMember('abcdef12-0000-4000-8000-000000000000', { ...deps, kbMaintainer: true }),
+            /kbMaintainer requires origin 'engine'/,
+        );
+        await assert.rejects(
+            () => connectFleetMember('abcdef12-0000-4000-8000-000000000000', { ...deps, origin: 'engine', kbMaintainer: 'yes' }),
+            /kbMaintainer must be a boolean/,
+        );
+    } finally { await stopServer(s); }
+});

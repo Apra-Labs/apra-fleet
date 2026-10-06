@@ -157,7 +157,11 @@ Resolves the local HTTP singleton, appends `?member=<memberId>` and connects,
 returning `{ transport, mcpClient, mode: 'http', url, close }`. `deps.origin:
 'engine'` also appends `origin=engine` (engine-origin session: its kb_/code_
 calls are excluded from the member's `session_stats` counts; only memberCall and
-`apra-fleet call` set it). Always `await close()` when done: it DELETEs the server session (`transport.stop()` alone leaks it). Refuses a stdio
+`apra-fleet call` set it). `deps.kbMaintainer: true` (only with `origin:
+'engine'`, else it throws) also appends `kb_maintainer=1`, the engine's
+kb_maintainer grant: the session is additionally served `kb_promote` and
+`kb_resolve_contradiction`, which no other member session sees. A member
+session is never served `kb_setup` or `kb_export`. Always `await close()` when done: it DELETEs the server session (`transport.stop()` alone leaks it). Refuses a stdio
 resolution (a member identity rides on the URL). An unregistered uuid rejects
 with `err.status === 403` / `err.code === 'HTTP_403'` (raised by
 `StreamableHttpTransport.start()` for any non-OK initialize response as
@@ -528,6 +532,14 @@ exported). For direct `callTool` users: `kb_list` accepts `confidence` as a
 list or as one tier string, and `kb_context` defaults to
 `["CONFIRMED","INFERRED"]`.
 
+Bible-related refusals are part of the closed error vocabulary in
+`memory-contract/v1/taxonomy.json`: `E-BIBLE-MALFORMED` (a bible file that is
+not valid JSON or not a bible shape; raised by `kb_import` and by a member
+session's `kb_query` / `kb_session_prime` / `kb_stats`), `E-MEMBER-VIEW-REMOTE`
+(a remote member's checkout bible is unreachable; the same three read tools)
+and `E-BIBLE-BASIS-NOT-GIT` (`kb_export` / `kb_bible_commit` in a folder that is
+not a git work tree).
+
 #### `kbExport(options?: KbExportOptions)`
 
 Calls `kb_export` -- exports the calling session's CONFIRMED KB entries to the
@@ -541,16 +553,24 @@ JSON (via `parseToolJson`): `{exported, path, scope, committed}`.
 #### `kbBibleCommit(options: KbBibleCommitOptions)`
 
 Calls `kb_bible_commit` -- merges exactly `ids` into the bible at entry level
-(every existing entry is kept; only the given ids are added or replaced),
-writes `baseBranch` / `baseCommit` into provenance, and makes a local commit
-scoped to the bible path. It never pushes. Ids that are not live CONFIRMED
+(only the given ids are added or replaced; every existing entry is kept unless
+the KB holds it as superseded or invalidated), writes `baseBranch` /
+`baseCommit` into provenance, and makes a local commit scoped to the bible
+path. It never pushes. Every bible entry the KB holds as superseded or
+invalidated is removed at each call (also with an empty `ids`) and listed in
+`removed` as `{id, reason}` (reason `superseded` or `invalidated`) and in the
+commit message; an entry unknown to the KB, or CONFIRMED and current, is never
+removed, nor is a merely stale one. `kbExport` never removes anything. Ids that are not live CONFIRMED
 entries are skipped and listed in `skipped` with reason
 `not_confirmed_or_unknown`; a CONFIRMED id that fails the same basis rule
-`kb_export` applies (a cited file changed or missing, or no basis) is skipped
-with reason `basis_mismatch` and any existing bible entry for it is kept; no mergeable ids or an unchanged
-entry set makes no commit. Re-running with the same ids after resetting to a
+`kb_export` applies (a cited file changed or absent at the repo's HEAD commit --
+uncommitted edits never change the verdict -- or no basis) is skipped
+with reason `basis_mismatch` and any existing bible entry for it is kept; a
+CONFIRMED id citing no source file is skipped with its own reason
+`no_source_files` (its existing bible entry is kept too); no mergeable ids or an unchanged
+entry set (nothing merged, nothing removed) makes no commit. Re-running with the same ids after resetting to a
 newer HEAD re-merges, so a rejected push can be retried without a manual
-merge. Result JSON: `{path, merged, skipped, entry_count, committed}`.
+merge. Result JSON: `{path, merged, skipped, removed, entry_count, committed}`.
 
 #### `composePermissions(options: ComposePermissionsOptions)`
 
@@ -630,7 +650,7 @@ detached `gitnexus analyze`, captures its output to
 `<data>/code-index/<slug>/analyze.log`, and returns after the first tick; its
 `outcome` is `started`, `up-to-date`, `starting`, `already-running` or
 `not-started` (with a typed `reason`: `npx-not-found`, `gitnexus-not-found`,
-`analyze-failed`, `spawn-failed`, `remote-member`, `provider-not-supported`). Both tools are
+`analyze-failed`, `spawn-failed`, `remote-member`, `gitnexus-too-old` (the installed gitnexus rejects `--index-only`; `detail` names the upgrade fix), `provider-not-supported`); every result also carries `injectedBlockFiles` (agent docs still holding a gitnexus block from an earlier plain analyze run; detection only). Both tools are
 gated on the member's code-intel provider: `none` fails with
 `E-CODE-INTEL-DISABLED` (nothing is spawned); any non-gitnexus provider (e.g.
 `codebase-memory`) returns `{ outcome: 'not-started', reason:
@@ -638,16 +658,24 @@ gated on the member's code-intel provider: `none` fails with
 tools instead of gitnexus readiness. `codeStatus()` returns the
 last run (`analyze.phase`, `analyze.result` = `indexed` | `up-to-date` |
 `incomplete` | `failed`, `analyze.lastLine`), live `readiness`
-(`ready` | `building` | `interrupted` | `missing`; `interrupted` = the index
-is marked incomplete and no analyze is running), `indexedCommit`, `logPath`
+(`ready` | `building` | `interrupted` | `inconsistent` | `missing`;
+`building` also covers an analyze rewriting an existing index, which is never
+served meanwhile; `interrupted` = the index is marked incomplete and no analyze
+is running; `inconsistent` = the gitnexus registry or the fleet record of its
+last build names a different commit than meta.json), `inconsistency` (that
+reason, or `null`), `indexedCommit`, `logPath`
 (the last run's `analyze.log`, or `null` when no analyze has written one yet)
 and `autoReindexPaused` (`null`, or `{ result, lastLine, logPath, finished }`
 of the automatic run that failed: automatic rebuilds of that folder stay
-paused until `codeReindex()` or a server restart). A code_* call on a local
-folder whose index is `missing` or `interrupted` requests a background build
-automatically (unless `autoReindex.enabled` is false in the code-intelligence
-config.json) and fails with `E-CODE-INDEX-NOT-READY` saying so. Extract both
-with `parseToolJson()`.
+paused until `codeReindex()` or a server restart), `injectedBlockFiles` / `injectedBlockWarning` (agent docs still holding a previously injected gitnexus block and the one-line WARN with the fix; `[]` / `null` when clean) and, on a failed run, `analyze.failureCause` (`gitnexus-too-old`). A code_* call on a local
+folder whose index is `missing`, `interrupted` or `inconsistent` requests a
+background build automatically (unless `autoReindex.enabled` is false in the
+code-intelligence config.json) and fails with `E-CODE-INDEX-NOT-READY` saying
+so; an answer during which the index changed is discarded with the same error.
+A `code_impact` / `code_context` answer whose resolved symbol is not the one
+requested carries `resolution_mismatch` (`{ requested, resolved: { name, id,
+filePath } }`) and `confidence: 'LOW'`, and an impact `risk` is moved to
+`unverified_risk` with `risk: 'UNKNOWN'`. Extract both with `parseToolJson()`.
 
 #### `doltPushMutex(options)`
 

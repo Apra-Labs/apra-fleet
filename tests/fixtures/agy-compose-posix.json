@@ -211,7 +211,11 @@
           "mcp(apra-fleet/credential_store_update)",
           "mcp(apra-fleet/send_email)",
           "mcp(apra-fleet/send_message)",
-          "mcp(apra-fleet/respond_to_message)"
+          "mcp(apra-fleet/respond_to_message)",
+          "mcp(apra-fleet/kb_promote)",
+          "mcp(apra-fleet/kb_resolve_contradiction)",
+          "mcp(apra-fleet/kb_setup)",
+          "mcp(apra-fleet/kb_export)"
         ]
       }
     }
@@ -355,7 +359,11 @@
           "mcp(apra-fleet/credential_store_update)",
           "mcp(apra-fleet/send_email)",
           "mcp(apra-fleet/send_message)",
-          "mcp(apra-fleet/respond_to_message)"
+          "mcp(apra-fleet/respond_to_message)",
+          "mcp(apra-fleet/kb_promote)",
+          "mcp(apra-fleet/kb_resolve_contradiction)",
+          "mcp(apra-fleet/kb_setup)",
+          "mcp(apra-fleet/kb_export)"
         ]
       }
     }

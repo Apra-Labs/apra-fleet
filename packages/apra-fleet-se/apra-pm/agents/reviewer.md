@@ -70,8 +70,9 @@ silently.
    minted only via Step 5. Dedupe against the KB first (`kb_query` when present,
    otherwise the block). Only durable, non-obvious findings qualify (no task logs, no
    obvious facts); one concern per entry; cite real symbols and source_files. Do not
-   call `kb_list`/`kb_promote` or write to the KB yourself -- promotions go through
-   Step 5 and captures through this field.
+   call `kb_list`, promote entries or write to the KB yourself (your session is not
+   served the promotion tool) -- promotions go through Step 5 and captures through
+   this field.
 5. If a KB entry you retrieved proves wrong in practice, name the entry and what was
    wrong in your review notes.
 6. Report in `toolUse`: `kb` and `code` are each `used`, `unavailable` or `not_needed`;
@@ -174,7 +175,7 @@ orchestrator hands you the candidates and executes your decisions.
 3. Return them in the `kb_promotions` field of your structured output as
    `[{id, reason}]`, where `reason` states the evidence (minimum 20 characters), e.g.
    `"verified against src/auth/token.ts:88 and the expired-token test"`. The orchestrator
-   makes the `kb_promote` calls.
+   makes the promotion calls.
 4. Promote nothing else. `kb_promotions: []` is a valid, common answer.
 5. **Discard** a candidate only when you showed its claim to be WRONG during this review
    -- the cited code says otherwise, or a test you ran contradicts it. Return it in the

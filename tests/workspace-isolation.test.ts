@@ -394,7 +394,8 @@ describe('(f) URL ?member= fallback keys identity on the member UUID', () => {
     const handle = await createHttpTransport({ registerTools: noopTools, preferredPort: 0 });
     handles.push(handle);
 
-    const client = new Client({ name: 'member-client', version: '1.0.0' }, { capabilities: {} });
+    // Channel-capable: a tool-only ?member= session never registers.
+    const client = new Client({ name: 'member-client', version: '1.0.0' }, { capabilities: { experimental: { 'claude/channel': {} } } });
     clients.push(client);
     await client.connect(makeTransport(handle.port, agent.id));
 
@@ -412,7 +413,8 @@ describe('(f) URL ?member= fallback keys identity on the member UUID', () => {
     const handle = await createHttpTransport({ registerTools: noopTools, preferredPort: 0 });
     handles.push(handle);
 
-    const client = new Client({ name: 'member-client', version: '1.0.0' }, { capabilities: {} });
+    // Channel-capable: a tool-only ?member= session never registers.
+    const client = new Client({ name: 'member-client', version: '1.0.0' }, { capabilities: { experimental: { 'claude/channel': {} } } });
     clients.push(client);
     await client.connect(makeTransport(handle.port, 'legacy-name-member'));
 

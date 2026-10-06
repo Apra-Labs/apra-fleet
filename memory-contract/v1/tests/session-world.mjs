@@ -36,7 +36,7 @@ function git(cwd, args) {
  * @param {(agent: object) => void} deps.addAgent
  * @param {(id: string) => boolean} deps.removeAgent
  * @param {(server: object, scope?: object) => Promise<void>} deps.registerAllTools  (no scope = FULL)
- * @param {(memberId: string, channelCapable: boolean) => object} deps.memberToolScope
+ * @param {(memberId: string, channelCapable: boolean, engineOrigin?: boolean, kbMaintainer?: boolean) => object} deps.memberToolScope
  */
 export async function materializeSessionWorld(env, root, deps) {
   const repoPaths = new Map();
@@ -50,11 +50,20 @@ export async function materializeSessionWorld(env, root, deps) {
       fs.writeFileSync(target, contents, 'utf-8');
     }
     if (repo.git) {
-      git(dir, ['init', '-q']);
+      // `bare: true` makes a bare repository: a git dir with no work tree.
+      git(dir, repo.bare ? ['init', '-q', '--bare'] : ['init', '-q']);
       // A local identity so kb_export's auto-commit never depends on host config.
       git(dir, ['config', 'user.email', 'contract@example.test']);
       git(dir, ['config', 'user.name', 'contract']);
       if (repo.remote) git(dir, ['remote', 'add', 'origin', deps.remoteUrl(repo.remote)]);
+      // Seed files are committed: kb_export and kb_bible_commit admit an entry
+      // only when its basis matches the cited file at HEAD, not on disk.
+      // Files written later by a step's setup ops stay uncommitted (absent at
+      // HEAD), which the admission rule treats as a basis mismatch.
+      if (!repo.bare && Object.keys(repo.files).length > 0) {
+        git(dir, ['add', '-A']);
+        git(dir, ['-c', 'commit.gpgsign=false', 'commit', '-q', '--no-verify', '-m', 'seed']);
+      }
     }
   }
 
@@ -107,7 +116,12 @@ export async function materializeSessionWorld(env, root, deps) {
       tool: (name, _description, _shape, handler) => { handlers.set(name, handler); },
       server: { sendLoggingMessage: async () => {} },
     };
-    await deps.registerAllTools(fakeServer, deps.memberToolScope(id, false));
+    // `kbMaintainer: true` is the engine's kb_maintainer grant (an origin=engine
+    // member session carrying kb_maintainer=1): the only member session served
+    // kb_promote and kb_resolve_contradiction. No member session is served
+    // kb_setup or kb_export; the corpus runs those in a FULL session.
+    const maintainer = session.kbMaintainer === true;
+    await deps.registerAllTools(fakeServer, deps.memberToolScope(id, false, maintainer, maintainer));
     sessionHandlers.set(key, handlers);
   }
 

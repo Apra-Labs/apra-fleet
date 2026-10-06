@@ -1,0 +1,17 @@
+{
+  "tool": "kb_promote",
+  "case": "setup-first-promote-for-bible-removal",
+  "kind": "happy",
+  "request": {
+    "id": "f73a13d1-15d2-46c7-a319-84232fdf856b",
+    "reason": "First promotion (UNVERIFIED -> INFERRED) of the entry used by the bible removal fixture."
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"id\":\"f73a13d1-15d2-46c7-a319-84232fdf856b\",\"previous_confidence\":\"INFERRED\",\"new_confidence\":\"CONFIRMED\"}"
+      }
+    ]
+  }
+}

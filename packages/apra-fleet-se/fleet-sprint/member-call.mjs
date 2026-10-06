@@ -37,6 +37,13 @@
 //      never masks the call's own result or typed error.
 // --list-tools delivers no file and issues neither command.
 //
+// KB_MAINTAINER GRANT: memberCall(member, tool, args, { kbMaintainer: true })
+// opens the member session with the kb_maintainer grant (local:
+// connectFleetMember { kbMaintainer: true }; remote: `apra-fleet call
+// --kb-maintainer`). Only that session is served kb_promote and
+// kb_resolve_contradiction. Callers pass it only when calling AS a repository's
+// chosen kb_maintainer (kb.mjs flushRepo / commitRepo).
+//
 // The engine's own orchestrator work keeps its FULL session -- the injected
 // callTool used elsewhere is untouched by this module.
 //
@@ -70,12 +77,13 @@ const TOOL_RE = /^[A-Za-z0-9_]+$/;
 /**
  * Build the command run ON a remote/relay member. Pure; exported for tests.
  * @param {{ os: string, shell: string }} target
- * @param {{ memberId: string, tool?: string, argsPath?: string, listTools?: boolean }} spec
+ * @param {{ memberId: string, tool?: string, argsPath?: string, listTools?: boolean, kbMaintainer?: boolean }} spec
  * @returns {string}
  */
-export function buildRemoteCallCommand(target, { memberId, tool, argsPath, listTools = false }) {
+export function buildRemoteCallCommand(target, { memberId, tool, argsPath, listTools = false, kbMaintainer = false }) {
     if (!UUID_RE.test(String(memberId))) throw new MemberCallError('E-USAGE', `unsafe member id '${memberId}'`);
     let script = `apra-fleet call --member ${memberId}`;
+    if (kbMaintainer === true) script += ' --kb-maintainer';
     if (listTools) {
         script += ' --list-tools';
     } else {
@@ -133,30 +141,30 @@ function parseRemoteOutput(res, what) {
 /**
  * Create the helper. Dependencies (all injectable):
  *   fleetApi        sendFiles / executeCommand / memberDetail (remote adapter + OS resolution)
- *   connectLocal    (memberId) => Promise<{ mcpClient: {callTool, listTools}, transport?: {stop} }>
+ *   connectLocal    (memberId, { kbMaintainer }) => Promise<{ mcpClient: {callTool, listTools}, transport?: {stop} }>
  *                   defaults to the client's connectFleetMember
  *   resolveTarget   ({ fleetApi, member, log }) => Promise<{os, shell}>; defaults to resolveMemberTarget
  *   fsImpl          { mkdtempSync, writeFileSync, rmSync } for the local args temp file
  *   tmpdir          local temp root
  *   log
  *
- * @returns {{ memberCall(member, tool, args): Promise<object>, listTools(member): Promise<object> }}
+ * @returns {{ memberCall(member, tool, args, opts?: { kbMaintainer?: boolean }): Promise<object>, listTools(member): Promise<object> }}
  */
 export function createMemberCall(deps = {}) {
     const { fleetApi, log = () => {} } = deps;
     const fsImpl = deps.fsImpl || fs;
     const tmpdir = deps.tmpdir || os.tmpdir();
     const resolveTarget = deps.resolveTarget || resolveMemberTarget;
-    const connectLocal = deps.connectLocal || (async (memberId) => {
+    const connectLocal = deps.connectLocal || (async (memberId, opts = {}) => {
         const m = await import('@apralabs/apra-fleet-client/server-resolution');
         // origin=engine: the engine's own reads are excluded from the member's session_stats counts.
-        return m.connectFleetMember(memberId, { origin: 'engine' });
+        return m.connectFleetMember(memberId, { origin: 'engine', ...(opts.kbMaintainer === true ? { kbMaintainer: true } : {}) });
     });
 
-    async function withLocalSession(member, fn) {
+    async function withLocalSession(member, fn, opts = {}) {
         let session;
         try {
-            session = await connectLocal(memberIdOf(member));
+            session = await connectLocal(memberIdOf(member), { kbMaintainer: opts.kbMaintainer === true });
         } catch (err) {
             if (err && err.status === 403) {
                 throw new MemberCallError('E-MEMBER-FORBIDDEN', `server refused member ${memberIdOf(member)}: not a registered member (HTTP 403)`, { status: 403 });
@@ -233,7 +241,7 @@ export function createMemberCall(deps = {}) {
             } finally {
                 try { fsImpl.rmSync(localDir, { recursive: true, force: true }); } catch { /* ignore */ }
             }
-            const command = buildRemoteCallCommand(target, { memberId, tool: spec.tool, argsPath });
+            const command = buildRemoteCallCommand(target, { memberId, tool: spec.tool, argsPath, kbMaintainer: spec.kbMaintainer === true });
             const res = await fleetApi.executeCommand({ member_id: memberId, command });
             return parseRemoteOutput(res, what);
         } finally {
@@ -243,13 +251,14 @@ export function createMemberCall(deps = {}) {
     }
 
     return {
-        async memberCall(member, tool, args = {}) {
+        async memberCall(member, tool, args = {}, opts = {}) {
             if (!memberIdOf(member)) throw new MemberCallError('E-USAGE', 'memberCall requires a member with an id');
             if (!TOOL_RE.test(String(tool))) throw new MemberCallError('E-USAGE', `unsafe tool name '${tool}'`);
+            const kbMaintainer = opts !== null && typeof opts === 'object' && opts.kbMaintainer === true;
             if (isLocal(member)) {
-                return withLocalSession(member, async (client) => unwrapToolResult(await client.callTool(tool, args), tool));
+                return withLocalSession(member, async (client) => unwrapToolResult(await client.callTool(tool, args), tool), { kbMaintainer });
             }
-            return runRemote(member, { tool, args }, tool);
+            return runRemote(member, { tool, args, kbMaintainer }, tool);
         },
         async listTools(member) {
             if (!memberIdOf(member)) throw new MemberCallError('E-USAGE', 'listTools requires a member with an id');

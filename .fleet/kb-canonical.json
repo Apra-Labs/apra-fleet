@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "34ff160ff8ee9e2268e851270b911771d06fedca",
     "branch": "feat/kb-redesign",
-    "entry_count": 273
+    "entry_count": 287
   },
   "entries": [
     {
@@ -390,6 +390,24 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:26.644Z"
+    },
+    {
+      "id": "101692b0-d5e6-4a32-8d6e-e8595ddc39f0",
+      "type": "learning",
+      "title": "kb_* tool description text is duplicated in generate-contract.mjs DESCRIPTIONS",
+      "summary": "Changing a kb_*/code_* registration description in src/services/tool-registry.ts also requires updating the hand-copied DESCRIPTIONS table in memory-contract/v1/generate-contract.mjs (and INVENTORY.md), then contract:generate; contract:check alone stays green.",
+      "symbols": [
+        "DESCRIPTIONS",
+        "registerAllTools"
+      ],
+      "source_files": [
+        "memory-contract/v1/generate-contract.mjs",
+        "src/services/tool-registry.ts",
+        "tests/memory-contract-roster-guard.test.ts",
+        "memory-contract/v1/INVENTORY.md"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T13:38:55.519Z"
     },
     {
       "id": "1045da8b-1650-40db-aa11-2389ad00e9a2",
@@ -862,6 +880,21 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:29.247Z"
+    },
+    {
+      "id": "2209f37c-c65d-4ddf-9ca4-dbde8ef2e698",
+      "type": "knowledge",
+      "title": "memory-contract/v1/schemas accepts only generator output; hand-authored schemas live elsewhere",
+      "summary": "generate-contract.mjs --check fails on any extra or untracked file under schemas/ or bindings/, so a hand-authored schema (e.g. the bible file format) must live outside those dirs, as memory-contract/v1/bible/ does.",
+      "symbols": [],
+      "source_files": [
+        "memory-contract/v1/generate-contract.mjs",
+        "memory-contract/v1/bible/kb-canonical.schema.json",
+        "memory-contract/v1/README.md",
+        "tests/memory-contract-bible-format.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T05:59:28.053Z"
     },
     {
       "id": "2267a58e-cee4-4a04-9674-f440db94c22a",
@@ -1588,6 +1621,31 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:16.108Z"
+    },
+    {
+      "id": "483c4334-ebbd-4dda-9e66-ca7899110f85",
+      "type": "knowledge",
+      "title": "Member kb_promote/kb_resolve_contradiction need the engine kb_maintainer grant",
+      "summary": "The member tool allowlist is explicit: kb_setup and kb_export are never served to a member session, and kb_promote and kb_resolve_contradiction are served only to a member session opened with origin=engine&kb_maintainer=1, which the engine opens for a repository's kb_maintainer.",
+      "symbols": [
+        "MEMBER_BASE_TOOLS",
+        "MEMBER_MAINTAINER_TOOLS",
+        "MEMBER_NEVER_TOOLS",
+        "memberToolScope",
+        "isToolInScope",
+        "KB_MAINTAINER_CALL",
+        "connectFleetMember"
+      ],
+      "source_files": [
+        "src/services/member-tool-allowlist.ts",
+        "src/services/tool-scope.ts",
+        "src/services/http-transport.ts",
+        "packages/apra-fleet-se/fleet-sprint/member-call.mjs",
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs",
+        "tests/member-session-scope.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T12:01:02.130Z"
     },
     {
       "id": "4877b2e5-80f4-4759-b8f9-92742ff9adca",
@@ -2397,6 +2455,26 @@
       "updated_at": "2026-10-02T09:20:12.324Z"
     },
     {
+      "id": "70f6818d-fe2c-425e-80b1-e2124b82270c",
+      "type": "knowledge",
+      "title": "merge-kb-canonical identity is the entry id only; title and source_file_hashes are content",
+      "summary": "packages/apra-fleet-se/scripts/merge-kb-canonical.mjs matches bible entries across base/ours/theirs by id only (no title fallback); title and source_file_hashes are in CONTENT_FIELDS; id-less entries throw MalformedInputError (CLI exit 2) and duplicate ids are conflicts (exit 1).",
+      "symbols": [
+        "mergeKbCanonical",
+        "entryIdentity",
+        "contentSignature",
+        "CONTENT_FIELDS",
+        "MalformedInputError"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/scripts/merge-kb-canonical.mjs",
+        "packages/apra-fleet-se/test/merge-kb-canonical.test.mjs",
+        "packages/apra-fleet-se/docs/kb-canonical-merge.md"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T06:57:40.812Z"
+    },
+    {
       "id": "711a5c87-4759-4322-b0a1-310d6c548685",
       "type": "knowledge",
       "title": "Manufacture a deterministic POSIX zombie with sh -c '<child> & echo $!; exec sleep N'",
@@ -2562,6 +2640,27 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:32.715Z"
+    },
+    {
+      "id": "7ec3c926-46e3-42df-ba26-148260f36a61",
+      "type": "knowledge",
+      "title": "kb_bible_commit removes bible entries the maintainer KB holds as superseded or invalidated",
+      "summary": "SqliteProvider.getRetirementReasons reads the new retired_reason column (superseded | invalidated) plus content_hash='invalidated'; kb_bible_commit drops those bible entries at every call and reports them in removed and the commit message. kb_export stays additive.",
+      "symbols": [
+        "getRetirementReasons",
+        "kbBibleCommit",
+        "bibleCommitMessage",
+        "discard",
+        "resolveContradiction"
+      ],
+      "source_files": [
+        "src/services/knowledge/sqlite-provider.ts",
+        "src/tools/kb-bible-commit.ts",
+        "tests/knowledge/kb-bible-commit-removal.test.ts",
+        "tests/knowledge/kb-bible-prune-e2e.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T13:38:54.468Z"
     },
     {
       "id": "7f7c5b11-5779-4c0b-8265-d21a7f0e1d6d",
@@ -3738,6 +3837,18 @@
       "updated_at": "2026-09-25T22:26:36.600Z"
     },
     {
+      "id": "bf01098e-a143-43ae-9dee-857382e24d07",
+      "type": "learning",
+      "title": "windows-service-task-xml test leaks backslash-named files into the repo root on POSIX",
+      "summary": "Running tests/windows-service-task-xml.test.ts on macOS leaves untracked files named like a Windows temp path (with fleet-wintask-*) in the repo root, so git status is not clean after npm test.",
+      "symbols": [],
+      "source_files": [
+        "tests/windows-service-task-xml.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T13:59:42.547Z"
+    },
+    {
       "id": "c0024b35-9a58-47b1-a735-6b3ae5056326",
       "type": "learning",
       "title": "Measure a source-text guard's coverage by line-by-line injection, and count only the before/after delta",
@@ -3816,6 +3927,18 @@
       "updated_at": "2026-09-25T22:26:41.509Z"
     },
     {
+      "id": "c3000d82-2c58-4500-86a3-f649e5b11a8f",
+      "type": "learning",
+      "title": "windows-service-task-xml test leaves backslash-named junk files in the repo root on POSIX",
+      "summary": "On macOS, running npm test makes tests/windows-service-task-xml.test.ts leave untracked files named like '\\\\var\\\\folders\\\\...\\\\fleet-wintask-XXXX\\\\apra-fleet-service.js' in the repo root, so git status --porcelain is not empty after a full run.",
+      "symbols": [],
+      "source_files": [
+        "tests/windows-service-task-xml.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T10:23:39.690Z"
+    },
+    {
       "id": "c34ab75b-6d9c-4dbb-b958-e855a4836866",
       "type": "knowledge",
       "title": "Provider-conditional body markers must be on their own line and cannot be quoted inside a fence",
@@ -3832,6 +3955,41 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:14.111Z"
+    },
+    {
+      "id": "c370a103-a884-47c3-aaa5-ac57d2572ddc",
+      "type": "knowledge",
+      "title": "Tool-only ?member= sessions never write the session registry",
+      "summary": "In http-transport onsessioninitialized, a ?member= session without the claude/channel capability skips sessionRegistry.register entirely, and onsessionclosed unregisters only channel-capable ?member= sessions, so launch placeholders and live interactive entries survive tool-only connects.",
+      "symbols": [
+        "createHttpTransport",
+        "sessionRegistry",
+        "sendMessage"
+      ],
+      "source_files": [
+        "src/services/http-transport.ts",
+        "tests/member-session-scope.test.ts",
+        "src/tools/send-message.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T12:01:01.669Z"
+    },
+    {
+      "id": "c5ebfbc3-a76c-42e4-8254-87fc2c82e39d",
+      "type": "knowledge",
+      "title": "fleet-sprint bible queue retries basis_mismatch skips for a bounded number of rounds",
+      "summary": "createKbWorkClient.commitRepo keeps ids that kb_bible_commit skipped with basis_mismatch queued for at most KB_BIBLE_SKIP_RETRY_ROUNDS (3) consecutive rounds, then drops them with a WARN; other skip reasons drop at once.",
+      "symbols": [
+        "createKbWorkClient",
+        "KB_BIBLE_SKIP_RETRY_ROUNDS",
+        "KB_RETRYABLE_SKIP_REASONS"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs",
+        "packages/apra-fleet-se/test/kb-bible-commit-round.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T10:23:39.272Z"
     },
     {
       "id": "c73a563f-06ee-4dff-8d4b-afa31d5de9f7",
@@ -3976,6 +4134,23 @@
       "updated_at": "2026-09-25T22:26:37.280Z"
     },
     {
+      "id": "cf249b70-5c8d-43bb-81f5-d2051cbaba57",
+      "type": "knowledge",
+      "title": "Engine only calls kb_bible_commit when confirmations are queued, so removals wait for a promotion round",
+      "summary": "createKbWorkClient.commitRepo returns early when a repo has no pending confirmations, so a supersede or invalidate on the maintainer reaches the bible only in a round that also promotes something.",
+      "symbols": [
+        "createKbWorkClient",
+        "commitRepo",
+        "kbBibleCommit"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs",
+        "src/tools/kb-bible-commit.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T13:59:43.038Z"
+    },
+    {
       "id": "d1963b85-b03a-4da7-85c0-ce433768c615",
       "type": "knowledge",
       "title": "scaledTimeout treats an empty APRA_FLEET_TEST_CONCURRENCY exactly like unset: unscaled base budget",
@@ -4040,6 +4215,27 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:37.343Z"
+    },
+    {
+      "id": "d3f48dc7-5172-4f00-94cf-5aba670fe6c4",
+      "type": "knowledge",
+      "title": "Ungated member kb_invalidate plus kb_bible_commit can prune bible entries without the maintainer grant",
+      "summary": "kb_invalidate and kb_bible_commit are both in MEMBER_BASE_TOOLS. Since kb_bible_commit now removes invalidated entries, an agent session on the maintainer member can retire a maintainer-tagged CONFIRMED entry and drop it from the bible.",
+      "symbols": [
+        "MEMBER_BASE_TOOLS",
+        "MEMBER_MAINTAINER_TOOLS",
+        "discard",
+        "getRetirementReasons",
+        "kbBibleCommit"
+      ],
+      "source_files": [
+        "src/services/member-tool-allowlist.ts",
+        "src/services/knowledge/sqlite-provider.ts",
+        "src/tools/kb-bible-commit.ts",
+        "src/tools/kb-invalidate.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T13:59:43.869Z"
     },
     {
       "id": "d4d1a321-9465-4713-ac98-83155ff6f619",
@@ -4485,6 +4681,24 @@
       "updated_at": "2026-09-29T06:13:11.619Z"
     },
     {
+      "id": "e533932d-34d6-460c-8513-2b444e679dbd",
+      "type": "knowledge",
+      "title": "Bible admission reads cited files at HEAD, not on disk",
+      "summary": "filterProjectBibleCandidates (used by kb_export scope=project and kb_bible_commit) hashes cited files at the work tree's HEAD via computeHeadFileHashBatch; uncommitted edits never change the verdict and a non-git folder throws KbHeadHashError.",
+      "symbols": [
+        "computeHeadFileHashBatch",
+        "KbHeadHashError",
+        "filterProjectBibleCandidates"
+      ],
+      "source_files": [
+        "src/services/knowledge/file-hash.ts",
+        "src/services/knowledge/bible-basis-filter.ts",
+        "tests/knowledge/kb-bible-admission-head.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T10:23:38.706Z"
+    },
+    {
       "id": "e687ffa8-8697-4f7f-9418-ba7f3efd6c2b",
       "type": "knowledge",
       "title": "Supervisor ledger setScopeFreshness before start() overwrites the on-disk ledger",
@@ -4719,6 +4933,19 @@
       "updated_at": "2026-09-29T06:13:53.807Z"
     },
     {
+      "id": "f2fb3b12-c3e9-46a0-8063-fa9565083b73",
+      "type": "learning",
+      "title": "APRA_TEST_SUITES_JSON scoping makes run-all-tests-suite-enumeration fail",
+      "summary": "Running a scoped vitest through scripts/run-all-tests.mjs with APRA_TEST_SUITES_JSON leaks the override into tests/run-all-tests-suite-enumeration.test.ts, which then sees 1 suite instead of 5 and fails.",
+      "symbols": [],
+      "source_files": [
+        "scripts/run-all-tests.mjs",
+        "tests/run-all-tests-suite-enumeration.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T13:59:44.305Z"
+    },
+    {
       "id": "f34ed294-df0a-43fc-a138-fa5f773bcaa3",
       "type": "knowledge",
       "title": "doltPullBefore records the remote tip before the caller re-lists, so a failed post-pull list is not retried",
@@ -4734,6 +4961,28 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-10-02T23:26:04.340Z"
+    },
+    {
+      "id": "f5c5d252-51e0-4107-a55f-c4eba27ea15d",
+      "type": "knowledge",
+      "title": "gitnexus readiness fences a live analyze before meta completeness",
+      "summary": "codeIndexReadiness reports 'building' whenever an analyze is live (lock, isReindexRunning, or recorded run alive), even if meta.json looks complete, because analyze rewrites the index in place; callGitNexus also discards answers if the index generation changed during the call.",
+      "symbols": [
+        "codeIndexReadiness",
+        "indexInconsistency",
+        "indexGeneration",
+        "callGitNexus",
+        "isRecordedAnalyzeAlive",
+        "indexChangedDuringCallError"
+      ],
+      "source_files": [
+        "src/tools/code-intelligence-readiness.ts",
+        "src/tools/code-index-state.ts",
+        "src/tools/code-intelligence-gitnexus.ts",
+        "src/tools/code-intelligence-reindex.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T06:57:41.197Z"
     },
     {
       "id": "f5fd18a6-c552-4dc8-bd9d-3bed5bef3e89",

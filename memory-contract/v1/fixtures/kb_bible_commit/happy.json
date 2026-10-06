@@ -4,7 +4,7 @@
   "kind": "happy",
   "request": {
     "ids": [
-      "5dfe9670-72fc-4231-b4f4-a0cd99137775"
+      "5df16a1a-8e71-4525-999e-9e33e17b4425"
     ],
     "baseBranch": "main",
     "baseCommit": "0123456789abcdef0123456789abcdef01234567"
@@ -13,7 +13,7 @@
     "content": [
       {
         "type": "text",
-        "text": "{\"path\":\"<SCRATCH_REPO_A>/.fleet/kb-canonical.json\",\"merged\":[\"5dfe9670-72fc-4231-b4f4-a0cd99137775\"],\"skipped\":[],\"entry_count\":1,\"committed\":false}"
+        "text": "{\"path\":\"<SCRATCH_REPO_A>/.fleet/kb-canonical.json\",\"merged\":[\"5df16a1a-8e71-4525-999e-9e33e17b4425\"],\"skipped\":[],\"removed\":[],\"entry_count\":1,\"committed\":false}"
       }
     ]
   }

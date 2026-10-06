@@ -10,5 +10,6 @@
         "text": "{\"exported\":1,\"path\":\"<SCRATCH_REPO_A>/.fleet/kb-canonical.json\",\"scope\":\"project\",\"committed\":true}"
       }
     ]
-  }
+  },
+  "session": "FULL_A"
 }

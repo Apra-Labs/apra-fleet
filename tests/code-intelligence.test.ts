@@ -35,7 +35,8 @@ vi.mock('child_process', () => ({
 // it here rather than exercising the real spawn logic (that lives in
 // tests/code-intelligence-reindex.test.ts) so these tests stay focused on the
 // wiring: exactly-once scheduling and failure isolation.
-vi.mock('../src/tools/code-intelligence-reindex.js', () => ({
+vi.mock('../src/tools/code-intelligence-reindex.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/tools/code-intelligence-reindex.js')>()),
   maybeScheduleReindex: mockMaybeScheduleReindex,
 }));
 
@@ -448,6 +449,20 @@ describe('GitNexusProvider child-tool surface guard (yashr-5t9 regression)', () 
 // fns).
 // ---------------------------------------------------------------------------
 describe('GitNexusProvider connection resilience', () => {
+  it('starts the MCP child at the pinned minimum gitnexus version', async () => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    mockConnect.mockResolvedValue(undefined);
+    const { GitNexusProvider } = await import('../src/tools/code-intelligence-gitnexus.js');
+    const { GITNEXUS_PACKAGE_SPEC, GITNEXUS_MIN_VERSION } = await import('../src/tools/code-intelligence-reindex.js');
+    const stdio = await import('@modelcontextprotocol/sdk/client/stdio.js');
+    await new GitNexusProvider().impact({ target: 'x', direction: 'upstream' });
+    const [opts] = (stdio.StdioClientTransport as unknown as { mock: { calls: [{ command: string; args: string[] }][] } }).mock.calls[0];
+    expect(opts.command).toBe('npx');
+    expect(opts.args).toEqual(['-y', GITNEXUS_PACKAGE_SPEC, 'mcp']);
+    expect(GITNEXUS_PACKAGE_SPEC).toBe(`gitnexus@>=${GITNEXUS_MIN_VERSION}`);
+  });
+
   it('(a) first connect failure errors actionably; next call retries a fresh connection', async () => {
     vi.resetModules();
     vi.clearAllMocks();
