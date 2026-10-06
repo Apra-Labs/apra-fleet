@@ -630,12 +630,32 @@ export type FleetStatusInput = z.infer<typeof fleetStatusSchema>;
 // belt-and-suspenders shape as codeIntelligence/kbHealth/versionMismatch
 // below -- detectFleetSePrereqs() never throws on its own, but this call is
 // wrapped anyway so fleet_status can never fail because of it.
+// apra-fleet-i9ag.12.14: detectFleetSePrereqs() spawns `node --version` and
+// `npm --version` with execFileSync, blocking the event loop for two process
+// spawns (more on Windows .cmd shims). The result only changes when an operator
+// installs or removes Node.js, so it is memoised for a short TTL -- including a
+// degraded (null) result, so a failing probe is not retried on every call.
+export const FLEET_SE_PREREQS_CACHE_TTL_MS = 60_000;
+let fleetSePrereqsCache: { at: number; value: string | null } | null = null;
+
+/** Clears the memoised prerequisite probe (tests, and a forced re-probe). */
+export function resetFleetSePrereqsCache(): void {
+  fleetSePrereqsCache = null;
+}
+
 function safeFleetSePrereqsSummary(): string | null {
-  try {
-    return summarizeFleetSePrereqs(detectFleetSePrereqs());
-  } catch {
-    return null;
+  const now = Date.now();
+  if (fleetSePrereqsCache && now - fleetSePrereqsCache.at < FLEET_SE_PREREQS_CACHE_TTL_MS) {
+    return fleetSePrereqsCache.value;
   }
+  let value: string | null;
+  try {
+    value = summarizeFleetSePrereqs(detectFleetSePrereqs());
+  } catch {
+    value = null;
+  }
+  fleetSePrereqsCache = { at: now, value };
+  return value;
 }
 
 export async function fleetStatus(input?: FleetStatusInput): Promise<string> {

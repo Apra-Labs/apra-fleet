@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
 import { addAgent } from '../src/services/registry.js';
-import { fleetStatus } from '../src/tools/check-status.js';
+import { fleetStatus, resetFleetSePrereqsCache, FLEET_SE_PREREQS_CACHE_TTL_MS } from '../src/tools/check-status.js';
 import * as logHelpers from '../src/utils/log-helpers.js';
 
 vi.mock('../src/services/strategy.js', () => ({
@@ -73,11 +73,14 @@ describe('fleetStatus fleetSePrereqs json payload (apra-fleet-i9ag.13.10)', () =
     backupAndResetRegistry();
     vi.clearAllMocks();
     mockDetectFleetSePrereqs.mockReset();
+    resetFleetSePrereqsCache();
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     restoreRegistry();
     mockDetectFleetSePrereqs.mockReset();
+    resetFleetSePrereqsCache();
   });
 
   it('includes fleetSePrereqs in the json payload when the probe succeeds', async () => {
@@ -133,6 +136,54 @@ describe('fleetStatus fleetSePrereqs json payload (apra-fleet-i9ag.13.10)', () =
     const result = await fleetStatus({ format: 'json' });
     const parsed = JSON.parse(result);
     expect(Object.prototype.hasOwnProperty.call(parsed, 'fleetSePrereqs')).toBe(false);
+  });
+
+  // apra-fleet-i9ag.12.14: the synchronous node/npm probe is memoised with a TTL.
+  const READY = {
+    node: { present: true, version: '22.16.0', satisfiesMin: true },
+    npm: { present: true, version: '10.5.0' },
+    ok: true,
+    missing: [],
+  };
+
+  it('repeated json calls within the TTL probe at most once, across both the empty-registry and members return paths', async () => {
+    mockDetectFleetSePrereqs.mockReturnValue(READY);
+
+    const empty1 = JSON.parse(await fleetStatus({ format: 'json' }));
+    const empty2 = JSON.parse(await fleetStatus({ format: 'json' }));
+    addAgent(makeTestAgent({ friendlyName: 'ttl-agent' }));
+    const withMember = JSON.parse(await fleetStatus({ format: 'json' }));
+
+    expect(mockDetectFleetSePrereqs).toHaveBeenCalledTimes(1);
+    for (const parsed of [empty1, empty2, withMember]) {
+      expect(parsed.fleetSePrereqs).toBe('ready (node 22.16.0, npm 10.5.0)');
+    }
+  });
+
+  it('probes again once the TTL has elapsed (fake timers)', async () => {
+    vi.useFakeTimers();
+    mockDetectFleetSePrereqs.mockReturnValue(READY);
+
+    await fleetStatus({ format: 'json' });
+    vi.advanceTimersByTime(FLEET_SE_PREREQS_CACHE_TTL_MS - 1);
+    await fleetStatus({ format: 'json' });
+    expect(mockDetectFleetSePrereqs).toHaveBeenCalledTimes(1);
+
+    vi.advanceTimersByTime(2);
+    await fleetStatus({ format: 'json' });
+    expect(mockDetectFleetSePrereqs).toHaveBeenCalledTimes(2);
+  });
+
+  it('a throwing probe still degrades safely (key omitted) and is not retried within the TTL', async () => {
+    mockDetectFleetSePrereqs.mockImplementation(() => {
+      throw new Error('boom: probe failed');
+    });
+
+    const first = JSON.parse(await fleetStatus({ format: 'json' }));
+    const second = JSON.parse(await fleetStatus({ format: 'json' }));
+    expect(Object.prototype.hasOwnProperty.call(first, 'fleetSePrereqs')).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(second, 'fleetSePrereqs')).toBe(false);
+    expect(mockDetectFleetSePrereqs).toHaveBeenCalledTimes(1);
   });
 });
 
