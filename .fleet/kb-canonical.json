@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "34ff160ff8ee9e2268e851270b911771d06fedca",
     "branch": "feat/kb-redesign",
-    "entry_count": 279
+    "entry_count": 281
   },
   "entries": [
     {
@@ -373,6 +373,24 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:26.644Z"
+    },
+    {
+      "id": "101692b0-d5e6-4a32-8d6e-e8595ddc39f0",
+      "type": "learning",
+      "title": "kb_* tool description text is duplicated in generate-contract.mjs DESCRIPTIONS",
+      "summary": "Changing a kb_*/code_* registration description in src/services/tool-registry.ts also requires updating the hand-copied DESCRIPTIONS table in memory-contract/v1/generate-contract.mjs (and INVENTORY.md), then contract:generate; contract:check alone stays green.",
+      "symbols": [
+        "DESCRIPTIONS",
+        "registerAllTools"
+      ],
+      "source_files": [
+        "memory-contract/v1/generate-contract.mjs",
+        "src/services/tool-registry.ts",
+        "tests/memory-contract-roster-guard.test.ts",
+        "memory-contract/v1/INVENTORY.md"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T13:38:55.519Z"
     },
     {
       "id": "1045da8b-1650-40db-aa11-2389ad00e9a2",
@@ -2605,6 +2623,27 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:32.715Z"
+    },
+    {
+      "id": "7ec3c926-46e3-42df-ba26-148260f36a61",
+      "type": "knowledge",
+      "title": "kb_bible_commit removes bible entries the maintainer KB holds as superseded or invalidated",
+      "summary": "SqliteProvider.getRetirementReasons reads the new retired_reason column (superseded | invalidated) plus content_hash='invalidated'; kb_bible_commit drops those bible entries at every call and reports them in removed and the commit message. kb_export stays additive.",
+      "symbols": [
+        "getRetirementReasons",
+        "kbBibleCommit",
+        "bibleCommitMessage",
+        "discard",
+        "resolveContradiction"
+      ],
+      "source_files": [
+        "src/services/knowledge/sqlite-provider.ts",
+        "src/tools/kb-bible-commit.ts",
+        "tests/knowledge/kb-bible-commit-removal.test.ts",
+        "tests/knowledge/kb-bible-prune-e2e.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T13:38:54.468Z"
     },
     {
       "id": "7f7c5b11-5779-4c0b-8265-d21a7f0e1d6d",
