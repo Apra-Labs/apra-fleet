@@ -658,8 +658,10 @@ export interface ReplaceFullInstallPlan {
   dataAside: string;
   /** Ordered member-bound commands (already wrapped for the member's shell). */
   steps: Array<{ name: ReplaceStepName; command: string }>;
-  /** One-line rollback commands, in order, for a failure from the uninstall step on. */
-  rollback: string[];
+  /** Rollback commands, in order, per failed step (empty for a backup failure):
+   *  data/ is left in place before step 4 completes, restored from dataAside
+   *  after it, and the (possibly torn) backup copy is only a last resort. */
+  rollbackFor: Record<ReplaceStepName | 'verify', string[]>;
 }
 
 /** Path-safe UTC stamp (no ':'): 20261006T143000Z. */
@@ -739,21 +741,39 @@ export function buildReplaceFullInstallPlan(opts: {
     { name: 'install', command: buildInstallCommand(installerPath, provider, targetOs, shell) },
   );
 
-  const rollback: string[] = posix
-    ? [
-        `rm -rf ${q(data)} && cp -R ${q(backupData)} ${q(data)}`,
-        `if [ -f ${q(backupKey)} ]; then cp ${q(backupKey)} ${q(key)}; fi`,
-        ...(targetOs === 'linux'
-          ? [`if [ -f ${q(backupUnit)} ]; then mkdir -p ${q(j('.config', 'systemd', 'user'))} && mv ${q(backupUnit)} ${q(unit)} && systemctl --user daemon-reload && systemctl --user enable --now fleet-supervisor; fi`]
-          : []),
-        `chmod +x ${q(installerPath)} && ${q(installerPath)} install --llm ${provider} --force`,
-      ]
-    : [
-        `if (Test-Path -LiteralPath ${q(data)}) { Remove-Item -Recurse -Force -LiteralPath ${q(data)} }; Copy-Item -Recurse -LiteralPath ${q(backupData)} -Destination ${q(data)}`,
-        `if (Test-Path -LiteralPath ${q(backupKey)} -PathType Leaf) { Copy-Item -LiteralPath ${q(backupKey)} -Destination ${q(key)} }`,
-        `& ${q(installerPath)} install --llm ${provider} --force`,
-      ];
-  return { backupDir, dataAside, steps, rollback };
+  // The rollback depends on how far the replacement got. Before step 4 completed
+  // the in-place data/ is intact (uninstall keeps it) and must NOT be replaced by
+  // the backup, which was copied while the old server was still running and may
+  // be torn. From step 5 on, data/ was moved aside AFTER the server stopped, so
+  // that consistent copy is the source; the backup is a last resort used only
+  // when the aside copy is gone.
+  const unitRestore = targetOs === 'linux' && posix
+    ? [`if [ -f ${q(backupUnit)} ]; then mkdir -p ${q(j('.config', 'systemd', 'user'))} && mv ${q(backupUnit)} ${q(unit)} && systemctl --user daemon-reload && systemctl --user enable --now fleet-supervisor; fi`]
+    : [];
+  const reinstall = posix
+    ? `chmod +x ${q(installerPath)} && ${q(installerPath)} install --llm ${provider} --force`
+    : `& ${q(installerPath)} install --llm ${provider} --force`;
+  const keyRestoreIfMissing = posix
+    ? `if [ ! -f ${q(key)} ] && [ -f ${q(backupKey)} ]; then cp ${q(backupKey)} ${q(key)}; fi`
+    : `if (-not (Test-Path -LiteralPath ${q(key)} -PathType Leaf) -and (Test-Path -LiteralPath ${q(backupKey)} -PathType Leaf)) { Copy-Item -LiteralPath ${q(backupKey)} -Destination ${q(key)} }`;
+  const dataInPlace: string[] = [keyRestoreIfMissing, ...unitRestore, reinstall];
+  const dataFromAside: string[] = [
+    posix
+      ? `if [ -d ${q(dataAside)} ]; then rm -rf ${q(data)} && mv ${q(dataAside)} ${q(data)}; else rm -rf ${q(data)} && cp -R ${q(backupData)} ${q(data)}; fi`
+      : `if (Test-Path -LiteralPath ${q(data)}) { Remove-Item -Recurse -Force -LiteralPath ${q(data)} }; if (Test-Path -LiteralPath ${q(dataAside)}) { Move-Item -LiteralPath ${q(dataAside)} -Destination ${q(data)} } else { Copy-Item -Recurse -LiteralPath ${q(backupData)} -Destination ${q(data)} }`,
+    keyRestoreIfMissing,
+    ...unitRestore,
+    reinstall,
+  ];
+  const rollbackFor: ReplaceFullInstallPlan['rollbackFor'] = {
+    backup: [],
+    uninstall: dataInPlace,
+    supervisor: dataInPlace,
+    'move-data': dataInPlace,
+    install: dataFromAside,
+    verify: dataFromAside,
+  };
+  return { backupDir, dataAside, steps, rollbackFor };
 }
 
 const REPLACE_STEP_LABEL: Record<ReplaceStepName, string> = {
@@ -821,7 +841,7 @@ async function replaceFullInstall(
     const label = name === 'verify' ? 'the version check after step 5' : REPLACE_STEP_LABEL[name];
     const detail = name === 'backup'
       ? `replacing the full install failed at ${label}: ${why}. Nothing was removed; the apra-fleet ${previousVersion} full install is unchanged`
-      : `replacing the full install failed at ${label}: ${why}. The backup is at ${plan.backupDir}. To roll back, run on the member: ${plan.rollback.join('; ')}`;
+      : `replacing the full install failed at ${label}: ${why}. The backup is at ${plan.backupDir}. To roll back, run on the member: ${plan.rollbackFor[name].join('; ')}`;
     return { state: 'unavailable', reason: 'replace-failed', detail, version: previousVersion };
   };
   for (const step of plan.steps) {
@@ -1201,7 +1221,7 @@ export const FLEET_MCP_FIX: Record<FleetMcpUnavailableReason | FleetMcpProviderR
   'full-install-running': 'The member apra-fleet install has no member-install marker (a full install, or a member install older than the marker), so the fleet leaves it alone; its owner replaces it with a member install using the steps in the detail (back up data and fleet.key, uninstall with the installed binary, run the staged current installer with install --member), then update_member {member_id, fleet_install: "auto"} -- or opts in to the fleet doing it with update_member {member_id, fleet_install: "replace-full"}.',
   'transfer-failed': 'Check file transfer to the member works (disk space, permissions), then run update_member with fleet_install "auto".',
   'install-failed': 'Run the apra-fleet installer on the member by hand and read its error, then member_detail with refresh:true.',
-  'replace-failed': 'The full-install replacement stopped at the step named in the detail; restore from the backup with the rollback commands in the detail (if listed), fix the cause, then run update_member {member_id, fleet_install: "replace-full"} again.',
+  'replace-failed': 'The full-install replacement stopped at the step named in the detail; run the rollback commands in the detail (if listed; they restore the consistent data copy, the backup only as a last resort), fix the cause, then run update_member {member_id, fleet_install: "replace-full"} again.',
   'install-unverified': 'Run update_member {member_id, fleet_install: "auto"} to upgrade apra-fleet on the member to the orchestrator version, then member_detail with refresh:true.',
   'install-too-old': 'Run update_member {member_id, fleet_install: "auto"} to upgrade apra-fleet on the member (its install predates register-member --id), then member_detail with refresh:true.',
   'E-FOLDER-TAKEN': 'The member install has this work folder registered under another id; unregister it there, then member_detail with refresh:true.',

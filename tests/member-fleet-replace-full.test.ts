@@ -187,6 +187,9 @@ describe('replace-full: a failure after the uninstall names the step and the rol
     expect(detail).toContain('step 5 (run the current installer in member mode)');
     expect(detail).toContain('install broke');
     expect(detail).toContain(`The backup is at ${backupDir}`);
+    // step 5 failure: the consistent copy moved aside in step 4 is restored; the backup is only the fallback
+    const aside = `${LINUX.home}/.apra-fleet/data.replaced-${STAMP}`;
+    expect(detail).toContain(`if [ -d '${aside}' ]; then rm -rf '${LINUX.home}/.apra-fleet/data' && mv '${aside}' '${LINUX.home}/.apra-fleet/data'; else`);
     expect(detail).toContain(`cp -R '${backupDir}/data' '${LINUX.home}/.apra-fleet/data'`);
     expect(detail).toContain(`cp '${backupDir}/fleet.key' '${LINUX.home}/.apra-fleet/fleet.key'`);
     expect(detail).toContain('systemctl --user enable --now fleet-supervisor');
@@ -199,8 +202,40 @@ describe('replace-full: a failure after the uninstall names the step and the rol
     expect(r).toMatchObject({ state: 'unavailable', reason: 'replace-failed' });
     const detail = (r as { detail: string }).detail;
     expect(detail).toContain('step 4 (move data aside)');
-    expect(detail).toContain(`Copy-Item -Recurse -LiteralPath '${WINDOWS.home}\\.apra-fleet-replace-backup-${STAMP}\\data'`);
+    // move-data failed: data/ is still in place, so the rollback must not delete or overwrite it
+    expect(detail).not.toContain('Remove-Item');
+    expect(detail).not.toContain('Copy-Item -Recurse');
+    expect(detail).toContain('install --llm claude --force');
     expect(destructive(h.events)).toEqual(['backup', 'uninstall', 'move-data']);
+  });
+
+  it('linux: uninstall step fails -> rollback leaves the in-place data/ alone and never restores the backup copy over it', async () => {
+    const h = harness(LINUX, { failStep: 'uninstall' });
+    const r = await ensureMemberFleetInstall(agentFor(LINUX), h.deps, { replaceFull: true });
+    expect(r).toMatchObject({ state: 'unavailable', reason: 'replace-failed' });
+    const detail = (r as { detail: string }).detail;
+    const backupDir = `${LINUX.home}/.apra-fleet-replace-backup-${STAMP}`;
+    expect(detail).toContain('step 2 (uninstall with the installed binary)');
+    expect(detail).not.toContain('rm -rf');
+    expect(detail).not.toContain(`cp -R '${backupDir}/data'`);
+    expect(detail).not.toContain('data.replaced-');
+    expect(detail).toContain(`cp '${backupDir}/fleet.key'`);
+    expect(detail).toContain('install --llm claude --force');
+  });
+
+  it('windows: install step fails -> PowerShell rollback restores the aside copy first, backup only as fallback', () => {
+    const plan = buildReplaceFullInstallPlan({
+      home: WINDOWS.home, targetOs: 'windows', shell: 'powershell5' as never, provider: 'claude',
+      installerPath: `${WINDOWS.home}\.apra-fleet\staging\apra-fleet.exe`, stamp: STAMP,
+    });
+    const first = plan.rollbackFor.install[0];
+    expect(first).toContain(`Move-Item -LiteralPath '${plan.dataAside}'`);
+    expect(first.indexOf('Move-Item')).toBeLessThan(first.indexOf('Copy-Item -Recurse'));
+    for (const step of ['uninstall', 'supervisor', 'move-data'] as const) {
+      expect(plan.rollbackFor[step].join(' ')).not.toContain('Remove-Item');
+      expect(plan.rollbackFor[step].join(' ')).not.toContain('Copy-Item -Recurse');
+    }
+    expect(plan.rollbackFor.backup).toEqual([]);
   });
 
   it('a backup failure stops before the uninstall and says nothing was removed (no rollback needed)', async () => {
@@ -244,6 +279,6 @@ describe.skipIf(!hasPs)('replace-full: every emitted PowerShell step and rollbac
       installerPath: `${WINDOWS.home}\.apra-fleet\staging\apra-fleet.exe`, stamp: STAMP,
     });
     for (const s of plan.steps) expect(psParseErrors(decodePowerShellEncodedCommand(s.command)), s.name).toEqual([]);
-    for (const line of plan.rollback) expect(psParseErrors(line), line).toEqual([]);
+    for (const lines of Object.values(plan.rollbackFor)) for (const line of lines) expect(psParseErrors(line), line).toEqual([]);
   });
 });
