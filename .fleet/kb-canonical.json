@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "12fbcf6bd3a5540e5e979715151986fa15c1291e",
     "branch": "main",
-    "entry_count": 274
+    "entry_count": 278
   },
   "entries": [
     {
@@ -3089,6 +3089,26 @@
       "updated_at": "2026-09-25T22:26:32.234Z"
     },
     {
+      "id": "99a0ad15-0be4-4953-beb1-81e9407e7af9",
+      "type": "knowledge",
+      "title": "Reviewer verdict buildFailing flag guarantees an in-goal fix task for a red branch",
+      "summary": "A CHANGES_NEEDED reviewer verdict with buildFailing true, where no reopen survived the goal-scope guard and no in-goal newTask landed, makes the orchestrator file one in-goal fix task with a fixed title (no duplicate while one is open).",
+      "symbols": [
+        "ensureRedBranchFixTask",
+        "needsRedBranchFixTask",
+        "isReviewerContractViolation",
+        "RED_BRANCH_FIX_TITLE"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/beads-transitions.mjs",
+        "packages/apra-fleet-se/fleet-sprint/phases/review.mjs",
+        "packages/apra-fleet-se/fleet-sprint/phases/re-review.mjs",
+        "packages/apra-fleet-se/apra-pm/agents/schemas/reviewer-output.json"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T07:47:46.559Z"
+    },
+    {
       "id": "9d3e4d50-c047-4b98-becc-2fff7b8e27fa",
       "type": "learning",
       "title": "apra-fleet-client's createWorkflowEngine() is dead code -- workflow/ dir does not exist in that package",
@@ -3523,6 +3543,25 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:35.794Z"
+    },
+    {
+      "id": "b1c3258d-ce3e-4d1c-a741-f02b4be30ab4",
+      "type": "knowledge",
+      "title": "D-push landed check reads refs/dolt/data inside the dolt mutex but never records it as a fingerprint",
+      "summary": "doltPushAfter now issues ls-remote before and after each push (plus bd vc status / bd diff when the tip did not move) inside the supervisor dolt mutex, purely to decide landed vs not-landed; these reads must never feed setLastSyncedTip.",
+      "symbols": [
+        "beginDoltPushLandedCheck",
+        "checkDoltPushLanded",
+        "readUnpushedDoltChanges",
+        "doltPushAfter"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/dolt-sync.mjs",
+        "packages/apra-fleet-se/test/dolt-sync-budget.test.mjs",
+        "packages/apra-fleet-se/test/push-landed-check.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T07:47:48.425Z"
     },
     {
       "id": "b1cde0e7-d4ce-4d12-8f37-750456b5b488",
@@ -4501,6 +4540,24 @@
       "updated_at": "2026-09-29T06:13:11.619Z"
     },
     {
+      "id": "e6525404-e387-4360-8df3-fe08d050a28a",
+      "type": "knowledge",
+      "title": "Develop dispatch excludes below-goal ready beads unless they block in-goal work or were worked on",
+      "summary": "runner.js dispatchableReadyLeafBeads filters readyLeafBeads through partitionReadyByGoal: a finite-priority below-goal bead is dropped unless it transitively blocks an open in-goal bead or is in workedOnBeadIds; there is deliberately no in-goal-ancestor exemption.",
+      "symbols": [
+        "partitionReadyByGoal",
+        "formatBelowGoalExclusionLog",
+        "dispatchableReadyLeafBeads",
+        "workedOnBeadIds"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/beads-scope.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T07:47:44.673Z"
+    },
+    {
       "id": "e687ffa8-8697-4f7f-9418-ba7f3efd6c2b",
       "type": "knowledge",
       "title": "Supervisor ledger setScopeFreshness before start() overwrites the on-disk ledger",
@@ -4713,6 +4770,23 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:08:07.865Z"
+    },
+    {
+      "id": "efe89bd6-8298-4e1e-b6a2-d5c73edf9a80",
+      "type": "learning",
+      "title": "Mock-sprint tests that create beads leak member-side body temp files unless cleaned",
+      "summary": "stageCommandBodyMemberSide writes fleet-sprint-body-*.txt to the real OS tmpdir even under with-test-sandbox, so a mock sprint that files a new bead leaves one file per create; capture the path from the bd create --body-file command via onCommand and delete it.",
+      "symbols": [
+        "stageCommandBodyMemberSide",
+        "runDevelopLoopScenario"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/member-provisioning.mjs",
+        "packages/apra-fleet-se/test/mock-sprint-reopen-gate-red-branch.test.mjs",
+        "packages/apra-fleet-se/test/helpers/mock-sprint-harness.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T07:47:42.802Z"
     },
     {
       "id": "f2e8ae2b-e3a5-4c51-820a-423478a7f23c",
