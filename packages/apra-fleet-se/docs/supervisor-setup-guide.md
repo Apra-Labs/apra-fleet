@@ -182,10 +182,20 @@ recover the identity without a restart, or restart from the right folder /
 with `--beads-dir`.
 
 Default port 8787. Smoke test:
+The bearer token is `<home>/.apra-fleet/fleet.key` (primary); the supervisor falls back to
+`<dataDir>/private/token` only when `fleet.key` did not exist at boot. A `401 {"error":"unauthorized"}`
+means the token is missing or wrong -- it is NOT an empty result.
+
 ```bash
-curl -s http://localhost:8787/api/sprints    # expect {"sprints":[],...}
-curl -s http://localhost:8787/api/members    # expect your registered fleet, non-empty
-curl -s http://localhost:8787/api/health     # expect beads.prefix = your project's prefix
+curl -sf -H "Authorization: Bearer $(cat ~/.apra-fleet/fleet.key 2>/dev/null || cat <dataDir>/private/token)" http://localhost:8787/api/sprints    # expect {"sprints":[],...}
+curl -sf -H "Authorization: Bearer $(cat ~/.apra-fleet/fleet.key 2>/dev/null || cat <dataDir>/private/token)" http://localhost:8787/api/members    # expect your registered fleet, non-empty
+curl -sf -H "Authorization: Bearer $(cat ~/.apra-fleet/fleet.key 2>/dev/null || cat <dataDir>/private/token)" http://localhost:8787/api/health     # expect beads.prefix = your project's prefix
+```
+PowerShell:
+```powershell
+Invoke-RestMethod -Headers @{ Authorization = 'Bearer ' + (Get-Content -Raw "$HOME\.apra-fleet\fleet.key").Trim() } http://localhost:8787/api/sprints
+Invoke-RestMethod -Headers @{ Authorization = 'Bearer ' + (Get-Content -Raw "$HOME\.apra-fleet\fleet.key").Trim() } http://localhost:8787/api/members
+Invoke-RestMethod -Headers @{ Authorization = 'Bearer ' + (Get-Content -Raw "$HOME\.apra-fleet\fleet.key").Trim() } http://localhost:8787/api/health
 ```
 See the `fleet-supervisor` skill for the full
 start/stop/restart/auto-start-on-login procedures, and `docs/supervisor-api.md`
@@ -195,8 +205,9 @@ nothing there is apra-fleet-specific either.
 ## Step 5 -- Launch your first sprint
 
 ```bash
-curl -s -X POST http://localhost:8787/api/sprints \
+curl -sf -X POST http://localhost:8787/api/sprints \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $(cat ~/.apra-fleet/fleet.key 2>/dev/null || cat <dataDir>/private/token)" \
   -d '{
     "issue": "<a beads root id in the target project>",
     "branch": "<new-or-existing-branch>",

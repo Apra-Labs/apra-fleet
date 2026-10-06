@@ -1268,9 +1268,11 @@ unparseable path fails closed (treated as guarded).
 
 **Two credential channels, one guard.** A request is authorized if it carries
 `Authorization: Bearer <token>` (case-insensitive scheme match per RFC 7235,
-compared with `crypto.timingSafeEqual`) or the `se_token=<token>` cookie set
-by `GET /` for the dashboard's own same-origin fetches (`HttpOnly`,
-`SameSite=Strict`). Every other client speaks the header: the coordination
+compared with `crypto.timingSafeEqual`) or the `se_token` cookie carrying
+`deriveDashboardCookie(token)` -- an HMAC-SHA256 of a fixed label under the
+token, verifiable by recomputation but not reversible into the token (which
+may be the shared fleet key). The raw token is accepted as a bearer only; the
+derived value as a cookie only. Every other client speaks the header: the coordination
 HTTP clients (`fleet-sprint/coordination.mjs`) send the bearer on both calls
 they make, the spawner passes the token to spawned children via env only
 (never argv, which would leak it into `ps`/process listings), and
@@ -1278,12 +1280,34 @@ they make, the spawner passes the token to spawned children via env only
 makes and turns a 401 into an actionable exit-1 hint rather than a false
 "no live sprints" read.
 
-**Known criteria gap, tracked as a follow-on rather than fixed here:** `GET /`
-must stay open (unauthenticated dashboard shell) AND must hand the token to
-the browser via the `se_token` cookie for same-origin fetches to work -- those
-two requirements together mean any loopback caller can hit `GET /` and harvest
-the token. Closing that gap needs a design decision (e.g. a first-use pairing
-flow) beyond this guard's scope.
+**Browser sign-in (token exchange).** The open pages (`GET /`, the extra index
+paths, the `/ui` project page) never set a cookie on a plain request -- they
+render a read-only view with a sign-in notice. `GET <page>?token=<token>`
+(`src/supervisor/dashboard-session.mjs`) is the exchange: a constant-time
+match sets the derived `se_token` cookie (`HttpOnly`, `SameSite=Strict`) and
+302-redirects to the same mount-aware path with the token removed; a mismatch
+sets no cookie and answers 401. This closes the earlier gap where any loopback
+caller could harvest the token from `GET /`'s Set-Cookie. `bin/serve.mjs`
+logs the token FILE and port to build the link from, never the token.
+
+**The per-sprint viewer is guarded too, with the bearer only.** The spawner
+hands the child the service token through the `FLEET_SE_SERVICE_TOKEN`
+environment variable. When it is set, the per-sprint viewer
+(`viewer/index.mjs`) requires `Authorization: Bearer <token>` on its control
+POSTs (`/stop`, `/pause`, `/resume`, `/save_logs`); without a token the viewer
+stays open, as before. The route match is exact, identical to the dispatch
+match, so a query-string variant cannot dodge the check. The viewer ignores
+cookies entirely: it never sees the derived dashboard cookie. The supervisor's
+live proxy strips any browser credentials from the forwarded request and
+injects the supervisor's own bearer, so a signed-in browser reaches the child's
+controls only through the supervisor's `POST /sprints/:id/live/*` guard, never
+by presenting a credential the child would honor. All proxied GET routes remain
+open on the child, as they are read-only.
+
+**Deploy health probes must treat non-2xx as a finding.** `sandbox-deploy`'s
+check of the production supervisor throws or reports a problem on any non-2xx
+answer (401, no listener) instead of silently skipping, because a skipped check
+reads as a pass.
 
 **Tooling callers must be updated in lockstep with the guard, or they will
 falsely read a healthy supervisor as down.** Any script that polls

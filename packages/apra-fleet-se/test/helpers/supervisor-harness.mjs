@@ -13,7 +13,7 @@
 //
 //   createTestSupervisor({dataDir?, ...deps}) -- constructs a supervisor with
 //   a minted/loaded token WITHOUT starting a real listener, and returns
-//   {supervisor, token, headers()} so a caller can register routes and drive
+//   {supervisor, token, headers(), dispose()} so a caller can register routes and drive
 //   supervisor.handleRequest() directly with mock req/res objects (the
 //   pattern the existing supervisor-api.test.mjs suite uses throughout).
 //
@@ -44,21 +44,33 @@ import { createSupervisor } from '../../src/supervisor/server.mjs';
 import { resolveServiceToken } from '../../src/supervisor/auth.mjs';
 
 /**
- * @param {string} [dataDir]
- * @returns {Promise<string>}
+ * apra-fleet-50j6.8: resolves dataDir/home, recording every dir the harness
+ * ITSELF mkdtemp'd so the matching cleanup removes exactly those -- never a
+ * caller-supplied path.
+ * @param {string|undefined} dataDirOpt
+ * @param {string|undefined} homeOpt
+ * @returns {Promise<{ dataDir: string, home: string, cleanup: () => Promise<void> }>}
  */
-async function resolveDataDir(dataDir) {
-    if (typeof dataDir === 'string' && dataDir.length > 0) return dataDir;
-    return fsp.mkdtemp(path.join(os.tmpdir(), 'eft-supervisor-harness-'));
-}
-
-/**
- * @param {string} [home]
- * @returns {Promise<string>}
- */
-async function resolveHomeDir(home) {
-    if (typeof home === 'string' && home.length > 0) return home;
-    return fsp.mkdtemp(path.join(os.tmpdir(), 'eft-supervisor-harness-home-'));
+async function resolveDirs(dataDirOpt, homeOpt) {
+    const created = [];
+    const ownOrTemp = async (supplied, prefix) => {
+        if (typeof supplied === 'string' && supplied.length > 0) return supplied;
+        const dir = await fsp.mkdtemp(path.join(os.tmpdir(), prefix));
+        created.push(dir);
+        return dir;
+    };
+    const dataDir = await ownOrTemp(dataDirOpt, 'eft-supervisor-harness-');
+    const home = await ownOrTemp(homeOpt, 'eft-supervisor-harness-home-');
+    let cleaned = false;
+    const cleanup = async () => {
+        if (cleaned) return;
+        cleaned = true;
+        for (const dir of created) {
+            // eslint-disable-next-line no-await-in-loop
+            await fsp.rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+        }
+    };
+    return { dataDir, home, cleanup };
 }
 
 /**
@@ -76,21 +88,36 @@ function headersFor(token) {
  * make actual network requests against it.
  * @param {{dataDir?: string, port?: number, [key: string]: any}} [opts]
  * @returns {Promise<{baseUrl: string, token: string, headers: () => {authorization: string}, stop: () => Promise<void>}>}
+ *   `stop()` stops the supervisor, then removes every dir the harness created.
  */
 export async function startTestSupervisor(opts = {}) {
     const { dataDir: dataDirOpt, home: homeOpt, port = 0, ...deps } = opts;
-    const dataDir = await resolveDataDir(dataDirOpt);
-    const home = await resolveHomeDir(homeOpt);
-    const { token } = resolveServiceToken(dataDir, { home });
-
-    const supervisor = createSupervisor({ ...deps, port, token });
-    const { port: boundPort } = await supervisor.start();
+    const { dataDir, home, cleanup } = await resolveDirs(dataDirOpt, homeOpt);
+    let token;
+    let supervisor;
+    let boundPort;
+    try {
+        ({ token } = resolveServiceToken(dataDir, { home }));
+        supervisor = createSupervisor({ ...deps, port, token });
+        ({ port: boundPort } = await supervisor.start());
+    } catch (err) {
+        await cleanup();
+        throw err;
+    }
 
     return {
         baseUrl: `http://127.0.0.1:${boundPort}`,
         token,
         headers: headersFor(token),
-        stop: () => supervisor.stop('test-harness'),
+        // apra-fleet-50j6.8: removes the harness-created dirs AFTER the
+        // supervisor has stopped; a caller-supplied dataDir/home is untouched.
+        stop: async () => {
+            try {
+                await supervisor.stop('test-harness');
+            } finally {
+                await cleanup();
+            }
+        },
     };
 }
 
@@ -100,15 +127,23 @@ export async function startTestSupervisor(opts = {}) {
  * directly with mock req/res objects. Never used by 50j6.1.3/50j6.2.5; those
  * consume startTestSupervisor() above.
  * @param {{dataDir?: string, [key: string]: any}} [opts]
- * @returns {Promise<{supervisor: object, token: string, headers: () => {authorization: string}}>}
+ * @returns {Promise<{supervisor: object, token: string, headers: () => {authorization: string}, dispose: () => Promise<void>}>}
  */
 export async function createTestSupervisor(opts = {}) {
     const { dataDir: dataDirOpt, home: homeOpt, ...deps } = opts;
-    const dataDir = await resolveDataDir(dataDirOpt);
-    const home = await resolveHomeDir(homeOpt);
-    const { token } = resolveServiceToken(dataDir, { home });
+    const { dataDir, home, cleanup } = await resolveDirs(dataDirOpt, homeOpt);
+    let token;
+    let supervisor;
+    try {
+        ({ token } = resolveServiceToken(dataDir, { home }));
+        supervisor = createSupervisor({ ...deps, token });
+    } catch (err) {
+        await cleanup();
+        throw err;
+    }
 
-    const supervisor = createSupervisor({ ...deps, token });
-
-    return { supervisor, token, headers: headersFor(token) };
+    // apra-fleet-50j6.8: `dispose()` removes only the dirs the harness itself
+    // created (never a caller-supplied dataDir/home). It does not stop the
+    // supervisor -- a caller that called supervisor.start() stops it first.
+    return { supervisor, token, headers: headersFor(token), dispose: cleanup };
 }

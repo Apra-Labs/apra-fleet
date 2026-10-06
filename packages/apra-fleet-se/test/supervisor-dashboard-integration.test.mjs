@@ -1,4 +1,5 @@
 import { test, describe, before, after } from 'node:test';
+import { deriveDashboardCookie } from '../src/supervisor/auth.mjs';
 import assert from 'node:assert';
 import http from 'node:http';
 import fsp from 'node:fs/promises';
@@ -655,21 +656,25 @@ describe('dashboard integration auth (apra-fleet-50j6.2.2) -- Stop/force-release
     });
 
     // -------------------------------------------------------------------------
-    // GET / sets the se_token cookie (acceptance criterion (1), re-proved here
+    // apra-fleet-50j6.6: a plain GET / sets NO cookie; the GET /?token=
+    // exchange sets the se_token cookie to the DERIVED value (re-proved here
     // against a REAL running supervisor+sprint, not just the unit-level check
     // in supervisor-dashboard.test.mjs).
     // -------------------------------------------------------------------------
-    test('GET / sets the se_token cookie carrying the same value as supervisor.token', async () => {
-        const res = await httpGet(port, '/');
-        assert.equal(res.status, 200);
+    test('GET / sets no cookie; GET /?token= sets the derived se_token cookie', async () => {
+        const plain = await httpGet(port, '/');
+        assert.equal(plain.status, 200);
+        assert.equal(plain.headers['set-cookie'], undefined);
+        const res = await httpGet(port, `/?token=${encodeURIComponent(token)}`);
+        assert.equal(res.status, 302);
         // Node's http client normalizes the (single) 'set-cookie' response
         // header into a one-element array, unlike every other header.
         const setCookie = Array.isArray(res.headers['set-cookie'])
             ? res.headers['set-cookie'][0]
             : res.headers['set-cookie'];
         assert.ok(typeof setCookie === 'string', 'expected a single Set-Cookie header');
-        assert.equal(setCookie, `se_token=${token}; Path=/; SameSite=Strict; HttpOnly`);
-        cookie = `se_token=${token}`;
+        assert.equal(setCookie, `se_token=${deriveDashboardCookie(token)}; Path=/; SameSite=Strict; HttpOnly`);
+        cookie = `se_token=${deriveDashboardCookie(token)}`;
     });
 
     // -------------------------------------------------------------------------

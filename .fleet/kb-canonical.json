@@ -6204,6 +6204,28 @@
       "updated_at": "2026-10-05T08:34:05.036Z"
     },
     {
+      "id": "c8fc2517-6f29-464f-8e86-512018bf529f",
+      "type": "knowledge",
+      "title": "Supervisor se_token cookie carries a derived HMAC; raw service token is bearer-only",
+      "summary": "isAuthorized in the supervisor accepts the raw service token only as a Bearer header and only deriveDashboardCookie(token) on the se_token cookie path; browsers get the cookie via a ?token= exchange that 302s.",
+      "symbols": [
+        "isAuthorized",
+        "deriveDashboardCookie",
+        "handleTokenExchange",
+        "upstreamRequestHeaders",
+        "createDashboardViewer"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/src/supervisor/auth.mjs",
+        "packages/apra-fleet-se/src/supervisor/dashboard-session.mjs",
+        "packages/apra-fleet-se/src/supervisor/proxy.mjs",
+        "packages/apra-fleet-workflow/src/viewer/index.mjs",
+        "packages/apra-fleet-se/test/supervisor-dashboard-cookie-harvest.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T04:03:24.801Z"
+    },
+    {
       "id": "c9908905-0938-4f8b-8804-04c5da21f168",
       "type": "knowledge",
       "title": "In Git Bash, a background job's $! is an MSYS pid that never equals the process's own process.pid",

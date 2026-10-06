@@ -396,7 +396,8 @@ function spawnDetached(args, env, logFile) {
 // Production snapshot (so verify/teardown can prove production was untouched)
 // ---------------------------------------------------------------------------
 
-export async function snapshotProduction(home = os.homedir()) {
+// `opts.supervisorPort` is a test seam (defaults to the real production port).
+export async function snapshotProduction(home = os.homedir(), { supervisorPort = PRODUCTION_SUPERVISOR_PORT } = {}) {
   const snap = {};
   const info = readJsonFile(path.join(home, '.apra-fleet', 'data', 'server.json'));
   if (info && info.pid) {
@@ -404,16 +405,24 @@ export async function snapshotProduction(home = os.homedir()) {
     snap.PROD_MCP_PORT = String(info.port ?? '');
   }
   const prodToken = tryLoadToken(productionSeDataDir(home));
-  const health = await getJson(`http://127.0.0.1:${PRODUCTION_SUPERVISOR_PORT}/api/health`, 2000, prodToken);
-  if (health && health.pid) {
-    snap.PROD_SUPERVISOR_PID = String(health.pid);
-    snap.PROD_SUPERVISOR_UPTIME = String(health.uptimeSeconds ?? 0);
+  // Status-aware: only "no answer" (refused/timeout) means there is no
+  // production supervisor. A supervisor that ANSWERED non-2xx (401 = wrong or
+  // absent token) is present but unreadable; snapshotting nothing would make
+  // checkProductionUnchanged() skip its supervisor branch and report a false
+  // clean, so fail loudly (same convention as teardown()'s non-2xx handling).
+  const probe = await probeJson(`http://127.0.0.1:${supervisorPort}/api/health`, 2000, prodToken);
+  if (!probe.ok && probe.status != null) {
+    throw new SandboxDeployError(`production supervisor on ${supervisorPort} answered /api/health with ${describeProbeFailure(probe)} -- cannot snapshot it, so "production untouched" could not be verified; fix the token (~/.apra-fleet/fleet.key) and retry`);
+  }
+  if (probe.ok && probe.body && probe.body.pid) {
+    snap.PROD_SUPERVISOR_PID = String(probe.body.pid);
+    snap.PROD_SUPERVISOR_UPTIME = String(probe.body.uptimeSeconds ?? 0);
   }
   return snap;
 }
 
 /** Returns a list of human-readable problems (empty = production untouched). */
-export async function checkProductionUnchanged(values, home = os.homedir()) {
+export async function checkProductionUnchanged(values, home = os.homedir(), { supervisorPort = PRODUCTION_SUPERVISOR_PORT } = {}) {
   const problems = [];
   if (values.PROD_MCP_PID) {
     const info = readJsonFile(path.join(home, '.apra-fleet', 'data', 'server.json'));
@@ -423,8 +432,11 @@ export async function checkProductionUnchanged(values, home = os.homedir()) {
   }
   if (values.PROD_SUPERVISOR_PID) {
     const prodToken = tryLoadToken(productionSeDataDir(home));
-    const health = await getJson(`http://127.0.0.1:${PRODUCTION_SUPERVISOR_PORT}/api/health`, 2000, prodToken);
-    if (!health || String(health.pid) !== values.PROD_SUPERVISOR_PID) {
+    const probe = await probeJson(`http://127.0.0.1:${supervisorPort}/api/health`, 2000, prodToken);
+    const health = probe.ok ? probe.body : null;
+    if (!probe.ok && probe.status != null) {
+      problems.push(`production supervisor /api/health failed: ${describeProbeFailure(probe)} (was pid ${values.PROD_SUPERVISOR_PID}) -- cannot confirm it is untouched`);
+    } else if (!health || String(health.pid) !== values.PROD_SUPERVISOR_PID) {
       problems.push(`production supervisor pid changed (was ${values.PROD_SUPERVISOR_PID}, now ${health?.pid ?? 'unreachable'})`);
     } else if (Number(health.uptimeSeconds) < Number(values.PROD_SUPERVISOR_UPTIME)) {
       problems.push(`production supervisor uptime reset (${values.PROD_SUPERVISOR_UPTIME}s -> ${health.uptimeSeconds}s)`);

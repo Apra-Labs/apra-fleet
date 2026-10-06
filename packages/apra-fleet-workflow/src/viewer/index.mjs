@@ -8,6 +8,7 @@ import { getRunningRunStatePath, getTerminalRunStatePath } from './run-state-pat
 import { buildListStatePayload, resolveStringRefs } from './lean-state.mjs';
 import { capCommandActivityMeta, getFullOutput } from './command-output-cap.mjs';
 import { buildRunTitle } from './run-title.mjs';
+import { isAuthorized } from '@apralabs/apra-fleet-client/auth/local-token';
 import { createRunSummary, refreshSummaryCore, applyExtensionSummary, backfillExtensionSummaries } from './run-summary.mjs';
 
 // apra-fleet-eft.6.5: the SAME template serves both the live view and the
@@ -1071,6 +1072,10 @@ export { HTML_TEMPLATE };
  * @param {{href: string, text: string}} [opts.backLink] - Optional link
  *   rendered as the first content of the page body (absolute http(s) href,
  *   non-empty text; invalid values throw here). Omit for no link.
+ * @param {string} [opts.serviceToken] - When set, POST /stop, /pause, /resume and
+ *   /save_logs require `Authorization: Bearer <token>` (401 otherwise, before any
+ *   side effect). GET routes stay open on loopback. Unset = controls open, one
+ *   startup warning.
  * @param {string} [opts.host='127.0.0.1'] - Interface to bind. Loopback by
  *   default -- see the `host`/`exclusive` note at server.listen() below for
  *   why the bind address is explicit rather than the OS wildcard.
@@ -1083,6 +1088,7 @@ export function createDashboardViewer(workflow, opts = {}) {
     // 127.0.0.1 only" rule in docs/hub-service-deployment.md. A caller that
     // genuinely wants this dashboard reachable off-box must say so.
     const host = (typeof opts.host === 'string' && opts.host.length > 0) ? opts.host : '127.0.0.1';
+    const serviceToken = (typeof opts.serviceToken === 'string' && opts.serviceToken.length > 0) ? opts.serviceToken : undefined;
     const dashboardExtensions = opts.dashboardExtensions || [];
     // Validated up front so a malformed back link fails at construction,
     // not on the first GET /.
@@ -1511,7 +1517,18 @@ export function createDashboardViewer(workflow, opts = {}) {
         moveStateToOldRuns();
     });
 
+    const CONTROL_POSTS = new Set(['/stop', '/pause', '/resume', '/save_logs']);
     const server = http.createServer((req, res) => {
+        // (apra-fleet-4v8r.1) Control POSTs need the service token as a bearer
+        // header. Only the Authorization header is consulted -- a cookie is
+        // deliberately not accepted (cookies are not port-scoped, so a browser
+        // would send the supervisor's cookie to this port too).
+        if (serviceToken && req.method === 'POST' && CONTROL_POSTS.has(req.url)
+            && !isAuthorized({ headers: { authorization: req.headers.authorization } }, serviceToken)) {
+            res.writeHead(401, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'unauthorized' }));
+            return;
+        }
         if (req.url === '/') {
             res.writeHead(200, { 'Content-Type': 'text/html' });
             res.end(backLink ? HTML_TEMPLATE(dashboardExtensions, { backLink }) : HTML_TEMPLATE(dashboardExtensions));
@@ -1736,6 +1753,11 @@ export function createDashboardViewer(workflow, opts = {}) {
     // default, which the supervisor in front of it already refuses to be.
     server.listen({ port, host, exclusive: true }, () => {
         console.log(`[Viewer] Workflow Dashboard live at http://${host}:${server.address().port}`);
+        if (serviceToken) {
+            console.log('[Viewer] Control POSTs (/stop, /pause, /resume, /save_logs) require a bearer token; use the supervisor /sprints/:id/live/* proxy -- direct browser use of this port will get 401.');
+        } else {
+            console.warn('[Viewer] WARNING: no service token configured -- control POSTs (/stop, /pause, /resume, /save_logs) are unauthenticated (loopback only).');
+        }
     });
 
     workflow.on('end', () => {
