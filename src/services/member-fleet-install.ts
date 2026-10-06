@@ -287,9 +287,10 @@ export function isMemberOutdated(
 }
 
 /** Release asset names published by .github/workflows/ci.yml, by platform. */
-const RELEASE_ASSETS: Record<string, string> = {
+export const RELEASE_ASSETS: Record<string, string> = {
   'linux/x64': 'apra-fleet-installer-linux-x64',
   'macos/arm64': 'apra-fleet-installer-darwin-arm64',
+  'macos/x64': 'apra-fleet-installer-darwin-x64',
   'windows/x64': 'apra-fleet-installer-win-x64.exe',
 };
 

@@ -199,6 +199,12 @@ jobs:
             binary: apra-fleet-installer-linux-x64
           - os: macos-latest
             binary: apra-fleet-installer-darwin-arm64
+          # Intel macOS: macos-15-intel is GitHub's Intel runner label (macos-13
+          # is retired). The runner's own setup-node installs an x64 node, which
+          # carries the SEA fuse package-sea.mjs injects into. Without this asset
+          # an Intel Mac member can never be upgraded from a non-Mac orchestrator.
+          - os: macos-15-intel
+            binary: apra-fleet-installer-darwin-x64
           # windows-2022 (VS 17), not windows-latest (VS 18): node-gyp can't
           # detect VS 18. See the build-and-test matrix above.
           - os: windows-2022
@@ -576,7 +582,7 @@ jobs:
           # Member installs download these assets and verify them against
           # SHA256SUMS before running them (src/services/member-fleet-install.ts).
           cd release-binaries
-          sha256sum apra-fleet-installer-linux-x64 apra-fleet-installer-darwin-arm64 apra-fleet-installer-win-x64.exe > SHA256SUMS
+          sha256sum apra-fleet-installer-linux-x64 apra-fleet-installer-darwin-arm64 apra-fleet-installer-darwin-x64 apra-fleet-installer-win-x64.exe > SHA256SUMS
           cat SHA256SUMS
 
       - name: Create GitHub release
@@ -587,6 +593,7 @@ jobs:
             ${{ env.TARBALL_NAME }}
             release-binaries/apra-fleet-installer-linux-x64
             release-binaries/apra-fleet-installer-darwin-arm64
+            release-binaries/apra-fleet-installer-darwin-x64
             release-binaries/apra-fleet-installer-win-x64.exe
           generate_release_notes: true
 
