@@ -1509,6 +1509,59 @@ export function kbKnowledgeBlock(entries, { captureChannel = true, source = 'pri
     ];
 }
 
+/**
+ * KNOWLEDGE BANK -- demotion candidates. Same bounded shape as
+ * kbPromotionBlock (list the offered ids with enough context to judge, say
+ * nothing when the list is empty) -- the two are read side by side in the
+ * reviewer prompt and must not drift.
+ *
+ * Demotion is CONFIRMED -> INFERRED only, and only for an id actually
+ * offered here (the engine refuses any other id, same as promotion/discard).
+ * The ONE case this is for: the entry's basis is UNCHANGED but a re-check
+ * during this review shows the claim no longer holds. A drifted or removed
+ * basis is NOT a demote case -- the freshness sweep and the bible basis
+ * predicate already handle that without reviewer judgment.
+ *
+ * @param {object[]|undefined} kbCandidates
+ * @returns {string[]}
+ */
+export function kbDemotionBlock(kbCandidates) {
+    if (!Array.isArray(kbCandidates) || kbCandidates.length === 0) return [];
+    return [
+        'KNOWLEDGE BANK -- demotion candidates. These entries are currently CONFIRMED. You are '
+        + 'the only role that can demote one back to INFERRED for a fresh look. Do NOT call any '
+        + 'kb_* tool yourself: return your decisions in your structured output and the '
+        + 'orchestrator executes them -- `kb_demotions` as [{id, reason, evidence_files?}] for '
+        + 'entries to demote back to INFERRED.\n'
+        + 'Demote ONLY the one case this is for: the entry\'s basis is UNCHANGED but a re-check '
+        + 'during THIS review shows the claim no longer holds -- you checked the same files/tests '
+        + 'the entry already cites and the claim does not hold up. This is NOT the route for a '
+        + 'drifted or removed basis (the cited code changed or vanished) -- freshness staling and '
+        + 'the bible basis predicate already handle that case without you.\n'
+        + 'Routing when an entry looks wrong: if you are merely LESS CERTAIN than CONFIRMED '
+        + 'demands, demote it here (`kb_demotions`). If you have PROVEN it wrong, that is '
+        + 'different work entirely, handled outside this role -- leave it alone and say so in '
+        + 'your notes; you have no tool for that. Discarding an unconfirmed (INFERRED) capture '
+        + 'you showed to be wrong is `kb_discards` (Step 5), never a demotion -- demotion only '
+        + 'ever applies to an already-CONFIRMED entry.\n'
+        + 'The `reason` must state what you checked this review that contradicts the claim '
+        + '(at least 20 characters, e.g. "re-ran the reopen test cited by this entry and it now '
+        + 'fails"). Demoting nothing is a valid outcome; return [] in that case. Never list the '
+        + 'same id in more than one of `kb_promotions`, `kb_discards` and `kb_demotions`; the '
+        + 'orchestrator refuses it in every list it appears in.\n'
+        + wrapUntrustedBlock('kb_query --tag member:<maintainer> --confidence CONFIRMED', JSON.stringify(
+            kbCandidates.map((e) => ({
+                id: e.id,
+                title: e.title,
+                summary: e.summary,
+                source_files: e.source_files,
+            })),
+            null,
+            2
+        )),
+    ];
+}
+
 export function kbPromotionBlock(kbCandidates) {
     if (!Array.isArray(kbCandidates) || kbCandidates.length === 0) return [];
     return [

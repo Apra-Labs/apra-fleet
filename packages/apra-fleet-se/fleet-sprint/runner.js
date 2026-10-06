@@ -226,7 +226,7 @@ import {
 // second one.
 import {
     createKbPrimingClient, KB_SELF_INJECTING_ROLES, kbQueryTerms,
-    kbKnowledgeBlock, kbPromotionBlock,
+    kbKnowledgeBlock, kbPromotionBlock, kbDemotionBlock,
 } from './kb.mjs';
 import { createKbInjection } from './kb-injection.mjs';
 import { pathsFromText, isPriorityTierToken } from './kb-hints.mjs';
@@ -393,12 +393,12 @@ export {
     KB_CAPTURE_TYPES, KB_MAX_PROMOTION_CANDIDATES, vetKbWork, createKbWorkClient,
 };
 // Re-exported so importers of the KB priming client and the prompt-
-// construction helpers (kbKnowledgeBlock, kbPromotionBlock, kbQueryTerms,
-// KB_SELF_INJECTING_ROLES) from runner.js keep working; kb.mjs is the
-// single source of truth for their implementation (apra-fleet-3swo.6.11).
+// construction helpers (kbKnowledgeBlock, kbPromotionBlock, kbDemotionBlock,
+// kbQueryTerms, KB_SELF_INJECTING_ROLES) from runner.js keep working; kb.mjs
+// is the single source of truth for their implementation (apra-fleet-3swo.6.11).
 export {
     createKbPrimingClient, KB_SELF_INJECTING_ROLES, kbQueryTerms,
-    kbKnowledgeBlock, kbPromotionBlock,
+    kbKnowledgeBlock, kbPromotionBlock, kbDemotionBlock,
 };
 // member-call.mjs is the single owner of memberCall/listTools (a MEMBER-scoped
 // tool call: local in-process session, or remote/relay via send_files +
