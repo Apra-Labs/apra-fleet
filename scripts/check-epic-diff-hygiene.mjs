@@ -100,6 +100,43 @@ export function getAddedLines(opts) {
 }
 
 /**
+ * Parses `git diff --name-status` output into {status, path} entries. Pure
+ * (no process spawn), so the violation-detection logic below can be tested
+ * against a fabricated diff line instead of a real `git diff` -- the same
+ * split applied in scripts/check-fixture-additivity.mjs's own
+ * parseNameStatus, kept local here since the two guards are otherwise
+ * independent.
+ * @param {string} diffOutput raw `git diff --name-status` stdout
+ * @returns {{status: string, path: string}[]}
+ */
+export function parseSprintAnalysisNameStatus(diffOutput) {
+  return diffOutput
+    .split('\n')
+    .filter((line) => line.length > 0)
+    .map((line) => {
+      const [status, ...rest] = line.split('\t');
+      return { status, path: rest.join('\t') };
+    });
+}
+
+/**
+ * The pure filter step: which entries are violations once `allowed` paths
+ * are tolerated. Split out of findSprintAnalysisDocChanges so a test can
+ * exercise both the flagged case and the allowed-set-suppressed case
+ * directly, without a HEAD..HEAD diff (which is always empty and proves
+ * nothing) and without a scratch git repo.
+ * @param {{status: string, path: string}[]} entries
+ * @param {Set<string>} [allowed] specific docs/sprint-analysis-*.md paths to
+ *   tolerate -- e.g. the harvester's own new report for the CURRENT cycle,
+ *   when this guard runs at a phase where one is expected. Empty by
+ *   default: a doer task should never see one at all.
+ * @returns {{status: string, path: string}[]} violating entries
+ */
+export function findSprintAnalysisViolations(entries, allowed = new Set()) {
+  return entries.filter((entry) => !allowed.has(entry.path));
+}
+
+/**
  * @param {{cwd?: string, baseRef: string, allowed?: Set<string>}} opts
  *   `allowed` names specific docs/sprint-analysis-*.md paths to tolerate --
  *   e.g. the harvester's own new report for the CURRENT cycle, when this
@@ -118,12 +155,6 @@ export function findSprintAnalysisDocChanges(opts) {
   if (result.status !== 0) {
     throw new Error(`git diff --name-status ${baseRef}..HEAD -- docs/sprint-analysis-* failed: ${result.stderr || result.error}`);
   }
-  return result.stdout
-    .split('\n')
-    .filter((line) => line.length > 0)
-    .map((line) => {
-      const [status, ...rest] = line.split('\t');
-      return { status, path: rest.join('\t') };
-    })
-    .filter((entry) => !allowed.has(entry.path));
+  const entries = parseSprintAnalysisNameStatus(result.stdout);
+  return findSprintAnalysisViolations(entries, allowed);
 }

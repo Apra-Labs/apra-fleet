@@ -19,6 +19,8 @@ import {
   addedLinesFromDiff,
   getAddedLines,
   findSprintAnalysisDocChanges,
+  parseSprintAnalysisNameStatus,
+  findSprintAnalysisViolations,
 } from '../scripts/check-epic-diff-hygiene.mjs';
 
 const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
@@ -70,7 +72,39 @@ describe('bead-id guard: the violation-detection logic itself', () => {
 });
 
 describe('sprint-analysis-doc guard: the violation-detection logic itself', () => {
-  it('flags any docs/sprint-analysis-* entry not in the allowed set', () => {
+  it('flags an added docs/sprint-analysis-* entry not in the allowed set (repeatable-test form of "add then confirm it fails")', () => {
+    const entries = parseSprintAnalysisNameStatus('A\tdocs/sprint-analysis-2026-01-01.md\n');
+    const violations = findSprintAnalysisViolations(entries, new Set());
+    expect(violations).toEqual([{ status: 'A', path: 'docs/sprint-analysis-2026-01-01.md' }]);
+  });
+
+  it('suppresses an entry explicitly named in the allowed set (the harvester\'s own current-cycle report)', () => {
+    const entries = parseSprintAnalysisNameStatus('A\tdocs/sprint-analysis-2026-01-01.md\n');
+    const violations = findSprintAnalysisViolations(entries, new Set(['docs/sprint-analysis-2026-01-01.md']));
+    expect(violations).toEqual([]);
+  });
+
+  it('the allowed-set filter is exact-path, so a different sprint-analysis file is still flagged', () => {
+    const entries = parseSprintAnalysisNameStatus('A\tdocs/sprint-analysis-2026-01-01.md\n');
+    const violations = findSprintAnalysisViolations(entries, new Set(['docs/sprint-analysis-2099-12-31.md']));
+    expect(violations).toEqual([{ status: 'A', path: 'docs/sprint-analysis-2026-01-01.md' }]);
+  });
+
+  it('parseSprintAnalysisNameStatus splits multiple name-status lines into {status, path} entries', () => {
+    const entries = parseSprintAnalysisNameStatus(
+      'A\tdocs/sprint-analysis-2026-01-01.md\nM\tdocs/sprint-analysis-2025-12-25.md\n',
+    );
+    expect(entries).toEqual([
+      { status: 'A', path: 'docs/sprint-analysis-2026-01-01.md' },
+      { status: 'M', path: 'docs/sprint-analysis-2025-12-25.md' },
+    ]);
+  });
+
+  it('findSprintAnalysisDocChanges wraps a real git diff and still defaults to an empty allowed set', () => {
+    // A HEAD..HEAD diff is legitimately empty for this repo (no uncommitted
+    // docs/sprint-analysis-* change), so this only exercises the spawnSync
+    // wiring; the detection logic itself is proven above against fabricated
+    // entries, and against the real epic branch diff below.
     const violations = findSprintAnalysisDocChanges({ cwd: REPO_ROOT, baseRef: 'HEAD' });
     expect(violations).toEqual([]);
   });
