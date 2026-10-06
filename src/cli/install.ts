@@ -2373,7 +2373,7 @@ Restart ${clientName} to reload the MCP server.` : '';
     ? `
   fleet-se:    ready (node ${fleetSePrereqs?.node.version ?? 'n/a'}, npm ${fleetSePrereqs?.npm.version ?? 'n/a'}, bd ${formatFleetSeBdPart(beadsSummary)})`
     : `
-  fleet-se:    NOT INSTALLED -- ${FLEET_SE_PREREQ_FIX_LINE}`;
+  fleet-se:    skipped by choice (core-only install)`;
   const serviceState = serviceHealthy === true ? 'registered and running' : serviceHealthy === false ? 'registered, but NOT answering /health (see the warning above)' : 'registered (health not checked)';
   const serviceLine = serviceStep ? `\n  Service:     ${serviceRegistered ? `${serviceState}${serviceReused ? ' (existing task reused)' : ''}${serviceRunKey ? ' (logon autostart via HKCU Run, no automatic restart)' : ''}` : 'registration skipped'}` : '';
   console.log(`
@@ -2390,7 +2390,7 @@ Apra Fleet ${serverVersion} installed successfully for ${paths.name}.
 ${instructions}${forceNote}
 `);
 
-  if (llm === 'claude' && installPm) {
+  if (llm === 'claude' && installPm && installWorkflows) {
     console.log('  /auto-sprint BD-1              (native workflow, current branch)');
     console.log('  /auto-sprint BD-1 BD-2         (multiple sprint goals)');
     console.log('  /pm                            (provider-agnostic skill, fleet-ready)');
