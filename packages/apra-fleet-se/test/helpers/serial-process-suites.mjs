@@ -95,4 +95,8 @@ export const SERIAL_PROCESS_TEST_FILES = [
     // buildRecordedNode() path (not process.execPath) under a flat 15s probe
     // SLA, so it is contention-sensitive like the suites above.
     'i9ag19-9-toolchain.test.mjs',
+
+    // apra-fleet-i9ag.19.47: drives probeVersion with the real execFileSync
+    // against a deliberately hanging child under a short timeout.
+    'i9ag19-16-node-version.test.mjs',
 ];

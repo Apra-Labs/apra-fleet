@@ -15,6 +15,7 @@
 import { test, describe, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -158,6 +159,40 @@ describe('apra-fleet-i9ag.19.16: probeVersion failure surfacing', () => {
         const result = probeVersion(exec, 'linux', 'node', ['--version'], { retry: true });
         assert.deepEqual(result, { version: null, incomplete: 'timeout' });
         assert.equal(attempts, 2, 'exactly one bounded retry -- the original attempt plus one, never a retry-until-pass loop');
+    });
+
+    test('retry contract: the REAL execFileSync timeout shape (code ETIMEDOUT, killed undefined, signal SIGTERM) classifies as "timeout" after exactly 2 attempts', () => {
+        let attempts = 0;
+        const exec = (file, args, options) => {
+            attempts += 1;
+            return execFileSync(file, args, options);
+        };
+        // A deliberately hanging child; execFileSync kills it on timeoutMs.
+        const result = probeVersion(exec, 'linux', process.execPath, ['-e', 'setInterval(()=>{},1000)'], { timeoutMs: 300, retry: true });
+        assert.deepEqual(result, { version: null, incomplete: 'timeout' });
+        assert.equal(attempts, 2);
+    });
+
+    test('retry contract: a synthetic ETIMEDOUT-shaped error (killed undefined) classifies as "timeout" after 2 attempts', () => {
+        let attempts = 0;
+        const exec = () => {
+            attempts += 1;
+            throw Object.assign(new Error('spawnSync ETIMEDOUT'), { code: 'ETIMEDOUT', signal: 'SIGTERM' });
+        };
+        const result = probeVersion(exec, 'linux', 'node', ['--version'], { retry: true });
+        assert.deepEqual(result, { version: null, incomplete: 'timeout' });
+        assert.equal(attempts, 2);
+    });
+
+    test('retry contract: a crash-shaped error (signal set, killed false, no ETIMEDOUT code) is NOT retried and stays incomplete:null', () => {
+        let attempts = 0;
+        const exec = () => {
+            attempts += 1;
+            throw Object.assign(new Error('child crashed'), { signal: 'SIGSEGV', killed: false });
+        };
+        const result = probeVersion(exec, 'linux', 'node', ['--version'], { retry: true });
+        assert.deepEqual(result, { version: null, incomplete: null });
+        assert.equal(attempts, 1);
     });
 
     test('retry contract: a genuine (non-transient) failure is NOT retried, and surfaces incomplete:null', () => {
