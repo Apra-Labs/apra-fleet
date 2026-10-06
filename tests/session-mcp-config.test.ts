@@ -184,6 +184,28 @@ describe('writeSessionMcpConfig', () => {
     for (const c of cmds) expect(c).not.toMatch(/\$HOME|~\/|\$env:/);
   });
 
+  it('remote: the written file is added to the clone exclude file at dispatch time (best effort)', async () => {
+    const agent = makeTestAgent({ id: ID, os: 'linux', workFolder: '/home/u/repo' });
+    const p = `/home/u/repo/${REMOTE_SESSION_MCP_FILE}`;
+    const files = new Map<string, string>();
+    const cmds: string[] = [];
+    const exec = async (cmd: string): Promise<SSHExecResult> => {
+      cmds.push(cmd);
+      const w = /^cat > "([^"]+)" << 'FLEET_PERMS_EOF'\n([\s\S]*)\nFLEET_PERMS_EOF$/.exec(cmd);
+      if (w) { files.set(w[1], w[2]); return { stdout: '', stderr: '', code: 0 }; }
+      const r = /^if test -e "([^"]+)"/.exec(cmd);
+      if (r) return { stdout: files.get(r[1]) ?? '', stderr: '', code: 0 };
+      if (cmd.includes('rev-parse --git-path info/exclude')) return { stdout: '.git/info/exclude\n', stderr: '', code: 0 };
+      return { stdout: '', stderr: '', code: 0 };
+    };
+    expect(await writeSessionMcpConfig(agent, p, exec)).toEqual({ ok: true });
+    expect(files.get('/home/u/repo/.git/info/exclude')).toBe(`/${REMOTE_SESSION_MCP_FILE}`);
+    // not a repo: the write still succeeds
+    const noRepo = async (cmd: string): Promise<SSHExecResult> =>
+      (cmd.includes('rev-parse') ? { stdout: '', stderr: 'not a repository', code: 128 } : exec(cmd));
+    expect(await writeSessionMcpConfig(agent, p, noRepo)).toEqual({ ok: true });
+  });
+
   it('remote PowerShell: WriteAllText with a PowerShell-quoted Windows path', async () => {
     const agent = makeTestAgent({ id: ID, os: 'windows', shell: 'powershell5' });
     const p = `C:\\Users\\b\\repo\\${REMOTE_SESSION_MCP_FILE}`;

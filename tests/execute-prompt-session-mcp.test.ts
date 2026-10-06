@@ -60,6 +60,9 @@ const AVAILABLE = { state: 'available' as const, checkedAt: '2026-10-05T00:00:00
 function stubMember(opts: { failSessionWrite?: boolean } = {}) {
   let written = '';
   mockExecCommand.mockImplementation(async (cmd: string) => {
+    // Not a repo: the best-effort exclude step is a no-op here (its own
+    // behaviour is covered in session-mcp-config.test.ts).
+    if (cmd.includes('rev-parse --git-path')) return { stdout: '', stderr: 'not a repository', code: 128 };
     const heredoc = /<< 'FLEET_PERMS_EOF'\n([\s\S]*)\nFLEET_PERMS_EOF$/.exec(cmd);
     if (heredoc) {
       if (opts.failSessionWrite) return { stdout: '', stderr: 'No space left on device', code: 1 };

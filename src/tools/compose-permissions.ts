@@ -700,6 +700,11 @@ async function syncMemberMcpConfig(
   const shell = getAgentShell(agent);
   const exec = (cmd: string, t?: number) => strategy.execCommand(cmd, t);
   const workFolderFiles = permissionPaths.filter(p => !isHomeAnchored(p));
+  // A remote member's per-dispatch session MCP config lives in the work
+  // folder while a session runs: keep it out of `git status` (and out of a
+  // role's `git add -A`). Listed before the sync so the recoverable
+  // member-config error path below excludes it too.
+  if (agent.agentType !== 'local' && provider.mcpConfigFlag) workFolderFiles.push(REMOTE_SESSION_MCP_FILE);
   try {
     // A local claude member gets the member config per dispatch session
     // (--mcp-config), so no folder entry is written for it: the sync runs in
@@ -724,10 +729,6 @@ async function syncMemberMcpConfig(
       });
       workFolderFiles.push(...result.workFolderFiles);
     }
-    // A remote member's per-dispatch session MCP config lives in the work
-    // folder while a session runs: keep it out of `git status` (and out of a
-    // role's `git add -A`).
-    if (agent.agentType !== 'local' && provider.mcpConfigFlag) workFolderFiles.push(REMOTE_SESSION_MCP_FILE);
     await ensureGitExcluded(exec, agent.workFolder, workFolderFiles, agentOs === 'windows', shell);
   } catch (e: any) {
     if (e instanceof MemberConfigError) {
@@ -885,6 +886,9 @@ export async function removeComposedMemberConfig(agent: Agent): Promise<string[]
       shell,
       transport: workspaceTrustTransportFor(agent, strategy),
       url: null,
+      // Only the entry fleet wrote for THIS member (?member=<uuid>): a human's
+      // own apra-fleet entry for that folder is never removed.
+      removeOnlyOwnEntry: true,
     });
     workFolderFiles.push(...result.workFolderFiles);
     details.push(result.detail);

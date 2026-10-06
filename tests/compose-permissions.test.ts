@@ -11,7 +11,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
 import { addAgent } from '../src/services/registry.js';
-import { composePermissions, findProfilesDir } from '../src/tools/compose-permissions.js';
+import { composePermissions, findProfilesDir, removeComposedMemberConfig } from '../src/tools/compose-permissions.js';
 import { ClaudeProvider } from '../src/providers/claude.js';
 import { AgyProvider } from '../src/providers/agy.js';
 import { readInstallConfig } from '../src/cli/config.js';
@@ -735,6 +735,48 @@ describe('composePermissions -- legacy fleet MCP entries pruned from settings.lo
       .find(cmd => cmd.startsWith('cat > "/home/testuser/project/.git/info/exclude"'));
     expect(excludeWrite).toBeDefined();
     expect(excludeWrite).toContain('/.fleet-session-mcp.json');
+  });
+
+  it('a REMOTE claude member whose ~/.claude.json cannot be edited still gets the session MCP config excluded', async () => {
+    const member = makeTestAgent({ friendlyName: 'claude-remote-unparseable', llmProvider: 'claude', os: 'linux' });
+    addAgent(member);
+    const fsHandler = makeFsHandler({ '"/home/testuser/.claude.json"': '{ // jsonc\n }' });
+    mockExecCommand.mockImplementation(async (cmd: string) => {
+      if (cmd.includes('rev-parse --git-path info/exclude')) return { stdout: '/home/testuser/project/.git/info/exclude\n', stderr: '', code: 0 };
+      return fsHandler(cmd);
+    });
+
+    const result = await composePermissions({ member_id: member.id, role: 'doer' });
+    expect(result).toContain('Member MCP config NOT edited');
+
+    const excludeWrite = mockExecCommand.mock.calls.map(c => c[0] as string)
+      .find(cmd => cmd.startsWith('cat > "/home/testuser/project/.git/info/exclude"'));
+    expect(excludeWrite).toContain('/.fleet-session-mcp.json');
+  });
+
+  it('removeComposedMemberConfig removes only the apra-fleet entry for THIS member, never a human entry', async () => {
+    const own = makeTestAgent({ friendlyName: 'claude-own', llmProvider: 'claude', os: 'linux' });
+    const other = makeTestAgent({ friendlyName: 'claude-other', llmProvider: 'claude', os: 'linux', workFolder: '/home/testuser/other' });
+    addAgent(own);
+    addAgent(other);
+    const human = { type: 'http', url: 'http://localhost:7523/mcp' };
+    const fsHandler = makeFsHandler({
+      '"/home/testuser/.claude.json"': JSON.stringify({
+        projects: {
+          '/home/testuser/project': { mcpServers: { 'apra-fleet': { type: 'http', url: `http://localhost:7523/mcp?member=${own.id}` } } },
+          '/home/testuser/other': { mcpServers: { 'apra-fleet': human } },
+        },
+      }),
+    });
+    mockExecCommand.mockImplementation(fsHandler);
+
+    await removeComposedMemberConfig(own);
+    await removeComposedMemberConfig(other);
+
+    const readBack = await fsHandler('cat "/home/testuser/.claude.json" 2>/dev/null');
+    const cfg = JSON.parse(readBack.stdout);
+    expect(cfg.projects['/home/testuser/project'].mcpServers['apra-fleet']).toBeUndefined();
+    expect(cfg.projects['/home/testuser/other'].mcpServers['apra-fleet']).toEqual(human);
   });
 
   it('a LOCAL claude member gets no per-folder apra-fleet entry (its dispatches carry the member config per session)', async () => {

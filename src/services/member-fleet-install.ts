@@ -1062,8 +1062,11 @@ const PER_FOLDER_PROVIDERS = new Set<LlmProvider>(['claude', 'opencode']);
  *  - agy: unavailable(no-per-project-mcp), unverified; nothing is probed.
  *  - providers with no per-folder fleet entry: unavailable(provider-unsupported), unverified.
  *  - LOCAL members: no install and no per-folder entry (a claude dispatch gets
- *    the member config per session, --mcp-config); a direct MEMBER session to
- *    this server, i.e. the exact URL that session is given.
+ *    the member config per session, --mcp-config). Verified by opening a
+ *    MEMBER session for the uuid on this server through the client's own
+ *    server resolution (registered member, version answers, kb_* / code_*
+ *    listed) -- the same server and member identity the injected URL names,
+ *    not a request to that literal URL or a run of the CLI with the file.
  *  - remote members: ensure the install (opts.install, default true; false
  *    only probes the version), register the member on its own install
  *    (`register-member --type local --id <uuid>`), check the per-folder MCP

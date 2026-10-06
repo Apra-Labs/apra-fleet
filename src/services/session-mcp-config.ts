@@ -24,7 +24,7 @@ import path from 'node:path';
 import type { Agent } from '../types.js';
 import { FLEET_DIR } from '../paths.js';
 import { getAgentOS, getAgentShell, isPosixShell } from '../utils/agent-helpers.js';
-import { joinMemberPath, memberMcpUrl, writeMemberFile, MEMBER_MCP_SERVER_NAME, type MemberExecFn } from './member-config-io.js';
+import { ensureGitExcluded, joinMemberPath, memberMcpUrl, writeMemberFile, MEMBER_MCP_SERVER_NAME, type MemberExecFn } from './member-config-io.js';
 
 /** Work-folder-relative name of a remote member's per-dispatch config file. */
 export const REMOTE_SESSION_MCP_FILE = '.fleet-session-mcp.json';
@@ -108,6 +108,12 @@ export async function writeSessionMcpConfig(
     }
     const posix = isPosixShell(getAgentOS(agent), getAgentShell(agent));
     await writeMemberFile(exec, absPath, content, posix);
+    // Keep the file out of `git status` (and a role's `git add -A`) even when
+    // compose never ran for this clone. Best effort: a non-repo or a failed
+    // exclude never blocks the dispatch.
+    try {
+      await ensureGitExcluded(exec, agent.workFolder, [REMOTE_SESSION_MCP_FILE], getAgentOS(agent) === 'windows', getAgentShell(agent));
+    } catch { /* best effort */ }
     return { ok: true };
   } catch (err: unknown) {
     return { ok: false, detail: err instanceof Error ? err.message : String(err) };
