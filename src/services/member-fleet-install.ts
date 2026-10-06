@@ -45,6 +45,7 @@ import { getAgentOS, getAgentShell, isPosixShell } from '../utils/agent-helpers.
 import { escapePowerShellArgInner, escapeShellArgInner } from '../utils/shell-escape.js';
 import { wrapPowerShellEncoded } from '../os/windows.js';
 import { serverVersion } from '../version.js';
+import { BUILTIN_DEFAULT_PORT, validPort } from '../paths.js';
 import { FULL_INSTALL_RUNNING_CODE, FORCE_STOP_FULL_INSTALL_FLAG } from '../cli/install-guard.js';
 import { parseVersion, isNewer } from './update-check.js';
 import { recordFleetMcpStatus } from './registry.js';
@@ -1190,6 +1191,60 @@ export async function readMemberMcpEntryUrl(agent: Agent, home: string, deps: Pi
   }
 }
 
+/** Outcome of resolving the port a remote member's own install listens on. */
+export type MemberPortResolution =
+  | { kind: 'resolved'; port: number; source: 'marker' | 'default'; note?: string }
+  | { kind: 'failed'; detail: string };
+
+/**
+ * The port a REMOTE member's own apra-fleet install listens on, resolved on
+ * the member: the `port` its member-install marker
+ * (<home>/.apra-fleet/data/member-install.json) records. server.json in the
+ * same data dir is only advisory -- a no-op `apra-fleet start` never rewrites
+ * it, so it can describe an older instance -- and a disagreement is reported
+ * in `note` while the marker wins. A marker that records no port (an install
+ * from before port recording) resolves to the built-in default with a note
+ * saying so. Read commands carry resolved, quoted paths built here in JS (no
+ * shell variable expansion). Never throws.
+ */
+export async function resolveMemberMcpPort(
+  agent: Agent,
+  home: string,
+  deps: Pick<MemberFleetInstallDeps, 'exec'>,
+): Promise<MemberPortResolution> {
+  const targetOs = getAgentOS(agent) as TargetOS;
+  const shell = getAgentShell(agent);
+  const posix = isPosixShell(targetOs, shell);
+  const exec = (cmd: string, t?: number) => deps.exec(agent, cmd, t ?? PROBE_TIMEOUT_MS);
+  const markerPath = memberInstallMarkerPathFor(home, agent);
+  let marker: Record<string, unknown>;
+  try {
+    marker = await readMemberJson(exec, markerPath, posix);
+  } catch (err: unknown) {
+    return { kind: 'failed', detail: `the member's apra-fleet port could not be read from ${markerPath}: ${err instanceof Error ? err.message : String(err)}` };
+  }
+  let serverPort: number | undefined;
+  try {
+    const info = await readMemberJson(exec, joinMemberPath(home, '.apra-fleet/data/server.json', targetOs === 'windows', shell), posix);
+    serverPort = validPort(info.port);
+  } catch { /* advisory only */ }
+  const recorded = validPort(marker.port);
+  if (recorded === undefined) {
+    const seen = serverPort !== undefined && serverPort !== BUILTIN_DEFAULT_PORT ? ` (server.json there records port ${serverPort}, not used)` : '';
+    return {
+      kind: 'resolved', port: BUILTIN_DEFAULT_PORT, source: 'default',
+      note: `the member install did not record its port in ${markerPath}, so the built-in default port ${BUILTIN_DEFAULT_PORT} is used${seen}; re-run update_member with fleet_install "auto" to record it`,
+    };
+  }
+  if (serverPort !== undefined && serverPort !== recorded) {
+    return {
+      kind: 'resolved', port: recorded, source: 'marker',
+      note: `the member-install marker records port ${recorded} but server.json records port ${serverPort}; using the marker's port ${recorded} (server.json may describe a stale or other instance)`,
+    };
+  }
+  return { kind: 'resolved', port: recorded, source: 'marker' };
+}
+
 function memberQuery(agent: Agent): string {
   return `?member=${encodeURIComponent(agent.id)}`;
 }
@@ -1441,10 +1496,17 @@ async function probeRemote(
   }
   const withVersion = { version, ...(installFailure ? { installFailure } : {}) };
   const upgradeNote = installFailure ? installFailureNote(installFailure, version) : undefined;
+  // Set once the member's port is resolved (step 2c): the port fields and the
+  // note about it ride on every later outcome, like a failed upgrade.
+  let portFields: Partial<FleetMcpStatus> = {};
+  let portNote: string | undefined;
+  const notes = (): string[] => [upgradeNote, portNote].filter((n): n is string => !!n);
   // Every later outcome keeps a failed upgrade visible: a later step's error
   // must never hide it, and an available status still names it.
-  const fail: Unavailable = (reason, detail) =>
-    unavailable(reason, upgradeNote ? `${(detail ?? reason).replace(/\.\s*$/, '')}. Also: ${upgradeNote}` : detail, withVersion);
+  const fail: Unavailable = (reason, detail) => {
+    const also = notes();
+    return unavailable(reason, also.length ? `${(detail ?? reason).replace(/\.\s*$/, '')}. Also: ${also.join('. ')}` : detail, { ...withVersion, ...portFields });
+  };
 
   // 2a. Self-register ONLY into a member install (marker present). An install
   // without the marker -- a human full install at the same <home>/.apra-fleet
@@ -1460,6 +1522,20 @@ async function probeRemote(
       const installer = await stageReplacementInstaller(agent, deps, home, null, install);
       return fail('full-install-running', `the apra-fleet ${version} at ${binPath} has no member-install marker, so the member was not registered into it. ${buildFullInstallReplaceHint({ home, targetOs, shell, provider: agent.llmProvider ?? 'claude', installer })}`);
     }
+  }
+
+  // 2c. The port the member's own install listens on, from its marker: the
+  // per-folder entry written below and every later session config use it.
+  // An unreadable marker keeps the previously recorded port (never a silent
+  // fall back to the default, which another user's server may hold).
+  const portRes = await resolveMemberMcpPort(agent, home, deps);
+  let portAgent: Agent = agent;
+  if (portRes.kind === 'resolved') {
+    portFields = { port: portRes.port, portSource: portRes.source };
+    portNote = portRes.note;
+    portAgent = { ...agent, memberMcpPort: portRes.source === 'marker' ? portRes.port : undefined };
+  } else {
+    portNote = portRes.detail;
   }
 
   // 2b. Register the member on its own install under the orchestrator's id.
@@ -1483,7 +1559,7 @@ async function probeRemote(
   // it is still written (best effort) but neither its write nor its check gates.
   const perFolderGates = (agent.llmProvider ?? 'claude') !== 'claude';
   if (writeMcpEntry && deps.writeMcpEntry) {
-    const w = await deps.writeMcpEntry(agent);
+    const w = await deps.writeMcpEntry(portAgent);
     if (!w.ok && perFolderGates) return fail((w.reason as FleetMcpUnavailableReason | undefined) ?? 'mcp-entry-missing', w.detail);
   }
   if (perFolderGates) {
@@ -1509,9 +1585,12 @@ async function probeRemote(
   if (!l.ok) return fail('member-session-failed', l.detail);
   const judged = judgeSession(v.value, l.value);
   if (!judged.ok) return fail(judged.reason, judged.detail);
+  const finalNotes = notes();
   return {
     state: 'available', version, checkedAt: checkedAt(),
-    ...(installFailure ? { installFailure, detail: upgradeNote } : {}),
+    ...(installFailure ? { installFailure } : {}),
+    ...(finalNotes.length ? { detail: finalNotes.join('. ') } : {}),
+    ...portFields,
   };
 }
 

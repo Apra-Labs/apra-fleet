@@ -35,11 +35,15 @@ const FS_OP_TIMEOUT_MS = 15000;
  * machine. `?member=<uuid>` identifies the session as that member, which is
  * what reduces the served tool list to the member allowlist. A local member
  * shares this process's server, so it follows this process's port (honoring
- * an APRA_FLEET_PORT sandbox); a remote member talks to its own default
- * install.
+ * an APRA_FLEET_PORT sandbox); a remote member talks to its OWN install, on
+ * the port that install records in its member-install marker
+ * (agent.memberMcpPort, resolved on the member by the fleetMcp probe), or the
+ * built-in default when it recorded none (the probe reports that in fleetMcp
+ * detail). Two member installs on one host (one per Unix user) therefore each
+ * get their own server, never the other user's.
  */
-export function memberMcpUrl(agent: Pick<Agent, 'id' | 'agentType'>): string {
-  const port = agent.agentType === 'local' ? DEFAULT_PORT : BUILTIN_DEFAULT_PORT;
+export function memberMcpUrl(agent: Pick<Agent, 'id' | 'agentType' | 'memberMcpPort'>): string {
+  const port = agent.agentType === 'local' ? DEFAULT_PORT : (agent.memberMcpPort ?? BUILTIN_DEFAULT_PORT);
   return `http://localhost:${port}/mcp?member=${encodeURIComponent(agent.id)}`;
 }
 

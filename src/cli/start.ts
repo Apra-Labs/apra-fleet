@@ -8,7 +8,7 @@ import {
   unresponsiveInstanceMessage,
 } from '../services/singleton.js';
 import { getServiceManager } from '../services/service-manager/index.js';
-import { LOG_FILE_PATH, FLEET_DIR, DEFAULT_PORT, DEFAULT_HOST, isNonDefaultInstance } from '../paths.js';
+import { LOG_FILE_PATH, FLEET_DIR, DEFAULT_HOST, isNonDefaultInstance, resolveServerPort } from '../paths.js';
 import { BIN_DIR } from './config.js';
 import { serverVersion } from '../version.js';
 import { clearStoppedMarker, readStoppedMarker } from '../services/stopped-marker.js';
@@ -104,8 +104,9 @@ export async function runStart(_args: string[]): Promise<void> {
   // The server does not fall back to a random port when its configured
   // port is taken (GitHub #584): fail here with the actionable message
   // instead of spawning a server that exits immediately.
-  if (await isPortInUse(DEFAULT_PORT, DEFAULT_HOST)) {
-    console.error(portInUseMessage(DEFAULT_PORT, readServerInfoPid()));
+  const serverPort = resolveServerPort();
+  if (await isPortInUse(serverPort, DEFAULT_HOST)) {
+    console.error(portInUseMessage(serverPort, readServerInfoPid()));
     process.exit(1);
     return;
   }

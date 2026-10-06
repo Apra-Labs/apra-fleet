@@ -4,7 +4,7 @@ import os from 'node:os';
 import { execSync, execFileSync } from 'node:child_process';
 import { serverVersion } from '../version.js';
 import type { LlmProvider } from '../types.js';
-import { DEFAULT_PORT, DEFAULT_HOST, LOG_FILE_PATH } from '../paths.js';
+import { BUILTIN_DEFAULT_PORT, DEFAULT_PORT, DEFAULT_HOST, LOG_FILE_PATH, recordedMemberInstallPort, resolveServerPort, validPort } from '../paths.js';
 import { getServiceManager } from '../services/service-manager/index.js';
 import type { ServiceManager } from '../services/service-manager/types.js';
 import { LINUX_UNIT_NAME, MACOS_PLIST_LABEL, WINDOWS_TASK_NAME } from '../services/service-manager/types.js';
@@ -1094,6 +1094,40 @@ export const MEMBER_INSTALL_NEXT_STEP =
   'Next step (on the orchestrator): run update_member {member_id, fleet_install: "auto"} (or register_member) for this member; ' +
   'it registers the member on this install and writes its per-folder apra-fleet MCP entry.';
 
+/**
+ * The port a member install records: --port <n> / --port=<n>, else
+ * APRA_FLEET_PORT, else the port an earlier member install in this data dir
+ * recorded (an upgrade keeps it), else the built-in default. `explicit` is
+ * true when --port was passed. --port that disagrees with APRA_FLEET_PORT is
+ * an error: the two would put the server and its record on different ports.
+ */
+export function resolveMemberInstallPort(
+  args: string[],
+  envPort: string | undefined,
+  recordedPort: number | undefined,
+): { port: number; explicit: boolean } | { error: string } {
+  let raw: string | undefined;
+  const eq = args.find(a => a.startsWith('--port='));
+  if (eq) raw = eq.slice('--port='.length);
+  else {
+    const i = args.indexOf('--port');
+    if (i >= 0) {
+      raw = args[i + 1];
+      if (raw === undefined || raw.startsWith('-')) return { error: '--port requires a port number (1-65535).' };
+    }
+  }
+  const env = envPort !== undefined && envPort !== '' ? validPort(envPort) : undefined;
+  if (raw !== undefined) {
+    const port = validPort(raw);
+    if (port === undefined) return { error: `--port must be a port number (1-65535), got "${raw}".` };
+    if (env !== undefined && env !== port) {
+      return { error: `--port ${port} disagrees with APRA_FLEET_PORT=${env}; pass one of them.` };
+    }
+    return { port, explicit: true };
+  }
+  return { port: env ?? recordedPort ?? BUILTIN_DEFAULT_PORT, explicit: false };
+}
+
 export async function runInstall(args: string[]): Promise<void> {
   // --help / -h guard - must come first, before any side effects (#142)
   if (args.includes('--help') || args.includes('-h')) {
@@ -1136,7 +1170,11 @@ Options:
                           is stopped; anything else is refused (E-FULL-INSTALL-RUNNING).
   --force-stop-full-install
                           With --member --force: also stop a running server that was not started
-                          by a member install (e.g. a full install on a shared machine).`);
+                          by a member install (e.g. a full install on a shared machine).
+  --port <n>              With --member: the port this member install's server listens on
+                          (default: APRA_FLEET_PORT, else the port a previous member install
+                          recorded, else 7523). Recorded in the member-install marker; use a
+                          different port for each Unix user's member install on one host.`);
     process.exit(0);
     return;
   }
@@ -1253,8 +1291,8 @@ Options:
     workflowsMode = 'none';
   }
 
-  const knownFlagPrefixes = ['--llm=', '--skill=', '--transport=', '--workflows='];
-  const knownFlagExact = new Set(['--member', '--llm', '--skill', '--no-skill', '--workflows', '--force', FORCE_STOP_FULL_INSTALL_FLAG, '--transport', '--help', '-h']);
+  const knownFlagPrefixes = ['--llm=', '--skill=', '--transport=', '--workflows=', '--port='];
+  const knownFlagExact = new Set(['--member', '--llm', '--skill', '--no-skill', '--workflows', '--force', FORCE_STOP_FULL_INSTALL_FLAG, '--transport', '--port', '--help', '-h']);
   for (const a of args) {
     if (knownFlagExact.has(a)) continue;
     if (knownFlagPrefixes.some(p => a.startsWith(p))) continue;
@@ -1262,6 +1300,20 @@ Options:
     console.error(`Error: Unknown option "${a}". Run apra-fleet install --help for usage.`);
     process.exit(1);
   }
+
+  // The port a member install's server listens on, recorded in the marker
+  // (the server reads it back at launch; the orchestrator reads it for the
+  // member's MCP URL). Only a member install takes --port.
+  const memberPortChoice = resolveMemberInstallPort(args, process.env.APRA_FLEET_PORT, recordedMemberInstallPort());
+  if ('error' in memberPortChoice) {
+    console.error(`Error: ${memberPortChoice.error}`);
+    process.exit(1);
+  }
+  if (memberPortChoice.explicit && !memberMode) {
+    console.error('Error: --port is only valid with --member (a full install uses APRA_FLEET_PORT).');
+    process.exit(1);
+  }
+  const memberPort = memberPortChoice.port;
 
   const installFleet = skillMode === 'fleet' || skillMode === 'pm' || skillMode === 'all';
   const installPm = skillMode === 'pm' || skillMode === 'all';
@@ -1939,7 +1991,7 @@ ${manualStopHint(pidsAfterStop)}
   // auto-start registration, which can fail. A failed auto-start still exits
   // non-zero (E-MEMBER-AUTOSTART) but leaves the marker, so the next fleet_install
   // "auto" recognises its own half-finished install and retries.
-  if (memberMode) writeMemberInstallMarker(serverVersion);
+  if (memberMode) writeMemberInstallMarker(serverVersion, memberPort);
 
   // --- Step N: Register and start service (SEA + HTTP mode only) ---
   let serviceRegistered = false;
@@ -1954,8 +2006,9 @@ ${manualStopHint(pidsAfterStop)}
     {
       const { checkRunningInstance, isPortInUse, portInUseMessage, readServerInfoPid } = await import('../services/singleton.js');
       const probe = await checkRunningInstance();
-      if (probe.state === 'gone' && await isPortInUse(DEFAULT_PORT, DEFAULT_HOST)) {
-        console.warn(`    Warning: ${portInUseMessage(DEFAULT_PORT, readServerInfoPid())}`);
+      const serverPort = resolveServerPort();
+      if (probe.state === 'gone' && await isPortInUse(serverPort, DEFAULT_HOST)) {
+        console.warn(`    Warning: ${portInUseMessage(serverPort, readServerInfoPid())}`);
       }
     }
     const svcMgr = await getServiceManager();

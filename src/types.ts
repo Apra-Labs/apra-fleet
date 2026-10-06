@@ -77,6 +77,13 @@ export interface Agent {
    *  every probe overwrites it, so a manual fix flips unavailable -> available
    *  on the next probe with no restart (src/services/member-fleet-install.ts). */
   fleetMcp?: FleetMcpStatus;
+  /** Remote members: the port the member's OWN apra-fleet install records in
+   *  its member-install marker, i.e. where its server listens. memberMcpUrl
+   *  builds the member's MCP URL from it; absent means the install recorded
+   *  no port (the built-in default is used, and fleetMcp detail says so).
+   *  Set by the fleetMcp probe (recordFleetMcpStatus) and kept separate from
+   *  fleetMcp so a later status overwrite never silently drops it. */
+  memberMcpPort?: number;
 }
 
 /** Observation of a member's apra-fleet MCP server (see Agent.fleetMcp). */
@@ -112,6 +119,13 @@ export interface FleetMcpStatus {
    *  cannot run bd. Independent of `state` (the KB/code tools may still work);
    *  absent when bd works or could not be probed. */
   beads?: { state: 'missing' | 'broken'; detail: string; fix: string };
+  /** Remote members: the port the member's MCP URL uses, as resolved by this
+   *  probe from the member's own install. Absent when the probe did not get
+   *  that far (the previously recorded port is kept then). */
+  port?: number;
+  /** Where `port` came from: the member-install marker, or the built-in
+   *  default because the marker records no port (detail says so). */
+  portSource?: 'marker' | 'default';
 }
 
 export interface GitHubAppConfig {

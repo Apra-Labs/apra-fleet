@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import { execSync } from 'node:child_process';
-import { runInstall, _setSeaOverride, _setManifestOverride, MEMBER_INSTALL_NEXT_STEP } from '../src/cli/install.js';
+import { runInstall, _setSeaOverride, _setManifestOverride, MEMBER_INSTALL_NEXT_STEP, resolveMemberInstallPort } from '../src/cli/install.js';
 
 // `apra-fleet install --member`: server + user-mode auto-start only. Runs
 // against an in-memory filesystem rooted at a fake HOME (os/fs/child_process
@@ -199,5 +199,61 @@ describe('install --member', () => {
     expect(out).toContain('Settings:');
     expect(out).toContain('Run /mcp in Claude Code');
     expect(out).not.toContain(MEMBER_INSTALL_NEXT_STEP);
+  });
+});
+
+describe('install --member records its port in the marker', () => {
+  const marker = () => {
+    const k = [...files.keys()].find(f => f.endsWith('member-install.json'));
+    return k ? JSON.parse(files.get(k)!) : undefined;
+  };
+
+  it('--port <n> is recorded', async () => {
+    await runInstall(['--transport', 'http', '--member', '--port', '7611']);
+    expect(marker()).toMatchObject({ port: 7611 });
+  });
+
+  it('no --port records the built-in default (an upgrade keeps an earlier recorded port)', async () => {
+    const prevEnv = process.env.APRA_FLEET_PORT;
+    delete process.env.APRA_FLEET_PORT;
+    try {
+      await runInstall(['--transport', 'http', '--member']);
+      expect(marker()).toMatchObject({ port: 7523 });
+      const k = [...files.keys()].find(f => f.endsWith('member-install.json'))!;
+      files.set(k, JSON.stringify({ version: '0.0.1', port: 7644 }));
+      await runInstall(['--transport', 'http', '--member', '--force']);
+      expect(marker()).toMatchObject({ port: 7644 });
+    } finally {
+      if (prevEnv !== undefined) process.env.APRA_FLEET_PORT = prevEnv;
+    }
+  });
+
+  it('--port without --member is refused', async () => {
+    const exit = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => { throw new Error(`exit ${code}`); }) as any);
+    try {
+      await expect(runInstall(['--transport', 'http', '--port', '7611'])).rejects.toThrow('exit 1');
+      expect(vi.mocked(console.error).mock.calls.flat().join('\n')).toContain('--port is only valid with --member');
+    } finally {
+      exit.mockRestore();
+    }
+  });
+});
+
+describe('resolveMemberInstallPort', () => {
+  it('parses --port n and --port=n', () => {
+    expect(resolveMemberInstallPort(['--port', '7611'], undefined, undefined)).toEqual({ port: 7611, explicit: true });
+    expect(resolveMemberInstallPort(['--port=7612'], undefined, undefined)).toEqual({ port: 7612, explicit: true });
+  });
+  it('falls back to APRA_FLEET_PORT, then the recorded port, then 7523', () => {
+    expect(resolveMemberInstallPort([], '7700', 7644)).toEqual({ port: 7700, explicit: false });
+    expect(resolveMemberInstallPort([], undefined, 7644)).toEqual({ port: 7644, explicit: false });
+    expect(resolveMemberInstallPort([], '', undefined)).toEqual({ port: 7523, explicit: false });
+  });
+  it('rejects a bad value, a missing value, and a value that disagrees with APRA_FLEET_PORT', () => {
+    expect(resolveMemberInstallPort(['--port', 'abc'], undefined, undefined)).toHaveProperty('error');
+    expect(resolveMemberInstallPort(['--port', '70000'], undefined, undefined)).toHaveProperty('error');
+    expect(resolveMemberInstallPort(['--port'], undefined, undefined)).toHaveProperty('error');
+    expect(resolveMemberInstallPort(['--port', '7611'], '7700', undefined)).toHaveProperty('error');
+    expect(resolveMemberInstallPort(['--port', '7611'], '7611', undefined)).toEqual({ port: 7611, explicit: true });
   });
 });

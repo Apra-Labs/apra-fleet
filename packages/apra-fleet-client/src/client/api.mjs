@@ -270,6 +270,8 @@
  * @property {string} [fleetInstalledAt] - ISO 8601 time this fleet's own install run last succeeded on the member; carried across later probes; absent when the fleet never installed it (a refusal or observation-only probe never sets it)
  * @property {{reason: string, detail?: string}} [installFailure] - A requested apra-fleet upgrade that failed before the member was touched while the older install stayed in use; present on available and unavailable statuses, also named in detail
  * @property {{state: "missing" | "broken", detail: string, fix: string}} [beads] - Present only when the beads CLI (bd) is not usable on a remote member (not on its PATH nor in <home>/.apra-fleet/bin); independent of state; absent when bd works or could not be probed
+ * @property {number} [port] - Remote members: the port of the member's own apra-fleet install, resolved from its member-install marker; the member MCP URL (per-folder entry and per-session config) uses it
+ * @property {"marker" | "default"} [portSource] - Where port came from: the member-install marker, or the built-in default because the install recorded no port (detail says so)
  */
 
 /**

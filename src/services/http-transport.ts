@@ -8,7 +8,7 @@ import { getTokenIssuer, localWorkspaceId } from './token-issuer.js';
 import { sessionRegistry } from './session-registry.js';
 import { FULL_TOOL_SCOPE, memberToolScope, type ToolScope } from './tool-scope.js';
 import { getAgent, findAgentByName } from './registry.js';
-import { DEFAULT_PORT, DEFAULT_HOST } from '../paths.js';
+import { DEFAULT_HOST, resolveServerPort } from '../paths.js';
 import { serverVersion } from '../version.js';
 import { logLine } from '../utils/log-helpers.js';
 import { recordShutdown } from './server-lifecycle.js';
@@ -472,7 +472,7 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
   // logged opt-in: several unauthenticated code paths in this file (the
   // ?member= URL-param fallback, /shutdown's admin-key check) were
   // written assuming only same-machine callers can reach this server.
-  const targetPort = preferredPort ?? DEFAULT_PORT;
+  const targetPort = preferredPort ?? resolveServerPort();
   const bindHost = DEFAULT_HOST;
   if (bindHost !== '127.0.0.1') {
     logLine('session', `WARNING: binding to ${bindHost} (not loopback-only) -- unauthenticated requests (the ?member= URL-param fallback, /shutdown) are now reachable from any host that can route to this address, not just this machine. Set APRA_FLEET_HOST=127.0.0.1 (or unset it) to restore the loopback-only default.`);

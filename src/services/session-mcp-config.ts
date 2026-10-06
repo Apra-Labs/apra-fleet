@@ -73,7 +73,7 @@ export function perFolderMcpEntryNeeded(agent: Agent): boolean {
  * established that the member's CLI accepts it (see resolveSessionMcpAlwaysLoad).
  */
 export function sessionMcpConfigContent(
-  agent: Pick<Agent, 'id' | 'agentType'>,
+  agent: Pick<Agent, 'id' | 'agentType' | 'memberMcpPort'>,
   opts: { alwaysLoad?: boolean } = {},
 ): string {
   const entry: Record<string, unknown> = { type: 'http', url: memberMcpUrl(agent) };
