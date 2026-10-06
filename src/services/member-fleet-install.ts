@@ -830,8 +830,8 @@ export function fleetMcpFixLine(
 /** A MEMBER session's client surface (subset of the MCP client). */
 export interface MemberSession {
   mcpClient: {
-    callTool(name: string, args: unknown): Promise<unknown>;
-    listTools(): Promise<unknown>;
+    callTool(name: string, args: unknown, opts?: { timeoutMs?: number }): Promise<unknown>;
+    listTools(opts?: { timeoutMs?: number }): Promise<unknown>;
   };
   close?: () => Promise<void>;
   transport?: { stop?: () => void };
@@ -1207,10 +1207,27 @@ function installFailureNote(f: { reason: string; detail?: string }, version: str
   return `the apra-fleet upgrade on the member failed (${f.reason}${f.detail ? `: ${f.detail.replace(/\.\s*$/, '')}` : ''}); the older apra-fleet ${version ?? '(unknown version)'} install is in use`;
 }
 
+/**
+ * Bound for each step of the LOCAL member-session probe (open the session,
+ * call version, list tools). It is a loopback call to this same server, so
+ * it normally answers in milliseconds; without a bound the client default
+ * (15 minutes) let one stuck request hold register_member open.
+ */
+export const LOCAL_MEMBER_CALL_TIMEOUT_MS = 20_000;
+
+function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const t = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${what} timed out after ${ms}ms`)), ms);
+    (timer as { unref?: () => void }).unref?.();
+  });
+  return Promise.race([p, t]).finally(() => { if (timer) clearTimeout(timer); });
+}
+
 async function probeLocal(agent: Agent, deps: MemberFleetMcpDeps, unavailable: Unavailable, checkedAt: () => string): Promise<FleetMcpStatus> {
   let session: MemberSession;
   try {
-    session = await deps.connectLocalMember(agent.id);
+    session = await withTimeout(deps.connectLocalMember(agent.id), LOCAL_MEMBER_CALL_TIMEOUT_MS, 'opening the member session');
   } catch (err: unknown) {
     const e = err as { status?: number; message?: string };
     return unavailable('member-session-failed', e.status === 403
@@ -1218,8 +1235,11 @@ async function probeLocal(agent: Agent, deps: MemberFleetMcpDeps, unavailable: U
       : `could not open a member session: ${e.message ?? String(err)}`);
   }
   try {
-    const versionResult = await session.mcpClient.callTool('version', {});
-    const list = await session.mcpClient.listTools();
+    const callOpts = { timeoutMs: LOCAL_MEMBER_CALL_TIMEOUT_MS };
+    // The client honours timeoutMs; the outer race also bounds a session
+    // implementation that ignores it.
+    const versionResult = await withTimeout(session.mcpClient.callTool('version', {}, callOpts), LOCAL_MEMBER_CALL_TIMEOUT_MS, 'the member session version call');
+    const list = await withTimeout(session.mcpClient.listTools(callOpts), LOCAL_MEMBER_CALL_TIMEOUT_MS, 'the member session tools/list call');
     const judged = judgeSession(versionResult, list);
     if (!judged.ok) return unavailable(judged.reason, judged.detail);
     return { state: 'available', checkedAt: checkedAt(), ...(judged.version ? { version: judged.version } : {}) };
@@ -1227,7 +1247,7 @@ async function probeLocal(agent: Agent, deps: MemberFleetMcpDeps, unavailable: U
     return unavailable('member-session-failed', `member session call failed: ${err instanceof Error ? err.message : String(err)}`);
   } finally {
     try {
-      if (session.close) await session.close(); else session.transport?.stop?.();
+      if (session.close) await withTimeout(session.close(), LOCAL_MEMBER_CALL_TIMEOUT_MS, 'closing the member session'); else session.transport?.stop?.();
     } catch { /* ignore */ }
   }
 }

@@ -172,10 +172,10 @@ describe('register_member: invokes ensureWorkspaceTrusted (apra-fleet-eft.40.2)'
     });
 
     expect(result).toContain('Member registered successfully');
-    // Called twice: once directly by register_member's own workspace-trust
-    // seed, and once more inside the compose_permissions auto-run
-    // (apra-fleet-5oo.1) which self-heals trust on every run (apra-fleet-eft.40.2).
-    expect(spy).toHaveBeenCalledTimes(2);
+    // Called once: by the compose_permissions auto-run (apra-fleet-5oo.1),
+    // which self-heals trust on every run (apra-fleet-eft.40.2). register_member
+    // no longer seeds it a second time itself when compose runs (apra-fleet-njeb).
+    expect(spy).toHaveBeenCalledTimes(1);
     // apra-fleet-7dir.2.8 widened the hook with a 4th `shell` argument; this
     // member records no shell, so seedWorkspaceTrust forwards undefined.
     expect(spy).toHaveBeenCalledWith('/home/testuser/git/trust-reg-test', expect.any(Function), 'linux', undefined, TRUST_TRANSPORT, '/home/testuser');
