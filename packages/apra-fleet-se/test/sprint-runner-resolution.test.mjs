@@ -22,7 +22,7 @@
 // external seam (exec, isSea, execPath, platform, spawn, fs, dataDir/home)
 // is injected.
 
-import { test, describe } from 'node:test';
+import { test, describe, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import fsp from 'node:fs/promises';
@@ -40,7 +40,23 @@ import { createSpawner, defaultCliPath } from '../src/supervisor/spawner.mjs';
 import { createLedger, LEDGER_FILENAME } from '../src/supervisor/ledger.mjs';
 import { createHistory, HISTORY_FILENAME } from '../src/supervisor/history.mjs';
 import { createSprintController, registerSprintRoutes, ApiError } from '../src/supervisor/api.mjs';
-import { createTestSupervisor } from './helpers/supervisor-harness.mjs';
+import { createTestSupervisor as createHarnessSupervisor } from './helpers/supervisor-harness.mjs';
+
+// apra-fleet-50j6.8: every createTestSupervisor() call below lets the harness
+// mkdtemp its own home dir; dispose them all once this file's tests finish.
+const harnessDisposers = [];
+after(async () => {
+    for (const dispose of harnessDisposers.splice(0)) {
+        // eslint-disable-next-line no-await-in-loop
+        await dispose();
+    }
+});
+async function createTestSupervisor(opts) {
+    const built = await createHarnessSupervisor(opts);
+    harnessDisposers.push(built.dispose);
+    return built;
+}
+
 
 // -- shared test doubles ------------------------------------------------
 
