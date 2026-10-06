@@ -59,7 +59,7 @@ test('mock sprint: an integ dispatch empty_response is retried via resume and re
                 }
                 // The resume recovers the real verdict.
                 return {
-                    content: [{ text: JSON.stringify({ featuresClosed: 1, issuesCreated: 0, passed: true, bugsFiled: [], summary: 'All suites passed on resume.' }) }],
+                    content: [{ text: JSON.stringify({ featuresClosed: 1, issuesCreated: 0, passed: true, bugsFiled: [], dedupChecks: [], summary: 'All suites passed on resume.' }) }],
                 };
             },
         });
@@ -153,7 +153,7 @@ test('mock sprint: a genuine integ test FAIL (passed:false verdict) is still rec
                 // A real, well-formed pass/fail verdict of FAIL -- NOT an infra
                 // failure. This must remain a genuine FAIL, proving the fix
                 // narrowed only the infra-fault family.
-                content: [{ text: JSON.stringify({ featuresClosed: 0, issuesCreated: 1, passed: false, bugsFiled: ['bug-x'], summary: 'e2e spec X failed.' }) }],
+                content: [{ text: JSON.stringify({ featuresClosed: 0, issuesCreated: 1, passed: false, bugsFiled: ['bug-x'], dedupChecks: [{ beadId: 'bug-x', query: 'q', candidateIds: [], verdict: 'no-overlap' }], summary: 'e2e spec X failed.' }) }],
             }),
         });
 

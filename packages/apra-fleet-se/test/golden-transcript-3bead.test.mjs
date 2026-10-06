@@ -571,6 +571,7 @@ function build3BeadFleetApi(tempDir, epicBead, dispatchLog) {
                             issuesCreated: 0,
                             passed: true,
                             bugsFiled: [],
+                            dedupChecks: [],
                             summary: 'All vitest e2e specs passed successfully.',
                         })
                     }]

@@ -627,7 +627,16 @@ function backlogPanelClientScript(mountPrefix) {
         if (totalCountEl) totalCountEl.textContent = lastTasks.length + ' bead(s)';
     }
 
+    // Both pieces of per-row view state live in this closure, NOT on the DOM,
+    // so they survive every renderTable() innerHTML rebuild AND every data
+    // refresh (applyFilters(), incl. a filter change or a tab-activation
+    // refetch): collapsedBeadIds = folded tree rows, expandedDescIds = open
+    // bead-desc descriptions (passed as renderBeadsHtml's 4th argument).
+    // Neither set is cleared or pruned on refresh -- an id absent from the
+    // current (possibly filtered) row set simply has no row to apply to, and
+    // its state comes back when a later refresh brings the row back.
     var collapsedBeadIds = new Set();
+    var expandedDescIds = new Set();
     var lastTasks = window.__backlogTasks || [];
     var filterOptions = window.__backlogFilterOptions || { type: [], status: [], priority: [], model: [] };
     var currentFilters = {};
@@ -675,7 +684,7 @@ function backlogPanelClientScript(mountPrefix) {
     }
 
     function renderTable() {
-        var raw = renderBeadsHtml([], lastTasks, collapsedBeadIds);
+        var raw = renderBeadsHtml([], lastTasks, collapsedBeadIds, expandedDescIds);
         var headerRow = buildFilterHeaderRowHtml(filterOptions, currentFilters);
         container.innerHTML = injectRowCheckboxes(injectFilterHeader(raw, headerRow));
         wireHeaderControls();
@@ -704,6 +713,19 @@ function backlogPanelClientScript(mountPrefix) {
         renderTable();
     });
 
+    // 'toggle' does not bubble, but it is observable in the capture phase --
+    // one container-level capture listener records every bead-desc open/close
+    // (descriptions here are inlined server-side, data-loaded=true, so there
+    // is nothing to fetch).
+    container.addEventListener('toggle', function (e) {
+        var el = e.target;
+        if (!el || el.tagName !== 'DETAILS' || !el.classList || !el.classList.contains('bead-desc')) return;
+        var id = el.dataset ? el.dataset.beadId : undefined;
+        if (id === undefined) return;
+        if (el.open) expandedDescIds.add(String(id));
+        else expandedDescIds.delete(String(id));
+    }, true);
+
     function applyFilters() {
         lastBacklogFetchAt = Date.now();
         var params = new URLSearchParams();
@@ -717,7 +739,6 @@ function backlogPanelClientScript(mountPrefix) {
                 lastTasks = (data && Array.isArray(data.tasks)) ? data.tasks : [];
                 window.__backlogTasks = lastTasks;
                 if (data && data.filterOptions) filterOptions = data.filterOptions;
-                collapsedBeadIds.clear();
                 renderTable();
                 updateTotalCount();
                 var entries = Object.keys(currentFilters)

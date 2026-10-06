@@ -147,7 +147,7 @@ describe('apra-fleet-siqi.2.2: tab activation triggers a data fetch with no full
         mockEvent.currentTarget = tabButtons.backlog;
         switchTab('backlog');
 
-        assert.deepEqual(backlogCalls, [3000], 'Backlog activation must call window.__fleetSeBacklog.refreshIfStale() with the configured TAB_ACTIVATION_STALE_MS');
+        assert.deepEqual(backlogCalls, [30000], 'Backlog activation must call window.__fleetSeBacklog.refreshIfStale() with its own BACKLOG_TAB_ACTIVATION_STALE_MS (30000), not the Sprints tab threshold');
         assert.deepEqual(sprintStackCalls, [], 'activating Backlog must never call the Sprints refresh path -- the two tabs refresh independently');
         assert.ok(tabContents.backlog.classList.contains('active'), 'the Backlog tab-content panel is activated');
         assert.ok(!tabContents.sprints.classList.contains('active'), 'the Sprints tab-content panel is not activated');
@@ -192,6 +192,6 @@ describe('apra-fleet-siqi.2.2: tab activation triggers a data fetch with no full
         mockEvent.currentTarget = tabButtons.backlog;
         switchTab('backlog');
         assert.deepEqual(sprintStackCalls, [3000], 'the earlier Sprints refresh call count is untouched by the later Backlog activation');
-        assert.deepEqual(backlogCalls, [3000]);
+        assert.deepEqual(backlogCalls, [30000]);
     });
 });

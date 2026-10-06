@@ -1145,7 +1145,7 @@ describe('execution-role dispatch: returnable verdicts', () => {
         assert.strictEqual(deployerReport.properties.deployed.type, 'boolean');
         assert.deepStrictEqual(deployerReport.required, ['deployed', 'notes']);
         assert.strictEqual(integReport.properties.passed.type, 'boolean');
-        assert.deepStrictEqual(integReport.required, ['featuresClosed', 'issuesCreated', 'passed', 'bugsFiled', 'summary']);
+        assert.deepStrictEqual(integReport.required, ['featuresClosed', 'issuesCreated', 'passed', 'bugsFiled', 'dedupChecks', 'summary']);
         assert.deepStrictEqual(finalVerdict.properties.verdict.enum, ['PASS', 'FAIL']);
         assert.deepStrictEqual(finalVerdict.required, ['verdict', 'notes']);
         assert.strictEqual(regressionReport.properties.passed.type, 'boolean');

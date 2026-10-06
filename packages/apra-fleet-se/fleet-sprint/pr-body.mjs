@@ -35,6 +35,14 @@ export const RUN_HISTORY_MAX_ENTRIES = 8;
  *  (PR_DESCRIPTION_MAX_LENGTH) is even considered. */
 export const PR_NOTES_MAX_LENGTH = 2000;
 
+/** Upper bound on the rendered 'Owed triage' list. The section sits in the
+ *  body's tail, which the notes budget cannot shrink, so an uncapped list
+ *  pushed the body past PR_DESCRIPTION_MAX_LENGTH and the downstream cut
+ *  dropped the rest of the list, the review footer and the run-history block.
+ *  Items past this budget are counted in a 'not shown' line instead; the run
+ *  log and the sprint result's owedTriage carry the full list. */
+export const PR_OWED_TRIAGE_MAX_LENGTH = 1500;
+
 const VERDICTS = new Set(['PASS', 'FAIL', 'ABORTED']);
 const RUN_ID_UNSAFE_RE = /[^A-Za-z0-9._:/-]/g;
 const RUN_ID_MAX = 64;
@@ -183,6 +191,29 @@ function inline(text) {
 }
 
 /**
+ * Keeps rendered owed-triage list lines (category headers '- Label (n):' and
+ * indented items '  - id: ...') within PR_OWED_TRIAGE_MAX_LENGTH. Stops at the
+ * first line that does not fit, drops a category header left with no item
+ * under it, and appends a line counting the items not shown.
+ */
+function capOwedTriageList(lines, max = PR_OWED_TRIAGE_MAX_LENGTH) {
+    const isItem = (l) => l.startsWith('  - ');
+    const kept = [];
+    let used = 0;
+    let i = 0;
+    for (; i < lines.length; i++) {
+        if (used + lines[i].length + 1 > max) break;
+        kept.push(lines[i]);
+        used += lines[i].length + 1;
+    }
+    if (i === lines.length) return kept;
+    if (kept.length > 0 && !isItem(kept[kept.length - 1])) kept.pop();
+    const omitted = lines.slice(i).filter(isItem).length;
+    kept.push(`- ${omitted} more item(s) not shown; the sprint run log and the sprint result (owedTriage) list every item.`);
+    return kept;
+}
+
+/**
  * Builds the sprint PR body as markdown.
  *
  * @param {object} opts
@@ -196,6 +227,12 @@ function inline(text) {
  * @param {string} [opts.notesHeading]
  * @param {string[]} [opts.details] engine-authored detail lines, rendered as list items
  * @param {string} [opts.costAnalysis] engine-computed cost block, rendered in a fenced Cost section
+ * @param {string[]} [opts.owedTriageLines] engine-formatted owed-triage lines
+ *   (owed-triage.mjs formatOwedTriageLines). Non-empty renders an 'Owed
+ *   triage' section AND marks the verdict heading as not clean, so a PASS that
+ *   still owes triage can never be read as a clean PASS. Empty renders nothing.
+ * @param {number} [opts.owedTriageTotal] the triage item count shown in the
+ *   verdict heading; defaults to the number of '- ' item lines.
  * @param {string} [opts.previousBody] the existing PR's body, for history carry-forward
  * @param {number} [opts.maxLength]
  * @returns {string}
@@ -203,6 +240,7 @@ function inline(text) {
 export function buildSprintPrBody({
     verdict, goal, branch, baseBranch, runId, now = new Date(),
     notes, notesHeading = 'Reviewer notes', details = [], costAnalysis = '', previousBody = '',
+    owedTriageLines = [], owedTriageTotal,
     maxLength = PR_DESCRIPTION_MAX_LENGTH,
 }) {
     const v = VERDICTS.has(verdict) ? verdict : 'FAIL';
@@ -215,8 +253,22 @@ export function buildSprintPrBody({
     }
     const previous = history.slice(1);
 
+    // formatOwedTriageLines() emits a summary line, then per-category header
+    // lines ('Label (n):') each followed by '- id: title -- reason' items.
+    // The summary is restated by the heading and the section intro below, so
+    // only the category headers and items are rendered as the list.
+    const owed = (Array.isArray(owedTriageLines) ? owedTriageLines : []).filter(Boolean).map((l) => inline(l));
+    const owedItems = owed.filter((l) => !/^owed triage:/i.test(l));
+    const owedCount = Number.isFinite(owedTriageTotal) && owedTriageTotal > 0
+        ? owedTriageTotal
+        : owedItems.filter((l) => l.startsWith('- ')).length;
+    const owedIncomplete = owed.some((l) => /^owed triage: INCOMPLETE/i.test(l));
+    const owedSuffix = owed.length > 0
+        ? ` (owed triage: ${owedIncomplete ? 'incomplete' : `${owedCount} item(s)`} -- ${v === 'PASS' ? 'PASS is NOT clean' : 'not clean'})`
+        : '';
+
     const head = [
-        `## Sprint verdict: ${v}`,
+        `## Sprint verdict: ${v}${owedSuffix}`,
         '',
         goal ? `- **Goal:** ${inline(goal)}` : null,
         `- **Branch:** ${codeSpan(inline(branch))}${baseBranch ? ` -> ${codeSpan(inline(baseBranch))}` : ''}`,
@@ -231,8 +283,20 @@ export function buildSprintPrBody({
     // to write (a shared prepend-only file that conflicted on every merge).
     const cost = sanitizePrMarkdown(costAnalysis);
     const costFence = '`'.repeat(Math.max(3, ...(cost.match(/`+/g) || []).map((r) => r.length + 1)));
+    const owedBlock = owed.length > 0
+        ? [
+            '### Owed triage',
+            '',
+            `This sprint finished with work a human still has to triage${v === 'PASS' ? ' -- the PASS verdict carries owed triage and is not clean' : ''}:`,
+            '',
+            ...(owedIncomplete ? ['- The sprint\'s beads could not be read at finalization, so this list may be incomplete.'] : []),
+            ...capOwedTriageList(owedItems.map((l) => (l.startsWith('- ') ? `  ${l}` : `- ${l}`))),
+            '',
+        ].join('\n')
+        : null;
     const tail = [
         '',
+        owedBlock,
         detailLines.length ? '### Details\n' : null,
         detailLines.length ? detailLines.join('\n') : null,
         detailLines.length ? '' : null,

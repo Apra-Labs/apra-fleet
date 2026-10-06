@@ -696,3 +696,92 @@ describe('backlog -- server exact-overlap policy is unchanged (UI steering does 
         assert.ok(badResult.conflicts[0].overlappingIds.includes('c1'));
     });
 });
+
+// Runs the ACTUAL embedded Backlog client script (backlogPanelClientScript(),
+// extracted verbatim from renderBacklogPanelHtml()'s last <script> block)
+// against a minimal stubbed DOM + fetch, to pin that a data refresh keeps both
+// pieces of per-row view state: open bead descriptions and folded tree rows.
+describe('backlog -- client script keeps expand/fold state across a refetch', () => {
+    const initial = [
+        { id: 'X', title: 'x title v1', description: 'x body', status: 'open', priority: 1 },
+        { id: 'Y', title: 'y title', description: 'y body', status: 'open', priority: 1 },
+        { id: 'R', title: 'r parent', description: 'r body', status: 'open', priority: 2 },
+        { id: 'R.1', parent: 'R', title: 'r child', description: 'r child body', status: 'open', priority: 2 },
+    ];
+    const changed = initial.map((t) => (t.id === 'X' ? { ...t, title: 'x title v2', description: 'x body v2' } : t));
+
+    function boot(fetchResult) {
+        const html = renderBacklogPanelHtml(initial, { type: [], status: [], priority: [], model: [] });
+        const start = html.lastIndexOf('<script>') + '<script>'.length;
+        const script = html.slice(start, html.lastIndexOf('</script>'));
+        const listeners = {};
+        const tableStart = html.indexOf('<div id="backlog-table">') + '<div id="backlog-table">'.length;
+        const container = {
+            // Seeded with the server-rendered table, as the real page is.
+            innerHTML: html.slice(tableStart, html.indexOf('</div><script>', tableStart)),
+            addEventListener(type, fn) { (listeners[type] = listeners[type] || []).push(fn); },
+            querySelectorAll: () => [],
+        };
+        const document = { getElementById: (id) => (id === 'backlog-table' ? container : null) };
+        const window = { __backlogTasks: initial.slice() };
+        const fetchCalls = [];
+        const fetch = (url) => {
+            fetchCalls.push(url);
+            return Promise.resolve({ json: () => Promise.resolve(fetchResult) });
+        };
+        new Function('document', 'window', 'fetch', script)(document, window, fetch);
+        const toggle = (id, open) => (listeners.toggle || []).forEach((fn) => fn({
+            target: { tagName: 'DETAILS', open, dataset: { beadId: id }, classList: { contains: (c) => c === 'bead-desc' } },
+        }));
+        const fold = (id) => listeners.click.forEach((fn) => fn({ target: { closest: () => ({ dataset: { toggleId: id } }) } }));
+        const isOpen = (id) => new RegExp('<details class="bead-desc" data-bead-id="' + id + '"[^>]*\\sopen>').test(container.innerHTML);
+        return { container, window, fetchCalls, toggle, fold, isOpen };
+    }
+    const settle = () => new Promise((r) => setImmediate(r));
+
+    test('an opened description stays open, a folded row stays folded, and an unopened description stays closed after a refetch with changed content', async () => {
+        const s = boot({ tasks: changed, total: changed.length });
+        s.toggle('X', true);
+        assert.ok(s.container.innerHTML.includes('#R.1</td>'), 'R.1 visible while R is unfolded');
+        s.fold('R');
+        assert.ok(!s.container.innerHTML.includes('#R.1</td>'), 'R.1 hidden once R is folded');
+
+        s.window.__fleetSeBacklog.refreshIfStale(0);
+        await settle();
+        assert.strictEqual(s.fetchCalls.length, 1);
+        assert.ok(s.container.innerHTML.includes('x title v2'), 'refetched content renders');
+        assert.ok(s.isOpen('X'), 'X description stays open');
+        assert.ok(!s.isOpen('Y'), 'Y description, never opened, stays closed');
+        assert.ok(!s.container.innerHTML.includes('#R.1</td>'), 'R stays folded across the refetch');
+        assert.ok(s.container.innerHTML.includes('[+]'));
+
+        s.toggle('X', false);
+        s.window.__fleetSeBacklog.refreshIfStale(0);
+        await settle();
+        assert.ok(!s.isOpen('X'), 'a closed description stays closed across the next refetch');
+    });
+
+    test('refreshIfStale fetches only once the last fetch is older than the threshold', (t) => {
+        t.mock.timers.enable({ apis: ['Date'], now: 1_000_000 });
+        const s = boot({ tasks: initial, total: initial.length });
+        s.window.__fleetSeBacklog.refreshIfStale(30000);
+        assert.strictEqual(s.fetchCalls.length, 0, 'inside the threshold since page load: no fetch');
+        t.mock.timers.tick(29_999);
+        s.window.__fleetSeBacklog.refreshIfStale(30000);
+        assert.strictEqual(s.fetchCalls.length, 0);
+        t.mock.timers.tick(1);
+        s.window.__fleetSeBacklog.refreshIfStale(30000);
+        assert.strictEqual(s.fetchCalls.length, 1, 'exactly one fetch past the threshold');
+        assert.ok(s.fetchCalls[0].startsWith('/api/backlog/tasks?'));
+        s.window.__fleetSeBacklog.refreshIfStale(30000);
+        assert.strictEqual(s.fetchCalls.length, 1, 'the fetch itself resets the staleness clock');
+    });
+
+    test('the dashboard activates the Backlog tab with its own 30000 ms threshold and keeps Sprints at 3000 ms', () => {
+        const html = renderIndexPageHtml([]);
+        assert.ok(html.includes('var BACKLOG_TAB_ACTIVATION_STALE_MS = 30000;'));
+        assert.ok(html.includes('var TAB_ACTIVATION_STALE_MS = 3000;'));
+        assert.ok(html.includes('window.__fleetSeBacklog.refreshIfStale(BACKLOG_TAB_ACTIVATION_STALE_MS)'));
+        assert.ok(html.includes('window.__fleetSeSprintStack.refreshIfStale(TAB_ACTIVATION_STALE_MS)'));
+    });
+});

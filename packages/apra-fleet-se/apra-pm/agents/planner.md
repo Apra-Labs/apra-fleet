@@ -114,6 +114,11 @@ when NOTES contains substantive corrections to DESCRIPTION.
 
 ## Step 2 -- Decompose sprint goals into features
 
+Before creating ANY new bead (here and in Step 3), search existing OPEN items across the
+ENTIRE backlog (not just the current sprint's scope) for overlap, e.g. `bd search "<key
+words>"` and `bd list --status=open`. It is better to refine an existing item's text, or
+add a child under it, than to create a duplicate.
+
 Every title you write below (Steps 2 and 3) is plain text only -- letters,
 digits, space, and `. , : ; ! ? ( ) ' _ / [ ] -`. No backticks, double
 quotes, `$`, or backslash (shell-interpolated by `bd create`); put any

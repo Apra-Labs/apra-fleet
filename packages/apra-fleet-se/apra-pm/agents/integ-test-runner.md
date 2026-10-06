@@ -229,14 +229,19 @@ Priority rules:
 - **P2**: requirement partially met; degraded or inconsistent behaviour
 - **P3**: quality, performance, or UX issue that does not block the core function
 
-Before creating a new bug, search for duplicates across BOTH tags -- the same defect
-can surface here or in the once-per-sprint regression pass (filed as `[carry-over]`):
+Before creating a new bug, search existing OPEN items across the ENTIRE backlog (not just
+this run's scope) for overlap. It is better to refine an existing item's text, or add a
+child under it, than to create a duplicate. Start with both tags -- the same defect can
+surface here or in the once-per-sprint regression pass (filed as `[carry-over]`) -- then
+search on the failing test or symptom more broadly:
 ```bash
 bd search "[integ]"
 bd search "[carry-over]"
+bd search "<failing test or symptom>"
 ```
-If an existing bug (either tag) covers the same failure, update its description rather
-than creating a new one.
+If an existing bug covers the same failure, update its description rather than creating a
+new one. Remember the search you ran: every bug you do file needs a `dedupChecks` entry
+in Step 4.
 
 ### If inconclusive (test infrastructure failure, flaky, environment error)
 
@@ -256,6 +261,12 @@ Return:
   was filed
 - `bugsFiled`: array of the beads IDs created in Step 3 "If any tests fail" or Step 1b
   (empty array if none)
+- `dedupChecks`: REQUIRED array (`[]` when you filed nothing) with one
+  `{ beadId, query, candidateIds, verdict }` entry per id in `bugsFiled` -- `query` is the
+  non-blank backlog search you ran before filing, `candidateIds` the existing bead ids that
+  might overlap (may be empty), `verdict` is `"no-overlap"` or `"overlap"`. Only file a bug
+  when the verdict is `"no-overlap"`; an id with a missing entry, blank query or `"overlap"`
+  verdict is flagged `[dedup-unverified]` for human review
 - `verifySetClosed`: array of verify-set bead ids (Step 1b) closed this run (empty
   array if none, or if your dispatch prompt named no verify-set ids)
 - `verifySetLeftOpen`: array of `{id, reason}` for verify-set bead ids left open this
@@ -281,6 +292,7 @@ placeholder):
   "issuesCreated": 1,
   "passed": false,
   "bugsFiled": ["BD-31"],
+  "dedupChecks": [{"beadId": "BD-31", "query": "password reset email", "candidateIds": [], "verdict": "no-overlap"}],
   "verifySetClosed": ["BD-40"],
   "verifySetLeftOpen": [{"id": "BD-41", "reason": "gap bug BD-42 filed -- Stop control still 500s"}],
   "observedFailures": [{"test": "payment-refund-flow.test", "cause": "untracked file, no owning bead", "beadId": "BD-43"}],
