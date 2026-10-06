@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "34ff160ff8ee9e2268e851270b911771d06fedca",
     "branch": "feat/kb-redesign",
-    "entry_count": 274
+    "entry_count": 277
   },
   "entries": [
     {
@@ -3815,6 +3815,18 @@
       "updated_at": "2026-09-25T22:26:41.509Z"
     },
     {
+      "id": "c3000d82-2c58-4500-86a3-f649e5b11a8f",
+      "type": "learning",
+      "title": "windows-service-task-xml test leaves backslash-named junk files in the repo root on POSIX",
+      "summary": "On macOS, running npm test makes tests/windows-service-task-xml.test.ts leave untracked files named like '\\\\var\\\\folders\\\\...\\\\fleet-wintask-XXXX\\\\apra-fleet-service.js' in the repo root, so git status --porcelain is not empty after a full run.",
+      "symbols": [],
+      "source_files": [
+        "tests/windows-service-task-xml.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T10:23:39.690Z"
+    },
+    {
       "id": "c34ab75b-6d9c-4dbb-b958-e855a4836866",
       "type": "knowledge",
       "title": "Provider-conditional body markers must be on their own line and cannot be quoted inside a fence",
@@ -3831,6 +3843,23 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:14.111Z"
+    },
+    {
+      "id": "c5ebfbc3-a76c-42e4-8254-87fc2c82e39d",
+      "type": "knowledge",
+      "title": "fleet-sprint bible queue retries basis_mismatch skips for a bounded number of rounds",
+      "summary": "createKbWorkClient.commitRepo keeps ids that kb_bible_commit skipped with basis_mismatch queued for at most KB_BIBLE_SKIP_RETRY_ROUNDS (3) consecutive rounds, then drops them with a WARN; other skip reasons drop at once.",
+      "symbols": [
+        "createKbWorkClient",
+        "KB_BIBLE_SKIP_RETRY_ROUNDS",
+        "KB_RETRYABLE_SKIP_REASONS"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs",
+        "packages/apra-fleet-se/test/kb-bible-commit-round.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T10:23:39.272Z"
     },
     {
       "id": "c73a563f-06ee-4dff-8d4b-afa31d5de9f7",
@@ -4482,6 +4511,24 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:11.619Z"
+    },
+    {
+      "id": "e533932d-34d6-460c-8513-2b444e679dbd",
+      "type": "knowledge",
+      "title": "Bible admission reads cited files at HEAD, not on disk",
+      "summary": "filterProjectBibleCandidates (used by kb_export scope=project and kb_bible_commit) hashes cited files at the work tree's HEAD via computeHeadFileHashBatch; uncommitted edits never change the verdict and a non-git folder throws KbHeadHashError.",
+      "symbols": [
+        "computeHeadFileHashBatch",
+        "KbHeadHashError",
+        "filterProjectBibleCandidates"
+      ],
+      "source_files": [
+        "src/services/knowledge/file-hash.ts",
+        "src/services/knowledge/bible-basis-filter.ts",
+        "tests/knowledge/kb-bible-admission-head.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T10:23:38.706Z"
     },
     {
       "id": "e687ffa8-8697-4f7f-9418-ba7f3efd6c2b",
