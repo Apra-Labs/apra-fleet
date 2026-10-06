@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "34ff160ff8ee9e2268e851270b911771d06fedca",
     "branch": "feat/kb-redesign",
-    "entry_count": 278
+    "entry_count": 280
   },
   "entries": [
     {
@@ -318,6 +318,27 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:11.553Z"
+    },
+    {
+      "id": "0dd36c44-87bd-4743-952c-ba90f5c85c3c",
+      "type": "knowledge",
+      "title": "?member= route requires the install's member access secret header",
+      "summary": "http-transport refuses a ?member= request without a member JWT unless the X-Apra-Fleet-Member-Secret header matches <data dir>/member-access.key; 401 comes before the registry lookup, and the file is re-read on every request.",
+      "symbols": [
+        "createHttpTransport",
+        "getOrCreateMemberAccessSecret",
+        "memberAccessSecretMatches",
+        "connectFleetMember",
+        "MEMBER_SECRET_HEADER"
+      ],
+      "source_files": [
+        "src/services/http-transport.ts",
+        "src/services/member-access-secret.ts",
+        "packages/apra-fleet-client/src/client/server-resolution.mjs",
+        "tests/test-helpers.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T14:55:56.447Z"
     },
     {
       "id": "0e10e4ea-5c23-4fc9-bd7a-baf1af522a3e",
@@ -3904,6 +3925,26 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:14.111Z"
+    },
+    {
+      "id": "c5601373-ca7a-44f8-b3f6-e0cf3588ba1e",
+      "type": "learning",
+      "title": "Remote fleetMcp probe reads the member access secret file; test exec fakes must answer it",
+      "summary": "probeRemote reads <home>/.apra-fleet/data/member-access.key on the member after resolving the port. A fake exec that returns exit 127 for unknown commands makes the probe fail with member-secret-unavailable.",
+      "symbols": [
+        "probeRemote",
+        "ensureRemoteMemberAccessSecret",
+        "syncMemberMcpEntry"
+      ],
+      "source_files": [
+        "src/services/member-fleet-install.ts",
+        "src/services/member-access-secret.ts",
+        "src/providers/opencode.ts",
+        "tests/member-fleet-wiring.test.ts",
+        "tests/model-tiers.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T14:55:56.513Z"
     },
     {
       "id": "c73a563f-06ee-4dff-8d4b-afa31d5de9f7",
