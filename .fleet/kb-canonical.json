@@ -1,9 +1,9 @@
 {
   "version": 2,
   "provenance": {
-    "commit": "7089d28145df9ebb88e42db63a3dacb38cee3f7d",
+    "commit": "2a139cba34f7da3d41cb1b1bc9ad5d7ded60e9c8",
     "branch": "v0.5_dashboard",
-    "entry_count": 425
+    "entry_count": 426
   },
   "entries": [
     {
@@ -2855,6 +2855,25 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:08:04.048Z"
+    },
+    {
+      "id": "540aa465-5536-48d3-babd-82917ed24d63",
+      "type": "knowledge",
+      "title": "Full-DB fetch tripwire allows two fetches per planning phase",
+      "summary": "checkFullDbFetchLog lets a 'Plan Cn Rn' / 'Replan Cn Rn' phase make up to two bd list --all fetches without an intervening bd mutation; a third, or a second in any other phase, is flagged.",
+      "symbols": [
+        "checkFullDbFetchLog",
+        "fetchScopeSnapshot",
+        "PLANNING_PHASE_RE"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/full-db-fetch-guard.mjs",
+        "packages/apra-fleet-se/fleet-sprint/scope-snapshot.mjs",
+        "packages/apra-fleet-se/fleet-sprint/phases/plan.mjs",
+        "packages/apra-fleet-se/test/full-db-fetch-tripwire.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T02:51:26.840Z"
     },
     {
       "id": "54594a50-c325-4889-8164-d275ecb01ae9",
