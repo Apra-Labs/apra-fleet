@@ -1,9 +1,9 @@
 {
   "version": 2,
   "provenance": {
-    "commit": "2e962a242779b2eea35bc4f388e9033a71b3d776",
+    "commit": "34ff160ff8ee9e2268e851270b911771d06fedca",
     "branch": "feat/kb-redesign",
-    "entry_count": 271
+    "entry_count": 273
   },
   "entries": [
     {
@@ -3363,6 +3363,25 @@
       "updated_at": "2026-09-25T22:26:35.520Z"
     },
     {
+      "id": "a9d7239d-6b3c-4e16-a262-f88c66f8eb6c",
+      "type": "learning",
+      "title": "execute_prompt runs a member CLI version probe before the main command for every session-MCP dispatch",
+      "summary": "Every dispatch that attaches the per-session MCP config (all local claude members) first runs cmds.agentVersion(provider) via strategy.execCommand, unless the version is cached. Tests that mock exec with fixed call sequences must account for that extra call.",
+      "symbols": [
+        "resolveSessionMcpAlwaysLoad",
+        "resetCliVersionCache",
+        "executePrompt"
+      ],
+      "source_files": [
+        "src/tools/execute-prompt.ts",
+        "src/services/session-mcp-config.ts",
+        "tests/integration/pid-lifecycle.test.ts",
+        "tests/execute-prompt-agent.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T09:23:05.626Z"
+    },
+    {
       "id": "aa5c6a57-a70f-4fce-82e1-a0d75851d351",
       "type": "knowledge",
       "title": "A blocks edge inside a streak lane splits the lane instead of sequencing it",
@@ -4738,6 +4757,22 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:14.498Z"
+    },
+    {
+      "id": "f60d53f5-f72a-439f-82c9-03b7deaefc9a",
+      "type": "learning",
+      "title": "Member-init: server fleetMcp reason supersedes a tools-step failure",
+      "summary": "In member-init-probe finish(), a fleetMcp problem with a server-named reason overrides a generic tools-step failure only when the tools failure is the first gating problem.",
+      "symbols": [
+        "createMemberInitProbe",
+        "finish"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/member-init-probe.mjs",
+        "packages/apra-fleet-se/test/mock-sprint-member-init-probe.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T09:23:05.562Z"
     },
     {
       "id": "f8604414-0bbf-4850-88bd-6a67e5539341",
