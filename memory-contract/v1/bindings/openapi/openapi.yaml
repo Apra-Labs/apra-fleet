@@ -113,7 +113,7 @@
     },
     {
       "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-DEMOTE-EVIDENCE-UNRESOLVED",
-      "title": "A cited evidence file does not resolve in this worktree, is not a regular file, or contains a '..' segment that traverses out of the anchor. The traversal check runs FIRST, so a traversing path that happens to land on a real file outside the repo is refused too.",
+      "title": "A cited evidence file does not resolve in this worktree, is not a regular file, or is not anchor-relative -- an absolute path, or one with a '..' segment, both of which name a location the anchor does not contain. The anchor-relative check (the shared validateFilePaths guard, same as E-PATH-TRAVERSAL) runs FIRST, so a path that happens to land on a real file outside the repo is refused too.",
       "status": 403
     },
     {

@@ -22,6 +22,7 @@ import {
   orJoinFtsTerms,
 } from './audn.js';
 import { computeFileHashBatch } from './file-hash.js';
+import { validateFilePaths } from './path-validation.js';
 import { KbCaptureRejected, type DiscardResult } from './types.js';
 import type {
   MemoryProvider,
@@ -1586,9 +1587,17 @@ export class SqliteProvider implements MemoryProvider {
    * recorded as an unverifiable string.
    *
    * Refuses, all with E-DEMOTE-EVIDENCE-UNRESOLVED:
-   *   - any '..' segment (traverses out of the anchor), checked BEFORE
-   *     existence so a traversal that happens to land on a real file outside
-   *     the repo is still refused;
+   *   - any path that is not anchor-relative -- an ABSOLUTE path, or one with
+   *     a '..' segment. Both are "out of the anchor": an absolute path names a
+   *     location the anchor does not contain, and was previously accepted and
+   *     recorded verbatim, which contradicted this very comment. The check is
+   *     delegated to validateFilePaths (path-validation.ts), the SAME guard
+   *     every other caller-supplied kb_* file list already runs (kb_capture,
+   *     kb_context, kb_invalidate, kb_session_prime and the HTTP routes), so
+   *     this is not a third hand-rolled path guard. It runs BEFORE existence,
+   *     so a path that happens to land on a real file outside the repo is
+   *     still refused, and it applies even on the shared-global no-anchor KB,
+   *     where nothing absolute could be verified against an anchor anyway;
    *   - a path that does not resolve, via the SAME resolver promote uses
    *     (unresolvableBasisFiles -> resolveBasisFile);
    *   - a path that resolves to something that is not a regular file
@@ -1602,12 +1611,17 @@ export class SqliteProvider implements MemoryProvider {
       );
     };
 
+    // Per-file so the message can name EVERY offender, not just the first one
+    // validateFilePaths would throw on.
     const traversing = files.filter((f) => {
-      const normalized = path.normalize(f);
-      const segments = normalized.split(/[\\/]/);
-      return segments.includes('..');
+      try {
+        validateFilePaths([f]);
+        return false;
+      } catch {
+        return true;
+      }
     });
-    if (traversing.length > 0) refuse('traverses out of the anchor', traversing);
+    if (traversing.length > 0) refuse('is absolute or traverses out of the anchor', traversing);
 
     const unresolved = this.unresolvableBasisFiles(files);
     if (unresolved.length > 0) refuse('does not resolve', unresolved);
