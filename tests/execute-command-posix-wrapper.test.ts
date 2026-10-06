@@ -8,6 +8,8 @@ import { addAgent } from '../src/services/registry.js';
 import { executeCommand, GIT_BASH_LAUNCHER_MAX_COMMAND_CHARS } from '../src/tools/execute-command.js';
 import type { Agent, SSHExecResult } from '../src/types.js';
 import { findRealBash } from './helpers/real-bash.js';
+import { credentialSet, credentialDelete } from '../src/services/credential-store.js';
+import { encryptPassword } from '../src/utils/crypto.js';
 
 // End-to-end check of the POSIX execute_command wrapper: capture the exact
 // string executeCommand() hands to the strategy, then EXECUTE it with a real
@@ -218,6 +220,46 @@ describe.skipIf(!shellcheck)('execute_command POSIX wrapper passes shellcheck', 
       const r = spawnSync(shellcheck!, ['-S', 'error', '-f', 'gcc', file], { encoding: 'utf8', timeout: 30000 });
       expect(r.stdout + r.stderr).toBe('');
       expect(r.status).toBe(0);
+    });
+  }
+});
+
+// A {{secure.NAME}} secret is substituted already POSIX-quoted, then the whole
+// command is quoted AGAIN as the eval payload. The double layer must unwrap to
+// the exact bytes, as a printf argument, through a variable, and alongside the
+// auth env prefix.
+describe.skipIf(!bash.path)('secret substitution survives the eval payload byte-exact', () => {
+  const secret = `q'uo"te $HOME \`id\` !! back\\slash '''\nline2`;
+  let name: string;
+  let dir: string;
+  beforeAll(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-ec-sec-')); workDir = dir; });
+  afterAll(() => { fs.rmSync(dir, { recursive: true, force: true }); });
+  beforeEach(() => {
+    backupAndResetRegistry(); vi.clearAllMocks();
+    name = `ecsec${Date.now()}${Math.random().toString(36).slice(2, 6)}`;
+    credentialSet(name, secret, false, 'allow');
+  });
+  afterEach(() => { credentialDelete(name); restoreRegistry(); });
+
+  for (const kind of MEMBER_KINDS) {
+    it(`${kind.label}: printf, variable, and alongside the auth prefix`, async () => {
+      const member = makeTestAgent({
+        ...kind.overrides,
+        workFolder: shellPath(dir),
+        encryptedEnvVars: { FLEET_TEST_KEY: encryptPassword('auth-ok') },
+      });
+      addAgent(member);
+      captured.length = 0;
+      await executeCommand({
+        member_id: member.id,
+        command: `printf '[%s]' {{secure.${name}}}\nv={{secure.${name}}}\nprintf '<%s>' "$v" "$FLEET_TEST_KEY"`,
+        timeout_s: 5,
+      } as any);
+      expect(captured).toHaveLength(1);
+      expect(captured[0]).toMatch(/^export FLEET_TEST_KEY='auth-ok' && /);
+      const r = run(bash.path!, captured[0]);
+      expect(r.status).toBe(0);
+      expect(body(r)).toBe(`[${secret}]<${secret}><auth-ok>`);
     });
   }
 });
