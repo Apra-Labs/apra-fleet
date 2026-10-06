@@ -39,7 +39,13 @@ import { join } from 'node:path';
  * baked into the binary, and apra-fleet-ui-kit feeds the shell Vite build.
  * Each is listed as its src + package.json rather than the whole dir: the
  * dist/ trees are gitignored (invisible to git anyway) and test/docs changes
- * must not mark the binary stale.
+ * must not mark the binary stale. Their tracked tsconfig.json files (which can
+ * change the dist esbuild/Vite inline) are listed too.
+ *
+ * packages/fleet-api-contract/openapi.json is deliberately EXCLUDED: nothing
+ * bundled reads it. a repo grep for "openapi.json" under src, each package src dir and scripts finds
+ * only packages/fleet-api-contract/src/scripts/gen-openapi.ts, which WRITES it
+ * (a generated doc artifact, not a build input of the SEA binary).
  */
 export const SEA_RELEVANT_GIT_PATHS = [
   'scripts/gen-sea-config.mjs',
@@ -50,8 +56,10 @@ export const SEA_RELEVANT_GIT_PATHS = [
   'packages/apra-fleet-client/package.json',
   'packages/fleet-api-contract/src',
   'packages/fleet-api-contract/package.json',
+  'packages/fleet-api-contract/tsconfig.json',
   'packages/apra-fleet-ui-kit/src',
   'packages/apra-fleet-ui-kit/package.json',
+  'packages/apra-fleet-ui-kit/tsconfig.json',
   'src',
 ];
 
