@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "12fbcf6bd3a5540e5e979715151986fa15c1291e",
     "branch": "main",
-    "entry_count": 281
+    "entry_count": 284
   },
   "entries": [
     {
@@ -38,6 +38,23 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:25.765Z"
+    },
+    {
+      "id": "025f20b0-69c1-4ea4-bf1b-7db4dd3540ea",
+      "type": "learning",
+      "title": "Permission-heal retry reuses the same attempt number, so it never resumes onto the remote tip",
+      "summary": "dispatchRole's permission_denied heal re-runs the attempt with attempt -= 1. A heal on attempt 1 therefore retries as attempt 1, where retryFollowsPossibleMutation is false and resumeOntoRemoteTip is not set, even though permission_denied counts as agent-ran.",
+      "symbols": [
+        "dispatchRole",
+        "agentRan",
+        "isNoMutationDispatchFailure"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/dispatch-role.mjs",
+        "packages/apra-fleet-se/fleet-sprint/dispatch-failure.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T09:41:40.896Z"
     },
     {
       "id": "03858e18-b478-4840-a621-8f1d93ccf8c2",
@@ -3540,6 +3557,25 @@
       "updated_at": "2026-09-25T22:26:35.728Z"
     },
     {
+      "id": "b03effcd-0488-452b-9b49-ab21049c0ece",
+      "type": "knowledge",
+      "title": "runDoltStep classifies on raw dolt output but surfaces surfaceDoltFailureText(raw)",
+      "summary": "In dolt-sync.mjs runDoltStep, classification and isSpawnOutageFailure run on rawError; the error logged, returned and used in DoltSyncError messages is surfaceDoltFailureText(rawError), which only changes Windows 'Not enough memory resources' text.",
+      "symbols": [
+        "runDoltStep",
+        "surfaceDoltFailureText",
+        "WINDOWS_SPAWN_LIMIT_MESSAGE",
+        "isSpawnOutageFailure",
+        "classifyDoltFailure"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/dolt-sync.mjs",
+        "packages/apra-fleet-se/test/dolt-windows-spawn-limit-message.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T09:41:37.051Z"
+    },
+    {
       "id": "b0f6be79-738c-491b-9ba5-7c7e5d69b805",
       "type": "knowledge",
       "title": "registerAllTools can be driven by a 4-line fake McpServer, unlocking every handler body for testing",
@@ -3812,6 +3848,28 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:34.848Z"
+    },
+    {
+      "id": "bcd7c247-9534-4ba5-bc6a-997c94ca7bbd",
+      "type": "knowledge",
+      "title": "Windows local-member child env is bounded by boundChildEnv (deduped PATH, 32767-char cap)",
+      "summary": "WindowsCommands.getCleanEnv and WindowsGitBashCommands.cleanExec pass their env through boundChildEnv (src/os/child-env-bound.ts): PATH deduped case-insensitively, and the largest non-protected vars dropped until the block fits CHILD_ENV_BLOCK_CAP_CHARS.",
+      "symbols": [
+        "boundChildEnv",
+        "isProtectedEnvName",
+        "CHILD_ENV_BLOCK_CAP_CHARS",
+        "getCleanEnv",
+        "cleanExec"
+      ],
+      "source_files": [
+        "src/os/child-env-bound.ts",
+        "src/os/windows.ts",
+        "src/os/windows-gitbash.ts",
+        "tests/windows-child-env-bound.test.ts",
+        "scripts/repro/win-env-block-size.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T09:41:38.971Z"
     },
     {
       "id": "beb4faf7-40fa-4484-9cf5-b287df8f47d2",
