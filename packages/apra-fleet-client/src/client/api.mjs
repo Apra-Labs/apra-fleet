@@ -1086,9 +1086,13 @@ export class ApraFleet {
      * code_status -- the calling session's own code index state: the last
      * analyze run (`analyze`: phase, result 'indexed' | 'up-to-date' |
      * 'incomplete' | 'failed', lastLine, ...), live `readiness`
-     * ('ready' | 'building' | 'interrupted' | 'missing'; 'interrupted' = an
-     * analyze died mid-write and none is running -- the next code_* call
-     * starts a rebuild), `indexedCommit`, `lockHeld`, and `logPath` (null
+     * ('ready' | 'building' | 'interrupted' | 'inconsistent' | 'missing';
+     * 'building' also covers an analyze rewriting an existing index, which is
+     * never served meanwhile; 'interrupted' = an analyze died mid-write and
+     * none is running; 'inconsistent' = the gitnexus registry or the fleet
+     * record of its last build names a different commit than meta.json, with
+     * the reason in `inconsistency` (null otherwise) -- for both, the next
+     * code_* call starts a rebuild), `indexedCommit`, `lockHeld`, and `logPath` (null
      * when no analyze log exists yet), and `autoReindexPaused` (null, or the
      * { result, lastLine, logPath, finished } of a failed automatic run --
      * automatic rebuilds stay paused until codeReindex() or a server

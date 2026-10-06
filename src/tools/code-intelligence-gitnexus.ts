@@ -7,12 +7,21 @@ import type { CodeIntelligenceProvider } from './code-intelligence.js';
 import { freshnessNote } from './code-intelligence-freshness.js';
 import { maybeScheduleReindex, GITNEXUS_PACKAGE_SPEC } from './code-intelligence-reindex.js';
 import { isTestPath } from './code-intelligence-tests.js';
-import { ensureGitNexusIndexReady } from './code-intelligence-readiness.js';
+import { codeIndexReadiness, ensureGitNexusIndexReady, indexChangedDuringCallError } from './code-intelligence-readiness.js';
+import { indexGeneration, readGitNexusIndexState } from './code-index-state.js';
 import { logError } from '../utils/log-helpers.js';
 import { missingOnServerPathMessage, npxUnavailableReason } from '../utils/find-on-path.js';
 
 let sharedClient: Client | null = null;
 let connectionPromise: Promise<Client> | null = null;
+
+// Index generation (indexGeneration: meta lastCommit|indexedAt) each repo had
+// when the CURRENT gitnexus child last answered for it. The child is
+// long-lived and keeps its own handle on a repo's index; when an analyze
+// replaces that index on disk, the old handle can read a half-old,
+// half-new graph and resolve a name to an unrelated symbol. A changed
+// generation therefore recycles the child before the next call.
+const servedGeneration = new Map<string, string>();
 
 // Structured, actionable "offline" result. Same shape as a normal MCP tool
 // result (content array of text plus isError) so callers never receive an
@@ -31,6 +40,19 @@ function offlineResult(detail?: string): { content: Array<{ type: 'text'; text: 
 function resetConnection(): void {
   sharedClient = null;
   connectionPromise = null;
+  servedGeneration.clear();
+}
+
+/** Drop the current child (closing it) so the next call starts a fresh one. */
+function recycleConnection(): void {
+  const old = sharedClient;
+  resetConnection();
+  if (old) {
+    try {
+      const closing = (old as { close?: () => Promise<void> }).close?.();
+      if (closing && typeof closing.catch === 'function') closing.catch(() => { /* already gone */ });
+    } catch { /* already gone */ }
+  }
 }
 
 async function getGitNexusClient(): Promise<Client> {
@@ -155,25 +177,140 @@ function appendFreshnessNote(result: unknown, note: string): unknown {
 // session's resolved (self) folder as `repo` (resolveCodeSelf in
 // code-intelligence.ts); a direct provider call without one is forwarded
 // untouched.
+//
+// Consistency fence: the index generation is read before the call; a child
+// that last answered this repo from an older generation is recycled first.
+// AFTER the call, readiness and the generation are checked again: if an
+// analyze started, finished, or left the metadata inconsistent while the
+// call ran, the answer may come from a half-rewritten index and is DISCARDED
+// with E-CODE-INDEX-NOT-READY rather than returned.
 async function callGitNexus(name: string, params: Record<string, unknown>): Promise<unknown> {
   const repo = params.repo;
   const hasRepo = typeof repo === 'string' && repo.length > 0;
-  if (hasRepo) ensureGitNexusIndexReady(repo as string);
+  let generation = '';
+  if (hasRepo) {
+    ensureGitNexusIndexReady(repo as string);
+    generation = indexGeneration(readGitNexusIndexState(repo as string));
+    const seen = servedGeneration.get(repo as string);
+    if (seen !== undefined && seen !== generation) recycleConnection();
+  }
 
+  let result: unknown;
   try {
     const client = await getGitNexusClient();
-    const result = await client.callTool({ name, arguments: params });
-    if (hasRepo) {
-      const note = computeFreshnessNote(repo as string);
-      if (note) return appendFreshnessNote(result, note);
-    }
-    return result;
+    result = await client.callTool({ name, arguments: params });
   } catch (err) {
     resetConnection();
     let detail = err instanceof Error ? err.message : String(err);
     if (/\bENOENT\b/.test(detail) && /npx/.test(detail)) detail = `${detail}: ${missingOnServerPathMessage('npx')}`;
     return offlineResult(detail);
   }
+
+  if (!hasRepo) return result;
+  const after = codeIndexReadiness('gitnexus', repo as string);
+  const generationAfter = indexGeneration(readGitNexusIndexState(repo as string));
+  if (!after.ready || generationAfter !== generation) {
+    // The child may hold a handle on the index that just changed.
+    recycleConnection();
+    throw indexChangedDuringCallError(repo as string, after);
+  }
+  servedGeneration.set(repo as string, generation);
+  const note = computeFreshnessNote(repo as string);
+  return note ? appendFreshnessNote(result, note) : result;
+}
+
+// ---------------------------------------------------------------------------
+// Resolution check (code_impact / code_context): gitnexus resolves the
+// requested name to a symbol and reports the one it used (impact: `target`,
+// context: `symbol`). An answer about a DIFFERENT symbol than the one asked
+// for -- e.g. a stale or half-rewritten index mapping a name to an unrelated
+// node -- must never read as a confident answer about the requested one, so
+// it is flagged (resolution_mismatch, confidence LOW) and an impact risk
+// level is moved to unverified_risk with risk 'UNKNOWN'.
+// ---------------------------------------------------------------------------
+
+export interface ResolvedSymbol {
+  name?: string;
+  id?: string;
+  filePath?: string;
+}
+
+export interface ResolutionMismatch {
+  requested: string;
+  resolved: ResolvedSymbol;
+}
+
+/**
+ * True when `resolved` is the symbol `requested` names: equal to its name,
+ * id (uid) or file path, or a qualified form ending in the name
+ * (Class.method, ns::fn, Class#method, file.ts:fn, dir/file.ts). A response
+ * that resolved nothing (no name and no id) has nothing to contradict.
+ */
+export function resolvesToRequested(requested: string, resolved: ResolvedSymbol): boolean {
+  const req = requested.trim();
+  const name = resolved.name ?? '';
+  const id = resolved.id ?? '';
+  if (req === '' || (name === '' && id === '')) return true;
+  if (req === name || req === id || req === resolved.filePath) return true;
+  return name !== '' && ['.', '::', '#', ':', '/'].some((sep) => req.endsWith(sep + name));
+}
+
+function resolvedFrom(value: unknown): ResolvedSymbol | null {
+  if (!value || typeof value !== 'object') return null;
+  const v = value as Record<string, unknown>;
+  const str = (x: unknown): string | undefined => (typeof x === 'string' && x !== '' ? x : undefined);
+  const out: ResolvedSymbol = { name: str(v.name), id: str(v.id) ?? str(v.uid), filePath: str(v.filePath) };
+  return out.name || out.id ? out : null;
+}
+
+/**
+ * Flag a code_impact ('impact', resolved symbol in payload.target) or
+ * code_context ('context', payload.symbol) result whose resolved symbol is not
+ * the requested one. Returns the result unchanged when it matches, is an
+ * error, or is not the JSON shape gitnexus returns.
+ */
+export function flagResolutionMismatch(result: unknown, requested: unknown, kind: 'impact' | 'context'): unknown {
+  if (typeof requested !== 'string' || isErrorResult(result)) return result;
+  if (!result || typeof result !== 'object' || !('content' in result)) return result;
+  const content = (result as { content: unknown }).content;
+  if (!Array.isArray(content) || content.length === 0) return result;
+  const first = content[0] as { type?: unknown; text?: unknown } | undefined;
+  if (!first || typeof first.text !== 'string') return result;
+  const sep = '\n\n---\n';
+  const cut = first.text.indexOf(sep);
+  const jsonPart = cut >= 0 ? first.text.slice(0, cut) : first.text;
+  const suffix = cut >= 0 ? first.text.slice(cut) : '';
+  let payload: Record<string, unknown>;
+  try {
+    const parsed = JSON.parse(jsonPart) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return result;
+    payload = parsed as Record<string, unknown>;
+  } catch { return result; }
+
+  const resolved = resolvedFrom(kind === 'impact' ? payload.target : payload.symbol);
+  if (!resolved || resolvesToRequested(requested, resolved)) return result;
+
+  const mismatch: ResolutionMismatch = { requested, resolved };
+  const what = `${resolved.name ?? resolved.id}${resolved.filePath ? ` (${resolved.filePath})` : ''}`;
+  const warning = `[code-intelligence] RESOLUTION MISMATCH: '${requested}' resolved to a different symbol, ${what}. ` +
+    'This answer is about that symbol, not the one requested; confidence is LOW. ' +
+    'Check the name (or pass file_path), and run code_status -- an index rebuilt or left inconsistent can map a name to an unrelated symbol.';
+  const patched: Record<string, unknown> = { ...payload, resolution_mismatch: mismatch, confidence: 'LOW' };
+  if (kind === 'impact' && 'risk' in payload) {
+    patched.unverified_risk = payload.risk;
+    patched.risk = 'UNKNOWN';
+  }
+  const rest = result as Record<string, unknown>;
+  return {
+    ...rest,
+    content: [
+      { ...first, text: JSON.stringify(patched, null, 2) + suffix },
+      ...content.slice(1),
+      { type: 'text', text: warning },
+    ],
+    resolution_mismatch: mismatch,
+    confidence: 'LOW',
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -474,7 +611,7 @@ export class GitNexusProvider implements CodeIntelligenceProvider {
   }
 
   async impact(params: Record<string, unknown>): Promise<unknown> {
-    return callGitNexus('impact', params);
+    return flagResolutionMismatch(await callGitNexus('impact', params), params.target, 'impact');
   }
 
   async query(params: Record<string, unknown>): Promise<unknown> {
@@ -482,7 +619,7 @@ export class GitNexusProvider implements CodeIntelligenceProvider {
   }
 
   async context(params: Record<string, unknown>): Promise<unknown> {
-    return callGitNexus('context', params);
+    return flagResolutionMismatch(await callGitNexus('context', params), params.name, 'context');
   }
 
   // T2.1: architectural map via Community nodes (rung 2 -- compose over cypher;

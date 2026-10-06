@@ -14,7 +14,7 @@ import { logWarn, logError } from '../utils/log-helpers.js';
 import { findExecutableOnPath, missingOnServerPathMessage, npxUnavailableReason } from '../utils/find-on-path.js';
 import { FLEET_DIR } from '../paths.js';
 import { resolveProjectSlug } from '../services/knowledge/project-slug.js';
-import { isPidAlive, readGitNexusIndexState } from './code-index-state.js';
+import { indexInconsistency, isPidAlive, readGitNexusIndexState, type RecordedIndexBuild } from './code-index-state.js';
 import { excludeLineFor } from '../services/member-config-io.js';
 import type { CodeIndexNotReadyState, CodeIndexReadiness } from './code-intelligence-readiness.js';
 
@@ -122,6 +122,8 @@ export interface AnalyzeStatus {
   finished?: string;
   /** Set on a failed run whose log names a cause the fleet recognizes. */
   failureCause?: AnalyzeFailureCause;
+  /** meta.json lastCommit when the run finished (fleet's own record of the build). */
+  indexedCommit?: string;
 }
 
 export type NotStartedReason =
@@ -182,7 +184,26 @@ function resultFromExit(dir: string, repo: string, code: number | null): Analyze
   if (code !== 0) return 'failed';
   if (readLogLines(dir).some((l) => /already up to date/i.test(l))) return 'up-to-date';
   const idx = readGitNexusIndexState(repo);
-  return idx.metaPresent && idx.lastCommit !== '' && !idx.incrementalInProgress ? 'indexed' : 'incomplete';
+  return idx.metaPresent && idx.lastCommit !== '' && !idx.incrementalInProgress && !indexInconsistency(repo, idx) ? 'indexed' : 'incomplete';
+}
+
+/**
+ * Fleet's record of the last analyze it finished for `repo` (status.json):
+ * the commit meta.json named when that run ended. null when no finished,
+ * successful run is recorded (or it belongs to another folder sharing the
+ * slug dir). Never throws.
+ */
+export function recordedIndexBuild(repo: string): RecordedIndexBuild | null {
+  try {
+    const status = readStatusFile(codeIndexDir(repo));
+    if (!status || status.phase !== 'done' || !status.finished) return null;
+    if (typeof status.repo === 'string' && status.repo !== repo) return null;
+    if (status.result !== 'indexed' && status.result !== 'up-to-date') return null;
+    if (typeof status.indexedCommit !== 'string' || status.indexedCommit === '') return null;
+    return { indexedCommit: status.indexedCommit, finished: status.finished };
+  } catch {
+    return null;
+  }
 }
 
 // The exact argv every fleet-initiated analyze runs. `--index-only` is
@@ -382,9 +403,12 @@ export function spawnAnalyze(repoPath: string, opts: { auto?: boolean } = {}): S
     const failureCause = status.result === 'failed' ? failureCauseOf(lines) : undefined;
     if (failureCause) status.failureCause = failureCause;
     status.finished = new Date().toISOString();
-    writeStatus(dir, status);
     const idx = readGitNexusIndexState(repoPath);
-    const indexReady = idx.metaPresent && idx.lastCommit !== '' && !idx.incrementalInProgress;
+    if (idx.lastCommit) status.indexedCommit = idx.lastCommit;
+    writeStatus(dir, status);
+    // An index whose metadata disagrees with itself is not ready either: an
+    // automatic run that leaves one pauses automatic rebuilds like any other.
+    const indexReady = idx.metaPresent && idx.lastCommit !== '' && !idx.incrementalInProgress && !indexInconsistency(repoPath, idx);
     const prev = state.get(repoPath);
     let autoPaused: AutoReindexPause | undefined;
     if (!indexReady && auto) {
@@ -492,6 +516,13 @@ export function isRecordedAnalyzeAlive(repoPath: string, now: number = Date.now(
     if (typeof status.pid !== 'number' || !Number.isInteger(status.pid) || status.pid <= 0) return false;
     const started = Date.parse(status.started);
     if (Number.isFinite(started) && now - started > RECORDED_ANALYZE_MAX_AGE_MS) return false;
+    // A complete index stamped AFTER the run started is that run's own final
+    // write: the index is no longer being rewritten, whatever the pid (which
+    // may have been reused) says. Readiness fences a complete index on a live
+    // recorded run, so this keeps a stale record from fencing it for hours.
+    const idx = readGitNexusIndexState(repoPath);
+    const indexedAt = Date.parse(idx.indexedAt);
+    if (idx.metaPresent && !idx.incrementalInProgress && Number.isFinite(started) && Number.isFinite(indexedAt) && indexedAt > started) return false;
     return isPidAlive(status.pid);
   } catch {
     return false;
@@ -601,6 +632,8 @@ export interface CodeStatusResult {
   analyze: AnalyzeStatus | null;
   ready: boolean;
   readiness: 'ready' | CodeIndexNotReadyState;
+  /** Why the index metadata disagrees with itself (readiness 'inconsistent'); null otherwise. */
+  inconsistency: string | null;
   indexedCommit: string | null;
   incrementalInProgress: boolean;
   lockHeld: boolean;
@@ -643,6 +676,7 @@ export function codeStatus(repo: string, readiness: CodeIndexReadiness): CodeSta
     repo, analyze,
     ready: readiness.ready,
     readiness: readiness.ready ? 'ready' : readiness.state,
+    inconsistency: !readiness.ready && readiness.state === 'inconsistent' ? (readiness.detail ?? null) : null,
     indexedCommit: idx.lastCommit || null,
     incrementalInProgress: idx.incrementalInProgress,
     lockHeld: idx.lockHeld,

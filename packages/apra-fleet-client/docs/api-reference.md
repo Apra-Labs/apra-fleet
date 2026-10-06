@@ -638,16 +638,24 @@ gated on the member's code-intel provider: `none` fails with
 tools instead of gitnexus readiness. `codeStatus()` returns the
 last run (`analyze.phase`, `analyze.result` = `indexed` | `up-to-date` |
 `incomplete` | `failed`, `analyze.lastLine`), live `readiness`
-(`ready` | `building` | `interrupted` | `missing`; `interrupted` = the index
-is marked incomplete and no analyze is running), `indexedCommit`, `logPath`
+(`ready` | `building` | `interrupted` | `inconsistent` | `missing`;
+`building` also covers an analyze rewriting an existing index, which is never
+served meanwhile; `interrupted` = the index is marked incomplete and no analyze
+is running; `inconsistent` = the gitnexus registry or the fleet record of its
+last build names a different commit than meta.json), `inconsistency` (that
+reason, or `null`), `indexedCommit`, `logPath`
 (the last run's `analyze.log`, or `null` when no analyze has written one yet)
 and `autoReindexPaused` (`null`, or `{ result, lastLine, logPath, finished }`
 of the automatic run that failed: automatic rebuilds of that folder stay
 paused until `codeReindex()` or a server restart), `injectedBlockFiles` / `injectedBlockWarning` (agent docs still holding a previously injected gitnexus block and the one-line WARN with the fix; `[]` / `null` when clean) and, on a failed run, `analyze.failureCause` (`gitnexus-too-old`). A code_* call on a local
-folder whose index is `missing` or `interrupted` requests a background build
-automatically (unless `autoReindex.enabled` is false in the code-intelligence
-config.json) and fails with `E-CODE-INDEX-NOT-READY` saying so. Extract both
-with `parseToolJson()`.
+folder whose index is `missing`, `interrupted` or `inconsistent` requests a
+background build automatically (unless `autoReindex.enabled` is false in the
+code-intelligence config.json) and fails with `E-CODE-INDEX-NOT-READY` saying
+so; an answer during which the index changed is discarded with the same error.
+A `code_impact` / `code_context` answer whose resolved symbol is not the one
+requested carries `resolution_mismatch` (`{ requested, resolved: { name, id,
+filePath } }`) and `confidence: 'LOW'`, and an impact `risk` is moved to
+`unverified_risk` with `risk: 'UNKNOWN'`. Extract both with `parseToolJson()`.
 
 #### `doltPushMutex(options)`
 
