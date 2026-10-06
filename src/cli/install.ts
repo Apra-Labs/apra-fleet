@@ -1165,6 +1165,19 @@ export const MEMBER_INSTALL_NEXT_STEP =
   'Next step (on the orchestrator): run update_member {member_id, fleet_install: "auto"} (or register_member) for this member; ' +
   'it registers the member on this install and writes its per-folder apra-fleet MCP entry.';
 
+/**
+ * Write the code-intelligence provider config into this instance's
+ * code-intelligence dir (per-instance: honours APRA_FLEET_DATA_DIR via the
+ * shared fleet-path resolver, apra-fleet-q1ku). Returns the file written.
+ */
+export function writeCodeIntelligenceConfig(): string {
+  const ciConfigDir = codeIntelligenceDir();
+  fs.mkdirSync(ciConfigDir, { recursive: true });
+  const file = path.join(ciConfigDir, 'config.json');
+  fs.writeFileSync(file, JSON.stringify({ provider: 'gitnexus' }, null, 2));
+  return file;
+}
+
 export async function runInstall(args: string[]): Promise<void> {
   // --help / -h guard - must come first, before any side effects (#142)
   if (args.includes('--help') || args.includes('-h')) {
@@ -2125,9 +2138,7 @@ ${manualStopHint(pidsAfterStop)}
 
   // Write code intelligence provider config (provider-agnostic; fleet serves code intelligence tools)
   try {
-    const ciConfigDir = codeIntelligenceDir();
-    fs.mkdirSync(ciConfigDir, { recursive: true });
-    fs.writeFileSync(path.join(ciConfigDir, 'config.json'), JSON.stringify({ provider: 'gitnexus' }, null, 2));
+    writeCodeIntelligenceConfig();
     console.log('    [OK] Code intelligence provider config written');
   } catch (err) {
     console.warn('    [!] Code intelligence config skipped:', err instanceof Error ? err.message : String(err));
