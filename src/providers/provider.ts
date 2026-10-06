@@ -263,6 +263,11 @@ export interface TokenUsage {
   cache_read_input_tokens?: number;
   /** Prompt tokens written into the provider's prompt cache. */
   cache_creation_input_tokens?: number;
+  /** USD this dispatch cost, as the provider CLI itself reported it (Claude:
+   *  the delta of the result's cumulative total_cost_usd, see
+   *  services/session-cost.ts). Absent when the provider reports no cost;
+   *  cost consumers then price the token counts from the rate table. */
+  cost_usd?: number;
 }
 
 export interface ParsedResponse {
@@ -271,6 +276,10 @@ export interface ParsedResponse {
   isError: boolean;
   raw: string;
   usage?: TokenUsage;
+  /** The CLI's CUMULATIVE session cost in USD (Claude: total_cost_usd), when
+   *  reported. Not per dispatch: execute_prompt turns it into the dispatch's
+   *  usage.cost_usd. */
+  sessionCostUsd?: number;
   /** e.g. 'error_max_turns' -- the CLI result event's own subtype, when present. */
   subtype?: string;
   /** e.g. 'max_turns' -- the CLI result event's own terminal_reason, when present. */
@@ -292,6 +301,9 @@ export interface PermissionDenialItem {
   action: string;
   /** The concrete target, when the CLI named it, e.g. 'git status --short --branch'. */
   target?: string;
+  /** compose_permissions grants that would allow this one call, primary
+   *  first (empty when no grant maps to it). */
+  suggestedGrants?: string[];
 }
 
 /** Structured permission denial surfaced by execute_prompt as
@@ -308,12 +320,23 @@ export interface PermissionDenial {
   hint: string;
   /** Which of the CLI's signals reported the denial. */
   signals: Array<'result_json' | 'stderr' | 'transcript'>;
+  /** The permission mode the session ran in, when the provider knows it
+   *  (Claude: 'auto' | 'acceptEdits' | 'bypassPermissions'). */
+  permissionMode?: string;
+  /** false when no grant may ever be added for these denials: in Claude auto
+   *  mode a refusal comes from the safety classifier or a deny rule, not from
+   *  a missing allow rule. Absent = a grant may heal it. */
+  healable?: boolean;
 }
 
 /** Context parseResponse may use; providers that do not need it ignore it. */
 export interface ParseResponseContext {
   /** The member's OS (e.g. agy's permission-denial hint differs on Windows). */
   agentOs?: 'linux' | 'macos' | 'windows';
+  /** The member's unattended setting and the model the dispatch ran with, so
+   *  a provider can tell which permission mode the session ran in. */
+  unattended?: false | 'auto' | 'dangerous';
+  model?: string;
 }
 
 /** Extra inputs to composePermissionConfig; providers that do not need them
@@ -429,8 +452,10 @@ export interface ProviderAdapter {
    *  applies. This is the single source of truth for unattended-mode flag
    *  resolution: both buildPromptCommand() (POSIX, via os/linux.ts) and
    *  os/windows.ts call this instead of re-deriving the branching
-   *  themselves, so the two dispatch paths cannot diverge. */
-  resolvePermissionFlag(unattended: false | 'auto' | 'dangerous' | undefined): string;
+   *  themselves, so the two dispatch paths cannot diverge. `model` is the
+   *  model the dispatch runs (Claude falls back from auto to acceptEdits on a
+   *  model without auto-mode support). */
+  resolvePermissionFlag(unattended: false | 'auto' | 'dangerous' | undefined, model?: string): string;
 
   // Response parsing
   parseResponse(result: SSHExecResult, ctx?: ParseResponseContext): ParsedResponse;

@@ -1036,11 +1036,14 @@ export function isPermissionDeniedDispatchError(err) {
 
 /**
  * The permissionDenied block carried on a permission-refusal dispatch error,
- * normalised to `{ actions: string[], denials: {action, target?}[],
- * suggestedGrants: string[], hint: string }`, or null when the error carries
- * none.
+ * normalised to `{ actions: string[], denials: {action, target?,
+ * suggestedGrants?}[], suggestedGrants: string[], hint: string,
+ * permissionMode?: string, healable?: boolean }`, or null when the error
+ * carries none. `healable: false` means the session's permission mode (Claude
+ * auto/bypass) makes the refusal a classifier or deny-rule decision that no
+ * grant may ever override.
  * @param {unknown} err
- * @returns {{actions: string[], denials: Array<{action: string, target?: string}>, suggestedGrants: string[], hint: string}|null}
+ * @returns {{actions: string[], denials: Array<{action: string, target?: string, suggestedGrants?: string[]}>, suggestedGrants: string[], hint: string, permissionMode?: string, healable?: boolean}|null}
  */
 export function permissionDeniedOf(err) {
     const d = err?.details?.permissionDenied;
@@ -1048,23 +1051,29 @@ export function permissionDeniedOf(err) {
     const strings = (v) => (Array.isArray(v) ? v.filter((x) => typeof x === 'string') : []);
     const denials = Array.isArray(d.denials)
         ? d.denials.filter((x) => x && typeof x.action === 'string')
-            .map((x) => (typeof x.target === 'string' ? { action: x.action, target: x.target } : { action: x.action }))
+            .map((x) => ({
+                action: x.action,
+                ...(typeof x.target === 'string' ? { target: x.target } : {}),
+                ...(Array.isArray(x.suggestedGrants) ? { suggestedGrants: strings(x.suggestedGrants) } : {}),
+            }))
         : [];
     return {
         actions: strings(d.actions),
         denials,
         suggestedGrants: strings(d.suggestedGrants),
         hint: typeof d.hint === 'string' ? d.hint : '',
+        ...(typeof d.permissionMode === 'string' ? { permissionMode: d.permissionMode } : {}),
+        ...(typeof d.healable === 'boolean' ? { healable: d.healable } : {}),
     };
 }
 
 /**
  * Thrown by the dispatch engine (dispatch-role.mjs) when a role's dispatch
- * was refused tool calls for lack of a grant and the one bounded heal --
- * compose_permissions for that member's roles, then one retry -- did not
- * clear it: the heal itself failed, or the retried dispatch was refused
- * again. Ends the sprint naming the member, the denied actions and the fix;
- * no plan-review or review round is ever charged for it.
+ * was refused tool calls and the progressive heal (createPermissionDenialHeal:
+ * grant within the member's composed policy, retry, repeat while each heal
+ * adds a new grant) can make no further progress. Ends the sprint naming the
+ * member, the denied actions and the fix; no plan-review or review round is
+ * ever charged for it.
  *
  * A WorkflowError (so the run records a terminal reason) but deliberately
  * NOT a typed abort, like MemberPermissionConfigError: the fix is a member
@@ -1075,7 +1084,10 @@ export function permissionDeniedOf(err) {
  * @property {string[]} actions - the denied actions (e.g. 'Bash "bd show x"')
  * @property {string[]} suggestedGrants - compose_permissions grants that would allow them
  * @property {string[]} rejectedGrants - suggested grants outside the role policy, never auto-added
- * @property {string} step - 'heal' (compose_permissions failed) or 'retry' (refused again after the heal)
+ * @property {string} step - 'heal' (compose_permissions failed or no heal is wired),
+ *   'not_healable' (auto/bypass-mode refusal: classifier or deny rule, never granted),
+ *   'no_progress' (refused again after its grant, outside policy, NEVER_AUTO_GRANT, or no
+ *   grant maps to the call) or 'cap' (heal limit per member per sprint or per ladder reached)
  */
 export class MemberPermissionDeniedError extends WorkflowError {
     /**

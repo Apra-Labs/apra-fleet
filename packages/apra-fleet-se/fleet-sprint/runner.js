@@ -82,7 +82,7 @@ import {
     createMemberSessionGuard, createUnattendedAutoProvisioner,
     createDeployPermissionsProvisioner, stageCommandBodyMemberSide,
     createPermissionConfigPreflight,
-    createPermissionDenialHeal,
+    createPermissionDenialHeal, permissionLedgerFolder,
 } from './member-provisioning.mjs';
 import {
     parseOwnerRepoFromRemoteUrl, parseRepoScopeFromRemoteUrl, vcsCredentialLabelForProvider,
@@ -1453,19 +1453,23 @@ async function runSprintCycle(context) {
             if (!roles.includes(role)) roles.push(role);
         }
     }
+    // Per-member compose_permissions ledger folder (project_folder): grants
+    // the permission heal adds are recorded there, and every proactive compose
+    // of the member passes it, so the next sprint keeps them.
+    const ledgerFolderFor = (m) => permissionLedgerFolder(m, args && args.permissionLedgerDir);
     const verifyPermissionConfigs = context.verifyPermissionConfigs ?? (
         (args && typeof args.callTool === 'function')
-            ? createPermissionConfigPreflight({ callTool: args.callTool, command, log, memberShell: memberSeCommands })
+            ? createPermissionConfigPreflight({ callTool: args.callTool, command, log, memberShell: memberSeCommands, ledgerFolderFor })
             : async () => ({ composed: [] })
     );
     await verifyPermissionConfigs(permissionConfigMembers);
 
     // Mid-sprint counterpart of the preflight above: a dispatch whose member
     // CLI refused tool calls for lack of a grant (execute_prompt reason
-    // 'permission_denied') is healed ONCE by the dispatch engine through this
-    // hook -- compose_permissions for the member's roles plus any suggested
-    // grant within that role policy -- and retried once; see
-    // createPermissionDenialHeal. Same precedence: an injected
+    // 'permission_denied') is healed PROGRESSIVELY by the dispatch engine
+    // through this hook -- each refusal gets the missing grant within the
+    // member's composed policy and a retry, until no progress is possible;
+    // see createPermissionDenialHeal. Same precedence: an injected
     // `context.onPermissionDenied` (tests), else the real compose_permissions
     // heal from `args.callTool`, else none (the engine then fails the sprint
     // on the first refusal, naming member, actions and fix).
@@ -1475,6 +1479,7 @@ async function runSprintCycle(context) {
                 callTool: args.callTool,
                 log,
                 memberRoles: (m) => permissionConfigMembers.get(m) || [],
+                ledgerFolderFor,
             })
             : undefined
     );

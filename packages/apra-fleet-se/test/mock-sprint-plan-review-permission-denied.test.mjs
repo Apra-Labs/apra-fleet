@@ -10,9 +10,9 @@ import { scaledTimeout } from './helpers/scaled-timeout.mjs';
 // re-clone) used to come back as an ordinary CHANGES_NEEDED verdict whose notes
 // were the refusal text, so the plan was "rejected" three times and the sprint
 // died with SprintPlanRejectedError. execute_prompt now reports the refusal as
-// reason 'permission_denied'; the dispatch engine heals it once via
-// compose_permissions and retries, and the refusal never counts as a plan
-// round.
+// reason 'permission_denied'; the dispatch engine heals it via
+// compose_permissions (progressively, within the member's composed policy)
+// and retries, and the refusal never counts as a plan round.
 // =============================================================================
 
 const DENIED_BLOCK = (rootId) => ({
@@ -42,6 +42,8 @@ const APPROVED = { content: [{ text: JSON.stringify({ verdict: 'APPROVED', notes
 
 // Wraps the harness default callTool, recording compose_permissions calls and
 // answering them with `composeResult`.
+// A dry_run (the heal reading the member's composed policy) is answered with
+// the doer base profile's bd rule unless `composeResult` is a failure.
 function composeSpy(composeResult) {
     const composeCalls = [];
     const factory = (executeCommand) => {
@@ -49,6 +51,9 @@ function composeSpy(composeResult) {
         return async (name, args) => {
             if (name === 'compose_permissions') {
                 composeCalls.push(args);
+                if (args.dry_run && !composeResult.isError) {
+                    return { content: [{ text: JSON.stringify({ dry_run: true, mode: args.role, stacks: [], allow: ['Read', 'Bash(git:*)', 'Bash(bd:*)', 'Bash(bd *)'] }) }] };
+                }
                 return composeResult;
             }
             return base(name, args);
@@ -84,15 +89,19 @@ test('mock sprint: a plan-reviewer permission refusal is healed by compose_permi
 
         // Exactly one compose_permissions heal, for that member. The member
         // also serves doer in this single-member sprint, so it is composed as
-        // doer -- never narrowed to reviewer -- and the in-policy suggestion
-        // is merged in a second call.
-        const recompose = composeCalls.filter((c) => !c.grant);
+        // doer -- never narrowed to reviewer -- and the first in-policy
+        // suggestion (checked against the composed list from dry_run) is
+        // granted in a second call, recorded in the member's ledger folder.
+        assert.equal(composeCalls.filter((c) => c.dry_run).length, 1);
+        const recompose = composeCalls.filter((c) => !c.grant && !c.dry_run);
         assert.equal(recompose.length, 1, `expected one re-compose, got ${JSON.stringify(composeCalls)}`);
         assert.equal(recompose[0].member_name, 'local');
         assert.equal(recompose[0].role, 'doer');
+        assert.match(String(recompose[0].project_folder), /permission-ledgers[\\/]local$/);
         const grants = composeCalls.filter((c) => c.grant);
         assert.equal(grants.length, 1);
-        assert.deepEqual(grants[0].grant, ['Bash(bd:*)', `Bash(bd show ${scenario.epicBeadId})`]);
+        assert.deepEqual(grants[0].grant, ['Bash(bd:*)']);
+        assert.equal(grants[0].project_folder, recompose[0].project_folder);
 
         // The plan-review rejection counter is unchanged by the denial: one
         // planner round, and both plan-reviewer dispatches (refused, then
@@ -102,7 +111,7 @@ test('mock sprint: a plan-reviewer permission refusal is healed by compose_permi
         assert.ok(!scenario.logs.some((m) => /Plan C1 R2/.test(m)), 'no second plan round may start');
         assert.ok(!scenario.logs.some((m) => /Plan reviewer.*degrading|requires approval.*CHANGES_NEEDED/i.test(m) && /degrad/.test(m)),
             'the refusal must never be degraded into a verdict');
-        assert.ok(scenario.logs.some((m) => /permissions re-composed -- retrying once/.test(m)), `expected the heal log line, logs: ${JSON.stringify(scenario.logs.filter((m) => /perm/i.test(m)))}`);
+        assert.ok(scenario.logs.some((m) => /granted Bash\(bd:\*\) -- retrying/.test(m)), `expected the heal log line, logs: ${JSON.stringify(scenario.logs.filter((m) => /perm/i.test(m)))}`);
 
         // The sprint proceeded past planning to the doer.
         assert.ok(scenario.dispatched.some((d) => d.agent === 'doer' || (d.opts && d.opts.agent === 'doer')),

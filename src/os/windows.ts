@@ -218,7 +218,7 @@ export class WindowsCommands implements OsCommands {
     // AGY has no true auto and uses its baseline --mode accept-edits (with a warning); OpenCode has
     // no true dangerous and falls back to --auto) must not be re-derived here,
     // or this path silently diverges from the POSIX buildPromptCommand() path.
-    const permFlag = provider.resolvePermissionFlag(unattended);
+    const permFlag = provider.resolvePermissionFlag(unattended, model);
     if (permFlag) argList += ` ${permFlag}`;
     if (model) {
       argList += ` ${provider.modelFlag(escapeWindowsArg(model))}`;

@@ -44,6 +44,8 @@
 // file-exists probe, built per member OS/shell by SeOsCommands.fileExistsProbe
 // from a validated literal work-folder-relative path (no environment reads).
 
+import os from 'node:os';
+import path from 'node:path';
 import { ApraFleet } from '@apralabs/apra-fleet-client';
 import { resultText } from './mcp-result.mjs';
 import { MemberPermissionConfigError } from './errors.mjs';
@@ -272,11 +274,15 @@ function composeFailureText(res) {
  * compose_permissions/execute_prompt, which provision them. A server too old
  * to report permissionConfigPaths is logged and that member is not checked.
  *
- * @param {{ callTool: Function, command: Function, memberShell: (member: string) => Promise<{ fileExistsProbe: (relPath: string) => string }>, log?: Function }} opts
+ * `ledgerFolderFor(member)` (optional) names the member's compose_permissions
+ * ledger folder; a re-compose passes it as project_folder so grants an
+ * earlier sprint's permission heal recorded there are restored too.
+ *
+ * @param {{ callTool: Function, command: Function, memberShell: (member: string) => Promise<{ fileExistsProbe: (relPath: string) => string }>, ledgerFolderFor?: (member: string) => string|undefined, log?: Function }} opts
  * @returns {(memberRoles: Map<string, string[]>) => Promise<{ composed: string[] }>}
  */
 export function createPermissionConfigPreflight(opts = {}) {
-    const { callTool, command, memberShell, log = () => {} } = opts;
+    const { callTool, command, memberShell, ledgerFolderFor = () => undefined, log = () => {} } = opts;
     if (typeof callTool !== 'function') throw new TypeError('createPermissionConfigPreflight: callTool is required');
     if (typeof command !== 'function') throw new TypeError('createPermissionConfigPreflight: command is required');
     if (typeof memberShell !== 'function') throw new TypeError('createPermissionConfigPreflight: memberShell is required');
@@ -361,7 +367,8 @@ export function createPermissionConfigPreflight(opts = {}) {
             log(`[permission-config] member '${member}' is missing its composed permission config (${missing.join(', ')}); re-composing it with compose_permissions role '${role}'.`);
             let res;
             try {
-                res = await fleetApi.composePermissions({ member_name: member, role });
+                const ledger = ledgerFolderFor(member);
+                res = await fleetApi.composePermissions({ member_name: member, role, ...(ledger ? { project_folder: ledger } : {}) });
             } catch (err) {
                 throw fail(member, role, missing, `compose_permissions failed: ${err && err.message ? err.message : err}`, { step: 'compose' });
             }
@@ -381,131 +388,257 @@ export function createPermissionConfigPreflight(opts = {}) {
 // Mid-sprint permission-refusal heal (dispatch reason 'permission_denied')
 // ---------------------------------------------------------------------------
 
-// The role policy a permission heal may auto-grant within, per
-// compose_permissions role. It mirrors the base profiles compose_permissions
-// itself composes for that role (skills/fleet/profiles/base-reviewer.json and
-// base-dev.json; test/permission-denial-heal.test.mjs fails if an entry here
-// is not in its profile). A suggested grant outside it is NEVER auto-added:
-// it is named in the failure for an operator to grant deliberately. Bash
-// grants are matched by command WORD, so `Bash(bd:*)` and the narrow
-// `Bash(bd show x)` are both in policy for a role whose profile allows bd.
-const AUTO_GRANT_POLICY = Object.freeze({
-    reviewer: Object.freeze({
-        commands: Object.freeze(['git', 'bd', 'which', 'ls', 'cat', 'head', 'tail', 'find', 'wc', 'sort', 'diff', 'echo', 'grep', 'gh', 'jq']),
-        tools: Object.freeze([
-            'Read', 'Glob', 'Grep',
-            'mcp__apra-fleet__kb_session_prime', 'mcp__apra-fleet__kb_query', 'mcp__apra-fleet__kb_feedback',
-            'mcp__apra-fleet__code_context', 'mcp__apra-fleet__code_graph', 'mcp__apra-fleet__code_impact', 'mcp__apra-fleet__code_query',
-        ]),
-    }),
-    doer: Object.freeze({
-        commands: Object.freeze([
-            'git', 'bd', 'which', 'ls', 'cat', 'head', 'tail', 'mkdir', 'cp', 'mv', 'rm', 'find', 'wc', 'sort', 'diff',
-            'echo', 'touch', 'chmod', 'curl', 'tar', 'unzip', 'grep', 'sed', 'awk', 'tee', 'xargs', 'sleep', 'kill', 'pkill',
-            'gh', 'jq',
-        ]),
-        tools: Object.freeze([
-            'Read', 'Write', 'Edit', 'Glob', 'Grep',
-            'mcp__apra-fleet__kb_session_prime', 'mcp__apra-fleet__kb_query', 'mcp__apra-fleet__kb_stats',
-            'mcp__apra-fleet__kb_capture', 'mcp__apra-fleet__kb_feedback',
-            'mcp__apra-fleet__code_context', 'mcp__apra-fleet__code_graph', 'mcp__apra-fleet__code_impact', 'mcp__apra-fleet__code_query',
-        ]),
-    }),
-});
+/**
+ * The compose_permissions ledger folder (project_folder) for one member: a
+ * per-member folder under `baseDir` when given, else under the fleet server's
+ * data directory (APRA_FLEET_DATA_DIR, default ~/.apra-fleet/data) -- the
+ * same machine, since the server resolves project_folder on its own
+ * filesystem and the sprint engine runs beside it. compose_permissions
+ * creates the folder on its first grant. One folder per member keeps grants
+ * scoped to that member.
+ * @param {string} member
+ * @param {string} [baseDir]
+ * @returns {string|undefined}
+ */
+export function permissionLedgerFolder(member, baseDir) {
+    if (!member) return undefined;
+    const root = baseDir || path.join(process.env.APRA_FLEET_DATA_DIR || path.join(os.homedir(), '.apra-fleet', 'data'), 'permission-ledgers');
+    return path.join(root, String(member).replace(/[^\w.-]/g, '_'));
+}
 
-/** Exposed for the profile drift test only. */
-export const PERMISSION_HEAL_AUTO_GRANT_POLICY = AUTO_GRANT_POLICY;
+/** Heals per member per sprint. Each heal re-runs a whole role dispatch, and
+ *  real denial sets name one or two distinct tools, so three progressive
+ *  grants (A, then B, then C) cover the observed cases while bounding the
+ *  re-dispatch cost of a member that keeps reaching for new tools. */
+export const PERMISSION_HEAL_MEMBER_CAP = 3;
+/** Heals within one dispatch ladder (one role dispatch and its retries): a
+ *  single dispatch that needs a third new tool after two grants is more likely
+ *  wandering than blocked, and the member cap still allows a later dispatch
+ *  to heal. */
+export const PERMISSION_HEAL_LADDER_CAP = 2;
 
 // A grant payload with any of these can chain or substitute another command,
-// so it is never in policy whatever its first word (compose_permissions
+// so it is never in policy whatever the composed list says (compose_permissions
 // refuses the same set as NEVER_AUTO_GRANT).
 const GRANT_CHAIN_RE = /[|;&`<>]|\$\(/;
 
-/**
- * Splits `suggestedGrants` into the ones within compose role `composeRole`'s
- * auto-grant policy and the ones outside it. Pure; the code-level guard that
- * keeps a heal from widening a member beyond what its role is composed with.
- * @param {'doer'|'reviewer'} composeRole
- * @param {string[]} suggestedGrants
- * @returns {{ allowed: string[], rejected: string[] }}
- */
-export function grantsWithinRolePolicy(composeRole, suggestedGrants) {
-    const policy = AUTO_GRANT_POLICY[composeRole] || AUTO_GRANT_POLICY.reviewer;
-    const commands = new Set(policy.commands);
-    const tools = new Set(policy.tools);
-    const allowed = [];
-    const rejected = [];
-    for (const raw of suggestedGrants || []) {
-        const g = String(raw || '').trim();
-        if (!g) continue;
-        let ok = false;
-        const bash = /^Bash\((.*)\)$/s.exec(g);
-        if (bash) {
-            const payload = bash[1].trim();
-            const word = payload.split(/[\s:]/)[0];
-            ok = !GRANT_CHAIN_RE.test(payload) && commands.has(word);
-        } else {
-            ok = tools.has(g);
-        }
-        (ok ? allowed : rejected).push(g);
-    }
-    return { allowed: [...new Set(allowed)], rejected: [...new Set(rejected)] };
+/** Splits `Tool(payload)`; a bare tool name has payload null. */
+function splitRule(rule) {
+    const s = String(rule || '').trim();
+    const m = /^([A-Za-z_][\w.-]*)\((.*)\)$/s.exec(s);
+    return m ? { tool: m[1], payload: m[2].trim().replace(/\s+/g, ' ') } : { tool: s, payload: null };
+}
+
+/** The literal prefix a wildcard payload matches (`x:*` and `x *` both mean
+ *  "x, then anything"; `x*` is a raw prefix), or null for an exact payload. */
+function wildcardBase(payload) {
+    if (payload.endsWith(':*')) return { base: payload.slice(0, -2), word: true };
+    if (payload.endsWith(' *')) return { base: payload.slice(0, -2), word: true };
+    if (payload.endsWith('*')) return { base: payload.slice(0, -1), word: false };
+    return null;
+}
+
+/** True when payload rule `rule` allows the literal command line `cmd`. */
+function bashRuleAllows(rule, cmd) {
+    const w = wildcardBase(rule);
+    if (!w) return rule === cmd;
+    return w.word ? (cmd === w.base || cmd.startsWith(w.base + ' ')) : cmd.startsWith(w.base);
+}
+
+/** True when payload rule `rule` allows everything payload `wanted` allows. */
+function bashRuleCovers(rule, wanted) {
+    if (rule === wanted) return true;
+    const ww = wildcardBase(wanted);
+    if (!ww) return bashRuleAllows(rule, wanted);
+    const rw = wildcardBase(rule);
+    if (!rw) return false;
+    return rw.word ? (ww.base === rw.base || ww.base.startsWith(rw.base + ' ')) : ww.base.startsWith(rw.base);
 }
 
 /**
- * Builds the dispatch engine's `onPermissionDenied` hook: one bounded heal of
- * a member whose dispatch was refused tool calls for lack of a grant.
+ * True when the composed allow list `policy` already covers `grant` -- the
+ * code-level guard that keeps a heal inside what the user's role profile
+ * (plus detected stacks) grants. A bare tool name in the policy covers any
+ * scoped form of that tool; a Bash rule covers a grant only if it allows
+ * everything the grant would.
+ * @param {string} grant
+ * @param {string[]} policy
+ */
+export function grantWithinPolicy(grant, policy) {
+    const g = splitRule(grant);
+    if (g.payload !== null && GRANT_CHAIN_RE.test(g.payload)) return false;
+    for (const raw of policy || []) {
+        const r = splitRule(raw);
+        if (r.tool !== g.tool) continue;
+        if (r.payload === null) return true;
+        if (g.payload === null) continue;
+        if (r.tool === 'Bash' ? bashRuleCovers(r.payload, g.payload) : r.payload === g.payload) return true;
+    }
+    return false;
+}
+
+/** True when an already-landed grant should have allowed this refused call. */
+function grantAllowsCall(grant, item) {
+    const g = splitRule(grant);
+    if (g.tool !== item.action) return false;
+    if (g.payload === null) return true;
+    if (typeof item.target !== 'string') return false;
+    const call = item.target.trim().replace(/\s+/g, ' ');
+    return g.tool === 'Bash' ? bashRuleAllows(g.payload, call) : g.payload === call;
+}
+
+const describeCall = (d) => (d.target ? `${d.action} "${d.target}"` : d.action);
+
+/**
+ * Builds the dispatch engine's `onPermissionDenied` hook: a PROGRESSIVE heal
+ * of a member whose dispatch was refused tool calls for lack of a grant.
+ * Denied tool A -> grant A, retry; tool B denied next -> grant B, retry; it
+ * keeps going while each heal adds a grant that was not there before, and
+ * stops (healed: false, with a `step`) only when no progress is possible:
  *
- *   1. compose_permissions for the member with the compose role of ALL its
- *      sprint roles (composeRoleForRoles over `memberRoles(member)`, so a
- *      member that also serves doer is never narrowed to reviewer) -- this
- *      restores a composed config a re-clone dropped;
- *   2. when the denial's suggestedGrants include grants within that role's
- *      policy (grantsWithinRolePolicy), a second compose_permissions call
- *      merges just those. Grants outside the policy are never sent.
+ *   not_healable  the session ran in an auto/bypass permission mode: the
+ *                 refusal is the safety classifier or a deny rule, which no
+ *                 grant may override (only acceptEdits-mode sessions -- e.g.
+ *                 a model without auto support -- are healed);
+ *   no_progress   a call was refused again although a landed grant covers
+ *                 it (the grant did not take: something overrides it), a
+ *                 call maps to no grant, or a needed grant is outside the
+ *                 member's composed policy;
+ *   cap           PERMISSION_HEAL_MEMBER_CAP heals for this member this
+ *                 sprint, or PERMISSION_HEAL_LADDER_CAP in this ladder;
+ *   heal          compose_permissions failed or refused the grant (its
+ *                 NEVER_AUTO_GRANT floor); the grants are named.
  *
- * Resolves `{ healed, composeRole, grants, rejectedGrants, reason }`; never
- * throws -- the engine turns `healed: false` into MemberPermissionDeniedError.
+ * Security model: the member never grants itself anything -- the
+ * orchestrator grants on need, only grants the member's own composed policy
+ * already contains (compose_permissions dry_run for its role + stacks, not a
+ * hand-kept copy), and compose_permissions' NEVER_AUTO_GRANT floor still
+ * applies on the server.
  *
- * @param {{ callTool: Function, memberRoles?: (member: string) => string[], log?: Function }} opts
+ * State is per sprint (this hook's lifetime) and per member: the grants that
+ * landed and the heal count. Only the member's FIRST heal re-composes its
+ * config from the role profile (restoring a config a re-clone dropped); later
+ * heals only ADD grants, because a proactive compose rewrites the allow list
+ * and would wipe the grants of earlier heals. Every grant is recorded in the
+ * member's ledger folder (`ledgerFolderFor`, passed as project_folder), so a
+ * later sprint's compose of that member keeps it.
+ *
+ * Resolves `{ healed, step?, composeRole, grants, rejectedGrants, reason }`;
+ * never throws. healed is true only when at least one new grant landed.
+ *
+ * @param {{ callTool: Function, memberRoles?: (member: string) => string[], ledgerFolderFor?: (member: string) => string|undefined, log?: Function }} opts
  */
 export function createPermissionDenialHeal(opts = {}) {
-    const { callTool, memberRoles = () => [], log = () => {} } = opts;
+    const { callTool, memberRoles = () => [], ledgerFolderFor = () => undefined, log = () => {} } = opts;
     if (typeof callTool !== 'function') throw new TypeError('createPermissionDenialHeal: callTool is required');
     const fleetApi = new ApraFleet({ callTool });
+
+    /** @type {Map<string, { granted: string[], healCount: number, recomposed: boolean, policy: Map<string, string[]> }>} */
+    const state = new Map();
+    const stateFor = (member) => {
+        if (!state.has(member)) state.set(member, { granted: [], healCount: 0, recomposed: false, policy: new Map() });
+        return state.get(member);
+    };
 
     const compose = async (args) => {
         let res;
         try {
             res = await fleetApi.composePermissions(args);
         } catch (err) {
-            return `compose_permissions failed: ${err && err.message ? err.message : err}`;
+            return { error: `compose_permissions failed: ${err && err.message ? err.message : err}`, res: null };
         }
         const failure = composeFailureText(res);
-        return failure ? `compose_permissions failed: ${failure.replace(/\s+/g, ' ').slice(0, 300)}` : null;
+        return failure
+            ? { error: `compose_permissions failed: ${failure.replace(/\s+/g, ' ').slice(0, 300)}`, res }
+            : { error: null, res };
     };
 
-    return async function onPermissionDenied({ member, role, denial }) {
+    const policyFor = async (member, st, composeRole) => {
+        if (st.policy.has(composeRole)) return { allow: st.policy.get(composeRole) };
+        const { error, res } = await compose({ member_name: member, role: composeRole, dry_run: true });
+        if (error) return { error };
+        let parsed = null;
+        try { parsed = JSON.parse(resultText(res)); } catch { /* checked below */ }
+        if (!parsed || parsed.dry_run !== true || !Array.isArray(parsed.allow)) {
+            return { error: 'compose_permissions dry_run did not return the composed allow list (fleet server too old?)' };
+        }
+        const allow = parsed.allow.filter((p) => typeof p === 'string');
+        st.policy.set(composeRole, allow);
+        return { allow };
+    };
+
+    return async function onPermissionDenied({ member, role, denial, ladderHeals = 0 }) {
         const roles = [...new Set([...(memberRoles(member) || []), role].filter(Boolean))];
         const composeRole = composeRoleForRoles(roles);
-        const { allowed, rejected } = grantsWithinRolePolicy(composeRole, denial ? denial.suggestedGrants : []);
+        const st = stateFor(member);
+        const stop = (step, reason, rejectedGrants = []) => {
+            log(`[permission-heal] member '${member}' (${role}): not healed (${step}) -- ${reason}`);
+            return { healed: false, step, composeRole, grants: [], rejectedGrants, reason };
+        };
+
+        const items = denial && Array.isArray(denial.denials) ? denial.denials : [];
+        const what = items.length ? items.map(describeCall).join(', ') : ((denial && denial.actions.join(', ')) || 'unknown actions');
+
+        if (denial && (denial.healable === false || denial.permissionMode === 'auto' || denial.permissionMode === 'bypassPermissions')) {
+            return stop('not_healable', `the session ran in ${denial.permissionMode || 'a non-healable'} permission mode, where ${what} was refused by the safety classifier or a deny rule; no grant is ever added for that.`);
+        }
+        if (st.healCount >= PERMISSION_HEAL_MEMBER_CAP) {
+            return stop('cap', `${st.healCount} permission heals already ran for this member this sprint (limit ${PERMISSION_HEAL_MEMBER_CAP}).`);
+        }
+        if (ladderHeals >= PERMISSION_HEAL_LADDER_CAP) {
+            return stop('cap', `${ladderHeals} permission heals already ran for this dispatch (limit ${PERMISSION_HEAL_LADDER_CAP}).`);
+        }
+        if (items.length === 0) return stop('no_progress', 'the refusal named no tool call to grant.');
+
+        // Refused again although a landed grant covers the call: the grant
+        // did not take (a deny rule or managed setting overrides it).
+        for (const item of items) {
+            const landed = st.granted.find((g) => grantAllowsCall(g, item));
+            if (landed) return stop('no_progress', `${describeCall(item)} was refused again after ${landed} was granted, so granting cannot fix it (a deny rule or managed setting likely overrides the grant).`);
+        }
+
+        const policy = await policyFor(member, st, composeRole);
+        if (policy.error) return stop('heal', policy.error);
+
+        const picked = new Set();
+        const alreadyGranted = new Set(st.granted);
+        const rejected = [];
+        for (const item of items) {
+            const options = Array.isArray(item.suggestedGrants) ? item.suggestedGrants : (denial.suggestedGrants || []);
+            if (options.length === 0) return stop('no_progress', `no compose_permissions grant maps to ${describeCall(item)} (e.g. a chained shell command).`);
+            const pick = options.find((g) => grantWithinPolicy(g, policy.allow));
+            if (!pick) { rejected.push(...options); continue; }
+            if (!alreadyGranted.has(pick)) picked.add(pick);
+        }
+        const newGrants = [...picked];
         if (rejected.length) {
-            log(`[permission-heal] member '${member}': NOT auto-granting ${rejected.join(', ')} -- outside the '${composeRole}' role policy; an operator must grant it deliberately.`);
+            return stop('no_progress', `${[...new Set(rejected)].join(', ')} is outside the '${composeRole}' composed policy for this member; an operator must grant it deliberately.`, [...new Set(rejected)]);
         }
-        log(`[permission-heal] member '${member}' (${role}) was refused tool calls (${(denial && denial.actions.join(', ')) || 'unknown actions'}); re-composing its permissions with role '${composeRole}'.`);
-        const recomposeErr = await compose({ member_name: member, role: composeRole });
-        if (recomposeErr) return { healed: false, composeRole, grants: [], rejectedGrants: rejected, reason: recomposeErr };
-        if (allowed.length) {
-            const grantErr = await compose({
-                member_name: member,
-                role: composeRole,
-                grant: allowed,
-                grant_reason: `sprint ${role} dispatch was refused these tool calls`,
-            });
-            if (grantErr) return { healed: false, composeRole, grants: [], rejectedGrants: rejected, reason: grantErr };
+        if (newGrants.length === 0) return stop('no_progress', `every grant for ${what} is already in place.`);
+
+        const ledger = ledgerFolderFor(member);
+        const ledgerArg = ledger ? { project_folder: ledger } : {};
+        if (!st.recomposed) {
+            log(`[permission-heal] member '${member}' (${role}) was refused ${what}; re-composing its permissions with role '${composeRole}' (first heal this sprint).`);
+            const re = await compose({ member_name: member, role: composeRole, ...ledgerArg });
+            if (re.error) return stop('heal', re.error);
+            st.recomposed = true;
         }
-        log(`[permission-heal] member '${member}': permissions re-composed${allowed.length ? ` with ${allowed.join(', ')}` : ''}.`);
-        return { healed: true, composeRole, grants: allowed, rejectedGrants: rejected, reason: null };
+        const granted = await compose({
+            member_name: member,
+            role: composeRole,
+            grant: newGrants,
+            grant_reason: `sprint ${role} dispatch was refused these tool calls`,
+            ...ledgerArg,
+        });
+        // A refused grant call (compose_permissions' NEVER_AUTO_GRANT floor,
+        // or a delivery failure -- its own message says which) lands nothing:
+        // stop and name the grants for an operator.
+        if (granted.error) return stop('heal', granted.error, newGrants);
+        st.granted.push(...newGrants);
+        st.healCount += 1;
+        log(`[permission-heal] member '${member}': granted ${newGrants.join(', ')} (heal ${st.healCount}/${PERMISSION_HEAL_MEMBER_CAP} this sprint).`);
+        return { healed: true, composeRole, grants: newGrants, rejectedGrants: [], reason: null };
     };
 }
 

@@ -128,6 +128,16 @@ describe('createPermissionConfigPreflight', () => {
         assert.ok(logs.some((l) => l.includes("member 'm1' is missing its composed permission config (.claude/settings.local.json)")), JSON.stringify(logs));
     });
 
+    test('a re-compose passes the member ledger folder, so grants an earlier sprint healed are restored', async () => {
+        const f = fakeFleet();
+        const check = createPermissionConfigPreflight({
+            callTool: f.callTool, command: f.command, memberShell: memberShellFor({ os: 'linux', shell: '' }),
+            ledgerFolderFor: (m) => `/ledgers/${m}`,
+        });
+        await check(new Map([['m1', ['doer']]]));
+        assert.deepEqual(f.composeCalls, [{ member_name: 'm1', role: 'doer', project_folder: '/ledgers/m1' }]);
+    });
+
     test('config present -> no compose_permissions call', async () => {
         const f = fakeFleet({ present: { m1: true } });
         const check = createPermissionConfigPreflight({ callTool: f.callTool, command: f.command, memberShell: memberShellFor({ os: 'linux', shell: '' }) });

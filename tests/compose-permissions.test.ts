@@ -1242,3 +1242,61 @@ describe('composePermissions -- fresh/empty permissions.json', () => {
     readSpy.mockRestore();
   });
 });
+
+// ---------------------------------------------------------------------------
+// dry_run, project_folder stack-detection fallback, ledger folder creation
+// ---------------------------------------------------------------------------
+
+describe('composePermissions -- dry_run returns the composed allow list and writes nothing', () => {
+  it('doer + node stack: base profile plus the stack commands, no write and no ledger', async () => {
+    const member = makeTestAgent({ friendlyName: 'claude-dry', llmProvider: 'claude', os: 'linux' });
+    addAgent(member);
+    mockExecCommand.mockImplementation(async (cmd: string) => (
+      cmd.includes('ls ') && cmd.includes('package.json') ? { stdout: 'package.json\n', stderr: '', code: 0 } : OK
+    ));
+    const out = JSON.parse(await composePermissions({ member_id: member.id, role: 'doer', dry_run: true }));
+    expect(out.dry_run).toBe(true);
+    expect(out.mode).toBe('doer');
+    expect(out.stacks).toEqual(['node']);
+    expect(out.allow).toContain('Bash(git:*)');
+    expect(out.allow).toContain('Bash(npm:*)');
+    expect(out.allow).toContain('Bash(node:*)');
+    const allCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
+    expect(allCmds.some(cmd => cmd.includes('cat >') || cmd.includes('WriteAllText') || cmd.includes('mkdir'))).toBe(false);
+  });
+});
+
+describe('composePermissions -- project_folder whose basename is not a work-folder subfolder', () => {
+  it('stack detection falls back to the work folder root instead of detecting nothing', async () => {
+    const member = makeTestAgent({ friendlyName: 'claude-ledger', llmProvider: 'claude', os: 'linux', workFolder: '/home/testuser/repo' });
+    addAgent(member);
+    const ledgerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-ledger-'));
+    try {
+      mockExecCommand.mockImplementation(async (cmd: string) => (
+        cmd.includes('ls ') && cmd.includes('package.json') ? { stdout: 'package.json\n', stderr: '', code: 0 } : OK
+      ));
+      const out = JSON.parse(await composePermissions({ member_id: member.id, role: 'doer', dry_run: true, project_folder: path.join(ledgerDir, 'member-x') }));
+      expect(out.stacks).toEqual(['node']);
+      const stackCmd = mockExecCommand.mock.calls.map(c => c[0] as string).find(cmd => cmd.includes('package.json'))!;
+      expect(stackCmd).toContain('cd "/home/testuser/repo/member-x" 2>/dev/null || cd "/home/testuser/repo" 2>/dev/null');
+    } finally {
+      fs.rmSync(ledgerDir, { recursive: true, force: true });
+    }
+  });
+
+  it('a grant creates a missing ledger folder and records the grant there', async () => {
+    const member = makeTestAgent({ friendlyName: 'claude-ledger-grant', llmProvider: 'claude', os: 'linux' });
+    addAgent(member);
+    installFsMock();
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-ledger-'));
+    const ledgerDir = path.join(base, 'permission-ledgers', 'member-y');
+    try {
+      const result = await composePermissions({ member_id: member.id, role: 'doer', grant: ['Bash(npm:*)'], grant_reason: 'heal', project_folder: ledgerDir });
+      expect(result).toContain('Granted');
+      const ledger = JSON.parse(fs.readFileSync(path.join(ledgerDir, 'permissions.json'), 'utf-8'));
+      expect(ledger.granted.map((g: { permission: string }) => g.permission)).toContain('Bash(npm:*)');
+    } finally {
+      fs.rmSync(base, { recursive: true, force: true });
+    }
+  });
+});

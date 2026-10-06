@@ -66,6 +66,8 @@
  * @typedef {Object} PermissionDenialItem
  * @property {string} action - Provider permission action, e.g. 'command', 'read_file', 'mcp'.
  * @property {string} [target] - The concrete target when the CLI named it, e.g. 'git status --short --branch'.
+ * @property {string[]} [suggestedGrants] - compose_permissions grants that would allow this one
+ *   call, primary first (empty when no grant maps to it).
  */
 
 /**
@@ -79,6 +81,11 @@
  *   canonical mapping exists.
  * @property {string} hint - One-line remediation.
  * @property {Array<'result_json'|'stderr'|'transcript'>} signals - Which CLI signals reported it.
+ * @property {string} [permissionMode] - The permission mode the session ran in, when the
+ *   provider knows it (Claude: 'auto' | 'acceptEdits' | 'bypassPermissions').
+ * @property {boolean} [healable] - false when no grant may ever be added for these denials
+ *   (Claude auto/bypass mode: the safety classifier or a deny rule refused the call, not a
+ *   missing allow rule). Absent = a grant may heal it.
  */
 
 /**
@@ -101,7 +108,12 @@
  *   event's non-empty `permission_denials` while is_error stays false, which used to surface as
  *   an ordinary reply). A failure for every caller even when the reply looks complete. Pass `suggestedGrants` to
  *   compose_permissions `grant` to heal it; read it with {@link permissionDenialOf}. Any partial
- *   reply is in `response`.
+ *   reply is in `response`. Exception: a Claude session in auto or bypass mode whose reply is
+ *   complete returns success with the refusals in `permissionWarning` instead; an incomplete
+ *   one fails here with `healable: false`, which a caller must never grant for.
+ * @property {PermissionDenied} [permissionWarning] - Present on a SUCCESSFUL dispatch whose
+ *   session refused tool calls that must never be granted (`healable: false`); a logged
+ *   warning, not a failure.
  * @property {UsageLimitSignal} [usageLimit] - Present when `reason === 'usage_limit'`
  *   (apra-fleet-hzeb.2): the provider's detectUsageLimit() signal verbatim -- a 429/quota
  *   exhaustion that a fresh session cannot cure, so execute_prompt returns this INSTEAD of
@@ -132,6 +144,9 @@
  * @property {number} total_tokens - input_tokens + output_tokens only (the context-window
  *   figure context admission reads); it deliberately EXCLUDES the cache counts, so a cost
  *   figure must price all four counts rather than total_tokens.
+ * @property {number} [cost_usd] - USD this dispatch cost as the provider CLI reported it
+ *   (Claude: the per-dispatch share of the cumulative total_cost_usd). Use it as-is when
+ *   present; price the token counts only when it is absent.
  */
 
 /**
@@ -139,8 +154,9 @@
  * @property {string} model - Concrete model the tier resolves to.
  * @property {number} promptPrice - $/1M input_tokens.
  * @property {number} completionPrice - $/1M output_tokens.
- * @property {number} cacheReadPrice - $/1M cache_read_input_tokens.
- * @property {number} cacheWritePrice - $/1M cache_creation_input_tokens.
+ * @property {number} cacheReadPrice - $/1M cache_read_input_tokens (the model's own cache-hit rate).
+ * @property {number} cacheWritePrice - $/1M cache_creation_input_tokens (Claude: the 1-hour
+ *   cache-write rate, 2x input, which the Claude Code CLI uses).
  */
 
 /**
@@ -258,6 +274,7 @@
  * @property {string} [category] - Optional group label
  * @property {string[]} [tags] - Optional list of free-form labels
  * @property {"false" | "auto" | "dangerous"} [unattended] - Permission mode for unattended execution
+ *   ("auto" on a Claude model without auto-mode support, such as Haiku, runs acceptEdits)
  * @property {boolean} [unreservable] - Mark this member as never exclusively reservable, so it can be shared by more than one sprint at once (e.g. fleet-sprint's shared "backlog" role)
  * @property {"gitbash" | "pwsh7" | "powershell5"} [shell] - Override the probed Windows shell for this member. Windows members only -- ignored for non-windows members.
  */
@@ -290,7 +307,8 @@
  * @property {"codebase-memory" | "gitnexus" | "none"} [code_intel_provider] - Change the code-intelligence provider for this member
  * @property {string} [category] - Group label
  * @property {string[]} [tags] - Free-form labels
- * @property {"false" | "auto" | "dangerous"} [unattended] - Permission mode
+ * @property {"false" | "auto" | "dangerous"} [unattended] - Permission mode ("auto" on a
+ *   Claude model without auto-mode support, such as Haiku, runs acceptEdits)
  * @property {boolean} [unreservable] - Mark/unmark this member as shared/never exclusively reservable
  * @property {"gitbash" | "pwsh7" | "powershell5"} [shell] - Override the probed Windows shell for this member. Windows members only -- ignored for non-windows members.
  * @property {"github" | "bitbucket" | "azure-devops" | "none"} [vcs_provider] - Directly set (override) this member's VCS provider. An explicit operator value, never auto-detected -- use this to correct a wrong auto-detect from register_member, or to set the provider without provisioning credentials. "none" clears it.
@@ -555,6 +573,11 @@
  *   shell-chaining metacharacter (| ; && backtick $() are rejected outright,
  *   for every caller.
  * @property {string} [grant_reason] - Reason for the grant (stored in ledger)
+ * @property {boolean} [dry_run] - Compose only: return the allow list the role/tags
+ *   (plus detected stacks, plus the ledger when project_folder is given) would deliver, as
+ *   JSON text `{"dry_run":true,"mode","stacks","allow"}`, without writing anything to the
+ *   member. Ignored with `grant`. Use it to check whether a grant is within the member's
+ *   composed policy.
  */
 
 /**
@@ -669,10 +692,16 @@ export function permissionDenialOf(result) {
     if (!Array.isArray(d.denials) || !d.denials.every((x) => x && typeof x.action === 'string' && (x.target === undefined || typeof x.target === 'string'))) return null;
     return {
         actions: [...d.actions],
-        denials: d.denials.map((x) => (x.target === undefined ? { action: x.action } : { action: x.action, target: x.target })),
+        denials: d.denials.map((x) => ({
+            action: x.action,
+            ...(x.target === undefined ? {} : { target: x.target }),
+            ...(isStringArray(x.suggestedGrants) ? { suggestedGrants: [...x.suggestedGrants] } : {}),
+        })),
         suggestedGrants: [...d.suggestedGrants],
         hint: d.hint,
         signals: isStringArray(d.signals) ? [...d.signals] : [],
+        ...(typeof d.permissionMode === 'string' ? { permissionMode: d.permissionMode } : {}),
+        ...(typeof d.healable === 'boolean' ? { healable: d.healable } : {}),
     };
 }
 

@@ -21,9 +21,9 @@ describe('get_member_model_pricing', () => {
     addAgent(makeTestAgent({ id: 'm-claude', friendlyName: 'claude-member', llmProvider: 'claude' }));
     const result = JSON.parse(await getMemberModelPricing({ member_id: 'm-claude' }));
     expect(result.llm_provider).toBe('claude');
-    expect(result.pricing.cheap).toEqual({ model: 'haiku', promptPrice: 0.80, completionPrice: 4.00, cacheReadPrice: 0.08, cacheWritePrice: 1 });
-    expect(result.pricing.standard).toEqual({ model: 'sonnet', promptPrice: 3.00, completionPrice: 15.00, cacheReadPrice: 0.3, cacheWritePrice: 3.75 });
-    expect(result.pricing.premium).toEqual({ model: 'opus', promptPrice: 15.00, completionPrice: 75.00, cacheReadPrice: 1.5, cacheWritePrice: 18.75 });
+    expect(result.pricing.cheap).toEqual({ model: 'haiku', promptPrice: 1.00, completionPrice: 5.00, cacheReadPrice: 0.10, cacheWritePrice: 2 });
+    expect(result.pricing.standard).toEqual({ model: 'sonnet', promptPrice: 2.00, completionPrice: 10.00, cacheReadPrice: 0.20, cacheWritePrice: 4 });
+    expect(result.pricing.premium).toEqual({ model: 'opus', promptPrice: 4.00, completionPrice: 20.00, cacheReadPrice: 0.20, cacheWritePrice: 8 });
   });
 
   it('agy member with no override returns provider default pricing', async () => {
@@ -82,7 +82,7 @@ describe('get_member_model_pricing', () => {
   it('a member with a single-tier modelPremium override (update_member --model-premium) is priced against that override, not the provider default', async () => {
     addAgent(makeTestAgent({ id: 'm-single-override', friendlyName: 'single-override-member', llmProvider: 'claude', modelPremium: 'sonnet' }));
     const result = JSON.parse(await getMemberModelPricing({ member_id: 'm-single-override' }));
-    expect(result.pricing.premium).toEqual({ model: 'sonnet', promptPrice: 3.00, completionPrice: 15.00, cacheReadPrice: 0.3, cacheWritePrice: 3.75 });
+    expect(result.pricing.premium).toEqual({ model: 'sonnet', promptPrice: 2.00, completionPrice: 10.00, cacheReadPrice: 0.20, cacheWritePrice: 4 });
     // Untouched tiers still resolve to the provider default.
     expect(result.pricing.cheap.model).toBe('haiku');
   });
@@ -93,13 +93,25 @@ describe('get_member_model_pricing', () => {
     expect(result.member_id).toBe('m-by-name');
   });
 
-  it('prices Claude cache tokens at Anthropic list multipliers (read 0.1x, 5-minute write 1.25x prompt)', async () => {
+  it('prices Claude cache tokens at each model\'s own read rate and the 1-hour write rate (2x prompt)', async () => {
     addAgent(makeTestAgent({ id: 'm-claude-cache', friendlyName: 'claude-cache', llmProvider: 'claude' }));
     const result = JSON.parse(await getMemberModelPricing({ member_id: 'm-claude-cache' }));
     for (const tier of ['cheap', 'standard', 'premium'] as const) {
       const p = result.pricing[tier];
-      expect(p.cacheReadPrice).toBeCloseTo(p.promptPrice * 0.1, 10);
-      expect(p.cacheWritePrice).toBeCloseTo(p.promptPrice * 1.25, 10);
+      // The Claude Code CLI writes its cache with the 1-hour TTL.
+      expect(p.cacheWritePrice).toBeCloseTo(p.promptPrice * 2, 10);
     }
+    // Read rates are per model, not one multiplier: Opus 5.5 reads at 0.05x.
+    expect(result.pricing.cheap.cacheReadPrice).toBe(0.10);
+    expect(result.pricing.standard.cacheReadPrice).toBe(0.20);
+    expect(result.pricing.premium.cacheReadPrice).toBe(0.20);
+  });
+
+  it('copilot Claude rows are list-priced too (Haiku 4.5, Sonnet 4.5, Opus 4.5)', async () => {
+    addAgent(makeTestAgent({ id: 'm-copilot-rates', friendlyName: 'copilot-rates', llmProvider: 'copilot' }));
+    const result = JSON.parse(await getMemberModelPricing({ member_id: 'm-copilot-rates' }));
+    expect(result.pricing.cheap).toEqual({ model: 'claude-haiku-4-5', promptPrice: 1, completionPrice: 5, cacheReadPrice: 0.1, cacheWritePrice: 2 });
+    expect(result.pricing.standard).toEqual({ model: 'claude-sonnet-4-5', promptPrice: 3, completionPrice: 15, cacheReadPrice: 0.3, cacheWritePrice: 6 });
+    expect(result.pricing.premium).toEqual({ model: 'claude-opus-4-5', promptPrice: 5, completionPrice: 25, cacheReadPrice: 0.5, cacheWritePrice: 10 });
   });
 });

@@ -908,7 +908,17 @@ export class FleetWorkflow extends EventEmitter {
     // tier. Increments budget._pricedReal/_pricedFallback so
     // buildCostAnalysis() (runner.js) can honestly report which source
     // priced a run's total.
+    //
+    // A usage block that carries the provider's own per-dispatch cost
+    // (usage.cost_usd: the Claude CLI's list-price figure, already reduced
+    // to this dispatch's share by the server) is charged exactly that -- no
+    // recompute. Token pricing is only the fallback for a provider or result
+    // that reports no cost.
     async _resolveCost(opts, usage, budget) {
+        if (usage && typeof usage.cost_usd === 'number' && Number.isFinite(usage.cost_usd)) {
+            budget._pricedReal++;
+            return usage.cost_usd;
+        }
         const tier = opts.model;
         if (tier === 'cheap' || tier === 'standard' || tier === 'premium') {
             const memberKey = opts.member_id || opts.member_name;
@@ -1250,6 +1260,12 @@ export class FleetWorkflow extends EventEmitter {
                 // predate this field.
                 const structured = result && result.structuredContent;
                 const reportedUsage = (structured && structured.usage) || result.usage;
+                // A successful dispatch whose session refused tool calls that
+                // must never be granted (Claude auto mode: classifier or deny
+                // rule). The reply is complete; this is a warning only.
+                if (structured && !structured.isError && structured.permissionWarning && typeof structured.permissionWarning.hint === 'string') {
+                    console.error(`[Agent Permission Warning] member '${opts.member_name || opts.member_id}': ${structured.permissionWarning.hint}`);
+                }
 
                 // apra-fleet-unw.4: never fabricate usage. If the fleet result
                 // didn't report real token usage, both usage and cost are

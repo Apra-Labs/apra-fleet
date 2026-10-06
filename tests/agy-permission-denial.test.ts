@@ -37,7 +37,7 @@ describe('detectAgyPermissionDenial -- recorded agy outputs', () => {
     const d = detectAgyPermissionDenial(r)!;
     expect(d).toBeDefined();
     expect(d.actions).toEqual(['command']);
-    expect(d.denials).toEqual([{ action: 'command', target: 'git status --short --branch' }]);
+    expect(d.denials).toEqual([{ action: 'command', target: 'git status --short --branch', suggestedGrants: ['Bash(git:*)', 'Bash(git status --short --branch)'] }]);
     expect(d.suggestedGrants).toEqual(['Bash(git:*)', 'Bash(git status --short --branch)']);
     expect(d.signals).toEqual(['result_json', 'stderr', 'transcript']);
     expect(d.hint).toContain('command "git status --short --branch"');
@@ -48,7 +48,7 @@ describe('detectAgyPermissionDenial -- recorded agy outputs', () => {
   it('JSON result alone (status SUCCESS, empty response, denied_actions) is a denial', () => {
     const d = detectAgyPermissionDenial(run(RESULT_JSON))!;
     expect(d.actions).toEqual(['command']);
-    expect(d.denials).toEqual([{ action: 'command' }]);
+    expect(d.denials).toEqual([{ action: 'command', suggestedGrants: [] }]);
     expect(d.signals).toEqual(['result_json']);
   });
 
@@ -60,7 +60,7 @@ describe('detectAgyPermissionDenial -- recorded agy outputs', () => {
 
   it('transcript alone (no JSON result on stdout, e.g. result went to CONOUT$) is a denial with its target', () => {
     const d = detectAgyPermissionDenial(run(transcriptBlock()))!;
-    expect(d.denials).toEqual([{ action: 'command', target: 'git status --short --branch' }]);
+    expect(d.denials).toEqual([{ action: 'command', target: 'git status --short --branch', suggestedGrants: ['Bash(git:*)', 'Bash(git status --short --branch)'] }]);
     expect(d.signals).toEqual(['transcript']);
   });
 
@@ -90,7 +90,7 @@ describe('detectAgyPermissionDenial -- recorded agy outputs', () => {
     expect(chained.suggestedGrants).toEqual([]);
     expect(chained.hint).toContain('No compose_permissions grant maps');
     const mcp = detectAgyPermissionDenial(run(transcriptBlock(t('user denied permission for mcp(apra-fleet/kb_session_prime)'))))!;
-    expect(mcp.denials).toEqual([{ action: 'mcp', target: 'apra-fleet/kb_session_prime' }]);
+    expect(mcp.denials).toEqual([{ action: 'mcp', target: 'apra-fleet/kb_session_prime', suggestedGrants: ['mcp__apra-fleet__kb_session_prime'] }]);
     expect(mcp.suggestedGrants).toEqual(['mcp__apra-fleet__kb_session_prime']);
   });
 });
@@ -144,7 +144,7 @@ describe('execute_prompt -- permission_denied', () => {
     expect(result.structuredContent.isError).toBe(true);
     expect(result.structuredContent.reason).toBe('permission_denied');
     expect(result.structuredContent.permissionDenied.actions).toEqual(['command']);
-    expect(result.structuredContent.permissionDenied.denials).toEqual([{ action: 'command', target: 'git status --short --branch' }]);
+    expect(result.structuredContent.permissionDenied.denials).toEqual([{ action: 'command', target: 'git status --short --branch', suggestedGrants: ['Bash(git:*)', 'Bash(git status --short --branch)'] }]);
     expect(result.structuredContent.permissionDenied.suggestedGrants).toEqual(['Bash(git:*)', 'Bash(git status --short --branch)']);
     expect(result.structuredContent.sessionId).toBe(CONV);
     expect(result.structuredContent.usage).toEqual({ input_tokens: 17220, output_tokens: 68, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, total_tokens: 17288 });

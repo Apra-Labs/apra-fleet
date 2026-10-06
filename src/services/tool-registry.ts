@@ -152,7 +152,7 @@ export async function registerAllTools(server: McpServer): Promise<void> {
   server.tool('version', 'Returns the installed apra-fleet server version', versionSchema.shape, wrapTool('version', () => version()));
 
   // Permissions
-  server.tool('compose_permissions', 'Set up and deliver the right permissions to a member for their role or tags. Automatically tailors permissions to the project type. Pass tags (e.g. ["doer","gpu"]) to layer custom tag profiles additively on top of the base role; a doer/reviewer tag sets the primary mode and wins over role. Use grant to add specific permissions mid-sprint without a full recompose.', composePermissionsSchema.shape, wrapTool('compose_permissions', (input) => composePermissions(input as any)));
+  server.tool('compose_permissions', 'Set up and deliver the right permissions to a member for their role or tags. Automatically tailors permissions to the project type. Pass tags (e.g. ["doer","gpu"]) to layer custom tag profiles additively on top of the base role; a doer/reviewer tag sets the primary mode and wins over role. Use grant to add specific permissions mid-sprint without a full recompose. Use dry_run to read the composed allow list without writing anything.', composePermissionsSchema.shape, wrapTool('compose_permissions', (input) => composePermissions(input as any)));
 
   // Cloud Control
   server.tool('cloud_control', 'Manually start, stop, or check status of a cloud fleet member. Start waits until the member is ready; stop is immediate.', cloudControlSchema.shape, wrapTool('cloud_control', (input) => cloudControl(input as any)));

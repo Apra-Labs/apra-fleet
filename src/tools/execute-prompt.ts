@@ -36,6 +36,7 @@ import { getTokenIssuer } from '../services/token-issuer.js';
 import { resolveExpectedDemand, checkContextAdmission, recordSessionUsage } from '../services/context-admission.js';
 import { recordKnownSession, isKnownSession } from '../services/known-sessions.js';
 import { resolveBudgetScope, evaluateBudget, recordAndEvaluate, type BudgetUsageBlock } from '../services/budget-awareness.js';
+import { dispatchCostFromCumulative } from '../services/session-cost.js';
 import { sendMessage } from './send-message.js';
 import { registerPending } from '../services/pending-responses.js';
 import type { Agent, SSHExecResult } from '../types.js';
@@ -53,7 +54,8 @@ import { ensureAgyProject } from '../services/agy-project.js';
  * reports none). DECISION: total_tokens stays input_tokens + output_tokens --
  * it is the context-window figure fleet-sprint's context admission reads, and
  * cache tokens are not added to it so admission behaviour is unchanged. Cost
- * consumers must price the cache counts themselves (see estimateDispatchCost).
+ * consumers use cost_usd when present and otherwise price the four counts
+ * themselves (see estimateDispatchCost).
  */
 export interface StructuredUsage {
   input_tokens: number;
@@ -61,6 +63,11 @@ export interface StructuredUsage {
   cache_read_input_tokens: number;
   cache_creation_input_tokens: number;
   total_tokens: number;
+  /** USD this dispatch cost as the provider CLI reported it (Claude: the
+   *  per-dispatch delta of total_cost_usd). Absent when the provider reports
+   *  no cost; a cost consumer must use this figure when present and price
+   *  the token counts only when it is absent. */
+  cost_usd?: number;
 }
 
 export function toStructuredUsage(u: TokenUsage): StructuredUsage {
@@ -70,6 +77,7 @@ export function toStructuredUsage(u: TokenUsage): StructuredUsage {
     cache_read_input_tokens: u.cache_read_input_tokens ?? 0,
     cache_creation_input_tokens: u.cache_creation_input_tokens ?? 0,
     total_tokens: u.input_tokens + u.output_tokens,
+    ...(typeof u.cost_usd === 'number' ? { cost_usd: u.cost_usd } : {}),
   };
 }
 
@@ -104,6 +112,11 @@ export interface ExecutePromptStructured {
    *  compose_permissions grants that would allow them, and a hint). Any
    *  partial reply is in `response`. */
   permissionDenied?: PermissionDenial;
+  /** Present on a SUCCESSFUL dispatch whose session refused tool calls it
+   *  must never be granted (Claude auto/bypass mode: safety classifier or a
+   *  deny rule; healable is false). The reply was complete, so this is a
+   *  warning, not a failure. */
+  permissionWarning?: PermissionDenial;
   /** false when nothing was dispatched to the member: a max_total_time
    *  failure that ran out of budget during setup (cloud start, before the
    *  first attempt). Absent on every other result. */
@@ -1508,8 +1521,15 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   // due together and the inactivity one, armed first, wins the tie. That
   // kill IS the max_total_s ceiling, so it is classified as max_total_time.
   let lastAttempt: { timeoutMs: number; maxTotalMs: number | undefined } | undefined;
+  // The session whose saved cost total the last dispatched invocation started
+  // from: the resumed session (or a fork's source) for the original command,
+  // nothing for every fresh-session retry. Read by parseDispatch below.
+  let lastAttemptContinues: string | undefined;
   const dispatchAttempt = (cmd: string, attemptTimeoutMs: number, attemptMaxTotalMs: number | undefined) => {
     lastAttempt = { timeoutMs: attemptTimeoutMs, maxTotalMs: attemptMaxTotalMs };
+    lastAttemptContinues = cmd === claudeCmd
+      ? (forkDescriptor ? forkDescriptor.sourceSessionId : (resuming ? resumeTargetId : undefined))
+      : undefined;
     return strategy.execCommand(cmd, attemptTimeoutMs, attemptMaxTotalMs, onPidCaptured, dispatchSignal);
   };
   const isMaxTotalKill = (err: unknown): boolean => {
@@ -1552,7 +1572,25 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   // since a 0-exit result event whose text carries the limit message must not
   // be returned as a success response either.
   // The member's OS reaches the parser (agy's permission-denial hint differs on Windows).
-  const parseCtx = { agentOs: agent.os };
+  // unattended + model let the provider tell which permission mode the
+  // session ran in (Claude: a denial in auto mode is never healable).
+  const parseCtx = { agentOs: agent.os, unattended: agent.unattended, model: resolvedModel };
+  // Every provider.parseResponse in the dispatch path goes through this, so
+  // a provider-reported cumulative session cost (Claude total_cost_usd) is
+  // turned into THIS dispatch's cost exactly once per invocation, on every
+  // path (success and failure alike), and the session's baseline advances.
+  // The per-dispatch figure rides on usage.cost_usd; when the baseline of a
+  // continued session is unknown it is left off and cost consumers price the
+  // token counts instead.
+  const parseDispatch = (r: SSHExecResult): ParsedResponse => {
+    const p = provider.parseResponse(r, parseCtx);
+    if (typeof p.sessionCostUsd === 'number') {
+      const landedOn = p.sessionId ?? (lastAttemptContinues && !forkDescriptor ? lastAttemptContinues : undefined);
+      const cost = dispatchCostFromCumulative(p.sessionCostUsd, landedOn, lastAttemptContinues);
+      if (cost !== undefined && p.usage) p.usage = { ...p.usage, cost_usd: cost };
+    }
+    return p;
+  };
   const checkUsageLimit = (r: SSHExecResult, p: ParsedResponse): ExecutePromptResult | null => {
     const signal = provider.detectUsageLimit(r, p);
     if (!signal) return null;
@@ -1626,7 +1664,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
       result = await dispatchAttempt(retryCmd, budget.timeoutMs, budget.maxTotalMs);
     }
-    let parsed = provider.parseResponse(result, parseCtx);
+    let parsed = parseDispatch(result);
     if (parsed.usage) _epUsage = parsed.usage;
     {
       const usageLimitResult = checkUsageLimit(result, parsed);
@@ -1669,7 +1707,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
         const freshOpts = { ...promptOpts, sessionId: isCallerMinted ? uuid() : undefined, resuming: false, fork: undefined };
         const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
         result = await dispatchAttempt(retryCmd, staleBudget.timeoutMs, staleBudget.maxTotalMs);
-        parsed = provider.parseResponse(result, parseCtx);
+        parsed = parseDispatch(result);
         if (parsed.usage) _epUsage = parsed.usage;
         const usageLimitResult = checkUsageLimit(result, parsed);
         if (usageLimitResult) return usageLimitResult;
@@ -1690,7 +1728,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
         const freshOpts = { ...promptOpts, sessionId: isCallerMinted ? uuid() : undefined, resuming: false, fork: undefined };
         const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
         result = await dispatchAttempt(retryCmd, overloadBudget.timeoutMs, overloadBudget.maxTotalMs);
-        parsed = provider.parseResponse(result, parseCtx);
+        parsed = parseDispatch(result);
         if (parsed.usage) _epUsage = parsed.usage;
         const usageLimitResult = checkUsageLimit(result, parsed);
         if (usageLimitResult) return usageLimitResult;
@@ -1704,7 +1742,21 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     // a permission failure the caller can heal via compose_permissions, not
     // as an empty response. Only providers whose parser sets
     // permissionDenial reach this; any partial reply is kept.
-    if (parsed.permissionDenial) {
+    //
+    // Exception: a denial the provider marks healable:false (Claude auto or
+    // bypass mode -- the safety classifier or a deliberate deny rule refused
+    // the call, not a missing allow rule) on an otherwise complete reply is a
+    // logged warning, not a failure: the agent kept working, and no grant may
+    // ever be added for such a refusal. It rides on the success result as
+    // `permissionWarning`. An incomplete reply still fails as
+    // permission_denied, carrying healable:false so no caller grants for it.
+    let permissionWarning: PermissionDenial | undefined;
+    if (parsed.permissionDenial && parsed.permissionDenial.healable === false
+      && result.code === 0 && !parsed.isError && parsed.result?.trim()) {
+      permissionWarning = parsed.permissionDenial;
+      logWarn('permission_denied_incidental', `"${agent.friendlyName}" (${permissionWarning.permissionMode ?? 'unknown'} mode): ${permissionWarning.hint} -- reply complete, reported as a warning; never auto-granted.`);
+    }
+    if (parsed.permissionDenial && !permissionWarning) {
       const denial = parsed.permissionDenial;
       const partial = parsed.result?.trim() ? parsed.result.trim() : undefined;
       return {
@@ -1815,7 +1867,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
         // Feed the durable output through the normal provider parse path,
         // exactly as if it had arrived on the original channel.
         const recoveredResult: SSHExecResult = { stdout: recovery.stdout, stderr: result.stderr ?? '', code: 0 };
-        const recoveredParsed = provider.parseResponse(recoveredResult, parseCtx);
+        const recoveredParsed = parseDispatch(recoveredResult);
         if (recoveredParsed.result && recoveredParsed.result.trim() !== '') {
           scope.info(`recovered the real result from the durable output file after a false-alarm empty_response (waited ${Math.round((recovery.waitedMs ?? 0) / 1000)}s)`);
           parsed = recoveredParsed;
@@ -1850,7 +1902,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
           const freshOpts = { ...promptOpts, sessionId: isCallerMinted ? uuid() : undefined, resuming: false, fork: undefined };
           const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
           result = await dispatchAttempt(retryCmd, healBudget.timeoutMs, healBudget.maxTotalMs);
-          parsed = provider.parseResponse(result, parseCtx);
+          parsed = parseDispatch(result);
           if (parsed.usage) _epUsage = parsed.usage;
           const usageLimitResult = checkUsageLimit(result, parsed);
           if (usageLimitResult) return usageLimitResult;
@@ -2030,6 +2082,7 @@ session: ${parsed.sessionId}`;
     }
 
     if (heuristicWarningSuffix) output += heuristicWarningSuffix;
+    if (permissionWarning) output += `\n\n[WARN] ${permissionWarning.hint}`;
     return {
       text: output,
       structuredContent: {
@@ -2038,6 +2091,7 @@ session: ${parsed.sessionId}`;
         ...(parsed.sessionId ? { sessionId: parsed.sessionId } : {}),
         ...(contextWarning ? { contextWarning } : {}),
         ...(budgetUsage ? { budgetUsage } : {}),
+        ...(permissionWarning ? { permissionWarning } : {}),
       },
     };
   } catch (err: any) {

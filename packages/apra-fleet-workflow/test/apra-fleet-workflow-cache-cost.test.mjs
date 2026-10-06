@@ -62,24 +62,36 @@ describe('workflow budget includes prompt-cache tokens', () => {
     test('fallback pricing path: spent() rises by the cache-inclusive cost', async () => {
         const wf = new FleetWorkflow(mockApi());
         await wf.agent('hello', { member_name: MEMBER, model: 'premium' });
-        // pricing.mjs 'premium' row: prompt 15, completion 75; Anthropic
-        // cache multipliers -> read 1.5, write 18.75 ($/1M).
-        // 1_000*15 = 0.015; 500*75 = 0.0375; 200_000*1.5 = 0.3; 10_000*18.75 = 0.1875.
-        // Total 0.54 (the old input+output-only figure was 0.0525).
-        assert.ok(Math.abs(wf.budget.spent() - 0.54) < 1e-12, `spent ${wf.budget.spent()}`);
+        // pricing.mjs 'premium' row = Opus 5.5 list price: prompt 4, completion
+        // 20, cache read 0.20 (its own 0.05x), 1-hour cache write 8 ($/1M).
+        // 1_000*4 = 0.004; 500*20 = 0.01; 200_000*0.2 = 0.04; 10_000*8 = 0.08.
+        // Total 0.134 (the input+output-only figure would be 0.014).
+        assert.ok(Math.abs(wf.budget.spent() - 0.134) < 1e-12, `spent ${wf.budget.spent()}`);
         assert.strictEqual(wf.budget.pricingSummary().fallback, 1);
     });
 
     test('a ceiling below the cache-inclusive cost but above the old input+output cost is enforced', async () => {
         const wf = new FleetWorkflow(mockApi());
-        // Old figure per dispatch 0.0525, cache-inclusive 0.54: a 0.3 ceiling
-        // would never trip under the old accounting until the 6th dispatch.
-        wf.budget.total = 0.3;
+        // Input+output-only figure per dispatch 0.014, cache-inclusive 0.134:
+        // a 0.1 ceiling would not trip under input+output accounting until
+        // the 8th dispatch.
+        wf.budget.total = 0.1;
         await wf.agent('first', { member_name: MEMBER, model: 'premium' });
         await assert.rejects(
             () => wf.agent('second', { member_name: MEMBER, model: 'premium' }),
             (err) => err instanceof BudgetExceededError,
         );
+    });
+
+    test('a usage carrying the provider-reported cost_usd is charged exactly that, on either pricing path', async () => {
+        for (const pricing of [REAL_PRICING, undefined]) {
+            const api = mockApi({ pricing });
+            api.executePrompt = async () => ({ content: [{ text: 'ok' }], structuredContent: { response: 'ok', usage: { ...CACHE_USAGE, cost_usd: 0.1380048 } } });
+            const wf = new FleetWorkflow(api);
+            await wf.agent('hello', { member_name: MEMBER, model: 'standard' });
+            assert.strictEqual(wf.budget.spent(), 0.1380048);
+            assert.deepStrictEqual(wf.budget.pricingSummary(), { real: 1, fallback: 0 });
+        }
     });
 
     test('a non-Claude fallback row prices cache tokens at its plain prompt rate', () => {
@@ -89,8 +101,9 @@ describe('workflow budget includes prompt-cache tokens', () => {
     });
 
     test('a usage with only cache tokens is priced, not treated as empty', () => {
+        // sonnet = Sonnet 5.5: cache read $0.20/1M.
         const cost = calculateCost('sonnet', { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 1_000_000 });
-        assert.ok(Math.abs(cost - 0.3) < 1e-12, `cost ${cost}`);
+        assert.ok(Math.abs(cost - 0.2) < 1e-12, `cost ${cost}`);
     });
 
     test('billedTokens counts total_tokens plus both cache counts', () => {

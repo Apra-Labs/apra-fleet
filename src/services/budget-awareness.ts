@@ -134,9 +134,13 @@ export function _resetBudgetState(): void {
 
 /**
  * Spend that a single dispatch's token usage represents, in the budget's unit.
- * For a token budget this is every billed token: input + output + cache-read +
- * cache-write (the cache counts are separate from input_tokens; absent = 0).
- * For a dollar budget each count is priced at its own rate via
+ * A token budget counts input + output only -- the meaning it had before
+ * cache tokens were parsed. Cache reads re-count the whole cached prefix on
+ * every turn (one real session: 58,653 input+output tokens vs 17,966,362 with
+ * cache), so adding them would make an existing token budget bind hundreds of
+ * times sooner for an upgrading user. Cache cost is carried by dollar budgets.
+ * For a dollar budget the provider's own reported cost (usage.cost_usd) is
+ * used as-is when present; otherwise each count is priced at its own rate via
  * getMemberModelPricing() for the resolved tier; an unpriceable
  * tier (unknown model, subscription-plan member with no meter) contributes 0
  * rather than a fabricated cost -- the same "never invent a price" discipline
@@ -149,9 +153,10 @@ export function estimateDispatchCost(
   usage: TokenUsage,
   unit: BudgetUnit,
 ): number {
+  if (unit === 'tokens') return usage.input_tokens + usage.output_tokens;
+  if (typeof usage.cost_usd === 'number' && Number.isFinite(usage.cost_usd)) return usage.cost_usd;
   const cacheRead = usage.cache_read_input_tokens ?? 0;
   const cacheWrite = usage.cache_creation_input_tokens ?? 0;
-  if (unit === 'tokens') return usage.input_tokens + usage.output_tokens + cacheRead + cacheWrite;
   const pricing = getMemberModelPricing(agent, provider);
   const price = pricing[tier ?? 'standard'];
   if (!price) return 0;

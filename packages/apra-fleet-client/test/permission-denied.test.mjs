@@ -67,6 +67,24 @@ describe('permission_denied', () => {
         assert.strictEqual(permissionDenialOf({ structuredContent: { reason: 'permission_denied', permissionDenied: { actions: [], denials: [{}], suggestedGrants: [], hint: '' } } }), null);
     });
 
+    test('permissionDenialOf keeps per-call grants, the permission mode and healable:false (never grant)', () => {
+        const block = {
+            actions: ['Bash'],
+            denials: [{ action: 'Bash', target: 'curl x', suggestedGrants: ['Bash(curl:*)', 'Bash(curl x)'] }],
+            suggestedGrants: ['Bash(curl:*)', 'Bash(curl x)'],
+            hint: 'classifier',
+            signals: ['result_json'],
+            permissionMode: 'auto',
+            healable: false,
+        };
+        const d = permissionDenialOf({ structuredContent: { isError: true, reason: 'permission_denied', permissionDenied: block } });
+        assert.deepStrictEqual(d, block);
+        assert.match(executePromptSrc, /permissionWarning\?: PermissionDenial;/);
+        assert.match(apiSrc, /@property \{PermissionDenied\} \[permissionWarning\]/);
+        assert.match(apiSrc, /@property \{number\} \[cost_usd\]/);
+        assert.match(executePromptSrc, /cost_usd\?: number;/);
+    });
+
     test('client typedefs match the server declarations', () => {
         assert.deepStrictEqual(typedefProps('PermissionDenied'), interfaceProps(providerSrc, 'PermissionDenial'));
         assert.deepStrictEqual(typedefProps('PermissionDenialItem'), interfaceProps(providerSrc, 'PermissionDenialItem'));

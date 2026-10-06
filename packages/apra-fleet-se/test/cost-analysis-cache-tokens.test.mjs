@@ -39,11 +39,21 @@ test('sprint cost report renders cache-inclusive tracked spend', async () => {
     wf.budget.total = 5;
 
     const text = buildCostAnalysis(wf.budget);
-    // Hand-computed per dispatch, premium fallback ($/1M: prompt 15,
-    // completion 75, cache read 1.5, cache write 18.75):
-    //   0.015 + 0.0375 + 0.3 + 0.1875 = 0.54; two dispatches = 1.08.
-    // The pre-fix input+output-only figure was 2 * 0.0525 = 0.105.
-    assert.match(text, /Tracked spend \(priced dispatches only\): \$1\.0800\./);
-    assert.match(text, /Remaining budget: \$3\.9200\./);
-    assert.doesNotMatch(text, /\$0\.1050/);
+    // Hand-computed per dispatch, premium fallback = Opus 5.5 list price
+    // ($/1M: prompt 4, completion 20, cache read 0.20, 1-hour cache write 8):
+    //   0.004 + 0.01 + 0.04 + 0.08 = 0.134; two dispatches = 0.268.
+    // The input+output-only figure would be 2 * 0.014 = 0.028.
+    assert.match(text, /Tracked spend \(priced dispatches only\): \$0\.2680\./);
+    assert.match(text, /Remaining budget: \$4\.7320\./);
+    assert.doesNotMatch(text, /\$0\.0280/);
+});
+
+test('sprint cost report uses the provider-reported cost_usd as-is when the usage carries one', async () => {
+    const api = mockApi();
+    api.executePrompt = async () => ({ content: [{ text: 'ok' }], structuredContent: { response: 'ok', usage: { ...CACHE_USAGE, cost_usd: 0.1380048 } } });
+    const wf = new FleetWorkflow(api);
+    await wf.agent('one', { member_name: 'fleet-dev', model: 'premium' });
+    assert.equal(wf.budget.spent(), 0.1380048);
+    assert.deepEqual(wf.budget.pricingSummary(), { real: 1, fallback: 0 });
+    assert.match(buildCostAnalysis(wf.budget), /Tracked spend \(priced dispatches only\): \$0\.1380\./);
 });

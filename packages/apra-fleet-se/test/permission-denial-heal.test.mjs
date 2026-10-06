@@ -1,14 +1,14 @@
 // Agent permission refusals (execute_prompt reason 'permission_denied') are a
-// missing-permission dispatch failure: the dispatch engine heals them once via
-// the onPermissionDenied hook (compose_permissions), retries once without
-// charging the ladder, and otherwise fails the sprint with
-// MemberPermissionDeniedError -- never a degraded verdict. Also pins the
-// role-policy guard on auto-added grants and the real heal's compose calls.
+// missing-permission dispatch failure: the dispatch engine heals them
+// PROGRESSIVELY via the onPermissionDenied hook (grant the missing tool within
+// the member's composed policy, retry without charging the ladder, repeat for
+// the next tool), and fails the sprint with MemberPermissionDeniedError --
+// never a degraded verdict -- once no progress is possible. Auto-mode
+// refusals (safety classifier / deny rule) are never granted. Also pins the
+// policy guard on grants and the real heal's compose calls.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { AgentDispatchError } from '@apralabs/apra-fleet-workflow';
 
 import { dispatchRole } from '../fleet-sprint/dispatch-role.mjs';
@@ -17,12 +17,10 @@ import {
     MemberPermissionDeniedError, isPermissionDeniedDispatchError, permissionDeniedOf,
 } from '../fleet-sprint/errors.mjs';
 import {
-    grantsWithinRolePolicy, createPermissionDenialHeal, PERMISSION_HEAL_AUTO_GRANT_POLICY,
+    grantWithinPolicy, createPermissionDenialHeal, permissionLedgerFolder,
+    PERMISSION_HEAL_MEMBER_CAP, PERMISSION_HEAL_LADDER_CAP,
 } from '../fleet-sprint/member-provisioning.mjs';
 import { createRecordingCtx, ROLE_CALL_OPTS, BINDINGS } from './helpers/dispatch-role-harness.mjs';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PROFILES_DIR = path.join(__dirname, '..', '..', '..', 'skills', 'fleet', 'profiles');
 
 const DENIAL = Object.freeze({
     actions: ['Bash'],
@@ -86,22 +84,23 @@ test('plan-reviewer refusal: one heal for that member+role, one retry, the heale
     assert.ok(!rec.logs.some((l) => /degrading/.test(l)), rec.logs.join('\n'));
 });
 
-test('a second refusal after the heal fails the sprint naming member, actions and fix -- no degraded verdict', async () => {
-    const { ctx, rec } = createRecordingCtx({ responses: [deniedError(), deniedError(), APPROVED], members: { 'plan-reviewer': 'rev' } });
-    const heals = withHeal(ctx, { healed: true, composeRole: 'reviewer', grants: [], rejectedGrants: [] });
+test('a heal that cannot make progress fails the sprint with the hook\'s step, naming member, actions and fix -- no degraded verdict', async () => {
+    const { ctx, rec } = createRecordingCtx({ responses: [deniedError(), APPROVED], members: { 'plan-reviewer': 'rev' } });
+    const heals = withHeal(ctx, { healed: false, step: 'no_progress', composeRole: 'reviewer', grants: [], rejectedGrants: [], reason: 'Bash "bd show root-1" was refused again after Bash(bd:*) was granted' });
 
     await assert.rejects(dispatchRole(ctx, 'plan-reviewer', planReviewOpts()), (err) => {
         assert.ok(err instanceof MemberPermissionDeniedError, String(err));
-        assert.equal(err.step, 'retry');
+        assert.equal(err.step, 'no_progress');
         assert.equal(err.member, 'rev');
         assert.match(err.message, /member 'rev'/);
         assert.match(err.message, /Bash "bd show root-1"/);
+        assert.match(err.message, /no further progress/);
         assert.match(err.message, /To fix: run compose_permissions for member 'rev' with role reviewer/);
         assert.match(err.message, /not a Plan Reviewer result/);
         return true;
     });
     assert.equal(heals.length, 1);
-    assert.equal(rec.dispatches.length, 2);
+    assert.equal(rec.dispatches.length, 1);
 });
 
 test('a failing heal fails the sprint at once (step heal), naming the heal failure and out-of-policy grants', async () => {
@@ -133,86 +132,247 @@ test('no heal wired: the first refusal fails the sprint rather than degrading in
 
 test('the engine handles the refusal for every role, e.g. the per-round reviewer', async () => {
     const { ctx, rec } = createRecordingCtx({ responses: [deniedError(), { verdict: 'APPROVED', notes: 'ok' }] });
-    const heals = withHeal(ctx, { healed: true, composeRole: 'doer', grants: [], rejectedGrants: [] });
+    const heals = withHeal(ctx, { healed: true, composeRole: 'doer', grants: ['Bash(bd:*)'], rejectedGrants: [] });
     const outcome = await dispatchRole(ctx, 'reviewer', { bindings: BINDINGS, prompt: 'REVIEW', roleLabel: 'Reviewer' }).catch((e) => e);
     // Whatever the reviewer's own post-result steps make of the value, the
-    // refusal was healed once and re-dispatched, never degraded.
+    // refusal was healed and re-dispatched, never degraded.
     assert.equal(heals.length, 1);
     assert.equal(heals[0].role, 'reviewer');
     assert.equal(rec.dispatches.length, 2);
     assert.ok(!(outcome && outcome.degraded), 'refusal must not degrade');
 });
 
-test('grantsWithinRolePolicy: only grants within the compose role policy are auto-added', () => {
-    assert.deepEqual(grantsWithinRolePolicy('reviewer', ['Bash(bd:*)', 'Bash(bd show x)', 'mcp__apra-fleet__kb_query', 'Read']), {
-        allowed: ['Bash(bd:*)', 'Bash(bd show x)', 'mcp__apra-fleet__kb_query', 'Read'],
-        rejected: [],
-    });
-    // rm and Write are doer-only; sudo is never in policy; a chained payload
-    // is never in policy whatever its first word.
-    assert.deepEqual(grantsWithinRolePolicy('reviewer', ['Bash(rm:*)', 'Write', 'Bash(sudo:*)', 'Bash(bd show x && rm -rf /)', 'Bash(git log | sh)']), {
-        allowed: [],
-        rejected: ['Bash(rm:*)', 'Write', 'Bash(sudo:*)', 'Bash(bd show x && rm -rf /)', 'Bash(git log | sh)'],
-    });
-    assert.deepEqual(grantsWithinRolePolicy('doer', ['Bash(rm:*)', 'Write', 'Bash(sudo:*)', 'Bash(docker:*)', 'WebFetch']), {
-        allowed: ['Bash(rm:*)', 'Write'],
-        rejected: ['Bash(sudo:*)', 'Bash(docker:*)', 'WebFetch'],
-    });
-});
+// ---------------------------------------------------------------------------
+// The real progressive heal (createPermissionDenialHeal)
+// ---------------------------------------------------------------------------
 
-test('the auto-grant policy never exceeds the compose_permissions base profiles it mirrors', () => {
-    const profile = (name) => JSON.parse(fs.readFileSync(path.join(PROFILES_DIR, name), 'utf8')).permissions.allow;
-    for (const [role, file] of [['reviewer', 'base-reviewer.json'], ['doer', 'base-dev.json']]) {
-        const allow = profile(file);
-        for (const word of PERMISSION_HEAL_AUTO_GRANT_POLICY[role].commands) {
-            assert.ok(allow.includes(`Bash(${word}:*)`), `${role} policy allows '${word}' but ${file} has no Bash(${word}:*)`);
-        }
-        for (const tool of PERMISSION_HEAL_AUTO_GRANT_POLICY[role].tools) {
-            assert.ok(allow.includes(tool), `${role} policy allows '${tool}' but ${file} does not`);
-        }
-    }
-});
+// The member's composed allow list as compose_permissions dry_run returns it:
+// the doer base profile plus a detected node stack (npm/node are NOT in any
+// hand-kept copy -- the policy must come from the composed list).
+const DOER_NODE_POLICY = [
+    'Read', 'Write', 'Edit', 'Glob', 'Grep',
+    'Bash(git:*)', 'Bash(bd:*)', 'Bash(bd *)', 'Bash(ls:*)', 'Bash(cat:*)', 'Bash(grep:*)', 'Bash(gh:*)',
+    'Bash(npm:*)', 'Bash(npx:*)', 'Bash(node:*)', 'Bash(npm test*)',
+    'mcp__apra-fleet__kb_query',
+];
+const REVIEWER_POLICY = ['Read', 'Glob', 'Grep', 'Bash(git:*)', 'Bash(bd:*)', 'Bash(npm test:*)', 'mcp__apra-fleet__kb_query'];
 
-function fakeCompose(results = []) {
+/** A compose_permissions stand-in: dry_run answers with the policy for the
+ *  role, a grant listed in `refuse` is refused as never auto-grantable, every
+ *  other call succeeds. Records every call. */
+function fakeFleet({ policy = { doer: DOER_NODE_POLICY, reviewer: REVIEWER_POLICY }, refuse = [], fail = null } = {}) {
     const calls = [];
-    const queue = [...results];
     const callTool = async (name, args) => {
         calls.push({ name, args });
-        const next = queue.length ? queue.shift() : 'Permissions composed';
-        if (next instanceof Error) throw next;
-        return { content: [{ type: 'text', text: next }] };
+        if (fail) {
+            if (fail instanceof Error) throw fail;
+            return { content: [{ type: 'text', text: fail }] };
+        }
+        if (args.dry_run) return { content: [{ type: 'text', text: JSON.stringify({ dry_run: true, mode: args.role, stacks: ['node'], allow: policy[args.role] }) }] };
+        if (args.grant && args.grant.some((g) => refuse.includes(g))) {
+            return { content: [{ type: 'text', text: `\u274c Cannot auto-grant dangerous permissions: ${args.grant.join(', ')}. Escalate to user.` }] };
+        }
+        return { content: [{ type: 'text', text: args.grant ? `\u2705 Granted ${args.grant.length} permissions` : '\u2705 Permissions composed' }] };
     };
-    return { calls, callTool };
+    const writes = () => calls.filter((c) => !c.args.dry_run);
+    return { calls, writes, callTool };
 }
 
-test('real heal: re-composes with the role of ALL the member roles, then grants only in-policy suggestions', async () => {
-    const { calls, callTool } = fakeCompose();
-    const logs = [];
-    const heal = createPermissionDenialHeal({ callTool, log: (m) => logs.push(m), memberRoles: () => ['plan-reviewer', 'doer'] });
-    const res = await heal({ member: 'rev', role: 'plan-reviewer', denial: { ...DENIAL, suggestedGrants: ['Bash(bd:*)', 'Bash(docker:*)'] } });
-    assert.equal(res.healed, true);
-    assert.equal(res.composeRole, 'doer');
-    assert.deepEqual(calls.map((c) => c.name), ['compose_permissions', 'compose_permissions']);
-    assert.deepEqual(calls[0].args, { member_name: 'rev', role: 'doer' });
-    assert.deepEqual(calls[1].args.grant, ['Bash(bd:*)']);
-    assert.deepEqual(res.rejectedGrants, ['Bash(docker:*)']);
-    assert.ok(logs.some((l) => /NOT auto-granting Bash\(docker:\*\)/.test(l)));
+const bashDenial = (cmd, extra = {}) => {
+    const word = cmd.split(/\s+/)[0];
+    const grants = /[|;&`<>]|\$\(/.test(cmd) ? [] : [`Bash(${word}:*)`, ...(cmd !== word ? [`Bash(${cmd})`] : [])];
+    return {
+        actions: ['Bash'],
+        denials: [{ action: 'Bash', target: cmd, suggestedGrants: grants }],
+        suggestedGrants: grants,
+        hint: `claude refused Bash "${cmd}"`,
+        signals: ['result_json'],
+        permissionMode: 'acceptEdits',
+        healable: true,
+        ...extra,
+    };
+};
+
+function deniedWith(denial) {
+    return new AgentDispatchError('[Workflow Error] Agent dispatch failed (permission_denied): denied', { details: { reason: 'permission_denied', member: 'dev', permissionDenied: denial } });
+}
+
+test('progressive heal sequence: denial A -> grant -> denial B -> grant -> success, recompose only on the first heal', async () => {
+    const fleet = fakeFleet();
+    const { ctx, rec } = createRecordingCtx({
+        responses: [deniedWith(bashDenial('npm test')), deniedWith(bashDenial('gh pr view 7')), APPROVED],
+        members: { 'plan-reviewer': 'dev' },
+    });
+    ctx.onPermissionDenied = createPermissionDenialHeal({
+        callTool: fleet.callTool, memberRoles: () => ['plan-reviewer', 'doer'], ledgerFolderFor: (m) => `/ledgers/${m}`,
+    });
+
+    const outcome = await dispatchRole(ctx, 'plan-reviewer', planReviewOpts());
+
+    assert.equal(outcome.ok, true);
+    assert.deepEqual(outcome.value, APPROVED);
+    assert.equal(rec.dispatches.length, 3);
+    // Neither heal retry is charged to the ladder.
+    assert.equal(outcome.attempts, 1);
+    // Policy read once (dry_run), one proactive re-compose (first heal only),
+    // then one grant per heal. The second heal does NOT re-compose: that would
+    // rewrite the allow list and wipe the first grant.
+    assert.deepEqual(fleet.writes().map((c) => c.args), [
+        { member_name: 'dev', role: 'doer', project_folder: '/ledgers/dev' },
+        { member_name: 'dev', role: 'doer', grant: ['Bash(npm:*)'], grant_reason: 'sprint plan-reviewer dispatch was refused these tool calls', project_folder: '/ledgers/dev' },
+        { member_name: 'dev', role: 'doer', grant: ['Bash(gh:*)'], grant_reason: 'sprint plan-reviewer dispatch was refused these tool calls', project_folder: '/ledgers/dev' },
+    ]);
+    assert.equal(fleet.calls.filter((c) => c.args.dry_run).length, 1);
 });
 
-test('real heal: a reviewer-only member is composed as reviewer and an out-of-policy-only denial sends no grant call', async () => {
-    const { calls, callTool } = fakeCompose();
-    const heal = createPermissionDenialHeal({ callTool, memberRoles: () => ['plan-reviewer'] });
-    const res = await heal({ member: 'rev', role: 'plan-reviewer', denial: { ...DENIAL, suggestedGrants: ['Bash(rm:*)'] } });
-    assert.equal(res.healed, true);
-    assert.deepEqual(calls.map((c) => c.args), [{ member_name: 'rev', role: 'reviewer' }]);
+test('auto-mode (classifier / deny rule) refusal is never healed: no compose call at all, the sprint stops not_healable', async () => {
+    const fleet = fakeFleet();
+    const heal = createPermissionDenialHeal({ callTool: fleet.callTool, memberRoles: () => ['doer'] });
+    for (const denial of [
+        bashDenial('curl https://example.com', { permissionMode: 'auto', healable: false }),
+        bashDenial('curl https://example.com', { permissionMode: 'auto' }),
+        bashDenial('curl https://example.com', { permissionMode: 'bypassPermissions', healable: false }),
+    ]) {
+        const res = await heal({ member: 'dev', role: 'doer', denial });
+        assert.equal(res.healed, false);
+        assert.equal(res.step, 'not_healable');
+        assert.deepEqual(res.grants, []);
+    }
+    assert.equal(fleet.calls.length, 0, 'a classifier block must never reach compose_permissions');
+
+    const { ctx, rec } = createRecordingCtx({ responses: [deniedWith(bashDenial('curl x', { permissionMode: 'auto', healable: false })), APPROVED], members: { 'plan-reviewer': 'dev' } });
+    ctx.onPermissionDenied = heal;
+    await assert.rejects(dispatchRole(ctx, 'plan-reviewer', planReviewOpts()), (err) => {
+        assert.ok(err instanceof MemberPermissionDeniedError);
+        assert.equal(err.step, 'not_healable');
+        assert.match(err.message, /safety checks/);
+        assert.match(err.message, /No grant is added for a classifier or deny-rule refusal/);
+        return true;
+    });
+    assert.equal(rec.dispatches.length, 1);
 });
 
-test('real heal: a failing compose_permissions (thrown or [FAIL] text) is healed:false with the reason', async () => {
+test('no progress: the same call refused again after its grant landed stops instead of looping', async () => {
+    const fleet = fakeFleet();
+    const heal = createPermissionDenialHeal({ callTool: fleet.callTool, memberRoles: () => ['doer'] });
+    assert.equal((await heal({ member: 'dev', role: 'doer', denial: bashDenial('npm test') })).healed, true);
+    const again = await heal({ member: 'dev', role: 'doer', denial: bashDenial('npm test') });
+    assert.equal(again.healed, false);
+    assert.equal(again.step, 'no_progress');
+    assert.match(again.reason, /refused again after Bash\(npm:\*\) was granted/);
+    // A DIFFERENT command the landed grant already covers is no progress too.
+    const covered = await heal({ member: 'dev', role: 'doer', denial: bashDenial('npm run build') });
+    assert.equal(covered.step, 'no_progress');
+    assert.equal(fleet.writes().filter((c) => c.args.grant).length, 1);
+});
+
+test('no progress: a grant outside the composed policy is never sent, and is named for the operator', async () => {
+    const fleet = fakeFleet();
+    const heal = createPermissionDenialHeal({ callTool: fleet.callTool, memberRoles: () => ['doer'] });
+    const res = await heal({ member: 'dev', role: 'doer', denial: bashDenial('docker ps') });
+    assert.equal(res.healed, false);
+    assert.equal(res.step, 'no_progress');
+    assert.deepEqual(res.rejectedGrants, ['Bash(docker:*)', 'Bash(docker ps)']);
+    assert.equal(fleet.writes().length, 0);
+});
+
+test('no progress: a call that maps to no grant (a chained command) stops', async () => {
+    const fleet = fakeFleet();
+    const heal = createPermissionDenialHeal({ callTool: fleet.callTool, memberRoles: () => ['doer'] });
+    const res = await heal({ member: 'dev', role: 'doer', denial: bashDenial('git log | sh') });
+    assert.equal(res.step, 'no_progress');
+    assert.match(res.reason, /no compose_permissions grant maps/);
+    assert.equal(fleet.writes().length, 0);
+});
+
+test('compose_permissions refusing a grant (NEVER_AUTO_GRANT) stops, names the grant and lands nothing', async () => {
+    const fleet = fakeFleet({ refuse: ['Bash(npm:*)'] });
+    const heal = createPermissionDenialHeal({ callTool: fleet.callTool, memberRoles: () => ['doer'] });
+    const res = await heal({ member: 'dev', role: 'doer', denial: bashDenial('npm test') });
+    assert.equal(res.healed, false);
+    assert.equal(res.step, 'heal');
+    assert.match(res.reason, /Cannot auto-grant dangerous permissions: Bash\(npm:\*\)/);
+    assert.deepEqual(res.rejectedGrants, ['Bash(npm:*)']);
+    assert.deepEqual(res.grants, []);
+});
+
+test('cap: at most PERMISSION_HEAL_MEMBER_CAP heals per member per sprint', async () => {
+    const fleet = fakeFleet();
+    const heal = createPermissionDenialHeal({ callTool: fleet.callTool, memberRoles: () => ['doer'] });
+    const cmds = ['npm test', 'gh pr view 1', 'git status', 'ls -la'];
+    for (const cmd of cmds.slice(0, PERMISSION_HEAL_MEMBER_CAP)) {
+        assert.equal((await heal({ member: 'dev', role: 'doer', denial: bashDenial(cmd) })).healed, true, cmd);
+    }
+    const over = await heal({ member: 'dev', role: 'doer', denial: bashDenial(cmds[PERMISSION_HEAL_MEMBER_CAP]) });
+    assert.equal(over.healed, false);
+    assert.equal(over.step, 'cap');
+    // The cap is per member: another member still heals.
+    assert.equal((await heal({ member: 'other', role: 'doer', denial: bashDenial('npm test') })).healed, true);
+});
+
+test('cap: at most PERMISSION_HEAL_LADDER_CAP heals within one dispatch ladder', async () => {
+    assert.equal(PERMISSION_HEAL_LADDER_CAP, 2);
+    const fleet = fakeFleet();
+    const { ctx, rec } = createRecordingCtx({
+        responses: [deniedWith(bashDenial('npm test')), deniedWith(bashDenial('gh pr view 1')), deniedWith(bashDenial('git status')), APPROVED],
+        members: { 'plan-reviewer': 'dev' },
+    });
+    ctx.onPermissionDenied = createPermissionDenialHeal({ callTool: fleet.callTool, memberRoles: () => ['doer'] });
+    await assert.rejects(dispatchRole(ctx, 'plan-reviewer', planReviewOpts()), (err) => err instanceof MemberPermissionDeniedError && err.step === 'cap');
+    assert.equal(rec.dispatches.length, 3);
+    assert.equal(fleet.writes().filter((c) => c.args.grant).length, 2);
+});
+
+test('healed is false when nothing was granted (every needed grant already in place)', async () => {
+    const fleet = fakeFleet();
+    const heal = createPermissionDenialHeal({ callTool: fleet.callTool, memberRoles: () => ['doer'] });
+    // A denial whose only grant option is one this heal already landed, but
+    // for a call it does not cover (a scoped grant suggested again).
+    const scoped = { ...bashDenial('npm test'), denials: [{ action: 'Read', target: '/w/a', suggestedGrants: ['Read'] }], suggestedGrants: ['Read'] };
+    assert.equal((await heal({ member: 'dev', role: 'doer', denial: scoped })).healed, true);
+    const res = await heal({ member: 'dev', role: 'doer', denial: { ...scoped, denials: [{ action: 'Write', target: '/w/b', suggestedGrants: ['Read'] }] } });
+    assert.equal(res.healed, false);
+    assert.equal(res.step, 'no_progress');
+});
+
+test('the policy is the member\'s composed allow list (dry_run), cached per member: npm is grantable for a node doer', async () => {
+    const fleet = fakeFleet();
+    const heal = createPermissionDenialHeal({ callTool: fleet.callTool, memberRoles: (m) => (m === 'rev' ? ['plan-reviewer'] : ['doer']) });
+    assert.equal((await heal({ member: 'dev', role: 'doer', denial: bashDenial('npx vitest run') })).healed, true);
+    assert.equal((await heal({ member: 'dev', role: 'doer', denial: bashDenial('node -v') })).healed, true);
+    assert.deepEqual(fleet.calls.filter((c) => c.args.dry_run).map((c) => c.args), [{ member_name: 'dev', role: 'doer', dry_run: true }]);
+    // A reviewer-only member gets the reviewer list: `npm test` is narrow there.
+    const res = await heal({ member: 'rev', role: 'plan-reviewer', denial: bashDenial('npm test') });
+    assert.equal(res.composeRole, 'reviewer');
+    assert.equal(res.healed, true);
+    assert.deepEqual(res.grants, ['Bash(npm test)']);
+});
+
+test('a failing compose_permissions (thrown or [FAIL] text) is healed:false, step heal, with the reason', async () => {
     for (const failure of [new Error('member offline'), '[FAIL] Failed to provision the agy project']) {
-        const { callTool } = fakeCompose([failure]);
-        const heal = createPermissionDenialHeal({ callTool, memberRoles: () => ['plan-reviewer'] });
+        const fleet = fakeFleet({ fail: failure });
+        const heal = createPermissionDenialHeal({ callTool: fleet.callTool, memberRoles: () => ['plan-reviewer'] });
         const res = await heal({ member: 'rev', role: 'plan-reviewer', denial: DENIAL });
         assert.equal(res.healed, false);
+        assert.equal(res.step, 'heal');
         assert.match(res.reason, /compose_permissions failed/);
     }
+});
+
+test('grantWithinPolicy: wildcard coverage, bare tools, chained payloads', () => {
+    assert.equal(grantWithinPolicy('Bash(npm:*)', DOER_NODE_POLICY), true);
+    assert.equal(grantWithinPolicy('Bash(npm test)', REVIEWER_POLICY), true);
+    assert.equal(grantWithinPolicy('Bash(npm:*)', REVIEWER_POLICY), false, 'npm test:* does not cover all of npm');
+    assert.equal(grantWithinPolicy('Bash(gitk:*)', DOER_NODE_POLICY), false);
+    assert.equal(grantWithinPolicy('Read(/w/a)', DOER_NODE_POLICY), true, 'bare Read covers a scoped Read');
+    assert.equal(grantWithinPolicy('Write', REVIEWER_POLICY), false);
+    assert.equal(grantWithinPolicy('Bash(git log | sh)', ['Bash(git:*)']), false);
+    assert.equal(grantWithinPolicy('mcp__apra-fleet__kb_query', REVIEWER_POLICY), true);
+});
+
+test('permissionLedgerFolder: one folder per member, under a given base or the fleet data dir', () => {
+    assert.equal(permissionLedgerFolder('dev', '/base'), path.join('/base', 'dev'));
+    assert.equal(permissionLedgerFolder('a/b c', '/base'), path.join('/base', 'a_b_c'));
+    assert.match(permissionLedgerFolder('dev'), /permission-ledgers[\\/]dev$/);
+    assert.equal(permissionLedgerFolder(''), undefined);
 });

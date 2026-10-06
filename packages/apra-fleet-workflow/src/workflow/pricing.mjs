@@ -1,9 +1,9 @@
 // Estimated per-1M-token prices (USD), prompt/completion split.
 // These are point-in-time ESTIMATES, not a live pricing feed -- do not treat
-// them as authoritative for billing. lastUpdated: 2024 (see apra-fleet-unw.4;
-// no new prices were invented when this table was reviewed -- if a model you
-// need isn't listed below, calculateCost() returns `null` rather than
-// guessing at a price).
+// them as authoritative for billing. Claude rows lastUpdated: 2026-10-06 from
+// Anthropic's published pricing page (see apra-fleet-unw.4; no prices are
+// invented -- if a model you need isn't listed below, calculateCost() returns
+// `null` rather than guessing at a price).
 //
 // apra-fleet-dv5.2: this table is now the FALLBACK layer only. Real
 // per-member pricing (apra-fleet-dv5.5's get_member_model_pricing MCP tool,
@@ -16,9 +16,8 @@
 //  - Tier bands ('cheap'/'standard'/'premium'): what runner.js's
 //    FIXED_ROLE_TIER and the planner's per-bead metadata convention emit by
 //    default (apra-fleet-dv5.1) -- provider-agnostic, resolved to a
-//    concrete model per member server-side. Seeded from the pre-existing
-//    haiku/sonnet/opus rows below (same relative ordering), NOT sourced
-//    from an official published price list.
+//    concrete model per member server-side. Priced as the claude
+//    provider's default model for that tier (haiku/sonnet/opus rows below).
 //  - Concrete model IDs ('fable'/'opus'/'sonnet'/'haiku' and the
 //    non-fleet rows further below): a fully legitimate, permanent
 //    alternative to a tier keyword -- not a deprecated/legacy convention --
@@ -36,29 +35,35 @@ export const MODEL_PRICING = {
     'gemini-1.5-flash': { prompt: 0.35, completion: 1.05 },
 
     // Tier-band fallback rows (apra-fleet-dv5.2) -- used only when real
-    // per-member pricing is unavailable. Seeded from the haiku/sonnet/opus
-    // rows below; keep in sync if those are ever revised.
-    'cheap': { prompt: 0.80, completion: 4.00 },
-    'standard': { prompt: 3.00, completion: 15.00 },
-    'premium': { prompt: 15.00, completion: 75.00 },
+    // per-member pricing is unavailable. They match the claude provider's
+    // default tier models (cheap = haiku, standard = sonnet, premium = opus);
+    // keep in sync with those rows.
+    'cheap': { prompt: 1.00, completion: 5.00, cacheRead: 0.10 },
+    'standard': { prompt: 2.00, completion: 10.00, cacheRead: 0.20 },
+    'premium': { prompt: 4.00, completion: 20.00, cacheRead: 0.20 },
 
-    // Concrete fleet model IDs (N10, apra-fleet-unw2.8) -- ESTIMATES, see
-    // comment above. A legitimate, permanent input form (not legacy).
-    'haiku': { prompt: 0.80, completion: 4.00 },     // Claude Haiku 4.5 (estimate) -- cheapest/fastest tier
-    'sonnet': { prompt: 3.00, completion: 15.00 },   // Claude Sonnet 5 (estimate) -- mid tier, unchanged from the 2024 sonnet row
-    'opus': { prompt: 15.00, completion: 75.00 },    // Claude Opus 4.8 (estimate) -- premium tier, unchanged from the 2024 opus row
-    'fable': { prompt: 15.00, completion: 75.00 }    // Claude Fable 5 (estimate) -- treated as premium tier, same order of magnitude as opus
+    // Concrete fleet model IDs (N10, apra-fleet-unw2.8) -- Anthropic list
+    // prices for the model each alias resolves to (checked 2026-10-06,
+    // https://platform.claude.com/docs/en/about-claude/pricing). A
+    // legitimate, permanent input form (not legacy).
+    'haiku': { prompt: 1.00, completion: 5.00, cacheRead: 0.10 },     // Claude Haiku 4.5
+    'sonnet': { prompt: 2.00, completion: 10.00, cacheRead: 0.20 },   // Claude Sonnet 5.5
+    'opus': { prompt: 4.00, completion: 20.00, cacheRead: 0.20 },     // Claude Opus 5.5 (cache read 0.05x)
+    'fable': { prompt: 10.00, completion: 50.00, cacheRead: 0.25 }    // Claude Fable 5.1 (cache read 0.025x)
 };
 
 // Prompt-cache rates (apra-fleet cache-token accounting). Anthropic list
-// pricing (https://docs.anthropic.com/en/docs/about-claude/pricing, prompt
-// caching): a cache read costs 0.1x the base input price, a 5-minute cache
-// write 1.25x. Every row above is a Claude model or seeded from one EXCEPT the
-// gpt-*/gemini-* rows, whose usage never carries Claude's cache fields; those
-// price any cache token at the plain prompt rate (no invented discount).
-// Mirrors src/services/model-pricing.ts on the server.
+// pricing: a cache read is the row's own `cacheRead` rate (0.1x on most
+// models, 0.05x on Opus 5.5, 0.025x on Fable 5.1 -- not one multiplier;
+// a row without one uses CACHE_READ_MULTIPLIER), and a cache write is priced
+// at the 1-hour rate, 2x the base input price -- the Claude Code CLI writes
+// its cache with the 1-hour TTL. The gpt-*/gemini-* rows' usage never carries
+// Claude's cache fields; those price any cache token at the plain prompt rate
+// (no invented discount). Mirrors src/services/model-pricing.ts on the server.
+// This table is the fallback only: a dispatch whose usage carries the
+// provider's own cost_usd is charged that figure (see FleetWorkflow._resolveCost).
 export const CACHE_READ_MULTIPLIER = 0.1;
-export const CACHE_WRITE_MULTIPLIER = 1.25;
+export const CACHE_WRITE_MULTIPLIER = 2;
 const NON_CLAUDE_KEY_RE = /^(gpt-|gemini-)/;
 
 /**
@@ -68,7 +73,8 @@ const NON_CLAUDE_KEY_RE = /^(gpt-|gemini-)/;
 export function cacheRatesFor(key) {
     const row = MODEL_PRICING[key];
     if (NON_CLAUDE_KEY_RE.test(key)) return { cacheRead: row.prompt, cacheWrite: row.prompt };
-    return { cacheRead: row.prompt * CACHE_READ_MULTIPLIER, cacheWrite: row.prompt * CACHE_WRITE_MULTIPLIER };
+    const cacheRead = typeof row.cacheRead === 'number' ? row.cacheRead : row.prompt * CACHE_READ_MULTIPLIER;
+    return { cacheRead, cacheWrite: row.prompt * CACHE_WRITE_MULTIPLIER };
 }
 
 /**

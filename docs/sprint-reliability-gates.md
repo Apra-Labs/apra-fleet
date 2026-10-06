@@ -45,16 +45,30 @@ call. Any change to this shape must be made in the server tool and
 
 - An expired-OAuth result is classified as an LLM auth failure, healed once, and
   fails loudly if the heal fails.
-- Claude `permission_denials` entries classify the dispatch as `permission_denied`;
-  it is healed once via compose_permissions. A second denial ends the sprint. A
-  plan-reviewer permission refusal is healed and never counted as a plan rejection.
-  Trade-off: any denial, even an incidental one, currently fails the dispatch.
+- Claude `permission_denials` are judged by the session's permission mode
+  (`claudePermissionMode`: the member's `unattended` setting plus the model;
+  `auto` on a model without auto support, e.g. Haiku, runs `acceptEdits`).
+  - auto/bypass mode: the refusal is the safety classifier or a deny rule.
+    A complete reply is a success carrying the denials as `permissionWarning`
+    (logged); an incomplete one fails `permission_denied` with
+    `healable: false`. No grant is ever added for it.
+  - acceptEdits mode: the dispatch fails `permission_denied` and fleet-sprint
+    heals it progressively: grant the missing tool (only within the member's
+    composed policy from `compose_permissions` dry_run), retry, repeat for the
+    next tool. It stops when no progress is possible (refused again after its
+    grant, outside policy, NEVER_AUTO_GRANT, no grant maps) or at 3 heals per
+    member per sprint / 2 per dispatch. Grants are recorded in a per-member
+    ledger folder so the next sprint keeps them. A plan-reviewer refusal is
+    never counted as a plan rejection.
 
 ## Cost accounting
 
-Claude cache-read and cache-write tokens are parsed and priced server-side and
-included in sprint budgets, totals, and the cost report. Trade-off: token-unit
-budgets count cache-read tokens 1:1 with fresh tokens, which overstates them.
+A Claude dispatch is charged the CLI's own `total_cost_usd` (list price, model-
+and cache-TTL-correct). It is cumulative across `--resume`, so the server
+records each session's last figure and charges the delta (`usage.cost_usd`).
+The rate table (Anthropic list prices; cache writes at the 1-hour rate the CLI
+uses) prices only results without a reported cost, e.g. agy or opencode.
+Token-unit budgets count input+output only; dollar budgets carry the cache cost.
 
 ## SSH / SFTP
 

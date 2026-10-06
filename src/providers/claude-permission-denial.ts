@@ -21,6 +21,13 @@ import type { PermissionDenial, PermissionDenialItem } from './provider.js';
  * 'permission_denied' (any partial reply kept in `response`) and the caller
  * heals via compose_permissions. This matches agy, whose headless denials are
  * failures regardless of the reply.
+ *
+ * Exception, decided by the session's permission mode (ClaudeProvider.
+ * parseResponse via claudePermissionMode): in auto or bypass mode a refusal
+ * is the safety classifier or a deliberate deny rule, never a missing allow
+ * rule. Those denials are marked healable:false; a complete reply then comes
+ * back as a success carrying them as a logged warning, and no caller may ever
+ * add a grant for them.
  */
 
 const SHELL_CHAIN_RE = /[|;&`<>]|\$\(/;
@@ -98,6 +105,7 @@ export function detectClaudePermissionDenial(stdout: string): PermissionDenial |
   }
   const actions = [...new Set(denials.map(d => d.action))];
   const perDenial = denials.map(d => suggestedGrantsFor(d));
+  denials.forEach((d, i) => { d.suggestedGrants = perDenial[i]; });
   const primary = [...new Set(perDenial.map(g => g[0]).filter((g): g is string => !!g))];
   const narrow = [...new Set(perDenial.flatMap(g => g.slice(1)))].filter(g => !primary.includes(g));
   const suggestedGrants = [...primary, ...narrow];
