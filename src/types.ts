@@ -132,6 +132,11 @@ export interface FleetMcpStatus {
   /** Where `port` came from: the member-install marker, or the built-in
    *  default because the marker records no port (detail says so). */
   portSource?: 'marker' | 'default';
+  /** Set by the probe that replaced an unmarked (full) install with a member
+   *  install (fleet_install "replace-full"): the replaced version, what was
+   *  removed or moved, and the timestamped backup directory on the member.
+   *  An observation of that probe only; not carried to later probes. */
+  replacedFullInstall?: { previousVersion: string; removed: string[]; backupPath: string };
 }
 
 export interface GitHubAppConfig {

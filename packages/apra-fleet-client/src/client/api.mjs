@@ -219,7 +219,7 @@
  * @property {string[]} [tags] - Optional list of free-form labels
  * @property {"false" | "auto" | "dangerous"} [unattended] - Permission mode for unattended execution
  * @property {boolean} [unreservable] - Mark this member as never exclusively reservable, so it can be shared by more than one sprint at once (e.g. fleet-sprint's shared "backlog" role)
- * @property {"auto" | "skip"} [fleet_install] - Whether registration installs/updates apra-fleet on the member, writes its per-folder apra-fleet MCP entry and verifies it (default "auto"; local members only get the MEMBER-session probe). "skip" performs no install and reports the probe result only. Registration succeeds either way; the result reports fleetMcp.
+ * @property {"auto" | "skip" | "replace-full"} [fleet_install] - Whether registration installs/updates apra-fleet on the member, writes its per-folder apra-fleet MCP entry and verifies it (default "auto"; local members only get the MEMBER-session probe; a full install without the member-install marker is never touched). "replace-full": also explicitly opts in to replacing such a full install with a member install (backup of data and fleet.key, uninstall, member install, self-register). "skip" performs no install and reports the probe result only. Registration succeeds either way; the result reports fleetMcp.
  * @property {"gitbash" | "pwsh7" | "powershell5"} [shell] - Override the probed Windows shell for this member. Windows members only -- ignored for non-windows members.
  */
 
@@ -227,7 +227,7 @@
  * @typedef {Object} UpdateMemberOptions
  * @property {string} [member_id] - UUID of the member
  * @property {string} [member_name] - Friendly name of the member
- * @property {"auto" | "skip"} [fleet_install] - "auto": for a remote member, install/upgrade the member's own apra-fleet when missing or older (build-aware), self-register, write its per-folder apra-fleet MCP entry and verify, even when nothing else changed. "skip": never install. Omit: install only on a provider change. Unknown input keys are rejected by the server.
+ * @property {"auto" | "skip" | "replace-full"} [fleet_install] - "auto": for a remote member, install/upgrade the member's own apra-fleet when missing or older (build-aware), self-register, write its per-folder apra-fleet MCP entry and verify, even when nothing else changed; a full install without the member-install marker is never touched. "replace-full": "auto" plus an explicit opt-in to replace such a full install with a member install (backup of data and fleet.key, uninstall, member install, self-register). "skip": never install. Omit: install only on a provider change. Unknown input keys are rejected by the server.
  * @property {string} [friendly_name] - New friendly name
  * @property {string} [work_folder] - New working directory. For non-local (remote/relay) members, must be a fully-qualified/absolute path -- "~" and relative paths are rejected. A folder may hold at most one LLM member and one LLM-less (llm_provider none) member.
  * @property {string} [host] - New host
@@ -272,6 +272,7 @@
  * @property {{state: "missing" | "broken", detail: string, fix: string}} [beads] - Present only when the beads CLI (bd) is not usable on a remote member (not on its PATH nor in <home>/.apra-fleet/bin); independent of state; absent when bd works or could not be probed
  * @property {number} [port] - Remote members: the port of the member's own apra-fleet install, resolved from its member-install marker; the member MCP URL (per-folder entry and per-session config) uses it
  * @property {"marker" | "default"} [portSource] - Where port came from: the member-install marker, or the built-in default because the install recorded no port (detail says so)
+ * @property {{previousVersion: string, removed: string[], backupPath: string}} [replacedFullInstall] - Set by the probe that replaced a full install with a member install (fleet_install "replace-full"): replaced version, what was removed or moved, and the timestamped backup directory on the member
  */
 
 /**

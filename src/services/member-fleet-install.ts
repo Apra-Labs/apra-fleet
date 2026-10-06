@@ -114,7 +114,11 @@ export type FleetInstallUnavailableReason =
   | 'install-failed'
   /** After installing, the member still does not report a version >= the
    *  orchestrator's. */
-  | 'install-unverified';
+  | 'install-unverified'
+  /** The opt-in full-install replacement (fleet_install "replace-full") failed
+   *  at a step that ran on the member; the detail names the step and, from the
+   *  uninstall step on, the rollback commands. */
+  | 'replace-failed';
 
 /** What the probe observed about the member's current install. */
 export type MemberFleetProbe =
@@ -137,6 +141,9 @@ export type MemberFleetInstallResult =
       installed: boolean;
       source?: InstallSource['kind'];
       binPath: string;
+      /** Set when this call replaced an unmarked (full) install with a member
+       *  install (fleet_install "replace-full"). */
+      replaced?: ReplacedFullInstall;
     }
   | {
       state: 'unavailable';
@@ -161,6 +168,9 @@ export interface MemberFleetInstallDeps {
   downloadReleaseAsset(url: string, assetName: string): Promise<string>;
   /** Remove a local temp file created by downloadReleaseAsset. Best effort. */
   removeLocal(localPath: string): void;
+  /** Clock for the full-install replacement's backup timestamp. Optional:
+   *  absent means the real clock. */
+  now?(): Date;
 }
 
 // ---------------------------------------------------------------------------
@@ -615,8 +625,232 @@ export function buildFullInstallReplaceHint(opts: {
   );
   return (
     'The fleet does not touch an apra-fleet install without the member-install marker (a full install, or a member install older than the marker). ' +
-    `To replace it with a member install, its owner runs on the member: ${steps.join('; ')}.`
+    `To replace it with a member install, its owner runs on the member: ${steps.join('; ')}. ` +
+    `Or opt in to the fleet running these steps itself (back up data and fleet.key, uninstall, member install, self-register): update_member {member_id, fleet_install: "${REPLACE_FULL_INSTALL}"}.`
   );
+}
+
+// ---------------------------------------------------------------------------
+// Opt-in full-install replacement (fleet_install "replace-full")
+// ---------------------------------------------------------------------------
+
+/** The explicit fleet_install value that lets the fleet replace an unmarked
+ *  (full) install with a member install. Never implied by "auto". */
+export const REPLACE_FULL_INSTALL = 'replace-full';
+
+/** Tag the linux supervisor step prints when it moved a unit file into the backup. */
+export const SUPERVISOR_MOVED_SENTINEL = '__APRA_FLEET_SUPERVISOR_MOVED__';
+
+/** What a successful replacement removed and where the backup is. */
+export interface ReplacedFullInstall {
+  /** The replaced install's version. */
+  previousVersion: string;
+  /** Human-readable items the replacement removed or moved. */
+  removed: string[];
+  /** Timestamped backup directory on the member (data/ and fleet.key). */
+  backupPath: string;
+}
+
+export type ReplaceStepName = 'backup' | 'uninstall' | 'supervisor' | 'move-data' | 'install';
+
+export interface ReplaceFullInstallPlan {
+  backupDir: string;
+  dataAside: string;
+  /** Ordered member-bound commands (already wrapped for the member's shell). */
+  steps: Array<{ name: ReplaceStepName; command: string }>;
+  /** One-line rollback commands, in order, for a failure from the uninstall step on. */
+  rollback: string[];
+}
+
+/** Path-safe UTC stamp (no ':'): 20261006T143000Z. */
+export function replaceBackupStamp(d: Date): string {
+  return d.toISOString().replace(/\.\d+Z$/, 'Z').replace(/[-:]/g, '');
+}
+
+/**
+ * The member-bound command sequence of the opt-in replacement (pure; exported
+ * for tests). Every path is resolved here from the probed home and quoted for
+ * the member's shell; PowerShell is wrapped via -EncodedCommand. Steps:
+ *   backup     -- copy data/ and fleet.key (outside data/) into a timestamped dir;
+ *   uninstall  -- the INSTALLED binary's own uninstall --force --yes;
+ *   supervisor -- linux: stop/disable the fleet-supervisor user unit when its
+ *                 unit file exists, move the file into the backup, daemon-reload
+ *                 (uninstall leaves it running);
+ *   move-data  -- move data/ aside;
+ *   install    -- the staged CURRENT installer in member mode.
+ * Self-registration and the per-folder MCP entry follow in the probe.
+ */
+export function buildReplaceFullInstallPlan(opts: {
+  home: string;
+  targetOs: TargetOS;
+  shell: MemberShell;
+  provider: LlmProvider;
+  installerPath: string;
+  stamp: string;
+}): ReplaceFullInstallPlan {
+  const { home, targetOs, shell, provider, installerPath, stamp } = opts;
+  const posix = isPosixShell(targetOs, shell);
+  const j = (...parts: string[]) => memberJoin(targetOs, shell, home, ...parts);
+  const data = j('.apra-fleet', 'data');
+  const key = j('.apra-fleet', 'fleet.key');
+  const bin = memberBinPath(home, targetOs, shell);
+  const backupDir = j(`.apra-fleet-replace-backup-${stamp}`);
+  const backupData = memberJoin(targetOs, shell, backupDir, 'data');
+  const backupKey = memberJoin(targetOs, shell, backupDir, 'fleet.key');
+  const dataAside = j('.apra-fleet', `data.replaced-${stamp}`);
+  const unitName = 'fleet-supervisor.service';
+  const unit = j('.config', 'systemd', 'user', unitName);
+  const backupUnit = memberJoin(targetOs, shell, backupDir, unitName);
+  const q = posix ? posixQuote : psQuote;
+  // PowerShell steps run inside wrapPowerShellEncoded, which sets
+  // $ErrorActionPreference = 'Stop' and exits non-zero on an error or a native
+  // non-zero $LASTEXITCODE: a failed copy, move or uninstall is a failed step.
+  const cmd = (posixForm: string, psForm: string) => memberCommandFor(targetOs, shell, { posix: posixForm, powershell: psForm });
+
+  const steps: ReplaceFullInstallPlan['steps'] = [
+    {
+      name: 'backup',
+      command: cmd(
+        `mkdir -p ${q(backupDir)} && cp -R ${q(data)} ${q(backupData)} && if [ -f ${q(key)} ]; then cp ${q(key)} ${q(backupKey)}; fi`,
+        `New-Item -ItemType Directory -Force -Path ${q(backupDir)} | Out-Null; Copy-Item -Recurse -LiteralPath ${q(data)} -Destination ${q(backupData)}; if (Test-Path -LiteralPath ${q(key)} -PathType Leaf) { Copy-Item -LiteralPath ${q(key)} -Destination ${q(backupKey)} }`,
+      ),
+    },
+    {
+      name: 'uninstall',
+      command: cmd(
+        `${q(bin)} uninstall --force --yes`,
+        `& ${q(bin)} uninstall --force --yes`,
+      ),
+    },
+  ];
+  if (targetOs === 'linux' && posix) {
+    steps.push({
+      name: 'supervisor',
+      command:
+        `if [ -f ${q(unit)} ]; then systemctl --user stop fleet-supervisor || true; systemctl --user disable fleet-supervisor || true; ` +
+        `mv ${q(unit)} ${q(backupUnit)} && printf '%s\\n' '${SUPERVISOR_MOVED_SENTINEL}' && (systemctl --user daemon-reload || true); fi`,
+    });
+  }
+  steps.push(
+    {
+      name: 'move-data',
+      command: cmd(`mv ${q(data)} ${q(dataAside)}`, `Move-Item -LiteralPath ${q(data)} -Destination ${q(dataAside)}`),
+    },
+    { name: 'install', command: buildInstallCommand(installerPath, provider, targetOs, shell) },
+  );
+
+  const rollback: string[] = posix
+    ? [
+        `rm -rf ${q(data)} && cp -R ${q(backupData)} ${q(data)}`,
+        `if [ -f ${q(backupKey)} ]; then cp ${q(backupKey)} ${q(key)}; fi`,
+        ...(targetOs === 'linux'
+          ? [`if [ -f ${q(backupUnit)} ]; then mkdir -p ${q(j('.config', 'systemd', 'user'))} && mv ${q(backupUnit)} ${q(unit)} && systemctl --user daemon-reload && systemctl --user enable --now fleet-supervisor; fi`]
+          : []),
+        `chmod +x ${q(installerPath)} && ${q(installerPath)} install --llm ${provider} --force`,
+      ]
+    : [
+        `if (Test-Path -LiteralPath ${q(data)}) { Remove-Item -Recurse -Force -LiteralPath ${q(data)} }; Copy-Item -Recurse -LiteralPath ${q(backupData)} -Destination ${q(data)}`,
+        `if (Test-Path -LiteralPath ${q(backupKey)} -PathType Leaf) { Copy-Item -LiteralPath ${q(backupKey)} -Destination ${q(key)} }`,
+        `& ${q(installerPath)} install --llm ${provider} --force`,
+      ];
+  return { backupDir, dataAside, steps, rollback };
+}
+
+const REPLACE_STEP_LABEL: Record<ReplaceStepName, string> = {
+  backup: 'step 1 (back up data and fleet.key)',
+  uninstall: 'step 2 (uninstall with the installed binary)',
+  supervisor: 'step 3 (stop and disable the fleet-supervisor user unit)',
+  'move-data': 'step 4 (move data aside)',
+  install: 'step 5 (run the current installer in member mode)',
+};
+
+/**
+ * Replace an unmarked (full) install at `binPath` with a member install. The
+ * caller has already established: the opt-in was given, an apra-fleet install
+ * runs there, and the marker probe answered cleanly "absent". The installer is
+ * fetched and staged BEFORE anything destructive, so a download, checksum or
+ * transfer failure leaves the install untouched. Never throws.
+ */
+async function replaceFullInstall(
+  agent: Agent,
+  deps: MemberFleetInstallDeps,
+  home: string,
+  binPath: string,
+  previousVersion: string,
+): Promise<MemberFleetInstallResult> {
+  const targetOs = getAgentOS(agent) as TargetOS;
+  const shell = getAgentShell(agent);
+  const provider: LlmProvider = agent.llmProvider ?? 'claude';
+  const orchestratorVersion = deps.orchestratorVersion();
+  const untouched = (reason: FleetInstallUnavailableReason, detail: string): MemberFleetInstallResult => ({
+    state: 'unavailable', reason, detail: `${detail}; the full install was not replaced and nothing on the member was changed`, version: previousVersion,
+  });
+
+  const arch = await probeMemberArch(agent, deps);
+  if (!arch) return untouched('arch-unknown', 'the member CPU architecture could not be probed');
+  const source = chooseInstallSource({ os: targetOs, arch }, deps.orchestratorPlatform(), deps.orchestratorExecutable(), orchestratorVersion);
+  if (source.kind === 'unavailable') return untouched(source.reason, source.detail);
+
+  let localPath: string;
+  let downloaded = false;
+  if (source.kind === 'orchestrator-executable') {
+    localPath = source.localPath;
+  } else {
+    try {
+      localPath = await deps.downloadReleaseAsset(source.url, source.assetName);
+      downloaded = true;
+    } catch (err: unknown) {
+      return untouched(err instanceof ReleaseDownloadError ? err.reason : 'download-failed', `${source.url}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  const stagingDir = memberStagingDir(home, targetOs, shell);
+  try {
+    const sent = await deps.transfer(agent, [localPath], stagingDir);
+    if (sent.failed.length > 0 || sent.success.length === 0) {
+      return untouched('transfer-failed', sent.failed.map(f => `${f.path}: ${f.error}`).join('; ') || 'nothing was transferred');
+    }
+  } finally {
+    if (downloaded) deps.removeLocal(localPath);
+  }
+  const installerPath = memberJoin(targetOs, shell, stagingDir, anyBasename(localPath));
+
+  const stamp = replaceBackupStamp(deps.now ? deps.now() : new Date());
+  const plan = buildReplaceFullInstallPlan({ home, targetOs, shell, provider, installerPath, stamp });
+  let supervisorMoved = false;
+  const failedAt = (name: ReplaceStepName | 'verify', why: string): MemberFleetInstallResult => {
+    const label = name === 'verify' ? 'the version check after step 5' : REPLACE_STEP_LABEL[name];
+    const detail = name === 'backup'
+      ? `replacing the full install failed at ${label}: ${why}. Nothing was removed; the apra-fleet ${previousVersion} full install is unchanged`
+      : `replacing the full install failed at ${label}: ${why}. The backup is at ${plan.backupDir}. To roll back, run on the member: ${plan.rollback.join('; ')}`;
+    return { state: 'unavailable', reason: 'replace-failed', detail, version: previousVersion };
+  };
+  for (const step of plan.steps) {
+    let r: SSHExecResult;
+    try {
+      r = await deps.exec(agent, step.command, step.name === 'install' || step.name === 'uninstall' ? INSTALL_TIMEOUT_MS : MEMBER_CALL_TIMEOUT_MS);
+    } catch (err: unknown) {
+      return failedAt(step.name, err instanceof Error ? err.message : String(err));
+    }
+    if (r.code !== 0) {
+      return failedAt(step.name, `exited ${r.code}: ${(r.stderr.trim() || r.stdout.trim()).slice(-400)}`);
+    }
+    if (step.name === 'supervisor' && r.stdout.includes(SUPERVISOR_MOVED_SENTINEL)) supervisorMoved = true;
+  }
+
+  const after = await probeMemberFleetVersion(agent, binPath, deps);
+  if (after.kind !== 'installed' || isMemberOutdated(after.version, orchestratorVersion, source.kind === 'orchestrator-executable')) {
+    const seen = after.kind === 'installed' ? `reports ${after.version}` : after.kind === 'probe-failed' ? after.detail : after.kind;
+    return failedAt('verify', `after install the member ${seen}; expected >= ${orchestratorVersion}`);
+  }
+  const removed = [
+    `the apra-fleet ${previousVersion} full install (uninstalled with its own binary)`,
+    ...(supervisorMoved ? [`the fleet-supervisor user unit (stopped, disabled, unit file moved into the backup)`] : []),
+    `its data directory (moved aside to ${plan.dataAside})`,
+  ];
+  return {
+    state: 'available', version: after.version, installed: true, source: source.kind, binPath,
+    replaced: { previousVersion, removed, backupPath: plan.backupDir },
+  };
 }
 
 /**
@@ -752,16 +986,16 @@ export async function probeMemberInstallMarker(
 export async function ensureMemberFleetInstall(
   agent: Agent,
   deps: MemberFleetInstallDeps = defaultMemberFleetInstallDeps(),
-  opts: { force?: boolean } = {},
+  opts: { force?: boolean; replaceFull?: boolean } = {},
 ): Promise<MemberFleetInstallResult> {
   try {
-    return await ensureOnce(agent, deps, opts.force === true);
+    return await ensureOnce(agent, deps, opts.force === true, opts.replaceFull === true);
   } catch (err: unknown) {
     return { state: 'unavailable', reason: 'probe-failed', detail: `install flow threw: ${err instanceof Error ? err.message : String(err)}` };
   }
 }
 
-async function ensureOnce(agent: Agent, deps: MemberFleetInstallDeps, force: boolean): Promise<MemberFleetInstallResult> {
+async function ensureOnce(agent: Agent, deps: MemberFleetInstallDeps, force: boolean, replaceFull = false): Promise<MemberFleetInstallResult> {
   const targetOs = getAgentOS(agent) as TargetOS;
   const shell = getAgentShell(agent);
   const provider: LlmProvider = agent.llmProvider ?? 'claude';
@@ -776,6 +1010,18 @@ async function ensureOnce(agent: Agent, deps: MemberFleetInstallDeps, force: boo
   const before = await probeMemberFleetVersion(agent, binPath, deps);
   if (before.kind === 'probe-failed') {
     return { state: 'unavailable', reason: 'probe-failed', detail: before.detail };
+  }
+  // Opt-in replacement (fleet_install "replace-full"): decided BEFORE the
+  // up-to-date gates, so a same-version full install is replaced too. Only a
+  // clean "absent" marker answer on a working install replaces; a probe failure
+  // refuses with no destructive command; a marked install takes the normal
+  // upgrade path below.
+  if (replaceFull && before.kind === 'installed') {
+    const marker = await probeMemberInstallMarker(agent, home, deps);
+    if (marker.kind === 'probe-failed') {
+      return { state: 'unavailable', reason: 'probe-failed', detail: `${marker.detail}; the opt-in full-install replacement was not run`, version: before.version };
+    }
+    if (marker.kind === 'absent') return replaceFullInstall(agent, deps, home, binPath, before.version);
   }
   // Pre-gate: only a strictly older core is outdated for certain; a same-core
   // build difference is decided below once the install source is known.
@@ -952,9 +1198,10 @@ export const FLEET_MCP_FIX: Record<FleetMcpUnavailableReason | FleetMcpProviderR
   'download-timeout': 'The release download did not finish in time; check the network to the release host, then run update_member with fleet_install "auto".',
   'checksum-mismatch': 'The downloaded installer did not match its published SHA256SUMS; do not install it -- run update_member with fleet_install "auto" again, and report it if it repeats.',
   'checksum-unavailable': 'No published SHA256SUMS lists this installer (release missing or incomplete); publish the release assets, then run update_member with fleet_install "auto".',
-  'full-install-running': 'The member apra-fleet install has no member-install marker (a full install, or a member install older than the marker), so the fleet leaves it alone; its owner replaces it with a member install using the steps in the detail (back up data and fleet.key, uninstall with the installed binary, run the staged current installer with install --member), then update_member {member_id, fleet_install: "auto"}.',
+  'full-install-running': 'The member apra-fleet install has no member-install marker (a full install, or a member install older than the marker), so the fleet leaves it alone; its owner replaces it with a member install using the steps in the detail (back up data and fleet.key, uninstall with the installed binary, run the staged current installer with install --member), then update_member {member_id, fleet_install: "auto"} -- or opts in to the fleet doing it with update_member {member_id, fleet_install: "replace-full"}.',
   'transfer-failed': 'Check file transfer to the member works (disk space, permissions), then run update_member with fleet_install "auto".',
   'install-failed': 'Run the apra-fleet installer on the member by hand and read its error, then member_detail with refresh:true.',
+  'replace-failed': 'The full-install replacement stopped at the step named in the detail; restore from the backup with the rollback commands in the detail (if listed), fix the cause, then run update_member {member_id, fleet_install: "replace-full"} again.',
   'install-unverified': 'Run update_member {member_id, fleet_install: "auto"} to upgrade apra-fleet on the member to the orchestrator version, then member_detail with refresh:true.',
   'install-too-old': 'Run update_member {member_id, fleet_install: "auto"} to upgrade apra-fleet on the member (its install predates register-member --id), then member_detail with refresh:true.',
   'E-FOLDER-TAKEN': 'The member install has this work folder registered under another id; unregister it there, then member_detail with refresh:true.',
@@ -1403,7 +1650,7 @@ async function probeMemberFleetMcpInner(
 
     const status = agent.agentType === 'local'
       ? await probeLocal(agent, deps, unavailable, checkedAt)
-      : await probeRemote(agent, deps, opts.install !== false, unavailable, checkedAt, opts.forceInstall === true, ctx, opts.writeMcpEntry === true);
+      : await probeRemote(agent, deps, opts.install !== false, unavailable, checkedAt, opts.forceInstall === true, ctx, opts.writeMcpEntry === true, opts.replaceFull === true);
     // The member session listing kb_*/code_* proves the server, not what a
     // dispatched role sees: roles run as `claude --agent <role>`, whose tools
     // list filters the session. Verify that path too.
@@ -1427,7 +1674,14 @@ async function probeMemberFleetMcpInner(
 /** Probe options. `writeMcpEntry` (register_member / update_member with a
  *  fleet install) writes the per-folder MCP entry before it is checked;
  *  without it (member_detail refresh) the probe stays read-only. */
-export interface ProbeOpts { install?: boolean; forceInstall?: boolean; writeMcpEntry?: boolean }
+export interface ProbeOpts {
+  install?: boolean;
+  forceInstall?: boolean;
+  writeMcpEntry?: boolean;
+  /** fleet_install "replace-full": with `install`, replace an unmarked (full)
+   *  install with a member install instead of refusing it. Never implied. */
+  replaceFull?: boolean;
+}
 
 type Unavailable = (reason: FleetMcpUnavailableReason, detail?: string, extra?: Partial<FleetMcpStatus>) => FleetMcpStatus;
 
@@ -1438,7 +1692,7 @@ type Unavailable = (reason: FleetMcpUnavailableReason, detail?: string, extra?: 
  * older install there is intact and stays in use (reported, never silent).
  */
 const INSTALL_FAIL_CLOSED: ReadonlySet<string> = new Set([
-  'install-failed', 'install-unverified', 'full-install-running', 'probe-failed', 'home-unresolved',
+  'install-failed', 'install-unverified', 'full-install-running', 'probe-failed', 'home-unresolved', 'replace-failed',
 ]);
 
 /** One line naming a failed upgrade and the older install still in use. */
@@ -1480,6 +1734,7 @@ async function probeRemote(
   forceInstall = false,
   ctx: { installedNow: boolean } = { installedNow: false },
   writeMcpEntry = false,
+  replaceFull = false,
 ): Promise<FleetMcpStatus> {
   const targetOs = getAgentOS(agent) as TargetOS;
   const shell = getAgentShell(agent);
@@ -1494,9 +1749,15 @@ async function probeRemote(
   // A requested upgrade that failed BEFORE anything on the member was touched,
   // while the older install keeps serving: carried into the final status.
   let installFailure: { reason: string; detail?: string } | undefined;
+  // A full install this probe replaced (opt-in): reported on every outcome.
+  let replaced: ReplacedFullInstall | undefined;
   if (install) {
-    const r = await ensureMemberFleetInstall(agent, deps, { force: forceInstall });
-    if (r.state === 'available') { version = r.version; if (r.installed) { ctx.installedNow = true; installedNow = true; } }
+    const r = await ensureMemberFleetInstall(agent, deps, { force: forceInstall, replaceFull });
+    if (r.state === 'available') {
+      version = r.version;
+      if (r.installed) { ctx.installedNow = true; installedNow = true; }
+      replaced = r.replaced;
+    }
     // Fail closed -- with the install's OWN reason and detail, never a later
     // step's error (apra-fleet-b4g.73) -- when the installer ran or was
     // refused on the member, the probe itself failed, there is no older
@@ -1522,13 +1783,20 @@ async function probeRemote(
     if (p.kind !== 'installed') return unavailable('install-unverified', p.kind === 'broken' ? p.detail : 'apra-fleet is not installed on the member');
     version = p.version;
   }
-  const withVersion = { version, ...(installFailure ? { installFailure } : {}) };
+  const withVersion = {
+    version,
+    ...(installFailure ? { installFailure } : {}),
+    ...(replaced ? { replacedFullInstall: replaced } : {}),
+  };
   const upgradeNote = installFailure ? installFailureNote(installFailure, version) : undefined;
+  const replaceNote = replaced
+    ? `replaced the apra-fleet ${replaced.previousVersion} full install with a member install ${version}; removed: ${replaced.removed.join('; ')}; backup at ${replaced.backupPath}`
+    : undefined;
   // Set once the member's port is resolved (step 2c): the port fields and the
   // note about it ride on every later outcome, like a failed upgrade.
   let portFields: Partial<FleetMcpStatus> = {};
   let portNote: string | undefined;
-  const notes = (): string[] => [upgradeNote, portNote].filter((n): n is string => !!n);
+  const notes = (): string[] => [replaceNote, upgradeNote, portNote].filter((n): n is string => !!n);
   // Every later outcome keeps a failed upgrade visible: a later step's error
   // must never hide it, and an available status still names it.
   const fail: Unavailable = (reason, detail) => {
@@ -1635,6 +1903,7 @@ async function probeRemote(
   return {
     state: 'available', version, checkedAt: checkedAt(),
     ...(installFailure ? { installFailure } : {}),
+    ...(replaced ? { replacedFullInstall: replaced } : {}),
     ...(finalNotes.length ? { detail: finalNotes.join('. ') } : {}),
     ...portFields,
   };
