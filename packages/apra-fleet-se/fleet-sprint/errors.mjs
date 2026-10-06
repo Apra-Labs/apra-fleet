@@ -951,3 +951,43 @@ export class BeadsIdentityError extends WorkflowError {
         if (mismatches) this.mismatches = mismatches;
     }
 }
+
+// ---------------------------------------------------------------------------
+// Member permission config (the provider's composed per-folder config)
+// ---------------------------------------------------------------------------
+
+/**
+ * Thrown by the member permission-config preflight
+ * (member-provisioning.mjs createPermissionConfigPreflight) BEFORE any
+ * dispatch when a dispatch member's composed per-folder permission config
+ * (its provider's permissionConfigPaths(), as reported by member_detail) is
+ * missing from its work folder -- a re-clone, `git clean -xdf` or fresh
+ * worktree drops it -- and re-composing it with compose_permissions failed or
+ * did not bring it back, or it could not be probed at all. Dispatching would
+ * hand the role a session whose tool calls (e.g. bd) are refused as
+ * "requires approval".
+ *
+ * Like BeadsIdentityError, a WorkflowError but deliberately NOT a typed
+ * abort: nothing has been dispatched, so there is no partial work to push.
+ *
+ * @property {string} member - the member whose config is missing
+ * @property {string[]} files - the missing (or unprobeable) config file(s)
+ * @property {string} role - the compose_permissions role the fix names
+ */
+export class MemberPermissionConfigError extends WorkflowError {
+    /**
+     * @param {string} message
+     * @param {{ member: string, files?: string[], role?: string, details?: object, cause?: unknown }} opts
+     */
+    constructor(message, opts = {}) {
+        const { member, files = [], role, details, cause } = opts;
+        super(message, {
+            code: 'MEMBER_PERMISSION_CONFIG',
+            details: { member, files, role, ...details },
+            cause,
+        });
+        this.member = member;
+        this.files = files;
+        this.role = role;
+    }
+}

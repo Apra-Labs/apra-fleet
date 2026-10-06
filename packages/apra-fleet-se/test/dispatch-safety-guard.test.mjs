@@ -1156,8 +1156,10 @@ test('every command() call site in member-sync.mjs passes member_name or member_
 // (base64-encoded argv, no `$`-expansion/backticks/template literals) --
 // exactly the invariant shell-command-guard.mjs separately enforces on this
 // same file. createMemberSessionGuard and createUnattendedAutoProvisioner own
-// no command() site of their own, so a THIRD site appearing here means one of
-// those two started issuing a raw command directly.
+// no command() site of their own. The THIRD site is
+// createPermissionConfigPreflight's per-OS/shell file-exists probe (it passes
+// member_name), so a FOURTH site appearing here means one of the other
+// helpers started issuing a raw command directly.
 //
 // Its agent() baseline is ZERO, same per-module baseline reasoning as the
 // other extracted helper modules above -- a raw `agent(` appearing in this
@@ -1165,7 +1167,7 @@ test('every command() call site in member-sync.mjs passes member_name or member_
 // helper, which is exactly what a zero baseline turns red.
 // =============================================================================
 const MEMBER_PROVISIONING_PATH = path.join(__dirname, '../fleet-sprint/member-provisioning.mjs');
-const EXPECTED_MEMBER_PROVISIONING_COMMAND_COUNT = 2;
+const EXPECTED_MEMBER_PROVISIONING_COMMAND_COUNT = 3;
 
 test('every command() call site in member-provisioning.mjs passes member_name or member_id', () => {
     const { sites, violations } = checkPath(MEMBER_PROVISIONING_PATH);

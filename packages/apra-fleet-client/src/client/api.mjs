@@ -291,6 +291,10 @@
  *   minted token carries a given permission (e.g. GitHub's 'workflows', required to push any
  *   .github/workflows/** change) must read THIS, not their own provisioning default -- the two differ
  *   exactly for the members at risk.
+ * @property {string[]} [permissionConfigPaths] - The member's provider permission config file(s)
+ *   that compose_permissions writes (work-folder-relative, or home-anchored "~/..."), e.g.
+ *   ['.claude/settings.local.json'] for Claude. [] when the provider cannot name them yet (agy before
+ *   its project is provisioned). Reported even for an offline member. Absent on older servers.
  * @property {Object} connectivity - Connectivity check result (status, latencyMs, auth, keyPath, or error)
  * @property {boolean} [offline] - Set when the member could not be reached
  * @property {string} llmProvider - LLM provider for this member (default: "claude")

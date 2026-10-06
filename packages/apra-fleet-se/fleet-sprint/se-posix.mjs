@@ -42,6 +42,10 @@ export function assertSafeRelativePath(relPath, what = 'path') {
   return p;
 }
 
+/** Markers printed by every dialect's fileExistsProbe(). */
+export const FILE_PROBE_PRESENT = 'present';
+export const FILE_PROBE_ABSENT = 'absent';
+
 /**
  * A single file line safe to embed single-quoted in POSIX and PowerShell:
  * no single quote, backslash, $, backtick or newline.
@@ -198,6 +202,19 @@ export class SePosixCommands {
       + `if [ -s "$excl" ] && [ -n "$(tail -c 1 "$excl")" ]; then printf '\\n' >> "$excl"; fi; `
       + `printf '%s\\n' '${e}' >> "$excl"; }; }; fi`;
     return this.wrapForMember(script);
+  }
+
+  /**
+   * Report whether a work-folder-relative file exists: prints exactly
+   * FILE_PROBE_PRESENT or FILE_PROBE_ABSENT and exits 0 either way, so a
+   * non-zero exit always means the probe itself failed. Read-only.
+   * Caller: member-provisioning.mjs permission-config preflight.
+   * @param {string} relPath validated
+   * @returns {string}
+   */
+  fileExistsProbe(relPath) {
+    const p = assertSafeRelativePath(relPath, 'file path');
+    return this.wrapForMember(`if [ -e '${p}' ]; then echo ${FILE_PROBE_PRESENT}; else echo ${FILE_PROBE_ABSENT}; fi`);
   }
 
   /**

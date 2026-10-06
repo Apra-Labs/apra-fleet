@@ -81,6 +81,7 @@ import {
 import {
     createMemberSessionGuard, createUnattendedAutoProvisioner,
     createDeployPermissionsProvisioner, stageCommandBodyMemberSide,
+    createPermissionConfigPreflight,
 } from './member-provisioning.mjs';
 import {
     parseOwnerRepoFromRemoteUrl, parseRepoScopeFromRemoteUrl, vcsCredentialLabelForProvider,
@@ -1396,6 +1397,13 @@ async function runSprintCycle(context) {
     // VCS credential ensured first -- and re-verified; failing that, the
     // sprint stops with BEADS_SETUP_FAILED. The set-up commands go through
     // command() above, so noteMemberCommand() sees them.
+    // Member-bound SE command builder per member OS/shell, shared by the two
+    // member preflights below.
+    const memberSeCommands = async (member) => getSeCommands(await resolveMemberTarget({
+        fleetApi: (args && typeof args.callTool === 'function') ? sprintScopedFleetApi({ callTool: args.callTool, log }) : undefined,
+        member,
+        log,
+    }));
     const beadsSetupMembers = [...new Set([
         backlogMember,
         ...BEADS_READING_ROLES.flatMap((role) => getMembersForRole(role) || []),
@@ -1414,12 +1422,37 @@ async function runSprintCycle(context) {
         onAuthFailure,
         // Built per member OS/shell (member_detail via resolveMemberTarget,
         // which degrades to POSIX and logs when the member cannot be resolved).
-        memberShell: async (member) => getSeCommands(await resolveMemberTarget({
-            fleetApi: (args && typeof args.callTool === 'function') ? sprintScopedFleetApi({ callTool: args.callTool, log }) : undefined,
-            member,
-            log,
-        })),
+        memberShell: memberSeCommands,
     });
+
+    // Member permission-config preflight: every dispatch member's composed
+    // per-folder config (its provider's permissionConfigPaths, reported by
+    // member_detail) must be in its work folder before any dispatch. A
+    // re-clone / `git clean -xdf` / fresh worktree drops it while member init
+    // still reports OK, and the role's tool calls (bd included) are then
+    // refused as "requires approval". Missing -> one compose_permissions call
+    // for the member's role and a re-probe; still missing or compose failing
+    // -> MemberPermissionConfigError naming member, file and fix. Present
+    // configs are untouched. Same three-way precedence as
+    // ensureDeployPermissions below: an injected
+    // `context.verifyPermissionConfigs` (tests), else the real
+    // compose_permissions-backed check from `args.callTool`, else a no-op when
+    // there is no fleet connection to compose through.
+    const permissionConfigMembers = new Map();
+    for (const role of ROLES) {
+        for (const m of (getMembersForRole(role) || [])) {
+            if (!m) continue;
+            if (!permissionConfigMembers.has(m)) permissionConfigMembers.set(m, []);
+            const roles = permissionConfigMembers.get(m);
+            if (!roles.includes(role)) roles.push(role);
+        }
+    }
+    const verifyPermissionConfigs = context.verifyPermissionConfigs ?? (
+        (args && typeof args.callTool === 'function')
+            ? createPermissionConfigPreflight({ callTool: args.callTool, command, log, memberShell: memberSeCommands })
+            : async () => ({ composed: [] })
+    );
+    await verifyPermissionConfigs(permissionConfigMembers);
 
     // Self-heals deploy.md's declared Permissions onto the deployer /
     // integ-test-runner / regression-test-runner member before each of

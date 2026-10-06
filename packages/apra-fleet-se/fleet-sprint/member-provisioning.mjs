@@ -40,9 +40,14 @@
 // expansion (base64-encoded argv, no `$`/backtick/template-literal
 // interpolation), which is exactly the invariant shell-command-guard.mjs
 // enforces and reads GUARDED_MODULES to find.
+// A third command() site was added later: createPermissionConfigPreflight's
+// file-exists probe, built per member OS/shell by SeOsCommands.fileExistsProbe
+// from a validated literal work-folder-relative path (no environment reads).
 
 import { ApraFleet } from '@apralabs/apra-fleet-client';
 import { resultText } from './mcp-result.mjs';
+import { MemberPermissionConfigError } from './errors.mjs';
+import { FILE_PROBE_PRESENT, FILE_PROBE_ABSENT } from './se-posix.mjs';
 
 /**
  * Guards every "resume" re-dispatch below against spawning a second
@@ -208,6 +213,167 @@ export function createDeployPermissionsProvisioner(opts = {}) {
         } catch (err) {
             log(`[deploy-permissions] could not auto-provision deploy.md permissions on '${member}' (continuing -- the deployer's own Step 0a check remains the backstop): ${err.message}`);
         }
+    };
+}
+
+/**
+ * Sprint roles whose members get compose_permissions' read-mostly 'reviewer'
+ * profile. A member serving ANY other role (or a mix) gets 'doer', the
+ * superset, so re-composing never narrows what one of its roles needs.
+ */
+export const PERMISSION_CONFIG_REVIEWER_ROLES = Object.freeze(['reviewer', 'plan-reviewer', 'ci-watcher']);
+const REVIEWER_ROLE_SET = new Set(PERMISSION_CONFIG_REVIEWER_ROLES);
+
+/**
+ * compose_permissions role for a member serving `roles`.
+ * @param {string[]} roles
+ * @returns {'doer'|'reviewer'}
+ */
+export function composeRoleForRoles(roles) {
+    const list = (roles || []).filter(Boolean);
+    return list.length > 0 && list.every((r) => REVIEWER_ROLE_SET.has(r)) ? 'reviewer' : 'doer';
+}
+
+const PERMISSION_PROBE_TIMEOUT_S = 60;
+
+function memberDetailJson(res) {
+    const text = resultText(res);
+    return JSON.parse(text);
+}
+
+// A compose_permissions result that reports failure in its text (the tool
+// returns its refusals/delivery failures as a text result, not a throw).
+function composeFailureText(res) {
+    if (res && typeof res === 'object' && res.isError) return resultText(res) || 'compose_permissions reported an error';
+    const text = resultText(res).trim();
+    if (/^(\u274c|\[FAIL\])/.test(text)) return text;
+    return null;
+}
+
+/**
+ * Member-init check for every dispatch member's composed per-folder
+ * permission config (a re-cloned work folder, `git clean -xdf` or a fresh
+ * worktree loses it, and the member's role then has its tool calls -- bd
+ * included -- refused as "requires approval" while member init still reports
+ * OK). For each member, BEFORE any dispatch:
+ *
+ *   1. read the provider's permission config file(s) from member_detail
+ *      (`permissionConfigPaths`, straight from the member's ProviderAdapter --
+ *      never assumed to be Claude's);
+ *   2. probe each work-folder-relative one with a per-OS/shell command
+ *      (memberShell(member).fileExistsProbe -- never shell-level expansion);
+ *   3. if any is missing, call compose_permissions ONCE for the member's
+ *      role (composeRoleForRoles) and re-probe;
+ *   4. still missing, compose failing, or a probe that cannot answer ->
+ *      MemberPermissionConfigError naming member, file(s) and the fix.
+ *
+ * Present configs are left untouched (no compose call). Home-anchored paths
+ * ("~/...", agy) are not work-folder files: they are logged and left to
+ * compose_permissions/execute_prompt, which provision them. A server too old
+ * to report permissionConfigPaths is logged and that member is not checked.
+ *
+ * @param {{ callTool: Function, command: Function, memberShell: (member: string) => Promise<{ fileExistsProbe: (relPath: string) => string }>, log?: Function }} opts
+ * @returns {(memberRoles: Map<string, string[]>) => Promise<{ composed: string[] }>}
+ */
+export function createPermissionConfigPreflight(opts = {}) {
+    const { callTool, command, memberShell, log = () => {} } = opts;
+    if (typeof callTool !== 'function') throw new TypeError('createPermissionConfigPreflight: callTool is required');
+    if (typeof command !== 'function') throw new TypeError('createPermissionConfigPreflight: command is required');
+    if (typeof memberShell !== 'function') throw new TypeError('createPermissionConfigPreflight: memberShell is required');
+    const fleetApi = new ApraFleet({ callTool });
+
+    const quoted = (files) => files.map((f) => "'" + f + "'").join(', ');
+    const fixFor = (member, role, files) =>
+        'run compose_permissions for ' + member + ' with role ' + role + ', check ' + quoted(files) +
+        " exists in that member's workFolder, then rerun the sprint";
+
+    const fail = (member, role, files, cause, details) => new MemberPermissionConfigError(
+        "Member preflight failed: member '" + member + "' is missing its composed permission config " + quoted(files) + ' (' + cause + '). ' +
+        'A role dispatched there would have its tool calls refused as requiring approval, so the sprint stops before any dispatch. ' +
+        `To fix: ${fixFor(member, role, files)}.`,
+        { member, files, role, details }
+    );
+
+    async function probe(member, role, shell, file) {
+        let cmd;
+        try {
+            cmd = shell.fileExistsProbe(file);
+        } catch (err) {
+            throw fail(member, role, [file], `no probe could be built for it: ${err.message}`, { step: 'probe' });
+        }
+        let res;
+        try {
+            res = await command(cmd, { member_name: member, silent: true, failSoft: true, timeout_s: PERMISSION_PROBE_TIMEOUT_S, label: `Probe permission config ${file}` });
+        } catch (err) {
+            res = { ok: false, error: err && err.message ? err.message : String(err) };
+        }
+        if (res && typeof res === 'object' && res.ok === false) {
+            throw fail(member, role, [file], `its probe failed: ${String(res.error || 'command failed').replace(/\s+/g, ' ').slice(0, 300)}`, { step: 'probe' });
+        }
+        const out = (res && typeof res === 'object') ? String(res.output ?? '') : String(res ?? '');
+        const last = out.replace(/\r\n/g, '\n').split('\n').map((l) => l.trim()).filter(Boolean).pop() || '';
+        if (last === FILE_PROBE_PRESENT) return true;
+        if (last === FILE_PROBE_ABSENT) return false;
+        throw fail(member, role, [file], `its probe answered '${last.slice(0, 120)}', not '${FILE_PROBE_PRESENT}'/'${FILE_PROBE_ABSENT}'`, { step: 'probe' });
+    }
+
+    return async function verifyPermissionConfigs(memberRoles) {
+        const composed = [];
+        for (const [member, roles] of memberRoles) {
+            const role = composeRoleForRoles(roles);
+            // Which files to check comes only from member_detail. When it
+            // cannot say (unreachable, unparseable, or an older server without
+            // the field) there is nothing to probe: that is a loud WARNING, and
+            // an unreachable member then fails at its own first dispatch.
+            let detail = null;
+            let detailError = null;
+            try {
+                detail = memberDetailJson(await fleetApi.memberDetail({ member_name: member, format: 'json' }));
+            } catch (err) {
+                detailError = err && err.message ? err.message : String(err);
+            }
+            const reported = detail && typeof detail === 'object' ? detail.permissionConfigPaths : undefined;
+            if (!Array.isArray(reported)) {
+                const why = detailError
+                    ? 'member_detail could not be read (' + detailError.replace(/\s+/g, ' ').slice(0, 200) + ')'
+                    : 'member_detail does not report permissionConfigPaths (older fleet server)';
+                log('[permission-config] WARNING: ' + why + " for member '" + member + "'; its composed permission config is not verified this sprint.");
+                continue;
+            }
+            const files = [];
+            for (const p of reported) {
+                const f = String(p || '');
+                if (!f) continue;
+                if (f.startsWith('~')) {
+                    log(`[permission-config] member '${member}': '${f}' is home-anchored, not a workFolder file; left to compose_permissions/execute_prompt to provision.`);
+                    continue;
+                }
+                files.push(f);
+            }
+            if (files.length === 0) continue;
+            const shell = await memberShell(member);
+            const missing = [];
+            for (const f of files) if (!(await probe(member, role, shell, f))) missing.push(f);
+            if (missing.length === 0) {
+                log(`[permission-config] member '${member}': composed permission config present (${files.join(', ')}).`);
+                continue;
+            }
+            log(`[permission-config] member '${member}' is missing its composed permission config (${missing.join(', ')}); re-composing it with compose_permissions role '${role}'.`);
+            let res;
+            try {
+                res = await fleetApi.composePermissions({ member_name: member, role });
+            } catch (err) {
+                throw fail(member, role, missing, `compose_permissions failed: ${err && err.message ? err.message : err}`, { step: 'compose' });
+            }
+            const composeErr = composeFailureText(res);
+            if (composeErr) throw fail(member, role, missing, `compose_permissions failed: ${composeErr.replace(/\s+/g, ' ').slice(0, 300)}`, { step: 'compose' });
+            const still = [];
+            for (const f of missing) if (!(await probe(member, role, shell, f))) still.push(f);
+            if (still.length > 0) throw fail(member, role, still, 'it is still missing after compose_permissions', { step: 'verify' });
+            composed.push(member);
+            log(`[permission-config] member '${member}': permission config re-composed (${missing.join(', ')}).`);
+        }
+        return { composed };
     };
 }
 

@@ -11,7 +11,7 @@
 // core's src/os/windows.ts wrapPowerShellEncoded(), not a reuse of it: this
 // package cannot import core.
 
-import { assertSafeRelativePath, assertSafeFileLine } from './se-posix.mjs';
+import { assertSafeRelativePath, assertSafeFileLine, FILE_PROBE_PRESENT, FILE_PROBE_ABSENT } from './se-posix.mjs';
 
 /**
  * PowerShell command primitives for a Windows member.
@@ -165,6 +165,19 @@ export class SeWindowsCommands {
       `$global:LASTEXITCODE = 0`,
     ].join('; ');
     return this.wrapForMember(script);
+  }
+
+  /**
+   * PowerShell twin of SePosixCommands.fileExistsProbe: prints exactly
+   * FILE_PROBE_PRESENT or FILE_PROBE_ABSENT, literal path only, no member
+   * environment reads. Read-only.
+   * Caller: member-provisioning.mjs permission-config preflight.
+   * @param {string} relPath validated
+   * @returns {string}
+   */
+  fileExistsProbe(relPath) {
+    const p = assertSafeRelativePath(relPath, 'file path');
+    return this.wrapForMember(`if (Test-Path -LiteralPath '${p}') { Write-Output '${FILE_PROBE_PRESENT}' } else { Write-Output '${FILE_PROBE_ABSENT}' }`);
   }
 
   /**
