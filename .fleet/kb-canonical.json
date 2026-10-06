@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "34ff160ff8ee9e2268e851270b911771d06fedca",
     "branch": "feat/kb-redesign",
-    "entry_count": 272
+    "entry_count": 274
   },
   "entries": [
     {
@@ -2395,6 +2395,26 @@
       "updated_at": "2026-10-02T09:20:12.324Z"
     },
     {
+      "id": "70f6818d-fe2c-425e-80b1-e2124b82270c",
+      "type": "knowledge",
+      "title": "merge-kb-canonical identity is the entry id only; title and source_file_hashes are content",
+      "summary": "packages/apra-fleet-se/scripts/merge-kb-canonical.mjs matches bible entries across base/ours/theirs by id only (no title fallback); title and source_file_hashes are in CONTENT_FIELDS; id-less entries throw MalformedInputError (CLI exit 2) and duplicate ids are conflicts (exit 1).",
+      "symbols": [
+        "mergeKbCanonical",
+        "entryIdentity",
+        "contentSignature",
+        "CONTENT_FIELDS",
+        "MalformedInputError"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/scripts/merge-kb-canonical.mjs",
+        "packages/apra-fleet-se/test/merge-kb-canonical.test.mjs",
+        "packages/apra-fleet-se/docs/kb-canonical-merge.md"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T06:57:40.812Z"
+    },
+    {
       "id": "711a5c87-4759-4322-b0a1-310d6c548685",
       "type": "knowledge",
       "title": "Manufacture a deterministic POSIX zombie with sh -c '<child> & echo $!; exec sleep N'",
@@ -4713,6 +4733,28 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-10-02T23:26:04.340Z"
+    },
+    {
+      "id": "f5c5d252-51e0-4107-a55f-c4eba27ea15d",
+      "type": "knowledge",
+      "title": "gitnexus readiness fences a live analyze before meta completeness",
+      "summary": "codeIndexReadiness reports 'building' whenever an analyze is live (lock, isReindexRunning, or recorded run alive), even if meta.json looks complete, because analyze rewrites the index in place; callGitNexus also discards answers if the index generation changed during the call.",
+      "symbols": [
+        "codeIndexReadiness",
+        "indexInconsistency",
+        "indexGeneration",
+        "callGitNexus",
+        "isRecordedAnalyzeAlive",
+        "indexChangedDuringCallError"
+      ],
+      "source_files": [
+        "src/tools/code-intelligence-readiness.ts",
+        "src/tools/code-index-state.ts",
+        "src/tools/code-intelligence-gitnexus.ts",
+        "src/tools/code-intelligence-reindex.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T06:57:41.197Z"
     },
     {
       "id": "f5fd18a6-c552-4dc8-bd9d-3bed5bef3e89",
