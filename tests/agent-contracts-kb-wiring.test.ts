@@ -162,7 +162,7 @@ describe('promotion stays reviewer-only', () => {
 
   it('reviewer still carries the promote contract that mints CONFIRMED', () => {
     const reviewer = byRole.get('reviewer')!;
-    expect(reviewer).toMatch(/^## Step 5 -- Promote or discard knowledge you verified/m);
+    expect(reviewer).toMatch(/^## Step 5 -- Promote, discard, or demote knowledge you verified/m);
   });
 
   it('ci-watcher is told not to capture -- it verifies no claim about the repo', () => {
