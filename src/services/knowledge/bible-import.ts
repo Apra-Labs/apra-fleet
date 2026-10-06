@@ -6,6 +6,7 @@
 
 import fs from 'node:fs';
 import { KbCaptureRejected } from './types.js';
+import { isRepoRelativePath } from './bible-basis-filter.js';
 import type { KBEntryInput, ContentType, Confidence, AudnDecision } from './types.js';
 import type { SqliteProvider } from './sqlite-provider.js';
 
@@ -35,10 +36,12 @@ export class KbBibleError extends Error {
  * error message (e.g. 'kb_import'). A missing file surfaces as the fs error;
  * callers decide whether missing is an error (kb_import) or empty (the view).
  *
- * KB-TRUST PHASE 3a: the bible has TWO on-disk shapes and must accept both.
+ * The bible has THREE on-disk shapes and must accept all of them.
  *   v1 (legacy): a bare JSON array of entries.
  *   v2:          { version, provenance: {commit, branch, entry_count}, entries }
- * Selection is on Array.isArray. The reader must never lag the writer.
+ *   v3:          the v2 envelope; entries may carry source_file_hashes.
+ * Selection is on Array.isArray (v2 and v3 share the envelope). The reader
+ * must never lag the writer.
  */
 export function readBibleEntries(biblePath: string, label: string): unknown[] {
   return parseBibleText(fs.readFileSync(biblePath, 'utf-8'), biblePath, label);
@@ -76,6 +79,34 @@ interface BibleEntry {
   source_files?: string[];
   confidence: Confidence;
   updated_at?: string;
+  source_file_hashes?: unknown;
+}
+
+/**
+ * The basis a v3 bible entry carries, or null when it carries none or an
+ * invalid one. Valid means: a plain object, at least one key, every key
+ * repo-relative (isRepoRelativePath), every value a non-empty string, and
+ * every cited source_file present as a key. Anything else imports
+ * basis-less -- never a partial or re-hashed basis.
+ */
+export function carriedBasisOf(entry: { source_files?: unknown; source_file_hashes?: unknown }): Record<string, string> | null {
+  const raw = entry.source_file_hashes;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const map = raw as Record<string, unknown>;
+  const keys = Object.keys(map);
+  if (keys.length === 0) return null;
+  const out: Record<string, string> = {};
+  for (const key of keys.sort()) {
+    if (!isRepoRelativePath(key)) return null;
+    const value = map[key];
+    if (typeof value !== 'string' || value.length === 0) return null;
+    out[key] = value;
+  }
+  const files = Array.isArray(entry.source_files) ? entry.source_files : [];
+  for (const file of files) {
+    if (typeof file !== 'string' || !Object.prototype.hasOwnProperty.call(out, file)) return null;
+  }
+  return out;
 }
 
 // Validate a single parsed bible entry against the exported CanonicalEntry field
@@ -179,12 +210,18 @@ export async function importBibleEntries(
     // KB-TRUST PHASE 1: isolate each entry so one unfalsifiable bible entry is
     // counted and the import continues, rather than aborting every entry after
     // it. Import mode exempts the confidence clamp, never the basis check.
+    //
+    // Bible format v3: the entry's carried basis is stored EXACTLY (capture
+    // does not hash this clone's files for it); a v1/v2 entry, or one whose
+    // carried map is invalid, stores no basis (carriedBasis null), so the
+    // bible predicate excludes it from re-export until it is re-verified.
     let audn_decision: AudnDecision;
     try {
       ({ audn_decision } = await provider.capture(kbInput, {
         importMode: true,
         preferredId: entry.id,
         verbatim: options.verbatim === true,
+        carriedBasis: carriedBasisOf(entry),
       }));
     } catch (err) {
       if (err instanceof KbCaptureRejected) {

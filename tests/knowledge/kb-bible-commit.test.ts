@@ -300,20 +300,16 @@ describe('capture -> promote -> bible commit -> export round trip (basis filter)
     expect(result.exported).toBe(ids.length);
   });
 
-  // CHARACTERIZATION ONLY, pending a separate decision: kb_import routes through
-  // capture(), which hashes the LOCAL file at import time, so an entry
-  // confirmed on another branch gains a basis taken from this checkout rather
-  // than from the tree it was verified on. This pins that the column is
-  // populated (export would otherwise drop every imported entry); it does not
-  // assert that a local-file basis is the right basis for an imported entry.
-  it('kb_import currently populates each imported entry basis from the local file (characterization)', async () => {
+  // Bible format v3 decision: kb_import never takes a basis from this
+  // checkout's files. The seeded bible here is v2 (no source_file_hashes), so
+  // its entries import basis-less and the bible predicate excludes them from
+  // re-export until they are re-verified.
+  it('kb_import of a v2 bible stores no basis for its entries (never a local re-hash)', async () => {
     const report = JSON.parse(await kbImport({ skip_sweep: true }, { folder: clone }));
     expect(report.imported).toBe(2);
     const bases = provider.getSourceFileBases(['kb-existing-1', 'kb-existing-2']);
     for (const id of ['kb-existing-1', 'kb-existing-2']) {
-      const basis = bases.get(id);
-      expect(basis).not.toBeNull();
-      expect(Object.keys(basis as Record<string, string>)).toEqual(['src/a.ts']);
+      expect(bases.get(id)).toBeNull();
     }
   });
 });

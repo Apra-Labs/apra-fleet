@@ -111,6 +111,15 @@ export interface CaptureOpts {
   // check still run. Never use it for a live per-repo DB: there AUDN is the
   // point.
   verbatim?: boolean;
+  // Bible format v3 (kb_import / member bible view only): the per-file hash
+  // basis the bible CARRIES for this entry. Honoured only together with
+  // importMode. When set (even to null), capture() stores exactly this map as
+  // the entry's basis and does NOT hash local files: a basis must never be
+  // laundered from the importing clone's tree. null (a v1/v2 entry, or an
+  // invalid carried map) stores no basis, so the bible predicate excludes the
+  // entry from re-export until it is re-verified. Left undefined, capture()
+  // computes the basis from local files as for every normal capture.
+  carriedBasis?: Record<string, string> | null;
 }
 
 export interface EntryTrustFilter {

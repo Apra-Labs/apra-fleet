@@ -954,7 +954,15 @@ export class SqliteProvider implements MemoryProvider {
     // T2.2 (F3 PART A): capture() is the single choke point every caller
     // (kb_capture, kb_harvest, future paths) goes through, so every entry
     // gets a hash basis here regardless of type.
-    const sourceFileHashes = await this.computeSourceFileHashes(input.source_files ?? []);
+    //
+    // Bible format v3: an IMPORT carrying a basis (opts.carriedBasis, honoured
+    // only under importMode, which no deserialized route can set) stores that
+    // map verbatim instead -- the basis the entry was verified against on the
+    // exporting clone, never this clone's files. carriedBasis null stores no
+    // basis (v1/v2 entry). Normal captures are unaffected.
+    const sourceFileHashes = opts?.importMode === true && opts.carriedBasis !== undefined
+      ? { ...(opts.carriedBasis ?? {}) }
+      : await this.computeSourceFileHashes(input.source_files ?? []);
 
     // Verbatim (member bible view): the bible was reviewed and merged as a
     // whole; AUDN against its own sibling entries would flag, re-id and
