@@ -324,6 +324,15 @@ function pickWindowsBdLine(lines: string[]): { path: string | null; reason: stri
   return { path: null, reason: 'where bd returned no output' };
 }
 
+/** Mirrors packages/apra-fleet-se/src/supervisor/node-version.mjs's
+ *  quoteForWindowsShell() (not imported: this root build does not depend on the
+ *  se workspace): wraps a whitespace-bearing token in double quotes, doubling
+ *  embedded quotes (cmd.exe's convention). */
+function quoteForWindowsShell(token: string): string {
+  if (!/\s/.test(token)) return token;
+  return `"${token.replace(/"/g, '""')}"`;
+}
+
 /**
  * Resolves bd's absolute path via a platform lookup ('where bd' on win32,
  * preferring the .cmd/.exe candidate; 'which bd' elsewhere, first non-empty
@@ -386,7 +395,12 @@ function resolveBdPath(
   let versionProbeReason: string | null = null;
   if (bdPath !== null) {
     try {
-      const raw = exec(bdPath, ['--version'], { ...PROBE_OPTIONS });
+      // apra-fleet-i9ag.19.48: PROBE_OPTIONS' shell:true makes cmd.exe word-split
+      // a win32 path containing a space (C:\Program Files\..., a profile under
+      // C:\Users\Jane Doe\), so quote it for the win32 shell only. The recorded
+      // `path` stays unquoted; the POSIX argv path is never quoted.
+      const probeTarget = platform === 'win32' ? quoteForWindowsShell(bdPath) : bdPath;
+      const raw = exec(probeTarget, ['--version'], { ...PROBE_OPTIONS });
       const parsed = parseVersionString(raw);
       const trimmed = String(raw).trim();
       version = parsed ?? (trimmed.length > 0 ? trimmed : null);

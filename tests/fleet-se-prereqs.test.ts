@@ -315,6 +315,49 @@ describe('resolveFleetSeToolchainPaths (apra-fleet-i9ag.19.1)', () => {
     expect(exec).toHaveBeenCalledWith('which', ['bd'], { shell: true, timeout: PREREQ_PROBE_TIMEOUT_MS });
   });
 
+  // apra-fleet-i9ag.19.48: the win32 probe runs through cmd.exe (shell:true), which
+  // word-splits a spaced path -- so it is quoted there, and ONLY there.
+  it('win32 quotes a spaced bd path in the --version probe but records it unquoted', () => {
+    const spaced = 'C:\\Program Files\\nodejs\\bd.cmd';
+    const exec = makeArgvExec({
+      'node -p process.execPath': 'C:\\nvm4w\\nodejs\\node.exe\n',
+      'node --version': 'v22.16.0\n',
+      'where bd': `${spaced}\n`,
+      [`"${spaced}" --version`]: '1.2.3\n',
+    });
+    const result = resolveFleetSeToolchainPaths({ exec, platform: 'win32' });
+    expect(result.bd.path).toBe(spaced);
+    expect(result.bd.version).toBe('1.2.3');
+    expect(result.bd.reason).toBeNull();
+    expect(exec).toHaveBeenCalledWith(`"${spaced}"`, ['--version'], { shell: true, timeout: PREREQ_PROBE_TIMEOUT_MS });
+    expect(exec).not.toHaveBeenCalledWith(spaced, ['--version'], expect.anything());
+  });
+
+  it('win32 does not quote a bd path with no space', () => {
+    const plain = 'C:\\Users\\dev\\AppData\\Roaming\\npm\\bd.cmd';
+    const exec = makeArgvExec({
+      'node -p process.execPath': 'C:\\nvm4w\\nodejs\\node.exe\n',
+      'node --version': 'v22.16.0\n',
+      'where bd': `${plain}\n`,
+      [`${plain} --version`]: '1.2.3\n',
+    });
+    resolveFleetSeToolchainPaths({ exec, platform: 'win32' });
+    expect(exec).toHaveBeenCalledWith(plain, ['--version'], { shell: true, timeout: PREREQ_PROBE_TIMEOUT_MS });
+  });
+
+  it('POSIX never quotes a spaced bd path (shell-less argv semantics)', () => {
+    const spaced = '/opt/my tools/bin/bd';
+    const exec = makeArgvExec({
+      'node -p process.execPath': '/usr/bin/node\n',
+      'node --version': 'v22.16.0\n',
+      'which bd': `${spaced}\n`,
+      [`${spaced} --version`]: '1.2.3\n',
+    });
+    const result = resolveFleetSeToolchainPaths({ exec, platform: 'linux', realpath: (p) => p });
+    expect(result.bd.version).toBe('1.2.3');
+    expect(exec).toHaveBeenCalledWith(spaced, ['--version'], { shell: true, timeout: PREREQ_PROBE_TIMEOUT_MS });
+  });
+
   // apra-fleet-i9ag.19.1 AMENDED AC (judge D2, PR #561): npm installs bd as
   // BOTH an extensionless POSIX-shell shim ('<prefix>\npm\bd') and a
   // 'bd.cmd', and 'where bd' lists the extensionless shim FIRST. The old
