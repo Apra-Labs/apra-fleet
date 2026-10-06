@@ -1237,3 +1237,73 @@ describe('MacOSServiceManager -- stop then start cycle', () => {
     expect(subs).not.toContain('print');
   });
 });
+
+// ---------------------------------------------------------------------------
+// apra-fleet status on Windows: progress suppressed, ONE batched task probe
+// ---------------------------------------------------------------------------
+describe('getServiceManagers (windows) -- batched scheduled-task probe', () => {
+  const origPlatform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+
+  function decodedPsScripts(): string[] {
+    return vi.mocked(execFileSync).mock.calls
+      .filter(([cmd]) => cmd === 'powershell')
+      .map(([, args]) => Buffer.from(String((args as string[])[3]), 'base64').toString('utf16le'));
+  }
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+    vi.mocked(execFileSync).mockImplementation(((cmd: string, args: string[]) => {
+      if (cmd === 'powershell') return 'ApraFleet|4\r\nApraFleetSupervisor|PROBEFAIL\r\n' as any;
+      if (cmd === 'schtasks') {
+        if (args.includes('/xml')) throw new Error('no xml');
+        return '"ApraFleetSupervisor","N/A","Ready"\r\n' as any;
+      }
+      if (cmd === 'reg') throw new Error('not found');
+      return '' as any;
+    }) as any);
+  });
+
+  afterEach(() => {
+    Object.defineProperty(process, 'platform', origPlatform);
+  });
+
+  it('issues exactly one powershell spawn for all services and attributes results per service', async () => {
+    const { getServiceManagers } = await vi.importActual<typeof import('../src/services/service-manager/index.js')>('../src/services/service-manager/index.js');
+    const [mcp, sup] = await getServiceManagers(['mcp-server', 'fleet-supervisor']);
+    const mcpStatus = await mcp.query();
+    const supStatus = await sup.query();
+
+    expect(decodedPsScripts()).toHaveLength(1);
+    expect(mcpStatus).toEqual({ installed: true, running: true, enabled: true });
+    // PROBEFAIL for the supervisor only -> CSV fallback for it alone.
+    expect(supStatus).toEqual({ installed: true, running: false });
+    const schtasksTargets = vi.mocked(execFileSync).mock.calls
+      .filter(([cmd]) => cmd === 'schtasks').map(([, a]) => a as string[]);
+    expect(schtasksTargets.length).toBeGreaterThan(0);
+    for (const a of schtasksTargets) expect(a).toContain('ApraFleetSupervisor');
+  });
+
+  it('the batched script probes both task names and suppresses progress before any cmdlet', async () => {
+    const { getServiceManagers } = await vi.importActual<typeof import('../src/services/service-manager/index.js')>('../src/services/service-manager/index.js');
+    const [mcp] = await getServiceManagers(['mcp-server', 'fleet-supervisor']);
+    await mcp.query();
+    const script = decodedPsScripts()[0];
+    expect(script).toContain("@('ApraFleet', 'ApraFleetSupervisor')");
+    const progressAt = script.indexOf("$ProgressPreference = 'SilentlyContinue'");
+    expect(progressAt).toBe(0);
+    expect(progressAt).toBeLessThan(script.indexOf('Get-'));
+  });
+
+  it('every powershell script the manager runs (including stop discovery) suppresses progress first', async () => {
+    const mgr = new WindowsServiceManager('fleet-supervisor');
+    vi.mocked(execFileSync).mockImplementation(((cmd: string) => (cmd === 'powershell' ? '' : '')) as any);
+    await mgr.query();
+    await mgr.stop().catch(() => {});
+    const scripts = decodedPsScripts();
+    expect(scripts.length).toBeGreaterThanOrEqual(2);
+    for (const script of scripts) {
+      expect(script.startsWith("$ProgressPreference = 'SilentlyContinue'")).toBe(true);
+    }
+  });
+});
