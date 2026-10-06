@@ -37,6 +37,28 @@ random 64-hex value in `<data dir>/member-access.key` (mode 0600; created by
 - Providers with no per-folder entry (agy, codex, copilot, none) are
   unchanged: they report `no-per-project-mcp` / `provider-unsupported`.
 
+#### Every /mcp session needs the secret (no `?member=` too)
+
+The same secret guards a session WITHOUT `?member=` (the full tool set,
+including command execution): a request carrying neither a valid bearer nor
+this install's secret gets 401. Consequences:
+
+- `apra-fleet install` writes the header into each provider's user-scope
+  registration (claude: `~/.claude.json` / `$CLAUDE_CONFIG_DIR/.claude.json`,
+  codex `http_headers`, copilot/agy/opencode `headers`). Those files are
+  written 0600 (an existing 0644 file is tightened) and the claude entry is
+  written directly, never via `claude mcp add --header`, so the secret is not
+  in argv. Re-running install (what `apra-fleet update` does) rewrites the
+  entry for every provider recorded in `install-config.json`, not just the
+  first.
+- A checked-in, project-scope `.mcp.json` / `mcp.json` cannot carry the secret:
+  do not list apra-fleet there with a URL (the repo's own `.mcp.json` relies on
+  the user-scope registration instead). A project that needs a project-scope
+  entry must add the header itself, from the owner-only `member-access.key`,
+  in a git-ignored local file (`.mcp.local.json` / provider local scope).
+- Programmatic clients use `withFleetAccessSecret()` (apra-fleet-client
+  `server-resolution`), which reads the secret from the caller's own data dir.
+
 | Provider | Where the entry goes |
 |---|---|
 | Claude | LOCAL scope (keyed by work folder) in `~/.claude.json`, or `$CLAUDE_CONFIG_DIR/.claude.json`; the path is probed on the member, never shell-expanded |

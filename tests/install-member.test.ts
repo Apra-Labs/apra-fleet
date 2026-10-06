@@ -138,8 +138,11 @@ describe('install --member', () => {
 
   it('--skill none WITHOUT --member still registers the user-scope MCP entry', async () => {
     await runInstall(['--transport', 'http', '--skill', 'none']);
-    expect(mcpAdds().length).toBe(1);
-    expect(mcpAdds()[0]).toContain('apra-fleet');
+    // registered via a direct write to ~/.claude.json (no secret in argv), not 'claude mcp add'
+    expect(mcpAdds().length).toBe(0);
+    const f = writtenPaths().filter(p => p.endsWith('/.claude.json'));
+    expect(f.length).toBeGreaterThan(0);
+    expect(JSON.parse(vi.mocked(fs.writeFileSync).mock.calls.filter(c => String(c[0]).replace(/\\/g, '/').endsWith('/.claude.json')).pop()![1] as string).mcpServers['apra-fleet'].type).toBe('http');
   });
 
   it('reports a typed non-success status when the auto-start cannot be registered', async () => {

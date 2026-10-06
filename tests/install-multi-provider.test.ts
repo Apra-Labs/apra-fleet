@@ -16,6 +16,14 @@ vi.mock('node:os', () => ({
 vi.mock('node:fs');
 vi.mock('node:child_process');
 
+/** The apra-fleet entry written to ~/.claude.json by the last install, with the file mode it was written with. */
+function claudeHttpRegistration(): { entry: any; mode: unknown } {
+  const writes = vi.mocked(fs.writeFileSync).mock.calls.filter(c => c[0].toString().replace(/\\/g, '/').endsWith('/mock/home/.claude.json'));
+  expect(writes.length).toBeGreaterThan(0);
+  const last = writes[writes.length - 1];
+  return { entry: JSON.parse(String(last[1])).mcpServers['apra-fleet'], mode: (last[2] as any)?.mode };
+}
+
 describe('runInstall multi-provider', () => {
   const mockHome = '/mock/home';
   const mockProjectRoot = '/mock/project';
@@ -59,14 +67,15 @@ describe('runInstall multi-provider', () => {
       expect.any(String)
     );
 
-    // Check if Claude MCP command is run
-    expect(vi.mocked(execSync)).toHaveBeenCalledWith(
-      expect.stringContaining('claude mcp add'),
-      expect.any(Object)
-    );
+    // The http registration is written to ~/.claude.json directly (the secret
+    // header must never ride in argv), owner-only
+    const reg = claudeHttpRegistration();
+    expect(reg.entry).toMatchObject({ type: 'http', url: 'http://localhost:7523/mcp' });
+    expect(reg.mode).toBe(0o600);
+    expect(vi.mocked(execSync).mock.calls.some(c => c[0].toString().includes('claude mcp add'))).toBe(false);
   });
 
-  it('degrades gracefully (warns, does not throw, does not run claude mcp add) when the claude CLI is not on PATH', async () => {
+  it('degrades gracefully (warns, does not throw, does not run claude mcp add) when the claude CLI is not on PATH (stdio registration)', async () => {
     vi.mocked(execSync).mockImplementation((cmd: any) => {
       const cmdStr = cmd.toString();
       if (cmdStr.includes('where claude') || cmdStr === 'command -v claude') {
@@ -76,7 +85,7 @@ describe('runInstall multi-provider', () => {
     });
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-    await expect(runInstall([])).resolves.not.toThrow();
+    await expect(runInstall(['--transport', 'stdio'])).resolves.not.toThrow();
 
     // Never attempted to actually register or remove the MCP server
     const claudeMcpCalls = vi.mocked(execSync).mock.calls.filter(c => c[0].toString().includes('claude mcp'));
@@ -199,7 +208,7 @@ describe('runInstall multi-provider', () => {
   });
 
   it('Claude MCP registration uses --scope user flag', async () => {
-    await runInstall([]);
+    await runInstall(['--transport', 'stdio']);
 
     const calls = vi.mocked(execSync).mock.calls.map(c => c[0].toString());
     const addCall = calls.find(c => c.includes('claude mcp add'));
@@ -1171,11 +1180,35 @@ describe('runInstall multi-provider', () => {
   it('--transport http (default) uses URL-based Claude MCP registration', async () => {
     await runInstall([]);
 
+    const reg = claudeHttpRegistration();
+    expect(reg.entry.type).toBe('http');
+    expect(reg.entry.url).toBe('http://localhost:7523/mcp');
+    // the access secret is delivered in the file, never in a command line
+    expect(reg.entry.headers['X-Apra-Fleet-Member-Secret']).toMatch(/^[0-9a-f]{64}$/);
     const calls = vi.mocked(execSync).mock.calls.map(c => c[0].toString());
-    const addCall = calls.find(c => c.includes('claude mcp add'));
-    expect(addCall).toBeDefined();
-    expect(addCall).toContain('--transport http');
-    expect(addCall).toContain('http://localhost:7523/mcp');
+    expect(calls.some(c => c.includes('claude mcp add') || c.includes(reg.entry.headers['X-Apra-Fleet-Member-Secret']))).toBe(false);
+  });
+
+  it('upgrade path: an http install also rewrites the other registered providers\' header-less entries with the access secret', async () => {
+    const prevExists = vi.mocked(fs.existsSync).getMockImplementation()!;
+    const prevRead = vi.mocked(fs.readFileSync).getMockImplementation()!;
+    const isCfg = (p: any) => p.toString().replace(/\\/g, '/').endsWith('/data/install-config.json');
+    vi.mocked(fs.existsSync).mockImplementation((p: any) => isCfg(p) ? true : prevExists(p));
+    vi.mocked(fs.readFileSync).mockImplementation(((p: any, ...rest: any[]) => isCfg(p)
+      ? JSON.stringify({ providers: { claude: { skill: 'all', installedAt: 'x' }, codex: { skill: 'all', installedAt: 'x' } } })
+      : (prevRead as any)(p, ...rest)) as any);
+    try {
+      await runInstall(['--llm', 'claude']);
+      const codexWrites = vi.mocked(fs.writeFileSync).mock.calls.filter(c => c[0].toString().replace(/\\/g, '/').endsWith('/.codex/config.toml'));
+      expect(codexWrites.length).toBeGreaterThan(0);
+      const toml = parseToml(String(codexWrites[codexWrites.length - 1][1])) as any;
+      expect(toml.mcp_servers['apra-fleet'].url).toBe('http://localhost:7523/mcp');
+      expect(toml.mcp_servers['apra-fleet'].http_headers['X-Apra-Fleet-Member-Secret']).toMatch(/^[0-9a-f]{64}$/);
+      expect((codexWrites[codexWrites.length - 1][2] as any)?.mode).toBe(0o600);
+    } finally {
+      vi.mocked(fs.existsSync).mockImplementation(prevExists);
+      vi.mocked(fs.readFileSync).mockImplementation(prevRead);
+    }
   });
 
   it('--transport stdio uses command+args Claude MCP registration', async () => {

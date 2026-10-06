@@ -298,11 +298,11 @@ describe('install MCP config in npm mode', () => {
 
     await runInstall([]);
 
-    const calls = vi.mocked(execSync).mock.calls.map(c => String(c[0]));
-    const mcpAdd = calls.find(c => c.includes('claude mcp add'));
-    expect(mcpAdd).toBeDefined();
-    expect(mcpAdd).toContain('--transport http');
-    expect(mcpAdd).toContain('http://localhost:7523/mcp');
+    const w = vi.mocked(fs.writeFileSync).mock.calls.filter(c => String(c[0]).replace(/\\/g, '/').endsWith('/.claude.json'));
+    expect(w.length).toBeGreaterThan(0);
+    const entry = JSON.parse(String(w[w.length - 1][1])).mcpServers['apra-fleet'];
+    expect(entry.type).toBe('http');
+    expect(entry.url).toBe('http://localhost:7523/mcp');
 
     process.argv[1] = origArgv1;
   });

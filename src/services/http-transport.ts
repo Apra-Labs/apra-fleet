@@ -237,7 +237,7 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
           res.writeHead(401, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({
             error: memberRouteParam !== null ? 'member secret required' : 'access secret required',
-            detail: `An /mcp session must present this apra-fleet install's access secret in the ${MEMBER_SECRET_HEADER} header (the secret was ${why}). It is in member-access.key in the install's data dir, readable only by the install's user; a session configured for another install or another user is refused. Re-run 'apra-fleet install' to rewrite this machine's MCP registration${memberRouteParam !== null ? ', or compose_permissions / update_member with fleet_install "auto" to rewrite the member MCP config' : ''}.`,
+            detail: `An /mcp session must present this apra-fleet install's access secret in the ${MEMBER_SECRET_HEADER} header (the secret was ${why}). It is in member-access.key in the install's data dir, readable only by the install's user; a session configured for another install or another user is refused. Re-run 'apra-fleet install' to rewrite this machine's user-scope MCP registration (a project-scope .mcp.json cannot carry the secret: remove its apra-fleet URL entry or add the header from member-access.key in a git-ignored local config)${memberRouteParam !== null ? ', or compose_permissions / update_member with fleet_install "auto" to rewrite the member MCP config' : ''}.`,
           }));
           return;
         }

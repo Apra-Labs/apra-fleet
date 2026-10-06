@@ -15,6 +15,8 @@ import {
   SCRIPTS_DIR,
   getProviderInstallConfig,
   readConfig,
+  readInstallConfig,
+  writeOwnerOnlyFile,
   writeConfig,
   writeInstallConfig,
   PROVIDER_STANDARD_MODELS,
@@ -770,7 +772,9 @@ function mergeAgyConfig(paths: ProviderInstallConfig, mcpConfig: any): void {
   settings.mcpServers = settings.mcpServers || {};
   settings.mcpServers['apra-fleet'] = mcpConfig;
 
-  fs.writeFileSync(mcpConfigFile, JSON.stringify(settings, null, 2) + '\n');
+  const out = JSON.stringify(settings, null, 2) + '\n';
+  if (mcpConfig.headers) writeOwnerOnlyFile(mcpConfigFile, out);
+  else fs.writeFileSync(mcpConfigFile, out);
 }
 
 function writeDefaultModel(paths: ProviderInstallConfig, standardModel: string): void {
@@ -786,7 +790,7 @@ function mergeCopilotConfig(paths: ProviderInstallConfig, mcpConfig: any): void 
   settings.mcpServers = settings.mcpServers || {};
   settings.mcpServers['apra-fleet'] = mcpConfig;
 
-  writeConfig(paths, settings);
+  writeConfig(paths, settings, { ownerOnly: !!mcpConfig.headers });
 }
 
 function mergeOpenCodeConfig(paths: ProviderInstallConfig, mcpConfig: any): void {
@@ -799,7 +803,7 @@ function mergeOpenCodeConfig(paths: ProviderInstallConfig, mcpConfig: any): void
         command: [mcpConfig.command, ...(mcpConfig.args || [])],
         enabled: true,
       };
-  writeConfig(paths, settings);
+  writeConfig(paths, settings, { ownerOnly: !!mcpConfig.headers });
 }
 
 function mergeCodexConfig(paths: ProviderInstallConfig, mcpConfig: any): void {
@@ -814,7 +818,45 @@ function mergeCodexConfig(paths: ProviderInstallConfig, mcpConfig: any): void {
     };
   }
 
-  writeConfig(paths, settings);
+  writeConfig(paths, settings, { ownerOnly: !!mcpConfig.headers });
+}
+
+/** The claude user-scope config file: $CLAUDE_CONFIG_DIR/.claude.json when set, else ~/.claude.json. */
+export function claudeUserConfigPath(): string {
+  const dir = process.env.CLAUDE_CONFIG_DIR;
+  return dir ? path.join(dir, '.claude.json') : path.join(os.homedir(), '.claude.json');
+}
+
+/**
+ * Register the http apra-fleet server in claude's user scope WITHOUT putting
+ * the access secret in argv (`claude mcp add --header` is visible to other
+ * local users via ps): the entry is merged into the claude config file
+ * directly, which is kept owner-only. An unparseable existing file is never
+ * overwritten.
+ */
+export function registerClaudeHttpMcp(url: string, headers: Record<string, string>): void {
+  const file = claudeUserConfigPath();
+  let settings: any = {};
+  if (fs.existsSync(file)) {
+    const raw = fs.readFileSync(file, 'utf-8').trim();
+    if (raw) {
+      try { settings = JSON.parse(raw); } catch {
+        throw new Error(`${file} is not valid JSON; fix or remove it, then re-run 'apra-fleet install'`);
+      }
+    }
+  }
+  settings.mcpServers = settings.mcpServers || {};
+  settings.mcpServers['apra-fleet'] = { type: 'http', url, headers };
+  writeOwnerOnlyFile(file, JSON.stringify(settings, null, 2) + '\n');
+}
+
+/** Write the http (url + access-secret header) apra-fleet registration for one provider. */
+export function registerHttpMcp(provider: LlmProvider, paths: ProviderInstallConfig, url: string, headers: Record<string, string>): void {
+  if (provider === 'claude') registerClaudeHttpMcp(url, headers);
+  else if (provider === 'codex') mergeCodexConfig(paths, { url, headers });
+  else if (provider === 'copilot') mergeCopilotConfig(paths, { url, type: 'http', headers });
+  else if (provider === 'agy') mergeAgyConfig(paths, { url, headers });
+  else if (provider === 'opencode') mergeOpenCodeConfig(paths, { url, headers });
 }
 
 function run(cmd: string, opts?: Record<string, unknown>): void {
@@ -1555,28 +1597,16 @@ ${manualStopHint(pidsAfterStop)}
     // install must never register apra-fleet in any provider's user-scope config.
     console.log('    Skipped (--member): no user-scope MCP registration.');
   } else if (transport === 'http') {
-    if (llm === 'claude') {
-      if (!isCommandAvailable('claude')) {
-        console.warn(
-          `  Warning: the 'claude' CLI was not found on PATH -- skipping MCP server registration.\n` +
-          `  Install Claude Code (https://claude.com/claude-code), then re-run 'apra-fleet install'\n` +
-          `  to register apra-fleet with it, or register manually with:\n` +
-          `    claude mcp add --scope user --transport http apra-fleet ${fleetUrl} --header "${MEMBER_SECRET_HEADER}: <contents of member-access.key in the data dir>"`
-        );
-      } else {
-        try {
-          run('claude mcp remove apra-fleet --scope user', { stdio: 'ignore' });
-        } catch { /* not registered */ }
-        run(`claude mcp add --scope user --transport http apra-fleet ${fleetUrl} --header "${MEMBER_SECRET_HEADER}: ${fleetAccessHeaders[MEMBER_SECRET_HEADER]}"`);
+    registerHttpMcp(llm, paths, fleetUrl, fleetAccessHeaders);
+    // Upgrade path: every OTHER provider this install registered earlier holds a
+    // header-less http entry the server now refuses; rewrite those too.
+    for (const other of Object.keys(readInstallConfig().providers) as LlmProvider[]) {
+      if (other === llm || !INSTALLABLE_LLM_PROVIDERS.includes(other)) continue;
+      try {
+        registerHttpMcp(other, getProviderInstallConfig(other), fleetUrl, fleetAccessHeaders);
+      } catch (err) {
+        console.warn(`    [!] could not refresh the ${other} MCP registration with the access secret: ${err instanceof Error ? err.message : String(err)}`);
       }
-    } else if (llm === 'codex') {
-      mergeCodexConfig(paths, { url: fleetUrl, headers: fleetAccessHeaders });
-    } else if (llm === 'copilot') {
-      mergeCopilotConfig(paths, { url: fleetUrl, type: 'http', headers: fleetAccessHeaders });
-    } else if (llm === 'agy') {
-      mergeAgyConfig(paths, { url: fleetUrl, headers: fleetAccessHeaders });
-    } else if (llm === 'opencode') {
-      mergeOpenCodeConfig(paths, { url: fleetUrl, headers: fleetAccessHeaders });
     }
   } else {
     // 'run --transport stdio' starts the stdio MCP server; passed as trailing args so
