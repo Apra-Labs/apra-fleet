@@ -276,7 +276,7 @@ describe('resolveFleetSeToolchainPaths (apra-fleet-i9ag.19.1)', () => {
     // absolute bdPath, never a fresh bare-'bd' PATH lookup that could
     // silently resolve to a different binary.
     expect(exec).toHaveBeenCalledWith('/usr/local/bin/bd', ['--version'], {
-      shell: true,
+      shell: false,
       timeout: PREREQ_PROBE_TIMEOUT_MS,
     });
     expect(exec).not.toHaveBeenCalledWith('bd', ['--version'], expect.anything());
@@ -355,7 +355,7 @@ describe('resolveFleetSeToolchainPaths (apra-fleet-i9ag.19.1)', () => {
     });
     const result = resolveFleetSeToolchainPaths({ exec, platform: 'linux', realpath: (p) => p });
     expect(result.bd.version).toBe('1.2.3');
-    expect(exec).toHaveBeenCalledWith(spaced, ['--version'], { shell: true, timeout: PREREQ_PROBE_TIMEOUT_MS });
+    expect(exec).toHaveBeenCalledWith(spaced, ['--version'], { shell: false, timeout: PREREQ_PROBE_TIMEOUT_MS });
   });
 
   // apra-fleet-i9ag.19.1 AMENDED AC (judge D2, PR #561): npm installs bd as
@@ -536,7 +536,7 @@ describe('resolveFleetSeToolchainPaths (apra-fleet-i9ag.19.1)', () => {
     // bdVersion (or, here, the reason it is null) provably describes the
     // recorded bdPath.
     expect(exec).toHaveBeenCalledWith('/usr/local/bin/bd', ['--version'], {
-      shell: true,
+      shell: false,
       timeout: PREREQ_PROBE_TIMEOUT_MS,
     });
     expect(exec).not.toHaveBeenCalledWith('bd', ['--version'], expect.anything());

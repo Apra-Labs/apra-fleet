@@ -400,7 +400,10 @@ function resolveBdPath(
       // C:\Users\Jane Doe\), so quote it for the win32 shell only. The recorded
       // `path` stays unquoted; the POSIX argv path is never quoted.
       const probeTarget = platform === 'win32' ? quoteForWindowsShell(bdPath) : bdPath;
-      const raw = exec(probeTarget, ['--version'], { ...PROBE_OPTIONS });
+      // POSIX has no .cmd shims, so run shell-less: /bin/sh -c would word-split
+      // a spaced path (/opt/my tools/bin/bd).
+      const probeOptions = platform === 'win32' ? { ...PROBE_OPTIONS } : { ...PROBE_OPTIONS, shell: false };
+      const raw = exec(probeTarget, ['--version'], probeOptions);
       const parsed = parseVersionString(raw);
       const trimmed = String(raw).trim();
       version = parsed ?? (trimmed.length > 0 ? trimmed : null);
