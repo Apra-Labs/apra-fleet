@@ -1,9 +1,9 @@
 {
   "version": 2,
   "provenance": {
-    "commit": "4f1d90d5877af2cd2ac19cb250fc46b9f3b9c951",
+    "commit": "85a04bf2d353ca960d30b447246bbe3a55ddb4b8",
     "branch": "v0.5_dashboard",
-    "entry_count": 434
+    "entry_count": 436
   },
   "entries": [
     {
@@ -3217,6 +3217,24 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-08T00:08:13.314Z"
+    },
+    {
+      "id": "5c216a1d-460f-4c89-9e0d-65a9e4d89655",
+      "type": "knowledge",
+      "title": "fleet-key token source reports aclVerified only after a stat proves the key is owner-only",
+      "summary": "readLocalToken's fleet-key branch returns aclVerified true on POSIX only when fs.statSync shows no group/other bits; a 0644 fleet.key reports false and is never chmod-ed by the reader. Windows is always false.",
+      "symbols": [
+        "readLocalToken",
+        "resolveServiceToken",
+        "isPosixOwnerOnly",
+        "TOKEN_ACL_UNVERIFIED_WARNING"
+      ],
+      "source_files": [
+        "packages/apra-fleet-client/src/auth/local-token.mjs",
+        "packages/apra-fleet-se/test/supervisor-auth.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T14:59:51.409Z"
     },
     {
       "id": "5c44ea0d-798a-43fd-b5ba-76a211a0d1e9",
