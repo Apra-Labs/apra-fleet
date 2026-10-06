@@ -392,15 +392,21 @@ export class SqliteProvider implements MemoryProvider {
   // absent from the returned map (not an error). Bounded to the caller's own
   // source_files list. Non-fatal: any hashing error yields an empty basis
   // rather than failing the capture.
+  /**
+   * The ONLY way this provider hashes source files: relative paths anchor at
+   * the provider repo (never process.cwd()) when one is set. Every call site
+   * goes through here so a new call cannot forget the anchor.
+   */
+  private hashAnchored(files: string[], anchor: string | undefined = this.repoPath): ReturnType<typeof computeFileHashBatch> {
+    return computeFileHashBatch(files, anchor !== undefined ? { cwd: anchor } : undefined);
+  }
+
   private async computeSourceFileHashes(files: string[]): Promise<Record<string, string>> {
     if (files.length === 0) return {};
     try {
       // Anchor relative basis paths at this provider's repo, the same root the
       // capture gate checked them against and the one freshnessSweep(root) uses.
-      const hashes = await computeFileHashBatch(
-        files,
-        this.repoPath !== undefined ? { cwd: this.repoPath } : undefined
-      );
+      const hashes = await this.hashAnchored(files);
       const map: Record<string, string> = {};
       for (const file of Object.keys(hashes)) {
         const result = hashes[file];
@@ -566,10 +572,7 @@ export class SqliteProvider implements MemoryProvider {
     // whenever the process cwd is not the repo -- which is the normal case in
     // the long-lived fleet server -- so every relative basis path would re-hash
     // to a different value and prime would stale healthy entries on sight.
-    const currentHashes = await computeFileHashBatch(
-      [...fileSet],
-      this.repoPath !== undefined ? { cwd: this.repoPath } : undefined
-    );
+    const currentHashes = await this.hashAnchored([...fileSet]);
 
     const staleIds: string[] = [];
     const unstaleIds: string[] = [];
@@ -670,7 +673,7 @@ export class SqliteProvider implements MemoryProvider {
     for (const basis of basisById.values()) {
       for (const file of Object.keys(basis)) fileSet.add(file);
     }
-    const currentHashes = await computeFileHashBatch([...fileSet], anchor ? { cwd: anchor } : undefined);
+    const currentHashes = await this.hashAnchored([...fileSet], anchor || undefined);
 
     const staleIds: string[] = [];
     const unstaleIds: string[] = [];
@@ -1160,7 +1163,7 @@ export class SqliteProvider implements MemoryProvider {
       }
     }
 
-    const hashes = await computeFileHashBatch(files);
+    const hashes = await this.hashAnchored(files);
 
     for (const file of files) {
       const entry = fileEntries.get(file);
@@ -1729,7 +1732,7 @@ export class SqliteProvider implements MemoryProvider {
       if (revivable) {
         const basis = this.parseBasis((refreshedRow as { source_file_hashes?: string | null }).source_file_hashes ?? null);
         if (basis) {
-          const currentHashes = await computeFileHashBatch(Object.keys(basis));
+          const currentHashes = await this.hashAnchored(Object.keys(basis));
           if (this.basisFullyMatches(basis, currentHashes)) {
             db.prepare('UPDATE entries SET stale = 0 WHERE id = ?').run(winnerId);
           }
@@ -1799,7 +1802,7 @@ export class SqliteProvider implements MemoryProvider {
     for (const basis of basisById.values()) {
       if (basis) for (const file of Object.keys(basis)) fileSet.add(file);
     }
-    const currentHashes = await computeFileHashBatch([...fileSet]);
+    const currentHashes = await this.hashAnchored([...fileSet]);
 
     for (const pair of liveTouchable) {
       const originalBasis = basisById.get(pair.original.id) ?? null;
