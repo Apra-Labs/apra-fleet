@@ -5,28 +5,27 @@ name: Regression - install/upgrade proof
 # (Node), U (upgrade from the latest release via install --force) and U2
 # (upgrade along the 'apra-fleet update' path) through the host driver, one
 # fresh VM per OS x pass. A stale upgrade-baseline pin is INCONCLUSIVE (red).
+#
+# Nightly only (schedule runs on the default branch) plus manual dispatch for
+# a specific branch: `gh workflow run regression.yml --ref <branch>`. It used
+# to run on every non-main push (~15 jobs incl. Windows/macOS each), which
+# multiplied runner minutes across every sprint and agent branch. CI
+# (ci.yml) is the per-PR verdict.
 on:
-  push:
-    branches-ignore: [main]
-  pull_request:
-    branches: [main]
+  schedule:
+    - cron: '47 4 * * *'
   workflow_dispatch:
 
-# Keyed by the tested commit so a push run and a re-run dedupe; on
-# pull_request github.sha is the synthetic merge commit, so use the head sha.
 concurrency:
-  group: regression-${{ github.event.pull_request.head.sha || github.sha }}
-  cancel-in-progress: false
+  group: regression-${{ github.ref }}
+  cancel-in-progress: true
 
 # Fork-safe: read-only token, no secrets anywhere in this workflow.
 permissions:
   contents: read
 
 jobs:
-  # Same-repo branches are covered by the push trigger; pull_request runs only
-  # for fork PRs, and tests the PR head commit, never the merge commit.
   build-installer:
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork
     strategy:
       fail-fast: false
       matrix:
@@ -45,7 +44,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
 
       - name: Setup Node.js 22.x
@@ -120,7 +119,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ github.sha }}
 
       # Runs the harness itself; the host driver drops this Node (and every
       # other PATH dir holding node/npm) from the box's environment.
