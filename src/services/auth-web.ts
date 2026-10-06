@@ -7,7 +7,7 @@ import { logError } from '../utils/log-helpers.js';
  * Result of attempting to launch the local browser credential UI.
  * - 'launched'    : a server is listening and a browser was opened; the value
  *                   will arrive via the onSubmit callback. close() tears it down.
- * - 'unavailable' : no way to open a browser here (headless / no opener) — the
+ * - 'unavailable' : no way to open a browser here (headless / no opener) -- the
  *                   caller should fall through to the manual CLI instruction.
  */
 export type AuthWebOutcome =
@@ -66,7 +66,7 @@ function formPage(prompt: string, isApiKey: boolean, token: string, error?: stri
 <html lang="en"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>apra-fleet — secure entry</title>
+<title>apra-fleet -- secure entry</title>
 <style>
   :root { color-scheme: light dark; }
   body { font: 15px/1.5 system-ui, sans-serif; margin: 0; display: grid; place-items: center; min-height: 100vh; background: #f5f5f7; }
@@ -105,7 +105,7 @@ function donePage(): string {
   main { text-align: center; padding: 2rem; }
   h1 { font-size: 1.4rem; }
 </style></head><body>
-<main><h1>✓ Received</h1><p>Encrypted and stored. You can close this tab and return to your session.</p></main>
+<main><h1>[OK] Received</h1><p>Encrypted and stored. You can close this tab and return to your session.</p></main>
 </body></html>`;
 }
 
