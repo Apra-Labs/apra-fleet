@@ -200,6 +200,9 @@ import { runRegressionTestPhase } from './phases/regression-test.mjs';
 // See each module's header for where its boundary is drawn.
 import { runHarvestPhase } from './phases/harvest.mjs';
 import { runPublishPrPhase } from './phases/publish-pr.mjs';
+// apra-fleet-5u79.2: the pure owed-triage collector. runSprintCycle does the
+// bead read; the module only classifies and formats.
+import { computeOwedTriage, formatOwedTriageLines, findStrandedRollups } from './owed-triage.mjs';
 // The dolt-push-mutex/child-id-allocator clients (HTTP + MCP transport) and
 // the fleet server's own per-member reservation-ledger client. Moved
 // verbatim out of runner.js (apra-fleet-3swo.4.3).
@@ -2371,6 +2374,16 @@ async function runSprintCycle(context) {
     // deadlock detector/auto-repair, and the "nothing to do" hard-fail below.
     let initialBeads = await readyLeafBeads();
 
+    // apra-fleet-5u79.2: the ids already closed when this sprint started, so
+    // Finalization's owed triage can tell a 'blocked:' closure made THIS
+    // sprint from an old one by bead state rather than by comparing clocks.
+    // readyLeafBeads() above just populated the shared scope snapshot and
+    // its only other command (`bd list --ready`) is a read, so this is served
+    // from that snapshot with no new bd command.
+    const closedAtSprintStartIds = new Set(
+        (await bdListScoped('')).filter((b) => b && b.status === 'closed').map((b) => b.id),
+    );
+
     // apra-fleet-jfo: a sprint whose scope has zero ready leaf work can still
     // be legitimate -- a pure-verify sprint aimed at an already-implemented
     // parent (or a target bead that is itself all-children-closed). Computed
@@ -2626,6 +2639,8 @@ async function runSprintCycle(context) {
     // This is a cumulative AUDIT TRAIL -- every rejection ever seen this run,
     // never cleared -- distinct from pendingRejectedNewTasks below.
     const rejectedNewTasks = [];
+    // Latest Integration-Test-skip reason per stranded rollup id, across cycles; fed to computeOwedTriage at Finalization.
+    const strandedSkipReasons = {};
 
     // The CURRENT set of not-yet-resubmitted rejected newTasks, resurfaced
     // verbatim into the next planning dispatch (buildPlannerPrompt's
@@ -3028,7 +3043,25 @@ async function runSprintCycle(context) {
         // playbook, or Deploy failed) correctly counts as "no verify
         // dispatch attempt", not a crash.
         let verifySetForIntegTest = [];
+        // Names in-scope open beads whose children are all closed at an
+        // Integration Test skip and remembers the latest reason per id for the
+        // Finalization owed-triage report. Read-only: it closes nothing.
+        const noteStrandedRollupsAtIntegSkip = async (reason) => {
+            try {
+                const stranded = findStrandedRollups({ scopeBeads: await bdListScoped(''), targetIds: targetIssues });
+                for (const r of stranded) {
+                    strandedSkipReasons[r.id] = `not verified because integration test was skipped: ${reason}`;
+                    log(`Integration Test skipped: ${r.id} "${r.title}" has all children closed but is still open and unverified (${reason}).`);
+                }
+            } catch (e) {
+                log(`WARN could not list stranded rollups at the Integration Test skip: ${e && e.message ? e.message : String(e)}`);
+            }
+        };
         if (hasPlaybook && deployedThisCycle) {
+            // Integration Test runs this cycle, so any skip reason recorded by an
+            // earlier cycle is no longer the current truth; drop it so the final
+            // report never claims "skipped" for a rollup verification attempted.
+            for (const k of Object.keys(strandedSkipReasons)) delete strandedSkipReasons[k];
             // The phase body lives in ./phases/integ-test.mjs
             // (apra-fleet-3swo.6.8), which receives its state explicitly
             // instead of closing over runSprintCycle's locals. The two
@@ -3051,8 +3084,12 @@ async function runSprintCycle(context) {
             }));
         } else if (hasPlaybook && !deployedThisCycle) {
             log('Skipping Integration Test Phase (deploy did not succeed this cycle, or no deploy.md was present to attempt)');
+            await noteStrandedRollupsAtIntegSkip(hasDeploy
+                ? 'deploy did not succeed, so the integration test did not run'
+                : 'no deploy.md was present to deploy, so the integration test did not run');
         } else {
             log('Skipping Integration Test Phase (no playbook found, or the probe itself failed -- see prior log line)');
+            await noteStrandedRollupsAtIntegSkip('no integ-test-playbook.md was found (or the playbook probe failed), so the integration test did not run');
         }
 
         // =======================
@@ -3386,6 +3423,41 @@ async function runSprintCycle(context) {
         computeChildFloor, createChildBeadWithAllocatedId, sanitizePrText,
     });
 
+    // Owed triage (apra-fleet-5u79.2): what this sprint leaves for a human --
+    // unrouted follow-ups, stranded all-children-closed rollups, rejected
+    // reviewer findings parked only in parent notes, and 'blocked:' closures.
+    // Computed AFTER Final Review's findings D-push so its own new follow-ups
+    // are included, and BEFORE Regression Test, which keeps that phase's
+    // documented place after the verdict untouched. bdListScoped('') is the
+    // scoped open+closed read: Final Review's D-pull and every bd create/
+    // update/dolt push it issued went through the wrapped command(), each of
+    // which drops the shared snapshot (beads-scope.mjs invalidation contract
+    // (b)), so this read is fresh without a duplicate full-DB fetch when
+    // nothing changed. A failed read is LOUD and marks the triage incomplete,
+    // which keeps `clean` false -- an unreadable scope is never reported as
+    // owing nothing.
+    let owedTriage;
+    try {
+        const scopeBeadsAtFinalization = await bdListScoped('');
+        owedTriage = computeOwedTriage({
+            scopeBeads: scopeBeadsAtFinalization,
+            rejectedNewTasks,
+            closedAtStartIds: closedAtSprintStartIds,
+            sprintStartedAt: sprintState.startedAtMs,
+            targetIds: targetIssues,
+            strandedReasons: strandedSkipReasons,
+        });
+    } catch (triageErr) {
+        log(`owed triage: WARN could not read the sprint's beads (${triageErr && triageErr.message ? triageErr.message : String(triageErr)}); listing rejected findings only and reporting this run as not clean.`);
+        owedTriage = { ...computeOwedTriage({ rejectedNewTasks }), incomplete: true };
+    }
+    const owedTriageLines = formatOwedTriageLines(owedTriage);
+    if (owedTriageLines.length > 0) {
+        for (const line of owedTriageLines) log(line);
+    } else {
+        log('owed triage: none');
+    }
+
     // =======================
     // 6b. Regression Test (once per sprint, informational -- never a gate)
     // =======================
@@ -3487,7 +3559,7 @@ async function runSprintCycle(context) {
         phase, log, command,
         args, validated, targetIssues, backlogMember, finalCycleLabel,
         gitSync, getMemberForRole,
-        finalVerdictResult, costAnalysis,
+        finalVerdictResult, costAnalysis, owedTriage,
     });
 
     endGroup();
@@ -3508,6 +3580,14 @@ async function runSprintCycle(context) {
         goal: validated.goal,
         maxCycles: validated.maxCycles,
         pushed,
+        // apra-fleet-5u79.2: owed triage never changes the verdict or the
+        // status mapping above. It is surfaced alongside them, and `clean`
+        // is the one flag a consumer may read as "PASS with nothing owed".
+        // This return value IS the success-path terminal record: the workflow
+        // viewer stores it wholesale as state.result and persists it to the
+        // run's old_runs/<runId>.json on 'end'.
+        owedTriage,
+        clean: finalVerdictResult.verdict === 'PASS' && owedTriage.total === 0 && !owedTriage.incomplete,
     };
 }
 

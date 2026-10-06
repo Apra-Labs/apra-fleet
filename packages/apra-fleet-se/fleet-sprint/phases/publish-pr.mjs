@@ -70,6 +70,7 @@ import { ApraFleet } from '@apralabs/apra-fleet-client';
 import { capabilities as vcsCapabilities } from '../vcs-module.mjs';
 import { raiseVcsPrForMember } from '../vcs-auth.mjs';
 import { buildSprintPrBody, buildSprintPrTitle } from '../pr-body.mjs';
+import { formatOwedTriageLines } from '../owed-triage.mjs';
 
 /**
  * Runs the Publish PR phase: push the sprint branch, then either raise a PR on
@@ -102,6 +103,10 @@ export async function runPublishPrPhase({
     finalVerdictResult,
     // Engine-computed cost block from ./harvest.mjs, rendered in the PR body.
     costAnalysis = '',
+    // Owed triage computed after Final Review (../owed-triage.mjs). Rendered
+    // as its own PR-body section only when non-empty; it never changes the
+    // verdict this phase publishes.
+    owedTriage = null,
 }) {
     phase(`Publish PR C${finalCycleLabel}`);
     // The branch push is the LAST step of a sprint that has already done all of
@@ -255,6 +260,8 @@ export async function runPublishPrPhase({
                 lowerQualityBanner || null,
             ],
             costAnalysis,
+            owedTriageLines: formatOwedTriageLines(owedTriage),
+            owedTriageTotal: owedTriage ? owedTriage.total : 0,
             previousBody,
         });
         const prBody = buildBody();

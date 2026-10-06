@@ -320,6 +320,11 @@ export const GUARDED_MODULES = [
     // no agent(), no push -- registered so a future dispatch landing here is
     // caught rather than silently unguarded.
     'pr-body.mjs',
+    // apra-fleet-5u79.1: the owed-triage collector (computeOwedTriage,
+    // formatOwedTriageLines). Pure by contract -- the caller does the bead
+    // read -- so it has no command()/agent()/push surface; registered so a
+    // future dispatch landing here is caught rather than silently unguarded.
+    'owed-triage.mjs',
     'newtask-text.mjs',
     // apra-fleet-fsxg: the parent-NOTES staleness signal. Its pure core is text
     // formatting, but collectParentNotesStalenessNotes carries TWO member_name-
