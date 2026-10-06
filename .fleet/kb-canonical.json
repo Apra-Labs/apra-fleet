@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "34ff160ff8ee9e2268e851270b911771d06fedca",
     "branch": "feat/kb-redesign",
-    "entry_count": 272
+    "entry_count": 273
   },
   "entries": [
     {
@@ -301,6 +301,23 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:26.477Z"
+    },
+    {
+      "id": "0c998153-a3fa-4e2f-a8d8-749917425ed5",
+      "type": "learning",
+      "title": "Uninstall Kept-section dry-run must mirror the real-run deletion list",
+      "summary": "printKeptSection in src/cli/uninstall.ts hardcodes the dry-run planned-removal set; adding a new deleted dir to the full-uninstall global cleanup without updating it makes dry-run Kept output wrong.",
+      "symbols": [
+        "printKeptSection",
+        "runUninstall",
+        "cleanupWorkflows"
+      ],
+      "source_files": [
+        "src/cli/uninstall.ts",
+        "tests/fixtures/regression-command-surface/uninstall-dry-run.txt"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T03:49:24.870Z"
     },
     {
       "id": "0cabfb38-9fc0-4974-8e64-c1cf40864e4a",
