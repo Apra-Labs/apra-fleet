@@ -238,10 +238,17 @@ function removeMacos(reg: SupervisorRegistration, failures: string[]): void {
   if (reg.definitionPath) unlinkIfPresent(reg.definitionPath, failures);
 }
 
-/** PIDs whose command line references the supervisor wrapper or installed serve.mjs. */
+/**
+ * PIDs whose command line references this user's supervisor wrapper, its
+ * launcher, or the installed serve.mjs. Every needle is a FULL path under this
+ * user's BIN_DIR / WORKFLOWS_DIR, never a bare filename: Win32_Process lists
+ * every user's processes to an elevated caller, and a bare-name match would
+ * tree-kill another user's supervisor.
+ */
 function findWindowsSupervisorPids(): number[] {
   const needles = [
-    SUPERVISOR_WINDOWS_WRAPPER_FILE,
+    windowsWrapperPath(),
+    windowsLauncherPath(),
     path.join(WORKFLOWS_DIR, 'fleet-sprint', 'bin', 'serve.mjs'),
   ].map(n => n.toLowerCase().replace(/'/g, "''"));
   const cond = needles.map(n => `$_.CommandLine.ToLower().Contains('${n}')`).join(' -or ');

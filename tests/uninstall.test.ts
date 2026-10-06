@@ -22,15 +22,17 @@ vi.mock('../src/cli/install.js', () => ({
 vi.mock('node:readline/promises', () => ({
   createInterface: vi.fn(),
 }));
-// The MCP-server service manager is stubbed so a test that stubs
-// process.platform does not drive the real per-OS manager (its graceful
-// server.json stop would poll). The supervisor cleanup does not use it.
-const mcpSvcMgr = vi.hoisted(() => ({
-  unregister: vi.fn(),
-  stop: vi.fn(),
-}));
+// The service managers are stubbed so a test that stubs process.platform does
+// not drive the real per-OS manager (its graceful server.json stop would poll).
+// The supervisor cleanup does not use them. Each service id gets its own mock
+// (with isInstalled) so a caller that also asks for the 'fleet-supervisor'
+// manager never inflates the MCP-server manager's call counts.
+const { mcpSvcMgr, supervisorSvcMgr } = vi.hoisted(() => {
+  const make = () => ({ unregister: vi.fn(), stop: vi.fn(), isInstalled: vi.fn() });
+  return { mcpSvcMgr: make(), supervisorSvcMgr: make() };
+});
 vi.mock('../src/services/service-manager/index.js', () => ({
-  getServiceManager: vi.fn(async () => mcpSvcMgr),
+  getServiceManager: vi.fn(async (id?: string) => (id === 'fleet-supervisor' ? supervisorSvcMgr : mcpSvcMgr)),
 }));
 
 /** fleet-supervisor unit/plist/wrapper paths (any OS). */
@@ -49,8 +51,11 @@ describe('uninstall', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    mcpSvcMgr.unregister.mockResolvedValue(undefined);
-    mcpSvcMgr.stop.mockResolvedValue(true);
+    for (const mgr of [mcpSvcMgr, supervisorSvcMgr]) {
+      mgr.unregister.mockResolvedValue(undefined);
+      mgr.stop.mockResolvedValue(true);
+      mgr.isInstalled.mockResolvedValue(false);
+    }
     vi.spyOn(os, 'homedir').mockReturnValue(home);
     vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit'); });
     
@@ -670,23 +675,92 @@ describe('uninstall', () => {
       expect(process.exit).not.toHaveBeenCalled();
     });
 
-    it('a stop/remove failure on an existing registration names the unit and exits non-zero', async () => {
-      setPlatform('linux');
-      const unitPath = path.join(unitDir, 'fleet-supervisor.service');
-      mockFs({ [unitPath]: unitText(`/usr/bin/node ${installedServeMjs}`) });
+    it.each([
+      ['linux', 'fleet-supervisor.service', 'Failed to disable unit: Access denied'],
+      ['darwin', 'com.apra-fleet.supervisor', 'Boot-out failed: 5: Input/output error'],
+      ['win32', 'ApraFleetSupervisor', 'ERROR: Access is denied.'],
+    ] as const)('%s: a stop/remove failure on %s names it, prints one accurate final line and exits 1', async (platform, name, failure) => {
+      setPlatform(platform);
+      const files: Record<string, string> = platform === 'linux'
+        ? { [path.join(unitDir, name)]: unitText(`/usr/bin/node ${installedServeMjs}`) }
+        : platform === 'darwin'
+          ? { [plistPath]: plistText(['/usr/local/bin/node', installedServeMjs]) }
+          : { [wrapperBat]: '@echo off' };
+      mockFs(files);
       mockExec((cmd, args) => {
-        if (cmd === 'systemctl' && args.includes('disable')) throw new Error('Failed to disable unit: Access denied');
+        if (cmd === 'schtasks' && args.includes('/Query')) return taskXml(wrapperBat, '');
+        if (platform === 'linux' && cmd === 'systemctl' && args.includes('disable')) throw new Error(failure);
+        if (platform === 'darwin' && cmd === 'launchctl') throw Object.assign(new Error(failure), { status: 5 });
+        if (platform === 'win32' && cmd === 'schtasks' && args.includes('/Delete')) throw Object.assign(new Error(failure), { status: 1 });
         return undefined;
       });
-      vi.spyOn(console, 'log').mockImplementation(() => {});
+      const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
       const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
       await expect(runUninstall(['--yes'])).rejects.toThrow('exit');
 
       expect(process.exit).toHaveBeenCalledWith(1);
       const errors = logged(errSpy);
-      expect(errors).toContain('fleet-supervisor.service');
-      expect(errors).toContain('Access denied');
+      expect(errors).toContain(name);
+      expect(errors).toContain(failure);
+      expect(errors).toContain('Uninstall incomplete');
+      // No contradictory "complete" line before the "incomplete" one.
+      expect(logged(consoleSpy)).not.toContain('Uninstall complete.');
+    });
+
+    it('a successful removal still ends with "Uninstall complete."', async () => {
+      setPlatform('linux');
+      mockFs({ [path.join(unitDir, 'fleet-supervisor.service')]: unitText(`/usr/bin/node ${installedServeMjs}`) });
+      mockExec(() => undefined);
+      const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      await runUninstall(['--yes']);
+
+      expect(logged(consoleSpy)).toContain('Uninstall complete.');
+      expect(logged(errSpy)).not.toContain('Uninstall incomplete');
+      expect(process.exit).not.toHaveBeenCalled();
+    });
+
+    it('win32: a taskkill "not found" (process already gone) is not a failure', async () => {
+      setPlatform('win32');
+      const removed = mockFs({ [wrapperBat]: '@echo off' });
+      mockExec((cmd, args) => {
+        if (cmd === 'schtasks' && args.includes('/Query')) return taskXml(wrapperBat, '');
+        if (cmd === 'powershell') return '4242\r\n';
+        if (cmd === 'taskkill') {
+          throw Object.assign(new Error('ERROR: The process "4242" not found.'), { status: 128 });
+        }
+        return undefined;
+      });
+      vi.spyOn(console, 'log').mockImplementation(() => {});
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      await runUninstall(['--yes']);
+
+      expect(execCalls()).toContainEqual(['taskkill', '/F', '/T', '/PID', '4242']);
+      expect(execCalls()).toContainEqual(['schtasks', '/Delete', '/TN', 'ApraFleetSupervisor', '/F']);
+      expect(removed.has(wrapperBat)).toBe(true);
+      expect(errSpy).not.toHaveBeenCalled();
+      expect(process.exit).not.toHaveBeenCalled();
+    });
+
+    it('win32: the process search matches only full paths under this user\'s BIN_DIR/WORKFLOWS_DIR, never a bare filename', async () => {
+      setPlatform('win32');
+      mockFs({ [wrapperBat]: '@echo off' });
+      mockExec((cmd, args) => (cmd === 'schtasks' && args.includes('/Query') ? taskXml(wrapperBat, '') : undefined));
+      vi.spyOn(console, 'log').mockImplementation(() => {});
+
+      await runUninstall(['--yes']);
+
+      const ps = execCalls().filter(([cmd]) => cmd === 'powershell');
+      expect(ps).toHaveLength(1);
+      const encoded = ps[0][ps[0].indexOf('-EncodedCommand') + 1];
+      const script = Buffer.from(encoded, 'base64').toString('utf16le');
+      const needles = [...script.matchAll(/\.Contains\('((?:[^']|'')*)'\)/g)].map(m => m[1].replace(/''/g, "'"));
+      expect(needles).toEqual([wrapperBat, wrapperJs, installedServeMjs].map(p => p.toLowerCase()));
+      for (const n of needles) expect(path.isAbsolute(n), `${n} is not a full path`).toBe(true);
+      expect(needles).not.toContain('apra-fleet-supervisor-service.bat');
     });
 
     it.each([

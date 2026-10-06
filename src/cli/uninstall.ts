@@ -537,8 +537,11 @@ Options:
     printKeptSection(dryRun, keptUserWorkflows, supervisorCleanup.kept);
   }
 
+  // One final status line: "Uninstall complete." only when nothing failed;
+  // a failed supervisor removal ends with "Uninstall incomplete" + exit 1.
+  const incomplete = supervisorCleanup.failed.length > 0;
   if (anythingRemoved) {
-    console.log('\nUninstall complete.');
+    if (!incomplete) console.log('\nUninstall complete.');
     console.log('\n⚠ Note: Surgical cleanup of settings (MCP, permissions, hooks) was performed.');
     console.log('  If you manually modified these settings, some entries might remain.');
     console.log('  Please review your provider settings files if you suspect residual config.');
@@ -546,7 +549,7 @@ Options:
     console.log('\nNothing to remove — no apra-fleet installation found for the specified scope.');
   }
 
-  if (supervisorCleanup.failed.length > 0) {
+  if (incomplete) {
     console.error('\nUninstall incomplete: the following fleet-supervisor service registration(s) could not be removed:');
     for (const { reg, error } of supervisorCleanup.failed) {
       console.error(`  - ${reg.name}: ${error}`);
