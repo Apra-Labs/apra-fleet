@@ -178,7 +178,10 @@ working folder, which is typically a feature branch.
   matching that file's content at the repo's HEAD commit (uncommitted edits
   never change the verdict; a file absent at HEAD is a mismatch; a folder that
   is not a git work tree is refused, never hashed from disk); otherwise it is skipped with reason
-  `basis_mismatch` and any existing bible entry for it is left unchanged. It makes a local commit scoped to
+  `basis_mismatch` and any existing bible entry for it is left unchanged. A
+  live CONFIRMED id that cites no source file has no checkable basis and is
+  skipped with its own reason `no_source_files` (never `basis_mismatch`),
+  likewise leaving any existing bible entry unchanged. It makes a local commit scoped to
   the bible path (identity `pm-kb`) and never pushes. No ids, no mergeable
   ids, or an unchanged entry set makes no write and no commit. Re-running with
   the same ids after resetting to a newer HEAD re-merges at entry level, so a

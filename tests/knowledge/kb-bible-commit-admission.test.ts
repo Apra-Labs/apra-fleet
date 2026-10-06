@@ -140,6 +140,58 @@ describe('kb_bible_commit admission (shared basis predicate)', () => {
     expect(r.committed).toBe(false);
   });
 
+  it('a CONFIRMED id citing no source file is skipped with no_source_files, never basis_mismatch', async () => {
+    writeSrc('src/a.ts', 'export const a = 1;\n');
+    writeSrc('src/b.ts', 'export const b = 1;\n');
+    const noFiles = await confirmedCiting('NoFiles', ['src/a.ts']);
+    const emptyBasis = await confirmedCiting('EmptyBasis', ['src/b.ts']);
+    // No MCP path mints a CONFIRMED entry without source files (capture and
+    // import refuse it), but a legacy row can hold one: make it directly.
+    db().prepare("UPDATE entries SET source_files = '[]', source_file_hashes = '{}' WHERE id = ?").run(noFiles);
+    db().prepare("UPDATE entries SET source_file_hashes = '{}' WHERE id = ?").run(emptyBasis);
+    commitWorkTree(clone);
+
+    const r = JSON.parse(await kbBibleCommit({ ids: [noFiles, emptyBasis], ...BASE }, { folder: clone }));
+
+    expect(r.merged).toEqual([]);
+    expect(r.skipped).toEqual([
+      { id: noFiles, reason: 'no_source_files' },
+      { id: emptyBasis, reason: 'basis_mismatch' },
+    ]);
+    expect(r.committed).toBe(false);
+  });
+
+  it('a skipped id already in the bible leaves its bible entry byte-identical (basis_mismatch and no_source_files)', async () => {
+    writeSrc('src/a.ts', 'export const a = 1;\n');
+    writeSrc('src/b.ts', 'export const b = 1;\n');
+    const drift = await confirmedCiting('Drift', ['src/a.ts']);
+    const noFiles = await confirmedCiting('LosesFiles', ['src/b.ts']);
+    commitWorkTree(clone);
+    const first = JSON.parse(await kbBibleCommit({ ids: [drift, noFiles], ...BASE }, { folder: clone }));
+    expect(first.merged).toEqual([drift, noFiles]);
+    const biblePath = path.join(clone, BIBLE_REL);
+    const before = fs.readFileSync(biblePath);
+    const headBefore = git(clone, ['rev-parse', 'HEAD']).trim();
+
+    writeSrc('src/a.ts', 'export const a = 2;\n');
+    commitWorkTree(clone);
+    db().prepare("UPDATE entries SET source_files = '[]', title = 'changed in the KB' WHERE id = ?").run(noFiles);
+    db().prepare("UPDATE entries SET title = 'also changed in the KB' WHERE id = ?").run(drift);
+    const headAfterEdit = git(clone, ['rev-parse', 'HEAD']).trim();
+
+    const second = JSON.parse(await kbBibleCommit({ ids: [drift, noFiles], ...BASE }, { folder: clone }));
+
+    expect(second.merged).toEqual([]);
+    expect(second.skipped).toEqual([
+      { id: drift, reason: 'basis_mismatch' },
+      { id: noFiles, reason: 'no_source_files' },
+    ]);
+    expect(second.committed).toBe(false);
+    expect(Buffer.compare(fs.readFileSync(biblePath), before)).toBe(0);
+    expect(git(clone, ['rev-parse', 'HEAD']).trim()).toBe(headAfterEdit);
+    expect(headAfterEdit).not.toBe(headBefore);
+  });
+
   it('scenario 3: on one mixed fixture, kb_bible_commit merges exactly the ids kb_export admits', async () => {
     for (const f of ['u', 'c', 'm', 'e', 'n', 'i']) writeSrc('src/' + f + '.ts', 'export const ' + f + ' = 1;\n');
     const u = await confirmedCiting('Unchanged', ['src/u.ts']);

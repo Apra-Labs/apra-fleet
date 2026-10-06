@@ -40,7 +40,7 @@ import {
 
 export const kbBibleCommitSchema = z.object({
   ids: z.array(z.string().min(1))
-    .describe('Ids of the entries confirmed this round. Each must be a live (non-stale, non-superseded) CONFIRMED entry in this repository\'s KB whose recorded file basis still matches the cited files at the repo\'s HEAD commit (the same rule kb_export applies; uncommitted edits are ignored); any other id is skipped and reported in skipped (reason not_confirmed_or_unknown or basis_mismatch). An empty list makes no commit.'),
+    .describe('Ids of the entries confirmed this round. Each must be a live (non-stale, non-superseded) CONFIRMED entry in this repository\'s KB whose recorded file basis still matches the cited files at the repo\'s HEAD commit (the same rule kb_export applies; uncommitted edits are ignored); any other id is skipped and reported in skipped (reason not_confirmed_or_unknown, no_source_files for a CONFIRMED entry citing no source file, or basis_mismatch). An empty list makes no commit.'),
   baseBranch: z.string().min(1)
     .describe('The sprint\'s target base branch (the branch the work merges into). Written to provenance.branch.'),
   baseCommit: z.string().min(1)
@@ -52,9 +52,19 @@ export const kbBibleCommitSchema = z.object({
 
 export type KbBibleCommitInput = z.infer<typeof kbBibleCommitSchema>;
 
+/**
+ * Why a requested id was not merged:
+ *  - not_confirmed_or_unknown: not a live CONFIRMED entry in this KB;
+ *  - no_source_files: CONFIRMED but cites no source file, so it has no basis
+ *    that could ever be checked (retrying cannot change this);
+ *  - basis_mismatch: CONFIRMED and cites files, but its recorded basis does not
+ *    match those files at HEAD (can clear once the files or the basis agree).
+ */
+export type KbBibleCommitSkipReason = 'not_confirmed_or_unknown' | 'no_source_files' | 'basis_mismatch';
+
 export interface KbBibleCommitSkip {
   id: string;
-  reason: 'not_confirmed_or_unknown' | 'basis_mismatch';
+  reason: KbBibleCommitSkipReason;
 }
 
 export interface KbBibleCommitResult {
@@ -88,6 +98,9 @@ export async function kbBibleCommit(input: KbBibleCommitInput, anchor?: KbAnchor
   const qualifying = await filterProjectBibleCandidates(requestedConfirmed, bases, repoPath);
   const qualifyingIds = new Set(qualifying.map(e => e.id));
   const confirmedIds = new Set(requestedConfirmed.map(e => e.id));
+  const noSourceIds = new Set(requestedConfirmed
+    .filter(e => !Array.isArray(e.source_files) || e.source_files.length === 0)
+    .map(e => e.id));
   const confirmed = new Map<string, CanonicalEntry>();
   // Format v3: each merged entry carries the exact stored basis it was just
   // admitted against (never re-hashed here).
@@ -97,9 +110,13 @@ export async function kbBibleCommit(input: KbBibleCommitInput, anchor?: KbAnchor
   const skipped: KbBibleCommitSkip[] = [];
   for (const id of requested) {
     if (qualifyingIds.has(id)) merged.push(id);
-    else if (confirmedIds.has(id)) {
+    else if (noSourceIds.has(id)) {
       // An id already in the bible keeps its existing entry: the merge never drops entries.
-      logWarn('kb_bible_commit', 'skipping ' + id + ': basis_mismatch (cited files changed, missing, or basis absent)');
+      logWarn('kb_bible_commit', 'skipping ' + id + ': no_source_files (a CONFIRMED entry citing no source file has no checkable basis)');
+      skipped.push({ id, reason: 'no_source_files' });
+    } else if (confirmedIds.has(id)) {
+      // An id already in the bible keeps its existing entry: the merge never drops entries.
+      logWarn('kb_bible_commit', 'skipping ' + id + ': basis_mismatch (cited files at HEAD changed or absent, or basis absent)');
       skipped.push({ id, reason: 'basis_mismatch' });
     } else skipped.push({ id, reason: 'not_confirmed_or_unknown' });
   }

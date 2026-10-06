@@ -562,7 +562,8 @@
  *   live CONFIRMED entries are skipped (reason not_confirmed_or_unknown); a CONFIRMED id
  *   whose cited files at the repo's HEAD commit no longer match its recorded basis (the
  *   same rule kb_export applies; uncommitted edits never change the verdict) is skipped
- *   with reason basis_mismatch. Skips are reported in the result's skipped list.
+ *   with reason basis_mismatch, and a CONFIRMED id citing no source file is skipped with
+ *   reason no_source_files. Skips are reported in the result's skipped list.
  *   An empty list makes no commit.
  * @property {string} baseBranch - The target base branch, written to provenance.branch.
  * @property {string} baseCommit - The base commit the entries were verified against,
@@ -1017,7 +1018,8 @@ export class ApraFleet {
      * same ids after resetting to a newer HEAD re-merges, so a rejected push can
      * be retried. Result JSON: {path, merged, skipped, entry_count, committed};
      * extract with parseToolJson(). Each skipped item is {id, reason} with reason
-     * not_confirmed_or_unknown or basis_mismatch.
+     * not_confirmed_or_unknown, no_source_files (a CONFIRMED id citing no source
+     * file) or basis_mismatch.
      * A CONFIRMED id is admitted only if it passes the same basis rule as kb_export.
      * The removed scope keys (repo_path, repo, repo_remote_url) are refused
      * with E-SCOPE-KEY-REMOVED before anything is sent.

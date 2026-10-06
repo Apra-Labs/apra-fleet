@@ -548,7 +548,9 @@ entries are skipped and listed in `skipped` with reason
 `not_confirmed_or_unknown`; a CONFIRMED id that fails the same basis rule
 `kb_export` applies (a cited file changed or absent at the repo's HEAD commit --
 uncommitted edits never change the verdict -- or no basis) is skipped
-with reason `basis_mismatch` and any existing bible entry for it is kept; no mergeable ids or an unchanged
+with reason `basis_mismatch` and any existing bible entry for it is kept; a
+CONFIRMED id citing no source file is skipped with its own reason
+`no_source_files` (its existing bible entry is kept too); no mergeable ids or an unchanged
 entry set makes no commit. Re-running with the same ids after resetting to a
 newer HEAD re-merges, so a rejected push can be retried without a manual
 merge. Result JSON: `{path, merged, skipped, entry_count, committed}`.

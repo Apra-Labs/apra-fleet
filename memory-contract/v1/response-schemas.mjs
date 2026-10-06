@@ -206,15 +206,16 @@ const KB_RESPONSE_BODIES = {
   }),
   // kb_bible_commit: ids the caller named are either merged (live CONFIRMED in
   // this KB and passing the shared bible basis predicate) or skipped with a
-  // reason (not_confirmed_or_unknown, or basis_mismatch for a CONFIRMED id whose
-  // cited-file basis no longer matches); committed is true only when a local
+  // reason (not_confirmed_or_unknown; no_source_files for a CONFIRMED id that
+  // cites no source file; or basis_mismatch for a CONFIRMED id whose cited-file
+  // basis does not match the files at HEAD); committed is true only when a local
   // commit of the bible path was made (never pushed).
   kb_bible_commit: z.object({
     path: z.string(),
     merged: z.array(z.string()),
     skipped: z.array(z.object({
       id: z.string(),
-      reason: z.enum(['not_confirmed_or_unknown', 'basis_mismatch']),
+      reason: z.enum(['not_confirmed_or_unknown', 'no_source_files', 'basis_mismatch']),
     })),
     entry_count: z.number(),
     committed: z.boolean(),
