@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "6c392d8af8963c1267052327b3a2ac519a6bb245",
     "branch": "u1_kb_redesign_base",
-    "entry_count": 279
+    "entry_count": 280
   },
   "entries": [
     {
@@ -2702,6 +2702,35 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:13.124Z"
+    },
+    {
+      "id": "843b9b37-7f25-4979-9a61-94e32ed50048",
+      "type": "runbook",
+      "title": "Record one new memory-contract fixture with RECORD_ONLY, never a full recorder re-run",
+      "summary": "memory-contract/v1/tests/record-fixtures.mjs mints fresh UUIDs on every run, so an unfiltered re-run churns the whole committed fixture corpus; RECORD_ONLY=<tool>/<case> replays the full setup chain but writes only the named fixtures.",
+      "symbols": [
+        "RECORD_ONLY",
+        "writeFixture",
+        "recordHappy",
+        "SCENARIO",
+        "checkFixtureAdditivity"
+      ],
+      "source_files": [
+        "memory-contract/v1/tests/record-fixtures.mjs",
+        "memory-contract/v1/tests/roundtrip-harness.mjs",
+        "scripts/check-fixture-additivity.mjs",
+        "tests/memory-contract-fixture-response-schema.test.ts",
+        "tests/memory-contract-roundtrip.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T23:35:45.262Z",
+      "source_file_hashes": {
+        "memory-contract/v1/tests/record-fixtures.mjs": "a964a001540a3ceaae5dbe438a420778f8bf88b1",
+        "memory-contract/v1/tests/roundtrip-harness.mjs": "ddd5125cdcf5872b5cdb1c353dca1871a2546dbc",
+        "scripts/check-fixture-additivity.mjs": "fbc8cb81193d7169496c38b1175a59c0204518d4",
+        "tests/memory-contract-fixture-response-schema.test.ts": "8138ea5086e05b31ed03c346a6613ed80d4dfd3d",
+        "tests/memory-contract-roundtrip.test.ts": "6b0b930d31bba36ee768f4a4a294782a8180cec6"
+      }
     },
     {
       "id": "85d4a659-328d-4c01-8317-437cff41a2f8",
