@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "34ff160ff8ee9e2268e851270b911771d06fedca",
     "branch": "feat/kb-redesign",
-    "entry_count": 275
+    "entry_count": 278
   },
   "entries": [
     {
@@ -952,6 +952,22 @@
       "updated_at": "2026-09-25T22:26:33.419Z"
     },
     {
+      "id": "277722da-41ce-47be-8e89-aad7d4bec133",
+      "type": "knowledge",
+      "title": "install --help output is pinned byte-for-byte to a regression fixture",
+      "summary": "tests/install-multi-provider.test.ts compares runInstall(['--help']) output to tests/fixtures/regression-command-surface/install-help.txt, so any help-text change to src/cli/install.ts must update that fixture in the same commit.",
+      "symbols": [
+        "runInstall"
+      ],
+      "source_files": [
+        "tests/install-multi-provider.test.ts",
+        "tests/fixtures/regression-command-surface/install-help.txt",
+        "src/cli/install.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T12:53:45.854Z"
+    },
+    {
       "id": "28cd0a59-ece9-45ba-9291-e82acaed18e2",
       "type": "knowledge",
       "title": "All four kb_ sites now log symmetric rejected and failed lines via isToolError",
@@ -1391,6 +1407,27 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:11.114Z"
+    },
+    {
+      "id": "416532bd-32a5-4056-8cb5-03f2219c2870",
+      "type": "knowledge",
+      "title": "Server bind port is resolved at call time: APRA_FLEET_PORT, then member-install marker port, then 7523",
+      "summary": "resolveServerPort() in src/paths.ts decides the port the http server binds and start/install check: explicit APRA_FLEET_PORT, else the port data/member-install.json records, else 7523; DEFAULT_PORT (load-time, env only) is no longer the bind source.",
+      "symbols": [
+        "resolveServerPort",
+        "recordedMemberInstallPort",
+        "DEFAULT_PORT",
+        "writeMemberInstallMarker"
+      ],
+      "source_files": [
+        "src/paths.ts",
+        "src/services/http-transport.ts",
+        "src/cli/start.ts",
+        "src/cli/install.ts",
+        "src/cli/install-guard.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T12:53:45.788Z"
     },
     {
       "id": "41e88d84-a9de-4d5b-aafa-1ee96089a6f9",
@@ -3091,6 +3128,20 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:13.561Z"
+    },
+    {
+      "id": "9f059720-a4b8-4ab7-bb33-de799fc910be",
+      "type": "learning",
+      "title": "Windows hands out listen(0) ephemeral ports sequentially, so back-to-back picks are adjacent",
+      "summary": "Two consecutive net.listen(0)+close calls on Windows return adjacent ports every time, so a test needing non-adjacent free ports must hold several open at once and use the outer ones.",
+      "symbols": [
+        "twoPorts"
+      ],
+      "source_files": [
+        "tests/integration/two-member-installs-one-host.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T12:53:45.919Z"
     },
     {
       "id": "9fa5c3ec-10b3-44bb-a852-07ca0a796391",
