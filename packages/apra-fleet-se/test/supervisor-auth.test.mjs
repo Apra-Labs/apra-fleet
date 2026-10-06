@@ -202,6 +202,15 @@ describe('requiresAuth', () => {
         // Protocol-relative form resolves to host 'api', path '/health' -- the
         // router reaches the same (unrouted) path, so guard and router agree.
         ['GET', '//api/health', false],
+        // Percent-encoded forms: new URL() does not decode %61 or %2F, so
+        // neither the guard nor the router (same normalizePath) sees
+        // /api/health -- both treat these as an unrouted, open path. The
+        // safety property is that guard and router never disagree; these
+        // rows break if either side starts decoding escapes.
+        ['GET', '/%61pi/health', false],
+        ['POST', '/%61pi/health', false],
+        ['GET', '/api%2Fhealth', false],
+        ['POST', '/api%2Fhealth', false],
     ];
 
     for (const [method, urlPath, expected] of REQUIRES_AUTH_TABLE) {
@@ -232,6 +241,8 @@ describe('requiresAuth', () => {
             '/sprints/x/live',
             '/api/health?verbose=1',
             '/state',
+            '/%61pi/health',
+            '/api%2Fhealth',
         ];
         for (const raw of rawUrls) {
             const routed = new URL(raw, 'http://localhost:1234').pathname;
