@@ -175,8 +175,8 @@ describe('registry - duplicate folder validation', () => {
   });
 
   it('allows same host+folder on different ports (RPort scenario)', () => {
-    addAgent(makeTestAgent({ id: 'remote-1', host: '10.0.0.1', port: 24091, workFolder: '/home/blub0x' }));
-    expect(hasDuplicateFolder('remote', '/home/blub0x', '10.0.0.1', 21870)).toBe(false);
+    addAgent(makeTestAgent({ id: 'remote-1', host: '10.0.0.1', port: 24091, workFolder: '/home/dev' }));
+    expect(hasDuplicateFolder('remote', '/home/dev', '10.0.0.1', 21870)).toBe(false);
   });
 
   it('detects duplicate remote host+port+folder', () => {

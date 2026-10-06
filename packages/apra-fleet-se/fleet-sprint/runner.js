@@ -2409,6 +2409,7 @@ async function runSprintCycle(context) {
             reconcilePendingRejectedNewTasks,
             stageCommandBodyMemberSide,
             updateDashboard,
+            publishState,
         });
         pendingRejectedNewTasks = planOutcome.pendingRejectedNewTasks;
         const { planCapDeferredIds, lastVerdict, planningRounds } = planOutcome;
@@ -3332,6 +3333,13 @@ export async function main(context) {
                     log,
                     onAuthFailure: abortOnAuthFailure,
                     callTool: (args && typeof args.callTool === 'function') ? args.callTool : undefined,
+                    // finalizeAbort raises the [ABORTED] PR, which mints a
+                    // just-in-time push+pr credential -- it needs the same
+                    // operator-chosen PAT secret name the sync self-heal above
+                    // gets, or it provisions the provider default and both
+                    // fails the PR and clobbers the member's working git
+                    // credential.
+                    azdevopsPatSecretName: validatedForLock.azdevopsPatSecretName,
                     runId: (args && typeof args.run_id === 'string') ? args.run_id : undefined,
                 });
             } catch (finalizeErr) {

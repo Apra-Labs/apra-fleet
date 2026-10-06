@@ -171,10 +171,13 @@ export async function loadOldSprintState(sprintId, env = process.env, readFile) 
  * `opts.history` mode, apra-fleet-eft.6.5).
  * @param {object} state - parsed old_runs/<sprintId>.json (or legacy old_sprints/)
  * @param {Array} [dashboardExtensions]
+ * @param {{ historyAssets?: 'live'|'relative' }} [opts] - 'relative' makes the
+ *   lazy-load clicks read materialised files beside the page (an archive);
+ *   the default keeps calling the live routes.
  * @returns {string}
  */
-export function renderHistoryPageHtml(state, dashboardExtensions = []) {
-    return HTML_TEMPLATE(dashboardExtensions, { history: true, state });
+export function renderHistoryPageHtml(state, dashboardExtensions = [], opts = {}) {
+    return HTML_TEMPLATE(dashboardExtensions, { ...opts, history: true, state });
 }
 
 /**

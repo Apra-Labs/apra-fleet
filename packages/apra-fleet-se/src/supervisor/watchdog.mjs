@@ -406,6 +406,30 @@ function readTerminalRunState(path) {
  * @param {NodeJS.ProcessEnv} env
  * @returns {object|null}
  */
+/**
+ * The engine's FINAL state for a sprint that is no longer running, for
+ * callers that answer from history after the reservation is gone (api.mjs's
+ * GET /api/sprints/:id). A normal finish is the run-state moved to old_runs/
+ * (defaultHasTerminalState); a crash is the watchdog's own record, written IN
+ * PLACE in running/ with `status: 'failed'` (defaultRecordTerminalError).
+ * Only that failed record is accepted from running/: a still-running sprint's
+ * in-progress file is never passed off as final. `null` when neither exists.
+ * @param {string} sprintId
+ * @param {string|null|undefined} branch
+ * @param {NodeJS.ProcessEnv} env
+ * @returns {object|null}
+ */
+export function defaultReadFinalState(sprintId, branch, env = process.env) {
+    const finished = defaultHasTerminalState(sprintId, branch, env);
+    if (finished) return finished;
+    try {
+        const crashed = readTerminalRunState(getRunningRunStatePath(sprintId, env));
+        return crashed && crashed.status === 'failed' ? crashed : null;
+    } catch {
+        return null;
+    }
+}
+
 export function defaultHasTerminalState(sprintId, branch, env = process.env) {
     try {
         const byRunId = getTerminalRunStatePath(sprintId, env);

@@ -447,12 +447,24 @@ async function provisionVcsAuthForMember({ fleetApi, command, member, log = () =
 // scope the mint) -- reusing it here means the PR-raising call sites never
 // need a SECOND `git remote get-url origin` dispatch of their own just to
 // learn the repo VCSModule needs to build the PR-creation command.
+//
+// `azdevopsPatSecretName` is forwarded for exactly the same reason the
+// self-heal and preflight paths already forward it: the provider default
+// secret name (DEFAULT_PAT_SECRET, 'azdevops_pat') is not usable on an
+// operator machine where that name is already committed to an unrelated
+// project, so the sprint must be able to name the PAT it actually owns.
+// Omitting it here is not a cosmetic miss -- provisioning with the WRONG PAT
+// does double damage: the PR creation 401s AND the bad credential is written
+// over the member's working git credential on disk, breaking plain `git
+// fetch` on that member until it is re-provisioned by hand. Absent, this
+// stays undefined and provisioning falls back to the provider default
+// exactly as before.
 /**
- * @param {{ fleetApi: object, command: Function, member: string, log?: Function, logPrefix: string }} opts
+ * @param {{ fleetApi: object, command: Function, member: string, log?: Function, logPrefix: string, azdevopsPatSecretName?: string }} opts
  * @returns {Promise<{ expiresAt: Date|null, repo: string|null }>}
  */
-async function provisionPrCapableAuthForMember({ fleetApi, command, member, log = () => {}, logPrefix, remoteUrlOverride }) {
-    return provisionVcsAuthForMember({ fleetApi, command, member, log, logPrefix, gitAccess: 'push+pr', remoteUrlOverride });
+async function provisionPrCapableAuthForMember({ fleetApi, command, member, log = () => {}, logPrefix, remoteUrlOverride, azdevopsPatSecretName }) {
+    return provisionVcsAuthForMember({ fleetApi, command, member, log, logPrefix, gitAccess: 'push+pr', remoteUrlOverride, azdevopsPatSecretName });
 }
 
 // Default credential label provision_vcs_auth deploys under when no explicit
@@ -672,13 +684,13 @@ function isPrAuthFailure(status, errorText) {
 // the caller to log as a WARNING, leaving the PR as it was. Without
 // `updateExisting` the returned shape is exactly the historical one.
 /**
- * @param {{ fleetApi: object, command: Function, member: string, base: string, head: string, title: string, body?: string, log?: Function, logPrefix: string, updateExisting?: Function }} opts
+ * @param {{ fleetApi: object, command: Function, member: string, base: string, head: string, title: string, body?: string, log?: Function, logPrefix: string, azdevopsPatSecretName?: string, updateExisting?: Function }} opts
  * @returns {Promise<{ ok: boolean, alreadyExists: boolean, prUrl: string|null, error: string|null, authFailure: boolean, updated?: boolean, updateError?: string|null }>}
  */
-export async function raiseVcsPrForMember({ fleetApi, command, member, base, head, title, body, log = () => {}, logPrefix, remoteUrlOverride, updateExisting }) {
+export async function raiseVcsPrForMember({ fleetApi, command, member, base, head, title, body, log = () => {}, logPrefix, remoteUrlOverride, azdevopsPatSecretName, updateExisting }) {
     let repo;
     try {
-        ({ repo } = await provisionPrCapableAuthForMember({ fleetApi, command, member, log, logPrefix, remoteUrlOverride }));
+        ({ repo } = await provisionPrCapableAuthForMember({ fleetApi, command, member, log, logPrefix, remoteUrlOverride, azdevopsPatSecretName }));
     } catch (provisionErr) {
         // apra-fleet-5co8.15: provisionPrCapableAuthForMember has no failSoft
         // of its own (by design -- see its doc comment above), so a
@@ -800,7 +812,10 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
                 healed = true;
                 log(`${logPrefix}: ${what} returned an auth-classified failure (HTTP ${parsed.status ?? '(unknown)'}) for member '${member}'; re-provisioning a push+pr credential and retrying once (command: ${b.logSafeCommand}): ${msg}`);
                 try {
-                    const reprov = await provisionPrCapableAuthForMember({ fleetApi, command, member, log, logPrefix, remoteUrlOverride });
+                    // The operator's secret name, like every other provisioning
+                    // call here: without it the retry mints the provider default
+                    // and overwrites the member's working credential.
+                    const reprov = await provisionPrCapableAuthForMember({ fleetApi, command, member, log, logPrefix, remoteUrlOverride, azdevopsPatSecretName });
                     if (reprov.repo) repo = reprov.repo;
                 } catch (healErr) {
                     return { ok: false, error: `${what} auth self-heal failed: ${healErr.message}` };
@@ -941,7 +956,7 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
             authHealAttempted = true;
             log(`${logPrefix}: PR creation returned an auth-classified failure (HTTP ${status ?? '(unknown)'}) for member '${member}'; re-provisioning a push+pr credential and retrying once (command: ${built.logSafeCommand}): ${errorText}`);
             try {
-                const reprov = await provisionPrCapableAuthForMember({ fleetApi, command, member, log, logPrefix, remoteUrlOverride });
+                const reprov = await provisionPrCapableAuthForMember({ fleetApi, command, member, log, logPrefix, remoteUrlOverride, azdevopsPatSecretName });
                 if (reprov.repo) repo = reprov.repo;
                 // No token re-read here any more: `built.command` still
                 // carries the placeholder, so the retry's own
@@ -996,7 +1011,7 @@ export function createMemberVcsProviderResolver(opts = {}) {
             cache.set(member, provider);
             return provider;
         } catch (err) {
-            log(`[Sync] could not resolve member '${member}'s VCS provider for git-failure classification (falling back to the default provider chain, no verdict change for GitHub members): ${err.message}`);
+            log(`[Sync] could not resolve member '${member}'s VCS provider for git-failure classification (falling back to the default provider chain, no verdict change for members already on it): ${err.message}`);
             cache.set(member, undefined);
             return undefined;
         }
@@ -1298,6 +1313,9 @@ export function createWorkflowsPermissionPreflightCallback(opts = {}) {
      */
     const silentMembers = new Set();
 
+    // GENERIC-BOUNDARY-EXCEPTION: workflows-permission preflight is GitHub-App-only
+    // (it returns early for every other provider and auth mode), so its
+    // provider checks and operator-referral log name GitHub. Not agent-dispatch text.
     return async function warnIfWorkflowsPermissionMissing(member, branch, baseBranch) {
         try {
             // branch === baseBranch is rejected at launch (sprint-args.mjs

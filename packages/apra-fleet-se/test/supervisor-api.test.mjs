@@ -192,6 +192,172 @@ describe('api -- POST /api/sprints validation + goal forwarding', () => {
         await fsp.rm(dir, { recursive: true, force: true });
     });
 
+    // An operator's VCS provider credential for the sprint's target project
+    // is not always stored under the provider's default secret name --
+    // commonly it is not, once that default name is already committed to a
+    // different project. Without a way to carry an override from the launch
+    // request through to the spawned child, the engine silently provisions
+    // the wrong credential and clobbers a working one. Forwarded the same way
+    // goal/maxCycles/requirementsFile/budget already are: read straight off
+    // `body`, not from validateLaunchRequest's narrow return. This field is
+    // public engine surface and must stay provider-neutral
+    // (docs/generic-engine-boundary.md) -- `vcs_pat_secret_name` is the
+    // canonical spelling; `azdevops_pat_secret_name` is accepted as a
+    // deprecated alias (see resolveVcsPatSecretName() in src/supervisor/
+    // api.mjs) so a caller built against the pre-rename field name (e.g. an
+    // older fleet-bridge) keeps working for one release.
+    test('forwards body.vcs_pat_secret_name into the child argv (asserted on spawn args)', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const captured = [];
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner(captured),
+            listMembers: () => ({ members: [] }),
+            getBacklog: () => ({ tasks: [] }),
+        });
+
+        const result = await controller.launch({
+            issue: 'PROJ-1', members: ['alice'], branch: 'feat/x', base: 'main',
+            vcs_pat_secret_name: 'fleet_bridge_azdevops_pat',
+        });
+
+        assert.equal(captured.length, 1);
+        const args = captured[0].args;
+        const si = args.indexOf('--vcs-pat-secret-name');
+        assert.ok(si >= 0, 'child argv must contain --vcs-pat-secret-name');
+        assert.equal(args[si + 1], 'fleet_bridge_azdevops_pat');
+        assert.equal(result.vcsPatSecretNameDeprecationWarning, null, 'the canonical spelling must not raise a deprecation warning');
+
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    // Deprecated-alias acceptance: the legacy azdevops_pat_secret_name field
+    // still reaches the child argv under the SAME --vcs-pat-secret-name flag
+    // (the flag itself was renamed; only the request-body spelling is dual),
+    // and the launch response carries a deprecation notice.
+    test('forwards the deprecated body.azdevops_pat_secret_name alias into the child argv and warns', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const captured = [];
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner(captured),
+            listMembers: () => ({ members: [] }),
+            getBacklog: () => ({ tasks: [] }),
+        });
+
+        const result = await controller.launch({
+            issue: 'PROJ-1', members: ['alice'], branch: 'feat/x', base: 'main',
+            azdevops_pat_secret_name: 'fleet_bridge_azdevops_pat',
+        });
+
+        assert.equal(captured.length, 1);
+        const args = captured[0].args;
+        const si = args.indexOf('--vcs-pat-secret-name');
+        assert.ok(si >= 0, 'child argv must contain --vcs-pat-secret-name');
+        assert.equal(args[si + 1], 'fleet_bridge_azdevops_pat');
+        assert.match(result.vcsPatSecretNameDeprecationWarning, /deprecated/);
+        assert.match(result.vcsPatSecretNameDeprecationWarning, /vcs_pat_secret_name/);
+
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('vcs_pat_secret_name wins when a request sends both spellings, with no deprecation warning', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const captured = [];
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner(captured),
+            listMembers: () => ({ members: [] }),
+            getBacklog: () => ({ tasks: [] }),
+        });
+
+        const result = await controller.launch({
+            issue: 'PROJ-1', members: ['alice'], branch: 'feat/x', base: 'main',
+            vcs_pat_secret_name: 'canonical_name',
+            azdevops_pat_secret_name: 'legacy_name',
+        });
+
+        const args = captured[0].args;
+        const si = args.indexOf('--vcs-pat-secret-name');
+        assert.equal(args[si + 1], 'canonical_name');
+        assert.equal(result.vcsPatSecretNameDeprecationWarning, null);
+
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('a launch WITHOUT vcs_pat_secret_name emits no --vcs-pat-secret-name flag', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const captured = [];
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner(captured),
+            listMembers: () => ({ members: [] }), getBacklog: () => ({}),
+        });
+        await controller.launch({ issue: 'PROJ-1', members: ['alice'], branch: 'feat/x', base: 'main' });
+        assert.equal(captured[0].args.includes('--vcs-pat-secret-name'), false);
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    // Pre-merge review fix: the PAT secret-name field was forwarded straight
+    // from the request body into spawnOpts with no type check, so a
+    // non-string value reached spawner.spawnSprint()'s args.push(...) and
+    // failed INSIDE child_process.spawn as an opaque 500, instead of a clear
+    // 400 naming the field the way branch/base/members already do.
+    test('a non-string vcs_pat_secret_name is rejected with a 400 naming the field, never reaching spawn', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const captured = [];
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner(captured),
+            listMembers: () => ({ members: [] }), getBacklog: () => ({}),
+        });
+        await assert.rejects(
+            () => controller.launch({
+                issue: 'PROJ-1', members: ['alice'], branch: 'feat/x', base: 'main',
+                vcs_pat_secret_name: 12345,
+            }),
+            (err) => err instanceof ApiError && err.status === 400 && err.field === 'vcs_pat_secret_name',
+        );
+        assert.equal(captured.length, 0, 'an invalid vcs_pat_secret_name must be rejected before any child is spawned');
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('a non-string legacy azdevops_pat_secret_name is rejected with a 400 naming that field', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const captured = [];
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner(captured),
+            listMembers: () => ({ members: [] }), getBacklog: () => ({}),
+        });
+        await assert.rejects(
+            () => controller.launch({
+                issue: 'PROJ-1', members: ['alice'], branch: 'feat/x', base: 'main',
+                azdevops_pat_secret_name: 12345,
+            }),
+            (err) => err instanceof ApiError && err.status === 400 && err.field === 'azdevops_pat_secret_name',
+        );
+        assert.equal(captured.length, 0, 'an invalid azdevops_pat_secret_name must be rejected before any child is spawned');
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('a vcs_pat_secret_name with an invalid charset is rejected with a 400, matching the child-side rule', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner([]),
+            listMembers: () => ({ members: [] }), getBacklog: () => ({}),
+        });
+        await assert.rejects(
+            () => controller.launch({
+                issue: 'PROJ-1', members: ['alice'], branch: 'feat/x', base: 'main',
+                vcs_pat_secret_name: 'not a valid name!',
+            }),
+            (err) => err instanceof ApiError && err.status === 400 && err.field === 'vcs_pat_secret_name',
+        );
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
     test('apra-fleet-3i3.2: launch() persists branch/base/goal on the ledger reservation', async () => {
         const dir = await tmpDir();
         const { ledger, history } = await stores(dir);
@@ -942,6 +1108,94 @@ describe('api -- GET /api/sprints and /api/sprints/:id', () => {
         assert.equal(payload.live, false);
         assert.equal(payload.terminal, true);
         assert.ok(payload.state, 'must return a structured status payload, not the generic internal-error object');
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    // The OTHER side of the same closed-port window: a sprint that is live and
+    // NOT terminal, whose child dashboard is not listening yet (the seconds
+    // between spawn and the viewer binding its port) or has just exited ahead
+    // of the watchdog. Observed live: a caller polling right after launch got
+    // the generic 500 and gave up on a sprint that was running fine. It is a
+    // temporary condition of a real sprint, so it is a 503, never a 500.
+    test('GET /api/sprints/:id over HTTP for a live child whose dashboard is not answering is a 503, never the generic 500', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        await ledger.claim('s1', { members: ['a'], issueRoots: ['R'], childPid: 42, branch: 'feat/x' });
+        const supervisor = createSupervisor({ port: 0 });
+        registerSprintRoutes(supervisor, createSprintController({
+            ledger, history, spawner: recordingSpawner([]),
+            listMembers: () => ({}), getBacklog: () => ({}),
+            hasTerminalState: () => null,
+            resolvePort: (pid) => (pid === 42 ? 9200 : undefined),
+            proxyState: async () => { throw new Error('connect ECONNREFUSED 127.0.0.1:9200'); },
+        }));
+
+        const res = mockRes();
+        await supervisor.handleRequest(mockReq('GET', '/api/sprints/s1'), res);
+        assert.equal(res.statusCode, 503);
+        const payload = payloadOf(res);
+        assert.notEqual(payload.error, 'internal supervisor error', 'must say what is wrong, not the generic wrapper text');
+        assert.match(payload.error, /not answering/);
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('GET /api/sprints/:id still surfaces a non-connection proxy failure as an error (not masked as 503)', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        await ledger.claim('s1', { members: ['a'], issueRoots: ['R'], childPid: 42, branch: 'feat/x' });
+        const supervisor = createSupervisor({ port: 0 });
+        registerSprintRoutes(supervisor, createSprintController({
+            ledger, history, spawner: recordingSpawner([]),
+            listMembers: () => ({}), getBacklog: () => ({}),
+            hasTerminalState: () => null,
+            resolvePort: (pid) => (pid === 42 ? 9200 : undefined),
+            proxyState: async () => { throw new Error('child /state returned invalid JSON: Unexpected token'); },
+        }));
+
+        const res = mockRes();
+        await supervisor.handleRequest(mockReq('GET', '/api/sprints/s1'), res);
+        assert.equal(res.statusCode, 500);
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    // A sprint whose reservation is already released answers from history
+    // only -- and used to carry NO engine state at all, so anything built from
+    // it (fleet-bridge's archived dashboard) failed for every sprint the
+    // watchdog released before the caller got there: every crash, and every
+    // normal finish once the watchdog tick beat the caller. Observed live on a
+    // killed sprint. The engine's final state is still on disk; return it.
+    test('GET /api/sprints/:id for a released sprint returns its persisted final state beside the history', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        await history.record({ sprintId: 's1', event: 'auto-released', reason: 'watchdog: classified crashed (pid gone)', members: ['a'], issueRoots: ['R'] });
+        const seen = [];
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner([]),
+            listMembers: () => ({}), getBacklog: () => ({}),
+            readFinalState: (id) => { seen.push(id); return { status: 'failed', terminalReason: 'watchdog: crashed', tree: [] }; },
+        });
+        const out = await controller.getSprint('s1');
+        assert.equal(out.live, false);
+        assert.equal(out.latest.event, 'auto-released');
+        assert.deepEqual(out.state, { status: 'failed', terminalReason: 'watchdog: crashed', tree: [] });
+        assert.deepEqual(seen, ['s1']);
+        assert.equal(out.terminal, true, 'a persisted final state means the run ended');
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('GET /api/sprints/:id for a released sprint with no persisted state keeps the history-only shape', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        await history.record({ sprintId: 's1', event: 'auto-released', reason: 'watchdog: classified crashed (pid gone)', members: ['a'], issueRoots: ['R'] });
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner([]),
+            listMembers: () => ({}), getBacklog: () => ({}),
+            readFinalState: () => null,
+        });
+        const out = await controller.getSprint('s1');
+        assert.equal(out.live, false);
+        assert.equal('state' in out, false);
+        assert.equal('terminal' in out, false, 'no persisted state: the history events are the only evidence, nothing is asserted');
         await fsp.rm(dir, { recursive: true, force: true });
     });
 

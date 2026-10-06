@@ -31,6 +31,9 @@ truth for what a caller (the CLI, or a test bypassing the CLI and calling
   `doer_worklist_mode`, `resume_model_switch`, `worklist_effort_budget`,
   `azdevops_pat_secret_name`, `callTool`). Several of these have no CLI flag
   and are programmatic/test-only -- see `docs/fleet-sprint-cli-contract.md`.
+  (`azdevops_pat_secret_name` is not one of those -- it is set by the
+  provider-neutral `--vcs-pat-secret-name` flag, which keeps this pre-existing
+  internal key name; see `docs/cli-reference.md`.)
 - Re-validates issue ids and branch names against the same
   `ISSUE_ID_PATTERN`/`BRANCH_NAME_PATTERN` the CLI already checked (A7
   defense-in-depth: a malformed id/branch name can never reach a `command()`

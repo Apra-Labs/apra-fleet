@@ -261,6 +261,14 @@
  * registerVcsProvider(); the same one-file contract applies.
  *
  * ASCII only.
+ *
+ * GENERIC-BOUNDARY-EXCEPTION: this is the provider REGISTRY -- it necessarily
+ * imports and names every built-in provider ('github', 'bitbucket',
+ * 'azure-devops') to register them, and its DEFAULT_VCS_PROVIDER constant
+ * documents the registry's own default. That is the registry describing
+ * itself, not a leak: no sprint agent reads this file's source or is told to
+ * assume any of these providers. Dated 2026-09-21 (the fleet-bridge PR that
+ * added the generic-boundary provider-branding check).
  */
 
 import { GenericGitVCS } from './generic-git.mjs';

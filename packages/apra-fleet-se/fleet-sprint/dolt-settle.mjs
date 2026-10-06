@@ -64,6 +64,11 @@ import { getSeCommands } from './se-os-commands.mjs';
  *  installs it in-process on the orchestrator; this module installs it over
  *  command() on members, since members never run `apra-fleet install`. */
 export const DOLT_VERSION = 'v2.2.0';
+// GENERIC-BOUNDARY-EXCEPTION: github.com here names the hosting domain of the
+// upstream Dolt binary release this script downloads -- unrelated to the
+// sprint's own VCS provider selection (fleet-sprint/vcs-providers/**), so it
+// is not a provider-branding leak. Dated 2026-09-21 (the fleet-bridge PR that
+// added the generic-boundary provider-branding check).
 const DOLT_RELEASE_BASE = `https://github.com/dolthub/dolt/releases/download/${DOLT_VERSION}`;
 
 /** Default embedded dolt data dir -- used ONLY as a last-resort fallback

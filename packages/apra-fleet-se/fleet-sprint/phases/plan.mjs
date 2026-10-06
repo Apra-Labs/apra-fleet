@@ -97,11 +97,66 @@ export async function runPlanPhase({
     reconcilePendingRejectedNewTasks,
     stageCommandBodyMemberSide,
     updateDashboard,
+    // Optional (fleet-bridge Part A1): publishes this phase's progress under
+    // the 'plan' namespace so an HTTP client (e.g. the fleet-bridge
+    // await-gate) can see the plan-reviewer's verdict without scraping logs.
+    // Guarded by `typeof publishState === 'function'` everywhere it is used,
+    // so a unit harness that constructs this phase's state directly, with no
+    // viewer wired up, need not supply it.
+    publishState,
 }) {
     // The one reassigned input (header: MUTABLE STATE IS THREADED). Rebound to
     // a local so the body below reads exactly as it did inline, and handed
     // back to runner.js in the return value.
     let pendingRejectedNewTasks = initialPendingRejectedNewTasks;
+
+    // Truncates a string to n chars (default 300 -- comfortably under
+    // lean-state.mjs's own 400-char generic string cap, see the CRITICAL note
+    // on publishPlanState below). Non-strings become null rather than being
+    // coerced, so a missing verdict.notes reports as null, never "null" or
+    // "undefined".
+    function capText(s, n = 300) {
+        if (typeof s !== 'string') return null;
+        return s.length > n ? s.slice(0, n) : s;
+    }
+
+    // Publishes state.extensions.plan: {cycle, planningRounds, status,
+    // verdict, approved, deferredIds, findings, notesSummary, updatedAt}.
+    // `publishState` is OPTIONAL (see the destructured-param comment above),
+    // so this is a no-op when it is not a function, and the whole body is
+    // wrapped in try/catch -- this is telemetry only and must never fail a
+    // sprint that planned correctly.
+    //
+    // CRITICAL: this payload must never carry any of lean-state.mjs's
+    // HEAVY_FIELD_NAMES ('error', 'output', 'input', 'description',
+    // 'transcript', 'stdout', 'stderr') as a key, at ANY nesting depth --
+    // lean-state.mjs collapses any object carrying one of those keys into a
+    // 200-char `summary`, destroying every other field on it. Every string
+    // here goes through capText() (300 chars), safely under lean-state's own
+    // 400-char generic string cap, so nothing here gets leaned away either.
+    function publishPlanState(status, { verdict = null, deferredIds = [] } = {}) {
+        if (typeof publishState !== 'function') return;
+        try {
+            const findings = Array.isArray(verdict && verdict.findings)
+                ? verdict.findings
+                    .filter((f) => f && typeof f.id === 'string')
+                    .map((f) => ({ id: f.id, kind: f.kind, detail: capText(f.detail) }))
+                : [];
+            publishState('plan', {
+                cycle,
+                planningRounds,
+                status,
+                verdict: (verdict && typeof verdict.verdict === 'string') ? verdict.verdict : null,
+                approved: status === 'approved',
+                deferredIds,
+                findings,
+                notesSummary: capText(verdict && verdict.notes),
+                updatedAt: new Date().toISOString(),
+            });
+        } catch {
+            // Telemetry must never fail a sprint that planned correctly.
+        }
+    }
 
     // =======================
     // 1. Planning Loop
@@ -301,6 +356,7 @@ export async function runPlanPhase({
         } else {
             plannerFeedback = verdict.notes; // Pass textual feedback to planner, wrapped as untrusted by buildPlannerPrompt
         }
+        publishPlanState(planApproved ? 'approved' : 'iterating', { verdict });
         await updateDashboard();
     }
 
@@ -386,5 +442,12 @@ export async function runPlanPhase({
         planCapDeferredIds = contestedIds;
     }
 
+    // Terminal write for this Plan phase; publishState is last-write-wins per
+    // namespace, so this is authoritative over every 'iterating' write the
+    // round loop above made. Reaching here with planApproved === false means
+    // the plan-cap deferral path just above ran -- the whole-plan-contested
+    // and dispatch-failed branches both throw instead of falling through --
+    // so 'deferred' can never be conflated with 'approved'.
+    publishPlanState(planApproved ? 'approved' : 'deferred', { verdict: lastVerdict, deferredIds: planCapDeferredIds });
     return { planCapDeferredIds, lastVerdict, planningRounds, pendingRejectedNewTasks };
 }
