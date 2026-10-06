@@ -169,6 +169,13 @@ export interface BibleImportCounts {
   linked: number;
   flagged: number;
   rejected: number;
+  /**
+   * Local rows actually taken CONFIRMED -> INFERRED by an explicit demotion
+   * tombstone in this bible. A tombstone that named no local row, or one whose
+   * row was re-promoted after the demotion, is NOT counted: this is how many
+   * rows changed, not how many tombstones were read.
+   */
+  demoted: number;
 }
 
 /**
@@ -185,6 +192,17 @@ export interface BibleImportOptions {
    * which must reproduce the reviewed bible rather than re-curate it.
    */
   verbatim?: boolean;
+  /**
+   * The EXPLICIT demotion tombstones of the same bible (parseBibleDocument /
+   * readBibleDocument return them alongside the entries). Applied AFTER the
+   * entry loop, against rows that already existed locally.
+   *
+   * Omitted (or empty) means "this bible carries no tombstones" -- NOT "demote
+   * whatever is missing". Absence is never evidence of demotion: a clone
+   * legitimately holds CONFIRMED rows that were never exported, and an import
+   * must leave those byte-unchanged.
+   */
+  demotions?: BibleDemotion[];
 }
 
 export async function importBibleEntries(
@@ -197,6 +215,7 @@ export async function importBibleEntries(
   let linked = 0;
   let flagged = 0;
   let rejected = 0;
+  let demoted = 0;
 
   for (const candidate of bibleEntries) {
     // Malformed entry -> tolerate and skip individually.
@@ -264,5 +283,17 @@ export async function importBibleEntries(
     else if (audn_decision === 'flagged') flagged++;
   }
 
-  return { imported, skipped, linked, flagged, rejected };
+  // TOMBSTONES, applied AFTER the entry loop so an id the bible lists as a live
+  // entry is loaded first and judged on its own merits (its fresh created_at is
+  // newer than any tombstone, so it correctly stays CONFIRMED). The provider
+  // holds every rule -- never create, promotion-time comparison, no ownerTag
+  // check -- in applyBibleDemotion; this loop only counts what it changed.
+  //
+  // Note what is NOT here: nothing walks the local rows looking for ids missing
+  // from the bible. Only an id with an EXPLICIT tombstone is ever touched.
+  for (const tombstone of options.demotions ?? []) {
+    if (provider.applyBibleDemotion(tombstone.id, tombstone.demoted_at)) demoted++;
+  }
+
+  return { imported, skipped, linked, flagged, rejected, demoted };
 }

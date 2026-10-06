@@ -81,6 +81,47 @@ function normalizeDemoteReason(reason: string): string {
   return (reason ?? '').replace(/[\r\n]/g, ' ').trim();
 }
 
+/**
+ * The ONE demotion-note format, shared by kb_demote (demote()) and the bible
+ * tombstone path (applyBibleDemotion()), so a demotion that crosses clones
+ * reads identically to one applied locally.
+ *
+ * String concatenation (not a template literal) per the ASCII pre-commit hook
+ * gotcha: backslash-n escapes inside JS template literals false-positive on the
+ * hook's non-ASCII scan (same convention as promote()'s promotionNote and
+ * feedback()'s note).
+ *
+ * EXACTLY ONE leading newline. feedback() writes TWO ('\n\n[feedback ...'), so
+ * a demote note can never be mistaken for a feedback marker by anything
+ * scanning content for one.
+ */
+function buildDemotionNote(normalizedReason: string, evidence: string[], author: string): string {
+  const evidenceClause = evidence.length > 0 ? ' | evidence: ' + evidence.join(', ') : '';
+  return '\n[Demoted: ' + normalizedReason + evidenceClause + ' -- ' + (author || 'unknown') + ']';
+}
+
+/**
+ * The reason recorded when a demotion arrives through the committed project
+ * bible rather than a local kb_demote. Must clear MIN_DEMOTE_REASON_LENGTH.
+ */
+export const BIBLE_DEMOTION_REASON = 'demoted in the project bible';
+
+/**
+ * Is `a` strictly earlier than `b`? Both are expected to be ISO-8601 strings
+ * (every timestamp this store writes comes from Date.toISOString()). Parsed
+ * numerically rather than compared as strings so a hand-written bible carrying
+ * a non-UTC offset still orders correctly; when either side is unparseable the
+ * answer is false, i.e. "do not act" -- a tombstone whose time cannot be read
+ * must never demote anything.
+ */
+function isStrictlyBefore(a: string | undefined, b: string | undefined): boolean {
+  if (!a || !b) return false;
+  const ta = Date.parse(a);
+  const tb = Date.parse(b);
+  if (Number.isNaN(ta) || Number.isNaN(tb)) return false;
+  return ta < tb;
+}
+
 class NotImplementedError extends Error {
   constructor(method: string) {
     super(`SqliteProvider.${method}() not yet implemented`);
@@ -1779,17 +1820,10 @@ export class SqliteProvider implements MemoryProvider {
     // --- no refusal remains: everything below writes ---
 
     const now = new Date().toISOString();
-    // String concatenation (not a template literal) per the ASCII pre-commit
-    // hook gotcha: backslash-n escapes inside JS template literals
-    // false-positive on the hook's non-ASCII scan (same convention as
-    // promote()'s promotionNote and feedback()'s note).
-    //
-    // EXACTLY ONE leading newline. feedback() writes TWO ('\n\n[feedback ...'),
-    // so a demote note can never be mistaken for a feedback marker by anything
-    // scanning content for one.
-    const evidenceClause = evidence.length > 0 ? ' | evidence: ' + evidence.join(', ') : '';
-    const demotionNote = '\n[Demoted: ' + normalizedReason + evidenceClause
-      + ' -- ' + (entry.author || 'unknown') + ']';
+    // The note format (one leading newline, ASCII-safe concatenation, the
+    // feedback-marker collision rule) lives in buildDemotionNote, shared with
+    // the bible tombstone path so both demotions read identically.
+    const demotionNote = buildDemotionNote(normalizedReason, evidence, entry.author);
     const newContent = truncateContent(entry.content + demotionNote);
 
     const confidence_before = entry.confidence;
@@ -1807,6 +1841,73 @@ export class SqliteProvider implements MemoryProvider {
     );
 
     return { id, confidence_before, confidence_after };
+  }
+
+  /**
+   * Apply ONE explicit demotion tombstone from a committed project bible to the
+   * local row, so a demotion recorded on another clone actually lands here.
+   *
+   * Returns true only when a row was written. Every "no" is a silent false, not
+   * a throw: a bible carries tombstones for the whole project and most clones
+   * hold only some of those ids, so an inapplicable tombstone is the normal
+   * case, not an error.
+   *
+   * The rules, each of which silently corrupts another clone's KB if got wrong:
+   *
+   *  - NEVER CREATE. A tombstoned id with no local row stays absent. A
+   *    tombstone withdraws trust in a row; it is not a way to author one.
+   *  - PROMOTION TIME WINS TIES AND LATER. Demote only when the row's promotion
+   *    time (promoted_at when set, else created_at) is STRICTLY OLDER than the
+   *    tombstone's demoted_at. A row re-promoted at or after the demotion is
+   *    newer evidence and keeps its CONFIRMED standing.
+   *  - demoted_at is stamped with the TOMBSTONE's value, not now(): it records
+   *    when trust was withdrawn, which happened on the other clone.
+   *  - NO ownerTag CHECK. Bible-imported rows carry no member tag (see
+   *    importBibleEntries, which builds its input with tags: [] and author
+   *    'unknown'), so an owner check here would make every imported row
+   *    permanently undemotable. The trust boundary for this path is the
+   *    git-reviewed bible file, not entry ownership.
+   *
+   * ABSENCE IS NEVER A DEMOTION: this method is only ever called for an id that
+   * carries an EXPLICIT tombstone. A local CONFIRMED row merely missing from the
+   * bible (a local-only promotion, or one refused by the basis filter) is never
+   * passed here and must stay untouched.
+   *
+   * Two refusals are inherited from demote() because they are invariants of the
+   * store, not of the local/remote distinction: a superseded row is already out
+   * of every read path (the write would have no observable meaning), and a
+   * user-directive is human-terminal in both directions -- a bible must not be
+   * able to deactivate a directive a human set here.
+   */
+  applyBibleDemotion(id: string, tombstoneDemotedAt: string): boolean {
+    const db = this.getDb();
+    const row = db.prepare('SELECT * FROM entries WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+    // NEVER CREATE.
+    if (!row) return false;
+    const entry = this.rowToEntry(row);
+
+    if (entry.confidence !== 'CONFIRMED') return false;
+    if (entry.superseded_at) return false;
+    if (entry.type === 'user-directive') return false;
+
+    const promotionTime = entry.promoted_at ?? entry.created_at;
+    if (!isStrictlyBefore(promotionTime, tombstoneDemotedAt)) return false;
+
+    const demotionNote = buildDemotionNote(BIBLE_DEMOTION_REASON, [], entry.author);
+    const newContent = truncateContent(entry.content + demotionNote);
+
+    // Same SET as demote(): promoted_at and source stay untouched, so the
+    // provenance of the promotion being reversed survives.
+    db.prepare(
+      'UPDATE entries SET confidence = ?, demoted_at = ?, demoted_basis_hashes = ?, content = ? WHERE id = ?'
+    ).run(
+      'INFERRED',
+      tombstoneDemotedAt,
+      JSON.stringify(this.demoteBasisHashes(entry.source_files)),
+      newContent,
+      id,
+    );
+    return true;
   }
 
   // T3.1 (F8, D7): kb_feedback downvote path -- marks an entry stale=1 +

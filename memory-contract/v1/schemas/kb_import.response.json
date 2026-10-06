@@ -72,6 +72,9 @@
             "rejected": {
               "type": "number"
             },
+            "demoted": {
+              "type": "number"
+            },
             "sweep": {
               "type": "object",
               "properties": {
@@ -99,6 +102,7 @@
             "linked",
             "flagged",
             "rejected",
+            "demoted",
             "sweep"
           ],
           "additionalProperties": false

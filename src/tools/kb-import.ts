@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { getKbProviders } from '../services/knowledge/kb-providers.js';
 import { resolveKbAnchor, type KbAnchor } from '../services/knowledge/kb-self.js';
-import { readBibleEntries, importBibleEntries } from '../services/knowledge/bible-import.js';
+import { readBibleDocument, importBibleEntries } from '../services/knowledge/bible-import.js';
 import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
 
 // T2.1 (F4, D3 HARDENED): kb_import -- the trusted-channel write path that lets a
@@ -78,6 +78,14 @@ export interface KbImportReport {
    * bible, so re-importing an old bible deliberately drops those entries.
    */
   rejected: number;
+  /**
+   * Local rows taken CONFIRMED -> INFERRED by an EXPLICIT demotion tombstone in
+   * the imported bible -- the cross-clone half of kb_demote. Counts rows
+   * actually changed, not tombstones read: a tombstone naming an id this clone
+   * does not hold, or one whose row was re-promoted after the demotion, adds
+   * nothing. An entry merely ABSENT from the bible is never demoted.
+   */
+  demoted: number;
   sweep: { checked: number; staled: number; unstaled: number };
 }
 
@@ -93,7 +101,9 @@ export async function kbImport(input: KbImportInput, anchor?: KbAnchor): Promise
   }
   // Parsing (both on-disk shapes) is shared with the member bible view
   // (services/knowledge/bible-import.ts); a malformed file throws KbBibleError.
-  const bibleEntries = readBibleEntries(biblePath, 'kb_import');
+  // The DOCUMENT reader, not the entries-only one: the demotion tombstones are
+  // the cross-clone half of this import and must be read from the same parse.
+  const bibleDoc = readBibleDocument(biblePath, 'kb_import');
 
   // repoAnchor (resolved above) selects the KB, so an import 'for' repo B can
   // never land in whichever repo the server process happens to sit in.
@@ -103,7 +113,13 @@ export async function kbImport(input: KbImportInput, anchor?: KbAnchor): Promise
   // Same entry loop the member bible view uses: import mode (bible confidence
   // preserved, directives quarantined), id-exists skip first, per-entry
   // isolation of capture basis rejections.
-  const { imported, skipped, linked, flagged, rejected } = await importBibleEntries(provider, bibleEntries);
+  // Tombstones ride along in the same call so entries and demotions can never
+  // be applied from two different reads of the file.
+  const { imported, skipped, linked, flagged, rejected, demoted } = await importBibleEntries(
+    provider,
+    bibleDoc.entries,
+    { demotions: bibleDoc.demotions },
+  );
 
   // After the entry loop, run freshnessSweep() (T1.3) so imported entries whose
   // basis does not match THIS worktree stale immediately rather than serving
@@ -127,6 +143,6 @@ export async function kbImport(input: KbImportInput, anchor?: KbAnchor): Promise
     ? { checked: 0, staled: 0, unstaled: 0 }
     : await provider.freshnessSweep(repoAnchor);
 
-  const report: KbImportReport = { imported, skipped, linked, flagged, rejected, sweep };
+  const report: KbImportReport = { imported, skipped, linked, flagged, rejected, demoted, sweep };
   return JSON.stringify(report);
 }

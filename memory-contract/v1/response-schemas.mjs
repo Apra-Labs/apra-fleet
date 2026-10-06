@@ -182,6 +182,11 @@ const KB_RESPONSE_BODIES = {
     linked: z.number(),
     flagged: z.number(),
     rejected: z.number(),
+    // Local rows taken CONFIRMED -> INFERRED by an EXPLICIT demotion tombstone
+    // in the imported bible (the cross-clone half of kb_demote). Counts rows
+    // actually changed, not tombstones read; an entry merely ABSENT from the
+    // bible is never demoted.
+    demoted: z.number(),
     sweep: z.object({
       checked: z.number(),
       staled: z.number(),
