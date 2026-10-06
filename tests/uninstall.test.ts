@@ -54,10 +54,11 @@ describe('uninstall', () => {
     for (const mgr of [mcpSvcMgr, supervisorSvcMgr]) {
       mgr.unregister.mockResolvedValue(undefined);
       mgr.stop.mockResolvedValue(true);
-      // Mirrors the default fs mock below ("every path exists"): a caller
-      // that asks isInstalled() sees both units registered.
-      mgr.isInstalled.mockResolvedValue(true);
     }
+    // Mirrors the default fs mock below: every path exists EXCEPT the
+    // fleet-supervisor registrations.
+    mcpSvcMgr.isInstalled.mockResolvedValue(true);
+    supervisorSvcMgr.isInstalled.mockResolvedValue(false);
     vi.spyOn(os, 'homedir').mockReturnValue(home);
     vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit'); });
     
