@@ -348,15 +348,21 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
               // apra-fleet-eft.50.1: same durable launch-pid fallback as the
               // JWT branch above, so a URL-param reconnect on a retry keeps a
               // pid for the interactive liveness check to test.
-              const existing = sessionRegistry.get(sessionWorkspaceId, fallbackMemberId);
-              if (existing?.channelCapable && existing.server && !channelCapable) {
-                // A short-lived tool-only member session (apra-fleet call,
-                // memberCall) must not displace the member's live
-                // channel-capable interactive session: execute_prompt and
-                // send_message route through that registry entry.
-                logLine('session', `kept existing channel-capable member member_id=${fallbackMemberId} sid=${existing.sessionId}; tool-only sid=${sid} not registered`);
+              if (!channelCapable) {
+                // A tool-only member session (apra-fleet call, memberCall, a
+                // non-interactive agent's per-folder MCP entry) never touches
+                // the session registry. The registry entry is the member's
+                // interactive routing target: send_message pushes channel
+                // notifications to its server, and execute_prompt reads its
+                // launch-time pid. Registering here would replace a launch
+                // placeholder (server:null, pid set) or a missing entry with a
+                // session that cannot receive those pushes; onsessionclosed
+                // skips it for the same reason.
+                const existing = sessionRegistry.get(sessionWorkspaceId, fallbackMemberId);
+                logLine('session', `tool-only member session member_id=${fallbackMemberId} sid=${sid} not registered (registry entry ${existing ? 'sid=' + (existing.sessionId ?? 'none') : 'absent'} left as is)`);
                 return;
               }
+              const existing = sessionRegistry.get(sessionWorkspaceId, fallbackMemberId);
               const priorPid = existing?.pid
                 ?? sessionRegistry.lastKnownPid(sessionWorkspaceId, fallbackMemberId);
               sessionRegistry.register({
@@ -394,7 +400,9 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
               } else {
                 logLine('session', `skipped stale unregister member_id=${postClaims.member_id} sid=${sid} (superseded by sid=${current?.sessionId ?? 'none'})`);
               }
-            } else if (fallbackMemberId) {
+            } else if (fallbackMemberId && channelCapable) {
+              // A tool-only ?member= session never registered (see
+              // onsessioninitialized), so it never unregisters either.
               const current = sessionRegistry.get(sessionWorkspaceId, fallbackMemberId);
               if (current?.sessionId === sid) {
                 sessionRegistry.unregister(sessionWorkspaceId, fallbackMemberId);

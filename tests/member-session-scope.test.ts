@@ -37,6 +37,7 @@ import { getTokenIssuer, localWorkspaceId } from '../src/services/token-issuer.j
 import { sessionRegistry } from '../src/services/session-registry.js';
 import { registerPending, __clearAllPending } from '../src/services/pending-responses.js';
 import { addAgent } from '../src/services/registry.js';
+import { sendMessage } from '../src/tools/send-message.js';
 import { fleetEvents } from '../src/services/event-bus.js';
 import { MEMBER_ALLOWED_TOOLS, MEMBER_CHANNEL_TOOLS, REGISTERED_TOOL_NAMES } from '../src/services/member-tool-allowlist.js';
 import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
@@ -180,5 +181,76 @@ describe('member session tool scope over HTTP', () => {
     const names = await toolNames(await connect(handle.port, { bearer: token }));
     expect(names).toEqual(sorted(MEMBER_ALLOWED_TOOLS));
     expect(names).not.toContain('execute_prompt');
+  });
+});
+
+describe('tool-only ?member= sessions leave the session registry alone', () => {
+  const PLACEHOLDER_PID = 424242;
+
+  function registerPlaceholder(): void {
+    // What register_member records at launch, before the interactive session connects back.
+    sessionRegistry.register({
+      member_id: memberId, workspace_id: localWorkspaceId(), role: 'doer',
+      work_folder: '/tmp/scope-e2e-work', server: null, pid: PLACEHOLDER_PID, status: 'idle',
+    });
+  }
+
+  /** Close the session with an HTTP DELETE, which fires the server's onsessionclosed. */
+  async function terminate(client: Client, handle: HttpTransportHandle): Promise<void> {
+    const before = handle.sessions.size;
+    await (client.transport as StreamableHTTPClientTransport).terminateSession();
+    expect(handle.sessions.size).toBe(before - 1);
+  }
+
+  it('a tool-only connect does not replace a launch placeholder, and its close does not unregister it', async () => {
+    registerPlaceholder();
+    const placeholder = sessionRegistry.get(localWorkspaceId(), memberId);
+    const handle = await startServer();
+    const member = await connect(handle.port, { member: memberId });
+    // The session works as a member session...
+    expect(await toolNames(member)).toEqual(sorted(MEMBER_ALLOWED_TOOLS));
+    // ...but the placeholder is untouched: still no server, same pid, no sid.
+    const during = sessionRegistry.get(localWorkspaceId(), memberId);
+    expect(during).toBe(placeholder);
+    expect(during).toMatchObject({ server: null, pid: PLACEHOLDER_PID, status: 'idle' });
+    expect(during?.sessionId).toBeUndefined();
+
+    // send_message does not route to the tool-only session.
+    const sent = JSON.parse(await sendMessage({ member_id: memberId, content: 'hello' }, localWorkspaceId()));
+    expect(sent).toEqual({ error: 'member not connected or no MCP session' });
+
+    await terminate(member, handle);
+    expect(sessionRegistry.get(localWorkspaceId(), memberId)).toBe(placeholder);
+  });
+
+  it('a tool-only connect with no registry entry registers nothing, and its close leaves nothing', async () => {
+    expect(sessionRegistry.get(localWorkspaceId(), memberId)).toBeUndefined();
+    const handle = await startServer();
+    const member = await connect(handle.port, { member: memberId });
+    expect(await toolNames(member)).toEqual(sorted(MEMBER_ALLOWED_TOOLS));
+    expect(sessionRegistry.get(localWorkspaceId(), memberId)).toBeUndefined();
+    const sent = JSON.parse(await sendMessage({ member_id: memberId, content: 'hello' }, localWorkspaceId()));
+    expect(sent).toEqual({ error: 'member not connected or no MCP session' });
+    await terminate(member, handle);
+    expect(sessionRegistry.get(localWorkspaceId(), memberId)).toBeUndefined();
+  });
+
+  it('a channel-capable ?member= session still takes over the placeholder (keeping its pid) and unregisters on close', async () => {
+    registerPlaceholder();
+    const handle = await startServer();
+    const member = await connect(handle.port, { member: memberId, channel: true });
+    const live = sessionRegistry.get(localWorkspaceId(), memberId);
+    expect(live).toMatchObject({ pid: PLACEHOLDER_PID, status: 'online', channelCapable: true });
+    expect(live?.server).not.toBeNull();
+    expect(handle.sessions.has(live!.sessionId!)).toBe(true);
+
+    // A tool-only session alongside it neither displaces it nor removes it on close.
+    const tool = await connect(handle.port, { member: memberId });
+    expect(sessionRegistry.get(localWorkspaceId(), memberId)).toBe(live);
+    await terminate(tool, handle);
+    expect(sessionRegistry.get(localWorkspaceId(), memberId)).toBe(live);
+
+    await terminate(member, handle);
+    expect(sessionRegistry.get(localWorkspaceId(), memberId)).toBeUndefined();
   });
 });
