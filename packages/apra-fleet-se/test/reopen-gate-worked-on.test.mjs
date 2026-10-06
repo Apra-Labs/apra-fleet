@@ -181,7 +181,7 @@ describe('red branch: always a fix dispatch', () => {
         assert.equal(isInGoalPriority('P2', 'P2'), true);
         assert.equal(isInGoalPriority('P3', 'P2'), false);
         assert.equal(isInGoalPriority('junk', 'P2'), false);
-        const t = buildRedBranchFixTask({ goal: 'P1/P2', notes: 'npm test: 3 failures — see foo.test', site: 'Review C1 R2', skippedReopenIds: ['untouched-p3'] });
+        const t = buildRedBranchFixTask({ goal: 'P1/P2', notes: 'npm test: 3 failures \u2014 see foo.test', site: 'Review C1 R2', skippedReopenIds: ['untouched-p3'] });
         assert.equal(t.title, RED_BRANCH_FIX_TITLE);
         assert.equal(t.priority, 'P1');
         assert.match(t.description, /npm test: 3 failures \? see foo\.test/);
