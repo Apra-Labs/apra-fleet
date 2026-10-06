@@ -168,6 +168,8 @@ describe('replace-full: refusals run no destructive command', () => {
       const h = harness(p, { marker: 'timeout' });
       const r = await ensureMemberFleetInstall(agentFor(p), h.deps, { replaceFull: true });
       expect(r).toMatchObject({ state: 'unavailable', reason: 'probe-failed', detail: expect.stringContaining('timed out') });
+      // Pins the replaceFull guard: only it appends this opt-in-specific text (the normal upgrade path also fails probe-failed).
+      expect((r as { detail: string }).detail).toContain('the opt-in full-install replacement was not run');
       expect(h.events).toEqual([]);
     });
   }

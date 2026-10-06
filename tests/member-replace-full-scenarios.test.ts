@@ -200,6 +200,8 @@ describe('scenario 4: a marker probe failure + the opt-in', () => {
     const w = world({ marker: 'timeout' });
     const s = await refreshMemberFleetMcp(remoteMember(), deps(w), { install: true, writeMcpEntry: true, replaceFull: true });
     expect(s).toMatchObject({ state: 'unavailable', reason: 'probe-failed', detail: expect.stringContaining('timed out') });
+    // Pins the replaceFull guard: only it appends this opt-in-specific text (the normal upgrade path also fails probe-failed).
+    expect((s as { detail: string }).detail).toContain('the opt-in full-install replacement was not run');
     expect(mutating(w)).toEqual([]);
     expect(w.entryWrites).toBe(0);
     expect(w.installed).toBe(OLD);
