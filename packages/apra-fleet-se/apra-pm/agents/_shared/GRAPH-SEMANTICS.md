@@ -6,8 +6,8 @@ add`) is for ordering only. **Never add a `blocks` edge between a bead and its o
 `parent-child` edge one way plus a `blocks` edge the other way, between the same two
 beads, deadlocks both of them -- and `bd dep cycles` will not warn you (it does not check
 `parent-child` paths). Always verify with the scoped, ready-work-aware check instead:
-`bd list --parent <scope-id> --ready --json` must be non-empty whenever open work exists
-under `<scope-id>`; if it's empty, walk the scope's beads for a `blocks` edge pointing at
+the project-wide `bd ready --json`, narrowed to the sprint's beads (see "Scoping every
+query" below), must be non-empty whenever open work exists under the scope; if it's empty, walk the scope's beads for a `blocks` edge pointing at
 a `parent-child` ancestor/descendant and remove it.
 
 **How to wire a decomposed item correctly:**
@@ -38,8 +38,13 @@ a `parent-child` ancestor/descendant and remove it.
   not a bead-data change.
 
 **Scoping every query to the current sprint, not the whole project:**
-- Use `bd list --parent <sprint-root-id> ...` for anything meant to reflect "this sprint's
-  work" (ready, open, closed, blocked). Bare `bd ready` / `bd list --status=...` return
+- `bd list --parent <id>` returns DIRECT children only (one level) -- never grandchildren
+  or deeper. It is NOT the sprint's full scope. When the dispatch prompt carries a
+  SPRINT SCOPE MEMBERSHIP block, that block is the authoritative every-depth list of the sprint's
+  non-closed beads. For ready/blocked checks run the project-wide query (`bd ready --json` /
+  `bd blocked --json`) and keep only ids present in that block. When the block is absent,
+  walk `--parent` transitively (each child that has children is queried in turn) to build
+  the membership yourself. Bare `bd ready` / `bd list --status=...` alone return
   project-wide results, including other sprints/tracks that may be running concurrently.
 - `--parent` takes exactly one id per call. If you have more than one sprint-root id,
   query each separately and merge the results yourself -- a comma-joined list

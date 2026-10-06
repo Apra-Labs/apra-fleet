@@ -44,6 +44,45 @@ function boundReplanFindings(text) {
         `[TRUNCATED: original length ${originalLength} characters, cap ${REPLAN_FINDINGS_MAX_LENGTH} characters]`;
 }
 
+const SCOPE_SNAPSHOT_MAX_ENTRIES = 300;
+
+/**
+ * Renders the orchestrator-computed, every-depth sprint scope as a prompt
+ * block. `bd list --parent` returns DIRECT children only, so a role that
+ * re-derives scope with it misses depth-3+ beads; this block is the
+ * authoritative membership list instead. Non-closed beads are listed (capped),
+ * closed beads are a count only. Absent/empty snapshot -> '' (no block).
+ * @param {Array<{id: string, issue_type?: string, status?: string, parent?: string, title?: string}>|null|undefined} scopeSnapshot
+ * @returns {string}
+ */
+export function formatScopeMembershipBlock(scopeSnapshot) {
+    if (!Array.isArray(scopeSnapshot) || scopeSnapshot.length === 0) return '';
+    const beads = scopeSnapshot.filter((b) => b && b.id);
+    if (beads.length === 0) return '';
+    const open = beads.filter((b) => b.status !== 'closed');
+    const closedCount = beads.length - open.length;
+    const ascii = (v) => String(v == null ? '' : v).replace(/[^\x20-\x7e]/g, '').replace(/\s+/g, ' ').trim();
+    // Deterministic order: bd list returns same-second created_at ties in no
+    // stable order, and the prompt must not vary run to run. Title, then id.
+    open.sort((x, y) => (ascii(x.title) < ascii(y.title) ? -1 : ascii(x.title) > ascii(y.title) ? 1 : (String(x.id) < String(y.id) ? -1 : String(x.id) > String(y.id) ? 1 : 0)));
+    const shown = open.slice(0, SCOPE_SNAPSHOT_MAX_ENTRIES);
+    const out = [
+        'SPRINT SCOPE MEMBERSHIP (orchestrator-computed, every depth) -- this is the ' +
+        'authoritative list of the sprint\'s non-closed beads at EVERY depth of the hierarchy. ' +
+        '`bd list --parent <id>` returns DIRECT children only, so do not use it to decide ' +
+        'what is in scope; treat the ids below as the membership. Format: ' +
+        'id | type | status | parent | title.',
+    ];
+    for (const b of shown) {
+        out.push(`${ascii(b.id)} | ${ascii(b.issue_type) || '?'} | ${ascii(b.status) || '?'} | ${ascii(b.parent) || '-'} | ${ascii(b.title)}`);
+    }
+    if (open.length > shown.length) {
+        out.push(`(${open.length - shown.length} further non-closed bead(s) omitted -- list truncated at ${SCOPE_SNAPSHOT_MAX_ENTRIES})`);
+    }
+    out.push(`Closed beads in scope: ${closedCount} (count only).`);
+    return out.join('\n');
+}
+
 /**
  * @param {{
  *   isDeltaCycle: boolean,
@@ -57,10 +96,11 @@ function boundReplanFindings(text) {
  *   rejectedNewTasksToResubmit?: Array<{title: string, description: string, reason: string, cycle: number|string}>,
  *   verifyExcluded?: string[],
  *   stalenessNotes?: string[],
+ *   scopeSnapshot?: Array<object>|null,
  * }} opts
  * @returns {string}
  */
-export function buildPlannerPrompt({ isDeltaCycle, targetIssues, goal, requirementsFile, requirementsContent, feedback, replanScope = null, replanFindings = null, rejectedNewTasksToResubmit = [], verifyExcluded = [], stalenessNotes = [] }) {
+export function buildPlannerPrompt({ isDeltaCycle, targetIssues, goal, requirementsFile, requirementsContent, feedback, replanScope = null, replanFindings = null, rejectedNewTasksToResubmit = [], verifyExcluded = [], stalenessNotes = [], scopeSnapshot = null }) {
     const lines = [];
 
     // SCOPED in-cycle replan clause: present ONLY when a reviewer flagged
@@ -163,6 +203,8 @@ export function buildPlannerPrompt({ isDeltaCycle, targetIssues, goal, requireme
         );
     }
     lines.push(`Goal priority for this sprint: ${goal}.`);
+    const plannerScopeBlock = formatScopeMembershipBlock(scopeSnapshot);
+    if (plannerScopeBlock) lines.push(plannerScopeBlock);
     lines.push(
         // Mirrors buildPlanReviewerPrompt's matching criterion. Doers may only
         // claim issue_type=task, so a bug left as a childless leaf would be
@@ -229,10 +271,11 @@ export function buildPlannerPrompt({ isDeltaCycle, targetIssues, goal, requireme
  *   priorRoundVerdicts?: Array<{ round: number, verdict: string, notes: string|null }>,
  *   replanScope?: string[]|null,
  *   stalenessNotes?: string[],
+ *   scopeSnapshot?: Array<object>|null,
  * }} opts
  * @returns {string}
  */
-export function buildPlanReviewerPrompt({ targetIssues, goal, priorRoundVerdicts = [], replanScope = null, verifyExcluded = [], stalenessNotes = [] }) {
+export function buildPlanReviewerPrompt({ targetIssues, goal, priorRoundVerdicts = [], replanScope = null, verifyExcluded = [], stalenessNotes = [], scopeSnapshot = null }) {
     const hasReplanScope = Array.isArray(replanScope) && replanScope.length > 0;
     const lines = [
         'Review the beads DAG created by the planner for this sprint, per your agent contract.',
@@ -249,6 +292,9 @@ export function buildPlanReviewerPrompt({ targetIssues, goal, priorRoundVerdicts
     if (reviewerStalenessBlock) {
         lines.push(reviewerStalenessBlock);
     }
+
+    const reviewerScopeBlock = formatScopeMembershipBlock(scopeSnapshot);
+    if (reviewerScopeBlock) lines.push(reviewerScopeBlock);
 
     // apra-fleet-jfo: same authoritative, data-driven verify-route exclusion
     // as buildPlannerPrompt -- the plan-reviewer must not fail the plan for

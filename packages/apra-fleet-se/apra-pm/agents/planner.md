@@ -71,6 +71,7 @@ bd list --status=open
 ```
 
 For each sprint goal in scope, run `bd show <id>` to read its full description.
+`bd list --parent <id>` returns DIRECT children only, so it is not the sprint's full scope. When your dispatch prompt carries a SPRINT SCOPE MEMBERSHIP block, treat it as the authoritative every-depth membership list; when it is absent, walk `--parent` transitively.
 Also read any requirementsFile or design docs mentioned in your task.
 
 Run `git log --oneline -10` to understand what the codebase already has.
@@ -299,18 +300,16 @@ Wire dependencies (semantics: `bd dep add A B` means A is blocked by B -- B must
 ## Step 4 -- Validate your own DAG
 
 Before finishing, run these PER SPRINT ROOT (if you were given more than one sprint goal,
-run each and reason over the COMBINED result -- `--parent` takes exactly one id per call;
-see the graph-semantics section above for why bare `bd ready`/`bd blocked` are the wrong
-check):
+run each and reason over the COMBINED result). `bd list --parent <id>` returns DIRECT children only (one level), never grandchildren. When your dispatch prompt carries a SPRINT SCOPE MEMBERSHIP block, that block is the authoritative every-depth list of the sprint's non-closed beads. Run the project-wide queries and keep only ids present in the SPRINT SCOPE MEMBERSHIP block (or, when it is absent, ids reached by walking `--parent` transitively from each root); see the graph-semantics section above:
 ```bash
 bd graph --compact <root-id>
-bd blocked --parent <root-id>
-bd list --parent <root-id> --ready --type=task --json
+bd blocked --json
+bd ready --type=task --json
 ```
 
 **Acyclicity check (mandatory):** A correct DAG has no cycles. The invariant is on the
 UNION of ready work across all roots, NOT each root alone. Verify:
-1. The COMBINED `--ready` list across all sprint roots must be non-empty whenever open
+1. The COMBINED in-scope `bd ready` list across all sprint roots must be non-empty whenever open
    work exists anywhere in scope; if empty, there is a cycle -- find and break it before
    finishing. A SINGLE root with an empty `--ready` list is FINE when its open tasks are
    blocked by an open task in a DIFFERENT root (cross-goal ordering, not a cycle -- do
@@ -320,7 +319,7 @@ UNION of ready work across all roots, NOT each root alone. Verify:
    ancestor/descendant -- see the graph-semantics section above. Only `parent-child` edges
    (via `--parent`) should exist between a bead and its parent; `blocks` edges belong only
    between siblings.
-3. Check `bd blocked --parent <root-id>` for each root -- every blocked issue must be
+3. Check `bd blocked --json` (in-scope ids only) -- every blocked issue must be
    blocked by something that is itself unblocked (eventually reachable from the union
    `--ready` list, possibly in another root). Only if a blocked issue traces back to
    itself is that a cycle.

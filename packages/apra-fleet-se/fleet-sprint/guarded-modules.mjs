@@ -329,6 +329,9 @@ export const GUARDED_MODULES = [
     // baseline (EXPECTED_PARENT_NOTES_STALENESS_COMMAND_COUNT) in
     // dispatch-safety-guard.test.mjs.
     'parent-notes-staleness.mjs',
+    // Every-depth scope snapshot fetch for the planner/plan-reviewer prompts
+    // (bdListScoped only; no command() call sites of its own).
+    'scope-snapshot.mjs',
     // apra-fleet-3swo.6.15: the round-resume session registry
     // (round-session.mjs: DEFAULT_CONTEXT_CEILING, createRoundSessionRegistry)
     // and the dispatch-outcome classification surface (dispatch-failure.mjs:

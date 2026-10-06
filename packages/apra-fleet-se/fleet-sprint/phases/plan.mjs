@@ -48,6 +48,7 @@
 
 import { dispatchRole, TURN_BASES } from '../dispatch-role.mjs';
 import { buildPlannerPrompt, buildPlanReviewerPrompt } from '../prompts.mjs';
+import { fetchScopeSnapshot } from '../scope-snapshot.mjs';
 import { collectParentNotesStalenessNotes } from '../parent-notes-staleness.mjs';
 import { PlanReviewDispatchFailedError, SprintPlanRejectedError } from '../errors.mjs';
 import { buildSettleCallback } from '../dolt-settle.mjs';
@@ -97,6 +98,9 @@ export async function runPlanPhase({
     reconcilePendingRejectedNewTasks,
     stageCommandBodyMemberSide,
     updateDashboard,
+    // Every-depth scope snapshot seams (optional; absent -> no block).
+    bdListScoped,
+    invalidateAllBeadsCache,
 }) {
     // The one reassigned input (header: MUTABLE STATE IS THREADED). Rebound to
     // a local so the body below reads exactly as it did inline, and handed
@@ -151,6 +155,7 @@ export async function runPlanPhase({
         planningRounds++;
         phase(`Plan C${cycle} R${planningRounds}`);
 
+        const plannerScopeSnapshot = await fetchScopeSnapshot({ bdListScoped, invalidateAllBeadsCache, log, label: `planner C${cycle} R${planningRounds}` });
         const plannerPrompt = buildPlannerPrompt({
             isDeltaCycle,
             targetIssues,
@@ -161,6 +166,7 @@ export async function runPlanPhase({
             rejectedNewTasksToResubmit: pendingRejectedNewTasks,
             verifyExcluded: verifySetThisCycle,
             stalenessNotes: parentNotesStalenessNotes,
+            scopeSnapshot: plannerScopeSnapshot,
         });
         // The planner writes no code but MUTATES beads (it creates the task
         // DAG), so its policy is bracketed pushCode:false / pushBeads:true --
@@ -282,8 +288,11 @@ export async function runPlanPhase({
         // correctly-flavored error for each (apra-fleet-9ta.4). The engine
         // stamps that marker from the policy row; the notes below are the
         // per-error-class text this call site still owns.
+        // Fresh snapshot AFTER the planner ran: invalidate the shared full-DB
+        // cache so beads the planner just created are included.
+        const reviewerScopeSnapshot = await fetchScopeSnapshot({ bdListScoped, invalidateAllBeadsCache, log, invalidate: true, label: `plan-reviewer C${cycle} R${planningRounds}` });
         const planReviewOutcome = await dispatchRole(dispatchCtx, 'plan-reviewer', {
-            prompt: buildPlanReviewerPrompt({ targetIssues, goal: validated.goal, priorRoundVerdicts: priorPlanRoundVerdicts, verifyExcluded: verifySetThisCycle, stalenessNotes: parentNotesStalenessNotes }),
+            prompt: buildPlanReviewerPrompt({ targetIssues, goal: validated.goal, priorRoundVerdicts: priorPlanRoundVerdicts, verifyExcluded: verifySetThisCycle, stalenessNotes: parentNotesStalenessNotes, scopeSnapshot: reviewerScopeSnapshot }),
             resumePrompt: 'Continue your plan review exactly where you left off in this same session -- do not restart or re-read the DAG from scratch. Finish the remaining criteria and return your final verdict now.',
             roleLabel: 'Plan Reviewer',
             resumeLabel: `Plan Review (resume, max_turns=${TURN_BASES.PLAN_REVIEWER_MAX_TURNS * 2})`,
