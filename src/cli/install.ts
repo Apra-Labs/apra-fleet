@@ -1929,6 +1929,12 @@ ${manualStopHint(pidsAfterStop)}
   // Write install-config.json (merge provider entry)
   writeInstallConfig(llm, skillMode, workflowsMode);
 
+  // The fleet owns this install from here on: record the marker BEFORE the
+  // auto-start registration, which can fail. A failed auto-start still exits
+  // non-zero (E-MEMBER-AUTOSTART) but leaves the marker, so the next fleet_install
+  // "auto" recognises its own half-finished install and retries.
+  if (memberMode) writeMemberInstallMarker(serverVersion);
+
   // --- Step N: Register and start service (SEA + HTTP mode only) ---
   let serviceRegistered = false;
   let serviceHealthy: boolean | null = null;
@@ -1999,7 +2005,7 @@ ${restartHint}
   }
 
   // --- Done ---
-  if (memberMode) writeMemberInstallMarker(serverVersion); else clearMemberInstallMarker();
+  if (!memberMode) clearMemberInstallMarker();
   const beadsVersion = beadsResult.state === 'missing'
     ? `not available -- ${beadsResult.reason}. Fix: ${beadsResult.fix}`
     : `${beadsResult.version}${beadsResult.location === 'bin-dir' ? ` (${beadsResult.binPath})` : ''}`;

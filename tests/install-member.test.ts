@@ -140,6 +140,28 @@ describe('install --member', () => {
     expect(vi.mocked(console.log).mock.calls.flat().join('\n')).not.toContain('installed successfully');
   });
 
+  it('a failed auto-start still leaves data/member-install.json (the fleet owns the install it started)', async () => {
+    mockSvcMgr.register.mockRejectedValueOnce(new Error('systemd --user unavailable'));
+    await runInstall(['--transport', 'http', '--member']);
+    expect(process.exitCode).toBe(1);
+    expect(vi.mocked(console.error).mock.calls.flat().join('\n')).toContain('E-MEMBER-AUTOSTART');
+    expect([...files.keys()].filter(k => k.includes('member-install'))).toEqual([expect.stringContaining('member-install.json')]);
+  });
+
+  it('install step labels are sequential: no duplicate or skipped numbers', async () => {
+    for (const args of [['--member'], ['--skill', 'none']]) {
+      vi.mocked(console.log).mockClear();
+      await runInstall(['--transport', 'http', ...args]);
+      const out = vi.mocked(console.log).mock.calls.flat().join('\n');
+      const labels = [...out.matchAll(/^\s*\[(\d+)\/(\d+)\]/gm)].map(m => [Number(m[1]), Number(m[2])]);
+      expect(labels.length).toBeGreaterThan(3);
+      const total = labels[0][1];
+      expect(labels.every(l => l[1] === total)).toBe(true);
+      expect(labels.map(l => l[0])).toEqual(labels.map((_, i) => i + 1));
+      expect(labels.at(-1)![0]).toBe(total);
+    }
+  });
+
   it('fails with E-MEMBER-AUTOSTART for --transport stdio and installs nothing', async () => {
     await runInstall(['--transport', 'stdio', '--member']);
     expect(process.exitCode).toBe(1);
