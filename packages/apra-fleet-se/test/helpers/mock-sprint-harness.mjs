@@ -1750,7 +1750,7 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
                             issuesCreated: 0,
                             passed: true,
                             bugsFiled: [],
-                            dedupChecks: [], dedupChecks: [],
+                            dedupChecks: [],
                             summary: verifyIds.length > 0
                                 ? `All vitest e2e specs passed successfully. Verified and closed: ${verifyIds.join(', ')}.`
                                 : 'All vitest e2e specs passed successfully.',
@@ -1776,7 +1776,7 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
                         text: JSON.stringify({
                             passed: true,
                             sections: [{ name: 'Mock suite', passed: true }],
-                            bugsFiled: [], dedupChecks: [],
+                            bugsFiled: [],
                             summary: 'Mock regression pass: every playbook part green.',
                         })
                     }]

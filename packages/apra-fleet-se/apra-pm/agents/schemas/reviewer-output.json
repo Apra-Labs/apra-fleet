@@ -55,28 +55,7 @@
             "type": "string"
           },
           "dedupCheck": {
-            "type": "object",
-            "description": "Machine-checkable dedup evidence: the search you actually ran over the open backlog before proposing this task. NOT in the item's required list (deliberate): enforcement is PER ITEM in validateNewTask() after parsing, so a single newTask missing or malformed dedupCheck is rejected on its own and never makes ajv reject/retry the WHOLE verdict with its reopenIds and other newTasks -- the same rationale as the title allowlist. A newTask without a valid dedupCheck is rejected and no bead is created for it. If verdict is 'overlap', put the overlapping existing bead id FIRST in candidateIds: the orchestrator then appends this finding to that bead instead of creating a new one.",
-            "properties": {
-              "query": {
-                "type": "string",
-                "description": "The search actually run over open beads (non-empty)."
-              },
-              "candidateIds": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                },
-                "description": "Ids of existing beads that might overlap; may be empty."
-              },
-              "verdict": {
-                "type": "string",
-                "enum": [
-                  "no-overlap",
-                  "overlap"
-                ]
-              }
-            }
+            "description": "Machine-checkable dedup evidence: the search you actually ran over the open backlog before proposing this task. NOT in the item's required list (deliberate): enforcement is PER ITEM in validateNewTask() after parsing, so a single newTask missing or malformed dedupCheck is rejected on its own and never makes ajv reject/retry the WHOLE verdict with its reopenIds and other newTasks -- the same rationale as the title allowlist. A newTask without a valid dedupCheck is rejected and no bead is created for it. If verdict is 'overlap', put the overlapping existing bead id FIRST in candidateIds: the orchestrator then appends this finding to that bead instead of creating a new one. Expected shape (NOT enforced by the schema; validateDedupCheck is the sole enforcer): { query: non-empty string, candidateIds: array of bead id strings (may be empty), verdict: 'no-overlap' or 'overlap' }."
           }
         }
       }

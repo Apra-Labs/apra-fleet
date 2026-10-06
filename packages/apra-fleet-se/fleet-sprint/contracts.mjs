@@ -501,14 +501,11 @@ const FALLBACK_reviewerVerdict = {
                     // Per-item dedup evidence; enforced per item in
                     // validateNewTask(), deliberately NOT in `required` so one
                     // bad newTask never makes ajv reject the whole verdict.
-                    dedupCheck: {
-                        type: 'object',
-                        properties: {
-                            query: { type: 'string' },
-                            candidateIds: { type: 'array', items: { type: 'string' } },
-                            verdict: { type: 'string', enum: ['no-overlap', 'overlap'] },
-                        },
-                    },
+                    // Declared loosely (no type/enum) like `title`: shape is
+                    // enforced only by validateDedupCheck. Expected shape:
+                    // { query: string, candidateIds: string[], verdict:
+                    // 'no-overlap' | 'overlap' }.
+                    dedupCheck: {},
                 },
                 required: ['title', 'description', 'priority'],
             },
@@ -741,14 +738,11 @@ export const finalVerdict = {
                     // Per-item dedup evidence; enforced per item in
                     // validateNewTask(), deliberately NOT in `required` so one
                     // bad newTask never makes ajv reject the whole verdict.
-                    dedupCheck: {
-                        type: 'object',
-                        properties: {
-                            query: { type: 'string' },
-                            candidateIds: { type: 'array', items: { type: 'string' } },
-                            verdict: { type: 'string', enum: ['no-overlap', 'overlap'] },
-                        },
-                    },
+                    // Declared loosely (no type/enum) like `title`: shape is
+                    // enforced only by validateDedupCheck. Expected shape:
+                    // { query: string, candidateIds: string[], verdict:
+                    // 'no-overlap' | 'overlap' }.
+                    dedupCheck: {},
                 },
                 required: ['title', 'description', 'priority'],
             },

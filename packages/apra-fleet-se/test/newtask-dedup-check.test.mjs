@@ -128,9 +128,21 @@ describe('schema keeps dedupCheck out of the item required list', () => {
         assert.strictEqual(ajv.compile(finalVerdict)(finalV), true);
     });
 
-    test('dedupCheck is a declared property with the verdict enum on the reviewer schema', () => {
-        const dc = reviewerVerdict.properties.newTasks.items.properties.dedupCheck;
-        assert.deepStrictEqual(dc.properties.verdict.enum, ['no-overlap', 'overlap']);
+    test('malformed dedupCheck shapes still pass reviewerVerdict and finalVerdict schemas (per-item rejection only)', () => {
+        const ajv = new Ajv({ allErrors: true, strict: false });
+        const vr = ajv.compile(reviewerVerdict);
+        const vf = ajv.compile(finalVerdict);
+        for (const bad of [
+            { query: 'q', candidateIds: [], verdict: 'maybe' },
+            { query: 'q', candidateIds: 'x', verdict: 'overlap' },
+            'no-overlap',
+            null,
+        ]) {
+            const tasks = [{ ...BASE, dedupCheck: NO_OVERLAP }, { ...BASE, dedupCheck: bad }];
+            assert.strictEqual(vr({ verdict: 'CHANGES_NEEDED', notes: 'n', reopenIds: ['a-1'], newTasks: tasks }), true, JSON.stringify(vr.errors));
+            assert.strictEqual(vf({ verdict: 'PASS', notes: 'n', newTasks: tasks }), true, JSON.stringify(vf.errors));
+            assert.strictEqual(validateNewTask({ ...BASE, dedupCheck: bad }).ok, false);
+        }
         assert.ok(!reviewerVerdict.properties.newTasks.items.required.includes('dedupCheck'));
     });
 });
