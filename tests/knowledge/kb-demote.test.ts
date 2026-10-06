@@ -100,10 +100,14 @@ function entryInput(over: Record<string, unknown> = {}) {
   };
 }
 
-/** Capture an entry and walk it up to CONFIRMED through the real promote path. */
-async function confirmedEntry(over: Record<string, unknown> = {}): Promise<string> {
-  const { id } = await provider.capture(entryInput(over));
-  await provider.promote(id, PROMOTE_REASON);
+/**
+ * Capture an entry and walk it up to CONFIRMED through the real promote path.
+ * Defaults to the module-level `provider`; the migration regression test
+ * below passes its own file-backed instance.
+ */
+async function confirmedEntry(over: Record<string, unknown> = {}, on: SqliteProvider = provider): Promise<string> {
+  const { id } = await on.capture(entryInput(over));
+  await on.promote(id, PROMOTE_REASON);
   return id;
 }
 
@@ -507,5 +511,76 @@ describe('HttpKbProvider.demote', () => {
     expect(after.promoted_at).toBe(before.promoted_at);
 
     fallback.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Guarded migration: the demoted_at / demoted_basis_hashes columns.
+// ---------------------------------------------------------------------------
+//
+// This is a regression test, not a schema inspection: it reopens a REAL
+// file-backed DB (node:sqlite supports DROP COLUMN) that had both columns
+// removed -- simulating a DB created before this migration landed -- and
+// asserts init() backfills them as a harmless, caught ALTER TABLE ADD COLUMN,
+// with the pre-existing row still readable AND still demotable afterwards.
+
+describe('the demoted_at / demoted_basis_hashes migration is guarded and backfills', () => {
+  it('re-adds both columns on re-init after they are dropped, and a pre-existing row stays readable and demotable', async () => {
+    const dbPath = path.join(tmp, 'migration.sqlite');
+
+    const first = new SqliteProvider(dbPath, repo);
+    await first.init();
+    const id = await confirmedEntry({}, first);
+
+    const firstDb = (first as unknown as {
+      getDb(): { prepare(s: string): { all(...a: unknown[]): { name: string }[] }; exec(s: string): void };
+    }).getDb();
+
+    // Simulate a DB created before this migration landed.
+    firstDb.exec('ALTER TABLE entries DROP COLUMN demoted_at');
+    firstDb.exec('ALTER TABLE entries DROP COLUMN demoted_basis_hashes');
+    const droppedCols = firstDb.prepare('PRAGMA table_info(entries)').all().map((c) => c.name);
+    expect(droppedCols).not.toContain('demoted_at');
+    expect(droppedCols).not.toContain('demoted_basis_hashes');
+    first.close();
+
+    // Re-open the SAME file-backed DB. init()'s guarded ALTER must backfill
+    // both columns here (a real migration, not the usual caught no-op), and
+    // the row captured before the drop must still read back correctly.
+    const second = new SqliteProvider(dbPath, repo);
+    await second.init();
+
+    const secondDb = (second as unknown as {
+      getDb(): { prepare(s: string): { all(...a: unknown[]): { name: string }[]; get(...a: unknown[]): unknown } };
+    }).getDb();
+    const restoredCols = secondDb.prepare('PRAGMA table_info(entries)').all().map((c) => c.name);
+    expect(restoredCols).toContain('demoted_at');
+    expect(restoredCols).toContain('demoted_basis_hashes');
+
+    const restoredRow = secondDb.prepare('SELECT * FROM entries WHERE id = ?').get(id) as RawRow;
+    expect(restoredRow.confidence).toBe('CONFIRMED');
+    expect(restoredRow.demoted_at).toBeNull();
+    expect(restoredRow.demoted_basis_hashes).toBe('{}');
+
+    // Re-added columns are not just present but USABLE: a demote against the
+    // re-opened provider succeeds end-to-end.
+    await expect(second.demote(id, REASON)).resolves.toMatchObject({ confidence_after: 'INFERRED' });
+    expect((secondDb.prepare('SELECT * FROM entries WHERE id = ?').get(id) as RawRow).demoted_at).toBeTruthy();
+    second.close();
+  });
+
+  it('is a no-op on a freshly created DB that already has both columns (the common case)', async () => {
+    const dbPath = path.join(tmp, 'migration-fresh.sqlite');
+    const p = new SqliteProvider(dbPath, repo);
+    await p.init();
+    const id = await confirmedEntry({}, p);
+
+    // Re-init-by-reopen must not throw even though both columns already exist
+    // (the guarded ALTER's ordinary, far more common path).
+    p.close();
+    const reopened = new SqliteProvider(dbPath, repo);
+    await expect(reopened.init()).resolves.toBeUndefined();
+    await expect(reopened.demote(id, REASON)).resolves.toMatchObject({ confidence_after: 'INFERRED' });
+    reopened.close();
   });
 });
