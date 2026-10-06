@@ -296,15 +296,23 @@ export class WindowsGitBashCommands extends LinuxCommands {
     // wrapper, so the group is exactly the wrapper invocation; the group of
     // the shell running THIS kill is never targeted, nor pgid <= 1.
     //
+    // Stale-pid guard: callers may pass a pid stored by an EARLIER dispatch
+    // (execute_prompt pre-kills it), which MSYS may since have recycled. The
+    // group is only killed when the pid still has the wrapper's exact shape
+    // -- a non-leader whose parent IS its group leader (the `{ ...; } &`
+    // subshell of a non-interactive bash). An interactive shell's job is its
+    // own group leader, so a recycled pid there falls through to killing
+    // just that pid, the same exposure LinuxCommands.killPid has.
+    //
     // Pure bash builtins over /proc (no pgrep in Git bash). Doubled slashes
     // stop MSYS from path-mangling taskkill's switches. Best-effort: every
     // step tolerates an already-dead process and the trailing `true` keeps
     // the exit code 0, matching LinuxCommands.killPid.
     const p = Math.trunc(pid);
     return [
-      `_fleet_pg=; _fleet_self=; _fleet_w=`,
-      `{ read -r _fleet_pg < /proc/${p}/pgid; read -r _fleet_self < /proc/$$/pgid; } 2>/dev/null`,
-      `if [ -n "$_fleet_pg" ] && [ "$_fleet_pg" -gt 1 ] && [ "$_fleet_pg" != "$_fleet_self" ]; then `
+      `_fleet_pg=; _fleet_pp=; _fleet_self=; _fleet_w=`,
+      `{ read -r _fleet_pg < /proc/${p}/pgid; read -r _fleet_pp < /proc/${p}/ppid; read -r _fleet_self < /proc/$$/pgid; } 2>/dev/null`,
+      `if [ -n "$_fleet_pg" ] && [ "$_fleet_pg" -gt 1 ] && [ "$_fleet_pg" != "$_fleet_self" ] && [ "$_fleet_pg" != "${p}" ] && [ "$_fleet_pp" = "$_fleet_pg" ]; then `
         + `for _fleet_d in /proc/[0-9]*; do _fleet_g=; _fleet_x=; { read -r _fleet_g < "$_fleet_d/pgid"; } 2>/dev/null; `
         + `if [ "$_fleet_g" = "$_fleet_pg" ]; then { read -r _fleet_x < "$_fleet_d/winpid"; } 2>/dev/null; [ -n "$_fleet_x" ] && _fleet_w="$_fleet_w //PID $_fleet_x"; fi; done; `
         + `[ -n "$_fleet_w" ] && taskkill //F //T $_fleet_w >/dev/null 2>&1; `

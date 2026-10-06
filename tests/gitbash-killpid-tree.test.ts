@@ -77,6 +77,29 @@ describe.skipIf(!bash.path)('gitbash killPid kills the whole timed-out command t
     }
   }, 60000);
 
+  it('a recycled pid that is its own group leader kills only that pid, not its group', async () => {
+    // Shape of an unrelated process that may have inherited a stale stored
+    // pid: a group leader (here a bash with a child in its group). Only the
+    // leader itself may die; the rest of its group must survive.
+    const cmds = getOsCommands('windows', 'gitbash');
+    const leader = spawn(bash.path!, ['-c', 'sleep 3097 & c=$!; sleep 1; read -r w < /proc/$c/winpid; echo "L:$$ W:$w"; wait'], { windowsHide: true });
+    let out = '';
+    leader.stdout!.on('data', (d) => { out += d.toString(); });
+    let childWin: number | undefined;
+    try {
+      expect(await waitFor(() => /L:\d+ W:\d+/.test(out), 15000), out).toBe(true);
+      const [, lp, w] = /L:(\d+) W:(\d+)/.exec(out)!;
+      childWin = Number(w);
+      const k = runBash(bash.path!, cmds.killPid(Number(lp)));
+      expect(k.status).toBe(0);
+      await new Promise((r) => setTimeout(r, 1500));
+      expect(alive(childWin), 'group member of a leader pid must survive').toBe(true);
+    } finally {
+      if (childWin) { try { process.kill(childWin, 'SIGKILL'); } catch { /* gone */ } }
+      if (leader.pid) spawnSync('taskkill.exe', ['/F', '/T', '/PID', String(leader.pid)], { stdio: 'ignore', windowsHide: true });
+    }
+  }, 60000);
+
   it('a pid with no /proc entry is a harmless no-op (exit 0)', () => {
     const cmds = getOsCommands('windows', 'gitbash');
     const r = runBash(bash.path!, cmds.killPid(999999));

@@ -135,6 +135,9 @@ describe('WindowsGitBashCommands Windows-native overrides stay Windows-appropria
     expect(cmd).toContain('taskkill //F //T $_fleet_w');
     // Never targets its own process group, and always exits 0.
     expect(cmd).toContain('"$_fleet_pg" != "$_fleet_self"');
+    // Stale-pid guard: only a non-leader whose parent is its group leader.
+    expect(cmd).toContain('"$_fleet_pg" != "4242"');
+    expect(cmd).toContain('"$_fleet_pp" = "$_fleet_pg"');
     expect(cmd.endsWith('; true')).toBe(true);
   });
 
