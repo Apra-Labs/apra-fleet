@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -303,5 +303,31 @@ describe('apra-fleet-i9ag.15.11: the KB server owns its loopback port exclusivel
     } finally {
       await new Promise<void>((resolve) => s.close(() => resolve()));
     }
+  });
+});
+
+describe('apra-fleet-i9ag.15.20: loopback-only startup notice', () => {
+  const NOTICE = 'listening on loopback only; pass --host <addr> for a team-shared deployment';
+
+  async function startAndCaptureStderr(host?: string): Promise<string[]> {
+    const spy = vi.spyOn(process.stderr, 'write').mockImplementation((() => true) as any);
+    let s: http.Server | undefined;
+    try {
+      s = await startKbServer(0, false, undefined, host);
+      return spy.mock.calls.map(c => String(c[0]));
+    } finally {
+      spy.mockRestore();
+      if (s) await new Promise<void>((resolve) => s!.close(() => resolve()));
+    }
+  }
+
+  it('without --host writes exactly one loopback-only notice', async () => {
+    const writes = await startAndCaptureStderr();
+    expect(writes.filter(w => w.includes(NOTICE))).toHaveLength(1);
+  });
+
+  it('with --host given writes no such notice', async () => {
+    const writes = await startAndCaptureStderr('127.0.0.1');
+    expect(writes.filter(w => w.includes('loopback only'))).toHaveLength(0);
   });
 });
