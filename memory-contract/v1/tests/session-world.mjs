@@ -55,6 +55,14 @@ export async function materializeSessionWorld(env, root, deps) {
       git(dir, ['config', 'user.email', 'contract@example.test']);
       git(dir, ['config', 'user.name', 'contract']);
       if (repo.remote) git(dir, ['remote', 'add', 'origin', deps.remoteUrl(repo.remote)]);
+      // Seed files are committed: kb_export and kb_bible_commit admit an entry
+      // only when its basis matches the cited file at HEAD, not on disk.
+      // Files written later by a step's setup ops stay uncommitted (absent at
+      // HEAD), which the admission rule treats as a basis mismatch.
+      if (Object.keys(repo.files).length > 0) {
+        git(dir, ['add', '-A']);
+        git(dir, ['-c', 'commit.gpgsign=false', 'commit', '-q', '--no-verify', '-m', 'seed']);
+      }
     }
   }
 

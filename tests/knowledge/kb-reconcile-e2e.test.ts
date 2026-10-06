@@ -10,6 +10,7 @@ import { kbReconcilePrefilter } from '../../src/tools/kb-reconcile-prefilter.js'
 import { kbExport } from '../../src/tools/kb-export.js';
 import { computeFileHashBatch } from '../../src/services/knowledge/file-hash.js';
 import * as kbProvidersModule from '../../src/services/knowledge/kb-providers.js';
+import { commitWorkTree } from '../helpers/commit-work-tree.js';
 import type { KBEntryInput, ContentType, Confidence } from '../../src/services/knowledge/types.js';
 
 // T3.3 (F6/D6 e2e, HIGH-1 satisfiability proof): two-branch reconcile chain,
@@ -328,6 +329,8 @@ describe('kb-reconcile two-branch e2e (T3.3, F6/D6)', () => {
     // temp path (never qualifies: isRepoRelativePath), is not CONFIRMED, or is
     // superseded. Entries already in the bible are kept as they are.
     const canonicalPath = path.join(fleetDir, 'kb-canonical.json');
+    // Admission reads cited files at HEAD, so the merged tree is committed first.
+    commitWorkTree(repoDir, 'merged tree');
     const exportReport = JSON.parse(await kbExport({}, { folder: repoDir }));
     expect(exportReport.exported).toBe(6);
 

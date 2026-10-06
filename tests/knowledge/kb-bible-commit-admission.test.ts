@@ -8,10 +8,14 @@ import { kbBibleCommit } from '../../src/tools/kb-bible-commit.js';
 import { kbExport } from '../../src/tools/kb-export.js';
 import * as kbProvidersModule from '../../src/services/knowledge/kb-providers.js';
 import type { KBEntryInput } from '../../src/services/knowledge/types.js';
+import { commitWorkTree } from '../helpers/commit-work-tree.js';
 
 // kb_bible_commit admission = kb_export (scope=project) admission: both pass a
 // CONFIRMED entry only through the shared bible basis predicate, against a REAL
 // temp git repo (bare origin + clone) and the real handlers.
+//
+// The predicate reads cited files at HEAD, so each scenario commits its work
+// tree (commitWorkTree) before calling a tool.
 //
 // FALSIFICATION: reverting the predicate call in src/tools/kb-bible-commit.ts
 // (back to admitting every requested CONFIRMED id) makes scenario 2 (the edited
@@ -96,6 +100,7 @@ describe('kb_bible_commit admission (shared basis predicate)', () => {
     writeSrc('src/a.ts', 'export const a = 1;\n');
     const id = await confirmedCiting('Unchanged', ['src/a.ts']);
 
+    commitWorkTree(clone);
     const r = JSON.parse(await kbBibleCommit({ ids: [id], ...BASE }, { folder: clone }));
 
     expect(r.merged).toEqual([id]);
@@ -112,6 +117,7 @@ describe('kb_bible_commit admission (shared basis predicate)', () => {
     const drift = await confirmedCiting('Changed', ['src/b.ts']);
     writeSrc('src/b.ts', 'export const b = 2;\n');
 
+    commitWorkTree(clone);
     const r = JSON.parse(await kbBibleCommit({ ids: [ok, drift], ...BASE }, { folder: clone }));
 
     expect(r.merged).toEqual([ok]);
@@ -123,6 +129,7 @@ describe('kb_bible_commit admission (shared basis predicate)', () => {
     writeSrc('src/a.ts', 'export const a = 1;\n');
     const { id: inferred } = await provider.capture(makeInput({ title: 'Only inferred' }));
 
+    commitWorkTree(clone);
     const r = JSON.parse(await kbBibleCommit({ ids: [inferred, 'no-such-id'], ...BASE }, { folder: clone }));
 
     expect(r.merged).toEqual([]);
@@ -151,6 +158,7 @@ describe('kb_bible_commit admission (shared basis predicate)', () => {
     db().prepare("UPDATE entries SET confidence = 'INFERRED' WHERE id = ?").run(i);
 
     const all = [u, c, m, e, n, i];
+    commitWorkTree(clone);
     const commitResult = JSON.parse(await kbBibleCommit({ ids: all, ...BASE }, { folder: clone }));
     const mergedByCommit = [...commitResult.merged].sort();
     expect(commitResult.skipped.map((s: { id: string }) => s.id).sort()).toEqual([c, m, e, n, i].sort());

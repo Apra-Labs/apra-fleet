@@ -64,6 +64,9 @@ beforeEach(async () => {
   fs.mkdirSync(path.join(repo, 'src'), { recursive: true });
   git(root, ['init', '--quiet', repo]);
   fs.writeFileSync(path.join(repo, 'src', 'a.ts'), 'export const a = 1;\n');
+  // Committed: bible admission reads cited files at HEAD.
+  git(repo, ['add', 'src/a.ts']);
+  git(repo, ['commit', '--quiet', '--no-verify', '-m', 'seed']);
   provider = new SqliteProvider(path.join(root, 'kb.sqlite'), repo);
   await provider.init();
   vi.spyOn(kbProvidersModule, 'getKbProviders').mockResolvedValue({

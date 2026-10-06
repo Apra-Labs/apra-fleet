@@ -72,6 +72,8 @@ beforeEach(async () => {
   fs.mkdirSync(path.join(repo, 'src'), { recursive: true });
   fs.writeFileSync(path.join(repo, 'src', 'real.ts'), 'export const real = 1;\n');
   execFileSync('git', ['init', '-q', '.'], { cwd: repo });
+  // The cited file is committed: bible admission reads it at HEAD.
+  execFileSync('git', ['add', '-A'], { cwd: repo });
   execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'seed'], { cwd: repo });
 
   provider = new SqliteProvider(':memory:', repo);
@@ -140,16 +142,14 @@ describe('kb_export writes the v2 envelope with its export commit', () => {
     expect(bible.provenance.entry_count).toBe(bible.entries.length);
   }, 20000);
 
-  it('degrades to a null commit rather than throwing when the repo has no git', async () => {
+  it('refuses with E-BIBLE-BASIS-NOT-GIT, writing nothing, when the folder has no git', async () => {
+    // Bible admission reads cited files at HEAD; with no git there is no HEAD,
+    // and hashing the files on disk instead would be a silent fallback.
     fs.rmSync(path.join(repo, '.git'), { recursive: true, force: true });
     await seedConfirmed(['Gitless claim']);
 
-    await kbExport({}, { folder: repo });
-
-    const bible = readBible();
-    expect(bible.version).toBe(3);
-    expect(bible.provenance.commit).toBeNull();
-    expect(bible.entries).toHaveLength(1);
+    await expect(kbExport({}, { folder: repo })).rejects.toMatchObject({ code: 'E-BIBLE-BASIS-NOT-GIT' });
+    expect(fs.existsSync(path.join(repo, '.fleet', 'kb-canonical.json'))).toBe(false);
   }, 20000);
 });
 

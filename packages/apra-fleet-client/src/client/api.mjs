@@ -560,8 +560,9 @@
  * @typedef {Object} KbBibleCommitOptions
  * @property {string[]} ids - Ids of the entries confirmed this round. Ids that are not
  *   live CONFIRMED entries are skipped (reason not_confirmed_or_unknown); a CONFIRMED id
- *   whose cited files no longer match its recorded basis (the same rule kb_export applies)
- *   is skipped with reason basis_mismatch. Skips are reported in the result's skipped list.
+ *   whose cited files at the repo's HEAD commit no longer match its recorded basis (the
+ *   same rule kb_export applies; uncommitted edits never change the verdict) is skipped
+ *   with reason basis_mismatch. Skips are reported in the result's skipped list.
  *   An empty list makes no commit.
  * @property {string} baseBranch - The target base branch, written to provenance.branch.
  * @property {string} baseCommit - The base commit the entries were verified against,

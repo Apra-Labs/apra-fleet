@@ -273,6 +273,9 @@ describe('capture -> promote -> bible commit -> export round trip (basis filter)
   it('exports the unchanged entry, excludes the changed one, keeps the committed round', async () => {
     fs.writeFileSync(path.join(clone, 'src', 'b.ts'), 'export const b = 1;\n');
     fs.writeFileSync(path.join(clone, 'src', 'c.ts'), 'export const c = 1;\n');
+    // Admission reads cited files at HEAD, so the fixture files are committed.
+    git(clone, ['add', 'src']);
+    git(clone, ['commit', '--quiet', '-m', 'add b and c']);
     const head = git(clone, ['rev-parse', 'HEAD']).trim();
 
     // Round 1: the maintainer's bible commit of one confirmed entry.
@@ -288,6 +291,7 @@ describe('capture -> promote -> bible commit -> export round trip (basis filter)
       expect(bases.get(id)).not.toBeNull();
     }
     fs.writeFileSync(path.join(clone, 'src', 'c.ts'), 'export const c = 2;\n');
+    git(clone, ['commit', '--quiet', '-am', 'change c']);
 
     const result = JSON.parse(await kbExport({}, { folder: clone }));
     const ids = readBible(clone).entries.map(e => e.id);

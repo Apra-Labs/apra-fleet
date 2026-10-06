@@ -175,7 +175,9 @@ working folder, which is typically a feature branch.
   and reported in `skipped` with reason `not_confirmed_or_unknown` (never an
   error). A live CONFIRMED id is admitted only if it passes the same basis rule
   as `kb_export` (scope=project): every cited source file has a recorded hash
-  matching the file in the repo; otherwise it is skipped with reason
+  matching that file's content at the repo's HEAD commit (uncommitted edits
+  never change the verdict; a file absent at HEAD is a mismatch; a folder that
+  is not a git work tree is refused, never hashed from disk); otherwise it is skipped with reason
   `basis_mismatch` and any existing bible entry for it is left unchanged. It makes a local commit scoped to
   the bible path (identity `pm-kb`) and never pushes. No ids, no mergeable
   ids, or an unchanged entry set makes no write and no commit. Re-running with

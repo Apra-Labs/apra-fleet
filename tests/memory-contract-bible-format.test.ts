@@ -78,6 +78,10 @@ describe('live writer output validates against the bible schema', () => {
     execFileSync('git', ['init', '--quiet', root]);
     fs.mkdirSync(path.join(root, 'src'), { recursive: true });
     fs.writeFileSync(path.join(root, 'src', 'example.ts'), 'export const example = 1;\n');
+    // Committed: bible admission reads cited files at HEAD.
+    execFileSync('git', ['add', '-A'], { cwd: root });
+    execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t.local', '-c', 'commit.gpgsign=false',
+      'commit', '--quiet', '--no-verify', '-m', 'seed'], { cwd: root });
     provider = new SqliteProvider(':memory:', root);
     await provider.init();
     vi.spyOn(kbProvidersModule, 'getKbProviders').mockResolvedValue({

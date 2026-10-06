@@ -337,8 +337,12 @@ The SQLite database is one developer's private, warm working memory. The
 - `kb_export` merges `CONFIRMED`, non-superseded, non-stale PROJECT entries
   into `<repo>/.fleet/kb-canonical.json`, additively. An entry qualifies only
   when every file it cites has a recorded per-file hash (`source_file_hashes`)
-  matching the file currently in the repo; an empty basis or a missing file
-  excludes it. Entries already in the bible are never removed or rewritten
+  matching that file's content at the repo's HEAD commit (the git blob id of
+  `HEAD:<path>`, the same digest `git hash-object` stored at capture); an
+  empty basis or a file absent at HEAD excludes it. Uncommitted edits in the
+  work tree never change the verdict, and a folder that is not a git work
+  tree is refused (no fallback to hashing disk).
+  `kb_bible_commit` applies the same rule. Entries already in the bible are never removed or rewritten
   (the bible entry wins on an id clash); when nothing new qualifies the file is
   left byte-identical and nothing is committed. (a stable field set --
   `{id, type, title, summary, symbols, source_files, confidence, updated_at}`

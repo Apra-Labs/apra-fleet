@@ -40,7 +40,7 @@ import {
 
 export const kbBibleCommitSchema = z.object({
   ids: z.array(z.string().min(1))
-    .describe('Ids of the entries confirmed this round. Each must be a live (non-stale, non-superseded) CONFIRMED entry in this repository\'s KB whose recorded file basis still matches the files on disk (the same rule kb_export applies); any other id is skipped and reported in skipped (reason not_confirmed_or_unknown or basis_mismatch). An empty list makes no commit.'),
+    .describe('Ids of the entries confirmed this round. Each must be a live (non-stale, non-superseded) CONFIRMED entry in this repository\'s KB whose recorded file basis still matches the cited files at the repo\'s HEAD commit (the same rule kb_export applies; uncommitted edits are ignored); any other id is skipped and reported in skipped (reason not_confirmed_or_unknown or basis_mismatch). An empty list makes no commit.'),
   baseBranch: z.string().min(1)
     .describe('The sprint\'s target base branch (the branch the work merges into). Written to provenance.branch.'),
   baseCommit: z.string().min(1)
