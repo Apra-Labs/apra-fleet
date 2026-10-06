@@ -1375,3 +1375,127 @@ describe('beadsExtension.js: embedded browser script is syntactically valid and 
         assert.ok(html.includes('&lt;script&gt;alert(1)&lt;/script&gt;'));
     });
 });
+
+// Bead-description expand state survives a refresh, and payload-driven
+// rebuilds of the beads tree are throttled inside the extension's own client
+// script (core's generic poll loop is untouched).
+describe('renderBeadsHtml: optional expandedDescIds 4th argument', () => {
+    const tasks = [
+        { id: 'A', title: 'alpha', description: 'alpha body', status: 'open' },
+        { id: 'B', title: 'beta', description: 'beta body', status: 'open' },
+        { id: 'A.1', parent: 'A', title: 'child', summary: 'child summary', status: 'open' },
+    ];
+    const backlog = [{ id: 'Z', title: 'zed', description: 'zed body', status: 'open' }];
+
+    test('three-arg output is byte-identical to the four-arg form with nothing expanded, and carries no open attribute', () => {
+        const three = renderBeadsHtml(tasks, backlog, new Set(['B']));
+        assert.strictEqual(three, renderBeadsHtml(tasks, backlog, new Set(['B']), undefined));
+        assert.strictEqual(three, renderBeadsHtml(tasks, backlog, new Set(['B']), new Set()));
+        assert.strictEqual(three, renderBeadsHtml(tasks, backlog, new Set(['B']), []));
+        assert.ok(!/<details class="bead-desc"[^>]*\sopen[\s>]/.test(three));
+        assert.ok(/<details class="bead-desc" data-bead-id="A" data-updated-at="">/.test(three));
+    });
+
+    test('emits open on exactly the bead-desc details whose id is expanded (Set or array)', () => {
+        for (const expanded of [new Set(['A.1', 'Z']), ['A.1', 'Z']]) {
+            const html = renderBeadsHtml(tasks, backlog, undefined, expanded);
+            const opened = [...html.matchAll(/<details class="bead-desc" data-bead-id="([^"]*)"[^>]*\sopen>/g)].map((m) => m[1]).sort();
+            assert.deepStrictEqual(opened, ['A.1', 'Z']);
+            assert.strictEqual((html.match(/<details class="bead-desc"/g) || []).length, 4);
+        }
+    });
+});
+
+describe('beadsExtension.js: description expand state and render throttle', () => {
+    function setup() {
+        const listeners = {};
+        const containers = {};
+        let writes = 0;
+        function makeContainer() {
+            let html = '';
+            return {
+                get innerHTML() { return html; },
+                set innerHTML(v) { html = v; writes++; },
+            };
+        }
+        const doc = {
+            addEventListener(type, handler) { (listeners[type] = listeners[type] || []).push(handler); },
+            getElementById(id) {
+                if (!containers[id]) containers[id] = id === 'extension-beads' ? makeContainer() : { innerHTML: '' };
+                return containers[id];
+            },
+        };
+        new Function('document', beadsExtension.js)(doc);
+        const push = (sprintTasks) => listeners['workflow:state:beads'][0]({ detail: { sprintTasks, backlogTasks: [] } });
+        const toggle = (id, open) => listeners['toggle'][0]({
+            target: {
+                tagName: 'DETAILS', open, dataset: { beadId: id },
+                classList: { contains: (c) => c === 'bead-desc' },
+                querySelector: () => ({ textContent: '', dataset: { loaded: 'true' } }),
+            },
+        });
+        const html = () => containers['extension-beads'].innerHTML;
+        const isOpen = (id) => new RegExp('<details class="bead-desc" data-bead-id="' + id + '"[^>]*\\sopen>').test(html());
+        return { listeners, push, toggle, html, isOpen, writes: () => writes };
+    }
+
+    const v1 = [
+        { id: 'X', title: 'x title v1', description: 'x body', status: 'open', updated_at: '1' },
+        { id: 'Y', title: 'y title', description: 'y body', status: 'open', updated_at: '1' },
+    ];
+    const v2 = [{ ...v1[0], title: 'x title v2', updated_at: '2' }, v1[1]];
+    const v3 = [{ ...v1[0], title: 'x title v3', updated_at: '3' }, v1[1]];
+
+    test('an opened description stays open across a changed payload and shows the new title; a closed one stays closed', (t) => {
+        t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 1_000_000 });
+        const s = setup();
+        s.push(v1);
+        s.toggle('X', true);
+        t.mock.timers.tick(15_000);
+        s.push(v2);
+        assert.ok(s.html().includes('x title v2'));
+        assert.ok(s.isOpen('X'), 'X stays open after the rebuild');
+        assert.ok(!s.isOpen('Y'), 'never-opened Y stays closed');
+
+        s.toggle('X', false);
+        t.mock.timers.tick(15_000);
+        s.push(v3);
+        assert.ok(s.html().includes('x title v3'));
+        assert.ok(!s.isOpen('X'), 'X stays closed after being closed');
+    });
+
+    test('an unchanged payload dispatched repeatedly never rebuilds; changed payloads inside the window coalesce into one trailing render of the latest', (t) => {
+        t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 1_000_000 });
+        const s = setup();
+        s.push(v1);
+        const afterFirst = s.writes();
+        assert.strictEqual(afterFirst, 1);
+        for (let i = 0; i < 10; i++) { s.push(JSON.parse(JSON.stringify(v1))); t.mock.timers.tick(20_000); }
+        assert.strictEqual(s.writes(), afterFirst, 'identical payloads cause no innerHTML write');
+
+        s.push(v2);
+        const afterLeading = s.writes();
+        assert.strictEqual(afterLeading, afterFirst + 1, 'first change after a quiet window renders at once');
+        s.push(v3);
+        s.push(v2);
+        s.push(v3);
+        t.mock.timers.tick(14_999);
+        assert.strictEqual(s.writes(), afterLeading, 'no render inside the min-interval window');
+        t.mock.timers.tick(1);
+        assert.strictEqual(s.writes(), afterLeading + 1, 'exactly one trailing render');
+        assert.ok(s.html().includes('x title v3'), 'trailing render carries the latest payload');
+        t.mock.timers.tick(60_000);
+        assert.strictEqual(s.writes(), afterLeading + 1);
+    });
+
+    test('a tree-toggle click re-renders immediately even inside the throttle window', (t) => {
+        t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 1_000_000 });
+        const s = setup();
+        s.push([{ id: 'P', title: 'parent', status: 'open' }, { id: 'C', parent: 'P', title: 'child', status: 'open' }]);
+        assert.ok(s.html().includes('#C</td>'), 'C visible before folding P');
+        const before = s.writes();
+        s.listeners['click'][0]({ target: { closest: () => ({ dataset: { toggleId: 'P' } }) } });
+        assert.strictEqual(s.writes(), before + 1);
+        assert.ok(!s.html().includes('#C</td>'));
+    });
+});

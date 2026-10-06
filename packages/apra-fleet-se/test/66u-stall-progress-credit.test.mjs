@@ -113,7 +113,7 @@ test('mock sprint: a same-cycle Integ Test closure of a childful verify-routed t
                         return {
                             content: [{
                                 text: JSON.stringify({
-                                    featuresClosed: 0, issuesCreated: 0, passed: true, bugsFiled: [],
+                                    featuresClosed: 0, issuesCreated: 0, passed: true, bugsFiled: [], dedupChecks: [],
                                     summary: `Verified and closed ${epicBead.id} on dispatch ${epicVerifyDispatchCount}.`,
                                 })
                             }]
@@ -122,7 +122,7 @@ test('mock sprint: a same-cycle Integ Test closure of a childful verify-routed t
                     return {
                         content: [{
                             text: JSON.stringify({
-                                featuresClosed: 0, issuesCreated: 0, passed: true, bugsFiled: [],
+                                featuresClosed: 0, issuesCreated: 0, passed: true, bugsFiled: [], dedupChecks: [],
                                 summary: `Verification of ${epicBead.id} still in progress (dispatch ${epicVerifyDispatchCount}).`,
                             })
                         }]
@@ -130,7 +130,7 @@ test('mock sprint: a same-cycle Integ Test closure of a childful verify-routed t
                 }
                 return {
                     content: [{
-                        text: JSON.stringify({ featuresClosed: 0, issuesCreated: 0, passed: true, bugsFiled: [], summary: 'Nothing to verify this cycle.' })
+                        text: JSON.stringify({ featuresClosed: 0, issuesCreated: 0, passed: true, bugsFiled: [], dedupChecks: [], summary: 'Nothing to verify this cycle.' })
                     }]
                 };
             },
@@ -160,7 +160,7 @@ test('mock sprint: verify-routed beads dispatched repeatedly with zero closures 
             // bookkeeping gap.
             integHandler: async () => ({
                 content: [{
-                    text: JSON.stringify({ featuresClosed: 0, issuesCreated: 0, passed: true, bugsFiled: [], summary: 'Verified but did not close anything (simulated verifier failure).' })
+                    text: JSON.stringify({ featuresClosed: 0, issuesCreated: 0, passed: true, bugsFiled: [], dedupChecks: [], summary: 'Verified but did not close anything (simulated verifier failure).' })
                 }]
             }),
         });
@@ -220,7 +220,7 @@ test('mock sprint: a genuine stall for an unrelated reason, after a real earlier
                     return {
                         content: [{
                             text: JSON.stringify({
-                                featuresClosed: 0, issuesCreated: 0, passed: true, bugsFiled: [],
+                                featuresClosed: 0, issuesCreated: 0, passed: true, bugsFiled: [], dedupChecks: [],
                                 summary: `Verified and closed ${subTargetId}.`,
                             })
                         }]
@@ -228,7 +228,7 @@ test('mock sprint: a genuine stall for an unrelated reason, after a real earlier
                 }
                 return {
                     content: [{
-                        text: JSON.stringify({ featuresClosed: 0, issuesCreated: 0, passed: true, bugsFiled: [], summary: 'Nothing to verify this cycle.' })
+                        text: JSON.stringify({ featuresClosed: 0, issuesCreated: 0, passed: true, bugsFiled: [], dedupChecks: [], summary: 'Nothing to verify this cycle.' })
                     }]
                 };
             },

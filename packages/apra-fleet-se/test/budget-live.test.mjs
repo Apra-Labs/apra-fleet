@@ -243,7 +243,7 @@ function buildMockFleetApi(tempDir, epicBead, taskId, dispatched, { pricingByMem
                 return json({ deployed: true, notes: 'Deployed.' });
             }
             if (opts.agent === 'integ-test-runner') {
-                return json({ featuresClosed: 1, issuesCreated: 0, passed: true, bugsFiled: [], summary: 'All tests passed.' });
+                return json({ featuresClosed: 1, issuesCreated: 0, passed: true, bugsFiled: [], dedupChecks: [], summary: 'All tests passed.' });
             }
             if (opts.agent === 'harvester') {
                 return json({ status: 'OK', notes: 'Harvested.' });

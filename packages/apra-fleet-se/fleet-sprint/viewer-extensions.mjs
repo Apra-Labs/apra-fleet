@@ -150,9 +150,15 @@ export function renderProgressBarHtml(progress) {
  * @param {Array<{id: string|number, title?: string, description?: string, status?: string, issue_type?: string, ready?: boolean, priority?: number, metadata?: {model?: string}, dependencies?: Array<{depends_on_id: string|number, type: string}>}>} sprintTasks
  * @param {Array<{id: string|number, title?: string, description?: string, status?: string, issue_type?: string, priority?: number, metadata?: {model?: string}}>} [backlogTasks]
  * @param {Set<string>|string[]} [collapsedIds] ids (real bead ids, or the synthetic 'section:sprint'/'section:backlog') currently collapsed
+ * @param {Set<string>|string[]} [expandedDescIds] bead ids whose `bead-desc`
+ *   description `<details>` is currently open. Lives in the CALLER's
+ *   long-lived client state (same as collapsedIds), so an open description
+ *   survives the full innerHTML rebuild a refresh performs. Omitted -> no
+ *   `open` attribute is ever emitted (output byte-identical to the
+ *   three-argument form).
  * @returns {string}
  */
-export function renderBeadsHtml(sprintTasks, backlogTasks, collapsedIds) {
+export function renderBeadsHtml(sprintTasks, backlogTasks, collapsedIds, expandedDescIds) {
     sprintTasks = sprintTasks || [];
     backlogTasks = backlogTasks || [];
 
@@ -179,6 +185,7 @@ export function renderBeadsHtml(sprintTasks, backlogTasks, collapsedIds) {
     // a plain array (e.g. a future caller reconstructing it from
     // persisted/serialized state) -- never throws on either shape.
     collapsedIds = collapsedIds instanceof Set ? collapsedIds : new Set(Array.isArray(collapsedIds) ? collapsedIds : []);
+    expandedDescIds = expandedDescIds instanceof Set ? expandedDescIds : new Set(Array.isArray(expandedDescIds) ? expandedDescIds : []);
 
     // ASCII-only badges throughout (project convention) -- bracketed text
     // tags with inline color, not unicode glyphs/emoji.
@@ -339,7 +346,8 @@ export function renderBeadsHtml(sprintTasks, backlogTasks, collapsedIds) {
         const safePreview = escapeHtml(preview);
         const safeUpdatedAt = escapeHtml(task.updated_at || task.updatedAt || '');
         const hasFull = task.description ? 'true' : 'false';
-        return '<details class="bead-desc" data-bead-id="' + safeId + '" data-updated-at="' + safeUpdatedAt + '">' +
+        const openAttr = expandedDescIds.has(String(task.id)) ? ' open' : '';
+        return '<details class="bead-desc" data-bead-id="' + safeId + '" data-updated-at="' + safeUpdatedAt + '"' + openAttr + '>' +
             '<summary style="cursor: pointer; outline: none; list-style-position: inside;">' + safeTitle + '</summary>' +
             '<div class="bead-desc-body" data-loaded="' + hasFull + '" style="margin-top: 6px; padding: 8px; background: rgba(0,0,0,0.15); border-left: 2px solid var(--accent); font-size: 11px; border-radius: 0 4px 4px 0; color: #a1a1aa; white-space: pre-wrap; font-family: monospace;">' +
             safePreview +
@@ -989,6 +997,11 @@ export const beadsExtension = {
             // or a caller that inlined the full description up front) --
             // no network request on a repeat expand.
             if (!bodyEl || bodyEl.dataset.loaded === 'true') return;
+            // A fetch for this exact body is already in flight (e.g. the
+            // post-rebuild restore below AND the browser's own 'toggle'
+            // event for a details element created with \`open\` both ask)
+            // -- never issue a second request for the same row.
+            if (bodyEl.dataset.loading === 'true') return;
 
             const id = detailsEl.dataset.beadId;
             const updatedAt = detailsEl.dataset.updatedAt || '';
@@ -1001,6 +1014,7 @@ export const beadsExtension = {
             }
 
             bodyEl.textContent = 'Loading...';
+            bodyEl.dataset.loading = 'true';
             try {
                 const res = await fetch('/extensions/beads/detail/' + encodeURIComponent(id));
                 if (!res.ok) { bodyEl.textContent = '(description unavailable)'; return; }
@@ -1011,6 +1025,8 @@ export const beadsExtension = {
                 writeBeadDescCache(id, updatedAt, description);
             } catch (e) {
                 bodyEl.textContent = '(failed to load description)';
+            } finally {
+                bodyEl.dataset.loading = 'false';
             }
         }
 
@@ -1020,12 +1036,36 @@ export const beadsExtension = {
         // every <details class="bead-desc"> toggle, including rows
         // recreated by the full innerHTML rebuild below on each poll, with
         // no per-row listener wiring or cleanup needed.
+        //
+        // The same listener records which descriptions are open in
+        // \`expandedDescIds\` (closure state, like collapsedBeadIds below), on
+        // BOTH open and close, so the next rebuild re-emits \`open\` for
+        // exactly those rows via renderBeadsHtml's 4th argument instead of
+        // silently closing them.
+        const expandedDescIds = new Set();
         document.addEventListener('toggle', function (e) {
             const el = e.target;
-            if (el && el.tagName === 'DETAILS' && el.classList && el.classList.contains('bead-desc') && el.open) {
-                loadBeadDescription(el);
+            if (el && el.tagName === 'DETAILS' && el.classList && el.classList.contains('bead-desc')) {
+                const id = el.dataset ? el.dataset.beadId : undefined;
+                if (el.open) {
+                    if (id !== undefined) expandedDescIds.add(String(id));
+                    loadBeadDescription(el);
+                } else if (id !== undefined) {
+                    expandedDescIds.delete(String(id));
+                }
             }
         }, true);
+
+        // After a rebuild, every re-opened description body holds only the
+        // payload's short summary again (data-loaded is re-derived from the
+        // payload). Restore the full text: a localStorage hit for the same
+        // (id, updatedAt) is served synchronously with no network request;
+        // only a CHANGED updatedAt misses the cache and refetches.
+        function restoreExpandedDescriptions(container) {
+            if (expandedDescIds.size === 0 || !container || typeof container.querySelectorAll !== 'function') return;
+            const opened = container.querySelectorAll('details.bead-desc[open]');
+            for (let i = 0; i < opened.length; i++) loadBeadDescription(opened[i]);
+        }
 
         // apra-fleet-4p5: collapse state lives here, in this closure -- not
         // on any DOM node -- so it survives the full innerHTML rebuild each
@@ -1071,14 +1111,59 @@ export const beadsExtension = {
             // than silently dropping the widget.
             const headerExtra = document.getElementById('panel-header-beads-extra');
             const identityHtml = renderBeadsIdentityHtml(lastBeadsIdentity);
+            const treeHtml = renderBeadsHtml(lastBeadsData.sprintTasks || [], lastBeadsData.backlogTasks || [], collapsedBeadIds, expandedDescIds);
             if (headerExtra) {
                 headerExtra.innerHTML = progressHtml;
-                container.innerHTML = identityHtml
-                    + renderBeadsHtml(lastBeadsData.sprintTasks || [], lastBeadsData.backlogTasks || [], collapsedBeadIds);
+                container.innerHTML = identityHtml + treeHtml;
             } else {
-                container.innerHTML = progressHtml + identityHtml
-                    + renderBeadsHtml(lastBeadsData.sprintTasks || [], lastBeadsData.backlogTasks || [], collapsedBeadIds);
+                container.innerHTML = progressHtml + identityHtml + treeHtml;
             }
+            lastRenderedKey = beadsRenderKey();
+            lastPayloadRenderAt = Date.now();
+            restoreExpandedDescriptions(container);
+        }
+
+        // Payload-driven render throttle. BEFORE: core's generic viewer
+        // polls GET /state on every SSE message (coalesced to one poll per
+        // 400 ms) plus a 7000 ms heartbeat, and EVERY poll dispatched
+        // 'workflow:state:beads' straight into a full #extension-beads
+        // innerHTML rebuild -- a re-render at most every 400 ms while events
+        // flow and at least every 7 s when idle, even with nothing changed.
+        // AFTER (this extension only -- core's poll loop is shared by every
+        // workflow and is deliberately untouched): an unchanged payload never
+        // rebuilds, and changed payloads rebuild at most once per
+        // BEADS_RENDER_MIN_INTERVAL_MS (15000 ms), coalesced into ONE trailing
+        // render that always carries the latest payload. User-driven renders
+        // (tree-toggle click, beadsIdentity change) still render immediately.
+        const BEADS_RENDER_MIN_INTERVAL_MS = 15000;
+        let lastRenderedKey = null;
+        let lastPayloadRenderAt = -Infinity;
+        let pendingBeadsRender = null;
+
+        function beadsRenderKey() {
+            try {
+                return JSON.stringify([lastBeadsData, lastBeadsSummary]);
+            } catch (e) {
+                // Unserializable payload: never treat it as unchanged.
+                return null;
+            }
+        }
+
+        function schedulePayloadRender() {
+            if (pendingBeadsRender !== null) return; // the trailing render will read the latest payload
+            const key = beadsRenderKey();
+            if (key !== null && key === lastRenderedKey) return;
+            const wait = BEADS_RENDER_MIN_INTERVAL_MS - (Date.now() - lastPayloadRenderAt);
+            if (wait <= 0) {
+                renderBeadsPanel();
+                return;
+            }
+            pendingBeadsRender = setTimeout(function () {
+                pendingBeadsRender = null;
+                const latest = beadsRenderKey();
+                if (latest !== null && latest === lastRenderedKey) return;
+                renderBeadsPanel();
+            }, wait);
         }
 
         document.addEventListener('workflow:state:beadsIdentity', (e) => {
@@ -1108,7 +1193,7 @@ export const beadsExtension = {
 
         document.addEventListener('workflow:state:beads', (e) => {
             lastBeadsData = e.detail || {};
-            renderBeadsPanel();
+            schedulePayloadRender();
         });
 
         // apra-fleet-eft.37.3: mounts the auto-sprint verdict badge + PR

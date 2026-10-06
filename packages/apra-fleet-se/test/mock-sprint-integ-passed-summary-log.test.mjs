@@ -47,7 +47,7 @@ test('mock sprint: a passed:true integ cycle emits exactly one PASSED summary lo
                 // A well-formed, successful (no-op is equally valid) verdict --
                 // NOT an infra failure -- exercising the `passed === true` else
                 // branch at runner.js ~line 7986.
-                content: [{ text: JSON.stringify({ featuresClosed: 2, issuesCreated: 1, passed: true, bugsFiled: [], summary: 'All suites passed; 2 features verified.' }) }],
+                content: [{ text: JSON.stringify({ featuresClosed: 2, issuesCreated: 1, passed: true, bugsFiled: [], dedupChecks: [], summary: 'All suites passed; 2 features verified.' }) }],
             }),
         });
 

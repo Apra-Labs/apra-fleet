@@ -80,7 +80,7 @@ import { dispatchRole, TURN_BASES } from '../dispatch-role.mjs';
 import { buildFinalVerdictPrompt } from '../prompts.mjs';
 import { applyGuardedReopens, parseIdWithReasonEntry } from '../beads-transitions.mjs';
 import {
-    validateNewTask, appendRejectedFindingToParentNotes, persistNewTaskBestEffort,
+    validateNewTaskWithDedup, appendRejectedFindingToParentNotes, persistNewTaskBestEffort,
 } from '../abort.mjs';
 import { buildSettleCallback } from '../dolt-settle.mjs';
 // apra-fleet-rp7a.1: the SAME deferred split Cycle Evaluation applies. Shared
@@ -310,7 +310,7 @@ export async function runFinalReviewPhase({
         const createdIds = [];
         let createdCountUnknownId = 0;
         for (const newTask of finalNewTasks) {
-            const validation = validateNewTask(newTask);
+            const validation = await validateNewTaskWithDedup({ newTask, command, member: backlogMember, cycle: finalCycleLabel, log });
             if (!validation.ok) {
                 log(`Final Review newTasks: REJECTED (not sent to bd create) -- ${validation.reason}`);
                 rejectedNewTasks.push({ cycle: finalCycleLabel, reason: validation.reason, raw: newTask });
@@ -329,6 +329,7 @@ export async function runFinalReviewPhase({
                 }
                 continue;
             }
+            if (validation.merged) continue; // overlap: appended to the existing bead, no create
             const { title, description, priority } = validation;
             const created = await persistNewTaskBestEffort({
                 command, member: backlogMember, parentId: targetIssues[0],
