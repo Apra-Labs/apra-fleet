@@ -3058,6 +3058,10 @@ async function runSprintCycle(context) {
             }
         };
         if (hasPlaybook && deployedThisCycle) {
+            // Integration Test runs this cycle, so any skip reason recorded by an
+            // earlier cycle is no longer the current truth; drop it so the final
+            // report never claims "skipped" for a rollup verification attempted.
+            for (const k of Object.keys(strandedSkipReasons)) delete strandedSkipReasons[k];
             // The phase body lives in ./phases/integ-test.mjs
             // (apra-fleet-3swo.6.8), which receives its state explicitly
             // instead of closing over runSprintCycle's locals. The two

@@ -31,12 +31,13 @@ function prBodyFrom(commandLog) {
 
 const tempDirs = () => new Set(fs.readdirSync(os.tmpdir()).filter((n) => n.startsWith('apra-fleet-mock-sprint-integskip')));
 
-async function runScenario(tag, { withRunbooks, deployFails }) {
+async function runScenario(tag, { withRunbooks, deployFails, maxCycles = 1, deployFailsOnlyFirst = false }) {
     const ids = {};
+    let deployCalls = 0;
     const run = await runDevelopLoopScenario(tag, {
         members: ['local'],
         taskSpecs: [{ title: MAIN_TASK }],
-        maxCycles: 1,
+        maxCycles,
         withRunbooks,
         beforeSprint: async ({ tempDir, runCmd, epicBead }) => {
             const create = async (cmd) => {
@@ -60,7 +61,15 @@ async function runScenario(tag, { withRunbooks, deployFails }) {
             return { content: [{ text: JSON.stringify({ status: 'VERIFY', closedIds, notes: 'Closed.' }) }] };
         },
         deployHandler: deployFails
-            ? async () => ({ content: [{ text: JSON.stringify({ deployed: false, notes: 'Deploy blew up.' }) }] })
+            ? async () => {
+                deployCalls += 1;
+                const ok = deployFailsOnlyFirst && deployCalls > 1;
+                return { content: [{ text: JSON.stringify({ deployed: ok, notes: ok ? 'Deployed.' : 'Deploy blew up.' }) }] };
+            }
+            : undefined,
+        // Verifier runs but leaves every bead open (no bd close).
+        integHandler: deployFailsOnlyFirst
+            ? async () => ({ content: [{ text: JSON.stringify({ featuresClosed: 0, issuesCreated: 0, passed: true, bugsFiled: [], summary: 'Ran; closed nothing.' }) }] })
             : undefined,
         reviewerHandler: async () => ({
             content: [{ text: JSON.stringify({ verdict: 'APPROVED', notes: 'ok', reopenIds: [], newTasks: [] }) }],
@@ -110,6 +119,22 @@ test('stranded all-children-closed feature is listed with a deploy-failure reaso
         const before = tempDirs();
         const res = await runScenario('integskipdeployfail', { withRunbooks: true, deployFails: true });
         assertStranded(res, /deploy did not succeed/);
+        assert.deepEqual([...tempDirs()].filter((n) => !before.has(n)), [], 'scenario temp dirs were left behind');
+    });
+});
+
+test('a stale skip reason is dropped once a later cycle actually runs Integration Test', async () => {
+    await withScenarioMarkers('integskip (deploy fails then runs)', async () => {
+        const before = tempDirs();
+        const { run, ids } = await runScenario('integskipstale', { withRunbooks: true, deployFails: true, maxCycles: 2, deployFailsOnlyFirst: true });
+        assert.equal(run.error, null, `scenario threw: ${run.error && run.error.stack}`);
+        assert.ok(run.logs.some((l) => l.includes('Skipping Integration Test Phase')), 'cycle 1 did not skip Integration Test');
+        assert.ok(run.logs.some((l) => /Integration Test|integ-test-runner/i.test(l) && !l.includes('Skipping')), 'cycle 2 did not run Integration Test');
+        const t = run.result && run.result.owedTriage;
+        const entry = t && t.strandedRollups.find((x) => x.id === ids.rollup);
+        if (entry) assert.doesNotMatch(entry.reason, /skipped/, `stale skip reason survived: ${entry.reason}`);
+        const bead = run.finalBeadsById.get(ids.rollup);
+        assert.ok(bead && bead.status !== 'closed', 'rollup was closed');
         assert.deepEqual([...tempDirs()].filter((n) => !before.has(n)), [], 'scenario temp dirs were left behind');
     });
 });
