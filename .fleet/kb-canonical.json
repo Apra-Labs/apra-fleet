@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "34ff160ff8ee9e2268e851270b911771d06fedca",
     "branch": "feat/kb-redesign",
-    "entry_count": 277
+    "entry_count": 279
   },
   "entries": [
     {
@@ -1586,6 +1586,31 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:16.108Z"
+    },
+    {
+      "id": "483c4334-ebbd-4dda-9e66-ca7899110f85",
+      "type": "knowledge",
+      "title": "Member kb_promote/kb_resolve_contradiction need the engine kb_maintainer grant",
+      "summary": "The member tool allowlist is explicit: kb_setup and kb_export are never served to a member session, and kb_promote and kb_resolve_contradiction are served only to a member session opened with origin=engine&kb_maintainer=1, which the engine opens for a repository's kb_maintainer.",
+      "symbols": [
+        "MEMBER_BASE_TOOLS",
+        "MEMBER_MAINTAINER_TOOLS",
+        "MEMBER_NEVER_TOOLS",
+        "memberToolScope",
+        "isToolInScope",
+        "KB_MAINTAINER_CALL",
+        "connectFleetMember"
+      ],
+      "source_files": [
+        "src/services/member-tool-allowlist.ts",
+        "src/services/tool-scope.ts",
+        "src/services/http-transport.ts",
+        "packages/apra-fleet-se/fleet-sprint/member-call.mjs",
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs",
+        "tests/member-session-scope.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T12:01:02.130Z"
     },
     {
       "id": "4877b2e5-80f4-4759-b8f9-92742ff9adca",
@@ -3843,6 +3868,24 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:14.111Z"
+    },
+    {
+      "id": "c370a103-a884-47c3-aaa5-ac57d2572ddc",
+      "type": "knowledge",
+      "title": "Tool-only ?member= sessions never write the session registry",
+      "summary": "In http-transport onsessioninitialized, a ?member= session without the claude/channel capability skips sessionRegistry.register entirely, and onsessionclosed unregisters only channel-capable ?member= sessions, so launch placeholders and live interactive entries survive tool-only connects.",
+      "symbols": [
+        "createHttpTransport",
+        "sessionRegistry",
+        "sendMessage"
+      ],
+      "source_files": [
+        "src/services/http-transport.ts",
+        "tests/member-session-scope.test.ts",
+        "src/tools/send-message.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T12:01:01.669Z"
     },
     {
       "id": "c5ebfbc3-a76c-42e4-8254-87fc2c82e39d",
