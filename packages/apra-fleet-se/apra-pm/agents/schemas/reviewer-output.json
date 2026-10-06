@@ -34,6 +34,10 @@
         "type": "string"
       }
     },
+    "buildFailing": {
+      "type": "boolean",
+      "description": "Optional. true when the project's build or test suite FAILS on the branch under review. On a CHANGES_NEEDED verdict the orchestrator guarantees a fix is dispatched: if none of your reopenIds can be reopened and no in-goal newTask covers it, it files an in-goal fix task carrying your notes. Omit or false when the build and tests pass."
+    },
     "newTasks": {
       "type": "array",
       "items": {

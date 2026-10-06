@@ -194,6 +194,11 @@ applies the reopen/create transitions:
   needs a planner to rewrite the criteria before further development makes sense. Omit
   it (equivalent to `[]`) when every reopened bead just needs rework against its
   existing criteria.
+- `buildFailing`: optional boolean -- `true` when the project's build or test suite FAILS
+  on the branch under review (omit or `false` when they pass). On CHANGES_NEEDED the
+  orchestrator guarantees a fix is dispatched for a red branch: if none of your
+  `reopenIds` can be reopened and no in-goal `newTasks` entry covers it, it files an
+  in-goal fix task carrying your `notes`.
 - `newTasks`: array of `{ title, description, priority }` for follow-up work the review
   surfaced that no existing task covers (empty array if none). `title` is PLAIN TEXT
   ONLY: letters, digits, space, and `. , : ; ! ? ( ) ' _ / [ ] -` -- no backticks,

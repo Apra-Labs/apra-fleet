@@ -2299,6 +2299,14 @@ async function runSprintCycle(context) {
     // priority", NOT "bd list --ready returned []".
     const goalMax = goalPriorityMax(validated.goal);
 
+    // Every bead id this sprint has handed to a doer (dispatched; a doer's
+    // close is a subset). The reviewer-reopen goal-scope guard never defers a
+    // bead in this set -- the sprint's own commits for it are on the branch,
+    // so a reopen of it is the sprint repairing its own work (see
+    // isDeferredScopeReopen in beads-transitions.mjs). Passed explicitly to
+    // every verdict site: Review, Re-Review and Final Review.
+    const workedOnBeadIds = new Set();
+
     // Stall detection: abort with a typed StalledSprintError after two
     // consecutive cycles that made no forward progress, rather than burning
     // every remaining cycle on a develop/review loop that keeps reopening and
@@ -2698,6 +2706,9 @@ async function runSprintCycle(context) {
                 normalizeTierToken,
                 kbQueryTerms,
             });
+            for (const o of streakOutcomes) {
+                for (const id of (o.beadIds || [])) workedOnBeadIds.add(id);
+            }
 
             // --- Review: self-contained, schema-validated, orchestrator-applied ---
             // The phase body lives in ./phases/review.mjs
@@ -2719,6 +2730,7 @@ async function runSprintCycle(context) {
                 devRounds, streakOutcomes, readyTitleById,
                 lastReviewVerdict, reviewedThisCycle, pendingRejectedNewTasks,
                 dispatchReview, bdListScoped, goalMax, recordReopen,
+                workedOnIds: workedOnBeadIds,
                 childIdAllocator, sprintMutexId,
                 computeChildFloor, createChildBeadWithAllocatedId,
                 trackRejectedNewTaskForResurfacing, clearResubmittedNewTask,
@@ -3020,6 +3032,7 @@ async function runSprintCycle(context) {
                 rejectedNewTasks,
                 lastReviewVerdict, reviewedThisCycle, pendingRejectedNewTasks,
                 dispatchReview, bdListScoped, goalMax, recordReopen,
+                workedOnIds: workedOnBeadIds,
                 childIdAllocator, sprintMutexId,
                 computeChildFloor, createChildBeadWithAllocatedId,
                 trackRejectedNewTaskForResurfacing, clearResubmittedNewTask,
@@ -3147,6 +3160,7 @@ async function runSprintCycle(context) {
         gitSync,
         deployFailures, integFailures, rejectedNewTasks, verifyEverIds,
         bdListScoped, decomposedParentIds, goalMax, NOT_DONE_STATUSES,
+        workedOnIds: workedOnBeadIds,
         kbPriming, kbWork, getMemberForRole,
         childIdAllocator, sprintMutexId, resolveSettleShell,
         computeChildFloor, createChildBeadWithAllocatedId, sanitizePrText,

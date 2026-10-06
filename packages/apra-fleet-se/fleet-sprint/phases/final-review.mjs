@@ -134,6 +134,9 @@ export async function runFinalReviewPhase({
     bdListScoped,
     decomposedParentIds,
     goalMax,
+    // Bead ids this sprint has dispatched or closed: a below-goal reopen of
+    // one of them is applied, not deferred (see isDeferredScopeReopen).
+    workedOnIds,
     NOT_DONE_STATUSES,
     kbPriming,
     kbWork,
@@ -350,6 +353,7 @@ export async function runFinalReviewPhase({
             entries: finalReopenIds,
             bdListScoped, goalMax, goal: validated.goal, log, command,
             member: backlogMember,
+            workedOnIds,
             logPrefix: 'Final Review reopenIds',
             parseEntry: parseIdWithReasonEntry,
             buildReopenCommand: ({ id, reason }) => {

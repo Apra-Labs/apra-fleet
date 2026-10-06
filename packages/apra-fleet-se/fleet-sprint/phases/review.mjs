@@ -65,7 +65,7 @@
 // which stays there because the Re-Review and Final Review phases call it too.
 // =============================================================================
 
-import { applyGuardedReopens, foldReplanIds } from '../beads-transitions.mjs';
+import { applyGuardedReopens, foldReplanIds, ensureRedBranchFixTask, isInGoalPriority } from '../beads-transitions.mjs';
 import {
     validateNewTask, appendRejectedFindingToParentNotes, persistNewTaskBestEffort,
 } from '../abort.mjs';
@@ -117,6 +117,9 @@ export async function runReviewPhase({
     dispatchReview,
     bdListScoped,
     goalMax,
+    // Bead ids this sprint has dispatched or closed: a below-goal reopen of
+    // one of them is applied, not deferred (see isDeferredScopeReopen).
+    workedOnIds,
     recordReopen,
     childIdAllocator,
     sprintMutexId,
@@ -197,6 +200,7 @@ export async function runReviewPhase({
         entries: verdict.reopenIds,
         bdListScoped, goalMax, goal: validated.goal, log, command,
         member: backlogMember,
+        workedOnIds,
         logPrefix: 'Reviewer reopenIds',
         buildReopenCommand: ({ id }) => ({
             cmd: `bd update ${id} --status=open`,
@@ -233,6 +237,10 @@ export async function runReviewPhase({
     })) {
         replanIds.add(id);
     }
+    // newTasks that landed at an in-goal priority -- one of these (or a
+    // surviving reopen) is what keeps a red branch from being left with no
+    // dispatchable work (see ensureRedBranchFixTask below).
+    let inGoalNewTaskCount = 0;
     for (const newTask of verdict.newTasks) {
         // Validate BEFORE interpolation -- see validateNewTask() above
         // for why this is an allowlist, not escaping. A rejection is
@@ -292,8 +300,36 @@ export async function runReviewPhase({
         // unchanged description.
         if (persisted) {
             pendingRejectedNewTasks = clearResubmittedNewTask(pendingRejectedNewTasks, { title, description });
+            if (isInGoalPriority(priority, goalMax)) inGoalNewTaskCount += 1;
         }
     }
+
+    // A red branch must never be left with zero open work: when the verdict
+    // reports failing build/tests and no reopen or in-goal newTask survived
+    // (all filtered by the goal-scope guard, or none named), file one in-goal
+    // fix task carrying the reviewer's notes.
+    await ensureRedBranchFixTask({
+        verdict,
+        reopenedCount: reopenedIds.size,
+        inGoalNewTaskCount,
+        skippedReopenIds: (verdict.reopenIds || []).filter((id) => typeof id === 'string' && !reopenedIds.has(id)),
+        goal: validated.goal,
+        site: `Review C${cycle} R${devRounds}`,
+        bdListScoped, log,
+        createTask: (task) => persistNewTaskBestEffort({
+            command, member: backlogMember, parentId: targetIssues[0],
+            newTask: task, cycle, log, stage: 'develop-review-red-branch',
+            createFn: async () => {
+                const floor = await computeChildFloor({ command, member: backlogMember, parentId: targetIssues[0], log });
+                return createChildBeadWithAllocatedId({
+                    command, allocator: childIdAllocator, member: backlogMember,
+                    title: task.title, description: task.description, priority: task.priority,
+                    parentId: targetIssues[0], sprintId: sprintMutexId, floor, log,
+                    label: `Create red-branch fix task: ${task.title}`,
+                });
+            },
+        }),
+    });
 
     // The orchestrator just MUTATED beads (reopens + newTask creates) in
     // its own clone -- D-push so members observe them on their next

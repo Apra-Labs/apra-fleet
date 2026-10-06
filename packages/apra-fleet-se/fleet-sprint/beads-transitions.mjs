@@ -57,7 +57,125 @@ export function isReviewerContractViolation(verdict) {
     return verdict.verdict === 'CHANGES_NEEDED'
         && (!verdict.reopenIds || verdict.reopenIds.length === 0)
         && (!verdict.newTasks || verdict.newTasks.length === 0)
-        && (!verdict.replanIds || verdict.replanIds.length === 0);
+        && (!verdict.replanIds || verdict.replanIds.length === 0)
+        // A verdict reporting a red build/test run is actionable on its own:
+        // the orchestrator files an in-goal fix task for it (see
+        // needsRedBranchFixTask below), so it is not self-contradictory.
+        && verdict.buildFailing !== true;
+}
+
+// =============================================================================
+// RED BRANCH -> ALWAYS A FIX DISPATCH.
+//
+// A CHANGES_NEEDED verdict reporting a failing build or test run must always
+// leave dispatchable work behind. Before this, a reviewer naming only
+// below-goal reopenIds (all skipped by the goal-scope guard) -- or none at all
+// -- left the develop loop with zero open work on a red branch: it idled or
+// exited, and nothing ever fixed the tests. When nothing actionable survived,
+// the orchestrator files ONE in-goal fix task carrying the reviewer's notes.
+// =============================================================================
+
+/** Fixed title of the orchestrator-filed red-branch fix task (also its dedupe key). */
+export const RED_BRANCH_FIX_TITLE = 'Fix the failing build or tests on the sprint branch';
+
+/**
+ * Does this verdict need an orchestrator-filed red-branch fix task?
+ *
+ * @param {object} o
+ * @param {{ verdict: string, buildFailing?: boolean }} o.verdict
+ * @param {number} o.reopenedCount - reopens that survived the goal-scope guard
+ * @param {number} o.inGoalNewTaskCount - newTasks persisted at an in-goal priority
+ * @returns {boolean}
+ */
+export function needsRedBranchFixTask({ verdict, reopenedCount, inGoalNewTaskCount }) {
+    return Boolean(verdict)
+        && verdict.verdict === 'CHANGES_NEEDED'
+        && verdict.buildFailing === true
+        && reopenedCount === 0
+        && inGoalNewTaskCount === 0;
+}
+
+/**
+ * Is a newTask priority string ('P2') inside the sprint's goal band?
+ *
+ * @param {string} priority
+ * @param {number|string} goalMax
+ * @returns {boolean}
+ */
+export function isInGoalPriority(priority, goalMax) {
+    const p = normalizeGoalMax(String(priority));
+    const max = normalizeGoalMax(goalMax);
+    return Number.isFinite(p) && Number.isFinite(max) && p <= max;
+}
+
+/**
+ * Build the red-branch fix task: highest tier named in the goal, a fixed
+ * title, and the reviewer's notes (non-printable/non-ASCII characters
+ * replaced so newTask validation cannot reject it).
+ *
+ * @param {object} o
+ * @param {string} o.goal - e.g. 'P1/P2'
+ * @param {string} o.notes - the reviewer's notes
+ * @param {string} o.site - site label for the description, e.g. 'Review C1 R2'
+ * @param {string[]} [o.skippedReopenIds] - reopenIds the guard filtered out
+ * @returns {{ title: string, description: string, priority: string }}
+ */
+export function buildRedBranchFixTask({ goal, notes, site, skippedReopenIds = [] }) {
+    const tiers = String(goal || '').split('/').map((p) => Number(p.trim().replace(/^[Pp]/, ''))).filter(Number.isFinite);
+    const best = tiers.length > 0 ? Math.min(...tiers) : 1;
+    const safeNotes = String(notes || '(no reviewer notes)').replace(/[^\t\n\r\x20-\x7E]/g, '?');
+    const skipped = skippedReopenIds.length > 0
+        ? `\n\nThe reviewer named these beads for rework, but none could be reopened in this sprint: ${skippedReopenIds.join(', ')}.`
+        : '';
+    return {
+        title: RED_BRANCH_FIX_TITLE,
+        priority: `P${best}`,
+        description:
+            `The reviewer (${site}) reported that the build or tests FAIL on the sprint branch, and no reopened ` +
+            `or newly filed in-goal task covers the fix. Make the project's build and full test suite pass again ` +
+            `without weakening any test, then close this task.${skipped}\n\nReviewer notes:\n${safeNotes}`,
+    };
+}
+
+/**
+ * File the red-branch fix task when the verdict needs one, unless an earlier
+ * one is still not closed (one open fix task at a time, never one per round).
+ *
+ * @param {object} o
+ * @param {object} o.verdict - the reviewer verdict
+ * @param {number} o.reopenedCount
+ * @param {number} o.inGoalNewTaskCount
+ * @param {string[]} [o.skippedReopenIds]
+ * @param {string} o.goal
+ * @param {string} o.site - log/description label, e.g. 'Review C1 R2'
+ * @param {(rest: string) => Promise<Array<object>>} o.bdListScoped
+ * @param {(task: {title: string, description: string, priority: string}) => Promise<any>} o.createTask - creates the bead; truthy on success
+ * @param {(msg: string) => void} o.log
+ * @returns {Promise<'not-needed'|'exists'|'created'|'failed'>}
+ */
+export async function ensureRedBranchFixTask(o) {
+    const { verdict, reopenedCount, inGoalNewTaskCount, skippedReopenIds = [], goal, site, bdListScoped, createTask, log } = o;
+    if (!needsRedBranchFixTask({ verdict, reopenedCount, inGoalNewTaskCount })) return 'not-needed';
+    let existing = null;
+    try {
+        const scope = await bdListScoped('');
+        existing = scope.find((b) => b && b.title === RED_BRANCH_FIX_TITLE && b.status !== 'closed') || null;
+    } catch {
+        existing = null; // lookup failed -- file the task rather than risk leaving a red branch with no work
+    }
+    if (existing) {
+        log(`${site}: build/tests reported FAILING and no reopen or in-goal newTask survived -- red-branch fix task ${existing.id} is still open, not filing another.`);
+        return 'exists';
+    }
+    const task = buildRedBranchFixTask({ goal, notes: verdict.notes, site, skippedReopenIds });
+    const created = await createTask(task);
+    if (created) {
+        const idText = created && typeof created === 'object' && created.childId ? ` ${created.childId}` : '';
+        log(`${site}: build/tests reported FAILING and no reopen or in-goal newTask survived -- filed in-goal red-branch fix task${idText} ("${task.title}", ${task.priority}) so the branch is never left red with zero open work.`);
+        return 'created';
+    }
+    log(`${site}: build/tests reported FAILING and no reopen or in-goal newTask survived -- filing the red-branch fix task FAILED; see the newTask persistence log above.`);
+    return 'failed';
 }
 
 /**
@@ -130,18 +248,41 @@ export function normalizeGoalMax(goalMax) {
  * because comparing against the raw 'P2' string is what made this guard inert
  * (see normalizeGoalMax).
  *
+ * WORKED-ON EXEMPTION. A below-goal bead THIS SPRINT already dispatched or
+ * closed is never deferred: the sprint's own commits for it are on the branch
+ * under review, so a reviewer reopening it is asking the sprint to repair its
+ * own work (typically a red build or test run) -- not to pull deferred scope
+ * back in. Skipping that reopen left a red branch with nothing dispatched to
+ * fix it. `belowGoal` is still reported so the caller can log WHY the bead
+ * was kept.
+ *
  * @param {Map<string, object>|null} allowlist
  * @param {string} id
  * @param {number|string} goalMax - numeric ceiling, or the 'Pn' string form
- * @returns {{ deferred: boolean, priority: number|null }}
+ * @param {Set<string>|Iterable<string>|null} [workedOnIds] - bead ids this sprint dispatched or closed
+ * @returns {{ deferred: boolean, priority: number|null, belowGoal: boolean, workedOn: boolean }}
  */
-export function isDeferredScopeReopen(allowlist, id, goalMax) {
+export function isDeferredScopeReopen(allowlist, id, goalMax, workedOnIds = null) {
     const bead = allowlist ? allowlist.get(id) : null;
     const max = normalizeGoalMax(goalMax);
-    if (allowlist && bead && typeof bead.priority === 'number' && bead.priority > max) {
-        return { deferred: true, priority: bead.priority };
-    }
-    return { deferred: false, priority: bead && typeof bead.priority === 'number' ? bead.priority : null };
+    const priority = bead && typeof bead.priority === 'number' ? bead.priority : null;
+    const belowGoal = Boolean(allowlist && bead && priority !== null && priority > max);
+    const workedOn = toIdSet(workedOnIds).has(id);
+    return { deferred: belowGoal && !workedOn, priority, belowGoal, workedOn };
+}
+
+/**
+ * Normalise an optional worked-on id collection (Set, array, any iterable, or
+ * absent) to a Set. Absent means "the sprint has worked on nothing yet", which
+ * keeps the guard's historical behaviour exactly.
+ *
+ * @param {Set<string>|Iterable<string>|null|undefined} ids
+ * @returns {Set<string>}
+ */
+function toIdSet(ids) {
+    if (ids instanceof Set) return ids;
+    if (ids && typeof ids[Symbol.iterator] === 'function' && typeof ids !== 'string') return new Set(ids);
+    return new Set();
 }
 
 /**
@@ -197,12 +338,14 @@ export function parseIdWithReasonEntry(entry) {
  * @param {(e: {id: string, reason: string}) => {cmd: string, label: string}|null} o.buildReopenCommand
  * @param {(e: {id: string, reason: string}) => void} [o.onReopened] - per-bead side effects (thrash counters, feedback routing)
  * @param {(e: {id: string, reason: string}, err: Error) => void} [o.onEntryError] - when present, a throwing entry is non-fatal and reported here
+ * @param {Set<string>|Iterable<string>} [o.workedOnIds] - bead ids this sprint dispatched or closed; a below-goal reopen of one of these is APPLIED (see isDeferredScopeReopen)
  * @returns {Promise<string[]>} the ids ACTUALLY reopened (survived the guard)
  */
 export async function applyGuardedReopens(o) {
     const {
         entries, bdListScoped, goalMax, goal, logPrefix, log, command, member,
         parseEntry = parseBareIdEntry, buildReopenCommand, onReopened, onEntryError,
+        workedOnIds = null,
     } = o;
 
     const list = Array.isArray(entries) ? entries : [];
@@ -221,10 +364,13 @@ export async function applyGuardedReopens(o) {
             continue;
         }
 
-        const { deferred, priority } = isDeferredScopeReopen(allowlist, parsed.id, goalMax);
+        const { deferred, priority, belowGoal } = isDeferredScopeReopen(allowlist, parsed.id, goalMax, workedOnIds);
         if (deferred) {
             log(`${logPrefix}: SKIPPED '${parsed.id}' (priority P${priority} is below this sprint's goal ${goal} -- deferred scope, not reopened).`);
             continue;
+        }
+        if (belowGoal) {
+            log(`${logPrefix}: KEPT '${parsed.id}' (priority P${priority} is below this sprint's goal ${goal}, but this sprint already dispatched or closed it -- reopening so the sprint repairs its own work).`);
         }
 
         try {
