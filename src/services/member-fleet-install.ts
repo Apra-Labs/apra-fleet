@@ -592,7 +592,7 @@ export function buildFullInstallReplaceHint(opts: {
     posix
       ? `(1) back up, including the signing key that lives outside data/: cp -R ${q(data)} ${q(backup)} && cp ${q(key)} ${q(backup + '/')}`
       : `(1) back up, including the signing key that lives outside data/: Copy-Item -Recurse -LiteralPath ${q(data)} -Destination ${q(backup)}; Copy-Item -LiteralPath ${q(key)} -Destination ${q(backup + String.fromCharCode(92))}`,
-    `(2) uninstall with the INSTALLED binary (keeps data/): ${q(bin)} uninstall --force --yes`,
+    `(2) uninstall with the INSTALLED binary (keeps data/): ${posix ? '' : '& '}${q(bin)} uninstall --force --yes`,
     posix
       ? `(3) move the old data aside (the backup stays as the rollback copy): mv ${q(data)} ${q(aside)}`
       : `(3) move the old data aside (the backup stays as the rollback copy): Move-Item -LiteralPath ${q(data)} -Destination ${q(aside)}`,
@@ -634,6 +634,24 @@ async function stageReplacementInstaller(
   const shell = getAgentShell(agent);
   const stagingDir = memberStagingDir(home, targetOs, shell);
   const fallbackTarget = memberJoin(targetOs, shell, stagingDir, binaryNameFor(targetOs));
+  // The release-asset download for THIS member's platform, whatever the staging
+  // source was: it is what the owner runs when staging did not leave an
+  // installer on the member (and on the status-only path).
+  const releaseFetch = async (): Promise<{ target: string; fetchCommand: string } | null> => {
+    const arch = await probeMemberArch(agent, deps);
+    const assetName = arch ? releaseAssetNameFor({ os: targetOs, arch }) : null;
+    if (!assetName) return null;
+    const url = releaseAssetUrl(deps.orchestratorVersion(), assetName);
+    const target = memberJoin(targetOs, shell, stagingDir, assetName);
+    const fetchCommand = isPosixShell(targetOs, shell)
+      ? `mkdir -p ${posixQuote(stagingDir)} && curl -fL -o ${posixQuote(target)} ${posixQuote(url)}`
+      : `New-Item -ItemType Directory -Force -Path ${psQuote(stagingDir)} | Out-Null; Invoke-WebRequest -Uri ${psQuote(url)} -OutFile ${psQuote(target)}`;
+    return { target, fetchCommand };
+  };
+  const notStaged = async (why: string, dflt: string): Promise<ReplacementInstaller> => {
+    const f = await releaseFetch().catch(() => null);
+    return f ? { staged: false, why, target: f.target, fetchCommand: f.fetchCommand } : { staged: false, why, target: dflt };
+  };
   try {
     if (!source) {
       const arch = await probeMemberArch(agent, deps);
@@ -644,12 +662,7 @@ async function stageReplacementInstaller(
     }
     const baseName = source.kind === 'release-asset' ? source.assetName : anyBasename(source.localPath);
     const target = memberJoin(targetOs, shell, stagingDir, baseName);
-    const fetchCommand = source.kind === 'release-asset'
-      ? (isPosixShell(targetOs, shell)
-        ? `mkdir -p ${posixQuote(stagingDir)} && curl -fL -o ${posixQuote(target)} ${posixQuote(source.url)}`
-        : `New-Item -ItemType Directory -Force -Path ${psQuote(stagingDir)} | Out-Null; Invoke-WebRequest -Uri ${psQuote(source.url)} -OutFile ${psQuote(target)}`)
-      : undefined;
-    if (!stage) return { staged: false, why: 'not staged by this check; run update_member with fleet_install "auto" to stage it', target, fetchCommand };
+    if (!stage) return notStaged('not staged by this check; run update_member with fleet_install "auto" to stage it', target);
     let localPath: string;
     let downloaded = false;
     if (source.kind === 'orchestrator-executable') {
@@ -659,21 +672,21 @@ async function stageReplacementInstaller(
         localPath = await deps.downloadReleaseAsset(source.url, source.assetName);
         downloaded = true;
       } catch (err: unknown) {
-        return { staged: false, why: `download failed: ${err instanceof Error ? err.message : String(err)}`, target, fetchCommand };
+        return notStaged(`download failed: ${err instanceof Error ? err.message : String(err)}`, target);
       }
     }
     try {
       const sent = await deps.transfer(agent, [localPath], stagingDir);
       if (sent.failed.length > 0 || sent.success.length === 0) {
         const why = sent.failed.map(f => `${f.path}: ${f.error}`).join('; ') || 'nothing was transferred';
-        return { staged: false, why: `transfer failed: ${why}`, target, fetchCommand };
+        return notStaged(`transfer failed: ${why}`, target);
       }
     } finally {
       if (downloaded) deps.removeLocal(localPath);
     }
     return { staged: true, path: target };
   } catch (err: unknown) {
-    return { staged: false, why: err instanceof Error ? err.message : String(err), target: fallbackTarget };
+    return notStaged(err instanceof Error ? err.message : String(err), fallbackTarget);
   }
 }
 

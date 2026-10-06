@@ -4,6 +4,7 @@
  * (paths resolved in JS, no ~ or $HOME, no --force-stop-full-install, no bead ids).
  */
 import { describe, it, expect } from 'vitest';
+import { spawnSync } from 'node:child_process';
 import { makeTestAgent, decodePowerShellEncodedCommand } from './test-helpers.js';
 import type { Agent, SSHExecResult } from '../src/types.js';
 import {
@@ -94,7 +95,7 @@ describe('full-install-running hint, per OS', () => {
     const { detail } = await refusal(WINDOWS);
     const h = WINDOWS.home;
     expect(detail).toContain(`& '${h}\\.apra-fleet\\staging\\apra-fleet.exe' install --member --llm claude --force`);
-    expect(detail).toContain(`'${h}\\.apra-fleet\\bin\\apra-fleet.exe' uninstall --force --yes`);
+    expect(detail).toContain(`& '${h}\\.apra-fleet\\bin\\apra-fleet.exe' uninstall --force --yes`);
     expect(detail).toContain(`Copy-Item -Recurse -LiteralPath '${h}\\.apra-fleet\\data' -Destination '${h}\\.apra-fleet-data.full-install.bak'`);
     expect(detail).toContain(`Copy-Item -LiteralPath '${h}\\.apra-fleet\\fleet.key'`);
     expect(detail).not.toContain('fleet-supervisor');
@@ -112,17 +113,43 @@ describe('full-install-running hint, per OS', () => {
   });
 });
 
+/** Parse a PowerShell snippet with the real parser; null when powershell is unavailable. */
+function psParseErrors(code: string): string[] | null {
+  const r = spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', '$e=$null;$t=$null;[void][System.Management.Automation.Language.Parser]::ParseInput($env:HINT_SNIPPET,[ref]$t,[ref]$e);$e|ForEach-Object{$_.Message}'], { env: { ...process.env, HINT_SNIPPET: code }, encoding: 'utf8' });
+  if (r.error || r.status !== 0) return null;
+  return r.stdout.split(String.fromCharCode(10)).map((l) => l.trim()).filter(Boolean);
+}
+const hasPs = psParseErrors('1') !== null;
+
+describe.skipIf(!hasPs)('windows hint: every emitted PowerShell step parses', () => {
+  it.each([{ label: 'staged', opts: {} }, { label: 'staging failed', opts: { transferFails: true } }])('$label', async ({ opts }) => {
+    const { detail } = await refusal(WINDOWS, opts);
+    const steps = [...detail.matchAll(/\((\d)\)[^:]*: (.*?)(?=; \(\d|\.$)/g)].filter((m) => ['0', '1', '2', '3', '4'].includes(m[1]));
+    expect(steps.length).toBeGreaterThanOrEqual(4);
+    for (const m of steps) {
+      const stepText = m[1] === '0' ? m[2].slice(m[2].indexOf('fetch it with: ') + 'fetch it with: '.length) : m[2];
+      expect(psParseErrors(stepText), `step (${m[1]}): ${stepText}`).toEqual([]);
+    }
+  });
+});
+
 describe('full-install-running stages the current installer first', () => {
   it('transfers the installer to the staging dir before returning, and never runs it', async () => {
     const { events } = await refusal(LINUX);
     expect(events).toEqual([`transfer:${LINUX.home}/.apra-fleet/staging`]);
   });
 
-  it('staging failure is named in the hint (linux, same platform: no release asset to fetch)', async () => {
+  it('staging failure is named in the hint and gives the curl download command for the linux asset (orchestrator-executable source)', async () => {
     const { detail } = await refusal(LINUX, { transferFails: true });
+    const asset = 'apra-fleet-installer-linux-x64';
+    const target = `${LINUX.home}/.apra-fleet/staging/${asset}`;
     expect(detail).toContain('could not be staged');
     expect(detail).toContain('disk full');
-    expect(detail).toContain('release page');
+    expect(detail).toContain(`curl -fL -o '${target}' 'https://github.com/`);
+    expect(detail).toContain(`/releases/download/v0.4.4/${asset}'`);
+    expect(detail).not.toContain('release page');
+    // the install step runs the downloaded installer
+    expect(detail).toContain(`'${target}' install --member --llm claude --force`);
   });
 
   it('staging failure on a windows member gives the release-asset download command', async () => {
