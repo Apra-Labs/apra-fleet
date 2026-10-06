@@ -17,12 +17,16 @@ vi.mock('../src/services/singleton.js', async (importOriginal) => ({
   isPortInUse: vi.fn().mockResolvedValue(false),
   readServerInfoPid: () => undefined,
 }));
-vi.mock('../src/services/service-manager/index.js', () => ({
-  getServiceManager: vi.fn().mockResolvedValue({
+vi.mock('../src/services/service-manager/index.js', () => {
+  const mgr = () => ({
     isInstalled: vi.fn().mockResolvedValue(false),
     query: vi.fn().mockResolvedValue({ installed: false, running: false }),
-  }),
-}));
+  });
+  return {
+    getServiceManager: vi.fn().mockResolvedValue(mgr()),
+    getServiceManagers: vi.fn().mockImplementation(async (names: string[]) => names.map(() => mgr())),
+  };
+});
 
 import { runStop } from '../src/cli/stop.js';
 import { runStart } from '../src/cli/start.js';
