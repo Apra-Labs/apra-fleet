@@ -86,3 +86,18 @@ export async function getServiceManager(
     }
   }
 }
+
+/**
+ * Managers for several services at once. On Windows they share ONE
+ * PowerShell scheduled-task probe (one spawn for all services) instead of one
+ * per service; elsewhere this is just getServiceManager per id.
+ */
+export async function getServiceManagers(ids: ServiceId[]): Promise<ServiceManager[]> {
+  if (process.platform === 'win32') {
+    const { WindowsServiceManager, createBatchTaskStateProbe, defaultSchtasksRunner } = await import('./windows.js');
+    const { getServiceDescriptor } = await import('./types.js');
+    const probe = createBatchTaskStateProbe(ids.map(id => getServiceDescriptor(id).windowsTaskName));
+    return ids.map(id => new WindowsServiceManager(id, defaultSchtasksRunner, undefined, { probeTaskState: probe }));
+  }
+  return Promise.all(ids.map(id => getServiceManager(id)));
+}

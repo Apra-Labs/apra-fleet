@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import http from 'node:http';
 import { checkRunningInstance, describePreviousServer } from '../services/singleton.js';
-import { getServiceManager } from '../services/service-manager/index.js';
+import { getServiceManagers } from '../services/service-manager/index.js';
 import type { ServiceStatus } from '../services/service-manager/types.js';
 import { SERVER_INFO_PATH } from '../paths.js';
 import { detectFleetSePrereqs, summarizeFleetSePrereqs } from './fleet-se-prereqs.js';
@@ -115,7 +115,8 @@ export async function runStatus(
   // GitHub #585: a stale server.json means the previous server died uncleanly.
   const previousNote = instance.state === 'gone' ? describePreviousServer(instance.previous) : null;
   if (previousNote) console.log(`Note: ${previousNote}; its stale server.json was removed.`);
-  const svcMgr = await getServiceManager();
+  // One call for both services so Windows probes scheduled-task state in a single PowerShell spawn.
+  const [svcMgr, supervisorMgr] = await getServiceManagers(['mcp-server', 'fleet-supervisor']);
   const svcStatus: ServiceStatus = await svcMgr.query().catch(() => ({ installed: false, running: false }));
 
   // apra-fleet-i9ag.12.9: fleet-se's prerequisite (Node.js 22.16+ and npm) is
@@ -140,7 +141,6 @@ export async function runStatus(
   // The fleet-sprint supervisor is a SEPARATE OS service with its own
   // unit/plist/task -- reported on its own line so an operator can tell which
   // of the two is down.
-  const supervisorMgr = await getServiceManager('fleet-supervisor');
   const supervisorStatus: ServiceStatus = await supervisorMgr.query()
     .catch(() => ({ installed: false, running: false }));
 

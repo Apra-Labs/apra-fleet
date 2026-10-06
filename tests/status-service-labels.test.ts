@@ -44,6 +44,7 @@ const { mockGetSvcMgr, mcpMgr, supervisorMgr, mockCheckRunning } = vi.hoisted(()
 
 vi.mock('../src/services/service-manager/index.js', () => ({
   getServiceManager: mockGetSvcMgr,
+  getServiceManagers: async (ids: string[]) => Promise.all(ids.map(id => (mockGetSvcMgr as any)(id))),
 }));
 vi.mock('../src/services/singleton.js', () => ({
   checkRunningInstance: mockCheckRunning,

@@ -196,7 +196,7 @@ describe('WindowsServiceManager', () => {
       expect(args.slice(0, 3)).toEqual(['-NoProfile', '-NonInteractive', '-EncodedCommand']);
       const script = decodedProbeScripts()[0];
       expect(script).toContain('Get-ScheduledTask');
-      expect(script).toContain("-TaskName 'ApraFleet'");
+      expect(script).toContain("@('ApraFleet')");
       // Numeric state enum, so the mapping is locale-independent.
       expect(script).toContain('[int]$t.State');
       expect(script).not.toContain('$env:');
@@ -207,8 +207,8 @@ describe('WindowsServiceManager', () => {
       mockHost({ probe: '4\r\n' });
       await new WindowsServiceManager('fleet-supervisor').query();
       const script = decodedProbeScripts()[0];
-      expect(script).toContain("-TaskName 'ApraFleetSupervisor'");
-      expect(script).not.toContain("-TaskName 'ApraFleet'");
+      expect(script).toContain("@('ApraFleetSupervisor')");
+      expect(script).not.toContain("'ApraFleet'");
       for (const [cmd, args] of vi.mocked(execFileSync).mock.calls) {
         if (cmd === 'schtasks') expect(args as string[]).toContain('ApraFleetSupervisor');
       }
@@ -265,10 +265,10 @@ describe('WindowsServiceManager', () => {
         const status = await new WindowsServiceManager().query();
         expect(status.installed).toBe(true);
         const script = decodedProbeScripts()[0];
-        expect(script).toMatch(/Get-Command Get-ScheduledTask[^\n]*PROBEFAIL/);
+        expect(script).toMatch(/Get-Command Get-ScheduledTask[^\n]*\n[^\n]*\n[^\n]*\n[^\n]*/);
+        expect(script).toContain('if (-not $have) { "$n|PROBEFAIL" }');
         expect(script).toContain("-ErrorAction Stop");
-        expect(script).toMatch(/ObjectNotFound'\s*\)\s*\{\s*'NOTFOUND'/);
-        expect(script).not.toMatch(/SilentlyContinue'\s*\n?.*NOTFOUND/);
+        expect(script).toMatch(/ObjectNotFound'\) \{ "\$n\|NOTFOUND" \}/);
       });
 
       it('returns not installed when neither probe nor schtasks can answer', async () => {
