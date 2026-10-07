@@ -278,7 +278,7 @@ describe('mock sprint: KB writes route through the kb_maintainer', () => {
             // entries in the reviewer prompt.
             const candidateReads = fleet.events.filter((e) => e.type === 'kb' && e.tool === 'kb_query' && e.args && e.args.tag);
             assert.ok(candidateReads.length >= 1);
-            // my-beads-db-xqp.4.2: dispatchReview also reads DEMOTION
+            // dispatchReview also reads DEMOTION
             // candidates (CONFIRMED entries touching this round's changed
             // files) alongside the promotion read above -- a second,
             // differently-shaped kb_query carrying the same tag. Split the
