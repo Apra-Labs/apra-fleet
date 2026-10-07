@@ -17,7 +17,9 @@ import { resolveEpicBaseRef } from '../scripts/epic-base-ref.mjs';
 import {
   findBeadIdCitations,
   addedLinesFromDiff,
+  addedEntriesFromDiff,
   getAddedLines,
+  isRecordedBdFixturePath,
   findSprintAnalysisDocChanges,
   parseSprintAnalysisNameStatus,
   findSprintAnalysisViolations,
@@ -79,6 +81,90 @@ describe('bead-id guard: the violation-detection logic itself', () => {
   it('addedLinesFromDiff strips the + marker and excludes the +++ file header', () => {
     const diff = '--- a/x\n+++ b/x\n@@ -1 +1,2 @@\n-old\n+new line one\n+new line two\n';
     expect(addedLinesFromDiff(diff)).toEqual(['new line one', 'new line two']);
+  });
+});
+
+describe('bead-id guard: recorded bd replay fixtures are tolerated BY PATH, nothing else is', () => {
+  // A recorded fixture under test/fixtures/bd-recordings/ is captured `bd` CLI
+  // output, not LLM-facing or runtime-printed text, and bd echoes the ids of
+  // the beads a scenario creates -- so every new mock-sprint recording would
+  // otherwise trip this guard, with the only "fix" being a hand-edit of a
+  // fixture, which that directory's README and the fidelity test both forbid.
+  // The tolerance must therefore be decided from the diff's FILE ATTRIBUTION,
+  // never from what a line says. Both directions are asserted here: a
+  // fixture-path line carrying an id is tolerated AND a non-fixture-path line
+  // carrying THE SAME id is still flagged.
+  const FIXTURE_PATH = 'packages/apra-fleet-se/test/fixtures/bd-recordings/apra-fleet-mock-sprint-example.jsonl';
+  const SOURCE_PATH = 'packages/apra-fleet-se/fleet-sprint/runner.js';
+
+  function diffWithSameIdInBothFiles(exampleId: string): string {
+    // One unified diff touching two files, whose ADDED lines carry the very
+    // same tracker id. Only the path differs, so any hit-count difference is
+    // attributable to the path rule and nothing else.
+    return [
+      `--- a/${FIXTURE_PATH}`,
+      `+++ b/${FIXTURE_PATH}`,
+      '@@ -0,0 +1 @@',
+      `+{"command":"bd show ${exampleId} --json","exitCode":0,"stdout":"${exampleId}","stderr":""}`,
+      `--- a/${SOURCE_PATH}`,
+      `+++ b/${SOURCE_PATH}`,
+      '@@ -0,0 +1 @@',
+      `+  const prompt = 'work on ${exampleId} next';`,
+      '',
+    ].join('\n');
+  }
+
+  it('tolerates the id inside a bd-recordings fixture AND still flags the SAME id in a real source file', () => {
+    const exampleId = EXAMPLE_APRA_FLEET_PREFIX + 'unw.16';
+    const hits = findBeadIdCitations(addedEntriesFromDiff(diffWithSameIdInBothFiles(exampleId)));
+
+    // Direction 1: exactly one hit, so the fixture line was tolerated.
+    expect(hits.length).toBe(1);
+    // Direction 2: the surviving hit is the SOURCE file's, not the fixture's.
+    expect(hits[0].path).toBe(SOURCE_PATH);
+    expect(hits[0].match).toBe(exampleId);
+    expect(hits.some((h) => h.path === FIXTURE_PATH)).toBe(false);
+  });
+
+  it('the tolerance is PATH-attributed, not content-matched: the identical fixture CONTENT in a non-fixture path is flagged', () => {
+    const exampleId = EXAMPLE_APRA_FLEET_PREFIX + 'unw.16';
+    const recordingLine = `{"command":"bd show ${exampleId} --json","exitCode":0,"stdout":"${exampleId}","stderr":""}`;
+    const diff = [
+      // Byte-identical recording content, but committed to a docs file.
+      '--- a/docs/some-doc.md',
+      '+++ b/docs/some-doc.md',
+      '@@ -0,0 +1 @@',
+      `+${recordingLine}`,
+      '',
+    ].join('\n');
+    const hits = findBeadIdCitations(addedEntriesFromDiff(diff));
+    expect(hits.length).toBeGreaterThan(0);
+    expect(hits.every((h) => h.path === 'docs/some-doc.md')).toBe(true);
+  });
+
+  it('a line with NO file attribution is still scanned (fail closed, never vacuously tolerated)', () => {
+    const exampleId = EXAMPLE_MY_BEADS_DB_PREFIX + 'xqp.5.1';
+    expect(findBeadIdCitations([`cites ${exampleId}`]).length).toBe(1);
+    expect(findBeadIdCitations([{ path: null, line: `cites ${exampleId}` }]).length).toBe(1);
+  });
+
+  it('isRecordedBdFixturePath accepts only .jsonl recordings inside a bd-recordings directory', () => {
+    expect(isRecordedBdFixturePath(FIXTURE_PATH)).toBe(true);
+    // The recordings directory's own README is ordinary prose a human/agent
+    // reads, not captured tool output -- it stays fully scanned.
+    expect(isRecordedBdFixturePath('packages/apra-fleet-se/test/fixtures/bd-recordings/README.md')).toBe(false);
+    expect(isRecordedBdFixturePath('packages/apra-fleet-se/test/fixtures/other/x.jsonl')).toBe(false);
+    expect(isRecordedBdFixturePath(SOURCE_PATH)).toBe(false);
+    expect(isRecordedBdFixturePath(null)).toBe(false);
+    expect(isRecordedBdFixturePath(undefined)).toBe(false);
+  });
+
+  it('addedEntriesFromDiff attributes each added line to its +++ b/<path> header and drops the headers', () => {
+    const diff = '--- a/x.ts\n+++ b/x.ts\n@@ -1 +1,2 @@\n-old\n+one\n--- a/y.ts\n+++ b/y.ts\n@@ -1 +1 @@\n+two\n';
+    expect(addedEntriesFromDiff(diff)).toEqual([
+      { path: 'x.ts', line: 'one' },
+      { path: 'y.ts', line: 'two' },
+    ]);
   });
 });
 

@@ -77,11 +77,22 @@ silently served someone else's recorded output.
    existing naming pattern in this directory, e.g.
    `apra-fleet-mock-sprint-<your-tag>.jsonl` or
    `apra-fleet-golden-<your-tag>.jsonl`.
-4. Commit the new `.jsonl` fixture alongside the test that produced it, in
+4. Tracker ids in your new recording are FINE -- do not try to scrub them.
+   `bd`'s own output echoes back the ids of the beads your scenario creates,
+   so a recording routinely contains dozens of them. The repo-wide bead-id
+   citation guard (`scripts/check-epic-diff-hygiene.mjs`, enforced by
+   `tests/epic-diff-hygiene.test.ts`) tolerates them BY PATH for `.jsonl`
+   files inside this `test/fixtures/bd-recordings/` directory, on the ground
+   that a replay recording is captured tool output rather than the LLM-facing
+   or runtime-printed text CLAUDE.md's citation rule targets. The tolerance is
+   path-based only: this README, and any source/prompt/doc file elsewhere,
+   are still scanned, so never paste a recorded line carrying a tracker id
+   into one of those.
+5. Commit the new `.jsonl` fixture alongside the test that produced it, in
    the same commit -- a test that shells out to `bd` with no committed
    fixture will fail for every other developer/CI running the default
    replay-mode suite (`npm test` / `npm run test:unit`), not just for you.
-5. Re-recording when bd's output shape changes: fixtures are tied to the
+6. Re-recording when bd's output shape changes: fixtures are tied to the
    exact `bd` CLI version they were recorded against. If the installed
    `bd` version differs from the one a fixture was recorded with (a bd
    upgrade, a changed flag/output format), re-record rather than
