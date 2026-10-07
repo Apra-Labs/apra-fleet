@@ -56,6 +56,15 @@ If those KB tools are not available in your environment (MCP server not running)
 these steps and proceed.
 <!-- end-tool: ToolSearch -->
 
+### Persistent Memories (operational rules)
+
+Before beginning harvest operations, retrieve universal conventions and role-scoped operational rules from Beads:
+
+```bash
+bd memories role:all
+bd memories harvester:
+```
+
 ## Step 1 -- Write sprint analysis artifact (FIRST, before anything else)
 
 Your task context includes an `analysisArtifactFile` path and an `analysisText` block.

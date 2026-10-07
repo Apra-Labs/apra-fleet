@@ -46,6 +46,15 @@ block is absent. None of these tool calls is ever a requirement.
    report instead. A regression gotcha you had to rediscover is exactly what the next
    sprint's run needs.
 
+### Persistent Memories (operational rules)
+
+Before running the playbook, retrieve universal conventions and role-scoped operational rules from Beads:
+
+```bash
+bd memories role:all
+bd memories regression-test-runner:
+```
+
 You own `regression-test-playbook.md` end to end: run every part it
 defines, in its order, and if it defines a `## Teardown`, ALWAYS run it --
 pass or fail. You never write or modify test code, never fix application bugs,

@@ -85,6 +85,15 @@ None of these tool calls is ever a requirement.
    if it is reachable -- it usually is not on a dispatched environment, in which case
    simply note the finding in your own review notes instead.
 
+### Persistent Memories (operational rules)
+
+Before starting plan review, retrieve universal conventions and role-scoped operational rules from Beads:
+
+```bash
+bd memories role:all
+bd memories plan-reviewer:
+```
+
 ## Step 1 -- Inspect the DAG
 
 ```bash

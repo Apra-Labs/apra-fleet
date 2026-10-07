@@ -45,6 +45,15 @@ If those KB tools are not available in your environment (MCP server not running)
 these steps and proceed.
 <!-- end-tool: ToolSearch -->
 
+### Persistent Memories (operational rules)
+
+Before checking CI runs, retrieve universal conventions and role-scoped operational rules from Beads:
+
+```bash
+bd memories role:all
+bd memories ci-watcher:
+```
+
 ## Step 1 -- List recent CI runs
 
 Branch-scoped:
