@@ -173,6 +173,46 @@ describe('explicit INFERRED/UNVERIFIED reads return only the caller\'s own entri
   });
 });
 
+// A CONFIRMED read in a MEMBER session answers from the checkout bible view
+// by default (kb-self.ts getSelfReadKb), and every bible-view row is imported
+// with tags: [] (bible-import.ts) -- so tag: 'member:<id>' can never match
+// there, and demotionCandidates-style reads always come back empty. This
+// fails against pre-fix routing: own_scope did not exist, so the only way to
+// ask for "my own CONFIRMED rows" was the unsatisfiable bible-view tag filter.
+describe('own_scope: true reads the caller\'s own CONFIRMED rows from the per-repo DB', () => {
+  let aConfirmed: string;
+  let bConfirmed: string;
+
+  beforeAll(async () => {
+    aConfirmed = await capture(asA, 'Gizmo alpha confirmed fact');
+    await asA(() => kbPromote({ id: aConfirmed, reason: REASON }));
+    bConfirmed = await capture(asB, 'Gizmo bravo confirmed fact');
+    await asB(() => kbPromote({ id: bConfirmed, reason: REASON }));
+  });
+
+  it('the default CONFIRMED read (bible view) cannot see it even with the owner tag named explicitly', async () => {
+    const out = JSON.parse(await asA(() => kbQuery({ query: 'gizmo', tag: `member:${memberA}` })));
+    expect(ids(out.l1_results)).toEqual([]);
+    const l = JSON.parse(await asA(() => kbList({ tag: `member:${memberA}` })));
+    expect(ids(l.results)).toEqual([]);
+  });
+
+  it('kb_query own_scope: true reads the row back, and never another member\'s', async () => {
+    const a = JSON.parse(await asA(() => kbQuery({ query: 'gizmo', own_scope: true })));
+    expect(ids(a.l1_results)).toContain(aConfirmed);
+    expect(ids(a.l1_results)).not.toContain(bConfirmed);
+    const b = JSON.parse(await asB(() => kbQuery({ query: 'gizmo', own_scope: true })));
+    expect(ids(b.l1_results)).toContain(bConfirmed);
+    expect(ids(b.l1_results)).not.toContain(aConfirmed);
+  });
+
+  it('own_scope has no effect for a FULL session (already reads the per-repo DB)', async () => {
+    vi.spyOn(process, 'cwd').mockReturnValue(repo);
+    const out = JSON.parse(await asFull(() => kbQuery({ query: 'gizmo', own_scope: true })));
+    expect(ids(out.l1_results)).toEqual(expect.arrayContaining([aConfirmed, bConfirmed]));
+  });
+});
+
 describe('kb_promote in a MEMBER session acts only on own entries', () => {
   it('promoting another member\'s entry is the same typed not-found as an unknown id, and changes nothing', async () => {
     const before = row(aKnowledge);

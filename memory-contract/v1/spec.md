@@ -166,6 +166,19 @@ is reported not found, same as an unknown id, and is left unchanged. A FULL
 session carries no ownerTag at all and may demote any CONFIRMED row,
 bible-imported or not.
 
+Because the default CONFIRMED read is answered from the bible view, and every
+bible-view row is imported with `tags: []`, a MEMBER session has no way to
+read back its OWN promoted CONFIRMED rows from a default `kb_query`/`kb_list`
+call -- a `tag: "member:<id>"` filter can never match a bible-view row. `kb_query`
+accepts an opt-in `own_scope: true` to escape the bible view for exactly this
+case: it routes to the per-repo DB with the caller's own `ownerTag` applied,
+same as an explicit INFERRED/UNVERIFIED request, so the caller sees only its
+own rows regardless of which tier they are in. `own_scope` is ignored when
+`flagged_only` is set (that branch already reads the view unconditionally),
+has no effect for a FULL session or an in-process caller passing an explicit
+anchor (both already read the per-repo DB), and defaults to false/omitted so
+every other caller's routing and result shape is unchanged.
+
 ### 2.6 Bible provenance (target base branch) and entry-level commits
 
 The v2 bible (`.fleet/kb-canonical.json`) records `provenance.branch` and
