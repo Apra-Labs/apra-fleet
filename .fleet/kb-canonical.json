@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "34ff160ff8ee9e2268e851270b911771d06fedca",
     "branch": "feat/kb-redesign",
-    "entry_count": 307
+    "entry_count": 304
   },
   "entries": [
     {
@@ -1548,32 +1548,6 @@
       "updated_at": "2026-09-25T22:26:32.411Z"
     },
     {
-      "id": "3f28a3e2-5219-4c00-a63f-c0e040f4a36c",
-      "type": "knowledge",
-      "title": "The epic-diff hygiene guard tolerates bd replay fixtures by path, and the path only survives via addedEntriesFromDiff",
-      "summary": "The bead-id citation guard skips .jsonl files under a test/fixtures/bd-recordings/ directory, decided from the diff's '+++ b/<path>' header; addedLinesFromDiff discards that attribution, so only addedEntriesFromDiff/getAddedLines carry it.",
-      "symbols": [
-        "findBeadIdCitations",
-        "addedEntriesFromDiff",
-        "addedLinesFromDiff",
-        "getAddedLines",
-        "isRecordedBdFixturePath",
-        "RECORDED_BD_FIXTURE_DIR"
-      ],
-      "source_files": [
-        "scripts/check-epic-diff-hygiene.mjs",
-        "tests/epic-diff-hygiene.test.ts",
-        "packages/apra-fleet-se/test/fixtures/bd-recordings/README.md"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-10-07T03:57:19.245Z",
-      "source_file_hashes": {
-        "packages/apra-fleet-se/test/fixtures/bd-recordings/README.md": "3d6bea23d77394e73471bc1948bd2f4f67f8270b",
-        "scripts/check-epic-diff-hygiene.mjs": "fdbc1a6489bd0be2dc759408e28800702e56edb5",
-        "tests/epic-diff-hygiene.test.ts": "f3c8f512d59a7d0bdf0b20d8b492b2558fd8949d"
-      }
-    },
-    {
       "id": "4049e06d-337b-48f6-9cf8-e384ba0b34e5",
       "type": "learning",
       "title": "An inline-ladder-guard fixture with no agent() call site is structurally unfalsifiable",
@@ -2974,35 +2948,6 @@
       "updated_at": "2026-09-29T06:13:13.124Z"
     },
     {
-      "id": "843b9b37-7f25-4979-9a61-94e32ed50048",
-      "type": "runbook",
-      "title": "Record one new memory-contract fixture with RECORD_ONLY, never a full recorder re-run",
-      "summary": "memory-contract/v1/tests/record-fixtures.mjs mints fresh UUIDs on every run, so an unfiltered re-run churns the whole committed fixture corpus; RECORD_ONLY=<tool>/<case> replays the full setup chain but writes only the named fixtures.",
-      "symbols": [
-        "RECORD_ONLY",
-        "writeFixture",
-        "recordHappy",
-        "SCENARIO",
-        "checkFixtureAdditivity"
-      ],
-      "source_files": [
-        "memory-contract/v1/tests/record-fixtures.mjs",
-        "memory-contract/v1/tests/roundtrip-harness.mjs",
-        "scripts/check-fixture-additivity.mjs",
-        "tests/memory-contract-fixture-response-schema.test.ts",
-        "tests/memory-contract-roundtrip.test.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-10-06T23:35:45.262Z",
-      "source_file_hashes": {
-        "memory-contract/v1/tests/record-fixtures.mjs": "a964a001540a3ceaae5dbe438a420778f8bf88b1",
-        "memory-contract/v1/tests/roundtrip-harness.mjs": "ddd5125cdcf5872b5cdb1c353dca1871a2546dbc",
-        "scripts/check-fixture-additivity.mjs": "fbc8cb81193d7169496c38b1175a59c0204518d4",
-        "tests/memory-contract-fixture-response-schema.test.ts": "8138ea5086e05b31ed03c346a6613ed80d4dfd3d",
-        "tests/memory-contract-roundtrip.test.ts": "6b0b930d31bba36ee768f4a4a294782a8180cec6"
-      }
-    },
-    {
       "id": "85d4a659-328d-4c01-8317-437cff41a2f8",
       "type": "knowledge",
       "title": "resolveFleetServerConnection falls back to stdio instead of throwing when no HTTP singleton is running",
@@ -3058,29 +3003,6 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:33.483Z"
-    },
-    {
-      "id": "88968df3-9f64-4f50-b545-62ebadc0a3c5",
-      "type": "learning",
-      "title": "The epic-diff hygiene guards read committed HEAD, so a working-tree fix cannot be verified before committing",
-      "summary": "getAddedLines and findSprintAnalysisDocChanges both diff <baseRef>..HEAD, so uncommitted changes are invisible to the branch-diff assertions while the imported helper code is live from the working tree.",
-      "symbols": [
-        "getAddedLines",
-        "findSprintAnalysisDocChanges",
-        "resolveEpicBaseRef"
-      ],
-      "source_files": [
-        "scripts/check-epic-diff-hygiene.mjs",
-        "tests/epic-diff-hygiene.test.ts",
-        "scripts/epic-base-ref.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-10-07T03:57:21.124Z",
-      "source_file_hashes": {
-        "scripts/check-epic-diff-hygiene.mjs": "fdbc1a6489bd0be2dc759408e28800702e56edb5",
-        "scripts/epic-base-ref.mjs": "7472d316109caae20101b1a8d8b866658385b4a4",
-        "tests/epic-diff-hygiene.test.ts": "f3c8f512d59a7d0bdf0b20d8b492b2558fd8949d"
-      }
     },
     {
       "id": "88f7fc4e-32ed-41b5-8cad-c59dc81a9ab9",

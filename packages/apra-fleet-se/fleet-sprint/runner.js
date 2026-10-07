@@ -547,8 +547,7 @@ export { computeBranchEnsureMembers };
 // Pulled out as its own factory, injected with `command` and `pullGitBefore`
 // rather than written inline, so this can be unit-tested directly against
 // fakes that discriminate the two defects a diff guard spawning git is prone
-// to (the same class of trap recorded for check-epic-diff-hygiene.mjs's
-// guards: a detection function welded to its own git spawn can only be
+// to (a detection function welded to its own git spawn can only be
 // exercised against the one diff a test can cheaply construct in-repo,
 // which proves nothing). Here the two defects are: (1) computing the diff
 // BEFORE the fetch/fast-forward-merge instead of after -- a stale read that
