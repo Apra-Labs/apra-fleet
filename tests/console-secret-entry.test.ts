@@ -26,6 +26,7 @@ import { Readable } from 'node:stream';
 import { applyIsolatedHome } from './helpers/isolated-home.mjs';
 
 import { handleConsoleRequest } from '../src/console/server.js';
+import { SUBMIT_REJECTED_MESSAGE } from '../src/console/routes/secret-entry.js';
 import { getOrCreateKey } from '../src/services/jwt.js';
 import * as logHelpers from '../src/utils/log-helpers.js';
 import * as secretEntryService from '../src/services/secret-entry.js';
@@ -282,13 +283,40 @@ describe('console secret-entry routes: POST /api/secret-entry/submit', () => {
     expect(out.status).toBe(400);
   });
 
-  it('an onSubmit rejection -> 422 carrying the server error text', async () => {
+  it('an onSubmit rejection -> 422 with a fixed message, detail logged server-side only', async () => {
+    const logLineSpy = vi.spyOn(logHelpers, 'logLine');
     const onSubmit = vi.fn(() => ({ ok: false, error: 'store is full' }));
     const entry = makeEntry(onSubmit);
 
     const out = await post(SUBMIT_PATH, { token: entry.token, value: 'x' });
     expect(out.status).toBe(422);
-    expect(JSON.parse(out.body)).toEqual({ error: 'store is full' });
+    expect(JSON.parse(out.body)).toEqual({ error: SUBMIT_REJECTED_MESSAGE });
+    expect(out.body).not.toContain('store is full');
+    expect(logLineSpy.mock.calls.flat().join('\n')).toContain('store is full');
+  });
+
+  // apra-fleet-8byq.2: the real leak shape -- credentialSet throws an error
+  // whose message carries a filesystem path; the browser must never see it.
+  it('a credential-store failure with a path in its message -> fixed 422 body, neither path nor value, detail logged', async () => {
+    const logLineSpy = vi.spyOn(logHelpers, 'logLine');
+    const PATH_LEAK = '/home/someone/.apra-fleet/data/credentials.json';
+    const onSubmit = vi.fn((_v: string) => {
+      try {
+        throw new Error(`EACCES: permission denied, open '${PATH_LEAK}'`);
+      } catch (err: any) {
+        return { ok: false, error: err.message };
+      }
+    });
+    const entry = makeEntry(onSubmit);
+
+    const out = await post(SUBMIT_PATH, { token: entry.token, value: SENTINEL });
+    expect(out.status).toBe(422);
+    expect(JSON.parse(out.body)).toEqual({ error: SUBMIT_REJECTED_MESSAGE });
+    expect(out.body).not.toContain(PATH_LEAK);
+    expect(out.body).not.toContain(SENTINEL);
+    const logged = logLineSpy.mock.calls.flat().join('\n');
+    expect(logged).toContain(PATH_LEAK);
+    expect(logged).not.toContain(SENTINEL);
   });
 
   it('a throwing onSubmit -> 500 "submit failed", never echoing the thrown message', async () => {

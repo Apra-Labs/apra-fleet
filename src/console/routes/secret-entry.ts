@@ -36,6 +36,9 @@ import type { ConsoleRoute } from '../server.js';
 import { getSecretEntryPrompt, submitSecretEntry } from '../../services/secret-entry.js';
 import { logLine } from '../../utils/log-helpers.js';
 
+/** Fixed 422 body for a rejected submit; the underlying error is logged only. */
+export const SUBMIT_REJECTED_MESSAGE = 'The secret could not be stored. See the server log for details.';
+
 /** Hard ceiling on a console request body for this module. A secret value is
  *  never expected to be large; this is generous headroom while still small
  *  enough that a runaway client cannot buffer the server to death. */
@@ -202,7 +205,12 @@ export const secretEntryRoutes: ConsoleRoute[] = [
         sendError(res, 500, 'submit failed');
         return;
       }
-      sendError(res, 422, result.error);
+      // A rejected submit's error text comes from the onSubmit callback
+      // (credentialSet's thrown message for credential_store_set), which can
+      // carry a filesystem path. Answer a fixed message to the browser and
+      // keep the detail server-side only (never the secret value).
+      logLine('secret_entry', `submit rejected detail=${result.error}`);
+      sendError(res, 422, SUBMIT_REJECTED_MESSAGE);
     },
   },
 ];

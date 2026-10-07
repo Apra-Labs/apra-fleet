@@ -227,7 +227,9 @@ const TRANSIENT_SPAWN_ERRNOS = new Set(['EAGAIN', 'ENOMEM', 'EMFILE', 'ENFILE'])
 
 /**
  * Classifies a probe failure as one that could not COMPLETE -- the child was
- * killed BY A TIMEOUT (`err.killed: true`) or the OS itself transiently
+ * killed BY A TIMEOUT (async `execFile` shape `err.killed: true`, or the
+ * synchronous `execFileSync` shape `err.code === 'ETIMEDOUT'` with `killed`
+ * undefined and `signal: 'SIGTERM'`) or the OS itself transiently
  * failed to spawn it (`err.code` one of `TRANSIENT_SPAWN_ERRNOS`) -- versus
  * one that completed and genuinely found nothing (a missing binary/`ENOENT`,
  * a permission error, output with no parseable version) OR one that CRASHED
@@ -241,7 +243,9 @@ const TRANSIENT_SPAWN_ERRNOS = new Set(['EAGAIN', 'ENOMEM', 'EMFILE', 'ENFILE'])
  */
 function classifyIncompleteProbe(err) {
     if (!err || typeof err !== 'object') return null;
-    if (err.killed === true) return 'timeout';
+    // ETIMEDOUT is a timeout, NOT a transient spawn errno: do not add it to
+    // TRANSIENT_SPAWN_ERRNOS (it would be reported as an errno, not 'timeout').
+    if (err.killed === true || err.code === 'ETIMEDOUT') return 'timeout';
     if (typeof err.code === 'string' && TRANSIENT_SPAWN_ERRNOS.has(err.code)) return err.code;
     return null;
 }
@@ -404,7 +408,8 @@ export function knownSelfNodeVersion(candidatePath, deps = {}) {
  * @param {NodeJS.Platform} platform
  * @param {string} file
  * @param {string[]} args
- * @param {{ timeoutMs?: number, retry?: boolean, async?: boolean }} [options]
+ * @param {{ timeoutMs?: number, retry?: boolean, async?: boolean, shell?: boolean }} [options]
+ *   `shell: false` forces a shell-less probe (no win32 quoting) even on win32.
  * @returns {{ version: string|null, incomplete: string|null }
  *   | Promise<{ version: string|null, incomplete: string|null }>}
  *   A plain object when `options.async` is unset/false (node-runner.mjs's
@@ -415,7 +420,11 @@ export function knownSelfNodeVersion(candidatePath, deps = {}) {
  */
 export function probeVersion(exec, platform, file, args, options = {}) {
     const { timeoutMs, retry = false, async = false } = options;
-    const isWin32Shell = platform === 'win32';
+    // apra-fleet-aolt.1: `options.shell === false` lets a caller that has
+    // already resolved a shell-less invocation (toolchain.mjs's win32 bd
+    // probe: `<recorded node> <bd script> --version`) opt out of the win32
+    // shell route; omitted, the platform default applies unchanged.
+    const isWin32Shell = options.shell === false ? false : platform === 'win32';
     const probeTarget = isWin32Shell ? quoteForWindowsShell(file) : file;
     const execOptions = { shell: isWin32Shell, timeout: timeoutMs };
     // MAX_ATTEMPTS = 2 when retrying: the original attempt plus exactly one

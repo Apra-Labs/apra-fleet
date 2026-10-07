@@ -31,7 +31,19 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
-export const DEFAULT_THRESHOLD_BYTES = 10000000;
+// THRESHOLD DECISION (apra-fleet-i9ag.2.10): RAISED deliberately to 13,000,000,
+// not narrowed. Shipping packages/apra-fleet-se/src/ (needed so the
+// npm-installed bin/serve.mjs resolves its ../src/supervisor/*.mjs imports)
+// took the pack to 8,750,015 B against the old 10,000,000 limit; a later
+// measurement was 11,312,315 B. Narrowing the `files` entry was evaluated
+// first and rejected: walking static imports from every shipped entry point
+// (bin/*, fleet-sprint/**) reaches 1,134,712 of src/'s 1,138,754 bytes, so a
+// reachable-only entry would save about 4 KB (src/supervisor/sprint-identity.mjs).
+// The weight is real shipped code (fleet-sprint ~2.5 MB, src ~1.1 MB,
+// workflow/client src ~0.5 MB), so the lever to pull next time is this
+// constant (keep roughly 15% headroom over the measured size), or a real
+// trim of fleet-sprint/ -- not the src/ files entry.
+export const DEFAULT_THRESHOLD_BYTES = 13000000;
 
 /**
  * Extract and parse the JSON array `npm pack --dry-run --json` writes to

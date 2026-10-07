@@ -361,6 +361,124 @@ describe('sprint-runner-resolution -- createSpawner() spawns the resolved node, 
 });
 
 // =============================================================================
+// 2b. win32 .cmd shims (apra-fleet-i9ag.15.19): resolution probes through a
+//     shell (so cmd.exe accepts a shim), but spawnSprint() spawns with no
+//     shell, so the command resolution returns must already be spawnable.
+// =============================================================================
+
+describe('sprint-runner-resolution -- win32: a runtime resolved through a .cmd shim is spawnable as returned', () => {
+    const SHIM_DIR = 'C:\\Users\\jane\\AppData\\Roaming\\npm';
+    const NODE_SHIM = `${SHIM_DIR}\\node.cmd`;
+    const REAL_NODE = `${SHIM_DIR}\\node_modules\\node\\bin\\node.exe`;
+    // npm cmd-shim's shape for a native (.exe) bin target.
+    const NODE_SHIM_CONTENT = '@ECHO off\r\nGOTO start\r\n:find_dp0\r\nSET dp0=%~dp0\r\nEXIT /b\r\n:start\r\nSETLOCAL\r\nCALL :find_dp0\r\n"%dp0%\\node_modules\\node\\bin\\node.exe"   %*\r\n';
+    const fakeFiles = (files) => ({
+        existsFn: (p) => Object.prototype.hasOwnProperty.call(files, p),
+        readFileFn: (p) => {
+            if (!Object.prototype.hasOwnProperty.call(files, p)) throw new Error(`ENOENT ${p}`);
+            return files[p];
+        },
+    });
+
+    function makeFakeSpawn(pid) {
+        const calls = [];
+        const spawnFn = (command, args, opts) => {
+            const child = new EventEmitter();
+            child.pid = pid;
+            child.unref = () => {};
+            calls.push({ command, args, opts });
+            return child;
+        };
+        return { spawnFn, calls };
+    }
+
+    test('FLEET_SE_NODE pointing at a node.cmd shim: spawnSprint spawns the node.exe behind it, with no shell', async () => {
+        const { spawnFn, calls } = makeFakeSpawn(5151);
+        const spawner = createSpawner({
+            spawn: spawnFn,
+            resolveRunner: () => resolveSprintRunnerCommand({
+                env: { FLEET_SE_NODE: NODE_SHIM },
+                execPath: 'C:\\Program Files\\apra-fleet\\apra-fleet.exe',
+                isSea: () => true,
+                exec: fakeExec({ [NODE_SHIM]: 'v22.16.0' }),
+                platform: 'win32',
+                ...fakeFiles({ [NODE_SHIM]: NODE_SHIM_CONTENT }),
+            }),
+            basePort: 9200,
+            isPortAvailable: async () => true,
+            dataDir: 'fake-data-dir',
+            fs: { mkdirSync() {}, openSync() { return 42; }, closeSync() {} },
+            logger: { log() {}, error() {} },
+        });
+
+        const result = await spawner.spawnSprint({ issue: 'PROJ-1', members: 'alice', branch: 'feat/x', base: 'main' });
+
+        assert.equal(calls.length, 1);
+        assert.equal(calls[0].command, REAL_NODE, 'argv[0] handed to spawn() is the real node.exe, never the .cmd shim');
+        assert.ok(!calls[0].opts.shell, 'spawn gets no shell option -- the returned command must run without one');
+        assert.equal(calls[0].args[0], defaultCliPath());
+        assert.equal(result.command, REAL_NODE);
+    });
+
+    test('PATH tier: a bare "node" that exists only as node.cmd on PATH resolves to the node.exe behind it', () => {
+        const result = resolveSprintRunnerCommand({
+            env: { Path: `C:\\Windows\\system32;${SHIM_DIR}` },
+            execPath: 'C:\\Program Files\\apra-fleet\\apra-fleet.exe',
+            isSea: () => true,
+            exec: fakeExec({ node: 'v22.17.0' }),
+            platform: 'win32',
+            ...fakeFiles({ [NODE_SHIM]: NODE_SHIM_CONTENT }),
+        });
+        assert.deepEqual(result, {
+            command: REAL_NODE,
+            source: SPRINT_RUNNER_SOURCE.PATH,
+            version: '22.17.0',
+            resolvedFrom: NODE_SHIM,
+        });
+    });
+
+    test('PATH tier: a real node.exe earlier on PATH wins and the bare "node" is returned unchanged', () => {
+        const nodeDir = 'C:\\Program Files\\nodejs';
+        const result = resolveSprintRunnerCommand({
+            env: { Path: `${nodeDir};${SHIM_DIR}` },
+            execPath: 'C:\\Program Files\\apra-fleet\\apra-fleet.exe',
+            isSea: () => true,
+            exec: fakeExec({ node: 'v22.17.0' }),
+            platform: 'win32',
+            ...fakeFiles({ [`${nodeDir}\\node.exe`]: '', [NODE_SHIM]: NODE_SHIM_CONTENT }),
+        });
+        assert.deepEqual(result, { command: 'node', source: SPRINT_RUNNER_SOURCE.PATH, version: '22.17.0' });
+    });
+
+    test('a shim whose node.exe cannot be resolved fails resolution loudly instead of failing later at spawn', () => {
+        const badShim = 'C:\\tools\\node.cmd';
+        assert.throws(
+            () => resolveSprintRunnerCommand({
+                env: { FLEET_SE_NODE: badShim },
+                execPath: 'C:\\Program Files\\apra-fleet\\apra-fleet.exe',
+                isSea: () => true,
+                exec: fakeExec({ [badShim]: 'v22.16.0' }),
+                platform: 'win32',
+                ...fakeFiles({ [badShim]: '@echo off\r\nC:\\somewhere\\node.exe %*\r\n' }),
+            }),
+            (err) => err instanceof SprintRunnerResolutionError && err.message.includes(JSON.stringify(badShim)) && /shim/.test(err.message),
+        );
+    });
+
+    test('non-win32: a .cmd-looking override is returned untouched (resolution unchanged off Windows)', () => {
+        const result = resolveSprintRunnerCommand({
+            env: { FLEET_SE_NODE: '/opt/odd/node.cmd' },
+            execPath: '/opt/apra-fleet/apra-fleet',
+            isSea: () => true,
+            exec: fakeExec({ '/opt/odd/node.cmd': 'v22.16.0' }),
+            platform: 'linux',
+        });
+        assert.equal(result.command, '/opt/odd/node.cmd');
+        assert.equal('resolvedFrom' in result, false);
+    });
+});
+
+// =============================================================================
 // 3. Launch failure path through the real HTTP route layer.
 // =============================================================================
 

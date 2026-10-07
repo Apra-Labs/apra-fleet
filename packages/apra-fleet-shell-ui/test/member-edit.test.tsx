@@ -3,8 +3,8 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Members } from "../src/pages/Members";
 import type { FleetMember } from "../src/api/members";
-import { LOCAL_MEMBER, MEMBERS_LOCAL } from "./member-fixtures";
-import { findButton, findFieldInSection, jsonResponse, makeFetchMock, openDrawerFor, setInputValue } from "./harness";
+import { LOCAL_MEMBER, MEMBERS_LOCAL, MEMBERS_UNATTENDED, UNATTENDED_MEMBER } from "./member-fixtures";
+import { findButton, findFieldInSection, jsonResponse, makeFetchMock, openDrawerFor, setInputValue, setSelectValue } from "./harness";
 
 // apra-fleet-i9ag.6.1.2: covers the member edit flow added by apra-fleet-i9ag.6.1.1
 // (updateMember wrapper + MemberDrawer's "Edit member" form). Same harness as
@@ -229,5 +229,117 @@ describe("Member edit flow (apra-fleet-i9ag.6.1.2)", () => {
     expect(() => findFieldInSection(container, "Edit member", "Host")).toThrow();
     expect(() => findFieldInSection(container, "Edit member", "Port")).toThrow();
     expect(() => findFieldInSection(container, "Edit member", "Username")).toThrow();
+  });
+
+  describe("Unattended mode select (apra-fleet-i9ag.6.7)", () => {
+    async function openUnattended() {
+      const { fn, calls } = makeFetchMock(() => MEMBERS_UNATTENDED, {
+        "/api/fleet/update-member": jsonResponse(200, { text: "updated" })
+      });
+      vi.stubGlobal("fetch", fn);
+      await renderMembers();
+      await openDrawerFor(container, "unattended-one");
+      const select = findFieldInSection(container, "Edit member", "Unattended mode") as HTMLSelectElement;
+      return { select, calls };
+    }
+    const updateCallsOf = (calls: { url: string }[]) => calls.filter((c) => c.url === "/api/fleet/update-member");
+
+    it("pre-fills from a member payload carrying unattended: 'dangerous'", async () => {
+      const { select } = await openUnattended();
+      expect(UNATTENDED_MEMBER.unattended).toBe("dangerous");
+      expect(select.value).toBe("dangerous");
+    });
+
+    it("changing it to 'auto' POSTs unattended: 'auto'", async () => {
+      const { select, calls } = await openUnattended();
+      await act(async () => {
+        setSelectValue(select, "auto");
+      });
+      await act(async () => {
+        findButton(container, "Save changes").click();
+      });
+      const updates = updateCallsOf(calls) as { body: unknown }[];
+      expect(updates).toHaveLength(1);
+      expect(updates[0].body).toEqual({ member_id: UNATTENDED_MEMBER.id, unattended: "auto" });
+    });
+
+    it("an untouched select never adds unattended to the body", async () => {
+      const { calls } = await openUnattended();
+      const tags = findFieldInSection(container, "Edit member", "Tags") as HTMLInputElement;
+      await act(async () => {
+        setInputValue(tags, "core, extra");
+      });
+      await act(async () => {
+        findButton(container, "Save changes").click();
+      });
+      const updates = updateCallsOf(calls) as { body: Record<string, unknown> }[];
+      expect(updates).toHaveLength(1);
+      expect(Object.keys(updates[0].body).sort()).toEqual(["member_id", "tags"]);
+    });
+
+    it("selecting 'false' explicitly posts the string \"false\"", async () => {
+      const { select, calls } = await openUnattended();
+      await act(async () => {
+        setSelectValue(select, "false");
+      });
+      await act(async () => {
+        findButton(container, "Save changes").click();
+      });
+      const updates = updateCallsOf(calls) as { body: Record<string, unknown> }[];
+      expect(updates).toHaveLength(1);
+      expect(updates[0].body.unattended).toBe("false");
+      expect(typeof updates[0].body.unattended).toBe("string");
+    });
+  });
+
+  it("the Icon input states it cannot be cleared, and emptying a set icon sends no POST (apra-fleet-i9ag.6.8)", async () => {
+    const withIcon = { members: [{ ...LOCAL_MEMBER, icon: "blue-circle" }] };
+    const { fn, calls } = makeFetchMock(() => withIcon, {
+      "/api/fleet/update-member": jsonResponse(200, { text: "updated" })
+    });
+    vi.stubGlobal("fetch", fn);
+    await renderMembers();
+    await openDrawerFor(container, "local-one");
+
+    const icon = findFieldInSection(container, "Edit member", "Icon") as HTMLInputElement;
+    const label = container.querySelector(`label[for="${icon.id}"]`);
+    expect(label?.textContent ?? "").toContain("cannot be cleared");
+    expect(icon.value).toBe("blue-circle");
+
+    await act(async () => {
+      setInputValue(icon, "");
+    });
+    await act(async () => {
+      findButton(container, "Save changes").click();
+    });
+    expect(calls.filter((c) => c.url === "/api/fleet/update-member")).toHaveLength(0);
+    const alert = Array.from(container.querySelectorAll('[role="alert"]')).find((el) =>
+      (el.textContent ?? "").includes("No changes to submit")
+    );
+    expect(alert).toBeDefined();
+  });
+
+  it("an emptied friendly name is blocked client-side with an inline message and no POST or success text (apra-fleet-i9ag.6.9)", async () => {
+    const { fn, calls } = makeFetchMock(() => MEMBERS_LOCAL, {
+      "/api/fleet/update-member": jsonResponse(200, { text: "updated" })
+    });
+    vi.stubGlobal("fetch", fn);
+    await renderMembers();
+    await openDrawerFor(container, "local-one");
+
+    const nameInput = findFieldInSection(container, "Edit member", "Friendly name") as HTMLInputElement;
+    await act(async () => {
+      setInputValue(nameInput, "   ");
+    });
+    await act(async () => {
+      findButton(container, "Save changes").click();
+    });
+
+    expect(calls.filter((c) => c.url === "/api/fleet/update-member")).toHaveLength(0);
+    const alert = Array.from(container.querySelectorAll('[role="alert"]')).find((el) =>
+      (el.textContent ?? "").includes("Friendly name cannot be empty")
+    );
+    expect(alert).toBeDefined();
+    expect(container.textContent ?? "").not.toContain("updated");
   });
 });

@@ -358,6 +358,53 @@ function extractNpmShimScriptName(content) {
 }
 
 /**
+ * Generalized form of `extractNpmShimScriptName()` (apra-fleet-i9ag.15.19):
+ * the `%dp0%`-relative target of ANY npm cmd-shim, whatever its extension.
+ * npm's shim for a `.js` bin runs it through `"%_prog%"` (node); for a native
+ * target (e.g. the `node` npm package's `node.exe`) it runs the target
+ * itself -- both end in `"%dp0%\<target>" %*`.
+ * @param {string} content
+ * @returns {string|null}
+ */
+function extractNpmShimTargetName(content) {
+    const match = content.match(/"%dp0%\\([^"]+)"\s*%\*/);
+    return match ? match[1] : null;
+}
+
+/**
+ * Resolves the absolute target an npm-generated Windows `.cmd` shim at
+ * `cmdPath` wraps -- a `.js` script, or a native `.exe` -- using the same
+ * shim-shape parsing as `resolveConfiguredWindowsBdScript()`. Used by
+ * node-runner.mjs to turn a `.cmd` shim that resolution accepted (its probe
+ * goes through a shell) into the real binary behind it, which spawn can run
+ * without a shell. Returns `null` (never throws) when not on win32, the file
+ * is missing or unreadable, or its content is not npm's shim shape.
+ * @param {string} cmdPath
+ * @param {{
+ *   platform?: NodeJS.Platform,
+ *   existsFn?: (p: string) => boolean,
+ *   readFileFn?: (p: string, enc: string) => string,
+ * }} [deps]
+ * @returns {string|null}
+ */
+export function resolveWindowsShimTarget(cmdPath, deps = {}) {
+    const platform = deps.platform ?? process.platform;
+    const existsFn = deps.existsFn ?? existsSync;
+    const readFileFn = deps.readFileFn ?? readFileSync;
+    if (platform !== 'win32') return null;
+    if (typeof cmdPath !== 'string' || cmdPath.length === 0 || !existsFn(cmdPath)) return null;
+    let content;
+    try {
+        content = readFileFn(cmdPath, 'utf-8');
+    } catch {
+        return null;
+    }
+    const targetName = extractNpmShimTargetName(String(content));
+    if (!targetName) return null;
+    return path.win32.join(path.win32.dirname(cmdPath), targetName);
+}
+
+/**
  * Resolves the `.../bin/bd.js` script a SPECIFIC configured `bdPath` wraps,
  * when that `bdPath` is an npm-generated Windows `.cmd` shim -- the
  * configured-invocation counterpart to `resolveWindowsBdScript()`'s PATH
@@ -392,6 +439,68 @@ export function resolveConfiguredWindowsBdScript(bdPath, deps = {}) {
     const scriptName = extractNpmShimScriptName(content);
     if (!scriptName) return null;
     return path.win32.join(path.win32.dirname(bdPath), scriptName);
+}
+
+/**
+ * Resolves the shell-less win32 invocation of bd through a RECORDED node
+ * (apra-fleet-aolt.1): `{ nodePath, scriptPath }` meaning "run
+ * `<nodePath> <scriptPath> <args>` via execFile with no shell", or `null`
+ * when that is not possible -- not win32, no recorded `nodePath`, or the bd
+ * shim does not resolve to a node script. With a `bdPath` the shim is read
+ * from that one file (`resolveConfiguredWindowsBdScript()`); without one,
+ * PATH is scanned for `bd.cmd` (`resolveWindowsBdScript()`). Shared by
+ * `execBdAsync()` (the configured invocation) and toolchain.mjs's startup bd
+ * probe (the recorded toolchain, before it is configured here), so both use
+ * the one shim resolver `execBdSync()` already relies on.
+ *
+ * Never uses `process.execPath` as the interpreter: under the installed SEA
+ * binary that is the apra-fleet binary, not node.
+ *
+ * @param {{
+ *   platform?: NodeJS.Platform,
+ *   nodePath?: string|null,
+ *   bdPath?: string|null,
+ *   resolveWindowsBd?: typeof resolveWindowsBdScript,
+ *   resolveConfiguredWindowsBd?: typeof resolveConfiguredWindowsBdScript,
+ * }} [opts]
+ * @returns {{ nodePath: string, scriptPath: string }|null}
+ */
+export function resolveWin32BdShimInvocation(opts = {}) {
+    const platform = opts.platform ?? process.platform;
+    if (platform !== 'win32') return null;
+    const nodePath = normalizeConfiguredPath(opts.nodePath);
+    if (!nodePath) return null;
+    const bdPath = normalizeConfiguredPath(opts.bdPath);
+    const resolveWindowsBd = opts.resolveWindowsBd ?? resolveWindowsBdScript;
+    const resolveConfiguredWindowsBd = opts.resolveConfiguredWindowsBd ?? resolveConfiguredWindowsBdScript;
+    let scriptPath = null;
+    try {
+        scriptPath = bdPath
+            ? resolveConfiguredWindowsBd(bdPath, { platform })
+            : resolveWindowsBd({ platform });
+    } catch {
+        scriptPath = null;
+    }
+    if (typeof scriptPath !== 'string' || scriptPath.length === 0) return null;
+    return { nodePath, scriptPath };
+}
+
+/**
+ * execBdAsync()'s view of `resolveWin32BdShimInvocation()`: the currently
+ * configured invocation (configureBdInvocation()) plus test-injected
+ * resolvers.
+ * @param {NodeJS.Platform} platform
+ * @param {{ resolveWindowsBd?: Function, resolveConfiguredWindowsBd?: Function }} resolvers
+ * @returns {{ nodePath: string, scriptPath: string }|null}
+ */
+function resolveWin32RecordedNodeBdShim(platform, resolvers) {
+    return resolveWin32BdShimInvocation({
+        platform,
+        nodePath: configuredInvocation.nodePath,
+        bdPath: configuredInvocation.bdPath,
+        resolveWindowsBd: resolvers?.resolveWindowsBd,
+        resolveConfiguredWindowsBd: resolvers?.resolveConfiguredWindowsBd,
+    });
 }
 
 /**
@@ -642,10 +751,31 @@ function quoteShellFile(file, platform) {
  * @param {import('node:child_process').ExecFileOptions} [options] - forwarded as-is (cwd, encoding, ...); `shell` is always forced to `true` regardless of what is passed here.
  * @param {typeof nodeExecFileAsync} [execFileAsyncImpl] - injectable for tests (same signature as `promisify(require('node:child_process').execFile)`); defaults to the real one.
  * @param {(msg: string) => void} [warn] - injectable warn sink for the large-output line.
+ * WIN32 RECORDED-NODE SHIM PATH (apra-fleet-aolt.1): the `{ shell: true }`
+ * route above runs `bd.cmd`, whose own body runs a bare `node` -- which a
+ * service's inherited PATH (Windows task) usually does not contain unless
+ * node came from the MSI installer. So on win32, when a recorded `nodePath`
+ * is configured AND the bd shim resolves to its wrapped node script
+ * (`resolveConfiguredWindowsBdScript()` for a configured `bdPath`, else the
+ * PATH scan `resolveWindowsBdScript()` -- the same resolvers `execBdSync()`
+ * uses), this runs `<nodePath> <script> <args>` via execFile with NO shell,
+ * exactly like execBdSync's shim branch. The shell fallback (with
+ * `assertSafeArgs()`, which still runs first on every path) is used only
+ * when no nodePath is recorded or the shim cannot be resolved. POSIX is
+ * unchanged.
+ *
+ * @param {string[]} args - argv passed to `bd` (e.g. ['list', '--json', '--limit', '0']); every element must match `SAFE_ARG_PATTERN`.
+ * @param {import('node:child_process').ExecFileOptions} [options] - forwarded as-is (cwd, encoding, ...); `shell` is forced to `true` on the shell route and `false` on the win32 recorded-node shim route.
+ * @param {typeof nodeExecFileAsync} [execFileAsyncImpl] - injectable for tests (same signature as `promisify(require('node:child_process').execFile)`); defaults to the real one.
+ * @param {(msg: string) => void} [warn] - injectable warn sink for the large-output line.
  * @param {NodeJS.Platform} [platform] - injectable for tests, so the win32-vs-POSIX shell-quoting branch is exercisable on any host.
+ * @param {{
+ *   resolveWindowsBd?: typeof resolveWindowsBdScript,
+ *   resolveConfiguredWindowsBd?: typeof resolveConfiguredWindowsBdScript,
+ * }} [resolvers] - injectable for tests, so the win32 shim route is exercisable on any host.
  * @returns {Promise<{stdout: string|Buffer, stderr: string|Buffer}>}
  */
-export function execBdAsync(args, options = {}, execFileAsyncImpl = nodeExecFileAsync, warn = console.warn, platform = process.platform) {
+export function execBdAsync(args, options = {}, execFileAsyncImpl = nodeExecFileAsync, warn = console.warn, platform = process.platform, resolvers = {}) {
     // Deliberately NOT an `async function`: both argument-shape rejections
     // below must throw SYNCHRONOUSLY (they are programmer errors, and callers
     // /tests rely on it), so the promise chain only starts once the args are
@@ -654,6 +784,17 @@ export function execBdAsync(args, options = {}, execFileAsyncImpl = nodeExecFile
         throw new TypeError('execBdAsync requires args to be an array of strings');
     }
     assertSafeArgs(args);
+    const shim = resolveWin32RecordedNodeBdShim(platform, resolvers);
+    if (shim) {
+        return Promise.resolve(execFileAsyncImpl(
+            shim.nodePath,
+            [shim.scriptPath, ...args],
+            { maxBuffer: BD_MAX_BUFFER_BYTES, ...options, shell: false },
+        )).then((res) => {
+            warnIfLargeBdOutput(args, res ? res.stdout : null, warn);
+            return res;
+        });
+    }
     // CONFIGURED: use the configured bdPath in place of the bare 'bd' PATH
     // lookup; UNCONFIGURED (bdPath is null): unchanged from before this fix.
     const bdFile = configuredInvocation.bdPath ?? 'bd';

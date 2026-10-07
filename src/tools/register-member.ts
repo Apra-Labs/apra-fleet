@@ -32,6 +32,7 @@ import { beadsStatusNote, refreshMemberFleetMcp, getMemberFleetMcpDeps } from '.
 import { ensureAgyProject } from '../services/agy-project.js';
 import { detectVcsProviderFromRemoteUrl } from '../utils/vcs-provider-detect.js';
 import { validateEnvMap } from '../utils/env-map-validation.js';
+import { RegistrationTimer, formatBound, type RegistrationStepBounds } from '../services/registration-steps.js';
 
 export const registerMemberSchema = z.object({
   friendly_name: z.string()
@@ -157,12 +158,27 @@ export interface RegisterMemberOptions {
    * a tagless default.
    */
   skipCompose?: boolean;
+  /**
+   * Test seam: override the per-step wall-clock bounds (ms) registration waits
+   * for each probe step (DEFAULT_STEP_BOUNDS_MS in registration-steps.ts).
+   * Not part of registerMemberSchema, so the tool surface is unchanged.
+   */
+  stepBoundsMs?: RegistrationStepBounds;
 }
 
 export async function registerMember(input: RegisterMemberInput, opts: RegisterMemberOptions = {}): Promise<string> {
   const warnings: string[] = [];
   const isLocal = input.member_type === 'local';
   const isCloud = !!input.cloud_provider;
+  // Every member probe below runs as a timed, bounded step: a probe that
+  // exceeds its bound is reported as degraded and registration continues
+  // without it, instead of holding the call open (apra-fleet-njeb).
+  const timer = new RegistrationTimer(opts.stepBoundsMs);
+  const degradedNotes: string[] = [];
+  const noteDegraded = (what: string, boundMs: number, consequence: string) => {
+    degradedNotes.push(`${what} (timed out after ${formatBound(boundMs)})`);
+    warnings.push(`${what} did not finish within ${formatBound(boundMs)} -- ${consequence}`);
+  };
 
   // --- Validate required fields ---
   if (isCloud) {
@@ -371,7 +387,10 @@ export async function registerMember(input: RegisterMemberInput, opts: RegisterM
     const strategy = getStrategy(tempAgent);
 
     // Step 1: Test connectivity
-    connResult = await strategy.testConnection();
+    const conn = await timer.run('connect', () => strategy.testConnection());
+    connResult = conn.timedOut
+      ? { ok: false, error: `connectivity check timed out after ${formatBound(conn.boundMs)}` }
+      : conn.value;
     if (!connResult.ok) {
       const target = isLocal ? 'local machine' : `${resolvedHost}:${input.port}`;
       if (isCloud) {
@@ -416,9 +435,17 @@ export async function registerMember(input: RegisterMemberInput, opts: RegisterM
       // about that, unlike a local member where LocalStrategy spawns the
       // resolved bash.exe path directly.
       const probeTransport = tempAgent.agentType === 'local' ? 'local' : 'ssh';
-      const probe = await probeWindowsShell((command, timeoutMs) => strategy.execCommand(command, timeoutMs), probeTransport);
-      tempAgent.shell = probe.shell;
-      if (probe.warning) warnings.push(probe.warning);
+      const probeRun = await timer.run('shell-probe',
+        () => probeWindowsShell((command, timeoutMs) => strategy.execCommand(command, timeoutMs), probeTransport));
+      if (probeRun.timedOut) {
+        // Same fallback probeWindowsShell itself degrades to when nothing
+        // could be proven: the shell every Windows host has.
+        tempAgent.shell = 'powershell5';
+        noteDegraded('shell-probe', probeRun.boundMs, 'assuming Windows PowerShell 5.1; set shell explicitly with update_member if this member should use Git bash or PowerShell 7.');
+      } else {
+        tempAgent.shell = probeRun.value.shell;
+        if (probeRun.value.warning) warnings.push(probeRun.value.warning);
+      }
     }
 
     // The registration-time probes below must speak the SAME shell the member
@@ -432,13 +459,16 @@ export async function registerMember(input: RegisterMemberInput, opts: RegisterM
     // this must be skipped entirely rather than merely tolerating a rejection.
     const isNoLlm = providerName === 'none';
 
-    const versionCheck = isNoLlm ? Promise.resolve() : strategy.execCommand(cmds.agentVersion(provider), 15000)
-      .then(r => {
-        r.code === 0
-          ? (claudeVersion = r.stdout.trim())
-          : warnings.push(`${providerName} CLI not found on ${isLocal ? 'this machine' : 'remote machine'} — install it before using execute_prompt`);
-      })
-      .catch(() => { warnings.push(`Could not verify ${providerName} CLI availability`); });
+    // Each check RETURNS its outcome; the outcome is applied only once its
+    // step has settled within its bound, so a check that finishes after
+    // registration stopped waiting for it never mutates the member.
+    const where = isLocal ? 'this machine' : 'remote machine';
+    const versionCheck = isNoLlm ? Promise.resolve(null) : timer.run('cli-version', () =>
+      strategy.execCommand(cmds.agentVersion(provider), 15000)
+        .then(r => r.code === 0
+          ? { version: r.stdout.trim() }
+          : { warning: `${providerName} CLI not found on ${where} -- install it before using execute_prompt` })
+        .catch(() => ({ warning: `Could not verify ${providerName} CLI availability` })));
 
     const authCheck = isNoLlm ? Promise.resolve() : (!isLocal
       ? strategy.execCommand(cmds.agentVersion(provider), 60000)
@@ -446,12 +476,10 @@ export async function registerMember(input: RegisterMemberInput, opts: RegisterM
           .catch(() => { warnings.push(`${providerName} CLI check timed out or failed — run provision_llm_auth to set up authentication`); })
       : Promise.resolve());
 
-    const mkdirCheck = isLocal
-      ? import('node:fs').then(({ mkdirSync }) => {
-          mkdirSync(input.work_folder, { recursive: true });
-        }).catch(() => { warnings.push(`Could not create folder "${input.work_folder}"`); })
-      : strategy.execCommand(cmds.mkdir(input.work_folder), 10000)
-          .catch(() => { warnings.push(`Could not create folder "${input.work_folder}"`); });
+    const mkdirCheck = timer.run('work-folder', () => (isLocal
+      ? import('node:fs').then(({ mkdirSync }) => { mkdirSync(input.work_folder, { recursive: true }); })
+      : strategy.execCommand(cmds.mkdir(input.work_folder), 10000).then(() => undefined))
+      .then(() => true).catch(() => false));
 
     // Step 3b: best-effort VCS-provider detection (apra-fleet-5oo).
     //
@@ -475,23 +503,39 @@ export async function registerMember(input: RegisterMemberInput, opts: RegisterM
     // mkdir had to CREATE cannot contain a git repo, so the probe's answer is
     // the same ("no remote") whichever of the two lands first.
     const vcsProviderCheck = input.vcs_provider
-      ? Promise.resolve()
-      : strategy.execCommand(cmds.gitRemoteOrigin(input.work_folder), 15000)
-          .then(remoteRes => {
-            // Take stdout regardless of exit code: both OS builders swallow
-            // the failure ("|| true" / "try {} catch {}") so an absent repo
-            // yields empty output rather than a non-zero code, and stderr is
-            // never a URL.
-            const remoteUrl = String(remoteRes.stdout ?? '').trim().split(/\r?\n/)[0].trim();
-            const detected = detectVcsProviderFromRemoteUrl(remoteUrl);
-            if (detected) {
-              tempAgent.vcsProvider = detected;
-              vcsProviderAutoDetected = true;
-            }
-          })
-          .catch(() => { /* Best effort -- fall through to the warning below. */ });
+      ? Promise.resolve(null)
+      : timer.run('vcs-remote', () => strategy.execCommand(cmds.gitRemoteOrigin(input.work_folder), 15000)
+          // Take stdout regardless of exit code: both OS builders swallow
+          // the failure ("|| true" / "try {} catch {}") so an absent repo
+          // yields empty output rather than a non-zero code, and stderr is
+          // never a URL.
+          .then(remoteRes => detectVcsProviderFromRemoteUrl(String(remoteRes.stdout ?? '').trim().split(/\r?\n/)[0].trim()) ?? null)
+          // Best effort -- fall through to the warning below.
+          .catch(() => null));
 
-    await Promise.all([versionCheck, authCheck, mkdirCheck, vcsProviderCheck]);
+    const [versionRun, , mkdirRun, vcsRun] = await Promise.all([versionCheck, authCheck, mkdirCheck, vcsProviderCheck]);
+    if (versionRun) {
+      if (versionRun.timedOut) {
+        noteDegraded('cli-version', versionRun.boundMs, `${providerName} CLI availability not verified; check it with member_detail before using execute_prompt.`);
+      } else if ('version' in versionRun.value) {
+        claudeVersion = versionRun.value.version;
+      } else {
+        warnings.push(versionRun.value.warning);
+      }
+    }
+    if (mkdirRun.timedOut) {
+      noteDegraded('work-folder', mkdirRun.boundMs, `could not confirm folder "${input.work_folder}" exists.`);
+    } else if (!mkdirRun.value) {
+      warnings.push(`Could not create folder "${input.work_folder}"`);
+    }
+    if (vcsRun) {
+      if (vcsRun.timedOut) {
+        noteDegraded('vcs-remote', vcsRun.boundMs, 'VCS provider not auto-detected from the git remote.');
+      } else if (vcsRun.value) {
+        tempAgent.vcsProvider = vcsRun.value;
+        vcsProviderAutoDetected = true;
+      }
+    }
 
     // AGY: create the member's own agy project (`agy --new-project`) and bind
     // it by id; every dispatch passes --project <id> and compose_permissions
@@ -511,19 +555,27 @@ export async function registerMember(input: RegisterMemberInput, opts: RegisterM
     // Remote members have their own home dir and never receive these via install() --
     // only when connectivity is confirmed do we attempt the probe/push round trip.
     if (connResult.ok) {
-      agentProvisionResult = await provisionAgents(tempAgent);
-      if (agentProvisionResult.warning) warnings.push(agentProvisionResult.warning);
-
-      // Project-level agent files in the work folder shadow the managed role
-      // set (local and remote members alike). Never throws.
-      const shadowWarning = await recheckProjectAgentShadows(tempAgent);
-      if (shadowWarning) warnings.push(shadowWarning);
-
-      // apra-fleet-eft.40.2: seed Claude workspace trust for this member's work folder
-      // so composed project-scoped permissions are honored on the first dispatch,
-      // even if the member was never opened interactively. Best-effort/non-fatal;
-      // non-Claude providers no-op.
-      await seedWorkspaceTrust(tempAgent, strategy, 'register_member');
+      const filesRun = await timer.run('agent-files', async () => {
+        const provisioned = await provisionAgents(tempAgent);
+        // Project-level agent files in the work folder shadow the managed role
+        // set (local and remote members alike). Never throws.
+        const shadowWarning = await recheckProjectAgentShadows(tempAgent);
+        // apra-fleet-eft.40.2: seed Claude workspace trust for this member's work folder
+        // so composed project-scoped permissions are honored on the first dispatch,
+        // even if the member was never opened interactively. Best-effort/non-fatal;
+        // non-Claude providers no-op. Only when compose_permissions is skipped:
+        // its proactive run below seeds trust itself (self-healing), so seeding
+        // here too repeated the same member round trips (apra-fleet-njeb).
+        if (opts.skipCompose) await seedWorkspaceTrust(tempAgent, strategy, 'register_member');
+        return { provisioned, shadowWarning };
+      });
+      if (filesRun.timedOut) {
+        noteDegraded('agent-files', filesRun.boundMs, 'role files / workspace trust may be incomplete; run update_member to re-provision.');
+      } else {
+        agentProvisionResult = filesRun.value.provisioned;
+        if (agentProvisionResult.warning) warnings.push(agentProvisionResult.warning);
+        if (filesRun.value.shadowWarning) warnings.push(filesRun.value.shadowWarning);
+      }
     }
 
     // --- Validate opencode model_tiers against available models ---
@@ -604,11 +656,16 @@ export async function registerMember(input: RegisterMemberInput, opts: RegisterM
   let composeResult: string | undefined;
   if (!opts.skipCompose) {
     try {
-      composeResult = await composePermissions({
+      const composeRun = await timer.run('compose-permissions', () => composePermissions({
         member_id: tempAgent.id,
         role: 'doer',
         tags: tempAgent.tags,
-      });
+      }));
+      // compose_permissions is mandatory, not a probe: exceeding its bound
+      // is a loud failure, never a silent degrade.
+      composeResult = composeRun.timedOut
+        ? `compose_permissions timed out after ${formatBound(composeRun.boundMs)}`
+        : composeRun.value;
     } catch (e: any) {
       composeResult = `compose_permissions threw: ${e?.message ?? String(e)}`;
     }
@@ -685,9 +742,24 @@ export async function registerMember(input: RegisterMemberInput, opts: RegisterM
       // A fleet install also (re)writes the per-folder MCP entry before it is
       // checked, so this one call ends at fleetMcp=available.
       const install = (input.fleet_install ?? 'auto') !== 'skip';
-      const status = await refreshMemberFleetMcp(
-        tempAgent, getMemberFleetMcpDeps(), { install, writeMcpEntry: install },
-      );
+      const writeMcpEntry = install;
+      const mcpDeps = getMemberFleetMcpDeps();
+      const mcpRun = await timer.run('fleet-mcp',
+        () => refreshMemberFleetMcp(tempAgent, mcpDeps, { install, writeMcpEntry }),
+        timer.boundFor(isLocal ? 'fleet-mcp' : 'fleet-mcp-remote'));
+      let status: Awaited<ReturnType<typeof refreshMemberFleetMcp>>;
+      if (mcpRun.timedOut) {
+        status = {
+          state: 'unavailable',
+          reason: 'probe-failed',
+          checkedAt: new Date().toISOString(),
+          detail: `fleetMcp probe timed out after ${formatBound(mcpRun.boundMs)}; re-probe with member_detail refresh:true`,
+        };
+        mcpDeps.record(tempAgent.id, status);
+        noteDegraded('fleet-mcp', mcpRun.boundMs, 'fleetMcp recorded unavailable; re-probe with member_detail refresh:true.');
+      } else {
+        status = mcpRun.value;
+      }
       fleetMcpLine = status.state === 'available'
         ? `available${status.version ? ` (apra-fleet ${status.version})` : ''}${status.installFailure && status.detail ? ` -- warning: ${status.detail}` : ''}`
         : `unavailable (${status.reason ?? 'unknown'})${status.detail ? ` -- ${status.detail}` : ''}`;
@@ -696,6 +768,8 @@ export async function registerMember(input: RegisterMemberInput, opts: RegisterM
       fleetMcpLine = `unavailable (probe-failed) -- ${e?.message ?? String(e)}`;
     }
   }
+
+  logLine('register_member', `timings for ${tempAgent.friendlyName}: ${timer.summary()}`, tempAgent);
 
   let result = `✅ Member registered successfully!\n\n`;
   result += `  Icon:    ${tempAgent.icon}\n`;
@@ -755,6 +829,9 @@ export async function registerMember(input: RegisterMemberInput, opts: RegisterM
   }
   if (fleetMcpLine) {
     result += `  fleetMcp: ${fleetMcpLine}\n`;
+  }
+  if (degradedNotes.length > 0) {
+    result += `  Degraded: ${degradedNotes.join('; ')}\n`;
   }
   if (isCloud && cloudConfig) {
     result += `  Cloud:   ${cloudConfig.provider} / ${cloudConfig.instanceId} / ${cloudConfig.region}\n`;

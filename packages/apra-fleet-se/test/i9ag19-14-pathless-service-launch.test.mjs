@@ -352,14 +352,19 @@ function bdShimSource(bdRecordDir) {
  *     `<binDir>/node_modules/bd/bin/bd.js`.
  *   - WINDOWS: npm generates a `bd.cmd` shim that prefers a `node.exe`
  *     CO-LOCATED with itself (`%dp0%\node.exe`) and only falls back to a bare
- *     `node` on PATH. Because a real npm global prefix DOES have node.exe
- *     sitting next to the shims, PATH-lessness is much less lethal there --
- *     which is precisely why the production fix
- *     (`withConfiguredNodeDirOnPath()` in src/supervisor/lib/exec-bd.mjs,
- *     `withNodeFirstBdExec()` in src/supervisor/toolchain.mjs) is POSIX-gated
- *     by design. So this fixture reproduces npm's real Windows layout too:
- *     the shim sits in the SAME directory as the recorded node, and its body
- *     matches npm's generated shape exactly -- trailing
+ *     `node` on PATH. A real npm global prefix (`%APPDATA%\npm`) does NOT
+ *     have node.exe in it -- node lives under its own install dir (e.g.
+ *     `C:\Program Files\nodejs`, a version manager's dir) -- so in practice
+ *     the shim runs the bare-`node` PATH fallback and dies on a node-less
+ *     service PATH exactly like the POSIX case. That is why the production
+ *     fix on win32 does not rely on the shim at all: exec-bd.mjs's
+ *     execBdSync/execBdAsync and
+ *     toolchain.mjs's startup bd probe parse the shim and run
+ *     `<recorded node> <bd.js> <args>` with no shell, while the PATH-prepend
+ *     fix (`withConfiguredNodeDirOnPath()`, `withNodeFirstBdExec()`) stays
+ *     POSIX-gated. This fixture co-locates the shim with the recorded node
+ *     only because `buildRecordedNode()` and the shim share one binDir; its
+ *     body matches npm's generated shape exactly -- trailing
  *     `"%dp0%\...\bd.js" %*` -- which is also what
  *     `resolveConfiguredWindowsBdScript()` parses to invoke the wrapped
  *     `bd.js` directly under the recorded node. A shim in a node-LESS

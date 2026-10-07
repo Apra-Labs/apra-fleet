@@ -77,4 +77,10 @@ gh release edit vX.Y.Z --notes "..."   # replace with a clean summary
 Keep the summary short: what changed and why. It's fine to leave GitHub's
 "Full Changelog" link at the bottom for anyone who wants the raw commit diff.
 
+Before writing the summary, read `docs/release-notes-pending.md`. It holds
+upgrade notes accumulated since the last release (for example behaviour changes
+that break existing deployments). Fold every entry into the `--notes` text
+(keep upgrade warnings prominent), then clear the entries from that file
+(leave its header) and commit the cleared file.
+
 Done.

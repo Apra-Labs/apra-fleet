@@ -72,6 +72,12 @@ export class HttpKbProvider implements MemoryProvider {
   // every repo that never opted in.
   private readonly strict: boolean;
 
+  // Short-lived reachability cache for strict mode's ensureReachable(): a burst
+  // of local-only delegations (getLinked/relatedClaims/promote) costs one probe
+  // instead of one round trip each. Invalidated by markDegraded/markConnected.
+  private reachableUntil = 0;
+  private static readonly REACHABLE_TTL_MS = 5_000;
+
   constructor(url: string, token: string, fallback?: SqliteProvider, offlineFallback: 'local' | 'error' = 'local') {
     this.baseUrl = url.replace(/\/$/, '');
     this.token = token;
@@ -109,6 +115,7 @@ export class HttpKbProvider implements MemoryProvider {
   // is the point: this is explicit configuration plus loud failure, not the
   // silent local read this bead replaces.
   private markDegraded(err: unknown): void {
+    this.reachableUntil = 0;
     const reason = err instanceof Error ? err.message : String(err);
     if (!this.degraded) {
       this.degraded = true;
@@ -136,6 +143,7 @@ export class HttpKbProvider implements MemoryProvider {
   // succeeds, and re-arms the stderr warning so a LATER disconnect is
   // reported again rather than staying silent for the rest of the session.
   private markConnected(): void {
+    this.reachableUntil = 0;
     if (this.degraded) {
       this.degraded = false;
       this.degradedReason = undefined;
@@ -168,9 +176,11 @@ export class HttpKbProvider implements MemoryProvider {
   // reachable and is treated as connected; only a genuine connection error
   // (ECONNREFUSED/ENOTFOUND/ETIMEDOUT/ECONNRESET) throws.
   private async ensureReachable(): Promise<void> {
+    if (Date.now() < this.reachableUntil) return;
     try {
       await this.rawRequest('GET', '/api/kb/context', undefined, { files: '' });
       this.markConnected();
+      this.reachableUntil = Date.now() + HttpKbProvider.REACHABLE_TTL_MS;
     } catch (err) {
       if (isConnectionError(err)) {
         this.markDegraded(err);
@@ -180,6 +190,7 @@ export class HttpKbProvider implements MemoryProvider {
       // remote host answered -- reachable, just not necessarily happy with
       // this exact probe request.
       this.markConnected();
+      this.reachableUntil = Date.now() + HttpKbProvider.REACHABLE_TTL_MS;
     }
   }
 

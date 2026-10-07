@@ -1124,6 +1124,15 @@ export class ApraFleet {
 
     /**
      * Add a machine to the fleet.
+     *
+     * Each member probe the server runs during registration (shell detection,
+     * CLI version, VCS remote, work folder, role files, compose_permissions,
+     * the fleetMcp member session) has a wall-clock bound. A probe that
+     * exceeds its bound no longer holds the call open: the member is still
+     * registered, and the result text carries a
+     * "Degraded: <probe> (timed out after <bound>)" line plus a warning per
+     * timed-out probe. compose_permissions is mandatory, so exceeding its
+     * bound returns the "compose_permissions failed" error instead.
      * @param {RegisterMemberOptions} options
      */
     async registerMember(options) {

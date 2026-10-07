@@ -232,4 +232,51 @@ describe("AddMemberWizard (apra-fleet-9h9j.2.3)", () => {
     expect((findByLabel("Friendly name") as HTMLInputElement).value).toBe("dup-box");
     expect((findByLabel("Work folder") as HTMLInputElement).value).toBe("/home/work");
   });
+
+  it("shows an in-progress status while the registration request is pending, and does not resubmit", async () => {
+    // apra-fleet-njeb: a local registration can take tens of seconds; the
+    // drawer must show it is working rather than sit idle.
+    let resolveFetch: (value: unknown) => void = () => {};
+    const fetchMock = vi.fn().mockReturnValue(new Promise((resolve) => { resolveFetch = resolve; }));
+    vi.stubGlobal("fetch", fetchMock);
+    const onRegistered = await renderWizard();
+
+    await act(async () => {
+      clickButton("Next");
+    });
+    setValue(findByLabel("Friendly name"), "slow-box");
+    setValue(findByLabel("Work folder"), "C:\\demo-member");
+    await act(async () => {
+      clickButton("Next");
+    });
+
+    expect(container.querySelector('[role="status"]')).toBeNull();
+
+    await act(async () => {
+      clickButton("Register");
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    const status = container.querySelector('[role="status"]');
+    expect(status).not.toBeNull();
+    expect(status?.getAttribute("aria-busy")).toBe("true");
+    expect(status?.textContent).toContain("Registering slow-box...");
+    expect(status?.textContent).toMatch(/\d+s elapsed/);
+    expect(onRegistered).not.toHaveBeenCalled();
+
+    // A second click while pending sends nothing.
+    await act(async () => {
+      clickButton("Register");
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      resolveFetch({ ok: true, status: 200, json: async () => ({ text: "registered" }) });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(onRegistered).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('[role="status"]')).toBeNull();
+  });
 });
+

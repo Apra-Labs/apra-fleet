@@ -380,6 +380,9 @@ export function buildServeSpawnerDeps({ port, repoRoot, beadsIdentity, serviceTo
         // node than the one the operator recorded. bd can fall back silently
         // because its fallback still works; node's cannot.
         configuredNodePath: toolchain.nodePath ?? undefined,
+        // apra-fleet-hap8: bd's directory joins node's on the sprint child's PATH.
+        // Only a bd the startup validation accepted (bdOk), as for the BD env below.
+        configuredBdPath: toolchain.bdOk ? (toolchain.bdPath ?? undefined) : undefined,
         // apra-fleet-i9ag.19.35: the version serveMain()'s validation accepted for
         // that exact path, in this process -- passed ONLY when `nodeOk` was
         // true, i.e. only when this supervisor has already seen that binary

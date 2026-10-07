@@ -1,12 +1,13 @@
+import { apiUrl } from "./base-path";
 // Thin fetch wrapper over the console-hosted one-time secret-entry API
 // (src/console/routes/secret-entry.ts, apra-fleet-i9ag.11.4) for the
 // SecretEntry page (apra-fleet-i9ag.11.7). Deliberately its own module --
 // members.ts, health.ts and secrets.ts each get their own, so no two lanes
 // ever contend for one shared file.
 //
-// Root-relative paths only (no origin, no configured base) so the same
+// Console-relative paths resolved through apiUrl() (no origin, no configured base) so the same
 // bundle works on loopback, a LAN address and a tunnelled port alike: the
-// browser reaches this page at the console origin, and a fetch("/api/...")
+// browser reaches this page at the console origin, and apiUrl("/api/...")
 // always targets that same origin regardless of what host/port it is.
 
 export interface SecretEntryPrompt {
@@ -35,7 +36,7 @@ export type SubmitResult =
   | { status: "error"; message: string };
 
 async function postJson(path: string, body: unknown): Promise<{ status: number; data: unknown }> {
-  const response = await fetch(path, {
+  const response = await fetch(apiUrl(path), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body ?? {})

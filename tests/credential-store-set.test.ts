@@ -370,7 +370,7 @@ describe('credentialStoreSet', () => {
       credentialDelete('submitted_cred');
     });
 
-    it('returns the fallback message when the web server could not start', async () => {
+    it('passes through the collector fallback message as the [FAIL] result', async () => {
       Object.defineProperty(process.stdin, 'isTTY', { value: false, configurable: true });
       vi.mocked(authSocket.collectOobApiKey).mockResolvedValue({ fallback: 'No display available.' });
 
@@ -563,3 +563,42 @@ describe('credentialStoreSet', () => {
 });
 
 
+
+// apra-fleet-i9ag.11.22: a wildcard APRA_FLEET_HOST must not yield an
+// unopenable printed origin. DEFAULT_HOST is read at module load, so each
+// case re-imports src/paths.ts under a fresh module registry.
+describe('resolveConsoleBaseUrl wildcard APRA_FLEET_HOST fallback', () => {
+  const savedHost = process.env.APRA_FLEET_HOST;
+  const savedBase = process.env.APRA_FLEET_CONSOLE_BASE_URL;
+  afterEach(() => {
+    if (savedHost === undefined) delete process.env.APRA_FLEET_HOST; else process.env.APRA_FLEET_HOST = savedHost;
+    if (savedBase === undefined) delete process.env.APRA_FLEET_CONSOLE_BASE_URL; else process.env.APRA_FLEET_CONSOLE_BASE_URL = savedBase;
+    vi.resetModules();
+  });
+
+  async function baseFor(host: string) {
+    delete process.env.APRA_FLEET_CONSOLE_BASE_URL;
+    process.env.APRA_FLEET_HOST = host;
+    vi.resetModules();
+    const paths = await import('../src/paths.js');
+    return paths.resolveConsoleBaseUrl();
+  }
+
+  it.each([
+    ['0.0.0.0', 'http://127.0.0.1:'],
+    ['::', 'http://[::1]:'],
+    ['::0', 'http://[::1]:'],
+  ])('APRA_FLEET_HOST=%s yields an openable loopback origin', async (host, prefix) => {
+    const r = await baseFor(host);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.baseUrl.startsWith(prefix)).toBe(true);
+      expect(r.baseUrl).not.toContain('0.0.0.0');
+    }
+  });
+
+  it('a specific LAN host is left unchanged', async () => {
+    const r = await baseFor('192.168.1.5');
+    expect(r.ok && r.baseUrl.startsWith('http://192.168.1.5:')).toBe(true);
+  });
+});

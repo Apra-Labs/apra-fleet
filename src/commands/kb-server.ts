@@ -284,7 +284,8 @@ export async function startKbServer(port: number, generateToken: boolean, dbPath
   // genuinely wants this reachable off-box) inverts that: a second loopback
   // bind on this port now fails loudly with EADDRINUSE via the 'error'
   // handler below, instead of silently splitting traffic.
-  const bindHost = typeof host === 'string' && host.length > 0 ? host : '127.0.0.1';
+  const hostGiven = typeof host === 'string' && host.length > 0;
+  const bindHost = hostGiven ? host : '127.0.0.1';
 
   return new Promise((resolve, reject) => {
     server.on('error', (err: NodeJS.ErrnoException) => {
@@ -297,6 +298,11 @@ export async function startKbServer(port: number, generateToken: boolean, dbPath
 
     server.listen({ port, host: bindHost, exclusive: true }, () => {
       process.stderr.write(`KB server listening on http://${bindHost}:${port}\n`);
+      // Upgrade notice: older builds bound the OS wildcard, so an existing
+      // team-shared deployment silently becomes unreachable remotely.
+      if (!hostGiven) {
+        process.stderr.write('KB server: listening on loopback only; pass --host <addr> for a team-shared deployment\n');
+      }
       resolve(server);
     });
   });

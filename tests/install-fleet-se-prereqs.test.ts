@@ -427,13 +427,32 @@ describe('installer fleet-se prerequisite gate (apra-fleet-i9ag.13.7.3)', () => 
     expect(detector).not.toHaveBeenCalled();
     const logs = logSpy.mock.calls.map(c => c.join(' ')).join('\n');
     expect(logs).not.toContain('Installing Beads task tracker');
-    expect(logs).toMatch(/fleet-se:\s+NOT INSTALLED/);
-    expect(logs).toContain(FLEET_SE_PREREQ_FIX_LINE);
+    // apra-fleet-3t9b: skipped by choice -- no fix line suggesting the flag
+    // the operator already used, and no /auto-sprint advertised.
+    expect(logs).toMatch(/fleet-se:\s+skipped by choice/);
+    expect(logs).not.toContain(FLEET_SE_PREREQ_FIX_LINE);
+    expect(logs).not.toContain('--workflows none for the core console only');
+    expect(logs).not.toContain('/auto-sprint');
     // No npm install of @beads/bd was ever attempted.
     const npmInstallCall = vi.mocked(execFileSync).mock.calls.find(
       c => c[0] === 'npm' && Array.isArray(c[1]) && c[1].includes(BEADS_PACKAGE),
     );
     expect(npmInstallCall).toBeUndefined();
+  });
+
+  it('case 5b (3t9b): the closing banner lists /auto-sprint in default mode and omits it with --workflows none', async () => {
+    _setFleetSePrereqStepDeps({ detectFleetSePrereqs: fakeDetector(SATISFIED) });
+    vi.mocked(execFileSync).mockReturnValue('bd 1.3.0\n' as any);
+    await expect(runInstall(['--llm', 'claude'])).resolves.toBeUndefined();
+    const defaultLogs = logSpy.mock.calls.map(c => c.join(' ')).join('\n');
+    expect(defaultLogs).toMatch(/fleet-se:\s+ready/);
+    expect(defaultLogs).toContain('/auto-sprint BD-1');
+
+    logSpy.mockClear();
+    await expect(runInstall(['--llm', 'claude', '--workflows', 'none'])).resolves.toBeUndefined();
+    const noneLogs = logSpy.mock.calls.map(c => c.join(' ')).join('\n');
+    expect(noneLogs).not.toContain('/auto-sprint');
+    expect(noneLogs).toMatch(/fleet-se:\s+skipped by choice/);
   });
 
   it('case 6: prerequisites satisfied but the @beads/bd npm install itself throws -- exits non-zero and surfaces npm\'s own error text (REVERT CANARY)', async () => {

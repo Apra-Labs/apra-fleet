@@ -61,7 +61,7 @@ function quietExec(cmd: string, args: string[]): Buffer {
   return execFileSync(cmd, args, QUIET);
 }
 
-const defaultSchtasksRunner: SchtasksRunner = (args) => quietExec('schtasks', args);
+export const defaultSchtasksRunner: SchtasksRunner = (args) => quietExec('schtasks', args);
 const defaultRegRunner: RegRunner = (args) => quietExec('reg', args);
 
 function defaultSpawnDetached(cmd: string, args: string[], verbatim = false): void {
@@ -361,33 +361,79 @@ function statusFromProbedState(value: string | null): ServiceStatus | null {
   }
 }
 
+/** Build the one PowerShell script that probes every named task (progress records suppressed). */
+export function buildTaskStateProbeScript(taskNames: string[]): string {
+  const list = taskNames.map(n => `'${n.replace(/'/g, "''")}'`).join(', ');
+  return [
+    // Progress records otherwise leak "#< CLIXML" to stderr and slow the probe.
+    "$ProgressPreference = 'SilentlyContinue'",
+    // NOTFOUND only after a successful cmdlet run that found no task. A
+    // missing cmdlet (no ScheduledTasks module, Server Core) or a failed or
+    // denied query emits PROBEFAIL so query() falls through to the schtasks
+    // CSV read instead of claiming 'not installed' for a registered task.
+    "$have = [bool](Get-Command Get-ScheduledTask -ErrorAction SilentlyContinue)",
+    `foreach ($n in @(${list})) {`,
+    "if (-not $have) { \"$n|PROBEFAIL\" } else {",
+    "try { $t = Get-ScheduledTask -TaskName $n -ErrorAction Stop; \"$n|$([int]$t.State)\" }",
+    "catch { if ($_.CategoryInfo.Category -eq 'ObjectNotFound') { \"$n|NOTFOUND\" } else { \"$n|PROBEFAIL\" } } } }",
+  ].join('\n');
+}
+
 /**
- * Default `Get-ScheduledTask` state probe. PowerShell is invoked as an
- * explicit `-EncodedCommand` (CLAUDE.md: never rely on shell-level expansion
- * in a Windows command string); the only interpolated value is the
- * descriptor's fixed ASCII task name. null when the probe cannot run.
+ * Probe the scheduled-task state of several tasks in ONE PowerShell spawn
+ * (each spawn costs seconds on Windows). PowerShell is invoked as an explicit
+ * `-EncodedCommand` (CLAUDE.md: never rely on shell-level expansion in a
+ * Windows command string); the only interpolated values are the descriptors'
+ * fixed ASCII task names. A task maps to null when the probe cannot answer
+ * for it (PROBEFAIL, unparseable, or powershell unusable): the schtasks CSV
+ * read then decides, per task.
  */
-export function defaultProbeTaskState(taskName: string): string | null {
-  const needle = taskName.replace(/'/g, "''");
-  const script = [
-    "$ErrorActionPreference = 'SilentlyContinue'",
-    `$t = Get-ScheduledTask -TaskName '${needle}'`,
-    "if ($t) { [int]$t.State } else { 'NOTFOUND' }",
-  ].join('; ');
-  const encoded = Buffer.from(script, 'utf16le').toString('base64');
+export function probeTaskStatesBatch(taskNames: string[]): Map<string, string | null> {
+  const result = new Map<string, string | null>(taskNames.map(n => [n, null]));
+  const encoded = Buffer.from(buildTaskStateProbeScript(taskNames), 'utf16le').toString('base64');
+  let out: string;
   try {
     // GitHub #585: pipe all stdio and hide the window, like every other
     // status probe, so nothing prints above apra-fleet status.
-    const out = String(execFileSync(
+    out = String(execFileSync(
       'powershell',
       ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded],
       { encoding: 'utf8', ...QUIET },
     ) ?? '');
-    return out.trim().split(/\r?\n/).map(l => l.trim()).filter(Boolean).pop() ?? null;
   } catch {
     // No powershell, or it exited non-zero: the probe is unusable here.
-    return null;
+    return result;
   }
+  const lines = out.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  for (const line of lines) {
+    const bar = line.lastIndexOf('|');
+    if (bar < 0) continue;
+    const name = line.slice(0, bar);
+    if (result.has(name)) result.set(name, line.slice(bar + 1));
+  }
+  // Bare single-value output (no "name|" prefix) answers a one-task probe.
+  if (taskNames.length === 1 && result.get(taskNames[0]) === null && lines.length > 0 && !lines.some(l => l.includes('|'))) {
+    result.set(taskNames[0], lines[lines.length - 1]);
+  }
+  return result;
+}
+
+/** Single-task probe; see probeTaskStatesBatch. */
+export function defaultProbeTaskState(taskName: string): string | null {
+  return probeTaskStatesBatch([taskName]).get(taskName) ?? null;
+}
+
+/**
+ * A per-task probe backed by ONE shared batch: the first call runs the single
+ * PowerShell spawn for every name, later calls read its result. Used by
+ * `apra-fleet status` to query all fleet services at once.
+ */
+export function createBatchTaskStateProbe(taskNames: string[]): (taskName: string) => string | null {
+  let results: Map<string, string | null> | null = null;
+  return (taskName) => {
+    results ??= probeTaskStatesBatch(taskNames);
+    return results.get(taskName) ?? null;
+  };
 }
 
 /**
@@ -650,7 +696,7 @@ export class WindowsServiceManager implements ServiceManager {
    */
   private findWrapperProcessIds(): number[] {
     const needle = this.descriptor.windowsWrapperFileName.replace(/'/g, "''");
-    const script = [
+    const script = "$ProgressPreference = 'SilentlyContinue'; " + [
       'Get-CimInstance Win32_Process',
       `Where-Object { $_.CommandLine -like '*${needle}*' }`,
       'ForEach-Object { $_.ProcessId }',

@@ -881,6 +881,13 @@ export function createSprintController(deps = {}) {
     }
 
     // -- GET /api/sprints/:id : live child state, else history ----------------
+    function isChildNotListening(err) {
+        const code = err && err.code;
+        return code === 'ECONNREFUSED' || code === 'ECONNRESET';
+    }
+    function pendingSprint(id) {
+        return { sprintId: id, live: false, pending: true, starting: true };
+    }
     async function getSprint(id) {
         const reservation = ledger.get(id);
         if (reservation) {
@@ -897,8 +904,22 @@ export function createSprintController(deps = {}) {
             }
             const port = resolvePort(reservation.childPid ?? null);
             if (port != null) {
-                const state = await proxyState(port);
-                return { sprintId: id, live: true, state };
+                try {
+                    const state = await proxyState(port);
+                    return { sprintId: id, live: true, state };
+                } catch (err) {
+                    // apra-fleet-7myc: the child's port refuses connections while
+                    // it is still starting (or just closed). That is not a server
+                    // error -- a 5xx here lands in the browser console on every
+                    // launch-watcher poll. With no recorded outcome yet, answer a
+                    // 200 carrying an explicit pending marker; a recorded outcome
+                    // (launch-failed / child-exited) falls through to history below.
+                    if (!isChildNotListening(err)) throw err;
+                    if (!history.latestFor(id)) return pendingSprint(id);
+                }
+            } else if (!history.latestFor(id)) {
+                // Reserved but its port is not known yet: still starting.
+                return pendingSprint(id);
             }
         }
         // Not live (finished/gone, or port unknown): return the historical record.

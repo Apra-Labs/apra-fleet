@@ -16,6 +16,7 @@
 // scripts/lib/exec-bd.mjs.
 
 import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
 import path from 'node:path';
 
 /** Minimum Node.js version fleet-se requires (major.minor.patch). */
@@ -77,6 +78,8 @@ export interface FleetSePrereqDeps {
   exec: FleetSePrereqExec;
   /** Injectable platform value -- defaults to process.platform. */
   platform: NodeJS.Platform;
+  /** Injectable symlink resolver for the POSIX bd path -- defaults to fs.realpathSync. */
+  realpath: (p: string) => string;
 }
 
 export interface FleetSePrereqProbe {
@@ -321,6 +324,15 @@ function pickWindowsBdLine(lines: string[]): { path: string | null; reason: stri
   return { path: null, reason: 'where bd returned no output' };
 }
 
+/** Mirrors packages/apra-fleet-se/src/supervisor/node-version.mjs's
+ *  quoteForWindowsShell() (not imported: this root build does not depend on the
+ *  se workspace): wraps a whitespace-bearing token in double quotes, doubling
+ *  embedded quotes (cmd.exe's convention). */
+function quoteForWindowsShell(token: string): string {
+  if (!/\s/.test(token)) return token;
+  return `"${token.replace(/"/g, '""')}"`;
+}
+
 /**
  * Resolves bd's absolute path via a platform lookup ('where bd' on win32,
  * preferring the .cmd/.exe candidate; 'which bd' elsewhere, first non-empty
@@ -342,11 +354,16 @@ function pickWindowsBdLine(lines: string[]): { path: string | null; reason: stri
  * `ok:true` as an advisory (bd's version could not be confirmed), not a
  * failure. Never throws.
  */
-function resolveBdPath(exec: FleetSePrereqExec, platform: NodeJS.Platform): FleetSeToolchainProbe {
+function resolveBdPath(
+  exec: FleetSePrereqExec,
+  platform: NodeJS.Platform,
+  realpath: (p: string) => string = fs.realpathSync,
+): FleetSeToolchainProbe {
   const lookupFile = platform === 'win32' ? 'where' : 'which';
 
   let bdPath: string | null = null;
   let reason: string | null = null;
+  let realpathReason: string | null = null;
   try {
     const raw = exec(lookupFile, ['bd'], { ...PROBE_OPTIONS });
     const lines = String(raw)
@@ -359,6 +376,14 @@ function resolveBdPath(exec: FleetSePrereqExec, platform: NodeJS.Platform): Flee
       reason = picked.reason;
     } else if (lines.length > 0) {
       bdPath = lines[0];
+      // Record the symlink-resolved real path: a PATH entry can be a per-shell
+      // symlink dir (e.g. fnm multishell) that vanishes after this process
+      // exits. A realpath failure is advisory only -- keep the PATH-found path.
+      try {
+        bdPath = realpath(bdPath);
+      } catch (err) {
+        realpathReason = `could not resolve the symlink-resolved real path of ${bdPath}; recording the PATH-found path (${errorMessage(err)})`;
+      }
     } else {
       reason = `${lookupFile} bd returned no output`;
     }
@@ -370,7 +395,15 @@ function resolveBdPath(exec: FleetSePrereqExec, platform: NodeJS.Platform): Flee
   let versionProbeReason: string | null = null;
   if (bdPath !== null) {
     try {
-      const raw = exec(bdPath, ['--version'], { ...PROBE_OPTIONS });
+      // apra-fleet-i9ag.19.48: PROBE_OPTIONS' shell:true makes cmd.exe word-split
+      // a win32 path containing a space (C:\Program Files\..., a profile under
+      // C:\Users\Jane Doe\), so quote it for the win32 shell only. The recorded
+      // `path` stays unquoted; the POSIX argv path is never quoted.
+      const probeTarget = platform === 'win32' ? quoteForWindowsShell(bdPath) : bdPath;
+      // POSIX has no .cmd shims, so run shell-less: /bin/sh -c would word-split
+      // a spaced path (/opt/my tools/bin/bd).
+      const probeOptions = platform === 'win32' ? { ...PROBE_OPTIONS } : { ...PROBE_OPTIONS, shell: false };
+      const raw = exec(probeTarget, ['--version'], probeOptions);
       const parsed = parseVersionString(raw);
       const trimmed = String(raw).trim();
       version = parsed ?? (trimmed.length > 0 ? trimmed : null);
@@ -386,7 +419,9 @@ function resolveBdPath(exec: FleetSePrereqExec, platform: NodeJS.Platform): Flee
     // Path resolution failing is fatal to this probe (reason names why);
     // a resolved path whose version probe then failed is NOT fatal (ok
     // stays true) but the diagnostic is still surfaced, never discarded.
-    reason: bdPath !== null ? versionProbeReason : reason,
+    reason: bdPath !== null
+      ? ([realpathReason, versionProbeReason].filter((r): r is string => r !== null).join('; ') || null)
+      : reason,
   };
 }
 
@@ -407,6 +442,6 @@ export function resolveFleetSeToolchainPaths(
 
   return {
     node: resolveNodePath(exec),
-    bd: resolveBdPath(exec, platform),
+    bd: resolveBdPath(exec, platform, deps.realpath ?? fs.realpathSync),
   };
 }

@@ -59,7 +59,7 @@ export function Secrets() {
   const [state, setState] = useState<LoadState>({ kind: "loading" });
   const [addOpen, setAddOpen] = useState(false);
   const [addForm, setAddForm] = useState<AddFormState>(ADD_FORM_INITIAL);
-  const [addResult, setAddResult] = useState<{ url: string; expiresAt?: string } | null>(null);
+  const [addResult, setAddResult] = useState<{ name: string; expiresAt?: string } | null>(null);
   const [addError, setAddError] = useState<string | null>(null);
 
   const [editingName, setEditingName] = useState<string | null>(null);
@@ -102,7 +102,9 @@ export function Secrets() {
         members: addForm.members,
         ttl_seconds: addForm.ttlSeconds.trim() ? Number(addForm.ttlSeconds) : undefined
       });
-      setAddResult(result);
+      // Keep only the credential name: the one-time entry url embeds a
+      // single-use token that must not linger in the page DOM.
+      setAddResult({ name: addForm.name, expiresAt: result.expiresAt });
       window.open(result.url, "_blank", "noopener");
       setAddOpen(false);
       setAddForm(ADD_FORM_INITIAL);
@@ -207,7 +209,7 @@ export function Secrets() {
           {addError ? <p role="alert">{addError}</p> : null}
         </div>
       ) : null}
-      {addResult ? <p role="status">Collection url opened: {addResult.url}</p> : null}
+      {addResult ? <p role="status">Secret entry opened in a new tab for credential {addResult.name}</p> : null}
 
       {gitAppOpen ? (
         <div>

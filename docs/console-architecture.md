@@ -351,6 +351,20 @@ that is not byte-equal to the fleet key and still differs per package id --
 `forwardCredential` only ever removes the header, it never changes how the
 credential the removed header would have carried is derived.
 
+## Reverse-proxy sub-path mounts
+
+The shell derives its API base at run time (`packages/apra-fleet-shell-ui/src/api/base-path.ts`):
+the prefix of `window.location.pathname` before the `/ui` segment. Served at
+`/ui/`, requests go to `/api/...` and `/ext/...` exactly as before; served at
+`/fleet/ui/`, they go to `/fleet/api/...` and `/fleet/ext/...`. Every shell
+fetch and the package iframe URL (`extSrc`) go through `apiUrl()`, enforced by
+`test/no-root-relative-fetch.test.ts`. The reverse proxy must forward
+`/fleet/api/*`, `/fleet/ext/*` and `/fleet/ui/*` to the console with the
+`/fleet` prefix stripped. Limit: the built `index.html` references its
+bundles under the Vite base `/ui/` (root-absolute), so the proxy must also
+serve `/ui/assets/*` from the console (or rewrite those URLs); only the API
+and ext calls are mount-aware.
+
 ## Static asset serving: dev disk vs. packaged binary
 
 The shell is a normal Vite build (`packages/apra-fleet-shell-ui`, base path
