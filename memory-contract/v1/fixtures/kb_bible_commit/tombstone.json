@@ -15,7 +15,7 @@
     "content": [
       {
         "type": "text",
-        "text": "{\"path\":\"<SCRATCH_REPO_A>/.fleet/kb-canonical.json\",\"merged\":[],\"demoted\":[\"408fddf3-7a7b-4861-93bc-fcc3b6a8b0d6\"],\"skipped\":[{\"id\":\"f8e50e13-9843-4dd9-bd44-b7a405a46c90\",\"reason\":\"not_demoted_or_unknown\"}],\"entry_count\":1,\"committed\":true}"
+        "text": "{\"path\":\"<SCRATCH_REPO_A>/.fleet/kb-canonical.json\",\"merged\":[],\"demoted\":[\"408fddf3-7a7b-4861-93bc-fcc3b6a8b0d6\"],\"skipped\":[{\"id\":\"f8e50e13-9843-4dd9-bd44-b7a405a46c90\",\"reason\":\"not_demoted_or_unknown\"}],\"removed\":[],\"entry_count\":1,\"committed\":true}"
       }
     ]
   }

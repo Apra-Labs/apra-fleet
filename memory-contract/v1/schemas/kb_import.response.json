@@ -102,7 +102,6 @@
             "linked",
             "flagged",
             "rejected",
-            "demoted",
             "sweep"
           ],
           "additionalProperties": false
