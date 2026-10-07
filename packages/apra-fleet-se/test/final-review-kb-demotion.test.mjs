@@ -175,7 +175,7 @@ describe('Final Review: demotion candidates reach the final-verdict prompt', () 
     // Criterion 7, final-review half: every degradation leaves the final
     // review dispatching anyway. A sprint's verdict must never hinge on the
     // KB being reachable.
-    test('a throwing demotion-candidate read must not fail the final review', async () => {
+    test('GUARD: a throw from the demotion-candidate read PROPAGATES at this call site, which is why the client must degrade internally', async () => {
         const { state, prompts } = harness({
             demotionCandidates: async () => { throw new Error('kb unreachable'); },
         });
