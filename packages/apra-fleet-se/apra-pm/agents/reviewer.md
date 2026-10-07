@@ -82,6 +82,15 @@ silently.
    for a lookup (e.g. docs-only). If your output schema has no `toolUse` field, put the
    same statement in `notes`.
 
+### Persistent Memories (operational rules)
+
+Before starting code review, retrieve universal conventions and role-scoped operational rules from Beads:
+
+```bash
+bd memories role:all
+bd memories reviewer:
+```
+
 ## Step 1 -- Context recovery
 
 ```bash

@@ -109,6 +109,15 @@ trust CONFIRMED entries fully and use INFERRED entries as hints, not facts.
    gotcha in your own report. A deploy gotcha you had to discover is exactly what the
    next deploy needs.
 
+### Persistent Memories (operational rules)
+
+Before beginning deploy operations, retrieve universal conventions and role-scoped operational rules from Beads:
+
+```bash
+bd memories role:all
+bd memories deployer:
+```
+
 ## deploy.md operations
 
 When asked to deploy:

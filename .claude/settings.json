@@ -15,7 +15,7 @@
       {
         "hooks": [
           {
-            "command": "bd prime",
+            "command": "bd prime --no-memories",
             "type": "command"
           }
         ],
@@ -26,7 +26,7 @@
       {
         "hooks": [
           {
-            "command": "bd prime",
+            "command": "bd prime --no-memories",
             "type": "command"
           }
         ],
