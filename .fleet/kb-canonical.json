@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "6c392d8af8963c1267052327b3a2ac519a6bb245",
     "branch": "u1_kb_redesign_base",
-    "entry_count": 289
+    "entry_count": 292
   },
   "entries": [
     {
@@ -1351,6 +1351,28 @@
       "updated_at": "2026-09-29T06:13:13.689Z"
     },
     {
+      "id": "36b36170-b2dc-4796-9d61-0184e2873f8c",
+      "type": "runbook",
+      "title": "Scope the root npm test to one file with APRA_TEST_SUITES_JSON instead of calling vitest directly",
+      "summary": "scripts/run-all-tests.mjs reads APRA_TEST_SUITES_JSON as a JSON array of {name,cmd,args}, so a single file can be run inside the bounded, process-tree-killing runner the repo requires.",
+      "symbols": [
+        "defaultSuites",
+        "APRA_TEST_SUITES_JSON"
+      ],
+      "source_files": [
+        "scripts/run-all-tests.mjs",
+        "packages/apra-fleet-se/scripts/run-tests.mjs",
+        "CLAUDE.md"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-07T03:57:23.163Z",
+      "source_file_hashes": {
+        "CLAUDE.md": "d0dad99a63c7cdc6b53510bb6064be9dc0b80811",
+        "packages/apra-fleet-se/scripts/run-tests.mjs": "e3742bcfa41dec5eff2447a9095867732cddc8a6",
+        "scripts/run-all-tests.mjs": "417c4823d50bd28807c117c1b16cc01e3798cc2e"
+      }
+    },
+    {
       "id": "38065918-834d-4116-9dd1-153006cb7f05",
       "type": "knowledge",
       "title": "All fleet-sprint ladders are migrated, so both dispatch-pin tables' inline halves are empty and no anchor search runs",
@@ -1491,6 +1513,32 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:32.411Z"
+    },
+    {
+      "id": "3f28a3e2-5219-4c00-a63f-c0e040f4a36c",
+      "type": "knowledge",
+      "title": "The epic-diff hygiene guard tolerates bd replay fixtures by path, and the path only survives via addedEntriesFromDiff",
+      "summary": "The bead-id citation guard skips .jsonl files under a test/fixtures/bd-recordings/ directory, decided from the diff's '+++ b/<path>' header; addedLinesFromDiff discards that attribution, so only addedEntriesFromDiff/getAddedLines carry it.",
+      "symbols": [
+        "findBeadIdCitations",
+        "addedEntriesFromDiff",
+        "addedLinesFromDiff",
+        "getAddedLines",
+        "isRecordedBdFixturePath",
+        "RECORDED_BD_FIXTURE_DIR"
+      ],
+      "source_files": [
+        "scripts/check-epic-diff-hygiene.mjs",
+        "tests/epic-diff-hygiene.test.ts",
+        "packages/apra-fleet-se/test/fixtures/bd-recordings/README.md"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-07T03:57:19.245Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/test/fixtures/bd-recordings/README.md": "3d6bea23d77394e73471bc1948bd2f4f67f8270b",
+        "scripts/check-epic-diff-hygiene.mjs": "fdbc1a6489bd0be2dc759408e28800702e56edb5",
+        "tests/epic-diff-hygiene.test.ts": "f3c8f512d59a7d0bdf0b20d8b492b2558fd8949d"
+      }
     },
     {
       "id": "4049e06d-337b-48f6-9cf8-e384ba0b34e5",
@@ -2881,6 +2929,29 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:33.483Z"
+    },
+    {
+      "id": "88968df3-9f64-4f50-b545-62ebadc0a3c5",
+      "type": "learning",
+      "title": "The epic-diff hygiene guards read committed HEAD, so a working-tree fix cannot be verified before committing",
+      "summary": "getAddedLines and findSprintAnalysisDocChanges both diff <baseRef>..HEAD, so uncommitted changes are invisible to the branch-diff assertions while the imported helper code is live from the working tree.",
+      "symbols": [
+        "getAddedLines",
+        "findSprintAnalysisDocChanges",
+        "resolveEpicBaseRef"
+      ],
+      "source_files": [
+        "scripts/check-epic-diff-hygiene.mjs",
+        "tests/epic-diff-hygiene.test.ts",
+        "scripts/epic-base-ref.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-07T03:57:21.124Z",
+      "source_file_hashes": {
+        "scripts/check-epic-diff-hygiene.mjs": "fdbc1a6489bd0be2dc759408e28800702e56edb5",
+        "scripts/epic-base-ref.mjs": "7472d316109caae20101b1a8d8b866658385b4a4",
+        "tests/epic-diff-hygiene.test.ts": "f3c8f512d59a7d0bdf0b20d8b492b2558fd8949d"
+      }
     },
     {
       "id": "88f7fc4e-32ed-41b5-8cad-c59dc81a9ab9",
