@@ -29,6 +29,7 @@ import type { Agent } from '../../types.js';
 import { knownRepoRemoteUrl } from '../member-remote-url.js';
 import { getKbProviders, getGlobalKbProvider, getProjectSlug, type KbProviders } from './kb-providers.js';
 import { getMemberBibleView } from './member-bible-view.js';
+import { inFlightAgents } from '../in-flight-agents.js';
 
 /** Explicit KB anchor for in-process callers. Not exposed on any tool schema. */
 export interface KbAnchor {
@@ -156,12 +157,35 @@ export interface SelfSession {
  */
 export function resolveSelfSession(): SelfSession {
   const memberId = getSessionMemberId();
-  if (memberId === undefined) return { folder: process.cwd() };
-  const agent = getAgent(memberId);
-  const label = agent?.friendlyName ?? memberId;
-  const folder = agent?.workFolder ?? '';
-  if (!agent || !folder) throw noWorkFolder(folder, label);
-  return { memberId, memberLabel: label, folder, agent };
+  if (memberId !== undefined) {
+    const agent = getAgent(memberId);
+    const label = agent?.friendlyName ?? memberId;
+    const folder = agent?.workFolder ?? '';
+    if (!agent || !folder) throw noWorkFolder(folder, label);
+    return { memberId, memberLabel: label, folder, agent };
+  }
+
+  const cwd = process.cwd();
+  // If the server process cwd is not a git repository and there is an active
+  // in-flight agent dispatch, attribute the tool call to that dispatched member
+  // rather than failing with E-SELF-NOT-A-REPO on a server working directory
+  // (e.g. Windows System32 / daemon root).
+  if (gitOut(cwd, ['rev-parse', '--git-dir']) === null && inFlightAgents.size === 1) {
+    const singleInFlightId = inFlightAgents.values().next().value;
+    if (singleInFlightId) {
+      const agent = getAgent(singleInFlightId);
+      if (agent && agent.workFolder) {
+        return {
+          memberId: agent.id,
+          memberLabel: agent.friendlyName ?? agent.id,
+          folder: agent.workFolder,
+          agent,
+        };
+      }
+    }
+  }
+
+  return { folder: cwd };
 }
 
 /**

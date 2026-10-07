@@ -11,7 +11,15 @@ import { logWarn } from '../utils/log-helpers.js';
 import { getModelOverride } from '../services/user-config.js';
 import { transformAgentForAgy } from '../cli/agent-transform.js';
 import { MEMBER_ALLOWED_TOOLS, MEMBER_DENIED_TOOLS } from '../services/member-tool-allowlist.js';
-import { agyMemberDenyRules, joinMemberPath, pruneLegacyMcpInMemberFile } from '../services/member-config-io.js';
+import {
+  agyMemberDenyRules,
+  joinMemberPath,
+  pruneLegacyMcpInMemberFile,
+  readMemberJson,
+  writeMemberJson,
+  MemberConfigNotJsonError,
+  MEMBER_MCP_SERVER_NAME,
+} from '../services/member-config-io.js';
 import { isPosixShell } from '../utils/agent-helpers.js';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -301,7 +309,7 @@ export class AgyProvider implements ProviderAdapter {
           if (sessionId === undefined && typeof entry.conversation_id === 'string' && entry.conversation_id.trim()) {
             sessionId = entry.conversation_id.trim();
           }
-          const isModelTurn = entry.source === 'MODEL' || entry.type === 'PLANNER_RESPONSE' || entry.type === 'GENERIC' || entry.type === 'MODEL_RESPONSE';
+          const isModelTurn = (entry.source === 'MODEL' || entry.type === 'PLANNER_RESPONSE' || entry.type === 'MODEL_RESPONSE') && entry.type !== 'GENERIC' && entry.source !== 'SYSTEM';
           if (
             isModelTurn &&
             entry.status === 'DONE' &&
@@ -452,20 +460,72 @@ export class AgyProvider implements ProviderAdapter {
     }];
   }
 
-  /** agy has no per-project MCP config, so no per-folder member entry is
-   *  written. The only member-MCP work is pruning the retired
-   *  apra-fleet-member url+bearer entry from agy's machine-global
-   *  ~/.gemini/config/mcp_config.json, when that file exists. */
+  /** agy configures MCP servers in machine-global ~/.gemini/config/mcp_config.json.
+   *  Writes the member's MCP URL (with ?member=<uuid>) so the member connects to the
+   *  fleet MCP server with member scope and proper KB/code identity. */
   async syncMemberMcpEntry(ctx: MemberMcpSyncContext): Promise<MemberMcpSyncResult> {
     if (!ctx.memberHomeDir) {
       throw new Error('agy: the member home directory could not be resolved, so mcp_config.json cannot be checked');
     }
     const isWindows = ctx.agentOs === 'windows';
+    const posix = isPosixShell(isWindows, ctx.shell);
     const file = joinMemberPath(ctx.memberHomeDir.trim(), '.gemini/config/mcp_config.json', isWindows, ctx.shell);
-    const pruned = await pruneLegacyMcpInMemberFile(ctx.execCommand, file, isPosixShell(isWindows, ctx.shell));
+    const pruned = await pruneLegacyMcpInMemberFile(ctx.execCommand, file, posix);
+
+    let detail: string;
+    if (ctx.url !== null) {
+      let config: Record<string, unknown>;
+      try {
+        config = await readMemberJson(ctx.execCommand, file, posix);
+      } catch (e) {
+        if (e instanceof MemberConfigNotJsonError) {
+          throw new MemberConfigNotJsonError(file, 'is not strict JSON', 'agy-config-unparseable');
+        }
+        throw e;
+      }
+      const mcpServers = (config.mcpServers && typeof config.mcpServers === 'object' && !Array.isArray(config.mcpServers))
+        ? config.mcpServers as Record<string, unknown>
+        : {};
+      const cur = mcpServers[MEMBER_MCP_SERVER_NAME] as Record<string, unknown> | undefined;
+      const current = !!cur && typeof cur === 'object' && cur.url === ctx.url;
+      if (current && !pruned) {
+        detail = `agy: ${file} already up to date`;
+      } else {
+        mcpServers[MEMBER_MCP_SERVER_NAME] = { url: ctx.url };
+        config.mcpServers = mcpServers;
+        await writeMemberJson(ctx.execCommand, file, config, posix);
+        detail = `agy: wrote ${MEMBER_MCP_SERVER_NAME} in ${file}`;
+      }
+    } else if (ctx.removeOnlyOwnEntry) {
+      let config: Record<string, unknown>;
+      try {
+        config = await readMemberJson(ctx.execCommand, file, posix);
+      } catch {
+        config = {};
+      }
+      const mcpServers = (config.mcpServers && typeof config.mcpServers === 'object' && !Array.isArray(config.mcpServers))
+        ? config.mcpServers as Record<string, unknown>
+        : {};
+      const cur = mcpServers[MEMBER_MCP_SERVER_NAME] as Record<string, unknown> | undefined;
+      if (cur && typeof cur.url === 'string' && cur.url.includes(`member=${encodeURIComponent(ctx.agent.id)}`)) {
+        delete mcpServers[MEMBER_MCP_SERVER_NAME];
+        if (Object.keys(mcpServers).length === 0) {
+          delete config.mcpServers;
+        } else {
+          config.mcpServers = mcpServers;
+        }
+        await writeMemberJson(ctx.execCommand, file, config, posix);
+        detail = `agy: removed ${MEMBER_MCP_SERVER_NAME} from ${file}`;
+      } else {
+        detail = pruned ? `agy: pruned apra-fleet-member from ${file}` : 'agy: no member MCP entry to remove';
+      }
+    } else {
+      detail = pruned ? `agy: pruned apra-fleet-member from ${file}` : 'agy: no per-project MCP config; nothing to write';
+    }
+
     return {
       workFolderFiles: [],
-      detail: pruned ? `agy: pruned apra-fleet-member from ${file}` : 'agy: no per-project MCP config; nothing to write',
+      detail,
     };
   }
 

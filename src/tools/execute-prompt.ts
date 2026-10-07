@@ -38,6 +38,7 @@ import { recordKnownSession, isKnownSession } from '../services/known-sessions.j
 import { resolveBudgetScope, evaluateBudget, recordAndEvaluate, type BudgetUsageBlock } from '../services/budget-awareness.js';
 import { sendMessage } from './send-message.js';
 import { registerPending } from '../services/pending-responses.js';
+import { inFlightAgents } from '../services/in-flight-agents.js';
 import type { Agent, SSHExecResult } from '../types.js';
 import type { AgentStrategy } from '../services/strategy.js';
 import type { ProviderAdapter } from '../providers/index.js';
@@ -359,7 +360,7 @@ export function currentSprintId(): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
-export const inFlightAgents = new Set<string>();
+export { inFlightAgents };
 
 // Member ids whose remote agent files (planner.md, doer.md, _shared/, schemas/, ...)
 // have already been probed/refreshed this server process uptime -- the #336
