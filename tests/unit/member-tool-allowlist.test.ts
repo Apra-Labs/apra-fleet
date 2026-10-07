@@ -38,9 +38,9 @@ describe('member tool allowlist', () => {
     }
   });
 
-  it('never serves kb_setup or kb_export, and keeps kb_promote / kb_resolve_contradiction to the maintainer grant', () => {
+  it('never serves kb_setup or kb_export, and keeps kb_promote / kb_demote / kb_resolve_contradiction to the maintainer grant', () => {
     expect([...MEMBER_NEVER_TOOLS].sort()).toEqual(['kb_export', 'kb_setup']);
-    expect([...MEMBER_MAINTAINER_TOOLS].sort()).toEqual(['kb_promote', 'kb_resolve_contradiction']);
+    expect([...MEMBER_MAINTAINER_TOOLS].sort()).toEqual(['kb_demote', 'kb_promote', 'kb_resolve_contradiction']);
     for (const t of [...MEMBER_NEVER_TOOLS, ...MEMBER_MAINTAINER_TOOLS]) {
       expect(MEMBER_ALLOWED_TOOLS).not.toContain(t);
       expect(isMemberAllowedTool(t)).toBe(false);

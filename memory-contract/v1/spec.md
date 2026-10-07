@@ -219,6 +219,10 @@ A MEMBER session is served an explicit tool list
   `origin=engine` is ignored. Every other member session -- including an agent
   session on the maintainer member, which connects through the plain
   `?member=<uuid>` entry -- gets an unknown-tool error.
+- `kb_demote` withdraws CONFIRMED (CONFIRMED -> INFERRED) and is served on the
+  same terms as `kb_promote`: only to a member session carrying the
+  kb_maintainer grant. The engine applies every reviewer demotion through that
+  session; no other member session needs it.
 - Every other `kb_*` tool (including `kb_bible_commit`, `kb_import` and
   `kb_reconcile_prefilter`) and every `code_*` tool is served to every member
   session.
