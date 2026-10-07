@@ -9,6 +9,7 @@ import { kbDemote } from '../../src/tools/kb-demote.js';
 import { kbExport } from '../../src/tools/kb-export.js';
 import * as kbProvidersModule from '../../src/services/knowledge/kb-providers.js';
 import type { KBEntryInput } from '../../src/services/knowledge/types.js';
+import { commitWorkTree } from '../helpers/commit-work-tree.js';
 
 // The DEMOTION TOMBSTONE lifecycle of the committed project bible, end to end
 // against a REAL temp git repository (bare origin + clone), a REAL
@@ -70,6 +71,9 @@ function makeInput(overrides: Partial<KBEntryInput> = {}): KBEntryInput {
 function writeSrc(rel: string, body: string): void {
   fs.mkdirSync(path.dirname(path.join(clone, rel)), { recursive: true });
   fs.writeFileSync(path.join(clone, rel), body);
+  // The bible admission predicate reads cited files at HEAD, so a written
+  // source file is committed at once: on disk and at HEAD stay the same.
+  commitWorkTree(clone);
 }
 
 /** A live CONFIRMED entry citing `file`, captured after the file exists so its basis matches. */
@@ -125,7 +129,7 @@ beforeEach(async () => {
   git(clone, ['config', 'user.email', 'test@example.invalid']);
   git(clone, ['config', 'commit.gpgsign', 'false']);
   git(clone, ['checkout', '--quiet', '-B', 'main']);
-  writeSrc('README.md', 'seed\n');
+  fs.writeFileSync(path.join(clone, 'README.md'), 'seed\n');
   git(clone, ['add', '-A']);
   git(clone, ['commit', '--quiet', '-m', 'seed']);
   git(clone, ['push', '--quiet', 'origin', 'main']);
@@ -349,6 +353,8 @@ describe('bible demotion tombstones', () => {
     const id = await confirmedCiting('Alpha', 'src/alpha.ts');
     await kbBibleCommit({ ids: [id], ...BASE }, { folder: clone });
     await kbDemote({ id, reason: DEMOTE_REASON }, { folder: clone });
+    // Captured before the garbage is written: writing its cited file commits.
+    const other = await confirmedCiting('Beta', 'src/beta.ts');
 
     const garbage = '{ this is not valid json';
     fs.writeFileSync(biblePath(), garbage);
@@ -358,7 +364,6 @@ describe('bible demotion tombstones', () => {
       .rejects.toThrow(/not a readable bible file, refusing to overwrite it/);
     expect(fs.readFileSync(biblePath(), 'utf-8')).toBe(garbage);
 
-    const other = await confirmedCiting('Beta', 'src/beta.ts');
     await expect(kbBibleCommit({ ids: [other], ...BASE }, { folder: clone }))
       .rejects.toThrow(/not a readable bible file, refusing to overwrite it/);
     expect(fs.readFileSync(biblePath(), 'utf-8')).toBe(garbage);

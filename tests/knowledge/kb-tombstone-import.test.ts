@@ -16,6 +16,7 @@ import {
 } from '../../src/services/knowledge/member-bible-view.js';
 import * as kbProvidersModule from '../../src/services/knowledge/kb-providers.js';
 import type { KBEntryInput, KBEntry } from '../../src/services/knowledge/types.js';
+import { commitWorkTree } from '../helpers/commit-work-tree.js';
 
 // Does a demotion actually CROSS CLONES? kb_demote lowers trust here;
 // kb_bible_commit records the tombstone; this file proves the other side --
@@ -116,6 +117,9 @@ function makeInput(over: Partial<KBEntryInput> = {}): KBEntryInput {
 function writeSrc(clone: string, rel: string, body: string): void {
   fs.mkdirSync(path.dirname(path.join(clone, rel)), { recursive: true });
   fs.writeFileSync(path.join(clone, rel), body);
+  // The bible admission predicate reads cited files at HEAD, so a written
+  // source file is committed at once: on disk and at HEAD stay the same.
+  commitWorkTree(clone);
 }
 
 /**
