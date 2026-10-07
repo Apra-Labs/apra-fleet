@@ -3,7 +3,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { runDevelopLoopScenario, withScenarioMarkers, defaultMockCallTool } from './helpers/mock-sprint-harness.mjs';
 import { scaledTimeout } from './helpers/scaled-timeout.mjs';
-import { createKbWorkClient } from '../fleet-sprint/kb.mjs';
+import { createKbWorkClient, KB_DEMOTION_READ_LIMIT, KB_MAX_DEMOTION_CANDIDATES } from '../fleet-sprint/kb.mjs';
 import { createKbMaintainerSelector } from '../fleet-sprint/kb-maintainer.mjs';
 
 // =============================================================================
@@ -294,7 +294,21 @@ describe('mock sprint: KB writes route through the kb_maintainer', () => {
             }
             for (const q of demotionReads) {
                 assert.equal(q.member, 'maint');
-                assert.deepEqual(q.args, { tag: `member:${MAINT}`, confidence: ['CONFIRMED'], exclude_disputed: true, limit: 20 });
+                // Spelled out field by field rather than compared to
+                // buildDemotionCandidateQuery's own output, which would be
+                // tautological. This is the demotion READ: own-scope so a
+                // MEMBER-session CONFIRMED read is answered from the per-repo
+                // KB rather than the untagged checkout bible view, deliberately
+                // WIDE (stale and contradiction-flagged rows are demotable and
+                // are the ones most worth re-checking), and limited by the read
+                // limit, never by the 20-entry offer cap.
+                assert.equal(q.args.tag, `member:${MAINT}`);
+                assert.equal(q.args.own_scope, true, 'without own_scope this read matches nothing in a real sprint');
+                assert.deepEqual(q.args.confidence, ['CONFIRMED'], 'kb_demote accepts nothing else (E-DEMOTE-NOT-CONFIRMED)');
+                assert.equal(q.args.include_stale, true, 'a stale CONFIRMED row is demotable');
+                assert.equal(q.args.exclude_disputed, false, 'a contradiction-flagged CONFIRMED row is demotable too');
+                assert.equal(q.args.limit, KB_DEMOTION_READ_LIMIT, 'the read limit must be the wide one');
+                assert.notEqual(q.args.limit, KB_MAX_DEMOTION_CANDIDATES, 'the offer cap must never be used as the read limit');
             }
             assert.equal(reviewRounds, 1);
             const offered = candidateIds(reviewerPrompts[0]);
