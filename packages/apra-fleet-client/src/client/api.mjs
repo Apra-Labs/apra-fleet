@@ -560,9 +560,13 @@
  * @typedef {Object} KbBibleCommitOptions
  * @property {string[]} ids - Ids of the entries confirmed this round. Ids that are not
  *   live CONFIRMED entries are skipped (reason not_confirmed_or_unknown); a CONFIRMED id
- *   whose cited files no longer match its recorded basis (the same rule kb_export applies)
- *   is skipped with reason basis_mismatch. Skips are reported in the result's skipped list.
- *   An empty list makes no commit.
+ *   whose cited files at the repo's HEAD commit no longer match its recorded basis (the
+ *   same rule kb_export applies; uncommitted edits never change the verdict) is skipped
+ *   with reason basis_mismatch, and a CONFIRMED id citing no source file is skipped with
+ *   reason no_source_files. Skips are reported in the result's skipped list.
+ *   Independently of ids, bible entries the KB holds as superseded or invalidated are
+ *   removed and reported in the result's removed list; an empty list with nothing to
+ *   remove makes no commit.
  * @property {string} baseBranch - The target base branch, written to provenance.branch.
  * @property {string} baseCommit - The base commit the entries were verified against,
  *   written to provenance.commit.
@@ -585,6 +589,29 @@
  *   demotion. Each must resolve to a real file inside the calling session's repo; a
  *   path that does not resolve, names a directory, is ABSOLUTE, or contains a ".."
  *   segment is refused with E-DEMOTE-EVIDENCE-UNRESOLVED and nothing is written.
+ */
+
+/**
+ * One entry of the bible file (.fleet/kb-canonical.json) kb_export and
+ * kb_bible_commit write and kb_import reads -- bible format v3, described by
+ * memory-contract/v1/bible/kb-canonical.schema.json. The file itself is
+ * {version: 3, provenance: {commit, branch, entry_count}, entries: KbBibleEntry[]};
+ * readers also accept v2 (same envelope, no hashes) and v1 (a bare entry array).
+ * @typedef {Object} KbBibleEntry
+ * @property {string} id - Entry id (unique within the bible; writers refuse a duplicate id).
+ * @property {string} type - Content type (knowledge, learning, runbook, context-cache, user-directive).
+ * @property {string} title - Entry title.
+ * @property {string} summary - Entry summary.
+ * @property {string[]} symbols - Symbols the entry is about.
+ * @property {string[]} source_files - Repo-relative files the entry cites.
+ * @property {string} confidence - CONFIRMED, INFERRED or UNVERIFIED.
+ * @property {string} updated_at - Promotion (or creation) timestamp.
+ * @property {Object<string, string>} [source_file_hashes] - v3: the per-file hash basis
+ *   (repo-relative path -> hash) the entry was admitted against, copied from the
+ *   exporting KB's stored basis. kb_import stores it as the entry's basis exactly
+ *   (never re-hashing local files); an entry without it gets a local
+ *   freshness-only basis (it can go stale) that is never exported, so it is not
+ *   re-published until recaptured.
  */
 
 /**
@@ -991,7 +1018,9 @@ export class ApraFleet {
     /**
      * Export the calling session's CONFIRMED KB entries to the canonical bible
      * file and auto-commit it locally (never pushed). Pass baseBranch/baseCommit
-     * to record the target base branch and base commit in provenance.
+     * to record the target base branch and base commit in provenance. Writes
+     * bible format v3: each added project entry is a KbBibleEntry carrying its
+     * source_file_hashes basis; a bible holding a duplicate id is refused.
      * Result JSON: {exported, path, scope, committed}; extract with parseToolJson().
      * The removed scope keys (repo_path, repo, repo_remote_url) are refused
      * with E-SCOPE-KEY-REMOVED before anything is sent.
@@ -1004,12 +1033,19 @@ export class ApraFleet {
 
     /**
      * Merge exactly the given confirmed entry ids into the bible at entry level
-     * (existing entries kept), write baseBranch/baseCommit provenance, and make a
-     * local commit scoped to the bible path. Never pushes; re-running with the
+     * (existing entries kept unless this KB holds them as superseded or
+     * invalidated -- those are removed, also when ids is empty; each merged
+     * entry is a v3 KbBibleEntry carrying its source_file_hashes basis; a bible
+     * holding a duplicate id is refused), write baseBranch/baseCommit
+     * provenance, and make a local commit scoped to the bible path whose message
+     * lists each removal. Never pushes; re-running with the
      * same ids after resetting to a newer HEAD re-merges, so a rejected push can
-     * be retried. Result JSON: {path, merged, demoted, skipped, entry_count, committed};
-     * extract with parseToolJson(). Each skipped item is {id, reason} with reason
-     * not_confirmed_or_unknown, basis_mismatch or not_demoted_or_unknown.
+     * be retried. Result JSON: {path, merged, demoted, skipped, removed,
+     * entry_count, committed}; extract with parseToolJson(). Each skipped item is
+     * {id, reason} with reason not_confirmed_or_unknown, no_source_files (a
+     * CONFIRMED id citing no source file), basis_mismatch or
+     * not_demoted_or_unknown (a demoted_ids id). Each removed item is {id, reason}
+     * with reason superseded or invalidated.
      * A CONFIRMED id is admitted only if it passes the same basis rule as kb_export.
      * demoted_ids records EXPLICIT demotion tombstones: an admitted id is removed from
      * entries and tombstoned as {id, demoted_at}; entry_count counts entries only.
@@ -1076,7 +1112,12 @@ export class ApraFleet {
      * is 'started' | 'up-to-date' | 'starting' | 'already-running' |
      * 'not-started'; a not-started result carries a typed `reason`
      * ('npx-not-found' | 'gitnexus-not-found' | 'analyze-failed' |
-     * 'spawn-failed' | 'remote-member' | 'provider-not-supported'). Only the
+     * 'spawn-failed' | 'remote-member' | 'gitnexus-too-old' |
+     * 'provider-not-supported'); 'gitnexus-too-old' means the installed
+     * gitnexus rejects --index-only and its `detail` names the upgrade fix.
+     * Every result also carries `injectedBlockFiles` (repo-relative agent docs
+     * still holding a gitnexus block injected by an earlier plain analyze run;
+     * detection only, the work tree is never edited). Only the
      * gitnexus provider is supported: provider 'none' makes the tool fail with
      * E-CODE-INTEL-DISABLED, and any other provider (e.g. codebase-memory)
      * yields { outcome: 'not-started', reason: 'provider-not-supported',
@@ -1092,13 +1133,21 @@ export class ApraFleet {
      * code_status -- the calling session's own code index state: the last
      * analyze run (`analyze`: phase, result 'indexed' | 'up-to-date' |
      * 'incomplete' | 'failed', lastLine, ...), live `readiness`
-     * ('ready' | 'building' | 'interrupted' | 'missing'; 'interrupted' = an
-     * analyze died mid-write and none is running -- the next code_* call
-     * starts a rebuild), `indexedCommit`, `lockHeld`, and `logPath` (null
+     * ('ready' | 'building' | 'interrupted' | 'inconsistent' | 'missing';
+     * 'building' also covers an analyze rewriting an existing index, which is
+     * never served meanwhile; 'interrupted' = an analyze died mid-write and
+     * none is running; 'inconsistent' = the gitnexus registry or the fleet
+     * record of its last build names a different commit than meta.json, with
+     * the reason in `inconsistency` (null otherwise) -- for both, the next
+     * code_* call starts a rebuild), `indexedCommit`, `lockHeld`, and `logPath` (null
      * when no analyze log exists yet), and `autoReindexPaused` (null, or the
      * { result, lastLine, logPath, finished } of a failed automatic run --
      * automatic rebuilds stay paused until codeReindex() or a server
-     * restart). A remote work folder returns { remote: true, repo,
+     * restart), `injectedBlockFiles` / `injectedBlockWarning` (agent docs still
+     * holding a previously injected gitnexus block, and the one-line WARN with
+     * the fix; [] / null when clean), and on a failed run
+     * `analyze.failureCause` ('gitnexus-too-old' when gitnexus rejected
+     * --index-only). A remote work folder returns { remote: true, repo,
      * indexedCommit: null, detail }. Same provider gate as codeReindex():
      * provider 'none' fails with E-CODE-INTEL-DISABLED; a non-gitnexus
      * provider returns the not-supported shape { outcome: 'not-started',

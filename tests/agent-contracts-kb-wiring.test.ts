@@ -151,13 +151,16 @@ describe('the code index is reachable from the roles that read code', () => {
 describe('promotion stays reviewer-only', () => {
   const byRole = assetsByRole();
 
-  it('reviewer is the sole role instructed to call kb_promote', () => {
-    // kb-reconciler mentions kb_promote too, but only to explicitly forbid composing it
-    // with kb_feedback for a contradiction pair (kb_resolve_contradiction is its one,
-    // single write path) -- that is a prohibition, not an instruction to call it.
-    // Excluded from this "who is told to call it" check rather than weakening the check.
-    const promoters = ROLES.filter((r) => r !== 'kb-reconciler' && byRole.get(r)!.includes('kb_promote'));
+  it('reviewer is the sole role that returns promotions (kb_promotions), and no member-run role names kb_promote', () => {
+    // Promotions are returned in the reviewer's kb_promotions output and applied
+    // by the engine in the kb_maintainer session; a member session is not
+    // served kb_promote, so no role run on a member names it at all.
+    // kb-reconciler is excluded: it runs in the PM's own FULL session and
+    // mentions kb_promote only to forbid composing it with kb_feedback.
+    const promoters = ROLES.filter((r) => byRole.get(r)!.includes('kb_promotions'));
     expect(promoters).toEqual(['reviewer']);
+    const namesPromoteTool = ROLES.filter((r) => r !== 'kb-reconciler' && /\bkb_promote\b/.test(byRole.get(r)!));
+    expect(namesPromoteTool).toEqual([]);
   });
 
   it('reviewer still carries the promote contract that mints CONFIRMED', () => {

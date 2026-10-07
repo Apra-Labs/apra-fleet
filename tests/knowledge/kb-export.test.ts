@@ -7,6 +7,7 @@ import { SqliteProvider } from '../../src/services/knowledge/sqlite-provider.js'
 import { kbExport } from '../../src/tools/kb-export.js';
 import * as kbProvidersModule from '../../src/services/knowledge/kb-providers.js';
 import { vi } from 'vitest';
+import { commitWorkTree } from '../helpers/commit-work-tree.js';
 import type { KBEntryInput } from '../../src/services/knowledge/types.js';
 
 function makeInput(overrides: Partial<KBEntryInput> = {}): KBEntryInput {
@@ -34,7 +35,8 @@ let tmpDir: string;
 
 // The project export only publishes entries whose per-file hash basis matches
 // the files in repo_path, so the project provider is anchored at tmpDir and
-// every file the fixtures cite exists there at capture time (unchanged after).
+// every file the fixtures cite exists there at capture time, committed at HEAD
+// (unchanged after).
 const CITED_FILES = [
   'src/default.ts', 'src/a.ts', 'src/b.ts', 'src/c.ts',
   'src/order0.ts', 'src/order1.ts', 'src/order2.ts', 'src/order3.ts', 'src/order4.ts',
@@ -46,6 +48,8 @@ beforeEach(async () => {
     fs.mkdirSync(path.dirname(path.join(tmpDir, rel)), { recursive: true });
     fs.writeFileSync(path.join(tmpDir, rel), 'export const x = ' + JSON.stringify(rel) + ';');
   }
+  // Bible admission reads the cited files at HEAD, so they are committed.
+  commitWorkTree(tmpDir, 'seed cited files');
   provider = new SqliteProvider(':memory:', tmpDir);
   await provider.init();
   globalProvider = new SqliteProvider(':memory:');
@@ -112,7 +116,7 @@ describe('kb_export (T3.4, F8b, D8)', () => {
     expect(written[0].title).toBe('Entry A knowledge');
   });
 
-  it('field set is exact: id, type, title, summary, symbols, source_files, confidence, updated_at', async () => {
+  it('field set is exact: id, type, title, summary, symbols, source_files, confidence, updated_at, source_file_hashes (v3)', async () => {
     const { id } = await provider.capture(makeInput({ title: 'Field set entry' }));
     await provider.promote(id, 'confirmed for test: basis checked in fixture');
 
@@ -121,7 +125,7 @@ describe('kb_export (T3.4, F8b, D8)', () => {
 
     expect(written).toHaveLength(1);
     expect(Object.keys(written[0]).sort()).toEqual(
-      ['confidence', 'id', 'source_files', 'summary', 'symbols', 'title', 'type', 'updated_at'].sort()
+      ['confidence', 'id', 'source_file_hashes', 'source_files', 'summary', 'symbols', 'title', 'type', 'updated_at'].sort()
     );
     expect(written[0].confidence).toBe('CONFIRMED');
     expect(typeof written[0].updated_at).toBe('string');

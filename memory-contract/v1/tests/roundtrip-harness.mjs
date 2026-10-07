@@ -127,6 +127,7 @@ export const RECORDED_REMOTE_B = 'https://example.test/memory-contract-fixtures-
  * that repo at exactly that name under its own scratch root.
  */
 export const RECORDED_REMOTE_IMPORT_REJECTED = 'https://example.test/memory-contract-fixtures-import-rejected.git';
+export const RECORDED_REMOTE_BARE = 'https://example.test/memory-contract-fixtures-bare.git';
 
 export const ENVIRONMENT = {
   repos: [
@@ -153,14 +154,30 @@ export const ENVIRONMENT = {
     { key: 'PLAIN', dir: 'repo-plain', placeholder: null, files: {} },
     // E-SELF-NO-REMOTE: a git repository with no origin remote.
     { key: 'NO_REMOTE', dir: 'repo-no-remote', placeholder: null, git: true, remote: null, files: {} },
+    // E-BIBLE-BASIS-NOT-GIT: a BARE git repository with an origin remote. It
+    // passes kb (self) resolution (git rev-parse --git-dir succeeds, origin is
+    // set) but is not a git work tree, so bible admission cannot read the
+    // cited files at HEAD and kb_export / kb_bible_commit refuse. (Its dir
+    // name must not start with another repo's dir name, e.g. repo-b: the
+    // recorder's path sanitiser would rewrite that prefix.)
+    { key: 'BARE', dir: 'bare-repo', placeholder: null, git: true, bare: true, remote: 'BARE', files: {} },
   ],
-  remotes: { A: RECORDED_REMOTE_A, B: RECORDED_REMOTE_B, IMPORT_REJECTED: RECORDED_REMOTE_IMPORT_REJECTED },
+  remotes: {
+    A: RECORDED_REMOTE_A,
+    B: RECORDED_REMOTE_B,
+    IMPORT_REJECTED: RECORDED_REMOTE_IMPORT_REJECTED,
+    BARE: RECORDED_REMOTE_BARE,
+  },
   // Each session is one registered member. `repo` names a scratch repo above;
   // `dir` names a folder under the scratch root that is never created. A
   // `remote` member's folder lives on another host, so its KB identity is its
   // recorded origin remote (`remote` names a key of `remotes`).
   sessions: {
-    A: { member: 'contract-a', kind: 'local', repo: 'A' },
+    // Session A is repo A's kb_maintainer member session (the engine's
+    // kb_maintainer grant): the only member session served kb_promote and
+    // kb_resolve_contradiction. kb_setup and kb_export are never served to a
+    // member session, so their fixtures run in FULL_A.
+    A: { member: 'contract-a', kind: 'local', repo: 'A', kbMaintainer: true },
     B: { member: 'contract-b', kind: 'local', repo: 'B' },
     IMPORT_REJECTED: { member: 'contract-import-rejected', kind: 'local', repo: 'IMPORT_REJECTED' },
     // code_* sessions pin their provider (codeIntelProvider) so the recorded
@@ -172,6 +189,11 @@ export const ENVIRONMENT = {
     NO_REMOTE: { member: 'contract-no-remote', kind: 'local', repo: 'NO_REMOTE' },
     NO_WORKFOLDER: { member: 'contract-no-workfolder', kind: 'local', dir: 'no-such-work-folder' },
     REMOTE_UNREACHABLE: { member: 'contract-remote', kind: 'remote', dir: 'this-directory-does-not-exist', remote: 'A' },
+    // The bare repository's kb_maintainer member session (it captures and
+    // promotes the entry kb_bible_commit is then refused for) and its FULL
+    // session twin (kb_export is never served to a member session).
+    BARE: { member: 'contract-bare', kind: 'local', repo: 'BARE', kbMaintainer: true },
+    FULL_BARE: { kind: 'full', repo: 'BARE' },
     // A FULL session (no member identity): its (self) is the fleet server's
     // working folder, which the provider points at repo A for each call. It
     // shares repo A's KB with session A (same origin remote), but its reads and
@@ -199,6 +221,52 @@ function assertImportRejected(parsed) {
   return typeof parsed?.rejected === 'number' && parsed.rejected >= 1
     ? null
     : `expected parsed.rejected >= 1, got ${JSON.stringify(parsed?.rejected)}`;
+}
+
+// Bible v3 export -> import: repo A's bible (written by kb_export, format v3)
+// carries the entry's source_file_hashes; session B imports it with the cited
+// file present but DIFFERENT, so the stored basis is A's carried hash and the
+// post-import sweep stales the entry. A reader that re-hashed B's own file
+// would store a matching basis and stale nothing.
+function assertCarriedBasisStaled(parsed) {
+  return parsed?.imported === 1 && parsed?.rejected === 0 && parsed?.sweep?.staled === 1
+    ? null
+    : `expected imported 1, rejected 0, sweep.staled 1 (carried v3 basis kept), got ${JSON.stringify(parsed)}`;
+}
+
+// kb_bible_commit basis-mismatch: the response schema accepts any skip reason
+// and any merged list, so a provider that ADMITS the drifted entry would still
+// validate. The step's evidence is the response itself: nothing merged, and the
+// one requested id skipped with exactly reason basis_mismatch.
+function assertBasisMismatchSkipped(parsed, ctx) {
+  const driftId = ctx.ids.get('DRIFT')?.live;
+  const merged = parsed?.merged;
+  const skipped = parsed?.skipped;
+  if (!Array.isArray(merged) || merged.length !== 0) return `expected merged to be empty (the drifted entry must not be admitted), got ${JSON.stringify(merged)}`;
+  if (!Array.isArray(skipped) || skipped.length !== 1) return `expected exactly one skipped id, got ${JSON.stringify(skipped)}`;
+  if (skipped[0]?.id !== driftId) return `expected the skipped id to be the drifted entry ${driftId}, got ${JSON.stringify(skipped[0]?.id)}`;
+  return skipped[0]?.reason === 'basis_mismatch'
+    ? null
+    : `expected skipped[0].reason === 'basis_mismatch', got ${JSON.stringify(skipped[0]?.reason)}`;
+}
+
+function assertMergedForRemoval(parsed, ctx) {
+  const liveId = ctx.ids.get('REMOVAL')?.live;
+  return Array.isArray(parsed?.merged) && parsed.merged.length === 1 && parsed.merged[0] === liveId
+    ? null
+    : `expected merged to be exactly [${liveId}], got ${JSON.stringify(parsed?.merged)}`;
+}
+
+// The invalidated bible entry is removed with its reason, and the removal is
+// committed. A schema-valid response with an empty removed list would
+// otherwise pass.
+function assertRemovedInvalidated(parsed, ctx) {
+  const liveId = ctx.ids.get('REMOVAL')?.live;
+  const removed = parsed?.removed;
+  if (!Array.isArray(removed) || removed.length !== 1) return `expected exactly one removed entry, got ${JSON.stringify(removed)}`;
+  if (removed[0]?.id !== liveId) return `expected the removed id to be ${liveId}, got ${JSON.stringify(removed[0]?.id)}`;
+  if (removed[0]?.reason !== 'invalidated') return `expected removed[0].reason === 'invalidated', got ${JSON.stringify(removed[0]?.reason)}`;
+  return parsed?.committed === true ? null : `expected committed === true, got ${JSON.stringify(parsed?.committed)}`;
 }
 
 function assertConfidenceClamped(parsed) {
@@ -263,7 +331,10 @@ export const SCENARIO = [
   // level with explicit base-branch provenance (local commit only, no push).
   { tool: 'kb_bible_commit', case: 'happy', derive: { ids: ['FOO'] } },
   // basis-mismatch: a CONFIRMED entry whose cited file is edited after capture is
-  // skipped by kb_bible_commit (same basis rule as kb_export).
+  // skipped by kb_bible_commit (same basis rule as kb_export). The rule reads
+  // cited files at HEAD; this file is never committed in the scratch repo, so it
+  // is absent at HEAD -- a mismatch either way. assertParsed pins the outcome:
+  // a schema-valid response that admitted the entry would otherwise pass.
   {
     tool: 'kb_capture',
     case: 'setup-for-bible-commit-basis-mismatch',
@@ -278,6 +349,7 @@ export const SCENARIO = [
     tool: 'kb_bible_commit',
     case: 'basis-mismatch',
     derive: { ids: ['DRIFT'] },
+    assertParsed: assertBasisMismatchSkipped,
     setup: [
       { op: 'write', repo: 'A', rel: 'src/basis-drift.ts', contents: 'export const drift = 2;\n' },
     ],
@@ -305,6 +377,15 @@ export const SCENARIO = [
   { tool: 'kb_query', case: 'happy-confirmed-only', assertParsed: assertConfirmedOnly },
   { tool: 'kb_stats', case: 'happy' },
   { tool: 'kb_import', case: 'happy' },
+  // Bible v3 round trip: the basis carried in A's exported bible travels to B.
+  {
+    tool: 'kb_import',
+    case: 'happy-v3-carried-basis',
+    setup: [
+      { op: 'write', repo: 'B', rel: 'src/example.ts', contents: 'export function exampleFn(x: number): number {\n  return x + 2;\n}\n' },
+    ],
+    assertParsed: assertCarriedBasisStaled,
+  },
   { tool: 'kb_freshness_sweep', case: 'happy' },
   // A MEMBER session's kb_feedback is the typed E-MEMBER-VIEW-READ-ONLY
   // refusal (the member's bible view is read-only); the same request from a
@@ -336,8 +417,21 @@ export const SCENARIO = [
   { tool: 'kb_export', case: 'refusal-scope-key-removed' },
   { tool: 'kb_freshness_sweep', case: 'refusal-scope-key-removed' },
   { tool: 'kb_context', case: 'refusal-path-traversal' },
-  { tool: 'kb_export', case: 'refusal-repo-path-invalid' },
   { tool: 'kb_bible_commit', case: 'refusal-repo-path-invalid' },
+  // E-BIBLE-BASIS-NOT-GIT: a CONFIRMED entry in the bare repository's KB makes
+  // bible admission run, and admission refuses a folder with no work tree.
+  {
+    tool: 'kb_capture',
+    case: 'setup-for-bible-basis-not-git',
+    captureId: 'BARE_ENTRY',
+    setup: [
+      { op: 'write', repo: 'BARE', rel: 'src/bare-basis.ts', contents: 'export const bare = 1;\n' },
+    ],
+  },
+  { tool: 'kb_promote', case: 'setup-first-promote-for-bible-basis-not-git', derive: { id: 'BARE_ENTRY' } },
+  { tool: 'kb_promote', case: 'setup-second-promote-for-bible-basis-not-git', derive: { id: 'BARE_ENTRY' } },
+  { tool: 'kb_export', case: 'refusal-bible-basis-not-git' },
+  { tool: 'kb_bible_commit', case: 'refusal-bible-basis-not-git', derive: { ids: ['BARE_ENTRY'] } },
   { tool: 'kb_query', case: 'refusal-self-no-workfolder' },
   { tool: 'kb_stats', case: 'refusal-self-not-a-repo' },
   { tool: 'code_query', case: 'refusal-self-no-workfolder' },
@@ -434,6 +528,14 @@ export const SCENARIO = [
   },
   { tool: 'kb_promote', case: 'refusal-promote-directive', derive: { id: 'DIRECTIVE' } },
   { tool: 'kb_capture', case: 'non-error-confidence-clamped', assertParsed: assertConfidenceClamped },
+  // kb_bible_commit removal: merge a CONFIRMED entry, discard it by id, then a
+  // commit with no ids removes it (reason invalidated).
+  { tool: 'kb_capture', case: 'setup-for-bible-removal', captureId: 'REMOVAL' },
+  { tool: 'kb_promote', case: 'setup-first-promote-for-bible-removal', derive: { id: 'REMOVAL' } },
+  { tool: 'kb_promote', case: 'setup-second-promote-for-bible-removal', derive: { id: 'REMOVAL' } },
+  { tool: 'kb_bible_commit', case: 'setup-merge-for-bible-removal', derive: { ids: ['REMOVAL'] }, assertParsed: assertMergedForRemoval },
+  { tool: 'kb_invalidate', case: 'setup-invalidate-for-bible-removal', derive: { ids: ['REMOVAL'] } },
+  { tool: 'kb_bible_commit', case: 'happy-removes-invalidated', assertParsed: assertRemovedInvalidated },
 ];
 
 // ---------------------------------------------------------------------------

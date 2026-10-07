@@ -142,11 +142,17 @@ function buildCallTool(fleet, executeCommand) {
             return { content: [{ type: 'text', text: 'sent' }] };
         }
         if (name === 'execute_command' && typeof args.command === 'string' && args.command.includes('apra-fleet call')) {
-            const m = /apra-fleet call --member (\S+) (\w+) --args-file/.exec(args.command);
+            const m = /apra-fleet call --member (\S+) (?:--kb-maintainer )?(\w+) --args-file/.exec(args.command);
             const id = m && m[1];
             const tool = m && m[2];
             const member = byId.get(id);
-            fleet.events.push({ type: 'kb', member, tool, args: lastArgs });
+            // The kb_maintainer grant (`apra-fleet call --kb-maintainer`): only
+            // that session is served kb_promote, exactly like the real server.
+            const grant = / --kb-maintainer /.test(args.command);
+            fleet.events.push({ type: 'kb', member, tool, args: lastArgs, grant });
+            if (tool === 'kb_promote' && !grant) {
+                return { content: [{ type: 'text', text: JSON.stringify({ error: { code: 'E-TOOL', message: 'MCP error -32602: Tool kb_promote not found' } }) }] };
+            }
             try {
                 const body = fleet.memberTool(member, id, tool, lastArgs || {});
                 return { content: [{ type: 'text', text: JSON.stringify(body) }] };
@@ -264,6 +270,7 @@ describe('mock sprint: KB writes route through the kb_maintainer', () => {
             // member:<maintainer uuid>, and passes the basis check there.
             const captures = writes.filter((e) => e.tool === 'kb_capture');
             assert.deepEqual(captures.map((e) => e.member), ['maint', 'maint'], 'every kb_capture must run in the maintainer session, never the producing doer');
+            assert.ok(captures.every((e) => e.grant === true), 'maintainer writes carry the kb_maintainer grant');
             const maintEntries = fleet.kbOf(MAINT).filter((e) => e.id !== OLD_ENTRY_ID);
             assert.deepEqual(maintEntries.map((e) => e.title).sort(), ['claim to confirm', 'claim to discard']);
             for (const e of maintEntries) assert.deepEqual(e.tags, [`member:${MAINT}`]);
@@ -325,6 +332,7 @@ describe('mock sprint: KB writes route through the kb_maintainer', () => {
             const promote = writes.find((e) => e.tool === 'kb_promote');
             const invalidate = writes.find((e) => e.tool === 'kb_invalidate');
             assert.equal(promote.member, 'maint');
+            assert.equal(promote.grant, true, 'kb_promote runs in the kb_maintainer-grant session');
             assert.deepEqual(promote.args, { id: confirmed.id, reason: `verified against ${CITED}:42 and the tenant test` });
             assert.equal(invalidate.member, 'maint');
             assert.deepEqual(invalidate.args, { ids: [discarded.id] });

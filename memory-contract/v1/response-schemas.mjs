@@ -224,9 +224,13 @@ const KB_RESPONSE_BODIES = {
   }),
   // kb_bible_commit: ids the caller named are either merged (live CONFIRMED in
   // this KB and passing the shared bible basis predicate) or skipped with a
-  // reason (not_confirmed_or_unknown, or basis_mismatch for a CONFIRMED id whose
-  // cited-file basis no longer matches); committed is true only when a local
-  // commit of the bible path was made (never pushed).
+  // reason (not_confirmed_or_unknown; no_source_files for a CONFIRMED id that
+  // cites no source file; basis_mismatch for a CONFIRMED id whose cited-file
+  // basis does not match the files at HEAD; or not_demoted_or_unknown for a
+  // demoted_ids id that is not a local demoted entry); removed lists every bible
+  // entry dropped because this KB holds it as superseded or invalidated (always
+  // present, possibly empty); committed is true only when a local commit of
+  // the bible path was made (never pushed).
   // demoted names the ids admitted from demoted_ids: removed from entries and
   // tombstoned in the bible's demotions array. OPTIONAL so bibles/fixtures
   // recorded before tombstones existed still validate; the handler always emits
@@ -237,7 +241,11 @@ const KB_RESPONSE_BODIES = {
     demoted: z.array(z.string()).optional(),
     skipped: z.array(z.object({
       id: z.string(),
-      reason: z.enum(['not_confirmed_or_unknown', 'basis_mismatch', 'not_demoted_or_unknown']),
+      reason: z.enum(['not_confirmed_or_unknown', 'no_source_files', 'basis_mismatch', 'not_demoted_or_unknown']),
+    })),
+    removed: z.array(z.object({
+      id: z.string(),
+      reason: z.enum(['superseded', 'invalidated']),
     })),
     entry_count: z.number(),
     committed: z.boolean(),

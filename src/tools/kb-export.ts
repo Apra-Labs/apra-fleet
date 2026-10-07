@@ -65,15 +65,26 @@ export interface CanonicalEntry {
   source_files: string[];
   confidence: string;
   updated_at: string;
+  /**
+   * Bible format v3: the per-file hash basis (repo-relative path -> hash) the
+   * entry was admitted against, copied verbatim from the exporting provider's
+   * stored basis (SqliteProvider.getSourceFileBases) -- never re-hashed at
+   * write time. Keys are sorted so the file stays byte-stable. Absent on an
+   * entry carried over from a v1/v2 bible, which has no basis to carry.
+   */
+  source_file_hashes?: Record<string, string>;
 }
 
+/** The bible format version every writer emits. */
+export const BIBLE_FORMAT_VERSION = 3 as const;
+
 /**
- * KB-TRUST PHASE 3a: the v2 bible envelope. kb_import accepts BOTH this and the
- * legacy bare array, selecting on Array.isArray -- an older bible must keep
- * importing unchanged.
+ * The bible envelope. v3 (current) adds per-entry source_file_hashes; v2 is
+ * the same envelope without them. kb_import accepts v3, v2 and the legacy bare
+ * array, selecting on Array.isArray -- an older bible must keep importing.
  */
 export interface CanonicalBible {
-  version: 2;
+  version: typeof BIBLE_FORMAT_VERSION;
   provenance: {
     /** 40-char HEAD sha, or null when the repo has no commits or git is absent. */
     commit: string | null;
@@ -99,9 +110,21 @@ export interface CanonicalBibleDocument {
   demotions: BibleDemotion[];
 }
 
-/** Map a KB entry to the bible's stable field set. Shared with kb_bible_commit. */
-export function toCanonicalEntry(e: KBEntry): CanonicalEntry {
-  return {
+/** A basis map with its keys in sorted order, so serialization is byte-stable. */
+function sortedBasis(basis: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const key of Object.keys(basis).sort()) out[key] = basis[key];
+  return out;
+}
+
+/**
+ * Map a KB entry to the bible's stable field set. Shared with kb_bible_commit.
+ * `basis` is the entry's STORED per-file hash basis (the one the bible
+ * predicate admitted it against); when given and non-empty it is written as
+ * source_file_hashes (format v3). Nothing is hashed here.
+ */
+export function toCanonicalEntry(e: KBEntry, basis?: Record<string, string> | null): CanonicalEntry {
+  const entry: CanonicalEntry = {
     id: e.id,
     type: e.type,
     title: e.title,
@@ -111,6 +134,25 @@ export function toCanonicalEntry(e: KBEntry): CanonicalEntry {
     confidence: e.confidence,
     updated_at: e.promoted_at || e.created_at,
   };
+  if (basis && Object.keys(basis).length > 0) entry.source_file_hashes = sortedBasis(basis);
+  return entry;
+}
+
+/**
+ * Duplicate-id guard shared by every bible writer: a bible is keyed by id, so
+ * one about to be written with two entries sharing an id is corrupt. Throws
+ * (naming the id) BEFORE anything is written, so the file on disk is untouched.
+ */
+export function assertNoDuplicateBibleIds(entries: Array<{ id?: unknown }>, toolName: string): void {
+  const seen = new Set<string>();
+  for (const e of entries) {
+    const id = String(e.id);
+    if (seen.has(id)) {
+      throw new Error(toolName + ': refusing to write a bible with duplicate entry id ' + JSON.stringify(id)
+        + ' -- the bible is keyed by id; resolve the duplicate in .fleet/kb-canonical.json first');
+    }
+    seen.add(id);
+  }
 }
 
 /** Deterministic id ordering so re-exports produce meaningful diffs. */
@@ -120,7 +162,7 @@ export function compareById(a: { id: string }, b: { id: string }): number {
 
 /**
  * The entries of the bible already on disk, in either shape (legacy bare array
- * or v2 envelope). null when the file is absent or unparseable.
+ * or v2/v3 envelope). null when the file is absent or unparseable.
  *
  * Entries only, exactly as before: callers that do not care about tombstones are
  * unchanged. readBibleDocument below is the sibling reader for callers that do.
@@ -305,7 +347,7 @@ function autoCommitEnabled(): boolean {
 }
 
 // The entry count of the bible ALREADY on disk, read before we overwrite it.
-// Accepts both shapes (legacy bare array, v2 envelope) like entriesUnchanged.
+// Accepts every shape (legacy bare array, v2/v3 envelope) like entriesUnchanged.
 // null means "no comparable prior bible" -- absent file, or unparseable -- in
 // which case there is no shrink to detect and the export is a first write.
 function bibleEntryCount(outPath: string): number | null {
@@ -409,7 +451,7 @@ function byId(a: { id?: unknown }, b: { id?: unknown }): number {
 
 /**
  * Entries of the bible already on disk, as raw objects (never re-shaped, so
- * they are written back byte-for-byte equivalent). Accepts the v2 envelope and
+ * they are written back byte-for-byte equivalent). Accepts the v2/v3 envelope and
  * the legacy bare array. An absent file is an empty bible. A file that exists
  * but cannot be parsed as either shape THROWS: the project export is additive
  * and must never overwrite (and so silently drop) a bible it cannot read.
@@ -502,10 +544,12 @@ async function exportProjectBible(
 
   for (const e of qualifying) tombstones.delete(e.id);
 
-  const merged = [...existing, ...qualifying.map(toCanonicalEntry)].sort(byId);
+  // Each added entry carries the exact stored basis it was just admitted against.
+  const merged = [...existing, ...qualifying.map(e => toCanonicalEntry(e, bases.get(e.id)))].sort(byId);
+  assertNoDuplicateBibleIds(merged, 'kb_export');
   const nextDemotions = Array.from(tombstones.values()).sort(compareById);
   const bible = {
-    version: 2 as const,
+    version: BIBLE_FORMAT_VERSION,
     provenance: {
       commit: input.baseCommit ?? resolveHeadCommit(repoPath),
       branch: input.baseBranch ?? resolveBranch(repoPath),
@@ -551,7 +595,7 @@ export async function kbExport(input: KbExportInput, anchor?: KbAnchor): Promise
 
   // Deterministic ordering by id so re-exports produce meaningful diffs.
   const canonical: CanonicalEntry[] = entries
-    .map(toCanonicalEntry)
+    .map(e => toCanonicalEntry(e))
     .sort(compareById);
 
   if (!fs.existsSync(fleetDir)) {
@@ -578,13 +622,14 @@ export async function kbExport(input: KbExportInput, anchor?: KbAnchor): Promise
   // exists to avoid. When the entry set is unchanged the file is left exactly as
   // it is, which also keeps the recorded commit honest: it names the tree those
   // entries were last verified against, not the commit that stored them.
+  assertNoDuplicateBibleIds(canonical, 'kb_export');
   const nextEntriesJson = asciiSafeStringify(canonical);
   if (entriesUnchanged(outPath, nextEntriesJson)) {
     return JSON.stringify({ exported: canonical.length, path: outPath, scope, committed: false });
   }
 
   const bible: CanonicalBible = {
-    version: 2,
+    version: BIBLE_FORMAT_VERSION,
     provenance: {
       commit: input.baseCommit ?? resolveHeadCommit(repoPath),
       branch: input.baseBranch ?? resolveBranch(repoPath),

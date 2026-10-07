@@ -131,11 +131,17 @@ missing, not a git repository, or without an origin remote is refused with a
 typed error carrying a one-line remediation, never silently mapped to a
 directory-name or `default` KB:
 
-| Code | Meaning |
-|------|---------|
-| `E-SELF-NO-WORKFOLDER` | the work folder is unset, missing or not a directory |
-| `E-SELF-NOT-A-REPO` | the folder is not a git repository |
-| `E-SELF-NO-REMOTE` | no origin remote (or, for a remote member, no single known origin URL) |
+| Code | Meaning | Remediation (member session) |
+|------|---------|------------------------------|
+| `E-SELF-NO-WORKFOLDER` | the work folder is unset, missing or not a directory | create the folder, or re-register the member with an existing work folder (`register_member` / `update_member`) |
+| `E-SELF-NOT-A-REPO` | the folder is not a git repository | run `git init` (or clone the project) there and add an origin remote |
+| `E-SELF-NO-REMOTE` | no origin remote (or, for a remote member, no single known origin URL) | run `git remote add origin <url>` there; for a remote member, record the origin on the member (`update_member git_repos: ["<origin url>"]`) or call from a session on the member's own host |
+
+For a FULL session every remediation leads with the same fix: restart the
+fleet server with its working folder set to the intended repository, or call
+from a member session of a member registered on it (then, as applicable,
+make that folder a git repository with an origin remote). The error text is
+`<code>: <problem> Remediation: <fix>`, one line.
 
 **Remote members.** A remote member's work folder is a path on another host,
 so git cannot be shelled out for it. Its KB identity is the single origin URL
@@ -221,17 +227,40 @@ global-KB fallback stays CONFIRMED-only.
 ### Member-session tool calls
 
 A member session sees a reduced tool list. The allowlist lives in one
-dependency-free module (`src/services/member-tool-allowlist.ts`) and is
-derived by rule from `REGISTERED_TOOL_NAMES`: every `kb_*` and `code_*` tool
-plus `version`, `report_status` and `session_stats`. A newly registered
-`kb_`/`code_` tool is therefore member-allowed automatically. Enforcement is
-deny-by-omission: the tool registry's proxy simply does not register tools
-outside the scope for that session, and an unregistered `?member=` id is
-rejected with 403 by the HTTP transport. The `agy` provider's member tool
-lists are derived from the same allowlist. Note the allowlist includes
-write/admin KB tools (`kb_setup`, `kb_promote`, `kb_resolve_contradiction`,
-`kb_export`), so a member session can mint CONFIRMED entries and reconfigure
-the KB; this matches the specification and is a known trust boundary.
+dependency-free module (`src/services/member-tool-allowlist.ts`) and is an
+explicit list (`MEMBER_BASE_TOOLS`), not a `kb_`/`code_` prefix rule: every
+`code_*` tool, `version`, `report_status`, `session_stats`, and the `kb_*`
+tools that do not mint CONFIRMED or administer the KB. A newly registered
+`kb_`/`code_` tool is NOT member-visible until it is added there on purpose.
+Enforcement is deny-by-omission: the tool registry's proxy simply does not
+register tools outside the scope for that session (calling one is an
+unknown-tool error), and an unregistered `?member=` id is rejected with 403
+by the HTTP transport. The `agy` provider's member tool lists and the Claude
+deny rules are derived from the same allowlist.
+
+The KB write policy for member sessions:
+
+| Tool | Member session |
+|------|----------------|
+| `kb_setup` | never (it writes the install-wide provider config and stores credentials) |
+| `kb_export` | never (it auto-commits into the work tree) |
+| `kb_promote`, `kb_resolve_contradiction` | only the kb_maintainer session (they mint CONFIRMED) |
+| every other `kb_*` (incl. `kb_bible_commit`, `kb_import`) | yes |
+
+The kb_maintainer session is a member session the sprint engine opens with
+its kb_maintainer grant: `origin=engine&kb_maintainer=1` on the member URL
+(`connectFleetMember(id, { origin: 'engine', kbMaintainer: true })` locally,
+`apra-fleet call --kb-maintainer` on a remote member). The engine opens it
+only for the member it chose as a repository's kb_maintainer, to apply the
+reviewer's promotions and the bible commit there. `kb_maintainer=1` without
+`origin=engine` is ignored. Agent sessions on a member -- including on the
+maintainer -- use the plain `?member=<uuid>` entry, so they never see
+`kb_promote` or `kb_resolve_contradiction`: a role reports promotions in its
+output and the engine applies them. The grant is an unauthenticated loopback
+URL parameter like `?member=` itself: it keeps agent sessions off the
+CONFIRMED-minting tools, it is not a security boundary against a local
+process, which can always open a FULL session. A FULL session (no member
+identity) sees every tool.
 
 The per-folder MCP entry that gives a member this scoped session, and its
 install/verification flow, are described in
@@ -344,13 +373,34 @@ The SQLite database is one developer's private, warm working memory. The
 - `kb_export` merges `CONFIRMED`, non-superseded, non-stale PROJECT entries
   into `<repo>/.fleet/kb-canonical.json`, additively. An entry qualifies only
   when every file it cites has a recorded per-file hash (`source_file_hashes`)
-  matching the file currently in the repo; an empty basis or a missing file
-  excludes it. Entries already in the bible are never removed or rewritten
-  (the bible entry wins on an id clash); when nothing new qualifies the file is
-  left byte-identical and nothing is committed. (a stable field set --
-  `{id, type, title, summary, symbols, source_files, confidence, updated_at}`
-  -- id-sorted for meaningful diffs, ASCII-escaped so it honours the repo's
-  ASCII-only rule).
+  matching that file's content at the repo's HEAD commit (the git blob id of
+  `HEAD:<path>`, the same digest `git hash-object` stored at capture); an
+  empty basis or a file absent at HEAD excludes it. Uncommitted edits in the
+  work tree never change the verdict, and a folder that is not a git work
+  tree is refused (no fallback to hashing disk).
+  `kb_bible_commit` applies the same rule. `kb_export` is purely additive:
+  entries already in the bible are never removed or rewritten (the bible
+  entry wins on an id clash); when nothing new qualifies the file is left
+  byte-identical and nothing is committed.
+- `kb_bible_commit` additionally removes bible entries that the maintainer's
+  KB holds as superseded or invalidated, and lists each removal in both its
+  response and the commit message. Removals therefore land only when the
+  engine runs a commit round; a round with no new confirmations is skipped, so
+  a removal waits for the next promotion round.
+- Format v3: each entry carries a stable field set -- `{id, type, title,
+  summary, symbols, source_files, source_file_hashes, confidence,
+  updated_at}` -- id-sorted for meaningful diffs and ASCII-escaped so it
+  honours the repo's ASCII-only rule. `source_file_hashes` is the stored
+  basis, so freshness travels with the knowledge across clones. Both writers
+  refuse duplicate ids. `kb_import` keeps a carried basis verbatim; v1/v2
+  entries get a local freshness-only basis (`local_basis_only`) hashed from
+  the importing clone, so they still go stale when code drifts, but it is
+  never exported or used for admission, so they cannot be re-admitted until
+  recaptured.
+- A folder that is not a git work tree fails with `E-BIBLE-BASIS-NOT-GIT`. An
+  entry citing no files is skipped as `no_source_files` (distinct from
+  `basis_mismatch`); the engine keeps `basis_mismatch` ids queued for a
+  bounded number of rounds because a transient mismatch can clear.
 - With `scope='global'` it exports the GLOBAL KB to
   `.fleet/kb-canonical-global.json` (committed in the platform repo so the
   installer can distribute team-wide conventions).
@@ -474,7 +524,9 @@ basis and are re-checked by content hash at prime (and by `freshnessSweep`),
 so changes are detected across commits, branch switches, and rebases alike --
 see [Bidirectional staleness](#bidirectional-staleness) above. Running
 `kb_setup` writes the provider config (and, for teams, encrypts the remote
-token); it is optional for the local SQLite default.
+token); it is optional for the local SQLite default. Run it from a FULL
+session (the orchestrator or the CLI): a member session is never served
+`kb_setup` -- see [Member-session tool calls](#member-session-tool-calls).
 
 ### 2. Central server (HTTP, team-shared)
 
@@ -528,11 +580,10 @@ Knowledge Layer setup):
 }
 ```
 
-Build the initial graph:
-
-```bash
-npx gitnexus analyze
-```
+Build the initial graph through the fleet, not by hand: member init and the
+`code_reindex` tool run `npx gitnexus@>=1.6.5 analyze --index-only` (the pinned
+minimum version; `--index-only` keeps the run from writing into the target
+repo). Do not run a plain `gitnexus analyze` in a target repo.
 
 Verify by calling `context` with a symbol name in Claude Code.
 `kb_session_prime` degrades gracefully when GitNexus is absent.
@@ -726,10 +777,9 @@ call from an agent, scoped to that agent's own session folder.
 **Symptom**: `kb_session_prime` returns empty `recommended_gitnexus_calls` or
 GitNexus tools return outdated results after a refactor.
 
-**Fix**: rebuild the graph:
-```bash
-npx gitnexus analyze
-```
+**Fix**: rebuild the graph with the `code_reindex` tool (it runs
+`npx gitnexus@>=1.6.5 analyze --index-only`). Do not run a plain
+`gitnexus analyze` in a target repo.
 
 Run this after large refactors or after renaming many files. The graph update
 is incremental on subsequent runs.

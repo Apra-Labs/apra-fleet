@@ -144,7 +144,10 @@ describe('maybeScheduleReindex()', () => {
     expect(mockSpawn).toHaveBeenCalledTimes(1);
     const [cmd, args, options] = mockSpawn.mock.calls[0] as [string, string[], Record<string, unknown>];
     expect(cmd).toBe('npx');
-    expect(args).toEqual(['gitnexus', 'analyze', '--index-only']);
+    // On win32 spawn runs through cmd.exe (shell: true), where an unquoted `>=`
+    // is a redirection, so the version-range spec is double-quoted there.
+    const spec = process.platform === 'win32' ? '"gitnexus@>=1.6.5"' : 'gitnexus@>=1.6.5';
+    expect(args).toEqual([spec, 'analyze', '--index-only']);
     expect(options.cwd).toBe('/repo/path');
     expect(options.detached).toBe(true);
     expect(options.stdio).toEqual(['ignore', expect.any(Number), expect.any(Number)]);

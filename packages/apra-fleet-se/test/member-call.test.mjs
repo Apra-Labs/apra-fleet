@@ -267,3 +267,39 @@ describe('remote command shape per shell', () => {
         assert.throws(() => buildRemoteCallCommand({ os: 'linux' }, { ...spec, argsPath: '$HOME/a.json' }), MemberCallError);
     });
 });
+
+describe('memberCall kb_maintainer grant', () => {
+    test('local: the grant reaches connectLocal only when asked', async () => {
+        const seen = [];
+        const mc = createMemberCall({
+            connectLocal: async (id, opts) => {
+                seen.push([id, opts]);
+                return { mcpClient: { callTool: async () => text('{"ok":1}') }, close: async () => {} };
+            },
+        });
+        await mc.memberCall(local, 'kb_query', { query: 'x' });
+        await mc.memberCall(local, 'kb_promote', { id: 'e1', reason: 'r' }, { kbMaintainer: true });
+        await mc.memberCall(local, 'kb_promote', { id: 'e1', reason: 'r' }, { kbMaintainer: 'yes' });
+        assert.deepStrictEqual(seen, [
+            [MID, { kbMaintainer: false }],
+            [MID, { kbMaintainer: true }],
+            [MID, { kbMaintainer: false }],
+        ]);
+    });
+
+    test('remote: the grant adds --kb-maintainer to the apra-fleet call command, and only then', async () => {
+        for (const grant of [false, true]) {
+            const order = [];
+            const mc = createMemberCall({
+                fleetApi: makeFleetApi(order),
+                resolveTarget: async () => ({ os: 'linux', shell: '' }),
+            });
+            await mc.memberCall(remote, 'kb_promote', { id: 'e1', reason: 'r' }, grant ? { kbMaintainer: true } : undefined);
+            const fileName = path.basename(order[1].o.local_paths[0]);
+            const flag = grant ? ' --kb-maintainer' : '';
+            assert.strictEqual(order[2].o.command, `apra-fleet call --member ${MID}${flag} kb_promote --args-file .apra-call/${fileName} --rm-args-file`);
+        }
+        const ps = buildRemoteCallCommand({ os: 'windows', shell: '' }, { memberId: MID, tool: 'kb_promote', argsPath: '.apra-call/c.json', kbMaintainer: true });
+        assert.ok(Buffer.from(ps.split(' ')[2], 'base64').toString('utf16le').includes(`--member ${MID} --kb-maintainer kb_promote`));
+    });
+});

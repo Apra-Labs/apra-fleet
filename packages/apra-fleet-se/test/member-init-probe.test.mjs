@@ -297,3 +297,45 @@ test('local claude member whose role files could not be healed -> unverified, an
     assert.equal(rec.reason, 'role-agents-hide-member-tools');
     assert.match(rec.fix, /automatic rewrite failed/);
 });
+
+test('code_reindex rejected by an old gitnexus is reported with the version cause and the upgrade fix', async () => {
+    const f = fakeFleet({ reindex: {
+        outcome: 'not-started', reason: 'gitnexus-too-old', indexedCommit: null,
+        detail: 'the installed gitnexus does not support --index-only (needs >= 1.6.5): upgrade gitnexus',
+    } });
+    const [rec] = await f.make(['m1']).probeAll();
+    assert.equal(rec.codeIndex, 'failed');
+    assert.equal(rec.codeIndexReason, 'code-index-gitnexus-too-old');
+    const p = rec.problems.find((x) => x.step === 'code');
+    assert.match(p.fix, /too old/);
+    assert.match(p.fix, /upgrade gitnexus/);
+    assert.match(p.fix, /clear the npx cache/);
+    assert.notEqual(p.fix, 'code_reindex failed on the member; read its analyze log (code_status logPath) and rerun code_reindex');
+    assert.match(formatMemberInitLine(rec), /code-index-gitnexus-too-old: .*upgrade gitnexus/);
+});
+
+test('a polled analyze that failed for the too-old cause gets the same cause', async () => {
+    const f = fakeFleet({
+        reindex: { outcome: 'starting', firstTick: false, pid: 1, note: 'n', logPath: 'l', indexedCommit: null },
+        status: () => ({ ready: false, analyze: { phase: 'done', result: 'failed', failureCause: 'gitnexus-too-old', lastLine: "error: unknown option '--index-only'" } }),
+    });
+    const [rec] = await f.make(['m1']).probeAll();
+    assert.equal(rec.codeIndexReason, 'code-index-gitnexus-too-old');
+});
+
+test('a work tree carrying a previously injected gitnexus block is warned about with file and fix; a clean one is not', async () => {
+    const dirty = fakeFleet({ reindex: { outcome: 'started', pid: 1, lastLine: 'x', lockHeld: true, logPath: 'l', indexedCommit: null, injectedBlockFiles: ['CLAUDE.md'] } });
+    const [rec] = await dirty.make(['m1']).probeAll();
+    assert.equal(rec.warnings.length, 1);
+    assert.match(rec.warnings[0], /CLAUDE\.md/);
+    assert.match(rec.warnings[0], /remove the block/);
+    assert.match(rec.warnings[0], /commit/);
+    assert.match(formatMemberInitLine(rec), /WARN: CLAUDE\.md/);
+    // a warning is not a gating failure
+    assert.equal(rec.verified, true);
+
+    const clean = fakeFleet({ reindex: { outcome: 'started', pid: 1, lastLine: 'x', lockHeld: true, logPath: 'l', indexedCommit: null, injectedBlockFiles: [] } });
+    const [rec2] = await clean.make(['m1']).probeAll();
+    assert.deepEqual(rec2.warnings, []);
+    assert.doesNotMatch(formatMemberInitLine(rec2), /WARN: /);
+});

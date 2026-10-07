@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { computeFileHashBatch } from './file-hash.js';
+import { computeHeadFileHashBatch } from './file-hash.js';
 import type { FileHashResult } from './file-hash.js';
 
 /**
@@ -26,11 +26,15 @@ export function isRepoRelativePath(file: string): boolean {
 // type. KBEntry.content_hash is NOT used: it is only populated for
 // context-cache entries, so keying on it would exclude nearly every entry.
 //
-// Comparison is against the files ON DISK under repoPath, hashed with the same
-// computeFileHashBatch the provider used to store the basis, anchored at
-// { cwd: repoPath }. kb_export runs on the checkout being exported (in a sprint,
-// right after Final Review on the sprint branch), where the working tree equals
-// branch HEAD, so on-disk hashes are the branch-HEAD hashes.
+// Comparison is against the content of each cited file AT THE WORK TREE'S
+// HEAD COMMIT (git cat-file on HEAD:<path>, see computeHeadFileHashBatch), not
+// the file on disk: the work tree routinely differs from HEAD (uncommitted
+// edits, an agent mid-task), and the bible describes the committed branch, so
+// an uncommitted edit must never flip the verdict either way. The digest is the
+// git blob id -- the same one the provider stored as the basis (git
+// hash-object of the file at capture time), so an entry captured on a clean
+// tree matches HEAD. A file absent at HEAD is a mismatch. A repoPath that is
+// not inside a git work tree throws KbHeadHashError (no disk fallback).
 
 /** The minimal entry shape the predicate reads. */
 export interface BibleCandidate {
@@ -74,8 +78,9 @@ export function qualifiesForProjectBible(
 }
 
 /**
- * Hash every basis file once (one batch, anchored at repoPath) and return the
- * entries that pass qualifiesForProjectBible, preserving input order.
+ * Hash every basis file once (one batch, content at repoPath's HEAD commit)
+ * and return the entries that pass qualifiesForProjectBible, preserving input
+ * order. Throws KbHeadHashError when repoPath is not inside a git work tree.
  */
 export async function filterProjectBibleCandidates<T extends BibleCandidate>(
   entries: T[],
@@ -87,8 +92,7 @@ export async function filterProjectBibleCandidates<T extends BibleCandidate>(
     const basis = basisById.get(e.id);
     if (basis) for (const f of Object.keys(basis)) if (isRepoRelativePath(f)) fileSet.add(f);
   }
-  const currentHashes = fileSet.size > 0
-    ? await computeFileHashBatch([...fileSet], { cwd: repoPath })
-    : {};
+  if (entries.length === 0) return [];
+  const currentHashes = await computeHeadFileHashBatch([...fileSet], { cwd: repoPath });
   return entries.filter(e => qualifiesForProjectBible(e, basisById.get(e.id), currentHashes));
 }

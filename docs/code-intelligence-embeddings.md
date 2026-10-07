@@ -135,15 +135,16 @@ above can be a documented opt-in but is out of scope for the LOCAL wiring.)
   preserved-unless-`--drop-embeddings` behavior, and the win32 exact-scan
   caveat from this doc.
 - **Gap:** the VERIFY-checkpoint re-index described in the same skill still
-  runs the bare `npx gitnexus analyze` without `--embeddings`, so embeddings
+  runs analyze without `--embeddings`, so embeddings
   are populated at initial index time only, not refreshed on every VERIFY
   re-index.
-- No `src/` code path builds the `gitnexus analyze` command line -- it is only
-  ever invoked by PM-dispatched agents via `execute_command` per the skill
-  docs above (the fleet's own gitnexus MCP child process is spawned separately
-  as `npx -y gitnexus mcp`, unaffected by this flag). On the local-model path
-  no config field, no code change, and no API key are needed -- this is docs
-  and flag plumbing only.
+- The fleet-run index command line is built in `src/tools/code-intelligence-reindex.ts`
+  (`GITNEXUS_ANALYZE_ARGS`: `gitnexus@>=1.6.5 analyze --index-only`), used by
+  `code_reindex` and member init; it does not pass `--embeddings`. The
+  `--embeddings` invocations above are PM-skill-dispatched via `execute_command`
+  (the fleet's own gitnexus MCP child is spawned separately as
+  `npx -y gitnexus mcp`, unaffected by this flag). On the local-model path no
+  config field and no API key are needed.
 
 ## Cost summary
 

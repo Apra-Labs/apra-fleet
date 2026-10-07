@@ -15,7 +15,7 @@
             "type": "string",
             "minLength": 1
           },
-          "description": "Ids of the entries confirmed this round. Each must be a live (non-stale, non-superseded) CONFIRMED entry in this repository's KB whose recorded file basis still matches the files on disk (the same rule kb_export applies); any other id is skipped and reported in skipped (reason not_confirmed_or_unknown or basis_mismatch). An empty list makes no commit."
+          "description": "Ids of the entries confirmed this round. Each must be a live (non-stale, non-superseded) CONFIRMED entry in this repository's KB whose recorded file basis still matches the cited files at the repo's HEAD commit (the same rule kb_export applies; uncommitted edits are ignored); any other id is skipped and reported in skipped (reason not_confirmed_or_unknown, no_source_files for a CONFIRMED entry citing no source file, or basis_mismatch). Independently of the ids, every bible entry this KB holds as superseded or invalidated is removed and reported in removed; an empty list with no such entry makes no commit."
         },
         "demoted_ids": {
           "type": "array",

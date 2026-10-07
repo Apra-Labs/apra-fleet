@@ -1,0 +1,17 @@
+{
+  "tool": "kb_import",
+  "case": "happy-v3-carried-basis",
+  "kind": "happy",
+  "request": {
+    "path": "<SCRATCH_REPO_A>/.fleet/kb-canonical.json"
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"imported\":1,\"skipped\":0,\"linked\":0,\"flagged\":0,\"rejected\":0,\"sweep\":{\"checked\":1,\"staled\":1,\"unstaled\":0}}"
+      }
+    ]
+  },
+  "session": "B"
+}

@@ -1529,9 +1529,13 @@ async function runSprintCycle(context) {
     let memberCaller = context.memberCall ?? null;
     const canMemberCall = !!memberCaller || !!(args && typeof args.callTool === 'function');
     const kbMemberCall = canMemberCall
-        ? (member, tool, toolArgs) => {
+        ? (member, tool, toolArgs, callOpts) => {
             memberCaller ??= createMemberCall({ fleetApi: sprintScopedFleetApi({ callTool: args.callTool, log }), log });
-            return memberCaller.memberCall(member, tool, toolArgs);
+            // callOpts carries the kb_maintainer grant (kb.mjs passes it only
+            // when calling as a repository's kb_maintainer).
+            return callOpts === undefined
+                ? memberCaller.memberCall(member, tool, toolArgs)
+                : memberCaller.memberCall(member, tool, toolArgs, callOpts);
         }
         : undefined;
     // One beads-identity prober per run, shared by kb_maintainer selection

@@ -64,6 +64,15 @@ trust CONFIRMED entries fully and use INFERRED entries as hints, not facts.
 4. This role has no KB-capture channel: note a genuinely durable, non-obvious finding --
    or a KB entry that proved wrong in practice -- in your own report.
 
+### Persistent Memories (operational rules)
+
+Before starting sprint planning, retrieve universal conventions and role-scoped operational rules from Beads:
+
+```bash
+bd memories role:all
+bd memories planner:
+```
+
 ## Step 1 -- Explore the backlog
 
 ```bash

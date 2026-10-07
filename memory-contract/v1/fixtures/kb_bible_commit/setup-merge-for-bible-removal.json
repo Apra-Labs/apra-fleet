@@ -1,0 +1,20 @@
+{
+  "tool": "kb_bible_commit",
+  "case": "setup-merge-for-bible-removal",
+  "kind": "happy",
+  "request": {
+    "ids": [
+      "f73a13d1-15d2-46c7-a319-84232fdf856b"
+    ],
+    "baseBranch": "main",
+    "baseCommit": "0123456789abcdef0123456789abcdef01234567"
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"path\":\"<SCRATCH_REPO_A>/.fleet/kb-canonical.json\",\"merged\":[\"f73a13d1-15d2-46c7-a319-84232fdf856b\"],\"skipped\":[],\"removed\":[],\"entry_count\":2,\"committed\":true}"
+      }
+    ]
+  }
+}

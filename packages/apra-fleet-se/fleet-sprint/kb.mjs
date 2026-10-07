@@ -399,6 +399,22 @@ function memberLabel(member) {
 const BIBLE_FILE = '.fleet/kb-canonical.json';
 
 /**
+ * kb_bible_commit skip reasons the engine keeps queued: the cause can clear on
+ * its own (uncommitted edits, entries captured against commits the maintainer
+ * has not pulled yet), so the id is offered again at the next round. Every
+ * other reason (not_confirmed_or_unknown, no_source_files, or one this engine
+ * does not know) cannot change by retrying and drops the id.
+ */
+const KB_RETRYABLE_SKIP_REASONS = Object.freeze(new Set(['basis_mismatch']));
+
+/**
+ * How many bible-commit rounds in a row an id may be skipped with a retryable
+ * reason before it is dropped with a WARN, so a permanently drifted entry
+ * cannot sit in the queue forever.
+ */
+export const KB_BIBLE_SKIP_RETRY_ROUNDS = 3;
+
+/**
  * memberCall error codes that mean the TOOL refused the call (the member was
  * reached and answered). Every other coded error -- a connect failure, a
  * send_files failure, an unparseable remote reply -- means the member could
@@ -461,9 +477,16 @@ function memberNameOf(member) {
  * unpushed on the maintainer is G-pushed (same retry and reset guards), and
  * an undecidable check keeps the ids queued with a WARN. After seal() (a FAIL
  * verdict or an aborted sprint) nothing further is committed.
+ * An id kb_bible_commit skips with basis_mismatch stays queued and is offered
+ * again next round (the mismatch can be transient), for at most
+ * opts.bibleSkipRetryRounds (default KB_BIBLE_SKIP_RETRY_ROUNDS) skipped
+ * rounds in a row, then is dropped with a WARN naming it and the reason; any
+ * other skip reason drops the id at once. A skipped demotion
+ * (not_demoted_or_unknown) always leaves the queue: it never resolves itself
+ * without a new kb_demote.
  *
  * @param {{
- *   memberCall?: (member: object, name: string, args: object) => Promise<any>,
+ *   memberCall?: (member: object, name: string, args: object, opts?: { kbMaintainer?: boolean }) => Promise<any>,
  *   maintainers?: object|(() => object),
  *   gPull?: (memberName: string, options?: { resetToRemoteTip?: boolean }) => Promise<any>,
  *   gPush?: (memberName: string) => Promise<any>,
@@ -476,9 +499,17 @@ function memberNameOf(member) {
  *   roundChangedFiles?: (memberName: string) => Promise<string[]>,
  *   sprintChangedFiles?: (memberName: string) => Promise<string[]>,
  *   sprintStartMs?: number|(() => number),
+ *   bibleSkipRetryRounds?: number,
  *   log?: Function,
  * }} opts
  */
+/**
+ * memberCall options for a call made AS a repository's kb_maintainer: the
+ * session carries the kb_maintainer grant, so the server also serves it
+ * kb_promote and kb_resolve_contradiction (see member-call.mjs).
+ */
+export const KB_MAINTAINER_CALL = Object.freeze({ kbMaintainer: true });
+
 export function createKbWorkClient(opts = {}) {
     const {
         memberCall, gPull, gPush, abortRebase, bibleBase, canResetCheckout, checkedOutBranch, bibleUnpushed, unpushedOnlyBible,
@@ -546,6 +577,11 @@ export function createKbWorkClient(opts = {}) {
     const confirmations = new Map();
     /** repo -> ids the maintainer DEMOTED that are not yet in a pushed bible commit (insertion order). */
     const demotedPending = new Map();
+    /** repo -> (id -> rounds in a row kb_bible_commit skipped it with a retryable reason). */
+    const skipRounds = new Map();
+    const skipRetryRounds = Number.isInteger(opts.bibleSkipRetryRounds) && opts.bibleSkipRetryRounds > 0
+        ? opts.bibleSkipRetryRounds
+        : KB_BIBLE_SKIP_RETRY_ROUNDS;
     /** Why the bible commit was sealed (a FAIL verdict, an abort), or null while open. */
     let sealedReason = null;
 
@@ -757,7 +793,9 @@ export function createKbWorkClient(opts = {}) {
                 break;
             }
             const spec = OPS[op.kind];
-            const call = memberCall(target.record, spec.tool, spec.args(op.payload));
+            // AS the kb_maintainer: the grant is what lets the session see
+            // kb_promote (no other member session is served it).
+            const call = memberCall(target.record, spec.tool, spec.args(op.payload), KB_MAINTAINER_CALL);
             inFlight.set(maintainer, call.then(() => {}, () => {}));
             let res;
             try {
@@ -867,7 +905,7 @@ export function createKbWorkClient(opts = {}) {
                 ...(demoteIds.length > 0 ? { demoted_ids: demoteIds } : {}),
                 baseBranch: base.baseBranch,
                 baseCommit: base.baseCommit,
-            });
+            }, KB_MAINTAINER_CALL);
         } catch (err) {
             return { ok: false, stage: 'kb_bible_commit', error: errText(err) };
         }
@@ -1029,23 +1067,60 @@ export function createKbWorkClient(opts = {}) {
                 return { committed: 0, pending: totalPending() };
             }
             const skipped = Array.isArray(outcome.result.skipped) ? outcome.result.skipped : [];
-            const skippedIds = new Set(skipped.map((s) => s && s.id));
-            // Every id leaves the queue, skipped ones included: a skip (an id not
-            // CONFIRMED, or whose cited files no longer match its recorded basis) can
-            // never succeed on a retry without a new capture, and kb_export refuses the
-            // same entries, so re-queuing would only repeat the skip every round. The
-            // same reasoning applies to a skipped demotion (not_demoted_or_unknown
-            // never resolves itself without a new kb_demote).
-            for (const id of ids) pending.delete(id);
+            // A skip whose cause can clear on its own (basis_mismatch: the cited
+            // files at the maintainer's HEAD differ from the recorded basis, e.g.
+            // the entry was captured against commits not pulled yet) stays queued
+            // and is offered again next round, for a bounded number of rounds.
+            // Any other skip (not CONFIRMED or unknown, no source files) cannot
+            // change by retrying and leaves the queue. Merged ids leave it too.
+            // A round can carry demotions only, so pending may be absent.
+            if (!skipRounds.has(repo)) skipRounds.set(repo, new Map());
+            const rounds = skipRounds.get(repo);
+            const retained = [];
+            const dropped = [];
+            const exhausted = [];
+            for (const x of skipped) {
+                if (!x || typeof x.id !== 'string') continue;
+                if (!KB_RETRYABLE_SKIP_REASONS.has(x.reason)) { dropped.push(x); continue; }
+                const n = (rounds.get(x.id) || 0) + 1;
+                if (n >= skipRetryRounds) { exhausted.push({ ...x, rounds: n }); continue; }
+                rounds.set(x.id, n);
+                retained.push(x);
+            }
+            const keep = new Set(retained.map((x) => x.id));
+            for (const id of ids) {
+                if (keep.has(id)) continue;
+                if (pending) pending.delete(id);
+                rounds.delete(id);
+            }
             if (pending && pending.size === 0) confirmations.delete(repo);
+            if (rounds.size === 0) skipRounds.delete(repo);
+            // Every demoted id leaves the queue, skipped ones included: a skipped
+            // demotion (not_demoted_or_unknown) never resolves itself without a
+            // new kb_demote.
             for (const id of demoteIds) if (pendingDemoted) pendingDemoted.delete(id);
             if (pendingDemoted && pendingDemoted.size === 0) demotedPending.delete(repo);
+            const skippedIds = new Set(skipped.map((x) => x && x.id));
             const merged = Array.isArray(outcome.result.merged) ? outcome.result.merged.length
                 : ids.length - ids.filter((id) => skippedIds.has(id)).length;
             const demoted = Array.isArray(outcome.result.demoted) ? outcome.result.demoted.length
                 : demoteIds.length - demoteIds.filter((id) => skippedIds.has(id)).length;
-            if (skipped.length > 0) {
-                log(`[kb-work] kb_bible_commit skipped ${skipped.length} id(s) for ${repo} (dropped from the queue, with the reason the tool returned): ${skipped.map((x) => (x && x.id ? (x.reason ? `${x.id} (${x.reason})` : x.id) : String(x))).join(', ')}`);
+            const describe = (list) => list.map((x) => (x.reason ? `${x.id} (${x.reason})` : x.id)).join(', ');
+            if (dropped.length > 0) {
+                log(`[kb-work] kb_bible_commit skipped ${dropped.length} id(s) for ${repo} that cannot succeed on a retry (dropped from the queue, with the reason the tool returned): ${describe(dropped)}`);
+            }
+            if (retained.length > 0) {
+                log(`[kb-work] kb_bible_commit skipped ${retained.length} id(s) for ${repo} for a reason that can clear (kept queued for the next round, at most ${skipRetryRounds} skipped rounds in a row): ${describe(retained)}`);
+            }
+            for (const x of exhausted) {
+                log(`[kb-work] WARN: dropping ${x.id} from the bible queue for ${repo}: kb_bible_commit skipped it with reason ${x.reason || 'unknown'} for ${x.rounds} round(s) in a row`);
+            }
+            // Bible entries the maintainer KB holds as superseded or invalidated
+            // are removed by the tool at every call; name each one here so the
+            // removal is visible in the run log, not only in the commit message.
+            const removed = Array.isArray(outcome.result.removed) ? outcome.result.removed.filter((x) => x && typeof x.id === 'string') : [];
+            if (removed.length > 0) {
+                log(`[kb-work] kb_bible_commit removed ${removed.length} superseded/invalidated entry(ies) from the bible for ${repo}: ${describe(removed)}`);
             }
             log(`[kb-work] bible commit for ${repo} on maintainer '${maintainer}': ${describeCounts(merged, demoted)} ${outcome.pushed ? 'committed and pushed' : 'already in the bible -- nothing to push'}`);
             return { committed: outcome.pushed ? merged + demoted : 0, pending: (pending ? pending.size : 0) + (pendingDemoted ? pendingDemoted.size : 0) };

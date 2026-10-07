@@ -534,7 +534,7 @@ describe('(j) unauthenticated ?member= URL-param fallback on /mcp initialize', (
     restoreRegistry();
   });
 
-  it('registers a member via the URL param with role "doer" under the local workspace when no JWT is present', async () => {
+  it('registers a channel-capable member via the URL param with role "doer" under the local workspace when no JWT is present', async () => {
     // The param must name a REGISTERED member (an unknown one is refused, below).
     backupAndResetRegistry();
     addAgent(makeTestAgent({ id: 'url-param-member-id', friendlyName: 'url-param-member' }));
@@ -542,7 +542,9 @@ describe('(j) unauthenticated ?member= URL-param fallback on /mcp initialize', (
     handles.push(handle);
     const issuer = getTokenIssuer();
 
-    const client = new Client({ name: 'param-client', version: '1.0.0' }, { capabilities: {} });
+    // Channel-capable: a tool-only ?member= session never registers (see
+    // tests/member-session-scope.test.ts).
+    const client = new Client({ name: 'param-client', version: '1.0.0' }, { capabilities: { experimental: { 'claude/channel': {} } } });
     clients.push(client);
     const transport = new StreamableHTTPClientTransport(
       new URL(`http://127.0.0.1:${handle.port}/mcp?member=url-param-member-id`),
@@ -579,7 +581,9 @@ describe('(j) unauthenticated ?member= URL-param fallback on /mcp initialize', (
     handles.push(handle);
     const issuer = getTokenIssuer();
 
-    const client = new Client({ name: 'legacy-client', version: '1.0.0' }, { capabilities: {} });
+    // Channel-capable: a tool-only ?member= session never registers (see
+    // tests/member-session-scope.test.ts).
+    const client = new Client({ name: 'legacy-client', version: '1.0.0' }, { capabilities: { experimental: { 'claude/channel': {} } } });
     clients.push(client);
     const transport = new StreamableHTTPClientTransport(
       new URL(`http://127.0.0.1:${handle.port}/mcp?member=legacy-friendly-name`),

@@ -10,6 +10,8 @@ import { requireSqliteProject } from '../services/knowledge/require-sqlite-proje
 import type { BibleDemotion } from '../services/knowledge/bible-import.js';
 import {
   asciiSafeStringify,
+  assertNoDuplicateBibleIds,
+  BIBLE_FORMAT_VERSION,
   bibleContentChanged,
   commitBiblePath,
   compareById,
@@ -22,13 +24,22 @@ import {
 } from './kb-export.js';
 
 // kb_bible_commit: the kb_maintainer commits one review round's confirmations
-// to the bible. Unlike kb_export (which regenerates the WHOLE bible from the
-// DB), this merges at ENTRY level: every entry already in
-// <self>/.fleet/kb-canonical.json is kept, only the given ids are added or
-// replaced, and an entry in the file but absent from the DB is never dropped.
-// That is what makes a retry after a rejected push safe: the engine resets to
-// the new remote HEAD (which may carry another clone's entries) and calls this
-// again with the same ids -- the result holds both sets with no manual merge.
+// to the bible, merging at ENTRY level: the given ids are added or replaced,
+// and every entry already in <self>/.fleet/kb-canonical.json is kept UNLESS
+// this (the maintainer's) KB holds it as superseded or invalidated -- those
+// are removed, and each removal (id + reason) is listed in the response and in
+// the commit message. Removal runs at every call, also with no ids. An entry
+// in the file but absent from the DB is never dropped, nor is one the DB holds
+// as CONFIRMED and current. That keeps a retry after a rejected push safe: the
+// engine resets to the new remote HEAD (which may carry another clone's
+// entries, unknown to this DB) and calls this again with the same ids -- the
+// result holds both sets with no manual merge.
+//
+// A merely STALE entry (freshness sweep: its cited files moved) is NOT removed:
+// the owner decision names only superseded and invalidated, and staleness can
+// clear on its own (see SqliteProvider.getRetirementReasons).
+//
+// kb_export is untouched by this: it stays additive-only.
 //
 // Provenance records the sprint's TARGET BASE branch and the base commit the
 // entries were verified against, as given by the caller -- never the HEAD of
@@ -39,7 +50,7 @@ import {
 
 export const kbBibleCommitSchema = z.object({
   ids: z.array(z.string().min(1))
-    .describe('Ids of the entries confirmed this round. Each must be a live (non-stale, non-superseded) CONFIRMED entry in this repository\'s KB whose recorded file basis still matches the files on disk (the same rule kb_export applies); any other id is skipped and reported in skipped (reason not_confirmed_or_unknown or basis_mismatch). An empty list makes no commit.'),
+    .describe('Ids of the entries confirmed this round. Each must be a live (non-stale, non-superseded) CONFIRMED entry in this repository\'s KB whose recorded file basis still matches the cited files at the repo\'s HEAD commit (the same rule kb_export applies; uncommitted edits are ignored); any other id is skipped and reported in skipped (reason not_confirmed_or_unknown, no_source_files for a CONFIRMED entry citing no source file, or basis_mismatch). Independently of the ids, every bible entry this KB holds as superseded or invalidated is removed and reported in removed; an empty list with no such entry makes no commit.'),
   demoted_ids: z.array(z.string().min(1)).optional()
     .describe('Ids demoted this round (kb_demote). Each must name a local entry that HAS a demoted_at and is now below CONFIRMED; any other id is skipped and reported in skipped with reason not_demoted_or_unknown. An admitted id is REMOVED from entries and recorded as an explicit tombstone {id, demoted_at} in the bible demotions array, so other clones can apply the demotion instead of inferring it from an absence. Re-admitting the same id through ids (a re-promotion) clears its tombstone.'),
   baseBranch: z.string().min(1)
@@ -53,9 +64,30 @@ export const kbBibleCommitSchema = z.object({
 
 export type KbBibleCommitInput = z.infer<typeof kbBibleCommitSchema>;
 
+/**
+ * Why a requested id was not merged:
+ *  - not_confirmed_or_unknown: not a live CONFIRMED entry in this KB;
+ *  - no_source_files: CONFIRMED but cites no source file, so it has no basis
+ *    that could ever be checked (retrying cannot change this);
+ *  - basis_mismatch: CONFIRMED and cites files, but its recorded basis does not
+ *    match those files at HEAD (can clear once the files or the basis agree);
+ *  - not_demoted_or_unknown: named in demoted_ids, but the local entry is
+ *    unknown, was never demoted, or is CONFIRMED again.
+ */
+export type KbBibleCommitSkipReason =
+  'not_confirmed_or_unknown' | 'no_source_files' | 'basis_mismatch' | 'not_demoted_or_unknown';
+
 export interface KbBibleCommitSkip {
   id: string;
-  reason: 'not_confirmed_or_unknown' | 'basis_mismatch' | 'not_demoted_or_unknown';
+  reason: KbBibleCommitSkipReason;
+}
+
+/** Why a bible entry was removed: the maintainer KB holds it as retired. */
+export type KbBibleCommitRemovalReason = 'superseded' | 'invalidated';
+
+export interface KbBibleCommitRemoval {
+  id: string;
+  reason: KbBibleCommitRemovalReason;
 }
 
 export interface KbBibleCommitResult {
@@ -64,6 +96,7 @@ export interface KbBibleCommitResult {
   /** Ids admitted from demoted_ids: removed from entries, tombstoned. */
   demoted: string[];
   skipped: KbBibleCommitSkip[];
+  removed: KbBibleCommitRemoval[];
   /** ENTRIES only -- a tombstone is not an entry. */
   entry_count: number;
   committed: boolean;
@@ -82,10 +115,15 @@ export async function kbBibleCommit(input: KbBibleCommitInput, anchor?: KbAnchor
   const requestedDemotions = Array.from(new Set(input.demoted_ids ?? []));
   const done = (r: Omit<KbBibleCommitResult, 'path'>): string => JSON.stringify({ path: outPath, ...r });
 
-  if (requested.length === 0 && requestedDemotions.length === 0) {
+  // No ids, no demotions and no bible entry that could be removed: nothing to
+  // do, and the KB is not opened.
+  const existingDoc = readBibleDocument(outPath);
+  const existingAtStart = existingDoc?.entries ?? null;
+  if (requested.length === 0 && requestedDemotions.length === 0
+    && (existingAtStart === null || existingAtStart.length === 0)) {
     return done({
-      merged: [], demoted: [], skipped: [],
-      entry_count: readBibleDocument(outPath)?.entries.length ?? 0, committed: false,
+      merged: [], demoted: [], skipped: [], removed: [],
+      entry_count: existingAtStart?.length ?? 0, committed: false,
     });
   }
 
@@ -94,25 +132,33 @@ export async function kbBibleCommit(input: KbBibleCommitInput, anchor?: KbAnchor
   const confirmedEntries = await project.list({ confidence: ['CONFIRMED'] });
   const requestedSet = new Set(requested);
   // ONE admission rule with kb_export (scope=project): a CONFIRMED id is
-  // admitted only if it passes the shared bible basis predicate.
+  // admitted only if it passes the shared bible basis predicate. (With no
+  // requested ids this is empty and admission, including its git check, is
+  // not run.)
   const requestedConfirmed = confirmedEntries.filter(e => requestedSet.has(e.id));
-  const qualifying = await filterProjectBibleCandidates(
-    requestedConfirmed,
-    project.getSourceFileBases(requestedConfirmed.map(e => e.id)),
-    repoPath,
-  );
+  const bases = project.getSourceFileBases(requestedConfirmed.map(e => e.id));
+  const qualifying = await filterProjectBibleCandidates(requestedConfirmed, bases, repoPath);
   const qualifyingIds = new Set(qualifying.map(e => e.id));
   const confirmedIds = new Set(requestedConfirmed.map(e => e.id));
+  const noSourceIds = new Set(requestedConfirmed
+    .filter(e => !Array.isArray(e.source_files) || e.source_files.length === 0)
+    .map(e => e.id));
   const confirmed = new Map<string, CanonicalEntry>();
-  for (const e of qualifying) confirmed.set(e.id, toCanonicalEntry(e));
+  // Format v3: each merged entry carries the exact stored basis it was just
+  // admitted against (never re-hashed here).
+  for (const e of qualifying) confirmed.set(e.id, toCanonicalEntry(e, bases.get(e.id)));
 
   const merged: string[] = [];
   const skipped: KbBibleCommitSkip[] = [];
   for (const id of requested) {
     if (qualifyingIds.has(id)) merged.push(id);
-    else if (confirmedIds.has(id)) {
+    else if (noSourceIds.has(id)) {
       // An id already in the bible keeps its existing entry: the merge never drops entries.
-      logWarn('kb_bible_commit', 'skipping ' + id + ': basis_mismatch (cited files changed, missing, or basis absent)');
+      logWarn('kb_bible_commit', 'skipping ' + id + ': no_source_files (a CONFIRMED entry citing no source file has no checkable basis)');
+      skipped.push({ id, reason: 'no_source_files' });
+    } else if (confirmedIds.has(id)) {
+      // An id already in the bible keeps its existing entry: the merge never drops entries.
+      logWarn('kb_bible_commit', 'skipping ' + id + ': basis_mismatch (cited files at HEAD changed or absent, or basis absent)');
       skipped.push({ id, reason: 'basis_mismatch' });
     } else skipped.push({ id, reason: 'not_confirmed_or_unknown' });
   }
@@ -138,23 +184,37 @@ export async function kbBibleCommit(input: KbBibleCommitInput, anchor?: KbAnchor
 
   // A bible file that exists but cannot be parsed must not be overwritten: its
   // entries are unknown, and writing over it would drop all of them.
-  const existingDoc = readBibleDocument(outPath);
   if (existingDoc === null && fs.existsSync(outPath)) {
     throw new Error('kb_bible_commit: existing bible is not a readable bible file, refusing to overwrite it: ' + outPath);
   }
   const existing = existingDoc?.entries ?? null;
 
-  if (merged.length === 0 && admittedDemotions.length === 0) {
-    return done({ merged, demoted, skipped, entry_count: existing?.length ?? 0, committed: false });
+  // Removals: a bible entry this KB holds as superseded or invalidated. An id
+  // unknown to this KB, or known and not retired, is kept. A merged id is never
+  // retired (merging requires a live CONFIRMED entry), so the two never clash.
+  const retired = project.getRetirementReasons((existing ?? []).map(e => e.id));
+  const removed: KbBibleCommitRemoval[] = (existing ?? [])
+    .filter(e => retired.has(e.id))
+    .map(e => ({ id: e.id, reason: retired.get(e.id)! }))
+    .sort(compareById);
+
+  if (merged.length === 0 && removed.length === 0 && admittedDemotions.length === 0) {
+    return done({ merged, demoted, skipped, removed, entry_count: existing?.length ?? 0, committed: false });
   }
 
+  // Duplicate-id guard: an existing file holding one id twice would otherwise
+  // be silently collapsed by the id map below (dropping an entry). Refuse
+  // before anything is written.
+  assertNoDuplicateBibleIds(existing ?? [], 'kb_bible_commit');
   const byId = new Map<string, CanonicalEntry>();
   for (const e of existing ?? []) byId.set(e.id, e);
+  for (const r of removed) byId.delete(r.id);
   for (const id of merged) byId.set(id, confirmed.get(id)!);
   // An admitted demotion REMOVES the entry -- the only path by which this tool
   // drops one, and only on an explicit demoted_ids instruction.
   for (const id of demoted) byId.delete(id);
   const entries = Array.from(byId.values()).sort(compareById);
+  assertNoDuplicateBibleIds(entries, 'kb_bible_commit');
 
   // TOMBSTONE MERGE. Tombstones already in the file are PRESERVED (a later
   // commit carrying unrelated ids must not silently resurrect their entries on
@@ -173,11 +233,11 @@ export async function kbBibleCommit(input: KbBibleCommitInput, anchor?: KbAnchor
     === asciiSafeStringify(demotions);
   if (existing !== null && demotionsUnchanged
     && asciiSafeStringify(existing) === asciiSafeStringify(entries)) {
-    return done({ merged, demoted, skipped, entry_count: entries.length, committed: false });
+    return done({ merged, demoted, skipped, removed, entry_count: entries.length, committed: false });
   }
 
   const bible: CanonicalBible = {
-    version: 2,
+    version: BIBLE_FORMAT_VERSION,
     provenance: {
       commit: input.baseCommit,
       branch: input.baseBranch,
@@ -194,9 +254,7 @@ export async function kbBibleCommit(input: KbBibleCommitInput, anchor?: KbAnchor
 
   let committed = false;
   if (isGitRepo(repoPath) && bibleContentChanged(repoPath, outPath)) {
-    const demotedClause = demoted.length > 0 ? ', ' + demoted.length + ' demoted' : '';
-    const message = 'chore(kb): commit ' + merged.length + ' confirmed entries to the knowledge bible'
-      + demotedClause + ' -- ' + entries.length + ' total';
+    const message = bibleCommitMessage(merged.length, removed, entries.length, demoted.length);
     try {
       commitBiblePath(repoPath, outPath, message);
     } catch (err) {
@@ -206,5 +264,29 @@ export async function kbBibleCommit(input: KbBibleCommitInput, anchor?: KbAnchor
     committed = true;
   }
 
-  return done({ merged, demoted, skipped, entry_count: entries.length, committed });
+  return done({ merged, demoted, skipped, removed, entry_count: entries.length, committed });
+}
+
+/**
+ * The bible commit message. The subject counts merged, removed and demoted
+ * entries; when entries were removed, the body lists each one as
+ * '- <id> (<reason>)'. With no removals and no demotions the message is the
+ * single pre-existing subject line.
+ */
+export function bibleCommitMessage(
+  mergedCount: number, removed: KbBibleCommitRemoval[], total: number, demotedCount = 0,
+): string {
+  let head: string;
+  if (removed.length === 0) {
+    head = 'chore(kb): commit ' + mergedCount + ' confirmed entries to the knowledge bible';
+  } else if (mergedCount === 0) {
+    head = 'chore(kb): remove ' + removed.length + ' superseded/invalidated entries from the knowledge bible';
+  } else {
+    head = 'chore(kb): commit ' + mergedCount + ' confirmed entries to the knowledge bible, remove '
+      + removed.length + ' superseded/invalidated';
+  }
+  const demotedClause = demotedCount > 0 ? ', ' + demotedCount + ' demoted' : '';
+  const subject = head + demotedClause + ' -- ' + total + ' total';
+  if (removed.length === 0) return subject;
+  return subject + '\n\nRemoved:\n' + removed.map(r => '- ' + r.id + ' (' + r.reason + ')').join('\n');
 }

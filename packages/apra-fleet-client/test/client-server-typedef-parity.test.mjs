@@ -1,6 +1,6 @@
 // Parity test: pins apra-fleet-client's hand-maintained JSDoc typedefs in
 // api.mjs against the server-side zod schemas (register_member, update_member,
-// kb_export, kb_bible_commit)
+// kb_export, kb_bible_commit), the bible entry interface (CanonicalEntry)
 // and the member_detail result shape they claim to mirror.
 //
 // The typedefs have no compile-time link to the server tools -- see
@@ -243,6 +243,14 @@ describe('apra-fleet-client typedef vs server zod schema parity', () => {
         assert.ok(typedefFields.has('shell'), 'sanity: MemberDetailResult should declare shell');
 
         assertFieldParity('MemberDetailResult vs member-detail.ts result object', resultFields, typedefFields);
+    });
+
+    test('KbBibleEntry matches the CanonicalEntry interface the bible writers emit (format v3)', () => {
+        const block = extractBlock(kbExportSrc, 'export interface CanonicalEntry {', '\n}');
+        const serverFields = new Set([...block.matchAll(/^ {2}([a-zA-Z_]\w*)\??:/gm)].map((m) => m[1]));
+        const typedefFields = extractTypedefProperties(apiMjsSrc, 'KbBibleEntry');
+        assert.ok(serverFields.has('source_file_hashes'), 'sanity: CanonicalEntry should declare source_file_hashes (v3)');
+        assertFieldParity('KbBibleEntry vs CanonicalEntry', serverFields, typedefFields);
     });
 
     test('FleetMcpStatus matches the FleetMcpStatus interface in src/types.ts', () => {

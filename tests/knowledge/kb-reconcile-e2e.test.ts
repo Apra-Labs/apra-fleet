@@ -8,7 +8,9 @@ import { kbImport } from '../../src/tools/kb-import.js';
 import { kbFreshnessSweep } from '../../src/tools/kb-freshness-sweep.js';
 import { kbReconcilePrefilter } from '../../src/tools/kb-reconcile-prefilter.js';
 import { kbExport } from '../../src/tools/kb-export.js';
+import { computeFileHashBatch } from '../../src/services/knowledge/file-hash.js';
 import * as kbProvidersModule from '../../src/services/knowledge/kb-providers.js';
+import { commitWorkTree } from '../helpers/commit-work-tree.js';
 import type { KBEntryInput, ContentType, Confidence } from '../../src/services/knowledge/types.js';
 
 // T3.3 (F6/D6 e2e, HIGH-1 satisfiability proof): two-branch reconcile chain,
@@ -21,9 +23,18 @@ import type { KBEntryInput, ContentType, Confidence } from '../../src/services/k
 // -> kb_import it -> change ONE pre-existing (branch-A) file between import
 // and the freshness sweep -- per the Phase 2 reviewer's guidance, the sweep
 // retires PRE-EXISTING wrong-branch entries whose files the merge changed;
-// a freshly imported entry hashes the CURRENT worktree at capture time, so
-// it is fresh by construction and the sweep must NOT be asserted to stale it
+// the branch-B challenger arrives with the basis branch B's v3 bible CARRIES
+// for it (kb_import never re-hashes this clone's files), which matches the
+// merged worktree here, so the sweep must NOT be asserted to stale it
 // -- then kb_freshness_sweep -> kb_reconcile_prefilter -> kb_export.
+//
+// Bible v3 note: a carried basis must be keyed by repo-relative paths, so
+// every fixture here cites repo-relative paths ('dup.ts', 'gamma-new.ts', ...).
+// The provider is anchored at repoDir (new SqliteProvider(':memory:', repoDir))
+// and the test runs with process.cwd() set to a DIFFERENT directory, so it only
+// passes while SqliteProvider hashes relative basis paths against the repo
+// anchor. Reverting the anchor fix (bare computeFileHashBatch calls in the
+// reconcile prefilter, revival and freshness lookup) makes it fail.
 
 function git(dir: string, args: string[]): string {
   return execFileSync('git', args, { cwd: dir, encoding: 'utf-8' });
@@ -32,6 +43,10 @@ function git(dir: string, args: string[]): string {
 function initTempGitRepo(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-reconcile-e2e-'));
   git(dir, ['init', '--quiet']);
+  // The tools resolve their KB anchor from the server cwd, which this test
+  // sets to the temp repo; an origin remote gives it a KB identity (never
+  // contacted -- getKbProviders is mocked).
+  git(dir, ['remote', 'add', 'origin', 'https://example.invalid/kb-reconcile-e2e.git']);
   return dir;
 }
 
@@ -63,17 +78,23 @@ interface BibleEntryFixture {
   source_files?: string[];
   confidence: Confidence;
   updated_at?: string;
+  source_file_hashes?: Record<string, string>;
 }
 
 let provider: SqliteProvider;
 let repoDir: string;
 let fleetDir: string;
+let prevCwd: string;
+let otherCwd: string;
 
 beforeEach(async () => {
   repoDir = initTempGitRepo();
   fleetDir = path.join(repoDir, '.fleet');
   fs.mkdirSync(fleetDir, { recursive: true });
-  provider = new SqliteProvider(':memory:');
+  prevCwd = process.cwd();
+  otherCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-reconcile-e2e-cwd-'));
+  process.chdir(otherCwd);
+  provider = new SqliteProvider(':memory:', repoDir);
   await provider.init();
   vi.spyOn(kbProvidersModule, 'getKbProviders').mockResolvedValue({
     project: provider,
@@ -83,14 +104,18 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+  process.chdir(prevCwd);
   provider.close();
   vi.restoreAllMocks();
   fs.rmSync(repoDir, { recursive: true, force: true });
+  fs.rmSync(otherCwd, { recursive: true, force: true });
 });
 
+// Branch B's merged bible, in format v3 (entries may carry source_file_hashes).
 function writeBible(entries: BibleEntryFixture[]): string {
   const p = path.join(fleetDir, 'kb-canonical.json');
-  fs.writeFileSync(p, JSON.stringify(entries, null, 2), 'utf-8');
+  const bible = { version: 3, provenance: { commit: null, branch: 'branch-b', entry_count: entries.length }, entries };
+  fs.writeFileSync(p, JSON.stringify(bible, null, 2), 'utf-8');
   return p;
 }
 
@@ -123,15 +148,21 @@ function challengerIdFor(originalId: string): string {
 describe('kb-reconcile two-branch e2e (T3.3, F6/D6)', () => {
   it('duplicate skipped, refinement kept live alongside its predecessor, contradiction flagged, directive pending; then sweep + prefilter + export produce the reconciled bible', async () => {
     // --- Fixture files (real files in the temp git repo) -----------------
-    const fileDup = path.join(repoDir, 'dup.ts');
-    const fileBeta = path.join(repoDir, 'beta.ts');
-    const fileGammaOld = path.join(repoDir, 'gamma-old.ts'); // branch-A's file for the contradiction
-    const fileGammaNew = path.join(repoDir, 'gamma-new.ts'); // branch-B's file for the same contradiction
-    fs.writeFileSync(fileDup, 'export const dup = 1;');
-    fs.writeFileSync(fileBeta, 'export const beta = 1;');
+    // Repo-relative names (what the KB cites); abs() is where the file lives.
+    const fileDup = 'dup.ts';
+    const fileBeta = 'beta.ts';
+    const fileGammaOld = 'gamma-old.ts'; // branch-A's file for the contradiction
+    const fileGammaNew = 'gamma-new.ts'; // branch-B's file for the same contradiction
+    const abs = (rel: string): string => path.join(repoDir, rel);
+    fs.writeFileSync(abs(fileDup), 'export const dup = 1;');
+    fs.writeFileSync(abs(fileBeta), 'export const beta = 1;');
     const gammaOldOriginal = 'export const gammaOld = true; // branch-A implementation';
-    fs.writeFileSync(fileGammaOld, gammaOldOriginal);
-    fs.writeFileSync(fileGammaNew, 'export const gammaNew = true; // branch-B implementation');
+    fs.writeFileSync(abs(fileGammaOld), gammaOldOriginal);
+    fs.writeFileSync(abs(fileGammaNew), 'export const gammaNew = true; // branch-B implementation');
+
+    // The anchored capture gate needs the cited file to exist in the repo.
+    fs.mkdirSync(abs('src'), { recursive: true });
+    fs.writeFileSync(abs('src/fixture.ts'), 'export const fixture = 1;');
 
     // --- Step 1: seed branch-A claims with real hash bases ---------------
     const aDup = await provider.capture(makeInput({
@@ -166,10 +197,14 @@ describe('kb-reconcile two-branch e2e (T3.3, F6/D6)', () => {
       summary: 'refined beta claim', // different content -> AUDN 'update'
       symbols: ['refineSym'], source_files: [fileBeta], confidence: 'CONFIRMED',
     };
+    // Branch B verified this claim against gamma-new.ts and its v3 bible
+    // carries that basis (repo-relative key); the merged worktree matches it.
+    const gammaNewHash = (await computeFileHashBatch([fileGammaNew], { cwd: repoDir }))[fileGammaNew]!.hash;
     const bContra: BibleEntryFixture = {
       id: 'b-contra', type: 'knowledge', title: 'gammaSym is fixed report',
       summary: 'gammaSym is fixed as of the latest release.', // contradiction keyword
-      symbols: ['gammaSym'], source_files: [fileGammaNew], confidence: 'CONFIRMED',
+      symbols: ['gammaSym'], source_files: ['gamma-new.ts'], confidence: 'CONFIRMED',
+      source_file_hashes: { 'gamma-new.ts': gammaNewHash },
     };
     const bUndecided: BibleEntryFixture = {
       id: 'b-undecided', type: 'knowledge', title: 'undecidedSym is fixed report',
@@ -237,10 +272,13 @@ describe('kb-reconcile two-branch e2e (T3.3, F6/D6)', () => {
     // pre-existing wrong-branch entry; the freshly imported b-contra is
     // fresh by construction (captured against fileGammaNew as it exists
     // right now) and must NOT be asserted stale by this sweep.
-    fs.writeFileSync(fileGammaOld, 'export const gammaOld = false; // merge changed this');
+    fs.writeFileSync(abs(fileGammaOld), 'export const gammaOld = false; // merge changed this');
+    // Same for the undecidable pair: aUndecided's basis no longer matches and
+    // the challenger carries none, so NEITHER side matches -> left for agent.
+    fs.writeFileSync(abs('src/fixture.ts'), 'export const fixture = 2; // merge changed this');
 
     // --- Step 5: kb_freshness_sweep then kb_reconcile_prefilter -----------
-    const sweepReport = JSON.parse(await kbFreshnessSweep({}));
+    const sweepReport = JSON.parse(await kbFreshnessSweep({}, { folder: repoDir }));
     expect(sweepReport.staled).toBeGreaterThanOrEqual(1);
     expect(rawRow(aContra.id).stale).toBe(1); // pre-existing wrong-branch entry retired
     expect(rawRow(bContraId).stale).toBe(0); // fresh import untouched (not asserted stale)
@@ -250,7 +288,7 @@ describe('kb-reconcile two-branch e2e (T3.3, F6/D6)', () => {
     const pairsBeforePrefilter = await provider.flaggedPairs();
     expect(pairsBeforePrefilter.some(p => p.original.id === aContra.id && p.challenger.id === bContraId)).toBe(true);
 
-    const prefilterReport = JSON.parse(await kbReconcilePrefilter({}));
+    const prefilterReport = JSON.parse(await kbReconcilePrefilter({}, { folder: repoDir }));
     expect(prefilterReport.resolved).toEqual(
       expect.arrayContaining([{ winnerId: bContraId, loserId: aContra.id }])
     );
@@ -281,24 +319,31 @@ describe('kb-reconcile two-branch e2e (T3.3, F6/D6)', () => {
     expect(rawRow(aUndecided.id).superseded_at).toBeFalsy();
     expect(rawRow(bUndecidedId).contradiction_of).toBe(aUndecided.id);
 
-    // --- Step 6: kb_export never publishes an absolute-basis entry --------
-    // Every basis in this fixture is an absolute temp path. The project bible
-    // only describes the exported tree, so a cited/basis path that is not
-    // repo-relative never qualifies (isRepoRelativePath), even with a matching
-    // hash -- the winner stays in the KB but is NOT added to the bible. Nothing
-    // qualifies, so the additive export leaves the file byte-identical (still
-    // the bare array written above) and commits nothing.
-    const canonicalPath = path.join(fleetDir, 'kb-canonical.json');
-    const bibleBefore = fs.readFileSync(canonicalPath, 'utf-8');
-    const exportReport = JSON.parse(await kbExport({}, { folder: repoDir }));
-    expect(exportReport.exported).toBe(5);
-    expect(exportReport.committed).toBe(false);
-    expect(fs.readFileSync(canonicalPath, 'utf-8')).toBe(bibleBefore);
+    // The winner's stored basis is exactly the one branch B's bible carried.
+    expect(provider.getSourceFileBases([bContraId]).get(bContraId)).toEqual(bContra.source_file_hashes);
 
-    const canonical = JSON.parse(bibleBefore) as { id: string }[];
+    // --- Step 6: kb_export publishes the winner with its carried basis -----
+    // The winner is CONFIRMED with a repo-relative basis matching the merged
+    // tree, so the additive export adds it (format v3, same source_file_hashes
+    // it arrived with). Every other KB entry here either cites an absolute
+    // temp path (never qualifies: isRepoRelativePath), is not CONFIRMED, or is
+    // superseded. Entries already in the bible are kept as they are.
+    const canonicalPath = path.join(fleetDir, 'kb-canonical.json');
+    // Admission reads cited files at HEAD, so the merged tree is committed first.
+    commitWorkTree(repoDir, 'merged tree');
+    const exportReport = JSON.parse(await kbExport({}, { folder: repoDir }));
+    expect(exportReport.exported).toBe(6);
+
+    const written = JSON.parse(fs.readFileSync(canonicalPath, 'utf-8')) as {
+      version: number; entries: Array<{ id: string; source_file_hashes?: Record<string, string> }>;
+    };
+    expect(written.version).toBe(3);
+    const canonical = written.entries;
     const canonicalIds = canonical.map(e => e.id);
 
-    expect(canonicalIds).not.toContain(bContraId);       // winner: absolute basis, not published
+    // reconcile winner is exported (the winner id is fresh, so it is NOT one of the bible's pre-existing entries)
+    expect(canonicalIds).toContain(bContraId);
+    expect(canonical.find(e => e.id === bContraId)?.source_file_hashes).toEqual(bContra.source_file_hashes);
     expect(canonicalIds).not.toContain(aContra.id);      // loser: superseded, excluded
     // The project export is ADDITIVE: the bible file imported above already
     // carries b-directive as a pre-existing entry, and an export never removes

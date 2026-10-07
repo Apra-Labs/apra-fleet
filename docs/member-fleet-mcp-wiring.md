@@ -24,7 +24,7 @@ a list without `mcp__` entries hides the member's `kb_*` / `code_*` tools even
 though the entry above is connected (a plain `claude -p` in the folder sees
 them; the role session does not). The Claude transform
 (`transformAgentForClaude`, used by `apra-fleet install` and by member
-provisioning) appends every member `kb_*` / `code_*` tool as an exact
+provisioning) appends every member-allowed `kb_*` / `code_*` tool as an exact
 `mcp__apra-fleet__<tool>` name to each restrictive list. Exact names, not the
 server-level `mcp__apra-fleet` pattern: a role run as a local subagent of an
 orchestrator session talks to the full fleet server and must still reach only
@@ -40,7 +40,14 @@ the installed role files in the orchestrator's home. A failure is
 
 Deny rules for Claude and agy are derived from the complement of the shared
 member allowlist (`MEMBER_DENIED_TOOLS`), so the allowlist stays the single
-source of truth. Legacy `apra-fleet-member` entries and `{disabled:true}`
+source of truth. The allowlist is explicit (`MEMBER_BASE_TOOLS` in
+`src/services/member-tool-allowlist.ts`), not a `kb_` / `code_` prefix rule:
+`kb_setup` and `kb_export` are never served to a member session, and
+`kb_promote` / `kb_resolve_contradiction` only to an engine member session
+opened with the kb_maintainer grant (`origin=engine&kb_maintainer=1`, which
+memberCall sets only when calling as a repository's kb_maintainer). Agent
+sessions connect through the plain `?member=<uuid>` entry, so those four stay
+denied there. Legacy `apra-fleet-member` entries and `{disabled:true}`
 entries are pruned on compose. Changing a member's provider removes the old
 provider's composed config and re-composes for the new one.
 The former global endpoint-registration path was deleted; there is exactly one

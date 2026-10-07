@@ -120,10 +120,14 @@ describe('code_context registry wiring (code self)', () => {
     const { handler } = (await recordRegisteredTools()).get('code_context')!;
     const input = codeContextSchema.parse({ name: 'validateUser' });
 
-    await handler(input);
+    await handler(input, { sessionId: 'sess-full' });
 
     expect(handleCodeContextSpy).toHaveBeenCalledWith(input, { repo: serverRepo, memberId: undefined });
-    expect(recordUsageSpy).toHaveBeenCalledWith('code_context', 'validateUser', serverRepo);
+    // Usage attribution (4th argument): a FULL session carries its session id
+    // but never a member id.
+    expect(recordUsageSpy).toHaveBeenCalledTimes(1);
+    expect(recordUsageSpy).toHaveBeenCalledWith('code_context', 'validateUser', serverRepo, { memberId: undefined, sessionId: 'sess-full' });
+    expect(recordUsageSpy.mock.calls[0][3]?.memberId).toBeUndefined();
     expect(enrichSpy).toHaveBeenCalledWith('validateUser', PROVIDER_RESULT, serverRepo, undefined);
   });
 
@@ -131,10 +135,14 @@ describe('code_context registry wiring (code self)', () => {
     const { handler } = (await recordRegisteredTools(memberToolScope(memberId, false))).get('code_context')!;
     const input = codeContextSchema.parse({ name: 'validateUser' });
 
-    await handler(input);
+    await handler(input, { sessionId: 'sess-member' });
 
     expect(handleCodeContextSpy).toHaveBeenCalledWith(input, { repo: memberRepo, memberId });
-    expect(recordUsageSpy).toHaveBeenCalledWith('code_context', 'validateUser', memberRepo);
+    // Usage attribution (4th argument): a MEMBER session's call is attributed
+    // to the member id (from the tool scope) and the session id.
+    expect(recordUsageSpy).toHaveBeenCalledTimes(1);
+    expect(recordUsageSpy).toHaveBeenCalledWith('code_context', 'validateUser', memberRepo, { memberId, sessionId: 'sess-member' });
+    expect(recordUsageSpy.mock.calls[0][3]?.memberId).toBe(memberId);
     expect(enrichSpy).toHaveBeenCalledWith('validateUser', PROVIDER_RESULT, memberRepo, undefined);
   });
 

@@ -1,0 +1,283 @@
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import os from 'node:os';
+import path from 'node:path';
+import fs from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { SqliteProvider } from '../../src/services/knowledge/sqlite-provider.js';
+import { kbImport } from '../../src/tools/kb-import.js';
+import { kbExport } from '../../src/tools/kb-export.js';
+import { kbBibleCommit } from '../../src/tools/kb-bible-commit.js';
+import { carriedBasisOf, parseBibleText } from '../../src/services/knowledge/bible-import.js';
+import { filterProjectBibleCandidates } from '../../src/services/knowledge/bible-basis-filter.js';
+import { computeFileHashBatch } from '../../src/services/knowledge/file-hash.js';
+import { getMemberBibleView, resetMemberBibleViews } from '../../src/services/knowledge/member-bible-view.js';
+import * as kbProvidersModule from '../../src/services/knowledge/kb-providers.js';
+import type { KBEntryInput } from '../../src/services/knowledge/types.js';
+
+// Bible format v3 READERS: kb_import (and the member bible view, which shares
+// the loader) store the basis a v3 entry CARRIES -- never a re-hash of this
+// clone's files -- and a v1/v2 entry (or an invalid carried map) gets only a
+// local freshness-only basis the shared bible predicate never sees.
+
+const BIBLE_REL = '.fleet/kb-canonical.json';
+// A hash no local file has: the basis branch A verified against.
+const FOREIGN_HASH = 'f'.repeat(64);
+
+let root: string;
+let repo: string;
+let provider: SqliteProvider;
+
+function git(dir: string, args: string[]): string {
+  return execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t.local', ...args],
+    { cwd: dir, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] });
+}
+
+function entry(id: string, over: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id, type: 'knowledge', title: 'Title of ' + id, summary: 'Summary of ' + id,
+    symbols: ['sym_' + id.replace(/-/g, '_')], source_files: ['src/a.ts'], confidence: 'CONFIRMED',
+    updated_at: '2026-01-01T00:00:00.000Z', ...over,
+  };
+}
+
+function writeBible(version: 2 | 3, entries: unknown[]): string {
+  const p = path.join(repo, BIBLE_REL);
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, JSON.stringify({
+    version, provenance: { commit: null, branch: 'main', entry_count: entries.length }, entries,
+  }, null, 2) + '\n');
+  return p;
+}
+
+async function localHash(rel: string): Promise<string> {
+  const r = await computeFileHashBatch([rel], { cwd: repo });
+  return r[rel]!.hash;
+}
+
+async function admitted(id: string): Promise<boolean> {
+  const e = (await provider.list({ confidence: ['CONFIRMED'] })).filter(x => x.id === id);
+  const out = await filterProjectBibleCandidates(e, provider.getSourceFileBases([id]), repo);
+  return out.some(x => x.id === id);
+}
+
+beforeEach(async () => {
+  root = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-bible-v3-import-'));
+  repo = path.join(root, 'repo');
+  fs.mkdirSync(path.join(repo, 'src'), { recursive: true });
+  git(root, ['init', '--quiet', repo]);
+  fs.writeFileSync(path.join(repo, 'src', 'a.ts'), 'export const a = 1;\n');
+  // Committed: bible admission reads cited files at HEAD.
+  git(repo, ['add', 'src/a.ts']);
+  git(repo, ['commit', '--quiet', '--no-verify', '-m', 'seed']);
+  provider = new SqliteProvider(path.join(root, 'kb.sqlite'), repo);
+  await provider.init();
+  vi.spyOn(kbProvidersModule, 'getKbProviders').mockResolvedValue({
+    project: provider, global: provider, projectSlug: 'test',
+  } as any);
+});
+
+afterEach(() => {
+  provider.close();
+  vi.restoreAllMocks();
+  resetMemberBibleViews();
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+describe('kb_import of a v3 bible keeps the carried basis', () => {
+  it('cited file differs locally: stores the CARRIED hash, not the local one, and the predicate does not admit it', async () => {
+    writeBible(3, [entry('kb-v3-differs', { source_file_hashes: { 'src/a.ts': FOREIGN_HASH } })]);
+    const report = JSON.parse(await kbImport({ skip_sweep: true }, { folder: repo }));
+    expect(report.imported).toBe(1);
+
+    const stored = provider.getSourceFileBases(['kb-v3-differs']).get('kb-v3-differs');
+    expect(stored).toEqual({ 'src/a.ts': FOREIGN_HASH });
+    expect(stored!['src/a.ts']).not.toBe(await localHash('src/a.ts'));
+    expect(await admitted('kb-v3-differs')).toBe(false);
+  });
+
+  it('the post-import sweep stales an entry whose carried basis does not match this worktree', async () => {
+    writeBible(3, [entry('kb-v3-swept', { source_file_hashes: { 'src/a.ts': FOREIGN_HASH } })]);
+    const report = JSON.parse(await kbImport({}, { folder: repo }));
+    expect(report.imported).toBe(1);
+    expect(report.sweep.staled).toBe(1);
+  });
+
+  it('cited files match: stores the carried hashes and the entry is admitted', async () => {
+    const hash = await localHash('src/a.ts');
+    writeBible(3, [entry('kb-v3-matches', { source_file_hashes: { 'src/a.ts': hash } })]);
+    const report = JSON.parse(await kbImport({}, { folder: repo }));
+    expect(report.imported).toBe(1);
+    expect(report.sweep.staled).toBe(0);
+    expect(provider.getSourceFileBases(['kb-v3-matches']).get('kb-v3-matches')).toEqual({ 'src/a.ts': hash });
+    expect(await admitted('kb-v3-matches')).toBe(true);
+  });
+
+  it('a v2 bible imports; its entries get no verified basis and are excluded by the predicate', async () => {
+    writeBible(2, [entry('kb-v2-entry')]);
+    const report = JSON.parse(await kbImport({}, { folder: repo }));
+    expect(report.imported).toBe(1);
+    expect(provider.getSourceFileBases(['kb-v2-entry']).get('kb-v2-entry')).toBeNull();
+    expect(await admitted('kb-v2-entry')).toBe(false);
+  });
+
+  it('an invalid carried map (absolute key, or a cited file missing) gets no verified basis', async () => {
+    writeBible(3, [
+      entry('kb-v3-abs', { source_file_hashes: { '/etc/passwd': FOREIGN_HASH, 'src/a.ts': FOREIGN_HASH } }),
+      entry('kb-v3-partial', { source_files: ['src/a.ts', 'src/b.ts'], source_file_hashes: { 'src/a.ts': FOREIGN_HASH } }),
+    ]);
+    fs.writeFileSync(path.join(repo, 'src', 'b.ts'), 'export const b = 1;\n');
+    const report = JSON.parse(await kbImport({ skip_sweep: true }, { folder: repo }));
+    expect(report.imported).toBe(2);
+    const bases = provider.getSourceFileBases(['kb-v3-abs', 'kb-v3-partial']);
+    expect(bases.get('kb-v3-abs')).toBeNull();
+    expect(bases.get('kb-v3-partial')).toBeNull();
+  });
+});
+
+describe('normal (non-import) capture still hashes local files', () => {
+  it('a kb_capture-style capture computes its basis from the local file', async () => {
+    const input: KBEntryInput = {
+      type: 'knowledge', title: 'Local capture claim', summary: 'Local summary', content: 'Local content.',
+      source_files: ['src/a.ts'], symbols: ['localSym'], tags: [], content_hash: '', content_hash_type: 'sha256',
+      flagged_for_review: false, author: 'test', source: 'doer', confidence: 'INFERRED',
+    };
+    const { id } = await provider.capture(input);
+    expect(provider.getSourceFileBases([id]).get(id)).toEqual({ 'src/a.ts': await localHash('src/a.ts') });
+  });
+
+  it('carriedBasis is ignored without importMode', async () => {
+    const input: KBEntryInput = {
+      type: 'knowledge', title: 'Not an import claim', summary: 'Not import summary', content: 'Not import.',
+      source_files: ['src/a.ts'], symbols: ['notImportSym'], tags: [], content_hash: '', content_hash_type: 'sha256',
+      flagged_for_review: false, author: 'test', source: 'doer', confidence: 'INFERRED',
+    };
+    const { id } = await provider.capture(input, { carriedBasis: { 'src/a.ts': FOREIGN_HASH } });
+    expect(provider.getSourceFileBases([id]).get(id)).toEqual({ 'src/a.ts': await localHash('src/a.ts') });
+  });
+});
+
+describe('bible v3 parsing and the member bible view', () => {
+  it('parseBibleText accepts v1, v2 and v3 shapes', () => {
+    const e = entry('kb-parse');
+    expect(parseBibleText(JSON.stringify([e]), 'x', 't')).toHaveLength(1);
+    expect(parseBibleText(JSON.stringify({ version: 2, provenance: {}, entries: [e] }), 'x', 't')).toHaveLength(1);
+    expect(parseBibleText(JSON.stringify({ version: 3, provenance: {}, entries: [e] }), 'x', 't')).toHaveLength(1);
+  });
+
+  it('carriedBasisOf returns a key-sorted copy of a valid map and null otherwise', () => {
+    expect(carriedBasisOf({ source_files: ['b', 'a'], source_file_hashes: { b: 'h2', a: 'h1' } })).toEqual({ a: 'h1', b: 'h2' });
+    expect(Object.keys(carriedBasisOf({ source_files: ['b', 'a'], source_file_hashes: { b: 'h2', a: 'h1' } })!)).toEqual(['a', 'b']);
+    expect(carriedBasisOf({ source_files: ['a'] })).toBeNull();
+    expect(carriedBasisOf({ source_files: ['a'], source_file_hashes: {} })).toBeNull();
+    expect(carriedBasisOf({ source_files: ['a'], source_file_hashes: { a: '' } })).toBeNull();
+    expect(carriedBasisOf({ source_files: ['a'], source_file_hashes: ['a'] })).toBeNull();
+    expect(carriedBasisOf({ source_files: ['../a'], source_file_hashes: { '../a': 'h' } })).toBeNull();
+  });
+
+  it('member bible view loads a v3 file and keeps the carried basis', async () => {
+    writeBible(3, [entry('kb-view-v3', { source_file_hashes: { 'src/a.ts': FOREIGN_HASH } })]);
+    const view = await getMemberBibleView({ folder: repo });
+    const listed = await view.list({ confidence: ['CONFIRMED'] });
+    expect(listed.map(e => e.id)).toEqual(['kb-view-v3']);
+    expect(view.getSourceFileBases(['kb-view-v3']).get('kb-view-v3')).toEqual({ 'src/a.ts': FOREIGN_HASH });
+  });
+});
+
+// Legacy (v1/v2) bible entries get a LOCAL freshness-only basis: hashed from
+// this clone so the entry can still go stale when code drifts, but never
+// exported, never used for bible admission and never used for a mechanical
+// contradiction win.
+describe('legacy bible entries get a local freshness-only basis', () => {
+  const BASE = { baseBranch: 'main', baseCommit: 'a'.repeat(40) };
+
+  function row(id: string): { source_file_hashes: string; local_basis_only: number; stale: number } {
+    return (provider as any).getDb()
+      .prepare('SELECT source_file_hashes, local_basis_only, stale FROM entries WHERE id = ?').get(id);
+  }
+
+  // The bible lives outside the repo so kb_export / kb_bible_commit start
+  // from no .fleet/kb-canonical.json, and anything written there is theirs.
+  function writeExternalBible(version: 2 | 3, entries: unknown[]): string {
+    const p = path.join(root, 'external-bible.json');
+    fs.writeFileSync(p, JSON.stringify({
+      version, provenance: { commit: null, branch: 'main', entry_count: entries.length }, entries,
+    }, null, 2) + '\n');
+    return p;
+  }
+
+  it('a v2 import stores this clone\'s hashes flagged local-only, and editing a cited file stales it', async () => {
+    const p = writeExternalBible(2, [entry('kb-legacy-fresh')]);
+    const report = JSON.parse(await kbImport({ path: p }, { folder: repo }));
+    expect(report.imported).toBe(1);
+    expect(report.sweep.checked).toBe(1);
+    expect(report.sweep.staled).toBe(0);
+
+    const r = row('kb-legacy-fresh');
+    expect(r.local_basis_only).toBe(1);
+    expect(JSON.parse(r.source_file_hashes)).toEqual({ 'src/a.ts': await localHash('src/a.ts') });
+    expect(r.stale).toBe(0);
+    // Never a verified basis.
+    expect(provider.getSourceFileBases(['kb-legacy-fresh']).get('kb-legacy-fresh')).toBeNull();
+
+    fs.writeFileSync(path.join(repo, 'src', 'a.ts'), 'export const a = 2;\n');
+    expect((await provider.freshnessSweep(repo)).staled).toBe(1);
+    expect(row('kb-legacy-fresh').stale).toBe(1);
+
+    // Reverting the drift revives it, as for any basis.
+    fs.writeFileSync(path.join(repo, 'src', 'a.ts'), 'export const a = 1;\n');
+    expect((await provider.freshnessSweep(repo)).unstaled).toBe(1);
+  });
+
+  it('kb_export and kb_bible_commit never carry the local basis out', async () => {
+    const p = writeExternalBible(2, [entry('kb-legacy-out')]);
+    await kbImport({ path: p }, { folder: repo });
+    expect(row('kb-legacy-out').local_basis_only).toBe(1);
+    const biblePath = path.join(repo, BIBLE_REL);
+
+    const exp = JSON.parse(await kbExport({ scope: 'project' }, { folder: repo }));
+    expect(exp.exported).toBe(0);
+    expect(fs.existsSync(biblePath)).toBe(false);
+
+    const commit = JSON.parse(await kbBibleCommit({ ids: ['kb-legacy-out'], ...BASE }, { folder: repo }));
+    expect(commit.merged).toEqual([]);
+    expect(commit.skipped).toEqual([{ id: 'kb-legacy-out', reason: 'basis_mismatch' }]);
+    expect(commit.committed).toBe(false);
+    expect(fs.existsSync(biblePath)).toBe(false);
+  });
+
+  it('a v3 entry keeps its carried map with the local-only flag unset, and stays admissible', async () => {
+    const hash = await localHash('src/a.ts');
+    const p = writeExternalBible(3, [entry('kb-v3-verified', { source_file_hashes: { 'src/a.ts': hash } })]);
+    await kbImport({ path: p }, { folder: repo });
+    const r = row('kb-v3-verified');
+    expect(r.local_basis_only).toBe(0);
+    expect(JSON.parse(r.source_file_hashes)).toEqual({ 'src/a.ts': hash });
+    expect(provider.getSourceFileBases(['kb-v3-verified']).get('kb-v3-verified')).toEqual({ 'src/a.ts': hash });
+
+    const commit = JSON.parse(await kbBibleCommit({ ids: ['kb-v3-verified'], ...BASE }, { folder: repo }));
+    expect(commit.merged).toEqual(['kb-v3-verified']);
+    const written = JSON.parse(fs.readFileSync(path.join(repo, BIBLE_REL), 'utf8'));
+    expect(written.entries[0].source_file_hashes).toEqual({ 'src/a.ts': hash });
+  });
+
+  it('the reconcile prefilter never resolves a pair on a local basis', async () => {
+    // Original: a v3 entry whose carried hash does not match this clone.
+    // Challenger: a legacy entry whose local basis trivially matches. Read as
+    // a verified basis, the challenger would win mechanically.
+    const p = writeExternalBible(3, [
+      entry('kb-pair-original', { source_file_hashes: { 'src/a.ts': FOREIGN_HASH } }),
+      entry('kb-pair-legacy', { symbols: ['otherSym'] }),
+    ]);
+    const report = JSON.parse(await kbImport({ path: p, skip_sweep: true }, { folder: repo }));
+    expect(report.imported).toBe(2);
+    expect(row('kb-pair-legacy').local_basis_only).toBe(1);
+    const db = (provider as any).getDb();
+    db.prepare('UPDATE entries SET flagged_for_review = 1 WHERE id = ?').run('kb-pair-original');
+    db.prepare('UPDATE entries SET contradiction_of = ? WHERE id = ?').run('kb-pair-original', 'kb-pair-legacy');
+
+    const res = await provider.reconcilePrefilter();
+    expect(res.pairs).toBe(1);
+    expect(res.resolved).toEqual([]);
+    expect(res.left_for_agent).toEqual([{ originalId: 'kb-pair-original', challengerId: 'kb-pair-legacy' }]);
+  });
+});
