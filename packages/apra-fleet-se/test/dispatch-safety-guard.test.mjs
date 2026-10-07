@@ -426,7 +426,15 @@ const DISPATCH_ROLE_PATH = path.join(__dirname, '../fleet-sprint/dispatch-role.m
 // from the diffFiles site bumped above: that one stays the cumulative
 // origin/base...branch diff for the KB-injection hint context; these two
 // compute THIS round's diff only, after a fetch/fast-forward merge.
-const EXPECTED_COMMAND_COUNT = 8;
+// Bumped 8 -> 9: createSprintChangedFiles' single command() site
+// (`git diff --name-only origin/<base>...<branch>`) for
+// kbWork.demotionCandidates({ scope: 'sprint' }) -- the FINAL review's
+// changed-file scope, which has no round to diff from. Passes member_name
+// and is failSoft, verified compliant. A THIRD cumulative-range site is not
+// a duplicate of the diffFiles one: this one fetches/fast-forward-merges the
+// maintainer first and feeds the demotion-candidate filter, while diffFiles
+// stays the unpulled KB-injection hint-context read.
+const EXPECTED_COMMAND_COUNT = 9;
 // Bumped 9 -> 10 (2026-07-18): the doer max_turns-exhaustion resume path
 // (dispatchDoerResume) adds one new agent() call site -- a resume-and-continue
 // dispatch on the SAME session with an escalated max_turns, verified compliant

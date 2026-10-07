@@ -257,6 +257,94 @@ export const KB_MAX_PROMOTION_CANDIDATES = 40;
 /** Max demotion candidates offered to one reviewer, so the prompt stays bounded. */
 export const KB_MAX_DEMOTION_CANDIDATES = 20;
 
+/**
+ * How many owned CONFIRMED rows the demotion-candidate READ asks for, which is
+ * deliberately NOT the offer cap above.
+ *
+ * The cap is an OFFER cap -- how much of this prompt the candidate block may
+ * occupy. Using it as the read limit instead makes it a PRE-filter: a
+ * maintainer holding more owned CONFIRMED rows than the cap has an arbitrary
+ * 20 of them fetched, and the eligibility/changed-file filters then run over
+ * that arbitrary slice, so a genuinely relevant entry can be truncated away
+ * before anything ever looks at whether it is relevant. Read wide, filter,
+ * THEN cap.
+ */
+export const KB_DEMOTION_READ_LIMIT = 500;
+
+/**
+ * The EXACT kb_query arguments demotionCandidates issues, as a standalone
+ * pure function so the real read path can be exercised end-to-end against a
+ * real member session (tests/knowledge/) rather than only against a fake that
+ * re-states these arguments and therefore cannot catch them being wrong.
+ *
+ * Every field is load-bearing, and the previous shape of this read returned
+ * nothing in a real sprint:
+ *
+ *  - `own_scope: true` is the whole fix. In a MEMBER session getSelfReadKb
+ *    routes any read that does not explicitly name INFERRED/UNVERIFIED to the
+ *    member's CHECKOUT BIBLE VIEW, and bible-import.ts stamps every row of
+ *    that view `tags: []` -- so a CONFIRMED read filtered by a member tag can
+ *    never match anything, in any sprint. own_scope forces the PER-REPO DB
+ *    with the caller's own ownerTag applied, which is exactly the row set
+ *    kb_demote's ownerTag check can act on.
+ *  - `tag` is still required: kb_query refuses a call carrying neither
+ *    `query`, `tag` nor `flagged_only`, and this is a listing, not a search.
+ *    It names the same member tag own_scope's server-side ownerTag applies.
+ *  - `confidence: ['CONFIRMED']` -- kb_demote refuses anything else
+ *    (E-DEMOTE-NOT-CONFIRMED).
+ *  - `include_stale: true` and `exclude_disputed: false` ADMIT the rows most
+ *    worth demoting. SqliteProvider.demote() documents a STALE entry as
+ *    demotable on purpose (staleness is a freshness verdict; trust is a
+ *    separate axis), and a contradiction-flagged row is likewise demotable.
+ *    The default read drops both, which silently excluded the best
+ *    candidates.
+ *  - include_stale ALSO admits SUPERSEDED rows (kb_query maps the one input
+ *    flag onto both provider options), and kb_demote refuses those
+ *    (E-DEMOTE-SUPERSEDED) -- so the caller must drop them itself. See
+ *    isDemotableCandidate below.
+ *
+ * @param {string} memberId the maintainer member uuid whose session the read runs in
+ * @returns {object} kb_query arguments
+ */
+export function buildDemotionCandidateQuery(memberId) {
+    return {
+        tag: `member:${memberId}`,
+        own_scope: true,
+        confidence: ['CONFIRMED'],
+        include_stale: true,
+        exclude_disputed: false,
+        limit: KB_DEMOTION_READ_LIMIT,
+    };
+}
+
+/**
+ * Whether kb_demote would ACCEPT this entry from its owner's session -- the
+ * eligibility set read off SqliteProvider.demote()'s refusals rather than
+ * guessed at, so the reviewer is never offered an id that can only produce a
+ * refusal:
+ *
+ *   superseded_at set  -> E-DEMOTE-SUPERSEDED
+ *   type user-directive -> E-DEMOTE-REFUSED-DIRECTIVE
+ *   confidence != CONFIRMED -> E-DEMOTE-NOT-CONFIRMED
+ *
+ * Ownership ("Entry not found" for a row without the caller's member tag) is
+ * enforced by the read itself (own_scope's ownerTag), not re-checked here.
+ *
+ * NOT a refusal, and deliberately NOT filtered: `stale` and
+ * `flagged_for_review`/`contradiction_of`. demote() permits a stale entry
+ * explicitly and calls those the ones most worth demoting.
+ *
+ * @param {object} entry
+ * @returns {boolean}
+ */
+export function isDemotableCandidate(entry) {
+    if (!entry || typeof entry.id !== 'string' || !entry.id) return false;
+    if (entry.confidence !== 'CONFIRMED') return false;
+    if (entry.type === 'user-directive') return false;
+    if (entry.superseded_at) return false;
+    return true;
+}
+
 /** Display label for a member record in log lines. */
 function memberLabel(member) {
     return (member && (member.name || member.id)) || 'unknown member';
@@ -336,6 +424,8 @@ function memberNameOf(member) {
  *   checkedOutBranch?: (memberName: string) => Promise<{ branch: string|null, sprintBranch: string|null }>,
  *   bibleUnpushed?: (memberName: string, bibleFile: string) => Promise<{ unpushed: boolean|null, reason?: string }>,
  *   unpushedOnlyBible?: (memberName: string, bibleFile: string) => Promise<{ onlyBible: boolean, reason?: string }>,
+ *   roundChangedFiles?: (memberName: string) => Promise<string[]>,
+ *   sprintChangedFiles?: (memberName: string) => Promise<string[]>,
  *   sprintStartMs?: number|(() => number),
  *   log?: Function,
  * }} opts
@@ -353,6 +443,15 @@ export function createKbWorkClient(opts = {}) {
         // computes for the KB-injection hint context -- that caller and
         // promotionCandidates are both left unchanged).
         roundChangedFiles,
+        // The CUMULATIVE sprint changed-file set (baseBranch...branch) for a
+        // demotionCandidates({ scope: 'sprint' }) read -- the FINAL review's
+        // scope, because final review judges the whole sprint diff and so has
+        // no "this round" to speak of. Injected for the same reason
+        // roundChangedFiles is (the fetch/merge and git diff are git
+        // operations kb.mjs has no access to), and kept a SEPARATE injection
+        // rather than a flag on one callback so which diff a scope means is
+        // decided once, in runner.js's wiring, instead of inside a git helper.
+        sprintChangedFiles,
         log = () => {},
     } = opts;
     /** The sprint's start time (ms since epoch) from the sprint state, or null when unknown. */
@@ -1043,8 +1142,8 @@ export function createKbWorkClient(opts = {}) {
             }
         },
         /**
-         * The CONFIRMED entries this reviewer may demote
-         * back to INFERRED, scoped to THIS review round.
+         * The CONFIRMED entries this reviewer may demote back to INFERRED,
+         * scoped to the review that is about to run.
          *
          * Mirrors promotionCandidates in every structural respect it shares
          * with it -- reviewMaintainerFor to resolve the reviewer's repository
@@ -1057,39 +1156,82 @@ export function createKbWorkClient(opts = {}) {
          * kb_demote can actually apply: reviewMaintainerFor resolves exactly
          * the maintainer whose session kb_demote's ownerTag check requires.
          *
-         * UNLIKE promotionCandidates (windowed by sprint start time), an entry
-         * is kept only when it also touches a file changed in THIS review
-         * round. `opts.roundChangedFiles(target.member)` (injected; see
-         * runner.js) fetches and fast-forward-merges the maintainer's
-         * checkout, THEN diffs from the previous round's merged tip (or, on
-         * the first round, the sprint's base branch) to the new one -- the
-         * per-round diff, computed AFTER the merge so it reflects this
-         * round's commits rather than a stale pre-merge snapshot, and never
-         * the cumulative origin/base...branch diff kbInjection's diffFiles
-         * computes for the KB-injection hint context (that caller, and
-         * promotionCandidates, are both left unchanged by this). Demoting a
-         * CONFIRMED claim this round never re-checked is never this review's
-         * to offer, so no changed files this round means nothing is offered.
+         * THE READ. buildDemotionCandidateQuery (above) is the whole of it,
+         * and its `own_scope: true` is why this returns anything at all: a
+         * MEMBER-session CONFIRMED read without it is answered from the
+         * checkout bible view, whose rows are all untagged, so the owner
+         * filter could never match and this offered nothing in every real
+         * sprint. The read is also deliberately WIDE -- stale and
+         * contradiction-flagged rows included, since kb_demote accepts both
+         * and they are the ones most worth re-checking -- and limited to
+         * KB_DEMOTION_READ_LIMIT rather than the offer cap.
+         *
+         * THEN FILTER, THEN CAP, in that order. Eligibility
+         * (isDemotableCandidate: drops superseded, user-directive and any
+         * non-CONFIRMED row the read let through) and changed-file relevance
+         * run over the WHOLE read; only the survivors are capped at
+         * KB_MAX_DEMOTION_CANDIDATES. Capping first would make the offer cap
+         * a read pre-filter and let a maintainer with many owned CONFIRMED
+         * rows have every genuinely relevant one truncated away before
+         * anything checked whether it was relevant.
+         *
+         * SCOPE IS AN ARGUMENT, NOT A GUESS ABOUT THE CALLER. UNLIKE
+         * promotionCandidates (windowed by sprint start time), an entry is
+         * kept only when it touches a file in the changed-file set of the
+         * review being prepared, and WHICH set that is comes from
+         * `opts.scope`, never from inspecting who called:
+         *
+         *   'round'  (default) -- a PER-ROUND review. `roundChangedFiles`
+         *     fetches and fast-forward-merges the maintainer's checkout, THEN
+         *     diffs from the previous round's merged tip (or, on the first
+         *     round, the sprint's base branch) to the new one. Computed AFTER
+         *     the merge so it reflects this round's commits rather than a
+         *     stale pre-merge snapshot.
+         *   'sprint' -- the FINAL review, which judges the whole sprint diff
+         *     and therefore has no "this round": `sprintChangedFiles` gives
+         *     the CUMULATIVE baseBranch...branch diff.
+         *
+         * Neither is kbInjection's `diffFiles` (the KB-injection hint
+         * context's own cumulative diff), and promotionCandidates is
+         * unchanged by all of this.
+         *
+         * Demoting a CONFIRMED claim this review never re-checked is never
+         * this review's to offer, so an empty changed-file set offers
+         * nothing.
          *
          * Best-effort like every other KB read here: no maintainer, an
-         * unreachable one, no `roundChangedFiles` wired, a round-diff that
-         * could not be computed, or an erroring/rejecting kb_query all
-         * degrade to [] and must never fail the review dispatch.
+         * unreachable one, no changed-files callback wired for the requested
+         * scope, a diff that could not be computed, or an erroring/rejecting
+         * kb_query all degrade to [] and must never fail the review dispatch
+         * -- per-round or final.
          *
          * @param {object} member
+         * @param {{ scope?: 'round'|'sprint' }} [opts]
          * @returns {Promise<object[]>}
          */
-        async demotionCandidates(member) {
+        async demotionCandidates(member, { scope = 'round' } = {}) {
+            // Explicit, and explicitly validated: an unknown scope is a wiring
+            // bug, and silently falling back to the round diff at FINAL review
+            // would offer the reviewer a set scoped to a round that does not
+            // exist. Degrade to nothing rather than to the wrong scope.
+            if (scope !== 'round' && scope !== 'sprint') {
+                log(`[kb-work] demotion candidates requested with unknown scope '${scope}' (non-fatal): offering none.`);
+                return [];
+            }
+            const changedFilesFor = scope === 'sprint' ? sprintChangedFiles : roundChangedFiles;
+            const scopeLabel = scope === 'sprint' ? "this sprint's cumulative" : "this round's";
             const target = active ? reviewMaintainerFor(memberNameOf(member)) : null;
             if (!target) return [];
             // Replace (never accumulate) this review scope's offered set up
-            // front, so a failed read leaves nothing offered from a prior round.
+            // front, so a failed read leaves nothing offered from a prior
+            // round -- and so the FINAL review's call cannot inherit the last
+            // per-round call's offers either.
             offeredDemotions.set(target.repo, new Set());
             // Writes still queued for this repository (a capture or a
             // promotion/discard from this very round) get their chance to
             // land before the read, same as promotionCandidates.
             if (queues.has(target.repo)) await flush(target.repo);
-            if (typeof roundChangedFiles !== 'function') return [];
+            if (typeof changedFilesFor !== 'function') return [];
             // Same branch guard flushRepo/commitRepo apply before every G-pull
             // on the maintainer: a fast-forward merge does not care what
             // branch HEAD is currently on, only that HEAD is an ancestor of
@@ -1098,20 +1240,15 @@ export function createKbWorkClient(opts = {}) {
             if (!(await onSprintBranch(target.member, target.repo, 0, 'demotion candidate read'))) return [];
             let changed;
             try {
-                changed = await roundChangedFiles(target.member);
+                changed = await changedFilesFor(target.member);
             } catch (err) {
-                log(`[kb-work] could not compute this round's changed files on maintainer '${target.member}' (non-fatal): ${err.message}`);
+                log(`[kb-work] could not compute ${scopeLabel} changed files on maintainer '${target.member}' (non-fatal): ${err.message}`);
                 return [];
             }
             const files = Array.isArray(changed) ? changed.filter((f) => typeof f === 'string' && f.trim()) : [];
             if (files.length === 0) return [];
             try {
-                const res = await memberCall(target.record, 'kb_query', {
-                    tag: `member:${target.record.id}`,
-                    confidence: ['CONFIRMED'],
-                    exclude_disputed: true,
-                    limit: KB_MAX_DEMOTION_CANDIDATES,
-                });
+                const res = await memberCall(target.record, 'kb_query', buildDemotionCandidateQuery(target.record.id));
                 if (isToolError(res)) {
                     log(`[kb-work] kb_query for demotion candidates rejected on maintainer '${target.member}' (non-fatal): ${toolErrorText(res)}`);
                     return [];
@@ -1120,12 +1257,11 @@ export function createKbWorkClient(opts = {}) {
                 const results = parsed && Array.isArray(parsed.l1_results) ? parsed.l1_results
                     : (parsed && Array.isArray(parsed.results) ? parsed.results : []);
                 const fileSet = new Set(files);
-                const touchesThisRound = (e) => Array.isArray(e.source_files) && e.source_files.some((f) => fileSet.has(f));
+                const touchesChangedFiles = (e) => Array.isArray(e.source_files) && e.source_files.some((f) => fileSet.has(f));
+                // Filter the WHOLE read first (eligibility, then relevance),
+                // and only cap the survivors -- see the method comment.
                 const offered = results
-                    // kb_demote refuses a user-directive row outright (same
-                    // reason promotionCandidates excludes one), so offering
-                    // one here can only produce a guaranteed refusal.
-                    .filter((e) => e && typeof e.id === 'string' && e.type !== 'user-directive' && touchesThisRound(e))
+                    .filter((e) => isDemotableCandidate(e) && touchesChangedFiles(e))
                     .slice(0, KB_MAX_DEMOTION_CANDIDATES);
                 offeredDemotions.set(target.repo, new Set(offered.map((e) => e.id)));
                 return offered;

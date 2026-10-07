@@ -2,8 +2,9 @@ import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
     createKbWorkClient, vetKbWork, kbDemotionBlock, KB_MAX_DEMOTION_CANDIDATES, KB_MIN_PROMOTE_REASON,
+    KB_DEMOTION_READ_LIMIT, buildDemotionCandidateQuery, isDemotableCandidate,
 } from '../fleet-sprint/kb.mjs';
-import { createRoundChangedFiles, buildReviewerPrompt } from '../fleet-sprint/runner.js';
+import { createRoundChangedFiles, createSprintChangedFiles, buildReviewerPrompt } from '../fleet-sprint/runner.js';
 import { fakeMaintainerSelector } from './helpers/kb-maintainer-fakes.mjs';
 
 // Covers kbWork.demotionCandidates() --
@@ -24,6 +25,13 @@ const withMaintainer = () => fakeMaintainerSelector({
     maintainerOf: { 'example.com/warehouse': MAINTAINER },
 });
 
+// The fake kb_query HONOURS args.limit -- it serves at most that many rows,
+// exactly as the real provider does. That is what makes the cap-after-filter
+// test below able to FAIL: with the offer cap used as the read limit, rows
+// sitting past position 20 of the maintainer's owned CONFIRMED set are never
+// served at all, so no amount of later filtering can recover them. A fake that
+// ignored `limit` would return every row regardless of the ordering bug and
+// would quietly pass either implementation.
 function makeCallTool(entries, opts = {}) {
     const calls = [];
     return {
@@ -33,7 +41,8 @@ function makeCallTool(entries, opts = {}) {
             if (name === 'kb_query') {
                 if (opts.throwOnList) throw new Error('kb unavailable');
                 if (opts.rejectOnList) return { isError: true, content: [{ type: 'text', text: 'denied' }] };
-                return { content: [{ type: 'text', text: JSON.stringify({ l1_results: entries }) }] };
+                const limit = typeof args.limit === 'number' ? args.limit : entries.length;
+                return { content: [{ type: 'text', text: JSON.stringify({ l1_results: entries.slice(0, limit) }) }] };
             }
             return {};
         },
@@ -59,9 +68,23 @@ describe('createKbWorkClient.demotionCandidates', () => {
 
         const queryCall = calls.find((c) => c.name === 'kb_query');
         assert.ok(queryCall, 'kb_query was never called -- the reviewer gets no demotion candidates');
-        assert.deepEqual(queryCall.args, {
-            tag: `member:${MAINTAINER.id}`, confidence: ['CONFIRMED'], exclude_disputed: true, limit: KB_MAX_DEMOTION_CANDIDATES,
-        });
+        // Each field spelled out rather than compared to the builder's own
+        // output, which would be tautological. These ARE the four defects
+        // that made the first implementation return nothing in a real sprint.
+        assert.equal(
+            queryCall.args.own_scope, true,
+            'without own_scope a MEMBER-session CONFIRMED read is answered from the checkout bible view, '
+            + 'whose rows are all untagged -- the owner filter can then never match, in any sprint',
+        );
+        assert.equal(queryCall.args.tag, `member:${MAINTAINER.id}`, 'kb_query refuses a call with neither query, tag nor flagged_only');
+        assert.deepEqual(queryCall.args.confidence, ['CONFIRMED'], 'kb_demote accepts nothing else (E-DEMOTE-NOT-CONFIRMED)');
+        assert.equal(queryCall.args.include_stale, true, 'a STALE CONFIRMED row is demotable and is exactly the kind most worth re-checking');
+        assert.equal(queryCall.args.exclude_disputed, false, 'a contradiction-flagged CONFIRMED row is demotable too and must not be dropped by the read');
+        assert.equal(queryCall.args.limit, KB_DEMOTION_READ_LIMIT, 'the READ limit must be the wide one');
+        assert.notEqual(
+            queryCall.args.limit, KB_MAX_DEMOTION_CANDIDATES,
+            'the 20-entry OFFER cap must never be used as the read limit -- that makes it a pre-filter',
+        );
         assert.equal(queryCall.member, MAINTAINER, 'the read must run in the maintainer session that holds the entries');
         // kb-aaa touches server/transit.js (this round's changed files);
         // kb-bbb touches server/rules.js, which this round never changed.
@@ -102,10 +125,128 @@ describe('createKbWorkClient.demotionCandidates', () => {
             memberCall, maintainers: withMaintainer(), roundChangedFiles: async () => ['server/transit.js'], log: () => {},
         });
 
-        const candidates = await client.demotionCandidates(REVIEWER);
+        const candidates = await client.demotionCandidates(REVIEWER, { scope: 'round' });
 
         assert.equal(candidates.length, KB_MAX_DEMOTION_CANDIDATES, 'the cap was not applied');
         assert.ok(!candidates.some((c) => c.id === 'kb-20'), 'the 21st matching entry must not be offered');
+    });
+
+    // ---- eligibility mirrors kb_demote's own refusals -----------------------
+    // Read off SqliteProvider.demote(): superseded -> E-DEMOTE-SUPERSEDED,
+    // user-directive -> E-DEMOTE-REFUSED-DIRECTIVE, non-CONFIRMED ->
+    // E-DEMOTE-NOT-CONFIRMED. STALE is explicitly NOT a refusal there -- the
+    // method's own comment calls a stale entry one of the most worth demoting,
+    // because staleness is a freshness verdict and trust is a separate axis.
+    test('offers a STALE owned CONFIRMED entry -- demote() permits it, so filtering it out drops the best candidates', async () => {
+        const { memberCall } = makeCallTool([
+            { id: 'kb-stale', type: 'knowledge', confidence: 'CONFIRMED', stale: true, title: 'stale but demotable', summary: 'x', source_files: ['server/transit.js'] },
+        ]);
+        const client = createKbWorkClient({
+            memberCall, maintainers: withMaintainer(), roundChangedFiles: async () => ['server/transit.js'], log: () => {},
+        });
+
+        const candidates = await client.demotionCandidates(REVIEWER, { scope: 'round' });
+
+        assert.deepEqual(candidates.map((c) => c.id), ['kb-stale'], 'a stale CONFIRMED entry is demotable and must be offered');
+    });
+
+    test('offers a contradiction-flagged owned CONFIRMED entry -- kb_demote does not refuse one', async () => {
+        const { memberCall } = makeCallTool([
+            { id: 'kb-flagged', type: 'knowledge', confidence: 'CONFIRMED', flagged_for_review: true, title: 'disputed', summary: 'x', source_files: ['server/transit.js'] },
+            { id: 'kb-other-side', type: 'knowledge', confidence: 'CONFIRMED', contradiction_of: 'kb-flagged', title: 'the other side', summary: 'x', source_files: ['server/transit.js'] },
+        ]);
+        const client = createKbWorkClient({
+            memberCall, maintainers: withMaintainer(), roundChangedFiles: async () => ['server/transit.js'], log: () => {},
+        });
+
+        const candidates = await client.demotionCandidates(REVIEWER, { scope: 'round' });
+
+        assert.deepEqual(candidates.map((c) => c.id), ['kb-flagged', 'kb-other-side']);
+    });
+
+    test('never offers a SUPERSEDED entry -- the widened read admits them but kb_demote refuses them', async () => {
+        const { memberCall } = makeCallTool([
+            ...CONFIRMED_ENTRIES,
+            { id: 'kb-sup', type: 'knowledge', confidence: 'CONFIRMED', superseded_at: '2026-10-01T00:00:00.000Z', title: 'superseded', summary: 'x', source_files: ['server/transit.js'] },
+        ]);
+        const client = createKbWorkClient({
+            memberCall, maintainers: withMaintainer(), roundChangedFiles: async () => ['server/transit.js'], log: () => {},
+        });
+
+        const candidates = await client.demotionCandidates(REVIEWER, { scope: 'round' });
+
+        assert.ok(
+            !candidates.some((c) => c.id === 'kb-sup'),
+            'include_stale also admits superseded rows (one input flag, two provider options), so the caller must drop them -- '
+            + 'offering one can only produce E-DEMOTE-SUPERSEDED',
+        );
+    });
+
+    test('never offers a non-CONFIRMED row the read let through', async () => {
+        const { memberCall } = makeCallTool([
+            ...CONFIRMED_ENTRIES,
+            { id: 'kb-inf', type: 'knowledge', confidence: 'INFERRED', title: 'not confirmed', summary: 'x', source_files: ['server/transit.js'] },
+        ]);
+        const client = createKbWorkClient({
+            memberCall, maintainers: withMaintainer(), roundChangedFiles: async () => ['server/transit.js'], log: () => {},
+        });
+
+        const candidates = await client.demotionCandidates(REVIEWER, { scope: 'round' });
+
+        assert.ok(!candidates.some((c) => c.id === 'kb-inf'), 'kb_demote refuses anything but CONFIRMED (E-DEMOTE-NOT-CONFIRMED)');
+    });
+
+    // ---- the cap is an OFFER cap, applied LAST ------------------------------
+    test('CAP AFTER FILTER: every intersecting entry is offered even when the maintainer owns far more CONFIRMED rows than the cap', async () => {
+        // 60 owned CONFIRMED rows. The 5 that touch this round's changed files
+        // sit at positions 40-44, i.e. WELL PAST the 20-entry offer cap. With
+        // the cap used as the read limit, the read stops at position 20 and
+        // none of these five is ever served -- the reviewer is offered nothing
+        // while five genuinely relevant entries exist.
+        const owned = Array.from({ length: 60 }, (_, i) => ({
+            id: `kb-${i}`,
+            type: 'knowledge',
+            confidence: 'CONFIRMED',
+            title: `entry ${i}`,
+            summary: 'x',
+            source_files: [i >= 40 && i < 45 ? 'server/transit.js' : `server/unrelated-${i}.js`],
+        }));
+        const { calls, memberCall } = makeCallTool(owned);
+        const client = createKbWorkClient({
+            memberCall, maintainers: withMaintainer(), roundChangedFiles: async () => ['server/transit.js'], log: () => {},
+        });
+
+        const candidates = await client.demotionCandidates(REVIEWER, { scope: 'round' });
+
+        assert.deepEqual(
+            candidates.map((c) => c.id),
+            ['kb-40', 'kb-41', 'kb-42', 'kb-43', 'kb-44'],
+            'the relevant entries were truncated away before the changed-file filter ever ran',
+        );
+        assert.ok(
+            calls.find((c) => c.name === 'kb_query').args.limit > KB_MAX_DEMOTION_CANDIDATES,
+            'the read limit must be wider than the offer cap for the filter to have anything to work on',
+        );
+    });
+
+    test('the offer cap still binds AFTER filtering: 25 intersecting entries out of a wide read yield exactly 20', async () => {
+        const owned = Array.from({ length: 60 }, (_, i) => ({
+            id: `kb-${i}`,
+            type: 'knowledge',
+            confidence: 'CONFIRMED',
+            title: `entry ${i}`,
+            summary: 'x',
+            source_files: [i >= 30 && i < 55 ? 'server/transit.js' : `server/unrelated-${i}.js`],
+        }));
+        const { memberCall } = makeCallTool(owned);
+        const client = createKbWorkClient({
+            memberCall, maintainers: withMaintainer(), roundChangedFiles: async () => ['server/transit.js'], log: () => {},
+        });
+
+        const candidates = await client.demotionCandidates(REVIEWER, { scope: 'round' });
+
+        assert.equal(candidates.length, KB_MAX_DEMOTION_CANDIDATES, 'the prompt must stay bounded by the offer cap');
+        assert.equal(candidates[0].id, 'kb-30', 'the cap keeps the first survivors of the filter, not an arbitrary pre-filter slice');
     });
 
     test("no changed files this round yields [] without ever reading the KB", async () => {
@@ -209,6 +350,197 @@ describe('createKbWorkClient.demotionCandidates', () => {
 
         assert.deepEqual(candidates, []);
         assert.equal(roundChangedFilesCalls, 0, 'the round diff must never be computed on a maintainer checked out on the wrong branch');
+    });
+});
+
+// =============================================================================
+// SCOPE IS AN ARGUMENT. A per-round review scopes its demotion candidates to
+// THIS round's post-merge diff; the FINAL review has no round at all and
+// scopes to the sprint's cumulative baseBranch...branch diff. Which one is
+// used comes from the caller's explicit `scope`, never from the candidate read
+// working out who is asking.
+// =============================================================================
+describe('createKbWorkClient.demotionCandidates: changed-file SCOPE', () => {
+    const bothScopes = (overrides = {}) => createKbWorkClient({
+        maintainers: withMaintainer(),
+        roundChangedFiles: async () => ['server/transit.js'],
+        sprintChangedFiles: async () => ['server/rules.js'],
+        log: () => {},
+        ...overrides,
+    });
+
+    test("scope 'round' uses the per-round diff and scope 'sprint' uses the cumulative one -- the same KB read, two different offers", async () => {
+        const { memberCall } = makeCallTool(CONFIRMED_ENTRIES);
+        const client = bothScopes({ memberCall });
+
+        // kb-aaa cites server/transit.js (the round diff); kb-bbb cites
+        // server/rules.js (only in the cumulative sprint diff).
+        assert.deepEqual((await client.demotionCandidates(REVIEWER, { scope: 'round' })).map((c) => c.id), ['kb-aaa']);
+        assert.deepEqual((await client.demotionCandidates(REVIEWER, { scope: 'sprint' })).map((c) => c.id), ['kb-bbb']);
+    });
+
+    test("scope 'sprint' never calls the per-round diff, and scope 'round' never calls the cumulative one", async () => {
+        const { memberCall } = makeCallTool(CONFIRMED_ENTRIES);
+        let roundCalls = 0;
+        let sprintCalls = 0;
+        const client = bothScopes({
+            memberCall,
+            roundChangedFiles: async () => { roundCalls += 1; return ['server/transit.js']; },
+            sprintChangedFiles: async () => { sprintCalls += 1; return ['server/rules.js']; },
+        });
+
+        await client.demotionCandidates(REVIEWER, { scope: 'sprint' });
+        assert.equal(roundCalls, 0, "the final review has no round -- advancing the per-round diff's tracked sha from it would corrupt the next round");
+        assert.equal(sprintCalls, 1);
+
+        await client.demotionCandidates(REVIEWER, { scope: 'round' });
+        assert.equal(sprintCalls, 1, 'a per-round review must not compute the cumulative sprint diff');
+        assert.equal(roundCalls, 1);
+    });
+
+    test('scope defaults to the per-round diff when omitted', async () => {
+        const { memberCall } = makeCallTool(CONFIRMED_ENTRIES);
+        const client = bothScopes({ memberCall });
+
+        assert.deepEqual((await client.demotionCandidates(REVIEWER)).map((c) => c.id), ['kb-aaa']);
+    });
+
+    test('an unknown scope offers nothing rather than silently falling back to the wrong diff', async () => {
+        const { calls, memberCall } = makeCallTool(CONFIRMED_ENTRIES);
+        const client = bothScopes({ memberCall });
+
+        assert.deepEqual(await client.demotionCandidates(REVIEWER, { scope: 'cumulative' }), []);
+        assert.equal(calls.length, 0, 'an unrecognized scope must not reach the KB at all');
+    });
+
+    // ---- criterion 7's degradations, on the FINAL-review scope too ----------
+    test("scope 'sprint' with no sprintChangedFiles wired yields [] and never calls kb_query", async () => {
+        const { calls, memberCall } = makeCallTool(CONFIRMED_ENTRIES);
+        const client = createKbWorkClient({
+            memberCall, maintainers: withMaintainer(), roundChangedFiles: async () => ['server/transit.js'], log: () => {},
+        });
+
+        assert.deepEqual(await client.demotionCandidates(REVIEWER, { scope: 'sprint' }), [], 'the round diff must never stand in for a missing sprint diff');
+        assert.equal(calls.length, 0);
+    });
+
+    test("scope 'sprint': a cumulative diff that could not be computed degrades to [] and never throws into the final-review dispatch", async () => {
+        const { memberCall } = makeCallTool(CONFIRMED_ENTRIES);
+        const client = bothScopes({ memberCall, sprintChangedFiles: async () => { throw new Error('git unreachable'); } });
+
+        await assert.doesNotReject(() => client.demotionCandidates(REVIEWER, { scope: 'sprint' }));
+        assert.deepEqual(await client.demotionCandidates(REVIEWER, { scope: 'sprint' }), []);
+    });
+
+    test("scope 'sprint': a cold, broken or rejecting kb_query degrades to [] and never throws", async () => {
+        for (const opts of [{ throwOnList: true }, { rejectOnList: true }]) {
+            const { memberCall } = makeCallTool([], opts);
+            const client = bothScopes({ memberCall });
+            await assert.doesNotReject(() => client.demotionCandidates(REVIEWER, { scope: 'sprint' }));
+            assert.deepEqual(await client.demotionCandidates(REVIEWER, { scope: 'sprint' }), []);
+        }
+    });
+
+    test("scope 'sprint': no maintainer resolvable yields [] without reading some other KB", async () => {
+        const { calls, memberCall } = makeCallTool(CONFIRMED_ENTRIES);
+        const noSelection = createKbWorkClient({ memberCall, sprintChangedFiles: async () => ['server/rules.js'], log: () => {} });
+
+        assert.deepEqual(await noSelection.demotionCandidates(REVIEWER, { scope: 'sprint' }), []);
+        assert.deepEqual(await bothScopes({ memberCall }).demotionCandidates(null, { scope: 'sprint' }), []);
+        assert.equal(calls.length, 0);
+    });
+
+    test('REPLACES, never accumulates, across scopes: the final-review read cannot inherit the last round\'s offers', async () => {
+        const { memberCall } = makeCallTool(CONFIRMED_ENTRIES);
+        let sprintThrows = false;
+        const client = bothScopes({
+            memberCall,
+            sprintChangedFiles: async () => { if (sprintThrows) throw new Error('git unreachable'); return ['server/rules.js']; },
+        });
+
+        assert.deepEqual((await client.demotionCandidates(REVIEWER, { scope: 'round' })).map((c) => c.id), ['kb-aaa']);
+        sprintThrows = true;
+        assert.deepEqual(
+            await client.demotionCandidates(REVIEWER, { scope: 'sprint' }), [],
+            "a failed final-review read must not fall back to the last per-round review's offered set",
+        );
+    });
+});
+
+describe('buildDemotionCandidateQuery / isDemotableCandidate', () => {
+    test('the read is own-scoped, CONFIRMED, stale-and-dispute inclusive, and wide', () => {
+        assert.deepEqual(buildDemotionCandidateQuery('uuid-1'), {
+            tag: 'member:uuid-1',
+            own_scope: true,
+            confidence: ['CONFIRMED'],
+            include_stale: true,
+            exclude_disputed: false,
+            limit: KB_DEMOTION_READ_LIMIT,
+        });
+    });
+
+    test('eligibility mirrors demote()\'s refusals exactly -- stale and flagged in, superseded/directive/non-CONFIRMED out', () => {
+        const base = { id: 'kb-1', type: 'knowledge', confidence: 'CONFIRMED' };
+        assert.equal(isDemotableCandidate(base), true);
+        assert.equal(isDemotableCandidate({ ...base, stale: true }), true, 'demote() permits a stale entry');
+        assert.equal(isDemotableCandidate({ ...base, flagged_for_review: true }), true, 'demote() does not refuse a flagged entry');
+        assert.equal(isDemotableCandidate({ ...base, contradiction_of: 'kb-2' }), true);
+        assert.equal(isDemotableCandidate({ ...base, superseded_at: '2026-01-01T00:00:00.000Z' }), false, 'E-DEMOTE-SUPERSEDED');
+        assert.equal(isDemotableCandidate({ ...base, type: 'user-directive' }), false, 'E-DEMOTE-REFUSED-DIRECTIVE');
+        assert.equal(isDemotableCandidate({ ...base, confidence: 'INFERRED' }), false, 'E-DEMOTE-NOT-CONFIRMED');
+        for (const junk of [null, undefined, {}, { id: '' }, { id: 7, confidence: 'CONFIRMED' }]) {
+            assert.equal(isDemotableCandidate(junk), false);
+        }
+    });
+});
+
+describe('createSprintChangedFiles (the cumulative sprint diff the FINAL review scopes to)', () => {
+    test('fetches/fast-forward-merges BEFORE diffing, and diffs the whole baseBranch...branch range', async () => {
+        const calls = [];
+        let merged = false;
+        const pullGitBefore = async (memberName) => { calls.push({ op: 'pull', memberName }); merged = true; };
+        const command = async (cmd, opts) => {
+            calls.push({ op: 'command', cmd, opts, mergedAtCallTime: merged });
+            return { ok: true, output: 'round1-file.js\nround2-only-file.js\n' };
+        };
+        const sprintChangedFiles = createSprintChangedFiles({
+            command, pullGitBefore, baseBranch: 'main', branch: 'feat/thing', log: () => {},
+        });
+
+        const files = await sprintChangedFiles('maint-1');
+
+        assert.deepEqual(files, ['round1-file.js', 'round2-only-file.js']);
+        const diff = calls.find((c) => c.op === 'command');
+        assert.equal(diff.cmd, 'git diff --name-only origin/main...feat/thing');
+        assert.equal(diff.mergedAtCallTime, true, 'the cumulative diff was read from a stale pre-merge tree');
+        assert.equal(diff.opts.member_name, 'maint-1');
+        assert.equal(diff.opts.failSoft, true);
+    });
+
+    test('is STATELESS -- unlike the per-round factory it returns the same full range on every call', async () => {
+        const pullGitBefore = async () => {};
+        const seen = [];
+        const command = async (cmd) => { seen.push(cmd); return { ok: true, output: 'a.js\n' }; };
+        const sprintChangedFiles = createSprintChangedFiles({
+            command, pullGitBefore, baseBranch: 'main', branch: 'feat/thing', log: () => {},
+        });
+
+        assert.deepEqual(await sprintChangedFiles('maint-1'), ['a.js']);
+        assert.deepEqual(await sprintChangedFiles('maint-1'), ['a.js']);
+        assert.deepEqual(new Set(seen), new Set(['git diff --name-only origin/main...feat/thing']));
+    });
+
+    test('a failed fetch/merge or a failed diff degrades to []', async () => {
+        const okCommand = async () => ({ ok: true, output: 'a.js\n' });
+        const failing = createSprintChangedFiles({
+            command: okCommand, pullGitBefore: async () => { throw new Error('unreachable'); }, baseBranch: 'main', branch: 'feat/thing', log: () => {},
+        });
+        assert.deepEqual(await failing.call(null, 'maint-1'), []);
+
+        const badDiff = createSprintChangedFiles({
+            command: async () => ({ ok: false }), pullGitBefore: async () => {}, baseBranch: 'main', branch: 'feat/thing', log: () => {},
+        });
+        assert.deepEqual(await badDiff('maint-1'), []);
     });
 });
 

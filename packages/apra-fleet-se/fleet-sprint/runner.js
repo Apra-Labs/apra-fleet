@@ -600,6 +600,49 @@ function createRoundChangedFiles({ command, pullGitBefore, baseBranch, log = () 
 }
 export { createRoundChangedFiles };
 
+// Factory for kbWork.demotionCandidates({ scope: 'sprint' })'s
+// sprintChangedFiles callback -- the CUMULATIVE sprint changed-file set, which
+// is the FINAL review's scope.
+//
+// WHY THIS EXISTS SEPARATELY FROM createRoundChangedFiles. Final review judges
+// the WHOLE sprint diff in one pass, so "this round" is not a thing it has:
+// there is no previous round's merged tip to diff from, and scoping its
+// demotion candidates to the last round's diff would hide every entry the
+// earlier rounds' files made worth re-checking. The two scopes are therefore
+// two injected callbacks chosen by an explicit `scope` argument, not one
+// callback that tries to work out which review is asking.
+//
+// WHY IT IS NOT kbInjection's `diffFiles` either. That one computes the same
+// cumulative range but is wired for the reviewer/harvester KB-injection HINT
+// context and is deliberately left untouched; it also does no fetch/merge
+// first. This pulls before diffing for exactly the reason its round sibling
+// does -- a pre-merge tree has not absorbed the sprint's latest commits -- and
+// is STATELESS, unlike the round factory, because a cumulative range has
+// nothing to carry between calls.
+//
+// @param {{
+//   command: (cmd: string, opts: { member_name: string, silent?: boolean, failSoft?: boolean }) => Promise<{ ok: boolean, output?: string }>,
+//   pullGitBefore: (memberName: string) => Promise<any>,
+//   baseBranch: string,
+//   branch: string,
+//   log?: Function,
+// }} opts
+// @returns {(memberName: string) => Promise<string[]>}
+function createSprintChangedFiles({ command, pullGitBefore, baseBranch, branch, log = () => {} }) {
+    return async function sprintChangedFiles(memberName) {
+        try {
+            await pullGitBefore(memberName);
+        } catch (err) {
+            log(`[kb-work] could not fetch/fast-forward-merge '${memberName}' before computing the sprint's cumulative changed files (non-fatal): ${err && err.message ? err.message : String(err)}`);
+            return [];
+        }
+        const diffRes = await command(`git diff --name-only origin/${baseBranch}...${branch}`, { member_name: memberName, silent: true, failSoft: true });
+        if (!diffRes || !diffRes.ok) return [];
+        return String(diffRes.output || '').split('\n').map((l) => l.trim()).filter(Boolean);
+    };
+}
+export { createSprintChangedFiles };
+
 // ---------------------------------------------------------------------------
 // Canonical role-name constants for the Develop/Review loop
 // ---------------------------------------------------------------------------
@@ -1550,11 +1593,23 @@ async function runSprintCycle(context) {
         baseBranch: validated.baseBranch,
         log,
     });
+    // THE SPRINT's CUMULATIVE changed-file set, for the FINAL review's
+    // demotion-candidate read -- final review has no round, so it scopes to
+    // the whole baseBranch...branch diff. Same lazy gitSync binding as its
+    // per-round sibling above.
+    const sprintChangedFiles = context.sprintChangedFiles ?? createSprintChangedFiles({
+        command,
+        pullGitBefore: (memberName) => gitSync.pullGitBefore(memberName),
+        baseBranch: validated.baseBranch,
+        branch: validated.branch,
+        log,
+    });
     const kbWork = context.kbWork ?? createKbWorkClient({
         memberCall: kbMemberCall,
         maintainers: () => context.kbMaintainers,
         gPull: (maintainerName, options) => gitSync.pullGitBefore(maintainerName, options),
         roundChangedFiles,
+        sprintChangedFiles,
         // The review-round bible commit (kbWork.commitRound): G-push, the
         // retry's rebase --abort, and the base branch/commit recorded as the
         // bible's provenance -- all on the maintainer, all bracketed.
@@ -2104,7 +2159,7 @@ async function runSprintCycle(context) {
         // Best-effort exactly like promotionCandidates: a cold or unreachable
         // KB, or a round diff that could not be computed, must not fail the
         // review.
-        const kbDemoteCandidates = await kbWork.demotionCandidates(reviewerPool[0]);
+        const kbDemoteCandidates = await kbWork.demotionCandidates(reviewerPool[0], { scope: 'round' });
         if (kbDemoteCandidates.length > 0) {
             log(`[kb-work] offering ${kbDemoteCandidates.length} CONFIRMED entr(ies) to the reviewer for demotion.`);
         }
