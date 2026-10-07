@@ -643,6 +643,65 @@ function createSprintChangedFiles({ command, pullGitBefore, baseBranch, branch, 
 }
 export { createSprintChangedFiles };
 
+// Factory for kbWork.promotionCandidates()'s D6 in-sprint ping-pong guard:
+// the CURRENT sha256 of a bounded set of files, read on a member's own
+// checkout. kb.mjs has no shell/fs access of its own (every kb_* call there
+// goes through memberCall, never a shell) and this is the one disk fact no
+// kb_* tool answers -- demoted_basis_hashes (surfaced on an INFERRED entry's
+// kb_query row once it has ever been demoted) is a snapshot taken AT DEMOTE
+// TIME, not a live one, so telling "basis unchanged" from "basis moved on"
+// needs a fresh read of the SAME files right now.
+//
+// MUST hash the SAME way SqliteProvider's demoteBasisHashes does -- plain
+// sha256 of the raw bytes, never `git hash-object` (which normalizes line
+// endings and therefore would not reliably equal a plain sha256 of the same
+// content) -- or the two sides of kb.mjs's comparison would silently never
+// match. Run through a disposable `node -e` script (the same technique
+// kbInjection's deployTargets callback already uses to read a file's content
+// off a member) rather than a shell pipeline, so no file path -- however it
+// is spelled -- is ever interpolated into a shell command string.
+//
+// A missing or unreadable file is simply absent from the result (never a
+// fabricated hash); a failed command, or output that is not the JSON object
+// this script prints, degrades to {} -- the caller's "never falsely
+// suppress" rule then leaves every candidate offered, exactly as it does for
+// an unparseable demoted_basis_hashes snapshot.
+//
+// @param {{
+//   command: (cmd: string, opts: { member_name: string, silent?: boolean, failSoft?: boolean }) => Promise<{ ok: boolean, output?: string }>,
+//   log?: Function,
+// }} opts
+// @returns {(memberName: string, files: string[]) => Promise<Record<string, string>>}
+function createCurrentFileHashes({ command, log = () => {} }) {
+    return async function currentFileHashes(memberName, files) {
+        const list = Array.isArray(files) ? files.filter((f) => typeof f === 'string' && f.length > 0) : [];
+        if (list.length === 0) return {};
+        const script = [
+            'const fs=require("fs");',
+            'const crypto=require("crypto");',
+            `const files=${JSON.stringify(list)};`,
+            'const out={};',
+            'for (const f of files) { try { out[f]=crypto.createHash("sha256").update(fs.readFileSync(f)).digest("hex"); } catch (e) {} }',
+            'process.stdout.write(JSON.stringify(out));',
+        ].join(' ');
+        let res;
+        try {
+            res = await command(`node -e ${JSON.stringify(script)}`, { member_name: memberName, silent: true, failSoft: true });
+        } catch (err) {
+            log(`[kb-work] could not re-hash ${list.length} file(s) on '${memberName}' for the in-sprint ping-pong guard (non-fatal): ${err && err.message ? err.message : String(err)}`);
+            return {};
+        }
+        if (!res || !res.ok) return {};
+        try {
+            const parsed = JSON.parse(String(res.output || '{}'));
+            return (parsed && typeof parsed === 'object') ? parsed : {};
+        } catch {
+            return {};
+        }
+    };
+}
+export { createCurrentFileHashes };
+
 // ---------------------------------------------------------------------------
 // Canonical role-name constants for the Develop/Review loop
 // ---------------------------------------------------------------------------
@@ -1604,12 +1663,17 @@ async function runSprintCycle(context) {
         branch: validated.branch,
         log,
     });
+    const currentFileHashes = context.currentFileHashes ?? createCurrentFileHashes({ command, log });
     const kbWork = context.kbWork ?? createKbWorkClient({
         memberCall: kbMemberCall,
         maintainers: () => context.kbMaintainers,
         gPull: (maintainerName, options) => gitSync.pullGitBefore(maintainerName, options),
         roundChangedFiles,
         sprintChangedFiles,
+        // D6 in-sprint ping-pong guard (promotionCandidates): re-hash a
+        // candidate's cited files on demand to tell "basis unchanged since
+        // the demotion" from "basis moved on" -- see createCurrentFileHashes.
+        currentFileHashes,
         // The review-round bible commit (kbWork.commitRound): G-push, the
         // retry's rebase --abort, and the base branch/commit recorded as the
         // bible's provenance -- all on the maintainer, all bracketed.

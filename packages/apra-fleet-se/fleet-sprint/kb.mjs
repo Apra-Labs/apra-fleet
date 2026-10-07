@@ -345,6 +345,51 @@ export function isDemotableCandidate(entry) {
     return true;
 }
 
+/**
+ * D6 in-sprint ping-pong guard: true when `entry` was demoted DURING THIS
+ * SPRINT -- i.e. its `demoted_at` (an INFERRED entry's kb_query row carries
+ * this when it was ever demoted, per rowToEntry) falls at or after the
+ * sprint's start. `since` is the sprint start in ms
+ * (createKbWorkClient's sprintStartMs()); when it is null the guard cannot
+ * tell "this sprint" from "ever demoted", so it answers false -- the SAME
+ * permissive default promotionCandidates' own created_at window filter uses
+ * for an unknown sprint start, never a reason to exclude.
+ *
+ * @param {object} entry
+ * @param {number|null} since
+ * @returns {boolean}
+ */
+export function wasDemotedThisSprint(entry, since) {
+    if (!entry || typeof entry.demoted_at !== 'string' || since === null) return false;
+    const t = Date.parse(entry.demoted_at);
+    return Number.isFinite(t) && t >= since;
+}
+
+/**
+ * D6 in-sprint ping-pong guard: true when EVERY file `basis` (an entry's
+ * demoted_basis_hashes snapshot, taken AS THE FILES WERE ON DISK AT DEMOTE
+ * TIME) cites still hashes, in `current` (this moment's re-read), to the
+ * SAME value -- i.e. nothing the demotion was based on has changed since.
+ *
+ * NEVER A MATCH -- so the entry stays offered rather than silently
+ * ping-ponged out forever on an unprovable basis -- when: `basis` is
+ * missing or empty (a legacy row, or one demoted before this snapshot
+ * existed); `current` is missing (the disk-hash callback was never wired,
+ * or its read failed); or any cited file is absent from `current` (deleted,
+ * unreadable, or moved outside the checkout). This mirrors
+ * isDemotableCandidate's own "never falsely suppress" rule for an
+ * unparseable basis.
+ *
+ * @param {Record<string,string>|undefined} basis
+ * @param {Record<string,string>|undefined} current
+ * @returns {boolean}
+ */
+export function demotionBasisUnchanged(basis, current) {
+    const files = basis ? Object.keys(basis) : [];
+    if (files.length === 0 || !current) return false;
+    return files.every((f) => typeof current[f] === 'string' && current[f] === basis[f]);
+}
+
 /** Display label for a member record in log lines. */
 function memberLabel(member) {
     return (member && (member.name || member.id)) || 'unknown member';
@@ -456,6 +501,20 @@ export function createKbWorkClient(opts = {}) {
         // rather than a flag on one callback so which diff a scope means is
         // decided once, in runner.js's wiring, instead of inside a git helper.
         sprintChangedFiles,
+        // D6 in-sprint ping-pong guard's disk-hash read --
+        // (memberName: string, files: string[]) => Promise<Record<string, string>>,
+        // the CURRENT sha256 of each file in `files` on `memberName`'s own
+        // checkout (absent files are simply missing from the result, never a
+        // fabricated hash). Injected for the same reason roundChangedFiles is:
+        // kb.mjs has no shell/fs access of its own, and this is the one disk
+        // fact kb_query cannot answer -- demoted_basis_hashes (surfaced on an
+        // INFERRED entry's kb_query row) is a demote-TIME snapshot, not a live
+        // one. MUST hash the SAME way SqliteProvider's demoteBasisHashes does
+        // (plain sha256 of the raw bytes) so the two sides compare like for
+        // like; see promotionCandidates' guard below. Optional: when not
+        // wired, the guard degrades to "never exclude" (see
+        // demotionBasisUnchanged), never to a failed or wrongly-filtered read.
+        currentFileHashes,
         log = () => {},
     } = opts;
     /** The sprint's start time (ms since epoch) from the sprint state, or null when unknown. */
@@ -1149,6 +1208,22 @@ export function createKbWorkClient(opts = {}) {
          *
          * Best-effort by design -- a cold or unreachable KB must degrade to
          * "nothing to promote", never fail the review dispatch.
+         *
+         * D6 IN-SPRINT PING-PONG GUARD. Without this, an entry the reviewer
+         * demoted in round N is offered right back for promotion in round
+         * N+1 -- promotionCandidates' own in-window filter admits it (an
+         * INFERRED entry created this sprint still matches, whether it got
+         * there by a fresh capture or by a demotion of a CONFIRMED one), and
+         * nothing has changed about it to re-judge. An entry wasDemotedThisSprint
+         * (its demoted_at falls at or after sprintStartMs()) is excluded when
+         * demotionBasisUnchanged is true for it -- i.e. unless at least one
+         * of its cited files now hashes differently from the
+         * demoted_basis_hashes snapshot taken at demote time (currentFileHashes,
+         * read ONLY for the files these candidates actually cite, never
+         * recomputed from scratch). A changed basis is new evidence, so that
+         * entry stays offered. The guard runs HERE, at offering time -- a
+         * ping-ponged id is never in the candidate block apply() later checks
+         * offeredCandidates against, never merely refused there.
          */
         async promotionCandidates(member) {
             // The candidates live in the reviewer's repository MAINTAINER's KB
@@ -1186,12 +1261,36 @@ export function createKbWorkClient(opts = {}) {
                     const t = typeof e.created_at === 'string' ? Date.parse(e.created_at) : NaN;
                     return Number.isFinite(t) && t >= since;
                 };
-                const offered = results
+                const eligible = results
                     // promote() refuses type='user-directive' outright (activation
                     // is human-terminal, CLI-only), so offering one as a candidate
                     // can only produce a guaranteed refusal.
-                    .filter((e) => e && typeof e.id === 'string' && e.type !== 'user-directive' && inWindow(e))
-                    .slice(0, KB_MAX_PROMOTION_CANDIDATES);
+                    .filter((e) => e && typeof e.id === 'string' && e.type !== 'user-directive' && inWindow(e));
+                // D6 ping-pong guard (see the method comment): only entries
+                // demoted THIS sprint are even candidates for exclusion, and
+                // only a disk re-hash can tell whether their basis moved on
+                // since. Reading is bounded to exactly the files THESE
+                // candidates cite -- never every file in the repository --
+                // and skipped entirely when there is nothing to check or no
+                // callback wired, so the common case (no in-sprint demotion)
+                // costs nothing extra.
+                const pingPonged = eligible.filter((e) => wasDemotedThisSprint(e, since));
+                let unchanged = new Set();
+                if (pingPonged.length > 0 && typeof currentFileHashes === 'function') {
+                    const files = new Set();
+                    for (const e of pingPonged) for (const f of Object.keys(e.demoted_basis_hashes || {})) files.add(f);
+                    if (files.size > 0) {
+                        try {
+                            const current = await currentFileHashes(target.member, [...files]);
+                            for (const e of pingPonged) {
+                                if (demotionBasisUnchanged(e.demoted_basis_hashes, current)) unchanged.add(e.id);
+                            }
+                        } catch (err) {
+                            log(`[kb-work] could not re-hash the in-sprint ping-pong basis on maintainer '${target.member}' (non-fatal, nothing excluded): ${err.message}`);
+                        }
+                    }
+                }
+                const offered = eligible.filter((e) => !unchanged.has(e.id)).slice(0, KB_MAX_PROMOTION_CANDIDATES);
                 offeredCandidates.set(target.repo, new Set(offered.map((e) => e.id)));
                 return offered;
             } catch (err) {

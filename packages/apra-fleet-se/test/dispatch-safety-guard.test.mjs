@@ -434,7 +434,16 @@ const DISPATCH_ROLE_PATH = path.join(__dirname, '../fleet-sprint/dispatch-role.m
 // a duplicate of the diffFiles one: this one fetches/fast-forward-merges the
 // maintainer first and feeds the demotion-candidate filter, while diffFiles
 // stays the unpulled KB-injection hint-context read.
-const EXPECTED_COMMAND_COUNT = 9;
+// Bumped 9 -> 10: createCurrentFileHashes' single command() site
+// (a disposable `node -e` script that sha256-hashes a bounded file list) for
+// kbWork.promotionCandidates()'s D6 in-sprint ping-pong guard -- re-hashing a
+// just-demoted entry's cited files to tell "basis unchanged since the
+// demotion" from "basis moved on". Passes member_name and is failSoft,
+// verified compliant. No path is ever interpolated into the command string;
+// the file list is JSON-embedded into the generated script, same technique
+// createDeployPermissionsProvisioner's and stageCommandBodyMemberSide's
+// `node -e` sites already use.
+const EXPECTED_COMMAND_COUNT = 10;
 // Bumped 9 -> 10 (2026-07-18): the doer max_turns-exhaustion resume path
 // (dispatchDoerResume) adds one new agent() call site -- a resume-and-continue
 // dispatch on the SAME session with an escalated max_turns, verified compliant
