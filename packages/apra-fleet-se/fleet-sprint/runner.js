@@ -656,10 +656,14 @@ export { createSprintChangedFiles };
 // sha256 of the raw bytes, never `git hash-object` (which normalizes line
 // endings and therefore would not reliably equal a plain sha256 of the same
 // content) -- or the two sides of kb.mjs's comparison would silently never
-// match. Run through a disposable `node -e` script (the same technique
-// kbInjection's deployTargets callback already uses to read a file's content
-// off a member) rather than a shell pipeline, so no file path -- however it
-// is spelled -- is ever interpolated into a shell command string.
+// match. Run through a disposable `node -e` script rather than a shell
+// pipeline. The file list is KB-supplied text, so it is NEVER interpolated
+// into the command string: it travels as one base64 argv token (alphabet
+// A-Za-z0-9+/=, inert in POSIX shells, PowerShell and cmd.exe) and the fixed
+// script, which carries no `$`, backticks or double quotes, decodes it --
+// the same recipe as stageCommandBodyMemberSide in member-provisioning.mjs.
+// A JSON.stringify'd list inside a double-quoted shell string is NOT safe:
+// POSIX shells still expand `$(...)` and backticks inside double quotes.
 //
 // A missing or unreadable file is simply absent from the result (never a
 // fabricated hash); a failed command, or output that is not the JSON object
@@ -672,21 +676,20 @@ export { createSprintChangedFiles };
 //   log?: Function,
 // }} opts
 // @returns {(memberName: string, files: string[]) => Promise<Record<string, string>>}
+const CURRENT_FILE_HASHES_SCRIPT =
+    "const fs=require('fs'),crypto=require('crypto');" +
+    "const files=JSON.parse(Buffer.from(process.argv[1],'base64').toString('utf8'));" +
+    "const out={};" +
+    "for (const f of files) { try { out[f]=crypto.createHash('sha256').update(fs.readFileSync(f)).digest('hex'); } catch (e) {} }" +
+    "process.stdout.write(JSON.stringify(out));";
 function createCurrentFileHashes({ command, log = () => {} }) {
     return async function currentFileHashes(memberName, files) {
         const list = Array.isArray(files) ? files.filter((f) => typeof f === 'string' && f.length > 0) : [];
         if (list.length === 0) return {};
-        const script = [
-            'const fs=require("fs");',
-            'const crypto=require("crypto");',
-            `const files=${JSON.stringify(list)};`,
-            'const out={};',
-            'for (const f of files) { try { out[f]=crypto.createHash("sha256").update(fs.readFileSync(f)).digest("hex"); } catch (e) {} }',
-            'process.stdout.write(JSON.stringify(out));',
-        ].join(' ');
+        const filesB64 = Buffer.from(JSON.stringify(list), 'utf-8').toString('base64');
         let res;
         try {
-            res = await command(`node -e ${JSON.stringify(script)}`, { member_name: memberName, silent: true, failSoft: true });
+            res = await command(`node -e "${CURRENT_FILE_HASHES_SCRIPT}" "${filesB64}"`, { member_name: memberName, silent: true, failSoft: true });
         } catch (err) {
             log(`[kb-work] could not re-hash ${list.length} file(s) on '${memberName}' for the in-sprint ping-pong guard (non-fatal): ${err && err.message ? err.message : String(err)}`);
             return {};
