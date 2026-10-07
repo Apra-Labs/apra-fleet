@@ -418,7 +418,7 @@ const DISPATCH_ROLE_PATH = path.join(__dirname, '../fleet-sprint/dispatch-role.m
 // gets its own explicit baseline count below.
 // Bumped 4 -> 5: the KB injection's diff-file listing (`git diff --name-only`,
 // role hint source for reviewer/harvester) passes member_name and is failSoft.
-// Bumped 6 -> 8 (my-beads-db-xqp.4.2): createRoundChangedFiles' two command()
+// Bumped 6 -> 8: createRoundChangedFiles' two command()
 // sites for kbWork.demotionCandidates()'s per-review-round changed-file set
 // (`git rev-parse HEAD` and `git diff --name-only <fromRef>...<head>`, both
 // inside the function this file defines and exports) -- both pass

@@ -538,7 +538,7 @@ function computeBranchEnsureMembers(getMembersForRole, kbMaintainers, backlogMem
 }
 export { computeBranchEnsureMembers };
 
-// my-beads-db-xqp.4.2: factory for kbWork.demotionCandidates()'s
+// Factory for kbWork.demotionCandidates()'s
 // roundChangedFiles callback -- THIS REVIEW ROUND's changed-file set,
 // deliberately separate from kbInjection's diffFiles (the cumulative
 // origin/base...branch diff computed for the reviewer/harvester hint
@@ -1537,7 +1537,7 @@ async function runSprintCycle(context) {
     // maintainer is mid-dispatch (dispatchStarted/dispatchEnded below).
     // gitSync is bound further down; the G-pull closure resolves it lazily,
     // and no KB write can be applied before the first dispatch completes.
-    // my-beads-db-xqp.4.2: THIS REVIEW ROUND's changed-file set for
+    // THIS REVIEW ROUND's changed-file set for
     // kbWork.demotionCandidates(), deliberately separate from kbInjection's
     // diffFiles below (the cumulative origin/base...branch diff, left
     // unchanged for its existing reviewer/harvester hint-context callers).
@@ -2098,7 +2098,7 @@ async function runSprintCycle(context) {
         if (kbCandidates.length > 0) {
             log(`[kb-work] offering ${kbCandidates.length} INFERRED entr(ies) to the reviewer for promotion.`);
         }
-        // my-beads-db-xqp.4.2: the CONFIRMED entries this reviewer may demote
+        // The CONFIRMED entries this reviewer may demote
         // back to INFERRED, scoped to the files THIS round's diff actually
         // touched (see createKbWorkClient's roundChangedFiles wiring above).
         // Best-effort exactly like promotionCandidates: a cold or unreachable

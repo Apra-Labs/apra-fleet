@@ -6,11 +6,11 @@ import {
 import { createRoundChangedFiles, buildReviewerPrompt } from '../fleet-sprint/runner.js';
 import { fakeMaintainerSelector } from './helpers/kb-maintainer-fakes.mjs';
 
-// my-beads-db-xqp.4.2 / my-beads-db-xqp.4.4: kbWork.demotionCandidates() --
+// Covers kbWork.demotionCandidates() --
 // the CONFIRMED entries this reviewer may demote back to INFERRED, scoped to
 // THIS review round's changed files -- plus the round-diff mechanism it
 // depends on (createRoundChangedFiles), and the vetKbWork/kbDemotionBlock
-// pieces landed by the sibling impl tasks (my-beads-db-xqp.4.1/4.3) that had
+// pieces landed by sibling impl work that had
 // no dedicated test coverage of their own until now (verified by grep: zero
 // hits for kb_demotions/demotionCandidates/kbDemotionBlock anywhere under
 // test/ before this file).
@@ -45,7 +45,7 @@ const CONFIRMED_ENTRIES = [
     { id: 'kb-bbb', type: 'learning', confidence: 'CONFIRMED', title: 'Exit events are no-op when unmatched', summary: 'unmatched exit never fabricates a transit', source_files: ['server/rules.js'] },
 ];
 
-describe('createKbWorkClient.demotionCandidates (my-beads-db-xqp.4.2)', () => {
+describe('createKbWorkClient.demotionCandidates', () => {
     test("asks the reviewer's repository maintainer for its own CONFIRMED entries touching this round's changed files", async () => {
         const { calls, memberCall } = makeCallTool(CONFIRMED_ENTRIES);
         const client = createKbWorkClient({
@@ -212,7 +212,7 @@ describe('createKbWorkClient.demotionCandidates (my-beads-db-xqp.4.2)', () => {
     });
 });
 
-describe('createRoundChangedFiles (my-beads-db-xqp.4.2: the per-round diff, not the cumulative one)', () => {
+describe('createRoundChangedFiles (the per-round diff, not the cumulative one)', () => {
     function fakeGit({ diffOutputs = {} } = {}) {
         const calls = [];
         let merged = false;
@@ -250,7 +250,7 @@ describe('createRoundChangedFiles (my-beads-db-xqp.4.2: the per-round diff, not 
     test('FALSIFICATION: computing the diff before the fetch/merge reads the stale pre-merge tree -- proving this test suite actually discriminates the order', async () => {
         // Same fakes as above, but this reverted variant reads HEAD and diffs
         // BEFORE calling pullGitBefore -- the superseded upstream attempt's
-        // defect (my-beads-db-xqp.4.2's own description). It is written here,
+        // defect described above. It is written here,
         // inline, purely to prove the fakes above can tell the two orders
         // apart; the correct order is exercised by createRoundChangedFiles
         // itself in the test above and is never reverted in production code.
@@ -341,7 +341,7 @@ describe('createRoundChangedFiles (my-beads-db-xqp.4.2: the per-round diff, not 
     });
 });
 
-describe('vetKbWork: kb_demotions (my-beads-db-xqp.4.1/4.4)', () => {
+describe('vetKbWork: kb_demotions', () => {
     const REASON = 'checked the same cited test this review and it now fails';
 
     test('kb_demotions is reviewer-only: a non-reviewer role is refused wholesale and nothing is executed', () => {
@@ -430,7 +430,7 @@ describe('vetKbWork: kb_demotions (my-beads-db-xqp.4.1/4.4)', () => {
     });
 });
 
-describe('kbDemotionBlock (my-beads-db-xqp.4.3/4.4)', () => {
+describe('kbDemotionBlock', () => {
     test('renders nothing for an empty or absent candidate list', () => {
         for (const kbCandidates of [[], undefined, null]) {
             assert.deepEqual(kbDemotionBlock(kbCandidates), []);
@@ -449,7 +449,7 @@ describe('kbDemotionBlock (my-beads-db-xqp.4.3/4.4)', () => {
     });
 });
 
-describe('buildReviewerPrompt: demotion candidates (my-beads-db-xqp.4.2/4.4)', () => {
+describe('buildReviewerPrompt: demotion candidates', () => {
     const BASE = {
         beadIds: ['apra-fleet-aaa'],
         acceptanceCriteriaJson: '[]',

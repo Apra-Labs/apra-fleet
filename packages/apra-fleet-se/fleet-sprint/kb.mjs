@@ -343,7 +343,7 @@ function memberNameOf(member) {
 export function createKbWorkClient(opts = {}) {
     const {
         memberCall, gPull, gPush, abortRebase, bibleBase, canResetCheckout, checkedOutBranch, bibleUnpushed, unpushedOnlyBible,
-        // my-beads-db-xqp.4.2: THIS REVIEW ROUND's changed-file set for
+        // THIS REVIEW ROUND's changed-file set for
         // demotionCandidates() -- (memberName: string) => Promise<string[]>.
         // Injected rather than computed here because the fetch/fast-forward
         // merge and the git diff are git operations kb.mjs has no access to
@@ -1043,7 +1043,7 @@ export function createKbWorkClient(opts = {}) {
             }
         },
         /**
-         * my-beads-db-xqp.4.2: the CONFIRMED entries this reviewer may demote
+         * The CONFIRMED entries this reviewer may demote
          * back to INFERRED, scoped to THIS review round.
          *
          * Mirrors promotionCandidates in every structural respect it shares
