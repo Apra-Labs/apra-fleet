@@ -146,3 +146,39 @@ sequenceDiagram
      `git pull && npm ci && npm run build && npm run build:binary && dist/apra-fleet-installer-linux-x64 install --force --llm agy`
 3. **Verification:**
    - Execute sprint or probe to verify AGY member MCP tools and reactive self-heal on any missing permissions.
+
+---
+
+## 5. Empirical Confirmations & Deployment Findings
+
+### 5.1 Dual-Host Version Parity and Deployment
+- **Git Commit:** `9fc0a610` on branch `feat/agy-agent-transform-tests`.
+- **Remote Host (`fleet-lin-agy`):**
+  - Updated RPort tunnel port to `29196` via `update_member { member_name: 'fleet-lin-agy', port: 29196 }`.
+  - Built from source and packaged binary: `dist/apra-fleet-installer-linux-x64`.
+  - Installed member mode: `dist/apra-fleet-installer-linux-x64 install --member --force --force-stop-full-install --llm agy`.
+  - Probed and registered: `update_member { member_name: 'fleet-lin-agy', fleet_install: 'auto' }`.
+  - Result: `fleetMcp: available (apra-fleet v0.4.4_9fc0a6)`.
+- **Local Host (`fleet-agy-local`):**
+  - Rebuilt binary from matching commit `9fc0a610`: `dist/apra-fleet-installer-win-x64.exe`.
+  - Installed via `dist/apra-fleet-installer-win-x64.exe install --force --llm agy`.
+  - Verified server running: `apra-fleet v0.4.4_9fc0a6`.
+  - Probed status: `fleetMcp: available (apra-fleet v0.4.4_9fc0a6)`.
+  - Result: Both devices are strictly version-aligned on `v0.4.4_9fc0a6`.
+
+### 5.2 Confirmation Experiments
+1. **Experiment A (Local Live Prompt Dispatch):**
+   - Dispatched prompt to `fleet-agy-local` via `execute_prompt`.
+   - Result: Successful completion returning `HELLO_AGY_LOCAL_TEST_OK` (tokens: 213,963 input / 7,725 output).
+2. **Experiment B (Remote Live Prompt Dispatch):**
+   - Dispatched prompt to `fleet-lin-agy` over SSH port 29196 via `execute_prompt`.
+   - Result: Successful completion returning `HELLO_AGY_REMOTE_LINUX_TEST_OK` (tokens: 198,308 input / 12,485 output).
+3. **Experiment C (Reactive Permission Self-Healing Callback):**
+   - Tested `createPermissionSelfHealCallback` with simulated denial requiring `Bash(git:*)` across both members.
+   - Result: `compose_permissions` successfully added grants to project ledger and member native configs; callback returned `true` for both nodes.
+4. **Experiment D (Full `dispatchRole` Self-Healing Retry Loop):**
+   - Executed `dispatchRole` ladder under simulated initial `permission_denied` failure.
+   - Result: Attempt 1 caught the denial, invoked `onPermissionFailure`, applied grants via `compose_permissions`, and triggered Attempt 2 which succeeded (`Outcome ok: true`, `Attempts made: 2`, `VERDICT: PASS`).
+
+### 5.3 Operational Rules
+- **RPort Tunneled Device (`fleet-lin-agy`):** RPort reverse tunnels are dynamic and port assignments change upon tunnel restart. Whenever connectivity to `utubovyu.users.openrport.io` fails, the operator must provide the updated port rather than attempting connection to alternate local or arbitrary IPs.
