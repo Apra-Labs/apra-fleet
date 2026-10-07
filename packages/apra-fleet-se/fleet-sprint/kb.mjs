@@ -254,6 +254,9 @@ export function vetKbWork(role, result) {
 /** Max promotion candidates offered to one reviewer, so the prompt stays bounded. */
 export const KB_MAX_PROMOTION_CANDIDATES = 40;
 
+/** Max demotion candidates offered to one reviewer, so the prompt stays bounded. */
+export const KB_MAX_DEMOTION_CANDIDATES = 20;
+
 /** Display label for a member record in log lines. */
 function memberLabel(member) {
     return (member && (member.name || member.id)) || 'unknown member';
@@ -338,7 +341,20 @@ function memberNameOf(member) {
  * }} opts
  */
 export function createKbWorkClient(opts = {}) {
-    const { memberCall, gPull, gPush, abortRebase, bibleBase, canResetCheckout, checkedOutBranch, bibleUnpushed, unpushedOnlyBible, log = () => {} } = opts;
+    const {
+        memberCall, gPull, gPush, abortRebase, bibleBase, canResetCheckout, checkedOutBranch, bibleUnpushed, unpushedOnlyBible,
+        // my-beads-db-xqp.4.2: THIS REVIEW ROUND's changed-file set for
+        // demotionCandidates() -- (memberName: string) => Promise<string[]>.
+        // Injected rather than computed here because the fetch/fast-forward
+        // merge and the git diff are git operations kb.mjs has no access to
+        // (every kb_* call here goes through memberCall, never a shell); see
+        // runner.js's wiring for how this fetches, merges and diffs from the
+        // previous round's tip (never the cumulative sprint diff diffFiles
+        // computes for the KB-injection hint context -- that caller and
+        // promotionCandidates are both left unchanged).
+        roundChangedFiles,
+        log = () => {},
+    } = opts;
     /** The sprint's start time (ms since epoch) from the sprint state, or null when unknown. */
     const sprintStartMs = () => {
         const v = typeof opts.sprintStartMs === 'function' ? opts.sprintStartMs() : opts.sprintStartMs;
@@ -356,6 +372,8 @@ export function createKbWorkClient(opts = {}) {
     const queues = new Map();
     /** repo -> Set of candidate ids the latest promotionCandidates() call offered. */
     const offeredCandidates = new Map();
+    /** repo -> Set of candidate ids the latest demotionCandidates() call offered. */
+    const offeredDemotions = new Map();
     /** repo -> tail of the serialized flush chain for that repository. */
     const flushChains = new Map();
     /** member name -> open dispatch count (nested brackets count once each). */
@@ -1021,6 +1039,98 @@ export function createKbWorkClient(opts = {}) {
                 return offered;
             } catch (err) {
                 log(`[kb-work] could not read promotion candidates from maintainer '${target.member}' (non-fatal): ${err.message}`);
+                return [];
+            }
+        },
+        /**
+         * my-beads-db-xqp.4.2: the CONFIRMED entries this reviewer may demote
+         * back to INFERRED, scoped to THIS review round.
+         *
+         * Mirrors promotionCandidates in every structural respect it shares
+         * with it -- reviewMaintainerFor to resolve the reviewer's repository
+         * MAINTAINER (refusing rather than reading some other KB when there is
+         * none), replacing (never accumulating) the offered set up front so a
+         * failed read leaves nothing offered from a prior round, and flushing
+         * any writes still queued for that repository before the read -- and
+         * reads the SAME owner-tagged rows at the OTHER confidence tier
+         * (CONFIRMED rather than INFERRED). Every offered id is therefore one
+         * kb_demote can actually apply: reviewMaintainerFor resolves exactly
+         * the maintainer whose session kb_demote's ownerTag check requires.
+         *
+         * UNLIKE promotionCandidates (windowed by sprint start time), an entry
+         * is kept only when it also touches a file changed in THIS review
+         * round. `opts.roundChangedFiles(target.member)` (injected; see
+         * runner.js) fetches and fast-forward-merges the maintainer's
+         * checkout, THEN diffs from the previous round's merged tip (or, on
+         * the first round, the sprint's base branch) to the new one -- the
+         * per-round diff, computed AFTER the merge so it reflects this
+         * round's commits rather than a stale pre-merge snapshot, and never
+         * the cumulative origin/base...branch diff kbInjection's diffFiles
+         * computes for the KB-injection hint context (that caller, and
+         * promotionCandidates, are both left unchanged by this). Demoting a
+         * CONFIRMED claim this round never re-checked is never this review's
+         * to offer, so no changed files this round means nothing is offered.
+         *
+         * Best-effort like every other KB read here: no maintainer, an
+         * unreachable one, no `roundChangedFiles` wired, a round-diff that
+         * could not be computed, or an erroring/rejecting kb_query all
+         * degrade to [] and must never fail the review dispatch.
+         *
+         * @param {object} member
+         * @returns {Promise<object[]>}
+         */
+        async demotionCandidates(member) {
+            const target = active ? reviewMaintainerFor(memberNameOf(member)) : null;
+            if (!target) return [];
+            // Replace (never accumulate) this review scope's offered set up
+            // front, so a failed read leaves nothing offered from a prior round.
+            offeredDemotions.set(target.repo, new Set());
+            // Writes still queued for this repository (a capture or a
+            // promotion/discard from this very round) get their chance to
+            // land before the read, same as promotionCandidates.
+            if (queues.has(target.repo)) await flush(target.repo);
+            if (typeof roundChangedFiles !== 'function') return [];
+            // Same branch guard flushRepo/commitRepo apply before every G-pull
+            // on the maintainer: a fast-forward merge does not care what
+            // branch HEAD is currently on, only that HEAD is an ancestor of
+            // the fetched tip, so pulling on a maintainer not actually on the
+            // sprint branch could silently advance the wrong branch.
+            if (!(await onSprintBranch(target.member, target.repo, 0, 'demotion candidate read'))) return [];
+            let changed;
+            try {
+                changed = await roundChangedFiles(target.member);
+            } catch (err) {
+                log(`[kb-work] could not compute this round's changed files on maintainer '${target.member}' (non-fatal): ${err.message}`);
+                return [];
+            }
+            const files = Array.isArray(changed) ? changed.filter((f) => typeof f === 'string' && f.trim()) : [];
+            if (files.length === 0) return [];
+            try {
+                const res = await memberCall(target.record, 'kb_query', {
+                    tag: `member:${target.record.id}`,
+                    confidence: ['CONFIRMED'],
+                    exclude_disputed: true,
+                    limit: KB_MAX_DEMOTION_CANDIDATES,
+                });
+                if (isToolError(res)) {
+                    log(`[kb-work] kb_query for demotion candidates rejected on maintainer '${target.member}' (non-fatal): ${toolErrorText(res)}`);
+                    return [];
+                }
+                const parsed = parseResult(res);
+                const results = parsed && Array.isArray(parsed.l1_results) ? parsed.l1_results
+                    : (parsed && Array.isArray(parsed.results) ? parsed.results : []);
+                const fileSet = new Set(files);
+                const touchesThisRound = (e) => Array.isArray(e.source_files) && e.source_files.some((f) => fileSet.has(f));
+                const offered = results
+                    // kb_demote refuses a user-directive row outright (same
+                    // reason promotionCandidates excludes one), so offering
+                    // one here can only produce a guaranteed refusal.
+                    .filter((e) => e && typeof e.id === 'string' && e.type !== 'user-directive' && touchesThisRound(e))
+                    .slice(0, KB_MAX_DEMOTION_CANDIDATES);
+                offeredDemotions.set(target.repo, new Set(offered.map((e) => e.id)));
+                return offered;
+            } catch (err) {
+                log(`[kb-work] could not read demotion candidates from maintainer '${target.member}' (non-fatal): ${err.message}`);
                 return [];
             }
         },

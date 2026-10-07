@@ -538,6 +538,68 @@ function computeBranchEnsureMembers(getMembersForRole, kbMaintainers, backlogMem
 }
 export { computeBranchEnsureMembers };
 
+// my-beads-db-xqp.4.2: factory for kbWork.demotionCandidates()'s
+// roundChangedFiles callback -- THIS REVIEW ROUND's changed-file set,
+// deliberately separate from kbInjection's diffFiles (the cumulative
+// origin/base...branch diff computed for the reviewer/harvester hint
+// context, left completely unchanged by this).
+//
+// Pulled out as its own factory, injected with `command` and `pullGitBefore`
+// rather than written inline, so this can be unit-tested directly against
+// fakes that discriminate the two defects a diff guard spawning git is prone
+// to (the same class of trap recorded for check-epic-diff-hygiene.mjs's
+// guards: a detection function welded to its own git spawn can only be
+// exercised against the one diff a test can cheaply construct in-repo,
+// which proves nothing). Here the two defects are: (1) computing the diff
+// BEFORE the fetch/fast-forward-merge instead of after -- a stale read that
+// can miss exactly the files this round touched -- and (2) collapsing to
+// the cumulative sprint diff instead of the per-round one. A fake
+// `pullGitBefore` and `command` can flip between a pre-merge and a
+// post-merge tree deterministically, so a test can assert the returned set
+// came from the POST-merge tree without needing a real git repository.
+//
+// One factory call carries ONE piece of state across its returned
+// function's calls: the previous round's diffed-to commit sha (`lastSha`).
+// The first call has no previous round, so it diffs from the sprint's base
+// branch instead -- the only point "the previous round" can mean before any
+// round has run.
+//
+// @param {{
+//   command: (cmd: string, opts: { member_name: string, silent?: boolean, failSoft?: boolean }) => Promise<{ ok: boolean, output?: string }>,
+//   pullGitBefore: (memberName: string) => Promise<any>,
+//   baseBranch: string,
+//   log?: Function,
+// }} opts
+// @returns {(memberName: string) => Promise<string[]>}
+function createRoundChangedFiles({ command, pullGitBefore, baseBranch, log = () => {} }) {
+    let lastSha = null;
+    return async function roundChangedFiles(memberName) {
+        // AFTER the fetch and fast-forward merge, never before -- computing
+        // the diff first would read a snapshot that has not yet absorbed
+        // this round's commits (the superseded upstream attempt's defect).
+        try {
+            await pullGitBefore(memberName);
+        } catch (err) {
+            log(`[kb-work] could not fetch/fast-forward-merge '${memberName}' before computing this round's changed files (non-fatal): ${err && err.message ? err.message : String(err)}`);
+            return [];
+        }
+        const headRes = await command('git rev-parse HEAD', { member_name: memberName, silent: true, failSoft: true });
+        const head = (headRes && headRes.ok) ? String(headRes.output || '').trim() : '';
+        if (!head) return [];
+        // THIS round's diff only: from the previous round's merged tip (or,
+        // on the first round, the sprint's base branch) to the new tip --
+        // never the cumulative origin/base...branch diff diffFiles computes.
+        const fromRef = lastSha || `origin/${baseBranch}`;
+        const diffRes = await command(`git diff --name-only ${fromRef}...${head}`, { member_name: memberName, silent: true, failSoft: true });
+        const files = (diffRes && diffRes.ok)
+            ? String(diffRes.output || '').split('\n').map((l) => l.trim()).filter(Boolean)
+            : [];
+        lastSha = head;
+        return files;
+    };
+}
+export { createRoundChangedFiles };
+
 // ---------------------------------------------------------------------------
 // Canonical role-name constants for the Develop/Review loop
 // ---------------------------------------------------------------------------
@@ -1475,10 +1537,24 @@ async function runSprintCycle(context) {
     // maintainer is mid-dispatch (dispatchStarted/dispatchEnded below).
     // gitSync is bound further down; the G-pull closure resolves it lazily,
     // and no KB write can be applied before the first dispatch completes.
+    // my-beads-db-xqp.4.2: THIS REVIEW ROUND's changed-file set for
+    // kbWork.demotionCandidates(), deliberately separate from kbInjection's
+    // diffFiles below (the cumulative origin/base...branch diff, left
+    // unchanged for its existing reviewer/harvester hint-context callers).
+    // gitSync.pullGitBefore is bound lazily here exactly like gPull/gPush
+    // below -- gitSync is defined further down in this function, and
+    // roundChangedFiles is not CALLED until long after that assignment runs.
+    const roundChangedFiles = context.roundChangedFiles ?? createRoundChangedFiles({
+        command,
+        pullGitBefore: (memberName) => gitSync.pullGitBefore(memberName),
+        baseBranch: validated.baseBranch,
+        log,
+    });
     const kbWork = context.kbWork ?? createKbWorkClient({
         memberCall: kbMemberCall,
         maintainers: () => context.kbMaintainers,
         gPull: (maintainerName, options) => gitSync.pullGitBefore(maintainerName, options),
+        roundChangedFiles,
         // The review-round bible commit (kbWork.commitRound): G-push, the
         // retry's rebase --abort, and the base branch/commit recorded as the
         // bible's provenance -- all on the maintainer, all bracketed.
@@ -2022,6 +2098,16 @@ async function runSprintCycle(context) {
         if (kbCandidates.length > 0) {
             log(`[kb-work] offering ${kbCandidates.length} INFERRED entr(ies) to the reviewer for promotion.`);
         }
+        // my-beads-db-xqp.4.2: the CONFIRMED entries this reviewer may demote
+        // back to INFERRED, scoped to the files THIS round's diff actually
+        // touched (see createKbWorkClient's roundChangedFiles wiring above).
+        // Best-effort exactly like promotionCandidates: a cold or unreachable
+        // KB, or a round diff that could not be computed, must not fail the
+        // review.
+        const kbDemoteCandidates = await kbWork.demotionCandidates(reviewerPool[0]);
+        if (kbDemoteCandidates.length > 0) {
+            log(`[kb-work] offering ${kbDemoteCandidates.length} CONFIRMED entr(ies) to the reviewer for demotion.`);
+        }
         // What the KB knows about the beads UNDER REVIEW, not just whatever the
         // sprint-start prime happened to surface. Falls back to the primed set
         // when the query returns nothing (a KB with no matching rows yet).
@@ -2068,6 +2154,7 @@ async function runSprintCycle(context) {
                 branch: validated.branch,
                 goal: validated.goal,
                 kbCandidates,
+                kbDemoteCandidates,
                 kbBlock: reviewerKbBlock,
             }),
             // Restate the review scope: a resumed dispatch replaces the
