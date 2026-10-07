@@ -65,6 +65,17 @@ describe('bead-id guard: the violation-detection logic itself', () => {
     expect(hits).toEqual([]);
   });
 
+  it('flags a my-beads-db- tracker id whose short code is purely alphabetic -- no digit, no dot segment', () => {
+    // The digit requirement is kept for apra-fleet- (see the test above) but
+    // dropped for my-beads-db-, since no package/directory in this repo
+    // carries that prefix. A bare epic-level id (prefix plus a plain-word
+    // short code) is exactly the form the pre-fix guard missed.
+    const exampleId = EXAMPLE_MY_BEADS_DB_PREFIX + 'epic';
+    const hits = findBeadIdCitations([`see ${exampleId} for the full epic description`]);
+    expect(hits.length).toBe(1);
+    expect(hits[0].match).toBe(exampleId);
+  });
+
   it('addedLinesFromDiff strips the + marker and excludes the +++ file header', () => {
     const diff = '--- a/x\n+++ b/x\n@@ -1 +1,2 @@\n-old\n+new line one\n+new line two\n';
     expect(addedLinesFromDiff(diff)).toEqual(['new line one', 'new line two']);

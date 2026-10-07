@@ -16,18 +16,32 @@
 import { spawnSync } from 'node:child_process';
 
 /**
- * A real tracker id always mixes at least one digit into the short code
- * immediately after the prefix (a few-character alphanumeric slug, optionally
- * followed by one or more dot-number segments). This is what distinguishes a
- * real citation from an ordinary mention of this repo's own package/directory
- * names, which are plain words with no digit (apra-fleet-client, apra-fleet-
- * se, apra-fleet-workflow, apra-fleet-mcp) and would otherwise false-positive
- * on every diff that so much as names one of those packages. (This comment
- * deliberately does not spell out a digit-bearing example id as a literal,
- * contiguous string: this very file is itself scanned by the guard it
- * defines, and a real-looking example here would trip its own check.)
+ * A real apra-fleet- tracker id always mixes at least one digit into the
+ * short code immediately after the prefix (a few-character alphanumeric
+ * slug, optionally followed by one or more dot-number segments). That digit
+ * requirement is what distinguishes a real apra-fleet- citation from an
+ * ordinary mention of this repo's own package/directory names, which are
+ * plain words with no digit (apra-fleet-client, apra-fleet-se, apra-fleet-
+ * workflow, apra-fleet-mcp) and would otherwise false-positive on every diff
+ * that so much as names one of those packages. (This comment deliberately
+ * does not spell out a digit-bearing example id as a literal, contiguous
+ * string: this very file is itself scanned by the guard it defines, and a
+ * real-looking example here would trip its own check.)
+ *
+ * No package or directory in this repo is named with the my-beads-db-
+ * prefix, so there is nothing for a digit requirement to protect there --
+ * and requiring one let a purely alphabetic my-beads-db- short code (e.g.
+ * this epic's own bare id) pass uncaught, which is exactly the citation
+ * CLAUDE.md's rule is meant to catch. The digit test below is therefore
+ * applied ONLY when the matched prefix is apra-fleet-, never for
+ * my-beads-db-.
  */
 const TRACKER_ID_RE = /\b(my-beads-db-|apra-fleet-)([a-z0-9]+(?:\.[a-z0-9]+)*)/gi;
+
+/** True when `prefix` is the one tracker prefix the digit requirement still applies to. */
+function prefixRequiresDigit(prefix) {
+  return /^apra-fleet-$/i.test(prefix);
+}
 
 /**
  * One documented, reviewed exception (ratchet pattern, same shape as
@@ -63,7 +77,7 @@ export function findBeadIdCitations(addedLines, allowedLines = KNOWN_PRE_EXISTIN
     TRACKER_ID_RE.lastIndex = 0;
     let m;
     while ((m = TRACKER_ID_RE.exec(line)) !== null) {
-      if (/\d/.test(m[2])) hits.push({ line, match: m[0] });
+      if (!prefixRequiresDigit(m[1]) || /\d/.test(m[2])) hits.push({ line, match: m[0] });
     }
   }
   return hits;
