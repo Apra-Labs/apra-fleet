@@ -117,17 +117,13 @@ fails and the ledger is not updated.
 names a member may see (`apra-fleet` and `apra-fleet-member`): member
 lifecycle and registry tools, `execute_prompt`/`execute_command`, file
 transfer, auth and credential-store tools, `compose_permissions`,
-`shutdown_server`, and messaging/email.
-
-The list is not hand-maintained: `AGY_ORCHESTRATOR_DENIED_TOOLS` is
-`MEMBER_DENIED_TOOLS` (`src/services/member-tool-allowlist.ts`), which is
-every registered tool the member allowlist rule does *not* allow. Because
-that rule allows every `kb_*` and `code_*` tool by prefix, **no** knowledge-
-base or code-intelligence tool is denied - `kb_session_prime`, `kb_query`,
-`kb_capture`, `kb_promote`, `kb_demote`, `kb_export`, `kb_harvest` and the
-rest are all member-visible, and whether they are allowed depends on the
-composed grants. A newly registered `kb_*`/`code_*` tool therefore needs no
-edit here. A deny rule wins over a matching allow rule.
+`shutdown_server`, messaging/email, and the administrative knowledge-base
+tools (`kb_promote`, `kb_demote`, `kb_import`, `kb_export`, `kb_harvest`, ...). Tools a
+member legitimately uses - code intelligence (`code_*`) and the read/capture
+knowledge-base tools (`kb_session_prime`, `kb_query`, `kb_stats`,
+`kb_capture`, `kb_feedback`, `kb_list`) - are not denied; whether they are
+allowed depends on the composed grants. A deny rule wins over a matching
+allow rule.
 
 ---
 

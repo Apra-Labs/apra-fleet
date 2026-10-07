@@ -62,7 +62,9 @@ kb_bible_commit) excludes an entry whose basis no longer resolves. Reach for
 kb_demote only when re-reading the SAME basis changed your mind, not when the
 basis itself moved out from under the entry.
 
-**Who can demote what.** The same own-scope rule kb_promote and kb_invalidate
+**Who can demote what.** A member session is served `kb_demote` only with the
+engine's kb_maintainer grant, exactly like `kb_promote` (memory-contract spec
+section 2.5a); role agents never call it. The same own-scope rule kb_promote and kb_invalidate
 already follow applies: in a MEMBER session, `kb_capture` tags every stored
 entry `member:<caller uuid>`, and `kb_demote` (like `kb_promote` and
 `kb_invalidate`) acts only on entries carrying the caller's own tag -- any
