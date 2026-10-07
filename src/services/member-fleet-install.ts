@@ -1059,7 +1059,10 @@ const PER_FOLDER_PROVIDERS = new Set<LlmProvider>(['claude', 'opencode']);
  * Observe a member's apra-fleet MCP server and return its fleetMcp status.
  * Never throws and never records -- see refreshMemberFleetMcp for that.
  *
- *  - agy: unavailable(no-per-project-mcp), unverified; nothing is probed.
+ *  - agy local: unavailable(no-per-project-mcp), unverified; nothing is probed.
+ *  - agy remote: ensure the install (opts.install), register the member on its own install
+ *    (`register-member --type local --id <uuid>`), verify member session, report
+ *    unavailable(no-per-project-mcp), unverified (with version).
  *  - providers with no per-folder fleet entry: unavailable(provider-unsupported), unverified.
  *  - LOCAL members: no install and no per-folder entry (a claude dispatch gets
  *    the member config per session, --mcp-config). Verified by opening a
@@ -1169,10 +1172,10 @@ async function probeMemberFleetMcpInner(
   });
   try {
     const provider: LlmProvider = agent.llmProvider ?? 'claude';
-    if (provider === 'agy') {
+    if (provider === 'agy' && agent.agentType === 'local') {
       return unavailable('no-per-project-mcp', 'agy has no per-project MCP config fleet can point at the member session', { unverified: true });
     }
-    if (!PER_FOLDER_PROVIDERS.has(provider)) {
+    if (provider !== 'agy' && !PER_FOLDER_PROVIDERS.has(provider)) {
       return unavailable('provider-unsupported', `fleet writes no per-folder apra-fleet MCP entry for provider "${provider}"`, { unverified: true });
     }
 
@@ -1332,8 +1335,9 @@ async function probeRemote(
   // config per session (--mcp-config, see session-mcp-config.ts) once this
   // probe reports available, so for claude the entry is only the fallback:
   // it is still written (best effort) but neither its write nor its check gates.
-  const perFolderGates = (agent.llmProvider ?? 'claude') !== 'claude';
-  if (writeMcpEntry && deps.writeMcpEntry) {
+  const provider = agent.llmProvider ?? 'claude';
+  const perFolderGates = provider !== 'claude' && provider !== 'agy';
+  if (writeMcpEntry && deps.writeMcpEntry && provider !== 'agy') {
     const w = await deps.writeMcpEntry(agent);
     if (!w.ok && perFolderGates) return fail((w.reason as FleetMcpUnavailableReason | undefined) ?? 'mcp-entry-missing', w.detail);
   }
@@ -1360,6 +1364,13 @@ async function probeRemote(
   if (!l.ok) return fail('member-session-failed', l.detail);
   const judged = judgeSession(v.value, l.value);
   if (!judged.ok) return fail(judged.reason, judged.detail);
+  if (provider === 'agy') {
+    return unavailable('no-per-project-mcp', 'agy has no per-project MCP config fleet can point at the member session', {
+      unverified: true,
+      ...(version ? { version } : {}),
+      ...(installFailure ? { installFailure, detail: upgradeNote } : {}),
+    });
+  }
   return {
     state: 'available', version, checkedAt: checkedAt(),
     ...(installFailure ? { installFailure, detail: upgradeNote } : {}),

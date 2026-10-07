@@ -1448,6 +1448,7 @@ async function runSprintCycle(context) {
         callTool: (args && typeof args.callTool === 'function') ? args.callTool : undefined,
         memberCall: kbMemberCall,
         members: physicalMembers,
+        maintainers: () => context.kbMaintainers,
         log,
     });
     await kbPriming.primeAll();

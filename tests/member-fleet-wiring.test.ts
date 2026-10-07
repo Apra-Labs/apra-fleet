@@ -272,6 +272,27 @@ describe('register_member fleet_install', () => {
     expect(installCmds(w)).toEqual([]);
   });
 
+  it('remote agy member registers on its own install with the orchestrator id', async () => {
+    const w = newWorld();
+    __setMemberFleetMcpDeps(withRealRecord(fakeDeps(w)));
+    const baseExec = makeConfigAwareExec();
+    const newProjectId = '00000000-0000-0000-0000-000000000001';
+    mockExecCommand.mockImplementation(async (cmd: string, timeout?: number) => {
+      if (cmd.includes('FLEET_AGY_NEW_PROJECT_EOF')) {
+        return { stdout: `FLEET_AGY_NEW_PROJECT:${JSON.stringify({ created: [newProjectId], logIds: [newProjectId], status: 0 })}`, stderr: '', code: 0 };
+      }
+      if (cmd.includes('FLEET_AGY_PROBE_EOF')) {
+        return { stdout: 'FLEET_AGY_PROJECT:{"state":"ok"}', stderr: '', code: 0 };
+      }
+      return baseExec(cmd, timeout);
+    });
+    const result = await registerMember({ ...REMOTE, friendly_name: 'bella-agy', llm_provider: 'agy', fleet_install: 'auto', port: 22 } as any);
+    expect(result).toContain('Member registered successfully');
+    expect(result).toContain('fleetMcp: unavailable (no-per-project-mcp)');
+    expect(registerCmds(w)[0]).toContain("'--llm'");
+    expect(registerCmds(w)[0]).toContain("'agy'");
+  });
+
   it('local member: a direct MEMBER session is used, nothing is installed or exec\'d on a member host', async () => {
     const w = newWorld();
     const connect = vi.fn(async (): Promise<MemberSession> => ({

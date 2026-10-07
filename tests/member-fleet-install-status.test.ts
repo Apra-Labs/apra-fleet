@@ -275,12 +275,28 @@ describe('remote member: install, self-register, verify MEMBER session', () => {
 });
 
 describe('agy and local members', () => {
-  it('agy -> unavailable(no-per-project-mcp), flagged unverified, nothing probed', async () => {
+  it('local agy member -> unavailable(no-per-project-mcp), flagged unverified, nothing probed', async () => {
     const world = newWorld();
-    const s = await probeMemberFleetMcp(makeTestAgent({ llmProvider: 'agy' }), deps(world));
+    const s = await probeMemberFleetMcp(makeTestLocalAgent({ llmProvider: 'agy' }), deps(world));
     expect(s).toMatchObject({ state: 'unavailable', reason: 'no-per-project-mcp', unverified: true });
-    // Only the bd probe runs: agy roles still run bd on the member.
-    expect(world.execLog.filter(c => !c.includes('command -v bd'))).toEqual([]);
+    // Local members share the install; nothing probed.
+    expect(world.execLog).toEqual([]);
+  });
+
+  it('remote agy member -> installs, self-registers under orchestrator id, verifies member session, returns unavailable(no-per-project-mcp) with version', async () => {
+    const world = newWorld();
+    const agent = makeTestAgent({ llmProvider: 'agy' });
+    const s = await probeMemberFleetMcp(agent, deps(world));
+    expect(s).toMatchObject({ state: 'unavailable', reason: 'no-per-project-mcp', unverified: true, version: VERSION });
+    // Member self-registration was executed on the remote host
+    const regCmd = world.execLog.find(c => c.includes('register-member'));
+    expect(regCmd).toContain("'--id'");
+    expect(regCmd).toContain(`'${agent.id}'`);
+    expect(regCmd).toContain("'--llm'");
+    expect(regCmd).toContain("'agy'");
+    // Member session version and list-tools were verified
+    expect(world.execLog.some(c => c.includes('call') && c.includes('version'))).toBe(true);
+    expect(world.execLog.some(c => c.includes('call') && c.includes('--list-tools'))).toBe(true);
   });
 
   it('local member gets its status from a direct MEMBER session with no install attempted', async () => {
