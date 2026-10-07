@@ -2,6 +2,8 @@ import { policyFor, PRE_DISPATCH_STEPS_IN_BRACKET } from './role-policies.mjs';
 import {
     isNonRetryableDispatchError,
     isAuthDispatchError,
+    isPermissionDeniedDispatchError,
+    permissionDenialOfError,
     isPostDispatchSyncFailure,
     isInfraDispatchFailure,
     isUsageLimitDispatchError,
@@ -897,9 +899,20 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
                         continue;
                     }
                 }
+                if (isPermissionDeniedDispatchError(err) && typeof ctx.onPermissionFailure === 'function') {
+                    const denial = permissionDenialOfError(err);
+                    const healed = await ctx.onPermissionFailure({
+                        member, role: roleName, label: `${roleLabel} dispatch`, denial,
+                    });
+                    if (healed) {
+                        ctx.log(`${roleLabel} dispatch: permission self-heal succeeded for member '${member}' -- retrying.`);
+                        healRetryIsFinal = true;
+                        continue;
+                    }
+                }
                 ctx.log(
-                    `${roleLabel} dispatch threw a non-retryable error (auth/trust): ${err.message}. Aborting ` +
-                    "retries -- fix the member's credentials/trust and re-run."
+                    `${roleLabel} dispatch threw a non-retryable error (auth/trust/permissions): ${err.message}. Aborting ` +
+                    "retries -- fix the member's credentials/trust/permissions and re-run."
                 );
                 // A ladder whose own failure legitimately fails the whole
                 // sprint propagates instead of degrading: with the dispatch
@@ -915,6 +928,11 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
             if (!completedButSyncFailed && !retry.abortOnNonRetryable && retry.authSelfHeal
                 && isAuthDispatchError(err) && typeof ctx.onLlmAuthFailure === 'function') {
                 await ctx.onLlmAuthFailure({ member, label: `${roleLabel} dispatch`, error: err.message });
+            }
+            if (!completedButSyncFailed && !retry.abortOnNonRetryable
+                && isPermissionDeniedDispatchError(err) && typeof ctx.onPermissionFailure === 'function') {
+                const denial = permissionDenialOfError(err);
+                await ctx.onPermissionFailure({ member, role: roleName, label: `${roleLabel} dispatch`, denial });
             }
 
             // RUN-level control signals are not failures of this role at all,

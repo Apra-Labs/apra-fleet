@@ -85,6 +85,7 @@ import {
 import {
     createMemberSessionGuard, createUnattendedAutoProvisioner,
     createDeployPermissionsProvisioner, stageCommandBodyMemberSide,
+    createPermissionSelfHealCallback,
 } from './member-provisioning.mjs';
 import {
     parseOwnerRepoFromRemoteUrl, parseRepoScopeFromRemoteUrl, vcsCredentialLabelForProvider,
@@ -453,6 +454,7 @@ export { isMissingRemoteRefError };
 export {
     createMemberSessionGuard, createUnattendedAutoProvisioner,
     createDeployPermissionsProvisioner, stageCommandBodyMemberSide,
+    createPermissionSelfHealCallback,
 };
 // Re-exported so importers of the child-bead allocation and batched-claim
 // helpers from runner.js keep working; beads-children.mjs is the single
@@ -1238,6 +1240,15 @@ async function runSprintCycle(context) {
             : undefined
     );
 
+    // Permission self-heal counterpart to onLlmAuthFailure above.
+    // Reactive self-heal for permission-denied dispatch failures (Claude and AGY):
+    // calls compose_permissions with the required grants and retries once.
+    const onPermissionFailure = context.onPermissionFailure ?? (
+        (args && typeof args.callTool === 'function')
+            ? createPermissionSelfHealCallback({ callTool: args.callTool, log, projectFolder: validated.projectFolder })
+            : undefined
+    );
+
     // Provisions a member unattended='auto' right before its deployer /
     // integ-test-runner / regression-test-runner dispatch, so those
     // real-command/real-suite roles never stall on an interactive permission
@@ -1766,6 +1777,7 @@ async function runSprintCycle(context) {
         getMemberForRole,
         memberSessionGuard,
         onLlmAuthFailure,
+        onPermissionFailure,
         // apra-fleet-hzeb.4.2: the usage-limit pause/resume/re-probe hook the
         // engine arms for a role whose retry.usageLimitPause is set.
         onUsageLimit,

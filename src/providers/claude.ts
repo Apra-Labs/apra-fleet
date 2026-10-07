@@ -1,7 +1,7 @@
 import { escapePowerShellArgInner } from '../utils/shell-escape.js';
 import { randomBytes } from 'node:crypto';
-import type { ProviderAdapter, PromptOptions, ParsedResponse, UsageLimitSignal, MemberMcpSyncContext, MemberMcpSyncResult, WorkspaceTrustExecFn, WorkspaceTrustTransport, EnsureWorkspaceTrustedResult, SessionIdStrategy, ExecTimeoutSource, TargetOS } from './provider.js';
-import { buildResumeFlag, buildSessionIdFlag, buildForkFlag, encodeClaudeProjectDir, joinForOS, resolveHomeDir, guessedUsageLimitSignal } from './provider.js';
+import type { ProviderAdapter, PromptOptions, ParsedResponse, PermissionDenial, PermissionDenialItem, UsageLimitSignal, MemberMcpSyncContext, MemberMcpSyncResult, WorkspaceTrustExecFn, WorkspaceTrustTransport, EnsureWorkspaceTrustedResult, SessionIdStrategy, ExecTimeoutSource, TargetOS } from './provider.js';
+import { buildResumeFlag, buildSessionIdFlag, buildForkFlag, encodeClaudeProjectDir, joinForOS, resolveHomeDir, guessedUsageLimitSignal, suggestedGrantsForDenial } from './provider.js';
 import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
 import { classifyPromptError } from '../utils/prompt-errors.js';
@@ -180,6 +180,73 @@ export function parseClaudeResetTime(text: string, now: Date): Date | null {
   return null;
 }
 
+const CLAUDE_TOOL_DENIAL_RE = /(?:permission\s+to\s+use|permission\s+denied|not\s+permitted|denied\s+by\s+policy|requires\s+approval|requires\s+permission|forbidden)/i;
+const CLAUDE_BASH_CMD_RE = /(?:Bash|command|run)\s*[:(]?\s*['"`]?([^'"`\n]+)['"`]?/i;
+
+export function detectClaudePermissionDenial(result: SSHExecResult): PermissionDenial | undefined {
+  const stdout = result.stdout ?? '';
+  const stderr = result.stderr ?? '';
+  const combined = `${stdout}\n${stderr}`;
+
+  if (!CLAUDE_TOOL_DENIAL_RE.test(combined)) {
+    return undefined;
+  }
+
+  const denials: PermissionDenialItem[] = [];
+  const seen = new Set<string>();
+  const add = (item: PermissionDenialItem) => {
+    const key = `${item.action}\u0000${item.target ?? ''}`;
+    if (!seen.has(key)) { seen.add(key); denials.push(item); }
+  };
+
+  for (const line of stdout.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) continue;
+    try {
+      const obj = JSON.parse(trimmed);
+      if (obj.type === 'tool_result' && (obj.is_error || CLAUDE_TOOL_DENIAL_RE.test(JSON.stringify(obj)))) {
+        const text = typeof obj.content === 'string' ? obj.content : JSON.stringify(obj.content ?? '');
+        const matchCmd = CLAUDE_BASH_CMD_RE.exec(text);
+        if (matchCmd) {
+          add({ action: 'Bash', target: matchCmd[1].trim() });
+        } else {
+          add({ action: 'tool', target: text.slice(0, 100) });
+        }
+      }
+    } catch { /* skip */ }
+  }
+
+  if (denials.length === 0) {
+    const matchCmd = CLAUDE_BASH_CMD_RE.exec(combined);
+    if (matchCmd) {
+      add({ action: 'Bash', target: matchCmd[1].trim() });
+    } else {
+      add({ action: 'permission' });
+    }
+  }
+
+  const actions = [...new Set(denials.map(d => d.action))];
+  const perDenial = denials.map(d => suggestedGrantsForDenial(d));
+  const primary = [...new Set(perDenial.map(g => g[0]).filter((g): g is string => !!g))];
+  const narrow = [...new Set(perDenial.flatMap(g => g.slice(1)))].filter(g => !primary.includes(g));
+  const suggestedGrants = [...primary, ...narrow];
+
+  const what = denials.map(d => (d.target ? `${d.action} "${d.target}"` : d.action)).join(', ');
+  let hint = `claude auto-denied ${what} (headless mode cannot prompt for permission).`;
+  if (suggestedGrants.length) {
+    hint += ` Grant it with compose_permissions grant: ${JSON.stringify(primary)} and retry.`;
+    if (narrow.length) hint += ` Narrower alternative: ${JSON.stringify(narrow)}.`;
+  }
+
+  return {
+    actions,
+    denials,
+    suggestedGrants,
+    hint,
+    signals: ['result_json', 'stderr'],
+  };
+}
+
 export class ClaudeProvider implements ProviderAdapter {
   readonly name: LlmProvider = 'claude';
   readonly processName = 'claude';
@@ -282,6 +349,12 @@ export class ClaudeProvider implements ProviderAdapter {
   parseResponse(result: SSHExecResult): ParsedResponse {
     const raw = result.stdout.trim();
 
+    const attachDenial = (r: ParsedResponse): ParsedResponse => {
+      const denial = detectClaudePermissionDenial(result);
+      if (denial) r.permissionDenial = denial;
+      return r;
+    };
+
     const extractUsage = (u: any) =>
       u && typeof u.input_tokens === 'number' && typeof u.output_tokens === 'number'
         ? { input_tokens: u.input_tokens, output_tokens: u.output_tokens }
@@ -347,12 +420,12 @@ export class ClaudeProvider implements ProviderAdapter {
           assistantText += assistantTextOf(obj);
           maxTurnsSeen = maxTurnsSeen || isMaxTurnsSignal(obj);
           const r = fromEvent(obj, assistantText, maxTurnsSeen);
-          if (r) return r;
+          if (r) return attachDenial(r);
         }
       } else {
         // Single object - old Claude Code format
         const maxTurns = isMaxTurnsSignal(parsed);
-        return {
+        return attachDenial({
           result: parsed.result ?? parsed.response ?? raw,
           sessionId: parsed.session_id,
           isError: parsed.is_error === true || result.code !== 0,
@@ -361,7 +434,7 @@ export class ClaudeProvider implements ProviderAdapter {
           subtype: parsed.subtype,
           terminalReason: parsed.terminal_reason ?? (maxTurns ? 'max_turns' : undefined),
           apiErrorStatus: extractApiErrorStatus(parsed),
-        };
+        });
       }
     } catch { /* not valid JSON - try line-by-line JSONL below */ }
 
@@ -376,21 +449,21 @@ export class ClaudeProvider implements ProviderAdapter {
         assistantText += assistantTextOf(obj);
         maxTurnsSeen = maxTurnsSeen || isMaxTurnsSignal(obj);
         const r = fromEvent(obj, assistantText, maxTurnsSeen);
-        if (r) return r;
+        if (r) return attachDenial(r);
       } catch { /* skip non-JSON lines */ }
     }
 
     // Fallback: plain text output. A stream that emitted a standalone
     // max_turns_reached event but no terminating `type:result` event still
     // reaches here -- preserve the turn-limit signal so it is never lost.
-    return {
+    return attachDenial({
       result: raw,
       sessionId: undefined,
       isError: result.code !== 0,
       raw,
       usage: undefined,
       terminalReason: maxTurnsSeen ? 'max_turns' : undefined,
-    };
+    });
   }
 
   // apra-fleet-hzeb.1 / hzeb.1.2: Claude signals a usage limit via a 429

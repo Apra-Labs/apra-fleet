@@ -73,3 +73,30 @@ export class TransportClosedError extends ClientError {
         super(message, { code: 'TRANSPORT_CLOSED', ...opts });
     }
 }
+
+/**
+ * Thrown when an agent prompt execution fails due to a member permission denial.
+ * Carries the structured {@link PermissionDenied} block (actions, denials,
+ * suggestedGrants, hint, signals) on `.permissionDenied` and `.details.permissionDenied`.
+ */
+export class PermissionDeniedError extends ClientError {
+    /**
+     * @param {string} message
+     * @param {{ permissionDenied: import('./api.mjs').PermissionDenied, member?: string, details?: object, cause?: unknown }} [opts]
+     */
+    constructor(message, opts = {}) {
+        const { permissionDenied, member, details, cause } = opts;
+        super(message, {
+            code: 'PERMISSION_DENIED',
+            details: {
+                reason: 'permission_denied',
+                member,
+                permissionDenied,
+                ...details,
+            },
+            cause,
+        });
+        this.permissionDenied = permissionDenied;
+        this.member = member;
+    }
+}

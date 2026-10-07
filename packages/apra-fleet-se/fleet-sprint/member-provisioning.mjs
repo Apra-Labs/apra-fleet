@@ -250,3 +250,53 @@ export async function stageCommandBodyMemberSide({ command, member, content, lab
     if (!staged) throw new Error('member-side body staging returned an empty path');
     return staged;
 }
+
+/**
+ * Reactive self-heal for permission-denied dispatch failures (Claude and AGY).
+ *
+ * When an agent dispatch fails because a member lacked a permission grant
+ * (isPermissionDeniedDispatchError), this callback is invoked with the member,
+ * active role, and the structured PermissionDenial block (denial.suggestedGrants).
+ * It calls compose_permissions in reactive grant mode to deliver the requested
+ * grants to the member's native configuration and update the project ledger,
+ * returning true so dispatchRole can retry the failed dispatch immediately.
+ *
+ * @param {{ callTool: (name: string, args: object) => Promise<any>, log?: Function, projectFolder?: string }} opts
+ * @returns {(info: { member: string, role?: string, label?: string, denial?: import('@apralabs/apra-fleet-client').PermissionDenied | null }) => Promise<boolean>}
+ */
+export function createPermissionSelfHealCallback(opts = {}) {
+    const { callTool, log = () => {}, projectFolder } = opts;
+    const fleetApi = new ApraFleet({ callTool });
+
+    return async function onPermissionFailure({ member, role, label, denial }) {
+        if (!member) return false;
+        const grants = Array.isArray(denial?.suggestedGrants) ? denial.suggestedGrants : [];
+        if (grants.length === 0) {
+            log(`[Dispatch] self-heal: permission denial on member '${member}' (${label || 'dispatch'}) has no suggested grants. Cannot auto-heal.`);
+            return false;
+        }
+
+        const baseRole = (role === 'reviewer' || role === 'plan-reviewer') ? 'reviewer' : 'doer';
+        log(`[Dispatch] self-heal: permission denial detected on member '${member}' (${label || 'dispatch'}). Applying grants via compose_permissions: ${JSON.stringify(grants)}`);
+
+        try {
+            const composeRes = await fleetApi.composePermissions({
+                member_name: member,
+                role: baseRole,
+                grant: grants,
+                grant_reason: `Sprint permission self-heal: ${label || 'dispatch'} required ${denial?.actions?.join(', ') || 'unspecified actions'}`,
+                ...(projectFolder ? { project_folder: projectFolder } : {}),
+            });
+            const text = resultText(composeRes);
+            if (text.includes('[FAIL]') || text.includes('Cannot auto-grant')) {
+                log(`[Dispatch] self-heal: compose_permissions rejected grant for member '${member}': ${text}. Not retrying.`);
+                return false;
+            }
+            log(`[Dispatch] self-heal: compose_permissions succeeded for member '${member}'. Granted: ${grants.join(', ')}. Retrying dispatch.`);
+            return true;
+        } catch (composeErr) {
+            log(`[Dispatch] self-heal: compose_permissions failed for member '${member}': ${composeErr.message}. Not retrying.`);
+            return false;
+        }
+    };
+}

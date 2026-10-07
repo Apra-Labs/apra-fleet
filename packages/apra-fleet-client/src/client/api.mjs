@@ -718,18 +718,36 @@ export function assertNoRemovedKbScopeKeys(tool, options) {
     throw err;
 }
 
+export {
+    ClientError,
+    TimeoutError,
+    AbortError,
+    TransportClosedError,
+    PermissionDeniedError,
+} from './errors.mjs';
+
 /**
  * Typed read of an execute_prompt permission denial. Accepts the raw executePrompt()
- * result or its `structuredContent`; returns the {@link PermissionDenied} block when
- * `reason === 'permission_denied'` and the block is well-formed, else null.
+ * result, its `structuredContent`, or an Error object (such as AgentDispatchError);
+ * returns the {@link PermissionDenied} block when a permission denial is present,
+ * else null.
  *
- * @param {{structuredContent?: ExecutePromptStructured} | ExecutePromptStructured | null | undefined} result
+ * @param {any} resultOrError
  * @returns {PermissionDenied | null}
  */
-export function permissionDenialOf(result) {
-    const sc = result && typeof result === 'object' && 'structuredContent' in result ? result.structuredContent : result;
-    if (!sc || sc.reason !== 'permission_denied') return null;
-    const d = sc.permissionDenied;
+export function permissionDenialOf(resultOrError) {
+    if (!resultOrError || typeof resultOrError !== 'object') return null;
+    let d = null;
+    if (resultOrError.permissionDenied && typeof resultOrError.permissionDenied === 'object') {
+        d = resultOrError.permissionDenied;
+    } else if (resultOrError.details && typeof resultOrError.details === 'object' && resultOrError.details.permissionDenied) {
+        d = resultOrError.details.permissionDenied;
+    } else {
+        const sc = 'structuredContent' in resultOrError ? resultOrError.structuredContent : resultOrError;
+        if (sc && typeof sc === 'object' && sc.reason === 'permission_denied' && sc.permissionDenied) {
+            d = sc.permissionDenied;
+        }
+    }
     if (!d || typeof d !== 'object') return null;
     if (!isStringArray(d.actions) || !isStringArray(d.suggestedGrants) || typeof d.hint !== 'string') return null;
     if (!Array.isArray(d.denials) || !d.denials.every((x) => x && typeof x.action === 'string' && (x.target === undefined || typeof x.target === 'string'))) return null;
@@ -740,6 +758,22 @@ export function permissionDenialOf(result) {
         hint: d.hint,
         signals: isStringArray(d.signals) ? [...d.signals] : [],
     };
+}
+
+/**
+ * Returns a typed {@link PermissionDeniedError} if the given result or error represents
+ * a permission denial, or null if it does not.
+ *
+ * @param {any} resultOrError
+ * @param {string} [member]
+ * @returns {PermissionDeniedError | null}
+ */
+export function permissionErrorOf(resultOrError, member) {
+    const denial = permissionDenialOf(resultOrError);
+    if (!denial) return null;
+    const targetMember = member ?? resultOrError?.details?.member ?? resultOrError?.member;
+    const msg = `permission denied: ${denial.hint}`;
+    return new PermissionDeniedError(msg, { permissionDenied: denial, member: targetMember });
 }
 
 /**

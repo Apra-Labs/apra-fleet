@@ -421,10 +421,39 @@ const NON_RETRYABLE_DISPATCH_RE = /authentication failed|not logged in|workspace
  * @param {unknown} err
  * @returns {boolean}
  */
+export const PERMISSION_DENIED_DISPATCH_REASON = 'permission_denied';
+
+/**
+ * True when an agent dispatch error was caused by a permission denial.
+ * @param {unknown} err
+ * @returns {boolean}
+ */
+export function isPermissionDeniedDispatchError(err) {
+    if (!err || typeof err !== 'object') return false;
+    const reason = err?.details?.reason;
+    if (reason === PERMISSION_DENIED_DISPATCH_REASON) return true;
+    return Boolean(permissionDenialOfError(err));
+}
+
+/**
+ * Extracts the structured PermissionDenial block from a dispatch error.
+ * @param {unknown} err
+ * @returns {import('@apralabs/apra-fleet-client').PermissionDenied | null}
+ */
+export function permissionDenialOfError(err) {
+    if (!err || typeof err !== 'object') return null;
+    const denial = err?.permissionDenied ?? err?.details?.permissionDenied;
+    if (denial && typeof denial === 'object' && Array.isArray(denial.suggestedGrants)) {
+        return denial;
+    }
+    return null;
+}
+
 export function isNonRetryableDispatchError(err) {
     const reason = err?.details?.reason;
     if (reason === 'auth' || reason === 'workspace_not_trusted'
-        || reason === 'preflight_auth_missing' || reason === 'preflight_auth_expired') return true;
+        || reason === 'preflight_auth_missing' || reason === 'preflight_auth_expired'
+        || reason === PERMISSION_DENIED_DISPATCH_REASON) return true;
     return NON_RETRYABLE_DISPATCH_RE.test(String(err?.message ?? ''));
 }
 

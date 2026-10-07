@@ -296,6 +296,50 @@ export interface PermissionDenial {
   signals: Array<'result_json' | 'stderr' | 'transcript'>;
 }
 
+const SHELL_SEQUENCE_RE = /[;&|`$]/;
+const SHELL_CHAIN_RE = /[;&|]/;
+const PLAIN_COMMAND_WORD_RE = /^[a-zA-Z0-9_\-./]+$/;
+
+export function suggestedGrantsForDenial(item: PermissionDenialItem): string[] {
+  const t = item.target?.trim();
+  if (item.action === 'command' || item.action === 'unsandboxed' || item.action === 'Bash') {
+    if (!t || SHELL_SEQUENCE_RE.test(t)) return [];
+    const first = t.split(/\s+/)[0];
+    const out: string[] = [];
+    if (PLAIN_COMMAND_WORD_RE.test(first)) out.push(`Bash(${first}:*)`);
+    if (!SHELL_CHAIN_RE.test(t) && t !== first) out.push(`Bash(${t})`);
+    return out;
+  }
+  const one = suggestedGrantForDenial(item);
+  return one ? [one] : [];
+}
+
+export function suggestedGrantForDenial(item: PermissionDenialItem): string | undefined {
+  const t = item.target?.trim();
+  switch (item.action) {
+    case 'command':
+    case 'unsandboxed':
+    case 'Bash':
+      return t && !SHELL_CHAIN_RE.test(t) ? `Bash(${t})` : undefined;
+    case 'read_file':
+    case 'Read':
+      return t ? `Read(${t})` : 'Read';
+    case 'write_file':
+    case 'Write':
+      return t ? `Write(${t})` : 'Write';
+    case 'mcp': {
+      const m = t ? /^([^/\s]+)\/([^/\s]+)$/.exec(t) : null;
+      return m ? `mcp__${m[1]}__${m[2]}` : undefined;
+    }
+    case 'read_url':
+    case 'WebSearch':
+      return 'WebSearch';
+    default:
+      if (item.action.startsWith('mcp__')) return item.action;
+      return undefined;
+  }
+}
+
 /** Context parseResponse may use; providers that do not need it ignore it. */
 export interface ParseResponseContext {
   /** The member's OS (e.g. agy's permission-denial hint differs on Windows). */

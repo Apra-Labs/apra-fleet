@@ -1172,9 +1172,6 @@ async function probeMemberFleetMcpInner(
   });
   try {
     const provider: LlmProvider = agent.llmProvider ?? 'claude';
-    if (provider === 'agy' && agent.agentType === 'local') {
-      return unavailable('no-per-project-mcp', 'agy has no per-project MCP config fleet can point at the member session', { unverified: true });
-    }
     if (provider !== 'agy' && !PER_FOLDER_PROVIDERS.has(provider)) {
       return unavailable('provider-unsupported', `fleet writes no per-folder apra-fleet MCP entry for provider "${provider}"`, { unverified: true });
     }
@@ -1364,13 +1361,6 @@ async function probeRemote(
   if (!l.ok) return fail('member-session-failed', l.detail);
   const judged = judgeSession(v.value, l.value);
   if (!judged.ok) return fail(judged.reason, judged.detail);
-  if (provider === 'agy') {
-    return unavailable('no-per-project-mcp', 'agy has no per-project MCP config fleet can point at the member session', {
-      unverified: true,
-      ...(version ? { version } : {}),
-      ...(installFailure ? { installFailure, detail: upgradeNote } : {}),
-    });
-  }
   return {
     state: 'available', version, checkedAt: checkedAt(),
     ...(installFailure ? { installFailure, detail: upgradeNote } : {}),

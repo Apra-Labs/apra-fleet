@@ -416,7 +416,6 @@ export function createMemberInitProbe(opts = {}) {
     function providerOverride(provider) {
         const p = String(provider || '').toLowerCase();
         if (p === 'opencode') return 'no-per-tool-deny';
-        if (p === 'agy') return 'no-per-project-mcp';
         return null;
     }
 

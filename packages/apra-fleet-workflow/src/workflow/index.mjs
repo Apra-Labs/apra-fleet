@@ -1293,7 +1293,11 @@ export class FleetWorkflow extends EventEmitter {
                     // result forwards its permissionDenied block the same way, and
                     // dispatched:false (nothing was sent to the member) is kept so a
                     // caller can tell a setup-time failure from one where the agent ran.
-                    throw new AgentDispatchError(`[Workflow Error] Agent dispatch failed (${structured.reason || 'unknown'}): ${text}`, { details: { text, reason: structured.reason, member: opts.member_name || opts.member_id, ...(structured.usageLimit ? { usageLimit: structured.usageLimit } : {}), ...(structured.permissionDenied ? { permissionDenied: structured.permissionDenied } : {}), ...(structured.sessionId ? { sessionId: structured.sessionId } : {}), ...(structured.dispatched === false ? { dispatched: false } : {}) } });
+                    const dispatchErr = new AgentDispatchError(`[Workflow Error] Agent dispatch failed (${structured.reason || 'unknown'}): ${text}`, { details: { text, reason: structured.reason, member: opts.member_name || opts.member_id, ...(structured.usageLimit ? { usageLimit: structured.usageLimit } : {}), ...(structured.permissionDenied ? { permissionDenied: structured.permissionDenied } : {}), ...(structured.sessionId ? { sessionId: structured.sessionId } : {}), ...(structured.dispatched === false ? { dispatched: false } : {}) } });
+                    if (structured.permissionDenied) {
+                        dispatchErr.permissionDenied = structured.permissionDenied;
+                    }
+                    throw dispatchErr;
                 }
 
                 // A fleet TOOL/TRANSPORT failure that carries no

@@ -1,5 +1,5 @@
 import type { ProviderAdapter, PromptOptions, ParsedResponse, ParseResponseContext, ComposePermissionOptions, PermissionDenial, PermissionDenialItem, UsageLimitSignal, MemberMcpSyncContext, MemberMcpSyncResult, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult, SessionIdStrategy, ExecTimeoutSource, TargetOS } from './provider.js';
-import { joinForOS, resolveHomeDir, defaultUsageLimitSignal } from './provider.js';
+import { joinForOS, resolveHomeDir, defaultUsageLimitSignal, suggestedGrantsForDenial } from './provider.js';
 import type { LlmProvider, SSHExecResult, Agent } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
 import { classifyPromptError } from '../utils/prompt-errors.js';
@@ -642,41 +642,8 @@ const PLAIN_COMMAND_WORD_RE = /^[\w.+-]+$/;
  *  The prefix grant Bash(<first word>:*) composes to command(<word>) plus
  *  command(regex:<word> .*) on every OS, and the regex matches the full raw
  *  line, including a $(...) argument (docs/agy-provider.md section 3), so it comes first and the
- *  exact command follows as the narrow option. Linux/macOS agy reports a shell
- *  command it refuses as `unsandboxed "<command line>"` (the JSON result says
- *  `command`), so both actions are handled alike. */
 function suggestedGrantsFor(item: PermissionDenialItem): string[] {
-  const t = item.target?.trim();
-  if (item.action === 'command' || item.action === 'unsandboxed') {
-    if (!t || SHELL_SEQUENCE_RE.test(t)) return [];
-    const first = t.split(/\s+/)[0];
-    const out: string[] = [];
-    if (PLAIN_COMMAND_WORD_RE.test(first)) out.push(`Bash(${first}:*)`);
-    if (!SHELL_CHAIN_RE.test(t) && t !== first) out.push(`Bash(${t})`);
-    return out;
-  }
-  const one = suggestedGrantFor(item);
-  return one ? [one] : [];
-}
-
-function suggestedGrantFor(item: PermissionDenialItem): string | undefined {
-  const t = item.target?.trim();
-  switch (item.action) {
-    case 'command':
-      return t && !SHELL_CHAIN_RE.test(t) ? `Bash(${t})` : undefined;
-    case 'read_file':
-      return t ? `Read(${t})` : 'Read';
-    case 'write_file':
-      return t ? `Write(${t})` : 'Write';
-    case 'mcp': {
-      const m = t ? /^([^/\s]+)\/([^/\s]+)$/.exec(t) : null;
-      return m ? `mcp__${m[1]}__${m[2]}` : undefined;
-    }
-    case 'read_url':
-      return 'WebSearch';
-    default:
-      return undefined;
-  }
+  return suggestedGrantsForDenial(item);
 }
 
 /**
@@ -758,7 +725,7 @@ export function detectAgyPermissionDenial(result: SSHExecResult, agentOs?: Parse
     if (!denials.some(d => d.action === action)) add({ action });
   }
   const actions = [...new Set(denials.map(d => d.action))];
-  const perDenial = denials.map(d => suggestedGrantsFor(d));
+  const perDenial = denials.map(d => suggestedGrantsForDenial(d));
   const primary = [...new Set(perDenial.map(g => g[0]).filter((g): g is string => !!g))];
   const narrow = [...new Set(perDenial.flatMap(g => g.slice(1)))].filter(g => !primary.includes(g));
   const suggestedGrants = [...primary, ...narrow];
