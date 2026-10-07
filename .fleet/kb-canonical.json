@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "6c392d8af8963c1267052327b3a2ac519a6bb245",
     "branch": "u1_kb_redesign_base",
-    "entry_count": 282
+    "entry_count": 287
   },
   "entries": [
     {
@@ -335,6 +335,30 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:11.553Z"
+    },
+    {
+      "id": "0d1c4519-3851-454f-b7eb-b1ca25db6fe3",
+      "type": "knowledge",
+      "title": "A MEMBER-session kb_query needs tag or query even under own_scope, so the member tag stays in the args",
+      "summary": "kbQuery rejects any call carrying neither query, tag nor flagged_only, so an own_scope listing cannot drop the tag filter and rely on the server-applied ownerTag alone -- the tag is required, not redundant defence.",
+      "symbols": [
+        "kbQuery",
+        "getSelfReadKb",
+        "memberOwnerTag",
+        "buildDemotionCandidateQuery"
+      ],
+      "source_files": [
+        "src/tools/kb-query.ts",
+        "src/services/knowledge/kb-self.ts",
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-07T02:43:48.575Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs": "f2cd35efb67007f7afc90e795c6248cf7bd6cdbe",
+        "src/services/knowledge/kb-self.ts": "da0a43ebfc4ce07bebc7140fa6abddae97fac404",
+        "src/tools/kb-query.ts": "d327bcd710ad542d265f1214a9e403304ee96c6f"
+      }
     },
     {
       "id": "0e10e4ea-5c23-4fc9-bd7a-baf1af522a3e",
@@ -1736,6 +1760,29 @@
       "updated_at": "2026-09-29T06:13:53.836Z"
     },
     {
+      "id": "4d68d662-27cc-4fac-b8a0-cd34b4e93f4f",
+      "type": "runbook",
+      "title": "Falsify a kb read-routing guard by reverting the routing condition, not by reading the diff",
+      "summary": "The cheapest proof that a kb-self.ts routing opt-in is load-bearing is to delete the condition term, re-run the one test file through the bounded runner, and restore -- it names exactly which assertions depend on it.",
+      "symbols": [
+        "getSelfReadKb",
+        "APRA_TEST_SUITES_JSON",
+        "defaultSuites"
+      ],
+      "source_files": [
+        "src/services/knowledge/kb-self.ts",
+        "tests/knowledge/kb-member-own-scope.test.ts",
+        "scripts/run-all-tests.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-07T02:43:52.182Z",
+      "source_file_hashes": {
+        "scripts/run-all-tests.mjs": "417c4823d50bd28807c117c1b16cc01e3798cc2e",
+        "src/services/knowledge/kb-self.ts": "da0a43ebfc4ce07bebc7140fa6abddae97fac404",
+        "tests/knowledge/kb-member-own-scope.test.ts": "66f34ad7f117ce895fe3404ba69122d0ce660db5"
+      }
+    },
+    {
       "id": "4e315af5-d8ab-460e-850a-36d1d38ce19a",
       "type": "knowledge",
       "title": "runner.js's re-export of fatal-diagnostics.mjs is load-bearing for abort.mjs, not just compatibility sugar",
@@ -2612,6 +2659,25 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:32.715Z"
+    },
+    {
+      "id": "7d7cb749-9894-4d15-86e7-0e778d42e149",
+      "type": "runbook",
+      "title": "Falsifying a fleet-sprint test in /tmp needs node_modules symlinked back to the repo",
+      "summary": "Copying fleet-sprint and test to /tmp per the existing falsification runbook fails at import with ERR_MODULE_NOT_FOUND for workspace deps; one symlink to the repo's root node_modules fixes it.",
+      "symbols": [],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/package.json",
+        "packages/apra-fleet-se/test/kb-demotion-candidates.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-07T02:43:46.749Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/runner.js": "060bc81e2ffbfd1c0d7544de951bd7d4522eb339",
+        "packages/apra-fleet-se/package.json": "7b9496b2237c288e71045aa72c43202d8ca52935",
+        "packages/apra-fleet-se/test/kb-demotion-candidates.test.mjs": "aa9a9b9333191f00d1812768718f9831b8bd0a40"
+      }
     },
     {
       "id": "7f7c5b11-5779-4c0b-8265-d21a7f0e1d6d",
@@ -4679,6 +4745,29 @@
       "updated_at": "2026-09-25T22:26:38.195Z"
     },
     {
+      "id": "e6ed07fb-d473-4f64-b5d7-28930c2bbdd2",
+      "type": "learning",
+      "title": "dispatchRole's outcome.value is whatever agent() resolves to, so a fake agent must return the parsed object",
+      "summary": "dispatch-role.mjs does no JSON parsing of its own; runSprintCycle's agent wrapper already schema-parses, so a test fake returning an MCP envelope yields an undefined verdict rather than a parse error.",
+      "symbols": [
+        "dispatchRole",
+        "runFinalReviewPhase",
+        "runDispatch"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/dispatch-role.mjs",
+        "packages/apra-fleet-se/fleet-sprint/phases/final-review.mjs",
+        "packages/apra-fleet-se/test/final-review-kb-demotion.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-07T02:43:50.328Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/dispatch-role.mjs": "c9af9d36c71243e58bcfd40eac3cf3e831a898c8",
+        "packages/apra-fleet-se/fleet-sprint/phases/final-review.mjs": "bfa2693479f7a8cc59fe7f293e6352742b2d95f0",
+        "packages/apra-fleet-se/test/final-review-kb-demotion.test.mjs": "96f46d2fbd26ffdd7c013517894ba5588b7a460e"
+      }
+    },
+    {
       "id": "e72b1ade-286b-47e1-8113-be1ca0404703",
       "type": "knowledge",
       "title": "sprintMutexId pins the member-reservation key, not the engine run-state runId",
@@ -4884,6 +4973,33 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:08:07.865Z"
+    },
+    {
+      "id": "f1babecd-4025-4e59-8dea-9283fc46166e",
+      "type": "knowledge",
+      "title": "An ownerTag read in kb_query filters the GLOBAL KB too, not just the project store",
+      "summary": "Any kb_query path that sets ownerTag (member INFERRED/UNVERIFIED, or the new own_scope opt-in) passes owner_tag to the global provider as well, so every untagged global entry is dropped and the global half of the result disappears.",
+      "symbols": [
+        "kbQuery",
+        "passesTrustFilter",
+        "getSelfReadKb",
+        "memberOwnerTag",
+        "trustFilterSql"
+      ],
+      "source_files": [
+        "src/tools/kb-query.ts",
+        "src/services/knowledge/kb-self.ts",
+        "src/services/knowledge/sqlite-provider.ts",
+        "memory-contract/v1/spec.md"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-07T02:43:54.012Z",
+      "source_file_hashes": {
+        "memory-contract/v1/spec.md": "af70d214da46aeaec82ea189fe30d9b86aeefd73",
+        "src/services/knowledge/kb-self.ts": "da0a43ebfc4ce07bebc7140fa6abddae97fac404",
+        "src/services/knowledge/sqlite-provider.ts": "1ee0fa78dd17320aaf7409c977000ba321552cd1",
+        "src/tools/kb-query.ts": "d327bcd710ad542d265f1214a9e403304ee96c6f"
+      }
     },
     {
       "id": "f2e8ae2b-e3a5-4c51-820a-423478a7f23c",
