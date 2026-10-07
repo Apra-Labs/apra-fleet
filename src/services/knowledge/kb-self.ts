@@ -234,18 +234,32 @@ export interface SelfReadKb {
  * checkout bible through the in-memory view (member-bible-view.ts); the
  * per-repo DB is shared by every member of the repo, whichever branch each is
  * on. Everything else keeps the per-repo DB: FULL sessions, in-process callers
- * passing an explicit KbAnchor, and a MEMBER request that explicitly names the
+ * passing an explicit KbAnchor, a MEMBER request that explicitly names the
  * INFERRED or UNVERIFIED tier (a bible carries the CONFIRMED set, so those
- * tiers are not the view's to answer). The global KB is unchanged either way.
- * That last MEMBER case carries `ownerTag`: it sees only its own captures.
+ * tiers are not the view's to answer), and a MEMBER request that opts into
+ * `ownScope` (see below). The global KB is unchanged either way. Both of
+ * those last two MEMBER cases carry `ownerTag`: the caller sees only its own
+ * captures.
+ *
+ * `ownScope` is the opt-in escape hatch from the bible view for a CONFIRMED
+ * read: the bible view is built by importBibleEntries, which stamps every row
+ * `tags: []` (bible-import.ts), so a bible-view read can never satisfy a
+ * `tag: 'member:<uuid>'` filter -- there is no row in that view carrying any
+ * member tag to match. A caller that needs to read back its OWN promoted
+ * CONFIRMED rows (e.g. kb_demote's candidate list, which must only ever offer
+ * ids kb_demote's ownerTag check can actually act on) sets `ownScope: true` to
+ * route to the per-repo DB instead, same as an explicit INFERRED/UNVERIFIED
+ * request. Default false/omitted: the routing above is unchanged, so no
+ * existing caller's result shape moves.
  */
 export async function getSelfReadKb(
   anchor?: KbAnchor,
   confidence?: readonly string[],
+  ownScope?: boolean,
 ): Promise<SelfReadKb> {
   const resolved = resolveKbAnchor(anchor);
   const namesUnconfirmedTier = (confidence ?? []).some(c => c !== 'CONFIRMED');
-  if (anchor === undefined && getSessionMemberId() !== undefined && !namesUnconfirmedTier) {
+  if (anchor === undefined && getSessionMemberId() !== undefined && !namesUnconfirmedTier && !ownScope) {
     const [project, global] = await Promise.all([getMemberBibleView(resolved), getGlobalKbProvider()]);
     return {
       providers: { project, global, projectSlug: getProjectSlug(resolved.folder, resolved.remoteUrl) },

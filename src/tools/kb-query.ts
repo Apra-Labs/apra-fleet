@@ -28,6 +28,12 @@ export const kbQuerySchema = z.object({
     .describe('Only return entries whose confidence tier is in this list (e.g. ["CONFIRMED"]). Applies to l1_results, l2_expanded and related_claims alike. Default when omitted: ["CONFIRMED"] -- INFERRED and UNVERIFIED entries are returned only when listed explicitly. Ignored when flagged_only is true.'),
   exclude_disputed: z.boolean().optional()
     .describe('Drop entries on either side of an unresolved contradiction (flagged_for_review, or contradiction_of set). Applies to l1_results, l2_expanded and related_claims alike. Default true when confidence is omitted (CONFIRMED-undisputed default); default false when confidence is given explicitly. Ignored when flagged_only is true.'),
+  // MEMBER own-scope escape hatch from the bible view (kb-self.ts
+  // getSelfReadKb). Opt-in and default-off: every existing caller's routing
+  // (CONFIRMED -> bible view, INFERRED/UNVERIFIED -> per-repo DB) is
+  // unchanged unless this is set.
+  own_scope: z.boolean().optional()
+    .describe('MEMBER session only. A default CONFIRMED read is answered from the checkout bible view, where every row is untagged -- a tag: "member:<id>" filter can never match there. Set true to force the per-repo DB instead, with the caller\'s own ownerTag applied, so a member can read back a CONFIRMED row it itself promoted (e.g. to check what it may kb_demote). No effect for a FULL session, an in-process caller passing an explicit anchor, or a request that already names INFERRED/UNVERIFIED -- those already read the per-repo DB. It changes which store answers and nothing else, so to span everything kb_demote accepts combine it with confidence: ["CONFIRMED"] and include_stale: true: a stale or contradiction-flagged CONFIRMED row is still demotable, but the default read drops stale rows and (with no explicit confidence list) disputed ones. The widened read also returns superseded rows, which kb_demote refuses -- drop those yourself.'),
   // Removed pre-redesign scope keys: declared only so a caller still passing one
   // is refused with E-SCOPE-KEY-REMOVED instead of silently re-scoped.
   ...KB_REMOVED_SCOPE_KEYS_SHAPE,
@@ -59,11 +65,17 @@ export async function kbQuery(input: KbQueryInput, anchor?: KbAnchor): Promise<s
   }
 
   // A MEMBER session reads its checkout bible view unless it explicitly asks
-  // for INFERRED/UNVERIFIED (kb-self.ts getSelfReadKb); flagged_only ignores
-  // the confidence filter, so it is answered from the view too.
-  // An explicit INFERRED/UNVERIFIED request in a MEMBER session goes to the
-  // per-repo DB and sees only the caller's own captures (ownerTag).
-  const { providers, ownerTag } = await getSelfReadKb(anchor, input.flagged_only ? undefined : input.confidence);
+  // for INFERRED/UNVERIFIED, or opts into own_scope (kb-self.ts
+  // getSelfReadKb); flagged_only ignores the confidence filter, so it is
+  // answered from the view too (own_scope is ignored in that branch).
+  // An explicit INFERRED/UNVERIFIED request, or own_scope, in a MEMBER
+  // session goes to the per-repo DB and sees only the caller's own captures
+  // (ownerTag).
+  const { providers, ownerTag } = await getSelfReadKb(
+    anchor,
+    input.flagged_only ? undefined : input.confidence,
+    input.flagged_only ? undefined : input.own_scope,
+  );
   if (ownerTag !== undefined) requireSqliteProject(providers.project, 'kb_query');
 
   if (input.flagged_only) {

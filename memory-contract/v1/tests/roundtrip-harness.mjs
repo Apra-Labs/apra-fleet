@@ -354,6 +354,26 @@ export const SCENARIO = [
       { op: 'write', repo: 'A', rel: 'src/basis-drift.ts', contents: 'export const drift = 2;\n' },
     ],
   },
+  // kb_demote, on its OWN entry (never FOO -- the CONFIRMED-only read, kb_stats
+  // and the bible steps above all depend on FOO still being CONFIRMED). The
+  // refusal immediately follows the happy case because E-DEMOTE-NOT-CONFIRMED
+  // is only reachable on an entry kb_demote has already lowered to INFERRED.
+  {
+    tool: 'kb_capture',
+    case: 'setup-for-demote',
+    captureId: 'DEMOTED',
+    setup: [
+      { op: 'write', repo: 'A', rel: 'src/demote-basis.ts', contents: 'export const demoteBasis = 1;\n' },
+    ],
+  },
+  { tool: 'kb_promote', case: 'setup-first-promote-for-demote', derive: { id: 'DEMOTED' } },
+  { tool: 'kb_promote', case: 'setup-second-promote-for-demote', derive: { id: 'DEMOTED' } },
+  { tool: 'kb_demote', case: 'happy', derive: { id: 'DEMOTED' } },
+  { tool: 'kb_demote', case: 'refusal-not-confirmed', derive: { id: 'DEMOTED' } },
+  // kb_bible_commit demoted_ids: DEMOTED (now INFERRED, just demoted above) is
+  // admitted and tombstoned; FOO (still CONFIRMED, never demoted) is skipped
+  // with not_demoted_or_unknown. ids is empty, so this round only tombstones.
+  { tool: 'kb_bible_commit', case: 'tombstone', derive: { demoted_ids: ['DEMOTED', 'FOO'] } },
   { tool: 'kb_query', case: 'happy-confirmed-only', assertParsed: assertConfirmedOnly },
   { tool: 'kb_stats', case: 'happy' },
   { tool: 'kb_import', case: 'happy' },

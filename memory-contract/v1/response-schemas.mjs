@@ -159,6 +159,18 @@ const KB_RESPONSE_BODIES = {
     previous_confidence: z.string(),
     new_confidence: z.string(),
   }),
+  // Same three fields as kb_promote, and deliberately so: kb_demote is the
+  // inverse operation on the same axis, so a consumer reading a confidence
+  // change off either tool parses one shape. previous_confidence is always
+  // CONFIRMED here (every other tier is refused with E-DEMOTE-NOT-CONFIRMED
+  // before any write) and new_confidence always INFERRED, but both stay plain
+  // strings to match kb_promote rather than narrowing to an enum only this
+  // tool would carry.
+  kb_demote: z.object({
+    id: z.string(),
+    previous_confidence: z.string(),
+    new_confidence: z.string(),
+  }),
   kb_freshness_sweep: z.object({
     checked: z.number(),
     staled: z.number(),
@@ -170,6 +182,12 @@ const KB_RESPONSE_BODIES = {
     linked: z.number(),
     flagged: z.number(),
     rejected: z.number(),
+    // Local rows taken CONFIRMED -> INFERRED by an EXPLICIT demotion tombstone
+    // in the imported bible (the cross-clone half of kb_demote). Counts rows
+    // actually changed, not tombstones read; an entry merely ABSENT from the
+    // bible is never demoted. OPTIONAL so fixtures recorded before tombstones
+    // existed still validate; the handler always emits it.
+    demoted: z.number().optional(),
     sweep: z.object({
       checked: z.number(),
       staled: z.number(),
@@ -184,11 +202,12 @@ const KB_RESPONSE_BODIES = {
     pairs: z.number(),
     resolved: z.array(z.unknown()),
     left_for_agent: z.array(z.unknown()),
-    // F-11 (my-beads-db-27m.9, caught by the live round-trip harness): a COUNT
-    // of directive pairs skipped, not a flag -- src/services/knowledge/
-    // sqlite-provider.ts:1635 declares `skipped_directive: number` and :1650
-    // increments it. kb_reconcile_prefilter/happy.json records 0, so the
-    // previous z.boolean() contradicted the implementation and the corpus.
+    // F-11 (caught by the live round-trip harness): a COUNT of directive
+    // pairs skipped, not a flag -- SqliteProvider.reconcilePrefilter declares
+    // `skipped_directive: number` in its return type and increments it in
+    // the directive-pair branch. kb_reconcile_prefilter/happy.json records
+    // 0, so the previous z.boolean() contradicted the implementation and the
+    // corpus.
     skipped_directive: z.number(),
   }),
   kb_setup: z.object({
@@ -207,17 +226,23 @@ const KB_RESPONSE_BODIES = {
   // kb_bible_commit: ids the caller named are either merged (live CONFIRMED in
   // this KB and passing the shared bible basis predicate) or skipped with a
   // reason (not_confirmed_or_unknown; no_source_files for a CONFIRMED id that
-  // cites no source file; or basis_mismatch for a CONFIRMED id whose cited-file
-  // basis does not match the files at HEAD); removed lists every bible entry
-  // dropped because this KB holds it as superseded or invalidated (always
+  // cites no source file; basis_mismatch for a CONFIRMED id whose cited-file
+  // basis does not match the files at HEAD; or not_demoted_or_unknown for a
+  // demoted_ids id that is not a local demoted entry); removed lists every bible
+  // entry dropped because this KB holds it as superseded or invalidated (always
   // present, possibly empty); committed is true only when a local commit of
   // the bible path was made (never pushed).
+  // demoted names the ids admitted from demoted_ids: removed from entries and
+  // tombstoned in the bible's demotions array. OPTIONAL so bibles/fixtures
+  // recorded before tombstones existed still validate; the handler always emits
+  // it. entry_count counts ENTRIES only -- a tombstone is not an entry.
   kb_bible_commit: z.object({
     path: z.string(),
     merged: z.array(z.string()),
+    demoted: z.array(z.string()).optional(),
     skipped: z.array(z.object({
       id: z.string(),
-      reason: z.enum(['not_confirmed_or_unknown', 'no_source_files', 'basis_mismatch']),
+      reason: z.enum(['not_confirmed_or_unknown', 'no_source_files', 'basis_mismatch', 'not_demoted_or_unknown']),
     })),
     removed: z.array(z.object({
       id: z.string(),

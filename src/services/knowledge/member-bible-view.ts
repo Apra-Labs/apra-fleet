@@ -32,7 +32,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { SqliteProvider } from './sqlite-provider.js';
-import { readBibleEntries, parseBibleText, importBibleEntries } from './bible-import.js';
+import {
+  readBibleDocument,
+  parseBibleDocument,
+  excludeTombstonedEntries,
+  importBibleEntries,
+} from './bible-import.js';
 import { getAgent } from '../registry.js';
 import { getStrategy } from '../strategy.js';
 import { getAgentOS, getAgentShell, isPosixShell } from '../../utils/agent-helpers.js';
@@ -83,7 +88,15 @@ function statOrMissing(biblePath: string): { mtimeMs: number; size: number } {
 async function buildView(biblePath: string, repoRoot: string, missing: boolean): Promise<SqliteProvider> {
   _loadCounts.set(biblePath, (_loadCounts.get(biblePath) ?? 0) + 1);
   // Parse BEFORE opening the database, so a malformed bible costs nothing.
-  const entries = missing ? [] : readBibleEntries(biblePath, 'member bible view');
+  // DOCUMENT reader: the view must honour the bible's demotion tombstones, and
+  // the only way it can is by not listing the tombstoned entry. The provider
+  // below starts EMPTY, so there is no local row for a tombstone to demote --
+  // the import-side demotion branch is the wrong tool here and is deliberately
+  // not used.
+  const doc = missing
+    ? { entries: [] as unknown[], demotions: [] }
+    : readBibleDocument(biblePath, 'member bible view');
+  const entries = excludeTombstonedEntries(doc.entries, doc.demotions);
   // repoRoot anchors relative source_files exactly as the per-repo provider
   // does, so the capture basis check and prime()'s freshness check judge the
   // bible against the member's own checkout.
@@ -160,7 +173,12 @@ async function getRemoteMemberBibleView(anchor: KbAnchor): Promise<SqliteProvide
   if (current && current.mtimeMs === mtimeMs && current.size === size) return current.provider;
   const build = async (): Promise<SqliteProvider> => {
     _loadCounts.set(key, (_loadCounts.get(key) ?? 0) + 1);
-    const entries = mtimeMs === -1 ? [] : parseBibleText(await run(catCommand(agent, biblePath)), biblePath, 'member bible view');
+    // Same tombstone rule as the local path above -- a demotion must not be
+    // visible on one transport and invisible on the other.
+    const remoteDoc = mtimeMs === -1
+      ? { entries: [] as unknown[], demotions: [] }
+      : parseBibleDocument(await run(catCommand(agent, biblePath)), biblePath, 'member bible view');
+    const entries = excludeTombstonedEntries(remoteDoc.entries, remoteDoc.demotions);
     // The member's checkout is on another host: nothing here can verify its
     // source files, so import unanchored, then bind the remote folder so
     // freshness issues no verdict (see SqliteProvider.bindRepoPath).

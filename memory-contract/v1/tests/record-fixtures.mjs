@@ -117,6 +117,19 @@ const REPO_ROOT = path.resolve(HERE, '..', '..', '..');
 const DIST = path.join(REPO_ROOT, 'dist');
 const FIXTURES_DIR = path.join(REPO_ROOT, 'memory-contract', 'v1', 'fixtures');
 
+// Single-scenario mode: RECORD_ONLY=<tool>/<case>[,<tool>/<case>...] restricts
+// ACTUAL FILE WRITES to the listed fixtures; every other recordHappy/
+// recordRefusal call in this script still runs (so the setup chain a later
+// scenario depends on -- idFoo, idDemote, etc. -- still gets built), but its
+// result is not written to disk. This is the additive-only recording mode: a
+// full unfiltered run mints fresh UUIDs for EVERY fixture (recordHappy writes
+// unconditionally), which would make the whole existing corpus non-byte-
+// identical; this mode records new scenarios without touching any fixture
+// file already committed. Unset (the default) records everything, unchanged.
+const RECORD_ONLY = process.env.RECORD_ONLY
+  ? new Set(process.env.RECORD_ONLY.split(',').map((s) => s.trim()).filter(Boolean))
+  : null;
+
 // Synthetic scratch repos -- no real BluSKY code, credentials, or customer
 // text anywhere below. repoA/repoB are deliberately NOT git repos (no .git).
 const { ENVIRONMENT, RECORDED_REMOTE_A, RECORDED_REMOTE_B, RECORDED_REMOTE_IMPORT_REJECTED, RECORDED_REMOTE_BARE } =
@@ -204,6 +217,11 @@ function sanitizeValue(value) {
 }
 
 function writeFixture(tool, caseName, doc) {
+  const key = `${tool}/${caseName}`;
+  if (RECORD_ONLY && !RECORD_ONLY.has(key)) {
+    console.log(`  [skip] ${key}.json (RECORD_ONLY set, not in it)`);
+    return;
+  }
   const dir = path.join(FIXTURES_DIR, tool);
   fs.mkdirSync(dir, { recursive: true });
   const outPath = path.join(dir, `${caseName}.json`);
@@ -461,6 +479,67 @@ if (idFoo) {
       baseBranch: 'main',
       baseCommit: '0123456789abcdef0123456789abcdef01234567',
     });
+  }
+}
+
+// --- kb_demote ------------------------------------------------------------
+// DELIBERATELY SELF-CONTAINED: its own capture plus its own two promotes,
+// rather than reusing idFoo. Every later bible/stats/CONFIRMED-read fixture
+// depends on idFoo still being CONFIRMED, and kb_demote's whole job is to take
+// that away -- demoting idFoo here would silently rewrite those fixtures.
+//
+// The refusal case lives in this block and NOT in the refusal section further
+// down for the same reason the ordering comment at the top of this file gives:
+// E-DEMOTE-NOT-CONFIRMED is only reachable on an entry kb_demote has ALREADY
+// demoted, so the two cases are one dependent sequence, not two independent
+// scenarios.
+{
+  fs.writeFileSync(path.join(repoA, 'src', 'demote-basis.ts'), 'export const demoteBasis = 1;\n');
+  const captureForDemote = await recordHappy('kb_capture', 'setup-for-demote', {
+    type: 'knowledge',
+    title: 'Entry walked up to CONFIRMED so it can be demoted',
+    summary: 'Set up to demonstrate the kb_demote happy path and its E-DEMOTE-NOT-CONFIRMED refusal.',
+    content: 'This entry cites src/demote-basis.ts and is promoted twice so kb_demote has a legal CONFIRMED target.',
+    source_files: ['src/demote-basis.ts'],
+  });
+  const idDemote = parseEnvelopeText(captureForDemote)?.id;
+  if (idDemote) {
+    await recordHappy('kb_promote', 'setup-first-promote-for-demote', {
+      id: idDemote,
+      reason: 'First promotion (UNVERIFIED -> INFERRED) of the entry the kb_demote fixtures act on.',
+    });
+    await recordHappy('kb_promote', 'setup-second-promote-for-demote', {
+      id: idDemote,
+      reason: 'Second promotion (INFERRED -> CONFIRMED) so kb_demote has a CONFIRMED entry to lower.',
+    });
+    await recordHappy('kb_demote', 'happy', {
+      id: idDemote,
+      reason: 'Re-read src/demote-basis.ts and the claim holds in fewer cases than the promotion note asserts.',
+      evidence_files: ['src/demote-basis.ts'],
+    });
+    // Now INFERRED: kb_demote is not a ladder, so this is a REFUSAL rather
+    // than a second step down or an unchanged no-op return.
+    await recordRefusal('kb_demote', 'refusal-not-confirmed', {
+      id: idDemote,
+      reason: 'Attempting to demote the same entry again, after the call above already lowered it to INFERRED.',
+    }, 'E-DEMOTE-NOT-CONFIRMED');
+
+    // --- kb_bible_commit tombstone ------------------------------------------
+    // Exercises demoted_ids end to end in ONE call: idDemote is now INFERRED
+    // (demoted just above) with a demoted_at, so it is admitted -- removed from
+    // entries and recorded as an {id, demoted_at} tombstone in the bible's
+    // demotions array. idFoo (still CONFIRMED at this point -- this call does
+    // not touch it) was never demoted, so it is reported SKIPPED with reason
+    // not_demoted_or_unknown rather than as an error. ids is empty: this round
+    // confirms nothing new, only tombstones.
+    if (idFoo) {
+      await recordHappy('kb_bible_commit', 'tombstone', {
+        ids: [],
+        demoted_ids: [idDemote, idFoo],
+        baseBranch: 'main',
+        baseCommit: '0123456789abcdef0123456789abcdef01234567',
+      });
+    }
   }
 }
 

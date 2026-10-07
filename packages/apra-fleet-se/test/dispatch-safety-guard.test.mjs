@@ -418,7 +418,32 @@ const DISPATCH_ROLE_PATH = path.join(__dirname, '../fleet-sprint/dispatch-role.m
 // gets its own explicit baseline count below.
 // Bumped 4 -> 5: the KB injection's diff-file listing (`git diff --name-only`,
 // role hint source for reviewer/harvester) passes member_name and is failSoft.
-const EXPECTED_COMMAND_COUNT = 6;
+// Bumped 6 -> 8: createRoundChangedFiles' two command()
+// sites for kbWork.demotionCandidates()'s per-review-round changed-file set
+// (`git rev-parse HEAD` and `git diff --name-only <fromRef>...<head>`, both
+// inside the function this file defines and exports) -- both pass
+// member_name and are failSoft, verified compliant. Deliberately separate
+// from the diffFiles site bumped above: that one stays the cumulative
+// origin/base...branch diff for the KB-injection hint context; these two
+// compute THIS round's diff only, after a fetch/fast-forward merge.
+// Bumped 8 -> 9: createSprintChangedFiles' single command() site
+// (`git diff --name-only origin/<base>...<branch>`) for
+// kbWork.demotionCandidates({ scope: 'sprint' }) -- the FINAL review's
+// changed-file scope, which has no round to diff from. Passes member_name
+// and is failSoft, verified compliant. A THIRD cumulative-range site is not
+// a duplicate of the diffFiles one: this one fetches/fast-forward-merges the
+// maintainer first and feeds the demotion-candidate filter, while diffFiles
+// stays the unpulled KB-injection hint-context read.
+// Bumped 9 -> 10: createCurrentFileHashes' single command() site
+// (a disposable `node -e` script that sha256-hashes a bounded file list) for
+// kbWork.promotionCandidates()'s D6 in-sprint ping-pong guard -- re-hashing a
+// just-demoted entry's cited files to tell "basis unchanged since the
+// demotion" from "basis moved on". Passes member_name and is failSoft,
+// verified compliant. No path is ever interpolated into the command string;
+// the file list is JSON-embedded into the generated script, same technique
+// createDeployPermissionsProvisioner's and stageCommandBodyMemberSide's
+// `node -e` sites already use.
+const EXPECTED_COMMAND_COUNT = 10;
 // Bumped 9 -> 10 (2026-07-18): the doer max_turns-exhaustion resume path
 // (dispatchDoerResume) adds one new agent() call site -- a resume-and-continue
 // dispatch on the SAME session with an escalated max_turns, verified compliant

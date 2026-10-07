@@ -103,6 +103,36 @@
         }
       }
     },
+    "kb_demotions": {
+      "type": "array",
+      "description": "CONFIRMED entries whose basis is UNCHANGED but a re-check shows the claim no longer holds, demoted back to INFERRED for a fresh look. Reviewer-only, with the same evidence bar as kb_promotions and kb_discards. An id may appear in only one of kb_promotions, kb_discards and kb_demotions -- the engine refuses it in all lists it appears in. The engine makes the demotion calls.",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "reason"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The entry id, copied verbatim from the 'KNOWLEDGE BANK -- demotion candidates' block in your dispatch prompt. That block is the ONLY source of demotable ids -- do not call a kb_* tool to find one, and never invent one.",
+            "minLength": 1
+          },
+          "reason": {
+            "type": "string",
+            "description": "The evidence that the claim no longer holds despite its basis being unchanged -- what you actually checked.",
+            "minLength": 20
+          },
+          "evidence_files": {
+            "type": "array",
+            "description": "Optional files that support this demotion.",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
     "kb_captures": {
       "type": "array",
       "description": "Durable knowledge this role verified during its run. The engine makes the kb_capture calls; the role only decides. Optional -- omit or send [] to capture nothing.",

@@ -1,0 +1,28 @@
+{
+  "$id": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/bindings/mcp/kb_demote.json#",
+  "name": "kb_demote",
+  "description": "Lower a CONFIRMED KB entry back to INFERRED: { id, reason, evidence_files? }. Returns {id, previous_confidence, new_confidence}. Appends a \"[Demoted: <reason> | evidence: <files> -- <author>]\" note to content as the audit trail; promoted_at and source are left untouched, and a stale entry may be demoted. WHEN TO USE WHICH: the entry is still broadly right but you are LESS CERTAIN than CONFIRMED claims (it did not hold in a case you checked, its evidence turned out thinner than the promotion note implies) -> kb_demote. The entry is PROVEN WRONG in practice -> kb_feedback (flags it stale for human review, never touches confidence). Two entries make opposing claims and you know which wins -> kb_resolve_contradiction. You are discarding an unconfirmed capture outright -> kb_invalidate {ids}. REFUSALS, all checked before any write, nothing changes: a non-CONFIRMED entry is refused with E-DEMOTE-NOT-CONFIRMED (never a silent no-op); a superseded entry E-DEMOTE-SUPERSEDED; a user-directive E-DEMOTE-REFUSED-DIRECTIVE (directive state is human-terminal in both directions); a reason under 20 characters after collapsing newlines and trimming E-DEMOTE-REASON-REQUIRED; an evidence path that does not resolve, is not a file, or traverses out of the repo E-DEMOTE-EVIDENCE-UNRESOLVED. In a MEMBER session only entries tagged member:<caller uuid> can be demoted; any other id returns not-found and changes nothing. Scope: always the calling session's own KB -- a member session uses its registered work folder, any other session the fleet server's working folder; there is no repo/path scope argument (the removed repo_path, repo and repo_remote_url keys fail with E-SCOPE-KEY-REMOVED). Fails with E-SELF-NO-WORKFOLDER, E-SELF-NOT-A-REPO or E-SELF-NO-REMOTE (each with a one-line remediation) when that folder cannot carry a KB identity (it must be a git repository with an origin remote).",
+  "request": {
+    "$ref": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/schemas/kb_demote.request.json#"
+  },
+  "response": {
+    "$ref": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/schemas/kb_demote.response.json#"
+  },
+  "errors": [
+    {
+      "$ref": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-DEMOTE-NOT-CONFIRMED"
+    },
+    {
+      "$ref": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-DEMOTE-REASON-REQUIRED"
+    },
+    {
+      "$ref": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-DEMOTE-EVIDENCE-UNRESOLVED"
+    },
+    {
+      "$ref": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-DEMOTE-SUPERSEDED"
+    },
+    {
+      "$ref": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-DEMOTE-REFUSED-DIRECTIVE"
+    }
+  ]
+}

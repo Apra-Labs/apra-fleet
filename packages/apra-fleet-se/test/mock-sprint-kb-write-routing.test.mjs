@@ -3,7 +3,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { runDevelopLoopScenario, withScenarioMarkers, defaultMockCallTool } from './helpers/mock-sprint-harness.mjs';
 import { scaledTimeout } from './helpers/scaled-timeout.mjs';
-import { createKbWorkClient } from '../fleet-sprint/kb.mjs';
+import { createKbWorkClient, KB_DEMOTION_READ_LIMIT, KB_MAX_DEMOTION_CANDIDATES } from '../fleet-sprint/kb.mjs';
 import { createKbMaintainerSelector } from '../fleet-sprint/kb-maintainer.mjs';
 
 // =============================================================================
@@ -42,7 +42,7 @@ const isWriteTool = (tool) => tool === 'kb_capture' || tool === 'kb_promote' || 
  * A fake fleet: per-member KBs (keyed by member uuid), per-member checkouts,
  * the files published to the remote branch, and one ordered event list.
  */
-function createFakeFleet() {
+function createFakeFleet({ failOwnScopeQuery = false } = {}) {
     const kbs = new Map();          // member uuid -> entries[]
     const checkouts = new Map();    // member name -> Set<file>
     const published = new Set();    // files on the remote branch
@@ -65,6 +65,10 @@ function createFakeFleet() {
             case 'kb_session_prime': return { top_entries: [] };
             case 'kb_export': return { exported: kb.filter((e) => e.confidence === 'CONFIRMED').length };
             case 'kb_query': {
+                // The demotion-candidate read is the own-scoped one; failing
+                // only that read leaves the promotion read working, so a
+                // scenario can isolate the demotion degradation.
+                if (failOwnScopeQuery && args.own_scope === true) fail('kb unreachable: the demotion-candidate read failed');
                 if (typeof args.tag !== 'string') return { l1_results: [], related_claims: [] };
                 const tiers = Array.isArray(args.confidence) ? args.confidence : ['CONFIRMED'];
                 const hits = kb.filter((e) => e.tags.includes(args.tag) && tiers.includes(e.confidence) && !e.superseded_at);
@@ -285,9 +289,37 @@ describe('mock sprint: KB writes route through the kb_maintainer', () => {
             // entries in the reviewer prompt.
             const candidateReads = fleet.events.filter((e) => e.type === 'kb' && e.tool === 'kb_query' && e.args && e.args.tag);
             assert.ok(candidateReads.length >= 1);
-            for (const q of candidateReads) {
+            // dispatchReview also reads DEMOTION
+            // candidates (CONFIRMED entries touching this round's changed
+            // files) alongside the promotion read above -- a second,
+            // differently-shaped kb_query carrying the same tag. Split the
+            // two apart by confidence tier rather than asserting one shape
+            // over every tagged read.
+            const promotionReads = candidateReads.filter((q) => Array.isArray(q.args.confidence) && q.args.confidence.includes('INFERRED'));
+            const demotionReads = candidateReads.filter((q) => Array.isArray(q.args.confidence) && q.args.confidence.includes('CONFIRMED'));
+            assert.equal(promotionReads.length + demotionReads.length, candidateReads.length, 'every tagged kb_query must be either a promotion or a demotion candidate read');
+            assert.ok(promotionReads.length >= 1);
+            for (const q of promotionReads) {
                 assert.equal(q.member, 'maint');
                 assert.deepEqual(q.args, { tag: `member:${MAINT}`, confidence: ['INFERRED'], limit: 40 });
+            }
+            for (const q of demotionReads) {
+                assert.equal(q.member, 'maint');
+                // Spelled out field by field rather than compared to
+                // buildDemotionCandidateQuery's own output, which would be
+                // tautological. This is the demotion READ: own-scope so a
+                // MEMBER-session CONFIRMED read is answered from the per-repo
+                // KB rather than the untagged checkout bible view, deliberately
+                // WIDE (stale and contradiction-flagged rows are demotable and
+                // are the ones most worth re-checking), and limited by the read
+                // limit, never by the 20-entry offer cap.
+                assert.equal(q.args.tag, `member:${MAINT}`);
+                assert.equal(q.args.own_scope, true, 'without own_scope this read matches nothing in a real sprint');
+                assert.deepEqual(q.args.confidence, ['CONFIRMED'], 'kb_demote accepts nothing else (E-DEMOTE-NOT-CONFIRMED)');
+                assert.equal(q.args.include_stale, true, 'a stale CONFIRMED row is demotable');
+                assert.equal(q.args.exclude_disputed, false, 'a contradiction-flagged CONFIRMED row is demotable too');
+                assert.equal(q.args.limit, KB_DEMOTION_READ_LIMIT, 'the read limit must be the wide one');
+                assert.notEqual(q.args.limit, KB_MAX_DEMOTION_CANDIDATES, 'the offer cap must never be used as the read limit');
             }
             assert.equal(reviewRounds, 1);
             const offered = candidateIds(reviewerPrompts[0]);
@@ -309,6 +341,74 @@ describe('mock sprint: KB writes route through the kb_maintainer', () => {
             // ... and both drop out of the next candidate read (the final review's).
             assert.ok(finalPrompt, 'the final review must have run');
             assert.equal(candidateIds(finalPrompt), null, 'the final review gets no candidates: one CONFIRMED, one discarded, one out of window');
+        });
+    });
+
+    // A FAILING demotion-candidate read must leave BOTH reviews dispatching.
+    // The unit-level degradation tests prove the client returns [] instead of
+    // throwing; only driving the real runner proves the consequence that
+    // matters -- that the per-round review and the final review still run and
+    // still produce a verdict when the maintainer's own-scope read fails.
+    // Isolated to the own-scope read, so the promotion read still works and
+    // the rest of the round is unchanged.
+    test('a failing demotion-candidate read still lets the per-round review and the final review dispatch', { timeout: scaledTimeout(240000) }, async () => {
+        await withScenarioMarkers('kb demotion read failure', async () => {
+            const fleet = createFakeFleet({ failOwnScopeQuery: true });
+            // An owned CONFIRMED entry citing the file this sprint changes:
+            // with a working read this WOULD be offered for demotion, so the
+            // assertions below are about the failure, not about an empty KB.
+            fleet.seedEntry('maint', {
+                id: 'kb-would-have-been-offered', type: 'knowledge', title: 'A CONFIRMED claim about the widget cache',
+                summary: 'keyed by tenant id', source_files: [CITED], confidence: 'CONFIRMED',
+                created_at: '2000-01-01T00:00:00.000Z',
+            });
+            const reviewerPrompts = [];
+            let finalPrompt = null;
+            const doerHandler = async ({ opts, tempDir, runCmd }) => {
+                const ids = (opts.prompt.match(/Assigned bead ids \(comma-separated\):\s*(.+)/)?.[1] || '').split(',').map((s) => s.trim()).filter(Boolean);
+                for (const id of ids) await runCmd(`bd close ${id}`, tempDir);
+                fleet.published.add(CITED);
+                return { content: [{ text: JSON.stringify({ status: 'VERIFY', closedIds: ids, notes: 'done' }) }] };
+            };
+            const reviewerHandler = async ({ opts }) => {
+                reviewerPrompts.push(opts.prompt);
+                return { content: [{ text: JSON.stringify({ verdict: 'APPROVED', notes: 'Approved.', reopenIds: [], newTasks: [] }) }] };
+            };
+            const finalReviewHandler = async ({ opts }) => {
+                finalPrompt = opts.prompt;
+                return { content: [{ text: JSON.stringify({ verdict: 'PASS', notes: 'All goal beads closed.' }) }] };
+            };
+
+            const r = await runDevelopLoopScenario('kbdemotefail', {
+                members: ['maint', 'dev'],
+                roleMap: { doer: ['dev'], reviewer: ['dev'] },
+                beadsIdentity: { maint: { repoRemote: REPO_URL }, dev: { repoRemote: REPO_URL } },
+                taskSpecs: [{ title: 'Task: demotion read failure' }],
+                doerHandler, reviewerHandler, finalReviewHandler,
+                maxCycles: 1,
+                callToolFactory: (executeCommand) => buildCallTool(fleet, executeCommand),
+                onCommand: buildOnCommand(fleet),
+            });
+
+            assert.equal(r.error, null, `sprint error: ${r.error && r.error.message}`);
+            const ownScopeReads = fleet.events.filter((e) => e.type === 'kb' && e.tool === 'kb_query' && e.args && e.args.own_scope === true);
+            assert.ok(ownScopeReads.length >= 1, 'the demotion-candidate read must have been ATTEMPTED -- otherwise this proves nothing');
+            assert.equal(reviewerPrompts.length, 1, 'the per-round review must still be dispatched after the failed read');
+            assert.ok(finalPrompt, 'the final review must still be dispatched after the failed read');
+            // The block HEADER is not the discriminator: the reviewer role
+            // prompt and the structured-output schema both name it even when
+            // nothing is offered. The seeded entry's id is -- it can only
+            // reach a prompt through a successful read.
+            for (const prompt of [reviewerPrompts[0], finalPrompt]) {
+                assert.ok(
+                    !prompt.includes('kb-would-have-been-offered'),
+                    'a failed read must offer nothing, never a stale or partial demotion candidate',
+                );
+            }
+            assert.ok(
+                r.logs.some((l) => /could not read demotion candidates from maintainer 'maint' \(non-fatal\)/.test(l)),
+                'the degradation must be visible in the run log, not silent',
+            );
         });
     });
 

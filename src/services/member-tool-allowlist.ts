@@ -27,6 +27,10 @@
 //     member session -- including a role agent dispatched on the maintainer
 //     member, which connects through the plain per-folder ?member= entry --
 //     does not see them.
+//   - kb_demote lowers CONFIRMED to INFERRED. It is served on the same terms
+//     as kb_promote (kb_maintainer session only): the engine applies every
+//     reviewer demotion through the maintainer session, and no role agent
+//     needs to call it directly.
 
 /**
  * Every tool name registered by registerAllTools (src/services/tool-registry.ts).
@@ -46,7 +50,7 @@ export const REGISTERED_TOOL_NAMES: readonly string[] = Object.freeze([
   'code_graph', 'code_impact', 'code_query', 'code_context', 'code_map',
   'code_flow', 'code_tests', 'code_reindex', 'code_status',
   'kb_capture', 'kb_invalidate', 'kb_context', 'kb_session_prime', 'kb_query',
-  'kb_list', 'kb_harvest', 'kb_promote', 'kb_freshness_sweep', 'kb_import',
+  'kb_list', 'kb_harvest', 'kb_promote', 'kb_demote', 'kb_freshness_sweep', 'kb_import',
   'kb_resolve_contradiction', 'kb_reconcile_prefilter', 'kb_setup', 'kb_export',
   'kb_stats', 'kb_feedback', 'kb_bible_commit',
 ]);
@@ -73,11 +77,11 @@ export const MEMBER_BASE_TOOLS: readonly string[] = Object.freeze([
 
 /**
  * Tools served ONLY to a kb_maintainer member session (the engine's grant), on
- * top of the base allowlist. They mint CONFIRMED. Not part of
+ * top of the base allowlist. They mint CONFIRMED, or (kb_demote) withdraw it. Not part of
  * MEMBER_ALLOWED_TOOLS, so client-side deny rules keep them denied for every
  * agent session on a member.
  */
-export const MEMBER_MAINTAINER_TOOLS: readonly string[] = Object.freeze(['kb_promote', 'kb_resolve_contradiction']);
+export const MEMBER_MAINTAINER_TOOLS: readonly string[] = Object.freeze(['kb_promote', 'kb_demote', 'kb_resolve_contradiction']);
 
 /**
  * kb_ tools no member session is ever served, whatever its grants. Listed so

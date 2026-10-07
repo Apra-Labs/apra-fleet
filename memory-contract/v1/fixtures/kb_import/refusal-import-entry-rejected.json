@@ -9,7 +9,7 @@
     "content": [
       {
         "type": "text",
-        "text": "{\"imported\":0,\"skipped\":0,\"linked\":0,\"flagged\":0,\"rejected\":1,\"sweep\":{\"checked\":0,\"staled\":0,\"unstaled\":0}}"
+        "text": "{\"imported\":0,\"skipped\":0,\"linked\":0,\"flagged\":0,\"rejected\":1,\"demoted\":0,\"sweep\":{\"checked\":0,\"staled\":0,\"unstaled\":0}}"
       }
     ]
   },

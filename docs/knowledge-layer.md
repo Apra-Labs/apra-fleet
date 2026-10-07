@@ -309,11 +309,18 @@ session exists, so they can briefly appear as the member's online session.
 
 ## Trust model (enforced)
 
-Every entry carries a confidence tier and moves up a one-way ladder:
+Every entry carries a confidence tier and moves up a mostly-one-way ladder:
 
 ```
 UNVERIFIED  ->  INFERRED  ->  CONFIRMED
 ```
+
+Exactly one rung of that ladder is also reversible: `kb_demote` lowers a
+CONFIRMED entry back to INFERRED (never a ladder in its own direction, and
+never below INFERRED) -- see
+[kb-trust-model.md](kb-trust-model.md#kb_demote-is-the-only-way-back-down-and-only-one-rung)
+for the full rule, the one case it is for, who can demote what, and the bible
+tombstone mechanism that carries a demotion across clones.
 
 - `UNVERIFIED` -- extracted but unchecked (auto-harvested from a transcript, a
   raw session insight). Lowest trust.

@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/schemas/kb_demote.request.json#",
+  "x-invariant": [
+    "INV-05"
+  ],
+  "$ref": "#/$defs/v1-kb_demote-request",
+  "$defs": {
+    "v1-kb_demote-request": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "ID of the KB entry to demote"
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Why trust is being withdrawn -- at least 20 characters after newlines are collapsed to spaces and the result trimmed. Appended to the entry content as the audit trail; a reason made only of whitespace or newlines is refused."
+        },
+        "evidence_files": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Optional repo-relative files backing the demotion. Each must resolve to a real file inside the calling session's repo; a path that does not resolve, names a directory, is ABSOLUTE, or contains a \"..\" segment is refused with E-DEMOTE-EVIDENCE-UNRESOLVED and nothing is written."
+        },
+        "repo_path": {
+          "description": "REMOVED -- do not pass. A call carrying it fails with E-SCOPE-KEY-REMOVED; the KB is always the calling session's own."
+        },
+        "repo": {
+          "description": "REMOVED -- do not pass. A call carrying it fails with E-SCOPE-KEY-REMOVED; the KB is always the calling session's own."
+        },
+        "repo_remote_url": {
+          "description": "REMOVED -- do not pass. A call carrying it fails with E-SCOPE-KEY-REMOVED; the KB is always the calling session's own."
+        }
+      },
+      "required": [
+        "id",
+        "reason"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

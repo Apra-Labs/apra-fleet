@@ -226,7 +226,7 @@ import {
 // second one.
 import {
     createKbPrimingClient, KB_SELF_INJECTING_ROLES, kbQueryTerms,
-    kbKnowledgeBlock, kbPromotionBlock,
+    kbKnowledgeBlock, kbPromotionBlock, kbDemotionBlock,
 } from './kb.mjs';
 import { createKbInjection } from './kb-injection.mjs';
 import { pathsFromText, isPriorityTierToken } from './kb-hints.mjs';
@@ -393,12 +393,12 @@ export {
     KB_CAPTURE_TYPES, KB_MAX_PROMOTION_CANDIDATES, vetKbWork, createKbWorkClient,
 };
 // Re-exported so importers of the KB priming client and the prompt-
-// construction helpers (kbKnowledgeBlock, kbPromotionBlock, kbQueryTerms,
-// KB_SELF_INJECTING_ROLES) from runner.js keep working; kb.mjs is the
-// single source of truth for their implementation (apra-fleet-3swo.6.11).
+// construction helpers (kbKnowledgeBlock, kbPromotionBlock, kbDemotionBlock,
+// kbQueryTerms, KB_SELF_INJECTING_ROLES) from runner.js keep working; kb.mjs
+// is the single source of truth for their implementation (apra-fleet-3swo.6.11).
 export {
     createKbPrimingClient, KB_SELF_INJECTING_ROLES, kbQueryTerms,
-    kbKnowledgeBlock, kbPromotionBlock,
+    kbKnowledgeBlock, kbPromotionBlock, kbDemotionBlock,
 };
 // member-call.mjs is the single owner of memberCall/listTools (a MEMBER-scoped
 // tool call: local in-process session, or remote/relay via send_files +
@@ -537,6 +537,172 @@ function computeBranchEnsureMembers(getMembersForRole, kbMaintainers, backlogMem
     ])];
 }
 export { computeBranchEnsureMembers };
+
+// Factory for kbWork.demotionCandidates()'s
+// roundChangedFiles callback -- THIS REVIEW ROUND's changed-file set,
+// deliberately separate from kbInjection's diffFiles (the cumulative
+// origin/base...branch diff computed for the reviewer/harvester hint
+// context, left completely unchanged by this).
+//
+// Pulled out as its own factory, injected with `command` and `pullGitBefore`
+// rather than written inline, so this can be unit-tested directly against
+// fakes that discriminate the two defects a diff guard spawning git is prone
+// to (a detection function welded to its own git spawn can only be
+// exercised against the one diff a test can cheaply construct in-repo,
+// which proves nothing). Here the two defects are: (1) computing the diff
+// BEFORE the fetch/fast-forward-merge instead of after -- a stale read that
+// can miss exactly the files this round touched -- and (2) collapsing to
+// the cumulative sprint diff instead of the per-round one. A fake
+// `pullGitBefore` and `command` can flip between a pre-merge and a
+// post-merge tree deterministically, so a test can assert the returned set
+// came from the POST-merge tree without needing a real git repository.
+//
+// One factory call carries ONE piece of state across its returned
+// function's calls: the previous round's diffed-to commit sha (`lastSha`).
+// The first call has no previous round, so it diffs from the sprint's base
+// branch instead -- the only point "the previous round" can mean before any
+// round has run.
+//
+// @param {{
+//   command: (cmd: string, opts: { member_name: string, silent?: boolean, failSoft?: boolean }) => Promise<{ ok: boolean, output?: string }>,
+//   pullGitBefore: (memberName: string) => Promise<any>,
+//   baseBranch: string,
+//   log?: Function,
+// }} opts
+// @returns {(memberName: string) => Promise<string[]>}
+function createRoundChangedFiles({ command, pullGitBefore, baseBranch, log = () => {} }) {
+    let lastSha = null;
+    return async function roundChangedFiles(memberName) {
+        // AFTER the fetch and fast-forward merge, never before -- computing
+        // the diff first would read a snapshot that has not yet absorbed
+        // this round's commits (the superseded upstream attempt's defect).
+        try {
+            await pullGitBefore(memberName);
+        } catch (err) {
+            log(`[kb-work] could not fetch/fast-forward-merge '${memberName}' before computing this round's changed files (non-fatal): ${err && err.message ? err.message : String(err)}`);
+            return [];
+        }
+        const headRes = await command('git rev-parse HEAD', { member_name: memberName, silent: true, failSoft: true });
+        const head = (headRes && headRes.ok) ? String(headRes.output || '').trim() : '';
+        if (!head) return [];
+        // THIS round's diff only: from the previous round's merged tip (or,
+        // on the first round, the sprint's base branch) to the new tip --
+        // never the cumulative origin/base...branch diff diffFiles computes.
+        const fromRef = lastSha || `origin/${baseBranch}`;
+        const diffRes = await command(`git diff --name-only ${fromRef}...${head}`, { member_name: memberName, silent: true, failSoft: true });
+        const files = (diffRes && diffRes.ok)
+            ? String(diffRes.output || '').split('\n').map((l) => l.trim()).filter(Boolean)
+            : [];
+        lastSha = head;
+        return files;
+    };
+}
+export { createRoundChangedFiles };
+
+// Factory for kbWork.demotionCandidates({ scope: 'sprint' })'s
+// sprintChangedFiles callback -- the CUMULATIVE sprint changed-file set, which
+// is the FINAL review's scope.
+//
+// WHY THIS EXISTS SEPARATELY FROM createRoundChangedFiles. Final review judges
+// the WHOLE sprint diff in one pass, so "this round" is not a thing it has:
+// there is no previous round's merged tip to diff from, and scoping its
+// demotion candidates to the last round's diff would hide every entry the
+// earlier rounds' files made worth re-checking. The two scopes are therefore
+// two injected callbacks chosen by an explicit `scope` argument, not one
+// callback that tries to work out which review is asking.
+//
+// WHY IT IS NOT kbInjection's `diffFiles` either. That one computes the same
+// cumulative range but is wired for the reviewer/harvester KB-injection HINT
+// context and is deliberately left untouched; it also does no fetch/merge
+// first. This pulls before diffing for exactly the reason its round sibling
+// does -- a pre-merge tree has not absorbed the sprint's latest commits -- and
+// is STATELESS, unlike the round factory, because a cumulative range has
+// nothing to carry between calls.
+//
+// @param {{
+//   command: (cmd: string, opts: { member_name: string, silent?: boolean, failSoft?: boolean }) => Promise<{ ok: boolean, output?: string }>,
+//   pullGitBefore: (memberName: string) => Promise<any>,
+//   baseBranch: string,
+//   branch: string,
+//   log?: Function,
+// }} opts
+// @returns {(memberName: string) => Promise<string[]>}
+function createSprintChangedFiles({ command, pullGitBefore, baseBranch, branch, log = () => {} }) {
+    return async function sprintChangedFiles(memberName) {
+        try {
+            await pullGitBefore(memberName);
+        } catch (err) {
+            log(`[kb-work] could not fetch/fast-forward-merge '${memberName}' before computing the sprint's cumulative changed files (non-fatal): ${err && err.message ? err.message : String(err)}`);
+            return [];
+        }
+        const diffRes = await command(`git diff --name-only origin/${baseBranch}...${branch}`, { member_name: memberName, silent: true, failSoft: true });
+        if (!diffRes || !diffRes.ok) return [];
+        return String(diffRes.output || '').split('\n').map((l) => l.trim()).filter(Boolean);
+    };
+}
+export { createSprintChangedFiles };
+
+// Factory for kbWork.promotionCandidates()'s D6 in-sprint ping-pong guard:
+// the CURRENT sha256 of a bounded set of files, read on a member's own
+// checkout. kb.mjs has no shell/fs access of its own (every kb_* call there
+// goes through memberCall, never a shell) and this is the one disk fact no
+// kb_* tool answers -- demoted_basis_hashes (surfaced on an INFERRED entry's
+// kb_query row once it has ever been demoted) is a snapshot taken AT DEMOTE
+// TIME, not a live one, so telling "basis unchanged" from "basis moved on"
+// needs a fresh read of the SAME files right now.
+//
+// MUST hash the SAME way SqliteProvider's demoteBasisHashes does -- plain
+// sha256 of the raw bytes, never `git hash-object` (which normalizes line
+// endings and therefore would not reliably equal a plain sha256 of the same
+// content) -- or the two sides of kb.mjs's comparison would silently never
+// match. Run through a disposable `node -e` script rather than a shell
+// pipeline. The file list is KB-supplied text, so it is NEVER interpolated
+// into the command string: it travels as one base64 argv token (alphabet
+// A-Za-z0-9+/=, inert in POSIX shells, PowerShell and cmd.exe) and the fixed
+// script, which carries no `$`, backticks or double quotes, decodes it --
+// the same recipe as stageCommandBodyMemberSide in member-provisioning.mjs.
+// A JSON.stringify'd list inside a double-quoted shell string is NOT safe:
+// POSIX shells still expand `$(...)` and backticks inside double quotes.
+//
+// A missing or unreadable file is simply absent from the result (never a
+// fabricated hash); a failed command, or output that is not the JSON object
+// this script prints, degrades to {} -- the caller's "never falsely
+// suppress" rule then leaves every candidate offered, exactly as it does for
+// an unparseable demoted_basis_hashes snapshot.
+//
+// @param {{
+//   command: (cmd: string, opts: { member_name: string, silent?: boolean, failSoft?: boolean }) => Promise<{ ok: boolean, output?: string }>,
+//   log?: Function,
+// }} opts
+// @returns {(memberName: string, files: string[]) => Promise<Record<string, string>>}
+const CURRENT_FILE_HASHES_SCRIPT =
+    "const fs=require('fs'),crypto=require('crypto');" +
+    "const files=JSON.parse(Buffer.from(process.argv[1],'base64').toString('utf8'));" +
+    "const out={};" +
+    "for (const f of files) { try { out[f]=crypto.createHash('sha256').update(fs.readFileSync(f)).digest('hex'); } catch (e) {} }" +
+    "process.stdout.write(JSON.stringify(out));";
+function createCurrentFileHashes({ command, log = () => {} }) {
+    return async function currentFileHashes(memberName, files) {
+        const list = Array.isArray(files) ? files.filter((f) => typeof f === 'string' && f.length > 0) : [];
+        if (list.length === 0) return {};
+        const filesB64 = Buffer.from(JSON.stringify(list), 'utf-8').toString('base64');
+        let res;
+        try {
+            res = await command(`node -e "${CURRENT_FILE_HASHES_SCRIPT}" "${filesB64}"`, { member_name: memberName, silent: true, failSoft: true });
+        } catch (err) {
+            log(`[kb-work] could not re-hash ${list.length} file(s) on '${memberName}' for the in-sprint ping-pong guard (non-fatal): ${err && err.message ? err.message : String(err)}`);
+            return {};
+        }
+        if (!res || !res.ok) return {};
+        try {
+            const parsed = JSON.parse(String(res.output || '{}'));
+            return (parsed && typeof parsed === 'object') ? parsed : {};
+        } catch {
+            return {};
+        }
+    };
+}
+export { createCurrentFileHashes };
 
 // ---------------------------------------------------------------------------
 // Canonical role-name constants for the Develop/Review loop
@@ -1479,10 +1645,41 @@ async function runSprintCycle(context) {
     // maintainer is mid-dispatch (dispatchStarted/dispatchEnded below).
     // gitSync is bound further down; the G-pull closure resolves it lazily,
     // and no KB write can be applied before the first dispatch completes.
+    // THIS REVIEW ROUND's changed-file set for
+    // kbWork.demotionCandidates(), deliberately separate from kbInjection's
+    // diffFiles below (the cumulative origin/base...branch diff, left
+    // unchanged for its existing reviewer/harvester hint-context callers).
+    // gitSync.pullGitBefore is bound lazily here exactly like gPull/gPush
+    // below -- gitSync is defined further down in this function, and
+    // roundChangedFiles is not CALLED until long after that assignment runs.
+    const roundChangedFiles = context.roundChangedFiles ?? createRoundChangedFiles({
+        command,
+        pullGitBefore: (memberName) => gitSync.pullGitBefore(memberName),
+        baseBranch: validated.baseBranch,
+        log,
+    });
+    // THE SPRINT's CUMULATIVE changed-file set, for the FINAL review's
+    // demotion-candidate read -- final review has no round, so it scopes to
+    // the whole baseBranch...branch diff. Same lazy gitSync binding as its
+    // per-round sibling above.
+    const sprintChangedFiles = context.sprintChangedFiles ?? createSprintChangedFiles({
+        command,
+        pullGitBefore: (memberName) => gitSync.pullGitBefore(memberName),
+        baseBranch: validated.baseBranch,
+        branch: validated.branch,
+        log,
+    });
+    const currentFileHashes = context.currentFileHashes ?? createCurrentFileHashes({ command, log });
     const kbWork = context.kbWork ?? createKbWorkClient({
         memberCall: kbMemberCall,
         maintainers: () => context.kbMaintainers,
         gPull: (maintainerName, options) => gitSync.pullGitBefore(maintainerName, options),
+        roundChangedFiles,
+        sprintChangedFiles,
+        // D6 in-sprint ping-pong guard (promotionCandidates): re-hash a
+        // candidate's cited files on demand to tell "basis unchanged since
+        // the demotion" from "basis moved on" -- see createCurrentFileHashes.
+        currentFileHashes,
         // The review-round bible commit (kbWork.commitRound): G-push, the
         // retry's rebase --abort, and the base branch/commit recorded as the
         // bible's provenance -- all on the maintainer, all bracketed.
@@ -2026,6 +2223,16 @@ async function runSprintCycle(context) {
         if (kbCandidates.length > 0) {
             log(`[kb-work] offering ${kbCandidates.length} INFERRED entr(ies) to the reviewer for promotion.`);
         }
+        // The CONFIRMED entries this reviewer may demote
+        // back to INFERRED, scoped to the files THIS round's diff actually
+        // touched (see createKbWorkClient's roundChangedFiles wiring above).
+        // Best-effort exactly like promotionCandidates: a cold or unreachable
+        // KB, or a round diff that could not be computed, must not fail the
+        // review.
+        const kbDemoteCandidates = await kbWork.demotionCandidates(reviewerPool[0], { scope: 'round' });
+        if (kbDemoteCandidates.length > 0) {
+            log(`[kb-work] offering ${kbDemoteCandidates.length} CONFIRMED entr(ies) to the reviewer for demotion.`);
+        }
         // What the KB knows about the beads UNDER REVIEW, not just whatever the
         // sprint-start prime happened to surface. Falls back to the primed set
         // when the query returns nothing (a KB with no matching rows yet).
@@ -2072,6 +2279,7 @@ async function runSprintCycle(context) {
                 branch: validated.branch,
                 goal: validated.goal,
                 kbCandidates,
+                kbDemoteCandidates,
                 kbBlock: reviewerKbBlock,
             }),
             // Restate the review scope: a resumed dispatch replaces the

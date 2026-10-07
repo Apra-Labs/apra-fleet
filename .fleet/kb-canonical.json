@@ -1,9 +1,9 @@
 {
-  "version": 2,
+  "version": 3,
   "provenance": {
     "commit": "34ff160ff8ee9e2268e851270b911771d06fedca",
     "branch": "feat/kb-redesign",
-    "entry_count": 287
+    "entry_count": 304
   },
   "entries": [
     {
@@ -337,6 +337,30 @@
       "updated_at": "2026-09-29T06:13:11.553Z"
     },
     {
+      "id": "0d1c4519-3851-454f-b7eb-b1ca25db6fe3",
+      "type": "knowledge",
+      "title": "A MEMBER-session kb_query needs tag or query even under own_scope, so the member tag stays in the args",
+      "summary": "kbQuery rejects any call carrying neither query, tag nor flagged_only, so an own_scope listing cannot drop the tag filter and rely on the server-applied ownerTag alone -- the tag is required, not redundant defence.",
+      "symbols": [
+        "kbQuery",
+        "getSelfReadKb",
+        "memberOwnerTag",
+        "buildDemotionCandidateQuery"
+      ],
+      "source_files": [
+        "src/tools/kb-query.ts",
+        "src/services/knowledge/kb-self.ts",
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-07T02:43:48.575Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs": "f2cd35efb67007f7afc90e795c6248cf7bd6cdbe",
+        "src/services/knowledge/kb-self.ts": "da0a43ebfc4ce07bebc7140fa6abddae97fac404",
+        "src/tools/kb-query.ts": "d327bcd710ad542d265f1214a9e403304ee96c6f"
+      }
+    },
+    {
       "id": "0e10e4ea-5c23-4fc9-bd7a-baf1af522a3e",
       "type": "knowledge",
       "title": "Provider abstraction: six adapters, never assume Claude",
@@ -390,6 +414,33 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:26.644Z"
+    },
+    {
+      "id": "0ff467f2-a6d1-4e3a-80a5-61ed69e7cdae",
+      "type": "learning",
+      "title": "The demotion-candidate block header is in the reviewer prompt even with zero candidates",
+      "summary": "Asserting the absence of a KB demotion offer by searching a dispatch prompt for 'KNOWLEDGE BANK -- demotion candidates' is a false positive: the reviewer role prompt and the reviewer-output schema both name that block unconditionally.",
+      "symbols": [
+        "kbDemotionBlock",
+        "buildReviewerPrompt",
+        "buildFinalVerdictPrompt"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs",
+        "packages/apra-fleet-se/apra-pm/agents/reviewer.md",
+        "packages/apra-fleet-se/apra-pm/agents/schemas/reviewer-output.json",
+        "packages/apra-fleet-se/fleet-sprint/contracts.mjs",
+        "packages/apra-fleet-se/test/mock-sprint-kb-write-routing.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-07T03:17:00.552Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/apra-pm/agents/reviewer.md": "57cc90c041b5cc8ab155bf6a8e1c365ca2377856",
+        "packages/apra-fleet-se/apra-pm/agents/schemas/reviewer-output.json": "86c0383356cbeb93d135a3be7aba7a7895261e0a",
+        "packages/apra-fleet-se/fleet-sprint/contracts.mjs": "884752559bfc1392f33de8af55bfd24b2f9e1e5c",
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs": "f2cd35efb67007f7afc90e795c6248cf7bd6cdbe",
+        "packages/apra-fleet-se/test/mock-sprint-kb-write-routing.test.mjs": "dc4b892f9a269710ea49d7f382009c193af4ce6b"
+      }
     },
     {
       "id": "101692b0-d5e6-4a32-8d6e-e8595ddc39f0",
@@ -789,6 +840,31 @@
       "updated_at": "2026-09-25T22:26:28.024Z"
     },
     {
+      "id": "20e8ad93-da9b-40e7-bc72-aab8fc50623c",
+      "type": "knowledge",
+      "title": "The member bible view's cache reload is driven by SIZE, not mtime",
+      "summary": "getMemberBibleView caches a slot keyed on (mtimeMs, size) and rebuilds when either differs, but mtimeMs is not a reliable change signal: two writes to the same bible file were observed sharing one mtimeMs on ext4, and the remote path's stat command reports mtime in whole seconds.",
+      "symbols": [
+        "getMemberBibleView",
+        "statOrMissing",
+        "statCommand",
+        "buildView",
+        "memberBibleViewLoadCount"
+      ],
+      "source_files": [
+        "src/services/knowledge/member-bible-view.ts",
+        "tests/knowledge/kb-tombstone-import.test.ts",
+        "tests/knowledge/kb-remote-member-bible-view.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T21:38:33.896Z",
+      "source_file_hashes": {
+        "src/services/knowledge/member-bible-view.ts": "dcc07c3ed11bccf65f2472d7a3e913fe879f51a6",
+        "tests/knowledge/kb-remote-member-bible-view.test.ts": "fa6e32cb102bd780e8bf63e233283d1e82322bbe",
+        "tests/knowledge/kb-tombstone-import.test.ts": "b9e1a8124a075240d11f023e5162af2582244417"
+      }
+    },
+    {
       "id": "213603b7-2ab8-403b-816a-4b1b15a247fd",
       "type": "knowledge",
       "title": "mock-sprint scenarios run with zero-wait retry backoff, so ladder wall clock is watchdog budgets only",
@@ -861,6 +937,31 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:28.210Z"
+    },
+    {
+      "id": "21ed9f0f-8aa4-473b-873f-84ec3470b345",
+      "type": "learning",
+      "title": "INVENTORY.md section 4.1 and 4.4.1 count headers lag the MemoryProvider interface by several methods",
+      "summary": "The declared-method count in memory-contract/v1/INVENTORY.md drifts every time a method lands on MemoryProvider; as of the tombstone lane the interface declares 15 but 4.1 documents 14 and 4.4.1 compares 13.",
+      "symbols": [
+        "MemoryProvider",
+        "getLiveConfirmedState",
+        "applyBibleDemotion",
+        "discard",
+        "demote"
+      ],
+      "source_files": [
+        "memory-contract/v1/INVENTORY.md",
+        "src/services/knowledge/types.ts",
+        "src/services/knowledge/http-provider.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T23:03:54.128Z",
+      "source_file_hashes": {
+        "memory-contract/v1/INVENTORY.md": "69fb75aff96ba2ee596ef50d9cb4cb065c37977f",
+        "src/services/knowledge/http-provider.ts": "a553f755e5c097f3faeaa143e03ff6d74f1bb258",
+        "src/services/knowledge/types.ts": "646cf7843cd4fcc3cde9d5fadf031030cac49dca"
+      }
     },
     {
       "id": "2200c18a-8877-45cc-a0f3-64852b7baf9e",
@@ -1281,6 +1382,28 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:13.689Z"
+    },
+    {
+      "id": "36b36170-b2dc-4796-9d61-0184e2873f8c",
+      "type": "runbook",
+      "title": "Scope the root npm test to one file with APRA_TEST_SUITES_JSON instead of calling vitest directly",
+      "summary": "scripts/run-all-tests.mjs reads APRA_TEST_SUITES_JSON as a JSON array of {name,cmd,args}, so a single file can be run inside the bounded, process-tree-killing runner the repo requires.",
+      "symbols": [
+        "defaultSuites",
+        "APRA_TEST_SUITES_JSON"
+      ],
+      "source_files": [
+        "scripts/run-all-tests.mjs",
+        "packages/apra-fleet-se/scripts/run-tests.mjs",
+        "CLAUDE.md"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-07T03:57:23.163Z",
+      "source_file_hashes": {
+        "CLAUDE.md": "d0dad99a63c7cdc6b53510bb6064be9dc0b80811",
+        "packages/apra-fleet-se/scripts/run-tests.mjs": "e3742bcfa41dec5eff2447a9095867732cddc8a6",
+        "scripts/run-all-tests.mjs": "417c4823d50bd28807c117c1b16cc01e3798cc2e"
+      }
     },
     {
       "id": "38065918-834d-4116-9dd1-153006cb7f05",
@@ -1744,6 +1867,29 @@
       "updated_at": "2026-09-29T06:13:53.836Z"
     },
     {
+      "id": "4d68d662-27cc-4fac-b8a0-cd34b4e93f4f",
+      "type": "runbook",
+      "title": "Falsify a kb read-routing guard by reverting the routing condition, not by reading the diff",
+      "summary": "The cheapest proof that a kb-self.ts routing opt-in is load-bearing is to delete the condition term, re-run the one test file through the bounded runner, and restore -- it names exactly which assertions depend on it.",
+      "symbols": [
+        "getSelfReadKb",
+        "APRA_TEST_SUITES_JSON",
+        "defaultSuites"
+      ],
+      "source_files": [
+        "src/services/knowledge/kb-self.ts",
+        "tests/knowledge/kb-member-own-scope.test.ts",
+        "scripts/run-all-tests.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-07T02:43:52.182Z",
+      "source_file_hashes": {
+        "scripts/run-all-tests.mjs": "417c4823d50bd28807c117c1b16cc01e3798cc2e",
+        "src/services/knowledge/kb-self.ts": "da0a43ebfc4ce07bebc7140fa6abddae97fac404",
+        "tests/knowledge/kb-member-own-scope.test.ts": "66f34ad7f117ce895fe3404ba69122d0ce660db5"
+      }
+    },
+    {
       "id": "4e315af5-d8ab-460e-850a-36d1d38ce19a",
       "type": "knowledge",
       "title": "runner.js's re-export of fatal-diagnostics.mjs is load-bearing for abort.mjs, not just compatibility sugar",
@@ -1900,6 +2046,36 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:28.146Z"
+    },
+    {
+      "id": "50427e60-3c83-4cd5-8bd5-88f5a4a26519",
+      "type": "knowledge",
+      "title": "A kb_query INFERRED row really does carry demoted_at and demoted_basis_hashes, which is what makes the ping-pong guard fire",
+      "summary": "The in-sprint ping-pong guard reads demoted_at and demoted_basis_hashes off a kb_query row and compares the latter against a fresh disk sha256; both inputs exist on a real row, and the engine-side hash scheme matches the provider's byte for byte.",
+      "symbols": [
+        "promotionCandidates",
+        "wasDemotedThisSprint",
+        "demotionBasisUnchanged",
+        "createCurrentFileHashes",
+        "demoteBasisHashes",
+        "rowToEntry"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "src/services/knowledge/sqlite-provider.ts",
+        "src/tools/kb-query.ts",
+        "packages/apra-fleet-se/test/kb-demotion-apply.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-07T04:55:02.908Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs": "51f13c906f4dd4509c4e4ba2c88cec73cded4076",
+        "packages/apra-fleet-se/fleet-sprint/runner.js": "6918b55d94faf15e9a1d3d5c015555be484e0dd4",
+        "packages/apra-fleet-se/test/kb-demotion-apply.test.mjs": "eeb76a7a3fa809962becb22010c32871710dfd97",
+        "src/services/knowledge/sqlite-provider.ts": "1ee0fa78dd17320aaf7409c977000ba321552cd1",
+        "src/tools/kb-query.ts": "d327bcd710ad542d265f1214a9e403304ee96c6f"
+      }
     },
     {
       "id": "507e48f1-56a2-4c79-a367-98f4f6d7b029",
@@ -2642,6 +2818,25 @@
       "updated_at": "2026-09-25T22:26:32.715Z"
     },
     {
+      "id": "7d7cb749-9894-4d15-86e7-0e778d42e149",
+      "type": "runbook",
+      "title": "Falsifying a fleet-sprint test in /tmp needs node_modules symlinked back to the repo",
+      "summary": "Copying fleet-sprint and test to /tmp per the existing falsification runbook fails at import with ERR_MODULE_NOT_FOUND for workspace deps; one symlink to the repo's root node_modules fixes it.",
+      "symbols": [],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/package.json",
+        "packages/apra-fleet-se/test/kb-demotion-candidates.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-07T02:43:46.749Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/runner.js": "060bc81e2ffbfd1c0d7544de951bd7d4522eb339",
+        "packages/apra-fleet-se/package.json": "7b9496b2237c288e71045aa72c43202d8ca52935",
+        "packages/apra-fleet-se/test/kb-demotion-candidates.test.mjs": "aa9a9b9333191f00d1812768718f9831b8bd0a40"
+      }
+    },
+    {
       "id": "7ec3c926-46e3-42df-ba26-148260f36a61",
       "type": "knowledge",
       "title": "kb_bible_commit removes bible entries the maintainer KB holds as superseded or invalidated",
@@ -2957,6 +3152,35 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-30T23:07:12.100Z"
+    },
+    {
+      "id": "90331da2-fd2b-4446-806b-ae1d51ab4d22",
+      "type": "knowledge",
+      "title": "The cold seed skips a bible id on one live-CONFIRMED predicate, not a demotion check",
+      "summary": "kb_session_prime's project-bible cold seed seeds an id only when there is no local row or the local row is live CONFIRMED; demotion is covered as one of four non-live states rather than by a demoted_at special case.",
+      "symbols": [
+        "kbSessionPrime",
+        "getLiveConfirmedState",
+        "COLD_KB_MAX",
+        "tombstonedIds",
+        "extractBibleDemotions"
+      ],
+      "source_files": [
+        "src/tools/kb-session-prime.ts",
+        "src/services/knowledge/sqlite-provider.ts",
+        "src/services/knowledge/http-provider.ts",
+        "src/services/knowledge/types.ts",
+        "tests/knowledge/kb-tombstone-import.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T21:38:31.141Z",
+      "source_file_hashes": {
+        "src/services/knowledge/http-provider.ts": "a553f755e5c097f3faeaa143e03ff6d74f1bb258",
+        "src/services/knowledge/sqlite-provider.ts": "1ee0fa78dd17320aaf7409c977000ba321552cd1",
+        "src/services/knowledge/types.ts": "646cf7843cd4fcc3cde9d5fadf031030cac49dca",
+        "src/tools/kb-session-prime.ts": "cb38a97b254e86f4b99a4f15b709f127386c3fd9",
+        "tests/knowledge/kb-tombstone-import.test.ts": "b9e1a8124a075240d11f023e5162af2582244417"
+      }
     },
     {
       "id": "919a3f50-dcb3-4ee9-91d1-767fd503a3b8",
@@ -4027,6 +4251,32 @@
       "updated_at": "2026-09-25T22:26:36.836Z"
     },
     {
+      "id": "c7c52b15-c8bb-42ef-8a6d-d4a953698e71",
+      "type": "knowledge",
+      "title": "kb_query's include_stale also admits superseded rows, so a demotion candidate list must drop them itself",
+      "summary": "kbQuery maps one input flag onto two provider options -- include_stale sets both include_stale and include_superseded -- so the widened own-scope read kb_demote's candidate lane needs returns superseded entries that demote() then refuses with E-DEMOTE-SUPERSEDED.",
+      "symbols": [
+        "kbQuery",
+        "SqliteProvider.query",
+        "SqliteProvider.demote",
+        "getSelfReadKb"
+      ],
+      "source_files": [
+        "src/tools/kb-query.ts",
+        "src/services/knowledge/sqlite-provider.ts",
+        "memory-contract/v1/spec.md",
+        "tests/knowledge/kb-member-own-scope.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-07T01:55:28.342Z",
+      "source_file_hashes": {
+        "memory-contract/v1/spec.md": "af70d214da46aeaec82ea189fe30d9b86aeefd73",
+        "src/services/knowledge/sqlite-provider.ts": "1ee0fa78dd17320aaf7409c977000ba321552cd1",
+        "src/tools/kb-query.ts": "d327bcd710ad542d265f1214a9e403304ee96c6f",
+        "tests/knowledge/kb-member-own-scope.test.ts": "66f34ad7f117ce895fe3404ba69122d0ce660db5"
+      }
+    },
+    {
       "id": "c872c6d4-96f4-42b9-93e7-46349013671a",
       "type": "knowledge",
       "title": "kb_bible_commit and kb_export share one bible admission predicate",
@@ -4057,6 +4307,34 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:36.962Z"
+    },
+    {
+      "id": "cb382cdb-f8f9-4e4d-87d1-7b919b6c57bd",
+      "type": "knowledge",
+      "title": "Bible tombstones are applied by id only; absence from the bible never demotes",
+      "summary": "applyBibleDemotion is called only for ids carrying an explicit tombstone, demotes only when the row's promotion time is strictly older than the tombstone, never creates a row, and applies no ownerTag check because bible-imported rows carry no member tag.",
+      "symbols": [
+        "applyBibleDemotion",
+        "importBibleEntries",
+        "isStrictlyBefore",
+        "buildDemotionNote",
+        "BIBLE_DEMOTION_REASON",
+        "BibleImportCounts"
+      ],
+      "source_files": [
+        "src/services/knowledge/sqlite-provider.ts",
+        "src/services/knowledge/bible-import.ts",
+        "src/tools/kb-import.ts",
+        "tests/knowledge/kb-tombstone-import.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T21:38:29.360Z",
+      "source_file_hashes": {
+        "src/services/knowledge/bible-import.ts": "b8819f1314f4895501309ef6d38431165192271d",
+        "src/services/knowledge/sqlite-provider.ts": "1ee0fa78dd17320aaf7409c977000ba321552cd1",
+        "src/tools/kb-import.ts": "dbc690e75cdadecbeb6f9ba9782c1ba964d35ff0",
+        "tests/knowledge/kb-tombstone-import.test.ts": "b9e1a8124a075240d11f023e5162af2582244417"
+      }
     },
     {
       "id": "cc085797-4b47-455d-9357-fbbb267281ed",
@@ -4731,6 +5009,29 @@
       "updated_at": "2026-09-25T22:26:38.195Z"
     },
     {
+      "id": "e6ed07fb-d473-4f64-b5d7-28930c2bbdd2",
+      "type": "learning",
+      "title": "dispatchRole's outcome.value is whatever agent() resolves to, so a fake agent must return the parsed object",
+      "summary": "dispatch-role.mjs does no JSON parsing of its own; runSprintCycle's agent wrapper already schema-parses, so a test fake returning an MCP envelope yields an undefined verdict rather than a parse error.",
+      "symbols": [
+        "dispatchRole",
+        "runFinalReviewPhase",
+        "runDispatch"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/dispatch-role.mjs",
+        "packages/apra-fleet-se/fleet-sprint/phases/final-review.mjs",
+        "packages/apra-fleet-se/test/final-review-kb-demotion.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-07T02:43:50.328Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/dispatch-role.mjs": "c9af9d36c71243e58bcfd40eac3cf3e831a898c8",
+        "packages/apra-fleet-se/fleet-sprint/phases/final-review.mjs": "bfa2693479f7a8cc59fe7f293e6352742b2d95f0",
+        "packages/apra-fleet-se/test/final-review-kb-demotion.test.mjs": "96f46d2fbd26ffdd7c013517894ba5588b7a460e"
+      }
+    },
+    {
       "id": "e72b1ade-286b-47e1-8113-be1ca0404703",
       "type": "knowledge",
       "title": "sprintMutexId pins the member-reservation key, not the engine run-state runId",
@@ -4765,6 +5066,31 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-10-01T22:08:20.219Z"
+    },
+    {
+      "id": "e85bd4de-4872-40c7-9979-3b548c3f86a7",
+      "type": "learning",
+      "title": "A member-bible-view assertion run against an empty bible proves nothing",
+      "summary": "Tests that assert a MEMBER-session default CONFIRMED read returns zero rows are vacuous unless a bible file actually exists: with no .fleet/kb-canonical.json the view is empty for every possible reason, including never having loaded.",
+      "symbols": [
+        "getMemberBibleView",
+        "buildView",
+        "importBibleEntries",
+        "isValidBibleEntry",
+        "resetMemberBibleViews"
+      ],
+      "source_files": [
+        "src/services/knowledge/member-bible-view.ts",
+        "src/services/knowledge/bible-import.ts",
+        "tests/knowledge/kb-member-own-scope.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-07T01:55:30.096Z",
+      "source_file_hashes": {
+        "src/services/knowledge/bible-import.ts": "327e8c1b39601714474339bce4275e34f7962d91",
+        "src/services/knowledge/member-bible-view.ts": "dcc07c3ed11bccf65f2472d7a3e913fe879f51a6",
+        "tests/knowledge/kb-member-own-scope.test.ts": "66f34ad7f117ce895fe3404ba69122d0ce660db5"
+      }
     },
     {
       "id": "ea3bc985-569c-4eed-846d-1785c17be33f",
@@ -4913,6 +5239,33 @@
       "updated_at": "2026-09-29T06:08:07.865Z"
     },
     {
+      "id": "f1babecd-4025-4e59-8dea-9283fc46166e",
+      "type": "knowledge",
+      "title": "An ownerTag read in kb_query filters the GLOBAL KB too, not just the project store",
+      "summary": "Any kb_query path that sets ownerTag (member INFERRED/UNVERIFIED, or the new own_scope opt-in) passes owner_tag to the global provider as well, so every untagged global entry is dropped and the global half of the result disappears.",
+      "symbols": [
+        "kbQuery",
+        "passesTrustFilter",
+        "getSelfReadKb",
+        "memberOwnerTag",
+        "trustFilterSql"
+      ],
+      "source_files": [
+        "src/tools/kb-query.ts",
+        "src/services/knowledge/kb-self.ts",
+        "src/services/knowledge/sqlite-provider.ts",
+        "memory-contract/v1/spec.md"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-07T02:43:54.012Z",
+      "source_file_hashes": {
+        "memory-contract/v1/spec.md": "af70d214da46aeaec82ea189fe30d9b86aeefd73",
+        "src/services/knowledge/kb-self.ts": "da0a43ebfc4ce07bebc7140fa6abddae97fac404",
+        "src/services/knowledge/sqlite-provider.ts": "1ee0fa78dd17320aaf7409c977000ba321552cd1",
+        "src/tools/kb-query.ts": "d327bcd710ad542d265f1214a9e403304ee96c6f"
+      }
+    },
+    {
       "id": "f2e8ae2b-e3a5-4c51-820a-423478a7f23c",
       "type": "knowledge",
       "title": "Migrating a per-file callTool mock onto the shared vcs_credential_exec simulator silently replaces that file's own token literal",
@@ -5025,6 +5378,30 @@
       "updated_at": "2026-09-29T06:13:14.498Z"
     },
     {
+      "id": "f76c53b0-bb9d-4d14-9f2f-3c295fb6c96c",
+      "type": "learning",
+      "title": "A two-clone bible-import test must write cited source files into BOTH checkouts",
+      "summary": "The capture basis check runs on the import side too, so a bible entry citing a file absent from the importing checkout is counted as rejected rather than imported -- the clone then never holds the row a tombstone is supposed to demote.",
+      "symbols": [
+        "importBibleEntries",
+        "assertCheckableBasis",
+        "KbCaptureRejected",
+        "capture"
+      ],
+      "source_files": [
+        "src/services/knowledge/bible-import.ts",
+        "src/services/knowledge/sqlite-provider.ts",
+        "tests/knowledge/kb-tombstone-import.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T21:38:32.957Z",
+      "source_file_hashes": {
+        "src/services/knowledge/bible-import.ts": "b8819f1314f4895501309ef6d38431165192271d",
+        "src/services/knowledge/sqlite-provider.ts": "1ee0fa78dd17320aaf7409c977000ba321552cd1",
+        "tests/knowledge/kb-tombstone-import.test.ts": "b9e1a8124a075240d11f023e5162af2582244417"
+      }
+    },
+    {
       "id": "f8604414-0bbf-4850-88bd-6a67e5539341",
       "type": "knowledge",
       "title": "The ctx.steps hook bodies are the one part of a migrated ladder no dispatch-pin test executes",
@@ -5038,6 +5415,31 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:39.150Z"
+    },
+    {
+      "id": "fa43a0c8-83ac-45bd-a2f7-f68f82356d80",
+      "type": "runbook",
+      "title": "Recording one mock-sprint bd fixture also rewrites that file's existing fixtures",
+      "summary": "node scripts/run-tests.mjs record <file> re-records EVERY scenario in the file, so unrelated fixtures pick up fresh ids/timestamps; restore them with git checkout to keep the new test's diff focused.",
+      "symbols": [
+        "scenarioKeyFromCwd",
+        "loadReplaySession",
+        "runDevelopLoopScenario"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/test/fixtures/bd-recordings/README.md",
+        "packages/apra-fleet-se/test/helpers/bd-replay.mjs",
+        "packages/apra-fleet-se/scripts/run-tests.mjs",
+        "packages/apra-fleet-se/test/helpers/mock-sprint-harness.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-07T03:17:02.319Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/scripts/run-tests.mjs": "e3742bcfa41dec5eff2447a9095867732cddc8a6",
+        "packages/apra-fleet-se/test/fixtures/bd-recordings/README.md": "000d184da2a9cf5497371d94bd3d785702e614f5",
+        "packages/apra-fleet-se/test/helpers/bd-replay.mjs": "fe1c84ae4b169173098152a7d91b771127b62e98",
+        "packages/apra-fleet-se/test/helpers/mock-sprint-harness.mjs": "33849f67c59325c6f9b4eb317c3af2b20b489d59"
+      }
     },
     {
       "id": "fab4f020-c98c-4494-a3f8-d809cc5fa3ab",
@@ -5137,6 +5539,30 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-10-01T23:08:16.929Z"
+    },
+    {
+      "id": "ffa9d062-5867-42c0-99e6-571f0f89e36e",
+      "type": "runbook",
+      "title": "Run a single test file through run-all-tests.mjs with APRA_TEST_SUITES_JSON instead of bare vitest",
+      "summary": "APRA_TEST_SUITES_JSON overrides the suite list of scripts/run-all-tests.mjs, giving a single-file or single-folder run that still gets the wall-clock bound and the sandboxed HOME, which CLAUDE.md requires for a tracked task's verification step.",
+      "symbols": [
+        "ensureTestSandbox",
+        "defaultSuites",
+        "APRA_TEST_SUITES_JSON",
+        "APRA_TEST_TIMEOUT_MS"
+      ],
+      "source_files": [
+        "scripts/run-all-tests.mjs",
+        "scripts/test-sandbox.mjs",
+        "CLAUDE.md"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T23:03:55.956Z",
+      "source_file_hashes": {
+        "CLAUDE.md": "d0dad99a63c7cdc6b53510bb6064be9dc0b80811",
+        "scripts/run-all-tests.mjs": "417c4823d50bd28807c117c1b16cc01e3798cc2e",
+        "scripts/test-sandbox.mjs": "30cd05d2c2a46d9ced0287940db52cea1bc0f45a"
+      }
     }
   ]
 }

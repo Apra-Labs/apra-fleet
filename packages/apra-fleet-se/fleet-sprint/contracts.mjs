@@ -782,6 +782,41 @@ export const finalVerdict = {
                 required: ['id', 'reason'],
             },
         },
+        // The Final Review's DEMOTE judgement, mirroring reviewer-output.json's
+        // kb_demotions: same {id, reason, evidence_files?} shape as kb_discards,
+        // executed by the same kbWork.apply path. Optional: demoting nothing is
+        // the common answer. CONFIRMED to INFERRED only, and only for ids
+        // actually offered to this review round -- the basis-unchanged case,
+        // not drifted-or-removed basis (freshness staling already handles
+        // that). The reason minLength is the engine's evidence bar (kb.mjs
+        // KB_MIN_PROMOTE_REASON, enforced in vetKbWork); kept as a literal so
+        // this schema module stays dependency-free, pinned equal by
+        // test/kb-review-judgements.test.mjs.
+        kb_demotions: {
+            type: 'array',
+            description: 'CONFIRMED entries whose basis is UNCHANGED but a re-check shows the claim no longer holds, demoted back to INFERRED for a fresh look. Same evidence bar as kb_promotions and kb_discards. An id may appear in only one of kb_promotions, kb_discards and kb_demotions -- the engine refuses it in every list it appears in. The engine makes the demotion calls.',
+            items: {
+                type: 'object',
+                properties: {
+                    id: {
+                        type: 'string',
+                        description: "The entry id, copied verbatim from the 'KNOWLEDGE BANK -- demotion candidates' block in your dispatch prompt. Never invent one.",
+                        minLength: 1,
+                    },
+                    reason: {
+                        type: 'string',
+                        description: 'The evidence that the claim no longer holds despite its basis being unchanged -- what you actually checked.',
+                        minLength: 20,
+                    },
+                    evidence_files: {
+                        type: 'array',
+                        description: 'Optional files that support this demotion.',
+                        items: { type: 'string' },
+                    },
+                },
+                required: ['id', 'reason'],
+            },
+        },
     },
     required: ['verdict', 'notes'],
 };

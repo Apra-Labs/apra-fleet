@@ -66,6 +66,12 @@
                 "type": "string"
               }
             },
+            "demoted": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
             "skipped": {
               "type": "array",
               "items": {
@@ -79,7 +85,8 @@
                     "enum": [
                       "not_confirmed_or_unknown",
                       "no_source_files",
-                      "basis_mismatch"
+                      "basis_mismatch",
+                      "not_demoted_or_unknown"
                     ]
                   }
                 },

@@ -118,7 +118,7 @@ names a member may see (`apra-fleet` and `apra-fleet-member`): member
 lifecycle and registry tools, `execute_prompt`/`execute_command`, file
 transfer, auth and credential-store tools, `compose_permissions`,
 `shutdown_server`, messaging/email, and the administrative knowledge-base
-tools (`kb_promote`, `kb_import`, `kb_export`, `kb_harvest`, ...). Tools a
+tools (`kb_promote`, `kb_demote`, `kb_import`, `kb_export`, `kb_harvest`, ...). Tools a
 member legitimately uses - code intelligence (`code_*`) and the read/capture
 knowledge-base tools (`kb_session_prime`, `kb_query`, `kb_stats`,
 `kb_capture`, `kb_feedback`, `kb_list`) - are not denied; whether they are

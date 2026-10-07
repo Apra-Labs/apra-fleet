@@ -240,11 +240,13 @@ differ only in which argument the caller supplied, and both produce an
 identical, valid request document, so nothing in a request/response pair
 distinguishes them.
 
-## U4 -- Contradiction-resolution refusal, and the absence of a demote
+## U4 -- Contradiction-resolution refusal, and the demotion boundary
 
-Placement candidate: a subsection of its own; the absence half follows the
-precedent of `4.3`'s `**THE POLICY.**` block, which documents a capability that
-does not exist.
+Placement candidate: a subsection of its own; this draft originally followed
+the precedent of `4.3`'s `**THE POLICY.**` block, which documents a capability
+that does not exist -- that precedent no longer applies to the demotion half,
+since `kb_demote` shipped (`4.2`) and this draft is amended below to describe
+it rather than its absence.
 
 **THE RULE.** Contradiction detection at capture time MUST FLAG and MUST NOT
 resolve: both entries stay live, the newer one recording that it disputes the
@@ -254,10 +256,13 @@ writing NOTHING, when the two ids do not form a genuine contradiction pair
 (`E-RESOLVE-ALREADY-SUPERSEDED`), when either does not exist
 (`E-RESOLVE-MISSING-ENTRY`), or when either side is an ACTIVE user-directive
 (`E-RESOLVE-DIRECTIVE-PAIR`). Feedback on an entry MAY flag it and MAY stale it
-but MUST NOT alter its confidence. And no operation in this surface, given an
-entry id, MAY lower that entry's stored confidence: there is NO demote. An
-entry leaves circulation through a validity transition -- superseded, stale,
-disputed -- never through losing confidence.
+but MUST NOT alter its confidence. Exactly ONE caller-addressable operation in
+this surface MAY lower an entry's stored confidence, given its id: `kb_demote`
+(`4.2`), and only ever CONFIRMED -> INFERRED. Every other exit from
+circulation -- superseded, stale, disputed -- is still a validity transition
+that leaves confidence untouched; `kb_demote` does not change that for
+anything it does not itself cover, it only narrows the "never" in "never
+through losing confidence" to the one tier-pair it was built for.
 
 **THE PROOF.** The flag-only path is `src/services/knowledge/audn.ts:196-206`:
 a contradiction signal returns `decision: 'flagged'` with
@@ -284,50 +289,62 @@ resolution). Feedback: `src/tools/kb-feedback.ts:39-48` delegates to
 `stale`, `flagged_for_review` and `content` otherwise (`:1447-1449`). Neither
 names `confidence`; the response echoes it back (`kb-feedback.ts:47`) so a
 caller can observe it unchanged, and a downvoted CONFIRMED entry stays
-CONFIRMED-but-stale-flagged. On the absence: the provider writes `confidence`
-after insertion at exactly four sites, and no one of them is addressable as a
-demote -- `:1412` (`promote()`, a one-step upward ladder, `:1389-1396`, where
-CONFIRMED is a no-op), `:1584` (the resolution winner, always up to CONFIRMED),
-`:1732` (directive activation, up to CONFIRMED), and `:757`
-(`decayConceptEntries`). Retirement never touches the tier: the resolution loser
-gets `superseded_at`, `stale` and a cleared flag (`:1612-1614`) and keeps its
-confidence, and a rejected directive likewise gets only `superseded_at` and
-`stale` (`:1752`) even when it was ACTIVE.
+CONFIRMED-but-stale-flagged. The provider writes `confidence` after insertion
+at five sites, and now exactly one of them is a caller-addressable downward
+move: `SqliteProvider.promote` (a one-step upward ladder where CONFIRMED is a
+no-op), the resolution winner inside `SqliteProvider.resolveContradiction`
+(always up to CONFIRMED), directive activation (up to CONFIRMED),
+`SqliteProvider.decayConceptEntries` (a downward but NOT caller-addressable
+sweep, see below), and `SqliteProvider.demote` together with its bible
+counterpart `SqliteProvider.applyBibleDemotion` -- the only two sites that
+lower a CONFIRMED entry in response to a caller or an imported tombstone
+naming that entry by id, and both lower it to INFERRED and nothing else.
+Retirement never touches the tier: the resolution loser gets `superseded_at`,
+`stale` and a cleared flag and keeps its confidence, and a rejected directive
+likewise gets only `superseded_at` and `stale` even when it was ACTIVE.
 
-**THE DEMOTE THAT IS NOT ONE.** `decayConceptEntries`
-(`sqlite-provider.ts:746-765`) is the sole downward confidence write in the
-provider: `SET confidence = 'UNVERIFIED' WHERE confidence = 'INFERRED'` (`:757`)
-over rows that are unsuperseded, untouched since a cutoff, exempt if an ACTIVE
-directive, AND cite NO source files. It is not a demote in the sense this rule
-forbids -- it takes no entry id, it is a time-and-predicate sweep, and it runs
-as a side effect of `prime()` (`:1200`), not as an operation a caller asks for
-by name. It is also LEGACY-ONLY BY CONSTRUCTION, and that is the interlock worth
-recording: its predicate matches only zero-basis rows, and `U1`'s admission gate
-now refuses to create one, so the ladder cannot fire for anything captured after
-that gate landed. The code says as much itself (`:735-745`), including that the
-modern mechanism is a stale FLAG, not a confidence downgrade (`:742-744`). One
-precision an implementer needs: the decay window is not caller-settable on the
-MCP tool -- `src/tools/kb-session-prime.ts:11-27` does not declare it and the
-`prime()` call at `:204-208` passes only the three hint fields -- but
-`PrimeOptions` does carry `decay_after_days`
-(`src/services/knowledge/types.ts:156`) and the HTTP prime route parses a
-request body straight into it (`src/commands/kb-server.ts:184-191`), so on that
-route the cutoff IS caller-supplied. Still not addressable to an entry, but not
-purely internal either.
+**THE DEMOTE THAT IS NOT ONE.** `SqliteProvider.decayConceptEntries` is a
+SECOND downward confidence write in the provider, and it is deliberately
+nothing like `kb_demote`: `SET confidence = 'UNVERIFIED' WHERE confidence =
+'INFERRED'` over rows that are unsuperseded, untouched since a cutoff, exempt
+if an ACTIVE directive, AND cite NO source files. It is not addressable the
+way `kb_demote` is -- it takes no entry id, it is a time-and-predicate sweep,
+and it runs as a side effect of `prime()`, not as an operation a caller asks
+for by name against one entry. It never touches CONFIRMED at all (its WHERE
+clause only matches INFERRED), so it cannot substitute for `kb_demote` and
+`kb_demote` cannot substitute for it. It is also LEGACY-ONLY BY CONSTRUCTION,
+and that is the interlock worth recording: its predicate matches only
+zero-basis rows, and `U1`'s admission gate now refuses to create one, so the
+sweep cannot fire for anything captured after that gate landed. The code says
+as much itself, including that the modern mechanism for a doubtful
+INFERRED/UNVERIFIED entry is a stale FLAG, not a confidence downgrade -- and
+the modern mechanism for a doubtful CONFIRMED entry is now `kb_demote` (THE
+RULE, above). One precision an implementer needs: the decay window is not
+caller-settable on the MCP tool -- `src/tools/kb-session-prime.ts` does not
+declare it and its `prime()` call passes only the three hint fields -- but
+`PrimeOptions` does carry `decay_after_days`, and the HTTP prime route parses a
+request body straight into it, so on that route the cutoff IS caller-supplied.
+Still not addressable to an entry, but not purely internal either.
 
 **THE OBLIGATION.** A second implementation MUST make resolution refuse before
 writing anything -- a partial resolution that retires a loser and then fails
 the pair check leaves an entry retired with no winner, which no later call can
 undo. It MUST route every resolution write, including mechanically-decided ones,
 through that single refusing operation rather than reimplementing the UPDATE
-pair next to a prefilter. It MUST NOT let feedback touch confidence. And it MUST
-NOT invent a demote route to "fix" a bad entry, however natural that reads: the
-sanctioned move is a VALIDITY TRANSITION -- supersede it, stale it, or flag it
-as disputed -- and a demote would break the interlock above by manufacturing
-exactly the low-tier, low-attention rows the freshness and admission mechanisms
-were built to make impossible. That is the trap in this whole subsection: the
-surface looks like it is missing an obvious operation, and the missing operation
-is the guarantee.
+pair next to a prefilter. It MUST NOT let feedback touch confidence. It MUST
+implement `kb_demote` as the ONLY caller-addressable downward move and keep it
+exactly as narrow as `4.2` requires: CONFIRMED -> INFERRED and nothing else,
+never a ladder past INFERRED, refusing a non-CONFIRMED target rather than
+returning it unchanged, and leaving `promoted_at`/`source` untouched so a later
+re-promotion is never mistaken for the entry's first one. It MUST NOT let
+`kb_demote` or its bible-tombstone counterpart grow into a general
+confidence-editing route: no caller-settable target tier, no path from
+CONFIRMED to anything but INFERRED, and no path that creates a row the local
+KB does not already hold. For everything `kb_demote` does not cover, the
+sanctioned move is still a VALIDITY TRANSITION -- supersede it, stale it, or
+flag it as disputed -- and widening `kb_demote` into that territory would
+break the interlock above by manufacturing exactly the low-tier, low-attention
+rows the freshness and admission mechanisms were built to make impossible.
 
 **THE TEST HOOK.** `resolution refusal` -- drive each of the three
 tool-reachable refusals and assert nothing was written, reading BOTH entries
@@ -339,8 +356,10 @@ active-directive branch is not reachable from this surface at all --
 `tests/DEGRADATION.md` D-9 lists `E-RESOLVE-DIRECTIVE-PAIR` among the states no
 tool call can construct. `feedback-never-touches-confidence` covers the feedback
 half: downvote a CONFIRMED entry and assert the response reports CONFIRMED with
-`stale` and `flagged_for_review` set. The absence of a demote is not
-mechanically checkable by a conformance assertion -- an absent operation has no
-call to make -- and no `tests/DEGRADATION.md` entry currently records it; the
-nearest observable proxy is asserting that no declared tool accepts a
-confidence-lowering argument.
+`stale` and `flagged_for_review` set. The demotion boundary is now mechanically
+checkable, where this draft once had to settle for a proxy: `kb_demote`'s own
+fixtures (`fixtures/kb_demote/happy.json`, `refusal-not-confirmed.json`) drive
+a CONFIRMED entry down to INFERRED and assert the refusal when it is not
+CONFIRMED. The remaining proxy this section always offered still holds for
+everything `kb_demote` itself does not reach: assert that no OTHER declared
+tool accepts a confidence-lowering argument.

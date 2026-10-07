@@ -570,6 +570,25 @@
  * @property {string} baseBranch - The target base branch, written to provenance.branch.
  * @property {string} baseCommit - The base commit the entries were verified against,
  *   written to provenance.commit.
+ * @property {string[]} [demoted_ids] - Ids demoted this round (kb_demote). An id whose
+ *   local row carries a demoted_at and is now below CONFIRMED is REMOVED from entries and
+ *   recorded as an explicit tombstone {id, demoted_at} in the bible's optional top-level
+ *   demotions array; any other id is skipped with reason not_demoted_or_unknown. Existing
+ *   tombstones are preserved, and re-committing a tombstoned id through ids (a
+ *   re-promotion) restores its entry and clears its tombstone.
+ */
+
+/**
+ * @typedef {Object} KbDemoteOptions
+ * @property {string} id - ID of the KB entry to demote.
+ * @property {string} reason - Why trust is being withdrawn -- at least 20 characters
+ *   after newlines are collapsed to spaces and the result trimmed. Appended to the
+ *   entry content as the audit trail; a reason made only of whitespace or newlines
+ *   is refused.
+ * @property {string[]} [evidence_files] - Optional repo-relative files backing the
+ *   demotion. Each must resolve to a real file inside the calling session's repo; a
+ *   path that does not resolve, names a directory, is ABSOLUTE, or contains a ".."
+ *   segment is refused with E-DEMOTE-EVIDENCE-UNRESOLVED and nothing is written.
  */
 
 /**
@@ -1021,12 +1040,15 @@ export class ApraFleet {
      * provenance, and make a local commit scoped to the bible path whose message
      * lists each removal. Never pushes; re-running with the
      * same ids after resetting to a newer HEAD re-merges, so a rejected push can
-     * be retried. Result JSON: {path, merged, skipped, removed, entry_count,
-     * committed}; extract with parseToolJson(). Each skipped item is {id, reason}
-     * with reason not_confirmed_or_unknown, no_source_files (a CONFIRMED id
-     * citing no source file) or basis_mismatch. Each removed item is {id, reason}
+     * be retried. Result JSON: {path, merged, demoted, skipped, removed,
+     * entry_count, committed}; extract with parseToolJson(). Each skipped item is
+     * {id, reason} with reason not_confirmed_or_unknown, no_source_files (a
+     * CONFIRMED id citing no source file), basis_mismatch or
+     * not_demoted_or_unknown (a demoted_ids id). Each removed item is {id, reason}
      * with reason superseded or invalidated.
      * A CONFIRMED id is admitted only if it passes the same basis rule as kb_export.
+     * demoted_ids records EXPLICIT demotion tombstones: an admitted id is removed from
+     * entries and tombstoned as {id, demoted_at}; entry_count counts entries only.
      * The removed scope keys (repo_path, repo, repo_remote_url) are refused
      * with E-SCOPE-KEY-REMOVED before anything is sent.
      * @param {KbBibleCommitOptions} options
@@ -1034,6 +1056,22 @@ export class ApraFleet {
     async kbBibleCommit(options) {
         assertNoRemovedKbScopeKeys('kb_bible_commit', options);
         return this.mcpClient.callTool('kb_bible_commit', options);
+    }
+
+    /**
+     * Withdraw trust from a CONFIRMED entry, lowering it to INFERRED (the
+     * inverse of kb_promote). Not a ladder: an INFERRED/UNVERIFIED target is
+     * REFUSED with E-DEMOTE-NOT-CONFIRMED rather than returned as a no-op.
+     * Appends the reason (and any evidence files) as an audit note; promoted_at
+     * and source are left untouched. Result JSON:
+     * {id, previous_confidence, new_confidence}; extract with parseToolJson().
+     * The removed scope keys (repo_path, repo, repo_remote_url) are refused
+     * with E-SCOPE-KEY-REMOVED before anything is sent.
+     * @param {KbDemoteOptions} options
+     */
+    async kbDemote(options) {
+        assertNoRemovedKbScopeKeys('kb_demote', options);
+        return this.mcpClient.callTool('kb_demote', options);
     }
 
     /**

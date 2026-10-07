@@ -16,7 +16,8 @@
       "properties": {
         "version": { "const": 2 },
         "provenance": { "$ref": "#/$defs/provenance" },
-        "entries": { "type": "array", "items": { "$ref": "#/$defs/entryWithoutHashes" } }
+        "entries": { "type": "array", "items": { "$ref": "#/$defs/entryWithoutHashes" } },
+        "demotions": { "$ref": "#/$defs/demotions" }
       }
     },
     {
@@ -26,11 +27,24 @@
       "properties": {
         "version": { "const": 3 },
         "provenance": { "$ref": "#/$defs/provenance" },
-        "entries": { "type": "array", "items": { "$ref": "#/$defs/entry" } }
+        "entries": { "type": "array", "items": { "$ref": "#/$defs/entry" } },
+        "demotions": { "$ref": "#/$defs/demotions" }
       }
     }
   ],
   "$defs": {
+    "demotions": {
+      "type": "array",
+      "description": "Optional demotion tombstones written by kb_bible_commit demoted_ids. Each names an id whose CONFIRMED entry was withdrawn by kb_demote; that id is absent from entries. Omitted entirely when there are none. Never inferred from an absence: kb_import lowers a local CONFIRMED row only for an explicit tombstone newer than its promotion. See spec.md section 2.8.",
+      "items": {
+        "type": "object",
+        "required": ["id", "demoted_at"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "demoted_at": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
     "provenance": {
       "type": "object",
       "description": "commit: the base commit the entries were verified against (null when unknown). branch: the target base branch the entries merge into. entry_count: the number of entries in the file.",

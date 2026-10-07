@@ -208,6 +208,28 @@ export async function runFinalReviewPhase({
     if (finalKbCandidates.length > 0) {
         log(`[kb-work] offering ${finalKbCandidates.length} INFERRED entr(ies) to the final reviewer for promotion.`);
     }
+    // The CONFIRMED entries the final reviewer may demote back to INFERRED.
+    // buildFinalVerdictPrompt has always accepted and rendered kbDemoteCandidates,
+    // but nothing ever passed it here, so that block was dead on this path and
+    // the final reviewer -- the one review that reads the WHOLE diff -- could
+    // never demote, exactly as it could never promote before promotion
+    // candidates were added above.
+    //
+    // SCOPE IS 'sprint', PASSED EXPLICITLY. Final review judges the entire
+    // sprint diff and has no round, so its changed-file scope is the
+    // cumulative baseBranch...branch diff. demotionCandidates never infers
+    // this from who called it -- see its doc comment.
+    //
+    // Fetched ONCE, BEFORE the dispatch, for the same reason the promotion
+    // candidates above are: the retry and resume paths then reuse the
+    // identical block rather than re-reading a KB this review's own
+    // demotions may already have changed. Best-effort like every other KB
+    // read: a cold or unreachable KB, or a diff that could not be computed,
+    // degrades to [] and must never fail the final review.
+    const finalKbDemoteCandidates = await kbWork.demotionCandidates(getMemberForRole('reviewer'), { scope: 'sprint' });
+    if (finalKbDemoteCandidates.length > 0) {
+        log(`[kb-work] offering ${finalKbDemoteCandidates.length} CONFIRMED entr(ies) to the final reviewer for demotion.`);
+    }
     // apra-fleet-3swo.5.7: the final-review ladder -- its dispatch, its
     // read-side git-sync bracket, its max_turns-exhaustion resume at doubled
     // turns, its retry-once wrapper, its auth self-heal and its FAIL degrade --
@@ -245,6 +267,7 @@ export async function runFinalReviewPhase({
             unclosedVerifyIds: finalUnclosedVerifyIds,
             deferredAtGoalIds: finalDeferredAtGoalIds,
             kbCandidates: finalKbCandidates,
+            kbDemoteCandidates: finalKbDemoteCandidates,
             kbKnowledge: kbInjection ? undefined : kbPriming.knowledgeOf(getMemberForRole('reviewer')),
             kbBlock: kbInjection
                 ? await kbInjection.blockFor({

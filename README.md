@@ -207,6 +207,7 @@ MCP tools that ship with the KB:
 | `kb_context` | Batch file freshness check (single git call for N files) |
 | `kb_invalidate` | Mark files stale immediately (also called by the git hook), or discard own entries by `ids` |
 | `kb_promote` | Advance confidence: UNVERIFIED -> INFERRED -> CONFIRMED (FULL session, or the sprint's kb_maintainer member session only) |
+| `kb_demote` | Withdraw trust: lower a CONFIRMED entry back to INFERRED (the one reversible rung; never a ladder in its own direction) |
 | `kb_harvest` | Extract learnings from a session transcript (auto-fires after execute_prompt) |
 | `kb_export` | Additively merge live CONFIRMED entries whose cited files still match their recorded hashes into `.fleet/kb-canonical.json` -- the git-shareable team bible (FULL session only) |
 | `kb_bible_commit` | Merge confirmed entry ids into the bible (format v3, per-entry file hashes), remove superseded or invalidated entries, and commit locally with base-branch provenance (used by the sprint kb_maintainer) |

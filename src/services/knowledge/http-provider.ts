@@ -254,6 +254,19 @@ export class HttpKbProvider implements MemoryProvider {
     }
   }
 
+  // Delegated to the local fallback store like touch: "is the row I hold still
+  // live CONFIRMED" is a question about the LOCAL store by definition, and
+  // there is no remote route for it. An unreadable local store degrades to an
+  // empty map, i.e. "no local row for any of these" -- the cold seed then
+  // behaves exactly as it did before this predicate existed.
+  getLiveConfirmedState(ids: string[]): Map<string, boolean> {
+    try {
+      return this.fallback.getLiveConfirmedState(ids);
+    } catch {
+      return new Map();
+    }
+  }
+
   // Delegated to the local store like getLinked: the graph lives alongside the
   // entries, and there is no remote route for it. Never throws -- a graph miss
   // must degrade to "no related claims", not fail a prime.
@@ -282,6 +295,24 @@ export class HttpKbProvider implements MemoryProvider {
     reason?: string
   ): Promise<{ id: string; confidence_before: Confidence; confidence_after: Confidence }> {
     return this.fallback.promote(id, reason);
+  }
+
+  /**
+   * kb_demote is NOT delegated to the local fallback the way promote() is, and
+   * that asymmetry is deliberate. A demotion's whole value is its
+   * demoted_basis_hashes snapshot of the cited files as they are on disk at
+   * demote time; the fallback store is this host's local cache, not the remote
+   * KB that owns the entry, so a "successful" demote here would stamp a basis
+   * taken from the wrong tree onto a row nobody else ever sees. Refuse loudly
+   * and write NOTHING, as discard() does for the same class of operation.
+   */
+  async demote(
+    _id: string,
+    _reason: string,
+    _evidenceFiles?: string[],
+    _opts?: { ownerTag?: string },
+  ): Promise<{ id: string; confidence_before: Confidence; confidence_after: Confidence }> {
+    throw new Error('kb_demote is not supported for an HTTP KB: the remote provider has no demote route, and demoting against the local fallback store would snapshot the wrong tree. Nothing was changed.');
   }
 
   async sync(_opts?: SyncOptions): Promise<SyncResult> {

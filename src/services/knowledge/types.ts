@@ -84,6 +84,13 @@ export interface KBEntry {
   created_at: string;
   superseded_at?: string;
   promoted_at?: string;
+  // kb_demote. demoted_at is the ISO time trust was last withdrawn;
+  // demoted_basis_hashes is source_file -> sha256 of that file AS IT WAS ON
+  // DISK AT DEMOTE TIME -- NOT a copy of the capture-time source_file_hashes.
+  // Both are read-only on this interface (only demote() writes them), and both
+  // survive a later re-promotion so the demotion stays auditable.
+  demoted_at?: string;
+  demoted_basis_hashes?: Record<string, string>;
   use_count: number;
   last_accessed?: string;
 }
@@ -289,7 +296,17 @@ export interface MemoryProvider {
   discard(ids: string[], opts?: { ownerTag?: string }): Promise<DiscardResult>;
   getLinked(id: string): Promise<KBEntry[]>;
   prime(opts: PrimeOptions): Promise<PrimedContext>;
-  promote(id: string, reason?: string): Promise<{ id: string; confidence_before: Confidence; confidence_after: Confidence }>;
+  // opts.ownerTag is the MEMBER own-scope restriction: an entry not carrying
+  // the tag is refused with the SAME "Entry not found" message an unknown id
+  // gets, so existence is never disclosed. Declared here (not only on
+  // SqliteProvider) because the kb_promote/kb_demote tools pass it through the
+  // MemoryProvider-typed project provider.
+  promote(id: string, reason?: string, opts?: { ownerTag?: string }): Promise<{ id: string; confidence_before: Confidence; confidence_after: Confidence }>;
+  // kb_demote: CONFIRMED -> INFERRED. `reason` is REQUIRED (unlike promote's,
+  // which is optional for backwards compatibility): withdrawing trust is only
+  // useful if why is recorded. evidenceFiles are optional citations, each of
+  // which must resolve inside the provider's anchor.
+  demote(id: string, reason: string, evidenceFiles?: string[], opts?: { ownerTag?: string }): Promise<{ id: string; confidence_before: Confidence; confidence_after: Confidence }>;
   sync(opts?: SyncOptions): Promise<SyncResult>;
   // T2.1 (F5, D4): dedicated no-bump aggregation read (kb_list pattern -- never
   // touches use_count/last_accessed). Part of the interface (not just
@@ -304,6 +321,14 @@ export interface MemoryProvider {
   // another machine's bible has no local row and is silently skipped. Returns
   // the number of rows actually bumped.
   touch(ids: string[]): Promise<number>;
+  // For each given id that EXISTS locally, whether that row is LIVE CONFIRMED
+  // (CONFIRMED and not stale, not superseded, not flagged_for_review). An id
+  // with no local row is ABSENT from the map, so a caller can tell "I hold a
+  // row I no longer trust" from "I have never seen this id" -- the cold-seed
+  // in kb_session_prime needs exactly that distinction. On the interface (like
+  // touch) because that cold seed runs on whichever project provider is
+  // configured, not only the SQLite one.
+  getLiveConfirmedState(ids: string[]): Map<string, boolean>;
   // KB audit 2026-08-11: one hop across the KB's own graph, limited to the two
   // edge kinds FTS cannot substitute for -- `refines` ("there is a newer
   // framing of this claim") and `contradiction_of` ("something disputes it").

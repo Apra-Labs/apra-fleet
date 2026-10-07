@@ -173,7 +173,7 @@
             { "method_id": "P-2", "member": "capture", "tool": "kb_harvest", "position": "provider" },
             { "method_id": "P-2", "member": "capture", "tool": "kb_import", "position": "provider" }
           ],
-          "source": "src/services/knowledge/sqlite-provider.ts:339 (assertCheckableBasis, KbCaptureRejected('no_source_files'))",
+          "source": "src/services/knowledge/sqlite-provider.ts (SqliteProvider.assertCheckableBasis, zero-files branch, KbCaptureRejected('no_source_files'))",
           "surfaced": "thrown",
           "retryable": false,
           "note": "On the kb_import route this throw is caught per entry and counted -- see E-IMPORT-ENTRY-REJECTED."
@@ -187,7 +187,7 @@
             { "method_id": "P-2", "member": "capture", "tool": "kb_harvest", "position": "provider" },
             { "method_id": "P-2", "member": "capture", "tool": "kb_import", "position": "provider" }
           ],
-          "source": "src/services/knowledge/sqlite-provider.ts:349 (assertCheckableBasis, KbCaptureRejected('missing_source_files'))",
+          "source": "src/services/knowledge/sqlite-provider.ts (SqliteProvider.assertCheckableBasis, unresolvable-files branch, KbCaptureRejected('missing_source_files'))",
           "surfaced": "thrown",
           "retryable": false
         },
@@ -216,7 +216,7 @@
           "raising_methods": [
             { "method_id": "P-8", "member": "promote", "tool": "kb_promote", "position": "provider" }
           ],
-          "source": "src/services/knowledge/sqlite-provider.ts:1366-1370 (isNonTrivialPromoteReason)",
+          "source": "src/services/knowledge/sqlite-provider.ts (SqliteProvider.promote, reason-required guard, isNonTrivialPromoteReason)",
           "surfaced": "thrown",
           "retryable": false,
           "see_also": ["Capture provenance and confidence clamp"]
@@ -228,7 +228,7 @@
           "raising_methods": [
             { "method_id": "P-8", "member": "promote", "tool": "kb_promote", "position": "provider" }
           ],
-          "source": "src/services/knowledge/sqlite-provider.ts:1377-1384",
+          "source": "src/services/knowledge/sqlite-provider.ts (SqliteProvider.promote, basis-unresolved guard)",
           "surfaced": "thrown",
           "retryable": false,
           "see_also": ["Capture provenance and confidence clamp"]
@@ -240,10 +240,59 @@
           "raising_methods": [
             { "method_id": "P-8", "member": "promote", "tool": "kb_promote", "position": "provider" }
           ],
-          "source": "src/services/knowledge/sqlite-provider.ts:1343",
+          "source": "src/services/knowledge/sqlite-provider.ts (SqliteProvider.promote, already-superseded guard)",
           "surfaced": "thrown",
           "retryable": false,
           "group_decision": "AUTHORITY, not conflict. The refusal is about the target's standing to hold a higher tier, which is the same policy as the clamp; it is not about the semantics of a contradiction pair.",
+          "see_also": ["Superseding and AUDN matching"]
+        },
+        {
+          "$anchor": "E-DEMOTE-NOT-CONFIRMED",
+          "code": "E-DEMOTE-NOT-CONFIRMED",
+          "meaning": "The target entry is not CONFIRMED. kb_demote is not a ladder: it lowers CONFIRMED to INFERRED and nothing else, so an INFERRED or UNVERIFIED target is REFUSED rather than returned as an unchanged no-op -- a caller must never believe it lowered trust that was already at the floor.",
+          "raising_methods": [
+            { "method_id": "P-13", "member": "demote", "tool": "kb_demote", "position": "provider" }
+          ],
+          "source": "src/services/knowledge/sqlite-provider.ts (SqliteProvider.demote, refusal 4 of 6)",
+          "surfaced": "thrown",
+          "retryable": false,
+          "see_also": ["Capture provenance and confidence clamp"]
+        },
+        {
+          "$anchor": "E-DEMOTE-REASON-REQUIRED",
+          "code": "E-DEMOTE-REASON-REQUIRED",
+          "meaning": "The demotion carries no non-trivial reason: shorter than MIN_DEMOTE_REASON_LENGTH once newlines are collapsed to spaces and the result trimmed (so a reason made only of whitespace or newlines collapses to empty and is refused). Withdrawing trust must record its evidence as strictly as granting it.",
+          "raising_methods": [
+            { "method_id": "P-13", "member": "demote", "tool": "kb_demote", "position": "provider" }
+          ],
+          "source": "src/services/knowledge/sqlite-provider.ts (SqliteProvider.demote, refusal 5 of 6; normalizeDemoteReason)",
+          "surfaced": "thrown",
+          "retryable": false,
+          "see_also": ["Capture provenance and confidence clamp"]
+        },
+        {
+          "$anchor": "E-DEMOTE-EVIDENCE-UNRESOLVED",
+          "code": "E-DEMOTE-EVIDENCE-UNRESOLVED",
+          "meaning": "A cited evidence file does not resolve in this worktree, is not a regular file, or is not anchor-relative -- an absolute path, or one with a '..' segment, both of which name a location the anchor does not contain. The anchor-relative check (the shared validateFilePaths guard, same as E-PATH-TRAVERSAL) runs FIRST, so a path that happens to land on a real file outside the repo is refused too.",
+          "raising_methods": [
+            { "method_id": "P-13", "member": "demote", "tool": "kb_demote", "position": "provider" }
+          ],
+          "source": "src/services/knowledge/sqlite-provider.ts (SqliteProvider.assertResolvableDemoteEvidence, refusal 6 of 6)",
+          "surfaced": "thrown",
+          "retryable": false,
+          "see_also": ["Capture provenance and confidence clamp"]
+        },
+        {
+          "$anchor": "E-DEMOTE-SUPERSEDED",
+          "code": "E-DEMOTE-SUPERSEDED",
+          "meaning": "The target entry is already superseded, so it has dropped out of every read path and lowering its confidence would be a write with no observable meaning.",
+          "raising_methods": [
+            { "method_id": "P-13", "member": "demote", "tool": "kb_demote", "position": "provider" }
+          ],
+          "source": "src/services/knowledge/sqlite-provider.ts (SqliteProvider.demote, refusal 2 of 6)",
+          "surfaced": "thrown",
+          "retryable": false,
+          "group_decision": "AUTHORITY, not conflict -- the same reading as E-PROMOTE-SUPERSEDED: the refusal is about the target's standing to hold any tier at all, not about the semantics of a contradiction pair.",
           "see_also": ["Superseding and AUDN matching"]
         }
       ]
@@ -259,7 +308,19 @@
           "raising_methods": [
             { "method_id": "P-8", "member": "promote", "tool": "kb_promote", "position": "provider" }
           ],
-          "source": "src/services/knowledge/sqlite-provider.ts:1353-1357",
+          "source": "src/services/knowledge/sqlite-provider.ts (SqliteProvider.promote, user-directive refusal)",
+          "surfaced": "thrown",
+          "retryable": false,
+          "see_also": ["Directive quarantine"]
+        },
+        {
+          "$anchor": "E-DEMOTE-REFUSED-DIRECTIVE",
+          "code": "E-DEMOTE-REFUSED-DIRECTIVE",
+          "meaning": "Demotion of a user-directive entry is refused outright. Directive state is human-terminal in BOTH directions: promote() refuses them so an agent cannot forge an active directive, and demote() refuses them so an agent cannot deactivate one a human set.",
+          "raising_methods": [
+            { "method_id": "P-13", "member": "demote", "tool": "kb_demote", "position": "provider" }
+          ],
+          "source": "src/services/knowledge/sqlite-provider.ts (SqliteProvider.demote, refusal 3 of 6)",
           "surfaced": "thrown",
           "retryable": false,
           "see_also": ["Directive quarantine"]
@@ -271,7 +332,7 @@
           "raising_methods": [
             { "method_id": "X-4", "member": "resolveContradiction", "tool": "kb_resolve_contradiction", "position": "provider" }
           ],
-          "source": "src/services/knowledge/sqlite-provider.ts:1569-1571",
+          "source": "src/services/knowledge/sqlite-provider.ts (SqliteProvider.resolveContradiction, directive-pair refusal)",
           "surfaced": "thrown",
           "retryable": false,
           "see_also": ["Directive quarantine"]
@@ -317,7 +378,7 @@
           "raising_methods": [
             { "method_id": "X-4", "member": "resolveContradiction", "tool": "kb_resolve_contradiction", "position": "provider" }
           ],
-          "source": "src/services/knowledge/sqlite-provider.ts:1564-1566",
+          "source": "src/services/knowledge/sqlite-provider.ts (SqliteProvider.resolveContradiction, not-a-pair refusal)",
           "surfaced": "thrown",
           "retryable": false
         },
@@ -328,7 +389,7 @@
           "raising_methods": [
             { "method_id": "X-4", "member": "resolveContradiction", "tool": "kb_resolve_contradiction", "position": "provider" }
           ],
-          "source": "src/services/knowledge/sqlite-provider.ts:1560-1561",
+          "source": "src/services/knowledge/sqlite-provider.ts (SqliteProvider.resolveContradiction, already-superseded refusal)",
           "surfaced": "thrown",
           "retryable": false
         }
@@ -345,7 +406,7 @@
             { "method_id": "P-8", "member": "promote", "tool": "kb_promote", "position": "provider" },
             { "method_id": "X-2", "member": "feedback", "tool": "kb_feedback", "position": "provider" }
           ],
-          "source": "src/services/knowledge/sqlite-provider.ts:1340 (promote), :1431 (feedback)",
+          "source": "src/services/knowledge/sqlite-provider.ts (SqliteProvider.promote entry-not-found guard, SqliteProvider.feedback entry-not-found guard)",
           "surfaced": "thrown",
           "retryable": false
         },
@@ -356,7 +417,7 @@
           "raising_methods": [
             { "method_id": "X-4", "member": "resolveContradiction", "tool": "kb_resolve_contradiction", "position": "provider" }
           ],
-          "source": "src/services/knowledge/sqlite-provider.ts:1554-1555",
+          "source": "src/services/knowledge/sqlite-provider.ts (SqliteProvider.resolveContradiction, missing-entry refusal)",
           "surfaced": "thrown",
           "retryable": false,
           "note": "Kept distinct from E-ENTRY-NOT-FOUND rather than merged: it names a PAIR operation that wrote nothing, and INVENTORY.md 5.2 and methods.json X-4 both carry it under its own name."
@@ -388,7 +449,7 @@
             { "method_id": "X-6", "member": "hasEntry", "tool": "kb_import", "position": "provider" },
             { "method_id": "X-8", "member": "getSourceFileBases", "tool": "kb_export", "position": "provider" }
           ],
-          "source": "src/services/knowledge/sqlite-provider.ts:197 (SqliteProvider.getDb)",
+          "source": "src/services/knowledge/sqlite-provider.ts (SqliteProvider.getDb)",
           "surfaced": "thrown",
           "retryable": false,
           "note": "methods.json also cites this code on P-6 getLinked and P-9 sync, which have no tool route (tools: []); every member reached through getDb can raise it. init() itself (P-1) has no throw site of its own -- its ABSENCE is what causes this code everywhere else."
@@ -626,13 +687,13 @@
     {
       "name": "E-CLAMP",
       "outcome": "An incoming CONFIRMED on a non-directive type is DOWNGRADED to INFERRED, with a bracketed note appended to content. Reported as confidence_clamped: true in the kb_capture response; that flag is derived as 'stored confidence differs from requested', so it is not specific to this branch (a user-directive quarantined to UNVERIFIED also reports it).",
-      "where": "src/tools/kb-capture.ts:102-105 (UX copy), src/tools/kb-capture.ts:127-133 (confidence_clamped derivation), src/services/knowledge/sqlite-provider.ts:889-893 (enforcement)",
+      "where": "src/tools/kb-capture.ts:102-105 (UX copy), src/tools/kb-capture.ts:127-133 (confidence_clamped derivation), src/services/knowledge/sqlite-provider.ts (SqliteProvider.capture, confidence-clamp enforcement)",
       "reason_no_code": "The capture SUCCEEDED; only the requested tier was lowered, and the lowering is reported in a documented success field. This is the silent branch of the one authority policy -- its refusing branches (the promote path) are the authority group's codes. Giving the clamp an error code would make the normal, expected path of every over-confident capture look like a failure."
     },
     {
       "name": "E-DIRECTIVE-QUARANTINE",
       "outcome": "A user-directive capture is FORCED to a PENDING PROPOSAL rather than stored as requested: confidence to UNVERIFIED, flagged_for_review set, a 'directive:pending' tag added, and scope forced to 'project'. The capture itself SUCCEEDS and returns an id; activation remains CLI-only and no server code path for it exists.",
-      "where": "src/services/knowledge/sqlite-provider.ts:806-818 (enforcement)",
+      "where": "src/services/knowledge/sqlite-provider.ts (SqliteProvider.capture, directive-quarantine enforcement)",
       "reason_no_code": "The capture SUCCEEDED and stored a transformed entry -- capture() mutates the input and continues, it never throws. This is structurally the same class as E-CLAMP: a successful write with a forced downward transformation, not a refusal. It was previously classified surfaced: 'response-field', which was wrong on the taxonomy's own definition -- no named response field reports it as a quarantine. kb_capture returns {id, audn_decision, confidence_clamped}, and confidence_clamped is DERIVED as 'stored confidence differs from requested' (requested defaults to INFERRED when absent) in src/tools/kb-capture.ts:127-133, so a directive quarantined to UNVERIFIED reports confidence_clamped: true -- but that is the same success flag the CONFIRMED-to-INFERRED clamp sets, it names neither the quarantine nor the forced tag, flag or scope, and kb_harvest, kb_import and the HTTP route never populate it; kb_import surfaces only imported/skipped/rejected. Because the full transformation is observable only through a LATER read (tests/DEGRADATION.md D-8), it must not be projected onto the wire: an implementation built from a projection carrying it would REFUSE directive captures that this kernel ACCEPTS. Its refusing siblings on the same directive policy keep their codes in the governance group (E-PROMOTE-REFUSED-DIRECTIVE, E-RESOLVE-DIRECTIVE-PAIR)."
     },
     {
@@ -683,17 +744,17 @@
     "codes": [
       {
         "code": "E-DIRECTIVE-NOT-FOUND",
-        "where": "src/services/knowledge/sqlite-provider.ts:1723 (approveDirective), :1746 (rejectDirective)",
+        "where": "src/services/knowledge/sqlite-provider.ts (SqliteProvider.approveDirective entry-not-found guard, SqliteProvider.rejectDirective entry-not-found guard)",
         "reason_excluded": "An error code OF the CLI-only directive-activation operations. Publishing it would document that an approve/reject route exists on this surface. Not tool-reachable (methods.json not_in_scope)."
       },
       {
         "code": "E-DIRECTIVE-WRONG-TYPE",
-        "where": "src/services/knowledge/sqlite-provider.ts:1725 (approveDirective), :1748 (rejectDirective)",
+        "where": "src/services/knowledge/sqlite-provider.ts (SqliteProvider.approveDirective wrong-type guard, SqliteProvider.rejectDirective wrong-type guard)",
         "reason_excluded": "Same as E-DIRECTIVE-NOT-FOUND: activation-operation vocabulary, excluded by absence."
       },
       {
         "code": "E-DIRECTIVE-ALREADY-DECIDED",
-        "where": "src/services/knowledge/sqlite-provider.ts:1726, :1727 (approveDirective), :1749 (rejectDirective)",
+        "where": "src/services/knowledge/sqlite-provider.ts (SqliteProvider.approveDirective already-rejected and already-active guards, SqliteProvider.rejectDirective already-rejected guard)",
         "reason_excluded": "Same as E-DIRECTIVE-NOT-FOUND: activation-operation vocabulary, excluded by absence."
       }
     ]

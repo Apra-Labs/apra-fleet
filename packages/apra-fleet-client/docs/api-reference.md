@@ -526,7 +526,7 @@ Every `kb_*` call acts on the calling session's own KB (a member session's
 registered work folder; a FULL session's fleet server working folder). The
 pre-redesign scope keys `repo_path`, `repo` and `repo_remote_url` are removed:
 the server refuses a call carrying any of them with `E-SCOPE-KEY-REMOVED`,
-and `kbExport` / `kbBibleCommit` refuse them client-side with the same code
+and `kbExport` / `kbBibleCommit` / `kbDemote` refuse them client-side with the same code
 before sending (`assertNoRemovedKbScopeKeys`, `KB_REMOVED_SCOPE_KEYS` are
 exported). For direct `callTool` users: `kb_list` accepts `confidence` as a
 list or as one tier string, and `kb_context` defaults to
@@ -570,7 +570,35 @@ CONFIRMED id citing no source file is skipped with its own reason
 `no_source_files` (its existing bible entry is kept too); no mergeable ids or an unchanged
 entry set (nothing merged, nothing removed) makes no commit. Re-running with the same ids after resetting to a
 newer HEAD re-merges, so a rejected push can be retried without a manual
-merge. Result JSON: `{path, merged, skipped, removed, entry_count, committed}`.
+merge.
+
+Optional `demoted_ids` records DEMOTIONS explicitly. An id is admitted only when
+its local row carries a `demoted_at` and is now below CONFIRMED (`kb_demote` ran
+on it); any other id is skipped with reason `not_demoted_or_unknown` and nothing
+changes for it. An admitted id is removed from `entries` and upserted into the
+bible's optional top-level `demotions` array as `{id, demoted_at}`, so another
+clone applies the demotion explicitly instead of inferring it from an absence.
+Tombstones already in the file survive a later commit carrying unrelated ids, and
+re-committing a tombstoned id through `ids` (a re-promotion) restores its entry
+and clears its tombstone. `provenance.entry_count` counts entries only.
+
+Result JSON: `{path, merged, demoted, skipped, removed, entry_count, committed}`.
+
+#### `kbDemote(options: KbDemoteOptions)`
+
+Calls `kb_demote` -- withdraws trust from a CONFIRMED entry, lowering it to
+INFERRED (the inverse of `kbPromote`). Options: `id` (required), `reason`
+(required; at least 20 characters once newlines are collapsed to spaces and
+the result trimmed; appended to the entry content as the audit trail),
+`evidence_files?` (repo-relative files backing the demotion; each must resolve
+to a real file inside the calling session's repo). Not a ladder: calling it on
+an entry that is not CONFIRMED is REFUSED with `E-DEMOTE-NOT-CONFIRMED` rather
+than returned as an unchanged no-op. `promoted_at` and `source` are left
+untouched. Like `kbExport` / `kbBibleCommit`, the removed scope keys
+(`repo_path`, `repo`, `repo_remote_url`) are refused client-side with
+`E-SCOPE-KEY-REMOVED` before anything is sent.
+
+Result JSON: `{id, previous_confidence, new_confidence}`.
 
 #### `composePermissions(options: ComposePermissionsOptions)`
 

@@ -10,7 +10,7 @@
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 import path from 'node:path';
 import fs from 'node:fs';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { FLEET_DIR } from '../../paths.js';
 import { resolveProjectSlug } from './project-slug.js';
 import {
@@ -22,6 +22,7 @@ import {
   orJoinFtsTerms,
 } from './audn.js';
 import { computeFileHashBatch } from './file-hash.js';
+import { validateFilePaths } from './path-validation.js';
 import { KbCaptureRejected, type DiscardResult } from './types.js';
 import type {
   MemoryProvider,
@@ -59,6 +60,66 @@ const MIN_PROMOTE_REASON_LENGTH = 20;
 
 function isNonTrivialPromoteReason(reason?: string): boolean {
   return (reason ?? '').trim().length >= MIN_PROMOTE_REASON_LENGTH;
+}
+
+/**
+ * Minimum length of a kb_demote reason, measured AFTER newlines are collapsed
+ * to spaces and the result trimmed. Same floor as kb_promote: withdrawing
+ * trust must be as auditable as granting it, and a reason that is only
+ * whitespace/newlines collapses to the empty string and is refused.
+ */
+const MIN_DEMOTE_REASON_LENGTH = 20;
+
+/**
+ * The single normalisation applied to a demote reason, used for BOTH the
+ * length gate and the note written into content -- so what was validated is
+ * exactly what is recorded. Every newline becomes a space (the note must stay
+ * one line, and must never be able to grow a second leading newline and so
+ * collide with the kb_feedback marker, which is two newlines + "[feedback ").
+ */
+function normalizeDemoteReason(reason: string): string {
+  return (reason ?? '').replace(/[\r\n]/g, ' ').trim();
+}
+
+/**
+ * The ONE demotion-note format, shared by kb_demote (demote()) and the bible
+ * tombstone path (applyBibleDemotion()), so a demotion that crosses clones
+ * reads identically to one applied locally.
+ *
+ * String concatenation (not a template literal) per the ASCII pre-commit hook
+ * gotcha: backslash-n escapes inside JS template literals false-positive on the
+ * hook's non-ASCII scan (same convention as promote()'s promotionNote and
+ * feedback()'s note).
+ *
+ * EXACTLY ONE leading newline. feedback() writes TWO ('\n\n[feedback ...'), so
+ * a demote note can never be mistaken for a feedback marker by anything
+ * scanning content for one.
+ */
+function buildDemotionNote(normalizedReason: string, evidence: string[], author: string): string {
+  const evidenceClause = evidence.length > 0 ? ' | evidence: ' + evidence.join(', ') : '';
+  return '\n[Demoted: ' + normalizedReason + evidenceClause + ' -- ' + (author || 'unknown') + ']';
+}
+
+/**
+ * The reason recorded when a demotion arrives through the committed project
+ * bible rather than a local kb_demote. Must clear MIN_DEMOTE_REASON_LENGTH.
+ */
+export const BIBLE_DEMOTION_REASON = 'demoted in the project bible';
+
+/**
+ * Is `a` strictly earlier than `b`? Both are expected to be ISO-8601 strings
+ * (every timestamp this store writes comes from Date.toISOString()). Parsed
+ * numerically rather than compared as strings so a hand-written bible carrying
+ * a non-UTC offset still orders correctly; when either side is unparseable the
+ * answer is false, i.e. "do not act" -- a tombstone whose time cannot be read
+ * must never demote anything.
+ */
+function isStrictlyBefore(a: string | undefined, b: string | undefined): boolean {
+  if (!a || !b) return false;
+  const ta = Date.parse(a);
+  const tb = Date.parse(b);
+  if (Number.isNaN(ta) || Number.isNaN(tb)) return false;
+  return ta < tb;
 }
 
 class NotImplementedError extends Error {
@@ -244,6 +305,23 @@ export class SqliteProvider implements MemoryProvider {
     try {
       this.db.exec('ALTER TABLE entries ADD COLUMN local_basis_only INTEGER NOT NULL DEFAULT 0');
     } catch {}
+
+    // kb_demote (CONFIRMED -> INFERRED): demoted_at records WHEN trust was
+    // withdrawn, demoted_basis_hashes the sha256 of each cited source file AS
+    // IT WAS ON DISK AT DEMOTE TIME. The second column is deliberately NOT a
+    // copy of source_file_hashes (which is the CAPTURE-time basis): the
+    // ping-pong guard built on top of it asks "has the tree moved on since we
+    // demoted?", and a capture-time copy answers the wrong question, so a file
+    // edited between capture and demote would look unchanged forever. Same
+    // guarded-ALTER pattern as scope/source_file_hashes above: it runs on a
+    // fresh DB (the columns are not in CREATE TABLE) and is a caught no-op on
+    // a DB that already has them.
+    try {
+      this.db.exec('ALTER TABLE entries ADD COLUMN demoted_at TEXT');
+    } catch {}
+    try {
+      this.db.exec("ALTER TABLE entries ADD COLUMN demoted_basis_hashes TEXT NOT NULL DEFAULT '{}'");
+    } catch {}
   }
 
   private getDb(): DatabaseSync {
@@ -274,6 +352,10 @@ export class SqliteProvider implements MemoryProvider {
       created_at: row.created_at as string,
       superseded_at: row.superseded_at as string | undefined,
       promoted_at: row.promoted_at as string | undefined,
+      // kb_demote columns. Tolerant of a row read before the migration ran
+      // (undefined) and of a legacy NULL/'' in demoted_basis_hashes.
+      demoted_at: (row.demoted_at as string | null | undefined) ?? undefined,
+      demoted_basis_hashes: JSON.parse((row.demoted_basis_hashes as string) || '{}'),
       use_count: row.use_count as number,
       last_accessed: row.last_accessed as string | undefined,
     };
@@ -543,6 +625,80 @@ export class SqliteProvider implements MemoryProvider {
         `SELECT id, source_file_hashes, local_basis_only FROM entries WHERE id IN (${chunk.map(() => '?').join(',')})`
       ).all(...chunk) as { id: string; source_file_hashes: string | null; local_basis_only: number | null }[];
       for (const row of rows) out.set(row.id, row.local_basis_only ? null : this.parseBasis(row.source_file_hashes));
+    }
+    return out;
+  }
+
+  /**
+   * Read-only accessor for the demotion state of the given entry ids: the
+   * CURRENT confidence and demoted_at of each id that exists. An unknown id is
+   * simply absent from the map.
+   *
+   * Deliberately NOT routed through list(): list() excludes stale and superseded
+   * rows, and a demoted entry that later went stale is exactly the one whose
+   * tombstone other clones most need -- their bible still carries the entry.
+   * Policy (what counts as demoted enough to tombstone) lives in the caller
+   * (src/tools/kb-bible-commit.ts); this member only reports the two columns.
+   * Internal to this provider, not an MCP surface.
+   */
+  getDemotionState(ids: string[]): Map<string, { confidence: Confidence; demoted_at?: string }> {
+    const out = new Map<string, { confidence: Confidence; demoted_at?: string }>();
+    if (ids.length === 0) return out;
+    const db = this.getDb();
+    // Chunk to stay well under SQLite's bound-parameter limit (as above).
+    const CHUNK = 500;
+    for (let i = 0; i < ids.length; i += CHUNK) {
+      const chunk = ids.slice(i, i + CHUNK);
+      const rows = db.prepare(
+        `SELECT id, confidence, demoted_at FROM entries WHERE id IN (${chunk.map(() => '?').join(',')})`
+      ).all(...chunk) as { id: string; confidence: string; demoted_at: string | null }[];
+      for (const row of rows) {
+        out.set(row.id, {
+          confidence: row.confidence as Confidence,
+          demoted_at: row.demoted_at ?? undefined,
+        });
+      }
+    }
+    return out;
+  }
+
+  /**
+   * For each of the given ids that EXISTS locally, whether that row is LIVE
+   * CONFIRMED: confidence is CONFIRMED and the row is not stale, not superseded
+   * and not flagged_for_review.
+   *
+   * An id with NO local row is simply ABSENT from the map -- the caller must be
+   * able to tell "I hold a row and it is no longer trustworthy" (do not surface
+   * the bible's version of it) from "I have never seen this id" (the cold-seed
+   * case the bible exists to serve). A boolean-only return would conflate them.
+   *
+   * ONE predicate, deliberately not a demoted_at check. A demotion is only one
+   * of the ways a row stops being live CONFIRMED; staleness, supersession and a
+   * review flag are the others, and a cold seed that re-surfaced the bible's
+   * CONFIRMED copy of any of them would be re-asserting knowledge this clone has
+   * already stopped trusting. Reads the rows DIRECTLY rather than through list(),
+   * which filters stale and superseded rows out and so cannot report them.
+   */
+  getLiveConfirmedState(ids: string[]): Map<string, boolean> {
+    const out = new Map<string, boolean>();
+    if (ids.length === 0) return out;
+    const db = this.getDb();
+    // Chunk to stay well under SQLite's bound-parameter limit (as above).
+    const CHUNK = 500;
+    for (let i = 0; i < ids.length; i += CHUNK) {
+      const chunk = ids.slice(i, i + CHUNK);
+      const rows = db.prepare(
+        `SELECT id, confidence, stale, superseded_at, flagged_for_review FROM entries WHERE id IN (${chunk.map(() => '?').join(',')})`
+      ).all(...chunk) as {
+        id: string; confidence: string; stale: number;
+        superseded_at: string | null; flagged_for_review: number;
+      }[];
+      for (const row of rows) {
+        out.set(row.id, row.confidence === 'CONFIRMED'
+          && row.stale !== 1
+          && row.superseded_at === null
+          && row.flagged_for_review !== 1);
+      }
     }
     return out;
   }
@@ -1608,6 +1764,262 @@ export class SqliteProvider implements MemoryProvider {
       .run(confidence_after, now, newContent, 'promotion', id);
 
     return { id, confidence_before, confidence_after };
+  }
+
+  /**
+   * Evidence paths cited by a demote. Deliberately STRICTER than the basis
+   * check promote() runs: a demote reason is an audit record, so a path that
+   * cannot be pointed at inside this provider's anchor is refused rather than
+   * recorded as an unverifiable string.
+   *
+   * Refuses, all with E-DEMOTE-EVIDENCE-UNRESOLVED:
+   *   - any path that is not anchor-relative -- an ABSOLUTE path, or one with
+   *     a '..' segment. Both are "out of the anchor": an absolute path names a
+   *     location the anchor does not contain, and was previously accepted and
+   *     recorded verbatim, which contradicted this very comment. The check is
+   *     delegated to validateFilePaths (path-validation.ts), the SAME guard
+   *     every other caller-supplied kb_* file list already runs (kb_capture,
+   *     kb_context, kb_invalidate, kb_session_prime and the HTTP routes), so
+   *     this is not a third hand-rolled path guard. It runs BEFORE existence,
+   *     so a path that happens to land on a real file outside the repo is
+   *     still refused, and it applies even on the shared-global no-anchor KB,
+   *     where nothing absolute could be verified against an anchor anyway;
+   *   - a path that does not resolve, via the SAME resolver promote uses
+   *     (unresolvableBasisFiles -> resolveBasisFile);
+   *   - a path that resolves to something that is not a regular file
+   *     (directories are not evidence).
+   */
+  private assertResolvableDemoteEvidence(id: string, files: string[]): void {
+    const refuse = (why: string, offenders: string[]): never => {
+      throw new Error(
+        'E-DEMOTE-EVIDENCE-UNRESOLVED: kb_demote evidence ' + why + ': '
+          + offenders.join(', ') + '. Entry: ' + id
+      );
+    };
+
+    // Per-file so the message can name EVERY offender, not just the first one
+    // validateFilePaths would throw on.
+    const traversing = files.filter((f) => {
+      try {
+        validateFilePaths([f]);
+        return false;
+      } catch {
+        return true;
+      }
+    });
+    if (traversing.length > 0) refuse('is absolute or traverses out of the anchor', traversing);
+
+    const unresolved = this.unresolvableBasisFiles(files);
+    if (unresolved.length > 0) refuse('does not resolve', unresolved);
+
+    const notFiles = files.filter((f) => {
+      const resolved = this.resolveBasisFile(f);
+      try {
+        return !fs.statSync(resolved).isFile();
+      } catch {
+        // Unreadable here means unresolvableBasisFiles already cleared it (the
+        // shared-global no-anchor case); nothing further to assert.
+        return false;
+      }
+    });
+    if (notFiles.length > 0) refuse('is not a file', notFiles);
+  }
+
+  /**
+   * The demote-time basis snapshot: sha256 of each cited source file AS IT IS
+   * ON DISK RIGHT NOW, keyed by the original (unresolved) path string, the
+   * same key convention source_file_hashes uses.
+   *
+   * This MUST NOT be derived from the source_file_hashes column. That column
+   * is the CAPTURE-time basis; copying it was the defect in the superseded
+   * upstream attempt, and it silently breaks the ping-pong guard that asks
+   * whether the tree has moved on SINCE the demotion. Files that cannot be
+   * read are simply absent from the map (a demote is still allowed on an
+   * entry whose basis has since disappeared -- unlike promote, which refuses).
+   *
+   * sha256 and not `git hash-object`: this snapshot is compared against a
+   * later re-read of the same files by the same code, so it must not depend on
+   * git being available or on the file being in a work tree.
+   */
+  private demoteBasisHashes(files: string[]): Record<string, string> {
+    const hashes: Record<string, string> = {};
+    for (const f of files) {
+      try {
+        hashes[f] = createHash('sha256').update(fs.readFileSync(this.resolveBasisFile(f))).digest('hex');
+      } catch {
+        // Unreadable/absent basis file: no entry, never a fabricated hash.
+      }
+    }
+    return hashes;
+  }
+
+  /**
+   * kb_demote: withdraw trust from a CONFIRMED entry, CONFIRMED -> INFERRED.
+   *
+   * The inverse of promote() in intent but NOT its mirror image in mechanics:
+   *
+   *  - it is NOT a ladder. Only CONFIRMED is demotable; INFERRED/UNVERIFIED
+   *    are REFUSED (E-DEMOTE-NOT-CONFIRMED), never silently returned as a
+   *    no-op, so a caller can never believe it lowered trust that was already
+   *    at the floor;
+   *  - promoted_at and source are left untouched. promote() stamps
+   *    source='promotion'; a demotion must not erase the provenance of the
+   *    promotion it is reversing, and promoted_at stays as the record of when
+   *    the (now withdrawn) trust was granted;
+   *  - a STALE entry MAY be demoted. Staleness is a freshness verdict, trust
+   *    is a separate axis, and the entries most worth demoting are exactly the
+   *    ones the sweep has already flagged.
+   *
+   * EVERY refusal is checked BEFORE any write, in the order below, and the
+   * order is load-bearing: the own-scope/unknown-id check comes first so a
+   * member can never learn that an entry it does not own exists by probing for
+   * a different refusal message.
+   */
+  async demote(
+    id: string,
+    reason: string,
+    evidenceFiles?: string[],
+    opts?: { ownerTag?: string },
+  ): Promise<{ id: string; confidence_before: Confidence; confidence_after: Confidence }> {
+    const db = this.getDb();
+    const row = db.prepare('SELECT * FROM entries WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+
+    // (1) Unknown id. MEMBER own-scope: an entry the caller did not capture is
+    // indistinguishable from an unknown id -- the SAME message as promote(),
+    // so its existence is not disclosed.
+    if (!row) throw new Error('Entry not found: ' + id);
+    const entry = this.rowToEntry(row);
+    if (opts?.ownerTag && !entry.tags.includes(opts.ownerTag)) throw new Error('Entry not found: ' + id);
+
+    // (2) Superseded: the row is already out of every read path, so lowering
+    // its confidence would be a write with no observable meaning.
+    if (entry.superseded_at) {
+      throw new Error('E-DEMOTE-SUPERSEDED: cannot demote a superseded entry. Entry: ' + id);
+    }
+
+    // (3) user-directive: directives are human-terminal in BOTH directions.
+    // promote() refuses them so kb_promote cannot forge an active directive;
+    // demote() refuses them so an agent cannot deactivate one the human set.
+    if (entry.type === 'user-directive') {
+      throw new Error(
+        'E-DEMOTE-REFUSED-DIRECTIVE: cannot demote a user-directive via kb_demote: directive state is '
+          + 'human-terminal only. Run `apra-fleet kb reject-directive ' + id + '` to discard it. Entry: ' + id
+      );
+    }
+
+    // (4) Not CONFIRMED. A REFUSAL, not a no-op return: see the method comment.
+    if (entry.confidence !== 'CONFIRMED') {
+      throw new Error(
+        'E-DEMOTE-NOT-CONFIRMED: kb_demote lowers CONFIRMED to INFERRED only; this entry is '
+          + entry.confidence + '. Entry: ' + id
+      );
+    }
+
+    // (5) Reason floor, measured on the normalised reason -- so a reason made
+    // only of newlines collapses to empty and is refused here.
+    const normalizedReason = normalizeDemoteReason(reason);
+    if (normalizedReason.length < MIN_DEMOTE_REASON_LENGTH) {
+      throw new Error(
+        'E-DEMOTE-REASON-REQUIRED: kb_demote requires a reason recording why trust is being withdrawn '
+          + '(at least ' + MIN_DEMOTE_REASON_LENGTH + ' characters after collapsing newlines and trimming). Entry: ' + id
+      );
+    }
+
+    // (6) Evidence paths, when given.
+    const evidence = evidenceFiles ?? [];
+    if (evidence.length > 0) this.assertResolvableDemoteEvidence(id, evidence);
+
+    // --- no refusal remains: everything below writes ---
+
+    const now = new Date().toISOString();
+    // The note format (one leading newline, ASCII-safe concatenation, the
+    // feedback-marker collision rule) lives in buildDemotionNote, shared with
+    // the bible tombstone path so both demotions read identically.
+    const demotionNote = buildDemotionNote(normalizedReason, evidence, entry.author);
+    const newContent = truncateContent(entry.content + demotionNote);
+
+    const confidence_before = entry.confidence;
+    const confidence_after: Confidence = 'INFERRED';
+
+    // ONE update. promoted_at and source are deliberately absent from the SET.
+    db.prepare(
+      'UPDATE entries SET confidence = ?, demoted_at = ?, demoted_basis_hashes = ?, content = ? WHERE id = ?'
+    ).run(
+      confidence_after,
+      now,
+      JSON.stringify(this.demoteBasisHashes(entry.source_files)),
+      newContent,
+      id,
+    );
+
+    return { id, confidence_before, confidence_after };
+  }
+
+  /**
+   * Apply ONE explicit demotion tombstone from a committed project bible to the
+   * local row, so a demotion recorded on another clone actually lands here.
+   *
+   * Returns true only when a row was written. Every "no" is a silent false, not
+   * a throw: a bible carries tombstones for the whole project and most clones
+   * hold only some of those ids, so an inapplicable tombstone is the normal
+   * case, not an error.
+   *
+   * The rules, each of which silently corrupts another clone's KB if got wrong:
+   *
+   *  - NEVER CREATE. A tombstoned id with no local row stays absent. A
+   *    tombstone withdraws trust in a row; it is not a way to author one.
+   *  - PROMOTION TIME WINS TIES AND LATER. Demote only when the row's promotion
+   *    time (promoted_at when set, else created_at) is STRICTLY OLDER than the
+   *    tombstone's demoted_at. A row re-promoted at or after the demotion is
+   *    newer evidence and keeps its CONFIRMED standing.
+   *  - demoted_at is stamped with the TOMBSTONE's value, not now(): it records
+   *    when trust was withdrawn, which happened on the other clone.
+   *  - NO ownerTag CHECK. Bible-imported rows carry no member tag (see
+   *    importBibleEntries, which builds its input with tags: [] and author
+   *    'unknown'), so an owner check here would make every imported row
+   *    permanently undemotable. The trust boundary for this path is the
+   *    git-reviewed bible file, not entry ownership.
+   *
+   * ABSENCE IS NEVER A DEMOTION: this method is only ever called for an id that
+   * carries an EXPLICIT tombstone. A local CONFIRMED row merely missing from the
+   * bible (a local-only promotion, or one refused by the basis filter) is never
+   * passed here and must stay untouched.
+   *
+   * Two refusals are inherited from demote() because they are invariants of the
+   * store, not of the local/remote distinction: a superseded row is already out
+   * of every read path (the write would have no observable meaning), and a
+   * user-directive is human-terminal in both directions -- a bible must not be
+   * able to deactivate a directive a human set here.
+   */
+  applyBibleDemotion(id: string, tombstoneDemotedAt: string): boolean {
+    const db = this.getDb();
+    const row = db.prepare('SELECT * FROM entries WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+    // NEVER CREATE.
+    if (!row) return false;
+    const entry = this.rowToEntry(row);
+
+    if (entry.confidence !== 'CONFIRMED') return false;
+    if (entry.superseded_at) return false;
+    if (entry.type === 'user-directive') return false;
+
+    const promotionTime = entry.promoted_at ?? entry.created_at;
+    if (!isStrictlyBefore(promotionTime, tombstoneDemotedAt)) return false;
+
+    const demotionNote = buildDemotionNote(BIBLE_DEMOTION_REASON, [], entry.author);
+    const newContent = truncateContent(entry.content + demotionNote);
+
+    // Same SET as demote(): promoted_at and source stay untouched, so the
+    // provenance of the promotion being reversed survives.
+    db.prepare(
+      'UPDATE entries SET confidence = ?, demoted_at = ?, demoted_basis_hashes = ?, content = ? WHERE id = ?'
+    ).run(
+      'INFERRED',
+      tombstoneDemotedAt,
+      JSON.stringify(this.demoteBasisHashes(entry.source_files)),
+      newContent,
+      id,
+    );
+    return true;
   }
 
   // T3.1 (F8, D7): kb_feedback downvote path -- marks an entry stale=1 +
