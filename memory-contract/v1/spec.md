@@ -179,6 +179,26 @@ has no effect for a FULL session or an in-process caller passing an explicit
 anchor (both already read the per-repo DB), and defaults to false/omitted so
 every other caller's routing and result shape is unchanged.
 
+`own_scope` changes WHICH STORE answers and nothing else -- it moves no other
+default. That matters to the caller building a demotion candidate list,
+because `demote()` refuses an unknown or un-owned id, a superseded entry, a
+user-directive, a non-CONFIRMED entry and a too-thin reason, but it has NO
+stale refusal and no disputed refusal: staleness is a freshness verdict while
+trust is a separate axis, and a row the sweep has already staled, or that
+something now contradicts, is exactly the kind most worth demoting. The
+default read path drops both -- stale rows unless `include_stale` is set, and
+disputed rows while `exclude_disputed` is on (its default whenever no explicit
+`confidence` list is given). So an own-scope read that must span everything
+`kb_demote` will accept asks for all three together:
+`{ own_scope: true, confidence: ["CONFIRMED"], include_stale: true }` -- the
+explicit `confidence` list is what turns `exclude_disputed` off.
+
+That widened read also returns SUPERSEDED rows, because `include_stale`
+admits superseded entries alongside stale ones. `kb_demote` refuses those
+(`E-DEMOTE-SUPERSEDED`), and this read path deliberately does not filter them
+out: dropping a superseded row is the CALLER's job, stated here so it is not
+left implicit.
+
 ### 2.6 Bible provenance (target base branch) and entry-level commits
 
 The v2 bible (`.fleet/kb-canonical.json`) records `provenance.branch` and
