@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "6c392d8af8963c1267052327b3a2ac519a6bb245",
     "branch": "u1_kb_redesign_base",
-    "entry_count": 287
+    "entry_count": 289
   },
   "entries": [
     {
@@ -414,6 +414,33 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:26.644Z"
+    },
+    {
+      "id": "0ff467f2-a6d1-4e3a-80a5-61ed69e7cdae",
+      "type": "learning",
+      "title": "The demotion-candidate block header is in the reviewer prompt even with zero candidates",
+      "summary": "Asserting the absence of a KB demotion offer by searching a dispatch prompt for 'KNOWLEDGE BANK -- demotion candidates' is a false positive: the reviewer role prompt and the reviewer-output schema both name that block unconditionally.",
+      "symbols": [
+        "kbDemotionBlock",
+        "buildReviewerPrompt",
+        "buildFinalVerdictPrompt"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs",
+        "packages/apra-fleet-se/apra-pm/agents/reviewer.md",
+        "packages/apra-fleet-se/apra-pm/agents/schemas/reviewer-output.json",
+        "packages/apra-fleet-se/fleet-sprint/contracts.mjs",
+        "packages/apra-fleet-se/test/mock-sprint-kb-write-routing.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-07T03:17:00.552Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/apra-pm/agents/reviewer.md": "57cc90c041b5cc8ab155bf6a8e1c365ca2377856",
+        "packages/apra-fleet-se/apra-pm/agents/schemas/reviewer-output.json": "86c0383356cbeb93d135a3be7aba7a7895261e0a",
+        "packages/apra-fleet-se/fleet-sprint/contracts.mjs": "884752559bfc1392f33de8af55bfd24b2f9e1e5c",
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs": "f2cd35efb67007f7afc90e795c6248cf7bd6cdbe",
+        "packages/apra-fleet-se/test/mock-sprint-kb-write-routing.test.mjs": "dc4b892f9a269710ea49d7f382009c193af4ce6b"
+      }
     },
     {
       "id": "1045da8b-1650-40db-aa11-2389ad00e9a2",
@@ -5116,6 +5143,31 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:39.150Z"
+    },
+    {
+      "id": "fa43a0c8-83ac-45bd-a2f7-f68f82356d80",
+      "type": "runbook",
+      "title": "Recording one mock-sprint bd fixture also rewrites that file's existing fixtures",
+      "summary": "node scripts/run-tests.mjs record <file> re-records EVERY scenario in the file, so unrelated fixtures pick up fresh ids/timestamps; restore them with git checkout to keep the new test's diff focused.",
+      "symbols": [
+        "scenarioKeyFromCwd",
+        "loadReplaySession",
+        "runDevelopLoopScenario"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/test/fixtures/bd-recordings/README.md",
+        "packages/apra-fleet-se/test/helpers/bd-replay.mjs",
+        "packages/apra-fleet-se/scripts/run-tests.mjs",
+        "packages/apra-fleet-se/test/helpers/mock-sprint-harness.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-07T03:17:02.319Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/scripts/run-tests.mjs": "e3742bcfa41dec5eff2447a9095867732cddc8a6",
+        "packages/apra-fleet-se/test/fixtures/bd-recordings/README.md": "000d184da2a9cf5497371d94bd3d785702e614f5",
+        "packages/apra-fleet-se/test/helpers/bd-replay.mjs": "fe1c84ae4b169173098152a7d91b771127b62e98",
+        "packages/apra-fleet-se/test/helpers/mock-sprint-harness.mjs": "33849f67c59325c6f9b4eb317c3af2b20b489d59"
+      }
     },
     {
       "id": "fab4f020-c98c-4494-a3f8-d809cc5fa3ab",
