@@ -378,8 +378,8 @@ function memberNameOf(member) {
  * never through the member whose dispatch produced it, and never through the
  * orchestrator's own session.
  *
- *   - apply() vets a role's kb_captures / kb_promotions, then QUEUES them per
- *     repository and flushes that repository's queue.
+ *   - apply() vets a role's kb_captures / kb_promotions / kb_demotions, then
+ *     QUEUES them per repository and flushes that repository's queue.
  *   - A flush runs the existing G-pull (opts.gPull -> git-sync's bracketed
  *     syncMemberBefore) on the maintainer BEFORE the batch, so the
  *     maintainer's checkout holds the files a capture cites and the KB's
@@ -396,22 +396,26 @@ function memberNameOf(member) {
  *     the head of the queue: nothing is lost and nothing is silently dropped.
  *
  * The bible commit (commitRound): every promotion the maintainer applied is
- * remembered per repository as a CONFIRMATION awaiting the bible. After each
- * review round (reviewer, final reviewer, harvester) the engine calls
- * commitRound(), which per repository with confirmations runs, on the
- * maintainer: G-pull, kb_bible_commit {ids, baseBranch, baseCommit}, G-push.
- * baseBranch is the sprint's TARGET BASE branch and baseCommit the base
- * commit the entries were verified against (opts.bibleBase resolves both on
- * the maintainer). A rejected G-push is retried exactly once: abort any
- * in-progress rebase, G-pull onto the new remote tip, kb_bible_commit again
- * with the same ids (it merges at entry level, so the concurrent change's
- * entries survive with no manual merge) and G-push again. A second failure
- * keeps the ids queued for the next round with a WARN. When kb_bible_commit
- * commits nothing (committed:false) the ids leave the queue only once origin
- * is shown to hold the bible (opts.bibleUnpushed): an earlier round's bible
- * commit still unpushed on the maintainer is G-pushed (same retry and reset
- * guards), and an undecidable check keeps the ids queued with a WARN. After
- * seal() (a FAIL verdict or an aborted sprint) nothing further is committed.
+ * remembered per repository as a CONFIRMATION, and every successful demotion
+ * as a pending DEMOTION, both awaiting the bible. After each review round
+ * (reviewer, final reviewer, harvester) the engine calls commitRound(), which
+ * per repository with confirmations and/or demotions runs, on the
+ * maintainer: G-pull, kb_bible_commit {ids, demoted_ids, baseBranch,
+ * baseCommit}, G-push -- ids and demoted_ids are ALWAYS sent in the same
+ * call, so a round that both confirms and demotes entries makes exactly one
+ * kb_bible_commit call. baseBranch is the sprint's TARGET BASE branch and
+ * baseCommit the base commit the entries were verified against (opts.bibleBase
+ * resolves both on the maintainer). A rejected G-push is retried exactly
+ * once: abort any in-progress rebase, G-pull onto the new remote tip,
+ * kb_bible_commit again with the same ids and demoted_ids (it merges at entry
+ * level, so the concurrent change's entries survive with no manual merge) and
+ * G-push again. A second failure keeps the ids/demoted_ids queued for the
+ * next round with a WARN. When kb_bible_commit commits nothing
+ * (committed:false) the ids leave the queue only once origin is shown to hold
+ * the bible (opts.bibleUnpushed): an earlier round's bible commit still
+ * unpushed on the maintainer is G-pushed (same retry and reset guards), and
+ * an undecidable check keeps the ids queued with a WARN. After seal() (a FAIL
+ * verdict or an aborted sprint) nothing further is committed.
  *
  * @param {{
  *   memberCall?: (member: object, name: string, args: object) => Promise<any>,
@@ -481,6 +485,8 @@ export function createKbWorkClient(opts = {}) {
     const inFlight = new Map();
     /** repo -> ids the maintainer CONFIRMED that are not yet in a pushed bible commit (insertion order). */
     const confirmations = new Map();
+    /** repo -> ids the maintainer DEMOTED that are not yet in a pushed bible commit (insertion order). */
+    const demotedPending = new Map();
     /** Why the bible commit was sealed (a FAIL verdict, an abort), or null while open. */
     let sealedReason = null;
 
@@ -598,7 +604,7 @@ export function createKbWorkClient(opts = {}) {
         }
     }
 
-    const zeroCounts = () => ({ captured: 0, promoted: 0, discarded: 0 });
+    const zeroCounts = () => ({ captured: 0, promoted: 0, discarded: 0, demoted: 0 });
 
     const OPS = {
         capture: {
@@ -634,6 +640,12 @@ export function createKbWorkClient(opts = {}) {
                 }
                 return true;
             },
+        },
+        demote: {
+            tool: 'kb_demote',
+            args: (p) => ({ id: p.id, reason: p.reason, ...(Array.isArray(p.evidence_files) ? { evidence_files: p.evidence_files } : {}) }),
+            subject: (p) => p.id,
+            counter: 'demoted',
         },
     };
 
@@ -715,9 +727,13 @@ export function createKbWorkClient(opts = {}) {
                 if (!confirmations.has(repo)) confirmations.set(repo, new Set());
                 confirmations.get(repo).add(op.payload.id);
             }
+            if (op.kind === 'demote') {
+                if (!demotedPending.has(repo)) demotedPending.set(repo, new Set());
+                demotedPending.get(repo).add(op.payload.id);
+            }
         }
-        if (counts.captured || counts.promoted || counts.discarded) {
-            log(`[kb-work] maintainer '${maintainer}' (${repo}): captured ${counts.captured}, promoted ${counts.promoted}, discarded ${counts.discarded}`);
+        if (counts.captured || counts.promoted || counts.discarded || counts.demoted) {
+            log(`[kb-work] maintainer '${maintainer}' (${repo}): captured ${counts.captured}, promoted ${counts.promoted}, discarded ${counts.discarded}, demoted ${counts.demoted}`);
         }
         return counts;
     }
@@ -740,6 +756,19 @@ export function createKbWorkClient(opts = {}) {
     const errText = (err) => (err && err.message ? err.message : String(err));
 
     /**
+     * Log-message phrase for a (confirmation count, demotion count) pair,
+     * read naturally in every combination and -- critically -- IDENTICAL to
+     * the pre-existing "N confirmation(s)" wording when there are no pending
+     * demotions, so every pre-existing bible-commit log assertion (written
+     * before demotion support existed) keeps matching byte-for-byte.
+     */
+    const describeCounts = (n, m) => {
+        if (m === 0) return `${n} confirmation(s)`;
+        if (n === 0) return `${m} demotion(s)`;
+        return `${n} confirmation(s) and ${m} demotion(s)`;
+    };
+
+    /**
      * One kb_bible_commit attempt on the maintainer: G-pull, resolve the
      * base, kb_bible_commit, then G-push when a commit was made. Returns
      * { ok: true, result } or { ok: false, stage, error } -- never throws.
@@ -747,10 +776,16 @@ export function createKbWorkClient(opts = {}) {
      * maintainer holds a local bible commit the remote tip does not, so a
      * fast-forward pull would fail by construction; kb_bible_commit re-merges
      * the same ids at entry level on top of the new tip instead.
+     *
+     * `demoteIds` (defaulting to none) are this round's successful
+     * kb_demote() ids, passed as kb_bible_commit's `demoted_ids` in the SAME
+     * call as `ids` -- a round confirming some entries and demoting others
+     * produces exactly one kb_bible_commit call, never two.
      */
-    async function bibleAttempt(target, repo, ids, { resetToRemoteTip = false } = {}) {
+    async function bibleAttempt(target, repo, ids, demoteIds = [], { resetToRemoteTip = false } = {}) {
         const maintainer = target.member;
-        if (!(await onSprintBranch(maintainer, repo, ids.length))) return { ok: false, stage: 'branch check', error: 'the maintainer is not on the sprint branch', branchBlocked: true };
+        const count = ids.length + demoteIds.length;
+        if (!(await onSprintBranch(maintainer, repo, count))) return { ok: false, stage: 'branch check', error: 'the maintainer is not on the sprint branch', branchBlocked: true };
         try {
             await gPull(maintainer, resetToRemoteTip ? { resetToRemoteTip: true } : {});
         } catch (err) {
@@ -765,10 +800,15 @@ export function createKbWorkClient(opts = {}) {
         if (!base || typeof base.baseBranch !== 'string' || !base.baseBranch || typeof base.baseCommit !== 'string' || !base.baseCommit) {
             return { ok: false, stage: 'base resolution', error: 'the base branch or base commit could not be resolved on the maintainer' };
         }
-        if (!(await onSprintBranch(maintainer, repo, ids.length))) return { ok: false, stage: 'branch check', error: 'the maintainer is not on the sprint branch', branchBlocked: true };
+        if (!(await onSprintBranch(maintainer, repo, count))) return { ok: false, stage: 'branch check', error: 'the maintainer is not on the sprint branch', branchBlocked: true };
         let res;
         try {
-            res = await memberCall(target.record, 'kb_bible_commit', { ids, baseBranch: base.baseBranch, baseCommit: base.baseCommit });
+            res = await memberCall(target.record, 'kb_bible_commit', {
+                ids,
+                ...(demoteIds.length > 0 ? { demoted_ids: demoteIds } : {}),
+                baseBranch: base.baseBranch,
+                baseCommit: base.baseCommit,
+            });
         } catch (err) {
             return { ok: false, stage: 'kb_bible_commit', error: errText(err) };
         }
@@ -788,7 +828,7 @@ export function createKbWorkClient(opts = {}) {
             if (where.unpushed !== true) return { ok: false, stage: 'publication check', error: where.reason || 'whether origin holds the bible could not be established' };
             log(`[kb-work] kb_bible_commit made no new commit on maintainer '${maintainer}', but an earlier bible commit is not on origin yet -- pushing it`);
         }
-        if (!(await onSprintBranch(maintainer, repo, ids.length))) return { ok: false, stage: 'branch check', error: 'the maintainer is not on the sprint branch', branchBlocked: true };
+        if (!(await onSprintBranch(maintainer, repo, count))) return { ok: false, stage: 'branch check', error: 'the maintainer is not on the sprint branch', branchBlocked: true };
         // A bible push must publish the bible commit(s) only: never a doer
         // commit that sits unpushed underneath them. Without an injected
         // probe the push is allowed.
@@ -796,7 +836,7 @@ export function createKbWorkClient(opts = {}) {
             let verdict;
             try { verdict = await unpushedOnlyBible(maintainer, BIBLE_FILE); } catch (err) { verdict = { onlyBible: false, reason: errText(err) }; }
             if (!verdict || verdict.onlyBible !== true) {
-                log(`[kb-work] WARN: not pushing the bible commit from maintainer '${maintainer}' (${repo}): ${(verdict && verdict.reason) || 'unknown'} -- a bible push must not publish other commits; the ${ids.length} confirmation(s) stay queued for the next round`);
+                log(`[kb-work] WARN: not pushing the bible commit from maintainer '${maintainer}' (${repo}): ${(verdict && verdict.reason) || 'unknown'} -- a bible push must not publish other commits; the ${describeCounts(ids.length, demoteIds.length)} stay queued for the next round`);
                 return { ok: false, stage: 'push guard', error: (verdict && verdict.reason) || 'unpushed non-bible commits', branchBlocked: true };
             }
         }
@@ -867,77 +907,89 @@ export function createKbWorkClient(opts = {}) {
     }
 
     /**
-     * Commit one repository's pending confirmations to the bible on its
-     * maintainer. Never throws; ids that do not reach a pushed commit stay
-     * pending for the next round.
+     * Commit one repository's pending confirmations AND pending demotions to
+     * the bible on its maintainer, in a single kb_bible_commit call (`ids` and
+     * `demoted_ids` together -- see bibleAttempt). Never throws; ids that do
+     * not reach a pushed commit stay pending for the next round.
      * @returns {Promise<{ committed: number, pending: number }>}
      */
     async function commitRepo(repo) {
         const pending = confirmations.get(repo);
-        if (!pending || pending.size === 0) return { committed: 0, pending: 0 };
-        const ids = [...pending];
-        if (sealedReason) return { committed: 0, pending: ids.length };
+        const pendingDemoted = demotedPending.get(repo);
+        const ids = pending ? [...pending] : [];
+        const demoteIds = pendingDemoted ? [...pendingDemoted] : [];
+        if (ids.length === 0 && demoteIds.length === 0) return { committed: 0, pending: 0 };
+        const totalPending = () => ids.length + demoteIds.length;
+        if (sealedReason) return { committed: 0, pending: totalPending() };
         const sel = selector();
         const target = sel && typeof sel.getKbMaintainer === 'function' ? sel.getKbMaintainer(repo) : null;
         if (!target || !target.record) {
-            log(`[kb-work] WARN: repository ${repo} has no kb_maintainer -- ${ids.length} confirmation(s) stay queued for the bible`);
-            return { committed: 0, pending: ids.length };
+            log(`[kb-work] WARN: repository ${repo} has no kb_maintainer -- ${describeCounts(ids.length, demoteIds.length)} stay queued for the bible`);
+            return { committed: 0, pending: totalPending() };
         }
         const maintainer = target.member;
         if (typeof gPull !== 'function' || typeof gPush !== 'function' || typeof bibleBase !== 'function') {
-            log(`[kb-work] WARN: no git sync wired for the bible commit -- ${ids.length} confirmation(s) for ${repo} stay queued`);
-            return { committed: 0, pending: ids.length };
+            log(`[kb-work] WARN: no git sync wired for the bible commit -- ${describeCounts(ids.length, demoteIds.length)} for ${repo} stay queued`);
+            return { committed: 0, pending: totalPending() };
         }
         if (isBusy(maintainer)) {
-            log(`[kb-work] maintainer '${maintainer}' is mid-dispatch -- ${ids.length} confirmation(s) for ${repo} stay queued for the next round's bible commit`);
-            return { committed: 0, pending: ids.length };
+            log(`[kb-work] maintainer '${maintainer}' is mid-dispatch -- ${describeCounts(ids.length, demoteIds.length)} for ${repo} stay queued for the next round's bible commit`);
+            return { committed: 0, pending: totalPending() };
         }
         let release;
         inFlight.set(maintainer, new Promise((r) => { release = r; }));
         try {
-            let outcome = await bibleAttempt(target, repo, ids);
+            let outcome = await bibleAttempt(target, repo, ids, demoteIds);
             if (!outcome.ok && outcome.stage === 'G-push') {
                 log(`[kb-work] G-push of the bible commit on maintainer '${maintainer}' (${repo}) was rejected (${outcome.error}) -- retrying once: rebase --abort, G-pull, kb_bible_commit, G-push`);
-                if (typeof abortRebase === 'function' && (await onSprintBranch(maintainer, repo, ids.length))) {
+                if (typeof abortRebase === 'function' && (await onSprintBranch(maintainer, repo, totalPending()))) {
                     try { await abortRebase(maintainer); } catch (err) { log(`[kb-work] rebase --abort on maintainer '${maintainer}' failed (non-fatal): ${errText(err)}`); }
                 }
                 // The reset throws away the maintainer's local-only commits and
                 // uncommitted changes; it is usually also a doer, so only reset
                 // when that is the bible commit alone.
-                if (!(await onSprintBranch(maintainer, repo, ids.length))) return { committed: 0, pending: ids.length };
-                if (!(await resetIsSafe(maintainer, repo))) return { committed: 0, pending: ids.length };
-                outcome = await bibleAttempt(target, repo, ids, { resetToRemoteTip: true });
+                if (!(await onSprintBranch(maintainer, repo, totalPending()))) return { committed: 0, pending: totalPending() };
+                if (!(await resetIsSafe(maintainer, repo))) return { committed: 0, pending: totalPending() };
+                outcome = await bibleAttempt(target, repo, ids, demoteIds, { resetToRemoteTip: true });
                 if (!outcome.ok && (outcome.stage === 'G-push' || outcome.stage === 'kb_bible_commit')) {
                     // Leave the checkout on the remote tip: an unpushed bible
                     // commit would make the maintainer's next fast-forward
                     // G-pull fail. The ids stay queued and are re-merged by
                     // the next round's kb_bible_commit.
-                    if (typeof abortRebase === 'function' && !outcome.branchBlocked && (await onSprintBranch(maintainer, repo, ids.length))) {
+                    if (typeof abortRebase === 'function' && !outcome.branchBlocked && (await onSprintBranch(maintainer, repo, totalPending()))) {
                         try { await abortRebase(maintainer); } catch { /* best-effort */ }
                     }
-                    try { if ((await onSprintBranch(maintainer, repo, ids.length)) && (await resetIsSafe(maintainer, repo))) await gPull(maintainer, { resetToRemoteTip: true }); } catch (err) {
+                    try { if ((await onSprintBranch(maintainer, repo, totalPending())) && (await resetIsSafe(maintainer, repo))) await gPull(maintainer, { resetToRemoteTip: true }); } catch (err) {
                         log(`[kb-work] WARN: could not reset maintainer '${maintainer}' onto the remote tip after the failed bible commit: ${errText(err)}`);
                     }
                 }
             }
-            if (!outcome.ok && outcome.branchBlocked) return { committed: 0, pending: ids.length };
+            if (!outcome.ok && outcome.branchBlocked) return { committed: 0, pending: totalPending() };
             if (!outcome.ok) {
-                log(`[kb-work] WARN: bible commit for ${repo} on maintainer '${maintainer}' failed at ${outcome.stage} (${outcome.error}) -- ${ids.length} confirmation(s) stay queued for the next round`);
-                return { committed: 0, pending: ids.length };
+                log(`[kb-work] WARN: bible commit for ${repo} on maintainer '${maintainer}' failed at ${outcome.stage} (${outcome.error}) -- ${describeCounts(ids.length, demoteIds.length)} stay queued for the next round`);
+                return { committed: 0, pending: totalPending() };
             }
             const skipped = Array.isArray(outcome.result.skipped) ? outcome.result.skipped : [];
+            const skippedIds = new Set(skipped.map((s) => s && s.id));
             // Every id leaves the queue, skipped ones included: a skip (an id not
             // CONFIRMED, or whose cited files no longer match its recorded basis) can
             // never succeed on a retry without a new capture, and kb_export refuses the
-            // same entries, so re-queuing would only repeat the skip every round.
+            // same entries, so re-queuing would only repeat the skip every round. The
+            // same reasoning applies to a skipped demotion (not_demoted_or_unknown
+            // never resolves itself without a new kb_demote).
             for (const id of ids) pending.delete(id);
-            if (pending.size === 0) confirmations.delete(repo);
-            const merged = Array.isArray(outcome.result.merged) ? outcome.result.merged.length : ids.length - skipped.length;
+            if (pending && pending.size === 0) confirmations.delete(repo);
+            for (const id of demoteIds) if (pendingDemoted) pendingDemoted.delete(id);
+            if (pendingDemoted && pendingDemoted.size === 0) demotedPending.delete(repo);
+            const merged = Array.isArray(outcome.result.merged) ? outcome.result.merged.length
+                : ids.length - ids.filter((id) => skippedIds.has(id)).length;
+            const demoted = Array.isArray(outcome.result.demoted) ? outcome.result.demoted.length
+                : demoteIds.length - demoteIds.filter((id) => skippedIds.has(id)).length;
             if (skipped.length > 0) {
                 log(`[kb-work] kb_bible_commit skipped ${skipped.length} id(s) for ${repo} (dropped from the queue, with the reason the tool returned): ${skipped.map((x) => (x && x.id ? (x.reason ? `${x.id} (${x.reason})` : x.id) : String(x))).join(', ')}`);
             }
-            log(`[kb-work] bible commit for ${repo} on maintainer '${maintainer}': ${merged} confirmation(s) ${outcome.pushed ? 'committed and pushed' : 'already in the bible -- nothing to push'}`);
-            return { committed: outcome.pushed ? merged : 0, pending: pending.size };
+            log(`[kb-work] bible commit for ${repo} on maintainer '${maintainer}': ${describeCounts(merged, demoted)} ${outcome.pushed ? 'committed and pushed' : 'already in the bible -- nothing to push'}`);
+            return { committed: outcome.pushed ? merged + demoted : 0, pending: (pending ? pending.size : 0) + (pendingDemoted ? pendingDemoted.size : 0) };
         } finally {
             inFlight.delete(maintainer);
             release();
@@ -1000,7 +1052,7 @@ export function createKbWorkClient(opts = {}) {
             for (const q of queues.values()) n += q.length;
             return n;
         },
-        /** Log a WARN for every repository that still has queued writes or confirmations. */
+        /** Log a WARN for every repository that still has queued writes, confirmations or demotions. */
         warnPending() {
             for (const [repo, q] of queues) {
                 if (q.length > 0) log(`[kb-work] WARN: ${q.length} KB write(s) for ${repo} are still queued (maintainer busy or unreachable) -- not applied`);
@@ -1008,13 +1060,16 @@ export function createKbWorkClient(opts = {}) {
             for (const [repo, ids] of confirmations) {
                 if (ids.size > 0) log(`[kb-work] WARN: ${ids.size} confirmation(s) for ${repo} are not in a pushed bible commit${sealedReason ? ` (bible commits sealed: ${sealedReason})` : ''}`);
             }
+            for (const [repo, ids] of demotedPending) {
+                if (ids.size > 0) log(`[kb-work] WARN: ${ids.size} demotion(s) for ${repo} are not in a pushed bible commit${sealedReason ? ` (bible commits sealed: ${sealedReason})` : ''}`);
+            }
         },
         /**
          * The review-round bible commit: apply whatever is still queued, then
-         * for every repository with confirmations, on its maintainer: G-pull,
-         * kb_bible_commit, G-push (see the client header for the retry). A
-         * round with no confirmations makes no call at all. A no-op once
-         * sealed. Never throws.
+         * for every repository with confirmations and/or demotions, on its
+         * maintainer: G-pull, kb_bible_commit (ids and demoted_ids together),
+         * G-push (see the client header for the retry). A round with neither
+         * makes no call at all. A no-op once sealed. Never throws.
          * @param {string} [label] the round, for the log
          * @returns {Promise<{ committed: number, pending: number }>}
          */
@@ -1024,13 +1079,15 @@ export function createKbWorkClient(opts = {}) {
             if (sealedReason) {
                 let n = 0;
                 for (const ids of confirmations.values()) n += ids.size;
-                if (n > 0) log(`[kb-work] ${label}: bible commits are sealed (${sealedReason}) -- ${n} confirmation(s) not committed`);
+                for (const ids of demotedPending.values()) n += ids.size;
+                if (n > 0) log(`[kb-work] ${label}: bible commits are sealed (${sealedReason}) -- ${n} confirmation(s)/demotion(s) not committed`);
                 return { committed: 0, pending: n };
             }
             for (const repo of [...queues.keys()]) {
                 if (queues.get(repo).length > 0) await flush(repo);
             }
-            for (const repo of [...confirmations.keys()]) {
+            const pendingRepos = new Set([...confirmations.keys(), ...demotedPending.keys()]);
+            for (const repo of pendingRepos) {
                 const r = await serialize(repo, () => commitRepo(repo));
                 out.committed += r.committed;
                 out.pending += r.pending;
@@ -1039,15 +1096,16 @@ export function createKbWorkClient(opts = {}) {
         },
         /**
          * Stop every further bible commit: a FAIL verdict or an aborted
-         * sprint commits nothing more, and the confirmation queue is not
-         * flushed. Idempotent; the first reason wins.
+         * sprint commits nothing more, and the confirmation/demotion queues
+         * are not flushed. Idempotent; the first reason wins.
          */
         seal(reason) {
             if (sealedReason) return;
             sealedReason = String(reason || 'sealed');
             let n = 0;
             for (const ids of confirmations.values()) n += ids.size;
-            log(`[kb-work] bible commits sealed (${sealedReason})${n > 0 ? ` -- ${n} confirmation(s) will not be committed` : ''}`);
+            for (const ids of demotedPending.values()) n += ids.size;
+            log(`[kb-work] bible commits sealed (${sealedReason})${n > 0 ? ` -- ${n} confirmation(s)/demotion(s) will not be committed` : ''}`);
         },
         /** Confirmations not yet in a pushed bible commit (all repositories, or one). */
         pendingConfirmations(repo) {
@@ -1352,23 +1410,24 @@ export function createKbWorkClient(opts = {}) {
          * record or a bare name); it decides WHICH repository, never which
          * session -- no write is ever sent to it unless it is the maintainer.
          *
-         * @returns {Promise<{captured: number, promoted: number, discarded: number, refused: number}>}
+         * @returns {Promise<{captured: number, promoted: number, discarded: number, demoted: number, refused: number}>}
          *   counts of the writes applied by this call's flush (writes left
          *   queued for a busy or unreachable maintainer are not counted).
          */
         async apply(role, member, result) {
-            const { captures, promotions, discards, refused } = vetKbWork(role, result);
+            const { captures, promotions, discards, demotions, refused } = vetKbWork(role, result);
 
             for (const r of refused) log(`[kb-work] refused -- ${r}`);
             // Log every promotion with its stated evidence BEFORE attempting it.
             // This log is the audit trail the bible never had.
             for (const p of promotions) log(`[kb-work] promote ${p.id} (${role}): ${p.reason}`);
             for (const d of discards) log(`[kb-work] discard ${d.id} (${role}): ${d.reason}`);
+            for (const d of demotions) log(`[kb-work] demote ${d.id} (${role}): ${d.reason}`);
 
             let extraRefused = 0;
             const done = (counts) => ({ ...counts, refused: refused.length + extraRefused });
-            if (captures.length === 0 && promotions.length === 0 && discards.length === 0) return done(zeroCounts());
-            const dropped = `${captures.length} capture(s), ${promotions.length} promotion(s) and ${discards.length} discard(s) dropped`;
+            if (captures.length === 0 && promotions.length === 0 && discards.length === 0 && demotions.length === 0) return done(zeroCounts());
+            const dropped = `${captures.length} capture(s), ${promotions.length} promotion(s), ${discards.length} discard(s) and ${demotions.length} demotion(s) dropped`;
 
             const producer = memberNameOf(member);
             // Without a resolved member there is no repository the writes
@@ -1381,9 +1440,10 @@ export function createKbWorkClient(opts = {}) {
             const nonRepo = !!(sel && typeof sel.isNonRepoMember === 'function' && sel.isNonRepoMember(producer));
             // A capture belongs to the PRODUCER's repository: a member whose
             // work folder is not a repository has none, so its captures are
-            // dropped. Review judgements (CONFIRM/DISCARD) act on candidates
-            // read from the reviewer's maintainer (reviewMaintainerFor), so
-            // they follow the same resolution as the candidate read.
+            // dropped. Review judgements (CONFIRM/DISCARD/DEMOTE) act on
+            // candidates read from the reviewer's maintainer
+            // (reviewMaintainerFor), so they follow the same resolution as
+            // the candidate read.
             let target = null;
             if (captures.length > 0) {
                 if (nonRepo) {
@@ -1398,23 +1458,28 @@ export function createKbWorkClient(opts = {}) {
                 }
             }
             const repos = new Set(target ? [target.repo] : []);
-            if (promotions.length > 0 || discards.length > 0) {
+            if (promotions.length > 0 || discards.length > 0 || demotions.length > 0) {
                 const review = reviewMaintainerFor(producer);
                 if (review) {
                     // Only ids offered in this dispatch's candidate block may be
                     // judged; anything else is refused before any kb_* call.
+                    // Demotions are filtered against their OWN offered set
+                    // (offeredDemotions), never the promotion one -- an id
+                    // offered for promotion is not thereby offered for demotion.
                     const offered = offeredCandidates.get(review.repo) || new Set();
-                    const inBlock = (kind, x) => {
-                        if (offered.has(x.id)) return true;
+                    const offeredToDemote = offeredDemotions.get(review.repo) || new Set();
+                    const inBlock = (kind, x, offeredSet) => {
+                        if (offeredSet.has(x.id)) return true;
                         log(`[kb-work] refused -- ${role}: ${kind} ${x.id} not in this dispatch's candidate block`);
                         extraRefused += 1;
                         return false;
                     };
-                    for (const p of promotions) if (inBlock('promotion', p)) enqueue(review.repo, 'promote', role, p);
-                    for (const d of discards) if (inBlock('discard', d)) enqueue(review.repo, 'discard', role, d);
+                    for (const p of promotions) if (inBlock('promotion', p, offered)) enqueue(review.repo, 'promote', role, p);
+                    for (const d of discards) if (inBlock('discard', d, offered)) enqueue(review.repo, 'discard', role, d);
+                    for (const d of demotions) if (inBlock('demotion', d, offeredToDemote)) enqueue(review.repo, 'demote', role, d);
                     repos.add(review.repo);
                 } else {
-                    log(`[kb-work] WARN: no kb_maintainer for member '${producer}' (${role}) -- ${promotions.length} promotion(s) and ${discards.length} discard(s) dropped`);
+                    log(`[kb-work] WARN: no kb_maintainer for member '${producer}' (${role}) -- ${promotions.length} promotion(s), ${discards.length} discard(s) and ${demotions.length} demotion(s) dropped`);
                 }
             }
             const counts = zeroCounts();

@@ -754,7 +754,7 @@ describe('kb calls run AS the member -- no scope argument anywhere', () => {
 
         assert.deepEqual(await client.promotionCandidates(ALPHA), []);
         assert.deepEqual(await client.relevantKnowledge(ALPHA, ['x']), []);
-        assert.deepEqual(await client.apply('doer', ALPHA, { kb_captures: [GOOD_CAPTURE] }), { captured: 0, promoted: 0, discarded: 0, refused: 0 });
+        assert.deepEqual(await client.apply('doer', ALPHA, { kb_captures: [GOOD_CAPTURE] }), { captured: 0, promoted: 0, discarded: 0, demoted: 0, refused: 0 });
         assert.deepEqual(await client.commitRound(), { committed: 0, pending: 0 });
     });
 });

@@ -157,7 +157,7 @@ describe('CONFIRM and DISCARD on the maintainer', () => {
             kb_promotions: [{ id: 'kb-good', reason: REASON }],
             kb_discards: [{ id: 'kb-wrong', reason: WRONG }],
         });
-        assert.deepEqual(out, { captured: 0, promoted: 1, discarded: 1, refused: 0 });
+        assert.deepEqual(out, { captured: 0, promoted: 1, discarded: 1, demoted: 0, refused: 0 });
         assert.deepEqual(h.shape(), ['gpull:maint', 'kb_promote@maint', 'kb_invalidate@maint']);
         assert.deepEqual(h.events[1].args, { id: 'kb-good', reason: REASON });
         assert.deepEqual(h.events[2].args, { ids: ['kb-wrong'] });
@@ -220,7 +220,7 @@ describe('vetting kb_discards', () => {
             kb_promotions: [{ id: 'kb-both', reason: REASON }, { id: 'kb-ok', reason: REASON }],
             kb_discards: [{ id: 'kb-both', reason: WRONG }],
         });
-        assert.deepEqual(out, { captured: 0, promoted: 1, discarded: 0, refused: 2 });
+        assert.deepEqual(out, { captured: 0, promoted: 1, discarded: 0, demoted: 0, refused: 2 });
         assert.ok(h.logs.includes(`[kb-work] refused -- reviewer: promotion kb-both refused -- the same output also discards it (promote reason: ${REASON})`), JSON.stringify(h.logs));
         assert.ok(h.logs.includes(`[kb-work] refused -- reviewer: discard kb-both refused -- the same output also promotes it (discard reason: ${WRONG})`), JSON.stringify(h.logs));
         assert.deepEqual(h.shape(), ['gpull:maint', 'kb_promote@maint']);
