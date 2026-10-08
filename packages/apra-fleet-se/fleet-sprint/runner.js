@@ -2393,13 +2393,40 @@ async function runSprintCycle(context) {
     // there is a hit -- hasPlaybook is otherwise computed per cycle. This is
     // a diagnosis, not a repair: the operator's DAG is left untouched and
     // the refusal names the exact `bd dep` commands instead.
+    //
+    // Only a blocked bead at or above the goal priority refuses the sprint:
+    // the goal-priority exit condition never waits on a below-goal bead, so a
+    // below-goal one in this shape cannot stop the goal work from finishing.
+    // It is logged as a warning (same `bd dep` commands) and the run goes on.
+    //
+    // Blocker state is read from the full snapshot, not the assignee-filtered
+    // list, so a blocker owned by another assignee is still judged by its
+    // real status.
     {
-        const { verifyIds: preSprintVerifySet } = classifyVerifySet(await fetchAllBeadsShared(), targetIssues);
-        const unreachableAtLaunch = preSprintVerifySet.length > 0
-            ? findUnreachableVerifyBlocks(await notDoneBeadsFromSnapshot(), preSprintVerifySet)
+        const allBeadsAtLaunch = await fetchAllBeadsShared();
+        const statusAtLaunch = new Map(allBeadsAtLaunch.map((b) => [b.id, b.status]));
+        const { verifyIds: preSprintVerifySet } = classifyVerifySet(allBeadsAtLaunch, targetIssues);
+        const unreachableAll = preSprintVerifySet.length > 0
+            ? findUnreachableVerifyBlocks(await notDoneBeadsFromSnapshot(), preSprintVerifySet,
+                { isUnmet: (id) => statusAtLaunch.get(id) !== 'closed' })
             : [];
-        if (unreachableAtLaunch.length > 0
-            && !(await probeFileExists('integ-test-playbook.md', getMemberForRole('integ-test-runner')))) {
+        const launchGoalMax = Number(goalPriorityMax(validated.goal).slice(1));
+        const priorityById = new Map(allBeadsAtLaunch.map((b) => [b.id, b.priority]));
+        const atGoal = (id) => {
+            const pr = Number(priorityById.get(id));
+            return !Number.isFinite(pr) || pr <= launchGoalMax;
+        };
+        const unreachableAtLaunch = unreachableAll.filter((hit) => atGoal(hit.id));
+        const unreachableBelowGoal = unreachableAll.filter((hit) => !atGoal(hit.id));
+        const noIntegPlaybook = unreachableAll.length > 0
+            && !(await probeFileExists('integ-test-playbook.md', getMemberForRole('integ-test-runner')));
+        if (noIntegPlaybook && unreachableBelowGoal.length > 0) {
+            log(`Pre-sprint warning: no integ-test-playbook.md exists, so ${unreachableBelowGoal.length} below-goal bead(s) ` +
+                `can never become ready this sprint -- each is blocked only by verify-routed bead(s) that cannot close. ` +
+                `Not refusing the sprint, since the goal (${validated.goal}) does not wait on them: ` +
+                unreachableBelowGoal.map((h) => `${h.id} (blocked by ${h.blockerIds.join(', ')}; to unblock: ${verifyBlockFixCommands(h).join(' ; ')})`).join('; ') + '.');
+        }
+        if (noIntegPlaybook && unreachableAtLaunch.length > 0) {
             const lines = unreachableAtLaunch.map((hit) =>
                 `  - ${hit.id} is blocked only by verify-routed bead(s) ${hit.blockerIds.join(', ')}; ` +
                 `to keep the link but stop it gating readiness, run:\n` +
@@ -3205,8 +3232,14 @@ async function runSprintCycle(context) {
         // waiting beads are recorded so Finalization reports them as
         // unfinished (never a clean PASS). Computed from lists this
         // evaluation already read -- no new `bd list`.
+        // A blocker counts as met if either the fresh scoped closed list or
+        // the full snapshot says it is closed: the scoped list misses beads
+        // owned by another assignee, and the snapshot can lag by a cycle.
+        const snapshotStatusNow = hasPlaybook ? new Map()
+            : new Map((await fetchAllBeadsShared()).map((b) => [b.id, b.status]));
         const unreachableThisCycle = hasPlaybook ? [] : findUnreachableVerifyBlocks(
-            openAtGoal, verifySetThisCycle, { isUnmet: (id) => !closedIdsNow.has(id) }
+            openAtGoal, verifySetThisCycle,
+            { isUnmet: (id) => !closedIdsNow.has(id) && snapshotStatusNow.get(id) !== 'closed' }
         );
         const unreachableIdsThisCycle = new Set(unreachableThisCycle.map((h) => h.id));
         if (!hasPlaybook && openAtGoal.length > 0
@@ -3214,7 +3247,10 @@ async function runSprintCycle(context) {
             if (unreachableThisCycle.length > 0) {
                 unreachableVerifyBlocks = unreachableThisCycle;
                 const verifyOnly = openAtGoal.filter((b) => !unreachableIdsThisCycle.has(b.id)).map((b) => b.id);
-                log(`Cycle ${cycle}: no integ-test-playbook.md exists, so ${verifyOnly.length} remaining open-at-goal bead(s) are verify-routed with no way to close (${verifyOnly.join(', ')}) and ${unreachableThisCycle.length} more are blocked only by such beads -- exiting cycle loop, cannot make further progress by construction. Unfinished: ` +
+                const verifyOnlyText = verifyOnly.length > 0
+                    ? `${verifyOnly.length} remaining open-at-goal bead(s) are verify-routed with no way to close (${verifyOnly.join(', ')}) and ${unreachableThisCycle.length} more are`
+                    : `${unreachableThisCycle.length} remaining open-at-goal bead(s) are`;
+                log(`Cycle ${cycle}: no integ-test-playbook.md exists, so ${verifyOnlyText} blocked only by verify-routed bead(s) that cannot close -- exiting cycle loop, cannot make further progress by construction. Unfinished: ` +
                     unreachableThisCycle.map((h) => `${h.id} (blocked by ${h.blockerIds.join(', ')}; to unblock: ${verifyBlockFixCommands(h).join(' ; ')})`).join('; ') + '.');
             } else {
                 log(`Cycle ${cycle}: all ${openAtGoal.length} remaining open-at-goal bead(s) are verify-routed (${openAtGoal.map((b) => b.id).join(', ')}) and no integ-test-playbook.md exists to verify them -- exiting cycle loop, cannot make further progress by construction.`);

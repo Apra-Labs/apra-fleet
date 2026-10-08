@@ -135,3 +135,44 @@ test('mock sprint: the same shape arising mid-run exits the loop without a stall
         );
     });
 });
+
+test('mock sprint: a below-goal bead blocked only by verify-routed beads does not refuse the sprint and is logged as a warning', async () => {
+    await withScenarioMarkers('verifyblockbelowgoal (below-goal warning)', async () => {
+        const ids = {};
+        const res = await runDevelopLoopScenario('verifyblockbelowgoal', {
+            members: ['local'],
+            taskSpecs: [
+                { title: 'Task: Goal work G' },
+                { title: 'Task: Below-goal T', priority: 'P3' },
+            ],
+            maxCycles: 2,
+            reviewerHandler: APPROVE,
+            beforeSprint: async ({ tempDir: td, runCmd: run, epicBead, tasks }) => {
+                ids.g = tasks[0].id;
+                ids.t = tasks[1].id;
+                ids.b = await createBug(run, td, 'Bug: verify-routed below-goal B', epicBead.id);
+                await run(`bd update ${ids.b} --priority 3`, td);
+                const c = await createChild(run, td, `Task: fix for ${ids.b}`, ids.b);
+                await run(`bd update ${c} --priority 3`, td);
+                await run(`bd close ${c}`, td);
+                await run(`bd dep add ${ids.t} ${ids.b}`, td);
+            },
+        });
+        check(
+            !(res.error instanceof PreSprintValidationError),
+            `a below-goal bead must not refuse the sprint: ${res.error ? res.error.message : ''}`
+        );
+        check(
+            res.logs.some((m) => m.includes('Pre-sprint warning') && m.includes(ids.t) && m.includes(`bd dep remove ${ids.t} ${ids.b}`)),
+            `expected a pre-sprint warning naming ${ids.t} and the bd dep command, logs: ${JSON.stringify(res.logs)}`
+        );
+        check(
+            res.dispatched.some((d) => d.agent === 'doer'),
+            'the goal work must still be dispatched'
+        );
+        check(
+            res.finalBeadsById.get(ids.g) && res.finalBeadsById.get(ids.g).status === 'closed',
+            `expected the goal bead ${ids.g} closed, got: ${JSON.stringify(res.finalBeadsById.get(ids.g))}`
+        );
+    });
+});

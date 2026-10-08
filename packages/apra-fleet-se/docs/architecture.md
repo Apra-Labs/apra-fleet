@@ -1606,14 +1606,19 @@ The approach was a strangler-fig extraction, not a rewrite:
   `UNREACHABLE_VERIFY_BLOCK` is the one refusal raised whether or not other
   work is ready: with no `integ-test-playbook.md`, a bead whose only unmet
   `blocks` dependencies are verify-routed beads can never become ready, so
-  the sprint refuses up front and names the exact `bd dep remove` / `bd dep
-  add ... --type related` commands instead of rewriting the DAG. The same
-  shape arising mid-run makes the cycle loop exit (no stall-abort) and the
-  final notes name each such bead as unfinished; that run is never a PASS.
-  The human-readable message is unchanged from the prose each refusal already
-  emitted -- this adds a type and discriminator without restyling
-  operator-facing text -- and the error is never caught inside the
-  pre-sprint block, so it still fails the run before any dispatch occurs.
+  if that bead is at or above the goal priority the sprint refuses up front
+  and names the exact `bd dep remove` / `bd dep add ... --type related`
+  commands instead of rewriting the DAG. A below-goal bead in the same shape
+  only gets a pre-sprint warning with the same commands, because the
+  goal-priority exit condition never waits on it. The same shape arising
+  mid-run among goal-priority beads makes the cycle loop exit (no
+  stall-abort) and the final notes name each such bead as unfinished; that
+  run is never a PASS. For the reasons that predate the typed error, the
+  human-readable message is unchanged from the prose each refusal already
+  emitted -- the type and discriminator were added without restyling
+  operator-facing text; `UNREACHABLE_VERIFY_BLOCK` is a newer refusal with
+  its own message. The error is never caught inside the pre-sprint block,
+  so it still fails the run before any dispatch occurs.
   Constructing one with a `reason` outside the frozen vocabulary throws a
   `TypeError` at construction, rather than shipping a refusal that only
   looks typed.
