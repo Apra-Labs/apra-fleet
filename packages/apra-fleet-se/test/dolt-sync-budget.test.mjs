@@ -506,7 +506,9 @@ test('dispatch seam: RELIABILITY -- a member memoized as NO-REMOTE re-reads sync
     const pull = await doltPullBefore('m1', { command });
     assert.deepEqual(pull, { ok: true, member: 'm1' });
     assert.equal(countOf(PROBE), 2);
-    assert.equal(countOf(LS_REMOTE), 1);
+    // Two reads by the D-push landed check (before and after the push), one
+    // by the pull's fingerprint probe.
+    assert.equal(countOf(LS_REMOTE), 3);
 });
 
 test('dispatch seam: a member memoized as NO-REMOTE that stays that way pays one re-read per dispatch, nothing more', async () => {
@@ -1070,7 +1072,8 @@ test('fingerprint: a FAILED pull does not record the observed tip', async () => 
 
 // -----------------------------------------------------------------------------
 // The PUSH side (round-3 item 1). A push never records a fingerprint -- it
-// only forgets one -- and issues no ls-remote at all. See "WHY A PUSH CANNOT
+// only forgets one. Its only ls-remote reads are the D-push landed check
+// (before and after the push), which are never recorded. See "WHY A PUSH CANNOT
 // MINT A FINGERPRINT" in dolt-sync.mjs: the remote's new refs/dolt/data SHA
 // is a git commit minted INSIDE the push (Dolt's git blobstore), not derivable
 // from local state, and any post-push network read can observe a stranger's
@@ -1123,7 +1126,10 @@ test('fingerprint: THE FOREIGN-PUSH RACE -- an unrelated machine pushes right af
 
     const res = await doltPushAfter('m1', { command, pushBeads: true });
     assert.equal(res.pushed, true);
-    assert.equal(countOf(LS_REMOTE), 0, 'a push must never read the remote tip -- that read is the race');
+    // The D-push landed check reads the tip before and after the push (the
+    // after-read sees the stranger's SHA_C). That read only decides
+    // landed/not-landed; it must never be recorded as a fingerprint.
+    assert.equal(countOf(LS_REMOTE), 2, 'only the landed check reads the tip: once before, once after the push');
     assert.notEqual(getLastSyncedTip('m1'), SHA_C, "the stranger's SHA must never be recorded as ours");
     assert.equal(getLastSyncedTip('m1'), undefined, 'a push FORGETS the fingerprint; it never mints one');
 
@@ -1142,7 +1148,7 @@ test('fingerprint: a real push FORGETS the tip and issues no ls-remote; the next
     setLastSyncedTip('m1', SHA_A, PROBE_URL);
     const res = await doltPushAfter('m1', { command, pushBeads: true });
     assert.deepEqual(res, { ok: true, member: 'm1', pushed: true, reconciled: false });
-    assert.equal(countOf(LS_REMOTE), 0, 'no probe before OR after the push (round-3 item 3: no network round trip inside the mutex)');
+    assert.equal(countOf(LS_REMOTE), 2, 'the landed check reads the tip before and after the push, and records neither');
     assert.equal(getLastSyncedTip('m1'), undefined);
     const pullRes = await doltPullBefore('m1', { command });
     assert.equal(pullRes.skipped, undefined, "the pusher's next pull is real (one redundant pull is the safe error)");
@@ -1200,7 +1206,7 @@ test('fingerprint: the reconcile path (rejected push -> one pull -> re-push) for
     setLastSyncedTip('m1', SHA_A, PROBE_URL);
     const res = await doltPushAfter('m1', { command, pushBeads: true, sleep: async () => {} });
     assert.deepEqual(res, { ok: true, member: 'm1', pushed: true, reconciled: true });
-    assert.equal(countOf(LS_REMOTE), 0, 'neither the first push nor the re-push may probe the remote');
+    assert.equal(countOf(LS_REMOTE), 3, 'landed-check reads: before the first push, again before the re-push (the remote moved under the rejection), and after the re-push');
     assert.equal(countOf(PUSH), 2);
     assert.equal(countOf(PULL), 1, 'exactly the one bounded reconcile pull');
     assert.equal(getLastSyncedTip('m1'), undefined, 'the reconcile pull is NOT the fingerprinting pull -- the re-push then moves the remote past it');
@@ -1217,11 +1223,11 @@ test('fingerprint: a FAILED (non-diverged) push leaves the recorded tip alone --
     });
     setLastSyncedTip('m1', SHA_A, PROBE_URL);
     await assert.rejects(() => doltPushAfter('m1', { command, pushBeads: true, sleep: async () => {} }));
-    assert.equal(countOf(LS_REMOTE), 0);
+    assert.equal(countOf(LS_REMOTE), 1, 'only the landed check\'s pre-push read; a failed push has nothing to check');
     assert.equal(getLastSyncedTip('m1'), SHA_A);
 });
 
-test('fingerprint: the push side issues no ls-remote whether or not remoteTipFingerprint is passed', async () => {
+test('fingerprint: the push side reads ls-remote only for the landed check, and never records it, whether or not remoteTipFingerprint is passed', async () => {
     for (const opts of [{}, { remoteTipFingerprint: false }, { remoteTipFingerprint: true }]) {
         const { command, countOf } = makeCommandMock({
             [PROBE]: [REMOTE_JSON],
@@ -1229,8 +1235,9 @@ test('fingerprint: the push side issues no ls-remote whether or not remoteTipFin
             [PUSH]: [OK],
         });
         await doltPushAfter('m1', { command, pushBeads: true, ...opts });
-        assert.equal(countOf(LS_REMOTE), 0, `no probe at all for opts ${JSON.stringify(opts)}`);
+        assert.equal(countOf(LS_REMOTE), 2, `landed-check reads only (before + after) for opts ${JSON.stringify(opts)}`);
         assert.equal(countOf(PUSH), 1);
+        assert.equal(getLastSyncedTip('m1'), undefined, 'a push-side read is never recorded as a fingerprint');
     }
 });
 

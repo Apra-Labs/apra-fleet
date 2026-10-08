@@ -23,8 +23,8 @@ describe('File-transfer cross-OS matrix', () => {
     vi.spyOn(fs, 'mkdirSync').mockImplementation((() => undefined) as any);
 
     mockMkdir = vi.fn((_p: string, cb: Function) => cb(null));
-    mockFastPut = vi.fn((_local: string, _remote: string, cb: Function) => cb(null));
-    mockFastGet = vi.fn((_remote: string, _local: string, cb: Function) => cb(null));
+    mockFastPut = vi.fn((_local: string, _remote: string, _opts: unknown, cb: Function) => cb(null));
+    mockFastGet = vi.fn((_remote: string, _local: string, _opts: unknown, cb: Function) => cb(null));
 
     const fakeClient = {
       sftp: (cb: Function) => cb(null, { mkdir: mockMkdir, fastPut: mockFastPut, fastGet: mockFastGet, end: vi.fn() }),
@@ -99,6 +99,7 @@ describe('File-transfer cross-OS matrix', () => {
       expect(mockFastPut).toHaveBeenCalledWith(
         '/local/test.txt',
         '/home/user/project/test.txt',
+        expect.objectContaining({ step: expect.any(Function) }),
         expect.any(Function)
       );
     });
@@ -108,6 +109,7 @@ describe('File-transfer cross-OS matrix', () => {
       expect(mockFastPut).toHaveBeenCalledWith(
         '/local/test.txt',
         '/home/user/project/_staging/test.txt',
+        expect.objectContaining({ step: expect.any(Function) }),
         expect.any(Function)
       );
     });
@@ -117,6 +119,7 @@ describe('File-transfer cross-OS matrix', () => {
       expect(mockFastGet).toHaveBeenCalledWith(
         '/home/user/project/_staging/test.txt',
         expect.any(String),
+        expect.objectContaining({ step: expect.any(Function) }),
         expect.any(Function)
       );
     });
@@ -126,6 +129,7 @@ describe('File-transfer cross-OS matrix', () => {
       expect(mockFastGet).toHaveBeenCalledWith(
         '/home/user/project/.claude/skills/mapper/SKILL.md',
         expect.any(String),
+        expect.objectContaining({ step: expect.any(Function) }),
         expect.any(Function)
       );
     });
@@ -148,6 +152,7 @@ describe('File-transfer cross-OS matrix', () => {
       expect(mockFastPut).toHaveBeenCalledWith(
         '/tmp/regenmed-skill-update/SKILL.md',
         'C:/Users/Kashyap/bkp/source/repos/incytes-app-30/_staging/SKILL.md',
+        expect.objectContaining({ step: expect.any(Function) }),
         expect.any(Function)
       );
     });
@@ -158,6 +163,7 @@ describe('File-transfer cross-OS matrix', () => {
       expect(mockFastPut).toHaveBeenCalledWith(
         '/tmp/regenmed-skill-update/SKILL_v2.md',
         'C:/Users/Kashyap/bkp/source/repos/incytes-app-30/_staging/SKILL_v2.md',
+        expect.objectContaining({ step: expect.any(Function) }),
         expect.any(Function)
       );
     });
@@ -172,6 +178,7 @@ describe('File-transfer cross-OS matrix', () => {
       expect(mockFastGet).toHaveBeenCalledWith(
         'C:/Users/Kashyap/bkp/source/repos/incytes-app-30/.claude/skills/fhir-regenmed-mapper/SKILL.md',
         expect.any(String),
+        expect.objectContaining({ step: expect.any(Function) }),
         expect.any(Function)
       );
     });
@@ -186,6 +193,7 @@ describe('File-transfer cross-OS matrix', () => {
       expect(mockFastGet).toHaveBeenCalledWith(
         'C:/Users/Kashyap/bkp/source/repos/incytes-app-30/_staging/SKILL.md',
         expect.any(String),
+        expect.objectContaining({ step: expect.any(Function) }),
         expect.any(Function)
       );
     });
@@ -200,6 +208,7 @@ describe('File-transfer cross-OS matrix', () => {
       expect(mockFastGet).toHaveBeenCalledWith(
         'C:/Users/Kashyap/bkp/source/repos/incytes-app-30/_staging/SKILL.md',
         expect.any(String),
+        expect.objectContaining({ step: expect.any(Function) }),
         expect.any(Function)
       );
     });
@@ -209,6 +218,7 @@ describe('File-transfer cross-OS matrix', () => {
       expect(mockFastPut).toHaveBeenCalledWith(
         '/tmp/file.txt',
         'C:/Users/Kashyap/bkp/source/repos/incytes-app-30/file.txt',
+        expect.objectContaining({ step: expect.any(Function) }),
         expect.any(Function)
       );
     });

@@ -699,6 +699,7 @@ export function detectAgyPermissionDenial(result: SSHExecResult, agentOs?: Parse
   }
   const actions = [...new Set(denials.map(d => d.action))];
   const perDenial = denials.map(d => suggestedGrantsFor(d));
+  denials.forEach((d, i) => { d.suggestedGrants = perDenial[i]; });
   const primary = [...new Set(perDenial.map(g => g[0]).filter((g): g is string => !!g))];
   const narrow = [...new Set(perDenial.flatMap(g => g.slice(1)))].filter(g => !primary.includes(g));
   const suggestedGrants = [...primary, ...narrow];

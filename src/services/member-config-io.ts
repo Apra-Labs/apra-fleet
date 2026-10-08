@@ -19,7 +19,7 @@ import type { MemberShell } from '../os/os-commands.js';
 import { isPosixShell } from '../utils/agent-helpers.js';
 import { escapePowerShellArgInner } from '../utils/shell-escape.js';
 import { BUILTIN_DEFAULT_PORT, DEFAULT_PORT } from '../paths.js';
-import { MEMBER_DENIED_TOOLS } from './member-tool-allowlist.js';
+import { MEMBER_ALLOWED_TOOLS, MEMBER_DENIED_TOOLS } from './member-tool-allowlist.js';
 
 export type MemberExecFn = (command: string, timeoutMs?: number) => Promise<SSHExecResult>;
 
@@ -51,6 +51,16 @@ export function memberMcpUrl(agent: Pick<Agent, 'id' | 'agentType' | 'memberMcpP
  *  allowlist, on the member's apra-fleet server. Derived, never hand-listed. */
 export function claudeMemberDenyRules(): string[] {
   return MEMBER_DENIED_TOOLS.map(tool => `mcp__${MEMBER_MCP_SERVER_NAME}__${tool}`);
+}
+
+/** Allow rules, in Claude's mcp__<server>__<tool> form, for every fleet tool in
+ *  the member allowlist (kb_*, code_* and the self-reporting tools) -- never a
+ *  maintainer-only or never-served tool. compose_permissions adds them to every
+ *  composed profile so an acceptEdits session (a model without auto support)
+ *  is not refused a member tool for lack of an allow rule. Derived, never
+ *  hand-listed; agy maps the same tokens to mcp(<server>/<tool>). */
+export function memberMcpAllowRules(): string[] {
+  return MEMBER_ALLOWED_TOOLS.map(tool => `mcp__${MEMBER_MCP_SERVER_NAME}__${tool}`);
 }
 
 /** agy permission deny rules: same complement, in agy's mcp(<server>/<tool>) form. */

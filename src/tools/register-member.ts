@@ -64,7 +64,7 @@ export const registerMemberSchema = z.object({
   unattended: z.preprocess(
     (v) => v === false ? 'false' : v,
     z.enum(['false', 'auto', 'dangerous'])
-  ).optional().describe('Permission mode for unattended execution. Omit or pass "false" for interactive prompts (default); "auto" = auto-approve safe operations; "dangerous" = skip all permission checks.'),
+  ).optional().describe('Permission mode for unattended execution. Omit or pass "false" for interactive prompts (default); "auto" = auto-approve safe operations (Claude: --permission-mode auto; on a model without auto-mode support, such as Haiku, the dispatch runs acceptEdits instead); "dangerous" = skip all permission checks.'),
   category: z.string().max(64).optional().describe('Optional group label for this member (e.g. "doers", "reviewers", "cloud"). Used to group devices in fleet status output.'),
   tags: z.array(z.string().max(64, 'Each tag must be 64 characters or fewer'))
     .max(10, 'At most 10 tags are allowed')

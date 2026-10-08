@@ -65,7 +65,7 @@ export const updateMemberSchema = z.object({
   unattended: z.preprocess(
     (v) => v === false ? 'false' : v,
     z.enum(['false', 'auto', 'dangerous'])
-  ).optional().describe('Permission mode for unattended execution. Pass "false" to reset to interactive prompts; "auto" = auto-approve safe operations; "dangerous" = skip all permission checks.'),
+  ).optional().describe('Permission mode for unattended execution. Pass "false" to reset to interactive prompts; "auto" = auto-approve safe operations (Claude: --permission-mode auto; on a model without auto-mode support, such as Haiku, the dispatch runs acceptEdits instead); "dangerous" = skip all permission checks.'),
   category: z.string().max(64).optional().describe('Group label for this member (e.g. "doers", "reviewers"). Pass empty string to clear.'),
   tags: z.array(z.string().max(64, 'Each tag must be 64 characters or fewer'))
     .max(10, 'At most 10 tags are allowed')

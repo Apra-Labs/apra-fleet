@@ -1172,7 +1172,11 @@ export function createVcsAuthPreflightCallback(opts = {}) {
             if (expiresAt === null || expiresAt.getTime() - now() > VCS_AUTH_EXPIRY_PREFLIGHT_MS) {
                 // Still fresh (or a no-expiry credential type) -- skip, so
                 // this is not an unconditional provisioning call on every
-                // dispatch.
+                // dispatch. Still state WHY nothing was provisioned, so the
+                // "needs a fresh VCS credential" line is never left dangling.
+                log(expiresAt === null
+                    ? `[Sync] preflight: provision_vcs_auth skipped for member '${member}': PAT mode, credential has no expiry.`
+                    : `[Sync] preflight: provision_vcs_auth skipped for member '${member}': cached credential fresh until ${expiresAt.toISOString()}.`);
                 return;
             }
         }

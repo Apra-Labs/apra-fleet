@@ -533,7 +533,11 @@ const DOLT_SYNC_PATH = path.join(__dirname, '../fleet-sprint/dolt-sync.mjs');
 // 3 -> 4 (apra-fleet-akuv, remote-tip fingerprint): readRemoteDoltTip() gained
 // one new `git ls-remote <url> refs/dolt/data` call site (member_name:
 // member, confirmed present) used to skip a provably no-op D-pull/D-push.
-const EXPECTED_DOLT_SYNC_COMMAND_COUNT = 4;
+// 4 -> 7 (D-push landed check): readTipForPushCheck()'s `git ls-remote <url>
+// refs/dolt/data`, and readUnpushedDoltChanges()'s `bd vc status --json` and
+// `bd diff remotes/origin/<branch> <branch> --json` -- each passes
+// member_name: member.
+const EXPECTED_DOLT_SYNC_COMMAND_COUNT = 7;
 
 test('every command() call site in dolt-sync.mjs passes member_name or member_id', () => {
     const { sites, violations } = checkPath(DOLT_SYNC_PATH);
@@ -1119,7 +1123,11 @@ test('every command() call site in git-topology.mjs passes member_name or member
 // what a zero baseline turns red.
 // =============================================================================
 const MEMBER_SYNC_PATH = path.join(__dirname, '../fleet-sprint/member-sync.mjs');
-const EXPECTED_MEMBER_SYNC_COMMAND_COUNT = 1;
+// 1 -> 2 (G-push landed check): checkGitPushLanded()'s single `run` helper,
+// which issues its read-only git reads (rev-parse, ls-remote, fetch,
+// rev-list) with member_name: member, outside runGitStep because each is a
+// best-effort verification read, not a sync step to retry or self-heal.
+const EXPECTED_MEMBER_SYNC_COMMAND_COUNT = 2;
 
 test('every command() call site in member-sync.mjs passes member_name or member_id', () => {
     const { sites, violations } = checkPath(MEMBER_SYNC_PATH);
@@ -1158,8 +1166,10 @@ test('every command() call site in member-sync.mjs passes member_name or member_
 // (base64-encoded argv, no `$`-expansion/backticks/template literals) --
 // exactly the invariant shell-command-guard.mjs separately enforces on this
 // same file. createMemberSessionGuard and createUnattendedAutoProvisioner own
-// no command() site of their own, so a THIRD site appearing here means one of
-// those two started issuing a raw command directly.
+// no command() site of their own. The THIRD site is
+// createPermissionConfigPreflight's per-OS/shell file-exists probe (it passes
+// member_name), so a FOURTH site appearing here means one of the other
+// helpers started issuing a raw command directly.
 //
 // Its agent() baseline is ZERO, same per-module baseline reasoning as the
 // other extracted helper modules above -- a raw `agent(` appearing in this
@@ -1167,7 +1177,7 @@ test('every command() call site in member-sync.mjs passes member_name or member_
 // helper, which is exactly what a zero baseline turns red.
 // =============================================================================
 const MEMBER_PROVISIONING_PATH = path.join(__dirname, '../fleet-sprint/member-provisioning.mjs');
-const EXPECTED_MEMBER_PROVISIONING_COMMAND_COUNT = 2;
+const EXPECTED_MEMBER_PROVISIONING_COMMAND_COUNT = 3;
 
 test('every command() call site in member-provisioning.mjs passes member_name or member_id', () => {
     const { sites, violations } = checkPath(MEMBER_PROVISIONING_PATH);

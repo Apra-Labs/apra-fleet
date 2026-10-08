@@ -23,6 +23,14 @@ export const memberDetailSchema = z.object({
 
 export type MemberDetailInput = z.infer<typeof memberDetailSchema>;
 
+function permissionConfigPathsOf(agent: Agent): string[] {
+  try {
+    return getProvider(agent.llmProvider).permissionConfigPaths(agent);
+  } catch {
+    return [];
+  }
+}
+
 export async function memberDetail(input: MemberDetailInput): Promise<string> {
   const agentOrError = resolveMember(input.member_id, input.member_name);
   if (typeof agentOrError === 'string') return agentOrError;
@@ -65,6 +73,15 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
     // unreachable. Absent when the member was registered without an explicit
     // git_access (the engine then falls back to its provisioning default).
     gitAccess: agent.gitAccess ?? undefined,
+    // The provider's composed per-folder permission config file(s)
+    // (ProviderAdapter.permissionConfigPaths: work-folder-relative, or
+    // home-anchored "~/..."). Same reason as repo_remote_url above: the
+    // fleet-sprint engine has no provider layer of its own, and its member
+    // preflight probes these files to re-compose a config lost to a re-clone
+    // or `git clean -xdf` before dispatching. [] when the provider cannot name
+    // them yet (agy before its project is provisioned -- compose_permissions
+    // provisions it); a static fact, so reported even for an offline member.
+    permissionConfigPaths: permissionConfigPathsOf(agent),
   };
 
   // -- fleetMcp: the recorded status; refresh:true re-probes (without installing) and records --

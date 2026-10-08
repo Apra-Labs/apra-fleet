@@ -15,6 +15,7 @@ import { composePermissions, findProfilesDir, removeComposedMemberConfig } from 
 import { ClaudeProvider } from '../src/providers/claude.js';
 import { AgyProvider } from '../src/providers/agy.js';
 import { readInstallConfig } from '../src/cli/config.js';
+import { claudeMemberDenyRules, memberMcpAllowRules } from '../src/services/member-config-io.js';
 import type { LlmProvider, SSHExecResult } from '../src/types.js';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -1410,4 +1411,103 @@ describe('composePermissions -- fresh/empty permissions.json', () => {
     existsSpy.mockRestore();
     readSpy.mockRestore();
   });
+});
+
+// ---------------------------------------------------------------------------
+// dry_run, project_folder stack-detection fallback, ledger folder creation
+// ---------------------------------------------------------------------------
+
+describe('composePermissions -- dry_run returns the composed allow list and writes nothing', () => {
+  it('doer + node stack: base profile plus the stack commands, no write and no ledger', async () => {
+    const member = makeTestAgent({ friendlyName: 'claude-dry', llmProvider: 'claude', os: 'linux' });
+    addAgent(member);
+    mockExecCommand.mockImplementation(async (cmd: string) => (
+      cmd.includes('ls ') && cmd.includes('package.json') ? { stdout: 'package.json\n', stderr: '', code: 0 } : OK
+    ));
+    const out = JSON.parse(await composePermissions({ member_id: member.id, role: 'doer', dry_run: true }));
+    expect(out.dry_run).toBe(true);
+    expect(out.mode).toBe('doer');
+    expect(out.stacks).toEqual(['node']);
+    expect(out.allow).toContain('Bash(git:*)');
+    expect(out.allow).toContain('Bash(npm:*)');
+    expect(out.allow).toContain('Bash(node:*)');
+    const allCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
+    expect(allCmds.some(cmd => cmd.includes('cat >') || cmd.includes('WriteAllText') || cmd.includes('mkdir'))).toBe(false);
+  });
+});
+
+describe('composePermissions -- project_folder whose basename is not a work-folder subfolder', () => {
+  it('stack detection falls back to the work folder root instead of detecting nothing', async () => {
+    const member = makeTestAgent({ friendlyName: 'claude-ledger', llmProvider: 'claude', os: 'linux', workFolder: '/home/testuser/repo' });
+    addAgent(member);
+    const ledgerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-ledger-'));
+    try {
+      mockExecCommand.mockImplementation(async (cmd: string) => (
+        cmd.includes('ls ') && cmd.includes('package.json') ? { stdout: 'package.json\n', stderr: '', code: 0 } : OK
+      ));
+      const out = JSON.parse(await composePermissions({ member_id: member.id, role: 'doer', dry_run: true, project_folder: path.join(ledgerDir, 'member-x') }));
+      expect(out.stacks).toEqual(['node']);
+      const stackCmd = mockExecCommand.mock.calls.map(c => c[0] as string).find(cmd => cmd.includes('package.json'))!;
+      expect(stackCmd).toContain('cd "/home/testuser/repo/member-x" 2>/dev/null || cd "/home/testuser/repo" 2>/dev/null');
+    } finally {
+      fs.rmSync(ledgerDir, { recursive: true, force: true });
+    }
+  });
+
+  it('a grant creates a missing ledger folder and records the grant there', async () => {
+    const member = makeTestAgent({ friendlyName: 'claude-ledger-grant', llmProvider: 'claude', os: 'linux' });
+    addAgent(member);
+    installFsMock();
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-ledger-'));
+    const ledgerDir = path.join(base, 'permission-ledgers', 'member-y');
+    try {
+      const result = await composePermissions({ member_id: member.id, role: 'doer', grant: ['Bash(npm:*)'], grant_reason: 'heal', project_folder: ledgerDir });
+      expect(result).toContain('Granted');
+      const ledger = JSON.parse(fs.readFileSync(path.join(ledgerDir, 'permissions.json'), 'utf-8'));
+      expect(ledger.granted.map((g: { permission: string }) => g.permission)).toContain('Bash(npm:*)');
+    } finally {
+      fs.rmSync(base, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Member tool allow rules: every composed profile (proactive and dry_run,
+// doer and reviewer, role or tags) allows every member-allowlisted fleet tool,
+// so an acceptEdits session (Haiku, pre-4.6 models) is never refused a
+// kb_*/code_* call for lack of an allow rule -- and allows none of the tools
+// the member deny rules cover.
+// ---------------------------------------------------------------------------
+
+describe('composePermissions -- member tool allow rules', () => {
+  const MEMBER_RULES = memberMcpAllowRules();
+  const DENY = claudeMemberDenyRules();
+  const assertMemberRules = (allow: string[]) => {
+    for (const r of MEMBER_RULES) expect(allow).toContain(r);
+    for (const r of DENY) expect(allow).not.toContain(r);
+  };
+
+  for (const args of [{ role: 'doer' }, { role: 'reviewer' }, { tags: ['doer', 'gpu'] }, { tags: ['reviewer'] }] as const) {
+    const label = Object.values(args).flat().join('-');
+    it(`dry_run ${JSON.stringify(args)}: the allow list carries every member tool rule and no denied tool`, async () => {
+      const member = makeTestAgent({ friendlyName: `claude-mt-dry-${label}`, llmProvider: 'claude', os: 'linux' });
+      addAgent(member);
+      mockExecCommand.mockResolvedValue(OK);
+      const out = JSON.parse(await composePermissions({ member_id: member.id, ...args, dry_run: true } as any));
+      assertMemberRules(out.allow);
+    });
+
+    it(`proactive ${JSON.stringify(args)}: the written settings.local.json allows every member tool and still denies the rest`, async () => {
+      const member = makeTestAgent({ friendlyName: `claude-mt-${label}`, llmProvider: 'claude', os: 'linux' });
+      addAgent(member);
+      installFsMock();
+      await composePermissions({ member_id: member.id, ...args } as any);
+      const writeCmd = mockExecCommand.mock.calls.map(c => c[0] as string)
+        .find(cmd => cmd.includes('.claude/settings.local.json') && cmd.includes('FLEET_PERMS_EOF'))!;
+      expect(writeCmd).toBeDefined();
+      const perms = JSON.parse(extractWrittenContent(writeCmd)).permissions;
+      assertMemberRules(perms.allow);
+      for (const r of DENY) expect(perms.deny).toContain(r);
+    });
+  }
 });

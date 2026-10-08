@@ -1814,6 +1814,37 @@ describe('max_turns classification (apra-fleet-p4f.2)', () => {
     expect(cost).toBeGreaterThan(0);
   });
 
+  it('a successful dispatch exposes cache-read/cache-write counts in structured usage; total_tokens stays input+output', async () => {
+    const member = makeTestAgent({ friendlyName: 'cache-usage' });
+    addAgent(member);
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockResolvedValueOnce({
+        stdout: JSON.stringify({
+          type: 'result',
+          subtype: 'success',
+          result: 'ok',
+          session_id: 'sess-cache-usage',
+          usage: { input_tokens: 30, output_tokens: 900, cache_read_input_tokens: 250_000, cache_creation_input_tokens: 12_000 },
+        }),
+        stderr: '',
+        code: 0,
+      })
+      .mockResolvedValue({ stdout: '', stderr: '', code: 0 });
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+
+    expect(result.structuredContent?.isError).toBeFalsy();
+    expect((result.structuredContent as any)?.usage).toEqual({
+      input_tokens: 30,
+      output_tokens: 900,
+      cache_read_input_tokens: 250_000,
+      cache_creation_input_tokens: 12_000,
+      // Context-admission figure: deliberately excludes the cache counts.
+      total_tokens: 930,
+    });
+  });
+
   it('classifies a genuine auth error as a structured "auth" reason with login advice when there is no max_turns signal', async () => {
     const member = makeTestAgent({ friendlyName: 'genuine-auth-fail' });
     addAgent(member);
@@ -1829,6 +1860,23 @@ describe('max_turns classification (apra-fleet-p4f.2)', () => {
     // err.details.reason directly instead of regexing the message text.
     expect(result.structuredContent).toMatchObject({ isError: true, reason: 'auth' });
     expect(resultText(result)).toContain('/login');
+  });
+
+  it('maps an expired-OAuth api_error result to structured reason "auth"', async () => {
+    const member = makeTestAgent({ friendlyName: 'oauth-expired' });
+    addAgent(member);
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockResolvedValueOnce({
+        stdout: '{"type":"result","is_error":true,"terminal_reason":"api_error","result":"Failed to authenticate: OAuth session expired and could not be refreshed"}\n',
+        stderr: '',
+        code: 1,
+      })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+
+    expect(result.structuredContent).toMatchObject({ isError: true, reason: 'auth' });
   });
 
   // GitHub #585: a non-zero exit logs a capped, redacted stderr tail plus the
@@ -2613,7 +2661,7 @@ describe('context-headroom admission gate at the execute_prompt boundary (apra-f
       expect(result.structuredContent?.isError).toBe(true);
       expect((result.structuredContent as any)?.returnedSessionId).toBe('agy-different-id');
       expect(isKnownSession(agyMember.id, 'agy-different-id')).toBe(true);
-      expect((result.structuredContent as any)?.usage).toEqual({ input_tokens: 100, output_tokens: 50, total_tokens: 150 });
+      expect((result.structuredContent as any)?.usage).toEqual({ input_tokens: 100, output_tokens: 50, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, total_tokens: 150 });
 
       const updatedAgent = getAgent(agyMember.id);
       expect(updatedAgent?.tokenUsage).toEqual({ input: 100, output: 50 });

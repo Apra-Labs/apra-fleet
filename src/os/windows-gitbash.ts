@@ -5,6 +5,8 @@ import { wrapPowerShellEncoded } from './windows.js';
 import { escapeDoubleQuoted, escapeShellArg, escapeBatchMetachars, escapePowerShellArgInner, sanitizeSessionId } from '../utils/shell-escape.js';
 import { isWindowsPosixUname } from '../utils/platform.js';
 import { gitBashCandidates } from './git-bash-candidates.js';
+import { boundChildEnv, describeBoundedEnv } from './child-env-bound.js';
+import { logWarn } from '../utils/log-helpers.js';
 import type { ProviderAdapter } from './os-commands.js';
 
 /**
@@ -276,7 +278,12 @@ export class WindowsGitBashCommands extends LinuxCommands {
         || k === 'COPILOT_SOURCE_METADATA' || k === 'CODEX_SOURCE_METADATA') continue;
       env[k] = v;
     }
-    return { command, env, shell: resolveGitBashPath() };
+    // The inherited fleet-server env is passed on to bd -> dolt -> git, so
+    // bound it (deduped PATH, size cap) -- see child-env-bound.ts and
+    // docs/troubleshooting.md ("Not enough memory resources").
+    const bounded = boundChildEnv(env, { sep: process.platform === 'win32' ? ';' : ':' });
+    if (bounded.report.dropped.length || bounded.report.overCap) logWarn('clean_env', describeBoundedEnv(bounded.report));
+    return { command, env: bounded.env, shell: resolveGitBashPath() };
   }
 
   // --- Process management ---
