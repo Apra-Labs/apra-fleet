@@ -163,9 +163,13 @@ try {
       $init = Join-Path $Work 'init.json'
       [IO.File]::WriteAllText($init, '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"fresh-install-harness","version":"1"}}}', $Utf8)
       $h = @('-H', 'Content-Type: application/json', '-H', 'Accept: application/json, text/event-stream', '--data-binary', "@$init")
-      Http POST /mcp $h
+      # /mcp requires this install's access secret (owner-only member-access.key in the data dir).
+      $keyFile = Join-Path $FleetHome 'data\member-access.key'
+      $sh = if (Test-Path $keyFile) { @('-H', ('X-Apra-Fleet-Member-Secret: ' + (Get-Content $keyFile -Raw).Trim())) } else { @() }
+      Http POST /mcp ($h + $sh)
       $b = Get-Content $BODY -Raw -ErrorAction SilentlyContinue; $k = if ($b -match '"serverInfo":\{[^}]*\}') { $Matches[0] } else { Head $BODY 160 }
-      Rec B09 'POST /mcp initialize' $CODE $k
+      Rec B09 'POST /mcp initialize (with access secret)' $CODE $k
+      Http POST /mcp $h; Rec B15 'POST /mcp initialize without access secret' $CODE (Head $BODY 160)
       Http POST /mcp ($h + @('-H', 'Authorization: Bearer not-a-valid-token')); Rec B10 'POST /mcp with invalid bearer' $CODE (Head $BODY 160)
       Http POST /shutdown; Rec B11 'POST /shutdown (no bearer)' $CODE (Head $BODY 160)
       Http GET /api/fleet/members; Rec B12 'GET /api/fleet/members (no credential)' $CODE (Head $BODY 160)

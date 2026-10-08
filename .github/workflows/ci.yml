@@ -68,11 +68,19 @@ jobs:
       # Pinned to 1.3.0: this repo's Dolt DB is schema v66; older bd can't
       # read it. Known regression: 1.3.0 still misreads a fresh dir's failed
       # `git ls-remote` (apra-fleet-4ipl, upstream not fixed yet).
+      # Retried: the package's postinstall downloads the bd binary from GitHub
+      # releases, which intermittently answers HTTP 500.
       - name: Install bd CLI (required by apra-fleet-se tests and tests/exec-bd.test.ts)
+        shell: bash
         env:
           CI: ''
         run: |
-          npm install -g @beads/bd@1.3.0 --foreground-scripts
+          for attempt in 1 2 3; do
+            if npm install -g @beads/bd@1.3.0 --foreground-scripts; then break; fi
+            if [ "$attempt" = 3 ]; then echo "bd install failed after 3 attempts"; exit 1; fi
+            echo "bd install attempt $attempt failed; retrying in 15s"
+            sleep 15
+          done
           bd --version
 
       # Non-destructive; imports git-tracked .beads/issues.jsonl so dashboard/

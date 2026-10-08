@@ -157,8 +157,12 @@ B)
   else rec B07 "install summary: Supervisor line" "" "" "" "this build's installer reports no supervisor service"; fi
   health_step B08
   INIT='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"fresh-install-harness","version":"1"}}}'
+  # /mcp requires this install's access secret (owner-only member-access.key in the data dir).
+  SECRET_HDR=""; [ -f "$HOME/.apra-fleet/data/member-access.key" ] && SECRET_HDR="X-Apra-Fleet-Member-Secret: $(tr -d '\r\n' < "$HOME/.apra-fleet/data/member-access.key")"
+  http POST /mcp -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' ${SECRET_HDR:+-H "$SECRET_HDR"} -d "$INIT"
+  rec B09 "POST /mcp initialize (with access secret)" "$CODE" "$(grep -o -m1 '"serverInfo":{[^}]*}' "$BODY" || head -c 160 "$BODY")"
   http POST /mcp -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' -d "$INIT"
-  rec B09 "POST /mcp initialize" "$CODE" "$(grep -o -m1 '"serverInfo":{[^}]*}' "$BODY" || head -c 160 "$BODY")"
+  rec B15 "POST /mcp initialize without access secret" "$CODE" "$(head -c 160 "$BODY")"
   http POST /mcp -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' -H 'Authorization: Bearer not-a-valid-token' -d "$INIT"
   rec B10 "POST /mcp with invalid bearer" "$CODE" "$(head -c 160 "$BODY")"
   http POST /shutdown; rec B11 "POST /shutdown (no bearer)" "$CODE" "$(head -c 160 "$BODY")"
