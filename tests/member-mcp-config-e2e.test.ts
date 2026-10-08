@@ -29,7 +29,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { backupAndResetRegistry, restoreRegistry, makeTestAgent } from './test-helpers.js';
+import { backupAndResetRegistry, restoreRegistry, makeTestAgent, memberSecretHeaders } from './test-helpers.js';
 import { addAgent, getAllAgents } from '../src/services/registry.js';
 import { composePermissions } from '../src/tools/compose-permissions.js';
 import { updateMember } from '../src/tools/update-member.js';
@@ -206,7 +206,9 @@ function assertClaudeAbsent(wf: string): void {
 
 function assertOpencodeConfigured(wf: string, member: Agent): void {
   const cfgs = allConfigs(wf);
-  expect(cfgs.opencodeProject.mcp['apra-fleet']).toEqual({ type: 'remote', url: expect.stringMatching(memberUrlRe(member.id)), enabled: true });
+  expect(cfgs.opencodeProject.mcp['apra-fleet']).toEqual({ type: 'remote', url: expect.stringMatching(memberUrlRe(member.id)), enabled: true, headers: memberSecretHeaders() });
+  // It carries this install's member access secret, so the file is owner-only.
+  expect(fs.statSync(paths.opencodeProject(wf)).mode & 0o777).toBe(0o600);
   expect(excludeLines(wf)).toContain('/opencode.json');
   // opencode relies on the server's reduced tool list: no MCP deny rules.
   expect(JSON.stringify(cfgs.opencodeSettings)).not.toMatch(/mcp|apra-fleet|deny\b.*apra/);
