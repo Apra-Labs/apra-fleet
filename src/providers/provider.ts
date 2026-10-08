@@ -330,8 +330,14 @@ export interface PermissionDenial {
   permissionMode?: string;
   /** false when no grant may ever be added for these denials: in Claude auto
    *  mode a refusal comes from the safety classifier or a deny rule, not from
-   *  a missing allow rule. Absent = a grant may heal it. */
+   *  a missing allow rule; in any mode, a refusal of a fleet tool outside the
+   *  member allowlist is the member tool policy (cause 'policy_deny'). Absent
+   *  = a grant may heal it. */
   healable?: boolean;
+  /** 'policy_deny': at least one refused call was a fleet tool outside the
+   *  member allowlist, denied by the deny rules compose writes on purpose.
+   *  Always comes with healable: false. */
+  cause?: 'policy_deny';
 }
 
 /** Context parseResponse may use; providers that do not need it ignore it. */

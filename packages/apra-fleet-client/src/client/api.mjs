@@ -91,7 +91,11 @@
  *   provider knows it (Claude: 'auto' | 'acceptEdits' | 'bypassPermissions').
  * @property {boolean} [healable] - false when no grant may ever be added for these denials
  *   (Claude auto/bypass mode: the safety classifier or a deny rule refused the call, not a
- *   missing allow rule). Absent = a grant may heal it.
+ *   missing allow rule; or, in any mode, a fleet tool outside the member allowlist was refused
+ *   -- see `cause`). Absent = a grant may heal it.
+ * @property {'policy_deny'} [cause] - 'policy_deny' when at least one refused call was a fleet
+ *   tool outside the member allowlist, denied by the member's own permission config on purpose.
+ *   Always comes with `healable: false`; never grant it.
  */
 
 /**
@@ -859,6 +863,7 @@ export function permissionDenialOf(result) {
         signals: isStringArray(d.signals) ? [...d.signals] : [],
         ...(typeof d.permissionMode === 'string' ? { permissionMode: d.permissionMode } : {}),
         ...(typeof d.healable === 'boolean' ? { healable: d.healable } : {}),
+        ...(d.cause === 'policy_deny' ? { cause: 'policy_deny' } : {}),
     };
 }
 

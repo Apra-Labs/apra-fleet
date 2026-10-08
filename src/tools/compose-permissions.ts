@@ -23,6 +23,7 @@ import {
   quotePwshPath,
   MemberConfigError,
   MEMBER_MCP_SERVER_NAME,
+  memberMcpAllowRules,
   readMemberJson,
   removeGitExcluded,
   writeMemberJson,
@@ -303,6 +304,8 @@ function compose(profilesDir: string, role: string, stacks: string[], ledger: Le
   const baseName = role === 'doer' ? 'base-dev' : 'base-reviewer';
   const base = loadProfile(profilesDir, baseName);
   const perms = new Set<string>(base?.permissions?.allow ?? []);
+  // Every member-allowlisted fleet tool (kb_*, code_*, ...): see memberMcpAllowRules.
+  for (const rule of memberMcpAllowRules()) perms.add(rule);
 
   const roleKey = role === 'doer' ? 'dev' : 'reviewer';
   for (const stack of stacks) {
@@ -340,6 +343,8 @@ function composeFromTags(profilesDir: string, mode: 'doer' | 'reviewer', tags: s
   const baseName = mode === 'doer' ? 'base-dev' : 'base-reviewer';
   const base = loadProfile(profilesDir, baseName);
   const perms = new Set<string>(base?.permissions?.allow ?? []);
+  // Every member-allowlisted fleet tool (kb_*, code_*, ...): see memberMcpAllowRules.
+  for (const rule of memberMcpAllowRules()) perms.add(rule);
 
   const profileKey = mode === 'doer' ? 'dev' : 'reviewer';
 

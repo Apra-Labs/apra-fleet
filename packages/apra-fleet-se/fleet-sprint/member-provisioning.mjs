@@ -510,7 +510,9 @@ const describeCall = (d) => (d.target ? `${d.action} "${d.target}"` : d.action);
  *   not_healable  the session ran in an auto/bypass permission mode: the
  *                 refusal is the safety classifier or a deny rule, which no
  *                 grant may override (only acceptEdits-mode sessions -- e.g.
- *                 a model without auto support -- are healed);
+ *                 a model without auto support -- are healed), or the
+ *                 provider marked the denial cause 'policy_deny' (a tool the
+ *                 member's own config denies on purpose), in any mode;
  *   no_progress   a call was refused again although a landed grant covers
  *                 it (the grant did not take: something overrides it), a
  *                 call maps to no grant, or a needed grant is outside the
@@ -590,6 +592,9 @@ export function createPermissionDenialHeal(opts = {}) {
         const items = denial && Array.isArray(denial.denials) ? denial.denials : [];
         const what = items.length ? items.map(describeCall).join(', ') : ((denial && denial.actions.join(', ')) || 'unknown actions');
 
+        if (denial && denial.cause === 'policy_deny') {
+            return stop('not_healable', `${what} was refused by a deny rule the member's own permission config carries on purpose (a tool outside the member's allowlist); no grant is ever added for that.`);
+        }
         if (denial && (denial.healable === false || denial.permissionMode === 'auto' || denial.permissionMode === 'bypassPermissions')) {
             return stop('not_healable', `the session ran in ${denial.permissionMode || 'a non-healable'} permission mode, where ${what} was refused by the safety classifier or a deny rule; no grant is ever added for that.`);
         }

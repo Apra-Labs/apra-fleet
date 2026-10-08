@@ -73,6 +73,7 @@ For an agy member the failure is structured: `reason: "permission_denied"` with
 Claude denials carry `permissionMode` and `healable`:
 - `healable: true` (acceptEdits session): a missing allow rule - grant from `suggestedGrants` as above.
 - `healable: false` (auto or bypass session): the safety classifier or a deny rule refused the call. `suggestedGrants` is empty on purpose - do NOT grant it. Review the refused call; grant by hand only if the action is really intended.
+- `cause: "policy_deny"` (any session): a fleet tool outside the member allowlist was refused by the member's own deny rules. Always `healable: false` - never grant it; the member must do the work without that tool.
 
 By default a complete Claude reply is a success carrying its refusals in `permissionWarning` - check it. Pass `fail_on_permission_denial: true` to execute_prompt to make any refusal fail `permission_denied` instead (fleet-sprint does; a `healable: false` refusal on a complete reply stays a warning). A max_turns / auth / server result keeps its own reason, with the refusals attached.
 

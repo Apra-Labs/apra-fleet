@@ -361,6 +361,25 @@ export class ClaudeProvider implements ProviderAdapter {
     if (denial) {
       const mode = claudePermissionMode(ctx?.unattended, ctx?.model);
       denial.permissionMode = mode;
+      // A refusal of a fleet tool outside the member allowlist hit one of the
+      // deny rules compose writes on purpose (claudeMemberDenyRules), in ANY
+      // mode: it is policy, never a missing grant. One such call makes the
+      // whole denial non-healable -- a grant must never override the member
+      // tool policy, and suggestedGrants stays empty whenever healable is
+      // false -- so a complete reply is a warning and the heal never runs.
+      const policyRules = new Set(claudeMemberDenyRules());
+      const policyCalls = denial.denials.filter(d => policyRules.has(d.action));
+      if (policyCalls.length > 0) {
+        denial.healable = false;
+        denial.cause = 'policy_deny';
+        denial.suggestedGrants = [];
+        for (const d of denial.denials) d.suggestedGrants = [];
+        const tools = [...new Set(policyCalls.map(d => d.action))].join(', ');
+        const what = denial.denials.map(d => (d.target ? `${d.action} "${d.target}"` : d.action)).join(', ');
+        denial.hint = `claude (${mode} mode) refused ${what}: ${tools} ${policyCalls.length === 1 ? 'is a fleet tool' : 'are fleet tools'} outside the member tool allowlist, denied by the member's own permission config on purpose. A member session may only use the knowledge-bank and code-intelligence tools; no grant is ever added for this. Do the work without ${policyCalls.length === 1 ? 'that tool' : 'those tools'}.`;
+        parsed.permissionDenial = denial;
+        return parsed;
+      }
       denial.healable = mode === 'acceptEdits';
       if (!denial.healable) {
         // A classifier or deny-rule refusal must never come with a
