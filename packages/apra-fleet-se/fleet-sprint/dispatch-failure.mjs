@@ -62,9 +62,12 @@ export function isTerminalSprintFailure(err) {
 //     worked for the whole budget, so partial work may exist. EXCEPT when the
 //     server marked it dispatched:false (details.dispatched === false): the
 //     budget ran out during setup, before anything was sent, so nothing ran.
+//   - 'permission_denied': the agent ran its turn and some of its tool calls
+//     were refused for lack of a grant (the dispatch engine heals it via
+//     compose_permissions). Calls it WAS allowed may have committed work.
 // ('agent_never_started' is deliberately NOT here: the member process never
 // produced a session, so nothing ran and nothing was mutated.)
-const AGENT_RAN_DISPATCH_REASONS = new Set(['max_turns_exhausted', 'watchdog_timeout', 'max_total_time']);
+const AGENT_RAN_DISPATCH_REASONS = new Set(['max_turns_exhausted', 'watchdog_timeout', 'max_total_time', 'permission_denied']);
 
 function agentRan(details) {
     return AGENT_RAN_DISPATCH_REASONS.has(details.reason) && details.dispatched !== false;

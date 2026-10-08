@@ -134,7 +134,10 @@ describe('WindowsServiceManager lifecycle', () => {
     });
   }
 
+  let cwdBefore: string[];
+
   beforeEach(() => {
+    cwdBefore = fs.readdirSync(process.cwd());
     vi.clearAllMocks();
     order.length = 0;
     wsh = true;
@@ -174,6 +177,15 @@ describe('WindowsServiceManager lifecycle', () => {
 
   afterEach(() => {
     fs.rmSync(dir, { recursive: true, force: true });
+    // Nothing may leak into the cwd (relative '\\tmp\\fleet-wintask-*' launcher, 'C:\\' log dir).
+    const leaked = fs.readdirSync(process.cwd()).filter(n => !cwdBefore.includes(n));
+    for (const n of leaked) fs.rmSync(path.join(process.cwd(), n), { recursive: true, force: true });
+    expect(leaked).toEqual([]);
+  });
+
+  it('launcherPathFor keeps the launcher beside the wrapper for POSIX and Windows paths', () => {
+    expect(launcherPathFor('/tmp/x/apra-fleet-service.bat')).toBe('/tmp/x/apra-fleet-service.js');
+    expect(launcherPathFor('C:\\a\\apra-fleet-service.bat')).toBe('C:\\a\\apra-fleet-service.js');
   });
 
   it('register writes a UTF-16LE (BOM) task XML for the current user, /create /xml /f, then removes the XML', async () => {

@@ -25,6 +25,7 @@ export const composePermissionsSchema = z.object({
   project_folder: z.string().optional().describe('Local project folder containing permissions.json ledger. Omit to skip ledger merge.'),
   grant: z.array(z.string()).optional().describe('Reactive mode: additional permissions to grant (e.g. ["Bash(docker:*)", "Bash(docker-compose:*)"]). Appended to current permissions and re-delivered.'),
   grant_reason: z.string().optional().describe('Reason for the grant (stored in ledger)'),
+  dry_run: z.boolean().optional().describe('Compose only: return the allow list the role/tags (plus detected stacks, plus the ledger when project_folder is given) would deliver, as JSON text {"dry_run":true,"mode","stacks","allow"}, without writing anything to the member. Ignored with grant. Use it to check whether a grant is within the member\'s composed policy.'),
 });
 
 export type ComposePermissionsInput = z.infer<typeof composePermissionsSchema>;
@@ -240,6 +241,9 @@ function loadLedger(projectFolder: string): Ledger {
 }
 
 function saveLedger(projectFolder: string, ledger: Ledger): void {
+  // A caller may name a ledger folder that does not exist yet (fleet-sprint
+  // keeps one per member so grants survive into the next sprint).
+  fs.mkdirSync(projectFolder, { recursive: true });
   const ledgerPath = path.join(projectFolder, 'permissions.json');
   fs.writeFileSync(ledgerPath, JSON.stringify(ledger, null, 2) + '\n');
 }
@@ -250,13 +254,21 @@ async function detectStacks(agent: Agent, projectSubdir?: string): Promise<strin
   // Resolve the directory to check on the member: prefer <workFolder>/<projectSubdir>,
   // fall back to workFolder root. Using an absolute cd ensures remote (SSH) members
   // check the right directory instead of defaulting to their home directory.
+  const rootDir = agent.workFolder.replace(/\\/g, '/');
   const checkDir = projectSubdir
     ? `${agent.workFolder}/${projectSubdir}`.replace(/\\/g, '/')
-    : agent.workFolder.replace(/\\/g, '/');
+    : rootDir;
+  // The fallback to the work folder root is real: `cd <sub> || cd <root>`.
+  // A project_folder whose basename is not a subfolder of the work folder
+  // (e.g. a ledger folder kept elsewhere) used to detect NO stacks at all and
+  // silently drop the stack grants (npm/node/...) from the composed config.
+  const cdCmd = checkDir === rootDir
+    ? `cd "${rootDir}" 2>/dev/null`
+    : `{ cd "${checkDir}" 2>/dev/null || cd "${rootDir}" 2>/dev/null; }`;
   // TODO: unbranched POSIX && / || / 2>/dev/null -- same defect class as
   // orphan-recovery.ts's pid-alive/file-read commands (apra-fleet review,
   // fix/cross-shell-home-var). Not yet OS-branched for Windows members.
-  const result = await strategy.execCommand(`cd "${checkDir}" 2>/dev/null && ls ${markers} 2>/dev/null || true`, 10000);
+  const result = await strategy.execCommand(`${cdCmd} && ls ${markers} 2>/dev/null || true`, 10000);
   const found = new Set<string>();
   for (const line of result.stdout.split('\n')) {
     const file = line.trim();
@@ -264,7 +276,7 @@ async function detectStacks(agent: Agent, projectSubdir?: string): Promise<strin
   }
   // .sln/.csproj need glob - check separately
   // TODO: same unbranched-POSIX defect class as above -- not yet OS-branched.
-  const dotnetCheck = await strategy.execCommand(`cd "${checkDir}" 2>/dev/null && ls *.sln *.csproj 2>/dev/null || true`, LOCAL_FS_OP_TIMEOUT_MS);
+  const dotnetCheck = await strategy.execCommand(`${cdCmd} && ls *.sln *.csproj 2>/dev/null || true`, LOCAL_FS_OP_TIMEOUT_MS);
   if (dotnetCheck.stdout.trim()) found.add('dotnet');
   return [...found];
 }
@@ -596,6 +608,20 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
 
   const provider = getProvider(agent.llmProvider);
   const strategy = getStrategy(agent);
+
+  // Dry run: the allow list a proactive compose would deliver (role/tags +
+  // detected stacks + ledger when project_folder is given), with nothing
+  // written to the member or the ledger. Callers derive their grant policy
+  // from it (fleet-sprint's permission heal) instead of a hand-kept copy.
+  if (input.dry_run && !input.grant?.length) {
+    const profilesDirDry = findProfilesDir();
+    const ledgerDry = input.project_folder ? loadLedger(input.project_folder) : { stacks: [], granted: [] };
+    const stacksDry = await detectStacks(agent, input.project_folder ? path.basename(input.project_folder) : undefined);
+    const allowDry = input.tags?.length
+      ? composeFromTags(profilesDirDry, mode, input.tags, stacksDry, ledgerDry)
+      : compose(profilesDirDry, mode, stacksDry, ledgerDry);
+    return JSON.stringify({ dry_run: true, mode, stacks: stacksDry, allow: allowDry });
+  }
 
   // Reactive grant mode -- validate dangerous grants FIRST before any member probe or command
   if (input.grant?.length) {

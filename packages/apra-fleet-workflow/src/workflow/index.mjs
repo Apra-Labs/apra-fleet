@@ -5,6 +5,7 @@ import { AsyncLocalStorage } from 'async_hooks';
 import { calculateCost } from './pricing.mjs';
 import { WorkflowError, MemberNotFoundError, AgentOutputError, AgentDispatchError, CommandError, FleetTransportError, BudgetExceededError, CancelledError } from './errors.mjs';
 import { hashText, computeActivityKey } from './journal.mjs';
+import { commandFailureOf } from '@apralabs/apra-fleet-client';
 
 export { WorkflowError, MemberNotFoundError, AgentOutputError, AgentDispatchError, CommandError, FleetTransportError, BudgetExceededError, CancelledError } from './errors.mjs';
 
@@ -325,6 +326,9 @@ function buildRepairPrompt(errorsText, initialPrompt) {
  *   legitimate 15+ minute reviewer dispatch was client-timed-out at 930s while the remote
  *   session kept running.
  * @property {number} [max_turns] - Max turns for conversational tools
+ * @property {boolean} [fail_on_permission_denial] - Passed to execute_prompt: a tool call the
+ *   member CLI refused fails the dispatch (reason 'permission_denied') instead of riding on a
+ *   successful reply as permissionWarning. fleet-sprint sets it on every role dispatch.
  * @property {'low'|'medium'|'high'|'xhigh'|'max'} [effort] - Effort parameter for fleet routing
  * @property {string} [agentType] - Agent persona to activate on the member
  * @property {boolean|string} [resume] - Resume the previous session on the member if one exists.
@@ -907,7 +911,17 @@ export class FleetWorkflow extends EventEmitter {
     // tier. Increments budget._pricedReal/_pricedFallback so
     // buildCostAnalysis() (runner.js) can honestly report which source
     // priced a run's total.
+    //
+    // A usage block that carries the provider's own per-dispatch cost
+    // (usage.cost_usd: the Claude CLI's list-price figure, already reduced
+    // to this dispatch's share by the server) is charged exactly that -- no
+    // recompute. Token pricing is only the fallback for a provider or result
+    // that reports no cost.
     async _resolveCost(opts, usage, budget) {
+        if (usage && typeof usage.cost_usd === 'number' && Number.isFinite(usage.cost_usd)) {
+            budget._pricedReal++;
+            return usage.cost_usd;
+        }
         const tier = opts.model;
         if (tier === 'cheap' || tier === 'standard' || tier === 'premium') {
             const memberKey = opts.member_id || opts.member_name;
@@ -917,7 +931,18 @@ export class FleetWorkflow extends EventEmitter {
                 if (entry && typeof entry.promptPrice === 'number' && typeof entry.completionPrice === 'number') {
                     const pTokens = usage.input_tokens || 0;
                     const cTokens = usage.output_tokens || 0;
-                    const cost = (pTokens / 1_000_000) * entry.promptPrice + (cTokens / 1_000_000) * entry.completionPrice;
+                    // Prompt-cache tokens are billed separately from (not inside)
+                    // input_tokens and must be priced too, or a cache-heavy run
+                    // is undercounted several-fold. An older server whose
+                    // pricing entry has no cache rates prices them at the plain
+                    // prompt rate: an over- rather than under-estimate, so a
+                    // budget ceiling still holds.
+                    const crTokens = usage.cache_read_input_tokens || 0;
+                    const cwTokens = usage.cache_creation_input_tokens || 0;
+                    const cacheReadPrice = typeof entry.cacheReadPrice === 'number' ? entry.cacheReadPrice : entry.promptPrice;
+                    const cacheWritePrice = typeof entry.cacheWritePrice === 'number' ? entry.cacheWritePrice : entry.promptPrice;
+                    const cost = (pTokens / 1_000_000) * entry.promptPrice + (cTokens / 1_000_000) * entry.completionPrice
+                        + (crTokens / 1_000_000) * cacheReadPrice + (cwTokens / 1_000_000) * cacheWritePrice;
                     budget._pricedReal++;
                     return cost;
                 }
@@ -1161,6 +1186,8 @@ export class FleetWorkflow extends EventEmitter {
                 timeout_s: opts.timeout_s,
                 max_total_s: opts.max_total_s,
                 max_turns: opts.max_turns,
+                // Opt-in strict permission handling (see AgentOptions).
+                fail_on_permission_denial: opts.fail_on_permission_denial,
                 effort: opts.effort,
                 agent: opts.agentType,
                 // apra-fleet-eft.29.1: pass-through opt-in, see AgentOptions.sprint_id above.
@@ -1238,6 +1265,12 @@ export class FleetWorkflow extends EventEmitter {
                 // predate this field.
                 const structured = result && result.structuredContent;
                 const reportedUsage = (structured && structured.usage) || result.usage;
+                // A successful dispatch whose session refused tool calls that
+                // must never be granted (Claude auto mode: classifier or deny
+                // rule). The reply is complete; this is a warning only.
+                if (structured && !structured.isError && structured.permissionWarning && typeof structured.permissionWarning.hint === 'string') {
+                    console.error(`[Agent Permission Warning] member '${opts.member_name || opts.member_id}': ${structured.permissionWarning.hint}`);
+                }
 
                 // apra-fleet-unw.4: never fabricate usage. If the fleet result
                 // didn't report real token usage, both usage and cost are
@@ -1689,8 +1722,17 @@ export class FleetWorkflow extends EventEmitter {
                 throw new MemberNotFoundError(`[Workflow Error] ${outText}`, { details: { text: outText, member: opts.member_name || opts.member_id } });
             }
 
-            if (result.isError) {
-                const err = new CommandError(`[Command Failed] ${outText}`, { details: { text: outText, command: finalCmd } });
+            // A command that never produced an exit code -- the exec timed
+            // out, the transport failed, the member could not be started --
+            // is a failure, never a success. The server flags it with
+            // structuredContent.isError + reason (exitCode -1); older servers
+            // sent only the bare "Failed to execute command on ..." text, which
+            // commandFailureOf() also recognizes. The MCP-level result.isError
+            // flag is covered by the same helper. The reason rides on
+            // err.details so callers can tell a timeout from a transport error.
+            const failure = commandFailureOf(result);
+            if (failure) {
+                const err = new CommandError(`[Command Failed] ${failure.message}`, { details: { text: outText, command: finalCmd, reason: failure.reason } });
                 this.emit('activity:end', { ...activityMeta, error: err.message, duration, success: false });
                 throw err;
             }

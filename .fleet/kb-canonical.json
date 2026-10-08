@@ -1,9 +1,9 @@
 {
   "version": 2,
   "provenance": {
-    "commit": "a993f497d35892ff89039edb94be940fd1fb0b5e",
+    "commit": "12fbcf6bd3a5540e5e979715151986fa15c1291e",
     "branch": "main",
-    "entry_count": 270
+    "entry_count": 290
   },
   "entries": [
     {
@@ -38,6 +38,23 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:25.765Z"
+    },
+    {
+      "id": "025f20b0-69c1-4ea4-bf1b-7db4dd3540ea",
+      "type": "learning",
+      "title": "Permission-heal retry reuses the same attempt number, so it never resumes onto the remote tip",
+      "summary": "dispatchRole's permission_denied heal re-runs the attempt with attempt -= 1. A heal on attempt 1 therefore retries as attempt 1, where retryFollowsPossibleMutation is false and resumeOntoRemoteTip is not set, even though permission_denied counts as agent-ran.",
+      "symbols": [
+        "dispatchRole",
+        "agentRan",
+        "isNoMutationDispatchFailure"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/dispatch-role.mjs",
+        "packages/apra-fleet-se/fleet-sprint/dispatch-failure.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T09:41:40.896Z"
     },
     {
       "id": "03858e18-b478-4840-a621-8f1d93ccf8c2",
@@ -260,6 +277,19 @@
       "updated_at": "2026-09-25T22:26:39.791Z"
     },
     {
+      "id": "0afc6c5d-5e2c-423d-92b7-6f8f3f763fd1",
+      "type": "learning",
+      "title": "Local dist/agents/schemas staleness fails apra-fleet-se npm test independent of branch",
+      "summary": "contracts-schema-dist-staleness-guard compares gitignored dist/agents/schemas to package-local apra-pm schemas; npm run build does not refresh them, so a stale local dist fails the suite until npm run dist-pm is run.",
+      "symbols": [],
+      "source_files": [
+        "packages/apra-fleet-se/test/contracts-schema-dist-staleness-guard.test.mjs",
+        "packages/apra-fleet-se/apra-pm/agents/schemas/reviewer-output.json"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T05:51:30.141Z"
+    },
+    {
       "id": "0b6a7734-3224-4b5e-b407-6353af651e29",
       "type": "learning",
       "title": "Generic-boundary guard scans fleet-sprint runtime strings, so error messages must not cite apra-fleet source paths",
@@ -288,6 +318,23 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:26.415Z"
+    },
+    {
+      "id": "0c3d4e98-0da6-4fbf-a7d8-0cd8491d2d09",
+      "type": "learning",
+      "title": "Shell-command guard flags braced vars on continuation lines of multi-line template literals",
+      "summary": "findShellCommandViolations segments per line, so a ${x} on the second line of a multi-line template literal reads as a quoted string and is flagged; single-line templates are not flagged.",
+      "symbols": [
+        "findShellCommandViolations",
+        "findLineViolations"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/shell-command-guard.mjs",
+        "packages/apra-fleet-se/fleet-sprint/guarded-modules.mjs",
+        "packages/apra-fleet-se/fleet-sprint/member-provisioning.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T06:25:51.585Z"
     },
     {
       "id": "0c864109-fb10-49de-8ecb-867a2c1b0c04",
@@ -647,6 +694,22 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:27.578Z"
+    },
+    {
+      "id": "1c434eef-c9d6-4397-b70c-c6daf573fce0",
+      "type": "knowledge",
+      "title": "compose_permissions with grant merges into the existing config; it does not compose the role profile",
+      "summary": "A compose_permissions call that passes grant runs in reactive mode: it reads the member's current settings file (or {} if missing) and appends the grants, so a call with role+grant on a member whose config was dropped yields a config holding only the grants.",
+      "symbols": [
+        "composePermissions",
+        "createPermissionDenialHeal"
+      ],
+      "source_files": [
+        "src/tools/compose-permissions.ts",
+        "packages/apra-fleet-se/fleet-sprint/member-provisioning.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T09:16:42.473Z"
     },
     {
       "id": "1c4d6528-ced2-49d3-a737-84705e230f40",
@@ -1138,6 +1201,23 @@
       "updated_at": "2026-09-25T22:26:28.985Z"
     },
     {
+      "id": "3377795a-7d1a-4f6f-98b6-fd721581db37",
+      "type": "knowledge",
+      "title": "ssh2 1.17 sftp() leaves the session channel open when the sftp subsystem request is refused",
+      "summary": "Client.sftp() opens a session channel, and on a refused subsystem request calls back with only an error, without closing the channel or exposing it. Each failed attempt holds one sshd MaxSessions slot. exec() closes its channel on the equivalent failure.",
+      "symbols": [
+        "openSftp",
+        "closeRefusedSftpChannels",
+        "withSftpSession"
+      ],
+      "source_files": [
+        "src/services/sftp.ts",
+        "tests/sftp-subsystem-refusal.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T06:25:49.718Z"
+    },
+    {
       "id": "33c1189c-bf95-4cf3-b875-4b93620bea0f",
       "type": "knowledge",
       "title": "The decoupled exec timer's never-binds fallback must stay a finite int32 value",
@@ -1375,6 +1455,25 @@
       "updated_at": "2026-09-25T22:26:32.411Z"
     },
     {
+      "id": "3fe69283-7266-44c7-9f6d-d376847b4873",
+      "type": "knowledge",
+      "title": "A hostVerifier throw reaches connectWithTOFU as the client 'error' event, so the TOFU heal path is the single host-key re-accept point",
+      "summary": "verifyHostKey throws HostKeyMismatchError inside ssh2's hostVerifier. ssh2 catches parse exceptions in its socket data handler and emits them as 'error', so connectClient rejects with that same error object and connectWithTOFU re-accepts the key and logs the warning.",
+      "symbols": [
+        "connectWithTOFU",
+        "verifyHostKey",
+        "HostKeyMismatchError",
+        "getSSHConfig"
+      ],
+      "source_files": [
+        "src/services/ssh.ts",
+        "src/services/known-hosts.ts",
+        "tests/ssh-host-key-reaccept.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T10:58:58.488Z"
+    },
+    {
       "id": "4049e06d-337b-48f6-9cf8-e384ba0b34e5",
       "type": "learning",
       "title": "An inline-ladder-guard fixture with no agent() call site is structurally unfalsifiable",
@@ -1485,6 +1584,24 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:29.732Z"
+    },
+    {
+      "id": "44d154ae-2927-443c-bdae-fa7aa15f8f1f",
+      "type": "knowledge",
+      "title": "Only the Dolt sync path rewrites the Windows CreateProcess spawn-limit error text",
+      "summary": "surfaceDoltFailureText is applied only in dolt-sync.mjs runDoltStep. Other git spawn paths that hit the same Windows 'Not enough memory resources' refusal still surface raw output with any credential hints.",
+      "symbols": [
+        "surfaceDoltFailureText",
+        "WINDOWS_SPAWN_LIMIT_MESSAGE",
+        "runDoltStep"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/dolt-sync.mjs",
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/dolt.mjs",
+        "packages/apra-fleet-se/fleet-sprint/git-sync.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T09:57:31.784Z"
     },
     {
       "id": "45d5d161-53e7-4b40-8d2f-ce2282615ca2",
@@ -1933,6 +2050,29 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-30T23:07:12.100Z"
+    },
+    {
+      "id": "567db8cc-643d-46c8-92fd-371c0f959e52",
+      "type": "knowledge",
+      "title": "execute_prompt usage.total_tokens excludes prompt-cache tokens by design",
+      "summary": "total_tokens is input+output only (context-admission figure); cache_read_input_tokens/cache_creation_input_tokens are separate billed fields that cost consumers must price explicitly.",
+      "symbols": [
+        "toStructuredUsage",
+        "estimateDispatchCost",
+        "calculateCost",
+        "billedTokens",
+        "_resolveCost",
+        "hasContextHeadroomForResume"
+      ],
+      "source_files": [
+        "src/tools/execute-prompt.ts",
+        "src/services/budget-awareness.ts",
+        "packages/apra-fleet-workflow/src/workflow/pricing.mjs",
+        "packages/apra-fleet-workflow/src/workflow/index.mjs",
+        "packages/apra-fleet-se/fleet-sprint/worklists.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T05:09:12.855Z"
     },
     {
       "id": "5870e689-e4a9-433d-bf9c-bb5ea5a0067a",
@@ -2458,6 +2598,26 @@
       "updated_at": "2026-09-27T00:42:43.451Z"
     },
     {
+      "id": "754529a2-a31c-4170-b88a-b24c2166c3bd",
+      "type": "knowledge",
+      "title": "FLEET_PID-wrapped commands share one stored PID slot per member",
+      "summary": "execCommand stores every captured FLEET_PID in a per-member map that stop_prompt and orphan recovery read, so concurrent wrapped commands on one member overwrite and clear each other's PID.",
+      "symbols": [
+        "execCommand",
+        "setStoredPid",
+        "getStoredPid",
+        "clearStoredPid"
+      ],
+      "source_files": [
+        "src/services/ssh.ts",
+        "src/services/strategy.ts",
+        "src/utils/agent-helpers.ts",
+        "src/tools/stop-prompt.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T10:58:56.585Z"
+    },
+    {
       "id": "75cbd929-e560-423f-b90b-220e01148861",
       "type": "knowledge",
       "title": "vitest resolves a missing named export to undefined, but node --test hard-fails the whole module",
@@ -2885,6 +3045,23 @@
       "updated_at": "2026-09-25T22:26:33.853Z"
     },
     {
+      "id": "93bbfb5a-0681-45d2-9024-ecf14c44a479",
+      "type": "knowledge",
+      "title": "boundChildEnv drops non-protected vars even when protected vars alone keep the block over the cap",
+      "summary": "When PATH or credential vars alone exceed CHILD_ENV_BLOCK_CAP_CHARS, boundChildEnv still removes the largest non-protected vars before reporting overCap, so it can lose variables without getting under the cap.",
+      "symbols": [
+        "boundChildEnv",
+        "CHILD_ENV_BLOCK_CAP_CHARS"
+      ],
+      "source_files": [
+        "src/os/child-env-bound.ts",
+        "src/os/windows.ts",
+        "src/os/windows-gitbash.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T10:58:50.816Z"
+    },
+    {
       "id": "94673dc6-5636-4937-a401-04a24899a132",
       "type": "knowledge",
       "title": "bd show on a missing id exits 1, so every fleet-sprint existence probe lands in its catch branch",
@@ -3017,6 +3194,26 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:32.234Z"
+    },
+    {
+      "id": "99a0ad15-0be4-4953-beb1-81e9407e7af9",
+      "type": "knowledge",
+      "title": "Reviewer verdict buildFailing flag guarantees an in-goal fix task for a red branch",
+      "summary": "A CHANGES_NEEDED reviewer verdict with buildFailing true, where no reopen survived the goal-scope guard and no in-goal newTask landed, makes the orchestrator file one in-goal fix task with a fixed title (no duplicate while one is open).",
+      "symbols": [
+        "ensureRedBranchFixTask",
+        "needsRedBranchFixTask",
+        "isReviewerContractViolation",
+        "RED_BRANCH_FIX_TITLE"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/beads-transitions.mjs",
+        "packages/apra-fleet-se/fleet-sprint/phases/review.mjs",
+        "packages/apra-fleet-se/fleet-sprint/phases/re-review.mjs",
+        "packages/apra-fleet-se/apra-pm/agents/schemas/reviewer-output.json"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T07:47:46.559Z"
     },
     {
       "id": "9d3e4d50-c047-4b98-becc-2fff7b8e27fa",
@@ -3434,6 +3631,25 @@
       "updated_at": "2026-09-25T22:26:35.728Z"
     },
     {
+      "id": "b03effcd-0488-452b-9b49-ab21049c0ece",
+      "type": "knowledge",
+      "title": "runDoltStep classifies on raw dolt output but surfaces surfaceDoltFailureText(raw)",
+      "summary": "In dolt-sync.mjs runDoltStep, classification and isSpawnOutageFailure run on rawError; the error logged, returned and used in DoltSyncError messages is surfaceDoltFailureText(rawError), which only changes Windows 'Not enough memory resources' text.",
+      "symbols": [
+        "runDoltStep",
+        "surfaceDoltFailureText",
+        "WINDOWS_SPAWN_LIMIT_MESSAGE",
+        "isSpawnOutageFailure",
+        "classifyDoltFailure"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/dolt-sync.mjs",
+        "packages/apra-fleet-se/test/dolt-windows-spawn-limit-message.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T09:41:37.051Z"
+    },
+    {
       "id": "b0f6be79-738c-491b-9ba5-7c7e5d69b805",
       "type": "knowledge",
       "title": "registerAllTools can be driven by a 4-line fake McpServer, unlocking every handler body for testing",
@@ -3453,6 +3669,25 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:35.794Z"
+    },
+    {
+      "id": "b1c3258d-ce3e-4d1c-a741-f02b4be30ab4",
+      "type": "knowledge",
+      "title": "D-push landed check reads refs/dolt/data inside the dolt mutex but never records it as a fingerprint",
+      "summary": "doltPushAfter now issues ls-remote before and after each push (plus bd vc status / bd diff when the tip did not move) inside the supervisor dolt mutex, purely to decide landed vs not-landed; these reads must never feed setLastSyncedTip.",
+      "symbols": [
+        "beginDoltPushLandedCheck",
+        "checkDoltPushLanded",
+        "readUnpushedDoltChanges",
+        "doltPushAfter"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/dolt-sync.mjs",
+        "packages/apra-fleet-se/test/dolt-sync-budget.test.mjs",
+        "packages/apra-fleet-se/test/push-landed-check.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T07:47:48.425Z"
     },
     {
       "id": "b1cde0e7-d4ce-4d12-8f37-750456b5b488",
@@ -3689,6 +3924,28 @@
       "updated_at": "2026-09-25T22:26:34.848Z"
     },
     {
+      "id": "bcd7c247-9534-4ba5-bc6a-997c94ca7bbd",
+      "type": "knowledge",
+      "title": "Windows local-member child env is bounded by boundChildEnv (deduped PATH, 32767-char cap)",
+      "summary": "WindowsCommands.getCleanEnv and WindowsGitBashCommands.cleanExec pass their env through boundChildEnv (src/os/child-env-bound.ts): PATH deduped case-insensitively, and the largest non-protected vars dropped until the block fits CHILD_ENV_BLOCK_CAP_CHARS.",
+      "symbols": [
+        "boundChildEnv",
+        "isProtectedEnvName",
+        "CHILD_ENV_BLOCK_CAP_CHARS",
+        "getCleanEnv",
+        "cleanExec"
+      ],
+      "source_files": [
+        "src/os/child-env-bound.ts",
+        "src/os/windows.ts",
+        "src/os/windows-gitbash.ts",
+        "tests/windows-child-env-bound.test.ts",
+        "scripts/repro/win-env-block-size.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T09:41:38.971Z"
+    },
+    {
       "id": "beb4faf7-40fa-4484-9cf5-b287df8f47d2",
       "type": "knowledge",
       "title": "resolveProjectSlug prefers an explicit git remote URL over shelling git against repo_path",
@@ -3796,6 +4053,21 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:14.111Z"
+    },
+    {
+      "id": "c508933c-0e41-429e-8027-a8f10521fc3e",
+      "type": "learning",
+      "title": "path.win32.dirname keeps a POSIX path unchanged; only join/normalize turn it into a backslash cwd-relative path",
+      "summary": "On Linux, path.win32.dirname('/tmp/x/f.bat') returns '/tmp/x' unchanged, but path.win32.join('/tmp/x','f') returns '\\\\tmp\\\\x\\\\f', which fs treats as a single cwd-relative filename.",
+      "symbols": [
+        "launcherPathFor"
+      ],
+      "source_files": [
+        "src/services/service-manager/windows.ts",
+        "tests/windows-service-task-xml.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T10:51:15.984Z"
     },
     {
       "id": "c73a563f-06ee-4dff-8d4b-afa31d5de9f7",
@@ -4115,6 +4387,22 @@
       "updated_at": "2026-09-25T22:26:37.608Z"
     },
     {
+      "id": "d94ca346-3682-4441-9a48-d453758f56b2",
+      "type": "knowledge",
+      "title": "member-provisioning.mjs may not call .includes/.match/toLowerCase (phase5 prose-branching guard)",
+      "summary": "test/phase5-consumer-migration-end-state.test.mjs fails if member-provisioning.mjs or coordination.mjs contain any .includes(, .match( or toLowerCase call, even for non-prose structured lookups; use Set.has or RegExp.test instead.",
+      "symbols": [
+        "grantsWithinRolePolicy"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/test/phase5-consumer-migration-end-state.test.mjs",
+        "packages/apra-fleet-se/fleet-sprint/member-provisioning.mjs",
+        "packages/apra-fleet-se/fleet-sprint/coordination.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T09:16:44.427Z"
+    },
+    {
       "id": "d94caf49-8a04-4b0b-bf6f-82c3b47785ce",
       "type": "knowledge",
       "title": "A runner.js back-import is safe for hoisted function declarations but TDZ-unsafe for const values read at module-load time",
@@ -4431,6 +4719,24 @@
       "updated_at": "2026-09-29T06:13:11.619Z"
     },
     {
+      "id": "e6525404-e387-4360-8df3-fe08d050a28a",
+      "type": "knowledge",
+      "title": "Develop dispatch excludes below-goal ready beads unless they block in-goal work or were worked on",
+      "summary": "runner.js dispatchableReadyLeafBeads filters readyLeafBeads through partitionReadyByGoal: a finite-priority below-goal bead is dropped unless it transitively blocks an open in-goal bead or is in workedOnBeadIds; there is deliberately no in-goal-ancestor exemption.",
+      "symbols": [
+        "partitionReadyByGoal",
+        "formatBelowGoalExclusionLog",
+        "dispatchableReadyLeafBeads",
+        "workedOnBeadIds"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/beads-scope.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T07:47:44.673Z"
+    },
+    {
       "id": "e687ffa8-8697-4f7f-9418-ba7f3efd6c2b",
       "type": "knowledge",
       "title": "Supervisor ledger setScopeFreshness before start() overwrites the on-disk ledger",
@@ -4645,6 +4951,23 @@
       "updated_at": "2026-09-29T06:08:07.865Z"
     },
     {
+      "id": "efe89bd6-8298-4e1e-b6a2-d5c73edf9a80",
+      "type": "learning",
+      "title": "Mock-sprint tests that create beads leak member-side body temp files unless cleaned",
+      "summary": "stageCommandBodyMemberSide writes fleet-sprint-body-*.txt to the real OS tmpdir even under with-test-sandbox, so a mock sprint that files a new bead leaves one file per create; capture the path from the bd create --body-file command via onCommand and delete it.",
+      "symbols": [
+        "stageCommandBodyMemberSide",
+        "runDevelopLoopScenario"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/member-provisioning.mjs",
+        "packages/apra-fleet-se/test/mock-sprint-reopen-gate-red-branch.test.mjs",
+        "packages/apra-fleet-se/test/helpers/mock-sprint-harness.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T07:47:42.802Z"
+    },
+    {
       "id": "f2e8ae2b-e3a5-4c51-820a-423478a7f23c",
       "type": "knowledge",
       "title": "Migrating a per-file callTool mock onto the shared vcs_credential_exec simulator silently replaces that file's own token literal",
@@ -4680,6 +5003,22 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-10-02T23:26:04.340Z"
+    },
+    {
+      "id": "f503ec1b-2ff6-488f-9f2c-583adaeec7e9",
+      "type": "learning",
+      "title": "launcherPathFor picks path flavor from the wrapper path shape",
+      "summary": "launcherPathFor uses path.win32 only for drive-letter, UNC or backslash-containing wrapper paths, else path.posix; on Windows every real path is win32-shaped so behaviour there is unchanged.",
+      "symbols": [
+        "launcherPathFor",
+        "WindowsServiceManager.register"
+      ],
+      "source_files": [
+        "src/services/service-manager/windows.ts",
+        "tests/windows-service-task-xml.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T10:58:52.734Z"
     },
     {
       "id": "f5fd18a6-c552-4dc8-bd9d-3bed5bef3e89",
@@ -4720,6 +5059,26 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:14.498Z"
+    },
+    {
+      "id": "f76a103e-797e-4606-b224-bc130e8243e0",
+      "type": "knowledge",
+      "title": "A failed last-cycle deploy forces the sprint verdict to FAIL in the orchestrator, not the LLM",
+      "summary": "runner.js keeps lastDeployFailure for the latest cycle. Both satisfied exits (root-closed and goal-priority) refuse to fire while it is set and re-attempt the deploy, bounded by maxCycles and DEPLOY_RETRY_CYCLE_LIMIT. Final Review then overrides any PASS to FAIL with a reason naming the cycle and deployer notes.",
+      "symbols": [
+        "latestDeployFailure",
+        "applyDeployFailureVerdictGate",
+        "DEPLOY_RETRY_CYCLE_LIMIT",
+        "runFinalReviewPhase"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/phases/deploy.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/fleet-sprint/phases/final-review.mjs",
+        "packages/apra-fleet-se/test/mock-sprint-deploy-failure-verdict.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T08:11:44.370Z"
     },
     {
       "id": "f8604414-0bbf-4850-88bd-6a67e5539341",

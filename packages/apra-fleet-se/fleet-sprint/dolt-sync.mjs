@@ -85,7 +85,7 @@
  * ASCII only.
  */
 
-import { DoltDivergedError, DoltSyncError } from './errors.mjs';
+import { DoltDivergedError, DoltSyncError, UnpublishedSchemaMigrationsError } from './errors.mjs';
 import { classifyFailure, toDoltVerdict, commandBinary } from './vcs-module.mjs';
 import { buildSettleCallback } from './dolt-settle.mjs';
 
@@ -614,6 +614,40 @@ export function isSpawnOutageFailure(output) {
     return DOLT_SPAWN_OUTAGE_PATTERNS.some((re) => re.test(text));
 }
 
+/** The Windows CreateProcess ERROR_NOT_ENOUGH_MEMORY wording. */
+const WINDOWS_SPAWN_LIMIT_RE = /Not enough memory resources are available/i;
+
+/** Lines Dolt/git append after a failed git spawn that point at credentials
+ *  (`hint: dolt does not support interactive credential prompts`, Git
+ *  Credential Manager notes). After a CreateProcess refusal git never ran, so
+ *  no credential was ever consulted and these lines only mislead. */
+const MISLEADING_CREDENTIAL_HINT_RE = /^\s*hint:|credential manager|\bgcm\b/i;
+
+/** Prefix naming the real cause of a Windows spawn refusal. Deliberately free
+ *  of any wording the 'dolt' provider's rule tables match (auth, remote,
+ *  divergence), so re-classifying the surfaced text gives the same verdict as
+ *  the raw text. */
+export const WINDOWS_SPAWN_LIMIT_MESSAGE =
+    'Windows refused to start a child process (CreateProcess ERROR_NOT_ENOUGH_MEMORY): this is the Windows process-creation resource limit, '
+    + 'NOT a credential or remote problem, and free RAM does not rule it out. The usual causes are an oversized environment block handed to the '
+    + 'child (duplicated PATH, oversized inherited variables) or desktop-heap exhaustion in a non-interactive session; it is retried as a transient spawn outage.';
+
+/**
+ * The text a failed `bd dolt` step surfaces (logs, DoltSyncError messages).
+ * Identity for every failure except the Windows process-creation limit, which
+ * gets WINDOWS_SPAWN_LIMIT_MESSAGE prepended and its misleading credential
+ * hint lines removed. Classification must still run on the RAW text.
+ *
+ * @param {string} output - raw stderr/stdout of the failed command
+ * @returns {string}
+ */
+export function surfaceDoltFailureText(output) {
+    const text = String(output == null ? '' : output);
+    if (!WINDOWS_SPAWN_LIMIT_RE.test(text)) return text;
+    const kept = text.split(/\r?\n/).filter((line) => !MISLEADING_CREDENTIAL_HINT_RE.test(line)).join('\n').trim();
+    return `${WINDOWS_SPAWN_LIMIT_MESSAGE} Original output (credential hints removed): ${kept}`;
+}
+
 // apra-fleet-jxdf.2: every `bd dolt pull`/`bd dolt push` this module issues
 // used to inherit whatever generic default the injected command() primitive
 // falls back to when no timeout is specified (120s, sized for an ordinary
@@ -697,11 +731,15 @@ async function runDoltStep({ command, member, cmd, label, log, maxTransientRetri
             if (authHealAttempted) log(`[Dolt] self-heal recovered: ${label} succeeded for member '${member}' on the retry after re-provisioning credentials.`);
             return res;
         }
-        const error = res ? res.error : 'unknown command failure';
+        const rawError = res ? res.error : 'unknown command failure';
         // Same verdict classifyDoltFailure() returns, read once here so a
-        // missing-tool failure can also name the binary.
-        const classified = classifyFailure(error, { provider: 'dolt', tool: commandBinary(cmd) });
+        // missing-tool failure can also name the binary. Classified on the
+        // RAW text; everything surfaced below uses `error`, which names the
+        // real cause of a Windows process-creation refusal instead of the
+        // credential hints dolt appends to it (surfaceDoltFailureText).
+        const classified = classifyFailure(rawError, { provider: 'dolt', tool: commandBinary(cmd) });
         const kind = toDoltVerdict(classified.kind);
+        const error = surfaceDoltFailureText(rawError);
         if (kind === 'missing-tool') {
             // GitHub #616: a missing binary is never retried and never sent to
             // the credential self-heal -- neither can install it.
@@ -713,7 +751,7 @@ async function runDoltStep({ command, member, cmd, label, log, maxTransientRetri
             // Sub-classify WITHIN the transient verdict: only the spawn-outage
             // class gets the long wall-clock budget (see the constants block
             // above for why the count-based ladder was replaced).
-            if (isSpawnOutageFailure(error)) {
+            if (isSpawnOutageFailure(rawError)) {
                 const elapsedMs = now() - startedAt;
                 // The attempt ceiling is a backstop, not the policy: at the 30s
                 // backoff cap a 3-minute budget spends itself in ~10 retries, so
@@ -952,9 +990,10 @@ async function attemptSettle({ settle, member, operation, error, log }) {
 //   error, a skipped needed pull is not. A NO-OP push (nothing local to
 //   publish) is indistinguishable from a real one at this layer and is treated
 //   the same way -- it proves nothing about the clone's freshness, so it may
-//   not keep a fingerprint either. As a side effect no `git ls-remote` is
-//   issued anywhere in the D-push bracket any more (round 3, item 3): the
-//   mutex hold is now exactly push + reconcile + settle.
+//   not keep a fingerprint either. The D-push bracket does read the tip
+//   before and after the push, but only to decide whether the push LANDED
+//   (see "D-push landed check" below); that read is never recorded as a
+//   fingerprint, so the race above cannot reach a skip.
 //
 // FAIL-OPEN, ALWAYS. Every uncertainty -- no recorded tip yet, ls-remote failed
 // or timed out, unparseable output, a sync.remote that could not be positively
@@ -1252,6 +1291,144 @@ export function clearLastSyncedTip(member) {
     return lastSyncedTips.delete(member) ? 1 : 0;
 }
 
+// ---------------------------------------------------------------------------
+// D-push landed check: a push is only logged as landed when refs/dolt/data
+// actually moved
+// ---------------------------------------------------------------------------
+//
+// `bd dolt push` exiting 0 is not proof the remote moved: a push that timed
+// out at the transport used to be read as success and logged "landed" while
+// refs/dolt/data proved otherwise. So the D-push bracket reads refs/dolt/data
+// immediately before the first push and again after a push reports success:
+//   * the tip CHANGED -> the push landed. It may also carry another machine's
+//     later push on top of ours; that is still a landed push (Dolt's git
+//     blobstore publishes with a lease on the head it fetched, so a push that
+//     did not land fails instead of exiting 0). Bookkeeping is unchanged: the
+//     fingerprint is FORGOTTEN, never minted from the post-push read -- see
+//     "WHY A PUSH CANNOT MINT A FINGERPRINT" above. These reads only ever
+//     decide landed/not-landed; neither is ever recorded.
+//   * the tip did NOT change -> either a legitimate no-op push (nothing local
+//     to publish; verified live: refs/dolt/data stays put and bd still prints
+//     "Push complete.") or a push that did not land. `bd diff
+//     remotes/origin/<branch> <branch>` tells them apart: no changes means
+//     the remote already had everything (up-to-date), changes mean the
+//     clone still holds work the remote lacks (NOT landed -> failure).
+//   * anything inconclusive -- no git-transport (`git+`) sync.remote URL to
+//     read (a bare remote name, a Dolt-native file:// or cloud remote), a
+//     failed or unparseable read
+//     -- keeps the pre-check behavior and logs that the landing could not be
+//     verified. Only positive evidence of a non-landed push fails it.
+
+/** Read refs/dolt/data at `url` for the D-push landed check. Never throws.
+ *  `empty` is true when ls-remote succeeded but the remote has no
+ *  refs/dolt/data yet (a first push). */
+async function readTipForPushCheck(member, { command, url, when }) {
+    let res;
+    try {
+        res = await command(`git ${GIT_NO_PROMPT_FLAGS} ls-remote ${url} ${DOLT_DATA_REF}`, {
+            member_name: member,
+            silent: true,
+            failSoft: true,
+            label: `D-push ${when}-push remote-tip read for '${member}'`,
+            timeout_s: DOLT_TIP_PROBE_TIMEOUT_S,
+        });
+    } catch (err) {
+        return { sha: null, why: `ls-remote threw: ${(err && err.message) || err}` };
+    }
+    if (!res || res.ok === false) return { sha: null, why: `ls-remote failed: ${res ? res.error : 'no result'}` };
+    const output = typeof res === 'object' ? res.output : res;
+    const sha = parseLsRemoteTip(output);
+    if (sha) return { sha };
+    if (String(output == null ? '' : output).trim() === '') return { sha: null, empty: true, why: `the remote has no ${DOLT_DATA_REF}` };
+    return { sha: null, why: `ls-remote returned no parseable ${DOLT_DATA_REF} SHA` };
+}
+
+/**
+ * Parse `bd diff <from> <to> --json`: does the clone hold changes the
+ * remote-tracking branch lacks?
+ * @param {string|null|undefined} output
+ * @returns {boolean|null} true = unpushed changes, false = none, null = unknown
+ */
+export function parseBdDiffPending(output) {
+    const text = String(output == null ? '' : output).trim();
+    if (/^No changes between /m.test(text)) return false;
+    try {
+        const parsed = JSON.parse(text);
+        if (Array.isArray(parsed)) return parsed.length > 0;
+    } catch { /* not JSON */ }
+    return null;
+}
+
+/** Branch names bd may report that are safe to put in a command string on
+ *  any member shell (no whitespace, quotes or shell metacharacters). */
+const SAFE_DOLT_BRANCH_RE = /^[A-Za-z0-9._/-]+$/;
+
+/**
+ * Does `member`'s clone still hold changes its Dolt remote-tracking branch
+ * lacks? Reads the current branch from `bd vc status --json`, then diffs
+ * remotes/origin/<branch> against it. Never throws.
+ * @returns {Promise<{ pending: boolean|null, why?: string }>}
+ */
+async function readUnpushedDoltChanges(member, { command }) {
+    let branch = null;
+    try {
+        const res = await command('bd vc status --json', { member_name: member, silent: true, failSoft: true, label: `D-push landed check: branch read for '${member}'`, timeout_s: DOLT_TIP_PROBE_TIMEOUT_S });
+        if (res && res.ok !== false) {
+            const parsed = JSON.parse(String((typeof res === 'object' ? res.output : res) || ''));
+            if (parsed && typeof parsed.branch === 'string') branch = parsed.branch;
+        }
+    } catch { /* unknown branch -> inconclusive below */ }
+    if (!branch || !SAFE_DOLT_BRANCH_RE.test(branch)) return { pending: null, why: 'could not read the clone\'s Dolt branch' };
+    let res;
+    try {
+        res = await command(`bd diff remotes/origin/${branch} ${branch} --json`, { member_name: member, silent: true, failSoft: true, label: `D-push landed check: unpushed-change read for '${member}'`, timeout_s: DOLT_TIP_PROBE_TIMEOUT_S });
+    } catch (err) {
+        return { pending: null, why: `bd diff threw: ${(err && err.message) || err}` };
+    }
+    if (!res || res.ok === false) return { pending: null, why: `bd diff failed: ${res ? res.error : 'no result'}` };
+    const pending = parseBdDiffPending(typeof res === 'object' ? res.output : res);
+    return pending === null ? { pending: null, why: 'bd diff output was not recognized' } : { pending };
+}
+
+/**
+ * Start the D-push landed check: resolve the ls-remote URL from the memoized
+ * sync.remote and read refs/dolt/data before the push.
+ * @returns {Promise<{ url: string|null, preTip: string|null, preEmpty: boolean, why?: string }>}
+ */
+async function beginDoltPushLandedCheck(member, { command, log }) {
+    let url = null;
+    try {
+        const raw = (await readMemberSyncRemote(member, { command, log })).url;
+        // Only a git-transport Dolt remote (bd spells it `git+<url>`) publishes
+        // refs/dolt/data. A Dolt-native remote (file://, DoltHub, cloud
+        // storage) keeps its own chunk store; a directory that merely also
+        // happens to be a git repo would answer ls-remote with no refs both
+        // before and after a push that did land.
+        url = typeof raw === 'string' && raw.trim().startsWith('git+') ? toGitLsRemoteUrl(raw) : null;
+    } catch { url = null; }
+    if (!url) return { url: null, preTip: null, preEmpty: false, why: 'sync.remote is not a git-transport (git+) URL whose refs/dolt/data can be read' };
+    const pre = await readTipForPushCheck(member, { command, url, when: 'pre' });
+    return { url, preTip: pre.sha, preEmpty: !!pre.empty, why: pre.why };
+}
+
+/**
+ * Finish the D-push landed check after a push reported success.
+ * @returns {Promise<{ status: 'moved'|'up-to-date'|'not-landed'|'unverified', tip?: string, why?: string }>}
+ */
+async function checkDoltPushLanded(member, { command, check }) {
+    if (!check.url || (!check.preTip && !check.preEmpty)) return { status: 'unverified', why: check.why };
+    const post = await readTipForPushCheck(member, { command, url: check.url, when: 'post' });
+    if (!post.sha) {
+        if (post.empty) return { status: 'not-landed', why: `the remote still has no ${DOLT_DATA_REF} after the push` };
+        return { status: 'unverified', why: post.why };
+    }
+    if (post.sha !== check.preTip) return { status: 'moved', tip: post.sha };
+    const unpushed = await readUnpushedDoltChanges(member, { command });
+    if (unpushed.pending === false) return { status: 'up-to-date', tip: post.sha };
+    if (unpushed.pending === true) return { status: 'not-landed', tip: post.sha, why: `${DOLT_DATA_REF} is still ${post.sha} and the clone still holds changes the remote lacks` };
+    return { status: 'unverified', tip: post.sha, why: `${DOLT_DATA_REF} did not move (${post.sha}) and whether the clone had anything to publish could not be read: ${unpushed.why}` };
+}
+
 export async function doltPullBefore(member, opts = {}) {
     // `maxTransientRetries` is deliberately NOT defaulted here: runDoltStep()
     // must see whether the caller passed it (an explicit value caps both
@@ -1407,6 +1584,42 @@ export function extractConflictingTables(doltOutput) {
 }
 
 /**
+ * True when a failed D-pull carries the signature of a clone whose bd
+ * auto-applied schema migrations were never published: dolt refuses the merge
+ * because uncommitted local changes (the migrated `events` table) would be
+ * stomped. Only a DoltSyncError (not a divergence/auth classification, which
+ * keep their own handling) can match.
+ */
+export function isUnpublishedMigrationPullFailure(err) {
+    if (!(err instanceof DoltSyncError) || err instanceof DoltDivergedError) return false;
+    if (err.details && err.details.kind === 'auth') return false;
+    return /local changes would be stomped by merge/i.test(String(err.doltOutput || err.message || ''));
+}
+
+/**
+ * Heal for the signature above: publish the migrations with `bd dolt push`
+ * (through doltPushAfter, so it takes the global push mutex when one is
+ * supplied) and retry the pull exactly once. Any failure becomes an
+ * UnpublishedSchemaMigrationsError naming the cause and the fix commands.
+ */
+async function publishMigrationsAndRetryPull(member, opts, firstErr) {
+    const { log = () => {} } = opts;
+    log(`[Dolt] D-pull for member '${member}' failed because its beads clone holds unpublished local schema migrations (bd auto-applied them); publishing with 'bd dolt push' and retrying the pull once.`);
+    try {
+        await doltPushAfter(member, { ...opts, pushBeads: true });
+        // The pull must really run: a fingerprint skip would claim freshness.
+        clearLastSyncedTip(member);
+        return await doltPullBefore(member, opts);
+    } catch (healErr) {
+        throw new UnpublishedSchemaMigrationsError(
+            `[Dolt] member '${member}' beads clone has unpublished local schema migrations (bd auto-applied them), so the D-pull fails with "local changes would be stomped by merge" -- and publishing them failed: ${healErr.message}. ` +
+            `Fix: give '${member}' a valid VCS credential (provision_vcs_auth), then run 'bd dolt push' in its beads workspace to publish the migration, then 'bd dolt pull', and relaunch.`,
+            { member, doltOutput: firstErr.doltOutput, cause: healErr },
+        );
+    }
+}
+
+/**
  * Pre-flight beads-health gate: the same D-pull probe as doltPullBefore(),
  * run before a sprint issues any mutating git or PR command, so a diverged
  * beads clone aborts the run before setup has changed anything.
@@ -1430,7 +1643,12 @@ export function extractConflictingTables(doltOutput) {
 export async function preflightBeadsHealthGate(member, opts = {}) {
     const { command, log = () => {} } = opts;
     try {
-        return await doltPullBefore(member, opts);
+        try {
+            return await doltPullBefore(member, opts);
+        } catch (firstErr) {
+            if (!isUnpublishedMigrationPullFailure(firstErr)) throw firstErr;
+            return await publishMigrationsAndRetryPull(member, opts, firstErr);
+        }
     } catch (err) {
         if (!(err instanceof DoltDivergedError)) {
             throw err;
@@ -1557,6 +1775,8 @@ export async function doltPushAfter(member, opts = {}) {
     // exclusion mid-operation. Renew on an interval well under the lease while
     // we hold it, and stop renewing in the same `finally` that releases.
     let grant = null;
+    /** The pre-push refs/dolt/data read; set inside the mutex below. */
+    let landedCheck = { url: null, preTip: null, preEmpty: false, why: 'not read' };
     if (mutex && typeof mutex.acquire === 'function') {
         grant = await mutex.acquire(sprintId || member, { pid: process.pid });
     }
@@ -1577,6 +1797,11 @@ export async function doltPushAfter(member, opts = {}) {
         if (typeof renewTimer.unref === 'function') renewTimer.unref();
     }
     try {
+        // Read refs/dolt/data before the first push so a push that reports
+        // success can be checked against it (see "D-push landed check" above).
+        // Inside the mutex: no other push from this fleet can move the tip
+        // between this read and our push.
+        landedCheck = await beginDoltPushLandedCheck(member, { command, log });
         return await doltPushGuarded();
     } finally {
         if (renewTimer) clearInterval(renewTimer);
@@ -1627,14 +1852,52 @@ export async function doltPushAfter(member, opts = {}) {
         }
     }
 
+    /**
+     * A push step reported success. Decide whether it actually landed (see
+     * "D-push landed check" above) before logging it as landed or returning
+     * success. A push that provably did not land is retried once; if it still
+     * did not land, a DoltSyncError with details.kind 'push-not-landed' is
+     * thrown for the caller's degrade/fatal policy (DoltSync.syncAfter).
+     */
+    async function confirmPushLanded(result, label) {
+        let verdict = await checkDoltPushLanded(member, { command, check: landedCheck });
+        if (verdict.status === 'not-landed') {
+            log(`[Dolt] ${label} reported success but the push did NOT land: ${verdict.why}. Retrying the push once.`);
+            const retry = await runDoltStep({
+                command, member, cmd: 'bd dolt push',
+                label: `D-push retry after an unlanded push for '${member}'`, log, maxTransientRetries, onAuthFailure, sleep, backoffBaseMs, timeoutS, spawnOutageBudgetMs, now,
+            });
+            const firstWhy = verdict.why;
+            verdict = retry.ok
+                ? await checkDoltPushLanded(member, { command, check: landedCheck })
+                : { status: 'not-landed', why: `${firstWhy}; the retry push failed: ${retry.error}` };
+            if (verdict.status === 'not-landed') {
+                clearLastSyncedTip(member);
+                throw new DoltSyncError(
+                    `[Dolt] D-push for member '${member}' did not land on the remote: \`bd dolt push\` reported success but ${verdict.why}. The member's beads changes have NOT reached the shared remote.`,
+                    { member, doltOutput: verdict.why, details: { kind: 'push-not-landed', operation: 'push' } },
+                );
+            }
+        }
+        if (verdict.status === 'up-to-date') {
+            clearLastSyncedTip(member);
+            log(`[Dolt] D-push for member '${member}': nothing to publish (${DOLT_DATA_REF} unchanged and the clone holds no changes the remote lacks).`);
+            return { ...result, upToDate: true };
+        }
+        if (verdict.status === 'unverified' && landedCheck.url) {
+            log(`[Dolt] D-push for member '${member}' reported success, but whether it landed could not be verified: ${verdict.why}`);
+        }
+        forgetTipAfterPush();
+        return result;
+    }
+
     async function doltPushGuarded() {
     let push = await runDoltStep({
         command, member, cmd: 'bd dolt push',
         label: `D-push for '${member}'`, log, maxTransientRetries, onAuthFailure, sleep, backoffBaseMs, timeoutS, spawnOutageBudgetMs, now,
     });
     if (push.ok) {
-        forgetTipAfterPush();
-        return { ok: true, member, pushed: true, reconciled: false };
+        return await confirmPushLanded({ ok: true, member, pushed: true, reconciled: false }, `D-push for member '${member}'`);
     }
 
     if (push.kind === 'no-remote') {
@@ -1710,13 +1973,16 @@ export async function doltPushAfter(member, opts = {}) {
         );
     }
 
+    // The remote moved under the rejected first push (that is why it was
+    // rejected), so the landed check's pre-push tip is re-read now: compared
+    // against the stale one, another writer's push would read as ours landing.
+    landedCheck = await beginDoltPushLandedCheck(member, { command, log });
     push = await runDoltStep({
         command, member, cmd: 'bd dolt push',
         label: `D-push re-push after reconcile for '${member}'`, log, maxTransientRetries, onAuthFailure, sleep, backoffBaseMs, timeoutS, spawnOutageBudgetMs, now,
     });
     if (push.ok) {
-        forgetTipAfterPush();
-        return { ok: true, member, pushed: true, reconciled: true };
+        return await confirmPushLanded({ ok: true, member, pushed: true, reconciled: true }, `D-push re-push after reconcile for member '${member}'`);
     }
 
     if (push.kind === 'auth' && !push.selfHealed) {
@@ -1793,13 +2059,13 @@ export async function doltPushAfter(member, opts = {}) {
             );
         }
 
+        landedCheck = await beginDoltPushLandedCheck(member, { command, log });
         push = await runDoltStep({
             command, member, cmd: 'bd dolt push',
             label: `D-push second re-push after reconcile for '${member}'`, log, maxTransientRetries, sleep, backoffBaseMs, timeoutS, spawnOutageBudgetMs, now,
         });
         if (push.ok) {
-            forgetTipAfterPush();
-            return { ok: true, member, pushed: true, reconciled: true };
+            return await confirmPushLanded({ ok: true, member, pushed: true, reconciled: true }, `D-push second re-push after reconcile for member '${member}'`);
         }
 
         return await surfaceDivergence(

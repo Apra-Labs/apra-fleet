@@ -8,6 +8,7 @@ import { getRunningRunStatePath, getTerminalRunStatePath } from './run-state-pat
 import { buildListStatePayload, resolveStringRefs } from './lean-state.mjs';
 import { capCommandActivityMeta, getFullOutput } from './command-output-cap.mjs';
 import { buildRunTitle } from './run-title.mjs';
+import { billedTokens } from '../workflow/pricing.mjs';
 import { createRunSummary, refreshSummaryCore, applyExtensionSummary, backfillExtensionSummaries } from './run-summary.mjs';
 
 // apra-fleet-eft.6.5: the SAME template serves both the live view and the
@@ -742,7 +743,7 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
                         // tier was never displayed at all. modelHtml surfaces
                         // act.model (e.g. "premium"/"standard", already
                         // present on every agent activity) explicitly.
-                        let tokensHtml = act.usage ? \`<span style="color:var(--text-muted)">\${act.usage.total_tokens.toLocaleString()} tkns</span>\` : (act.type === 'agent' && !act.isRunning ? \`<span style="color:var(--text-muted)">n/a</span>\` : '');
+                        let tokensHtml = act.usage ? \`<span style="color:var(--text-muted)">\${((act.usage.total_tokens || 0) + (act.usage.cache_read_input_tokens || 0) + (act.usage.cache_creation_input_tokens || 0)).toLocaleString()} tkns</span>\` : (act.type === 'agent' && !act.isRunning ? \`<span style="color:var(--text-muted)">n/a</span>\` : '');
                         const modelHtml = (act.type === 'agent' && act.model) ? \`<span style="color:var(--text-muted)">[\${escapeHtml(act.model)}]</span>\` : '';
                         const memberDisplay = act.member ? escapeHtml(act.member) : (act.type === 'transform' ? 'js' : '');
                         const memberHtml = memberDisplay ? \`<span class="muted">(\${memberDisplay})</span>\` : '';
@@ -1343,7 +1344,9 @@ export function createDashboardViewer(workflow, opts = {}) {
                 }
             }
         }
-        if (meta.usage?.total_tokens) state.stats.totalTokens += meta.usage.total_tokens;
+        // Every billed token, including prompt-cache reads/writes (which
+        // usage.total_tokens -- the context-admission figure -- excludes).
+        if (meta.usage) state.stats.totalTokens += billedTokens(meta.usage);
         // apra-fleet-unw.4: `cost` is only added to the running total when
         // it's a known number. When agent() explicitly reported cost: null
         // (fleet result had no usage, or the model wasn't in the pricing

@@ -64,6 +64,25 @@
 //                          <base64 utf16le>` string; SePosixCommands throws
 //                          (a true POSIX member has no PowerShell to hand
 //                          the script to at all).
+//   ensureGitExcluded      beads-identity-check.mjs member beads set-up:
+//                          idempotently lists a new untracked beads path in
+//                          the member repo's git exclude file (resolved via
+//                          `git rev-parse --git-path info/exclude`, so repo
+//                          subdirs and linked worktrees work), silent exit-0
+//                          no-op outside a git repo.
+//   fileExistsProbe        member-provisioning.mjs permission-config
+//                          preflight: prints 'present'/'absent' for a
+//                          work-folder-relative file, exit 0 either way.
+//   ensureFile             beads-identity-check.mjs member beads set-up:
+//                          creates a file (and parent dir) only when absent,
+//                          never truncating an existing one.
+//   ensureLine             beads-identity-check.mjs member beads set-up:
+//                          idempotently makes a line a whole line of a file.
+//                          All four validate their work-folder-relative path
+//                          against a strict charset and THROW on anything
+//                          else (assertSafeRelativePath / assertSafeFileLine
+//                          in se-posix.mjs); gitbash inherits the POSIX
+//                          strings.
 //
 // Deliberately NOT included, so this stays an interface rather than a
 // catalogue:
@@ -90,6 +109,7 @@ import { SeWindowsGitbashCommands } from './se-windows-gitbash.mjs';
 export { SePosixCommands } from './se-posix.mjs';
 export { SeWindowsCommands } from './se-windows.mjs';
 export { SeWindowsGitbashCommands } from './se-windows-gitbash.mjs';
+export { FILE_PROBE_PRESENT, FILE_PROBE_ABSENT } from './se-posix.mjs';
 
 const posix = new SePosixCommands();
 const windowsPowerShell = new SeWindowsCommands();

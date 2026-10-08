@@ -491,6 +491,14 @@ export function createGitSync(deps = {}) {
     const brackets = deps.brackets ?? createSyncBrackets({ setPauseGuard: deps.setPauseGuard });
     const ctx = { ...deps, brackets };
     const { command, log, branch, doltPushMutex, sprintId, onAuthFailure, resolveMemberProvider, syncMemberAfter } = ctx;
+    // The beads-only helpers below (backlog member D-pull/D-push) bypass
+    // withGitSync, so they refresh the member's VCS credential themselves,
+    // through the same ensureVcsAuthFresh (same freshness cache) dispatch
+    // members use. Optional in a hand-built ctx; never throws.
+    const ensureBeadsMemberAuth = async (memberName) => {
+        if (typeof ctx.ensureVcsAuthFresh !== 'function') return;
+        try { await ctx.ensureVcsAuthFresh(memberName); } catch (err) { log(`[Sync] preflight: ensureVcsAuthFresh failed for beads member '${memberName}' (continuing): ${err && err.message}`); }
+    };
     return {
         brackets,
         /** Current number of open sync brackets -- read-only observability. */
@@ -511,14 +519,20 @@ export function createGitSync(deps = {}) {
          * passed through verbatim.
          */
         syncBeadsBefore: (memberName, options = {}) => brackets.withOpenSyncBracket(
-            () => DoltSync.syncBefore(memberName, { command, log, ...options }),
+            async () => {
+                await ensureBeadsMemberAuth(memberName);
+                return DoltSync.syncBefore(memberName, { command, log, onAuthFailure, mutex: doltPushMutex, sprintId, ...options });
+            },
         ),
         /**
          * A standalone bracketed beads D-push. `command`/`log` and the
          * cross-member D-push mutex default to the bound sprint state.
          */
         syncBeadsAfter: (memberName, options = {}) => brackets.withOpenSyncBracket(
-            () => DoltSync.syncAfter(memberName, { command, log, mutex: doltPushMutex, sprintId, ...options }),
+            async () => {
+                await ensureBeadsMemberAuth(memberName);
+                return DoltSync.syncAfter(memberName, { command, log, mutex: doltPushMutex, sprintId, onAuthFailure, ...options });
+            },
         ),
         /**
          * A standalone bracketed beads D-push, routed through
@@ -542,7 +556,10 @@ export function createGitSync(deps = {}) {
          * to opt back into the old throwing behavior at this call site.
          */
         pushBeadsAfter: (memberName, options = {}) => brackets.withOpenSyncBracket(
-            () => DoltSync.syncAfter(memberName, { command, log, mutex: doltPushMutex, sprintId, ...options }),
+            async () => {
+                await ensureBeadsMemberAuth(memberName);
+                return DoltSync.syncAfter(memberName, { command, log, mutex: doltPushMutex, sprintId, onAuthFailure, ...options });
+            },
         ),
         /**
          * A standalone bracketed G-push through runner.js's syncMemberAfter().

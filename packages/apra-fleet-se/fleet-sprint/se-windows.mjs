@@ -11,6 +11,8 @@
 // core's src/os/windows.ts wrapPowerShellEncoded(), not a reuse of it: this
 // package cannot import core.
 
+import { assertSafeRelativePath, assertSafeFileLine, FILE_PROBE_PRESENT, FILE_PROBE_ABSENT } from './se-posix.mjs';
+
 /**
  * PowerShell command primitives for a Windows member.
  */
@@ -123,6 +125,103 @@ export class SeWindowsCommands {
       .split(bq).join(bq + bq)
       .replace(/\$/g, `${bq}$`)
       .replace(/"/g, `${bq}"`);
+  }
+
+  /**
+   * PowerShell twin of SePosixCommands.ensureGitExcluded: idempotently add
+   * `entry` as a line of the exclude file git itself resolves
+   * (`git rev-parse --git-path info/exclude`, run in the work folder), creating
+   * its directory if missing; silent exit-0 no-op outside a git repo or with
+   * no git on PATH.
+   *
+   * Shape notes (all load-bearing):
+   *  - the git call sits in its own try/catch because wrapForMember sets
+   *    $ErrorActionPreference = 'Stop', under which Windows PowerShell 5.1
+   *    turns a redirected native stderr line ("fatal: not a git repository")
+   *    into a terminating error;
+   *  - $global:LASTEXITCODE is reset at the end so the envelope's native
+   *    exit-code check does not turn git's non-repo exit 128 into a failure;
+   *  - the line is written with an explicit LF ([char]10) and -NoNewline,
+   *    not Add-Content's platform CRLF, and no backtick escape is used
+   *    anywhere -- the only variables are script-local ones this string
+   *    assigns; nothing reads the member's environment ($env:, ~/).
+   * Caller: beads-identity-check.mjs member beads set-up (new untracked
+   * beads paths are excluded so the target work tree stays clean).
+   * @param {string} entry validated
+   * @returns {string}
+   */
+  ensureGitExcluded(entry) {
+    const e = assertSafeRelativePath(entry, 'git-exclude entry');
+    const script = [
+      `$excl = $null`,
+      `try { $out = @(git rev-parse --git-path info/exclude 2>$null); if ($LASTEXITCODE -eq 0 -and $out.Count -gt 0) { $excl = [string]$out[0] } } catch { $excl = $null }`,
+      `if ($excl) { `
+        + `$dir = Split-Path -Parent $excl; `
+        + `if ($dir -and -not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }; `
+        + `$raw = ''; if (Test-Path -LiteralPath $excl) { $raw = [string](Get-Content -LiteralPath $excl -Raw) }; `
+        + `if (@($raw -split '\\r?\\n') -notcontains '${e}') { `
+        + `$lf = [string][char]10; $prefix = ''; if ($raw.Length -gt 0 -and -not $raw.EndsWith($lf)) { $prefix = $lf }; `
+        + `Add-Content -LiteralPath $excl -NoNewline -Value ($prefix + '${e}' + $lf) } }`,
+      `$global:LASTEXITCODE = 0`,
+    ].join('; ');
+    return this.wrapForMember(script);
+  }
+
+  /**
+   * PowerShell twin of SePosixCommands.fileExistsProbe: prints exactly
+   * FILE_PROBE_PRESENT or FILE_PROBE_ABSENT, literal path only, no member
+   * environment reads. Read-only.
+   * Caller: member-provisioning.mjs permission-config preflight.
+   * @param {string} relPath validated
+   * @returns {string}
+   */
+  fileExistsProbe(relPath) {
+    const p = assertSafeRelativePath(relPath, 'file path');
+    return this.wrapForMember(`if (Test-Path -LiteralPath '${p}') { Write-Output '${FILE_PROBE_PRESENT}' } else { Write-Output '${FILE_PROBE_ABSENT}' }`);
+  }
+
+  /**
+   * PowerShell twin of SePosixCommands.ensureFile: create the file (and its
+   * parent directory) when absent; an existing file is never truncated.
+   * Only literal paths, no member environment reads.
+   * Caller: beads-identity-check.mjs member beads set-up.
+   * @param {string} relPath validated
+   * @returns {string}
+   */
+  ensureFile(relPath) {
+    const p = assertSafeRelativePath(relPath, 'file path');
+    const slash = p.lastIndexOf('/');
+    const dir = slash > 0 ? p.slice(0, slash) : '';
+    const parts = [];
+    if (dir) parts.push(`if (-not (Test-Path -LiteralPath '${dir}')) { New-Item -ItemType Directory -Force -Path '${dir}' | Out-Null }`);
+    parts.push(`if (-not (Test-Path -LiteralPath '${p}')) { New-Item -ItemType File -Path '${p}' | Out-Null }`);
+    return this.wrapForMember(parts.join('; '));
+  }
+
+  /**
+   * PowerShell twin of SePosixCommands.ensureLine: make `line` a whole line
+   * of the file (created with its parent directory when absent), appended
+   * with an explicit LF and -NoNewline like ensureGitExcluded; nothing else
+   * in the file is touched. Only script-local variables, no environment reads.
+   * Caller: beads-identity-check.mjs member beads set-up.
+   * @param {string} relPath validated
+   * @param {string} line validated
+   * @returns {string}
+   */
+  ensureLine(relPath, line) {
+    const p = assertSafeRelativePath(relPath, 'file path');
+    const l = assertSafeFileLine(line);
+    const slash = p.lastIndexOf('/');
+    const dir = slash > 0 ? p.slice(0, slash) : '';
+    const parts = [];
+    if (dir) parts.push(`if (-not (Test-Path -LiteralPath '${dir}')) { New-Item -ItemType Directory -Force -Path '${dir}' | Out-Null }`);
+    parts.push(
+      `$raw = ''; if (Test-Path -LiteralPath '${p}') { $raw = [string](Get-Content -LiteralPath '${p}' -Raw) }; `
+      + `if (@($raw -split '\\r?\\n') -notcontains '${l}') { `
+      + `$lf = [string][char]10; $prefix = ''; if ($raw.Length -gt 0 -and -not $raw.EndsWith($lf)) { $prefix = $lf }; `
+      + `Add-Content -LiteralPath '${p}' -NoNewline -Value ($prefix + '${l}' + $lf) }`,
+    );
+    return this.wrapForMember(parts.join('; '));
   }
 
   /**

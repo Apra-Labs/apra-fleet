@@ -267,6 +267,9 @@ export const GUARDED_MODULES = [
     // `node -e ...` member-side temp-file write. Both are shell-agnostic
     // (base64-encoded argv, no `$`-expansion/backticks/template literals),
     // which is exactly the invariant shell-command-guard.mjs enforces here.
+    // A THIRD site was added since: createPermissionConfigPreflight's
+    // per-OS/shell file-exists probe (SeOsCommands.fileExistsProbe, a
+    // validated literal path, no member environment reads).
     // resolveSettleShell stayed in runner.js (module-private composition-root
     // wiring anchored there by test/sprint-state.test.mjs) and is not part of
     // this module's surface.
@@ -377,9 +380,10 @@ export const GUARDED_MODULES = [
     'explicit-id-create-guard.mjs',
     // The beads identity contract (pure parse/compare helpers, no command()
     // or agent() site -- zero baseline) and the precondition that runs its
-    // three read-only probes: beads-identity-check.mjs carries ONE
-    // member_name-bearing command() call site (the probe loop), which is
-    // exactly what dispatch-safety-guard must keep scanning.
+    // three read-only probes: beads-identity-check.mjs carries TWO
+    // member_name-bearing command() call sites (the probe loop and the
+    // member beads set-up runner; its beads pull goes through DoltSync),
+    // which is exactly what dispatch-safety-guard must keep scanning.
     'beads-identity.mjs',
     'beads-identity-check.mjs',
     // The sprint-start token-usage memory sweep: TWO member_name-bearing

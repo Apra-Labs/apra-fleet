@@ -485,7 +485,10 @@ both `base-dev.json` and `base-reviewer.json`) are checked by most recent
 installation date, then by the remaining supported providers in deterministic
 order. Options: `member_id?`, `member_name?`, `role?`
 (`"doer" | "reviewer"`), `tags?`, `project_folder?`, `grant?`,
-`grant_reason?`. Provide at least one of `role` or `tags`; `tags` containing
+`grant_reason?`, `dry_run?`. `dry_run: true` returns the composed allow list
+(role/tags + detected stacks, + the ledger when `project_folder` is given) as
+JSON text `{"dry_run":true,"mode","stacks","allow"}` and writes nothing.
+Provide at least one of `role` or `tags`; `tags` containing
 `"doer"`/`"reviewer"` sets the primary mode and wins over `role`. Each
 `grant` entry is checked against the `NEVER_AUTO_GRANT` denylist, which is
 wildcard-matched (not exact-matched) against a normalized form of the

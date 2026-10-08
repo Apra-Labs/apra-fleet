@@ -70,7 +70,7 @@
 // red instead of landing on an unguarded site.
 // =============================================================================
 
-import { applyGuardedReopens } from '../beads-transitions.mjs';
+import { applyGuardedReopens, ensureRedBranchFixTask, isInGoalPriority } from '../beads-transitions.mjs';
 import {
     validateNewTask, appendRejectedFindingToParentNotes, persistNewTaskBestEffort,
 } from '../abort.mjs';
@@ -111,6 +111,9 @@ export async function runReReviewPhase({
     dispatchReview,
     bdListScoped,
     goalMax,
+    // Bead ids this sprint has dispatched or closed: a below-goal reopen of
+    // one of them is applied, not deferred (see isDeferredScopeReopen).
+    workedOnIds,
     recordReopen,
     childIdAllocator,
     sprintMutexId,
@@ -158,10 +161,11 @@ export async function runReReviewPhase({
     // DEFERRED bead named here is skipped with the identical
     // "deferred scope, not reopened" outcome instead of being pulled
     // back into a sprint that no longer targets it.
-    await applyGuardedReopens({
+    const reopenedIds = new Set(await applyGuardedReopens({
         entries: reReviewVerdict.reopenIds,
         bdListScoped, goalMax, goal: validated.goal, log, command,
         member: backlogMember,
+        workedOnIds,
         logPrefix: 'Re-review reopenIds',
         buildReopenCommand: ({ id }) => ({
             cmd: `bd update ${id} --status=open`,
@@ -169,7 +173,8 @@ export async function runReReviewPhase({
         }),
         // Track per-bead reopen counts for reopen-thrash detection.
         onReopened: ({ id }) => recordReopen(id),
-    });
+    }));
+    let inGoalNewTaskCount = 0;
     for (const newTask of reReviewVerdict.newTasks) {
         const validation = validateNewTask(newTask);
         if (!validation.ok) {
@@ -221,8 +226,35 @@ export async function runReReviewPhase({
         // Develop/Review newTasks site above.
         if (persisted) {
             pendingRejectedNewTasks = clearResubmittedNewTask(pendingRejectedNewTasks, { title, description });
+            if (isInGoalPriority(priority, goalMax)) inGoalNewTaskCount += 1;
         }
     }
+
+    // Same red-branch rule as the per-round Review phase: a verdict reporting
+    // failing build/tests with no surviving reopen or in-goal newTask still
+    // leaves one in-goal fix task for the next cycle to dispatch.
+    await ensureRedBranchFixTask({
+        verdict: reReviewVerdict,
+        reopenedCount: reopenedIds.size,
+        inGoalNewTaskCount,
+        skippedReopenIds: (reReviewVerdict.reopenIds || []).filter((id) => typeof id === 'string' && !reopenedIds.has(id)),
+        goal: validated.goal,
+        site: `Re-Review C${cycle}`,
+        bdListScoped, log,
+        createTask: (task) => persistNewTaskBestEffort({
+            command, member: backlogMember, parentId: targetIssues[0],
+            newTask: task, cycle, log, stage: 're-review-red-branch',
+            createFn: async () => {
+                const floor = await computeChildFloor({ command, member: backlogMember, parentId: targetIssues[0], log });
+                return createChildBeadWithAllocatedId({
+                    command, allocator: childIdAllocator, member: backlogMember,
+                    title: task.title, description: task.description, priority: task.priority,
+                    parentId: targetIssues[0], sprintId: sprintMutexId, floor, log,
+                    label: `Create red-branch fix task: ${task.title}`,
+                });
+            },
+        }),
+    });
 
     // D-push the orchestrator's applied re-review reopens/newTask
     // creates, same as the Develop/Review transition site above.

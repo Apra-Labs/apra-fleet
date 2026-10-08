@@ -490,6 +490,11 @@ const FALLBACK_reviewerVerdict = {
         // schema-valid and semantically a no-op, preserving pre-eft.67
         // behavior exactly.
         replanIds: { type: 'array', items: { type: 'string' } },
+        // Optional, NOT required: true when the build or test suite fails on
+        // the branch under review. Lets the orchestrator file an in-goal fix
+        // task when no reopen/newTask survives (ensureRedBranchFixTask in
+        // beads-transitions.mjs). Mirrors reviewer-output.json.
+        buildFailing: { type: 'boolean' },
         newTasks: {
             type: 'array',
             items: {

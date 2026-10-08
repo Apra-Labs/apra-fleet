@@ -357,6 +357,25 @@ export class DoltSyncError extends WorkflowError {
 }
 
 /**
+ * Thrown by preflightBeadsHealthGate() when the backlog member's beads clone
+ * holds local schema migrations bd auto-applied but never published (the
+ * pre-dispatch D-pull fails "local changes would be stomped by merge") AND the
+ * publish-and-retry heal could not recover. A DoltSyncError subtype, so every
+ * existing DoltSyncError handler still applies; the message names the cause
+ * and the exact fix commands.
+ */
+export class UnpublishedSchemaMigrationsError extends DoltSyncError {
+    /**
+     * @param {string} message
+     * @param {{ member?: string|null, doltOutput?: string|null, details?: object, cause?: unknown }} [opts]
+     */
+    constructor(message, opts = {}) {
+        super(message, { ...opts, details: { kind: 'unpublished-schema-migrations', ...opts.details } });
+        this.name = 'UnpublishedSchemaMigrationsError';
+    }
+}
+
+/**
  * apra-fleet dolt-settle redesign (see fleet-sprint/docs/dolt-sync-redesign.md
  * Part 5) -- thrown by settleDoltConflicts() when a member has no usable,
  * correctly-pinned `dolt` binary and settle's own install/repair ladder
@@ -412,7 +431,7 @@ export class DoltBinaryUnavailableError extends WorkflowError {
 // AgentDispatchError -- checked FIRST below since it can't be fooled by
 // auth-like noise in an unrelated failure's message text; the regex remains
 // as a fallback for older/mocked errors that only ever set `.message`.
-const NON_RETRYABLE_DISPATCH_RE = /authentication failed|not logged in|workspace not trusted|has not been trusted/i;
+const NON_RETRYABLE_DISPATCH_RE = /authentication failed|failed to authenticate|oauth session expired|could not be refreshed|not logged in|workspace not trusted|has not been trusted/i;
 
 /**
  * True when a dispatch error can NEVER be fixed by retrying (auth /
@@ -432,7 +451,7 @@ export function isNonRetryableDispatchError(err) {
 // LLM credential failure (as opposed to workspace-trust, which
 // provision_llm_auth cannot fix -- that needs an operator to run `claude
 // --dangerously-skip-permissions` or trust the folder interactively).
-const AUTH_DISPATCH_RE = /authentication failed|not logged in/i;
+const AUTH_DISPATCH_RE = /authentication failed|failed to authenticate|oauth session expired|could not be refreshed|not logged in/i;
 
 /**
  * True when a dispatch error is specifically an LLM auth/credential failure
@@ -900,6 +919,11 @@ export const BEADS_IDENTITY_FAILURE_REASONS = Object.freeze({
     MISMATCH: 'MISMATCH',
     // The member cannot run bd at all (not installed / not on PATH).
     MISSING_TOOL: 'MISSING_TOOL',
+    // A beads-reading member had no usable beads database (or no
+    // sync.remote) and the preflight could not set one up from the sprint's
+    // expected beads remote -- dispatching would hand the role a database
+    // that does not hold the sprint's issues, so refuse up front.
+    BEADS_SETUP_FAILED: 'BEADS_SETUP_FAILED',
 });
 
 /**
@@ -911,7 +935,9 @@ export const BEADS_IDENTITY_FAILURE_REASONS = Object.freeze({
  * when a member cannot run bd at all -- a bd probe failed because bd is not
  * installed or not on PATH (reason MISSING_TOOL), so every later bd command
  * there would fail too. Any other probe that fails or cannot be parsed is a
- * logged warning, never this error.
+ * logged warning, never this error -- except BEADS_SETUP_FAILED: a
+ * beads-reading member had no database / no sync.remote and setting it up
+ * from the expected remote failed.
  *
  * A WorkflowError so main()'s terminal record names the reason, but
  * deliberately NOT a typed abort: nothing has been dispatched or mutated, so
@@ -942,5 +968,144 @@ export class BeadsIdentityError extends WorkflowError {
         this.reason = reason;
         this.member = member;
         if (mismatches) this.mismatches = mismatches;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Member permission config (the provider's composed per-folder config)
+// ---------------------------------------------------------------------------
+
+/**
+ * Thrown by the member permission-config preflight
+ * (member-provisioning.mjs createPermissionConfigPreflight) BEFORE any
+ * dispatch when a dispatch member's composed per-folder permission config
+ * (its provider's permissionConfigPaths(), as reported by member_detail) is
+ * missing from its work folder -- a re-clone, `git clean -xdf` or fresh
+ * worktree drops it -- and re-composing it with compose_permissions failed or
+ * did not bring it back, or it could not be probed at all. Dispatching would
+ * hand the role a session whose tool calls (e.g. bd) are refused as
+ * "requires approval".
+ *
+ * Like BeadsIdentityError, a WorkflowError but deliberately NOT a typed
+ * abort: nothing has been dispatched, so there is no partial work to push.
+ *
+ * @property {string} member - the member whose config is missing
+ * @property {string[]} files - the missing (or unprobeable) config file(s)
+ * @property {string} role - the compose_permissions role the fix names
+ */
+export class MemberPermissionConfigError extends WorkflowError {
+    /**
+     * @param {string} message
+     * @param {{ member: string, files?: string[], role?: string, details?: object, cause?: unknown }} opts
+     */
+    constructor(message, opts = {}) {
+        const { member, files = [], role, details, cause } = opts;
+        super(message, {
+            code: 'MEMBER_PERMISSION_CONFIG',
+            details: { member, files, role, ...details },
+            cause,
+        });
+        this.member = member;
+        this.files = files;
+        this.role = role;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Agent permission refusals during a dispatch (reason 'permission_denied')
+// ---------------------------------------------------------------------------
+//
+// execute_prompt reports a dispatch whose member CLI refused tool calls for
+// lack of a grant as a structured `reason: 'permission_denied'` with a
+// `permissionDenied` block ({ actions, denials, suggestedGrants, hint,
+// signals }); the workflow layer forwards both onto AgentDispatchError.details.
+// It is a MISSING-PERMISSION failure, healed by compose_permissions -- never a
+// role outcome. In particular the refusal text must never be fed to a caller
+// as a plan-review/review verdict. Keyed on the structured reason only, like
+// isUsageLimitDispatchError: never on the provider's prose.
+export const PERMISSION_DENIED_DISPATCH_REASON = 'permission_denied';
+
+/**
+ * True when a dispatch error is an agent permission refusal.
+ * @param {unknown} err
+ * @returns {boolean}
+ */
+export function isPermissionDeniedDispatchError(err) {
+    return err?.details?.reason === PERMISSION_DENIED_DISPATCH_REASON;
+}
+
+/**
+ * The permissionDenied block carried on a permission-refusal dispatch error,
+ * normalised to `{ actions: string[], denials: {action, target?,
+ * suggestedGrants?}[], suggestedGrants: string[], hint: string,
+ * permissionMode?: string, healable?: boolean }`, or null when the error
+ * carries none. `healable: false` means the session's permission mode (Claude
+ * auto/bypass) makes the refusal a classifier or deny-rule decision that no
+ * grant may ever override.
+ * @param {unknown} err
+ * @returns {{actions: string[], denials: Array<{action: string, target?: string, suggestedGrants?: string[]}>, suggestedGrants: string[], hint: string, permissionMode?: string, healable?: boolean}|null}
+ */
+export function permissionDeniedOf(err) {
+    const d = err?.details?.permissionDenied;
+    if (!d || typeof d !== 'object') return null;
+    const strings = (v) => (Array.isArray(v) ? v.filter((x) => typeof x === 'string') : []);
+    const denials = Array.isArray(d.denials)
+        ? d.denials.filter((x) => x && typeof x.action === 'string')
+            .map((x) => ({
+                action: x.action,
+                ...(typeof x.target === 'string' ? { target: x.target } : {}),
+                ...(Array.isArray(x.suggestedGrants) ? { suggestedGrants: strings(x.suggestedGrants) } : {}),
+            }))
+        : [];
+    return {
+        actions: strings(d.actions),
+        denials,
+        suggestedGrants: strings(d.suggestedGrants),
+        hint: typeof d.hint === 'string' ? d.hint : '',
+        ...(typeof d.permissionMode === 'string' ? { permissionMode: d.permissionMode } : {}),
+        ...(typeof d.healable === 'boolean' ? { healable: d.healable } : {}),
+    };
+}
+
+/**
+ * Thrown by the dispatch engine (dispatch-role.mjs) when a role's dispatch
+ * was refused tool calls and the progressive heal (createPermissionDenialHeal:
+ * grant within the member's composed policy, retry, repeat while each heal
+ * adds a new grant) can make no further progress. Ends the sprint naming the
+ * member, the denied actions and the fix; no plan-review or review round is
+ * ever charged for it.
+ *
+ * A WorkflowError (so the run records a terminal reason) but deliberately
+ * NOT a typed abort, like MemberPermissionConfigError: the fix is a member
+ * grant, after which the sprint is simply re-run.
+ *
+ * @property {string} member - the member whose tool calls were refused
+ * @property {string|null} role - the sprint role whose dispatch was refused
+ * @property {string[]} actions - the denied actions (e.g. 'Bash "bd show x"')
+ * @property {string[]} suggestedGrants - compose_permissions grants that would allow them
+ * @property {string[]} rejectedGrants - suggested grants outside the role policy, never auto-added
+ * @property {string} step - 'heal' (compose_permissions failed or no heal is wired),
+ *   'not_healable' (auto/bypass-mode refusal: classifier or deny rule, never granted),
+ *   'no_progress' (refused again after its grant, outside policy, NEVER_AUTO_GRANT, or no
+ *   grant maps to the call) or 'cap' (heal limit per member per sprint or per ladder reached)
+ */
+export class MemberPermissionDeniedError extends WorkflowError {
+    /**
+     * @param {string} message
+     * @param {{ member: string, role?: string|null, actions?: string[], suggestedGrants?: string[], rejectedGrants?: string[], step: string, details?: object, cause?: unknown }} opts
+     */
+    constructor(message, opts = {}) {
+        const { member, role = null, actions = [], suggestedGrants = [], rejectedGrants = [], step, details, cause } = opts;
+        super(message, {
+            code: 'MEMBER_PERMISSION_DENIED',
+            details: { member, role, actions, suggestedGrants, rejectedGrants, step, ...details },
+            cause,
+        });
+        this.member = member;
+        this.role = role;
+        this.actions = actions;
+        this.suggestedGrants = suggestedGrants;
+        this.rejectedGrants = rejectedGrants;
+        this.step = step;
     }
 }

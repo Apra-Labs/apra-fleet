@@ -971,6 +971,12 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
         // tests are unaffected.
         commandLogDetailed = null,
         memberGitState = null,
+        // Optional ({ command, member_name }) => result|undefined hook, called
+        // for every executeCommand() before anything else. A test uses it to
+        // answer one member's commands (e.g. a member beads set-up sequence)
+        // and to observe their order: a returned non-undefined value is the
+        // command's result.
+        onCommand = null,
         // apra-fleet-unw2.9 (N11): injectable git/gh failure. Optional
         // (cmd: string) => boolean predicate, tested ONLY against `git `/
         // `gh ` commands (the ones this mock otherwise short-circuits to a
@@ -1138,6 +1144,10 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
     const api = {
         executeCommand: async (opts) => {
             commandLog.push(opts.command);
+            if (onCommand) {
+                const injected = await onCommand({ command: opts.command, member_name: opts.member_name });
+                if (injected !== undefined) return injected;
+            }
 
             // apra-fleet-unw2.4 (N4): per-member command log + simulated
             // per-member git checkout state (see the option comments above).
@@ -2107,6 +2117,13 @@ export async function runDevelopLoopScenario(tag, {
     // buildMockFleetApi's `beadsMemories` option comment. The keys the
     // sweep forgot come back as `forgottenMemories` on the result.
     beadsMemories,
+    // Optional executeCommand observer/override -- see buildMockFleetApi's
+    // `onCommand` option comment.
+    onCommand,
+    // Optional caller-owned array that receives every workflow
+    // `activity:end` record (command and agent activities, with `success`
+    // and `error`), so a scenario can assert how an activity was recorded.
+    activityEnds,
 }) {
     const { tempDir, epicBead, tasks } = await setupMinimal(tag, taskSpecs);
     if (withRunbooks) {
@@ -2190,11 +2207,13 @@ export async function runDevelopLoopScenario(tag, {
             ...(prCurlResponseQueue !== undefined ? { prCurlResponseQueue } : {}),
             ...(beadsIdentity !== undefined ? { beadsIdentity } : {}),
             ...(beadsMemories !== undefined ? { beadsMemories, forgottenMemories, memoriesSink } : {}),
+            ...(onCommand !== undefined ? { onCommand } : {}),
         });
         // apra-fleet-20i.1.2: see runOnce() above -- same tag-as-logPrefix
         // threading, real single-sprint CLI path unaffected.
         const workflow = new FleetWorkflow(mockFleetApi, { targetRepo: tempDir }, `[${tag}] `);
         workflow.on('log', (e) => logs.push(e.msg));
+        if (Array.isArray(activityEnds)) workflow.on('activity:end', (meta) => activityEnds.push(meta));
         // apra-fleet-eft.28.2: publishState() (runner.js's sprint-state
         // persistence, e.g. the main() typed-abort catch's
         // publishState('terminal', ...)) emits a 'state' event on the

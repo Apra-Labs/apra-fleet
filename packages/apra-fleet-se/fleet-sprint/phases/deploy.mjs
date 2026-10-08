@@ -43,6 +43,88 @@
 
 import { dispatchRole, TURN_BASES } from '../dispatch-role.mjs';
 
+// =============================================================================
+// DEPLOY-FAILURE VERDICT GATE (apra-fleet-b4g.102.1).
+//
+// A cycle whose deploy FAILED skipped Integration Test, so nothing this cycle
+// ever exercised the deployed build. Cycle Evaluation used to exit as
+// "satisfied" on 0 open beads + an APPROVED review regardless, and the Final
+// Review's LLM verdict was the only thing standing between that and a [PASS]
+// PR. The rule is now enforced by the orchestrator, not left to the LLM:
+//
+//   * Cycle Evaluation never exits as satisfied (goal-priority exit OR the
+//     root/target-already-closed exit) while the LATEST cycle's deploy failed.
+//     It re-attempts the deploy in another cycle while the cycle budget
+//     (maxCycles) and DEPLOY_RETRY_CYCLE_LIMIT both allow.
+//   * When that budget is exhausted, the loop ends and the sprint verdict is
+//     forced to FAIL (deliberately FAIL, not INCONCLUSIVE: Publish PR's title
+//     and the run status are PASS/FAIL only, and an unverified build is a
+//     failed gate, not an undecided one). The reason names the cycle and the
+//     deployer's notes, and is prepended to the verdict notes so it reaches
+//     the PR title ([FAIL]), the PR body and the sprint analysis doc.
+//
+// A sprint with no deploy.md never records a deploy outcome
+// (lastDeployFailure stays null), so none of this changes its behaviour.
+// =============================================================================
+
+/**
+ * Consecutive cycles that may each end "otherwise satisfied but the deploy
+ * failed" before Cycle Evaluation stops re-attempting the deploy and exits to
+ * the finish phases with a forced FAIL. Bounded by maxCycles as well.
+ */
+export const DEPLOY_RETRY_CYCLE_LIMIT = 3;
+
+/**
+ * The latest cycle's deploy outcome, as the gate reads it.
+ *
+ * @param {{ hasDeploy: boolean, deployedThisCycle: boolean, cycle: number,
+ *   deployFailures: Array<{cycle: number, notes: string}> }} opts
+ * @returns {{cycle: number, notes: string} | null} The failure record when a
+ *   deploy.md exists and this cycle's deploy failed; null when it succeeded or
+ *   no deploy was attempted (no deploy.md).
+ */
+export function latestDeployFailure({ hasDeploy, deployedThisCycle, cycle, deployFailures }) {
+    if (!hasDeploy || deployedThisCycle) return null;
+    const rec = [...deployFailures].reverse().find((f) => f && f.cycle === cycle);
+    return { cycle, notes: rec && rec.notes != null ? String(rec.notes) : '(deployer returned no notes)' };
+}
+
+/**
+ * One-line reason naming the deploy failure; used in the cycle-loop log, the
+ * forced verdict notes and therefore the PR body.
+ *
+ * @param {{cycle: number, notes: string}} failure
+ * @returns {string}
+ */
+export function formatDeployFailureReason(failure) {
+    return `Deploy FAILED in the last cycle (C${failure.cycle}), so Integration Test never ran against the ` +
+        `deployed build and this sprint cannot PASS. Deployer notes: ${failure.notes}`;
+}
+
+/**
+ * Applies the gate to the Final Review verdict. Returns a NEW verdict object
+ * (never mutates the dispatch result). With no failure, returns the input
+ * unchanged. With a failure, the verdict is FAIL and the notes start with the
+ * reason; an LLM PASS is overridden, an LLM FAIL keeps its own notes after it.
+ *
+ * @param {object} verdictResult Final Review verdict ({verdict, notes, ...}).
+ * @param {{cycle: number, notes: string} | null} failure
+ * @returns {object}
+ */
+export function applyDeployFailureVerdictGate(verdictResult, failure) {
+    if (!failure) return verdictResult;
+    const reason = formatDeployFailureReason(failure);
+    const prior = verdictResult && typeof verdictResult.notes === 'string' ? verdictResult.notes : '';
+    const overridden = !verdictResult || verdictResult.verdict === 'PASS';
+    return {
+        ...(verdictResult || {}),
+        verdict: 'FAIL',
+        notes: `${reason}` +
+            (overridden ? ' (Final Review returned PASS; the orchestrator overrode it to FAIL.)' : '') +
+            (prior ? `\n\n${prior}` : ''),
+    };
+}
+
 /**
  * Runs the per-cycle Deploy phase.
  *

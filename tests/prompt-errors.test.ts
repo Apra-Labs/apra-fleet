@@ -6,6 +6,16 @@ describe('classifyPromptError', () => {
     expect(classifyPromptError('Not logged in')).toBe('auth');
   });
 
+  it('classifies the expired-OAuth CLI result (carrying api_error) as auth, not server', () => {
+    const result = '{"is_error":true,"terminal_reason":"api_error","result":"Failed to authenticate: OAuth session expired and could not be refreshed"}';
+    expect(classifyPromptError(result)).toBe('auth');
+    expect(isRetryable(classifyPromptError(result))).toBe(false);
+  });
+
+  it('still classifies a 429 + api_error payload as overloaded', () => {
+    expect(classifyPromptError('{"is_error":true,"terminal_reason":"api_error","result":"API Error: 429 rate limit"}')).toBe('overloaded');
+  });
+
   // apra-fleet-eft.40.3
   it('classifies the workspace-not-trusted stderr signature', () => {
     expect(classifyPromptError('Ignoring 17 permissions.allow entries -- this workspace has not been trusted')).toBe('workspace_not_trusted');
