@@ -71,6 +71,38 @@ import {
 } from '../abort.mjs';
 
 /**
+ * The bead ids this round's Review covers: the union of every streak
+ * outcome's VERIFIED-closed beads (`closedIds`, which develop.mjs reads back
+ * from the shared beads DB after a D-pull), de-duplicated.
+ *
+ * Scope is built from `closedIds`, never from a streak's overall `outcome`:
+ * `outcome` exists for re-laning (a streak with ANY bead still open is
+ * 'failed' so that bead re-lanes next round), and a streak that closed A and B
+ * and then stopped on C (BLOCKED, out of turns, crashed) still did A and B --
+ * their commits are on the branch and they must be reviewed against their
+ * acceptance criteria in the SAME round, not skipped forever. An outcome with
+ * no `closedIds` contributes nothing, whatever its label.
+ *
+ * Invariant kept: every review-scope bead is closed in the SHARED beads DB.
+ * An outcome flagged `publishBlocked` (a permission-scope post-dispatch sync
+ * failure, where the D-push was skipped so the doer's closes exist only in its
+ * own clone) is excluded wholesale -- asking the reviewer to judge beads that
+ * carry no evidence and no report risks a self-contradictory CHANGES_NEEDED
+ * verdict and a ReviewerContractViolationError sprint abort.
+ *
+ * @param {Array<{closedIds?: string[], publishBlocked?: boolean}>} streakOutcomes
+ * @returns {string[]} unsorted, unique bead ids (callers order them).
+ */
+export function reviewScopeBeadIds(streakOutcomes) {
+    const ids = new Set();
+    for (const o of streakOutcomes || []) {
+        if (!o || o.publishBlocked) continue;
+        for (const id of Array.isArray(o.closedIds) ? o.closedIds : []) ids.add(id);
+    }
+    return [...ids];
+}
+
+/**
  * Runs ONE Review round: reviewer dispatch plus the orchestrator-applied
  * transitions its verdict asks for.
  *
@@ -133,9 +165,10 @@ export async function runReviewPhase({
     // Sort by (title, id) -- not raw outcome-recording order -- so this
     // evidence-gathering step is deterministic. See the readyTitleById
     // comment just above.
-    // Failed streaks' beadIds are excluded from this round's review
-    // scope.
-    const assignedBeadIds = streakOutcomes.filter((o) => o.outcome !== 'failed').flatMap((o) => o.beadIds)
+    // Scope = every bead verified closed this round, including the closed
+    // beads of a streak that failed on a sibling; a still-open bead and a
+    // publish-blocked outcome never enter it (see reviewScopeBeadIds).
+    const assignedBeadIds = reviewScopeBeadIds(streakOutcomes)
         .slice().sort((a, b) => {
             const ta = readyTitleById.get(a) || a;
             const tb = readyTitleById.get(b) || b;
@@ -145,7 +178,8 @@ export async function runReviewPhase({
         ? await command(`bd show ${assignedBeadIds.join(' ')} --json`, { member_name: backlogMember, silent: true })
         : '[]';
 
-    // Empty-guard: when EVERY streak this round failed, assignedBeadIds
+    // Empty-guard: when no bead was verified closed this round (every
+    // streak failed before closing anything), assignedBeadIds
     // is [] and there is nothing for the Reviewer to look at. Skip the
     // dispatch entirely rather than sending an empty-scope review: an
     // empty review is prone to returning CHANGES_NEEDED with empty
@@ -156,7 +190,7 @@ export async function runReviewPhase({
     // still runs, so the loop correctly continues instead of prematurely
     // treating the cycle as organically complete.
     if (assignedBeadIds.length === 0) {
-        log(`Develop C${cycle} R${devRounds}: all streaks this round failed with no beadIds assigned -- skipping Review dispatch (nothing to review). Failed-streak beads remain ready for the next Develop round.`);
+        log(`Develop C${cycle} R${devRounds}: all streaks this round failed with no beadIds assigned -- skipping Review dispatch (nothing to review: no bead was verified closed this round). Failed-streak beads remain ready for the next Develop round.`);
     } else {
     // dispatchReview() applies the shared contract-violation
     // retry-once-then-throw rule (see its own doc comment and
