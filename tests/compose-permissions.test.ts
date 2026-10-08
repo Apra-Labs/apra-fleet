@@ -15,6 +15,7 @@ import { composePermissions, findProfilesDir, removeComposedMemberConfig } from 
 import { ClaudeProvider } from '../src/providers/claude.js';
 import { AgyProvider } from '../src/providers/agy.js';
 import { readInstallConfig } from '../src/cli/config.js';
+import { claudeMemberDenyRules, memberMcpAllowRules } from '../src/services/member-config-io.js';
 import type { LlmProvider, SSHExecResult } from '../src/types.js';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -1468,4 +1469,45 @@ describe('composePermissions -- project_folder whose basename is not a work-fold
       fs.rmSync(base, { recursive: true, force: true });
     }
   });
+});
+
+// ---------------------------------------------------------------------------
+// Member tool allow rules: every composed profile (proactive and dry_run,
+// doer and reviewer, role or tags) allows every member-allowlisted fleet tool,
+// so an acceptEdits session (Haiku, pre-4.6 models) is never refused a
+// kb_*/code_* call for lack of an allow rule -- and allows none of the tools
+// the member deny rules cover.
+// ---------------------------------------------------------------------------
+
+describe('composePermissions -- member tool allow rules', () => {
+  const MEMBER_RULES = memberMcpAllowRules();
+  const DENY = claudeMemberDenyRules();
+  const assertMemberRules = (allow: string[]) => {
+    for (const r of MEMBER_RULES) expect(allow).toContain(r);
+    for (const r of DENY) expect(allow).not.toContain(r);
+  };
+
+  for (const args of [{ role: 'doer' }, { role: 'reviewer' }, { tags: ['doer', 'gpu'] }, { tags: ['reviewer'] }] as const) {
+    const label = Object.values(args).flat().join('-');
+    it(`dry_run ${JSON.stringify(args)}: the allow list carries every member tool rule and no denied tool`, async () => {
+      const member = makeTestAgent({ friendlyName: `claude-mt-dry-${label}`, llmProvider: 'claude', os: 'linux' });
+      addAgent(member);
+      mockExecCommand.mockResolvedValue(OK);
+      const out = JSON.parse(await composePermissions({ member_id: member.id, ...args, dry_run: true } as any));
+      assertMemberRules(out.allow);
+    });
+
+    it(`proactive ${JSON.stringify(args)}: the written settings.local.json allows every member tool and still denies the rest`, async () => {
+      const member = makeTestAgent({ friendlyName: `claude-mt-${label}`, llmProvider: 'claude', os: 'linux' });
+      addAgent(member);
+      installFsMock();
+      await composePermissions({ member_id: member.id, ...args } as any);
+      const writeCmd = mockExecCommand.mock.calls.map(c => c[0] as string)
+        .find(cmd => cmd.includes('.claude/settings.local.json') && cmd.includes('FLEET_PERMS_EOF'))!;
+      expect(writeCmd).toBeDefined();
+      const perms = JSON.parse(extractWrittenContent(writeCmd)).permissions;
+      assertMemberRules(perms.allow);
+      for (const r of DENY) expect(perms.deny).toContain(r);
+    });
+  }
 });
