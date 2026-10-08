@@ -101,6 +101,22 @@ describe('owner-only mode of credential-carrying config writes', () => {
     }
   });
 
+  it('an existing file is tightened to 0o600 BEFORE the credential is written into it', () => {
+    const file = path.join(tmpHome, 'existing.json');
+    fs.writeFileSync(file, '{}', { mode: 0o644 });
+    const order: string[] = [];
+    const writeSpy = vi.spyOn(fs, 'writeFileSync').mockImplementation(((...a: any[]) => { if (a[0] === file) order.push('write'); }) as any);
+    const chmodSpy = vi.spyOn(fs, 'chmodSync').mockImplementation(((p: any, m: any) => { if (p === file && m === 0o600) order.push('chmod'); }) as any);
+    try {
+      writeOwnerOnlyFile(file, '{"secret":1}');
+      expect(order[0]).toBe('chmod');
+      expect(order).toContain('write');
+    } finally {
+      writeSpy.mockRestore();
+      chmodSpy.mockRestore();
+    }
+  });
+
   it('every provider registration routes the header-carrying write through an owner-only write', () => {
     const chmodSpy = vi.spyOn(fs, 'chmodSync');
     try {

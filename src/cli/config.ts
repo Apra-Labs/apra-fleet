@@ -168,11 +168,18 @@ export function readConfig(paths: ProviderInstallConfig): any {
 }
 
 /**
- * Write a file that carries a credential: owner-only (0600). writeFileSync's
- * mode applies only when the file is created, so an existing file (a provider
- * config the user already had, at 0644) is chmod-ed explicitly.
+ * Write a file that carries a credential: owner-only (0600), never briefly
+ * readable by others. writeFileSync's mode applies only when the file is
+ * created, so an existing file (a provider config the user already had, at
+ * 0644) is chmod-ed BEFORE the credential is written into it; a new file is
+ * created 0600. The final chmod pins exactly 0600 whatever the umask.
  */
 export function writeOwnerOnlyFile(file: string, content: string): void {
+  try {
+    fs.chmodSync(file, 0o600);
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+  }
   fs.writeFileSync(file, content, { mode: 0o600 });
   fs.chmodSync(file, 0o600);
 }
