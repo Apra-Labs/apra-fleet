@@ -60,22 +60,38 @@
 // no-write instruction, and 'pr-body-only' returns the analysis for
 // ./publish-pr.mjs to put in the PR body instead. The harvester is still
 // dispatched in every mode, because its knowledge-bank capture and
-// low-priority backlog confirmation do not write to the repository. The
-// no-write modes are enforced through the harvester's prompt and agent
-// contract: the policy row's pushCode bracket is unchanged, and with nothing
-// committed it has nothing to push.
+// low-priority backlog confirmation do not write to the repository.
+//
+// THE NO-WRITE MODES ARE ENFORCED BY THE ENGINE, not only by the prompt.
+// 'pr-body-only' and 'off' dispatch through ../role-policies.mjs's
+// HARVESTER_NO_WRITE_POLICIES (via dispatchRole's ctx.policies seam), whose
+// harvester row never G-pushes code -- beads still D-push. Inside the bracket,
+// after the G-pull, this phase records the member's HEAD and working tree;
+// after the dispatch returns it records them again. A moved HEAD or a newly
+// dirty tree is a violation: it is logged loudly, the member is reset to the
+// recorded HEAD (and new untracked paths are removed) before Publish PR pushes
+// the branch, and the result is returned as harvestWriteCheck so the PR body
+// states the violation rather than claiming nothing was written. When the
+// member's HEAD or status cannot be read, the check is 'unverified' and the PR
+// body says so -- it never claims an unverified "wrote nothing".
 //
 // GUARD COVERAGE: registered as 'phases/harvest.mjs' in ../guarded-modules.mjs.
 // It took NO member_name-bearing command() call site out of runner.js -- the
 // docs commits are made by the DISPATCHED harvester inside its own
 // repo, and its pushes are the policy row's bracket -- but it took ONE
 // dispatchRole() site (the harvester ladder), which is exactly what
-// dispatch-safety-guard and the phase 3 dispatch census read. Both baselines
-// are pinned rather than assumed.
+// dispatch-safety-guard and the phase 3 dispatch census read. It has ONE
+// command() site of its own, runHarvesterGit() in noWriteGuard() below: the
+// no-write check's reads and reset, always on the harvester's member. Both
+// baselines are pinned rather than assumed.
 // =============================================================================
 
 import { dispatchRole, TURN_BASES } from '../dispatch-role.mjs';
 import { buildHarvesterPrompt } from '../prompts.mjs';
+import { HARVESTER_NO_WRITE_POLICIES } from '../role-policies.mjs';
+
+/** Harvest modes in which the harvester must not change the target repo. */
+export const NO_WRITE_HARVEST_MODES = Object.freeze(['pr-body-only', 'off']);
 
 /**
  * Runs the Harvest phase: assemble the sprint-analysis inputs, dispatch the
@@ -88,13 +104,16 @@ import { buildHarvesterPrompt } from '../prompts.mjs';
  * PR body.
  *
  * @param {object} state Explicit phase state; see this file's header.
- * @returns {Promise<{ costAnalysis: string, harvestAnalysis: string }>}
+ * @returns {Promise<{ costAnalysis: string, harvestAnalysis: string,
+ *   harvestWriteCheck: { status: 'not-applicable'|'clean'|'violation'|'unverified', detail: string } }>}
  */
 export async function runHarvestPhase({
     // Presentation + dispatch seams.
     phase,
     log,
     dispatchCtx,
+    // Member-bound command seam: the no-write modes' HEAD/tree check and reset.
+    command,
     // Sprint identity/config.
     validated,
     targetIssues,
@@ -195,12 +214,35 @@ export async function runHarvestPhase({
     // below) reads the branch. It ALSO mutates beads (issue-defer of
     // low-priority items), so it D-pushes those mutations alongside its git
     // push. Both flags live in the policy row now.
-    const harvestOutcome = await dispatchRole(dispatchCtx, 'harvester', {
-        prompt: harvesterPrompt,
-        resumePrompt: 'Continue your harvest exactly where you left off in this same session -- do not redo docs sections already written. Finish the remaining updates, commit them, and return your final report now.',
-        roleLabel: 'Harvester',
-        resumeLabel: `Harvest (resume, max_turns=${TURN_BASES.HARVESTER_MAX_TURNS * 2})`,
-    });
+    //
+    // In the no-write modes the row is swapped for the no-push variant and the
+    // member's HEAD/tree is snapshotted inside the bracket (prepare runs after
+    // the G-pull), once -- a resume keeps the original snapshot.
+    const noWrite = NO_WRITE_HARVEST_MODES.includes(harvestMode);
+    let guard = null;
+    let preSnapshot = null;
+    if (noWrite) {
+        if (typeof command !== 'function') {
+            throw new Error(`runHarvestPhase: harvest mode "${harvestMode}" requires the command seam to verify the harvester's member`);
+        }
+        guard = noWriteGuard({ command, member: dispatchCtx.getMemberForRole('harvester'), log, harvestMode });
+    }
+    const harvestOutcome = await dispatchRole(
+        noWrite ? { ...dispatchCtx, policies: HARVESTER_NO_WRITE_POLICIES } : dispatchCtx,
+        'harvester',
+        {
+            prompt: harvesterPrompt,
+            resumePrompt: harvesterResumePrompt(harvestMode),
+            roleLabel: 'Harvester',
+            resumeLabel: `Harvest (resume, max_turns=${TURN_BASES.HARVESTER_MAX_TURNS * 2})`,
+            ...(noWrite ? {
+                prepare: async () => {
+                    if (preSnapshot === null) preSnapshot = await guard.snapshot();
+                    return {};
+                },
+            } : {}),
+        }
+    );
     const harvesterResult = harvestOutcome.value;
     // No duplicate log() dump -- see dispatchReview() for why. The file
     // path itself IS worth a line: it is the durable, committed record of
@@ -220,7 +262,125 @@ export async function runHarvestPhase({
     } else {
         log(`Harvester: completed in harvest mode ${harvestMode} (no repository writes requested).`);
     }
-    return { costAnalysis, harvestAnalysis: prAnalysis };
+    const harvestWriteCheck = noWrite
+        ? await guard.verify(preSnapshot)
+        : { status: 'not-applicable', detail: `harvest mode ${harvestMode} permits repository writes` };
+    return { costAnalysis, harvestAnalysis: prAnalysis, harvestWriteCheck };
+}
+
+/**
+ * The max_turns resume prompt. Its leading sentence is the 'harvester'
+ * secondary row's ladderAnchor and must stay byte-identical; the rest follows
+ * the harvest mode, so a no-write harvest is never told to commit.
+ */
+export function harvesterResumePrompt(harvestMode) {
+    const head = 'Continue your harvest exactly where you left off in this same session';
+    if (NO_WRITE_HARVEST_MODES.includes(harvestMode)) {
+        return `${head} -- harvest mode is ${harvestMode}: do not create, edit or commit any repository file. Finish the remaining knowledge-bank captures and backlog confirmation, and return your final report now.`;
+    }
+    return `${head} -- do not redo docs sections already written. Finish the remaining updates, commit them, and return your final report now.`;
+}
+
+const SHA_RE = /^[0-9a-f]{7,64}$/;
+// A `git status --porcelain` (v1) line: two status characters, a space, a path.
+const PORCELAIN_LINE_RE = /^[ MTADRCU?!]{2} (.+)$/;
+// Paths `git clean` may be handed verbatim on any member shell.
+const CLEANABLE_PATH_RE = /^[A-Za-z0-9._/][A-Za-z0-9._/-]*$/;
+
+/**
+ * Parses `git status --porcelain` output into entries, or null when the
+ * output is not porcelain at all (an unreadable status is never "clean").
+ * .beads/ paths are dropped: bd's passive export changes there whenever the
+ * backlog confirmation mutates beads, which the no-write modes permit.
+ * @param {unknown} output
+ * @returns {Array<{ code: string, path: string, line: string }>|null}
+ */
+export function parsePorcelainStatus(output) {
+    const entries = [];
+    for (const line of String(output ?? '').split(/\r?\n/)) {
+        if (line.trim() === '') continue;
+        const m = PORCELAIN_LINE_RE.exec(line);
+        if (!m) return null;
+        let p = m[1];
+        const arrow = p.indexOf(' -> ');
+        if (arrow !== -1) p = p.slice(arrow + 4);
+        if (p === '.beads' || p.startsWith('.beads/')) continue;
+        entries.push({ code: line.slice(0, 2), path: p, line });
+    }
+    return entries;
+}
+
+/**
+ * The no-write harvest check on the harvester's member. snapshot() records
+ * HEAD and the working tree; verify(pre) compares them after the dispatch
+ * and, on a violation, resets the member to the recorded HEAD, removes new
+ * untracked paths, and re-reads both to report whether the reset restored
+ * it. Every command is a plain git invocation whose arguments the engine has
+ * validated (a hex sha, a [A-Za-z0-9._/-] path), so it is shell-neutral on
+ * any member shell.
+ */
+function noWriteGuard({ command, member, log, harvestMode }) {
+    const runHarvesterGit = (cmd, label) => command(cmd, {
+        member_name: member, silent: true, failSoft: true, label,
+    });
+    const snapshot = async () => {
+        const headRes = await runHarvesterGit('git rev-parse HEAD', `harvest no-write check: read HEAD on '${member}'`);
+        const statusRes = await runHarvesterGit('git status --porcelain', `harvest no-write check: read working tree on '${member}'`);
+        const rawHead = headRes && headRes.ok ? String(headRes.output ?? '').trim() : '';
+        const head = SHA_RE.test(rawHead) ? rawHead : null;
+        const entries = statusRes && statusRes.ok ? parsePorcelainStatus(statusRes.output) : null;
+        let error = null;
+        if (head === null) {
+            error = `could not read HEAD on member '${member}'${headRes && headRes.error ? ` (${headRes.error})` : ''}`;
+        } else if (entries === null) {
+            error = `could not read the working tree status on member '${member}'${statusRes && statusRes.error ? ` (${statusRes.error})` : ''}`;
+        }
+        return { head, entries, error };
+    };
+    const unverified = (detail) => {
+        log(`[Harvest Write Check Unverified] harvest mode ${harvestMode}: ${detail} -- the engine cannot confirm the harvester left the repository unchanged.`);
+        return { status: 'unverified', detail };
+    };
+    const verify = async (pre) => {
+        if (!pre) return unverified(`no pre-dispatch snapshot of member '${member}' was taken`);
+        if (pre.error) return unverified(`${pre.error} before the dispatch`);
+        const post = await snapshot();
+        if (post.error) return unverified(`${post.error} after the dispatch`);
+        const preLines = new Set(pre.entries.map((e) => e.line));
+        const newEntries = post.entries.filter((e) => !preLines.has(e.line));
+        const headMoved = post.head !== pre.head;
+        if (!headMoved && newEntries.length === 0) {
+            log(`Harvest mode ${harvestMode}: verified the harvester left member '${member}' unchanged (HEAD ${pre.head}, no new working-tree changes).`);
+            return { status: 'clean', detail: `HEAD ${pre.head} unchanged and no new working-tree changes` };
+        }
+        const parts = [];
+        if (headMoved) parts.push(`HEAD moved from ${pre.head} to ${post.head}`);
+        if (newEntries.length > 0) parts.push(`working tree changed: ${newEntries.map((e) => e.path).join(', ')}`);
+        log(`[Harvest Write Violation] harvest mode ${harvestMode}: the harvester changed the repository on member '${member}' despite the no-write mode -- ${parts.join('; ')}. Resetting the member to ${pre.head}; nothing from this harvest is pushed.`);
+        await runHarvesterGit(`git reset --hard ${pre.head}`, `harvest no-write check: reset '${member}' to ${pre.head}`);
+        const leftBehind = [];
+        for (const e of newEntries) {
+            if (e.code !== '??') continue;
+            if (CLEANABLE_PATH_RE.test(e.path)) {
+                await runHarvesterGit(`git clean -f -d -- ${e.path}`, `harvest no-write check: remove untracked '${e.path}' on '${member}'`);
+            } else {
+                leftBehind.push(e.path);
+            }
+        }
+        const after = await snapshot();
+        const restored = after.error === null && after.head === pre.head
+            && after.entries.every((e) => preLines.has(e.line));
+        if (restored) {
+            log(`Harvest mode ${harvestMode}: member '${member}' reset to ${pre.head}; the harvester's changes were discarded.`);
+        } else {
+            log(`[Harvest Write Violation] harvest mode ${harvestMode}: member '${member}' was NOT fully restored to ${pre.head}`
+                + `${leftBehind.length > 0 ? ` (untracked paths left behind: ${leftBehind.join(', ')})` : ''}`
+                + `${after.error ? ` (${after.error})` : ''} -- inspect the member before reusing it.`);
+        }
+        const detail = `${parts.join('; ')}; ${restored ? `member reset to ${pre.head}` : `member NOT fully restored to ${pre.head}`}`;
+        return { status: 'violation', detail };
+    };
+    return { snapshot, verify };
 }
 
 /** One-line, log/PR-facing description of each non-default harvest mode. */

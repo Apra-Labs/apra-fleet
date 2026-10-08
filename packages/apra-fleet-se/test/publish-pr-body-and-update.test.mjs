@@ -387,7 +387,7 @@ const remoteCommand = async (cmd) => (cmd === 'git remote get-url origin'
     ? { ok: true, output: 'https://github.com/acme/widgets.git', error: null }
     : { ok: true, output: '', error: null });
 
-async function publish({ gh, verdict, notes, runId, member, costAnalysis, harvestAnalysis, harvestMode }) {
+async function publish({ gh, verdict, notes, runId, member, costAnalysis, harvestAnalysis, harvestMode, harvestWriteCheck }) {
     const logs = [];
     const result = await runPublishPrPhase({
         phase: () => {},
@@ -403,6 +403,7 @@ async function publish({ gh, verdict, notes, runId, member, costAnalysis, harves
         finalVerdictResult: { verdict, notes },
         costAnalysis,
         harvestAnalysis,
+        harvestWriteCheck,
     });
     return { result, logs };
 }
@@ -435,21 +436,46 @@ describe('Publish PR: a relaunch rewrites the existing PR for the new verdict', 
             costAnalysis: 'Tracked spend (priced dispatches only): $2.5000.',
             harvestAnalysis: '# Sprint Analysis: feat/x\n\nFinal closed count: 4.',
             harvestMode: 'pr-body-only',
+            harvestWriteCheck: { status: 'clean', detail: 'HEAD abc1234 unchanged and no new working-tree changes' },
         });
         assert.ok(gh.pr.body.includes('### Sprint analysis'), gh.pr.body);
         assert.ok(gh.pr.body.includes('Final closed count: 4.'), gh.pr.body);
-        assert.ok(gh.pr.body.includes('- Harvest mode: pr-body-only -- no harvester commits; the sprint analysis is in this PR body.'), gh.pr.body);
+        assert.ok(gh.pr.body.includes('- Harvest mode: pr-body-only -- no harvester commits (engine-verified: HEAD and working tree unchanged); the sprint analysis is in this PR body.'), gh.pr.body);
         assert.ok(gh.pr.body.includes('### Cost'), gh.pr.body);
     });
 
     test('harvest_mode off / docs-dir are stated in Details; full (the default) adds no line', async () => {
         const off = fakeGitHub();
-        await publish({ gh: off, verdict: 'PASS', notes: 'ok', runId: 'run-o', member: 'pub-harvest-off', harvestMode: 'off' });
-        assert.ok(off.pr.body.includes('- Harvest mode: off -- the harvester wrote nothing to the repository.'), off.pr.body);
+        await publish({
+            gh: off, verdict: 'PASS', notes: 'ok', runId: 'run-o', member: 'pub-harvest-off', harvestMode: 'off',
+            harvestWriteCheck: { status: 'clean', detail: 'HEAD abc1234 unchanged and no new working-tree changes' },
+        });
+        assert.ok(off.pr.body.includes('- Harvest mode: off -- the harvester wrote nothing to the repository (engine-verified: HEAD and working tree unchanged).'), off.pr.body);
         assert.ok(!off.pr.body.includes('### Sprint analysis'));
         const full = fakeGitHub();
         await publish({ gh: full, verdict: 'PASS', notes: 'ok', runId: 'run-f', member: 'pub-harvest-full', harvestMode: 'full' });
         assert.ok(!full.pr.body.includes('Harvest mode'), full.pr.body);
+    });
+
+    test('no-write harvest modes never claim "wrote nothing" unless the engine verified it', async () => {
+        for (const mode of ['pr-body-only', 'off']) {
+            const violation = fakeGitHub();
+            await publish({
+                gh: violation, verdict: 'PASS', notes: 'ok', runId: `run-v-${mode}`, member: `pub-harvest-v-${mode}`, harvestMode: mode,
+                harvestWriteCheck: { status: 'violation', detail: 'HEAD moved from aaaaaaa to bbbbbbb; member reset to aaaaaaa' },
+            });
+            assert.ok(violation.pr.body.includes(`- Harvest mode: ${mode} -- VIOLATION: the harvester changed the repository despite the no-write mode (HEAD moved from aaaaaaa to bbbbbbb; member reset to aaaaaaa). The engine discarded the change and did not push it.`), violation.pr.body);
+            assert.ok(!violation.pr.body.includes('wrote nothing') && !violation.pr.body.includes('no harvester commits'), violation.pr.body);
+            for (const check of [{ status: 'unverified', detail: "could not read HEAD on member 'm'" }, undefined]) {
+                const unverified = fakeGitHub();
+                await publish({
+                    gh: unverified, verdict: 'PASS', notes: 'ok', runId: `run-u-${mode}`, member: `pub-harvest-u-${mode}-${check ? 'u' : 'none'}`, harvestMode: mode,
+                    harvestWriteCheck: check,
+                });
+                assert.ok(unverified.pr.body.includes(`- Harvest mode: ${mode} -- repository writes were not requested, but the engine could not verify the harvester's member`), unverified.pr.body);
+                assert.ok(!unverified.pr.body.includes('wrote nothing') && !unverified.pr.body.includes('no harvester commits'), unverified.pr.body);
+            }
+        }
     });
 
     test('PASS -> FAIL: the stale PASS title is replaced too', async () => {

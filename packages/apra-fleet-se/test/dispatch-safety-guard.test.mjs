@@ -977,12 +977,16 @@ test('every command() call site in phases/regression-test.mjs passes member_name
 // last two, which complete the runSprintCycle slice. Unlike every pair before
 // them these two get DIFFERENT baselines, and the difference is the point.
 //
-// phases/harvest.mjs is a zero baseline: it issues no command() at all. The
-// docs/sprint-analysis commits it exists to produce are made by the
-// DISPATCHED harvester inside its own repo, and they reach the remote through
-// the 'harvester' policy row's pushCode/pushBeads bracket -- never through an
-// orchestrator-side command() here. A command() appearing in this module would
-// mean the orchestrator had started committing or pushing the harvest itself.
+// phases/harvest.mjs has exactly ONE command() site, and it never commits or
+// pushes. The docs/sprint-analysis commits the phase exists to produce are
+// made by the DISPATCHED harvester inside its own repo, and they reach the
+// remote through the 'harvester' policy row's pushCode/pushBeads bracket --
+// never through an orchestrator-side command() here. The one site is the
+// no-write harvest modes' verification helper: it reads HEAD and the working
+// tree on the harvester's member before and after the dispatch, and resets a
+// write the harvester was told not to make. It must run on that member, so
+// it must name it. A second site would mean the orchestrator had started
+// doing something else on the member -- move this number deliberately.
 //
 // phases/publish-pr.mjs is the opposite: it is the ONE phase module that took
 // real member_name-bearing command() sites out of runner.js, and both are
@@ -996,7 +1000,7 @@ test('every command() call site in phases/regression-test.mjs passes member_name
 // raiseVcsPrForMember, not by an agent.
 // =============================================================================
 const HARVEST_PHASE_PATH = path.join(__dirname, '../fleet-sprint/phases/harvest.mjs');
-const EXPECTED_HARVEST_PHASE_COMMAND_COUNT = 0;
+const EXPECTED_HARVEST_PHASE_COMMAND_COUNT = 1;
 
 const PUBLISH_PR_PHASE_PATH = path.join(__dirname, '../fleet-sprint/phases/publish-pr.mjs');
 const EXPECTED_PUBLISH_PR_PHASE_COMMAND_COUNT = 2;

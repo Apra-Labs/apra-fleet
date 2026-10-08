@@ -75,20 +75,34 @@ import { buildSprintPrBody, buildSprintPrTitle } from '../pr-body.mjs';
  * The PR-body Details line stating a non-default harvest mode, so a reviewer
  * never has to guess why the branch has no harvester commits. null for
  * 'full' (the default) -- an unchanged launch keeps an unchanged body.
+ *
+ * For the no-write modes ('pr-body-only' and 'off') the line only claims the
+ * harvester wrote nothing when ./harvest.mjs actually verified it
+ * (harvestWriteCheck.status 'clean'). A 'violation' is stated as one, and an
+ * unverified run says the engine could not check -- never a false "wrote
+ * nothing".
  * @param {{ harvestMode?: string, harvestDocsDir?: string|null }} validated
+ * @param {{ status?: string, detail?: string }|null} [harvestWriteCheck]
  * @returns {string|null}
  */
-export function harvestModeDetail(validated) {
-    switch (validated && validated.harvestMode) {
-        case 'pr-body-only':
-            return 'Harvest mode: pr-body-only -- no harvester commits; the sprint analysis is in this PR body.';
-        case 'off':
-            return 'Harvest mode: off -- the harvester wrote nothing to the repository.';
-        case 'docs-dir':
-            return `Harvest mode: docs-dir -- sprint analysis and durable docs written under ${validated.harvestDocsDir}/ only; no README edits.`;
-        default:
-            return null;
+export function harvestModeDetail(validated, harvestWriteCheck = null) {
+    const mode = validated && validated.harvestMode;
+    if (mode === 'docs-dir') {
+        return `Harvest mode: docs-dir -- sprint analysis and durable docs written under ${validated.harvestDocsDir}/ only; no README edits.`;
     }
+    if (mode !== 'pr-body-only' && mode !== 'off') return null;
+    const tail = mode === 'pr-body-only' ? ' The sprint analysis is in this PR body.' : '';
+    const status = harvestWriteCheck && harvestWriteCheck.status;
+    const detail = harvestWriteCheck && harvestWriteCheck.detail ? harvestWriteCheck.detail : 'no check result was recorded';
+    if (status === 'clean') {
+        return mode === 'pr-body-only'
+            ? 'Harvest mode: pr-body-only -- no harvester commits (engine-verified: HEAD and working tree unchanged); the sprint analysis is in this PR body.'
+            : 'Harvest mode: off -- the harvester wrote nothing to the repository (engine-verified: HEAD and working tree unchanged).';
+    }
+    if (status === 'violation') {
+        return `Harvest mode: ${mode} -- VIOLATION: the harvester changed the repository despite the no-write mode (${detail}). The engine discarded the change and did not push it.${tail}`;
+    }
+    return `Harvest mode: ${mode} -- repository writes were not requested, but the engine could not verify the harvester's member (${detail}).${tail}`;
 }
 
 /**
@@ -123,6 +137,9 @@ export async function runPublishPrPhase({
     // The sprint analysis from ./harvest.mjs when harvest mode is
     // 'pr-body-only' ('' otherwise): the PR body is its only published copy.
     harvestAnalysis = '',
+    // ./harvest.mjs's no-write verification result ({status, detail}); decides
+    // what the harvest-mode Details line may claim.
+    harvestWriteCheck = null,
 }) {
     phase(`Publish PR C${finalCycleLabel}`);
     // The branch push is the LAST step of a sprint that has already done all of
@@ -273,7 +290,7 @@ export async function runPublishPrPhase({
             notes: finalVerdictResult.notes,
             details: [
                 validated.skipRegression ? 'Regression pass: skipped by launch option -- not run this sprint.' : null,
-                harvestModeDetail(validated),
+                harvestModeDetail(validated, harvestWriteCheck),
             ],
             costAnalysis,
             analysis: harvestAnalysis,

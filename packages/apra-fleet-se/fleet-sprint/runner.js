@@ -3320,13 +3320,14 @@ async function runSprintCycle(context) {
     // sprint-analysis document, the docs commits and the issue deferrals are
     // all written by the DISPATCHED harvester in its own repo, and the
     // 'harvester' policy row's pushCode/pushBeads bracket publishes them. The
-    // only values it returns are the cost block and (pr-body-only mode) the
-    // analysis text, both of which Publish PR renders. It must
+    // only values it returns are the cost block, (pr-body-only mode) the
+    // analysis text and the no-write modes' engine check of the harvester's
+    // member (harvestWriteCheck), all of which Publish PR renders. It must
     // nonetheless run HERE, after Regression Test (whose summary it folds into
     // the analysis document) and before Publish PR (which pushes the branch the
     // harvester just committed to).
-    const { costAnalysis, harvestAnalysis } = await runHarvestPhase({
-        phase, log, dispatchCtx,
+    const { costAnalysis, harvestAnalysis, harvestWriteCheck } = await runHarvestPhase({
+        phase, log, dispatchCtx, command,
         validated, targetIssues, finalCycleLabel, budget,
         closedCountHistory, highWaterClosedCount,
         deployFailures, integFailures, rejectedNewTasks,
@@ -3354,7 +3355,7 @@ async function runSprintCycle(context) {
         phase, log, command,
         args, validated, targetIssues, backlogMember, finalCycleLabel,
         gitSync, getMemberForRole,
-        finalVerdictResult, costAnalysis, harvestAnalysis,
+        finalVerdictResult, costAnalysis, harvestAnalysis, harvestWriteCheck,
     });
 
     endGroup();

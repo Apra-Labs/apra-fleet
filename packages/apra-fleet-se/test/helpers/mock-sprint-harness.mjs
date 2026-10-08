@@ -995,6 +995,16 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
         // failures unaffected.
         gitGhFailurePattern = null,
         gitGhFailureMessage = null,
+        // Optional ({ command, member }) => mockCmdResult(...) | null, consulted
+        // for every git/gh command BEFORE the generic answers below (after
+        // gitGhFailurePattern). Returning null falls through. Lets a scenario
+        // model a member's HEAD/working tree (the harvest no-write check).
+        gitCommandHandler = null,
+        // Optional ({ opts }) => void | result override for the 'harvester'
+        // dispatch, run after the harvester contract check passes. Returning
+        // undefined keeps the default OK report; it may mutate scenario state
+        // (e.g. simulate a harvester commit).
+        harvestHandler = null,
         // apra-fleet-unw2.9 (N11): idempotent-PR-creation simulation. When
         // provided, this Set is used (instead of a call-local one) to track
         // which branches already have a mock-simulated open PR -- passing
@@ -1373,6 +1383,11 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
                     // isError), matching src/tools/execute-command.ts. Simulate
                     // that as a nonzero exit carrying the failure text, not isError.
                     return mockCmdResult(1, '', gitGhFailureMessage || `mock git/gh failure (injected) for: ${opts.command}`);
+                }
+
+                if (gitCommandHandler) {
+                    const handled = gitCommandHandler({ command: opts.command, member: opts.member_name });
+                    if (handled) return handled;
                 }
 
                 // apra-fleet-eft.64.1: answer the Publish PR step's remote-
@@ -1792,6 +1807,10 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
                         }]
                     };
                 }
+                if (harvestHandler) {
+                    const overridden = await harvestHandler({ opts });
+                    if (overridden !== undefined) return overridden;
+                }
                 return {
                     content: [{
                         text: JSON.stringify({
@@ -2117,6 +2136,8 @@ export async function runDevelopLoopScenario(tag, {
     // (the --harvest-mode / --harvest-docs-dir launch options).
     harvestMode,
     harvestDocsDir,
+    // Optional harness hooks: see buildMockFleetApi's option comments.
+    gitCommandHandler, harvestHandler,
     // Seeded beads memories for the sprint-start memory sweep -- see
     // buildMockFleetApi's `beadsMemories` option comment. The keys the
     // sweep forgot come back as `forgottenMemories` on the result.
@@ -2205,6 +2226,8 @@ export async function runDevelopLoopScenario(tag, {
             memberGitState,
             gitGhFailurePattern,
             gitGhFailureMessage,
+            gitCommandHandler,
+            harvestHandler,
             prExistsState,
             ...(prRecordState !== undefined ? { prRecordState } : {}),
             ...(originUrl !== undefined ? { originUrl } : {}),

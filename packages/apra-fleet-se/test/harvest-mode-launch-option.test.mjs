@@ -3,16 +3,19 @@ import assert from 'node:assert/strict';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 import { validateArgs, HARVEST_MODES } from '../fleet-sprint/sprint-args.mjs';
-import { planHarvestOutputs } from '../fleet-sprint/phases/harvest.mjs';
+import { planHarvestOutputs, harvesterResumePrompt, parsePorcelainStatus, NO_WRITE_HARVEST_MODES } from '../fleet-sprint/phases/harvest.mjs';
+import { ROLE_POLICIES, HARVESTER_NO_WRITE_POLICIES } from '../fleet-sprint/role-policies.mjs';
 import { buildHarvesterPrompt } from '../fleet-sprint/prompts.mjs';
 import { buildRunnerArgs, parseCliArgs } from '../bin/cli.mjs';
 import { buildSprintArgv, createSpawner } from '../src/supervisor/spawner.mjs';
 import { createSprintController, ApiError } from '../src/supervisor/api.mjs';
 import { createLedger, LEDGER_FILENAME } from '../src/supervisor/ledger.mjs';
 import { createHistory, HISTORY_FILENAME } from '../src/supervisor/history.mjs';
-import { runDevelopLoopScenario, withScenarioMarkers, checkHarvesterContract } from './helpers/mock-sprint-harness.mjs';
+import { runDevelopLoopScenario, withScenarioMarkers, checkHarvesterContract, mockCmdResult } from './helpers/mock-sprint-harness.mjs';
 
 // =============================================================================
 // harvest_mode launch option: what the end-of-sprint harvester may write into
@@ -82,6 +85,10 @@ describe('runner arg contract: harvest_mode / harvest_docs_dir', () => {
         '..', '../docs', 'docs/..', 'docs/../etc', 'a/..b', 'docs\\sub', 'my docs', '$HOME/docs', '~/docs',
         'docs//sub', '.', './docs', 'docs/./sub', '.git', 'sub/.git/hooks', 'docs;rm', 'docs`x`', 'docs"x',
         'x'.repeat(201),
+        // A leading '-' (option injection), a trailing '.' (stripped by Windows)
+        // and Windows reserved device names, any case, with or without an extension.
+        '-docs', 'notes/-rf', 'docs.', 'notes/sub.', 'notes/v1.',
+        'con', 'CON', 'nul', 'Nul.md', 'aux', 'prn.txt', 'notes/com1', 'COM9', 'lpt1', 'docs/LPT9.log', 'notes/con/x',
     ]) {
         test(`rejects unsafe harvest_docs_dir ${JSON.stringify(bad.length > 40 ? `${bad.slice(0, 10)}...` : bad)}`, () => {
             assert.throws(
@@ -90,10 +97,36 @@ describe('runner arg contract: harvest_mode / harvest_docs_dir', () => {
             );
         });
     }
+    test('the new segment rules name the reason', () => {
+        const reject = (dir) => () => validateArgs({ ...BASE_ARGS, harvest_mode: 'docs-dir', harvest_docs_dir: dir });
+        assert.throws(reject('notes/-rf'), /starts with '-'/);
+        assert.throws(reject('notes/sub.'), /ends with '\.'/);
+        assert.throws(reject('notes/Nul.md'), /reserved Windows device name/);
+    });
+    for (const good of ['console', 'notes/com10', 'lpt', 'docs.v2', 'a-b/c_d', 'nul-docs', 'auxiliary/x']) {
+        test(`still accepts the near-miss harvest_docs_dir ${JSON.stringify(good)}`, () => {
+            assert.equal(validateArgs({ ...BASE_ARGS, harvest_mode: 'docs-dir', harvest_docs_dir: good }).harvestDocsDir, good);
+        });
+    }
 });
 
 describe('cli.mjs: --harvest-mode / --harvest-docs-dir', () => {
     const base = { targetIssues: ['PROJ-1'], members: ['m1'], branch: 'feat/x', baseBranch: 'main', goal: 'P1/P2', maxCycles: 1 };
+    for (const bad of ['notes/-rf', 'notes/sub.', 'notes/nul.md', 'COM1']) {
+        test(`the CLI rejects --harvest-docs-dir ${JSON.stringify(bad)} before connecting to the fleet`, () => {
+            const cli = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'cli.mjs');
+            const res = spawnSync(process.execPath, [cli, '-i', 'PROJ-1', '-m', 'm1', '-b', 'feat/x', '-B', 'main',
+                '--harvest-mode', 'docs-dir', '--harvest-docs-dir', bad], {
+                // NODE_TEST_CONTEXT would make cli.mjs treat itself as imported
+                // by the test runner and skip main(); the child is a real CLI run.
+                env: Object.fromEntries(Object.entries(process.env).filter(([k]) => k !== 'NODE_TEST_CONTEXT')),
+                encoding: 'utf8',
+                timeout: 60000,
+            });
+            assert.equal(res.status, 1, `stdout: ${res.stdout}\nstderr: ${res.stderr}`);
+            assert.match(res.stderr, /Invalid harvest_docs_dir/);
+        });
+    }
     test('parseCliArgs accepts both flags', () => {
         const { values } = parseCliArgs(['-i', 'PROJ-1', '-m', 'm1', '-b', 'feat/x', '-B', 'main', '--harvest-mode', 'docs-dir', '--harvest-docs-dir', 'notes']);
         assert.equal(values['harvest-mode'], 'docs-dir');
@@ -175,6 +208,9 @@ describe('supervisor POST /api/sprints: harvestMode / harvestDocsDir', () => {
         ['an absolute dir', { harvestMode: 'docs-dir', harvestDocsDir: '/etc' }, 'harvestDocsDir'],
         ['a dir with ..', { harvestMode: 'docs-dir', harvestDocsDir: 'docs/../..' }, 'harvestDocsDir'],
         ['a dir with a non-docs-dir mode', { harvestMode: 'full', harvestDocsDir: 'notes' }, 'harvestDocsDir'],
+        ['a dir segment starting with -', { harvestMode: 'docs-dir', harvestDocsDir: 'notes/-rf' }, 'harvestDocsDir'],
+        ['a dir segment ending with .', { harvestMode: 'docs-dir', harvestDocsDir: 'notes/sub.' }, 'harvestDocsDir'],
+        ['a reserved Windows device name', { harvestMode: 'docs-dir', harvestDocsDir: 'notes/Aux.md' }, 'harvestDocsDir'],
     ]) {
         test(`rejects ${label} with a 400 and spawns nothing`, async () => {
             const captured = [];
@@ -216,6 +252,49 @@ describe('planHarvestOutputs: what each mode writes and where the analysis goes'
     });
     test('an unknown mode is a loud error, never a silent default', () => {
         assert.throws(() => planHarvestOutputs({ ...common, harvestMode: 'bogus', harvestDocsDir: null }), /harvest mode/);
+    });
+});
+
+describe('no-write harvest modes: engine enforcement pieces', () => {
+    test('HARVESTER_NO_WRITE_POLICIES swaps only the harvester bracket to no code push (main and resume)', () => {
+        assert.deepEqual([...NO_WRITE_HARVEST_MODES].sort(), ['off', 'pr-body-only']);
+        const real = ROLE_POLICIES.harvester;
+        const variant = HARVESTER_NO_WRITE_POLICIES.harvester;
+        assert.equal(real.bracket.pushCode, true, 'the default harvester row still pushes code');
+        for (const row of [variant, variant.secondary]) {
+            assert.equal(row.bracket.wrapped, true);
+            assert.equal(row.bracket.pushCode, false);
+            assert.equal(row.bracket.pushBeads, true, 'backlog confirmation still D-pushes beads');
+        }
+        const strip = ({ bracket, secondary, ...rest }) => rest;
+        assert.deepEqual(strip(variant), strip(real), 'every other field of the main row is unchanged');
+        assert.deepEqual(strip(variant.secondary), strip(real.secondary), 'every other field of the resume row is unchanged');
+        for (const role of Object.keys(ROLE_POLICIES)) {
+            if (role !== 'harvester') assert.equal(HARVESTER_NO_WRITE_POLICIES[role], ROLE_POLICIES[role]);
+        }
+        assert.ok(Object.isFrozen(HARVESTER_NO_WRITE_POLICIES) && Object.isFrozen(variant.secondary.bracket));
+    });
+
+    test('the resume prompt keeps the ladder anchor and never says commit in a no-write mode', () => {
+        const anchor = ROLE_POLICIES.harvester.secondary.ladderAnchor;
+        for (const mode of HARVEST_MODES) {
+            assert.ok(harvesterResumePrompt(mode).startsWith(anchor), mode);
+        }
+        for (const mode of NO_WRITE_HARVEST_MODES) {
+            assert.doesNotMatch(harvesterResumePrompt(mode), /commit them/, mode);
+            assert.match(harvesterResumePrompt(mode), /do not create, edit or commit any repository file/, mode);
+        }
+        assert.match(harvesterResumePrompt('full'), /commit them/);
+        assert.match(harvesterResumePrompt('docs-dir'), /commit them/);
+    });
+
+    test('parsePorcelainStatus reads porcelain, ignores .beads/, and refuses non-porcelain output', () => {
+        assert.deepEqual(parsePorcelainStatus(''), []);
+        assert.deepEqual(parsePorcelainStatus(' M .beads/issues.jsonl\n'), []);
+        assert.deepEqual(parsePorcelainStatus(' M README.md\r\n?? notes/new.md\nR  a.md -> b.md\n').map((e) => [e.code, e.path]),
+            [[' M', 'README.md'], ['??', 'notes/new.md'], ['R ', 'b.md']]);
+        assert.equal(parsePorcelainStatus('ok (mocked -- no real git remote)'), null);
+        assert.equal(parsePorcelainStatus('fatal: not a git repository'), null);
     });
 });
 
@@ -272,6 +351,60 @@ function prCreateCommand(run) {
     return run.commandLog.find((c) => c.startsWith('curl -sS -X POST') && c.includes('/pulls'));
 }
 
+/**
+ * A model of the harvester member's checkout, answering the engine's no-write
+ * check (`git rev-parse HEAD`, `git status --porcelain`, `git reset --hard`,
+ * `git clean`) from state and recording every `git push` with the HEAD it
+ * would have published. `seq` interleaves those git commands with a
+ * 'HARVESTER' marker for the dispatch itself.
+ */
+const BASE_SHA = 'a'.repeat(40);
+const ROGUE_SHA = 'b'.repeat(40);
+function memberRepoModel() {
+    const state = { head: BASE_SHA, tracked: new Set(), untracked: new Set(), pushes: [], resets: [], cleans: [], seq: [] };
+    const porcelain = () => [
+        ...[...state.tracked].map((p) => ` M ${p}`),
+        ...[...state.untracked].map((p) => `?? ${p}`),
+    ].join('\n');
+    const ok = (out = '') => mockCmdResult(0, out, '');
+    const gitCommandHandler = ({ command, member }) => {
+        if (command === 'git rev-parse HEAD') {
+            state.seq.push('rev-parse');
+            return ok(`${state.head}\n`);
+        }
+        if (command === 'git status --porcelain') return ok(porcelain());
+        let m = /^git reset --hard ([0-9a-f]{7,64})$/.exec(command);
+        if (m) {
+            state.seq.push('reset');
+            state.resets.push({ member, sha: m[1] });
+            state.head = m[1];
+            state.tracked.clear();
+            return ok();
+        }
+        m = /^git clean -f -d -- (\S+)$/.exec(command);
+        if (m) {
+            state.cleans.push(m[1]);
+            state.untracked.delete(m[1]);
+            return ok();
+        }
+        if (/^git push\b/.test(command)) {
+            state.seq.push('push');
+            state.pushes.push({ command, head: state.head });
+        }
+        return null;
+    };
+    return { state, gitCommandHandler, porcelain };
+}
+
+/** The git commands between the harvester dispatch and the engine's post-dispatch HEAD read. */
+function harvestBracketTail(state) {
+    const start = state.seq.indexOf('HARVESTER');
+    assert.ok(start !== -1, 'the harvester was dispatched');
+    const end = state.seq.indexOf('rev-parse', start);
+    assert.ok(end !== -1, 'the engine re-read HEAD after the dispatch');
+    return state.seq.slice(start + 1, end);
+}
+
 test('mock sprint: unset harvest_mode is full -- docs/ analysis path, and no Cost block in what the harvester commits', { timeout: 300000 }, async () => {
     const run = await withScenarioMarkers('harvestfull', async () => runDevelopLoopScenario('harvestfull', {
         members: ['local'],
@@ -311,14 +444,79 @@ test('mock sprint: harvest_mode pr-body-only -- no harvester writes/commits, the
     assert.ok(pr.includes('Harvest mode: pr-body-only'), 'the mode is stated in the PR body, never silent');
     assert.ok(pr.includes('### Cost'), 'the cost block is still in the PR body');
     assert.ok(run.logs.some((l) => /Harvest mode pr-body-only/.test(l)), 'the mode is logged');
+    // This scenario's generic git mock answers HEAD with non-sha text, so the
+    // engine cannot verify the member: it must say so, never claim no commits.
+    assert.ok(pr.includes('the engine could not verify the harvester'), 'an unverifiable member is stated as unverified');
+    assert.equal(pr.includes('no harvester commits'), false, 'no unverified "no harvester commits" claim');
+    assert.ok(run.logs.some((l) => l.includes('[Harvest Write Check Unverified]')), 'the unverified check is logged loudly');
+});
+
+test('mock sprint: harvest_mode pr-body-only -- a harvester that COMMITS anyway is detected, reset and never pushed', { timeout: 300000 }, async () => {
+    const repo = memberRepoModel();
+    const run = await withScenarioMarkers('harvestprbodycommit', async () => runDevelopLoopScenario('harvestprbodycommit', {
+        members: ['local'],
+        taskSpecs: [{ title: 'Task: harvest-mode pr-body-only rogue commit scenario work' }],
+        maxCycles: 1,
+        harvestMode: 'pr-body-only',
+        gitCommandHandler: repo.gitCommandHandler,
+        harvestHandler: async () => {
+            repo.state.seq.push('HARVESTER');
+            repo.state.head = ROGUE_SHA;
+        },
+    }));
+    assert.equal(run.error, null, `sprint errored: ${run.error && run.error.message}`);
+    assert.ok(run.logs.some((l) => l.includes('[Harvest Write Violation]') && l.includes(`HEAD moved from ${BASE_SHA} to ${ROGUE_SHA}`)),
+        'the engine detects the commit and logs it loudly');
+    assert.deepEqual(repo.state.resets.map((r) => [r.member, r.sha]), [['local', BASE_SHA]], 'the member is reset to its pre-harvest HEAD');
+    assert.equal(repo.state.head, BASE_SHA);
+    assert.equal(repo.state.pushes.some((p) => p.head === ROGUE_SHA), false, 'the rogue commit is never pushed');
+    assert.equal(harvestBracketTail(repo.state).includes('push'), false, 'the no-write harvester bracket issues no git push');
+    const pr = prCreateCommand(run);
+    assert.ok(pr, 'a PR is raised');
+    assert.ok(pr.includes('Harvest mode: pr-body-only -- VIOLATION'), 'the PR body states the violation');
+    assert.ok(pr.includes(`HEAD moved from ${BASE_SHA} to ${ROGUE_SHA}`), 'with what the harvester did');
+    assert.equal(pr.includes('no harvester commits'), false, 'no false "no harvester commits" claim');
+    assert.ok(pr.includes('### Sprint analysis'), 'the analysis is still published in the PR body');
+});
+
+test('mock sprint: harvest_mode pr-body-only -- a harvester that leaves a DIRTY tree is detected and cleaned', { timeout: 300000 }, async () => {
+    const repo = memberRepoModel();
+    const run = await withScenarioMarkers('harvestprbodydirty', async () => runDevelopLoopScenario('harvestprbodydirty', {
+        members: ['local'],
+        taskSpecs: [{ title: 'Task: harvest-mode pr-body-only dirty tree scenario work' }],
+        maxCycles: 1,
+        harvestMode: 'pr-body-only',
+        gitCommandHandler: repo.gitCommandHandler,
+        harvestHandler: async () => {
+            repo.state.seq.push('HARVESTER');
+            repo.state.tracked.add('README.md');
+            repo.state.untracked.add('notes/new.md');
+        },
+    }));
+    assert.equal(run.error, null, `sprint errored: ${run.error && run.error.message}`);
+    assert.ok(run.logs.some((l) => l.includes('[Harvest Write Violation]') && l.includes('working tree changed: README.md, notes/new.md')),
+        'the engine detects the dirty tree and logs it loudly');
+    assert.deepEqual(repo.state.resets.map((r) => r.sha), [BASE_SHA], 'tracked changes are reset');
+    assert.deepEqual(repo.state.cleans, ['notes/new.md'], 'the new untracked file is removed');
+    assert.equal(repo.porcelain(), '', 'the member tree is clean again');
+    assert.ok(run.logs.some((l) => l.includes(`member 'local' reset to ${BASE_SHA}`)), 'the restore is confirmed in the log');
+    assert.equal(harvestBracketTail(repo.state).includes('push'), false, 'the no-write harvester bracket issues no git push');
+    const pr = prCreateCommand(run);
+    assert.ok(pr, 'a PR is raised');
+    assert.ok(pr.includes('Harvest mode: pr-body-only -- VIOLATION'), 'the PR body states the violation');
+    assert.ok(pr.includes('working tree changed: README.md, notes/new.md'), 'with the paths');
+    assert.equal(pr.includes('no harvester commits'), false);
 });
 
 test('mock sprint: harvest_mode off -- harvester still runs (KB capture + deferral) with no target-repo writes', { timeout: 300000 }, async () => {
+    const repo = memberRepoModel();
     const run = await withScenarioMarkers('harvestoff', async () => runDevelopLoopScenario('harvestoff', {
         members: ['local'],
         taskSpecs: [{ title: 'Task: harvest-mode off scenario work' }],
         maxCycles: 1,
         harvestMode: 'off',
+        gitCommandHandler: repo.gitCommandHandler,
+        harvestHandler: async () => { repo.state.seq.push('HARVESTER'); },
     }));
     assert.equal(run.error, null, `sprint errored: ${run.error && run.error.message}`);
     const p = harvesterPrompt(run);
@@ -330,7 +528,19 @@ test('mock sprint: harvest_mode off -- harvester still runs (KB capture + deferr
     const pr = prCreateCommand(run);
     assert.ok(pr, 'a PR is raised');
     assert.equal(pr.includes('### Sprint analysis'), false, 'off puts no analysis in the PR body');
-    assert.ok(pr.includes('Harvest mode: off'), 'the mode is stated in the PR body');
+    assert.ok(pr.includes('Harvest mode: off -- the harvester wrote nothing to the repository (engine-verified'), 'the verified mode is stated in the PR body');
+    assert.ok(run.logs.some((l) => l.includes(`verified the harvester left member 'local' unchanged (HEAD ${BASE_SHA}`)), 'the check is logged');
+    assert.deepEqual(repo.state.resets, [], 'a clean harvest is not reset');
+    assert.ok(repo.state.pushes.length > 0, 'the model does see this sprint\'s git pushes (doer brackets, Publish PR)');
+    // The harvester bracket still runs its beads D-push (the deferral beads
+    // publish): it is attempted between the harvest analysis log and the
+    // harvester outcome log (this mock has no beads remote, so it is skipped
+    // pre-attempt -- the point is that the bracket issues it).
+    const from = run.logs.findIndex((l) => l.startsWith('Harvest: sprint analysis (not committed in harvest mode off)'));
+    const to = run.logs.findIndex((l) => l.startsWith('Harvester: completed in harvest mode off'));
+    assert.ok(from !== -1 && to > from, 'both harvest log anchors are present');
+    assert.ok(run.logs.slice(from, to).some((l) => l.includes("D-push for member 'local'")), 'the harvester bracket D-pushes beads');
+    assert.equal(harvestBracketTail(repo.state).includes('push'), false, 'the no-write harvester bracket issues no git push');
 });
 
 test('mock sprint: harvest_mode docs-dir -- analysis under the configured dir, no README edits', { timeout: 300000 }, async () => {

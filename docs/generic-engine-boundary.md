@@ -106,7 +106,14 @@ launch option (`--harvest-mode` on the CLI, `harvestMode` on the supervisor,
 | `off` | none |
 
 `harvest_docs_dir` is required with `docs-dir` and rejected otherwise; it must
-be repo-relative (no absolute path, drive letter, backslash, `..` or `.git`).
+be repo-relative (no absolute path, drive letter, backslash, `..` or `.git`,
+no segment starting with `-` or ending with `.`, and no Windows reserved
+device name such as `con` or `nul.md`). The engine enforces the no-write
+modes itself rather than trusting the prompt: in `pr-body-only` and `off` the
+harvester dispatch uses a policy row that never pushes code, the engine reads
+the member's HEAD and working tree before and after the dispatch, and any
+change is logged as a violation, reset on the member before Publish PR pushes
+the branch, and stated in the PR body.
 The sprint cost block is never written to a committed file in any mode -- it
 goes to the PR body and the run log only. Knowledge-bank capture and the
 low-priority backlog confirmation run in every mode because neither writes to

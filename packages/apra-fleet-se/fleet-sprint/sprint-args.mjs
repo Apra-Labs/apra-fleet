@@ -268,13 +268,17 @@ export function validateBranchPair(branch, base) {
 export const HARVEST_MODES = Object.freeze(['off', 'pr-body-only', 'docs-dir', 'full']);
 export const HARVEST_DOCS_DIR_MAX_LENGTH = 200;
 const HARVEST_DOCS_DIR_SEGMENT_RE = /^[A-Za-z0-9._-]+$/;
+// Windows reserved device names, with or without an extension ("nul.md").
+const HARVEST_DOCS_DIR_RESERVED_RE = /^(con|nul|aux|prn|com[1-9]|lpt[1-9])(\..*)?$/i;
 
 /**
  * Validates the harvest launch options. harvest_docs_dir is required if and
  * only if harvest_mode is 'docs-dir', and must be a plain repo-relative path:
  * '/'-separated segments of [A-Za-z0-9._-] only -- no absolute path, drive
- * letter or UNC prefix, no backslash, no '..', no '.' or empty segment, and no
- * '.git' segment. A single trailing '/' is dropped. Anything else throws an
+ * letter or UNC prefix, no backslash, no '..', no '.' or empty segment, no
+ * '.git' segment, no segment starting with '-' or ending with '.', and no
+ * Windows reserved device name (con, nul, aux, prn, com1-9, lpt1-9, with or
+ * without an extension, any case). A single trailing '/' is dropped. Anything else throws an
  * [Arg Contract] error naming the offending value.
  *
  * @param {unknown} mode raw harvest_mode (undefined -> 'full')
@@ -284,7 +288,7 @@ const HARVEST_DOCS_DIR_SEGMENT_RE = /^[A-Za-z0-9._-]+$/;
 export function validateHarvestOptions(mode, docsDir) {
     const harvestMode = mode === undefined ? 'full' : mode;
     if (typeof harvestMode !== 'string' || !HARVEST_MODES.includes(harvestMode)) {
-        throw new Error(`[Arg Contract] Invalid harvest_mode "${harvestMode}": must be one of ${HARVEST_MODES.map((m) => `'${m}'`).join(', ')} (default 'full').`);
+        throw new Error(`[Arg Contract] Invalid harvest_mode "${harvestMode}": must be one of ${HARVEST_MODES.map((m) => "'" + m + "'").join(', ')} (default 'full').`);
     }
     if (harvestMode !== 'docs-dir') {
         if (docsDir !== undefined && docsDir !== null) {
@@ -308,6 +312,9 @@ export function validateHarvestOptions(mode, docsDir) {
         if (seg === '' || seg === '.') fail('empty or "." path segments are not allowed');
         if (seg.toLowerCase() === '.git') fail('a ".git" segment is not allowed');
         if (!HARVEST_DOCS_DIR_SEGMENT_RE.test(seg)) fail(`segment "${seg}" contains a character outside [A-Za-z0-9._-]`);
+        if (seg.startsWith('-')) fail(`segment "${seg}" starts with '-', which a command line would read as an option`);
+        if (seg.endsWith('.')) fail(`segment "${seg}" ends with '.', which Windows silently strips`);
+        if (HARVEST_DOCS_DIR_RESERVED_RE.test(seg)) fail(`segment "${seg}" is a reserved Windows device name`);
     }
     return { harvestMode, harvestDocsDir: normalized };
 }

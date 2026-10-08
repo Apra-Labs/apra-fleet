@@ -202,7 +202,10 @@ export const GUARDED_MODULES = [
     // DISPATCHED harvester inside its own repo and published by the 'harvester'
     // policy row's pushCode/pushBeads bracket -- but it took ONE dispatchRole()
     // site (the harvester ladder), which is what dispatch-safety-guard and the
-    // phase 3 dispatch census read.
+    // phase 3 dispatch census read. It has since gained ONE member_name-bearing
+    // command() site of its own: the no-write harvest modes' HEAD/working-tree
+    // check (and reset) on the harvester's member, which must run on exactly
+    // that member and nowhere else.
     //
     // publish-pr.mjs is the opposite shape and the more urgent of the two to
     // register: it took TWO member_name-bearing command() call sites out of
