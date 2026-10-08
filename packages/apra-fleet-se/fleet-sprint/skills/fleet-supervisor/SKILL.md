@@ -279,8 +279,11 @@ start with no login (`loginctl enable-linger <username>`).
    `bd dolt commit` then `bd dolt push`. Members pull their own copy; a
    sprint launched before the push works from stale scope.
 2. Check no conflicting sprint is already running: `GET /api/sprints`.
-3. Multi-member sprints need all members on the SAME git HEAD, or the
-   launch crashes immediately with a topology error. If unsure, use ONE
+3. Multi-member sprints require all participating members to be on the
+   exact SAME git commit (HEAD) of the target repository's base branch.
+   If members are on differing commits, the launch fails immediately with
+   a `[Topology]` error in legacy mode. Ensure all members have fetched and
+   aligned their base branch to origin before launching. If unsure, use ONE
    member. Don't guess a member list -- ask, or default to one.
 
 ## 2. Start a sprint
@@ -309,7 +312,8 @@ Field names, exactly as the API expects them:
 | `maxCycles` | no | default 5. |
 | `allowMissingMembers` | no | bool. |
 | `requirementsFile` | no | path. |
-| `roleMap` | no | `{"doer":["m1","m2"], "reviewer":["m3"]}`. |
+| `roleMap` | no | maps roles to member arrays. See "Role resolution mechanics" below. |
+| `phases` | no | per-launch phase settings, e.g. `{"regression": "skip"}` to skip regression testing, or `{"regression": "run"}` (default). |
 | `budget` | no | USD cap. |
 | `overrideRelaunchGate` | no | bool. See below. |
 
@@ -358,12 +362,48 @@ only use it once you know why the prior run died.
 - **Stale LLM auth**: dispatch fails with `empty_response`. Re-run
   `provision_llm_auth` for that member.
 
+## Role resolution mechanics: generalists vs specialists
+
+In a multi-member sprint, `runner.js` resolves roles using a specialist/generalist
+model:
+- **Specialists**: Any member explicitly named in any `roleMap` entry is
+  treated as a specialist for that role.
+- **Generalists**: Any member NOT named in any `roleMap` entry forms the
+  `unmappedRoleFallbackPool`. Every role left unmapped (e.g. `planner`,
+  `plan-reviewer`, `reviewer`, `deployer`, `integ-test-runner`,
+  `regression-test-runner`, `harvester`) automatically routes to this generalist
+  pool.
+
+### The empty generalist pool trap
+If you explicitly assign every member to a role in `roleMap` (for example,
+`{"doer": ["m1"], "reviewer": ["m2"]}` in a 2-member sprint), the generalist
+fallback pool becomes empty. Unmapped roles then collapse onto array index 0
+(`members[0]`), defeating role separation for planning, deploy, and testing.
+
+### The single-specialist pattern (recommended for 2 members)
+To cleanly isolate development from testing/verification across two members,
+name only the development member as a specialist:
+```json
+"roleMap": {
+  "doer": ["<dev-member>"]
+}
+```
+Because `<test-member>` is omitted from `roleMap`, it becomes the sole
+generalist. The engine automatically routes `planner`, `plan-reviewer`,
+`reviewer`, `deployer`, `integ-test-runner`, `regression-test-runner`, and
+`harvester` to `<test-member>`.
+
+### Single Doer best practice
+In multi-member sprints, default to a **single dedicated Doer** on the sprint
+branch. When multiple members act as concurrent Doers on the same branch without
+isolated git worktrees, concurrent pushes cause git non-fast-forward push
+rejections and concurrent Dolt/TaskDB merge conflicts on the shared remote.
+
 ## Member layout: isolate deploy/test roles from dev roles
 
 For projects where the deployed software runs and is verified LOCALLY on the
 member, give `deployer`, `integ-test-runner`, and `regression-test-runner` a
 dedicated member with its own independent git clone (not a worktree),
-separate from `planner`/`plan-reviewer`/`doer`/`reviewer`, via `roleMap`:
-`{"deployer": ["<deploy-member>"], "integ-test-runner": ["<deploy-member>"],
-"regression-test-runner": ["<deploy-member>"], "doer": ["<dev-member>"], ...}`.
-Dev roles can all safely share one generic member.
+separate from `planner`/`plan-reviewer`/`doer`/`reviewer`. Dev roles can all
+safely share one member, or use the single-specialist pattern above to route
+verification roles to the dedicated testing node.
