@@ -649,7 +649,8 @@ function cleanArg(val: unknown): string | undefined {
   if (clean.startsWith('"') && clean.endsWith('"') && clean.length >= 2) {
     try { clean = JSON.parse(clean); } catch { clean = clean.slice(1, -1); }
   }
-  return clean.trim() || undefined;
+  clean = clean.replace(/^"+|"+$/g, '').trim();
+  return clean || undefined;
 }
 
 interface ToolCallExtractor {

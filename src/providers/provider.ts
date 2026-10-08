@@ -350,15 +350,16 @@ export function splitPipelineStages(line: string): string[] {
 
 /** Extracts the base executable command from a single command or pipeline stage. */
 export function extractCommandFromStage(stage: string): string | undefined {
-  const trimmed = stage.trim();
+  const trimmed = stage.trim().replace(/^['"]+|['"]+$/g, '');
   if (!trimmed) return undefined;
   const tokens = trimmed.split(/\s+/);
   for (const token of tokens) {
-    if (/^[a-zA-Z_][a-zA-Z0-9_]*=/.test(token)) {
+    const cleanToken = token.replace(/^['"]+|['"]+$/g, '');
+    if (/^[a-zA-Z_][a-zA-Z0-9_]*=/.test(cleanToken)) {
       continue;
     }
-    if (PLAIN_COMMAND_WORD_RE.test(token)) {
-      return token;
+    if (PLAIN_COMMAND_WORD_RE.test(cleanToken)) {
+      return cleanToken;
     }
     break;
   }
