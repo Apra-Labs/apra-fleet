@@ -1,6 +1,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
 import { classifyVerifySet, buildPlannerPrompt, buildFinalVerdictPrompt, buildReviewerPrompt } from '../fleet-sprint/runner.js';
+import { selectReclaimCandidates, downstreamDependentIds } from '../fleet-sprint/beads-reachability.mjs';
 
 // Unit tests for apra-fleet-jfo's classifyVerifySet(): the phase-routing
 // initial slice that classifies "all children closed" beads into the
@@ -262,5 +263,70 @@ describe('buildReviewerPrompt beadIds contract (regression for the Re-Review emp
         });
         assert.match(prompt, /bead id\(s\): apra-fleet-6a7, apra-fleet-y8q\./);
         assert.doesNotMatch(prompt, /bead id\(s\): \./);
+    });
+});
+
+// =============================================================================
+// selectReclaimCandidates: which in_progress beads the sprint may reset to
+// open. A bead THIS run dispatched that is still in_progress once every
+// dispatch has returned is an orphan and is always reclaimed; a claim that
+// predates the sprint's launch is reclaimed only when the caller asks for the
+// pre-launch rule and the bead has nothing left to wait on.
+// =============================================================================
+describe('selectReclaimCandidates', () => {
+    const launch = Date.parse('2026-10-08T12:00:00Z');
+    const before = '2026-10-08T11:00:00Z';
+    const after = '2026-10-08T12:30:00Z';
+
+    test('a dispatched bead left in_progress is an orphan regardless of started_at or blockers', () => {
+        const beads = [
+            bead('a', { status: 'in_progress', started_at: after }),
+            bead('b', { status: 'in_progress', started_at: after, dependencies: [{ type: 'blocks', depends_on_id: 'c' }] }),
+            bead('c'),
+        ];
+        const picked = selectReclaimCandidates({ notDoneBeads: beads, sprintLaunchTime: launch, dispatchedIds: new Set(['a', 'b']), includePreLaunch: false });
+        assert.deepStrictEqual(picked.map((p) => [p.bead.id, p.kind]), [['a', 'orphan'], ['b', 'orphan']]);
+    });
+
+    test('a bead in_progress since after launch that this run never dispatched is left alone', () => {
+        const beads = [bead('a', { status: 'in_progress', started_at: after })];
+        const picked = selectReclaimCandidates({ notDoneBeads: beads, sprintLaunchTime: launch, dispatchedIds: new Set(), includePreLaunch: true });
+        assert.deepStrictEqual(picked, []);
+    });
+
+    test('the pre-launch rule applies only when asked for', () => {
+        const beads = [bead('s', { status: 'in_progress', started_at: before })];
+        assert.deepStrictEqual(
+            selectReclaimCandidates({ notDoneBeads: beads, sprintLaunchTime: launch, dispatchedIds: new Set(), includePreLaunch: false }),
+            []
+        );
+        const picked = selectReclaimCandidates({ notDoneBeads: beads, sprintLaunchTime: launch, dispatchedIds: new Set(), includePreLaunch: true });
+        assert.deepStrictEqual(picked.map((p) => [p.bead.id, p.kind]), [['s', 'pre-launch']]);
+    });
+
+    test('the pre-launch rule skips a bead with an unmet blocker and treats a missing started_at as pre-launch', () => {
+        const beads = [
+            bead('s1', { status: 'in_progress', started_at: before, dependencies: [{ type: 'blocks', depends_on_id: 'o' }] }),
+            bead('s2', { status: 'in_progress' }),
+            bead('o'),
+        ];
+        const picked = selectReclaimCandidates({ notDoneBeads: beads, sprintLaunchTime: launch, dispatchedIds: new Set(), includePreLaunch: true });
+        assert.deepStrictEqual(picked.map((p) => p.bead.id), ['s2']);
+    });
+
+    test('open, blocked and deferred beads are never candidates', () => {
+        const beads = ['open', 'blocked', 'deferred'].map((status) => bead(status, { status, started_at: before }));
+        const picked = selectReclaimCandidates({ notDoneBeads: beads, sprintLaunchTime: launch, dispatchedIds: new Set(['open', 'blocked', 'deferred']), includePreLaunch: true });
+        assert.deepStrictEqual(picked, []);
+    });
+
+    test('downstreamDependentIds names the not-done beads waiting on a reclaimed bead', () => {
+        const beads = [
+            bead('s', { status: 'in_progress' }),
+            bead('d1', { dependencies: [{ type: 'blocks', depends_on_id: 's' }] }),
+            bead('d2', { dependencies: [{ type: 'related', depends_on_id: 's' }] }),
+            bead('d3', { dependencies: [{ type: 'blocks', depends_on_id: 's' }] }),
+        ];
+        assert.deepStrictEqual(downstreamDependentIds(beads, 's'), ['d1', 'd3']);
     });
 });

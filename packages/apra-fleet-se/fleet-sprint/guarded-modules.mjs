@@ -72,6 +72,10 @@ export const GUARDED_MODULES = [
     'kb.mjs',
     'beads-scope.mjs',
     'beads-transitions.mjs',
+    // Pure reachability helpers (stale-claim reclaim selection and the
+    // verify-routed-blocker diagnosis). No command today; registered so any
+    // future command it grows is scanned from the start.
+    'beads-reachability.mjs',
     'role-policies.mjs',
     'inline-ladder-guard.mjs',
     // apra-fleet-3swo.5.3: the dispatchRole engine. It hosts the ONE real
