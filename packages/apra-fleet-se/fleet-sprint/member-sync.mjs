@@ -281,8 +281,17 @@ export async function checkGitPushLanded(member, { command, remote, branch }) {
 const SALVAGE_GIT_IDENTITY = '-c user.name=fleet-sprint-salvage -c user.email=fleet-sprint-salvage@localhost -c commit.gpgsign=false';
 const SALVAGE_COMMIT_MESSAGE = 'fleet-salvage-uncommitted-work-before-retry-reset';
 
-/** A `git status --porcelain` v1 entry line: two status columns, a space, a path. */
-const PORCELAIN_ENTRY_RE = /^[ MADRCUT?!]{2} \S/;
+/**
+ * A `git status --porcelain` v1 entry, matched against the TRIMMED line: one
+ * or two status letters, whitespace, a path. Matching the trimmed line means a
+ * transport that strips leading whitespace (turning ` M path` into `M path`)
+ * still reads as dirty. It is deliberately not "any non-empty line": a
+ * mocked/no-op command channel or shell-profile noise (e.g. `ok (mocked ...)`)
+ * must not be mistaken for uncommitted work and trigger a salvage commit.
+ */
+const PORCELAIN_ENTRY_RE = /^[MADRCUT?!]{1,2}\s+\S/;
+/** `git commit` output when the index has nothing to record (exit 1, not an error for salvage). */
+const NOTHING_TO_COMMIT_RE = /nothing to commit|nothing added to commit|no changes added to commit/i;
 /** A `git log --oneline --no-decorate` line: abbreviated sha, a space, the subject. */
 const ONELINE_RE = /^([0-9a-f]{7,40}) (.*)$/;
 
@@ -300,6 +309,13 @@ function outputLines(res) {
  *      uncommitted is lost. Hooks are skipped (--no-verify): this is a local,
  *      never-published snapshot of partial work, and a target repo's
  *      pre-commit hook rejecting that WIP must not block the retry.
+ *      Behaviour change vs. the bare reset: untracked files are now captured
+ *      on the salvage ref and then removed from the working tree by the reset.
+ *      Submodules whose only change is their own dirty working tree are
+ *      ignored (`--ignore-submodules=dirty`): `git add -A` cannot stage them,
+ *      so counting them as dirty would make the commit fail on every retry.
+ *      For any remaining case where nothing ends up staged, a "nothing to
+ *      commit" result is treated as a no-op rather than a salvage failure.
  *   2. If HEAD is ahead of `<remote>/<branch>`, a LOCAL branch
  *      `fleet-salvage/<branch>/<short HEAD sha>` is pointed at HEAD. The sha
  *      makes the name unique per salvaged state, and `git branch -f` makes the
@@ -309,18 +325,23 @@ function outputLines(res) {
  *   3. The ref and its commits are logged.
  *
  * The salvage ref is never pushed. Any failure throws GitSyncError so the
- * caller never reaches the reset. Every command is a plain git argv with no
- * shell expansion, quoting or redirection, issued via runGitStep with the
- * explicit member_name.
+ * caller never reaches the reset. Each command is a single command string run
+ * in the member's own shell via execute_command (through runGitStep with the
+ * explicit member_name), built only from shell-neutral tokens -- no variable
+ * expansion, quoting, `~`, backticks or redirection -- so it reads identically
+ * under PowerShell and POSIX shells.
  *
  * @returns {Promise<{ ref: string|null, commits: string[], committedDirtyTree: boolean }>}
  */
 async function salvageBeforeReset(member, { command, log, remote, branch, maxTransientRetries, onAuthFailure, provider }) {
-    const step = async (cmd, what) => {
+    const step = async (cmd, what, { tolerate } = {}) => {
         const res = await runGitStep({
             command, member, cmd,
             label: `G-pull salvage ${what} for '${member}'`, log, maxTransientRetries, onAuthFailure, provider,
         });
+        if (!res.ok && tolerate && tolerate.test(`${res.error || ''}\n${res.output || ''}`)) {
+            return { ...res, tolerated: true };
+        }
         if (!res.ok) {
             throw new GitSyncError(
                 `[Sync] G-pull salvage (${what}) failed for member '${member}' before the reset onto '${remote}/${branch}'; NOT resetting, so the prior attempt's work stays checked out: ${res.error}`,
@@ -330,11 +351,16 @@ async function salvageBeforeReset(member, { command, log, remote, branch, maxTra
         return res;
     };
 
-    const status = await step('git status --porcelain', 'working-tree status read');
-    const dirty = outputLines(status).some((l) => PORCELAIN_ENTRY_RE.test(l));
+    const status = await step('git status --porcelain --ignore-submodules=dirty', 'working-tree status read');
+    let dirty = outputLines(status).some((l) => PORCELAIN_ENTRY_RE.test(l.trim()));
     if (dirty) {
         await step('git add -A', 'stage uncommitted changes');
-        await step(`git ${SALVAGE_GIT_IDENTITY} commit --no-verify -m ${SALVAGE_COMMIT_MESSAGE}`, 'commit uncommitted changes');
+        const commit = await step(
+            `git ${SALVAGE_GIT_IDENTITY} commit --no-verify -m ${SALVAGE_COMMIT_MESSAGE}`,
+            'commit uncommitted changes',
+            { tolerate: NOTHING_TO_COMMIT_RE },
+        );
+        if (commit.tolerated) dirty = false;
     }
 
     const ahead = await step(`git log --oneline --no-decorate ${remote}/${branch}..HEAD`, 'unpublished-commit listing');

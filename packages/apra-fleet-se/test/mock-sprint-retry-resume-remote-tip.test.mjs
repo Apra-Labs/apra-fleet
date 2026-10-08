@@ -247,3 +247,54 @@ for (const [step, key] of [['status read', 'git status --porcelain'], ['salvage 
         check(calls.every((c) => !/^git reset --hard/.test(c.cmd)), `no reset after a failed salvage, got ${JSON.stringify(calls.map((c) => c.cmd))}`);
     });
 }
+
+test('salvage: a submodule whose only change is its own dirty working tree is ignored -- no salvage commit, and the reset proceeds', async () => {
+    // Without --ignore-submodules=dirty git reports ` M sub` for such a
+    // submodule, `git add -A` stages nothing, and the commit would fail on
+    // every retry. The flagged key is listed first so the substring mock
+    // answers the flagged status read with a clean tree, and the bare read
+    // (which the salvage must not use) with the dirty-submodule line.
+    const { command, calls } = makeCommandMock({
+        'git fetch': [OK],
+        'git status --porcelain --ignore-submodules=dirty': [OK],
+        'git status --porcelain': [{ ok: true, output: ' M sub\n', error: null }],
+        'git log --oneline': [OK],
+    });
+    const res = await syncMemberBefore('doer-s', { command, branch: SALVAGE_BRANCH, resetToRemoteTip: true });
+    check(res.ok, 'must succeed');
+    const statusCalls = calls.filter((c) => /^git status/.test(c.cmd));
+    check(statusCalls.length === 1 && statusCalls[0].cmd.includes('--ignore-submodules=dirty'), `the dirty check must ignore dirty submodules, got ${JSON.stringify(statusCalls.map((c) => c.cmd))}`);
+    check(calls.every((c) => !/\bcommit\b|^git add/.test(c.cmd)), `a dirty-submodule-only tree -> no add/commit, got ${JSON.stringify(calls.map((c) => c.cmd))}`);
+    check(calls.some((c) => /^git reset --hard/.test(c.cmd)), 'the reset still runs');
+});
+
+test('salvage: porcelain output with its leading whitespace trimmed still counts as dirty', async () => {
+    const { command, calls } = makeCommandMock(salvageScript({
+        'git status --porcelain': [{ ok: true, output: 'M README.md\r\n  ?? wip/new.txt\n', error: null }],
+    }));
+    const res = await syncMemberBefore('doer-s', { command, branch: SALVAGE_BRANCH, resetToRemoteTip: true });
+    check(res.ok, 'must succeed');
+    check(calls.some((c) => /^git add -A/.test(c.cmd)) && calls.some((c) => /\bcommit\b/.test(c.cmd)), `trimmed porcelain lines must still trigger the salvage commit, got ${JSON.stringify(calls.map((c) => c.cmd))}`);
+});
+
+test('salvage: non-porcelain noise on the status channel (e.g. a mocked "ok" reply) is not mistaken for uncommitted work', async () => {
+    const { command, calls } = makeCommandMock(salvageScript({
+        'git status --porcelain': [{ ok: true, output: 'ok (mocked -- no real git remote in this mock sprint)\n', error: null }],
+        'git log --oneline': [OK],
+    }));
+    const res = await syncMemberBefore('doer-s', { command, branch: SALVAGE_BRANCH, resetToRemoteTip: true });
+    check(res.ok, 'must succeed');
+    check(calls.every((c) => !/\bcommit\b|^git add/.test(c.cmd)), `noise -> no add/commit, got ${JSON.stringify(calls.map((c) => c.cmd))}`);
+});
+
+test('salvage: a commit that finds nothing staged ("nothing to commit") is a no-op, not a salvage failure, and the reset proceeds', async () => {
+    const { command, calls } = makeCommandMock(salvageScript({
+        'user.email=': [fail('nothing to commit, working tree clean')],
+        'git log --oneline': [OK],
+    }));
+    const logs = [];
+    const res = await syncMemberBefore('doer-s', { command, branch: SALVAGE_BRANCH, resetToRemoteTip: true, log: (m) => logs.push(String(m)) });
+    check(res.ok, 'must succeed');
+    check(calls.some((c) => /^git reset --hard/.test(c.cmd)), 'the reset still runs');
+    check(calls.every((c) => !/^git branch -f/.test(c.cmd)), 'nothing ahead -> no salvage branch');
+});
