@@ -68,10 +68,14 @@
 // harvester row never G-pushes code -- beads still D-push. Inside the bracket,
 // after the G-pull, this phase records the member's HEAD and working tree;
 // after the dispatch returns it records them again. A moved HEAD or a newly
-// dirty tree is a violation: it is logged loudly, the member is reset to the
-// recorded HEAD (and new untracked paths are removed) before Publish PR pushes
-// the branch, and the result is returned as harvestWriteCheck so the PR body
-// states the violation rather than claiming nothing was written. When the
+// dirty tree is a violation: it is logged loudly and undone before Publish PR
+// pushes the branch -- HEAD with `git reset --keep` (falling back to
+// `--soft`, never `--hard`, so edits already on the member survive), paths
+// the harvester first touched are restored or removed, and a path that was
+// already dirty is left and reported -- and the result is returned as
+// harvestWriteCheck so the PR body states the violation, and whether the
+// member was fully restored, rather than claiming nothing was written. If
+// HEAD cannot be moved back at all the phase throws. When the
 // member's HEAD or status cannot be read, the check is 'unverified' and the PR
 // body says so -- it never claims an unverified "wrote nothing".
 //
@@ -105,7 +109,7 @@ export const NO_WRITE_HARVEST_MODES = Object.freeze(['pr-body-only', 'off']);
  *
  * @param {object} state Explicit phase state; see this file's header.
  * @returns {Promise<{ costAnalysis: string, harvestAnalysis: string,
- *   harvestWriteCheck: { status: 'not-applicable'|'clean'|'violation'|'unverified', detail: string } }>}
+ *   harvestWriteCheck: { status: 'not-applicable'|'clean'|'violation'|'unverified', restored?: boolean, detail: string } }>}
  */
 export async function runHarvestPhase({
     // Presentation + dispatch seams.
@@ -313,11 +317,11 @@ export function parsePorcelainStatus(output) {
 /**
  * The no-write harvest check on the harvester's member. snapshot() records
  * HEAD and the working tree; verify(pre) compares them after the dispatch
- * and, on a violation, resets the member to the recorded HEAD, removes new
- * untracked paths, and re-reads both to report whether the reset restored
- * it. Every command is a plain git invocation whose arguments the engine has
- * validated (a hex sha, a [A-Za-z0-9._/-] path), so it is shell-neutral on
- * any member shell.
+ * and, on a violation, undoes only the harvester's changes (see verify) and
+ * re-reads both to report whether the member matches its pre-harvest state
+ * exactly. Every command is a plain git invocation whose arguments the engine
+ * has validated (a hex sha, a `:/`-prefixed [A-Za-z0-9._/-] path), so it is
+ * shell-neutral on any member shell.
  */
 function noWriteGuard({ command, member, log, harvestMode }) {
     const runHarvesterGit = (cmd, label) => command(cmd, {
@@ -347,38 +351,95 @@ function noWriteGuard({ command, member, log, harvestMode }) {
         const post = await snapshot();
         if (post.error) return unverified(`${post.error} after the dispatch`);
         const preLines = new Set(pre.entries.map((e) => e.line));
+        const prePaths = new Set(pre.entries.map((e) => e.path));
+        const postLines = new Set(post.entries.map((e) => e.line));
+        const postPaths = new Set(post.entries.map((e) => e.path));
         const newEntries = post.entries.filter((e) => !preLines.has(e.line));
+        // Pre-existing changes the harvester removed outright (reverted or
+        // committed); a pre-existing path it changed further is in newEntries.
+        const lostEntries = pre.entries.filter((e) => !postLines.has(e.line) && !postPaths.has(e.path));
         const headMoved = post.head !== pre.head;
-        if (!headMoved && newEntries.length === 0) {
+        if (!headMoved && newEntries.length === 0 && lostEntries.length === 0) {
             log(`Harvest mode ${harvestMode}: verified the harvester left member '${member}' unchanged (HEAD ${pre.head}, no new working-tree changes).`);
             return { status: 'clean', detail: `HEAD ${pre.head} unchanged and no new working-tree changes` };
         }
         const parts = [];
         if (headMoved) parts.push(`HEAD moved from ${pre.head} to ${post.head}`);
         if (newEntries.length > 0) parts.push(`working tree changed: ${newEntries.map((e) => e.path).join(', ')}`);
-        log(`[Harvest Write Violation] harvest mode ${harvestMode}: the harvester changed the repository on member '${member}' despite the no-write mode -- ${parts.join('; ')}. Resetting the member to ${pre.head}; nothing from this harvest is pushed.`);
-        await runHarvesterGit(`git reset --hard ${pre.head}`, `harvest no-write check: reset '${member}' to ${pre.head}`);
-        const leftBehind = [];
-        for (const e of newEntries) {
-            if (e.code !== '??') continue;
-            if (CLEANABLE_PATH_RE.test(e.path)) {
-                await runHarvesterGit(`git clean -f -d -- ${e.path}`, `harvest no-write check: remove untracked '${e.path}' on '${member}'`);
-            } else {
-                leftBehind.push(e.path);
+        if (lostEntries.length > 0) parts.push(`pre-existing working-tree changes removed: ${lostEntries.map((e) => e.path).join(', ')}`);
+        log(`[Harvest Write Violation] harvest mode ${harvestMode}: the harvester changed the repository on member '${member}' despite the no-write mode -- ${parts.join('; ')}. Restoring the member to its pre-harvest state; the engine pushes nothing from this harvest.`);
+
+        // Restore without ever discarding work that was on the member before
+        // the dispatch (the G-pull is a fast-forward, which succeeds on a
+        // dirty tree, so a member may carry uncommitted edits of its own):
+        //   - HEAD: `git reset --keep`, which refuses rather than overwrite a
+        //     local change. If it refuses, `git reset --soft` still takes the
+        //     harvester's commit off the branch (Publish PR must never push
+        //     it) while keeping every byte in the index and working tree, and
+        //     path restores are skipped -- the member is reported NOT restored.
+        //   - a tracked path first changed by the harvester: restored from the
+        //     pre-harvest HEAD (or removed, when the harvester added it);
+        //   - a new untracked path: removed;
+        //   - a path that was already dirty before the dispatch, a rename/copy,
+        //     or a name that is not a plain [A-Za-z0-9._/-] path: left alone
+        //     and reported, since restoring it could destroy pre-existing work.
+        // Pathspecs carry the `:/` prefix: porcelain paths are relative to the
+        // repository root, which the member's working directory need not be.
+        const notes = [];
+        let restorePaths = true;
+        if (headMoved) {
+            const keepRes = await runHarvesterGit(`git reset --keep ${pre.head}`, `harvest no-write check: move '${member}' back to ${pre.head} keeping local changes`);
+            if (!keepRes || !keepRes.ok) {
+                restorePaths = false;
+                notes.push(`git reset --keep ${pre.head} refused (local changes overlap the harvester's commit)`);
+                log(`[Harvest Write Violation] harvest mode ${harvestMode}: git reset --keep ${pre.head} refused on member '${member}'${keepRes && keepRes.error ? ` (${keepRes.error})` : ''}; moving HEAD back with git reset --soft so the harvester's commit is never pushed, and leaving the working tree untouched.`);
+                await runHarvesterGit(`git reset --soft ${pre.head}`, `harvest no-write check: move '${member}' HEAD back to ${pre.head} without touching files`);
+            }
+        }
+        if (restorePaths) {
+            for (const e of newEntries) {
+                if (prePaths.has(e.path)) {
+                    notes.push(`'${e.path}' was already modified before the harvest and was changed again; left as is`);
+                } else if (!CLEANABLE_PATH_RE.test(e.path) || e.code[0] === 'R' || e.code[0] === 'C') {
+                    notes.push(`'${e.path}' cannot be restored safely; left as is`);
+                } else if (e.code === '??') {
+                    await runHarvesterGit(`git clean -f -d -- :/${e.path}`, `harvest no-write check: remove untracked '${e.path}' on '${member}'`);
+                } else if (e.code[0] === 'A') {
+                    await runHarvesterGit(`git rm -f -q -- :/${e.path}`, `harvest no-write check: remove added '${e.path}' on '${member}'`);
+                } else {
+                    await runHarvesterGit(`git checkout ${pre.head} -- :/${e.path}`, `harvest no-write check: restore '${e.path}' on '${member}' from ${pre.head}`);
+                }
             }
         }
         const after = await snapshot();
-        const restored = after.error === null && after.head === pre.head
-            && after.entries.every((e) => preLines.has(e.line));
-        if (restored) {
-            log(`Harvest mode ${harvestMode}: member '${member}' reset to ${pre.head}; the harvester's changes were discarded.`);
-        } else {
-            log(`[Harvest Write Violation] harvest mode ${harvestMode}: member '${member}' was NOT fully restored to ${pre.head}`
-                + `${leftBehind.length > 0 ? ` (untracked paths left behind: ${leftBehind.join(', ')})` : ''}`
-                + `${after.error ? ` (${after.error})` : ''} -- inspect the member before reusing it.`);
+        let residual = [];
+        if (after.error === null) {
+            const afterLines = new Set(after.entries.map((e) => e.line));
+            residual = [...new Set([
+                ...after.entries.filter((e) => !preLines.has(e.line)).map((e) => e.path),
+                ...pre.entries.filter((e) => !afterLines.has(e.line)).map((e) => e.path),
+            ])];
         }
-        const detail = `${parts.join('; ')}; ${restored ? `member reset to ${pre.head}` : `member NOT fully restored to ${pre.head}`}`;
-        return { status: 'violation', detail };
+        // Restored means the SAME set of working-tree entries as before the
+        // dispatch (not a subset: a missing entry is lost pre-existing work).
+        const restored = after.error === null && after.head === pre.head && residual.length === 0;
+        if (restored) {
+            log(`Harvest mode ${harvestMode}: member '${member}' reset to ${pre.head}; the harvester's changes were discarded and the working tree matches its pre-harvest state.`);
+            return { status: 'violation', restored: true, detail: `${parts.join('; ')}; member reset to ${pre.head}` };
+        }
+        const why = [
+            ...(after.error ? [after.error] : []),
+            ...(after.error === null && after.head !== pre.head ? [`HEAD is still ${after.head}`] : []),
+            ...(residual.length > 0 ? [`residual paths: ${residual.join(', ')}`] : []),
+            ...notes,
+        ].join('; ');
+        log(`[Harvest Write Violation] harvest mode ${harvestMode}: member '${member}' was NOT restored to its pre-harvest state (HEAD ${pre.head}) -- ${why} -- inspect the member before reusing it.`);
+        if (after.error === null && after.head !== pre.head) {
+            // The branch still carries the harvester's commit, so Publish PR
+            // would push it: stop the sprint loudly instead.
+            throw new Error(`harvest mode ${harvestMode}: the harvester committed on member '${member}' despite the no-write mode and the engine could not move HEAD back to ${pre.head} (${why}); refusing to continue to Publish PR.`);
+        }
+        return { status: 'violation', restored: false, detail: `${parts.join('; ')}; member NOT restored to its pre-harvest state (${why})` };
     };
     return { snapshot, verify };
 }

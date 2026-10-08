@@ -78,7 +78,9 @@ import { buildSprintPrBody, buildSprintPrTitle } from '../pr-body.mjs';
  *
  * For the no-write modes ('pr-body-only' and 'off') the line only claims the
  * harvester wrote nothing when ./harvest.mjs actually verified it
- * (harvestWriteCheck.status 'clean'). A 'violation' is stated as one, and an
+ * (harvestWriteCheck.status 'clean'). A 'violation' is stated as one -- and
+ * says the change was discarded only when harvestWriteCheck.restored is true
+ * (the member matches its pre-harvest state exactly) -- and an
  * unverified run says the engine could not check -- never a false "wrote
  * nothing".
  * @param {{ harvestMode?: string, harvestDocsDir?: string|null }} validated
@@ -100,7 +102,10 @@ export function harvestModeDetail(validated, harvestWriteCheck = null) {
             : 'Harvest mode: off -- the harvester wrote nothing to the repository (engine-verified: HEAD and working tree unchanged).';
     }
     if (status === 'violation') {
-        return `Harvest mode: ${mode} -- VIOLATION: the harvester changed the repository despite the no-write mode (${detail}). The engine discarded the change and did not push it.${tail}`;
+        const outcome = harvestWriteCheck.restored === true
+            ? 'The engine discarded the change and did not push it.'
+            : 'The engine did not push it, but the harvester\'s member was NOT restored to its pre-harvest state -- inspect it before reusing it.';
+        return `Harvest mode: ${mode} -- VIOLATION: the harvester changed the repository despite the no-write mode (${detail}). ${outcome}${tail}`;
     }
     return `Harvest mode: ${mode} -- repository writes were not requested, but the engine could not verify the harvester's member (${detail}).${tail}`;
 }

@@ -353,17 +353,26 @@ function prCreateCommand(run) {
 
 /**
  * A model of the harvester member's checkout, answering the engine's no-write
- * check (`git rev-parse HEAD`, `git status --porcelain`, `git reset --hard`,
- * `git clean`) from state and recording every `git push` with the HEAD it
- * would have published. `seq` interleaves those git commands with a
- * 'HARVESTER' marker for the dispatch itself.
+ * check (`git rev-parse HEAD`, `git status --porcelain`, `git reset`,
+ * `git checkout <sha> -- :/<path>`, `git clean`) from state and recording
+ * every `git push` with the HEAD it would have published. `tracked` maps a
+ * modified tracked path to its porcelain XY code; `preTracked` seeds it with
+ * edits already on the member before the sprint. `commitFiles` are the paths
+ * a rogue harvester commit touched: `git reset --keep` refuses (like git)
+ * when one of them also has a local change. `git reset --hard` is modelled
+ * destructively (it drops every tracked change) so a test can prove it is
+ * never issued. `seq` interleaves those git commands with a 'HARVESTER'
+ * marker for the dispatch itself.
  */
 const BASE_SHA = 'a'.repeat(40);
 const ROGUE_SHA = 'b'.repeat(40);
-function memberRepoModel() {
-    const state = { head: BASE_SHA, tracked: new Set(), untracked: new Set(), pushes: [], resets: [], cleans: [], seq: [] };
+function memberRepoModel({ preTracked = {} } = {}) {
+    const state = {
+        head: BASE_SHA, tracked: new Map(Object.entries(preTracked)), untracked: new Set(), commitFiles: new Set(),
+        pushes: [], resets: [], cleans: [], checkouts: [], seq: [],
+    };
     const porcelain = () => [
-        ...[...state.tracked].map((p) => ` M ${p}`),
+        ...[...state.tracked].map(([p, code]) => `${code} ${p}`),
         ...[...state.untracked].map((p) => `?? ${p}`),
     ].join('\n');
     const ok = (out = '') => mockCmdResult(0, out, '');
@@ -373,18 +382,30 @@ function memberRepoModel() {
             return ok(`${state.head}\n`);
         }
         if (command === 'git status --porcelain') return ok(porcelain());
-        let m = /^git reset --hard ([0-9a-f]{7,64})$/.exec(command);
+        let m = /^git reset --(hard|keep|soft) ([0-9a-f]{7,64})$/.exec(command);
         if (m) {
+            const mode = m[1];
             state.seq.push('reset');
-            state.resets.push({ member, sha: m[1] });
-            state.head = m[1];
-            state.tracked.clear();
+            state.resets.push({ member, mode, sha: m[2] });
+            if (mode === 'keep' && [...state.commitFiles].some((p) => state.tracked.has(p))) {
+                return mockCmdResult(1, '', 'error: Entry would be overwritten by merge. Cannot merge.');
+            }
+            if (mode === 'hard') state.tracked.clear();
+            if (mode === 'soft') for (const p of state.commitFiles) state.tracked.set(p, state.tracked.has(p) ? 'MM' : 'M ');
+            state.head = m[2];
+            state.commitFiles.clear();
             return ok();
         }
-        m = /^git clean -f -d -- (\S+)$/.exec(command);
+        m = /^git clean -f -d -- :\/(\S+)$/.exec(command);
         if (m) {
             state.cleans.push(m[1]);
             state.untracked.delete(m[1]);
+            return ok();
+        }
+        m = /^git checkout ([0-9a-f]{7,64}) -- :\/(\S+)$/.exec(command);
+        if (m) {
+            state.checkouts.push({ sha: m[1], path: m[2] });
+            state.tracked.delete(m[2]);
             return ok();
         }
         if (/^git push\b/.test(command)) {
@@ -467,7 +488,7 @@ test('mock sprint: harvest_mode pr-body-only -- a harvester that COMMITS anyway 
     assert.equal(run.error, null, `sprint errored: ${run.error && run.error.message}`);
     assert.ok(run.logs.some((l) => l.includes('[Harvest Write Violation]') && l.includes(`HEAD moved from ${BASE_SHA} to ${ROGUE_SHA}`)),
         'the engine detects the commit and logs it loudly');
-    assert.deepEqual(repo.state.resets.map((r) => [r.member, r.sha]), [['local', BASE_SHA]], 'the member is reset to its pre-harvest HEAD');
+    assert.deepEqual(repo.state.resets.map((r) => [r.member, r.mode, r.sha]), [['local', 'keep', BASE_SHA]], 'the member is moved back to its pre-harvest HEAD with reset --keep, never --hard');
     assert.equal(repo.state.head, BASE_SHA);
     assert.equal(repo.state.pushes.some((p) => p.head === ROGUE_SHA), false, 'the rogue commit is never pushed');
     assert.equal(harvestBracketTail(repo.state).includes('push'), false, 'the no-write harvester bracket issues no git push');
@@ -489,14 +510,15 @@ test('mock sprint: harvest_mode pr-body-only -- a harvester that leaves a DIRTY 
         gitCommandHandler: repo.gitCommandHandler,
         harvestHandler: async () => {
             repo.state.seq.push('HARVESTER');
-            repo.state.tracked.add('README.md');
+            repo.state.tracked.set('README.md', ' M');
             repo.state.untracked.add('notes/new.md');
         },
     }));
     assert.equal(run.error, null, `sprint errored: ${run.error && run.error.message}`);
     assert.ok(run.logs.some((l) => l.includes('[Harvest Write Violation]') && l.includes('working tree changed: README.md, notes/new.md')),
         'the engine detects the dirty tree and logs it loudly');
-    assert.deepEqual(repo.state.resets.map((r) => r.sha), [BASE_SHA], 'tracked changes are reset');
+    assert.deepEqual(repo.state.resets, [], 'HEAD did not move, so nothing is reset');
+    assert.deepEqual(repo.state.checkouts, [{ sha: BASE_SHA, path: 'README.md' }], 'the tracked change is restored path by path from the pre-harvest HEAD');
     assert.deepEqual(repo.state.cleans, ['notes/new.md'], 'the new untracked file is removed');
     assert.equal(repo.porcelain(), '', 'the member tree is clean again');
     assert.ok(run.logs.some((l) => l.includes(`member 'local' reset to ${BASE_SHA}`)), 'the restore is confirmed in the log');
@@ -506,6 +528,105 @@ test('mock sprint: harvest_mode pr-body-only -- a harvester that leaves a DIRTY 
     assert.ok(pr.includes('Harvest mode: pr-body-only -- VIOLATION'), 'the PR body states the violation');
     assert.ok(pr.includes('working tree changed: README.md, notes/new.md'), 'with the paths');
     assert.equal(pr.includes('no harvester commits'), false);
+});
+
+// The three scenarios below start with an uncommitted edit ALREADY on the
+// member (the G-pull fast-forward succeeds on a dirty tree): undoing the
+// harvester must never destroy it, and the engine may only claim the member
+// was reset when its working tree matches the pre-harvest state exactly.
+const PRE_EXISTING = { 'some/file': ' M' };
+
+function assertNoHardReset(repo) {
+    assert.equal(repo.state.resets.some((r) => r.mode === 'hard'), false, 'git reset --hard is never issued');
+}
+
+test('mock sprint: harvest_mode pr-body-only -- a rogue commit on a member with pre-existing edits is undone with reset --keep, keeping the edits', { timeout: 300000 }, async () => {
+    const repo = memberRepoModel({ preTracked: PRE_EXISTING });
+    const run = await withScenarioMarkers('harvestprbodykeep', async () => runDevelopLoopScenario('harvestprbodykeep', {
+        members: ['local'],
+        taskSpecs: [{ title: 'Task: harvest-mode pr-body-only keep pre-existing edits scenario work' }],
+        maxCycles: 1,
+        harvestMode: 'pr-body-only',
+        gitCommandHandler: repo.gitCommandHandler,
+        harvestHandler: async () => {
+            repo.state.seq.push('HARVESTER');
+            repo.state.head = ROGUE_SHA;
+            repo.state.commitFiles.add('docs/sprint-analysis.md');
+        },
+    }));
+    assert.equal(run.error, null, `sprint errored: ${run.error && run.error.message}`);
+    assertNoHardReset(repo);
+    assert.deepEqual(repo.state.resets.map((r) => [r.mode, r.sha]), [['keep', BASE_SHA]], 'HEAD is moved back with reset --keep');
+    assert.equal(repo.state.head, BASE_SHA);
+    assert.equal(repo.state.tracked.get('some/file'), ' M', 'the pre-existing edit survives');
+    assert.deepEqual(repo.state.checkouts, [], 'the pre-existing edit is never checked out over');
+    assert.equal(repo.state.pushes.some((p) => p.head === ROGUE_SHA), false, 'the rogue commit is never pushed');
+    assert.ok(run.logs.some((l) => l.includes(`member 'local' reset to ${BASE_SHA}`) && l.includes('matches its pre-harvest state')),
+        'a restore is claimed only because the tree matches the pre-harvest state');
+    const pr = prCreateCommand(run);
+    assert.ok(pr, 'a PR is raised');
+    assert.ok(pr.includes('Harvest mode: pr-body-only -- VIOLATION'), 'the PR body states the violation');
+    assert.ok(pr.includes('The engine discarded the change and did not push it.'));
+});
+
+test('mock sprint: harvest_mode pr-body-only -- a rogue commit overlapping a pre-existing edit is NOT reported as reset', { timeout: 300000 }, async () => {
+    const repo = memberRepoModel({ preTracked: PRE_EXISTING });
+    const run = await withScenarioMarkers('harvestprbodykeeprefused', async () => runDevelopLoopScenario('harvestprbodykeeprefused', {
+        members: ['local'],
+        taskSpecs: [{ title: 'Task: harvest-mode pr-body-only keep refused scenario work' }],
+        maxCycles: 1,
+        harvestMode: 'pr-body-only',
+        gitCommandHandler: repo.gitCommandHandler,
+        harvestHandler: async () => {
+            repo.state.seq.push('HARVESTER');
+            repo.state.head = ROGUE_SHA;
+            repo.state.commitFiles.add('some/file');
+        },
+    }));
+    assert.equal(run.error, null, `sprint errored: ${run.error && run.error.message}`);
+    assertNoHardReset(repo);
+    assert.deepEqual(repo.state.resets.map((r) => r.mode), ['keep', 'soft'], 'a refused reset --keep falls back to reset --soft, which keeps every file');
+    assert.equal(repo.state.head, BASE_SHA, 'the rogue commit is off the branch');
+    assert.equal(repo.state.tracked.has('some/file'), true, 'the pre-existing edit is still on the member');
+    assert.equal(repo.state.pushes.some((p) => p.head === ROGUE_SHA), false, 'the rogue commit is never pushed');
+    assert.ok(run.logs.some((l) => l.includes('[Harvest Write Violation]') && l.includes(`git reset --keep ${BASE_SHA} refused`)), 'the refusal is logged loudly');
+    assert.ok(run.logs.some((l) => l.includes('was NOT restored') && l.includes('residual paths: some/file')), 'the residual path is logged');
+    assert.equal(run.logs.some((l) => l.includes(`member 'local' reset to ${BASE_SHA}`)), false, 'no false restore claim in the log');
+    const pr = prCreateCommand(run);
+    assert.ok(pr, 'a PR is raised');
+    assert.ok(pr.includes('Harvest mode: pr-body-only -- VIOLATION'), 'the PR body states the violation');
+    assert.ok(pr.includes('NOT restored') && pr.includes('residual paths: some/file'), 'the PR body says the member was not restored');
+    assert.equal(pr.includes('member reset to'), false, 'no false restore claim in the PR body');
+    assert.equal(pr.includes('discarded the change'), false);
+});
+
+test('mock sprint: harvest_mode pr-body-only -- a harvester edit to an already-dirty file is left and reported as not restored', { timeout: 300000 }, async () => {
+    const repo = memberRepoModel({ preTracked: PRE_EXISTING });
+    const run = await withScenarioMarkers('harvestprbodyredirty', async () => runDevelopLoopScenario('harvestprbodyredirty', {
+        members: ['local'],
+        taskSpecs: [{ title: 'Task: harvest-mode pr-body-only already-dirty file scenario work' }],
+        maxCycles: 1,
+        harvestMode: 'pr-body-only',
+        gitCommandHandler: repo.gitCommandHandler,
+        harvestHandler: async () => {
+            repo.state.seq.push('HARVESTER');
+            repo.state.tracked.set('some/file', 'MM');
+            repo.state.tracked.set('README.md', ' M');
+        },
+    }));
+    assert.equal(run.error, null, `sprint errored: ${run.error && run.error.message}`);
+    assertNoHardReset(repo);
+    assert.deepEqual(repo.state.resets, [], 'HEAD did not move, so nothing is reset');
+    assert.deepEqual(repo.state.checkouts, [{ sha: BASE_SHA, path: 'README.md' }], 'only the path the harvester first touched is restored');
+    assert.equal(repo.state.tracked.get('some/file'), 'MM', 'the already-dirty file is left as is, never checked out over');
+    assert.ok(run.logs.some((l) => l.includes('was NOT restored') && l.includes('residual paths: some/file')
+        && l.includes("'some/file' was already modified before the harvest")), 'the already-dirty file is reported as not restored');
+    assert.equal(run.logs.some((l) => l.includes(`member 'local' reset to ${BASE_SHA}`)), false, 'no false restore claim in the log');
+    const pr = prCreateCommand(run);
+    assert.ok(pr, 'a PR is raised');
+    assert.ok(pr.includes('NOT restored') && pr.includes('residual paths: some/file'), 'the PR body says the member was not restored');
+    assert.equal(pr.includes('member reset to'), false, 'no false restore claim in the PR body');
+    assert.equal(pr.includes('discarded the change'), false);
 });
 
 test('mock sprint: harvest_mode off -- harvester still runs (KB capture + deferral) with no target-repo writes', { timeout: 300000 }, async () => {

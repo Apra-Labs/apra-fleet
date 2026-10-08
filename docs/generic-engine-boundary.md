@@ -112,8 +112,10 @@ device name such as `con` or `nul.md`). The engine enforces the no-write
 modes itself rather than trusting the prompt: in `pr-body-only` and `off` the
 harvester dispatch uses a policy row that never pushes code, the engine reads
 the member's HEAD and working tree before and after the dispatch, and any
-change is logged as a violation, reset on the member before Publish PR pushes
-the branch, and stated in the PR body.
+change is logged as a violation, undone on the member before Publish PR pushes
+the branch (with `git reset --keep` and per-path restores, never discarding
+edits that were already on the member; whatever cannot be restored safely is
+left and reported as not restored), and stated in the PR body.
 The sprint cost block is never written to a committed file in any mode -- it
 goes to the PR body and the run log only. Knowledge-bank capture and the
 low-priority backlog confirmation run in every mode because neither writes to

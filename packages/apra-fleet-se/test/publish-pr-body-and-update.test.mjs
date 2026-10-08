@@ -462,10 +462,20 @@ describe('Publish PR: a relaunch rewrites the existing PR for the new verdict', 
             const violation = fakeGitHub();
             await publish({
                 gh: violation, verdict: 'PASS', notes: 'ok', runId: `run-v-${mode}`, member: `pub-harvest-v-${mode}`, harvestMode: mode,
-                harvestWriteCheck: { status: 'violation', detail: 'HEAD moved from aaaaaaa to bbbbbbb; member reset to aaaaaaa' },
+                harvestWriteCheck: { status: 'violation', restored: true, detail: 'HEAD moved from aaaaaaa to bbbbbbb; member reset to aaaaaaa' },
             });
             assert.ok(violation.pr.body.includes(`- Harvest mode: ${mode} -- VIOLATION: the harvester changed the repository despite the no-write mode (HEAD moved from aaaaaaa to bbbbbbb; member reset to aaaaaaa). The engine discarded the change and did not push it.`), violation.pr.body);
             assert.ok(!violation.pr.body.includes('wrote nothing') && !violation.pr.body.includes('no harvester commits'), violation.pr.body);
+            // A violation the engine could NOT fully undo never says "discarded".
+            for (const restored of [false, undefined]) {
+                const partial = fakeGitHub();
+                await publish({
+                    gh: partial, verdict: 'PASS', notes: 'ok', runId: `run-p-${mode}`, member: `pub-harvest-p-${mode}-${String(restored)}`, harvestMode: mode,
+                    harvestWriteCheck: { status: 'violation', restored, detail: 'working tree changed: some/file; member NOT restored to its pre-harvest state (residual paths: some/file)' },
+                });
+                assert.ok(partial.pr.body.includes(`- Harvest mode: ${mode} -- VIOLATION: the harvester changed the repository despite the no-write mode (working tree changed: some/file; member NOT restored to its pre-harvest state (residual paths: some/file)). The engine did not push it, but the harvester's member was NOT restored to its pre-harvest state`), partial.pr.body);
+                assert.ok(!partial.pr.body.includes('discarded') && !partial.pr.body.includes('member reset'), partial.pr.body);
+            }
             for (const check of [{ status: 'unverified', detail: "could not read HEAD on member 'm'" }, undefined]) {
                 const unverified = fakeGitHub();
                 await publish({
