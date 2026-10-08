@@ -296,18 +296,92 @@ export interface PermissionDenial {
   signals: Array<'result_json' | 'stderr' | 'transcript'>;
 }
 
-const SHELL_SEQUENCE_RE = /[|;`]|&&/;
+const SHELL_SEQUENCE_RE = /[;`]|&&/;
 const SHELL_CHAIN_RE = /[|;`]|&&|\$\(/;
 const PLAIN_COMMAND_WORD_RE = /^[a-zA-Z0-9_\-./]+$/;
+
+/**
+ * Splits a command line into its pipeline stages (on pipe `|`), respecting
+ * single and double quotes, and ignoring logical OR `||`.
+ */
+export function splitPipelineStages(line: string): string[] {
+  const stages: string[] = [];
+  let current = '';
+  let inSingleQuote = false;
+  let inDoubleQuote = false;
+  let escape = false;
+
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i];
+    if (escape) {
+      current += char;
+      escape = false;
+      continue;
+    }
+    if (char === '\\' && !inSingleQuote) {
+      escape = true;
+      current += char;
+      continue;
+    }
+    if (char === "'" && !inDoubleQuote) {
+      inSingleQuote = !inSingleQuote;
+      current += char;
+      continue;
+    }
+    if (char === '"' && !inSingleQuote) {
+      inDoubleQuote = !inDoubleQuote;
+      current += char;
+      continue;
+    }
+    if (!inSingleQuote && !inDoubleQuote) {
+      if (char === '|' && line[i + 1] !== '|' && line[i - 1] !== '|') {
+        if (current.trim()) stages.push(current.trim());
+        current = '';
+        continue;
+      }
+    }
+    current += char;
+  }
+  if (current.trim()) {
+    stages.push(current.trim());
+  }
+  return stages;
+}
+
+/** Extracts the base executable command from a single command or pipeline stage. */
+export function extractCommandFromStage(stage: string): string | undefined {
+  const trimmed = stage.trim();
+  if (!trimmed) return undefined;
+  const tokens = trimmed.split(/\s+/);
+  for (const token of tokens) {
+    if (/^[a-zA-Z_][a-zA-Z0-9_]*=/.test(token)) {
+      continue;
+    }
+    if (PLAIN_COMMAND_WORD_RE.test(token)) {
+      return token;
+    }
+    break;
+  }
+  return undefined;
+}
 
 export function suggestedGrantsForDenial(item: PermissionDenialItem): string[] {
   const t = item.target?.trim();
   if (item.action === 'command' || item.action === 'unsandboxed' || item.action === 'Bash') {
     if (!t || SHELL_SEQUENCE_RE.test(t)) return [];
-    const first = t.split(/\s+/)[0];
+    const stages = splitPipelineStages(t);
     const out: string[] = [];
-    if (PLAIN_COMMAND_WORD_RE.test(first)) out.push(`Bash(${first}:*)`);
-    if (!SHELL_CHAIN_RE.test(t) && t !== first) out.push(`Bash(${t})`);
+    for (const stage of stages) {
+      const cmd = extractCommandFromStage(stage);
+      if (cmd && PLAIN_COMMAND_WORD_RE.test(cmd)) {
+        const grant = `Bash(${cmd}:*)`;
+        if (!out.includes(grant)) out.push(grant);
+      }
+    }
+    if (out.length === 0) return [];
+    if (!t.includes('|') && !SHELL_CHAIN_RE.test(t) && t !== stages[0]?.split(/\s+/)[0]) {
+      out.push(`Bash(${t})`);
+    }
     return out;
   }
   const one = suggestedGrantForDenial(item);

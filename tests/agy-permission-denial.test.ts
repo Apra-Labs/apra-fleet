@@ -86,12 +86,22 @@ describe('detectAgyPermissionDenial -- recorded agy outputs', () => {
 
   it('refuses to suggest a grant for a chained command, and maps other actions', () => {
     const t = (err: string) => `{"type":"USER_INPUT","status":"DONE"}\n${JSON.stringify({ status: 'ERROR', error: err })}`;
-    const chained = detectAgyPermissionDenial(run(transcriptBlock(t('permission check failed for command "git status | head": user denied permission to run command'))))!;
+    const chained = detectAgyPermissionDenial(run(transcriptBlock(t('permission check failed for command "git status && rm x": user denied permission to run command'))))!;
     expect(chained.suggestedGrants).toEqual([]);
     expect(chained.hint).toContain('No compose_permissions grant maps');
     const mcp = detectAgyPermissionDenial(run(transcriptBlock(t('user denied permission for mcp(apra-fleet/kb_session_prime)'))))!;
     expect(mcp.denials).toEqual([{ action: 'mcp', target: 'apra-fleet/kb_session_prime' }]);
     expect(mcp.suggestedGrants).toEqual(['mcp__apra-fleet__kb_session_prime']);
+  });
+
+  it('decomposes piped commands to suggest grants for constituent tools', () => {
+    const t = (err: string) => `{"type":"USER_INPUT","status":"DONE"}\n${JSON.stringify({ status: 'ERROR', error: err })}`;
+    const piped = detectAgyPermissionDenial(run(transcriptBlock(t('permission check failed for command "git status | head": user denied permission to run command'))))!;
+    expect(piped.suggestedGrants).toEqual(['Bash(git:*)', 'Bash(head:*)']);
+    expect(piped.hint).toContain('Bash(git:*)');
+
+    const psGrep = detectAgyPermissionDenial(run(transcriptBlock(t('permission check failed for command "ps aux | grep -iE \'dolt|bd\'": user denied permission to run command'))))!;
+    expect(psGrep.suggestedGrants).toEqual(['Bash(ps:*)', 'Bash(grep:*)']);
   });
   it('extracts denied command from pending tool_calls when headless AGY auto-denies without an ERROR step', () => {
     const transcriptWithPendingToolCall = '{"type":"USER_INPUT","status":"DONE"}\n{"type":"MODEL_RESPONSE","source":"MODEL","status":"DONE","tool_calls":[{"name":"run_command","args":{"CommandLine":"\\"cat << \'EOF\' > output.txt\\\\n{\\\\n}\\\\nEOF\\""}}]}';
