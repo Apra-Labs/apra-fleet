@@ -73,6 +73,15 @@ your tool-loading tool first, before concluding they are unavailable.
    constraint, a gotcha, an invariant) -- or a KB entry that proved wrong in practice --
    in your own review notes.
 
+### Persistent Memories (operational rules)
+
+Before starting plan review, retrieve universal conventions and role-scoped operational rules from Beads:
+
+```bash
+bd memories role:all
+bd memories plan-reviewer:
+```
+
 ## Step 1 -- Inspect the DAG
 
 ```bash

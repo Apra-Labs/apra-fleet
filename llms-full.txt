@@ -209,11 +209,11 @@ MCP tools that ship with the KB:
 | `kb_list` | Audit-list entries by confidence/type/module/symbol (read-only, no use_count bump) |
 | `kb_context` | Batch file freshness check (single git call for N files) |
 | `kb_invalidate` | Mark files stale immediately (also called by the git hook), or discard own entries by `ids` |
-| `kb_promote` | Advance confidence: UNVERIFIED -> INFERRED -> CONFIRMED |
+| `kb_promote` | Advance confidence: UNVERIFIED -> INFERRED -> CONFIRMED (FULL session, or the sprint's kb_maintainer member session only) |
 | `kb_harvest` | Extract learnings from a session transcript (auto-fires after execute_prompt) |
-| `kb_export` | Additively merge live CONFIRMED entries whose cited files still match their recorded hashes into `.fleet/kb-canonical.json` -- the git-shareable team bible |
-| `kb_bible_commit` | Merge confirmed entry ids into the bible and commit locally with base-branch provenance (used by the sprint kb_maintainer) |
-| `kb_setup` | Install git hook, write provider config, store remote token encrypted |
+| `kb_export` | Additively merge live CONFIRMED entries whose cited files still match their recorded hashes into `.fleet/kb-canonical.json` -- the git-shareable team bible (FULL session only) |
+| `kb_bible_commit` | Merge confirmed entry ids into the bible (format v3, per-entry file hashes), remove superseded or invalidated entries, and commit locally with base-branch provenance (used by the sprint kb_maintainer) |
+| `kb_setup` | Install git hook, write provider config, store remote token encrypted (FULL session only) |
 
 `code_*` tools resolve the calling session's own folder, refuse with typed
 `E-CODE-INDEX-NOT-READY` / `E-CODE-INTEL-DISABLED` errors when the index is not
@@ -246,12 +246,21 @@ server handling many members across many repos never lets one repo's
 learnings land in another repo's KB. No `kb_*` tool takes a scope argument:
 a member session uses its registered work folder and any other session uses
 the fleet server's working folder, and a folder that is not a git repository
-with an origin remote is refused with a typed `E-SELF-*` error. Member
-sessions get a reduced tool list (`kb_*`, `code_*` and a few self-reporting
-tools), and the `apra-fleet call` verb lets a process call tools as a member.
-KB reads default to CONFIRMED, undisputed entries. See
+with an origin remote is refused with a typed error that names the fix:
+`E-SELF-NO-WORKFOLDER` (create the folder or re-register the member),
+`E-SELF-NOT-A-REPO` (`git init` or clone there) or `E-SELF-NO-REMOTE`
+(`git remote add origin <url>`; for a remote member, record its origin with
+`update_member git_repos`). Member sessions get a reduced, explicit tool list:
+the `code_*` tools, a few self-reporting tools and the `kb_*` tools except
+`kb_setup` and `kb_export` (never served to a member) and `kb_promote` /
+`kb_resolve_contradiction` (served only to the sprint engine's kb_maintainer
+session, which applies the reviewer's promotions). The `apra-fleet call` verb
+lets a process call tools as a member. KB reads default to CONFIRMED,
+undisputed entries. See
 [Per-repo KB isolation](docs/knowledge-layer.md#per-repo-kb-isolation) for
-the resolution, anchor and cache-keying rules.
+the resolution, anchor and cache-keying rules, and
+[Member-session tool calls](docs/knowledge-layer.md#member-session-tool-calls)
+for the member tool model.
 
 The backend is swappable: start with local SQLite, add a central HTTP server for
 a team, or plug in Postgres later -- all via a one-line config change.
@@ -871,6 +880,10 @@ share the exact same code path instead of re-implementing it:
   directories are left in place; `workflows/` itself is only removed if
   nothing user-authored remains, and the command prints which user
   workflows it kept.
+- A full `apra-fleet uninstall` also stops and removes the OS-level supervisor
+  service registration (systemd user unit, launchd agent, or Windows
+  scheduled task) when it points at the installed tree, before the workflows
+  runtime is deleted. See [docs/features/uninstall.md](features/uninstall.md).
 - `apra-fleet update` reads back the previously-persisted `--workflows` mode
   and threads it into the re-invoked install, so an update refreshes
   built-in workflow assets to the new version while preserving any
@@ -1227,7 +1240,10 @@ apra-fleet uninstall --skill workflows
 ```
 
 If the fleet server is running, uninstall aborts and tells you to re-run with
-`--force`. Full detail: [docs/features/uninstall.md](features/uninstall.md).
+`--force`. A full uninstall also stops and removes a leftover supervisor OS service
+(systemd user unit, launchd agent, or Windows scheduled task) that runs the installed
+tree, and ends with a "Kept (intentionally)" list (`data/`, `fleet.key`, user workflows).
+Full detail: [docs/features/uninstall.md](features/uninstall.md).
 
 ## Replace a full install on a member
 

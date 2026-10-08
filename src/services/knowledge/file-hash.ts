@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -176,4 +176,103 @@ export async function checkStaleness(entry: KBEntry): Promise<StalenessResult> {
     }
     throw err;
   }
+}
+
+/**
+ * The repo folder a HEAD-anchored hash was asked for is not inside a git work
+ * tree. Thrown instead of silently falling back to hashing files on disk:
+ * a disk hash is a working-tree hash, not a branch-HEAD hash.
+ */
+export class KbHeadHashError extends Error {
+  readonly code = 'E-BIBLE-BASIS-NOT-GIT' as const;
+  readonly folder: string;
+  readonly remediation: string;
+  constructor(folder: string, detail: string) {
+    const remediation = `Run this from a git checkout ('git init' or clone the repository into '${folder}').`;
+    super(`E-BIBLE-BASIS-NOT-GIT: '${folder}' is not inside a git work tree, so file content at HEAD cannot be read (${detail}). Remediation: ${remediation}`);
+    this.name = 'KbHeadHashError';
+    this.folder = folder;
+    this.remediation = remediation;
+  }
+}
+
+function gitWithStdin(args: string[], cwd: string, input: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn('git', args, { cwd, stdio: ['pipe', 'pipe', 'pipe'] });
+    const out: Buffer[] = [];
+    const err: Buffer[] = [];
+    child.stdout.on('data', (d: Buffer) => out.push(d));
+    child.stderr.on('data', (d: Buffer) => err.push(d));
+    child.on('error', reject);
+    child.on('close', code => {
+      if (code === 0) resolve(Buffer.concat(out).toString('utf-8'));
+      else reject(new Error(`git ${args.join(' ')} exited ${code}: ${Buffer.concat(err).toString('utf-8').trim()}`));
+    });
+    child.stdin.end(input);
+  });
+}
+
+/**
+ * Hash each file's content AT THE WORK TREE'S HEAD COMMIT (not the file on
+ * disk), keyed by the original path strings. Relative paths resolve against
+ * `cwd`, exactly as computeFileHashBatch({ cwd }) resolves them.
+ *
+ * Digest: the git blob id of HEAD:<path>. That is the same digest the stored
+ * basis carries -- computeFileHashBatch runs `git hash-object <file>`, which
+ * applies the same clean filters as `git add`, so a file whose on-disk content
+ * equals its HEAD content hashes to the HEAD blob id. Uncommitted edits
+ * therefore never change the result.
+ *
+ * A file absent at HEAD (untracked, deleted, a directory, a submodule) maps to
+ * null. An unborn HEAD (no commit yet) maps every file to null. A `cwd` that is
+ * not inside a git work tree throws KbHeadHashError -- never a disk fallback.
+ * Absolute paths are not supported (they map to null): HEAD content is only
+ * addressable repo-relatively.
+ */
+export async function computeHeadFileHashBatch(
+  filePaths: string[],
+  opts: { cwd: string },
+): Promise<Record<string, FileHashResult | null>> {
+  const result: Record<string, FileHashResult | null> = {};
+  const cwd = opts.cwd;
+  // The git check runs even for an empty list, so a caller in a non-git
+  // folder always fails loud rather than quietly admitting nothing.
+
+  let prefix: string;
+  try {
+    const { stdout } = await execFileAsync('git', ['rev-parse', '--is-inside-work-tree', '--show-prefix'], { cwd });
+    const lines = stdout.split('\n');
+    if (lines[0].trim() !== 'true') throw new Error('not inside a work tree');
+    prefix = (lines[1] ?? '').trim();
+  } catch (err) {
+    throw new KbHeadHashError(cwd, (err as Error)?.message ?? String(err));
+  }
+
+  if (filePaths.length === 0) return result;
+  for (const p of filePaths) result[p] = null;
+
+  try {
+    await execFileAsync('git', ['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'], { cwd });
+  } catch {
+    return result; // unborn HEAD: nothing is committed, so nothing matches
+  }
+
+  const queried: string[] = [];
+  const lines: string[] = [];
+  for (const p of filePaths) {
+    if (typeof p !== 'string' || p.length === 0 || /[\r\n]/.test(p) || path.isAbsolute(p) || path.win32.isAbsolute(p)) continue;
+    const rel = path.posix.normalize(prefix + p.replace(/\\/g, '/'));
+    if (rel.startsWith('../') || rel === '..' || rel === '.') continue;
+    queried.push(p);
+    lines.push('HEAD:' + rel);
+  }
+  if (queried.length === 0) return result;
+
+  const stdout = await gitWithStdin(['cat-file', '--batch-check=%(objectname) %(objecttype)'], cwd, lines.join('\n') + '\n');
+  const outLines = stdout.split('\n');
+  for (let i = 0; i < queried.length; i++) {
+    const [oid, type] = (outLines[i] ?? '').trim().split(' ');
+    if (type === 'blob' && /^[0-9a-f]{40,64}$/.test(oid)) result[queried[i]] = { hash: oid, type: 'git' };
+  }
+  return result;
 }

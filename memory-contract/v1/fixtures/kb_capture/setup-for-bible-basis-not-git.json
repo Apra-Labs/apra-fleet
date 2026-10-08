@@ -1,0 +1,23 @@
+{
+  "tool": "kb_capture",
+  "case": "setup-for-bible-basis-not-git",
+  "kind": "happy",
+  "request": {
+    "type": "knowledge",
+    "title": "Entry in a bare repository with no work tree",
+    "summary": "Set up to demonstrate the E-BIBLE-BASIS-NOT-GIT refusal of kb_export and kb_bible_commit.",
+    "content": "This entry cites src/bare-basis.ts in a bare repository, where no file can be read at HEAD of a work tree.",
+    "source_files": [
+      "src/bare-basis.ts"
+    ]
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"id\":\"075ccaee-e89b-4f97-b42d-7148d41bcb2e\",\"audn_decision\":\"add\",\"confidence_clamped\":false}"
+      }
+    ]
+  },
+  "session": "BARE"
+}

@@ -103,6 +103,7 @@ export const MEMBER_INIT_FIXES = Object.freeze({
     'code-index-timeout': 'the first code-index tick did not arrive within the bound; check code_status on the member (the index keeps building)',
     'code-intel-npx-missing': "npx or node is not on the apra-fleet service PATH, so code intelligence is unavailable: reinstall the service so it records node/npx (re-run the fleet installer on the host), or add node and npx to the service PATH and restart the server, then rerun code_reindex",
     'code-index-failed': 'code_reindex failed on the member: read its analyze log (code_status logPath) and rerun code_reindex',
+    'code-index-gitnexus-too-old': "the member's gitnexus is too old to support --index-only: upgrade gitnexus (npx -y gitnexus@latest analyze --index-only) or clear the npx cache (npm cache clean --force) on the member, then rerun code_reindex",
     'code-index-unrecognized': 'code_reindex returned an unrecognized answer: run update_member with fleet_install "auto" for the member so its fleet install is current',
 });
 
@@ -137,6 +138,7 @@ export function fixFor(reason) {
  * @property {number|null} confirmedCount  CONFIRMED bible entries (null when unreadable)
  * @property {'ok'|'unavailable'|'timeout'|'failed'} codeIndex
  * @property {string|null} codeIndexReason  null when codeIndex is ok
+ * @property {string[]} warnings        non-gating one-line WARNs (e.g. a work tree carrying a previously injected gitnexus block)
  * @property {string|null} repo         normalized repository of the member's work folder
  * @property {string|null} maintainer   kb_maintainer of that repository (from the sprint-setup selection)
  * @property {string|null} reason       machine-readable; null when verified
@@ -223,6 +225,7 @@ export function classifyReindex(res) {
         case 'not-started':
             if (res.reason === 'npx-not-found' || isNpxMissingText(res.detail)) return { state: 'unavailable', reason: 'code-intel-npx-missing', detail: res.detail };
             if (res.reason === 'provider-not-supported') return { state: 'unavailable', reason: 'code-provider-not-supported', detail: res.detail };
+            if (res.reason === 'gitnexus-too-old') return { state: 'failed', reason: 'code-index-gitnexus-too-old', detail: res.detail };
             return { state: 'failed', reason: 'code-index-failed', detail: [res.reason, res.detail].filter(Boolean).join(': ') };
         default:
             return { state: 'failed', reason: 'code-index-unrecognized' };
@@ -237,6 +240,9 @@ export function classifyStatus(res) {
     if (!res || typeof res !== 'object') return { state: 'pending', reason: null };
     if (res.outcome === 'not-started' && res.reason === 'provider-not-supported') return { state: 'unavailable', reason: 'code-provider-not-supported' };
     const a = res.analyze && typeof res.analyze === 'object' ? res.analyze : null;
+    if (a && a.phase === 'done' && a.result === 'failed' && a.failureCause === 'gitnexus-too-old') {
+        return { state: 'failed', reason: 'code-index-gitnexus-too-old', detail: a.lastLine || 'gitnexus rejected --index-only' };
+    }
     if (a && a.phase === 'done' && a.result === 'failed') return { state: 'failed', reason: 'code-index-failed', detail: a.lastLine || 'analyze failed' };
     if (res.ready === true || res.lockHeld === true) return { state: 'ok', reason: null };
     if (a && (a.phase === 'done' || (typeof a.lineCount === 'number' && a.lineCount > 0) || a.lockHeld === true)) return { state: 'ok', reason: null };
@@ -251,13 +257,14 @@ export function parseServerState(text) {
 
 /** The one init line logged per member. */
 export function formatMemberInitLine(rec) {
+    const warnSuffix = Array.isArray(rec.warnings) && rec.warnings.length > 0 ? `; WARN: ${rec.warnings.join(' | ')}` : '';
     if (rec.verified) {
         const count = rec.confirmedCount === null ? 'unreadable' : String(rec.confirmedCount);
         const code = rec.codeIndex === CODE_INDEX_STATES.OK ? 'ok' : `${rec.codeIndex} (${rec.codeIndexReason}: ${fixFor(rec.codeIndexReason)})`;
         const maint = rec.maintainer ? `; kb_maintainer: '${rec.maintainer}'` : '';
-        return `${MEMBER_INIT_LOG_PREFIX} OK member '${rec.member}': verified (kb_* and code_* tools on its member session); CONFIRMED entries: ${count}; code index: ${code}${maint}`;
+        return `${MEMBER_INIT_LOG_PREFIX} OK member '${rec.member}': verified (kb_* and code_* tools on its member session); CONFIRMED entries: ${count}; code index: ${code}${maint}${warnSuffix}`;
     }
-    return `${MEMBER_INIT_LOG_PREFIX} WARN member '${rec.member}': unverified -- reason: ${rec.reason}; fix: ${rec.fix}`;
+    return `${MEMBER_INIT_LOG_PREFIX} WARN member '${rec.member}': unverified -- reason: ${rec.reason}; fix: ${rec.fix}${warnSuffix}`;
 }
 
 /**
@@ -413,7 +420,12 @@ export function createMemberInitProbe(opts = {}) {
         let verdict;
         try {
             if (typeof memberCall !== 'function') throw new Error('no member session channel');
-            verdict = classifyReindex(parseToolJson(await memberCall(record, 'code_reindex', {})));
+            const answer = parseToolJson(await memberCall(record, 'code_reindex', {}));
+            verdict = classifyReindex(answer);
+            // Detection only (the member's own server reads its work tree): a
+            // block left by an earlier plain analyze run is reported, never edited.
+            const dirty = answer && Array.isArray(answer.injectedBlockFiles) ? answer.injectedBlockFiles.filter((f) => typeof f === 'string') : [];
+            if (dirty.length > 0) rec.warnings.push(`${dirty.join(', ')} carries a gitnexus block injected by an earlier plain 'gitnexus analyze' run; fix: remove the block between <!-- gitnexus:start --> and <!-- gitnexus:end --> and commit`);
         } catch (err) {
             if (isDisabledError(err)) return setCode(CODE_INDEX_STATES.UNAVAILABLE, 'code-intel-disabled', errText(err));
             if (isNpxMissingText(errText(err))) return setCode(CODE_INDEX_STATES.UNAVAILABLE, 'code-intel-npx-missing', errText(err));
@@ -462,7 +474,7 @@ export function createMemberInitProbe(opts = {}) {
             verified: false, server: 'skipped', fleetMcp: null,
             kbTools: null, codeTools: null, confirmedCount: null,
             codeIndex: CODE_INDEX_STATES.FAILED, codeIndexReason: null,
-            repo: null, maintainer: null,
+            repo: null, maintainer: null, warnings: [],
             reason: null, fix: null, problems: [], steps: [],
         };
         const problem = (step, reason, detail, fix) => {
@@ -545,7 +557,7 @@ export function createMemberInitProbe(opts = {}) {
                     rec = finish({
                         member: name, memberId: null, type: null, provider: null, verified: false, server: 'skipped',
                         fleetMcp: null, kbTools: null, codeTools: null, confirmedCount: null,
-                        codeIndex: CODE_INDEX_STATES.FAILED, codeIndexReason: 'member-tools-failed', repo: null, maintainer: null,
+                        codeIndex: CODE_INDEX_STATES.FAILED, codeIndexReason: 'member-tools-failed', repo: null, maintainer: null, warnings: [],
                         reason: null, fix: null, steps: [],
                         problems: [{ step: 'probe', reason: 'member-tools-failed', fix: fixFor('member-tools-failed'), detail: errText(err) }],
                     });

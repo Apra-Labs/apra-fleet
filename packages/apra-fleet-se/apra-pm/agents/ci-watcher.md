@@ -44,6 +44,15 @@ your tool-loading tool first, before concluding they are unavailable.
    repository, so you have no basis to write one down. If a known failure mode explains
    a red run, say so in your `notes`.
 
+### Persistent Memories (operational rules)
+
+Before checking CI runs, retrieve universal conventions and role-scoped operational rules from Beads:
+
+```bash
+bd memories role:all
+bd memories ci-watcher:
+```
+
 ## Step 1 -- List recent CI runs
 
 Branch-scoped:

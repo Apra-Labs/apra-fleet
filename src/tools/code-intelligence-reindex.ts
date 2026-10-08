@@ -14,7 +14,7 @@ import { logWarn, logError } from '../utils/log-helpers.js';
 import { findExecutableOnPath, missingOnServerPathMessage, npxUnavailableReason } from '../utils/find-on-path.js';
 import { FLEET_DIR } from '../paths.js';
 import { resolveProjectSlug } from '../services/knowledge/project-slug.js';
-import { isPidAlive, readGitNexusIndexState } from './code-index-state.js';
+import { indexInconsistency, isPidAlive, readGitNexusIndexState, type RecordedIndexBuild } from './code-index-state.js';
 import { excludeLineFor } from '../services/member-config-io.js';
 import type { CodeIndexNotReadyState, CodeIndexReadiness } from './code-intelligence-readiness.js';
 
@@ -39,6 +39,12 @@ interface ReindexEntry {
    * ready index, by an explicit code_reindex, or by a server restart.
    */
   autoPaused?: AutoReindexPause;
+  /**
+   * The last analyze failed because gitnexus rejects --index-only. Automatic
+   * runs would fail identically every cooldown, so none start until an
+   * explicit code_reindex (or a restart) re-arms them.
+   */
+  gitnexusTooOld?: boolean;
 }
 
 // Module-level per-repo state (design D3): in-memory is acceptable -- the
@@ -114,6 +120,10 @@ export interface AnalyzeStatus {
   result: AnalyzeResult | null;
   exitCode: number | null;
   finished?: string;
+  /** Set on a failed run whose log names a cause the fleet recognizes. */
+  failureCause?: AnalyzeFailureCause;
+  /** meta.json lastCommit when the run finished (fleet's own record of the build). */
+  indexedCommit?: string;
 }
 
 export type NotStartedReason =
@@ -121,7 +131,8 @@ export type NotStartedReason =
   | 'npx-not-found'
   | 'gitnexus-not-found'
   | 'spawn-failed'
-  | 'remote-member';
+  | 'remote-member'
+  | 'gitnexus-too-old';
 
 /** Directory holding analyze.log + status.json for `repo`. */
 export function codeIndexDir(repo: string): string {
@@ -173,7 +184,26 @@ function resultFromExit(dir: string, repo: string, code: number | null): Analyze
   if (code !== 0) return 'failed';
   if (readLogLines(dir).some((l) => /already up to date/i.test(l))) return 'up-to-date';
   const idx = readGitNexusIndexState(repo);
-  return idx.metaPresent && idx.lastCommit !== '' && !idx.incrementalInProgress ? 'indexed' : 'incomplete';
+  return idx.metaPresent && idx.lastCommit !== '' && !idx.incrementalInProgress && !indexInconsistency(repo, idx) ? 'indexed' : 'incomplete';
+}
+
+/**
+ * Fleet's record of the last analyze it finished for `repo` (status.json):
+ * the commit meta.json named when that run ended. null when no finished,
+ * successful run is recorded (or it belongs to another folder sharing the
+ * slug dir). Never throws.
+ */
+export function recordedIndexBuild(repo: string): RecordedIndexBuild | null {
+  try {
+    const status = readStatusFile(codeIndexDir(repo));
+    if (!status || status.phase !== 'done' || !status.finished) return null;
+    if (typeof status.repo === 'string' && status.repo !== repo) return null;
+    if (status.result !== 'indexed' && status.result !== 'up-to-date') return null;
+    if (typeof status.indexedCommit !== 'string' || status.indexedCommit === '') return null;
+    return { indexedCommit: status.indexedCommit, finished: status.finished };
+  } catch {
+    return null;
+  }
 }
 
 // The exact argv every fleet-initiated analyze runs. `--index-only` is
@@ -183,7 +213,38 @@ function resultFromExit(dir: string, repo: string, code: number | null): Analyze
 // member's TARGET repo dirties tracked files a doer would then commit. An
 // older gitnexus that does not know the flag fails loudly (analyze-failed with
 // its "unknown option" line), never silently falls back to a writing run.
-export const GITNEXUS_ANALYZE_ARGS: readonly string[] = ['gitnexus', 'analyze', '--index-only'];
+//
+// The package is resolved at a pinned MINIMUM version: 1.6.5 is the first
+// gitnexus release whose CLI defines --index-only (verified against the
+// published tarballs: 1.6.4's dist/cli/index.js has no such option, 1.6.5's
+// does). One constant feeds both the analyze argv and the MCP child argv.
+export const GITNEXUS_MIN_VERSION = '1.6.5';
+export const GITNEXUS_PACKAGE_SPEC = `gitnexus@>=${GITNEXUS_MIN_VERSION}`;
+export const GITNEXUS_ANALYZE_ARGS: readonly string[] = [GITNEXUS_PACKAGE_SPEC, 'analyze', '--index-only'];
+
+/**
+ * An npx argv that is safe under a shell. On Windows spawn() runs through
+ * cmd.exe (shell: true), where an unquoted `>=` is a redirection, so the
+ * version-range package spec is double-quoted there.
+ */
+export function npxArgsForShell(args: readonly string[], shell: boolean): string[] {
+  return args.map((a) => (shell && /[<>^&|]/.test(a) ? `"${a}"` : a));
+}
+
+/** Failure cause: the installed gitnexus rejects --index-only (too old). */
+export type AnalyzeFailureCause = 'gitnexus-too-old';
+
+/** The CLI parser's rejection of the flag, as it lands in analyze.log. */
+const UNKNOWN_INDEX_ONLY = /unknown option\b.*--index-only|--index-only.*unknown option|unrecognized (?:option|argument)\b.*--index-only/i;
+
+/** One-line cause + fix reported wherever the too-old failure surfaces. */
+export const GITNEXUS_TOO_OLD_DETAIL =
+  `the installed gitnexus does not support --index-only (needs >= ${GITNEXUS_MIN_VERSION}): upgrade gitnexus ` +
+  `(npx -y ${GITNEXUS_PACKAGE_SPEC} analyze --index-only) or clear the npx cache (npm cache clean --force), then rerun code_reindex`;
+
+function failureCauseOf(lines: readonly string[]): AnalyzeFailureCause | undefined {
+  return lines.some((l) => UNKNOWN_INDEX_ONLY.test(l)) ? 'gitnexus-too-old' : undefined;
+}
 
 // Work-tree paths an index-only analyze still creates inside the repo. They
 // go into the repo's git exclude file (local, untracked) -- never .gitignore.
@@ -216,6 +277,37 @@ export function ensureLocalGitExcluded(repoPath: string, relPaths: readonly stri
     logWarn('code-intelligence-reindex', `could not add ${relPaths.join(', ')} to the git exclude file of ${repoPath}: ${err instanceof Error ? err.message : String(err)}`);
     return false;
   }
+}
+
+// Agent docs a plain (non --index-only) `gitnexus analyze` injects its block
+// into. gitnexus's cli/ai-context.js (verified in the 1.6.5 tarball) wraps the
+// block in `<!-- gitnexus:start -->` ... `<!-- gitnexus:end -->` and writes it
+// to AGENTS.md and CLAUDE.md at the repo root. Only a marker on a line of its
+// own counts: ai-context.js itself quotes the marker inline in prose.
+export const GITNEXUS_INJECTED_BLOCK_FILES: readonly string[] = ['AGENTS.md', 'CLAUDE.md'];
+const INJECTED_BLOCK_MARKER = /^<!-- gitnexus:start -->[ \t]*$/m;
+
+/**
+ * Repo-relative agent docs of `repoPath` that still carry a gitnexus block
+ * injected by an earlier plain analyze run. READ-ONLY: it never edits the work
+ * tree (--index-only never removes such a block, so a clone dirtied before the
+ * fleet switched to it stays dirty until a human removes it). Never throws.
+ */
+export function detectInjectedGitnexusBlocks(repoPath: string): string[] {
+  const found: string[] = [];
+  for (const rel of GITNEXUS_INJECTED_BLOCK_FILES) {
+    try {
+      if (INJECTED_BLOCK_MARKER.test(readFileSync(join(repoPath, rel), 'utf8'))) found.push(rel);
+    } catch { /* absent or unreadable: nothing to report */ }
+  }
+  return found;
+}
+
+/** The one-line WARN for a non-empty detectInjectedGitnexusBlocks() result. */
+export function injectedBlockWarning(files: readonly string[]): string | null {
+  if (files.length === 0) return null;
+  return `WARN: ${files.join(', ')} carries a gitnexus block injected by an earlier plain 'gitnexus analyze' run ` +
+    '(--index-only never removes it): remove the block between <!-- gitnexus:start --> and <!-- gitnexus:end --> and commit.';
 }
 
 export type SpawnAnalyzeOutcome =
@@ -260,7 +352,7 @@ export function spawnAnalyze(repoPath: string, opts: { auto?: boolean } = {}): S
 
   let child: ChildProcess;
   try {
-    child = spawn('npx', [...GITNEXUS_ANALYZE_ARGS], {
+    child = spawn('npx', npxArgsForShell(GITNEXUS_ANALYZE_ARGS, process.platform === 'win32'), {
       cwd: repoPath,
       detached: true,
       stdio: ['ignore', fd, fd],
@@ -285,6 +377,7 @@ export function spawnAnalyze(repoPath: string, opts: { auto?: boolean } = {}): S
     runningAuto: auto,
     lastFinishedAt: existing?.lastFinishedAt,
     autoPaused: auto ? existing?.autoPaused : undefined,
+    gitnexusTooOld: auto ? existing?.gitnexusTooOld : undefined,
   });
 
   const refresh = (): void => {
@@ -307,10 +400,15 @@ export function spawnAnalyze(repoPath: string, opts: { auto?: boolean } = {}): S
     status.phase = 'done';
     status.exitCode = code;
     status.result = errMsg ? 'failed' : resultFromExit(dir, repoPath, code);
+    const failureCause = status.result === 'failed' ? failureCauseOf(lines) : undefined;
+    if (failureCause) status.failureCause = failureCause;
     status.finished = new Date().toISOString();
-    writeStatus(dir, status);
     const idx = readGitNexusIndexState(repoPath);
-    const indexReady = idx.metaPresent && idx.lastCommit !== '' && !idx.incrementalInProgress;
+    if (idx.lastCommit) status.indexedCommit = idx.lastCommit;
+    writeStatus(dir, status);
+    // An index whose metadata disagrees with itself is not ready either: an
+    // automatic run that leaves one pauses automatic rebuilds like any other.
+    const indexReady = idx.metaPresent && idx.lastCommit !== '' && !idx.incrementalInProgress && !indexInconsistency(repoPath, idx);
     const prev = state.get(repoPath);
     let autoPaused: AutoReindexPause | undefined;
     if (!indexReady && auto) {
@@ -318,7 +416,7 @@ export function spawnAnalyze(repoPath: string, opts: { auto?: boolean } = {}): S
     } else if (!indexReady) {
       autoPaused = prev?.autoPaused;
     }
-    state.set(repoPath, { lastFinishedAt: Date.now(), autoPaused });
+    state.set(repoPath, { lastFinishedAt: Date.now(), autoPaused, gitnexusTooOld: failureCause === 'gitnexus-too-old' ? true : undefined });
     // One warning per finished run: the failure detail and, for an automatic
     // run, that automatic rebuilds are now paused.
     const pausedNote = autoPaused && auto
@@ -356,7 +454,7 @@ export function autoReindexPause(repoPath: string): AutoReindexPause | null {
 /** Re-arm automatic rebuilds of `repoPath` (an explicit code_reindex does this). */
 export function clearAutoReindexPause(repoPath: string): void {
   const entry = state.get(repoPath);
-  if (entry?.autoPaused) state.set(repoPath, { ...entry, autoPaused: undefined });
+  if (entry?.autoPaused || entry?.gitnexusTooOld) state.set(repoPath, { ...entry, autoPaused: undefined, gitnexusTooOld: undefined });
 }
 
 // Consults config + the decision function, then starts the shared analyze
@@ -372,6 +470,7 @@ export function scheduleReindex(repoPath: string): ScheduleReindexOutcome {
 
     const existing = state.get(repoPath);
     if (existing?.runningChild) return { started: false, reason: 'already-running' };
+    if (existing?.gitnexusTooOld) return { started: false, reason: 'gitnexus-too-old', detail: GITNEXUS_TOO_OLD_DETAIL };
     if (existing?.autoPaused) return { started: false, reason: 'paused', pause: existing.autoPaused };
     const decisionEntry = existing ? { running: false, lastFinishedAt: existing.lastFinishedAt } : undefined;
     if (!shouldStartReindex(decisionEntry, Date.now(), cooldownMs)) {
@@ -417,6 +516,13 @@ export function isRecordedAnalyzeAlive(repoPath: string, now: number = Date.now(
     if (typeof status.pid !== 'number' || !Number.isInteger(status.pid) || status.pid <= 0) return false;
     const started = Date.parse(status.started);
     if (Number.isFinite(started) && now - started > RECORDED_ANALYZE_MAX_AGE_MS) return false;
+    // A complete index stamped AFTER the run started is that run's own final
+    // write: the index is no longer being rewritten, whatever the pid (which
+    // may have been reused) says. Readiness fences a complete index on a live
+    // recorded run, so this keeps a stale record from fencing it for hours.
+    const idx = readGitNexusIndexState(repoPath);
+    const indexedAt = Date.parse(idx.indexedAt);
+    if (idx.metaPresent && !idx.incrementalInProgress && Number.isFinite(started) && Number.isFinite(indexedAt) && indexedAt > started) return false;
     return isPidAlive(status.pid);
   } catch {
     return false;
@@ -434,7 +540,7 @@ const FIRST_TICK_POLL_MS = 100;
 const LOCK_OBSERVE_GRACE_MS = 1500;
 
 /** Every code_reindex response carries the commit the index is built at (null when none/remote). */
-export type CodeReindexResult = { indexedCommit: string | null } & CodeReindexOutcome;
+export type CodeReindexResult = { indexedCommit: string | null; injectedBlockFiles?: string[] } & CodeReindexOutcome;
 
 export type CodeReindexOutcome =
   | { outcome: 'started'; pid: number | null; lastLine: string; lockHeld: boolean; logPath: string }
@@ -457,7 +563,7 @@ export async function codeReindex(repo: string, boundMs: number = FIRST_TICK_BOU
   const r = await codeReindexOutcome(repo, boundMs);
   let indexedCommit: string | null = null;
   try { indexedCommit = readGitNexusIndexState(repo).lastCommit || null; } catch { /* never throw on IO */ }
-  return { ...r, indexedCommit };
+  return { ...r, indexedCommit, injectedBlockFiles: detectInjectedGitnexusBlocks(repo) };
 }
 
 async function codeReindexOutcome(repo: string, boundMs: number): Promise<CodeReindexOutcome> {
@@ -495,6 +601,9 @@ async function codeReindexOutcome(repo: string, boundMs: number): Promise<CodeRe
         if (lines.some((l) => /already up to date/i.test(l))) return { outcome: 'up-to-date', lastLine: last, logPath: log };
         return { outcome: 'started', pid: child.pid ?? null, lastLine: last, lockHeld: false, logPath: log };
       }
+      if (failureCauseOf(lines) === 'gitnexus-too-old') {
+        return { outcome: 'not-started', reason: 'gitnexus-too-old', detail: GITNEXUS_TOO_OLD_DETAIL, logPath: log };
+      }
       const missing = GITNEXUS_MISSING.test(lines.join('\n'));
       return {
         outcome: 'not-started',
@@ -523,6 +632,8 @@ export interface CodeStatusResult {
   analyze: AnalyzeStatus | null;
   ready: boolean;
   readiness: 'ready' | CodeIndexNotReadyState;
+  /** Why the index metadata disagrees with itself (readiness 'inconsistent'); null otherwise. */
+  inconsistency: string | null;
   indexedCommit: string | null;
   incrementalInProgress: boolean;
   lockHeld: boolean;
@@ -530,6 +641,10 @@ export interface CodeStatusResult {
   logPath: string | null;
   /** Set when an automatic run failed and automatic rebuilds are paused until code_reindex. */
   autoReindexPaused: AutoReindexPause | null;
+  /** Agent docs still carrying a gitnexus block from an earlier plain analyze; [] when clean. */
+  injectedBlockFiles: string[];
+  /** One-line WARN naming those files and the fix; null when clean. */
+  injectedBlockWarning: string | null;
 }
 
 /**
@@ -556,14 +671,18 @@ export function codeStatus(repo: string, readiness: CodeIndexReadiness): CodeSta
   }
   const idx = readGitNexusIndexState(repo);
   const log = logPath(dir);
+  const injected = detectInjectedGitnexusBlocks(repo);
   return {
     repo, analyze,
     ready: readiness.ready,
     readiness: readiness.ready ? 'ready' : readiness.state,
+    inconsistency: !readiness.ready && readiness.state === 'inconsistent' ? (readiness.detail ?? null) : null,
     indexedCommit: idx.lastCommit || null,
     incrementalInProgress: idx.incrementalInProgress,
     lockHeld: idx.lockHeld,
     logPath: existsSync(log) ? log : null,
     autoReindexPaused: autoReindexPause(repo),
+    injectedBlockFiles: injected,
+    injectedBlockWarning: injectedBlockWarning(injected),
   };
 }

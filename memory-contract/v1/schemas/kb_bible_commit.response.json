@@ -78,7 +78,31 @@
                     "type": "string",
                     "enum": [
                       "not_confirmed_or_unknown",
+                      "no_source_files",
                       "basis_mismatch"
+                    ]
+                  }
+                },
+                "required": [
+                  "id",
+                  "reason"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "removed": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": "string",
+                    "enum": [
+                      "superseded",
+                      "invalidated"
                     ]
                   }
                 },
@@ -100,6 +124,7 @@
             "path",
             "merged",
             "skipped",
+            "removed",
             "entry_count",
             "committed"
           ],

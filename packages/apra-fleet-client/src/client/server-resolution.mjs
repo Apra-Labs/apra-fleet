@@ -444,10 +444,16 @@ export function withFleetAccessSecret(options = {}, env = process.env) {
  * from (readMemberAccessSecret) and sent in the MEMBER_SECRET_HEADER header
  * on every request. Without it the server answers HTTP 401.
  *
+ * `deps.kbMaintainer === true` (requires `origin: 'engine'`) adds
+ * `kb_maintainer=1`: the engine's kb_maintainer grant. The server then also
+ * serves kb_promote and kb_resolve_contradiction to this member session (they
+ * mint CONFIRMED; no other member session sees them). memberCall sets it only
+ * for the member it chose as a repository's kb_maintainer.
+ *
  * @param {string} memberId registered member uuid
  * @param {object} [deps] same bag as resolveFleetServerConnection, plus `options`
  *                        forwarded to the transport and optional
- *                        `origin: 'engine'`.
+ *                        `origin: 'engine'`, and optional `kbMaintainer: true`.
  * @returns {Promise<{transport: object, mcpClient: McpClient, mode: 'http', url: string, close: () => Promise<void>}>}
  *          Always `await close()` when done: it DELETEs the server session so no
  *          McpServer or registry entry is leaked (`transport.stop()` does not).
@@ -456,6 +462,12 @@ export async function connectFleetMember(memberId, deps = {}) {
     if (!memberId) throw new Error('connectFleetMember requires a member id.');
     if (deps.origin !== undefined && deps.origin !== 'engine') {
         throw new Error(`connectFleetMember: unsupported origin '${deps.origin}' (only 'engine' is accepted).`);
+    }
+    if (deps.kbMaintainer !== undefined && typeof deps.kbMaintainer !== 'boolean') {
+        throw new Error('connectFleetMember: kbMaintainer must be a boolean.');
+    }
+    if (deps.kbMaintainer === true && deps.origin !== 'engine') {
+        throw new Error("connectFleetMember: kbMaintainer requires origin 'engine' (the kb_maintainer grant is engine-only).");
     }
     const resolution = await resolveFleetServerConnection(deps);
     if (resolution.mode !== 'http') {
@@ -467,6 +479,7 @@ export async function connectFleetMember(memberId, deps = {}) {
     const url = new URL(resolution.url);
     url.searchParams.set('member', memberId);
     if (deps.origin === 'engine') url.searchParams.set('origin', 'engine');
+    if (deps.kbMaintainer === true) url.searchParams.set('kb_maintainer', '1');
     const options = { ...(deps.options || {}) };
     const secret = readMemberAccessSecret(deps.env || process.env);
     if (secret) options.headers = { ...(options.headers || {}), [MEMBER_SECRET_HEADER]: secret };

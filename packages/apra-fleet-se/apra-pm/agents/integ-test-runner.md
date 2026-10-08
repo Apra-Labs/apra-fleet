@@ -86,6 +86,15 @@ your tool-loading tool first, before concluding they are unavailable.
    environment-sensitive, or the sandbox needs a step the playbook does not record, note
    the finding in your own report.
 
+### Persistent Memories (operational rules)
+
+Before working any feature, retrieve universal conventions and role-scoped operational rules from Beads:
+
+```bash
+bd memories role:all
+bd memories integ-test-runner:
+```
+
 ## Step 1 -- Work the features you were handed
 
 Your dispatch prompt hands you an **explicit list of feature ids** -- the open features in

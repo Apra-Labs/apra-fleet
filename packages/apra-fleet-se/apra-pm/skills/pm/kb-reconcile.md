@@ -95,7 +95,9 @@ Report: `{ pairs, resolved, left_for_agent, skipped_directive }`.
 
 If `left_for_agent` is non-empty, dispatch the `kb-reconciler` agent
 (`agents/kb-reconciler.md`, model tier cheap/standard)
-with that array. It reads the MERGED code via `code_context`/`code_impact`/
+with that array, as a subagent of THIS session -- never on a fleet member: a
+member session is not served `kb_resolve_contradiction` or `kb_export`, so the
+agent would stop at its tool check. It reads the MERGED code via `code_context`/`code_impact`/
 `code_query` (never Glob/Grep) for each remaining pair, resolves what the
 code decides via `kb_resolve_contradiction`, falls back to a trust-tier
 tiebreak (`CONFIRMED > INFERRED > UNVERIFIED`) when the code is silent, and

@@ -1,0 +1,18 @@
+{
+  "tool": "kb_invalidate",
+  "case": "setup-invalidate-for-bible-removal",
+  "kind": "happy",
+  "request": {
+    "ids": [
+      "f73a13d1-15d2-46c7-a319-84232fdf856b"
+    ]
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"discarded\":[\"f73a13d1-15d2-46c7-a319-84232fdf856b\"],\"not_found\":[],\"already_discarded\":[]}"
+      }
+    ]
+  }
+}

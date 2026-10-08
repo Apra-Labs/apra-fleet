@@ -54,6 +54,15 @@ your tool-loading tool first, before concluding they are unavailable.
 3. If a retrieved KB entry proves wrong in practice, say so in your `notes`, naming the
    entry and what was wrong.
 
+### Persistent Memories (operational rules)
+
+Before beginning harvest operations, retrieve universal conventions and role-scoped operational rules from Beads:
+
+```bash
+bd memories role:all
+bd memories harvester:
+```
+
 ## Step 1 -- Write sprint analysis artifact (FIRST, before anything else)
 
 Your task context includes an `analysisArtifactFile` path and an `analysisText` block.

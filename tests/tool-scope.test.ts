@@ -81,13 +81,37 @@ describe('registerAllTools scope gate', () => {
     expect(names).not.toContain('send_message');
   });
 
-  it('isToolInScope denies an unknown future tool to members unless the allowlist rule admits it', () => {
+  it('isToolInScope denies an unknown future tool to members: the allowlist is explicit, not a name prefix', () => {
     const member = memberToolScope('m-1', false);
     expect(isToolInScope('some_future_admin_tool', member)).toBe(false);
     expect(isToolInScope('some_future_admin_tool', FULL_TOOL_SCOPE)).toBe(true);
-    expect(isToolInScope('kb_some_future_tool', member)).toBe(true);
+    expect(isToolInScope('kb_some_future_tool', member)).toBe(false);
+    expect(isToolInScope('kb_some_future_tool', FULL_TOOL_SCOPE)).toBe(true);
     expect(isToolInScope('respond_to_message', member)).toBe(false);
     expect(isToolInScope('respond_to_message', memberToolScope('m-1', true))).toBe(true);
+  });
+
+  it('kb_promote and kb_resolve_contradiction need the engine kb_maintainer grant; kb_setup and kb_export are never in member scope', () => {
+    const plain = memberToolScope('m-1', false);
+    const engine = memberToolScope('m-1', false, true);
+    const maintainer = memberToolScope('m-1', false, true, true);
+    // The grant is engine-only: without origin=engine it is ignored.
+    const grantWithoutEngine = memberToolScope('m-1', false, false, true);
+    for (const t of ['kb_promote', 'kb_resolve_contradiction']) {
+      expect(isToolInScope(t, plain)).toBe(false);
+      expect(isToolInScope(t, engine)).toBe(false);
+      expect(isToolInScope(t, grantWithoutEngine)).toBe(false);
+      expect(isToolInScope(t, maintainer)).toBe(true);
+      expect(isToolInScope(t, FULL_TOOL_SCOPE)).toBe(true);
+    }
+    for (const t of ['kb_setup', 'kb_export']) {
+      for (const scope of [plain, engine, maintainer, memberToolScope('m-1', true, true, true)]) {
+        expect(isToolInScope(t, scope)).toBe(false);
+      }
+      expect(isToolInScope(t, FULL_TOOL_SCOPE)).toBe(true);
+    }
+    expect(isToolInScope('kb_bible_commit', plain)).toBe(true);
+    expect(isToolInScope('kb_import', plain)).toBe(true);
   });
 });
 

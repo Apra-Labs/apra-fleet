@@ -14,7 +14,7 @@ import { addAgent } from '../src/services/registry.js';
 import { fleetEvents } from '../src/services/event-bus.js';
 import { sessionRegistry } from '../src/services/session-registry.js';
 import { localWorkspaceId } from '../src/services/token-issuer.js';
-import { MEMBER_ALLOWED_TOOLS } from '../src/services/member-tool-allowlist.js';
+import { MEMBER_ALLOWED_TOOLS, MEMBER_MAINTAINER_TOOLS } from '../src/services/member-tool-allowlist.js';
 import { runCall } from '../src/cli/call.js';
 import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
 // @ts-expect-error plain .mjs workspace package
@@ -51,7 +51,10 @@ async function run(argv: string[], dataDir: string | undefined = process.env.APR
   const err: string[] = [];
   const code = await runCall(argv, {
     io: { out: t => out.push(t), err: t => err.push(t) },
-    connect: id => connectFleetMember(id, {
+    connect: (id, opts) => connectFleetMember(id, {
+      // The verb's real connect adds origin=engine; mirror it (and the grant).
+      origin: 'engine',
+      ...(opts?.kbMaintainer ? { kbMaintainer: true } : {}),
       env: { APRA_FLEET_DATA_DIR: dataDir },
       checkRunningInstance: async () => ({ running: true, url: `http://127.0.0.1:${handle.port}/mcp`, pid: process.pid }),
     }),
@@ -137,6 +140,15 @@ describe('apra-fleet call', () => {
     expect(r.code).toBe(0);
     const names = (JSON.parse(r.out) as { tools: Array<{ name: string }> }).tools.map(t => t.name).sort();
     expect(names).toEqual([...MEMBER_ALLOWED_TOOLS].sort());
+  });
+
+  it('--kb-maintainer opens the session with the kb_maintainer grant: the list adds kb_promote and kb_resolve_contradiction', async () => {
+    const r = await run(['--member', memberId, '--kb-maintainer', '--list-tools']);
+    expect(r.code).toBe(0);
+    const names = (JSON.parse(r.out) as { tools: Array<{ name: string }> }).tools.map(t => t.name).sort();
+    expect(names).toEqual([...MEMBER_ALLOWED_TOOLS, ...MEMBER_MAINTAINER_TOOLS].sort());
+    expect(names).not.toContain('kb_setup');
+    expect(names).not.toContain('kb_export');
   });
 
   it('accepts no inline JSON args: an inline JSON positional or --args flag is a usage error', async () => {

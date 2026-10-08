@@ -1,8 +1,8 @@
 /**
  * `apra-fleet call` -- generic member-session tool call.
  *
- *   apra-fleet call --member <uuid> <tool> [--args-file <path>]
- *   apra-fleet call --member <uuid> --list-tools
+ *   apra-fleet call --member <uuid> [--kb-maintainer] <tool> [--args-file <path>]
+ *   apra-fleet call --member <uuid> [--kb-maintainer] --list-tools
  *
  * Opens a MEMBER session (?member=<uuid>) against the LOCAL server through
  * apra-fleet-client, so the server's own input schema validates the arguments
@@ -11,19 +11,26 @@
  * arguments are {}, allowed only for a tool whose input schema requires none. The session is opened with
  * origin=engine, so its kb_/code_ calls are excluded from session_stats. Failures are printed as a
  * structured JSON error on stderr and the exit code is non-zero.
+ *
+ * --kb-maintainer adds the engine's kb_maintainer grant (kb_maintainer=1): the
+ * session is also served kb_promote and kb_resolve_contradiction. Remote
+ * memberCall passes it only when calling as a repository's kb_maintainer.
  */
 import fs from 'node:fs';
 
 const USAGE = `apra-fleet call -- call a tool as a registered member session
 
 Usage:
-  apra-fleet call --member <uuid> <tool> [--args-file <path>]
-  apra-fleet call --member <uuid> --list-tools
+  apra-fleet call --member <uuid> [--kb-maintainer] <tool> [--args-file <path>]
+  apra-fleet call --member <uuid> [--kb-maintainer] --list-tools
 
   --member <uuid>       Registered member id (an unregistered id fails with HTTP 403)
   --args-file <path>    JSON file holding the tool arguments (a JSON object); omit it
                         for a tool with no required arguments (they default to {})
   --rm-args-file        Delete the args file once read (used by remote memberCall)
+  --kb-maintainer       Open the session with the kb_maintainer grant (adds kb_promote
+                        and kb_resolve_contradiction; used by memberCall for the
+                        repository's kb_maintainer)
   --list-tools          Print the member session's tools/list
   --help, -h            Show this help`;
 
@@ -37,7 +44,7 @@ export interface CallDeps {
   readFile?: (p: string) => string;
   removeFile?: (p: string) => void;
   /** Connect a member session; defaults to the client's connectFleetMember. */
-  connect?: (memberId: string) => Promise<{
+  connect?: (memberId: string, opts: { kbMaintainer: boolean }) => Promise<{
     transport: { stop?: () => void };
     /** Releases the server-side session (HTTP DELETE); preferred over transport.stop(). */
     close?: () => Promise<void>;
@@ -53,17 +60,19 @@ interface Parsed {
   tool?: string;
   argsFile?: string;
   rmArgsFile: boolean;
+  kbMaintainer: boolean;
   listTools: boolean;
   help: boolean;
 }
 
 function parse(argv: string[]): Parsed | { error: string } {
-  const out: Parsed = { listTools: false, rmArgsFile: false, help: false };
+  const out: Parsed = { listTools: false, rmArgsFile: false, kbMaintainer: false, help: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--help' || a === '-h') out.help = true;
     else if (a === '--list-tools') out.listTools = true;
     else if (a === '--rm-args-file') out.rmArgsFile = true;
+    else if (a === '--kb-maintainer') out.kbMaintainer = true;
     else if (a === '--member' || a === '--args-file') {
       const v = argv[++i];
       if (v === undefined || v.startsWith('--')) return { error: `${a} requires a value` };
@@ -121,16 +130,16 @@ export async function runCall(argv: string[], deps: CallDeps = {}): Promise<numb
     }
   }
 
-  const connect = deps.connect ?? (async (id: string) => {
+  const connect = deps.connect ?? (async (id: string, opts: { kbMaintainer: boolean }) => {
     const m = await import('@apralabs/apra-fleet-client/server-resolution');
     // origin=engine: this verb is the engine acting as the member (remote
     // memberCall), so its kb_/code_ calls are not counted in session_stats.
-    return m.connectFleetMember(id, { origin: 'engine' });
+    return m.connectFleetMember(id, { origin: 'engine', ...(opts.kbMaintainer ? { kbMaintainer: true } : {}) });
   });
 
   let session;
   try {
-    session = await connect(parsed.member);
+    session = await connect(parsed.member, { kbMaintainer: parsed.kbMaintainer });
   } catch (e) {
     const err = e as Error & { status?: number; code?: string };
     if (err.status === 403) {

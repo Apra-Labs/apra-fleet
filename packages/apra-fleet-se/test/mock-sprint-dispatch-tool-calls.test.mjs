@@ -45,7 +45,7 @@ test('mock sprint: session_stats snapshots around each dispatch, read via member
                     return { content: [{ type: 'text', text: 'sent' }] };
                 }
                 if (name === 'execute_command' && typeof args.command === 'string' && args.command.includes('apra-fleet call')) {
-                    const m = /apra-fleet call --member (\S+) (\w+) --args-file/.exec(args.command);
+                    const m = /apra-fleet call --member (\S+) (?:--kb-maintainer )?(\w+) --args-file/.exec(args.command);
                     const tool = m && m[2];
                     if (tool === 'session_stats') {
                         memberStatsReads.push({ member: m[1], args: deliveredArgs[deliveredArgs.length - 1] });

@@ -37,8 +37,9 @@ import { getTokenIssuer, localWorkspaceId } from '../src/services/token-issuer.j
 import { sessionRegistry } from '../src/services/session-registry.js';
 import { registerPending, __clearAllPending } from '../src/services/pending-responses.js';
 import { addAgent } from '../src/services/registry.js';
+import { sendMessage } from '../src/tools/send-message.js';
 import { fleetEvents } from '../src/services/event-bus.js';
-import { MEMBER_ALLOWED_TOOLS, MEMBER_CHANNEL_TOOLS, REGISTERED_TOOL_NAMES } from '../src/services/member-tool-allowlist.js';
+import { MEMBER_ALLOWED_TOOLS, MEMBER_CHANNEL_TOOLS, MEMBER_MAINTAINER_TOOLS, REGISTERED_TOOL_NAMES } from '../src/services/member-tool-allowlist.js';
 import { makeTestAgent, backupAndResetRegistry, restoreRegistry, memberSecretHeaders, memberSecretRequestInit } from './test-helpers.js';
 
 const RECONNECT = { maxRetries: 0, maxReconnectionDelay: 100, initialReconnectionDelay: 100, reconnectionDelayGrowFactor: 1 };
@@ -73,10 +74,11 @@ async function startServer(): Promise<HttpTransportHandle> {
 
 async function connect(
   port: number,
-  opts: { member?: string; channel?: boolean; bearer?: string } = {},
+  opts: { member?: string; channel?: boolean; bearer?: string; params?: Record<string, string> } = {},
 ): Promise<Client> {
   const url = new URL(`http://127.0.0.1:${port}/mcp`);
   if (opts.member) url.searchParams.set('member', opts.member);
+  for (const [k, v] of Object.entries(opts.params ?? {})) url.searchParams.set(k, v);
   const client = new Client(
     { name: 'scope-e2e-client', version: '1.0.0' },
     { capabilities: opts.channel ? { experimental: { 'claude/channel': {} } } : {} },
@@ -180,5 +182,132 @@ describe('member session tool scope over HTTP', () => {
     const names = await toolNames(await connect(handle.port, { bearer: token }));
     expect(names).toEqual(sorted(MEMBER_ALLOWED_TOOLS));
     expect(names).not.toContain('execute_prompt');
+  });
+});
+
+describe('tool-only ?member= sessions leave the session registry alone', () => {
+  const PLACEHOLDER_PID = 424242;
+
+  function registerPlaceholder(): void {
+    // What register_member records at launch, before the interactive session connects back.
+    sessionRegistry.register({
+      member_id: memberId, workspace_id: localWorkspaceId(), role: 'doer',
+      work_folder: '/tmp/scope-e2e-work', server: null, pid: PLACEHOLDER_PID, status: 'idle',
+    });
+  }
+
+  /** Close the session with an HTTP DELETE, which fires the server's onsessionclosed. */
+  async function terminate(client: Client, handle: HttpTransportHandle): Promise<void> {
+    const before = handle.sessions.size;
+    await (client.transport as StreamableHTTPClientTransport).terminateSession();
+    expect(handle.sessions.size).toBe(before - 1);
+  }
+
+  it('a tool-only connect does not replace a launch placeholder, and its close does not unregister it', async () => {
+    registerPlaceholder();
+    const placeholder = sessionRegistry.get(localWorkspaceId(), memberId);
+    const handle = await startServer();
+    const member = await connect(handle.port, { member: memberId });
+    // The session works as a member session...
+    expect(await toolNames(member)).toEqual(sorted(MEMBER_ALLOWED_TOOLS));
+    // ...but the placeholder is untouched: still no server, same pid, no sid.
+    const during = sessionRegistry.get(localWorkspaceId(), memberId);
+    expect(during).toBe(placeholder);
+    expect(during).toMatchObject({ server: null, pid: PLACEHOLDER_PID, status: 'idle' });
+    expect(during?.sessionId).toBeUndefined();
+
+    // send_message does not route to the tool-only session.
+    const sent = JSON.parse(await sendMessage({ member_id: memberId, content: 'hello' }, localWorkspaceId()));
+    expect(sent).toEqual({ error: 'member not connected or no MCP session' });
+
+    await terminate(member, handle);
+    expect(sessionRegistry.get(localWorkspaceId(), memberId)).toBe(placeholder);
+  });
+
+  it('a tool-only connect with no registry entry registers nothing, and its close leaves nothing', async () => {
+    expect(sessionRegistry.get(localWorkspaceId(), memberId)).toBeUndefined();
+    const handle = await startServer();
+    const member = await connect(handle.port, { member: memberId });
+    expect(await toolNames(member)).toEqual(sorted(MEMBER_ALLOWED_TOOLS));
+    expect(sessionRegistry.get(localWorkspaceId(), memberId)).toBeUndefined();
+    const sent = JSON.parse(await sendMessage({ member_id: memberId, content: 'hello' }, localWorkspaceId()));
+    expect(sent).toEqual({ error: 'member not connected or no MCP session' });
+    await terminate(member, handle);
+    expect(sessionRegistry.get(localWorkspaceId(), memberId)).toBeUndefined();
+  });
+
+  it('a channel-capable ?member= session still takes over the placeholder (keeping its pid) and unregisters on close', async () => {
+    registerPlaceholder();
+    const handle = await startServer();
+    const member = await connect(handle.port, { member: memberId, channel: true });
+    const live = sessionRegistry.get(localWorkspaceId(), memberId);
+    expect(live).toMatchObject({ pid: PLACEHOLDER_PID, status: 'online', channelCapable: true });
+    expect(live?.server).not.toBeNull();
+    expect(handle.sessions.has(live!.sessionId!)).toBe(true);
+
+    // A tool-only session alongside it neither displaces it nor removes it on close.
+    const tool = await connect(handle.port, { member: memberId });
+    expect(sessionRegistry.get(localWorkspaceId(), memberId)).toBe(live);
+    await terminate(tool, handle);
+    expect(sessionRegistry.get(localWorkspaceId(), memberId)).toBe(live);
+
+    await terminate(member, handle);
+    expect(sessionRegistry.get(localWorkspaceId(), memberId)).toBeUndefined();
+  });
+});
+
+describe('member KB write policy: kb_setup / kb_export never, kb_promote / kb_resolve_contradiction only with the kb_maintainer grant', () => {
+  const NEVER = ['kb_setup', 'kb_export'];
+  const MAINTAINER_ONLY = ['kb_promote', 'kb_resolve_contradiction'];
+  const ARGS: Record<string, Record<string, unknown>> = {
+    kb_setup: { provider: 'sqlite' },
+    kb_export: {},
+    kb_promote: { id: 'no-such-entry', reason: 'scope test: never reaches a KB entry' },
+    kb_resolve_contradiction: { winnerId: 'no-such-a', loserId: 'no-such-b', evidence: 'scope test' },
+  };
+
+  it('a non-maintainer member session neither lists nor can call any of the four (unknown tool)', async () => {
+    const handle = await startServer();
+    for (const opts of [
+      { member: memberId },
+      { member: memberId, channel: true },
+      // origin=engine alone is not the grant.
+      { member: memberId, params: { origin: 'engine' } },
+      // The grant is engine-only: kb_maintainer=1 without origin=engine is ignored.
+      { member: memberId, params: { kb_maintainer: '1' } },
+    ]) {
+      const client = await connect(handle.port, opts);
+      const names = await toolNames(client);
+      for (const t of [...NEVER, ...MAINTAINER_ONLY]) {
+        expect(names, `${JSON.stringify(opts)} lists ${t}`).not.toContain(t);
+        expect(await callFailsAsUnknownTool(client, t, ARGS[t]), `${JSON.stringify(opts)} ${t}`).toBe(true);
+      }
+    }
+  });
+
+  it('the kb_maintainer member session lists and reaches kb_promote and kb_resolve_contradiction, but still not kb_setup or kb_export', async () => {
+    const handle = await startServer();
+    const maint = await connect(handle.port, { member: memberId, params: { origin: 'engine', kb_maintainer: '1' } });
+    const names = await toolNames(maint);
+    expect(names).toEqual(sorted([...MEMBER_ALLOWED_TOOLS, ...MEMBER_MAINTAINER_TOOLS]));
+    for (const t of MAINTAINER_ONLY) {
+      // Reaches the real handler: it refuses at kb (self) resolution (the
+      // test member has no KB identity) -- a handler error, not the SDK's
+      // unknown-tool error.
+      const result = await maint.callTool({ name: t, arguments: ARGS[t] });
+      const text = ((result.content as Array<{ text?: string }>)?.[0]?.text ?? '');
+      expect(text, t).toMatch(/^E-SELF-[A-Z-]+: /);
+      expect(text, t).not.toMatch(/Tool \S+ not found/);
+    }
+    for (const t of NEVER) {
+      expect(names).not.toContain(t);
+      expect(await callFailsAsUnknownTool(maint, t, ARGS[t]), t).toBe(true);
+    }
+  });
+
+  it('a FULL session still lists all four', async () => {
+    const handle = await startServer();
+    const names = await toolNames(await connect(handle.port));
+    for (const t of [...NEVER, ...MAINTAINER_ONLY]) expect(names).toContain(t);
   });
 });

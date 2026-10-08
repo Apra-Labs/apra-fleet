@@ -28,7 +28,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { handleCodeReindex, handleCodeStatus } from '../src/tools/code-intelligence.js';
-import { autoReindexPause, codeStatus, DEFAULT_COOLDOWN_MS } from '../src/tools/code-intelligence-reindex.js';
+import { freshnessNote } from '../src/tools/code-intelligence-freshness.js';
+import {
+  autoReindexPause, codeStatus, DEFAULT_COOLDOWN_MS, scheduleReindex, maybeScheduleReindex,
+  GITNEXUS_MIN_VERSION, GITNEXUS_PACKAGE_SPEC, GITNEXUS_ANALYZE_ARGS, detectInjectedGitnexusBlocks,
+} from '../src/tools/code-intelligence-reindex.js';
 import { assertCodeIndexReady, codeIndexReadiness, ensureGitNexusIndexReady } from '../src/tools/code-intelligence-readiness.js';
 
 // Exercise the real self-heal scheduler here (tests/setup.ts fakes it globally).
@@ -73,6 +77,7 @@ case "$FAKE_MODE" in
     echo "Indexed ok"
     ;;
   uptodate) echo "Already up to date"; ;;
+  tooold) echo "error: unknown option '--index-only'"; exit 1 ;;
   notfound) echo "npm error 404 Not Found - GET https://registry.npmjs.org/gitnexus"; exit 1 ;;
 esac
 `;
@@ -129,9 +134,22 @@ afterAll(() => {
   for (const pid of pids) {
     try { process.kill(pid, 0); leaked++; try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } } catch { /* gone */ }
   }
-  fs.rmSync(sandbox.root, { recursive: true, force: true });
+  rmTolerant(sandbox.root);
   expect(leaked).toBe(0);
 });
+
+// Windows can briefly hold a just-exited child's cwd or log handle open, so
+// rmdir fails with EBUSY/EPERM. Retry with backoff (rmSync's maxRetries),
+// then warn and leave the temp dir rather than fail the suite on cleanup.
+function rmTolerant(dir: string): void {
+  try {
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== 'EBUSY' && code !== 'EPERM' && code !== 'ENOTEMPTY') throw err;
+    console.warn(`code-reindex-tools: could not remove ${dir} (${code}); leaving it for the OS temp cleanup`);
+  }
+}
 
 function collectPids(): void {
   const d = path.join(sandbox.data, 'code-index');
@@ -146,7 +164,7 @@ function collectPids(): void {
 
 beforeEach(() => {
   collectPids();
-  fs.rmSync(path.join(sandbox.data, 'code-index'), { recursive: true, force: true });
+  rmTolerant(path.join(sandbox.data, 'code-index'));
   repo = newRepo();
 });
 
@@ -202,6 +220,43 @@ describe.skipIf(isWin)('code_reindex / code_status with a fake gitnexus', () => 
     process.env.FAKE_MODE = 'notfound';
     const r = await handleCodeReindex({}, { repo, memberId: 'm' });
     expect(r).toMatchObject({ outcome: 'not-started', reason: 'gitnexus-not-found' });
+  });
+
+  it('a gitnexus that rejects --index-only is analyze-failed with the version cause and the upgrade fix', async () => {
+    process.env.FAKE_MODE = 'tooold';
+    const r = await handleCodeReindex({}, { repo, memberId: 'm' });
+    expect(r).toMatchObject({ outcome: 'not-started', reason: 'gitnexus-too-old' });
+    const detail = (r as { detail?: string }).detail ?? '';
+    expect(detail).toContain('does not support --index-only');
+    expect(detail).toContain(GITNEXUS_MIN_VERSION);
+    expect(detail).toMatch(/upgrade gitnexus/);
+    expect(detail).toMatch(/clear the npx cache/);
+    const s = await waitFor(() => (codeStatus(repo, codeIndexReadiness('gitnexus', repo)).analyze?.phase === 'done' ? codeStatus(repo, codeIndexReadiness('gitnexus', repo)) : undefined));
+    expect(s.analyze).toMatchObject({ result: 'failed', failureCause: 'gitnexus-too-old' });
+  });
+
+  it('after an automatic run fails for the too-old cause, no further automatic run starts and no re-index is claimed', async () => {
+    process.env.FAKE_MODE = 'tooold';
+    expect(scheduleReindex(repo)).toEqual({ started: true });
+    await waitFor(() => (codeStatus(repo, codeIndexReadiness('gitnexus', repo)).analyze?.phase === 'done' ? true : undefined));
+    // Repeated divergence: each attempt names the cause (not 'cooldown') and starts nothing.
+    for (let i = 0; i < 3; i++) {
+      const again = scheduleReindex(repo);
+      expect(again).toMatchObject({ started: false, reason: 'gitnexus-too-old' });
+      const started = maybeScheduleReindex(repo);
+      expect(started).toBe(false);
+      expect(freshnessNote('a'.repeat(40), 'b'.repeat(40), started)).not.toContain('background re-index has been started');
+    }
+    // An explicit code_reindex re-arms automatic runs.
+    process.env.FAKE_MODE = 'index';
+    const r = await handleCodeReindex({}, { repo, memberId: 'm' });
+    if (r.outcome === 'started' && r.pid) pids.add(r.pid);
+    await waitFor(() => (codeStatus(repo, codeIndexReadiness('gitnexus', repo)).analyze?.result === 'indexed' ? true : undefined));
+  });
+
+  it('the analyze argv carries the pinned minimum gitnexus version', () => {
+    expect(GITNEXUS_PACKAGE_SPEC).toBe(`gitnexus@>=${GITNEXUS_MIN_VERSION}`);
+    expect(GITNEXUS_ANALYZE_ARGS[0]).toBe(GITNEXUS_PACKAGE_SPEC);
   });
 
   it('a second code_reindex while one runs does not start another analyze', async () => {
@@ -393,5 +448,55 @@ describe('client exports and sandbox hygiene', () => {
     for (const entry of fs.existsSync(sandbox.data) ? fs.readdirSync(sandbox.data) : []) {
       expect(['code-index', 'logs']).toContain(entry);
     }
+  });
+});
+
+describe('detectInjectedGitnexusBlocks (previously polluted clones)', () => {
+  const BLOCK = '# Mine\n<!-- gitnexus:start -->\n# GitNexus\n<!-- gitnexus:end -->\n';
+
+  function pollute(): { before: string; contentBefore: string } {
+    fs.writeFileSync(path.join(repo, 'CLAUDE.md'), BLOCK);
+    execFileSync('git', ['add', 'CLAUDE.md'], { cwd: repo });
+    execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'polluted'], { cwd: repo });
+    return { before: porcelain(repo), contentBefore: fs.readFileSync(path.join(repo, 'CLAUDE.md'), 'utf8') };
+  }
+
+  it('reports a work tree carrying an injected block with the file name and the fix, and never edits it', async () => {
+    const { before, contentBefore } = pollute();
+
+    expect(detectInjectedGitnexusBlocks(repo)).toEqual(['CLAUDE.md']);
+    const status = await handleCodeStatus({}, { repo, memberId: 'm' }) as { injectedBlockFiles: string[]; injectedBlockWarning: string };
+    expect(status.injectedBlockFiles).toEqual(['CLAUDE.md']);
+    expect(status.injectedBlockWarning).toMatch(/^WARN: CLAUDE\.md /);
+    expect(status.injectedBlockWarning).toContain('remove the block');
+    expect(status.injectedBlockWarning).toContain('commit');
+
+    // detection only: git status and the file are untouched
+    expect(porcelain(repo)).toBe(before);
+    expect(fs.readFileSync(path.join(repo, 'CLAUDE.md'), 'utf8')).toBe(contentBefore);
+  });
+
+  // code_reindex spawns `npx`, which this file fakes with a POSIX shell
+  // script on PATH. On Windows spawn goes through cmd.exe, which cannot run
+  // that script, so the call reaches a real npx and hangs -- skipped there
+  // like the other fake-npx tests in this file.
+  it.skipIf(isWin)('code_reindex also reports the injected block files', async () => {
+    process.env.FAKE_MODE = 'uptodate';
+    const { before, contentBefore } = pollute();
+
+    const reindex = await handleCodeReindex({}, { repo, memberId: 'm' }) as { injectedBlockFiles?: string[] };
+    expect(reindex.injectedBlockFiles).toEqual(['CLAUDE.md']);
+
+    expect(porcelain(repo)).toBe(before);
+    expect(fs.readFileSync(path.join(repo, 'CLAUDE.md'), 'utf8')).toBe(contentBefore);
+  });
+
+  it('a clean work tree (and one that only quotes the marker in prose) produces no warning', async () => {
+    seedAgentDocs(repo);
+    fs.writeFileSync(path.join(repo, 'AGENTS.md'), 'See the `<!-- gitnexus:start -->` block in docs.\n');
+    expect(detectInjectedGitnexusBlocks(repo)).toEqual([]);
+    const status = await handleCodeStatus({}, { repo, memberId: 'm' }) as { injectedBlockFiles: string[]; injectedBlockWarning: string | null };
+    expect(status.injectedBlockFiles).toEqual([]);
+    expect(status.injectedBlockWarning).toBeNull();
   });
 });

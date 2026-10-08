@@ -27,7 +27,7 @@ import { registerAllTools } from '../../src/services/tool-registry.js';
 import { addAgent } from '../../src/services/registry.js';
 import { resolveProjectSlug } from '../../src/services/knowledge/project-slug.js';
 import { getKbProviders } from '../../src/services/knowledge/kb-providers.js';
-import { makeTestLocalAgent, backupAndResetRegistry, restoreRegistry, memberSecretRequestInit } from '../test-helpers.js';
+import { makeTestAgent, makeTestLocalAgent, backupAndResetRegistry, restoreRegistry, memberSecretRequestInit } from '../test-helpers.js';
 
 const RECONNECT = { maxRetries: 0, maxReconnectionDelay: 100, initialReconnectionDelay: 100, reconnectionDelayGrowFactor: 1 };
 const RUN = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -55,6 +55,15 @@ function register(key: string, workFolder: string): void {
   addAgent(agent);
   members[key] = agent.id;
   folders[key] = workFolder;
+}
+
+function registerRemote(key: string, gitRepos: string[]): void {
+  const agent = makeTestAgent({
+    friendlyName: `kb-self-${key}-${RUN}`, workFolder: `/home/testuser/kb-self-${key}-${RUN}`, gitRepos,
+  });
+  addAgent(agent);
+  members[key] = agent.id;
+  folders[key] = agent.workFolder;
 }
 
 async function connect(member?: string): Promise<Client> {
@@ -100,6 +109,9 @@ beforeAll(async () => {
   fs.mkdirSync(plain);
   register('plain', plain);
   register('noremote', gitRepo('noremote', false));
+  // Remote members: the work folder is on another host (it does not exist here).
+  registerRemote('remote', [remoteFor('remote')]);
+  registerRemote('remotenone', []);
   handle = await createHttpTransport({ registerTools: registerAllTools, preferredPort: 0 });
 }, 30_000);
 
@@ -242,5 +254,43 @@ describe('kb (self): the removed scope keys are refused, never silently stripped
     const asArray = await callJson(alpha, 'kb_list', { confidence: ['INFERRED'] });
     expect(asString.total).toBeGreaterThan(0);
     expect(asString).toEqual(asArray);
+  });
+});
+
+describe('kb (self): a REMOTE member session resolves the KB from its single known origin remote', () => {
+  it('a remote member with one git_repos entry reads the KB for that URL\'s slug', async () => {
+    // Seed the KB for the remote's slug from a local checkout of the same
+    // origin (the KB file is keyed by the slug, not the folder). The entry is
+    // tagged as the remote member's own capture: an explicit all-tier member
+    // read returns only those.
+    const seedDir = gitRepo('remoteseed', false);
+    execFileSync('git', ['remote', 'add', 'origin', remoteFor('remote')], { cwd: seedDir });
+    const seedProviders = await getKbProviders(seedDir);
+    const slug = resolveProjectSlug(undefined, remoteFor('remote'));
+    expect(seedProviders.projectSlug).toBe(slug);
+    const { id } = await seedProviders.project.capture({
+      type: 'knowledge', title: 'Remote gateway retries idempotent calls',
+      summary: 'Remote gateway retries idempotent calls up to three times.',
+      content: 'The remote gateway retries idempotent calls.', source_files: ['src/remoteseed.ts'],
+      symbols: ['remoteGateway'], tags: [`member:${members.remote}`], content_hash: '', content_hash_type: 'sha256',
+      flagged_for_review: false, author: 'test', source: 'session', confidence: 'INFERRED',
+    } as any);
+
+    const remote = await connect(members.remote);
+    const hits = await callJson(remote, 'kb_query', { query: 'gateway retries idempotent', confidence: ALL_TIERS });
+    expect(hits.l1_results.map((e: { id: string }) => e.id)).toContain(id);
+    const listed = await callJson(remote, 'kb_list', { confidence: ALL_TIERS });
+    expect(listed.results.map((e: { id: string }) => e.id)).toContain(id);
+
+    // A local member on a different origin does not see it.
+    const alphaHits = await callJson(await connect(members.alpha), 'kb_query', { query: 'gateway retries idempotent', confidence: ALL_TIERS });
+    expect(alphaHits.l1_results.map((e: { id: string }) => e.id)).not.toContain(id);
+  });
+
+  it('a remote member with no known origin remote gets E-SELF-NO-REMOTE with the update_member remediation', async () => {
+    const out = await call(await connect(members.remotenone), 'kb_query', { query: 'anything', confidence: ALL_TIERS });
+    expect(out.isError).toBe(true);
+    expect(out.text).toContain(`E-SELF-NO-REMOTE: Member 'kb-self-remotenone-${RUN}' work folder '${folders.remotenone}' is on another host and the member has no single known origin remote, so it has no KB identity.`);
+    expect(out.text).toContain('Remediation: Record the repo\'s origin URL on the member (update_member git_repos: ["<origin url>"]) or call kb tools from a session on the member\'s own host.');
   });
 });

@@ -19,7 +19,7 @@
     },
     "kb_self_resolution": {
       "confirmed_by": "src/services/knowledge/kb-self.ts (resolveSelfAnchor, validateSelfFolder), src/tools/kb-*.ts",
-      "finding": "No kb_* tool takes a repo/scope argument. Every kb_* call operates on the CALLING SESSION's own KB: a member session resolves the member's registered work folder, any other session the fleet server's working folder. A local folder must exist, be a git repository and have an origin remote, else the call throws E-SELF-NO-WORKFOLDER, E-SELF-NOT-A-REPO or E-SELF-NO-REMOTE BEFORE getKbProviders is reached. A remote member's folder lives on another host, so its KB identity is the member's single known origin remote and the folder is carried verbatim (N-ANCHOR-VERBATIM-MISSING for the read tools); the WRITING tools kb_export, kb_bible_commit and kb_import then refuse with E-REPO-PATH-INVALID because they need the folder on this host. Recorded per affected tool below as 'anchor_validation' ('self-validated' | 'self-validated+local-folder-required'). The removed pre-redesign scope keys (repo_path, repo, repo_remote_url) are still declared on every kb_* input schema, described as REMOVED, so they reach the tool wrapper, which refuses them with E-SCOPE-KEY-REMOVED before any self-resolution -- they are never silently stripped.",
+      "finding": "No kb_* tool takes a repo/scope argument. Every kb_* call operates on the CALLING SESSION's own KB: a member session resolves the member's registered work folder, any other session the fleet server's working folder. A local folder must exist, be a git repository and have an origin remote, else the call throws E-SELF-NO-WORKFOLDER, E-SELF-NOT-A-REPO or E-SELF-NO-REMOTE BEFORE getKbProviders is reached. A remote member's folder lives on another host, so its KB identity is the member's single known origin remote and the folder is carried verbatim (N-ANCHOR-VERBATIM-MISSING for the read tools); the WRITING tools kb_export, kb_bible_commit and kb_import then refuse with E-REPO-PATH-INVALID because they need the folder on this host (kb_export is never served to a member session -- spec.md section 2.5a -- so for it this refusal is defence in depth). Recorded per affected tool below as 'anchor_validation' ('self-validated' | 'self-validated+local-folder-required'). The removed pre-redesign scope keys (repo_path, repo, repo_remote_url) are still declared on every kb_* input schema, described as REMOVED, so they reach the tool wrapper, which refuses them with E-SCOPE-KEY-REMOVED before any self-resolution -- they are never silently stripped.",
       "affected_methods": ["P-2 capture", "P-3 query", "P-7 prime", "P-10 stats", "P-11 touch", "X-1 list", "X-3 freshnessSweep", "X-6 hasEntry", "X-8 getSourceFileBases"]
     },
     "not_in_scope": "approveDirective, rejectDirective, addDirective, flaggedPairs (INVENTORY.md section 4.2) are CLI-only and not reachable by any registered MCP tool, so they have no entry here.",
@@ -58,7 +58,7 @@
       "side_effect_class": "trust-mutating",
       "idempotent": false,
       "idempotent_note": "New row per call unless AUDN dedupes to E-DEDUP-NONE.",
-      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-NO-BASIS", "E-BASIS-MISSING-FILES", "E-SUPERSEDE-CONSENT-MISSING", "E-ACTIVE-DIRECTIVE-SUPERSEDE-GUARD", "E-PROVIDER-UNINITIALIZED"],
+      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-NO-BASIS", "E-BASIS-MISSING-FILES", "E-SUPERSEDE-CONSENT-MISSING", "E-ACTIVE-DIRECTIVE-SUPERSEDE-GUARD", "E-BIBLE-MALFORMED", "E-PROVIDER-UNINITIALIZED"],
       "non_error_outcomes": ["E-CLAMP", "E-CONTRADICTION-FLAGGED", "E-DEDUP-NONE", "E-DIRECTIVE-QUARANTINE"],
       "see_also": ["Capture provenance and confidence clamp", "Directive quarantine", "Superseding and AUDN matching", "Freshness and content hashing"]
     },
@@ -76,7 +76,7 @@
       "side_effect_class": "append",
       "idempotent": false,
       "idempotent_note": "Read result is stable but each call bumps use_count/last_accessed telemetry.",
-      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-QUERY-NO-SELECTOR", "E-PROVIDER-UNINITIALIZED"],
+      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-QUERY-NO-SELECTOR", "E-BIBLE-MALFORMED", "E-MEMBER-VIEW-REMOTE", "E-PROVIDER-UNINITIALIZED"],
       "see_also": ["Query modes"]
     },
     {
@@ -181,7 +181,7 @@
       "side_effect_class": "pure read",
       "idempotent": true,
       "idempotent_note": "Explicitly never bumps use_count/last_accessed.",
-      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-PROVIDER-UNINITIALIZED"],
+      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-BIBLE-MALFORMED", "E-MEMBER-VIEW-REMOTE", "E-PROVIDER-UNINITIALIZED"],
       "non_error_outcomes": ["E-STATS-UNSUPPORTED", "E-BIBLE-READ-DEGRADED"],
       "see_also": ["Query modes"]
     },
@@ -234,8 +234,8 @@
       "tools_note": "kb_stats calls it for bible-drift comparison; kb_export calls it (confidence: 'CONFIRMED') to select entries to export; kb_bible_commit calls it (confidence: 'CONFIRMED') to resolve the given ids to live CONFIRMED entries before merging them into the bible.",
       "side_effect_class": "pure read",
       "idempotent": true,
-      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-REPO-PATH-INVALID", "E-PROVIDER-UNINITIALIZED"],
-      "error_codes_note": "E-REPO-PATH-INVALID only applies on the kb_export and kb_bible_commit routes (a remote member session, whose folder is not on this host), thrown before this member is reached. The E-SELF-* codes apply on every route, also before this member is reached.",
+      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-REPO-PATH-INVALID", "E-BIBLE-BASIS-NOT-GIT", "E-PROVIDER-UNINITIALIZED"],
+      "error_codes_note": "E-REPO-PATH-INVALID only applies on the kb_export and kb_bible_commit routes (a remote member session, whose folder is not on this host; no member session is served kb_export, so on that route it is defence in depth), thrown before this member is reached. The E-SELF-* codes apply on every route, also before this member is reached.",
       "see_also": []
     },
     {
@@ -336,7 +336,7 @@
       "idempotent": true,
       "idempotent_note": "Synchronous (non-Promise) member; chunked SELECT, no writes.",
       "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-REPO-PATH-INVALID", "E-PROVIDER-UNINITIALIZED"],
-      "error_codes_note": "E-REPO-PATH-INVALID (a remote member session, whose folder is not on this host) and the E-SELF-* codes are thrown by kb_export before this member is reached.",
+      "error_codes_note": "E-REPO-PATH-INVALID (a remote member session, whose folder is not on this host -- defence in depth, since no member session is served kb_export) and the E-SELF-* codes are thrown by kb_export before this member is reached.",
       "see_also": ["X-1"]
     }
   ],
