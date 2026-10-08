@@ -158,6 +158,35 @@ describe('writer and probe share the resolver (real git)', () => {
     expect(new Set(resolverCmds).size).toBe(1);
   });
 
+  it('nested work folder: what an older compose left under the exact-folder key is cleaned up (own entry + legacy), another member\'s entry is kept', async () => {
+    const folderKey = normalizeProjectKey(nested);
+    const agent = agentFor(nested);
+    const other = { type: 'http', url: 'http://localhost:7523/mcp?member=someone-else' };
+    fs.writeFileSync(path.join(home, '.claude.json'), JSON.stringify({
+      projects: {
+        [folderKey]: { mcpServers: { [MEMBER_MCP_SERVER_NAME]: { type: 'http', url: memberMcpUrl(agent) }, 'apra-fleet-member': { type: 'http', url: 'x' }, deepwiki: { type: 'http', url: 'd' } } },
+      },
+    }));
+    const m = localMember();
+    // Removal (url null), as for a local member: the resolved key has no entry,
+    // only the exact-folder spelling does.
+    await new ClaudeProvider().syncMemberMcpEntry({
+      agent, execCommand: m.exec, memberHomeDir: home, agentOs, shell: (agent as any).shell, transport: m.transport, url: null, removeOnlyOwnEntry: true,
+    } as any);
+    let config = JSON.parse(fs.readFileSync(path.join(home, '.claude.json'), 'utf8'));
+    expect(config.projects[folderKey].mcpServers).toEqual({ deepwiki: { type: 'http', url: 'd' } });
+
+    // Someone else's apra-fleet entry under that spelling is never touched.
+    config.projects[folderKey].mcpServers[MEMBER_MCP_SERVER_NAME] = other;
+    fs.writeFileSync(path.join(home, '.claude.json'), JSON.stringify(config));
+    await new ClaudeProvider().syncMemberMcpEntry({
+      agent, execCommand: m.exec, memberHomeDir: home, agentOs, shell: (agent as any).shell, transport: m.transport, url: null, removeOnlyOwnEntry: true,
+    } as any);
+    config = JSON.parse(fs.readFileSync(path.join(home, '.claude.json'), 'utf8'));
+    expect(config.projects[folderKey].mcpServers[MEMBER_MCP_SERVER_NAME]).toEqual(other);
+    fs.rmSync(path.join(home, '.claude.json'), { force: true });
+  });
+
   it('non-git work folder: the exact folder is the key, for the writer and the probe', async () => {
     fs.rmSync(path.join(home, '.claude.json'), { force: true });
     const { config, url, probed } = await sync(plain);

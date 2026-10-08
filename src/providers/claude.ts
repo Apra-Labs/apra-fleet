@@ -17,6 +17,7 @@ import {
   quotePwshPath,
   readMemberJson,
   resolveClaudeProjectKey,
+  normalizeProjectKey,
   LEGACY_MEMBER_MCP_SERVER_NAME,
   MEMBER_MCP_SERVER_NAME,
 } from '../services/member-config-io.js';
@@ -598,6 +599,28 @@ export class ClaudeProvider implements ProviderAdapter {
       }
       project.mcpServers = servers;
       projects[key] = project;
+      config.projects = projects;
+    }
+
+    // An older compose keyed the entry by the work folder exactly as
+    // registered. The resolved key differs when the folder sits below its
+    // repository root, or when git reports the root symlink-resolved
+    // (macOS /var -> /private/var). Clean up what this member left
+    // under that spelling: the legacy entry and its OWN apra-fleet entry,
+    // never someone else's.
+    const folderKey = normalizeProjectKey(agent.workFolder);
+    const aliased = folderKey !== key && isRecord(projects[folderKey]) ? projects[folderKey] as Record<string, unknown> : null;
+    if (aliased && isRecord(aliased.mcpServers)) {
+      const servers = aliased.mcpServers as Record<string, unknown>;
+      if (LEGACY_MEMBER_MCP_SERVER_NAME in servers) {
+        delete servers[LEGACY_MEMBER_MCP_SERVER_NAME];
+        changed = true;
+      }
+      const stale = servers[MEMBER_MCP_SERVER_NAME];
+      if (isRecord(stale) && typeof stale.url === 'string' && stale.url.endsWith(`?member=${encodeURIComponent(agent.id)}`)) {
+        delete servers[MEMBER_MCP_SERVER_NAME];
+        changed = true;
+      }
       config.projects = projects;
     }
 
