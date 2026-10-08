@@ -1,4 +1,4 @@
-import { escapePowerShellArgInner } from '../utils/shell-escape.js';
+import { escapePowerShellArgInner, escapeForDoubleQuotes } from '../utils/shell-escape.js';
 import { randomBytes } from 'node:crypto';
 import type { ProviderAdapter, PromptOptions, ParsedResponse, UsageLimitSignal, MemberMcpSyncContext, MemberMcpSyncResult, WorkspaceTrustExecFn, WorkspaceTrustTransport, EnsureWorkspaceTrustedResult, SessionIdStrategy, ExecTimeoutSource, TargetOS } from './provider.js';
 import { buildResumeFlag, buildSessionIdFlag, buildForkFlag, encodeClaudeProjectDir, joinForOS, resolveHomeDir, guessedUsageLimitSignal } from './provider.js';
@@ -592,9 +592,11 @@ export class ClaudeProvider implements ProviderAdapter {
       // The file channel writes relative to the member's HOME, so it only fits
       // when the config file is home-anchored (not a CLAUDE_CONFIG_DIR override).
       transport: target.homeAnchored ? ctx.transport : undefined,
-      homeFile: target.file,
-      tmpFile: joinMemberPath(target.dir, staging.tmpRel, isWindows, ctx.shell),
-      b64File: joinMemberPath(target.dir, staging.b64Rel, isWindows, ctx.shell),
+      // Embedded inside "..." in the delivery commands: escape what is live
+      // there for the member's shell (the read above quotes the path itself).
+      homeFile: escapeForDoubleQuotes(target.file, !posix),
+      tmpFile: escapeForDoubleQuotes(joinMemberPath(target.dir, staging.tmpRel, isWindows, ctx.shell), !posix),
+      b64File: escapeForDoubleQuotes(joinMemberPath(target.dir, staging.b64Rel, isWindows, ctx.shell), !posix),
       staging,
     });
     const what = url !== null ? `wrote ${MEMBER_MCP_SERVER_NAME} (local scope)` : `removed ${MEMBER_MCP_SERVER_NAME}`;
@@ -709,9 +711,14 @@ export class ClaudeProvider implements ProviderAdapter {
       console.error(`[claude] workspace trust: ${detail}`);
       return { seeded: false, detail, mcpServersSeeded: [] };
     }
-    const homeDir = isWindows
-      ? resolvedHome.replace(/\//g, '\\').replace(/\\+$/, '')
-      : resolvedHome.replace(/\\/g, '/').replace(/\/+$/, '');
+    // Every path below is embedded inside "..." in a member-bound command, and
+    // the resolved home is environment-derived (os.homedir() for a local
+    // member), so escape what is live inside double quotes for the target shell.
+    const homeDir = escapeForDoubleQuotes(
+      isWindows
+        ? resolvedHome.replace(/\//g, '\\').replace(/\\+$/, '')
+        : resolvedHome.replace(/\\/g, '/').replace(/\/+$/, ''),
+      isWindows);
     const inHome = (rel: string) => (isWindows ? `${homeDir}\\${rel}` : `${homeDir}/${rel}`);
     const homeFile = inHome('.claude.json');
     const tmpFile = inHome(staging.tmpRel);
@@ -722,7 +729,7 @@ export class ClaudeProvider implements ProviderAdapter {
     // never local node:fs. It rides along in the SAME read command as ~/.claude.json:
     // one round-trip, and (crucially) the already-satisfied case still costs exactly one
     // exec, so the "no write when nothing to do" contract is observable as before.
-    const mcpFile = `${key}/.mcp.json`;
+    const mcpFile = `${escapeForDoubleQuotes(key, isWindows)}/.mcp.json`;
     const SPLIT = '---FLEET_MCP_SPLIT---';
     const HOME_UNREADABLE = 'FLEET_HOME_CONFIG_UNREADABLE';
 
