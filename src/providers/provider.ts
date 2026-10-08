@@ -244,7 +244,7 @@ export function guessedUsageLimitSignal(message: string, now: number = Date.now(
  * (529 / "overloaded") deliberately does NOT match here -- that stays a
  * retryable overload, not a usage limit.
  */
-const USAGE_LIMIT_QUOTA_RE = /\b429\b|rate limit|quota exceeded|usage limit|credit limit|resource_exhausted/i;
+const USAGE_LIMIT_QUOTA_RE = /\b429\b|rate limit|quota (?:exceeded|reached)|usage limit|credit limit|resource(?:_|\s+(?:has\s+been\s+)?)exhausted/i;
 
 export function defaultUsageLimitSignal(output: string, now: number = Date.now()): UsageLimitSignal | null {
   if (!output || !USAGE_LIMIT_QUOTA_RE.test(output)) return null;

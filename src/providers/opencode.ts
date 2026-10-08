@@ -118,8 +118,11 @@ export class OpenCodeProvider implements ProviderAdapter {
 
   // apra-fleet-hzeb.1: OpenCode has no distinct usage-limit event surface, so key off
   // the raw output using the shared quota detector (guessed resume window).
+  // A successful dispatch (code 0 and !isError) must NEVER be classified as a
+  // usage limit, even if stdout transcripts happen to mention 429 in token metrics.
   detectUsageLimit(result: SSHExecResult, parsed: ParsedResponse): UsageLimitSignal | null {
-    return defaultUsageLimitSignal(result.stderr || result.stdout || parsed.result);
+    if (result.code === 0 && !parsed.isError) return null;
+    return defaultUsageLimitSignal(result.stderr || (parsed.isError ? parsed.result : ''));
   }
 
   headlessInvocation(promptLiteral: string): string {
