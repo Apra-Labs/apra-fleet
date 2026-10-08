@@ -430,8 +430,21 @@ export async function runDevelopPhase({
             },
             // Built INSIDE the bracket, after the claim: the streak this
             // dispatch actually owns is only known once the claim has run.
-            prepare: async ({ dispatch, resumeAttempt }) => {
-                if (dispatch.kind === 'max-turns-resume') {
+            prepare: async ({ dispatch, resumeAttempt, freshSession }) => {
+                const isMaxTurnsContinuation = dispatch.kind === 'max-turns-resume';
+                if (isMaxTurnsContinuation && freshSession === true) {
+                    // The exhausted attempt left no session to resume (no
+                    // id reported, or the server no longer knows it): the
+                    // continuation is a FRESH session, so it gets the FULL
+                    // streak prompt below -- a "continue where you left
+                    // off" nudge means nothing without the old context.
+                    log(
+                        `Doer streak ${streakScope()} on member '${doerMember}' exhausted its turn limit ` +
+                        '(max_turns) and its session cannot be resumed -- starting a FRESH session with the full ' +
+                        `prompt at max_turns=${BASE_DOER_MAX_TURNS * (2 ** resumeAttempt)} ` +
+                        `(attempt ${resumeAttempt}/${policyFor('doer').retry.resumeAttempts}).`
+                    );
+                } else if (isMaxTurnsContinuation) {
                     const resumeTurns = BASE_DOER_MAX_TURNS * (2 ** resumeAttempt);
                     log(
                         `Doer streak ${streakScope()} on member '${doerMember}' exhausted its turn limit ` +
@@ -495,8 +508,10 @@ export async function runDevelopPhase({
                 // provider without resume support, prior streak failed),
                 // fall back to a FRESH session carrying the FULL prompt --
                 // never a delta prompt into a fresh session.
+                // A fresh max-turns fallback is never a worklist resume:
+                // it must not continue another session's context.
                 let worklistResumeArg = false;
-                if (worklistCtx && worklistCtx.sessionId) {
+                if (!isMaxTurnsContinuation && worklistCtx && worklistCtx.sessionId) {
                     if (hasContextHeadroomForResume(worklistCtx.usage)) {
                         worklistResumeArg = worklistCtx.sessionId;
                     } else {
@@ -575,9 +590,13 @@ export async function runDevelopPhase({
             // have run partial turns in it) -- clear it so the worklist's
             // NEXT streak starts from a FRESH session with the full
             // prompt, mirroring createRoundSessionRegistry's
-            // clear-on-failure rule. (The max-turns ladder is unaffected:
-            // it resumes the member's last session via `resume: true`,
-            // not this id.)
+            // clear-on-failure rule. (The max-turns ladder does not use
+            // this id either: dispatch-role.mjs resumes the EXHAUSTED
+            // attempt's own session by the explicit id reported on its
+            // error -- never `resume: true`, which the server resolves to
+            // the member's last session, whichever role ran it -- and
+            // starts a fresh session with the full prompt when that id is
+            // missing or unknown.)
             if (worklistCtx) {
                 worklistCtx.sessionId = null;
                 worklistCtx.usage = null;

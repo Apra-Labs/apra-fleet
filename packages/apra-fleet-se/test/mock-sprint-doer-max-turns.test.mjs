@@ -1,8 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { runCmd, runDevelopLoopScenario, withScenarioMarkers } from './helpers/mock-sprint-harness.mjs';
+import { runCmd, runDevelopLoopScenario, withScenarioMarkers, NO_SESSION_ID_MARKER } from './helpers/mock-sprint-harness.mjs';
 
 const check = (cond, msg) => assert.ok(cond, msg);
+
+// The session id the mock server reports on a max_turns-exhausted doer
+// dispatch (execute_prompt's structuredContent.sessionId). The resume must
+// target exactly this session by explicit id -- never `resume: true`, which
+// the server resolves to the member's last session, whichever role ran it.
+const EXHAUSTED_DOER_SESSION = 'sess-doer-exhausted';
 
 // =============================================================================
 // apra-fleet-p4f.3 (superseded): a doer streak that exhausts its turn limit
@@ -28,7 +34,7 @@ test('mock sprint: a max_turns-exhausted doer streak resumes with escalated max_
             maxCycles: 1,
             doerHandler: async () => ({
                 content: [{ text: 'stopped after max turns, simulating a max_turns-exhausted doer dispatch' }],
-                structuredContent: { isError: true, reason: 'max_turns_exhausted' },
+                structuredContent: { isError: true, reason: 'max_turns_exhausted', sessionId: EXHAUSTED_DOER_SESSION },
             }),
         });
 
@@ -86,13 +92,13 @@ test('mock sprint: a max_turns-exhausted doer streak that succeeds on its first 
             maxCycles: 1,
             doerHandler: async ({ opts }) => {
                 calls++;
-                observedOpts.push({ resume: opts.resume, max_turns: opts.max_turns });
+                observedOpts.push({ resume: opts.resume, max_turns: opts.max_turns, raw: { ...opts } });
                 if (calls === 1) {
                     const beadIdMatch = opts.prompt.match(/apra-fleet-mock-sprint-\S+/);
                     capturedBeadId = beadIdMatch ? beadIdMatch[0] : null;
                     return {
                         content: [{ text: 'stopped after max turns' }],
-                        structuredContent: { isError: true, reason: 'max_turns_exhausted' },
+                        structuredContent: { isError: true, reason: 'max_turns_exhausted', sessionId: EXHAUSTED_DOER_SESSION },
                     };
                 }
                 return {
@@ -109,7 +115,11 @@ test('mock sprint: a max_turns-exhausted doer streak that succeeds on its first 
 
         check(calls >= 2, `expected at least 2 doer dispatches (original + first resume), got ${calls}`);
         check(observedOpts[0]?.resume !== true, `first dispatch should not be a resume, got resume=${observedOpts[0]?.resume}`);
-        check(observedOpts[1]?.resume === true, `the retry after max_turns exhaustion must be a session resume, not a fresh dispatch, got resume=${observedOpts[1]?.resume}`);
+        check(
+            observedOpts[1]?.resume === EXHAUSTED_DOER_SESSION,
+            `the retry after max_turns exhaustion must resume the exhausted session by explicit id ('${EXHAUSTED_DOER_SESSION}'), never resume=true and never a fresh dispatch, got resume=${observedOpts[1]?.resume}`
+        );
+        check(!('session_id' in (observedOpts[1]?.raw || {})), 'the resume must not also send session_id');
         check(observedOpts[1]?.max_turns === 1000, `expected the first resume to escalate max_turns to 1000, got ${observedOpts[1]?.max_turns}`);
         check(
             result.logs.some((m) => m.includes('resuming the same session with max_turns=1000 (attempt 1/2)')),
@@ -211,7 +221,7 @@ test('mock sprint: a max_turns-exhausted doer streak resume calls the REAL pre-r
                     order.push('doer-dispatch-original');
                     return {
                         content: [{ text: 'stopped after max turns, simulating a max_turns-exhausted doer dispatch' }],
-                        structuredContent: { isError: true, reason: 'max_turns_exhausted' },
+                        structuredContent: { isError: true, reason: 'max_turns_exhausted', sessionId: EXHAUSTED_DOER_SESSION },
                     };
                 }
                 order.push(`doer-dispatch-resume(resume=${opts.resume})`);
@@ -295,7 +305,7 @@ test('mock sprint: a max_turns-exhausted doer streak whose bead is ALREADY close
                 }
                 return {
                     content: [{ text: 'stopped after max turns, but already closed all assigned beads before this point' }],
-                    structuredContent: { isError: true, reason: 'max_turns_exhausted' },
+                    structuredContent: { isError: true, reason: 'max_turns_exhausted', sessionId: EXHAUSTED_DOER_SESSION },
                 };
             },
         });
@@ -341,7 +351,7 @@ test('mock sprint: a max_turns-exhausted doer streak with a bead STILL OPEN stil
                     capturedIds = assignedIdsFromPrompt(opts.prompt);
                     return {
                         content: [{ text: 'stopped after max turns, did not close its assigned bead(s)' }],
-                        structuredContent: { isError: true, reason: 'max_turns_exhausted' },
+                        structuredContent: { isError: true, reason: 'max_turns_exhausted', sessionId: EXHAUSTED_DOER_SESSION },
                     };
                 }
                 // Resume dispatch: finish the work now.
@@ -370,5 +380,66 @@ test('mock sprint: a max_turns-exhausted doer streak with a bead STILL OPEN stil
             outcomesLine.includes('"outcome":"success"') || outcomesLine.includes('"outcome":"retried"'),
             `Expected the streak to still complete successfully via the resume ladder (success or retried), line: ${outcomesLine}`
         );
+    });
+});
+
+// =============================================================================
+// No session id on the exhausted doer dispatch (a provider that reports none,
+// or a result the server could not parse one from): there is no session the
+// engine can name, and falling back to `resume: true` would land on whatever
+// session the member ran last -- possibly another role's. The engine instead
+// starts a FRESH session carrying the FULL doer prompt (never the short
+// "continue" nudge, which is meaningless without the old context) at the
+// escalated max_turns, and logs that it did so.
+// =============================================================================
+test('mock sprint: a max_turns-exhausted doer streak with NO session id restarts in a FRESH session with the full prompt, logged', async () => {
+    await withScenarioMarkers('doermaxturnsfresh', async () => {
+        let doerCalls = 0;
+        let capturedIds = [];
+        const observed = [];
+
+        const result = await runDevelopLoopScenario('doermaxturnsfresh', {
+            members: ['local'],
+            taskSpecs: [{ title: 'Task: max_turns no-session-id scenario work' }],
+            maxCycles: 1,
+            reviewerHandler: approveReviewer,
+            doerHandler: async ({ opts, tempDir: td }) => {
+                doerCalls += 1;
+                observed.push({ resume: opts.resume, max_turns: opts.max_turns, prompt: opts.prompt, hasSessionId: 'session_id' in opts });
+                if (doerCalls === 1) {
+                    capturedIds = assignedIdsFromPrompt(opts.prompt);
+                    return {
+                        content: [{ text: 'stopped after max turns, no session id reported' }],
+                        structuredContent: { isError: true, reason: 'max_turns_exhausted', sessionId: NO_SESSION_ID_MARKER },
+                    };
+                }
+                for (const id of capturedIds) {
+                    await runCmd(`bd close ${id}`, td);
+                }
+                return {
+                    content: [{ text: JSON.stringify({ status: 'VERIFY', closedIds: capturedIds, notes: 'Closed in the fresh session.' }) }],
+                };
+            },
+        });
+
+        assert.ok(!result.error, `Scenario should not throw: ${result.error ? result.error.message : ''}`);
+        assert.ok(doerCalls >= 2, `Expected a second doer dispatch after the exhaustion, got ${doerCalls}`);
+        const second = observed[1];
+        assert.strictEqual(second.resume, false, `The fallback must be an explicit FRESH session (resume=false), never resume=true, got ${second.resume}`);
+        assert.strictEqual(second.hasSessionId, false, 'The fresh fallback must not send session_id either');
+        assert.strictEqual(second.max_turns, 1000, `The fresh fallback still gets the escalated turn budget, got ${second.max_turns}`);
+        assert.match(second.prompt, /Assigned bead ids \(comma-separated\):/, 'The fresh session must carry the FULL doer prompt');
+        assert.ok(!second.prompt.startsWith('Continue exactly where you left off'), 'The fresh session must not get the resume nudge');
+        assert.ok(!second.prompt.includes('WORKLIST CONTINUATION'), 'The fresh session must not claim warm worklist context');
+        assert.ok(
+            result.logs.some((m) => m.includes('no session id') && m.includes('FRESH session')),
+            `Expected the fresh-session fallback to be logged, logs: ${JSON.stringify(result.logs.filter((m) => m.includes('session')))}`
+        );
+        assert.ok(
+            !result.logs.some((m) => m.includes('resuming the same session with max_turns=')),
+            'No "resuming the same session" claim when no session could be resumed'
+        );
+        const outcomesLine = result.logs.find((m) => m.includes('streak outcomes:'));
+        assert.ok(outcomesLine && outcomesLine.includes('"outcome":"retried"'), `Expected the streak to complete via the fresh fallback, line: ${outcomesLine}`);
     });
 });

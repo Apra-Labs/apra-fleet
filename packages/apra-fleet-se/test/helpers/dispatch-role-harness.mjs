@@ -134,9 +134,30 @@ export const BINDINGS = Object.freeze({
     maxTurns: 1000,
 });
 
-/** An AgentDispatchError whose details.reason marks the turn budget spent. */
-export function turnExhaustionError(message = 'max turns spent') {
-    return new AgentDispatchError(message, { details: { reason: 'max_turns_exhausted' } });
+/**
+ * The session id the exhausted dispatch reports by default. A max-turns resume
+ * must name EXACTLY this id (`resume: "<id>"`), never `resume: true` -- the
+ * server resolves `true` to the member's last session, which may belong to a
+ * different role. test/helpers/execution-ladders.mjs and planning-ladders.mjs
+ * pin the same literal (pure-data files, no imports); a test asserts they agree.
+ */
+export const EXHAUSTED_SESSION_ID = 'sess-exhausted-attempt';
+
+/**
+ * An AgentDispatchError whose details.reason marks the turn budget spent.
+ * `sessionId` is the exhausted attempt's own session id, carried on
+ * err.details.sessionId exactly as the workflow layer does; pass null for an
+ * attempt that reported no id.
+ */
+export function turnExhaustionError(message = 'max turns spent', sessionId = EXHAUSTED_SESSION_ID) {
+    return new AgentDispatchError(message, {
+        details: { reason: 'max_turns_exhausted', ...(sessionId ? { sessionId } : {}) },
+    });
+}
+
+/** The server refused an explicit-id resume: that session is gone or unknown. */
+export function sessionNotFoundError(sessionId = EXHAUSTED_SESSION_ID, message = 'session not found') {
+    return new AgentDispatchError(message, { details: { reason: 'session_not_found', sessionId } });
 }
 
 /** An LLM-credential dispatch failure (self-healable, and non-retryable). */
@@ -173,10 +194,13 @@ export function postDispatchSyncError(message = 'post-dispatch sync failed') {
  * An INFRASTRUCTURE dispatch failure: the member CLI never delivered a result
  * envelope, so no verdict of any kind was produced. 'empty_response' is one
  * of errors.mjs's real INFRA_DISPATCH_REASONS, so isInfraDispatchFailure()
- * classifies this exactly as production would.
+ * classifies this exactly as production would. Like turnExhaustionError, it
+ * carries the session id the server reported for the failed run (pass `null`
+ * for a run that reported none), because the recovery resume continues that
+ * exact session by explicit id.
  */
-export function infraError(message = 'member produced no result envelope') {
-    return new AgentDispatchError(message, { details: { reason: 'empty_response' } });
+export function infraError(message = 'member produced no result envelope', sessionId = EXHAUSTED_SESSION_ID) {
+    return new AgentDispatchError(message, { details: { reason: 'empty_response', ...(sessionId ? { sessionId } : {}) } });
 }
 
 /** The read-side git sync bracket around a dispatch failed (not a divergence). */

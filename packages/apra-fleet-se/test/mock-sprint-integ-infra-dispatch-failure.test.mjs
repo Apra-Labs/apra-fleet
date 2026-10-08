@@ -54,7 +54,7 @@ test('mock sprint: an integ dispatch empty_response is retried via resume and re
                     // result envelope -- the C4 empty_response fault.
                     return {
                         content: [{ text: 'exited 0 but produced no parseable output (empty result)' }],
-                        structuredContent: { isError: true, reason: 'empty_response' },
+                        structuredContent: { isError: true, reason: 'empty_response', sessionId: 'sess-integ-run-1' },
                     };
                 }
                 // The resume recovers the real verdict.
@@ -102,7 +102,7 @@ test('mock sprint: an integ dispatch inactivity timeout that persists after resu
                 // test verdict on either attempt.
                 return {
                     content: [{ text: 'command killed after inactivity timeout (no output)' }],
-                    structuredContent: { isError: true, reason: 'dispatch_failed' },
+                    structuredContent: { isError: true, reason: 'dispatch_failed', sessionId: 'sess-integ-run-1' },
                 };
             },
         });

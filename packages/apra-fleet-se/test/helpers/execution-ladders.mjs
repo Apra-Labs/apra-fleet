@@ -59,6 +59,18 @@ export const BINDING_VALUES = Object.freeze({
 });
 
 /**
+ * The session id the harness's exhausted dispatch reports
+ * (dispatch-role-harness.mjs's EXHAUSTED_SESSION_ID; a test asserts the two
+ * agree). Every 'max-turns-resume' pin below expects EXACTLY this id as its
+ * `resume` value: a resume after turn exhaustion names the exhausted
+ * dispatch's own session explicitly. It used to be `resume: true`, which the
+ * server resolves to the member's LAST session -- whichever role that
+ * belonged to -- so a doer could resume a reviewer session that ran on the
+ * same member. Changed deliberately; never `true` again.
+ */
+export const EXHAUSTED_SESSION_ID = 'sess-exhausted-attempt';
+
+/**
  * Every dispatch the dispatchRole engine serves on the EXECUTION side, with
  * the values it must RESOLVE for each. Same field vocabulary as
  * planning-ladders.mjs's ENGINE_DISPATCHES -- see that file for what each
@@ -124,7 +136,7 @@ export const EXECUTION_ENGINE_DISPATCHES = [
         watchdog: false,
         watchdogLabel: null,
         schema: 'doerReport',
-        resume: true,
+        resume: EXHAUSTED_SESSION_ID,
     },
     {
         role: 'reviewer',
@@ -168,7 +180,7 @@ export const EXECUTION_ENGINE_DISPATCHES = [
         watchdog: false,
         watchdogLabel: null,
         schema: 'reviewerVerdict',
-        resume: true,
+        resume: EXHAUSTED_SESSION_ID,
     },
     {
         role: 'final-review',
@@ -207,7 +219,7 @@ export const EXECUTION_ENGINE_DISPATCHES = [
         watchdog: false,
         watchdogLabel: null,
         schema: 'finalVerdict',
-        resume: true,
+        resume: EXHAUSTED_SESSION_ID,
     },
     {
         role: 'integ-test-runner',
@@ -250,7 +262,7 @@ export const EXECUTION_ENGINE_DISPATCHES = [
         watchdog: true,
         watchdogLabel: 'Integration Test (resume, max_turns=1000)',
         schema: 'integReport',
-        resume: true,
+        resume: EXHAUSTED_SESSION_ID,
     },
     {
         role: 'regression-test-runner',
@@ -292,7 +304,7 @@ export const EXECUTION_ENGINE_DISPATCHES = [
         watchdog: true,
         watchdogLabel: 'Regression Test (resume, max_turns=1000)',
         schema: 'regressionReport',
-        resume: true,
+        resume: EXHAUSTED_SESSION_ID,
     },
     {
         role: 'deployer',
@@ -336,7 +348,7 @@ export const EXECUTION_ENGINE_DISPATCHES = [
         watchdog: true,
         watchdogLabel: 'Deploy (resume, max_turns=1000)',
         schema: 'deployerReport',
-        resume: true,
+        resume: EXHAUSTED_SESSION_ID,
     },
     {
         role: 'harvester',
@@ -379,7 +391,7 @@ export const EXECUTION_ENGINE_DISPATCHES = [
         watchdog: false,
         watchdogLabel: null,
         schema: 'harvesterReport',
-        resume: true,
+        resume: EXHAUSTED_SESSION_ID,
     },
 ];
 

@@ -46,6 +46,7 @@ import {
     infraError,
     trustError,
     turnExhaustionError,
+    EXHAUSTED_SESSION_ID,
     TURN_BASES,
     sentinelNotePolicies,
 } from './helpers/dispatch-role-harness.mjs';
@@ -669,7 +670,7 @@ describe('execution-role dispatch: retry and degrade ladders', () => {
             responses: Array.from({ length: p.retry.resumeAttempts + 1 }, () => turnExhaustionError()),
         });
         await dispatchRole(escalating.ctx, 'doer', opts);
-        const resumes = escalating.rec.dispatches.filter((d) => d.options.resume === true);
+        const resumes = escalating.rec.dispatches.filter((d) => d.options.resume === EXHAUSTED_SESSION_ID);
         assert.strictEqual(resumes.length, p.retry.resumeAttempts, 'The escalation is bounded, never unbounded.');
         assert.deepStrictEqual(
             resumes.map((d) => d.options.max_turns),

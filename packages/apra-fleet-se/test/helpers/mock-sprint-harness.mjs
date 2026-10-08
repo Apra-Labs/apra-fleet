@@ -1635,8 +1635,14 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
                 // prompt -- the branch was already established in the session
                 // being resumed, so this gate would otherwise misfire on
                 // every resume attempt regardless of what the real prompt
-                // said.
-                if (!isResumedDispatch(opts.resume) && !/Sprint track branch to work on:\s*\S+/.test(opts.prompt)) {
+                // said. ANY explicit session id counts here, not just this
+                // mock's default one: the max-turns ladder resumes the
+                // exhausted attempt's OWN reported session id, which a
+                // scenario may set to its own value. (A worklist resume also
+                // names an id, but its prompt restates the branch anyway.)
+                const isDoerResume = isResumedDispatch(opts.resume)
+                    || (typeof opts.resume === 'string' && opts.resume.length > 0);
+                if (!isDoerResume && !/Sprint track branch to work on:\s*\S+/.test(opts.prompt)) {
                     return {
                         content: [{
                             text: JSON.stringify({
