@@ -72,6 +72,26 @@ import { raiseVcsPrForMember } from '../vcs-auth.mjs';
 import { buildSprintPrBody, buildSprintPrTitle } from '../pr-body.mjs';
 
 /**
+ * The PR-body Details line stating a non-default harvest mode, so a reviewer
+ * never has to guess why the branch has no harvester commits. null for
+ * 'full' (the default) -- an unchanged launch keeps an unchanged body.
+ * @param {{ harvestMode?: string, harvestDocsDir?: string|null }} validated
+ * @returns {string|null}
+ */
+export function harvestModeDetail(validated) {
+    switch (validated && validated.harvestMode) {
+        case 'pr-body-only':
+            return 'Harvest mode: pr-body-only -- no harvester commits; the sprint analysis is in this PR body.';
+        case 'off':
+            return 'Harvest mode: off -- the harvester wrote nothing to the repository.';
+        case 'docs-dir':
+            return `Harvest mode: docs-dir -- sprint analysis and durable docs written under ${validated.harvestDocsDir}/ only; no README edits.`;
+        default:
+            return null;
+    }
+}
+
+/**
  * Runs the Publish PR phase: push the sprint branch, then either raise a PR on
  * a hosted remote or (on a remote that can never open one) close the target
  * issue(s) directly when the verdict passed.
@@ -100,6 +120,9 @@ export async function runPublishPrPhase({
     finalVerdictResult,
     // Engine-computed cost block from ./harvest.mjs, rendered in the PR body.
     costAnalysis = '',
+    // The sprint analysis from ./harvest.mjs when harvest mode is
+    // 'pr-body-only' ('' otherwise): the PR body is its only published copy.
+    harvestAnalysis = '',
 }) {
     phase(`Publish PR C${finalCycleLabel}`);
     // The branch push is the LAST step of a sprint that has already done all of
@@ -250,8 +273,10 @@ export async function runPublishPrPhase({
             notes: finalVerdictResult.notes,
             details: [
                 validated.skipRegression ? 'Regression pass: skipped by launch option -- not run this sprint.' : null,
+                harvestModeDetail(validated),
             ],
             costAnalysis,
+            analysis: harvestAnalysis,
             previousBody,
         });
         const prBody = buildBody();

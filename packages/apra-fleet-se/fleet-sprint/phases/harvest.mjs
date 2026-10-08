@@ -46,11 +46,24 @@
 // import; dispatchRole/TURN_BASES and buildHarvesterPrompt live in real sibling
 // modules and are imported directly.
 //
-// THE COST BLOCK IS ENGINE-RENDERED, NOT HARVESTER-WRITTEN. It is appended
-// to analysisText (so the per-branch analysis document keeps a durable copy)
-// and returned for ./publish-pr.mjs to render in the PR body. The harvester no
-// longer writes a CHANGELOG entry: a shared, prepend-only file conflicted on
-// every concurrent sprint PR merge.
+// THE COST BLOCK IS ENGINE-RENDERED AND NEVER COMMITTED. It is logged here and
+// returned for ./publish-pr.mjs to render in the PR body; it is NOT part of
+// the analysisText handed to the harvester, so no file the harvester commits
+// carries spend data, in any harvest mode. The harvester no longer writes a
+// CHANGELOG entry either: a shared, prepend-only file conflicted on every
+// concurrent sprint PR merge.
+//
+// HARVEST MODE (the harvest_mode launch option, ../sprint-args.mjs) decides
+// what the harvester may write into the target repo -- see
+// planHarvestOutputs() below. 'full' (the default) and 'docs-dir' hand the
+// harvester an artifact path; 'pr-body-only' and 'off' hand it `none` and a
+// no-write instruction, and 'pr-body-only' returns the analysis for
+// ./publish-pr.mjs to put in the PR body instead. The harvester is still
+// dispatched in every mode, because its knowledge-bank capture and
+// low-priority backlog confirmation do not write to the repository. The
+// no-write modes are enforced through the harvester's prompt and agent
+// contract: the policy row's pushCode bracket is unchanged, and with nothing
+// committed it has nothing to push.
 //
 // GUARD COVERAGE: registered as 'phases/harvest.mjs' in ../guarded-modules.mjs.
 // It took NO member_name-bearing command() call site out of runner.js -- the
@@ -69,12 +82,13 @@ import { buildHarvesterPrompt } from '../prompts.mjs';
  * harvester ladder, and log what it reported.
  *
  * Everything else this phase produces is written to the repo by the dispatched
- * harvester itself (docs/, the deferred beads) or already logged here. The one
- * value a later phase reads is the cost block, which ./publish-pr.mjs renders
- * in the PR body.
+ * harvester itself (docs, the deferred beads) or already logged here. The
+ * values a later phase reads are the cost block and, in harvest mode
+ * 'pr-body-only', the sprint analysis; ./publish-pr.mjs renders both in the
+ * PR body.
  *
  * @param {object} state Explicit phase state; see this file's header.
- * @returns {Promise<{ costAnalysis: string }>}
+ * @returns {Promise<{ costAnalysis: string, harvestAnalysis: string }>}
  */
 export async function runHarvestPhase({
     // Presentation + dispatch seams.
@@ -118,7 +132,7 @@ export async function runHarvestPhase({
     // determinism test), and harvester.md Step 1 already overwrites the file at
     // this path if it exists.
     const branchSlug = computeBranchSlug(validated.branch);
-    const analysisArtifactFile = `docs/sprint-analysis-${branchSlug}.md`;
+    const harvestMode = validated.harvestMode ?? 'full';
     const reportText = buildAnalysisText({
         targetIssues,
         branch: validated.branch,
@@ -140,16 +154,32 @@ export async function runHarvestPhase({
         spend: integTestRunnerSpend,
         dispatchCount: integTestRunnerDispatchCount,
     });
-    // Fence built by repeat(): literal backtick runs here trip the shell-command
-    // guard's backtick-substitution check.
-    const fence = '`'.repeat(3);
-    const analysisText = [reportText, '## Cost', `${fence}\n${costAnalysis}\n${fence}`].join('\n\n');
+    const { analysisArtifactFile, harvesterAnalysisText, prAnalysis } = planHarvestOutputs({
+        harvestMode,
+        harvestDocsDir: validated.harvestDocsDir ?? null,
+        branchSlug,
+        reportText,
+    });
+    // The cost block never reaches the harvester (and so never a committed
+    // file, in any mode): it is logged here and rendered in the PR body by
+    // ./publish-pr.mjs.
+    log(`Harvest: sprint cost analysis (PR body and run log only, never committed):\n${costAnalysis}`);
+    if (harvestMode !== 'full') {
+        log(`Harvest mode ${harvestMode}: ${HARVEST_MODE_SUMMARY[harvestMode]}`);
+    }
+    if (analysisArtifactFile === null) {
+        // No committed copy of the analysis exists in these modes, so the run
+        // log carries the full text.
+        log(`Harvest: sprint analysis (not committed in harvest mode ${harvestMode}):\n${reportText}`);
+    }
     const harvesterPrompt = buildHarvesterPrompt({
         branch: validated.branch,
         baseBranch: validated.baseBranch,
         targetIssues,
         analysisArtifactFile,
-        analysisText,
+        analysisText: harvesterAnalysisText,
+        harvestMode,
+        harvestDocsDir: validated.harvestDocsDir ?? null,
     });
     // apra-fleet-3swo.5.7: the harvester ladder -- its dispatch, its
     // pushCode/pushBeads git-sync bracket, its max_turns-exhaustion resume at
@@ -185,8 +215,50 @@ export async function runHarvestPhase({
         log(`Harvester: proceeding without a validated harvester report: ${harvestOutcome.error?.message ?? 'no report'}`);
     } else if (harvesterResult.status !== 'OK') {
         log(`Harvester reported FAILED: ${harvesterResult.notes}`);
-    } else {
+    } else if (analysisArtifactFile !== null) {
         log(`Harvester: wrote sprint analysis (including the Final Review verdict) to ${analysisArtifactFile}.`);
+    } else {
+        log(`Harvester: completed in harvest mode ${harvestMode} (no repository writes requested).`);
     }
-    return { costAnalysis };
+    return { costAnalysis, harvestAnalysis: prAnalysis };
+}
+
+/** One-line, log/PR-facing description of each non-default harvest mode. */
+export const HARVEST_MODE_SUMMARY = Object.freeze({
+    'docs-dir': 'the harvester writes the sprint analysis and durable docs only under the configured docs directory, with no README edits.',
+    'pr-body-only': 'no harvester commits; the sprint analysis is published in the PR body.',
+    off: 'the harvester writes nothing to the repository; knowledge-bank capture and backlog confirmation still run.',
+});
+
+/**
+ * Pure plan of what the harvester may write for a harvest mode (see the
+ * harvest_mode launch option in ../sprint-args.mjs):
+ *   - analysisArtifactFile: where the harvester writes the sprint analysis --
+ *     docs/ for 'full', harvestDocsDir for 'docs-dir', null (no file) for
+ *     'pr-body-only' and 'off';
+ *   - harvesterAnalysisText: the analysis handed to the harvester -- the
+ *     report text only, never the cost block, so no committed file carries
+ *     spend data in any mode;
+ *   - prAnalysis: the analysis ./publish-pr.mjs renders in the PR body --
+ *     the report text for 'pr-body-only', '' otherwise.
+ * An unknown mode throws: harvest output is never decided by a silent default.
+ *
+ * @param {{ harvestMode: string, harvestDocsDir: string|null, branchSlug: string, reportText: string }} opts
+ * @returns {{ analysisArtifactFile: string|null, harvesterAnalysisText: string, prAnalysis: string }}
+ */
+export function planHarvestOutputs({ harvestMode, harvestDocsDir, branchSlug, reportText }) {
+    const fileName = `sprint-analysis-${branchSlug}.md`;
+    switch (harvestMode) {
+        case 'full':
+            return { analysisArtifactFile: `docs/${fileName}`, harvesterAnalysisText: reportText, prAnalysis: '' };
+        case 'docs-dir':
+            if (!harvestDocsDir) throw new Error('planHarvestOutputs: harvest mode "docs-dir" requires harvestDocsDir');
+            return { analysisArtifactFile: `${harvestDocsDir}/${fileName}`, harvesterAnalysisText: reportText, prAnalysis: '' };
+        case 'pr-body-only':
+            return { analysisArtifactFile: null, harvesterAnalysisText: reportText, prAnalysis: reportText };
+        case 'off':
+            return { analysisArtifactFile: null, harvesterAnalysisText: reportText, prAnalysis: '' };
+        default:
+            throw new Error(`planHarvestOutputs: unknown harvest mode "${harvestMode}"`);
+    }
 }

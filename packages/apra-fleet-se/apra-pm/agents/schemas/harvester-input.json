@@ -9,11 +9,11 @@
   "properties": {
     "analysisArtifactFile": {
       "type": "string",
-      "description": "Relative path (under the repo) to write the sprint analysis artifact to."
+      "description": "Relative path (under the repo) to write the sprint analysis artifact to, or the literal none when the harvest mode forbids repository writes."
     },
     "analysisText": {
       "type": "string",
-      "description": "Exact, pre-formatted analysis content to write verbatim."
+      "description": "Exact, pre-formatted analysis content to write verbatim (context only when analysisArtifactFile is none)."
     },
     "base-branch": {
       "type": "string",
@@ -22,6 +22,15 @@
     "branch": {
       "type": "string",
       "description": "Sprint branch being harvested."
+    },
+    "harvestMode": {
+      "type": "string",
+      "enum": ["full", "docs-dir", "pr-body-only", "off"],
+      "description": "Optional. Which repository writes the harvester may make; absent means full."
+    },
+    "harvestDocsDir": {
+      "type": "string",
+      "description": "Optional. Repo-relative directory for durable docs; supplied only when harvestMode is docs-dir."
     }
   }
 }

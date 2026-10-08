@@ -46,6 +46,7 @@ import { validateIssueId, validateBranchName, validateBranchPair } from '../../f
 import { resolveRoleMap } from '../../bin/cli.mjs';
 import { resolveBacklogRoleAlias, ROLE_BACKLOG } from '../../fleet-sprint/backlog-role.mjs';
 import { normalizeRole } from '../../fleet-sprint/contracts.mjs';
+import { HARVEST_MODES, validateHarvestOptions } from '../../fleet-sprint/sprint-args.mjs';
 import { isDeterministicTerminalReason } from './history.mjs';
 import { defaultHasTerminalState } from './watchdog.mjs';
 import { toBeadsSummary } from './beads-identity.mjs';
@@ -491,11 +492,29 @@ export function createSprintController(deps = {}) {
             }
             skipRegression = phases.regression === 'skip';
         }
+        // harvestMode / harvestDocsDir (optional): what the end-of-sprint
+        // harvester may write into the target repo. Validated with the
+        // runner's own validator before any spawn; omitted means 'full' and
+        // neither flag reaches the child.
+        let harvestMode;
+        let harvestDocsDir;
+        if (body.harvestMode !== undefined || body.harvestDocsDir !== undefined) {
+            if (body.harvestMode !== undefined && !HARVEST_MODES.includes(body.harvestMode)) {
+                throw new ApiError(400, `[Arg Contract] Invalid harvestMode ${JSON.stringify(body.harvestMode)}: must be one of ${HARVEST_MODES.map((m) => `"${m}"`).join(', ')} (default "full")`, 'harvestMode');
+            }
+            try {
+                const v = validateHarvestOptions(body.harvestMode, body.harvestDocsDir);
+                harvestMode = body.harvestMode;
+                harvestDocsDir = v.harvestDocsDir ?? undefined;
+            } catch (err) {
+                throw new ApiError(400, err.message, 'harvestDocsDir');
+            }
+        }
         // `issue` stays a single comma-joined string (the exact shape
         // buildSprintArgv/cli.mjs's --issue flag expects, and byte-identical
         // to the input for the single-id case); `issueIds` is the split array
         // callers use for issueRoots / per-root history lookups.
-        return { issue: issueIds.join(','), issueIds, branch, base, members, skipRegression };
+        return { issue: issueIds.join(','), issueIds, branch, base, members, skipRegression, harvestMode, harvestDocsDir };
     }
 
     // -- GET /api/members : list_members + live-reservation overlay -----------
@@ -536,7 +555,7 @@ export function createSprintController(deps = {}) {
 
     // -- POST /api/sprints : validated, goal-forwarding launch ----------------
     async function launch(body = {}) {
-        const { issue, issueIds, branch, base, members, skipRegression } = validateLaunchRequest(body);
+        const { issue, issueIds, branch, base, members, skipRegression, harvestMode, harvestDocsDir } = validateLaunchRequest(body);
         // An '@file' roleMap is a CLI-only convenience: over HTTP it would make
         // the supervisor read an arbitrary server-side path named by the request
         // body, and the alias warning could not be computed from it. Reject it.
@@ -713,6 +732,8 @@ export function createSprintController(deps = {}) {
             budget: body.budget,
             runId: sprintId,
             skipRegression,
+            harvestMode,
+            harvestDocsDir,
         };
         let spawned;
         try {

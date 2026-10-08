@@ -109,15 +109,34 @@ export function closeOpenFences(text) {
 }
 
 /** Caps already-sanitized notes at `max` characters, cutting at a line
- *  boundary when one is reasonably close, with a visible marker. */
-export function capNotes(text, max) {
+ *  boundary when one is reasonably close, with a visible marker naming
+ *  `what` was cut (plus an optional `hint` on where the full text is). */
+export function capNotes(text, max, what = 'reviewer notes', hint = '') {
     const total = text.length;
     if (total <= max) return closeOpenFences(text);
     let cut = text.slice(0, Math.max(0, max));
     const nl = cut.lastIndexOf('\n');
     if (nl > max * 0.5) cut = cut.slice(0, nl);
     cut = closeOpenFences(cut.replace(/\s+$/, ''));
-    return `${cut}\n\n*[... reviewer notes truncated: ${cut.length} of ${total} characters shown ...]*`;
+    return `${cut}\n\n*[... ${what} truncated: ${cut.length} of ${total} characters shown${hint} ...]*`;
+}
+
+/** Turns ATX heading lines ('# x', '## y') outside code fences into bold
+ *  text, so an engine-authored document embedded in the PR body keeps its
+ *  structure without its headings outranking the body's own sections. */
+export function demoteMarkdownHeadings(text) {
+    let fence = null;
+    return String(text ?? '').replace(/\r\n?/g, '\n').split('\n').map((line) => {
+        const f = /^ {0,3}(`{3,}|~{3,})/.exec(line);
+        if (f) {
+            if (!fence) fence = f[1];
+            else if (f[1][0] === fence[0] && f[1].length >= fence.length) fence = null;
+            return line;
+        }
+        if (fence) return line;
+        const h = /^ {0,3}#{1,6}[ \t]+(.*?)(?:[ \t]+#+)?[ \t]*$/.exec(line);
+        return h && h[1] ? `**${h[1]}**` : line;
+    }).join('\n');
 }
 
 /** Normalizes a run id to the history-safe charset. */
@@ -196,13 +215,16 @@ function inline(text) {
  * @param {string} [opts.notesHeading]
  * @param {string[]} [opts.details] engine-authored detail lines, rendered as list items
  * @param {string} [opts.costAnalysis] engine-computed cost block, rendered in a fenced Cost section
+ * @param {string} [opts.analysis] engine-computed sprint analysis (harvest mode
+ *   'pr-body-only'), rendered as a Sprint analysis section after the notes with
+ *   its headings demoted; capped with a visible marker to fit the body budget
  * @param {string} [opts.previousBody] the existing PR's body, for history carry-forward
  * @param {number} [opts.maxLength]
  * @returns {string}
  */
 export function buildSprintPrBody({
     verdict, goal, branch, baseBranch, runId, now = new Date(),
-    notes, notesHeading = 'Reviewer notes', details = [], costAnalysis = '', previousBody = '',
+    notes, notesHeading = 'Reviewer notes', details = [], costAnalysis = '', analysis = '', previousBody = '',
     maxLength = PR_DESCRIPTION_MAX_LENGTH,
 }) {
     const v = VERDICTS.has(verdict) ? verdict : 'FAIL';
@@ -249,9 +271,29 @@ export function buildSprintPrBody({
     ].filter((l) => l !== null).join('\n');
 
     const cleanNotes = sanitizePrMarkdown(notes);
-    const budget = Math.min(PR_NOTES_MAX_LENGTH, maxLength - head.length - tail.length - 120);
+    const cleanAnalysis = sanitizePrMarkdown(demoteMarkdownHeadings(analysis));
+    // 120: room for the notes' truncation marker and joins. The analysis
+    // section reserves its own heading + marker room (ANALYSIS_OVERHEAD).
+    const available = maxLength - head.length - tail.length - 120 - (cleanAnalysis ? ANALYSIS_OVERHEAD : 0);
+    // With an analysis present, notes shorter than half the room keep all of
+    // it; longer notes are capped at half so the analysis is never squeezed
+    // out entirely. The analysis then takes whatever room the notes left.
+    const notesCap = cleanAnalysis && cleanNotes.length > Math.floor(available / 2)
+        ? Math.floor(available / 2)
+        : available;
+    const budget = Math.min(PR_NOTES_MAX_LENGTH, notesCap);
     const notesBlock = cleanNotes ? capNotes(cleanNotes, Math.max(200, budget)) : '*No notes were provided.*';
+    let analysisSection = '';
+    if (cleanAnalysis) {
+        const analysisBudget = Math.max(200, available - Math.min(notesBlock.length, PR_NOTES_MAX_LENGTH));
+        const analysisBlock = capNotes(cleanAnalysis, analysisBudget, 'sprint analysis', '; the full analysis is in the sprint log');
+        analysisSection = `\n### Sprint analysis\n\n${analysisBlock}\n`;
+    }
     // Blank lines around the notes keep them their own block: notes ending in
     // a paragraph directly above '---' would otherwise turn into a heading.
-    return `${head}\n${notesBlock}\n${tail}`;
+    return `${head}\n${notesBlock}\n${analysisSection}${tail}`;
 }
+
+/** Room reserved for the Sprint analysis heading, its truncation marker and
+ *  the joins around it, when an analysis is rendered. */
+const ANALYSIS_OVERHEAD = 160;

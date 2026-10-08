@@ -2113,6 +2113,10 @@ export async function runDevelopLoopScenario(tag, {
     // Optional passthrough for args.skip_regression (the --skip-regression
     // launch option), so a scenario can prove the regression phase is skipped.
     skipRegression,
+    // Optional passthroughs for args.harvest_mode / args.harvest_docs_dir
+    // (the --harvest-mode / --harvest-docs-dir launch options).
+    harvestMode,
+    harvestDocsDir,
     // Seeded beads memories for the sprint-start memory sweep -- see
     // buildMockFleetApi's `beadsMemories` option comment. The keys the
     // sweep forgot come back as `forgottenMemories` on the result.
@@ -2249,6 +2253,8 @@ export async function runDevelopLoopScenario(tag, {
                 ...(roleMapWarnings !== undefined ? { roleMapWarnings } : {}),
                 ...(expectBeads !== undefined ? { expect_beads: expectBeads } : {}),
                 ...(skipRegression !== undefined ? { skip_regression: skipRegression } : {}),
+                ...(harvestMode !== undefined ? { harvest_mode: harvestMode } : {}),
+                ...(harvestDocsDir !== undefined ? { harvest_docs_dir: harvestDocsDir } : {}),
             }, true);
         } catch (err) {
             error = err;

@@ -161,6 +161,45 @@ describe('sprint PR body (markdown)', () => {
         assert.ok(!sampleBody().includes('### Cost'));
         assert.equal(sampleBody({ costAnalysis: '' }), EXPECTED_BODY);
     });
+
+    // harvest_mode pr-body-only: the sprint analysis is published here instead
+    // of being committed into the target repo by the harvester.
+    const ANALYSIS = '# Sprint Analysis: feat/widgets\n\n## Progress\n\nFinal closed count: 3.\n\n- cycle 1: 3 closed';
+
+    test('a sprint analysis renders as its own section after the notes, before Details, with headings demoted', () => {
+        const body = sampleBody({ analysis: ANALYSIS });
+        assert.ok(body.includes('### Sprint analysis\n\n'), body);
+        assert.ok(body.indexOf('### Reviewer notes') < body.indexOf('### Sprint analysis'));
+        assert.ok(body.indexOf('### Sprint analysis') < body.indexOf('### Details'));
+        assert.ok(body.includes('**Sprint Analysis: feat/widgets**'), 'an H1 in the analysis becomes bold text, not a competing heading');
+        assert.ok(body.includes('**Progress**'));
+        assert.ok(body.includes('Final closed count: 3.\n\n- cycle 1: 3 closed'));
+        assert.equal((body.match(/^#{1,2} /gm) || []).length, 1, 'only the verdict heading is an H1/H2');
+    });
+
+    test('no analysis renders no Sprint analysis section -- body is unchanged', () => {
+        assert.equal(sampleBody({ analysis: '' }), EXPECTED_BODY);
+    });
+
+    test('the analysis is sanitized like the notes', () => {
+        const body = sampleBody({ analysis: 'see <script>x</script> {{vcs_token}} for details of the run' });
+        assert.ok(!body.includes('<script>') && !/\{\{/.test(body), body);
+    });
+
+    test('long notes + long analysis + history: both capped visibly and the body still fits the provider limit', () => {
+        const longNotes = Array.from({ length: 400 }, (_, i) => `- finding ${i}: ${'x'.repeat(30)}`).join('\n');
+        const longAnalysis = Array.from({ length: 400 }, (_, i) => `- cycle ${i}: ${'y'.repeat(30)}`).join('\n');
+        let previous = '';
+        for (let i = 0; i < RUN_HISTORY_MAX_ENTRIES + 3; i++) {
+            previous = sampleBody({ runId: `run-${i}`, notes: longNotes, analysis: longAnalysis, costAnalysis: 'Tracked spend: $1.0000.', previousBody: previous });
+        }
+        assert.ok(previous.length <= PR_DESCRIPTION_MAX_LENGTH, `body length ${previous.length} exceeds ${PR_DESCRIPTION_MAX_LENGTH}`);
+        assert.match(previous, /\*\[\.\.\. reviewer notes truncated: \d+ of \d+ characters shown \.\.\.\]\*/);
+        assert.match(previous, /\*\[\.\.\. sprint analysis truncated: \d+ of \d+ characters shown; the full analysis is in the sprint log \.\.\.\]\*/);
+        assert.ok(previous.includes('### Cost'), 'the cost block survives');
+        assert.ok(previous.includes('Do NOT auto-merge'));
+        assert.ok(previous.endsWith('-->'));
+    });
 });
 
 describe('run history marker round-trip', () => {
@@ -348,14 +387,14 @@ const remoteCommand = async (cmd) => (cmd === 'git remote get-url origin'
     ? { ok: true, output: 'https://github.com/acme/widgets.git', error: null }
     : { ok: true, output: '', error: null });
 
-async function publish({ gh, verdict, notes, runId, member, costAnalysis }) {
+async function publish({ gh, verdict, notes, runId, member, costAnalysis, harvestAnalysis, harvestMode }) {
     const logs = [];
     const result = await runPublishPrPhase({
         phase: () => {},
         log: (m) => logs.push(m),
         command: remoteCommand,
         args: { callTool: gh.callTool, run_id: runId },
-        validated: { branch: 'feat/x', baseBranch: 'main', goal: 'Ship X', runId },
+        validated: { branch: 'feat/x', baseBranch: 'main', goal: 'Ship X', runId, ...(harvestMode ? { harvestMode } : {}) },
         targetIssues: [],
         backlogMember: member,
         finalCycleLabel: '1',
@@ -363,6 +402,7 @@ async function publish({ gh, verdict, notes, runId, member, costAnalysis }) {
         getMemberForRole: () => member,
         finalVerdictResult: { verdict, notes },
         costAnalysis,
+        harvestAnalysis,
     });
     return { result, logs };
 }
@@ -386,6 +426,30 @@ describe('Publish PR: a relaunch rewrites the existing PR for the new verdict', 
         const gh = fakeGitHub();
         await publish({ gh, verdict: 'PASS', notes: 'ok', runId: 'run-c', member: 'pub-cost', costAnalysis: 'Tracked spend (priced dispatches only): $2.5000.' });
         assert.ok(gh.pr.body.includes('### Cost\n\n```\nTracked spend (priced dispatches only): $2.5000.\n```'), gh.pr.body);
+    });
+
+    test('harvest_mode pr-body-only: the harvest analysis reaches the created PR body and the mode is stated', async () => {
+        const gh = fakeGitHub();
+        await publish({
+            gh, verdict: 'PASS', notes: 'ok', runId: 'run-h', member: 'pub-harvest',
+            costAnalysis: 'Tracked spend (priced dispatches only): $2.5000.',
+            harvestAnalysis: '# Sprint Analysis: feat/x\n\nFinal closed count: 4.',
+            harvestMode: 'pr-body-only',
+        });
+        assert.ok(gh.pr.body.includes('### Sprint analysis'), gh.pr.body);
+        assert.ok(gh.pr.body.includes('Final closed count: 4.'), gh.pr.body);
+        assert.ok(gh.pr.body.includes('- Harvest mode: pr-body-only -- no harvester commits; the sprint analysis is in this PR body.'), gh.pr.body);
+        assert.ok(gh.pr.body.includes('### Cost'), gh.pr.body);
+    });
+
+    test('harvest_mode off / docs-dir are stated in Details; full (the default) adds no line', async () => {
+        const off = fakeGitHub();
+        await publish({ gh: off, verdict: 'PASS', notes: 'ok', runId: 'run-o', member: 'pub-harvest-off', harvestMode: 'off' });
+        assert.ok(off.pr.body.includes('- Harvest mode: off -- the harvester wrote nothing to the repository.'), off.pr.body);
+        assert.ok(!off.pr.body.includes('### Sprint analysis'));
+        const full = fakeGitHub();
+        await publish({ gh: full, verdict: 'PASS', notes: 'ok', runId: 'run-f', member: 'pub-harvest-full', harvestMode: 'full' });
+        assert.ok(!full.pr.body.includes('Harvest mode'), full.pr.body);
     });
 
     test('PASS -> FAIL: the stale PASS title is replaced too', async () => {

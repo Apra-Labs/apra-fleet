@@ -230,3 +230,41 @@ test('tokenizer: own-line // and /* */ comments inside a template literal are st
     const findings = scanSource('fleet-sprint/x.mjs', snippet, 'js');
     check(findings.length === 0, `comment text inside a template literal must not produce findings, got: ${JSON.stringify(findings, null, 2)}`);
 });
+
+// -----------------------------------------------------------------------------
+// harvester.md: the role prompt runs on members of any OS/shell and for any
+// target repo. Its Step 1 used to `mkdir -p "<repo>/sprint-logs"` (the wrong
+// directory -- the analysis is written elsewhere -- and a POSIX-only command)
+// and to commit unconditionally; harvest_mode now governs what it may write.
+// -----------------------------------------------------------------------------
+const HARVESTER_MD = path.join(PACKAGE_ROOT, 'apra-pm/agents/harvester.md');
+
+test('harvester.md: no mkdir of sprint-logs and no POSIX-only shell command', () => {
+    const md = read(HARVESTER_MD);
+    check(!/mkdir/.test(md), 'harvester.md must not tell the agent to run mkdir (Write creates parent dirs; mkdir -p is POSIX-only)');
+    check(!/sprint-logs/.test(md), 'harvester.md must not reference a sprint-logs directory the engine never writes');
+    check(!/```(bash|sh|shell)\b/.test(md), 'harvester.md must not present commands as a POSIX shell script');
+    for (const [label, re] of [
+        ['rm -rf', /\brm -rf\b/],
+        ['/dev/null', /\/dev\/null/],
+        ['a heredoc', /<<-?\s*['"]?[A-Z]+/],
+        ['$(...) substitution', /\$\(/],
+        ['an && chain', /&&/],
+        ['a single-quoted shell argument', /-c user\.\w+='/],
+        ['export VAR=', /\bexport \w+=/],
+    ]) {
+        check(!re.test(md), `harvester.md contains a POSIX-only construct: ${label}`);
+    }
+});
+
+test('harvester.md: documents every harvestMode generically, and scans clean', () => {
+    const md = read(HARVESTER_MD);
+    for (const mode of ['full', 'docs-dir', 'pr-body-only', 'off']) {
+        check(md.includes(`\`${mode}\``), `harvester.md must document harvestMode \`${mode}\``);
+    }
+    check(/harvestDocsDir/.test(md), 'harvester.md must document the harvestDocsDir input');
+    check(/analysisArtifactFile[^\n]*`none`/.test(md), 'harvester.md must say what to do when analysisArtifactFile is `none`');
+    check(!/[^\x09\x0a\x0d\x20-\x7e]/.test(md), 'harvester.md must be ASCII only');
+    const findings = scanSource('apra-pm/agents/harvester.md', md, 'md');
+    check(findings.length === 0, `harvester.md boundary findings: ${JSON.stringify(findings, null, 2)}`);
+});

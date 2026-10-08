@@ -90,6 +90,30 @@ section, use it") is fine; requiring it by heading is not. To make a section
 universal, add it to `TARGET_FILE_CONTRACT` and the getting-started doc, and
 prove the reference target satisfies it.
 
+### Per-target harvest writes (`harvest_mode`)
+
+How much the harvest phase may write into the target repo is a per-target,
+per-launch decision, not something the engine may assume. It is an explicit
+launch option (`--harvest-mode` on the CLI, `harvestMode` on the supervisor,
+`harvest_mode` in the engine args), validated in one place
+(`validateHarvestOptions` in `fleet-sprint/sprint-args.mjs`):
+
+| Mode | Target-repo writes |
+|------|--------------------|
+| `full` (default when unset) | sprint-analysis document under `docs/`, durable docs, README |
+| `docs-dir` | analysis document and durable docs only under `harvest_docs_dir`; no README edits |
+| `pr-body-only` | none -- the analysis is rendered into the PR body |
+| `off` | none |
+
+`harvest_docs_dir` is required with `docs-dir` and rejected otherwise; it must
+be repo-relative (no absolute path, drive letter, backslash, `..` or `.git`).
+The sprint cost block is never written to a committed file in any mode -- it
+goes to the PR body and the run log only. Knowledge-bank capture and the
+low-priority backlog confirmation run in every mode because neither writes to
+the target repo. The role prompt (`apra-pm/agents/harvester.md`) carries the
+mode contract generically and is held by `test/generic-boundary-guard.test.mjs`
+to contain no POSIX-only shell constructs, since it runs on members of any OS.
+
 ## Adding a legitimate exception
 
 An exception takes two visible edits, never a one-line silence, so it is

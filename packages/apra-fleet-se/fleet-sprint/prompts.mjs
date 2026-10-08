@@ -589,21 +589,58 @@ export function buildFinalVerdictPrompt({ targetIssues, branch, baseBranch, goal
  * branch -- with real, runner-computed values. The vendored input schema is
  * deliberately not loosened to accommodate missing values; supplying them is
  * the caller's job.
- * @param {{ branch: string, baseBranch: string, targetIssues: string[], analysisArtifactFile: string, analysisText: string }} opts
+ *
+ * harvestMode (the harvest_mode launch option, default 'full') decides what
+ * the harvester may write into the target repo and is stated explicitly in
+ * the prompt in every mode:
+ *   full         -- analysis + durable docs under docs/, README edits.
+ *   docs-dir     -- analysis + durable docs under harvestDocsDir only, no
+ *                   README edits.
+ *   pr-body-only / off -- no file writes, no commits, no push;
+ *                   analysisArtifactFile is the literal `none` and
+ *                   analysisText is context only. Knowledge-bank capture and
+ *                   low-priority backlog confirmation still run.
+ * @param {{ branch: string, baseBranch: string, targetIssues: string[], analysisArtifactFile: string|null, analysisText: string, harvestMode?: string, harvestDocsDir?: string|null }} opts
  * @returns {string}
  */
-export function buildHarvesterPrompt({ branch, baseBranch, targetIssues, analysisArtifactFile, analysisText }) {
+export function buildHarvesterPrompt({ branch, baseBranch, targetIssues, analysisArtifactFile, analysisText, harvestMode = 'full', harvestDocsDir = null }) {
     // analysisText is orchestrator-computed, not another agent's output, so
     // wrapUntrustedBlock does not apply. It still gets a fence sized past the
     // longest backtick run in it, so a literal fence line inside the content
-    // (the cost block is itself fenced) cannot terminate it early.
+    // cannot terminate it early.
     const fence = (content) => '`'.repeat(Math.max(3, (content.match(/`+/g) || []).reduce((m, r) => Math.max(m, r.length), 0) + 1));
     const analysisFence = fence(analysisText);
+    const noWrite = harvestMode === 'pr-body-only' || harvestMode === 'off';
+    const modeLines = [`harvestMode: ${harvestMode}`];
+    if (harvestMode === 'full') {
+        modeLines.push('Update docs/ and README, and defer low-priority issues, per your agent contract.');
+    } else if (harvestMode === 'docs-dir') {
+        modeLines.push(`harvestDocsDir: ${harvestDocsDir}`);
+        modeLines.push(
+            `Write durable knowledge only under ${harvestDocsDir}/ (not docs/), make NO README edits, ` +
+            'and defer low-priority issues, per your agent contract.'
+        );
+    } else if (noWrite) {
+        const why = harvestMode === 'pr-body-only'
+            ? 'the orchestrator publishes the sprint analysis in the pull request body'
+            : 'harvest output is switched off for this repository';
+        modeLines.push(
+            `Do NOT create, modify or delete any file in the repository and do NOT commit or push -- ${why}. ` +
+            'Still run your knowledge-bank step (Step 0) and confirm low-priority issues as backlog (Step 5), ' +
+            'per your agent contract.'
+        );
+    } else {
+        throw new Error(`buildHarvesterPrompt: unknown harvestMode "${harvestMode}"`);
+    }
+    const artifactLine = `analysisArtifactFile: ${noWrite ? 'none' : analysisArtifactFile}`;
+    const analysisLabel = noWrite
+        ? 'analysisText (pre-computed by the orchestrator -- context only in this mode; do NOT write it to any file):'
+        : 'analysisText (pre-computed by the orchestrator -- write verbatim to analysisArtifactFile, per Step 1 of your contract):';
     return [
         `Harvest durable knowledge for sprint scope issue id(s): ${targetIssues.join(', ')}.`,
         `Branch: ${branch} (base: ${baseBranch}).`,
-        'Update docs/ and README, and defer low-priority issues, per your agent contract.',
-        `analysisArtifactFile: ${analysisArtifactFile}`,
-        `analysisText (pre-computed by the orchestrator -- write verbatim to analysisArtifactFile, per Step 1 of your contract):\n${analysisFence}\n${analysisText}\n${analysisFence}`,
+        ...modeLines,
+        artifactLine,
+        `${analysisLabel}\n${analysisFence}\n${analysisText}\n${analysisFence}`,
     ].join('\n\n');
 }

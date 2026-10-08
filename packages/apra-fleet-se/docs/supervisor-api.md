@@ -28,6 +28,13 @@ short-circuits before anything downstream runs:
    Optional `phases` is validated too: only `{ "regression": "run" | "skip" }`
    is accepted (anything else -> `400`, field `phases`); `"skip"` forwards
    `--skip-regression` to the child.
+   Optional `harvestMode` (`full` | `docs-dir` | `pr-body-only` | `off`;
+   absent means `full`) and `harvestDocsDir` are validated with the same
+   `validateHarvestOptions` the CLI and engine use: an unknown mode is `400`,
+   field `harvestMode`; `docs-dir` without a dir, a dir with any other mode,
+   or an unsafe dir (absolute, `..`, backslash, `.git`, other characters) is
+   `400`, field `harvestDocsDir`. Valid values are forwarded to the child as
+   `--harvest-mode` / `--harvest-docs-dir`.
    Optional `roleMap` (object or JSON string) is resolved too. The
    `roleMap.orchestrator` key is a DEPRECATED alias of `roleMap.backlog`:
    using it still works, and the response carries a top-level
