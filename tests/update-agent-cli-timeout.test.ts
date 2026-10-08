@@ -80,13 +80,13 @@ describe('update_llm_cli install/update timeout', () => {
     addAgent(member);
     mockExecCommand
       .mockResolvedValueOnce(notInstalled)
-      .mockImplementationOnce(timesOut(4242, 200_000, 'inactivity'));
+      .mockImplementationOnce(timesOut(4242, 700_000, 'inactivity'));
 
     const report = await updateAgentCli({ member_id: member.id, install_if_missing: true });
 
     expect(report).toContain('\u274C inst-hang');
     expect(report).toContain(
-      `CLI install killed on timeout after running 200s: it produced no output for ${INSTALL_INACTIVITY_TIMEOUT_MS / 1000}s; ` +
+      `CLI install killed on timeout after running 700s: it produced no output for ${INSTALL_INACTIVITY_TIMEOUT_MS / 1000}s; ` +
       'its remote process tree (PID 4242) was killed.',
     );
     expect(report).toMatch(/may be partially installed/);
@@ -113,7 +113,7 @@ describe('update_llm_cli install/update timeout', () => {
     addAgent(member);
     mockExecCommand
       .mockResolvedValueOnce(installed('1.0.0'))
-      .mockImplementationOnce(timesOut(undefined, 130_000, 'inactivity'));
+      .mockImplementationOnce(timesOut(undefined, 700_000, 'inactivity'));
 
     const report = await updateAgentCli({ member_id: member.id });
 
@@ -121,7 +121,7 @@ describe('update_llm_cli install/update timeout', () => {
     expect(inactivity).toBe(UPDATE_INACTIVITY_TIMEOUT_MS);
     expect(ceiling).toBe(INSTALL_MAX_TOTAL_MS);
     expect(report).toContain('\u274C upd-hang');
-    expect(report).toContain('CLI update killed on timeout after running 130s: it produced no output for 120s; its SSH channel was closed (no PID was reported, so the remote process may still be running).');
+    expect(report).toContain('CLI update killed on timeout after running 700s: it produced no output for 600s; its SSH channel was closed (no PID was reported, so the remote process may still be running).');
   });
 
   it('a non-timeout failure is not dressed up as a timeout kill', async () => {

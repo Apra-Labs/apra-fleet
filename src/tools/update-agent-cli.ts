@@ -17,9 +17,16 @@ import type { OsCommands } from '../os/os-commands.js';
  * step ran -- never a silent cut mid-install. The inactivity budget catches
  * a hung installer; the ceiling bounds one that keeps printing but never
  * finishes.
+ *
+ * Both inactivity windows are 600s: since the PID wrapper a timed-out
+ * install is really killed (the previous release let it run on and usually
+ * finish in the background), and real installers -- the agy and Claude
+ * installers on a slow link -- can stay silent for minutes while
+ * downloading. A long quiet window is cheaper than a killed, half-written
+ * install; the 15-minute ceiling still bounds a runaway.
  */
-export const INSTALL_INACTIVITY_TIMEOUT_MS = 180_000;
-export const UPDATE_INACTIVITY_TIMEOUT_MS = 120_000;
+export const INSTALL_INACTIVITY_TIMEOUT_MS = 600_000;
+export const UPDATE_INACTIVITY_TIMEOUT_MS = 600_000;
 export const INSTALL_MAX_TOTAL_MS = 15 * 60_000;
 
 export const updateAgentCliSchema = z.object({

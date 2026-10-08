@@ -48,6 +48,10 @@ call. Any change to this shape must be made in the server tool and
 - Claude `permission_denials` are judged by the session's permission mode
   (`claudePermissionMode`: the member's `unattended` setting plus the model;
   `auto` on a model without auto support, e.g. Haiku, runs `acceptEdits`).
+  fleet-sprint dispatches with `fail_on_permission_denial: true`; other callers
+  get a success with `permissionWarning` on a complete reply (v0.4.3
+  semantics). A max_turns / auth / server result keeps its own reason, with
+  the denials attached.
   - auto/bypass mode: the refusal is the safety classifier or a deny rule.
     A complete reply is a success carrying the denials as `permissionWarning`
     (logged); an incomplete one fails `permission_denied` with

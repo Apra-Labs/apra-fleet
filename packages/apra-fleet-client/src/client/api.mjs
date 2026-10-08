@@ -5,6 +5,12 @@
  * @property {number} [max_total_s] - Hard ceiling in seconds, measured from when the server
  *   receives the call (setup counts); exceeding it returns reason 'max_total_time'
  * @property {number} [max_turns] - Max turns for claude -p (default: 50)
+ * @property {boolean} [fail_on_permission_denial] - Strict permission handling (default false).
+ *   true: a refused tool call fails with reason 'permission_denied' (except a healable:false
+ *   Claude refusal on a complete reply, which is a permissionWarning). Omitted/false: a complete
+ *   Claude reply succeeds with the refusals in permissionWarning; AGY refusals still fail.
+ *   A max_turns/auth/server/overloaded result keeps its own reason either way, with the
+ *   refusals attached as permissionDenied.
  * @property {string} [member_id] - UUID of the member
  * @property {string} [member_name] - Friendly name of the member
  * @property {string} [model] - Model tier ("cheap", "standard", "premium") or a specific model ID
@@ -103,17 +109,19 @@
  *   timeout_s; the process was killed) |
  *   'max_total_time' (max_total_s, measured from the call including setup, ran out) | ...
  * @property {PermissionDenied} [permissionDenied] - Present when `reason === 'permission_denied'`:
- *   the member CLI refused tool calls for lack of a grant (AGY headless mode auto-denies them
- *   and exits 0, which used to surface as 'empty_response'; Claude reports them in its result
- *   event's non-empty `permission_denials` while is_error stays false, which used to surface as
- *   an ordinary reply). A failure for every caller even when the reply looks complete. Pass `suggestedGrants` to
- *   compose_permissions `grant` to heal it; read it with {@link permissionDenialOf}. Any partial
- *   reply is in `response`. Exception: a Claude session in auto or bypass mode whose reply is
- *   complete returns success with the refusals in `permissionWarning` instead; an incomplete
- *   one fails here with `healable: false`, which a caller must never grant for.
+ *   the member CLI refused tool calls (AGY headless mode auto-denies them and exits 0; Claude
+ *   reports them in its result event's non-empty `permission_denials`). For Claude this needs the
+ *   caller's `fail_on_permission_denial: true`; AGY fails this way either way. Pass
+ *   `suggestedGrants` to compose_permissions `grant` to heal it; read it with
+ *   {@link permissionDenialOf}. Any partial reply is in `response`. A healable:false Claude
+ *   refusal (auto/bypass mode) on a complete reply is a `permissionWarning`, not this failure;
+ *   on an incomplete one it fails here with `healable: false` and no suggested grants. Also
+ *   present as an EXTRA field on a typed failure (max_turns_exhausted, auth, server,
+ *   overloaded, ...) or a non-strict Claude failure whose turn carried refusals: the typed
+ *   reason wins.
  * @property {PermissionDenied} [permissionWarning] - Present on a SUCCESSFUL dispatch whose
- *   session refused tool calls that must never be granted (`healable: false`); a logged
- *   warning, not a failure.
+ *   session refused tool calls without failing it: a healable:false refusal (never grant it),
+ *   or any Claude refusal when `fail_on_permission_denial` was not set. A logged warning.
  * @property {UsageLimitSignal} [usageLimit] - Present when `reason === 'usage_limit'`
  *   (apra-fleet-hzeb.2): the provider's detectUsageLimit() signal verbatim -- a 429/quota
  *   exhaustion that a fresh session cannot cure, so execute_prompt returns this INSTEAD of

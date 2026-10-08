@@ -572,6 +572,11 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
                 resume: resolveResumeArg(dispatch.resumeArg, localOpts),
                 onSessionId: opts.onSessionId,
                 label: prepared.label ?? defaultLabel,
+                // Strict permission handling: a refused tool call fails the
+                // dispatch (permission_denied) so no role trusts a result made
+                // without the refused tool's output, and the progressive heal
+                // (onPermissionDenied) can grant the missing permission.
+                fail_on_permission_denial: true,
             };
             for (const key of Object.keys(options)) {
                 if (options[key] === undefined) delete options[key];

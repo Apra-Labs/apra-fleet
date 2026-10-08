@@ -326,6 +326,9 @@ function buildRepairPrompt(errorsText, initialPrompt) {
  *   legitimate 15+ minute reviewer dispatch was client-timed-out at 930s while the remote
  *   session kept running.
  * @property {number} [max_turns] - Max turns for conversational tools
+ * @property {boolean} [fail_on_permission_denial] - Passed to execute_prompt: a tool call the
+ *   member CLI refused fails the dispatch (reason 'permission_denied') instead of riding on a
+ *   successful reply as permissionWarning. fleet-sprint sets it on every role dispatch.
  * @property {'low'|'medium'|'high'|'xhigh'|'max'} [effort] - Effort parameter for fleet routing
  * @property {string} [agentType] - Agent persona to activate on the member
  * @property {boolean|string} [resume] - Resume the previous session on the member if one exists.
@@ -1183,6 +1186,8 @@ export class FleetWorkflow extends EventEmitter {
                 timeout_s: opts.timeout_s,
                 max_total_s: opts.max_total_s,
                 max_turns: opts.max_turns,
+                // Opt-in strict permission handling (see AgentOptions).
+                fail_on_permission_denial: opts.fail_on_permission_denial,
                 effort: opts.effort,
                 agent: opts.agentType,
                 // apra-fleet-eft.29.1: pass-through opt-in, see AgentOptions.sprint_id above.

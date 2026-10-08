@@ -108,14 +108,17 @@ export interface ExecutePromptStructured {
    *  read resumeAt/resumeAtSource/message without re-parsing the failure text. */
   usageLimit?: UsageLimitSignal;
   /** Present on a 'permission_denied' failure: the member CLI refused tool
-   *  calls for lack of a grant (actions, concrete targets, the
-   *  compose_permissions grants that would allow them, and a hint). Any
-   *  partial reply is in `response`. */
+   *  calls (actions, concrete targets, the compose_permissions grants that
+   *  would allow them, and a hint). Any partial reply is in `response`. For
+   *  Claude only with fail_on_permission_denial; AGY always. Also present as
+   *  an extra field on a typed failure (max_turns_exhausted, auth, server,
+   *  overloaded, workspace_not_trusted) or a non-strict Claude failure whose
+   *  turn carried refusals -- the typed reason wins. */
   permissionDenied?: PermissionDenial;
-  /** Present on a SUCCESSFUL dispatch whose session refused tool calls it
-   *  must never be granted (Claude auto/bypass mode: safety classifier or a
-   *  deny rule; healable is false). The reply was complete, so this is a
-   *  warning, not a failure. */
+  /** Present on a SUCCESSFUL dispatch whose session refused tool calls
+   *  without failing it: a healable:false refusal (Claude auto/bypass mode:
+   *  safety classifier or deny rule -- never grant it), or any Claude refusal
+   *  when fail_on_permission_denial was not set. A warning, not a failure. */
   permissionWarning?: PermissionDenial;
   /** false when nothing was dispatched to the member: a max_total_time
    *  failure that ran out of budget during setup (cloud start, before the
@@ -123,6 +126,10 @@ export interface ExecutePromptStructured {
   dispatched?: false;
   [key: string]: unknown;
 }
+
+/** Failure classes that win over a permission denial carried in the same
+ *  result: the caller acts on these (resume, re-provision, retry later). */
+const TYPED_FAILURE_CATEGORIES: ReadonlySet<PromptErrorCategory> = new Set<PromptErrorCategory>(['auth', 'server', 'overloaded', 'workspace_not_trusted', 'max_turns']);
 
 export interface ExecutePromptResult {
   text: string;
@@ -154,6 +161,7 @@ export const executePromptSchema = z.object({
   timeout_s: z.number().default(300).describe('Inactivity timeout in seconds -- always drives the stall detector\'s per-dispatch baseline threshold, measured against the member\'s own session transcript activity (default: 300s / 5 minutes). Omitting it yields a 300s baseline, a deliberate change from the previously silent 150s stall-detector default. Per-provider, it ALSO arms the exec-level rolling timer against this dispatch\'s stdout/stderr channel for Codex and Copilot, which have no pollable transcript; Claude and AGY take that exec-channel ceiling from max_total_s instead; and OpenCode keeps BOTH signals armed at once (this exec-channel timer plus coarse log-directory-mtime polling, combined with OR semantics -- either advancing counts as not-stalled), since its transcript signal is directory-level only, not a per-turn file (see ProviderAdapter.execTimeoutSource()).'),
   max_total_s: z.number().optional().describe('Hard ceiling in seconds, measured from the moment the call is received (setup such as member readiness and preflight counts) -- the command is killed after this total elapsed time regardless of activity and the call returns reason max_total_time. If omitted, there is no total time limit.'),
   max_turns: z.number().min(1).max(500).optional().describe('Max turns for claude -p (default: 50)'),
+  fail_on_permission_denial: z.boolean().optional().describe('Strict permission handling (default: false). true = a tool call the member CLI refused fails the dispatch with reason "permission_denied" and a permissionDenied block (suggestedGrants to heal it with compose_permissions), even when the reply looks complete -- except a Claude refusal with healable:false (auto/bypass mode: safety classifier or deny rule) on a complete reply, which is only a permissionWarning. Omitted/false = each provider keeps its earlier behaviour: a complete Claude reply is a success carrying the refusals in permissionWarning; AGY refusals still fail permission_denied. Either way a max_turns / auth / server / overloaded result keeps its own reason, with the refusals attached as permissionDenied.'),
   model: z.string().optional().describe('Model tier ("cheap", "standard", "premium") or a specific model ID for power users. Prefer tier names -- the server resolves them to the correct model per provider. If omitted, defaults to the standard tier. Applies to both new and resumed sessions.'),
   substitutions: z.record(z.string(), z.string()).optional().describe(
     'Optional map of token name to replacement value. ' +
@@ -1575,6 +1583,26 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   // unattended + model let the provider tell which permission mode the
   // session ran in (Claude: a denial in auto mode is never healable).
   const parseCtx = { agentOs: agent.os, unattended: agent.unattended, model: resolvedModel };
+  // The session/usage/budget/PID bookkeeping a dispatch that RAN gets, for an
+  // early return that is not the success path (permission_denied): the
+  // member's stored session advances so a later resume continues this turn,
+  // the spend reaches the member total, the session total and the budget,
+  // and the stored PID is cleared.
+  const recordDispatchBookkeeping = async (p: ParsedResponse): Promise<void> => {
+    if (p.sessionId) {
+      recordKnownSession(agent.id, p.sessionId);
+      touchAgent(agent.id, p.sessionId);
+    }
+    clearStoredPid(agent.id);
+    if (p.usage) {
+      const prev = agent.tokenUsage ?? { input: 0, output: 0 };
+      updateAgent(agent.id, {
+        tokenUsage: { input: prev.input + p.usage.input_tokens, output: prev.output + p.usage.output_tokens },
+      });
+      recordSessionUsage(p.sessionId ?? mintedId, p.usage);
+      if (budgetScope) await recordAndEvaluate({ scope: budgetScope, agent, provider, tier: resolvedTier, usage: p.usage });
+    }
+  };
   // Every provider.parseResponse in the dispatch path goes through this, so
   // a provider-reported cumulative session cost (Claude total_cost_usd) is
   // turned into THIS dispatch's cost exactly once per invocation, on every
@@ -1737,40 +1765,62 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
 
     _epExitCode = result.code;
 
-    // The member CLI refused tool calls for lack of a grant (AGY headless mode
-    // auto-denies them and still exits 0 with status SUCCESS). Report that as
-    // a permission failure the caller can heal via compose_permissions, not
-    // as an empty response. Only providers whose parser sets
-    // permissionDenial reach this; any partial reply is kept.
+    // Permission refusals (parsed.permissionDenial). Order matters:
     //
-    // Exception: a denial the provider marks healable:false (Claude auto or
-    // bypass mode -- the safety classifier or a deliberate deny rule refused
-    // the call, not a missing allow rule) on an otherwise complete reply is a
-    // logged warning, not a failure: the agent kept working, and no grant may
-    // ever be added for such a refusal. It rides on the success result as
-    // `permissionWarning`. An incomplete reply still fails as
-    // permission_denied, carrying healable:false so no caller grants for it.
+    // 1. A TYPED failure is classified first and wins: a max_turns-terminated
+    //    turn, or a nonzero exit the provider classifies as auth / server /
+    //    overloaded / workspace_not_trusted. Its reason is what a caller acts
+    //    on (fleet-sprint resumes a max_turns turn, re-provisions on auth);
+    //    an incidental refusal inside such a turn rides along as an extra
+    //    `permissionDenied` field and never turns it into permission_denied.
+    //
+    // 2. Otherwise the caller's choice decides. `fail_on_permission_denial`
+    //    (fleet-sprint passes it) makes any refusal a `permission_denied`
+    //    failure the caller can heal with compose_permissions -- except a
+    //    denial the provider marks healable:false (Claude auto/bypass mode:
+    //    safety classifier or deny rule) on a complete reply, which is only a
+    //    warning. Without the flag each provider keeps its v0.4.3 semantics:
+    //    Claude's reply stands (a complete reply is a success carrying the
+    //    refusals as `permissionWarning`; an incomplete one gets its ordinary
+    //    classification with the denial attached), while AGY -- whose headless
+    //    denials exit 0 with an empty reply -- still fails permission_denied.
+    const denial = parsed.permissionDenial;
+    const strictDenials = input.fail_on_permission_denial === true || provider.name !== 'claude';
+    const typedFailure = isMaxTurnsResponse(parsed)
+      || (result.code !== 0 && TYPED_FAILURE_CATEGORIES.has(provider.classifyError(result.stderr || result.stdout)));
+    const replyComplete = result.code === 0 && !parsed.isError && !!parsed.result?.trim();
     let permissionWarning: PermissionDenial | undefined;
-    if (parsed.permissionDenial && parsed.permissionDenial.healable === false
-      && result.code === 0 && !parsed.isError && parsed.result?.trim()) {
-      permissionWarning = parsed.permissionDenial;
-      logWarn('permission_denied_incidental', `"${agent.friendlyName}" (${permissionWarning.permissionMode ?? 'unknown'} mode): ${permissionWarning.hint} -- reply complete, reported as a warning; never auto-granted.`);
+    // A denial carried along on a non-permission outcome (typed failure, or
+    // non-strict Claude whose reply was not complete).
+    let carriedDenial: PermissionDenial | undefined;
+    if (denial) {
+      if (typedFailure) {
+        carriedDenial = denial;
+      } else if (replyComplete && (denial.healable === false || !strictDenials)) {
+        permissionWarning = denial;
+        logWarn('permission_denied_incidental', `"${agent.friendlyName}" (${denial.permissionMode ?? 'unknown'} mode): ${denial.hint} -- reply complete, reported as a warning${denial.healable === false ? '; never auto-granted' : ''}.`);
+      } else if (strictDenials) {
+        const partial = parsed.result?.trim() ? parsed.result.trim() : undefined;
+        // The turn ran: keep the session, usage, budget and PID bookkeeping
+        // a completed dispatch gets, so a later resume continues THIS session
+        // and the spend is recorded.
+        await recordDispatchBookkeeping(parsed);
+        return {
+          text: `[FAIL] execute_prompt on "${agent.friendlyName}": permission denied -- ${denial.hint}${partial ? `\n[partial response]\n${partial}` : ''}`,
+          structuredContent: {
+            isError: true,
+            reason: 'permission_denied',
+            permissionDenied: denial,
+            ...(partial ? { response: partial } : {}),
+            ...(parsed.sessionId ? { sessionId: parsed.sessionId } : {}),
+            ...(_epUsage ? { usage: toStructuredUsage(_epUsage) } : {}),
+          },
+        };
+      } else {
+        carriedDenial = denial;
+      }
     }
-    if (parsed.permissionDenial && !permissionWarning) {
-      const denial = parsed.permissionDenial;
-      const partial = parsed.result?.trim() ? parsed.result.trim() : undefined;
-      return {
-        text: `[FAIL] execute_prompt on "${agent.friendlyName}": permission denied -- ${denial.hint}${partial ? `\n[partial response]\n${partial}` : ''}`,
-        structuredContent: {
-          isError: true,
-          reason: 'permission_denied',
-          permissionDenied: denial,
-          ...(partial ? { response: partial } : {}),
-          ...(parsed.sessionId ? { sessionId: parsed.sessionId } : {}),
-          ...(_epUsage ? { usage: toStructuredUsage(_epUsage) } : {}),
-        },
-      };
-    }
+    const carriedDenialField = carriedDenial ? { permissionDenied: carriedDenial } : {};
 
     if (result.code !== 0) {
       // GitHub #585: a failed dispatch used to log only exit=N. Log a capped
@@ -1812,6 +1862,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
           // stats.totalCost of $0). Attach it here whenever it's available so
           // the caller can record the real partial cost instead of nothing.
           ...(_epUsage ? { usage: toStructuredUsage(_epUsage) } : {}),
+          ...carriedDenialField,
         },
       };
     }
@@ -1916,7 +1967,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
           text: trustClassified
             ? `[FAIL] ${workspaceNotTrustedAdvice(agent.friendlyName)}\n${stderrTail}`
             : `[FAIL] execute_prompt on "${agent.friendlyName}" exited 0 but produced no parseable output (empty result -- the member CLI likely died mid-turn without printing its result envelope).${stderrTail ? `\n[stderr tail]\n${stderrTail}` : ''}`,
-          structuredContent: { isError: true, reason: trustClassified ? 'workspace_not_trusted' : 'empty_response' },
+          structuredContent: { isError: true, reason: trustClassified ? 'workspace_not_trusted' : 'empty_response', ...carriedDenialField },
         };
       }
     }
@@ -2082,7 +2133,10 @@ session: ${parsed.sessionId}`;
     }
 
     if (heuristicWarningSuffix) output += heuristicWarningSuffix;
-    if (permissionWarning) output += `\n\n[WARN] ${permissionWarning.hint}`;
+    // A refusal that did not fail the dispatch (incidental, or carried on a
+    // turn that still exited 0) rides on the success as a warning.
+    const successWarning = permissionWarning ?? carriedDenial;
+    if (successWarning) output += `\n\n[WARN] ${successWarning.hint}`;
     return {
       text: output,
       structuredContent: {
@@ -2091,7 +2145,7 @@ session: ${parsed.sessionId}`;
         ...(parsed.sessionId ? { sessionId: parsed.sessionId } : {}),
         ...(contextWarning ? { contextWarning } : {}),
         ...(budgetUsage ? { budgetUsage } : {}),
-        ...(permissionWarning ? { permissionWarning } : {}),
+        ...(successWarning ? { permissionWarning: successWarning } : {}),
       },
     };
   } catch (err: any) {

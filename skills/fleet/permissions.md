@@ -70,9 +70,11 @@ When `execute_prompt` output contains a permission denial, call `compose_permiss
 For an agy member the failure is structured: `reason: "permission_denied"` with
 `permissionDenied.suggestedGrants` (primary grant first) - review them and pass them as `grant`.
 
-Claude denials also carry `permissionMode` and `healable`:
+Claude denials carry `permissionMode` and `healable`:
 - `healable: true` (acceptEdits session): a missing allow rule - grant from `suggestedGrants` as above.
-- `healable: false` (auto or bypass session): the safety classifier or a deny rule refused the call. `suggestedGrants` is empty on purpose - do NOT grant it. A complete reply is a success carrying the refusals in `permissionWarning`; an incomplete one fails `permission_denied`. Review the refused call; grant by hand only if the action is really intended.
+- `healable: false` (auto or bypass session): the safety classifier or a deny rule refused the call. `suggestedGrants` is empty on purpose - do NOT grant it. Review the refused call; grant by hand only if the action is really intended.
+
+By default a complete Claude reply is a success carrying its refusals in `permissionWarning` - check it. Pass `fail_on_permission_denial: true` to execute_prompt to make any refusal fail `permission_denied` instead (fleet-sprint does; a `healable: false` refusal on a complete reply stays a warning). A max_turns / auth / server result keeps its own reason, with the refusals attached.
 
 `compose_permissions` with `dry_run: true` returns the composed allow list (JSON, nothing written) - check a grant against it before granting.
 

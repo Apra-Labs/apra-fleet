@@ -14,7 +14,9 @@ import { ClaudeProvider, claudeModelSupportsAuto, claudePermissionMode } from '.
 import { WindowsCommands } from '../src/os/windows.js';
 import { detectClaudePermissionDenial } from '../src/providers/claude-permission-denial.js';
 import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
-import { addAgent } from '../src/services/registry.js';
+import { addAgent, getAgent } from '../src/services/registry.js';
+import { isKnownSession } from '../src/services/known-sessions.js';
+import { getStoredPid } from '../src/utils/agent-helpers.js';
 import { executePrompt } from '../src/tools/execute-prompt.js';
 // @ts-ignore -- plain ESM client package without type declarations
 import { permissionDenialOf } from '../packages/apra-fleet-client/src/client/api.mjs';
@@ -176,7 +178,7 @@ describe('execute_prompt -- Claude permission_denied', () => {
     addAgent(member);
     mockExecCommand.mockResolvedValue(run(RESULT));
 
-    const result: any = await executePrompt({ member_id: member.id, prompt: 'review the plan', resume: false, timeout_s: 5 });
+    const result: any = await executePrompt({ member_id: member.id, prompt: 'review the plan', resume: false, timeout_s: 5, fail_on_permission_denial: true });
 
     expect(result.structuredContent.isError).toBe(true);
     expect(result.structuredContent.reason).toBe('permission_denied');
@@ -219,7 +221,7 @@ describe('execute_prompt -- Claude permission_denied', () => {
     const member = makeTestAgent({ friendlyName: 'claude-auto-empty', llmProvider: 'claude', unattended: 'auto' });
     addAgent(member);
     mockExecCommand.mockResolvedValue(run(JSON.stringify({ ...JSON.parse(RESULT), result: '' })));
-    const result: any = await executePrompt({ member_id: member.id, prompt: 'review the plan', resume: false, timeout_s: 5 });
+    const result: any = await executePrompt({ member_id: member.id, prompt: 'review the plan', resume: false, timeout_s: 5, fail_on_permission_denial: true });
     expect(result.structuredContent.reason).toBe('permission_denied');
     expect(result.structuredContent.permissionDenied.healable).toBe(false);
     expect(result.structuredContent.permissionDenied.suggestedGrants).toEqual([]);
@@ -231,7 +233,7 @@ describe('execute_prompt -- Claude permission_denied', () => {
     const member = makeTestAgent({ friendlyName: 'claude-haiku', llmProvider: 'claude', unattended: 'auto' });
     addAgent(member);
     mockExecCommand.mockResolvedValue(run(RESULT));
-    const result: any = await executePrompt({ member_id: member.id, prompt: 'review the plan', resume: false, timeout_s: 5, model: 'cheap' });
+    const result: any = await executePrompt({ member_id: member.id, prompt: 'review the plan', resume: false, timeout_s: 5, model: 'cheap', fail_on_permission_denial: true });
     expect(result.structuredContent.reason).toBe('permission_denied');
     expect(result.structuredContent.permissionDenied.permissionMode).toBe('acceptEdits');
     expect(result.structuredContent.permissionDenied.healable).toBe(true);
@@ -241,6 +243,71 @@ describe('execute_prompt -- Claude permission_denied', () => {
       expect(c).toContain('--permission-mode acceptEdits');
       expect(c).not.toContain('--permission-mode auto');
     }
+  });
+
+  // Without fail_on_permission_denial a Claude reply stands, as in v0.4.3.
+  it('no flag, acceptEdits: a complete reply with denials is a SUCCESS carrying a healable permissionWarning', async () => {
+    const member = makeTestAgent({ friendlyName: 'claude-nonstrict', llmProvider: 'claude' });
+    addAgent(member);
+    mockExecCommand.mockResolvedValue(run(RESULT));
+    const result: any = await executePrompt({ member_id: member.id, prompt: 'review the plan', resume: false, timeout_s: 5 });
+    expect(result.structuredContent.isError).not.toBe(true);
+    expect(result.structuredContent.reason).toBeUndefined();
+    expect(result.structuredContent.response).toContain('requires approval');
+    expect(result.structuredContent.permissionWarning.healable).toBe(true);
+    expect(result.structuredContent.permissionWarning.suggestedGrants).toEqual(EXPECTED_GRANTS);
+    expect(result.text).toContain('[RESULT]');
+    expect(result.text).toContain('[WARN]');
+  });
+
+  it('no flag: an EMPTY Claude reply with denials keeps its ordinary reason (empty_response), denial attached', async () => {
+    const member = makeTestAgent({ friendlyName: 'claude-nonstrict-empty', llmProvider: 'claude', unattended: 'auto' });
+    addAgent(member);
+    mockExecCommand.mockResolvedValue(run(JSON.stringify({ ...JSON.parse(RESULT), result: '' })));
+    const result: any = await executePrompt({ member_id: member.id, prompt: 'review the plan', resume: false, timeout_s: 5 });
+    expect(result.structuredContent.reason).toBe('empty_response');
+    expect(result.structuredContent.permissionDenied.healable).toBe(false);
+  });
+
+  it('strict permission_denied keeps the session, usage and budget bookkeeping of a dispatch that ran', async () => {
+    const member = makeTestAgent({ friendlyName: 'claude-bookkeeping', llmProvider: 'claude', tokenUsage: { input: 0, output: 0 } });
+    addAgent(member);
+    mockExecCommand.mockResolvedValue(run(RESULT));
+    const result: any = await executePrompt({ member_id: member.id, prompt: 'review the plan', resume: false, timeout_s: 5, fail_on_permission_denial: true });
+    expect(result.structuredContent.reason).toBe('permission_denied');
+    const after = getAgent(member.id)!;
+    // The stored session advanced, so a later resume:true continues this turn.
+    expect(after.sessionId).toBe(SESSION);
+    expect(after.tokenUsage!.input).toBe(1840);
+    expect(isKnownSession(member.id, SESSION)).toBe(true);
+    expect(getStoredPid(member.id)).toBeUndefined();
+  });
+
+  // A typed failure wins over a denial carried in the same result, in either
+  // permission mode and with or without the strict flag.
+  const maxTurnsResult = () => run(JSON.stringify({
+    ...JSON.parse(RESULT), is_error: true, subtype: 'error_max_turns', terminal_reason: 'max_turns',
+  }), 'Error: Reached max turns (50)', 1);
+  for (const unattended of [undefined, 'auto'] as const) {
+    for (const strict of [true, false]) {
+      it(`max_turns + denials (${unattended ?? 'acceptEdits'}, strict=${strict}) is max_turns_exhausted with the denial attached`, async () => {
+        const member = makeTestAgent({ friendlyName: `claude-mt-${unattended ?? 'ae'}-${strict}`, llmProvider: 'claude', unattended });
+        addAgent(member);
+        mockExecCommand.mockResolvedValue(maxTurnsResult());
+        const result: any = await executePrompt({ member_id: member.id, prompt: 'do it', resume: false, timeout_s: 5, fail_on_permission_denial: strict });
+        expect(result.structuredContent.reason).toBe('max_turns_exhausted');
+        expect(result.structuredContent.permissionDenied.actions).toEqual(['Bash']);
+      });
+    }
+  }
+
+  it('auth failure + denials (strict) is auth, not permission_denied', async () => {
+    const member = makeTestAgent({ friendlyName: 'claude-auth', llmProvider: 'claude' });
+    addAgent(member);
+    mockExecCommand.mockResolvedValue(run(JSON.stringify({ ...JSON.parse(RESULT), is_error: true, result: 'Failed to authenticate. OAuth session expired.' }), 'Failed to authenticate: OAuth session expired', 1));
+    const result: any = await executePrompt({ member_id: member.id, prompt: 'do it', resume: false, timeout_s: 5, fail_on_permission_denial: true });
+    expect(result.structuredContent.reason).toBe('auth');
+    expect(result.structuredContent.permissionDenied).toBeDefined();
   });
 
   it('the same result with no denials is an ordinary success', async () => {

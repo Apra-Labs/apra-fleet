@@ -84,6 +84,25 @@ test('plan-reviewer refusal: one heal for that member+role, one retry, the heale
     assert.ok(!rec.logs.some((l) => /degrading/.test(l)), rec.logs.join('\n'));
 });
 
+test('every role dispatch asks execute_prompt for strict permission handling (fail_on_permission_denial)', async () => {
+    const { ctx, rec } = createRecordingCtx({ responses: [APPROVED], members: { 'plan-reviewer': 'rev' } });
+    await dispatchRole(ctx, 'plan-reviewer', planReviewOpts());
+    assert.equal(rec.dispatches.length, 1);
+    assert.equal(rec.dispatches[0].options.fail_on_permission_denial, true);
+});
+
+test('a max_turns failure that carries a permission denial is a max_turns failure: no heal, never MemberPermissionDeniedError', async () => {
+    const maxTurns = new AgentDispatchError(
+        '[Workflow Error] Agent dispatch failed (max_turns_exhausted): turn limit',
+        { details: { reason: 'max_turns_exhausted', member: 'rev', permissionDenied: DENIAL } },
+    );
+    const { ctx } = createRecordingCtx({ responses: [maxTurns, APPROVED, APPROVED, APPROVED], members: { 'plan-reviewer': 'rev' } });
+    const heals = withHeal(ctx, { healed: true, composeRole: 'reviewer', grants: ['Bash(bd:*)'], rejectedGrants: [] });
+    const outcome = await dispatchRole(ctx, 'plan-reviewer', planReviewOpts()).catch((e) => e);
+    assert.equal(heals.length, 0, 'a max_turns turn must never reach the permission heal');
+    assert.ok(!(outcome instanceof MemberPermissionDeniedError), String(outcome && outcome.message));
+});
+
 test('a heal that cannot make progress fails the sprint with the hook\'s step, naming member, actions and fix -- no degraded verdict', async () => {
     const { ctx, rec } = createRecordingCtx({ responses: [deniedError(), APPROVED], members: { 'plan-reviewer': 'rev' } });
     const heals = withHeal(ctx, { healed: false, step: 'no_progress', composeRole: 'reviewer', grants: [], rejectedGrants: [], reason: 'Bash "bd show root-1" was refused again after Bash(bd:*) was granted' });
