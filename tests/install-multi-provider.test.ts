@@ -1145,7 +1145,7 @@ describe('runInstall multi-provider', () => {
       const ps = p.toString();
       if (ps.includes('version.json')) return true;
       if (ps.includes('hooks-config.json')) return true;
-      if (ps.includes('Git\\bin\\bash.exe')) return true;
+      if (ps.includes('Git\\bin\\bash.exe') || ps.includes('Git/bin/bash.exe')) return true;
       if (fileState.has(ps)) return true;
       return false;
     });
@@ -1170,8 +1170,47 @@ describe('runInstall multi-provider', () => {
 
     expect(parsed).toHaveProperty('statusLine');
     if (process.platform === 'win32') {
-      expect(parsed.statusLine.command).toContain('Git\\bin\\bash.exe');
+      expect(parsed.statusLine.command).toContain('set PATH=');
       expect(parsed.statusLine.command).toContain('fleet-statusline.sh');
+      expect(parsed.statusLine.command).not.toContain('"');
+    }
+  });
+
+  it('agy install configures statusLine fallback when Git Bash is not found on Windows', async () => {
+    const fileState = new Map<string, string>();
+
+    vi.mocked(fs.existsSync).mockImplementation((p: any) => {
+      const ps = p.toString();
+      if (ps.includes('version.json')) return true;
+      if (ps.includes('hooks-config.json')) return true;
+      if (fileState.has(ps)) return true;
+      return false;
+    });
+    vi.mocked(fs.readFileSync).mockImplementation((p: any) => {
+      const ps = p.toString();
+      if (fileState.has(ps)) return fileState.get(ps)!;
+      if (ps.includes('version.json')) return JSON.stringify({ version: '0.1.3_62ec2e' });
+      if (ps.includes('hooks-config.json')) return JSON.stringify({ hooks: { PostToolUse: [{ matcher: 'test', hooks: [] }] } });
+      return '';
+    });
+    vi.mocked(fs.writeFileSync).mockImplementation((p: any, content: any) => {
+      fileState.set(p.toString(), content.toString());
+    });
+    vi.mocked(fs.readdirSync).mockReturnValue([] as any);
+
+    await runInstall(['--llm', 'agy']);
+
+    const agyConfig = path.join(mockHome, '.gemini', 'antigravity-cli', 'settings.json');
+    const finalContent = fileState.get(agyConfig);
+    expect(finalContent).toBeDefined();
+    const parsed = JSON.parse(finalContent!);
+
+    expect(parsed).toHaveProperty('statusLine');
+    if (process.platform === 'win32') {
+      expect(parsed.statusLine.command).toMatch(/^bash '[^']+'$/);
+      expect(parsed.statusLine.command).toContain('fleet-statusline.sh');
+      expect(parsed.statusLine.command).not.toContain('"');
+      expect(parsed.statusLine.command).not.toContain('set PATH=');
     }
   });
 

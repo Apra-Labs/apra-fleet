@@ -34,6 +34,7 @@ import {
 } from './install-guard.js';
 import { convertClaudeAllowToAgyPermissions, formatAgyPermissionRules } from '../providers/agy.js';
 import { codeIntelPathWarning } from '../utils/find-on-path.js';
+import { gitBashCandidates } from '../os/git-bash-candidates.js';
 
 // --- Dolt CLI install step: injectable deps + explicit gate ---
 //
@@ -739,10 +740,15 @@ function configureStatusline(paths: ProviderInstallConfig, scriptPath: string, l
 
   if (process.platform === 'win32') {
     if (llm === 'agy') {
-      const gitBash = 'C:\\Program Files\\Git\\bin\\bash.exe';
-      const bashBin = fs.existsSync(gitBash) ? `"${gitBash}"` : 'bash';
       const formattedScriptPath = scriptPath.replace(/\\/g, '/');
-      command = `${bashBin} "${formattedScriptPath}"`;
+      const candidates = gitBashCandidates(process.env.LOCALAPPDATA);
+      const gitBash = candidates.find(c => fs.existsSync(c));
+      if (gitBash) {
+        const gitBin = path.dirname(gitBash);
+        command = `set PATH=${gitBin};%PATH% && bash '${formattedScriptPath}'`;
+      } else {
+        command = `bash '${formattedScriptPath}'`;
+      }
     } else {
       command = `bash "${scriptPath}"`;
     }
