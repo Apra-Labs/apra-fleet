@@ -663,7 +663,10 @@ export async function runDevelopPhase({
                 // Mode (i): PER-STREAK attribution for a failed batch
                 // dispatch -- a sub-streak whose beads all verifiably
                 // closed before the failure keeps its work (outcome
-                // 'success', its closes stand and go to review); only
+                // 'success', its closes stand and go to review -- EXCEPT
+                // when the dispatch was permission-scope publish-blocked:
+                // then every sub-outcome is marked publishBlocked and
+                // review.mjs excludes it from review wholesale); only
                 // sub-streaks with still-open beads are 'failed' and
                 // re-lane next round (permission-scope ones are additionally
                 // recorded on `permissionScopeBlockedBeads` below so they are
