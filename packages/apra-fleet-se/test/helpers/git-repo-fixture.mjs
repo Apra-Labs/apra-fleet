@@ -320,6 +320,40 @@ export function createGitRepoFixture(opts = {}) {
             const res = git(['rev-list', '--merges', '--format=%s', 'HEAD'], clonePath);
             return res.ok ? res.stdout.split('\n').filter((l) => l && !l.startsWith('commit ')) : [];
         },
+        /** Any ref resolved in the member clone, or null if it does not exist. */
+        localRev(ref) {
+            return revParse(clonePath, ref);
+        },
+        /** Commit subjects reachable from `ref` in the member clone, newest first. */
+        localSubjectsOf(ref) {
+            return subjects(clonePath, ref);
+        },
+        /** Local branch names in the member clone under `prefix` (e.g. 'fleet-salvage/'). */
+        localBranchesUnder(prefix) {
+            const res = git(['for-each-ref', '--format=%(refname:short)', `refs/heads/${prefix}`], clonePath);
+            return res.ok ? res.stdout.split('\n').filter(Boolean).sort() : [];
+        },
+        /** The content of `relPath` at `ref` in the member clone, or null. */
+        localFileAt(ref, relPath) {
+            const res = git(['show', `${ref}:${relPath}`], clonePath);
+            return res.ok ? res.stdout : null;
+        },
+        /** Every ref name in the bare origin -- read straight from it. */
+        originRefNames() {
+            const res = git(['for-each-ref', '--format=%(refname)'], originDir);
+            return res.ok ? res.stdout.split('\n').filter(Boolean).sort() : [];
+        },
+        /** Write (or overwrite) a file in the member clone WITHOUT committing it
+         *  -- an uncommitted working-tree change a killed attempt left behind. */
+        memberWriteFile(relPath, body) {
+            const abs = path.join(clonePath, relPath);
+            fs.mkdirSync(path.dirname(abs), { recursive: true });
+            fs.writeFileSync(abs, `${body == null ? relPath : body}\n`, 'utf-8');
+        },
+        /** Create a local branch in the member clone at `ref` (test setup only). */
+        memberCreateBranch(name, ref) {
+            gitOrThrow(['branch', name, ref || 'HEAD'], clonePath);
+        },
         /** The member clone's remote-tracking ref for the shared branch. */
         localRemoteTrackingTip() {
             return revParse(clonePath, `refs/remotes/origin/${branch}`);

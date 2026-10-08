@@ -79,7 +79,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 
 import { createSyncBrackets, createGitSync } from '../fleet-sprint/git-sync.mjs';
-import { GitDivergedError } from '../fleet-sprint/errors.mjs';
+import { GitDivergedError, GitSyncError } from '../fleet-sprint/errors.mjs';
 import {
     syncMemberBefore,
     syncMemberAfter,
@@ -343,5 +343,147 @@ describe('withGitSync against a real git origin (no network, no credentials)', {
         assert.equal(fixture.localStatus(), '', 'the working tree is clean after the bracket');
         assert.equal(fixture.localRebaseInProgress(), false, 'no rebase/merge state left behind');
         assert.equal(gitSync.openBracketCount(), 0, 'the bracket closed');
+    });
+
+    // -------------------------------------------------------------------
+    // 6. Salvage before the resume reset: a killed attempt's unpublished
+    //    commit AND its uncommitted working-tree changes survive on a local
+    //    fleet-salvage/<branch>/<short sha> branch that is never pushed.
+    // -------------------------------------------------------------------
+    test('G-pull: resumeOntoRemoteTip salvages the killed attempt\'s unpublished commit and uncommitted changes onto a local fleet-salvage branch BEFORE the hard reset, and never pushes it', async () => {
+        fixture = createGitRepoFixture({ member: 'salvage-member', prefix: 'salvage-dirty-' });
+        const logs = [];
+        const gitSync = makeGitSync(fixture, { log: (m) => logs.push(String(m)) });
+
+        // The killed attempt: one finished (protected test) commit that was
+        // never published, plus uncommitted work -- a tracked modification
+        // and a brand-new untracked file.
+        const killedSha = fixture.memberCommit('killed-attempt-test-commit', 'protected test');
+        fixture.memberWriteFile('README.md', 'modified by the killed attempt');
+        fixture.memberWriteFile('wip/untracked.txt', 'untracked work in progress');
+        const peerSha = fixture.peerPublish('published-tip');
+
+        let tipSeenByDispatch = null;
+        await gitSync.withGitSync('salvage-member', true, async () => {
+            tipSeenByDispatch = fixture.localTip();
+            return 'dispatch-ok';
+        }, { resumeOntoRemoteTip: true });
+
+        // The reset itself still happened: the retry resumes on the published tip.
+        assert.equal(tipSeenByDispatch, peerSha, 'the retried dispatch still resumes ON the published tip');
+        assert.equal(fixture.localTip(), peerSha);
+        assert.equal(fixture.localStatus(), '', 'the hard reset still leaves a clean working tree');
+
+        // REAL STATE: exactly one salvage branch, named after the short sha
+        // of the salvaged HEAD, holding the killed commit and the dirty tree.
+        const prefix = `fleet-salvage/${fixture.branch}/`;
+        const salvage = fixture.localBranchesUnder(prefix);
+        assert.equal(salvage.length, 1, `expected exactly one salvage branch under ${prefix}, got ${JSON.stringify(salvage)}`);
+        const ref = salvage[0];
+        const shortSha = ref.slice(prefix.length);
+        assert.match(shortSha, /^[0-9a-f]{7,40}$/, `the salvage branch must end in the short HEAD sha, got '${ref}'`);
+        const salvageTip = fixture.localRev(`refs/heads/${ref}`);
+        assert.ok(salvageTip.startsWith(shortSha), `the ref suffix '${shortSha}' must name the commit it points at (${salvageTip})`);
+        assert.equal(fixture.isAncestor(killedSha, salvageTip), true, 'the killed attempt\'s committed work is reachable from the salvage branch');
+        assert.notEqual(salvageTip, killedSha, 'the dirty tree was captured as an extra salvage commit on top of the killed commit');
+        assert.equal(fixture.localFileAt(salvageTip, 'README.md'), 'modified by the killed attempt', 'the uncommitted tracked modification was captured');
+        assert.equal(fixture.localFileAt(salvageTip, 'wip/untracked.txt'), 'untracked work in progress', 'the untracked file was captured');
+        assert.equal(fixture.localFileAt(salvageTip, 'killed-attempt-test-commit.txt'), 'protected test');
+
+        // Never pushed: origin carries no fleet-salvage ref at all.
+        assert.deepEqual(fixture.originRefNames().filter((r) => r.includes('fleet-salvage')), [], 'the salvage ref must never reach the remote');
+        assert.deepEqual(fixture.commandsOf('fleet-salvage').filter((c) => /^git push/.test(c.cmd)), [], 'no command pushes a salvage ref');
+
+        // ORDER: the salvage branch existed before the reset was issued.
+        const branchIdx = fixture.calls.findIndex((c) => /^git branch /.test(c.cmd) && c.cmd.includes(prefix));
+        const resetIdx = fixture.calls.findIndex((c) => /^git reset --hard/.test(c.cmd));
+        assert.ok(branchIdx !== -1 && resetIdx !== -1 && branchIdx < resetIdx, `salvage (idx ${branchIdx}) must run before the reset (idx ${resetIdx})`);
+
+        // LOG: names the ref and its commits.
+        const salvageLog = logs.find((l) => l.includes(ref));
+        assert.ok(salvageLog, `a log line must name the salvage ref '${ref}'; logs: ${JSON.stringify(logs)}`);
+        assert.ok(salvageLog.includes('killed-attempt-test-commit'), `the salvage log must list the salvaged commits; got: ${salvageLog}`);
+        assert.equal(gitSync.openBracketCount(), 0, 'the bracket closed');
+    });
+
+    test('G-pull: resumeOntoRemoteTip with only a committed-but-unpublished change salvages that exact commit (no extra salvage commit on a clean tree)', async () => {
+        fixture = createGitRepoFixture({ member: 'salvage-clean', prefix: 'salvage-clean-' });
+        const killedSha = fixture.memberCommit('killed-attempt-commit');
+        const peerSha = fixture.peerPublish('published-tip');
+
+        await syncMemberBefore('salvage-clean', { command: fixture.command, branch: fixture.branch, resetToRemoteTip: true });
+
+        const prefix = `fleet-salvage/${fixture.branch}/`;
+        const salvage = fixture.localBranchesUnder(prefix);
+        assert.equal(salvage.length, 1, `expected one salvage branch, got ${JSON.stringify(salvage)}`);
+        assert.equal(fixture.localRev(`refs/heads/${salvage[0]}`), killedSha, 'a clean tree needs no salvage commit: the ref points at the killed commit itself');
+        assert.ok(killedSha.startsWith(salvage[0].slice(prefix.length)));
+        assert.deepEqual(fixture.commandsOf(' commit '), [], 'no salvage commit is made when the tree is clean');
+        assert.equal(fixture.localTip(), peerSha, 'the reset still ran');
+    });
+
+    test('G-pull: resumeOntoRemoteTip with nothing unpublished and a clean tree creates no salvage branch', async () => {
+        fixture = createGitRepoFixture({ member: 'salvage-noop', prefix: 'salvage-noop-' });
+        const peerSha = fixture.peerPublish('published-tip');
+        const logs = [];
+
+        await syncMemberBefore('salvage-noop', { command: fixture.command, branch: fixture.branch, resetToRemoteTip: true, log: (m) => logs.push(String(m)) });
+
+        assert.deepEqual(fixture.localBranchesUnder('fleet-salvage/'), [], 'nothing to salvage -> no salvage branch');
+        assert.deepEqual(fixture.commandsOf(' commit '), [], 'nothing to salvage -> no salvage commit');
+        assert.equal(fixture.localTip(), peerSha);
+        assert.equal(logs.some((l) => l.includes('fleet-salvage/')), false, 'no salvage ref is logged when nothing was salvaged');
+    });
+
+    test('G-pull: a salvage failure aborts with a typed GitSyncError and does NOT hard-reset', async () => {
+        fixture = createGitRepoFixture({ member: 'salvage-fail', prefix: 'salvage-fail-' });
+        // A real git refusal: a plain branch named exactly fleet-salvage/<branch>
+        // makes the nested fleet-salvage/<branch>/<sha> ref impossible to create
+        // (a directory/file ref conflict).
+        fixture.memberCreateBranch(`fleet-salvage/${fixture.branch}`);
+        const killedSha = fixture.memberCommit('killed-attempt-commit');
+        fixture.peerPublish('published-tip');
+
+        const err = await syncMemberBefore('salvage-fail', { command: fixture.command, branch: fixture.branch, resetToRemoteTip: true })
+            .then(() => null, (e) => e);
+
+        assert.ok(err instanceof GitSyncError, `expected GitSyncError, got ${err && err.constructor.name}: ${err && err.message}`);
+        assert.equal(err instanceof GitDivergedError, false, 'a salvage failure is a sync error, not a divergence');
+        assert.match(err.message, /salvage/i, 'the error names the salvage step');
+        assert.deepEqual(fixture.commandsOf('git reset --hard'), [], 'the hard reset must never be issued after a failed salvage');
+        assert.equal(fixture.localTip(), killedSha, 'the killed attempt\'s commit is still checked out -- nothing was destroyed');
+    });
+
+    test('G-pull: the salvage step is idempotent -- a rerun with the same HEAD after a failed reset treats the existing salvage ref as success', async () => {
+        fixture = createGitRepoFixture({ member: 'salvage-rerun', prefix: 'salvage-rerun-' });
+        const killedSha = fixture.memberCommit('killed-attempt-commit');
+        fixture.memberWriteFile('dirty.txt', 'uncommitted');
+        const peerSha = fixture.peerPublish('published-tip');
+
+        // First run: salvage succeeds, then the reset itself fails.
+        let resetFailures = 0;
+        const flakyCommand = async (cmd, opts) => {
+            if (/^git reset --hard/.test(cmd) && resetFailures === 0) {
+                resetFailures += 1;
+                fixture.calls.push({ cmd, opts });
+                return { ok: false, output: '', error: 'fatal: simulated reset failure' };
+            }
+            return fixture.command(cmd, opts);
+        };
+        const first = await syncMemberBefore('salvage-rerun', { command: flakyCommand, branch: fixture.branch, resetToRemoteTip: true })
+            .then(() => null, (e) => e);
+        assert.ok(first instanceof GitSyncError, `the simulated reset failure surfaces as GitSyncError, got ${first && first.message}`);
+        const prefix = `fleet-salvage/${fixture.branch}/`;
+        const afterFirst = fixture.localBranchesUnder(prefix);
+        assert.equal(afterFirst.length, 1);
+        const tipAfterFirst = fixture.localRev(`refs/heads/${afterFirst[0]}`);
+
+        // Rerun: same HEAD, salvage ref already exists -> success, not a failure.
+        await syncMemberBefore('salvage-rerun', { command: fixture.command, branch: fixture.branch, resetToRemoteTip: true });
+        assert.deepEqual(fixture.localBranchesUnder(prefix), afterFirst, 'the rerun reuses the same salvage ref; no second ref');
+        assert.equal(fixture.localRev(`refs/heads/${afterFirst[0]}`), tipAfterFirst, 'the salvage ref still points at the same commit');
+        assert.equal(fixture.isAncestor(killedSha, tipAfterFirst), true);
+        assert.equal(fixture.localFileAt(tipAfterFirst, 'dirty.txt'), 'uncommitted');
+        assert.equal(fixture.localTip(), peerSha, 'the rerun completed the reset');
     });
 });

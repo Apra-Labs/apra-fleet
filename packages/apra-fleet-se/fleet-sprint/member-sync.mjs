@@ -159,12 +159,21 @@ export async function syncMemberBefore(member, opts = {}) {
     // because every subsequent push/merge fails non-fast-forward. Hard-resetting
     // onto the freshly fetched remote tip makes the retry resume ON TOP of
     // already-published work instead of re-committing it. Only the code checkout
-    // is touched (beads live in a separate Dolt clone); a local commit that was
-    // never published is intentionally dropped and simply re-done by the retry,
-    // which is what prevents the divergent duplicate commit. A concrete branch
-    // is required to name a remote tip; without one this falls through to the
-    // ff-only merge below.
+    // is touched (beads live in a separate Dolt clone).
+    //
+    // The reset moves the BRANCH off the killed attempt's unpublished work, but
+    // that work is never destroyed: salvageBeforeReset() first commits any
+    // uncommitted changes and pins every commit ahead of the remote tip on a
+    // LOCAL `fleet-salvage/<branch>/<short sha>` branch, logging the ref and its
+    // commits so an operator can recover them. The salvage ref is never pushed
+    // (publishing unreviewed partial work is exactly what the reset avoids) and
+    // is not handed to the retry, which still re-does the work on the published
+    // tip. If the salvage fails, this throws GitSyncError and does NOT reset --
+    // a retry that cannot start is recoverable, destroyed work is not. A
+    // concrete branch is required to name a remote tip; without one this falls
+    // through to the ff-only merge below.
     if (resetToRemoteTip && branch) {
+        await salvageBeforeReset(member, { command, log, remote, branch, maxTransientRetries, onAuthFailure, provider });
         const resetTarget = `${remote}/${branch}`;
         const reset = await runGitStep({
             command, member, cmd: `git reset --hard ${resetTarget}`,
@@ -263,6 +272,83 @@ export async function checkGitPushLanded(member, { command, remote, branch }) {
     if (!Number.isInteger(count)) return { status: 'unverified', localHead, remoteTip, why: 'could not compare the local HEAD with the remote tip' };
     if (count === 0) return { status: 'contained', localHead, remoteTip };
     return { status: 'not-contained', localHead, remoteTip, why: `${remote}/${branch} is at ${remoteTip}, which lacks ${count} commit(s) of the local HEAD ${localHead}` };
+}
+
+// Identity for the salvage commit, passed with explicit `-c` flags so the
+// commit cannot fail on a member with no configured git identity. Plain
+// tokens only (no spaces, quotes or shell metacharacters), so every salvage
+// command below reads identically under PowerShell and POSIX shells.
+const SALVAGE_GIT_IDENTITY = '-c user.name=fleet-sprint-salvage -c user.email=fleet-sprint-salvage@localhost -c commit.gpgsign=false';
+const SALVAGE_COMMIT_MESSAGE = 'fleet-salvage-uncommitted-work-before-retry-reset';
+
+/** A `git status --porcelain` v1 entry line: two status columns, a space, a path. */
+const PORCELAIN_ENTRY_RE = /^[ MADRCUT?!]{2} \S/;
+/** A `git log --oneline --no-decorate` line: abbreviated sha, a space, the subject. */
+const ONELINE_RE = /^([0-9a-f]{7,40}) (.*)$/;
+
+function outputLines(res) {
+    return String((res && res.output) || '').split('\n').map((l) => l.replace(/\r$/, ''));
+}
+
+/**
+ * Salvage step of syncMemberBefore's resetToRemoteTip mode: preserve whatever
+ * a killed/retried attempt left in `member`'s checkout BEFORE the hard reset
+ * discards it from the branch.
+ *
+ *   1. A dirty working tree (tracked changes or untracked files) is committed
+ *      on the current branch with an explicit `-c` identity, so nothing
+ *      uncommitted is lost. Hooks are skipped (--no-verify): this is a local,
+ *      never-published snapshot of partial work, and a target repo's
+ *      pre-commit hook rejecting that WIP must not block the retry.
+ *   2. If HEAD is ahead of `<remote>/<branch>`, a LOCAL branch
+ *      `fleet-salvage/<branch>/<short HEAD sha>` is pointed at HEAD. The sha
+ *      makes the name unique per salvaged state, and `git branch -f` makes the
+ *      step idempotent: a rerun with the same HEAD (e.g. after the reset
+ *      itself failed) re-points the existing ref at the same commit and
+ *      succeeds.
+ *   3. The ref and its commits are logged.
+ *
+ * The salvage ref is never pushed. Any failure throws GitSyncError so the
+ * caller never reaches the reset. Every command is a plain git argv with no
+ * shell expansion, quoting or redirection, issued via runGitStep with the
+ * explicit member_name.
+ *
+ * @returns {Promise<{ ref: string|null, commits: string[], committedDirtyTree: boolean }>}
+ */
+async function salvageBeforeReset(member, { command, log, remote, branch, maxTransientRetries, onAuthFailure, provider }) {
+    const step = async (cmd, what) => {
+        const res = await runGitStep({
+            command, member, cmd,
+            label: `G-pull salvage ${what} for '${member}'`, log, maxTransientRetries, onAuthFailure, provider,
+        });
+        if (!res.ok) {
+            throw new GitSyncError(
+                `[Sync] G-pull salvage (${what}) failed for member '${member}' before the reset onto '${remote}/${branch}'; NOT resetting, so the prior attempt's work stays checked out: ${res.error}`,
+                { member, gitOutput: res.error },
+            );
+        }
+        return res;
+    };
+
+    const status = await step('git status --porcelain', 'working-tree status read');
+    const dirty = outputLines(status).some((l) => PORCELAIN_ENTRY_RE.test(l));
+    if (dirty) {
+        await step('git add -A', 'stage uncommitted changes');
+        await step(`git ${SALVAGE_GIT_IDENTITY} commit --no-verify -m ${SALVAGE_COMMIT_MESSAGE}`, 'commit uncommitted changes');
+    }
+
+    const ahead = await step(`git log --oneline --no-decorate ${remote}/${branch}..HEAD`, 'unpublished-commit listing');
+    const commits = outputLines(ahead).map((l) => l.match(ONELINE_RE)).filter(Boolean);
+    if (commits.length === 0) {
+        return { ref: null, commits: [], committedDirtyTree: dirty };
+    }
+
+    // `git log` lists newest first, so the first entry is HEAD's short sha.
+    const ref = `fleet-salvage/${branch}/${commits[0][1]}`;
+    await step(`git branch -f ${ref} HEAD`, 'branch creation');
+    const listed = commits.map((m) => `${m[1]} ${m[2]}`);
+    log(`[Sync] G-pull salvage for member '${member}': preserved ${listed.length} unpublished commit(s)${dirty ? ' (including a commit of the uncommitted working-tree changes)' : ''} on LOCAL branch '${ref}' before resetting onto '${remote}/${branch}'. The ref is not pushed; recover with 'git cherry-pick' or 'git log ${ref}' on that member. Commits: ${listed.join('; ')}`);
+    return { ref, commits: listed, committedDirtyTree: dirty };
 }
 
 /**
