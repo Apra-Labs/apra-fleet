@@ -234,6 +234,9 @@
  *   'max_total_time' (hard total-time cap) | 'transport_error' (connection/channel failure) |
  *   'cloud_start_failed' | 'preflight_offline' | 'preflight_auth_expired' |
  *   'preflight_auth_missing'.
+ * @property {'secret_delivery_unavailable'} [storedEnvNotDelivered] - Present when the
+ *   command ran WITHOUT the member's stored credential env vars because no
+ *   owner-only file channel exists to deliver them (SFTP disabled, relay member).
  */
 
 /**
