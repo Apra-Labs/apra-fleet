@@ -53,7 +53,7 @@ test('publish phase passes the banner into the PR body as one detail line', asyn
 
 test('init: a real probe of one unverified member yields the init banner source', async () => {
     const callTool = async (tool, args) => {
-        const body = { id: `u-${args.member_name}`, type: 'local', llmProvider: args.member_name === 'b' ? 'agy' : 'claude', folder: '/w' };
+        const body = { id: `u-${args.member_name}`, type: 'local', llmProvider: args.member_name === 'b' ? 'opencode' : 'claude', folder: '/w' };
         if (args.refresh) body.fleetMcp = { state: 'available', checkedAt: 'x' };
         return { content: [{ text: JSON.stringify(body) }] };
     };

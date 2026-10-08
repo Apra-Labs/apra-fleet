@@ -390,6 +390,7 @@ role today, so always omit it or send `[]`. Example instance:
 
 ## Rules
 
+- NEVER write output schema files (e.g. planner-output.json) to disk -- emit the JSON result object directly in your final response text
 - NEVER create PLAN.md or progress.json
 - NEVER close any issues -- you only create and link
 - NEVER add scope beyond the sprint goals you were given and open bugs/features

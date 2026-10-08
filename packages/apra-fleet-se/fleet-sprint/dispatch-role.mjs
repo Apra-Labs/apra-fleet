@@ -911,7 +911,7 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
                     }
                 }
                 ctx.log(
-                    `${roleLabel} dispatch threw a non-retryable error (auth/trust/permissions): ${err.message}. Aborting ` +
+                    `${roleLabel} dispatch threw a non-retryable error (auth/trust): ${err.message}. Aborting ` +
                     "retries -- fix the member's credentials/trust/permissions and re-run."
                 );
                 // A ladder whose own failure legitimately fails the whole

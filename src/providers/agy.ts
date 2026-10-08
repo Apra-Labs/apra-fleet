@@ -638,13 +638,72 @@ function stripTranscript(text: string): string {
 const SHELL_SEQUENCE_RE = /[|;`]|&&/;
 const PLAIN_COMMAND_WORD_RE = /^[\w.+-]+$/;
 
-/** The compose_permissions grants that allow one denied call, primary first.
- *  The prefix grant Bash(<first word>:*) composes to command(<word>) plus
- *  command(regex:<word> .*) on every OS, and the regex matches the full raw
- *  line, including a $(...) argument (docs/agy-provider.md section 3), so it comes first and the
+/** The compose_permissions grants that allow one denied call, delegated to shared suggestedGrantsForDenial. */
 function suggestedGrantsFor(item: PermissionDenialItem): string[] {
   return suggestedGrantsForDenial(item);
 }
+
+function cleanArg(val: unknown): string | undefined {
+  if (typeof val !== 'string' || !val.trim()) return undefined;
+  let clean = val.trim();
+  if (clean.startsWith('"') && clean.endsWith('"') && clean.length >= 2) {
+    try { clean = JSON.parse(clean); } catch { clean = clean.slice(1, -1); }
+  }
+  return clean.trim() || undefined;
+}
+
+interface ToolCallExtractor {
+  action: string;
+  reportedMatches: readonly string[];
+  matches: (toolName: string) => boolean;
+  extractTarget: (args: Record<string, unknown>, toolName: string) => string | undefined;
+}
+
+/** Declarative registry mapping AGY tool calls to denied actions and concrete targets. */
+const TOOL_CALL_EXTRACTORS: readonly ToolCallExtractor[] = [
+  {
+    action: 'command',
+    reportedMatches: ['command', 'unsandboxed'],
+    matches: (name) => name === 'run_command' || name === 'execute_command' || name === 'bash',
+    extractTarget: (args) => cleanArg(args.CommandLine || args.command || args.cmd),
+  },
+  {
+    action: 'write_file',
+    reportedMatches: ['write_file', 'filesystem'],
+    matches: (name) => name === 'write_to_file' || name === 'replace_file_content' || name === 'edit_file',
+    extractTarget: (args) => cleanArg(args.TargetFile || args.path || args.file_path),
+  },
+  {
+    action: 'read_file',
+    reportedMatches: ['read_file', 'filesystem'],
+    matches: (name) => name === 'view_file' || name === 'read_file',
+    extractTarget: (args) => cleanArg(args.AbsolutePath || args.path || args.file_path),
+  },
+  {
+    action: 'mcp',
+    reportedMatches: ['mcp'],
+    matches: (name) => name === 'call_mcp_tool' || name.startsWith('mcp_') || name.startsWith('mcp__'),
+    extractTarget: (args, name) => {
+      if (name === 'call_mcp_tool') {
+        const s = cleanArg(args.ServerName || args.server_name);
+        const t = cleanArg(args.ToolName || args.tool_name);
+        return s && t ? `${s}/${t}` : undefined;
+      }
+      const clean = name.replace(/^mcp_+/, '');
+      const sep = clean.indexOf('__');
+      if (sep > 0) return `${clean.slice(0, sep)}/${clean.slice(sep + 2)}`;
+      const singleSep = clean.indexOf('_');
+      if (singleSep > 0) return `${clean.slice(0, singleSep)}/${clean.slice(singleSep + 1)}`;
+      return clean;
+    },
+  },
+  {
+    action: 'read_url',
+    reportedMatches: ['read_url', 'execute_url'],
+    matches: (name) => name === 'read_url_content' || name === 'read_browser_page' || name === 'search_web',
+    extractTarget: (args) => cleanArg(args.Url || args.url || args.query),
+  },
+];
 
 /**
  * Detects an agy permission denial in a dispatch's output. The JSON result is
@@ -705,6 +764,31 @@ export function detectAgyPermissionDenial(result: SSHExecResult, agentOs?: Parse
         if (m) {
           transcriptItems.push({ action: m[1], target: m[2] });
           break;
+        }
+      }
+    }
+    if (transcriptItems.length === 0 && (jsonActions.length > 0 || stderrActions.length > 0)) {
+      // When AGY auto-denies a tool in headless mode, it terminates immediately
+      // without writing an ERROR step. Extract the denied action's target from the
+      // last model turn's pending tool call in this turn that matches the reported denied actions.
+      const reported = new Set([...jsonActions, ...stderrActions]);
+      for (let i = entries.length - 1; i >= from; i--) {
+        const e = entries[i];
+        if (e && Array.isArray(e.tool_calls) && e.tool_calls.length > 0) {
+          for (const call of e.tool_calls) {
+            const name = call.name;
+            const args = (call.args || {}) as Record<string, unknown>;
+            for (const extractor of TOOL_CALL_EXTRACTORS) {
+              if (extractor.matches(name) && extractor.reportedMatches.some(r => reported.has(r))) {
+                const target = extractor.extractTarget(args, name);
+                if (target) {
+                  transcriptItems.push({ action: extractor.action, target });
+                  break;
+                }
+              }
+            }
+          }
+          if (transcriptItems.length > 0) break;
         }
       }
     }

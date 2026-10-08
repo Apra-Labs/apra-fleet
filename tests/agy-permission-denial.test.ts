@@ -93,6 +93,47 @@ describe('detectAgyPermissionDenial -- recorded agy outputs', () => {
     expect(mcp.denials).toEqual([{ action: 'mcp', target: 'apra-fleet/kb_session_prime' }]);
     expect(mcp.suggestedGrants).toEqual(['mcp__apra-fleet__kb_session_prime']);
   });
+  it('extracts denied command from pending tool_calls when headless AGY auto-denies without an ERROR step', () => {
+    const transcriptWithPendingToolCall = '{"type":"USER_INPUT","status":"DONE"}\n{"type":"MODEL_RESPONSE","source":"MODEL","status":"DONE","tool_calls":[{"name":"run_command","args":{"CommandLine":"\\"cat << \'EOF\' > output.txt\\\\n{\\\\n}\\\\nEOF\\""}}]}';
+    const r = run(`FLEET_PID:4242\n${RESULT_JSON}\n${transcriptBlock(transcriptWithPendingToolCall)}`, STDERR);
+    const d = detectAgyPermissionDenial(r)!;
+    expect(d).toBeDefined();
+    expect(d.actions).toEqual(['command']);
+    expect(d.denials[0].action).toBe('command');
+    expect(d.denials[0].target).toContain("cat << 'EOF'");
+    expect(d.suggestedGrants).toContain('Bash(cat:*)');
+  });
+
+  it('extracts denied mcp tool from call_mcp_tool when headless AGY auto-denies mcp', () => {
+    const transcript = '{"type":"USER_INPUT","status":"DONE"}\n{"type":"MODEL_RESPONSE","source":"MODEL","status":"DONE","tool_calls":[{"name":"call_mcp_tool","args":{"ServerName":"apra-fleet","ToolName":"kb_capture"}}]}';
+    const stderr = '[agy:error] a tool required the "mcp" permission that headless mode cannot prompt for, so it was auto-denied';
+    const r = run(`FLEET_PID:4242\n${RESULT_JSON.replace('"action":"command"', '"action":"mcp"')}\n${transcriptBlock(transcript)}`, stderr);
+    const d = detectAgyPermissionDenial(r)!;
+    expect(d).toBeDefined();
+    expect(d.actions).toEqual(['mcp']);
+    expect(d.denials[0]).toEqual({ action: 'mcp', target: 'apra-fleet/kb_capture' });
+    expect(d.suggestedGrants).toEqual(['mcp__apra-fleet__kb_capture']);
+  });
+
+  it('extracts denied read_url tool from read_url_content when headless AGY auto-denies read_url', () => {
+    const transcript = '{"type":"USER_INPUT","status":"DONE"}\n{"type":"MODEL_RESPONSE","source":"MODEL","status":"DONE","tool_calls":[{"name":"read_url_content","args":{"Url":"https://example.com/api"}}]}';
+    const stderr = '[agy:error] a tool required the "read_url" permission that headless mode cannot prompt for, so it was auto-denied';
+    const r = run(`FLEET_PID:4242\n${RESULT_JSON.replace('"action":"command"', '"action":"read_url"')}\n${transcriptBlock(transcript)}`, stderr);
+    const d = detectAgyPermissionDenial(r)!;
+    expect(d).toBeDefined();
+    expect(d.actions).toEqual(['read_url']);
+    expect(d.denials[0]).toEqual({ action: 'read_url', target: 'https://example.com/api' });
+  });
+
+  it('extracts denied write_file tool from write_to_file when headless AGY auto-denies write_file', () => {
+    const transcript = '{"type":"USER_INPUT","status":"DONE"}\n{"type":"MODEL_RESPONSE","source":"MODEL","status":"DONE","tool_calls":[{"name":"write_to_file","args":{"TargetFile":"C:/path/to/file.txt"}}]}';
+    const stderr = '[agy:error] a tool required the "write_file" permission that headless mode cannot prompt for, so it was auto-denied';
+    const r = run(`FLEET_PID:4242\n${RESULT_JSON.replace('"action":"command"', '"action":"write_file"')}\n${transcriptBlock(transcript)}`, stderr);
+    const d = detectAgyPermissionDenial(r)!;
+    expect(d).toBeDefined();
+    expect(d.actions).toEqual(['write_file']);
+    expect(d.denials[0]).toEqual({ action: 'write_file', target: 'C:/path/to/file.txt' });
+  });
 });
 
 describe('parseResponse attaches the denial for agy only', () => {
@@ -118,7 +159,8 @@ const mockExecCommand = vi.fn<(cmd: string, timeout?: number) => Promise<SSHExec
 vi.mock('../src/services/strategy.js', () => ({
   getStrategy: () => ({ execCommand: mockExecCommand, testConnection: vi.fn(), transferFiles: vi.fn(), close: vi.fn() }),
 }));
-vi.mock('../src/services/agent-provisioner.js', () => ({
+vi.mock('../src/services/agent-provisioner.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/services/agent-provisioner.js')>()),
   provisionAgents: vi.fn().mockResolvedValue({ pushed: [] }),
   remoteAgentsDir: vi.fn().mockReturnValue('.claude/agents/pm'),
 }));

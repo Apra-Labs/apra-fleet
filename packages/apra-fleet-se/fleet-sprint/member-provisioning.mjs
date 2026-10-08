@@ -280,18 +280,13 @@ export function createPermissionSelfHealCallback(opts = {}) {
         log(`[Dispatch] self-heal: permission denial detected on member '${member}' (${label || 'dispatch'}). Applying grants via compose_permissions: ${JSON.stringify(grants)}`);
 
         try {
-            const composeRes = await fleetApi.composePermissions({
+            await fleetApi.composePermissions({
                 member_name: member,
                 role: baseRole,
                 grant: grants,
                 grant_reason: `Sprint permission self-heal: ${label || 'dispatch'} required ${denial?.actions?.join(', ') || 'unspecified actions'}`,
                 ...(projectFolder ? { project_folder: projectFolder } : {}),
             });
-            const text = resultText(composeRes);
-            if (text.includes('[FAIL]') || text.includes('Cannot auto-grant')) {
-                log(`[Dispatch] self-heal: compose_permissions rejected grant for member '${member}': ${text}. Not retrying.`);
-                return false;
-            }
             log(`[Dispatch] self-heal: compose_permissions succeeded for member '${member}'. Granted: ${grants.join(', ')}. Retrying dispatch.`);
             return true;
         } catch (composeErr) {

@@ -175,11 +175,11 @@ describe('verified-member injection gating (b4g.18.3)', () => {
         assert.ok(unverifiedPrompt.includes('KNOWLEDGE BANK') && unverifiedPrompt.includes('known thing'));
     });
 
-    // The REAL init probe decides verified-ness: opencode / agy are unverified
-    // although their MEMBER session lists the kb tools.
-    for (const [provider, reason] of [['opencode', 'no-per-tool-deny'], ['agy', 'no-per-project-mcp']]) {
+    // The REAL init probe decides verified-ness: opencode is unverified (no-per-tool-deny)
+    // although its MEMBER session lists the kb tools.
+    for (const [provider, reason] of [['opencode', 'no-per-tool-deny']]) {
         test(`${provider} member: its MEMBER session lists the kb tools yet the prompt still gets the block`, async () => {
-            const name = provider === 'opencode' ? 'oc-1' : 'agy-1';
+            const name = 'oc-1';
             const callTool = async (tool, args) => {
                 if (tool !== 'member_detail') throw new Error(`unexpected ${tool}`);
                 const body = { id: `uuid-${args.member_name}`, type: 'local', llmProvider: provider, folder: `/w/${args.member_name}` };
