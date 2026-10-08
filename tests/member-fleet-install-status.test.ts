@@ -275,19 +275,25 @@ describe('remote member: install, self-register, verify MEMBER session', () => {
 });
 
 describe('agy and local members', () => {
-  it('local agy member -> unavailable(no-per-project-mcp), flagged unverified, nothing probed', async () => {
+  it('local agy member -> available via member session, nothing probed', async () => {
     const world = newWorld();
-    const s = await probeMemberFleetMcp(makeTestLocalAgent({ llmProvider: 'agy' }), deps(world));
-    expect(s).toMatchObject({ state: 'unavailable', reason: 'no-per-project-mcp', unverified: true });
+    const localSession = {
+      mcpClient: {
+        callTool: async () => ({ content: [{ type: 'text', text: `apra-fleet ${VERSION}` }] }),
+        listTools: async () => ({ tools: [{ name: 'version' }, { name: 'kb_query' }, { name: 'code_query' }] }),
+      },
+    };
+    const s = await probeMemberFleetMcp(makeTestLocalAgent({ llmProvider: 'agy' }), deps(world, { connect: async () => localSession as any }));
+    expect(s).toMatchObject({ state: 'available', version: VERSION });
     // Local members share the install; nothing probed.
     expect(world.execLog).toEqual([]);
   });
 
-  it('remote agy member -> installs, self-registers under orchestrator id, verifies member session, returns unavailable(no-per-project-mcp) with version', async () => {
+  it('remote agy member -> installs, self-registers under orchestrator id, verifies member session, returns available with version', async () => {
     const world = newWorld();
     const agent = makeTestAgent({ llmProvider: 'agy' });
     const s = await probeMemberFleetMcp(agent, deps(world));
-    expect(s).toMatchObject({ state: 'unavailable', reason: 'no-per-project-mcp', unverified: true, version: VERSION });
+    expect(s).toMatchObject({ state: 'available', version: VERSION });
     // Member self-registration was executed on the remote host
     const regCmd = world.execLog.find(c => c.includes('register-member'));
     expect(regCmd).toContain("'--id'");

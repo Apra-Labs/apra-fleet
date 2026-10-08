@@ -296,8 +296,8 @@ export interface PermissionDenial {
   signals: Array<'result_json' | 'stderr' | 'transcript'>;
 }
 
-const SHELL_SEQUENCE_RE = /[;&|`$]/;
-const SHELL_CHAIN_RE = /[;&|]/;
+const SHELL_SEQUENCE_RE = /[|;`]|&&/;
+const SHELL_CHAIN_RE = /[|;`]|&&|\$\(/;
 const PLAIN_COMMAND_WORD_RE = /^[a-zA-Z0-9_\-./]+$/;
 
 export function suggestedGrantsForDenial(item: PermissionDenialItem): string[] {

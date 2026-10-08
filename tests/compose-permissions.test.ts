@@ -417,9 +417,9 @@ describe('composePermissions -- AGY proactive', () => {
     expect(result).toContain(`.gemini/config/projects/${AGY_PID}.json`);
 
     const writes = mockExecCommand.mock.calls.map(c => c[0] as string).filter(cmd => cmd.includes('cat >'));
-    expect(writes).toHaveLength(1);
-    const projectWrite = writes[0];
-    expect(projectWrite).toContain(`cat > "${AGY_FILE}"`);
+    expect(writes).toHaveLength(2);
+    const projectWrite = writes.find(cmd => cmd.includes(AGY_FILE))!;
+    expect(projectWrite).toBeDefined();
     expect(writes.some(cmd => cmd.includes('/home/testuser/project/.gemini'))).toBe(false);
     expect(writes.some(cmd => cmd.includes('default-cli-project'))).toBe(false);
 

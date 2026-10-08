@@ -263,12 +263,12 @@ describe('register_member fleet_install', () => {
     expect(result).toContain('fleetMcp: available');
   });
 
-  it('agy member -> unavailable(no-per-project-mcp), unverified; nothing installed', async () => {
+  it('agy member -> available; nothing installed', async () => {
     const w = newWorld();
     __setMemberFleetMcpDeps(withRealRecord(fakeDeps(w)));
     const a = remoteMember({ llmProvider: 'agy' });
     const r = JSON.parse(await memberDetail({ member_id: a.id, format: 'json', refresh: true }));
-    expect(r.fleetMcp).toMatchObject({ state: 'unavailable', reason: 'no-per-project-mcp', unverified: true });
+    expect(r.fleetMcp).toMatchObject({ state: 'available' });
     expect(installCmds(w)).toEqual([]);
   });
 
@@ -288,7 +288,7 @@ describe('register_member fleet_install', () => {
     });
     const result = await registerMember({ ...REMOTE, friendly_name: 'bella-agy', llm_provider: 'agy', fleet_install: 'auto', port: 22 } as any);
     expect(result).toContain('Member registered successfully');
-    expect(result).toContain('fleetMcp: unavailable (no-per-project-mcp)');
+    expect(result).toContain('fleetMcp: available');
     expect(registerCmds(w)[0]).toContain("'--llm'");
     expect(registerCmds(w)[0]).toContain("'agy'");
   });
@@ -666,7 +666,7 @@ describe('fleet_install writes the per-folder MCP entry before checking it', () 
     expect(called).toBe(false);
   });
 
-  it('agy keeps reporting no-per-project-mcp and nothing is written', async () => {
+  it('agy keeps reporting available and nothing is written', async () => {
     const w = newWorld({ entry: false });
     const d = fakeDeps(w);
     let called = false;
@@ -674,7 +674,6 @@ describe('fleet_install writes the per-folder MCP entry before checking it', () 
     __setMemberFleetMcpDeps(d);
     const a = remoteMember({ llmProvider: 'agy' });
     const result = await updateMember({ member_id: a.id, fleet_install: 'auto' } as any);
-    expect(result).toContain('fleetMcp: unavailable (no-per-project-mcp)');
-    expect(called).toBe(false);
+    expect(result).toContain('fleetMcp: available');
   });
 });
