@@ -1085,8 +1085,17 @@ For other providers, these are written to that provider's skill/config directori
 
 This local install only covers the machine you run it on. Remote fleet members get their own copy of the PM agent files independently -- `register_member` and `update_member` push them on first contact, and `execute_prompt` re-checks and re-provisions any missing or stale files on first dispatch to that member each server run (so an existing member picks up new agent files after you upgrade Fleet, without needing to be re-registered). Local members are unaffected -- they share the operator's home directory above.
 
-The install also registers the MCP server (`claude mcp add apra-fleet`) and
-configures a status bar icon showing fleet member activity.
+The install also registers the MCP server and configures a status bar icon
+showing fleet member activity. The registration is written directly into the
+provider's user-scope config (for Claude, `mcpServers.apra-fleet` in
+`~/.claude.json`), not through `claude mcp add`, so the access secret never
+appears on a command line. It carries this install's access secret
+(`~/.apra-fleet/data/member-access.key`, owner-only, created on first install
+or server start) in the `X-Apra-Fleet-Member-Secret` header, and every config
+file holding it is made owner-only. The server refuses a `/mcp` request
+without the secret (HTTP 401 `access secret required`); re-run
+`apra-fleet install` to rewrite a registration that lacks it. (A `--transport
+stdio` install needs no secret and still registers with `claude mcp add`.)
 
 ### Two sprint entry points -- do not confuse them
 
@@ -1131,7 +1140,7 @@ described in `packages/apra-fleet-se/docs/cli-reference.md`).
 
 - No system-level changes -- no `/usr/local`, no PATH modification, no
   admin/sudo required.
-- No network calls beyond `claude mcp add` -- the binary stays local.
+- The MCP registration makes no network calls -- the binary stays local.
 - No background services or daemons -- the fleet server starts on demand when
   your AI coding agent connects.
 
