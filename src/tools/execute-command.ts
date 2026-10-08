@@ -339,9 +339,10 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
 
     writeStatusline(new Map([[agent.id, 'busy']]));
     try {
-      const launchResult = await strategy.execCommand(launchCmd, input.timeout_s * 1000, undefined, onPidCaptured);
+      const timeoutMs = (input.timeout_s ?? 120) * 1000;
+      const launchResult = await strategy.execCommand(launchCmd, timeoutMs, undefined, onPidCaptured);
       touchAgent(agent.id);
-      writeStatusline();
+      writeStatusline(new Map([[agent.id, 'idle']]));
       // Redact credential values from any output returned by the launch command (H2)
       const launchOutput = credentials.length > 0
         ? redactOutput(launchResult.stdout + launchResult.stderr, credentials)
@@ -350,7 +351,8 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
       const legacySuffix = legacyWarnings.length > 0 ? `\n${legacyWarnings.join('\n')}` : '';
       return `${longRunningOsWarning}Task launched: task_id=${taskId}\nUse monitor_task to track progress.${legacySuffix}`;
     } catch (err: any) {
-      writeStatusline(new Map([[agent.id, 'offline']]));
+      const isOffline = agent.agentType !== 'local' && !!(err.message && /ssh|network|econnrefused|ehostunreach|connection timed out/i.test(err.message));
+      writeStatusline(new Map([[agent.id, isOffline ? 'offline' : 'idle']]));
       return `Failed to launch task on "${agent.friendlyName}": ${err.message}`;
     }
   }
@@ -386,7 +388,8 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
       logWarn('execute_command', 'stored env vars not delivered (secret_delivery_unavailable)', agent);
     }
     stagedEnvPath = staged.path;
-    const result = await strategy.execCommand(staged.prefix + wrapped, input.timeout_s * 1000, undefined, onPidCaptured);
+    const timeoutMs = (input.timeout_s ?? 120) * 1000;
+    const result = await strategy.execCommand(staged.prefix + wrapped, timeoutMs, undefined, onPidCaptured);
     stagedEnvConsumed = result.code === 0;
     touchAgent(agent.id); // T7: idle manager resets its timer via touchAgent
 
@@ -403,7 +406,7 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
     const redactedStdout = credentials.length > 0 ? redactOutput(result.stdout ?? '', credentials) : (result.stdout ?? '');
     const redactedStderr = credentials.length > 0 ? redactOutput(result.stderr ?? '', credentials) : (result.stderr ?? '');
 
-    writeStatusline();
+    writeStatusline(new Map([[agent.id, 'idle']]));
 
     // Log command output under a dedicated tag so `watch` can surface it (the
     // fleet log is watch's source; short-command stdout is otherwise not
@@ -427,7 +430,8 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
       structuredContent: { exitCode: result.code, stdout: redactedStdout, stderr: redactedStderr, ...(storedEnvNotDelivered ? { storedEnvNotDelivered: 'secret_delivery_unavailable' as const } : {}) },
     };
   } catch (err: any) {
-    writeStatusline(new Map([[agent.id, 'offline']]));
+    const isOffline = agent.agentType !== 'local' && !!(err.message && /ssh|network|econnrefused|ehostunreach|connection timed out/i.test(err.message));
+    writeStatusline(new Map([[agent.id, isOffline ? 'offline' : 'idle']]));
     scope.abort(err.message);
     return `Failed to execute command on "${agent.friendlyName}": ${err.message}`;
   } finally {

@@ -128,6 +128,7 @@ export class WindowsCommands implements OsCommands {
   // --- Process check ---
 
   fleetProcessCheck(folder: string, sessionId?: string, processName?: string): string {
+    if (processName === '') return "echo 'idle'";
     const pname = processName ?? 'claude';
     const escapedFolder = escapeWindowsArg(folder.replace(/\\/g, '\\\\'));
     const sessionFilter = sessionId ? ` -or $_.CommandLine -match '${escapeWindowsArg(sanitizeSessionId(sessionId))}'` : '';

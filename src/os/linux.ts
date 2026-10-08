@@ -96,6 +96,7 @@ export class LinuxCommands implements OsCommands {
   // --- Process check ---
 
   fleetProcessCheck(folder: string, sessionId?: string, processName?: string): string {
+    if (processName === '') return 'echo "idle"';
     const pname = processName ?? 'claude';
     // Use bracket trick plus boundaries to avoid pgrep matching its own grep process
     // or folder names that contain the process name as a substring (e.g. fleet-agy).
