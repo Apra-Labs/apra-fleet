@@ -85,6 +85,8 @@ import {
 import {
     createMemberSessionGuard, createUnattendedAutoProvisioner,
     createDeployPermissionsProvisioner, stageCommandBodyMemberSide,
+    createPermissionConfigPreflight,
+    createPermissionDenialHeal, permissionLedgerFolder,
 } from './member-provisioning.mjs';
 import {
     parseOwnerRepoFromRemoteUrl, parseRepoScopeFromRemoteUrl, vcsCredentialLabelForProvider,
@@ -160,7 +162,7 @@ import { runDevelopPhase } from './phases/develop.mjs';
 // around Deploy, and the dashboard/still-open loop control after Review,
 // stayed here.
 import { runReviewPhase } from './phases/review.mjs';
-import { runDeployPhase } from './phases/deploy.mjs';
+import { runDeployPhase, latestDeployFailure, formatDeployFailureReason, DEPLOY_RETRY_CYCLE_LIMIT } from './phases/deploy.mjs';
 // apra-fleet-3swo.6.8: the next two phase() boundaries -- the per-cycle Integ
 // Test and the Re-Review that Cycle Evaluation dispatches when the goal-
 // priority count already reads 0 but no review ran this cycle. Integ Test is
@@ -242,6 +244,9 @@ import {
     // moved here from runner.js; imported back and re-exported (facade region
     // below) so no importer of runner.js is edited by the move.
     parseBdJson, goalPriorityMax, partitionByGoalMembership,
+    // Develop-dispatch goal filter: below-goal ready leaves are excluded
+    // unless they block in-goal work or the sprint already worked on them.
+    partitionReadyByGoal, formatBelowGoalExclusionLog,
     // apra-fleet-rp7a.1: the deferred split the Cycle Evaluation completion
     // math and phases/final-review.mjs's closing count BOTH apply, so the two
     // cannot drift apart. See its own doc comment for why 'deferred' -- and
@@ -1206,7 +1211,9 @@ async function runSprintCycle(context) {
     const ensureVcsAuthFresh = context.ensureVcsAuthFresh ?? (
         (args && typeof args.callTool === 'function')
             ? createVcsAuthPreflightCallback({ callTool: args.callTool, command, log, azdevopsPatSecretName: validated.azdevopsPatSecretName })
-            : async () => {}
+            : async (member) => {
+                log(`[Sync] preflight: provision_vcs_auth skipped for member '${member}': no callTool wired -- no proactive preflight (the reactive self-heal is the only auth recovery).`);
+            }
     );
 
     // Sync-step "does this push touch .github/workflows without the
@@ -1655,6 +1662,13 @@ async function runSprintCycle(context) {
     // VCS credential ensured first -- and re-verified; failing that, the
     // sprint stops with BEADS_SETUP_FAILED. The set-up commands go through
     // command() above, so noteMemberCommand() sees them.
+    // Member-bound SE command builder per member OS/shell, shared by the two
+    // member preflights below.
+    const memberSeCommands = async (member) => getSeCommands(await resolveMemberTarget({
+        fleetApi: (args && typeof args.callTool === 'function') ? sprintScopedFleetApi({ callTool: args.callTool, log }) : undefined,
+        member,
+        log,
+    }));
     const beadsSetupMembers = [...new Set([
         backlogMember,
         ...BEADS_READING_ROLES.flatMap((role) => getMembersForRole(role) || []),
@@ -1674,12 +1688,61 @@ async function runSprintCycle(context) {
         onAuthFailure,
         // Built per member OS/shell (member_detail via resolveMemberTarget,
         // which degrades to POSIX and logs when the member cannot be resolved).
-        memberShell: async (member) => getSeCommands(await resolveMemberTarget({
-            fleetApi: (args && typeof args.callTool === 'function') ? sprintScopedFleetApi({ callTool: args.callTool, log }) : undefined,
-            member,
-            log,
-        })),
+        memberShell: memberSeCommands,
     });
+
+    // Member permission-config preflight: every dispatch member's composed
+    // per-folder config (its provider's permissionConfigPaths, reported by
+    // member_detail) must be in its work folder before any dispatch. A
+    // re-clone / `git clean -xdf` / fresh worktree drops it while member init
+    // still reports OK, and the role's tool calls (bd included) are then
+    // refused as "requires approval". Missing -> one compose_permissions call
+    // for the member's role and a re-probe; still missing or compose failing
+    // -> MemberPermissionConfigError naming member, file and fix. Present
+    // configs are untouched. Same three-way precedence as
+    // ensureDeployPermissions below: an injected
+    // `context.verifyPermissionConfigs` (tests), else the real
+    // compose_permissions-backed check from `args.callTool`, else a no-op when
+    // there is no fleet connection to compose through.
+    const permissionConfigMembers = new Map();
+    for (const role of ROLES) {
+        for (const m of (getMembersForRole(role) || [])) {
+            if (!m) continue;
+            if (!permissionConfigMembers.has(m)) permissionConfigMembers.set(m, []);
+            const roles = permissionConfigMembers.get(m);
+            if (!roles.includes(role)) roles.push(role);
+        }
+    }
+    // Per-member compose_permissions ledger folder (project_folder): grants
+    // the permission heal adds are recorded there, and every proactive compose
+    // of the member passes it, so the next sprint keeps them.
+    const ledgerFolderFor = (m) => permissionLedgerFolder(m, args && args.permissionLedgerDir);
+    const verifyPermissionConfigs = context.verifyPermissionConfigs ?? (
+        (args && typeof args.callTool === 'function')
+            ? createPermissionConfigPreflight({ callTool: args.callTool, command, log, memberShell: memberSeCommands, ledgerFolderFor })
+            : async () => ({ composed: [] })
+    );
+    await verifyPermissionConfigs(permissionConfigMembers);
+
+    // Mid-sprint counterpart of the preflight above: a dispatch whose member
+    // CLI refused tool calls for lack of a grant (execute_prompt reason
+    // 'permission_denied') is healed PROGRESSIVELY by the dispatch engine
+    // through this hook -- each refusal gets the missing grant within the
+    // member's composed policy and a retry, until no progress is possible;
+    // see createPermissionDenialHeal. Same precedence: an injected
+    // `context.onPermissionDenied` (tests), else the real compose_permissions
+    // heal from `args.callTool`, else none (the engine then fails the sprint
+    // on the first refusal, naming member, actions and fix).
+    const onPermissionDenied = context.onPermissionDenied ?? (
+        (args && typeof args.callTool === 'function')
+            ? createPermissionDenialHeal({
+                callTool: args.callTool,
+                log,
+                memberRoles: (m) => permissionConfigMembers.get(m) || [],
+                ledgerFolderFor,
+            })
+            : undefined
+    );
 
     // Self-heals deploy.md's declared Permissions onto the deployer /
     // integ-test-runner / regression-test-runner member before each of
@@ -1770,6 +1833,8 @@ async function runSprintCycle(context) {
         // apra-fleet-hzeb.4.2: the usage-limit pause/resume/re-probe hook the
         // engine arms for a role whose retry.usageLimitPause is set.
         onUsageLimit,
+        // The one bounded heal for a 'permission_denied' dispatch.
+        onPermissionDenied,
         fixedRoleTier: FIXED_ROLE_TIER,
         budgets: {
             DISPATCH_TIMEOUT_S,
@@ -2537,6 +2602,36 @@ async function runSprintCycle(context) {
     // priority", NOT "bd list --ready returned []".
     const goalMax = goalPriorityMax(validated.goal);
 
+    // Every bead id this sprint has handed to a doer (dispatched; a doer's
+    // close is a subset). The reviewer-reopen goal-scope guard never defers a
+    // bead in this set -- the sprint's own commits for it are on the branch,
+    // so a reopen of it is the sprint repairing its own work (see
+    // isDeferredScopeReopen in beads-transitions.mjs). Passed explicitly to
+    // every verdict site: Review, Re-Review and Final Review.
+    const workedOnBeadIds = new Set();
+
+    // The develop loop's ready set: readyLeafBeads() minus below-goal beads
+    // that neither (transitively) block an open in-goal bead nor were already
+    // dispatched by this sprint (see partitionReadyByGoal in beads-scope.mjs).
+    // Used by every Develop/Review-loop readiness read -- the per-cycle seed,
+    // the per-round streak input and the round-loop "still open" check -- so
+    // an excluded bead can neither be dispatched nor keep the loop spinning.
+    // The completion gate needs no change: it already counts only beads at or
+    // above goal priority, so an excluded bead never holds the sprint open.
+    // Pre-sprint validation keeps the unfiltered readyLeafBeads(): its
+    // deadlock diagnosis is about the graph, not about goal membership.
+    const loggedBelowGoalExclusions = new Set();
+    async function dispatchableReadyLeafBeads() {
+        const [ready, scopeAll] = await Promise.all([readyLeafBeads(), bdListScoped('')]);
+        const { dispatchable, excluded } = partitionReadyByGoal(ready, scopeAll, validated.goal, { workedOnIds: workedOnBeadIds });
+        const fresh = excluded.filter((e) => !loggedBelowGoalExclusions.has(e.id));
+        if (fresh.length > 0) {
+            for (const e of fresh) loggedBelowGoalExclusions.add(e.id);
+            log(formatBelowGoalExclusionLog(fresh, validated.goal));
+        }
+        return dispatchable;
+    }
+
     // Stall detection: abort with a typed StalledSprintError after two
     // consecutive cycles that made no forward progress, rather than burning
     // every remaining cycle on a develop/review loop that keeps reopening and
@@ -2609,6 +2704,14 @@ async function runSprintCycle(context) {
     // evidence-based prompt below -- never silently swallowed.
     const deployFailures = [];
     const integFailures = [];
+    // apra-fleet-b4g.102.1: the LATEST cycle's deploy outcome ({cycle, notes}
+    // when deploy.md exists and that cycle's deploy failed, else null), and
+    // how many consecutive cycles ended otherwise-satisfied but deploy-blocked.
+    // Cycle Evaluation never exits as satisfied while lastDeployFailure is
+    // set, and Final Review forces FAIL if it is still set when the loop ends
+    // (see the deploy-failure verdict gate in ./phases/deploy.mjs).
+    let lastDeployFailure = null;
+    let deployBlockedCycles = 0;
 
     // apra-fleet-nwh.1: integ-test-runner's own tracked spend, broken out of
     // the harvester's cost block so it is never silently folded into
@@ -2737,7 +2840,7 @@ async function runSprintCycle(context) {
         // filter exists to stop NON-target parents/bugs from wasting doer
         // dispatches, never to make a sprint's own target unreachable.
         const targetIssueSet = new Set(targetIssues);
-        let readyBeads = (await readyLeafBeads())
+        let readyBeads = (await dispatchableReadyLeafBeads())
             .filter((b) => targetIssueSet.has(b.id) || !b.issue_type || b.issue_type === 'task')
             .slice().sort((a, b) => a.title.localeCompare(b.title) || a.id.localeCompare(b.id));
 
@@ -2758,7 +2861,7 @@ async function runSprintCycle(context) {
             });
             if (cycleReclaimedIds.length > 0) {
                 log(`Cycle ${cycle} self-heal: reclaimed ${cycleReclaimedIds.length} orphaned bead(s), re-checking readiness: ${cycleReclaimedIds.join(', ')}.`);
-                readyBeads = (await readyLeafBeads())
+                readyBeads = (await dispatchableReadyLeafBeads())
                     .filter((b) => targetIssueSet.has(b.id) || !b.issue_type || b.issue_type === 'task')
                     .slice().sort((a, b) => a.title.localeCompare(b.title) || a.id.localeCompare(b.id));
             }
@@ -2840,7 +2943,7 @@ async function runSprintCycle(context) {
             // after the plan phase (a reviewer newTask, an out-of-band filing)
             // would otherwise land in a doer streak and burn a dispatch on a
             // contract-bound refusal. Same target-issue exemption as above.
-            const currentReadyAll = (await readyLeafBeads())
+            const currentReadyAll = (await dispatchableReadyLeafBeads())
                 .filter((b) => targetIssueSet.has(b.id) || !b.issue_type || b.issue_type === 'task')
                 .slice().sort((a, b) => a.title.localeCompare(b.title) || a.id.localeCompare(b.id));
 
@@ -2936,6 +3039,9 @@ async function runSprintCycle(context) {
                 normalizeTierToken,
                 kbQueryTerms,
             });
+            for (const o of streakOutcomes) {
+                for (const id of (o.beadIds || [])) workedOnBeadIds.add(id);
+            }
 
             // --- Review: self-contained, schema-validated, orchestrator-applied ---
             // The phase body lives in ./phases/review.mjs
@@ -2957,6 +3063,7 @@ async function runSprintCycle(context) {
                 devRounds, streakOutcomes, readyTitleById,
                 lastReviewVerdict, reviewedThisCycle, pendingRejectedNewTasks,
                 dispatchReview, bdListScoped, goalMax, recordReopen,
+                workedOnIds: workedOnBeadIds,
                 childIdAllocator, sprintMutexId,
                 computeChildFloor, createChildBeadWithAllocatedId,
                 trackRejectedNewTaskForResurfacing, clearResubmittedNewTask,
@@ -2971,7 +3078,7 @@ async function runSprintCycle(context) {
             // must not read as "work still pending" here -- it is never a
             // dispatchable leaf, so it must not keep this loop from
             // organically completing (apra-fleet-66u.1/66u.2 rework).
-            const stillOpen = await readyLeafBeads();
+            const stillOpen = await dispatchableReadyLeafBeads();
             lastStillOpenCount = stillOpen.length;  // Track for post-loop round-cap detection
 
             if (stillOpen.length === 0) {
@@ -3021,6 +3128,8 @@ async function runSprintCycle(context) {
         } else {
             log('Skipping Deploy Phase (no deploy.md found, or the probe itself failed -- see prior log line)');
         }
+        lastDeployFailure = latestDeployFailure({ hasDeploy, deployedThisCycle, cycle, deployFailures });
+        if (!lastDeployFailure) deployBlockedCycles = 0;
 
         // apra-fleet-66u.2: declared here, OUTSIDE the `if (hasPlaybook &&
         // deployedThisCycle)` block below, so Cycle Evaluation's
@@ -3169,7 +3278,13 @@ async function runSprintCycle(context) {
             staleCycles++;
         }
 
-        if (staleCycles >= STALL_CYCLE_LIMIT) {
+        // apra-fleet-b4g.102.1: a cycle spent re-attempting a failed deploy
+        // after the work itself was already satisfied is not a stall -- it is
+        // bounded separately (DEPLOY_RETRY_CYCLE_LIMIT and maxCycles) by the
+        // deploy-blocked exit below, which ends the sprint with a FAIL naming
+        // the deploy failure instead of a SPRINT_STALLED abort that would not.
+        const waitingOnDeployRetry = deployBlockedCycles > 0 && lastDeployFailure !== null && openAtGoal.length === 0;
+        if (staleCycles >= STALL_CYCLE_LIMIT && !waitingOnDeployRetry) {
             const thrashIds = thrashingBeadIds();
             // apra-fleet-mjo: counts alone ("history: [9, 14, 14, 14]") do not
             // tell an operator WHAT is holding the sprint open, which is
@@ -3258,6 +3373,7 @@ async function runSprintCycle(context) {
                 rejectedNewTasks,
                 lastReviewVerdict, reviewedThisCycle, pendingRejectedNewTasks,
                 dispatchReview, bdListScoped, goalMax, recordReopen,
+                workedOnIds: workedOnBeadIds,
                 childIdAllocator, sprintMutexId,
                 computeChildFloor, createChildBeadWithAllocatedId,
                 trackRejectedNewTaskForResurfacing, clearResubmittedNewTask,
@@ -3313,13 +3429,35 @@ async function runSprintCycle(context) {
         // open/in_progress/blocked can never satisfy `.every()` here, so this
         // never fires for that case and every gate above/below runs exactly
         // as before.
-        if (targetIssues.length > 0 && targetIssues.every((id) => closedIdsNow.has(id))) {
+        // apra-fleet-b4g.102.1: neither "satisfied" exit below may fire while
+        // the LATEST cycle's deploy failed (Integration Test was skipped, so
+        // nothing verified the deployed build). Re-attempt the deploy in
+        // another cycle while the budget allows; otherwise exit to the finish
+        // phases, where Final Review forces a FAIL that names the failure. A
+        // sprint with no deploy.md never sets lastDeployFailure.
+        const rootsAllClosed = targetIssues.length > 0 && targetIssues.every((id) => closedIdsNow.has(id));
+        const goalSatisfied = openAtGoal.length === 0 && lastReviewVerdict === 'APPROVED' && stillOpenVerifyIds.length === 0;
+        if ((rootsAllClosed || goalSatisfied) && lastDeployFailure) {
+            deployBlockedCycles++;
+            const which = rootsAllClosed ? 'every configured sprint root/target bead is closed' : `goal priority ${validated.goal} (<=${goalMax}) is otherwise satisfied`;
+            if (cycle < MAX_CYCLES && deployBlockedCycles < DEPLOY_RETRY_CYCLE_LIMIT) {
+                log(`Cycle ${cycle}: ${which}, but NOT exiting as satisfied -- ${formatDeployFailureReason(lastDeployFailure)}. Re-attempting deploy next cycle (deploy-blocked cycle ${deployBlockedCycles} of at most ${DEPLOY_RETRY_CYCLE_LIMIT}).`);
+                cycle++;
+                endGroup();
+                continue;
+            }
+            log(`Cycle ${cycle}: ${which}, but the deploy re-attempt budget is exhausted (${deployBlockedCycles} consecutive deploy-blocked cycle(s), maxCycles ${MAX_CYCLES}) -- ${formatDeployFailureReason(lastDeployFailure)}. Exiting cycle loop; the sprint verdict will be FAIL.`);
+            endGroup();
+            break;
+        }
+
+        if (rootsAllClosed) {
             log(`Cycle ${cycle}: every configured sprint root/target bead is already closed (${targetIssues.join(', ')}) -- no further cycle can make progress. Exiting cycle loop straight into the finish phases.`);
             endGroup();
             break;
         }
 
-        if (openAtGoal.length === 0 && lastReviewVerdict === 'APPROVED' && stillOpenVerifyIds.length === 0) {
+        if (goalSatisfied) {
             // apra-fleet-rp7a.1: the deferred enumeration rides on the EXIT
             // line specifically, because this is the line that says the sprint
             // is finished -- a scope whose only remaining not-done beads were
@@ -3384,7 +3522,9 @@ async function runSprintCycle(context) {
         args, validated, targetIssues, backlogMember, finalCycleLabel, sprintState,
         gitSync,
         deployFailures, integFailures, rejectedNewTasks, verifyEverIds,
+        lastDeployFailure,
         bdListScoped, decomposedParentIds, goalMax, NOT_DONE_STATUSES,
+        workedOnIds: workedOnBeadIds,
         kbPriming, kbWork, kbInjection, kbSprintContext, getMemberForRole,
         childIdAllocator, sprintMutexId, resolveSettleShell,
         computeChildFloor, createChildBeadWithAllocatedId, sanitizePrText,

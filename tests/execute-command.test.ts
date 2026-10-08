@@ -89,14 +89,49 @@ describe('executeCommand', () => {
     expect(structuredContent).toEqual({ exitCode: 127, stdout: '', stderr: 'command not found' });
   });
 
-  it('returns error message on exception', async () => {
+  it('returns an isError transport_error result on a transport exception', async () => {
     const member = makeTestAgent({ friendlyName: 'err-member' });
     addAgent(member);
-    mockExecCommand.mockRejectedValue(new Error('connection timeout'));
+    mockExecCommand.mockRejectedValue(new Error('connect ECONNREFUSED 10.0.0.5:22'));
 
     const result = await executeCommand({ member_id: member.id, command: 'echo hi', timeout_s: 5 });
-    expect(result).toContain('Failed to execute command');
-    expect(result).toContain('connection timeout');
+    expect(typeof result).not.toBe('string');
+    const { text, structuredContent } = result as Exclude<typeof result, string>;
+    expect(text).toContain('Failed to execute command on "err-member"');
+    expect(text).toContain('ECONNREFUSED');
+    expect(text).not.toContain('Exit code: 0');
+    expect(structuredContent).toEqual({
+      isError: true,
+      reason: 'transport_error',
+      exitCode: -1,
+      stdout: '',
+      stderr: 'connect ECONNREFUSED 10.0.0.5:22',
+    });
+  });
+
+  it('returns an isError timeout result when the exec hits the inactivity timeout', async () => {
+    const member = makeTestAgent({ friendlyName: 'slow-member' });
+    addAgent(member);
+    mockExecCommand.mockRejectedValue(new Error('Command timed out after 600000ms of inactivity'));
+
+    const result = await executeCommand({ member_id: member.id, command: 'bd dolt push', timeout_s: 600 });
+    expect(typeof result).not.toBe('string');
+    const { text, structuredContent } = result as Exclude<typeof result, string>;
+    expect(text).toContain('Command timed out after 600000ms of inactivity');
+    expect(structuredContent?.isError).toBe(true);
+    expect(structuredContent?.reason).toBe('timeout');
+    expect(structuredContent?.exitCode).toBe(-1);
+  });
+
+  it('classifies a max-total-time rejection as max_total_time', async () => {
+    const member = makeTestAgent({ friendlyName: 'cap-member' });
+    addAgent(member);
+    mockExecCommand.mockRejectedValue(new Error('Command exceeded max total time of 5000ms'));
+
+    const result = await executeCommand({ member_id: member.id, command: 'sleep 99', timeout_s: 5 });
+    const { structuredContent } = result as Exclude<typeof result, string>;
+    expect(structuredContent?.isError).toBe(true);
+    expect(structuredContent?.reason).toBe('max_total_time');
   });
 
   it('returns member not found for invalid ID', async () => {

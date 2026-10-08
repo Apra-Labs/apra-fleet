@@ -1,6 +1,6 @@
 import { escapeForDoubleQuotes } from '../utils/shell-escape.js';
 import { randomBytes } from 'node:crypto';
-import type { ProviderAdapter, PromptOptions, ParsedResponse, UsageLimitSignal, MemberMcpSyncContext, MemberMcpSyncResult, WorkspaceTrustExecFn, WorkspaceTrustTransport, MemberSecretFileChannel, EnsureWorkspaceTrustedResult, SessionIdStrategy, ExecTimeoutSource, TargetOS } from './provider.js';
+import type { ProviderAdapter, PromptOptions, ParsedResponse, ParseResponseContext, UsageLimitSignal, MemberMcpSyncContext, MemberMcpSyncResult, WorkspaceTrustExecFn, WorkspaceTrustTransport, MemberSecretFileChannel, EnsureWorkspaceTrustedResult, SessionIdStrategy, ExecTimeoutSource, TargetOS } from './provider.js';
 import { buildResumeFlag, buildSessionIdFlag, buildForkFlag, encodeClaudeProjectDir, joinForOS, resolveHomeDir, guessedUsageLimitSignal } from './provider.js';
 import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
@@ -21,7 +21,56 @@ import {
   LEGACY_MEMBER_MCP_SERVER_NAME,
   MEMBER_MCP_SERVER_NAME,
 } from '../services/member-config-io.js';
+import { detectClaudePermissionDenial } from './claude-permission-denial.js';
 
+
+/**
+ * Whether Claude Code's auto permission mode works with this model. Per the
+ * Claude Code permission-modes docs, auto needs Opus 4.6+, Sonnet 4.6+ or
+ * Fable; "Older models, including ... Haiku ... are not supported on any
+ * provider", and such a session silently starts in Manual (default) mode,
+ * which in a headless -p dispatch denies even Edit/Write in the work folder
+ * (observed: every haiku dispatch on an unattended=auto member recorded
+ * permissionMode "default"). Undefined model = the CLI's default model, which
+ * is a supported one.
+ */
+export function claudeModelSupportsAuto(model: string | undefined): boolean {
+  if (!model) return true;
+  const m = model.toLowerCase();
+  if (m.includes('haiku')) return false;
+  if (/claude-3/.test(m)) return false;
+  const v = /claude-(?:sonnet|opus)-(\d+)(?:[-.](\d+))?/.exec(m);
+  if (v) {
+    const major = Number(v[1]);
+    const minor = v[2] !== undefined && v[2].length <= 2 ? Number(v[2]) : 0;
+    if (major < 4) return false;
+    if (major === 4 && minor < 6) return false;
+  }
+  return true;
+}
+
+/** The permission mode a Claude dispatch's session runs in. */
+export type ClaudePermissionMode = 'auto' | 'acceptEdits' | 'bypassPermissions';
+
+/**
+ * The ONE place that decides a Claude session's permission mode from the
+ * member's unattended setting and the dispatch's model: both the CLI flag
+ * (resolvePermissionFlag) and the treatment of a denial (parseResponse) read
+ * it. 'auto' on a model without auto support falls back to acceptEdits rather
+ * than letting the CLI start the session in the stricter Manual mode.
+ *
+ * Residual gap: a CLI that drops auto for another reason (a CLI older than
+ * 2.1.281, managed disableAutoMode, a classifier outage) still counts as auto
+ * here. That errs toward never granting on its denials -- the safe direction.
+ */
+export function claudePermissionMode(
+  unattended: false | 'auto' | 'dangerous' | undefined,
+  model: string | undefined,
+): ClaudePermissionMode {
+  if (unattended === 'dangerous') return 'bypassPermissions';
+  if (unattended === 'auto' && claudeModelSupportsAuto(model)) return 'auto';
+  return 'acceptEdits';
+}
 
 // apra-fleet-iuc.1 / apra-fleet-ekm: reliable max_turns detection in the CLI
 // transcript. A max_turns-terminated session must ALWAYS classify as max_turns,
@@ -234,7 +283,7 @@ export class ClaudeProvider implements ProviderAdapter {
     } else if (sessionId) {
       cmd += ` ${buildSessionIdFlag(sessionId)}`;
     }
-    const permFlag = this.resolvePermissionFlag(unattended);
+    const permFlag = this.resolvePermissionFlag(unattended, model);
     if (permFlag) cmd += ` ${permFlag}`;
     if (model) {
       cmd += ` --model "${escapeDoubleQuoted(model)}"`;
@@ -282,9 +331,12 @@ export class ClaudeProvider implements ProviderAdapter {
     return '--permission-mode acceptEdits';
   }
 
-  resolvePermissionFlag(unattended: false | 'auto' | 'dangerous' | undefined): string {
-    if (unattended === 'auto') return '--permission-mode auto';
-    if (unattended === 'dangerous') return '--dangerously-skip-permissions';
+  resolvePermissionFlag(unattended: false | 'auto' | 'dangerous' | undefined, model?: string): string {
+    // One mode function decides both the flag and how a denial from the
+    // session is treated (parseResponse), so the two cannot drift apart.
+    const mode = claudePermissionMode(unattended, model);
+    if (mode === 'auto') return '--permission-mode auto';
+    if (mode === 'bypassPermissions') return '--dangerously-skip-permissions';
     // apra-fleet-eft.65.1: interactive-session parity for the work folder.
     // A headless `-p` dispatch cannot present a permission prompt, so with no
     // permission-mode flag the CLI HARD-BLOCKS Edit/Write of a brand-new file
@@ -297,13 +349,53 @@ export class ClaudeProvider implements ProviderAdapter {
     return this.workspaceEditPermissionFlag() ?? '';
   }
 
-  parseResponse(result: SSHExecResult): ParsedResponse {
+  /** Parses the run's result and, when Claude refused tool calls (a
+   *  non-empty permission_denials on the result event), attaches the denial
+   *  with the session's permission mode. In acceptEdits mode a refusal is a
+   *  missing allow rule (healable by a grant); in auto or bypass mode it comes
+   *  from the safety classifier or a deny rule and is never healable
+   *  (execute_prompt reports it as a warning when the reply is complete). */
+  parseResponse(result: SSHExecResult, ctx?: ParseResponseContext): ParsedResponse {
+    const parsed = this.parseResult(result);
+    const denial = detectClaudePermissionDenial(result.stdout);
+    if (denial) {
+      const mode = claudePermissionMode(ctx?.unattended, ctx?.model);
+      denial.permissionMode = mode;
+      denial.healable = mode === 'acceptEdits';
+      if (!denial.healable) {
+        // A classifier or deny-rule refusal must never come with a
+        // ready-to-paste grant: blank every suggestion, overall and per call.
+        denial.suggestedGrants = [];
+        for (const d of denial.denials) d.suggestedGrants = [];
+        const what = denial.denials.map(d => (d.target ? `${d.action} "${d.target}"` : d.action)).join(', ');
+        denial.hint = `claude (${mode} mode) refused ${what}: in this mode a refusal comes from the safety classifier or a deny rule, not from a missing grant, so no grant is ever added for it automatically. Review the refused calls; change the member's permissions by hand only if the action is really intended.`;
+      }
+      parsed.permissionDenial = denial;
+    }
+    return parsed;
+  }
+
+  private parseResult(result: SSHExecResult): ParsedResponse {
     const raw = result.stdout.trim();
 
+    // Claude reports prompt-cache traffic in two fields separate from (not
+    // included in) input_tokens; both are billed, so they are carried through
+    // (0 when the CLI omits them) for cost/budget accounting downstream.
+    const cacheCount = (n: unknown): number => (typeof n === 'number' && Number.isFinite(n) && n > 0 ? n : 0);
     const extractUsage = (u: any) =>
       u && typeof u.input_tokens === 'number' && typeof u.output_tokens === 'number'
-        ? { input_tokens: u.input_tokens, output_tokens: u.output_tokens }
+        ? {
+          input_tokens: u.input_tokens,
+          output_tokens: u.output_tokens,
+          cache_read_input_tokens: cacheCount(u.cache_read_input_tokens),
+          cache_creation_input_tokens: cacheCount(u.cache_creation_input_tokens),
+        }
         : undefined;
+    // The CLI's own cost figure (list price, model- and cache-TTL-correct).
+    // CUMULATIVE for the session across --resume; execute_prompt turns it into
+    // the dispatch's delta (services/session-cost.ts).
+    const extractCost = (c: unknown): number | undefined =>
+      (typeof c === 'number' && Number.isFinite(c) && c >= 0 ? c : undefined);
 
     // apra-fleet-eft.28.6: first non-blank string wins. Used so an EMPTY
     // (present-but-blank) result field on the `type:result` event falls back to
@@ -349,6 +441,7 @@ export class ClaudeProvider implements ProviderAdapter {
         isError: obj.is_error === true || obj.subtype === 'error' || result.code !== 0,
         raw,
         usage: extractUsage(obj.usage),
+        sessionCostUsd: extractCost(obj.total_cost_usd),
         subtype: obj.subtype,
         terminalReason: obj.terminal_reason ?? (maxTurns ? 'max_turns' : undefined),
         apiErrorStatus: extractApiErrorStatus(obj),
@@ -376,6 +469,7 @@ export class ClaudeProvider implements ProviderAdapter {
           isError: parsed.is_error === true || result.code !== 0,
           raw,
           usage: extractUsage(parsed.usage),
+          sessionCostUsd: extractCost(parsed.total_cost_usd),
           subtype: parsed.subtype,
           terminalReason: parsed.terminal_reason ?? (maxTurns ? 'max_turns' : undefined),
           apiErrorStatus: extractApiErrorStatus(parsed),

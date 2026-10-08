@@ -201,6 +201,70 @@ export async function syncMemberBefore(member, opts = {}) {
     return { ok: true, member };
 }
 
+// G-push landed check. `git push` exiting 0 is not proof the shared branch
+// now carries this member's work (a push reported as success by a transport
+// that never delivered it was read as landed). After a push reports success,
+// confirm the remote branch CONTAINS the local HEAD: equal tips, or -- when
+// another writer pushed on top of ours in the meantime -- a remote tip that
+// has our HEAD as an ancestor. Only positive evidence that the branch lacks
+// our HEAD fails the push; an inconclusive read (unparseable output, a failed
+// fetch, no branch name) keeps the pre-check behavior and is logged.
+
+/** Refs/remotes safe to place in a command string on any member shell. */
+const SAFE_GIT_NAME_RE = /^[A-Za-z0-9._/-]+$/;
+const GIT_SHA_RE = /^[0-9a-f]{40,64}$/i;
+
+function outputOf(res) {
+    if (!res || res.ok === false) return null;
+    return String((typeof res === 'object' ? res.output : res) ?? '');
+}
+
+/**
+ * Does `remote`/`branch` contain `member`'s local HEAD? Never throws.
+ *
+ * @param {string} member
+ * @param {{ command: Function, remote: string, branch?: string }} opts
+ * @returns {Promise<{ status: 'contained'|'not-contained'|'unverified', why?: string, localHead?: string, remoteTip?: string }>}
+ */
+export async function checkGitPushLanded(member, { command, remote, branch }) {
+    if (!branch) return { status: 'unverified', why: 'no branch name to check the push against' };
+    if (!SAFE_GIT_NAME_RE.test(branch) || !SAFE_GIT_NAME_RE.test(remote)) return { status: 'unverified', why: 'remote or branch name is outside the safe character set' };
+    const run = async (cmd, label) => {
+        try {
+            return await command(cmd, { member_name: member, silent: true, failSoft: true, label: `${label} for '${member}'` });
+        } catch (err) {
+            return { ok: false, error: (err && err.message) || String(err) };
+        }
+    };
+
+    const headOut = outputOf(await run('git rev-parse HEAD', 'G-push landed check: local HEAD read'));
+    const localHead = headOut === null ? null : headOut.trim().split(/\r?\n/)[0].trim();
+    if (!localHead || !GIT_SHA_RE.test(localHead)) return { status: 'unverified', why: 'could not read the local HEAD' };
+
+    const lsOut = outputOf(await run(`git ls-remote ${remote} refs/heads/${branch}`, 'G-push landed check: remote branch read'));
+    if (lsOut === null) return { status: 'unverified', why: `could not read ${remote}/${branch}` };
+    let remoteTip = null;
+    for (const line of lsOut.split(/\r?\n/)) {
+        const m = line.match(/^([0-9a-f]{40,64})\s+(\S+)\s*$/i);
+        if (m && m[2] === `refs/heads/${branch}`) { remoteTip = m[1].toLowerCase(); break; }
+    }
+    if (!remoteTip) {
+        if (lsOut.trim() === '') return { status: 'not-contained', localHead, why: `branch '${branch}' does not exist on '${remote}'` };
+        return { status: 'unverified', localHead, why: `unrecognized ls-remote output for ${remote}/${branch}` };
+    }
+    if (remoteTip === localHead.toLowerCase()) return { status: 'contained', localHead, remoteTip };
+
+    // The remote moved past (or away from) our HEAD. Fetch it, then count
+    // commits in our HEAD that the remote tip lacks: 0 means contained.
+    const fetchRes = await run(`git fetch ${remote} ${branch}`, 'G-push landed check: remote branch fetch');
+    if (outputOf(fetchRes) === null) return { status: 'unverified', localHead, remoteTip, why: `could not fetch ${remote}/${branch}: ${fetchRes && fetchRes.error}` };
+    const countOut = outputOf(await run(`git rev-list --count ${localHead} --not ${remoteTip}`, 'G-push landed check: containment count'));
+    const count = countOut === null ? NaN : Number(countOut.trim());
+    if (!Number.isInteger(count)) return { status: 'unverified', localHead, remoteTip, why: 'could not compare the local HEAD with the remote tip' };
+    if (count === 0) return { status: 'contained', localHead, remoteTip };
+    return { status: 'not-contained', localHead, remoteTip, why: `${remote}/${branch} is at ${remoteTip}, which lacks ${count} commit(s) of the local HEAD ${localHead}` };
+}
+
 /**
  * G-push: publish `member`'s committed work to the shared branch after a
  * dispatch -- `git push` with ONE bounded pull-rebase retry. If the
@@ -266,12 +330,28 @@ export async function syncMemberAfter(member, opts = {}) {
     // `git push <remote> <branch>` spelling below.
     const pushCmd = branch ? `git push${setUpstream ? ' -u' : ''} ${remote} ${branch}` : 'git push';
 
+    // A push step reported success: only return success when the remote
+    // branch provably carries our HEAD, or the check is inconclusive.
+    const confirmLanded = async (result, label) => {
+        const verdict = await checkGitPushLanded(member, { command, remote, branch });
+        if (verdict.status === 'not-contained') {
+            throw new GitSyncError(
+                `[Sync] ${label} reported success but the push did NOT land: ${verdict.why}. The member's commits have NOT reached the shared branch.`,
+                { member, gitOutput: verdict.why, details: { kind: 'push-not-landed', operation: 'push', localHead: verdict.localHead, remoteTip: verdict.remoteTip } },
+            );
+        }
+        if (verdict.status === 'unverified' && branch) {
+            log(`[Sync] ${label} reported success, but whether it landed could not be verified: ${verdict.why}`);
+        }
+        return result;
+    };
+
     let push = await runGitStep({
         command, member, cmd: pushCmd,
         label: `G-push for '${member}'`, log, maxTransientRetries, onAuthFailure, provider,
     });
     if (push.ok) {
-        return { ok: true, member, pushed: true, rebased: false };
+        return await confirmLanded({ ok: true, member, pushed: true, rebased: false }, `G-push for member '${member}'`);
     }
 
     if (push.kind !== 'diverged') {
@@ -314,7 +394,7 @@ export async function syncMemberAfter(member, opts = {}) {
                 label: `G-push retry (create missing remote branch) for '${member}'`, log, maxTransientRetries, onAuthFailure, provider,
             });
             if (createPush.ok) {
-                return { ok: true, member, pushed: true, rebased: false };
+                return await confirmLanded({ ok: true, member, pushed: true, rebased: false }, `G-push retry (create missing remote branch) for member '${member}'`);
             }
             if (createPush.kind === 'diverged') {
                 // The branch now exists on the remote -- a concurrent writer
@@ -363,8 +443,9 @@ export async function syncMemberAfter(member, opts = {}) {
                     label: `G-push after Tier 2 conflict resolution for '${member}'`, log, maxTransientRetries, onAuthFailure, provider,
                 });
                 if (rePush.ok) {
+                    const landed = await confirmLanded({ ok: true, member, pushed: true, rebased: true, tier2Resolved: true }, `G-push after Tier 2 conflict resolution for member '${member}'`);
                     log(`[Sync] Tier 2 conflict resolution for member '${member}' succeeded -- working tree clean and the resolved code was pushed.`);
-                    return { ok: true, member, pushed: true, rebased: true, tier2Resolved: true };
+                    return landed;
                 }
                 log(`[Sync] Tier 2 conflict resolution for member '${member}' left a clean tree but the re-push still failed: ${rePush.error}`);
             } else {
@@ -390,7 +471,7 @@ export async function syncMemberAfter(member, opts = {}) {
         label: `G-push re-push after rebase for '${member}'`, log, maxTransientRetries, onAuthFailure, provider,
     });
     if (push.ok) {
-        return { ok: true, member, pushed: true, rebased: true };
+        return await confirmLanded({ ok: true, member, pushed: true, rebased: true }, `G-push re-push after rebase for member '${member}'`);
     }
 
     // Still rejected after the one bounded rebase -- diverged, never retried further.

@@ -278,6 +278,9 @@ export const GUARDED_MODULES = [
     // `node -e ...` member-side temp-file write. Both are shell-agnostic
     // (base64-encoded argv, no `$`-expansion/backticks/template literals),
     // which is exactly the invariant shell-command-guard.mjs enforces here.
+    // A THIRD site was added since: createPermissionConfigPreflight's
+    // per-OS/shell file-exists probe (SeOsCommands.fileExistsProbe, a
+    // validated literal path, no member environment reads).
     // resolveSettleShell stayed in runner.js (module-private composition-root
     // wiring anchored there by test/sprint-state.test.mjs) and is not part of
     // this module's surface.

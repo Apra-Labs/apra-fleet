@@ -89,6 +89,7 @@ import { buildSettleCallback } from '../dolt-settle.mjs';
 // reported the deferred bead as still open, and the evidence-based final
 // verdict would then FAIL a sprint the loop had just declared complete.
 import { partitionDeferredBeads } from '../beads-scope.mjs';
+import { applyDeployFailureVerdictGate, formatDeployFailureReason } from './deploy.mjs';
 
 /**
  * Runs the Final Review phase: the sprint's closing evidence-based verdict,
@@ -129,11 +130,18 @@ export async function runFinalReviewPhase({
     integFailures,
     rejectedNewTasks,
     verifyEverIds,
+    // The LAST cycle's deploy failure ({cycle, notes}), or null when that
+    // deploy succeeded or no deploy.md exists. Non-null forces a FAIL verdict
+    // (see the deploy-failure verdict gate in ./deploy.mjs).
+    lastDeployFailure = null,
     // runSprintCycle-scoped locals and runner-module-private values, injected
     // rather than imported (see header).
     bdListScoped,
     decomposedParentIds,
     goalMax,
+    // Bead ids this sprint has dispatched or closed: a below-goal reopen of
+    // one of them is applied, not deferred (see isDeferredScopeReopen).
+    workedOnIds,
     NOT_DONE_STATUSES,
     kbPriming,
     kbInjection,
@@ -261,6 +269,16 @@ export async function runFinalReviewPhase({
         resumeLabel: `Final Review (resume, max_turns=${TURN_BASES.FINAL_REVIEW_MAX_TURNS * 2})`,
     });
     finalVerdictResult = finalReviewOutcome.value;
+    // apra-fleet-b4g.102.1: a sprint whose last cycle's deploy failed never
+    // reaches Integration Test against a deployed build, so it can never PASS
+    // -- enforced here by the orchestrator rather than trusted to the LLM.
+    // Applied BEFORE anything below reads the verdict, so Publish PR (title,
+    // body), the analysis doc and the run status all see the forced FAIL.
+    if (lastDeployFailure) {
+        const llmVerdict = finalVerdictResult && finalVerdictResult.verdict;
+        finalVerdictResult = applyDeployFailureVerdictGate(finalVerdictResult, lastDeployFailure);
+        log(`Final Review: sprint verdict forced to FAIL (Final Review returned ${llmVerdict ?? '(none)'}) -- ${formatDeployFailureReason(lastDeployFailure)}`);
+    }
     // No duplicate log() dump -- see dispatchReview() for why.
     // `finalVerdictResult.verdict` also surfaces via the generic,
     // workflow-agnostic Result strip in the dashboard header (state.result --
@@ -375,6 +393,7 @@ export async function runFinalReviewPhase({
             entries: finalReopenIds,
             bdListScoped, goalMax, goal: validated.goal, log, command,
             member: backlogMember,
+            workedOnIds,
             logPrefix: 'Final Review reopenIds',
             parseEntry: parseIdWithReasonEntry,
             buildReopenCommand: ({ id, reason }) => {

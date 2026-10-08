@@ -6,6 +6,9 @@ import {
     isInfraDispatchFailure,
     isUsageLimitDispatchError,
     usageLimitOf,
+    isPermissionDeniedDispatchError,
+    permissionDeniedOf,
+    MemberPermissionDeniedError,
 } from './errors.mjs';
 import { AgentOutputError, AgentDispatchError, FleetTransportError, WorkflowError } from '@apralabs/apra-fleet-workflow';
 
@@ -569,6 +572,11 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
                 resume: resolveResumeArg(dispatch.resumeArg, localOpts),
                 onSessionId: opts.onSessionId,
                 label: prepared.label ?? defaultLabel,
+                // Strict permission handling: a refused tool call fails the
+                // dispatch (permission_denied) so no role trusts a result made
+                // without the refused tool's output, and the progressive heal
+                // (onPermissionDenied) can grant the missing permission.
+                fail_on_permission_denial: true,
             };
             for (const key of Object.keys(options)) {
                 if (options[key] === undefined) delete options[key];
@@ -725,9 +733,86 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
     // resume ladder. A usage-limit re-dispatch does NOT consume a ladder
     // attempt (see the hook below), so it also skips the retry backoff.
     let usageLimitRedispatch = null;
+    // A permission-refusal heal is PROGRESSIVE: each refusal is handed to
+    // ctx.onPermissionDenied, which grants what the member is missing (within
+    // its composed policy) and reports healed:true only when a new grant
+    // landed; the attempt is then re-run without charging the ladder (and
+    // without the backoff). The hook owns every stop rule (auto-mode refusal,
+    // no progress, per-member and per-ladder caps); this ladder only counts
+    // its own heals for the per-ladder cap.
+    let permissionHeals = 0;
+    let permissionHealRedispatch = false;
+    // Resolves null when the heal succeeded (re-run the attempt), else the
+    // MemberPermissionDeniedError that ends the sprint.
+    const healPermissionDenial = async (err) => {
+        const denial = permissionDeniedOf(err);
+        const actions = denial && denial.denials.length
+            ? denial.denials.map((d) => (d.target ? `${d.action} "${d.target}"` : d.action))
+            : ((denial && denial.actions) || []);
+        const actionText = actions.length ? actions.join(', ') : 'unknown actions';
+        const suggested = (denial && denial.suggestedGrants) || [];
+        const fail = (step, why, heal) => {
+            const composeRole = (heal && heal.composeRole) || 'the role of its sprint roles';
+            const rejected = (heal && heal.rejectedGrants) || [];
+            const grantFix = rejected.length
+                ? ` and grant ${JSON.stringify(rejected)} if that role should have them (they are outside the role policy, so the sprint never auto-grants them)`
+                : (suggested.length ? ` (suggested grants: ${JSON.stringify(suggested)})` : '');
+            if (step === 'not_healable') {
+                return new MemberPermissionDeniedError(
+                    `${roleLabel} dispatch on member '${member}' was refused tool calls by its permission mode's safety checks: ${actionText}. ` +
+                    `${why} The reply was not complete, so this is not a ${roleLabel} result. ` +
+                    'No grant is added for a classifier or deny-rule refusal. To fix: review the refused calls; if the action is really intended, ' +
+                    `grant it on member '${member}' by hand (compose_permissions grant) or change the role's task, then rerun the sprint.`,
+                    {
+                        member, role: policy.role, actions, suggestedGrants: [], rejectedGrants: [], step,
+                        details: { hint: denial ? denial.hint : '' }, cause: err,
+                    },
+                );
+            }
+            return new MemberPermissionDeniedError(
+                `${roleLabel} dispatch on member '${member}' was refused tool calls for lack of a permission grant: ${actionText}. ` +
+                `${why} This is a missing-permission failure, not a ${roleLabel} result. ` +
+                `To fix: run compose_permissions for member '${member}' with role ${composeRole}${grantFix}, then rerun the sprint.`,
+                {
+                    member,
+                    role: policy.role,
+                    actions,
+                    suggestedGrants: suggested,
+                    rejectedGrants: rejected,
+                    step,
+                    details: { hint: denial ? denial.hint : '' },
+                    cause: err,
+                },
+            );
+        };
+        if (typeof ctx.onPermissionDenied !== 'function') {
+            return fail('heal', 'No permission heal is wired for this run, so nothing re-composed the member.', null);
+        }
+        let heal;
+        try {
+            heal = await ctx.onPermissionDenied({ member, role: policy.role, roleLabel, denial, ladderHeals: permissionHeals });
+        } catch (healErr) {
+            heal = { healed: false, reason: healErr && healErr.message ? healErr.message : String(healErr) };
+        }
+        if (!heal || !heal.healed) {
+            const step = (heal && heal.step) || 'heal';
+            const why = step === 'heal'
+                ? `The permission heal failed: ${(heal && heal.reason) || 'no result'}.`
+                : `The permission heal can make no further progress: ${(heal && heal.reason) || step}.`;
+            return fail(step, why, heal);
+        }
+        permissionHeals += 1;
+        ctx.log(
+            `${roleLabel} dispatch: member '${member}' was refused ${actionText}; granted ` +
+            `${(heal.grants || []).join(', ') || 'its missing permissions'} -- retrying (heal ${permissionHeals} of this dispatch, not charged to the ladder).`
+        );
+        return null;
+    };
 
     for (let attempt = 1; attempt <= attempts; attempt++) {
-        if (!usageLimitRedispatch && backoffMs && backoffMs[attempt - 1] > 0) {
+        const skipBackoff = Boolean(usageLimitRedispatch) || permissionHealRedispatch;
+        permissionHealRedispatch = false;
+        if (!skipBackoff && backoffMs && backoffMs[attempt - 1] > 0) {
             ctx.log(
                 `${roleLabel} dispatch: waiting ${backoffMs[attempt - 1] / 1000}s before retry attempt ` +
                 `${attempt}/${backoffMs.length}...`
@@ -825,6 +910,28 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
                 skipPreDispatchSyncNext = ctx.isNoMutationDispatchFailure(err);
             }
 
+            // An agent permission refusal (reason 'permission_denied': the
+            // member CLI refused tool calls for lack of a grant) is a
+            // MISSING-PERMISSION failure, for every role -- never a role
+            // outcome. It is never degraded (a plan-reviewer's refusal text
+            // must not become a CHANGES_NEEDED verdict and charge a planning
+            // round), never retried blindly (the same config refuses the same
+            // call), and healed progressively: ctx.onPermissionDenied grants
+            // the missing permission within the member's composed policy, then
+            // the attempt is re-run without charging the ladder; a refusal of
+            // a different tool next time is healed the same way. When the hook
+            // can make no further progress (auto-mode refusal, refused again
+            // after its grant, outside policy, cap reached) or no hook is
+            // wired, the sprint ends with MemberPermissionDeniedError naming
+            // member, the denied actions and the fix.
+            if (!completedButSyncFailed && isPermissionDeniedDispatchError(err)) {
+                const healError = await healPermissionDenial(err);
+                if (healError) throw healError;
+                permissionHealRedispatch = true;
+                attempt -= 1;
+                continue;
+            }
+
             // Usage-limit pause/resume (apra-fleet-hzeb.4.2). A provider
             // rate/usage limit is neither a failure of this role nor something a
             // retry ladder can out-wait on its own budget -- it needs a real
@@ -899,12 +1006,18 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
                 }
                 ctx.log(
                     `${roleLabel} dispatch threw a non-retryable error (auth/trust): ${err.message}. Aborting ` +
-                    "retries -- fix the member's credentials/trust and re-run."
+                    `retries -- fix member '${member}' credentials/trust and re-run (for an LLM auth failure: re-login on the source machine with /login, then provision_llm_auth; or provision an API key).`
                 );
                 // A ladder whose own failure legitimately fails the whole
                 // sprint propagates instead of degrading: with the dispatch
                 // channel walled off there is no judgement to fabricate.
-                if (retry.rethrowsUnhealedNonRetryable) throw err;
+                if (retry.rethrowsUnhealedNonRetryable) {
+                    if (isAuthDispatchError(err) && err && typeof err.message === 'string'
+                        && !err.message.includes('provision_llm_auth')) {
+                        err.message += ` [LLM auth heal failed for member '${member}': re-login on the source machine with /login, then provision_llm_auth; or provision an API key]`;
+                    }
+                    throw err;
+                }
                 break;
             }
 

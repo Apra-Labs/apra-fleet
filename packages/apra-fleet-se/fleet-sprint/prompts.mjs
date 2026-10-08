@@ -429,7 +429,11 @@ export function buildReviewerPrompt({ beadIds, acceptanceCriteriaJson, baseBranc
             `Features/beads BELOW the goal priority (e.g. P3 when the ` +
             `goal is P1/P2) are DEFERRED BY DESIGN to a later sprint: their absence ` +
             `from the diff is correct, must not block APPROVED, must not appear in ` +
-            `reopenIds, and may be mentioned in notes only.`,
+            `reopenIds, and may be mentioned in notes only.` +
+            (scopeWide
+                ? ''
+                : ` EXCEPTION: a below-goal bead id named above is this sprint's OWN work -- if it ` +
+                  `needs rework (for example it broke the build or tests), name it in reopenIds.`),
         ] : []),
         // apra-fleet-0ef: the reviewer is the ONLY role permitted to mint
         // CONFIRMED, but a KB entry id can only come from the KB, and the
@@ -450,8 +454,11 @@ export function buildReviewerPrompt({ beadIds, acceptanceCriteriaJson, baseBranc
         're-development) and need a planner pass before the next dispatch, scoped to this ' +
         'cycle. An id you did not also name in `reopenIds` is dropped and never reaches the ' +
         'scoped-replan machinery, so only list ids you are reopening. ' +
+        'Set `buildFailing: true` when the build or test suite fails on the branch under review ' +
+        '(omit it or set false when they pass): on CHANGES_NEEDED the orchestrator then guarantees ' +
+        'a fix is dispatched even if none of your reopenIds can be reopened. ' +
         'Return ONLY your structured verdict (verdict, notes, reopenIds, replanIds, ' +
-        'newTasks) strictly as the required JSON schema; never touch beads yourself.',
+        'buildFailing, newTasks) strictly as the required JSON schema; never touch beads yourself.',
     ].join('\n\n');
 }
 

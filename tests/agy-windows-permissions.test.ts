@@ -246,7 +246,7 @@ describe('Linux/macOS unsandboxed denial (recorded shape, agy 1.2.11 on Linux)',
   it('whoami: suggests Bash(whoami:*) with an OS-correct hint; structured fields keep their shape', () => {
     const d = detectAgyPermissionDenial(unsandboxed('whoami'), 'linux')!;
     expect(d.actions).toEqual(['unsandboxed', 'command']);
-    expect(d.denials).toEqual([{ action: 'unsandboxed', target: 'whoami' }, { action: 'command' }]);
+    expect(d.denials).toEqual([{ action: 'unsandboxed', target: 'whoami', suggestedGrants: ['Bash(whoami:*)'] }, { action: 'command', suggestedGrants: [] }]);
     expect(d.suggestedGrants).toEqual(['Bash(whoami:*)']);
     expect(d.signals).toEqual(['result_json', 'stderr', 'transcript']);
     expect(d.hint).toContain('compose_permissions grant: ["Bash(whoami:*)"]');

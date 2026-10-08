@@ -5,6 +5,12 @@
  * @property {number} [max_total_s] - Hard ceiling in seconds, measured from when the server
  *   receives the call (setup counts); exceeding it returns reason 'max_total_time'
  * @property {number} [max_turns] - Max turns for claude -p (default: 50)
+ * @property {boolean} [fail_on_permission_denial] - Strict permission handling (default false).
+ *   true: a refused tool call fails with reason 'permission_denied' (except a healable:false
+ *   Claude refusal on a complete reply, which is a permissionWarning). Omitted/false: a complete
+ *   Claude reply succeeds with the refusals in permissionWarning; AGY refusals still fail.
+ *   A max_turns/auth/server/overloaded result keeps its own reason either way, with the
+ *   refusals attached as permissionDenied.
  * @property {string} [member_id] - UUID of the member
  * @property {string} [member_name] - Friendly name of the member
  * @property {string} [model] - Model tier ("cheap", "standard", "premium") or a specific model ID
@@ -66,6 +72,8 @@
  * @typedef {Object} PermissionDenialItem
  * @property {string} action - Provider permission action, e.g. 'command', 'read_file', 'mcp'.
  * @property {string} [target] - The concrete target when the CLI named it, e.g. 'git status --short --branch'.
+ * @property {string[]} [suggestedGrants] - compose_permissions grants that would allow this one
+ *   call, primary first (empty when no grant maps to it).
  */
 
 /**
@@ -76,9 +84,14 @@
  * @property {string[]} suggestedGrants - compose_permissions `grant` values that would allow the
  *   denied calls, primary first (for an agy command or unsandboxed denial, on any OS, a
  *   `Bash(<cmd>:*)` prefix grant, then the exact command as the narrow alternative); empty when no
- *   canonical mapping exists.
+ *   canonical mapping exists, and always empty when `healable` is false (never grant those).
  * @property {string} hint - One-line remediation.
  * @property {Array<'result_json'|'stderr'|'transcript'>} signals - Which CLI signals reported it.
+ * @property {string} [permissionMode] - The permission mode the session ran in, when the
+ *   provider knows it (Claude: 'auto' | 'acceptEdits' | 'bypassPermissions').
+ * @property {boolean} [healable] - false when no grant may ever be added for these denials
+ *   (Claude auto/bypass mode: the safety classifier or a deny rule refused the call, not a
+ *   missing allow rule). Absent = a grant may heal it.
  */
 
 /**
@@ -99,10 +112,19 @@
  *   without a command line -- relay member or SFTP disabled; deterministic, do not retry;
  *   no LLM call was made) | ...
  * @property {PermissionDenied} [permissionDenied] - Present when `reason === 'permission_denied'`:
- *   the member CLI refused tool calls for lack of a grant (AGY headless mode auto-denies them
- *   and exits 0, which used to surface as 'empty_response'). Pass `suggestedGrants` to
- *   compose_permissions `grant` to heal it; read it with {@link permissionDenialOf}. Any partial
- *   reply is in `response`.
+ *   the member CLI refused tool calls (AGY headless mode auto-denies them and exits 0; Claude
+ *   reports them in its result event's non-empty `permission_denials`). For Claude this needs the
+ *   caller's `fail_on_permission_denial: true`; AGY fails this way either way. Pass
+ *   `suggestedGrants` to compose_permissions `grant` to heal it; read it with
+ *   {@link permissionDenialOf}. Any partial reply is in `response`. A healable:false Claude
+ *   refusal (auto/bypass mode) on a complete reply is a `permissionWarning`, not this failure;
+ *   on an incomplete one it fails here with `healable: false` and no suggested grants. Also
+ *   present as an EXTRA field on a typed failure (max_turns_exhausted, auth, server,
+ *   overloaded, ...) or a non-strict Claude failure whose turn carried refusals: the typed
+ *   reason wins.
+ * @property {PermissionDenied} [permissionWarning] - Present on a SUCCESSFUL dispatch whose
+ *   session refused tool calls without failing it: a healable:false refusal (never grant it),
+ *   or any Claude refusal when `fail_on_permission_denial` was not set. A logged warning.
  * @property {UsageLimitSignal} [usageLimit] - Present when `reason === 'usage_limit'`
  *   (apra-fleet-hzeb.2): the provider's detectUsageLimit() signal verbatim -- a 429/quota
  *   exhaustion that a fresh session cannot cure, so execute_prompt returns this INSTEAD of
@@ -119,7 +141,42 @@
  * @property {string} [sessionId] - The session id this dispatch landed on, when known --
  *   present on success AND on a 'usage_limit'/'max_turns_exhausted' failure so the SAME
  *   session can be resumed later instead of losing context to a fresh one.
- * @property {{input_tokens:number, output_tokens:number, total_tokens:number}} [usage]
+ * @property {ExecutePromptUsage} [usage]
+ */
+
+/**
+ * @typedef {Object} ExecutePromptUsage
+ * @property {number} input_tokens - Uncached prompt tokens.
+ * @property {number} output_tokens - Completion tokens.
+ * @property {number} cache_read_input_tokens - Prompt tokens served from the provider's
+ *   prompt cache; billed, and NOT included in input_tokens (0 when the provider reports none).
+ * @property {number} cache_creation_input_tokens - Prompt tokens written to the provider's
+ *   prompt cache; billed, and NOT included in input_tokens (0 when the provider reports none).
+ * @property {number} total_tokens - input_tokens + output_tokens only (the context-window
+ *   figure context admission reads); it deliberately EXCLUDES the cache counts, so a cost
+ *   figure must price all four counts rather than total_tokens.
+ * @property {number} [cost_usd] - USD this dispatch cost as the provider CLI reported it
+ *   (Claude: the per-dispatch share of the cumulative total_cost_usd). Use it as-is when
+ *   present; price the token counts only when it is absent.
+ */
+
+/**
+ * @typedef {Object} ModelPrice
+ * @property {string} model - Concrete model the tier resolves to.
+ * @property {number} promptPrice - $/1M input_tokens.
+ * @property {number} completionPrice - $/1M output_tokens.
+ * @property {number} cacheReadPrice - $/1M cache_read_input_tokens (the model's own cache-hit rate).
+ * @property {number} cacheWritePrice - $/1M cache_creation_input_tokens (Claude: the 1-hour
+ *   cache-write rate, 2x input, which the Claude Code CLI uses).
+ */
+
+/**
+ * @typedef {Object} MemberModelPricingResult
+ * @property {string} member_id
+ * @property {string} member_name
+ * @property {string} llm_provider
+ * @property {{cheap: ModelPrice|null, standard: ModelPrice|null, premium: ModelPrice|null}} pricing
+ *   - null for a tier whose resolved model has no known price.
  */
 
 /**
@@ -158,6 +215,32 @@
  * @property {number} code - code_* calls counted
  * @property {number} total - kb + code
  * @property {Object<string, number>} tools - Per-tool counts (tools called at least once)
+ */
+
+/**
+ * Result-side shape of execute_command's `structuredContent`. Mirrors
+ * src/tools/execute-command.ts's ExecuteCommandStructured. A command that ran
+ * reports its real `exitCode` (isError absent). A command that never produced an
+ * exit code -- the exec timed out, the transport failed, a cloud member could
+ * not be started, or the pre-dispatch check failed -- reports `isError: true`,
+ * a `reason`, and `exitCode: -1` (never a fake 0). Read it with
+ * {@link commandFailureOf}.
+ * @typedef {Object} ExecuteCommandStructured
+ * @property {number} exitCode - Exit code of the command; -1 when it never produced one.
+ * @property {string} stdout - Command stdout (credential values redacted).
+ * @property {string} stderr - Command stderr, or the failure detail when isError is true.
+ * @property {boolean} [isError] - true when the command did not run to an exit code.
+ * @property {string} [reason] - Present with isError: 'timeout' (inactivity timeout) |
+ *   'max_total_time' (hard total-time cap) | 'transport_error' (connection/channel failure) |
+ *   'cloud_start_failed' | 'preflight_offline' | 'preflight_auth_expired' |
+ *   'preflight_auth_missing'.
+ */
+
+/**
+ * @typedef {Object} ExecuteCommandFailure
+ * @property {string} reason - The structured reason, or 'unflagged_failure' for a failure
+ *   recognized only from the text of an older server that sent no structuredContent.
+ * @property {string} message - Human-readable failure text.
  */
 
 /**
@@ -218,6 +301,7 @@
  * @property {string} [category] - Optional group label
  * @property {string[]} [tags] - Optional list of free-form labels
  * @property {"false" | "auto" | "dangerous"} [unattended] - Permission mode for unattended execution
+ *   ("auto" on a Claude model without auto-mode support, such as Haiku, runs acceptEdits)
  * @property {boolean} [unreservable] - Mark this member as never exclusively reservable, so it can be shared by more than one sprint at once (e.g. fleet-sprint's shared "backlog" role)
  * @property {"auto" | "skip" | "replace-full"} [fleet_install] - Whether registration installs/updates apra-fleet on the member, writes its per-folder apra-fleet MCP entry and verifies it (default "auto"; local members only get the MEMBER-session probe; a full install without the member-install marker is never touched). "replace-full": also explicitly opts in to replacing such a full install with a member install (backup of data and fleet.key, uninstall, member install, self-register). "skip" performs no install and reports the probe result only. Registration succeeds either way; the result reports fleetMcp.
  * @property {"gitbash" | "pwsh7" | "powershell5"} [shell] - Override the probed Windows shell for this member. Windows members only -- ignored for non-windows members.
@@ -252,7 +336,8 @@
  * @property {"codebase-memory" | "gitnexus" | "none"} [code_intel_provider] - Change the code-intelligence provider for this member
  * @property {string} [category] - Group label
  * @property {string[]} [tags] - Free-form labels
- * @property {"false" | "auto" | "dangerous"} [unattended] - Permission mode
+ * @property {"false" | "auto" | "dangerous"} [unattended] - Permission mode ("auto" on a
+ *   Claude model without auto-mode support, such as Haiku, runs acceptEdits)
  * @property {boolean} [unreservable] - Mark/unmark this member as shared/never exclusively reservable
  * @property {"gitbash" | "pwsh7" | "powershell5"} [shell] - Override the probed Windows shell for this member. Windows members only -- ignored for non-windows members.
  * @property {"github" | "bitbucket" | "azure-devops" | "none"} [vcs_provider] - Directly set (override) this member's VCS provider. An explicit operator value, never auto-detected -- use this to correct a wrong auto-detect from register_member, or to set the provider without provisioning credentials. "none" clears it.
@@ -307,6 +392,10 @@
  *   minted token carries a given permission (e.g. GitHub's 'workflows', required to push any
  *   .github/workflows/** change) must read THIS, not their own provisioning default -- the two differ
  *   exactly for the members at risk.
+ * @property {string[]} [permissionConfigPaths] - The member's provider permission config file(s)
+ *   that compose_permissions writes (work-folder-relative, or home-anchored "~/..."), e.g.
+ *   ['.claude/settings.local.json'] for Claude. [] when the provider cannot name them yet (agy before
+ *   its project is provisioned). Reported even for an offline member. Absent on older servers.
  * @property {Object} connectivity - Connectivity check result (status, latencyMs, auth, keyPath, or error)
  * @property {boolean} [offline] - Set when the member could not be reached
  * @property {string} llmProvider - LLM provider for this member (default: "claude")
@@ -400,7 +489,9 @@
  * @property {string} [label] - Credential label provision_vcs_auth deployed the helper under
  *   (it defaults to the provider name there, e.g. "github" or "azure-devops"). Omit for the
  *   unlabelled helper.
- * @property {number} [timeout_s] - Timeout in seconds for the command (default: 120).
+ * @property {number} [timeout_s] - Inactivity timeout in seconds for the command (default: 120).
+ *   On expiry the command's remote process tree is killed and the result is reason
+ *   'dispatch_failed' with a "Command timed out" message.
  */
 
 /**
@@ -557,6 +648,11 @@
  *   shell-chaining metacharacter (| ; && backtick $() are rejected outright,
  *   for every caller.
  * @property {string} [grant_reason] - Reason for the grant (stored in ledger)
+ * @property {boolean} [dry_run] - Compose only: return the allow list the role/tags
+ *   (plus detected stacks, plus the ledger when project_folder is given) would deliver, as
+ *   JSON text `{"dry_run":true,"mode","stacks","allow"}`, without writing anything to the
+ *   member. Ignored with `grant`. Use it to check whether a grant is within the member's
+ *   composed policy.
  */
 
 /**
@@ -750,10 +846,16 @@ export function permissionDenialOf(result) {
     if (!Array.isArray(d.denials) || !d.denials.every((x) => x && typeof x.action === 'string' && (x.target === undefined || typeof x.target === 'string'))) return null;
     return {
         actions: [...d.actions],
-        denials: d.denials.map((x) => (x.target === undefined ? { action: x.action } : { action: x.action, target: x.target })),
+        denials: d.denials.map((x) => ({
+            action: x.action,
+            ...(x.target === undefined ? {} : { target: x.target }),
+            ...(isStringArray(x.suggestedGrants) ? { suggestedGrants: [...x.suggestedGrants] } : {}),
+        })),
         suggestedGrants: [...d.suggestedGrants],
         hint: d.hint,
         signals: isStringArray(d.signals) ? [...d.signals] : [],
+        ...(typeof d.permissionMode === 'string' ? { permissionMode: d.permissionMode } : {}),
+        ...(typeof d.healable === 'boolean' ? { healable: d.healable } : {}),
     };
 }
 
@@ -806,6 +908,43 @@ export function fleetToolFailureOf(result) {
     return null;
 }
 
+// Older servers (before execute_command carried isError on its failure
+// paths) returned a bare text with no structuredContent for a command that
+// never ran. These are that text's two shapes.
+const UNFLAGGED_COMMAND_FAILURE_RE = /^Failed to (execute command|launch task) on "/;
+
+/**
+ * Typed read of an execute_command failure that never produced an exit code.
+ * Accepts the raw executeCommand() result. Returns `{ reason, message }` when the
+ * result is an isError failure (structuredContent.isError, or the MCP-level
+ * isError flag), or when an older server sent the bare "Failed to execute
+ * command on ..." / "Failed to launch task on ..." text with no
+ * structuredContent. Returns null for a command that ran (any exit code --
+ * callers check a non-zero exitCode separately).
+ *
+ * @param {{content?: {text?: string}[], structuredContent?: ExecuteCommandStructured, isError?: boolean} | null | undefined} result
+ * @returns {ExecuteCommandFailure | null}
+ */
+export function commandFailureOf(result) {
+    if (!result || typeof result !== 'object') return null;
+    const text = Array.isArray(result.content) && result.content.length > 0 && typeof result.content[0]?.text === 'string'
+        ? result.content[0].text
+        : '';
+    const sc = result.structuredContent;
+    if (sc && typeof sc === 'object' && sc.isError) {
+        const reason = typeof sc.reason === 'string' && sc.reason ? sc.reason : 'unknown';
+        const detail = typeof sc.stderr === 'string' ? sc.stderr : '';
+        return { reason, message: text || detail || `execute_command failed (${reason})` };
+    }
+    if (result.isError) {
+        return { reason: 'unknown', message: text || 'execute_command failed' };
+    }
+    if (!sc && UNFLAGGED_COMMAND_FAILURE_RE.test(text)) {
+        return { reason: 'unflagged_failure', message: text };
+    }
+    return null;
+}
+
 export class ApraFleet {
     /**
      * @param {{ callTool: (name: string, args: Record<string, any>, opts?: { timeoutMs?: number, signal?: AbortSignal }) => Promise<any> }} mcpClient
@@ -834,6 +973,9 @@ export class ApraFleet {
     /**
      * Run a shell command on a member.
      * @param {ExecuteCommandOptions} options
+     * @returns {Promise<{content?: {type: string, text: string}[], structuredContent?: ExecuteCommandStructured}>}
+     *   the raw callTool() result. A command that never produced an exit code carries
+     *   `structuredContent.isError` and `reason` -- read it with {@link commandFailureOf}.
      */
     async executeCommand(options) {
         const { timeoutMs, signal, ...payload } = options;
@@ -872,6 +1014,7 @@ export class ApraFleet {
     /**
      * Get a member's cheap/standard/premium tier resolved to a concrete
      * model and its real per-1M-token price (apra-fleet-dv5.5/dv5.6).
+     * The tool result text is the JSON of a {@link MemberModelPricingResult}.
      * @param {{ member_id?: string, member_name?: string }} options
      */
     async getMemberModelPricing(options) {

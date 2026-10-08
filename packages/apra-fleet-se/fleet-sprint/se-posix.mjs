@@ -28,8 +28,8 @@
  * its args path (^[A-Za-z0-9._/-]+$), plus: no '..' segment (no escaping the
  * work folder), no leading '/' (relative only) and no leading '-' (never
  * mistakable for an option). Anything else THROWS -- it is never quoted or
- * escaped into the string. Shared by every dialect's git-exclude/remove-file
- * primitive.
+ * escaped into the string. Shared by every dialect's git-exclude/remove-file/
+ * ensure-file/ensure-line primitive.
  * @param {string} relPath
  * @param {string} what caller-facing name for the error message
  * @returns {string} the validated path
@@ -41,6 +41,10 @@ export function assertSafeRelativePath(relPath, what = 'path') {
   }
   return p;
 }
+
+/** Markers printed by every dialect's fileExistsProbe(). */
+export const FILE_PROBE_PRESENT = 'present';
+export const FILE_PROBE_ABSENT = 'absent';
 
 /**
  * A single file line safe to embed single-quoted in POSIX and PowerShell:
@@ -185,7 +189,9 @@ export class SePosixCommands {
    * The only `$` expansions are of a shell-LOCAL variable this same string
    * assigns (`excl`) -- nothing reads the member's environment ($HOME,
    * $VAR/path, ~/, backticks).
-   * Caller: member-call.mjs runRemote (args-file cleanup).
+   * Callers: member-call.mjs runRemote (args-file cleanup);
+   * beads-identity-check.mjs member beads set-up (new untracked beads paths
+   * are excluded so the target work tree stays clean).
    * @param {string} entry work-folder-relative path/pattern, validated
    * @returns {string}
    */
@@ -208,6 +214,19 @@ export class SePosixCommands {
   removeFile(relPath) {
     const p = assertSafeRelativePath(relPath, 'file path');
     return this.wrapForMember(`rm -f -- '${p}'`);
+  }
+
+  /**
+   * Report whether a work-folder-relative file exists: prints exactly
+   * FILE_PROBE_PRESENT or FILE_PROBE_ABSENT and exits 0 either way, so a
+   * non-zero exit always means the probe itself failed. Read-only.
+   * Caller: member-provisioning.mjs permission-config preflight.
+   * @param {string} relPath validated
+   * @returns {string}
+   */
+  fileExistsProbe(relPath) {
+    const p = assertSafeRelativePath(relPath, 'file path');
+    return this.wrapForMember(`if [ -e '${p}' ]; then echo ${FILE_PROBE_PRESENT}; else echo ${FILE_PROBE_ABSENT}; fi`);
   }
 
   /**

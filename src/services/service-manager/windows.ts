@@ -164,7 +164,11 @@ export function buildWrapperBat(binaryPath: string, args: string[], logPath: str
 
 /** The hidden launcher script that sits next to the wrapper. */
 export function launcherPathFor(wrapperPath: string): string {
-  return path.win32.join(path.win32.dirname(wrapperPath), 'apra-fleet-service.js');
+  // A Windows-style wrapper path (drive letter, UNC or backslashes) keeps win32
+  // semantics; a POSIX absolute path must stay POSIX or path.win32 turns it
+  // into a cwd-relative '\\tmp\\...' string.
+  const flavor = /^[A-Za-z]:|^\\\\|\\/.test(wrapperPath) ? path.win32 : path.posix;
+  return flavor.join(flavor.dirname(wrapperPath), 'apra-fleet-service.js');
 }
 
 /**
@@ -347,7 +351,7 @@ export class WindowsServiceManager implements ServiceManager {
     fs.mkdirSync(path.dirname(this.wrapperPath), { recursive: true });
     // The wrapper's >> redirect fails (exit 1, nothing logged) when the log
     // dir is missing; create it now -- the wrapper also re-creates it.
-    try { fs.mkdirSync(path.win32.dirname(logPath), { recursive: true }); } catch { /* the wrapper retries */ }
+    try { fs.mkdirSync(path.dirname(logPath), { recursive: true }); } catch { /* the wrapper retries */ }
     fs.writeFileSync(this.wrapperPath, buildWrapperBat(binaryPath, args, logPath), 'utf8');
     const launcherPath = launcherPathFor(this.wrapperPath);
     fs.writeFileSync(launcherPath, buildLauncherJs(this.wrapperPath), 'utf8');

@@ -312,6 +312,113 @@ export function partitionByGoalMembership(tasks, goal) {
     return { sprintTasks, backlogTasks };
 }
 
+// ---------------------------------------------------------------------------
+// Below-goal beads are not DISPATCHED unless they serve in-goal work
+// ---------------------------------------------------------------------------
+//
+// The develop loop used to dispatch every ready leaf in scope, ordering by
+// priority but never excluding: a P3 streak could run in round 1 of a P1/P2
+// sprint, ahead of P1/P2 work. Exclusion uses the same "below goal" test as
+// partitionByGoalMembership (a FINITE numeric priority strictly worse than the
+// goal max -- a bead with no numeric priority is never excluded) and the same
+// blocks-edge idea, made transitive: a below-goal bead stays dispatchable when
+//
+//   - it (transitively, over 'blocks' edges) blocks an open in-goal bead --
+//     in-goal work cannot finish without it; or
+//   - this sprint already dispatched it (e.g. a reviewer reopen the
+//     worked-on exemption let through) -- the sprint is repairing its own
+//     work.
+//
+// Deliberately NO parent-chain exemption: a sprint's target root is normally
+// an open in-goal epic, so "has an open in-goal ancestor" would keep every
+// below-goal task in scope and make this filter inert.
+//
+// Consistent with the completion gate: that gate counts only beads at or above
+// goal priority (`--priority-max=goalMax`), so an excluded below-goal bead
+// never holds the sprint open.
+
+/** A bead's `blocks` prerequisites (ids it depends on), across bd's two dependency shapes. */
+function blocksPrereqIds(bead) {
+    const deps = bead && Array.isArray(bead.dependencies) ? bead.dependencies : [];
+    const out = [];
+    for (const d of deps) {
+        if (typeof d === 'string') { if (d) out.push(d); continue; }
+        if (!d || typeof d !== 'object') continue;
+        const type = d.type ?? d.dependency_type;
+        if (type !== undefined && type !== 'blocks') continue;
+        const id = d.depends_on_id ?? d.id;
+        if (id !== undefined && id !== null && id !== '') out.push(String(id));
+    }
+    return out;
+}
+
+/**
+ * Split ready leaf beads into those the develop loop may dispatch and the
+ * below-goal ones it must not (see the block comment above).
+ *
+ * @param {Array<object>} ready - ready leaf beads (bd list --ready shape)
+ * @param {Array<object>} scopeBeads - every in-scope bead, any status, with `dependencies` and `parent`
+ * @param {string} goal - sprint goal band, e.g. 'P1/P2'
+ * @param {{ workedOnIds?: Set<string>|Iterable<string> }} [opts]
+ * @returns {{ dispatchable: object[], excluded: Array<{ id: string, priority: number }> }}
+ */
+export function partitionReadyByGoal(ready, scopeBeads, goal, opts = {}) {
+    const list = Array.isArray(ready) ? ready : [];
+    const scope = Array.isArray(scopeBeads) ? scopeBeads : [];
+    const goalMaxNum = Number(goalPriorityMax(goal).slice(1));
+    const workedOn = opts.workedOnIds instanceof Set ? opts.workedOnIds : new Set(opts.workedOnIds || []);
+    const isBelowGoal = (b) =>
+        b && typeof b.priority === 'number' && Number.isFinite(b.priority) && b.priority > goalMaxNum;
+    const isOpen = (b) => b && b.status !== 'closed';
+
+    const byId = new Map();
+    for (const b of [...scope, ...list]) {
+        if (b && b.id !== undefined && b.id !== null && !byId.has(String(b.id))) byId.set(String(b.id), b);
+    }
+
+    // Every bead that (transitively) blocks an open in-goal bead: walk the
+    // blocks prerequisites backwards from each open in-goal bead.
+    const servesInGoal = new Set();
+    const queue = [];
+    for (const b of byId.values()) {
+        if (isOpen(b) && !isBelowGoal(b)) queue.push(String(b.id));
+    }
+    const visited = new Set(queue);
+    while (queue.length > 0) {
+        const id = queue.shift();
+        for (const pre of blocksPrereqIds(byId.get(id))) {
+            servesInGoal.add(pre);
+            if (!visited.has(pre)) { visited.add(pre); queue.push(pre); }
+        }
+    }
+
+    const dispatchable = [];
+    const excluded = [];
+    for (const b of list) {
+        if (!b) continue;
+        const id = String(b.id);
+        if (!isBelowGoal(b) || workedOn.has(id) || servesInGoal.has(id)) {
+            dispatchable.push(b);
+        } else {
+            excluded.push({ id, priority: b.priority });
+        }
+    }
+    return { dispatchable, excluded };
+}
+
+/**
+ * The run-log line for beads partitionReadyByGoal excluded from dispatch.
+ *
+ * @param {Array<{ id: string, priority: number }>} excluded
+ * @param {string} goal
+ * @returns {string}
+ */
+export function formatBelowGoalExclusionLog(excluded, goal) {
+    const named = excluded.map((e) => e.id + ' (P' + e.priority + ')').join(', ');
+    return `Develop dispatch: EXCLUDED ${named} -- below this sprint's goal ${goal}, not blocking any open ` +
+        'in-goal bead, and not yet worked on by this sprint -- excluded as below goal, not dispatched.';
+}
+
 /**
  * Build the id->bead and parent->children indexes every scope walk needs.
  *
