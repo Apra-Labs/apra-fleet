@@ -6,7 +6,8 @@ import type { AgentStrategy } from '../services/strategy.js';
 import { getStrategy } from '../services/strategy.js';
 import { getMemberHomeDir } from '../services/member-home.js';
 import { getProvider } from '../providers/index.js';
-import type { WorkspaceTrustTransport } from '../providers/provider.js';
+import { writeMemberSecretFile, removeMemberSecretFile } from '../services/member-secret-env.js';
+import type { WorkspaceTrustTransport, MemberSecretFileChannel } from '../providers/provider.js';
 import { getAgentShell } from './agent-helpers.js';
 import { logLine, logWarn } from './log-helpers.js';
 
@@ -23,6 +24,15 @@ import { logLine, logWarn } from './log-helpers.js';
  * the receiving spoke's received-files sandbox, not its home, so the adapter
  * must use exec-based (chunked) delivery there instead.
  */
+/** The owner-only secret-file channel of `agent` (writeMemberSecretFile): content
+ *  reaches the member without a command line, or the write fails loudly. */
+export function memberSecretFileChannelFor(agent: Agent): MemberSecretFileChannel {
+  return {
+    write: (content: string) => writeMemberSecretFile(agent, content, 'claude-config'),
+    remove: (filePath: string) => removeMemberSecretFile(agent, filePath),
+  };
+}
+
 export function workspaceTrustTransportFor(agent: Agent, strat: AgentStrategy): WorkspaceTrustTransport | undefined {
   if (agent.agentType === 'relay') return undefined;
   return {
@@ -109,10 +119,13 @@ export async function seedWorkspaceTrust(agent: Agent, strategy?: AgentStrategy,
       // The member's REGISTERED shell, not just its OS: a gitbash Windows
       // member needs POSIX trust-seeding strings (apra-fleet-7dir.2.8).
       getAgentShell(agent),
-      // File channel so a large merged ~/.claude.json never rides a Windows
-      // command line (GitHub #499); the adapter falls back to exec delivery.
+      // File channel so a merged ~/.claude.json never rides a command line
+      // (GitHub #499); the adapter then tries the secret file and otherwise fails.
       workspaceTrustTransportFor(agent, strat),
       memberHomeDir,
+      // Owner-only secret file when the file channel is unavailable: the
+      // content never rides a command line (the write fails loudly instead).
+      memberSecretFileChannelFor(agent),
     );
     logLine(tag, `workspace trust for "${agent.friendlyName}": ${result.detail}`, agent);
   } catch (e: any) {

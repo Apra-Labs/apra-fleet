@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "34ff160ff8ee9e2268e851270b911771d06fedca",
     "branch": "feat/kb-redesign",
-    "entry_count": 287
+    "entry_count": 300
   },
   "entries": [
     {
@@ -335,6 +335,27 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:11.553Z"
+    },
+    {
+      "id": "0dd36c44-87bd-4743-952c-ba90f5c85c3c",
+      "type": "knowledge",
+      "title": "?member= route requires the install's member access secret header",
+      "summary": "http-transport refuses a ?member= request without a member JWT unless the X-Apra-Fleet-Member-Secret header matches <data dir>/member-access.key; 401 comes before the registry lookup, and the file is re-read on every request.",
+      "symbols": [
+        "createHttpTransport",
+        "getOrCreateMemberAccessSecret",
+        "memberAccessSecretMatches",
+        "connectFleetMember",
+        "MEMBER_SECRET_HEADER"
+      ],
+      "source_files": [
+        "src/services/http-transport.ts",
+        "src/services/member-access-secret.ts",
+        "packages/apra-fleet-client/src/client/server-resolution.mjs",
+        "tests/test-helpers.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T14:55:56.447Z"
     },
     {
       "id": "0e10e4ea-5c23-4fc9-bd7a-baf1af522a3e",
@@ -1002,6 +1023,22 @@
       "updated_at": "2026-09-25T22:26:33.419Z"
     },
     {
+      "id": "277722da-41ce-47be-8e89-aad7d4bec133",
+      "type": "knowledge",
+      "title": "install --help output is pinned byte-for-byte to a regression fixture",
+      "summary": "tests/install-multi-provider.test.ts compares runInstall(['--help']) output to tests/fixtures/regression-command-surface/install-help.txt, so any help-text change to src/cli/install.ts must update that fixture in the same commit.",
+      "symbols": [
+        "runInstall"
+      ],
+      "source_files": [
+        "tests/install-multi-provider.test.ts",
+        "tests/fixtures/regression-command-surface/install-help.txt",
+        "src/cli/install.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T12:53:45.854Z"
+    },
+    {
       "id": "28cd0a59-ece9-45ba-9291-e82acaed18e2",
       "type": "knowledge",
       "title": "All four kb_ sites now log symmetric rejected and failed lines via isToolError",
@@ -1123,6 +1160,24 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:33.666Z"
+    },
+    {
+      "id": "2ea9d9e6-cb0e-44d2-b436-4d5a76879a2e",
+      "type": "knowledge",
+      "title": "install refresh loop rewrites only existing http apra-fleet registrations of other providers",
+      "summary": "runInstall's http path refreshes every OTHER provider in install-config.json with the access-secret header, but only when registeredMcpTransport() reports an existing http (url) entry; stdio entries and providers with no entry are left untouched.",
+      "symbols": [
+        "registeredMcpTransport",
+        "registerHttpMcp",
+        "runInstall"
+      ],
+      "source_files": [
+        "src/cli/install.ts",
+        "tests/install-multi-provider.test.ts",
+        "tests/install-access-secret-registration.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T19:27:44.459Z"
     },
     {
       "id": "2eecfb71-ff41-4639-bf98-16d39de7ff4f",
@@ -1443,6 +1498,27 @@
       "updated_at": "2026-09-29T06:13:11.114Z"
     },
     {
+      "id": "416532bd-32a5-4056-8cb5-03f2219c2870",
+      "type": "knowledge",
+      "title": "Server bind port is resolved at call time: APRA_FLEET_PORT, then member-install marker port, then 7523",
+      "summary": "resolveServerPort() in src/paths.ts decides the port the http server binds and start/install check: explicit APRA_FLEET_PORT, else the port data/member-install.json records, else 7523; DEFAULT_PORT (load-time, env only) is no longer the bind source.",
+      "symbols": [
+        "resolveServerPort",
+        "recordedMemberInstallPort",
+        "DEFAULT_PORT",
+        "writeMemberInstallMarker"
+      ],
+      "source_files": [
+        "src/paths.ts",
+        "src/services/http-transport.ts",
+        "src/cli/start.ts",
+        "src/cli/install.ts",
+        "src/cli/install-guard.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T12:53:45.788Z"
+    },
+    {
       "id": "41e88d84-a9de-4d5b-aafa-1ee96089a6f9",
       "type": "learning",
       "title": "The mock-sprint harness epic stays open at P2, making not-vacuously-strict assertions vacuous",
@@ -1667,6 +1743,26 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-30T23:07:12.100Z"
+    },
+    {
+      "id": "48ad2e50-277c-4ab6-bbc0-89a323ec979f",
+      "type": "knowledge",
+      "title": "FULL-scope /mcp sessions also require the install access secret header",
+      "summary": "Since 46c48b9f the http transport refuses ANY /mcp session (FULL as well as ?member=) without a member JWT or the X-Apra-Fleet-Member-Secret header matching <data dir>/member-access.key, so every orchestrator-side client must go through withFleetAccessSecret/connectFleet.",
+      "symbols": [
+        "withFleetAccessSecret",
+        "createWorkflowEngine",
+        "connectFleet",
+        "createFleetHttpTransport"
+      ],
+      "source_files": [
+        "src/services/http-transport.ts",
+        "packages/apra-fleet-client/src/client/server-resolution.mjs",
+        "packages/apra-fleet-client/src/client/factory.mjs",
+        "tests/http-transport.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T19:27:44.587Z"
     },
     {
       "id": "4ab868ea-bb49-459a-b21e-f2b906d3cb58",
@@ -2626,6 +2722,22 @@
       "updated_at": "2026-10-01T22:08:20.217Z"
     },
     {
+      "id": "7991cba8-26fc-4a6a-9f8a-95c168253838",
+      "type": "learning",
+      "title": "wrapPowerShellEncoded already sets Stop and propagates native exit codes",
+      "summary": "wrapPowerShellEncoded wraps every script in $ErrorActionPreference='Stop'; try { ...; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; exit 0 } catch { exit 1 }, so member PowerShell steps need no inner try/catch or explicit exit $LASTEXITCODE.",
+      "symbols": [
+        "wrapPowerShellEncoded",
+        "memberCommandFor"
+      ],
+      "source_files": [
+        "src/os/windows.ts",
+        "src/services/member-fleet-install.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T17:05:07.467Z"
+    },
+    {
       "id": "7cc58351-c7f9-4f14-99b0-cdd04cf83d7c",
       "type": "knowledge",
       "title": "Member OS resolution: always via agent.os",
@@ -3209,6 +3321,20 @@
       "updated_at": "2026-09-29T06:13:13.561Z"
     },
     {
+      "id": "9f059720-a4b8-4ab7-bb33-de799fc910be",
+      "type": "learning",
+      "title": "Windows hands out listen(0) ephemeral ports sequentially, so back-to-back picks are adjacent",
+      "summary": "Two consecutive net.listen(0)+close calls on Windows return adjacent ports every time, so a test needing non-adjacent free ports must hold several open at once and use the outer ones.",
+      "symbols": [
+        "twoPorts"
+      ],
+      "source_files": [
+        "tests/integration/two-member-installs-one-host.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T12:53:45.919Z"
+    },
+    {
       "id": "9fa5c3ec-10b3-44bb-a852-07ca0a796391",
       "type": "knowledge",
       "title": "makeTestLocalAgent defaults member os to the host platform, silently neutering OS-forcing test mocks",
@@ -3321,6 +3447,24 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-30T23:07:12.100Z"
+    },
+    {
+      "id": "a42a1209-e65a-49b2-890e-451547482116",
+      "type": "learning",
+      "title": "Claude --mcp-config entry wins over a same-name local-scope MCP server entry",
+      "summary": "On claude 2.1.291, with both a projects[cwd].mcpServers apra-fleet entry and an --mcp-config apra-fleet entry, only the --mcp-config entry's URL is initialized. So the session entry's alwaysLoad is not shadowed by the per-folder entry on remote members.",
+      "symbols": [
+        "sessionMcpConfigContent",
+        "perFolderMcpEntryNeeded",
+        "MEMBER_MCP_SERVER_NAME"
+      ],
+      "source_files": [
+        "src/services/session-mcp-config.ts",
+        "src/providers/claude.ts",
+        "src/tools/execute-prompt.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T10:15:58.471Z"
     },
     {
       "id": "a4663ebf-bce1-440a-a776-1ba2d1c30497",
@@ -3477,6 +3621,25 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:35.520Z"
+    },
+    {
+      "id": "a9d7239d-6b3c-4e16-a262-f88c66f8eb6c",
+      "type": "learning",
+      "title": "execute_prompt runs a member CLI version probe before the main command for every session-MCP dispatch",
+      "summary": "Every dispatch that attaches the per-session MCP config (all local claude members) first runs cmds.agentVersion(provider) via strategy.execCommand, unless the version is cached. Tests that mock exec with fixed call sequences must account for that extra call.",
+      "symbols": [
+        "resolveSessionMcpAlwaysLoad",
+        "resetCliVersionCache",
+        "executePrompt"
+      ],
+      "source_files": [
+        "src/tools/execute-prompt.ts",
+        "src/services/session-mcp-config.ts",
+        "tests/integration/pid-lifecycle.test.ts",
+        "tests/execute-prompt-agent.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T09:23:05.626Z"
     },
     {
       "id": "aa5c6a57-a70f-4fce-82e1-a0d75851d351",
@@ -3867,6 +4030,26 @@
       "updated_at": "2026-09-25T22:26:42.831Z"
     },
     {
+      "id": "c020df38-adf3-4618-9030-de857b6a2e9d",
+      "type": "knowledge",
+      "title": "Member claude.json delivery has no inline fallback: file channel or secret file, else E-MEMBER-CONFIG-NO-FILE-CHANNEL",
+      "summary": "deliverWorkspaceTrustFile writes ~/.claude.json only via the file channel or the owner-only secret file, then a move command that carries no content. With neither it throws E-MEMBER-CONFIG-NO-FILE-CHANNEL, so relay members and SSH members without SFTP now fail loudly.",
+      "symbols": [
+        "deliverWorkspaceTrustFile",
+        "memberSecretFileChannelFor",
+        "writeMemberSecretFile"
+      ],
+      "source_files": [
+        "src/providers/claude.ts",
+        "src/utils/workspace-trust.ts",
+        "src/services/member-secret-env.ts",
+        "src/services/relay-strategy.ts",
+        "tests/claude-config-sentinel.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T10:15:58.405Z"
+    },
+    {
       "id": "c0c940f9-8e0a-4772-89e6-f0961e094adc",
       "type": "learning",
       "title": "dolt-sync.mjs sync.remote/tip memoization is process-lifetime, so multi-scenario tests must reset it between runs",
@@ -3973,6 +4156,26 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-10-06T12:01:01.669Z"
+    },
+    {
+      "id": "c5601373-ca7a-44f8-b3f6-e0cf3588ba1e",
+      "type": "learning",
+      "title": "Remote fleetMcp probe reads the member access secret file; test exec fakes must answer it",
+      "summary": "probeRemote reads <home>/.apra-fleet/data/member-access.key on the member after resolving the port. A fake exec that returns exit 127 for unknown commands makes the probe fail with member-secret-unavailable.",
+      "symbols": [
+        "probeRemote",
+        "ensureRemoteMemberAccessSecret",
+        "syncMemberMcpEntry"
+      ],
+      "source_files": [
+        "src/services/member-fleet-install.ts",
+        "src/services/member-access-secret.ts",
+        "src/providers/opencode.ts",
+        "tests/member-fleet-wiring.test.ts",
+        "tests/model-tiers.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T14:55:56.513Z"
     },
     {
       "id": "c5ebfbc3-a76c-42e4-8254-87fc2c82e39d",
@@ -4946,6 +5149,28 @@
       "updated_at": "2026-10-06T13:59:44.305Z"
     },
     {
+      "id": "f33011e2-8ae6-4388-95d4-5e21f1716d0f",
+      "type": "knowledge",
+      "title": "fleet_install replace-full is decided in ensureOnce before the up-to-date gates",
+      "summary": "ensureMemberFleetInstall(opts.replaceFull) probes the member-install marker before the version short-circuits, so a same-version full install is replaced too. Only a clean 'absent' marker answer on an installed binary triggers replaceFullInstall; probe-failed refuses with no destructive command.",
+      "symbols": [
+        "ensureMemberFleetInstall",
+        "replaceFullInstall",
+        "buildReplaceFullInstallPlan",
+        "probeRemote",
+        "INSTALL_FAIL_CLOSED"
+      ],
+      "source_files": [
+        "src/services/member-fleet-install.ts",
+        "src/tools/update-member.ts",
+        "src/tools/register-member.ts",
+        "tests/member-fleet-replace-full.test.ts",
+        "tests/member-replace-full-scenarios.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T17:05:07.548Z"
+    },
+    {
       "id": "f34ed294-df0a-43fc-a138-fa5f773bcaa3",
       "type": "knowledge",
       "title": "doltPullBefore records the remote tip before the caller re-lists, so a failed post-pull list is not retried",
@@ -5023,6 +5248,22 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:14.498Z"
+    },
+    {
+      "id": "f60d53f5-f72a-439f-82c9-03b7deaefc9a",
+      "type": "learning",
+      "title": "Member-init: server fleetMcp reason supersedes a tools-step failure",
+      "summary": "In member-init-probe finish(), a fleetMcp problem with a server-named reason overrides a generic tools-step failure only when the tools failure is the first gating problem.",
+      "symbols": [
+        "createMemberInitProbe",
+        "finish"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/member-init-probe.mjs",
+        "packages/apra-fleet-se/test/mock-sprint-member-init-probe.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T09:23:05.562Z"
     },
     {
       "id": "f8604414-0bbf-4850-88bd-6a67e5539341",

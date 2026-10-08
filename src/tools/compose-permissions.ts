@@ -10,8 +10,9 @@ const __dirname = dirname(__filename);
 import { getStrategy } from '../services/strategy.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { getProvider } from '../providers/index.js';
-import { seedWorkspaceTrust, workspaceTrustTransportFor } from '../utils/workspace-trust.js';
+import { seedWorkspaceTrust, workspaceTrustTransportFor, memberSecretFileChannelFor } from '../utils/workspace-trust.js';
 import { perFolderMcpEntryNeeded, REMOTE_SESSION_MCP_FILE } from '../services/session-mcp-config.js';
+import { memberMcpHeaders } from '../services/member-access-secret.js';
 import {
   deleteMemberFile,
   ensureGitExcluded,
@@ -724,8 +725,11 @@ async function syncMemberMcpConfig(
         agentOs,
         shell,
         transport: workspaceTrustTransportFor(agent, strategy),
+        secretChannel: memberSecretFileChannelFor(agent),
         url: perFolder ? memberMcpUrl(agent) : null,
-        ...(perFolder ? {} : { removeOnlyOwnEntry: true }),
+        // The member install's access secret: its server refuses a ?member=
+        // session without it. Written only through file channels.
+        ...(perFolder ? memberHeadersField(agent) : { removeOnlyOwnEntry: true }),
       });
       workFolderFiles.push(...result.workFolderFiles);
     }
@@ -770,6 +774,12 @@ async function syncMemberMcpConfig(
     };
   }
   return {};
+}
+
+/** `{ headers }` for a member whose access secret is known, else nothing. */
+function memberHeadersField(agent: Agent): { headers?: Record<string, string> } {
+  const headers = memberMcpHeaders(agent);
+  return headers ? { headers } : {};
 }
 
 /**
@@ -885,6 +895,7 @@ export async function removeComposedMemberConfig(agent: Agent): Promise<string[]
       agentOs,
       shell,
       transport: workspaceTrustTransportFor(agent, strategy),
+      secretChannel: memberSecretFileChannelFor(agent),
       url: null,
       // Only the entry fleet wrote for THIS member (?member=<uuid>): a human's
       // own apra-fleet entry for that folder is never removed.

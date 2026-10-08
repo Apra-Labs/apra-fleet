@@ -219,7 +219,7 @@
  * @property {string[]} [tags] - Optional list of free-form labels
  * @property {"false" | "auto" | "dangerous"} [unattended] - Permission mode for unattended execution
  * @property {boolean} [unreservable] - Mark this member as never exclusively reservable, so it can be shared by more than one sprint at once (e.g. fleet-sprint's shared "backlog" role)
- * @property {"auto" | "skip"} [fleet_install] - Whether registration installs/updates apra-fleet on the member, writes its per-folder apra-fleet MCP entry and verifies it (default "auto"; local members only get the MEMBER-session probe). "skip" performs no install and reports the probe result only. Registration succeeds either way; the result reports fleetMcp.
+ * @property {"auto" | "skip" | "replace-full"} [fleet_install] - Whether registration installs/updates apra-fleet on the member, writes its per-folder apra-fleet MCP entry and verifies it (default "auto"; local members only get the MEMBER-session probe; a full install without the member-install marker is never touched). "replace-full": also explicitly opts in to replacing such a full install with a member install (backup of data and fleet.key, uninstall, member install, self-register). "skip" performs no install and reports the probe result only. Registration succeeds either way; the result reports fleetMcp.
  * @property {"gitbash" | "pwsh7" | "powershell5"} [shell] - Override the probed Windows shell for this member. Windows members only -- ignored for non-windows members.
  */
 
@@ -227,7 +227,7 @@
  * @typedef {Object} UpdateMemberOptions
  * @property {string} [member_id] - UUID of the member
  * @property {string} [member_name] - Friendly name of the member
- * @property {"auto" | "skip"} [fleet_install] - "auto": for a remote member, install/upgrade the member's own apra-fleet when missing or older (build-aware), self-register, write its per-folder apra-fleet MCP entry and verify, even when nothing else changed. "skip": never install. Omit: install only on a provider change. Unknown input keys are rejected by the server.
+ * @property {"auto" | "skip" | "replace-full"} [fleet_install] - "auto": for a remote member, install/upgrade the member's own apra-fleet when missing or older (build-aware), self-register, write its per-folder apra-fleet MCP entry and verify, even when nothing else changed; a full install without the member-install marker is never touched. "replace-full": "auto" plus an explicit opt-in to replace such a full install with a member install (backup of data and fleet.key, uninstall, member install, self-register). "skip": never install. Omit: install only on a provider change. Unknown input keys are rejected by the server.
  * @property {string} [friendly_name] - New friendly name
  * @property {string} [work_folder] - New working directory. For non-local (remote/relay) members, must be a fully-qualified/absolute path -- "~" and relative paths are rejected. A folder may hold at most one LLM member and one LLM-less (llm_provider none) member.
  * @property {string} [host] - New host
@@ -270,6 +270,18 @@
  * @property {string} [fleetInstalledAt] - ISO 8601 time this fleet's own install run last succeeded on the member; carried across later probes; absent when the fleet never installed it (a refusal or observation-only probe never sets it)
  * @property {{reason: string, detail?: string}} [installFailure] - A requested apra-fleet upgrade that failed before the member was touched while the older install stayed in use; present on available and unavailable statuses, also named in detail
  * @property {{state: "missing" | "broken", detail: string, fix: string}} [beads] - Present only when the beads CLI (bd) is not usable on a remote member (not on its PATH nor in <home>/.apra-fleet/bin); independent of state; absent when bd works or could not be probed
+ * @property {number} [port] - Remote members: the port of the member's own apra-fleet install, resolved from its member-install marker; the member MCP URL (per-folder entry and per-session config) uses it
+ * @property {"marker" | "default"} [portSource] - Where port came from: the member-install marker, or the built-in default because the install recorded no port (detail says so)
+ * @property {{previousVersion: string, removed: string[], backupPath: string}} [replacedFullInstall] - Set by the probe that replaced a full install with a member install (fleet_install "replace-full"): replaced version, what was removed or moved, and the timestamped backup directory on the member
+ */
+
+/**
+ * Code intelligence availability reported by member_detail.
+ * @typedef {Object} CodeIntelStatus
+ * @property {string|null} provider - 'gitnexus' | 'codebase-memory' | 'none' (null when it could not be resolved)
+ * @property {boolean} available
+ * @property {string} [cause] - Why it is unavailable; absent when available
+ * @property {string} [remedy] - What to do about the cause; absent when available
  */
 
 /**
@@ -305,6 +317,9 @@
  *   server (null when never probed). Recoverable: `member_detail { refresh: true }` re-probes and records.
  * @property {string|null} [fleetMcpFix] - One-line operator fix for `fleetMcp` when the member's KB/code tools are
  *   not usable (state "unavailable" or `unverified`); null when available and verified
+ * @property {CodeIntelStatus|null} [codeIntel] - Whether code intelligence (code_* tools) can run for this member,
+ *   with the cause and remedy when it cannot (e.g. npx/node missing from the apra-fleet service PATH). null for
+ *   remote members: their code tools run on the member host, not on this server.
  * @property {Object} [llm_cli] - LLM CLI info: { version, auth }
  * @property {Object|string} [tokenUsage] - Cumulative token usage, or "compute only" for llmProvider "none"
  * @property {Object} [session] - Session info: { id, lastActivity, lastLlmActivityAt, status, idleSecs }
@@ -901,7 +916,10 @@ export class ApraFleet {
     /**
      * Remove a member from the fleet. Member-side composed config (the
      * per-folder `apra-fleet` MCP entry, permission keys) is removed first;
-     * what could not be removed is reported as a warning.
+     * what could not be removed is reported as a warning. The member-side registration on the
+     * member's own apra-fleet install is removed only when that install carries the
+     * member-install marker; otherwise (unmarked, or the marker probe failed) it is
+     * skipped and the output says so and why.
      * @param {RemoveMemberOptions} options
      */
     async removeMember(options) {

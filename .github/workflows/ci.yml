@@ -68,11 +68,19 @@ jobs:
       # Pinned to 1.3.0: this repo's Dolt DB is schema v66; older bd can't
       # read it. Known regression: 1.3.0 still misreads a fresh dir's failed
       # `git ls-remote` (apra-fleet-4ipl, upstream not fixed yet).
+      # Retried: the package's postinstall downloads the bd binary from GitHub
+      # releases, which intermittently answers HTTP 500.
       - name: Install bd CLI (required by apra-fleet-se tests and tests/exec-bd.test.ts)
+        shell: bash
         env:
           CI: ''
         run: |
-          npm install -g @beads/bd@1.3.0 --foreground-scripts
+          for attempt in 1 2 3; do
+            if npm install -g @beads/bd@1.3.0 --foreground-scripts; then break; fi
+            if [ "$attempt" = 3 ]; then echo "bd install failed after 3 attempts"; exit 1; fi
+            echo "bd install attempt $attempt failed; retrying in 15s"
+            sleep 15
+          done
           bd --version
 
       # Non-destructive; imports git-tracked .beads/issues.jsonl so dashboard/
@@ -199,6 +207,12 @@ jobs:
             binary: apra-fleet-installer-linux-x64
           - os: macos-latest
             binary: apra-fleet-installer-darwin-arm64
+          # Intel macOS: macos-15-intel is GitHub's Intel runner label (macos-13
+          # is retired). The runner's own setup-node installs an x64 node, which
+          # carries the SEA fuse package-sea.mjs injects into. Without this asset
+          # an Intel Mac member can never be upgraded from a non-Mac orchestrator.
+          - os: macos-15-intel
+            binary: apra-fleet-installer-darwin-x64
           # windows-2022 (VS 17), not windows-latest (VS 18): node-gyp can't
           # detect VS 18. See the build-and-test matrix above.
           - os: windows-2022
@@ -576,7 +590,7 @@ jobs:
           # Member installs download these assets and verify them against
           # SHA256SUMS before running them (src/services/member-fleet-install.ts).
           cd release-binaries
-          sha256sum apra-fleet-installer-linux-x64 apra-fleet-installer-darwin-arm64 apra-fleet-installer-win-x64.exe > SHA256SUMS
+          sha256sum apra-fleet-installer-linux-x64 apra-fleet-installer-darwin-arm64 apra-fleet-installer-darwin-x64 apra-fleet-installer-win-x64.exe > SHA256SUMS
           cat SHA256SUMS
 
       - name: Create GitHub release
@@ -587,6 +601,7 @@ jobs:
             ${{ env.TARBALL_NAME }}
             release-binaries/apra-fleet-installer-linux-x64
             release-binaries/apra-fleet-installer-darwin-arm64
+            release-binaries/apra-fleet-installer-darwin-x64
             release-binaries/apra-fleet-installer-win-x64.exe
           generate_release_notes: true
 

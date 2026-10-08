@@ -23,6 +23,7 @@
 
 import { StreamableHttpTransport } from '@apralabs/apra-fleet-client/transport';
 import { McpClient } from '@apralabs/apra-fleet-client/client';
+import { withFleetAccessSecret } from '@apralabs/apra-fleet-client/server-resolution';
 import { ApraFleet } from '@apralabs/apra-fleet-client';
 
 /**
@@ -123,7 +124,7 @@ export async function listFleetMembers(deps = {}) {
         return markFleetMembersUnavailable({ members: [] }, `no reachable fleet HTTP singleton (${connection && connection.reason})`);
     }
 
-    const transport = new StreamableHttpTransport(connection.url);
+    const transport = new StreamableHttpTransport(connection.url, withFleetAccessSecret());
     try {
         await transport.start();
         const mcpClient = new McpClient(transport);
@@ -176,7 +177,7 @@ export async function executeFleetCommand(opts = {}) {
         return { ok: false, error: `no reachable fleet HTTP singleton (${connection && connection.reason})` };
     }
 
-    const transport = new StreamableHttpTransport(connection.url);
+    const transport = new StreamableHttpTransport(connection.url, withFleetAccessSecret());
     try {
         await transport.start();
         const fleetApi = new ApraFleet(new McpClient(transport));
@@ -234,7 +235,7 @@ async function callFleetMemberTool(toolName, invoke, { resolveConnection, logger
     if (!connection || connection.mode !== 'http') {
         return { ok: false, unavailable: true, error: `no reachable fleet HTTP singleton (${connection && connection.reason})` };
     }
-    const transport = new StreamableHttpTransport(connection.url);
+    const transport = new StreamableHttpTransport(connection.url, withFleetAccessSecret());
     try {
         await transport.start();
         const fleetApi = new ApraFleet(new McpClient(transport));

@@ -35,11 +35,15 @@ const FS_OP_TIMEOUT_MS = 15000;
  * machine. `?member=<uuid>` identifies the session as that member, which is
  * what reduces the served tool list to the member allowlist. A local member
  * shares this process's server, so it follows this process's port (honoring
- * an APRA_FLEET_PORT sandbox); a remote member talks to its own default
- * install.
+ * an APRA_FLEET_PORT sandbox); a remote member talks to its OWN install, on
+ * the port that install records in its member-install marker
+ * (agent.memberMcpPort, resolved on the member by the fleetMcp probe), or the
+ * built-in default when it recorded none (the probe reports that in fleetMcp
+ * detail). Two member installs on one host (one per Unix user) therefore each
+ * get their own server, never the other user's.
  */
-export function memberMcpUrl(agent: Pick<Agent, 'id' | 'agentType'>): string {
-  const port = agent.agentType === 'local' ? DEFAULT_PORT : BUILTIN_DEFAULT_PORT;
+export function memberMcpUrl(agent: Pick<Agent, 'id' | 'agentType' | 'memberMcpPort'>): string {
+  const port = agent.agentType === 'local' ? DEFAULT_PORT : (agent.memberMcpPort ?? BUILTIN_DEFAULT_PORT);
   return `http://localhost:${port}/mcp?member=${encodeURIComponent(agent.id)}`;
 }
 
@@ -249,6 +253,48 @@ export async function isGitTracked(
   const q = posix ? quotePosixPath : quotePwshPath;
   const r = await exec(`git -C ${q(wf)} ls-files --error-unmatch -- ${q(relPath)}`, FS_OP_TIMEOUT_MS);
   return r.code === 0;
+}
+
+/**
+ * The command that prints the git repository root of `workFolder` on the
+ * member. Resolved path, quoted per shell (quotePosixPath / quotePwshPath), no
+ * $VAR, ~ or backtick expansion for the member shell to perform.
+ */
+export function memberRepoRootCommand(workFolder: string, isWindows: boolean, posix: boolean): string {
+  const wf = isWindows && !posix ? workFolder.replace(/\//g, '\\') : workFolder.replace(/\\/g, '/');
+  const q = posix ? quotePosixPath : quotePwshPath;
+  return `git -C ${q(wf)} rev-parse --show-toplevel`;
+}
+
+/** Forward-slash, no trailing slash: the form Claude's project keys take. */
+export function normalizeProjectKey(p: string): string {
+  return p.trim().replace(/\\/g, '/').replace(/\/+$/, '');
+}
+
+/**
+ * The key Claude Code files a work folder's LOCAL-scope MCP servers under in
+ * its config file (projects[<key>].mcpServers): the git repository root of the
+ * folder, or the exact folder outside a git repo (git missing, not a repo, an
+ * unusable answer). The ONE resolver for both the writer (syncMemberMcpEntry)
+ * and the fleetMcp probe, so they can never disagree on the key.
+ */
+export async function resolveClaudeProjectKey(
+  exec: MemberExecFn,
+  workFolder: string,
+  isWindows: boolean,
+  posix: boolean,
+): Promise<string> {
+  const fallback = normalizeProjectKey(workFolder);
+  try {
+    const r = await exec(memberRepoRootCommand(workFolder, isWindows, posix), FS_OP_TIMEOUT_MS);
+    if (r.code !== 0) return fallback;
+    const root = (r.stdout ?? '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean).pop();
+    if (!root) return fallback;
+    const absolute = root.startsWith('/') || /^[A-Za-z]:[\\/]/.test(root);
+    return absolute ? normalizeProjectKey(root) : fallback;
+  } catch {
+    return fallback;
+  }
 }
 
 /** Reads and parses a member-side JSON file. Returns {} for a missing/empty

@@ -33,7 +33,7 @@ import {
   autoReindexPause, codeStatus, DEFAULT_COOLDOWN_MS, scheduleReindex, maybeScheduleReindex,
   GITNEXUS_MIN_VERSION, GITNEXUS_PACKAGE_SPEC, GITNEXUS_ANALYZE_ARGS, detectInjectedGitnexusBlocks,
 } from '../src/tools/code-intelligence-reindex.js';
-import { codeIndexReadiness, ensureGitNexusIndexReady } from '../src/tools/code-intelligence-readiness.js';
+import { assertCodeIndexReady, codeIndexReadiness, ensureGitNexusIndexReady } from '../src/tools/code-intelligence-readiness.js';
 
 // Exercise the real self-heal scheduler here (tests/setup.ts fakes it globally).
 vi.unmock('../src/tools/code-index-heal.js');
@@ -305,6 +305,38 @@ describe.skipIf(isWin)('code_reindex / code_status with a fake gitnexus', () => 
     } finally { providerRef.name = 'gitnexus'; }
     expect(porcelain(repo)).toBe(before);
     expect(fs.existsSync(path.join(repo, '.gitnexus'))).toBe(false);
+  });
+
+  it('AUTOMATIC path: a readiness-heal index build leaves the target work tree unchanged', async () => {
+    seedAgentDocs(repo);
+    const before = porcelain(repo);
+    expect(before).toBe('');
+    process.env.FAKE_MODE = 'index';
+    // No index yet: the code_* pre-flight schedules a background build itself.
+    expect(() => ensureGitNexusIndexReady(repo)).toThrow(/requested automatically/);
+    const done = await waitFor(() => {
+      const s = codeStatus(repo, codeIndexReadiness('gitnexus', repo));
+      if (s.analyze?.pid) pids.add(s.analyze.pid);
+      return s.analyze?.phase === 'done' ? s : undefined;
+    });
+    expect(done.analyze?.result).toBe('indexed');
+    expect(fs.existsSync(path.join(repo, '.gitnexus', 'meta.json'))).toBe(true);
+    expect(porcelain(repo)).toBe(before);
+    expect(fs.existsSync(path.join(repo, '.agents'))).toBe(false);
+    expect(fs.readFileSync(path.join(repo, 'AGENTS.md'), 'utf8')).not.toContain('gitnexus:start');
+    expect(fs.readFileSync(path.join(repo, 'CLAUDE.md'), 'utf8')).not.toContain('gitnexus:start');
+    const excl = execFileSync('git', ['rev-parse', '--git-path', 'info/exclude'], { cwd: repo, encoding: 'utf8' }).trim();
+    const lines = fs.readFileSync(path.resolve(repo, excl), 'utf8').split('\n');
+    expect(lines.filter((l) => l === '/.gitnexus/')).toHaveLength(1);
+  });
+
+  it('codebase-memory: the readiness path starts nothing and the work tree stays unchanged', () => {
+    seedAgentDocs(repo);
+    const before = porcelain(repo);
+    expect(() => assertCodeIndexReady('codebase-memory', repo)).toThrow(/codebase-memory/);
+    expect(porcelain(repo)).toBe(before);
+    expect(fs.existsSync(path.join(repo, '.gitnexus'))).toBe(false);
+    expect(fs.existsSync(path.join(sandbox.data, 'code-index'))).toBe(false);
   });
 
   it('a remote member folder is a typed not-started', async () => {

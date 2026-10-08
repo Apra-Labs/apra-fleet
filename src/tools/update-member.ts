@@ -75,7 +75,7 @@ export const updateMemberSchema = z.object({
   unreservable: z.boolean().optional().describe('Mark this member as never exclusively reservable, so it can be shared by more than one sprint at once (e.g. a member filling fleet-sprint\'s shared "backlog" role). reserve/release/force_release become no-op successes and overlap guards skip it.'),
   shell: z.enum(['gitbash', 'pwsh7', 'powershell5']).optional().describe('Override the probed Windows shell for this member (gitbash, pwsh7, or powershell5). Windows members only -- ignored for non-windows members.'),
   vcs_provider: z.enum(['github', 'bitbucket', 'azure-devops', 'none']).optional().describe('Directly set (override) this member\'s VCS provider -- an explicit operator value, never auto-detected. Use this to correct a wrong auto-detect from register_member, or to set the provider for a member with no credentials to provision (so provision_vcs_auth is not required just to record it). Pass "none" to clear it, declaring the member deliberately has no VCS provider.'),
-  fleet_install: z.enum(['auto', 'skip']).optional().describe('Upgrade or skip the member\'s own apra-fleet install. "auto": for a remote member, probe it and install/upgrade apra-fleet when it is missing or older than this orchestrator (build-aware), self-register, write its per-folder apra-fleet MCP entry and verify a MEMBER session, even when nothing else changed; local members only get the MEMBER-session probe. "skip": no install (a refresh triggered by another change runs with install off). Omit to keep the default: install only on a provider change. The result reports the recoverable fleetMcp status (re-probe with member_detail refresh:true).'),
+  fleet_install: z.enum(['auto', 'skip', 'replace-full']).optional().describe('Upgrade or skip the member\'s own apra-fleet install. "auto": for a remote member, probe it and install/upgrade apra-fleet when it is missing or older than this orchestrator (build-aware), self-register, write its per-folder apra-fleet MCP entry and verify a MEMBER session, even when nothing else changed; local members only get the MEMBER-session probe. An install without the member-install marker (a full install) is never touched by "auto". "replace-full": everything "auto" does, plus an explicit opt-in to REPLACE such a full install with a member install (back up data and fleet.key to a timestamped dir, uninstall with the installed binary, stop the linux fleet-supervisor unit, move data aside, run the current installer in member mode, self-register); refused with no destructive command when the marker probe fails. "skip": no install (a refresh triggered by another change runs with install off). Omit to keep the default: install only on a provider change. The result reports the recoverable fleetMcp status (re-probe with member_detail refresh:true).'),
 });
 
 export type UpdateMemberInput = z.infer<typeof updateMemberSchema>;
@@ -360,7 +360,8 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
   // and the outcome is a recorded, recoverable status (apra-fleet-b4g.56).
   const nameChanged = updated.friendlyName !== existing.friendlyName;
   let fleetMcpLine: string | undefined;
-  const fleetInstallAuto = input.fleet_install === 'auto';
+  // "replace-full" is "auto" plus the opt-in full-install replacement.
+  const fleetInstallAuto = input.fleet_install === 'auto' || input.fleet_install === 'replace-full';
   if (providerChanged || nameChanged || workFolderMoved || fleetInstallAuto) {
     try {
       // 'skip' disables the install; 'auto' installs a remote member (upgrading
@@ -374,9 +375,10 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
         // An install also (re)writes the per-folder MCP entry before it is
         // checked, so one fleet_install:"auto" call ends at fleetMcp=available.
         writeMcpEntry: install,
+        replaceFull: install && input.fleet_install === 'replace-full',
       });
       fleetMcpLine = status.state === 'available'
-        ? `available${status.version ? ` (apra-fleet ${status.version})` : ''}${status.installFailure && status.detail ? ` -- warning: ${status.detail}` : ''}`
+        ? `available${status.version ? ` (apra-fleet ${status.version})` : ''}${(status.installFailure || status.replacedFullInstall) && status.detail ? ` -- ${status.installFailure ? 'warning: ' : ''}${status.detail}` : ''}`
         : `unavailable (${status.reason ?? 'unknown'})${status.detail ? ` -- ${status.detail}` : ''}`;
       fleetMcpLine += beadsStatusNote(status);
     } catch (e: any) {

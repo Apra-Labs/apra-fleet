@@ -29,6 +29,21 @@ When the server starts, it writes a `server.json` file to `~/.apra-fleet/` conta
 }
 ```
 
+The `url` alone is not enough to connect. Every `/mcp` request must carry this
+install's access secret in the `X-Apra-Fleet-Member-Secret` header (or a valid
+member JWT); without it the server answers HTTP 401. The secret is in
+`~/.apra-fleet/data/member-access.key` (owner-only). `apra-fleet install`
+writes it into each provider's user-scope MCP registration for you; a
+hand-written client config needs it too, for example:
+
+```json
+{ "type": "http", "url": "http://localhost:7523/mcp",
+  "headers": { "X-Apra-Fleet-Member-Secret": "<contents of member-access.key>" } }
+```
+
+Keep such a config out of git (a project-scope `.mcp.json` cannot carry the
+secret safely).
+
 You can override the default port with the `APRA_FLEET_PORT` environment variable.
 If the configured port is already in use, the server refuses to start with an error
 naming the port, the pid recorded in `server.json` (if any) and `APRA_FLEET_PORT`.

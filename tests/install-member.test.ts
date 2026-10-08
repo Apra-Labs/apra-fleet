@@ -2,7 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import { execSync } from 'node:child_process';
-import { runInstall, _setSeaOverride, _setManifestOverride, MEMBER_INSTALL_NEXT_STEP } from '../src/cli/install.js';
+import { runInstall, _setSeaOverride, _setManifestOverride, MEMBER_INSTALL_NEXT_STEP, resolveMemberInstallPort } from '../src/cli/install.js';
+import { _setPortHolderProbeOverride, PORT_HELD_BY_OTHER_USER_CODE } from '../src/services/port-holder.js';
 
 // `apra-fleet install --member`: server + user-mode auto-start only. Runs
 // against an in-memory filesystem rooted at a fake HOME (os/fs/child_process
@@ -22,7 +23,15 @@ const { mockSvcMgr } = vi.hoisted(() => ({
   },
 }));
 
-vi.mock('node:os', () => ({ default: { homedir: vi.fn(() => '/mock/home'), platform: vi.fn(() => 'linux') } }));
+const { mockPortInUse } = vi.hoisted(() => ({
+  mockPortInUse: vi.fn<(port: number, host?: string) => Promise<boolean>>().mockResolvedValue(false),
+}));
+vi.mock('../src/services/singleton.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/services/singleton.js')>()),
+  isPortInUse: mockPortInUse,
+}));
+
+vi.mock('node:os', () => ({ default: { homedir: vi.fn(() => '/mock/home'), platform: vi.fn(() => 'linux'), userInfo: vi.fn(() => ({ username: 'installer-user' })) } }));
 vi.mock('node:fs');
 vi.mock('node:child_process');
 vi.mock('../src/services/service-manager/index.js', () => ({
@@ -86,6 +95,8 @@ beforeEach(() => {
   vi.spyOn(console, 'warn').mockImplementation(() => {});
   vi.spyOn(console, 'error').mockImplementation(() => {});
   process.exitCode = undefined;
+  mockPortInUse.mockResolvedValue(false);
+  _setPortHolderProbeOverride(null);
 });
 
 afterEach(() => {
@@ -127,8 +138,11 @@ describe('install --member', () => {
 
   it('--skill none WITHOUT --member still registers the user-scope MCP entry', async () => {
     await runInstall(['--transport', 'http', '--skill', 'none']);
-    expect(mcpAdds().length).toBe(1);
-    expect(mcpAdds()[0]).toContain('apra-fleet');
+    // registered via a direct write to ~/.claude.json (no secret in argv), not 'claude mcp add'
+    expect(mcpAdds().length).toBe(0);
+    const f = writtenPaths().filter(p => p.endsWith('/.claude.json'));
+    expect(f.length).toBeGreaterThan(0);
+    expect(JSON.parse(vi.mocked(fs.writeFileSync).mock.calls.filter(c => String(c[0]).replace(/\\/g, '/').endsWith('/.claude.json')).pop()![1] as string).mcpServers['apra-fleet'].type).toBe('http');
   });
 
   it('reports a typed non-success status when the auto-start cannot be registered', async () => {
@@ -138,6 +152,28 @@ describe('install --member', () => {
     const err = vi.mocked(console.error).mock.calls.flat().join('\n');
     expect(err).toContain('E-MEMBER-AUTOSTART');
     expect(vi.mocked(console.log).mock.calls.flat().join('\n')).not.toContain('installed successfully');
+  });
+
+  it('a failed auto-start still leaves data/member-install.json (the fleet owns the install it started)', async () => {
+    mockSvcMgr.register.mockRejectedValueOnce(new Error('systemd --user unavailable'));
+    await runInstall(['--transport', 'http', '--member']);
+    expect(process.exitCode).toBe(1);
+    expect(vi.mocked(console.error).mock.calls.flat().join('\n')).toContain('E-MEMBER-AUTOSTART');
+    expect([...files.keys()].filter(k => k.includes('member-install'))).toEqual([expect.stringContaining('member-install.json')]);
+  });
+
+  it('install step labels are sequential: no duplicate or skipped numbers', async () => {
+    for (const args of [['--member'], ['--skill', 'none']]) {
+      vi.mocked(console.log).mockClear();
+      await runInstall(['--transport', 'http', ...args]);
+      const out = vi.mocked(console.log).mock.calls.flat().join('\n');
+      const labels = [...out.matchAll(/^\s*\[(\d+)\/(\d+)\]/gm)].map(m => [Number(m[1]), Number(m[2])]);
+      expect(labels.length).toBeGreaterThan(3);
+      const total = labels[0][1];
+      expect(labels.every(l => l[1] === total)).toBe(true);
+      expect(labels.map(l => l[0])).toEqual(labels.map((_, i) => i + 1));
+      expect(labels.at(-1)![0]).toBe(total);
+    }
   });
 
   it('fails with E-MEMBER-AUTOSTART for --transport stdio and installs nothing', async () => {
@@ -177,5 +213,93 @@ describe('install --member', () => {
     expect(out).toContain('Settings:');
     expect(out).toContain('Run /mcp in Claude Code');
     expect(out).not.toContain(MEMBER_INSTALL_NEXT_STEP);
+  });
+});
+
+describe('install --member records its port in the marker', () => {
+  const marker = () => {
+    const k = [...files.keys()].find(f => f.endsWith('member-install.json'));
+    return k ? JSON.parse(files.get(k)!) : undefined;
+  };
+
+  it('--port <n> is recorded', async () => {
+    await runInstall(['--transport', 'http', '--member', '--port', '7611']);
+    expect(marker()).toMatchObject({ port: 7611 });
+  });
+
+  it('no --port records the built-in default (an upgrade keeps an earlier recorded port)', async () => {
+    const prevEnv = process.env.APRA_FLEET_PORT;
+    delete process.env.APRA_FLEET_PORT;
+    try {
+      await runInstall(['--transport', 'http', '--member']);
+      expect(marker()).toMatchObject({ port: 7523 });
+      const k = [...files.keys()].find(f => f.endsWith('member-install.json'))!;
+      files.set(k, JSON.stringify({ version: '0.0.1', port: 7644 }));
+      await runInstall(['--transport', 'http', '--member', '--force']);
+      expect(marker()).toMatchObject({ port: 7644 });
+    } finally {
+      if (prevEnv !== undefined) process.env.APRA_FLEET_PORT = prevEnv;
+    }
+  });
+
+  it('--port without --member is refused', async () => {
+    const exit = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => { throw new Error(`exit ${code}`); }) as any);
+    try {
+      await expect(runInstall(['--transport', 'http', '--port', '7611'])).rejects.toThrow('exit 1');
+      expect(vi.mocked(console.error).mock.calls.flat().join('\n')).toContain('--port is only valid with --member');
+    } finally {
+      exit.mockRestore();
+    }
+  });
+});
+
+describe('resolveMemberInstallPort', () => {
+  it('parses --port n and --port=n', () => {
+    expect(resolveMemberInstallPort(['--port', '7611'], undefined, undefined)).toEqual({ port: 7611, explicit: true });
+    expect(resolveMemberInstallPort(['--port=7612'], undefined, undefined)).toEqual({ port: 7612, explicit: true });
+  });
+  it('falls back to APRA_FLEET_PORT, then the recorded port, then 7523', () => {
+    expect(resolveMemberInstallPort([], '7700', 7644)).toEqual({ port: 7700, explicit: false });
+    expect(resolveMemberInstallPort([], undefined, 7644)).toEqual({ port: 7644, explicit: false });
+    expect(resolveMemberInstallPort([], '', undefined)).toEqual({ port: 7523, explicit: false });
+  });
+  it('rejects a bad value, a missing value, and a value that disagrees with APRA_FLEET_PORT', () => {
+    expect(resolveMemberInstallPort(['--port', 'abc'], undefined, undefined)).toHaveProperty('error');
+    expect(resolveMemberInstallPort(['--port', '70000'], undefined, undefined)).toHaveProperty('error');
+    expect(resolveMemberInstallPort(['--port'], undefined, undefined)).toHaveProperty('error');
+    expect(resolveMemberInstallPort(['--port', '7611'], '7700', undefined)).toHaveProperty('error');
+    expect(resolveMemberInstallPort(['--port', '7611'], '7611', undefined)).toEqual({ port: 7611, explicit: true });
+  });
+});
+
+describe('install --member when another user holds the port', () => {
+  const labelsOf = (out: string) => [...out.matchAll(/^\s*\[(\d+)\/(\d+)\]/gm)].map(m => [Number(m[1]), Number(m[2])]);
+
+  it('fails non-zero naming the holding user, pid and remedy; registers no service; step labels unchanged', async () => {
+    mockPortInUse.mockResolvedValue(true);
+    _setPortHolderProbeOverride(async () => ({ pid: 4321, user: 'fleet-other-user', uid: 987654, command: 'apra-fleet' }));
+    await runInstall(['--transport', 'http', '--member', '--port', '7611']);
+    expect(process.exitCode).toBe(1);
+    const err = vi.mocked(console.error).mock.calls.flat().join('\n');
+    expect(err).toContain(PORT_HELD_BY_OTHER_USER_CODE);
+    expect(err).toContain('"fleet-other-user"');
+    expect(err).toContain('pid 4321');
+    expect(err).toContain('--member --port');
+    expect(mockSvcMgr.register).not.toHaveBeenCalled();
+    const labels = labelsOf(vi.mocked(console.log).mock.calls.flat().join('\n'));
+    const total = labels[0][1];
+    expect(labels.every(l => l[1] === total)).toBe(true);
+    expect(labels.map(l => l[0])).toEqual(labels.map((_, i) => i + 1));
+    expect(labels.at(-1)![0]).toBe(total); // the service step label printed, nothing inserted
+  });
+
+  it('a holder that is this user keeps the warning and still registers the service', async () => {
+    mockPortInUse.mockResolvedValue(true);
+    const { currentUser } = await import('../src/services/port-holder.js');
+    _setPortHolderProbeOverride(async () => ({ pid: 2468, ...currentUser() }));
+    await runInstall(['--transport', 'http', '--member']);
+    expect(process.exitCode).toBeUndefined();
+    expect(vi.mocked(console.warn).mock.calls.flat().join('\n')).toContain('pid 2468');
+    expect(mockSvcMgr.register).toHaveBeenCalled();
   });
 });

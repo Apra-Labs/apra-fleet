@@ -17,7 +17,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { backupAndResetRegistry, restoreRegistry, makeTestAgent } from './test-helpers.js';
+import { backupAndResetRegistry, restoreRegistry, makeTestAgent, memberSecretHeaders } from './test-helpers.js';
 import { addAgent } from '../src/services/registry.js';
 import { composePermissions } from '../src/tools/compose-permissions.js';
 import { MEMBER_DENIED_TOOLS, MEMBER_ALLOWED_TOOLS } from '../src/services/member-tool-allowlist.js';
@@ -190,7 +190,9 @@ describe.skipIf(process.platform === 'win32')('compose_permissions -- per-folder
     expect(result).toContain('Permissions composed');
 
     const project = readJson(path.join(wf, 'opencode.json'));
-    expect(project.mcp['apra-fleet']).toEqual({ type: 'remote', url: expect.stringMatching(new RegExp(`\\?member=${member.id}$`)), enabled: true });
+    expect(project.mcp['apra-fleet']).toEqual({ type: 'remote', url: expect.stringMatching(new RegExp(`\\?member=${member.id}$`)), enabled: true, headers: memberSecretHeaders() });
+    // It carries this install's member access secret, so the file is owner-only.
+    expect(fs.statSync(path.join(wf, 'opencode.json')).mode & 0o777).toBe(0o600);
     const exclude = fs.readFileSync(path.join(wf, '.git', 'info', 'exclude'), 'utf-8').split('\n');
     expect(exclude).toContain('/opencode.json');
 

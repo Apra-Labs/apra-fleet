@@ -339,6 +339,9 @@ export async function resolveFleetServerConnection(deps = {}) {
  */
 export function createFleetHttpTransport(connection, deps = {}) {
     const env = deps.env || process.env;
+    // Every /mcp session needs the install's access secret (a FULL session as
+    // much as a ?member= one); read from the data dir the server was resolved from.
+    const authedOptions = withFleetAccessSecret(deps.options || {}, env);
     const forcedHttp = (env.APRA_FLEET_TRANSPORT || '').trim().toLowerCase() === 'http';
     // Reconnecting must stay on HTTP: never let the resolver pick stdio here.
     const relocateEnv = { ...env };
@@ -346,7 +349,7 @@ export function createFleetHttpTransport(connection, deps = {}) {
     delete relocateEnv.APRA_FLEET_SERVER_BIN;
     if (!forcedHttp) delete relocateEnv.APRA_FLEET_TRANSPORT;
     return new ReconnectingHttpTransport(connection.url, {
-        options: deps.options || {},
+        options: authedOptions,
         createTransport: deps.createTransport,
         relocate: async () => {
             const r = await resolveFleetServerConnection({ ...deps, env: relocateEnv });
@@ -387,6 +390,42 @@ export async function connectFleet(deps = {}) {
     return { transport, mcpClient, fleetApi: new ApraFleet(mcpClient), mode: resolution.mode };
 }
 
+/** Header a `?member=` request carries the install's member access secret in
+ *  (mirrors MEMBER_SECRET_HEADER in src/services/member-access-secret.ts). */
+export const MEMBER_SECRET_HEADER = 'X-Apra-Fleet-Member-Secret';
+
+/**
+ * The member access secret of the install whose data dir `env` names
+ * (<data dir>/member-access.key, owner-only), or null when there is none
+ * (an install older than the secret, whose server does not check it).
+ * @param {NodeJS.ProcessEnv} [env]
+ * @returns {string|null}
+ */
+export function readMemberAccessSecret(env = process.env) {
+    try {
+        const v = fs.readFileSync(path.join(getFleetDataDir(env), 'member-access.key'), 'utf8').trim();
+        return /^[0-9a-f]{64}$/.test(v) ? v : null;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * `options` with the install's access secret added as a request header (an
+ * explicit header already in `options` wins). Every http connection to the
+ * local server needs it -- the server refuses a /mcp session without a member
+ * JWT or this secret with HTTP 401. A missing secret file leaves `options`
+ * unchanged (the server then answers 401 with its own clear message).
+ * @param {object} [options] StreamableHttpTransport options
+ * @param {NodeJS.ProcessEnv} [env]
+ * @returns {object}
+ */
+export function withFleetAccessSecret(options = {}, env = process.env) {
+    const secret = readMemberAccessSecret(env);
+    if (!secret) return options;
+    return { ...options, headers: { [MEMBER_SECRET_HEADER]: secret, ...(options.headers || {}) } };
+}
+
 /**
  * Resolve + connect a MEMBER session: the local HTTP singleton with
  * `?member=<uuid>` appended, so the server scopes the session's tools to the
@@ -399,6 +438,11 @@ export async function connectFleet(deps = {}) {
  * the ENGINE acting as the member (memberCall, `apra-fleet call`), and the
  * server excludes its kb_/code_ calls from the member's session_stats counts.
  * Only those engine paths set it; any other origin value is refused.
+ *
+ * The server accepts a `?member=` session only with its install's member
+ * access secret: it is read from the same data dir the server was resolved
+ * from (readMemberAccessSecret) and sent in the MEMBER_SECRET_HEADER header
+ * on every request. Without it the server answers HTTP 401.
  *
  * `deps.kbMaintainer === true` (requires `origin: 'engine'`) adds
  * `kb_maintainer=1`: the engine's kb_maintainer grant. The server then also
@@ -436,7 +480,10 @@ export async function connectFleetMember(memberId, deps = {}) {
     url.searchParams.set('member', memberId);
     if (deps.origin === 'engine') url.searchParams.set('origin', 'engine');
     if (deps.kbMaintainer === true) url.searchParams.set('kb_maintainer', '1');
-    const transport = new StreamableHttpTransport(url.toString(), deps.options || {});
+    const options = { ...(deps.options || {}) };
+    const secret = readMemberAccessSecret(deps.env || process.env);
+    if (secret) options.headers = { ...(options.headers || {}), [MEMBER_SECRET_HEADER]: secret };
+    const transport = new StreamableHttpTransport(url.toString(), options);
     await transport.start();
     return {
         transport,

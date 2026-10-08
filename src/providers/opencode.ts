@@ -8,6 +8,7 @@ import { logWarn } from '../utils/log-helpers.js';
 import { sanitizeSessionId } from '../os/os-commands.js';
 import { transformAgentForOpenCode } from '../cli/agent-transform.js';
 import { isPosixShell } from '../utils/agent-helpers.js';
+import { moveStagedFileCommand } from '../services/member-access-secret.js';
 import {
   deleteMemberFile,
   joinMemberPath,
@@ -297,7 +298,10 @@ export class OpenCodeProvider implements ProviderAdapter {
     let detail: string;
     if (url !== null) {
       const cur = mcp[MEMBER_MCP_SERVER_NAME] as Record<string, unknown> | undefined;
-      const current = !!cur && typeof cur === 'object' && cur.type === 'remote' && cur.url === url && cur.enabled === true && Object.keys(cur).length === 3;
+      // The member install's access secret rides as an http header (opencode
+      // remote MCP `headers`); without it the server refuses the session.
+      const wanted: Record<string, unknown> = { type: 'remote', url, enabled: true, ...(ctx.headers ? { headers: ctx.headers } : {}) };
+      const current = !!cur && typeof cur === 'object' && JSON.stringify(cur) === JSON.stringify(wanted);
       if (current && !hadLegacy) {
         detail = `opencode: ${file} already up to date`;
       } else {
@@ -309,9 +313,13 @@ export class OpenCodeProvider implements ProviderAdapter {
             `E-OPENCODE-CONFIG-TRACKED: ${file} is tracked by git; compose left it untouched (writing the member URL would dirty the repo). Untrack it or add the apra-fleet MCP entry to it yourself.`,
           );
         }
-        mcp[MEMBER_MCP_SERVER_NAME] = { type: 'remote', url, enabled: true };
+        mcp[MEMBER_MCP_SERVER_NAME] = wanted;
         config.mcp = mcp;
-        await writeMemberJson(ctx.execCommand, file, config, posix);
+        if (ctx.headers) {
+          await writeSecretBearingConfig(ctx, file, JSON.stringify(config, null, 2) + '\n', posix);
+        } else {
+          await writeMemberJson(ctx.execCommand, file, config, posix);
+        }
         detail = `opencode: wrote ${MEMBER_MCP_SERVER_NAME} in ${file}`;
       }
     } else if (fileExists && await isGitTracked(ctx.execCommand, agent.workFolder, OPENCODE_PROJECT_CONFIG, isWindows, posix)) {
@@ -378,5 +386,24 @@ export class OpenCodeProvider implements ProviderAdapter {
     // validated --dangerously-skip-permissions flag on `opencode run` (same doc, checklist
     // item 1). No-op.
     return { seeded: false, detail: 'opencode: trust gate already bypassed via --dangerously-skip-permissions on opencode run' };
+  }
+}
+
+/**
+ * Writes an opencode.json that carries the member access secret WITHOUT the
+ * content ever appearing in a command string: staged in an owner-only file
+ * through the secret-file channel, then moved into place by a content-free
+ * command (the file stays owner-only). No channel -> throws loudly; there is
+ * no inline fallback.
+ */
+async function writeSecretBearingConfig(ctx: MemberMcpSyncContext, file: string, content: string, posix: boolean): Promise<void> {
+  if (!ctx.secretChannel) {
+    throw new Error(`E-MEMBER-CONFIG-NO-FILE-CHANNEL: cannot write ${file} on the member without putting the member access secret on a command line; no secret-file channel is available for this member. Enable the SFTP subsystem on the member's sshd, or use a member type with a file channel.`);
+  }
+  const staged = await ctx.secretChannel.write(content);
+  const r = await ctx.execCommand(moveStagedFileCommand(staged, file, posix), 15000);
+  if (r.code !== 0) {
+    try { await ctx.secretChannel.remove(staged); } catch { /* best effort */ }
+    throw new Error(`moving the staged opencode.json into ${file} failed (exit ${r.code}): ${(r.stderr || r.stdout || '').trim().slice(0, 300)}`);
   }
 }

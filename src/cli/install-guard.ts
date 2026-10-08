@@ -237,10 +237,14 @@ export function hasMemberInstallMarker(): boolean {
   }
 }
 
-export function writeMemberInstallMarker(version: string): void {
+/** Writes the marker. `port` is the port this member install's server listens
+ *  on (the server reads it back at launch, see resolveServerPort, and the
+ *  orchestrator reads it to build the member's MCP URL). */
+export function writeMemberInstallMarker(version: string, port?: number): void {
   try {
     fs.mkdirSync(getInstallDataDir(), { recursive: true });
-    fs.writeFileSync(memberInstallMarkerPath(), JSON.stringify({ version, installedAt: new Date().toISOString() }) + '\n');
+    const marker = { version, installedAt: new Date().toISOString(), ...(port !== undefined ? { port } : {}) };
+    fs.writeFileSync(memberInstallMarkerPath(), JSON.stringify(marker) + '\n');
   } catch {
     // Best effort: a missing marker only makes the next forced member install refuse loudly.
   }

@@ -332,9 +332,17 @@ export interface MemberMcpSyncContext {
   shell?: MemberShell;
   /** Out-of-band file channel for large home-anchored files (see WorkspaceTrustTransport). */
   transport?: WorkspaceTrustTransport;
+  /** Owner-only secret-file channel, tried when the file channel is unavailable
+   *  (see MemberSecretFileChannel). With neither, the write fails loudly. */
+  secretChannel?: MemberSecretFileChannel;
   /** The per-folder apra-fleet entry URL (.../mcp?member=<uuid>) to write, or null to REMOVE
    *  the entry this provider wrote for the member's folder (provider switch cleanup). */
   url: string | null;
+  /** HTTP headers the entry carries with `url` -- the member install's access
+   *  secret (member-access-secret.ts), without which its server refuses the
+   *  `?member=` session. A config carrying it is written only through a file
+   *  channel, never a command string. Absent when no secret is known. */
+  headers?: Record<string, string>;
   /** With url null: remove the folder's apra-fleet entry only when it points at
    *  THIS member (?member=<uuid>), leaving any other apra-fleet entry alone. */
   removeOnlyOwnEntry?: boolean;
@@ -360,6 +368,15 @@ export type WorkspaceTrustExecFn =(command: string, timeoutMs?: number) => Promi
  *  failure so the adapter can fall back. */
 export type WorkspaceTrustWriteHomeFileFn = (relPath: string, content: string) => Promise<void>;
 export type WorkspaceTrustReadHomeFileFn = (relPath: string) => Promise<{ found: boolean; content?: string } | undefined>;
+
+/** Owner-only secret-file channel (writeMemberSecretFile): stages `content` in a
+ *  fresh owner-only file on the member WITHOUT a command line and returns its
+ *  absolute member-side path. Used when the home-anchored file channel is
+ *  unavailable; `remove` is best-effort cleanup of a staged file. */
+export interface MemberSecretFileChannel {
+  write(content: string): Promise<string>;
+  remove(filePath: string): Promise<void>;
+}
 
 export interface WorkspaceTrustTransport {
   writeHomeFile?: WorkspaceTrustWriteHomeFileFn;
@@ -405,6 +422,12 @@ export interface ProviderAdapter {
    *  is variadic and would swallow a following positional prompt. Optional:
    *  providers without one never get a session config. */
   mcpConfigFlag?(absPath: string, posix: boolean): string;
+  /** Minimum CLI version whose per-session MCP config accepts an always-load
+   *  option that keeps the server's tools out of tool-search deferral (Claude:
+   *  the `alwaysLoad` server key). The dispatcher probes the member's CLI
+   *  version and writes the option only at or above this, logging a WARN
+   *  otherwise. Optional: providers without one never get the option. */
+  mcpAlwaysLoadMinVersion?(): string;
 
   // Permission bypass flag
   skipPermissionsFlag(): string;
@@ -631,7 +654,7 @@ export interface ProviderAdapter {
    *  `memberHomeDir` is the member home resolved in JavaScript (getMemberHomeDir); every
    *  member-side path is built from it, never from a shell home variable, and an adapter
    *  that needs it refuses (seeded: false, E-MEMBER-HOME-UNRESOLVED) when it is absent. */
-  ensureWorkspaceTrusted(workFolder: string, execCommand: WorkspaceTrustExecFn, agentOs?: 'linux' | 'macos' | 'windows', shell?: MemberShell, transport?: WorkspaceTrustTransport, memberHomeDir?: string | null): Promise<EnsureWorkspaceTrustedResult>;
+  ensureWorkspaceTrusted(workFolder: string, execCommand: WorkspaceTrustExecFn, agentOs?: 'linux' | 'macos' | 'windows', shell?: MemberShell, transport?: WorkspaceTrustTransport, memberHomeDir?: string | null, secretChannel?: MemberSecretFileChannel): Promise<EnsureWorkspaceTrustedResult>;
 }
 
 

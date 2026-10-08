@@ -12,7 +12,11 @@ import { getOrCreateKey } from '../src/services/jwt.js';
 import { getTokenIssuer } from '../src/services/token-issuer.js';
 import { sessionRegistry } from '../src/services/session-registry.js';
 import { addAgent } from '../src/services/registry.js';
-import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
+import { makeTestAgent, backupAndResetRegistry, restoreRegistry, memberSecretHeaders, memberSecretRequestInit } from './test-helpers.js';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { MEMBER_SECRET_HEADER, getOrCreateMemberAccessSecret } from '../src/services/member-access-secret.js';
 import { reportStatus, reportStatusSchema } from '../src/tools/report-status.js';
 
 function noop(_server: McpServer): void {
@@ -26,7 +30,7 @@ function makeClient(port: number): Client {
 function makeTransport(port: number): StreamableHTTPClientTransport {
   return new StreamableHTTPClientTransport(
     new URL(`http://127.0.0.1:${port}/mcp`),
-    { reconnectionOptions: { maxRetries: 0, maxReconnectionDelay: 100, initialReconnectionDelay: 100, reconnectionDelayGrowFactor: 1 } }
+    { reconnectionOptions: { maxRetries: 0, maxReconnectionDelay: 100, initialReconnectionDelay: 100, reconnectionDelayGrowFactor: 1 }, requestInit: memberSecretRequestInit() }
   );
 }
 
@@ -395,7 +399,7 @@ describe('(g) /shutdown requires the local admin key', () => {
 // ---------------------------------------------------------------------------
 function postMcpInitializeRaw(
   port: number,
-  opts: { authHeader?: string; memberParam?: string } = {},
+  opts: { authHeader?: string; memberParam?: string; headers?: Record<string, string> } = {},
 ): Promise<{ status: number; body: string }> {
   return new Promise((resolve, reject) => {
     const qs = opts.memberParam ? `?member=${encodeURIComponent(opts.memberParam)}` : '';
@@ -416,6 +420,7 @@ function postMcpInitializeRaw(
           Accept: 'application/json, text/event-stream',
           'Content-Length': Buffer.byteLength(body),
           ...(opts.authHeader ? { Authorization: opts.authHeader } : {}),
+          ...(opts.headers ?? {}),
         },
       },
       (res) => {
@@ -548,7 +553,7 @@ describe('(j) unauthenticated ?member= URL-param fallback on /mcp initialize', (
     clients.push(client);
     const transport = new StreamableHTTPClientTransport(
       new URL(`http://127.0.0.1:${handle.port}/mcp?member=url-param-member-id`),
-      { reconnectionOptions: { maxRetries: 0, maxReconnectionDelay: 100, initialReconnectionDelay: 100, reconnectionDelayGrowFactor: 1 } },
+      { reconnectionOptions: { maxRetries: 0, maxReconnectionDelay: 100, initialReconnectionDelay: 100, reconnectionDelayGrowFactor: 1 }, requestInit: memberSecretRequestInit() },
     );
     await client.connect(transport);
 
@@ -565,7 +570,7 @@ describe('(j) unauthenticated ?member= URL-param fallback on /mcp initialize', (
     const handle = await createHttpTransport({ registerTools: noop, preferredPort: 0 });
     handles.push(handle);
 
-    const { status, body } = await postMcpInitializeRaw(handle.port, { memberParam: 'no-such-member-uuid' });
+    const { status, body } = await postMcpInitializeRaw(handle.port, { memberParam: 'no-such-member-uuid', headers: memberSecretHeaders() });
     expect(status).toBe(403);
     expect(JSON.parse(body)).toEqual({ error: 'unknown member' });
     expect(sessionRegistry.get(getTokenIssuer().workspaceId(), 'no-such-member-uuid')).toBeUndefined();
@@ -587,7 +592,7 @@ describe('(j) unauthenticated ?member= URL-param fallback on /mcp initialize', (
     clients.push(client);
     const transport = new StreamableHTTPClientTransport(
       new URL(`http://127.0.0.1:${handle.port}/mcp?member=legacy-friendly-name`),
-      { reconnectionOptions: { maxRetries: 0, maxReconnectionDelay: 100, initialReconnectionDelay: 100, reconnectionDelayGrowFactor: 1 } },
+      { reconnectionOptions: { maxRetries: 0, maxReconnectionDelay: 100, initialReconnectionDelay: 100, reconnectionDelayGrowFactor: 1 }, requestInit: memberSecretRequestInit() },
     );
     await client.connect(transport);
 
@@ -598,6 +603,134 @@ describe('(j) unauthenticated ?member= URL-param fallback on /mcp initialize', (
     expect(sessionRegistry.get(issuer.workspaceId(), 'legacy-friendly-name')).toBeUndefined();
 
     sessionRegistry.unregister(issuer.workspaceId(), agent.id);
+  });
+});
+
+// (k) The ?member= route requires the install's member access secret
+// (apra-fleet-b4g.122.4): a session from another user, or one configured for
+// another install, is refused with 401 before any member lookup.
+describe("(k) ?member= route requires this install's member access secret", () => {
+  const tmpDirs: string[] = [];
+  afterEach(() => {
+    backupAndResetRegistry();
+    restoreRegistry();
+    for (const d of tmpDirs.splice(0)) fs.rmSync(d, { recursive: true, force: true });
+  });
+
+  async function memberServer(): Promise<{ handle: HttpTransportHandle; secretPath: string; secret: string; memberId: string }> {
+    backupAndResetRegistry();
+    const agent = makeTestAgent({ friendlyName: 'secret-gate-member' });
+    addAgent(agent);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-member-secret-'));
+    tmpDirs.push(dir);
+    const secretPath = path.join(dir, 'member-access.key');
+    const handle = await createHttpTransport({ registerTools: noop, preferredPort: 0, memberSecretPath: secretPath });
+    handles.push(handle);
+    return { handle, secretPath, secret: fs.readFileSync(secretPath, 'utf8').trim(), memberId: agent.id };
+  }
+
+  it('creates an owner-only 64-hex secret at server start', async () => {
+    const { secretPath, secret } = await memberServer();
+    expect(secret).toMatch(/^[0-9a-f]{64}$/);
+    if (process.platform !== 'win32') expect(fs.statSync(secretPath).mode & 0o777).toBe(0o600);
+  });
+
+  it('without the secret -> 401 with a clear error; no session, no registry entry', async () => {
+    const { handle, memberId } = await memberServer();
+    const { status, body } = await postMcpInitializeRaw(handle.port, { memberParam: memberId });
+    expect(status).toBe(401);
+    const parsed = JSON.parse(body);
+    expect(parsed.error).toBe('member secret required');
+    expect(parsed.detail).toContain(MEMBER_SECRET_HEADER);
+    expect(handle.sessions.size).toBe(0);
+    expect(sessionRegistry.get(getTokenIssuer().workspaceId(), memberId)).toBeUndefined();
+  });
+
+  it("with another install's secret -> 401", async () => {
+    const { handle, memberId } = await memberServer();
+    const otherInstallSecret = getOrCreateMemberAccessSecret();
+    const { status, body } = await postMcpInitializeRaw(handle.port, { memberParam: memberId, headers: { [MEMBER_SECRET_HEADER]: otherInstallSecret } });
+    expect(status).toBe(401);
+    expect(JSON.parse(body).error).toBe('member secret required');
+    expect(handle.sessions.size).toBe(0);
+  });
+
+  it('an unknown member without the secret gets 401, not 403 (membership is not revealed)', async () => {
+    const { handle } = await memberServer();
+    const { status } = await postMcpInitializeRaw(handle.port, { memberParam: 'no-such-member-uuid' });
+    expect(status).toBe(401);
+  });
+
+  it('with its own secret -> the member session opens', async () => {
+    const { handle, secret, memberId } = await memberServer();
+    const client = new Client({ name: 'secret-client', version: '1.0.0' }, { capabilities: {} });
+    clients.push(client);
+    await client.connect(new StreamableHTTPClientTransport(
+      new URL(`http://127.0.0.1:${handle.port}/mcp?member=${memberId}`),
+      { reconnectionOptions: { maxRetries: 0, maxReconnectionDelay: 100, initialReconnectionDelay: 100, reconnectionDelayGrowFactor: 1 }, requestInit: { headers: { [MEMBER_SECRET_HEADER]: secret } } },
+    ));
+    expect(handle.sessions.size).toBe(1);
+    sessionRegistry.unregister(getTokenIssuer().workspaceId(), memberId);
+  });
+
+  it('a replaced secret takes effect at once; a deleted one refuses every member request', async () => {
+    const { handle, secretPath, secret, memberId } = await memberServer();
+    const replacement = 'b'.repeat(64);
+    fs.writeFileSync(secretPath, replacement + '\n');
+    expect((await postMcpInitializeRaw(handle.port, { memberParam: memberId, headers: { [MEMBER_SECRET_HEADER]: secret } })).status).toBe(401);
+    fs.rmSync(secretPath);
+    expect((await postMcpInitializeRaw(handle.port, { memberParam: memberId, headers: { [MEMBER_SECRET_HEADER]: replacement } })).status).toBe(401);
+  });
+
+  it('a FULL (no ?member=) request without the secret -> 401 with a clear error; no session', async () => {
+    const { handle } = await memberServer();
+    const { status, body } = await postMcpInitializeRaw(handle.port);
+    expect(status).toBe(401);
+    const parsed = JSON.parse(body);
+    expect(parsed.error).toBe('access secret required');
+    expect(parsed.detail).toContain(MEMBER_SECRET_HEADER);
+    expect(handle.sessions.size).toBe(0);
+  });
+
+  it("a FULL request with another install's secret -> 401; with its own secret -> OK", async () => {
+    const { handle, secret } = await memberServer();
+    const other = getOrCreateMemberAccessSecret();
+    expect((await postMcpInitializeRaw(handle.port, { headers: { [MEMBER_SECRET_HEADER]: other } })).status).toBe(401);
+    expect((await postMcpInitializeRaw(handle.port, { headers: { [MEMBER_SECRET_HEADER]: secret } })).status).toBe(200);
+  });
+
+  function rawSessionRequest(port: number, method: 'GET' | 'DELETE', sid: string, headers: Record<string, string>): Promise<number> {
+    return new Promise((resolve, reject) => {
+      const req = http.request(
+        { hostname: '127.0.0.1', port, path: '/mcp', method, headers: { Accept: 'text/event-stream', 'mcp-session-id': sid, ...headers } },
+        (res) => { resolve(res.statusCode ?? 0); res.destroy(); },
+      );
+      req.on('error', reject);
+      req.end();
+    });
+  }
+
+  it('GET/DELETE on a live session with an unverified bearer and no secret -> 401; the session survives; a verified JWT still passes the gate', async () => {
+    const { handle, secret } = await memberServer();
+    const client = new Client({ name: 'victim', version: '1.0.0' }, { capabilities: {} });
+    clients.push(client);
+    await client.connect(new StreamableHTTPClientTransport(
+      new URL(`http://127.0.0.1:${handle.port}/mcp`),
+      { reconnectionOptions: { maxRetries: 0, maxReconnectionDelay: 100, initialReconnectionDelay: 100, reconnectionDelayGrowFactor: 1 }, requestInit: { headers: { [MEMBER_SECRET_HEADER]: secret } } },
+    ));
+    const [sid] = [...handle.sessions.keys()];
+    expect(sid).toBeTruthy();
+
+    expect(await rawSessionRequest(handle.port, 'GET', sid, { Authorization: 'Bearer x' })).toBe(401);
+    expect(await rawSessionRequest(handle.port, 'DELETE', sid, { Authorization: 'Bearer x' })).toBe(401);
+    expect(await rawSessionRequest(handle.port, 'DELETE', sid, {})).toBe(401);
+    expect(handle.sessions.has(sid)).toBe(true);
+
+    // Gate only: a verified JWT stands in for the secret. (It is not yet bound
+    // to the session it targets -- that is a separate follow-up.)
+    const token = getTokenIssuer().issue({ member_id: 'gate-jwt-member', role: 'doer', work_folder: '/tmp/gate' });
+    expect(await rawSessionRequest(handle.port, 'DELETE', sid, { Authorization: `Bearer ${token}` })).toBe(200);
+    expect(handle.sessions.has(sid)).toBe(false);
   });
 });
 

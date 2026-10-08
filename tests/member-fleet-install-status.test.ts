@@ -67,6 +67,12 @@ function deps(world: World, local?: { connect: (id: string) => Promise<MemberSes
     exec: async (_a, command) => {
       const c = text(command);
       world.execLog.push(c);
+      // Marker read (cat / Get-Content): a current member install records its port.
+      // The member access secret read: an install without one (older than the secret).
+      if (c.includes('member-access.key')) return ok('');
+      if (c.includes('member-install.json') && (c.includes('cat ') || c.includes('Get-Content'))) {
+        return world.marker ? ok(JSON.stringify({ version: VERSION, port: 7523 })) : ok('');
+      }
       if (c.includes('member-install.json')) return world.marker ? ok('') : { stdout: '', stderr: '', code: 1 };
       if (c.includes("'register-member'")) {
         switch (world.register) {
@@ -140,7 +146,7 @@ describe('remote member: install, self-register, verify MEMBER session', () => {
     const world = newWorld({ installed: null });
     world.claudeJson = entryFor(agent);
     const s = await probeMemberFleetMcp(agent, deps(world));
-    expect(s).toEqual({ state: 'available', version: VERSION, checkedAt: expect.any(String), fleetInstalledAt: expect.any(String) });
+    expect(s).toEqual({ state: 'available', version: VERSION, checkedAt: expect.any(String), fleetInstalledAt: expect.any(String), port: 7523, portSource: 'marker' });
     expect(world.transfers).toBe(1); // an install actually ran
     const reg = world.execLog.find(c => c.includes("'register-member'"))!;
     expect(reg).toContain(`'register-member' '--type' 'local' '--id' '${agent.id}' '--name' 'bella' '--path' '${WORK}' '--llm' 'claude'`);
@@ -441,7 +447,7 @@ describe('fleetMcp status is an observation, never sticky', () => {
     expect(getAgent(agent.id)?.fleetMcp).toMatchObject({ state: 'unavailable', reason: 'member-tools-missing' });
     world.listTools = newWorld().listTools;
     await refreshMemberFleetMcp(agent, d);
-    expect(getAgent(agent.id)?.fleetMcp).toEqual({ state: 'available', version: VERSION, checkedAt: expect.any(String) });
+    expect(getAgent(agent.id)?.fleetMcp).toEqual({ state: 'available', version: VERSION, checkedAt: expect.any(String), port: 7523, portSource: 'marker' });
   });
 
   it('recordFleetMcpStatus on an unknown id is a no-op', () => {

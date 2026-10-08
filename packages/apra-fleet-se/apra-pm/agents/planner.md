@@ -40,6 +40,9 @@ continue without KB. A missing or failing KB or code tool is never a reason to s
 never report this dispatch as blocked because of it. From whichever source you have,
 trust CONFIRMED entries fully and use INFERRED entries as hints, not facts.
 
+If the `kb_*`/`code_*` tools are listed only as deferred tools, load them by name with
+your tool-loading tool first, before concluding they are unavailable.
+
 1. When the tools are present, call `kb_session_prime` with `hint_symbols`/`hint_modules`
    derived from the sprint goals / requirements you are about to decompose.
 2. From whichever source you have (a live `kb_session_prime` result, the injected

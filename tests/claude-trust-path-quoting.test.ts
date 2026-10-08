@@ -87,7 +87,11 @@ describe('ClaudeProvider.ensureWorkspaceTrusted path quoting (real bash)', () =>
 
       const provider = new ClaudeProvider();
       const fwd = (p: string) => p.replace(/\\/g, '/');
-      await provider.ensureWorkspaceTrusted(fwd(work), exec, 'linux', undefined, undefined, fwd(home));
+      // The merged file goes through the file channel (never a command line);
+      // the staged file is then moved into place by a command embedding both
+      // paths inside "...", which is what this test exercises.
+      const transport = { writeHomeFile: async (rel: string, content: string) => { fs.writeFileSync(path.join(home, rel), content); } };
+      await provider.ensureWorkspaceTrusted(fwd(work), exec, 'linux', undefined, transport, fwd(home));
 
       const written = JSON.parse(fs.readFileSync(path.join(home, '.claude.json'), 'utf8'));
       expect(written.projects[fwd(work)]?.hasTrustDialogAccepted).toBe(true);
@@ -125,6 +129,8 @@ describe('ClaudeProvider.syncMemberMcpEntry path quoting (real bash)', () => {
         memberHomeDir: fwd(home),
         agentOs: 'linux',
         url,
+        // File channel as above: the move command embeds the escaped paths.
+        transport: { writeHomeFile: async (rel: string, content: string) => { fs.writeFileSync(path.join(home, rel), content); } },
       });
 
       const written = JSON.parse(fs.readFileSync(path.join(home, '.claude.json'), 'utf8'));

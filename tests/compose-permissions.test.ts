@@ -23,12 +23,30 @@ import path from 'node:path';
 // GitHub #499: seedWorkspaceTrust now also forwards a 5th `transport` argument (the
 // out-of-band file channel for a large ~/.claude.json) for every non-relay member.
 const TRUST_TRANSPORT = expect.objectContaining({ writeHomeFile: expect.any(Function) });
+const TRUST_SECRET = expect.objectContaining({ write: expect.any(Function), remove: expect.any(Function) });
 
 const mockExecCommand = vi.fn<(cmd: string, timeout?: number) => Promise<SSHExecResult>>();
+
+// The member file channel of the fake member: files land in the SAME store the
+// exec mock reads (b4g.101: ~/.claude.json content never rides a command line).
+const memberFs = {
+  current: null as null | { get: (k: string) => string | undefined; set: (k: string, v: string) => void },
+  /** The content currently at a member path (as the exec mock keys it: quoted). */
+  landed: (p: string) => memberFs.current?.get(`"${p}"`),
+};
 
 vi.mock('../src/services/strategy.js', () => ({
   getStrategy: () => ({
     execCommand: mockExecCommand,
+    transferFiles: async (paths: string[], dest?: string) => {
+      for (const p of paths) memberFs.current?.set(`"${dest}/${path.basename(p)}"`, fs.readFileSync(p, 'utf8'));
+      return { success: paths.map((p) => path.basename(p)), failed: [] };
+    },
+    writeSecretFile: async (name: string, content: string) => {
+      memberFs.current?.set(`"/home/testuser/${name}"`, content);
+      return `/home/testuser/${name}`;
+    },
+    removeSecretFile: async () => undefined,
   }),
 }));
 
@@ -57,6 +75,7 @@ function makeFsHandler(seed: Record<string, string> = {}): (cmd: string, timeout
     get: (k: string) => store.get(norm(k)),
     set: (k: string, v: string) => { store.set(norm(k), v); },
   };
+  memberFs.current = files;
   return async (cmd: string): Promise<SSHExecResult> => {
     // POSIX write (heredoc)
     let m = cmd.match(/^cat > (.+?) << 'FLEET_PERMS_EOF'\n([\s\S]*)\nFLEET_PERMS_EOF$/);
@@ -65,6 +84,14 @@ function makeFsHandler(seed: Record<string, string> = {}): (cmd: string, timeout
     // the per-folder member MCP entry.
     m = cmd.match(/^cat > (.+?) << 'FLEET_TRUST_EOF'\n([\s\S]*)\nFLEET_TRUST_EOF\nmv .+? (.+)$/);
     if (m) { files.set(m[3], m[2]); return { stdout: '', stderr: '', code: 0 }; }
+    // Content-free move of a staged file (file channel / secret file).
+    m = cmd.match(/^mv (".+?") (".+?")$/) ?? cmd.match(/^Move-Item -Force (".+?") (".+?")$/);
+    if (m) {
+      const staged = files.get(m[1]);
+      if (staged === undefined) return { stdout: '', stderr: 'No such file', code: 1 };
+      files.set(m[2], staged);
+      return { stdout: '', stderr: '', code: 0 };
+    }
     // Windows write (WriteAllText); PowerShell single-quote escaping doubles quotes
     m = cmd.match(/\[System\.IO\.File\]::WriteAllText\("(.+?)", '([\s\S]*)', \(New-Object System\.Text\.UTF8Encoding\(\$false\)\)\)/);
     if (m) { files.set(m[1], m[2].replace(/''/g, "'")); return { stdout: '', stderr: '', code: 0 }; }
@@ -709,9 +736,9 @@ describe('composePermissions -- legacy fleet MCP entries pruned from settings.lo
     expect(result).toContain('Permissions composed');
 
     const allCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
-    const trustWrite = allCmds.find(cmd => cmd.includes("'FLEET_TRUST_EOF'") && cmd.includes('/home/testuser/.claude.json'))!;
-    expect(trustWrite).toBeDefined();
-    const body = JSON.parse(trustWrite.split("'FLEET_TRUST_EOF'\n")[1].split('\nFLEET_TRUST_EOF')[0]);
+    // The merged file reaches the member through the file channel and a content-free mv.
+    expect(allCmds.some(cmd => cmd.includes('FLEET_TRUST_EOF'))).toBe(false);
+    const body = JSON.parse(memberFs.landed('/home/testuser/.claude.json')!);
     expect(body.projects['/home/testuser/project'].mcpServers['apra-fleet']).toEqual({
       type: 'http',
       url: `http://localhost:7523/mcp?member=${member.id}`,
@@ -1283,7 +1310,7 @@ describe('composePermissions -- invokes ensureWorkspaceTrusted (apra-fleet-eft.4
     expect(spy).toHaveBeenCalledTimes(1);
     // apra-fleet-7dir.2.8 widened the hook with a 4th `shell` argument; this
     // member records no shell, so seedWorkspaceTrust forwards undefined.
-    expect(spy).toHaveBeenCalledWith('/home/testuser/project', expect.any(Function), 'linux', undefined, TRUST_TRANSPORT, '/home/testuser');
+    expect(spy).toHaveBeenCalledWith('/home/testuser/project', expect.any(Function), 'linux', undefined, TRUST_TRANSPORT, '/home/testuser', TRUST_SECRET);
     spy.mockRestore();
   });
 
@@ -1299,7 +1326,7 @@ describe('composePermissions -- invokes ensureWorkspaceTrusted (apra-fleet-eft.4
     expect(spy).toHaveBeenCalledTimes(1);
     // apra-fleet-7dir.2.8 widened the hook with a 4th `shell` argument; this
     // member records no shell, so seedWorkspaceTrust forwards undefined.
-    expect(spy).toHaveBeenCalledWith('/home/testuser/project', expect.any(Function), 'linux', undefined, TRUST_TRANSPORT, '/home/testuser');
+    expect(spy).toHaveBeenCalledWith('/home/testuser/project', expect.any(Function), 'linux', undefined, TRUST_TRANSPORT, '/home/testuser', TRUST_SECRET);
     spy.mockRestore();
   });
 
@@ -1329,10 +1356,8 @@ describe('composePermissions -- invokes ensureWorkspaceTrusted (apra-fleet-eft.4
     const allCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
     // The LAST ~/.claude.json write is trust seeding (the per-folder member MCP
     // entry is written to the same file just before it).
-    const trustWrite = allCmds.filter(cmd => cmd.includes('FLEET_TRUST_EOF')).pop();
-    expect(trustWrite).toBeDefined();
-    const heredocMatch = trustWrite!.match(/<< 'FLEET_TRUST_EOF'\n([\s\S]*?)\nFLEET_TRUST_EOF/);
-    const written = JSON.parse(heredocMatch![1]);
+    expect(allCmds.some(cmd => cmd.includes('FLEET_TRUST_EOF'))).toBe(false);
+    const written = JSON.parse(memberFs.landed('/home/testuser/.claude.json')!);
     expect(written.projects['/home/testuser/project'].hasTrustDialogAccepted).toBe(true);
     // Trust seeding merged onto (did not clobber) the member MCP entry.
     expect(written.projects['/home/testuser/project'].mcpServers['apra-fleet'].url).toContain(`?member=${member.id}`);

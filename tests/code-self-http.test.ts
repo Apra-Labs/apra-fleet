@@ -49,7 +49,7 @@ import { registerAllTools } from '../src/services/tool-registry.js';
 import { addAgent } from '../src/services/registry.js';
 import { inFlightAgents } from '../src/tools/execute-prompt.js';
 import { PROVIDERS, type CodeIntelligenceProvider } from '../src/tools/code-intelligence.js';
-import { makeTestLocalAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
+import { makeTestLocalAgent, backupAndResetRegistry, restoreRegistry, memberSecretRequestInit } from './test-helpers.js';
 
 const RECONNECT = { maxRetries: 0, maxReconnectionDelay: 100, initialReconnectionDelay: 100, reconnectionDelayGrowFactor: 1 };
 const INDEX_FILE = '.fake-code-index.json';
@@ -95,7 +95,7 @@ async function connect(member?: string): Promise<Client> {
   if (member) url.searchParams.set('member', member);
   const client = new Client({ name: 'code-self-http', version: '1.0.0' }, { capabilities: {} });
   clients.push(client);
-  await client.connect(new StreamableHTTPClientTransport(url, { reconnectionOptions: RECONNECT }));
+  await client.connect(new StreamableHTTPClientTransport(url, { reconnectionOptions: RECONNECT, requestInit: memberSecretRequestInit() }));
   return client;
 }
 

@@ -70,6 +70,43 @@ test('connectFleetMember adds origin=engine only when asked, and refuses any oth
     } finally { await stopServer(s); }
 });
 
+test('connectFleetMember sends the member access secret of its data dir on every request, and none when the install has none', async () => {
+    const fs = await import('node:fs');
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const { MEMBER_SECRET_HEADER } = await import('../src/client/server-resolution.mjs');
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'client-member-secret-'));
+    const headers = [];
+    const server = http.createServer((req, res) => {
+        headers.push(`${req.method} ${req.headers[MEMBER_SECRET_HEADER.toLowerCase()] ?? '<none>'}`);
+        if (req.method === 'POST') {
+            res.setHeader('mcp-session-id', 'sid-1');
+            res.setHeader('content-type', 'application/json');
+            res.end(JSON.stringify({ jsonrpc: '2.0', id: 1, result: {} }));
+        } else { res.statusCode = 200; res.end(); }
+    });
+    await new Promise(r => server.listen(0, '127.0.0.1', r));
+    const url = `http://127.0.0.1:${server.address().port}/mcp`;
+    const deps = { env: { APRA_FLEET_DATA_DIR: dataDir }, checkRunningInstance: async () => ({ running: true, url, pid: process.pid }) };
+    try {
+        const none = await connectFleetMember('abcdef12-0000-4000-8000-000000000000', deps);
+        await none.close();
+        assert.ok(headers.length > 0 && headers.every(h => h.endsWith('<none>')), JSON.stringify(headers));
+        headers.length = 0;
+        const secret = 'a'.repeat(64);
+        fs.writeFileSync(path.join(dataDir, 'member-access.key'), `${secret}\n`);
+        const withSecret = await connectFleetMember('abcdef12-0000-4000-8000-000000000000', deps);
+        await withSecret.close();
+        assert.ok(headers.some(h => h.startsWith('POST')), JSON.stringify(headers));
+        assert.ok(headers.some(h => h.startsWith('DELETE')), JSON.stringify(headers));
+        assert.ok(headers.every(h => h.endsWith(secret)), JSON.stringify(headers));
+    } finally {
+        server.closeAllConnections();
+        await new Promise(r => server.close(r));
+        fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+});
+
 test('connectFleetMember adds kb_maintainer=1 only with origin engine', async () => {
     const s = await startServer(200);
     try {

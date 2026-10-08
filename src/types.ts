@@ -77,6 +77,19 @@ export interface Agent {
    *  every probe overwrites it, so a manual fix flips unavailable -> available
    *  on the next probe with no restart (src/services/member-fleet-install.ts). */
   fleetMcp?: FleetMcpStatus;
+  /** Remote members: the port the member's OWN apra-fleet install records in
+   *  its member-install marker, i.e. where its server listens. memberMcpUrl
+   *  builds the member's MCP URL from it; absent means the install recorded
+   *  no port (the built-in default is used, and fleetMcp detail says so).
+   *  Set by the fleetMcp probe (recordFleetMcpStatus) and kept separate from
+   *  fleetMcp so a later status overwrite never silently drops it. */
+  memberMcpPort?: number;
+  /** Remote members: the member install's member access secret
+   *  (<data dir>/member-access.key there), encrypted like encryptedPassword.
+   *  Its server accepts a `?member=` session only with this secret in the
+   *  X-Apra-Fleet-Member-Secret header (src/services/member-access-secret.ts).
+   *  Set by the fleetMcp probe; absent until it read the secret. */
+  encryptedMemberMcpSecret?: string;
 }
 
 /** Observation of a member's apra-fleet MCP server (see Agent.fleetMcp). */
@@ -112,6 +125,18 @@ export interface FleetMcpStatus {
    *  cannot run bd. Independent of `state` (the KB/code tools may still work);
    *  absent when bd works or could not be probed. */
   beads?: { state: 'missing' | 'broken'; detail: string; fix: string };
+  /** Remote members: the port the member's MCP URL uses, as resolved by this
+   *  probe from the member's own install. Absent when the probe did not get
+   *  that far (the previously recorded port is kept then). */
+  port?: number;
+  /** Where `port` came from: the member-install marker, or the built-in
+   *  default because the marker records no port (detail says so). */
+  portSource?: 'marker' | 'default';
+  /** Set by the probe that replaced an unmarked (full) install with a member
+   *  install (fleet_install "replace-full"): the replaced version, what was
+   *  removed or moved, and the timestamped backup directory on the member.
+   *  An observation of that probe only; not carried to later probes. */
+  replacedFullInstall?: { previousVersion: string; removed: string[]; backupPath: string };
 }
 
 export interface GitHubAppConfig {

@@ -27,7 +27,7 @@ import { registerAllTools } from '../../src/services/tool-registry.js';
 import { addAgent } from '../../src/services/registry.js';
 import { resolveProjectSlug } from '../../src/services/knowledge/project-slug.js';
 import { getKbProviders } from '../../src/services/knowledge/kb-providers.js';
-import { makeTestAgent, makeTestLocalAgent, backupAndResetRegistry, restoreRegistry } from '../test-helpers.js';
+import { makeTestAgent, makeTestLocalAgent, backupAndResetRegistry, restoreRegistry, memberSecretRequestInit } from '../test-helpers.js';
 
 const RECONNECT = { maxRetries: 0, maxReconnectionDelay: 100, initialReconnectionDelay: 100, reconnectionDelayGrowFactor: 1 };
 const RUN = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -71,7 +71,7 @@ async function connect(member?: string): Promise<Client> {
   if (member) url.searchParams.set('member', member);
   const client = new Client({ name: 'kb-self-e2e', version: '1.0.0' }, { capabilities: {} });
   clients.push(client);
-  await client.connect(new StreamableHTTPClientTransport(url, { reconnectionOptions: RECONNECT }));
+  await client.connect(new StreamableHTTPClientTransport(url, { reconnectionOptions: RECONNECT, requestInit: memberSecretRequestInit() }));
   return client;
 }
 

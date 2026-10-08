@@ -45,7 +45,7 @@ import type { ParsedResponse, PermissionDenial, UsageLimitSignal } from '../prov
 import { isMaxTurnsResponse } from '../providers/provider.js';
 import { preflightCheck } from '../services/preflight-check.js';
 import { ensureAgyProject } from '../services/agy-project.js';
-import { sessionMcpInjectionAvailable, sessionMcpConfigPath, sessionMcpConfigIsPerDispatch, writeSessionMcpConfig } from '../services/session-mcp-config.js';
+import { sessionMcpInjectionAvailable, sessionMcpConfigPath, sessionMcpConfigIsPerDispatch, writeSessionMcpConfig, resolveSessionMcpAlwaysLoad } from '../services/session-mcp-config.js';
 
 export interface ExecutePromptStructured {
   isError?: boolean;
@@ -1479,7 +1479,18 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     throw err;
   }
   if (sessionMcpPath) {
-    const wrote = await writeSessionMcpConfig(agent, sessionMcpPath, (cmd, t) => strategy.execCommand(cmd, t));
+    const memberExec = (cmd: string, t?: number) => strategy.execCommand(cmd, t);
+    // Non-deferral of the member's kb_*/code_* tools (Claude: alwaysLoad in
+    // the session config). When it cannot be applied the config is still
+    // attached, the tools stay deferred, and the cause is logged.
+    const loadPolicy = await resolveSessionMcpAlwaysLoad(
+      agent,
+      provider.mcpAlwaysLoadMinVersion?.(),
+      cmds.agentVersion(provider),
+      memberExec,
+    );
+    if (loadPolicy.warning) scope.warn(`session MCP config: ${loadPolicy.warning}`);
+    const wrote = await writeSessionMcpConfig(agent, sessionMcpPath, memberExec, { alwaysLoad: loadPolicy.alwaysLoad });
     if (wrote.ok) {
       if (sessionMcpConfigIsPerDispatch(agent)) sessionMcpCleanup.push(sessionMcpPath);
     } else {

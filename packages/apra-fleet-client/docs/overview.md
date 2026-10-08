@@ -112,12 +112,10 @@ See `api-reference.md` for full method-by-method documentation and
 
 ## A note on the `factory` entry point
 
-`src/client/factory.mjs` imports `FleetWorkflow` from
-`'../workflow/index.mjs'` and `WorkflowEngine` from `'../workflow/engine.mjs'`
--- paths that would resolve to `src/workflow/*` *inside this package*.
-This package has no `src/workflow` directory; that code actually lives in
-the separate `@apralabs/apra-fleet-workflow` package
-(`packages/apra-fleet-workflow/src/workflow/`). See "Known issues" in
-`api-reference.md` for details -- this affects only the `./factory` export;
-the `.` , `./client`, and `./transport` exports are self-contained and
-unaffected.
+`src/client/factory.mjs` loads `FleetWorkflow` and `WorkflowEngine` from
+the separate `@apralabs/apra-fleet-workflow` package with a dynamic
+`import()` inside `createWorkflowEngine()`. That package depends on this one,
+so the import is lazy: importing `./factory` does not need it, calling
+`createWorkflowEngine()` does. Its http transport carries the install's
+access secret header (see `api-reference.md`). The `.`, `./client`, and
+`./transport` exports are self-contained.

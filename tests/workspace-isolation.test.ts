@@ -35,7 +35,7 @@ import { sendMessage } from '../src/tools/send-message.js';
 import { createHttpTransport, HttpTransportHandle } from '../src/services/http-transport.js';
 import { fleetEvents } from '../src/services/event-bus.js';
 import { addAgent } from '../src/services/registry.js';
-import { backupAndResetRegistry, restoreRegistry, makeTestLocalAgent } from './test-helpers.js';
+import { backupAndResetRegistry, restoreRegistry, makeTestLocalAgent, memberSecretRequestInit } from './test-helpers.js';
 
 function noopTools(_server: McpServer): void {
   // no tools needed
@@ -271,7 +271,7 @@ describe('(e) event broadcast is scoped to the local workspace', () => {
     if (opts.member) url.searchParams.set('member', opts.member);
     return new StreamableHTTPClientTransport(url, {
       reconnectionOptions: { maxRetries: 0, maxReconnectionDelay: 100, initialReconnectionDelay: 100, reconnectionDelayGrowFactor: 1 },
-      ...(opts.token ? { requestInit: { headers: { Authorization: `Bearer ${opts.token}` } } } : {}),
+      requestInit: opts.token ? { headers: { Authorization: `Bearer ${opts.token}` } } : memberSecretRequestInit(),
     });
   }
 
@@ -383,6 +383,7 @@ describe('(f) URL ?member= fallback keys identity on the member UUID', () => {
     url.searchParams.set('member', member);
     return new StreamableHTTPClientTransport(url, {
       reconnectionOptions: { maxRetries: 0, maxReconnectionDelay: 100, initialReconnectionDelay: 100, reconnectionDelayGrowFactor: 1 },
+      requestInit: memberSecretRequestInit(),
     });
   }
 

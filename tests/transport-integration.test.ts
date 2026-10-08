@@ -15,6 +15,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { LoggingMessageNotificationSchema } from '@modelcontextprotocol/sdk/types.js';
+import { memberSecretRequestInit } from './test-helpers.js';
 import { createHttpTransport, HttpTransportHandle } from '../src/services/http-transport.js';
 import { fleetEvents } from '../src/services/event-bus.js';
 import { serverVersion } from '../src/version.js';
@@ -61,6 +62,7 @@ function makeHttpTransport(port: number): StreamableHTTPClientTransport {
         initialReconnectionDelay: 100,
         reconnectionDelayGrowFactor: 1,
       },
+      requestInit: memberSecretRequestInit(),
     }
   );
 }

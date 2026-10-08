@@ -145,6 +145,9 @@ export async function runCall(argv: string[], deps: CallDeps = {}): Promise<numb
     if (err.status === 403) {
       return fail(io, 'E-MEMBER-FORBIDDEN', `server refused member ${parsed.member}: not a registered member (HTTP 403)`, { status: 403 });
     }
+    if (err.status === 401) {
+      return fail(io, 'E-MEMBER-SECRET', `server refused the member session for ${parsed.member}: the member access secret (member-access.key in this install's data dir) was missing or did not match (HTTP 401). Run this as the install's own user, with the same APRA_FLEET_DATA_DIR as its server.`, { status: 401 });
+    }
     return fail(io, err.code ?? 'E-CONNECT', err.message);
   }
 

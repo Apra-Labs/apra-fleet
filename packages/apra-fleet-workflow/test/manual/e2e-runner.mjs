@@ -7,6 +7,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { McpClient } from '@apralabs/apra-fleet-client/client';
 import { StreamableHttpTransport } from '@apralabs/apra-fleet-client/transport';
+import { withFleetAccessSecret } from '@apralabs/apra-fleet-client/server-resolution';
 import { ApraFleet } from '@apralabs/apra-fleet-client';
 import { FleetWorkflow } from '../../src/workflow/index.mjs';
 import { WorkflowEngine } from '../../src/workflow/engine.mjs';
@@ -21,7 +22,7 @@ const e2eScriptPath = path.join(__dirname, 'e2e-harness-script.mjs');
 
 async function main() {
     console.log('Connecting to apra-fleet...');
-    const transport = new StreamableHttpTransport('http://127.0.0.1:7523/mcp');
+    const transport = new StreamableHttpTransport('http://127.0.0.1:7523/mcp', withFleetAccessSecret());
     const client = new McpClient(transport);
     
     const readyPromise = new Promise(resolve => transport.on('ready', resolve));
