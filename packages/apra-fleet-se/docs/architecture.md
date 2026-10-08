@@ -1600,9 +1600,17 @@ The approach was a strangler-fig extraction, not a rewrite:
   (a `WorkflowError` subclass, `errors.mjs`) replaces an untyped `Error`
   distinguishable only by prose with a `reason` discriminator drawn from a
   frozen vocabulary (`TARGET_NOT_VISIBLE`, `NOTHING_TO_DO`,
-  `CYCLE_REPAIR_FAILED`, `DEADLOCKED`), plus reason-specific structured
-  fields (e.g. `invisibleTargets`, `cyclePairs`, `deadlockedIds`). The
-  human-readable message is unchanged from the prose each refusal already
+  `CYCLE_REPAIR_FAILED`, `DEADLOCKED`, `UNREACHABLE_VERIFY_BLOCK`), plus
+  reason-specific structured fields (e.g. `invisibleTargets`, `cyclePairs`,
+  `deadlockedIds`, `details.unreachableVerifyBlocks`).
+  `UNREACHABLE_VERIFY_BLOCK` is the one refusal raised whether or not other
+  work is ready: with no `integ-test-playbook.md`, a bead whose only unmet
+  `blocks` dependencies are verify-routed beads can never become ready, so
+  the sprint refuses up front and names the exact `bd dep remove` / `bd dep
+  add ... --type related` commands instead of rewriting the DAG. The same
+  shape arising mid-run makes the cycle loop exit (no stall-abort) and the
+  final notes name each such bead as unfinished; that run is never a PASS.
+  The human-readable message is unchanged from the prose each refusal already
   emitted -- this adds a type and discriminator without restyling
   operator-facing text -- and the error is never caught inside the
   pre-sprint block, so it still fails the run before any dispatch occurs.

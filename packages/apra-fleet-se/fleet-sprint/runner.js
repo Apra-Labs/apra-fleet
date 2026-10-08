@@ -247,9 +247,12 @@ import {
     // only 'deferred' -- stops counting as open work.
     partitionDeferredBeads,
 } from './beads-scope.mjs';
-// Pure reachability helpers: which in_progress claims to reclaim, and what
-// each reclaim unblocks.
-import { selectReclaimCandidates, downstreamDependentIds } from './beads-reachability.mjs';
+// Pure reachability helpers: which in_progress claims to reclaim (and what
+// each reclaim unblocks), and which beads wait only on verify-routed beads.
+import {
+    selectReclaimCandidates, downstreamDependentIds,
+    findUnreachableVerifyBlocks, verifyBlockFixCommands,
+} from './beads-reachability.mjs';
 // The child-bead allocation and batched-claim command surface: computeChildFloor,
 // createChildBeadWithAllocatedId, verifyDoerStreakClosed and claimBeadsBatched.
 // Extracted out of runner.js (apra-fleet-3swo.6.13); imported only to be
@@ -2379,6 +2382,42 @@ async function runSprintCycle(context) {
         }
     }
 
+    // Verify-routed blockers with no way to close. A verify-routed bead (all
+    // children closed, see classifyVerifySet) closes only through the
+    // integ-test phase, and that phase runs only when integ-test-playbook.md
+    // exists. Without it, a bead whose ONLY unmet `blocks` dependencies are
+    // verify-routed beads can never become ready, and the run would spin
+    // until the stall detector aborts it. Checked whether or not other work
+    // is ready, after the stale-claim reclaim above. Reads the shared
+    // snapshot (no new `bd list`), and probes for the playbook only when
+    // there is a hit -- hasPlaybook is otherwise computed per cycle. This is
+    // a diagnosis, not a repair: the operator's DAG is left untouched and
+    // the refusal names the exact `bd dep` commands instead.
+    {
+        const { verifyIds: preSprintVerifySet } = classifyVerifySet(await fetchAllBeadsShared(), targetIssues);
+        const unreachableAtLaunch = preSprintVerifySet.length > 0
+            ? findUnreachableVerifyBlocks(await notDoneBeadsFromSnapshot(), preSprintVerifySet)
+            : [];
+        if (unreachableAtLaunch.length > 0
+            && !(await probeFileExists('integ-test-playbook.md', getMemberForRole('integ-test-runner')))) {
+            const lines = unreachableAtLaunch.map((hit) =>
+                `  - ${hit.id} is blocked only by verify-routed bead(s) ${hit.blockerIds.join(', ')}; ` +
+                `to keep the link but stop it gating readiness, run:\n` +
+                verifyBlockFixCommands(hit).map((c) => `      ${c}`).join('\n'));
+            throw new PreSprintValidationError(
+                `Pre-sprint validation failed: scope '${sprintFilter}' has ${unreachableAtLaunch.length} bead(s) that can never ` +
+                `become ready. Each is blocked only by bead(s) whose children are all closed, which are routed to ` +
+                `integration verification -- and no integ-test-playbook.md exists, so they can never close. Either add ` +
+                `integ-test-playbook.md, or change the blocking edge(s) to 'related':\n${lines.join('\n')}`,
+                {
+                    reason: PRE_SPRINT_REFUSAL_REASONS.UNREACHABLE_VERIFY_BLOCK,
+                    scope: sprintFilter,
+                    details: { unreachableVerifyBlocks: unreachableAtLaunch },
+                }
+            );
+        }
+    }
+
     // =======================
     // Goal-priority exit condition + stall-abort bookkeeping
     // =======================
@@ -2457,6 +2496,13 @@ async function runSprintCycle(context) {
     // score below: a bead cannot re-earn classification credit by
     // oscillating in and out of eligibility.
     const verifyEverIds = new Set();
+
+    // Open-at-goal beads the cycle loop exited on because their only unmet
+    // `blocks` dependencies were verify-routed beads that cannot close (no
+    // integ-test playbook). Set by the Cycle Evaluation exit below and
+    // reported after Final Review as unfinished work, with the `bd dep`
+    // commands that would unblock each one -- such a run is never a PASS.
+    let unreachableVerifyBlocks = [];
 
     // apra-fleet-rp7a.1: every bead id ever seen DEFERRED at/above goal
     // priority during Cycle Evaluation, monotone for the same reason
@@ -3150,12 +3196,29 @@ async function runSprintCycle(context) {
         }
 
         // apra-fleet-jfo D5: if the ONLY open-at-goal beads remaining are
-        // verify-routed and no playbook exists to verify them, no further
-        // cycle can make progress by construction -- exit to Finalization
-        // directly rather than let the stall net eventually convert
-        // "finished but unverifiable" into an ABORT.
-        if (!hasPlaybook && openAtGoal.length > 0 && openAtGoal.every((b) => verifyEverIds.has(b.id))) {
-            log(`Cycle ${cycle}: all ${openAtGoal.length} remaining open-at-goal bead(s) are verify-routed (${openAtGoal.map((b) => b.id).join(', ')}) and no integ-test-playbook.md exists to verify them -- exiting cycle loop, cannot make further progress by construction.`);
+        // verify-routed -- or blocked only by verify-routed beads -- and no
+        // playbook exists to verify them, no further cycle can make progress
+        // by construction: the verify-routed ones close only through the
+        // integ-test phase, and the ones waiting on them can never become
+        // ready. Exit to Finalization directly rather than let the stall net
+        // eventually convert "finished but unverifiable" into an ABORT. The
+        // waiting beads are recorded so Finalization reports them as
+        // unfinished (never a clean PASS). Computed from lists this
+        // evaluation already read -- no new `bd list`.
+        const unreachableThisCycle = hasPlaybook ? [] : findUnreachableVerifyBlocks(
+            openAtGoal, verifySetThisCycle, { isUnmet: (id) => !closedIdsNow.has(id) }
+        );
+        const unreachableIdsThisCycle = new Set(unreachableThisCycle.map((h) => h.id));
+        if (!hasPlaybook && openAtGoal.length > 0
+            && openAtGoal.every((b) => verifyEverIds.has(b.id) || unreachableIdsThisCycle.has(b.id))) {
+            if (unreachableThisCycle.length > 0) {
+                unreachableVerifyBlocks = unreachableThisCycle;
+                const verifyOnly = openAtGoal.filter((b) => !unreachableIdsThisCycle.has(b.id)).map((b) => b.id);
+                log(`Cycle ${cycle}: no integ-test-playbook.md exists, so ${verifyOnly.length} remaining open-at-goal bead(s) are verify-routed with no way to close (${verifyOnly.join(', ')}) and ${unreachableThisCycle.length} more are blocked only by such beads -- exiting cycle loop, cannot make further progress by construction. Unfinished: ` +
+                    unreachableThisCycle.map((h) => `${h.id} (blocked by ${h.blockerIds.join(', ')}; to unblock: ${verifyBlockFixCommands(h).join(' ; ')})`).join('; ') + '.');
+            } else {
+                log(`Cycle ${cycle}: all ${openAtGoal.length} remaining open-at-goal bead(s) are verify-routed (${openAtGoal.map((b) => b.id).join(', ')}) and no integ-test-playbook.md exists to verify them -- exiting cycle loop, cannot make further progress by construction.`);
+            }
             endGroup();
             break;
         }
@@ -3352,6 +3415,18 @@ async function runSprintCycle(context) {
             `${capped.length} bead(s) hit the stale-in_progress reclaim bounce cap (limit ${STALE_IN_PROGRESS_RECLAIM_LIMIT}) ` +
             `and were left 'in_progress' for human investigation: ${capped.join(', ')}.`
         );
+    }
+    if (unreachableVerifyBlocks.length > 0) {
+        engineSummaryNotes.push(
+            `${unreachableVerifyBlocks.length} bead(s) were left unfinished because they are blocked only by verify-routed ` +
+            `bead(s) and no integ-test-playbook.md exists to close those: ` +
+            unreachableVerifyBlocks.map((h) => `${h.id} (blocked by ${h.blockerIds.join(', ')}; to unblock: ${verifyBlockFixCommands(h).join(' ; ')})`).join('; ') +
+            '.'
+        );
+        if (finalVerdictResult.verdict === 'PASS') {
+            log(`Final verdict downgraded from PASS to FAIL: ${unreachableVerifyBlocks.length} bead(s) are unfinished (blocked only by verify-routed beads).`);
+            finalVerdictResult.verdict = 'FAIL';
+        }
     }
     for (const note of engineSummaryNotes) log(`Sprint summary: ${note}`);
     if (engineSummaryNotes.length > 0) {

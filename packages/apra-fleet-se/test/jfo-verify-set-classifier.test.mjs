@@ -1,7 +1,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
 import { classifyVerifySet, buildPlannerPrompt, buildFinalVerdictPrompt, buildReviewerPrompt } from '../fleet-sprint/runner.js';
-import { selectReclaimCandidates, downstreamDependentIds } from '../fleet-sprint/beads-reachability.mjs';
+import { findUnreachableVerifyBlocks, verifyBlockFixCommands, selectReclaimCandidates, downstreamDependentIds } from '../fleet-sprint/beads-reachability.mjs';
 
 // Unit tests for apra-fleet-jfo's classifyVerifySet(): the phase-routing
 // initial slice that classifies "all children closed" beads into the
@@ -263,6 +263,99 @@ describe('buildReviewerPrompt beadIds contract (regression for the Re-Review emp
         });
         assert.match(prompt, /bead id\(s\): apra-fleet-6a7, apra-fleet-y8q\./);
         assert.doesNotMatch(prompt, /bead id\(s\): \./);
+    });
+});
+
+// =============================================================================
+// findUnreachableVerifyBlocks: a not-done bead whose ONLY unmet `blocks`
+// dependencies are verify-routed beads can never become ready when no
+// integ-test playbook exists (verify-routed beads close only through the
+// integ phase), so the sprint deadlocks by construction. The helper finds
+// exactly that shape, from the same verify set classifyVerifySet produces.
+// =============================================================================
+describe('findUnreachableVerifyBlocks', () => {
+    // A task T blocked by two bugs whose children are all closed (both
+    // verify-routed by classifyVerifySet), all under one epic.
+    function verifyBlockedFixture() {
+        return [
+            bead('e', { issue_type: 'epic' }),
+            bead('b1', { parent: 'e', issue_type: 'bug' }),
+            bead('b1.1', { parent: 'b1', status: 'closed' }),
+            bead('b2', { parent: 'e', issue_type: 'bug' }),
+            bead('b2.1', { parent: 'b2', status: 'closed' }),
+            bead('t', {
+                parent: 'e',
+                dependencies: [
+                    { type: 'parent-child', depends_on_id: 'e' },
+                    { type: 'blocks', depends_on_id: 'b1' },
+                    { type: 'blocks', depends_on_id: 'b2' },
+                ],
+            }),
+        ];
+    }
+    const notDone = (beads) => beads.filter((b) => b.status !== 'closed');
+
+    test('a bead blocked only by verify-routed beads is reported with its blockers', () => {
+        const beads = verifyBlockedFixture();
+        const { verifyIds } = classifyVerifySet(beads, ['e']);
+        assert.deepStrictEqual(verifyIds.slice().sort(), ['b1', 'b2']);
+        assert.deepStrictEqual(findUnreachableVerifyBlocks(notDone(beads), verifyIds), [
+            { id: 't', blockerIds: ['b1', 'b2'] },
+        ]);
+    });
+
+    test('one non-verify unmet blocker means the bead is still reachable', () => {
+        const beads = verifyBlockedFixture();
+        beads.push(bead('x', { parent: 'e' }));
+        beads.find((b) => b.id === 't').dependencies.push({ type: 'blocks', depends_on_id: 'x' });
+        const { verifyIds } = classifyVerifySet(beads, ['e']);
+        assert.deepStrictEqual(findUnreachableVerifyBlocks(notDone(beads), verifyIds), []);
+    });
+
+    test('closed blockers are met; a bead with no unmet blocker at all is not a hit', () => {
+        const beads = [
+            bead('t', { dependencies: [{ type: 'blocks', depends_on_id: 'done' }] }),
+            bead('done', { status: 'closed' }),
+        ];
+        assert.deepStrictEqual(findUnreachableVerifyBlocks(notDone(beads), ['done']), []);
+    });
+
+    test('verify-routed and deferred beads are never themselves reported', () => {
+        const beads = [
+            bead('v1'),
+            bead('v2', { dependencies: [{ type: 'blocks', depends_on_id: 'v1' }] }),
+            bead('d', { status: 'deferred', dependencies: [{ type: 'blocks', depends_on_id: 'v1' }] }),
+        ];
+        assert.deepStrictEqual(findUnreachableVerifyBlocks(beads, ['v1', 'v2']), []);
+    });
+
+    test('non-blocks edges (related, parent-child) never make a bead unreachable', () => {
+        const beads = [
+            bead('v1'),
+            bead('t', { dependencies: [{ type: 'related', depends_on_id: 'v1' }, { type: 'parent-child', depends_on_id: 'v1' }] }),
+        ];
+        assert.deepStrictEqual(findUnreachableVerifyBlocks(beads, ['v1']), []);
+    });
+
+    test('an explicit isUnmet predicate decides which blockers are still open', () => {
+        // Cycle Evaluation passes only goal-priority beads, so a lower-priority
+        // open blocker is not in the list; the predicate keeps it unmet.
+        const beads = [bead('t', { dependencies: [{ type: 'blocks', depends_on_id: 'v1' }, { type: 'blocks', depends_on_id: 'lowpri' }] })];
+        const closed = new Set();
+        assert.deepStrictEqual(findUnreachableVerifyBlocks(beads, ['v1'], { isUnmet: (id) => !closed.has(id) }), []);
+        closed.add('lowpri');
+        assert.deepStrictEqual(findUnreachableVerifyBlocks(beads, ['v1'], { isUnmet: (id) => !closed.has(id) }), [
+            { id: 't', blockerIds: ['v1'] },
+        ]);
+    });
+
+    test('the fix commands name the exact bd dep edges to change', () => {
+        assert.deepStrictEqual(verifyBlockFixCommands({ id: 't', blockerIds: ['b1', 'b2'] }), [
+            'bd dep remove t b1',
+            'bd dep add t b1 --type related',
+            'bd dep remove t b2',
+            'bd dep add t b2 --type related',
+        ]);
     });
 });
 

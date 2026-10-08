@@ -844,6 +844,15 @@ export class ConcurrentSyncBracketError extends WorkflowError {
 //   DEADLOCKED           Not-done beads remain in scope but none are ready,
 //                        and the repairable cycle shape does not explain it.
 //                        Needs a human to break the dependency deadlock.
+//   UNREACHABLE_VERIFY_BLOCK
+//                        No integ-test playbook exists, and one or more
+//                        not-done beads are blocked ONLY by verify-routed
+//                        beads. Those close only through the integ-test
+//                        phase, which never runs without a playbook, so the
+//                        blocked beads can never become ready. Raised whether
+//                        or not other work is ready. The DAG is left
+//                        untouched; the message names each bead, its
+//                        blockers and the exact `bd dep` commands to run.
 //
 // NOT in this vocabulary, deliberately: the VERIFY-ONLY sprint path. An empty
 // ready set with implementation-complete beads routed to verify PROCEEDS, so
@@ -856,6 +865,7 @@ export const PRE_SPRINT_REFUSAL_REASONS = Object.freeze({
     NOTHING_TO_DO: 'NOTHING_TO_DO',
     CYCLE_REPAIR_FAILED: 'CYCLE_REPAIR_FAILED',
     DEADLOCKED: 'DEADLOCKED',
+    UNREACHABLE_VERIFY_BLOCK: 'UNREACHABLE_VERIFY_BLOCK',
 });
 
 /**
