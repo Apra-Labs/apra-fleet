@@ -710,7 +710,7 @@ describe("(k) ?member= route requires this install's member access secret", () =
     });
   }
 
-  it('GET/DELETE on a live session with an unverified bearer and no secret -> 401; the session survives; a verified JWT still passes', async () => {
+  it('GET/DELETE on a live session with an unverified bearer and no secret -> 401; the session survives; a verified JWT still passes the gate', async () => {
     const { handle, secret } = await memberServer();
     const client = new Client({ name: 'victim', version: '1.0.0' }, { capabilities: {} });
     clients.push(client);
@@ -726,6 +726,8 @@ describe("(k) ?member= route requires this install's member access secret", () =
     expect(await rawSessionRequest(handle.port, 'DELETE', sid, {})).toBe(401);
     expect(handle.sessions.has(sid)).toBe(true);
 
+    // Gate only: a verified JWT stands in for the secret. (It is not yet bound
+    // to the session it targets -- that is a separate follow-up.)
     const token = getTokenIssuer().issue({ member_id: 'gate-jwt-member', role: 'doer', work_folder: '/tmp/gate' });
     expect(await rawSessionRequest(handle.port, 'DELETE', sid, { Authorization: `Bearer ${token}` })).toBe(200);
     expect(handle.sessions.has(sid)).toBe(false);
