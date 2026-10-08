@@ -698,6 +698,38 @@ describe("(k) ?member= route requires this install's member access secret", () =
     expect((await postMcpInitializeRaw(handle.port, { headers: { [MEMBER_SECRET_HEADER]: other } })).status).toBe(401);
     expect((await postMcpInitializeRaw(handle.port, { headers: { [MEMBER_SECRET_HEADER]: secret } })).status).toBe(200);
   });
+
+  function rawSessionRequest(port: number, method: 'GET' | 'DELETE', sid: string, headers: Record<string, string>): Promise<number> {
+    return new Promise((resolve, reject) => {
+      const req = http.request(
+        { hostname: '127.0.0.1', port, path: '/mcp', method, headers: { Accept: 'text/event-stream', 'mcp-session-id': sid, ...headers } },
+        (res) => { resolve(res.statusCode ?? 0); res.destroy(); },
+      );
+      req.on('error', reject);
+      req.end();
+    });
+  }
+
+  it('GET/DELETE on a live session with an unverified bearer and no secret -> 401; the session survives; a verified JWT still passes', async () => {
+    const { handle, secret } = await memberServer();
+    const client = new Client({ name: 'victim', version: '1.0.0' }, { capabilities: {} });
+    clients.push(client);
+    await client.connect(new StreamableHTTPClientTransport(
+      new URL(`http://127.0.0.1:${handle.port}/mcp`),
+      { reconnectionOptions: { maxRetries: 0, maxReconnectionDelay: 100, initialReconnectionDelay: 100, reconnectionDelayGrowFactor: 1 }, requestInit: { headers: { [MEMBER_SECRET_HEADER]: secret } } },
+    ));
+    const [sid] = [...handle.sessions.keys()];
+    expect(sid).toBeTruthy();
+
+    expect(await rawSessionRequest(handle.port, 'GET', sid, { Authorization: 'Bearer x' })).toBe(401);
+    expect(await rawSessionRequest(handle.port, 'DELETE', sid, { Authorization: 'Bearer x' })).toBe(401);
+    expect(await rawSessionRequest(handle.port, 'DELETE', sid, {})).toBe(401);
+    expect(handle.sessions.has(sid)).toBe(true);
+
+    const token = getTokenIssuer().issue({ member_id: 'gate-jwt-member', role: 'doer', work_folder: '/tmp/gate' });
+    expect(await rawSessionRequest(handle.port, 'DELETE', sid, { Authorization: `Bearer ${token}` })).toBe(200);
+    expect(handle.sessions.has(sid)).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------

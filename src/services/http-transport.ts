@@ -224,11 +224,21 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
     // AND the no-member route (a FULL-scope session, which includes command
     // execution on this install's local members). Read per request so a
     // replaced secret takes effect at once; a missing one refuses (never fails
-    // open). A member JWT (Authorization: Bearer) is its own credential,
-    // checked below.
+    // open). A member JWT (Authorization: Bearer) is its own credential, but
+    // only a VERIFIED one replaces the secret: any bearer that fails JWT
+    // verification is refused here for every method, so `Bearer x` cannot
+    // carry a GET (SSE stream) or DELETE (session teardown) past this gate.
     {
       const memberRouteParam = new URL(url, 'http://localhost').searchParams.get('member');
-      if (extractBearer(req) === null) {
+      const gateBearer = extractBearer(req);
+      if (gateBearer !== null) {
+        if (!getTokenIssuer().verify(gateBearer)) {
+          logLine('session', `rejected ${req.method}: jwt verify failed member_param=${memberRouteParam ?? 'none'}`);
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'invalid token' }));
+          return;
+        }
+      } else {
         const expected = readMemberAccessSecret(memberSecretPath);
         if (!memberAccessSecretMatches(req.headers[MEMBER_SECRET_HEADER.toLowerCase()], expected)) {
           const why = req.headers[MEMBER_SECRET_HEADER.toLowerCase()] === undefined ? 'missing' : 'wrong';
