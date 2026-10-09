@@ -137,6 +137,13 @@ export interface FleetMcpStatus {
    *  removed or moved, and the timestamped backup directory on the member.
    *  An observation of that probe only; not carried to later probes. */
   replacedFullInstall?: { previousVersion: string; removed: string[]; backupPath: string };
+  /** Set when a requested apra-fleet install/upgrade on the member did not
+   *  happen (any install reason, on available and unavailable statuses): the
+   *  exact manual steps, built for the member's OS/shell, to install this
+   *  orchestrator's build there by hand (anonymous download URL, SHA-256
+   *  check, member-mode install, then update_member). register_member /
+   *  update_member print it in a WARNING; the call itself still succeeds. */
+  manualInstall?: string;
 }
 
 export interface GitHubAppConfig {
