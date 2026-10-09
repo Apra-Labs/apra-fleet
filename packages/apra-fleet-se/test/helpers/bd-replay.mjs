@@ -72,7 +72,7 @@ export function bdMode() {
 // The original mock-sprint-harness runCmd body, unchanged: resolve (never
 // reject) with { err, stdout, stderr } from a real child process.
 export const execCmd = (cmd, cwd) => new Promise((resolve) => {
-    exec(cmd, { cwd, env: { ...process.env, BD_ALLOW_REMOTE_MIGRATE: '1' } }, (err, stdout, stderr) => {
+    exec(cmd, { cwd, windowsHide: true, env: { ...process.env, BD_ALLOW_REMOTE_MIGRATE: '1' } }, (err, stdout, stderr) => {
         resolve({ err, stdout, stderr });
     });
 });
@@ -528,6 +528,13 @@ async function realBdInitTemplated(cwd) {
     if (err) return { err, stdout, stderr };
     await fs.promises.cp(templateDir, cwd, { recursive: true });
     return { err: null, stdout, stderr };
+}
+
+// Test-only: give `cwd` (an existing, empty dir) a real initialised beads
+// workspace from the shared template, regardless of bd mode. Used by
+// helpers/beads-fixture.mjs for hermetic fixture DBs.
+export async function bdInitFromTemplate(cwd) {
+    return realBdInitTemplated(cwd);
 }
 
 // Test-only introspection (same purpose as realSyncSpawnCount above): how

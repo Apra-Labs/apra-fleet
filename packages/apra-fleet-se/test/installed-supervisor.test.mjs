@@ -8,6 +8,7 @@ import net from 'node:net';
 import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { createBeadsFixture } from './helpers/beads-fixture.mjs';
 
 // apra-fleet-7h6n.4 -- merged from n4lu2-packaged-supervisor-boot.test.mjs,
 // qqof-supervisor-selfcontained-audit.test.mjs, and
@@ -440,16 +441,18 @@ describe('installed-supervisor: deployed supervisor boots without ERR_MODULE_NOT
         // startup WARNING, bin/serve.mjs / src/supervisor/beads-identity.mjs)
         // and which tracker an arbitrary tmp cwd walks up to is host-
         // dependent, so the beads tracker is named explicitly via --beads-dir
-        // (this repo's own, as CI bootstraps it) -- module resolution is
-        // still exercised from the unrelated cwd: every import resolves at
+        // (a hermetic fixture DB, never this repo's own) -- module resolution
+        // is still exercised from the unrelated cwd: every import resolves at
         // load time, before serve chdir's.
+        const beadsFixture = await createBeadsFixture();
+        tmpDirs.add(beadsFixture.dir);
         const arbitraryCwd = await mkTmp('installed-supervisor-arbitrary-cwd-');
         const dataDir = await mkTmp('installed-supervisor-data-');
         const seDataDir = await mkTmp('installed-supervisor-se-data-');
         const port = await getFreePort();
 
         let stderrBuf = '';
-        const serve = spawn(process.execPath, [serveBin, '--port', String(port), '--beads-dir', ROOT], {
+        const serve = spawn(process.execPath, [serveBin, '--port', String(port), '--beads-dir', beadsFixture.dir], {
             cwd: arbitraryCwd,
             stdio: ['ignore', 'ignore', 'pipe'],
             env: { ...process.env, APRA_FLEET_DATA_DIR: dataDir, FLEET_SE_DATA_DIR: seDataDir },

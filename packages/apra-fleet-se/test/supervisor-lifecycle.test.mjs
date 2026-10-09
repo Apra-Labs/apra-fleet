@@ -14,6 +14,7 @@ import { createHistory, HISTORY_FILENAME } from '../src/supervisor/history.mjs';
 import { createReconciler, isPidAlive } from '../src/supervisor/reconcile.mjs';
 import { createSpawner } from '../src/supervisor/spawner.mjs';
 import { createReadopter } from '../src/supervisor/readopt.mjs';
+import { createBeadsFixture } from './helpers/beads-fixture.mjs';
 
 // =============================================================================
 // apra-fleet-eft.4.6 -- supervisor lifecycle end-to-end test.
@@ -362,8 +363,11 @@ describe('supervisor lifecycle -- real `fleet-se serve` stays up, exits only on 
         const dataDir = await mkTmp('eft46-serve-data-');
         const seDataDir = await mkTmp('eft46-serve-se-');
         const port = await getFreePort();
+        // Hermetic tracker via --beads-dir, never this repo's own .beads.
+        const beadsFixture = await createBeadsFixture();
+        tmpDirs.add(beadsFixture.dir);
 
-        const serve = spawn(process.execPath, [SERVE_BIN, '--port', String(port)], {
+        const serve = spawn(process.execPath, [SERVE_BIN, '--port', String(port), '--beads-dir', beadsFixture.dir], {
             cwd: SE_PKG_ROOT,
             stdio: ['ignore', 'ignore', 'ignore'],
             env: { ...process.env, APRA_FLEET_DATA_DIR: dataDir, FLEET_SE_DATA_DIR: seDataDir },
