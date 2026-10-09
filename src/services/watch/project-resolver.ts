@@ -34,6 +34,7 @@ function git(folder: string, args: string[]): string | null {
       encoding: 'utf-8',
       timeout: 5000,
       stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true,
     });
     const trimmed = out.trim();
     return trimmed.length > 0 ? trimmed : null;

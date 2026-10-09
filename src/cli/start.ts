@@ -54,6 +54,7 @@ function directSpawn(): void {
   const child = spawn(cmd, spawnArgs, {
     env,
     detached: true,
+    windowsHide: true,
     stdio: ['ignore', logFd, logFd],
   });
   child.unref();

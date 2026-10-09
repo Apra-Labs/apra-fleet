@@ -58,7 +58,7 @@ export function getInstallDataDir(): string {
 
 function runCapture(cmd: string): string | null {
   try {
-    return execSync(cmd, { encoding: 'utf-8', stdio: 'pipe' }) as unknown as string;
+    return execSync(cmd, { encoding: 'utf-8', stdio: 'pipe', windowsHide: true }) as unknown as string;
   } catch {
     return null;
   }

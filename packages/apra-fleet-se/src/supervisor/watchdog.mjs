@@ -142,7 +142,7 @@ export const WATCHDOG_DEFAULT_LAUNCH_FAILED_WINDOW_MS = 60000;
  */
 async function readCmdlineViaPs(pid) {
     try {
-        const { stdout } = await execFileAsync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf-8' });
+        const { stdout } = await execFileAsync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf-8', windowsHide: true });
         const out = (stdout || '').trim();
         return out.length > 0 ? out : null;
     } catch {
@@ -162,7 +162,7 @@ async function readCmdlineViaWmic(pid) {
         const { stdout } = await execFileAsync(
             'wmic',
             ['process', 'where', `ProcessId=${pid}`, 'get', 'CommandLine'],
-            { encoding: 'utf-8' },
+            { encoding: 'utf-8', windowsHide: true },
         );
         const lines = (stdout || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
         // First non-empty line is the "CommandLine" header; the rest is the value.
@@ -186,7 +186,7 @@ async function readCmdlineViaCim(pid) {
         const { stdout } = await execFileAsync(
             'powershell',
             ['-NoProfile', '-NonInteractive', '-Command', `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CommandLine`],
-            { encoding: 'utf-8' },
+            { encoding: 'utf-8', windowsHide: true },
         );
         const out = (stdout || '').trim();
         return out.length > 0 ? out : null;

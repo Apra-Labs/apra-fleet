@@ -82,7 +82,13 @@ export function maybeScheduleReindex(repoPath: string): boolean {
     try {
       child = spawn('npx', ['gitnexus', 'analyze'], {
         cwd: repoPath,
-        detached: true,
+        // win32: NOT detached. A detached child has no console, so the
+        // node/git processes the cmd.exe shell starts each open a visible,
+        // focus-stealing console window; non-detached + windowsHide gives
+        // the whole tree one hidden console. The reindex still outlives the
+        // server: libuv lets grandchildren break away from its job object.
+        detached: process.platform !== 'win32',
+        windowsHide: true,
         stdio: ['ignore', 'ignore', 'pipe'],
         shell: process.platform === 'win32',
       });

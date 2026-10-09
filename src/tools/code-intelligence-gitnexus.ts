@@ -105,7 +105,7 @@ function computeFreshnessNote(repo: string): string | null {
     const metaPath = join(repo, '.gitnexus', 'meta.json');
     const meta = JSON.parse(readFileSync(metaPath, 'utf-8')) as { lastCommit?: string };
     const head = execFileSync('git', ['rev-parse', 'HEAD'], {
-      cwd: repo, encoding: 'utf-8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'],
+      cwd: repo, encoding: 'utf-8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true,
     }).trim();
 
     const diverged = freshnessNote(meta.lastCommit, head) !== null;

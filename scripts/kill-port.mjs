@@ -87,7 +87,7 @@ export function findPids(port, deps = {}) {
   if (isWindows(deps)) {
     let out;
     try {
-      out = exec('netstat', ['-ano'], { encoding: 'utf8' });
+      out = exec('netstat', ['-ano'], { encoding: 'utf8', windowsHide: true });
     } catch (err) {
       if (err && err.code === 'ENOENT') throw new ProbeToolMissingError('netstat');
       // netstat can exit non-zero with useful output in some locales; try to
@@ -97,7 +97,7 @@ export function findPids(port, deps = {}) {
     return parseNetstatPids(out, port);
   }
   try {
-    const out = exec('lsof', ['-ti', `tcp:${port}`], { encoding: 'utf8' });
+    const out = exec('lsof', ['-ti', `tcp:`], { encoding: 'utf8', windowsHide: true });
     return parseLsofPids(out);
   } catch (err) {
     if (err && err.code === 'ENOENT') throw new ProbeToolMissingError('lsof');
@@ -120,7 +120,7 @@ export function killPids(pids, deps = {}) {
   const kill = deps.processKill ?? process.kill;
   for (const pid of pids) {
     try {
-      if (isWindows(deps)) exec('taskkill', ['/F', '/PID', String(pid)], { stdio: 'ignore' });
+      if (isWindows(deps)) exec('taskkill', ['/F', '/PID', String(pid)], { stdio: 'ignore', windowsHide: true });
       else kill(Number(pid), 'SIGKILL');
     } catch {
       // best effort -- already gone, or unkillable; the retry loop's own

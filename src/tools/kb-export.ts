@@ -115,7 +115,7 @@ function gitOrNull(repoPath: string, args: string[]): string | null {
   if (!isGitRepo(repoPath)) return null;
   try {
     const out = execFileSync('git', args, {
-      cwd: repoPath, encoding: 'utf-8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'],
+      cwd: repoPath, encoding: 'utf-8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true,
     }).trim();
     return out.length > 0 ? out : null;
   } catch {
@@ -250,7 +250,7 @@ function isGitRepo(repoPath: string): boolean {
 // brand-new untracked file on the very first export) means it changed.
 function bibleContentChanged(repoPath: string, outPath: string): boolean {
   const status = execFileSync('git', ['status', '--porcelain', '--', outPath], {
-    cwd: repoPath, encoding: 'utf-8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'],
+    cwd: repoPath, encoding: 'utf-8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true,
   });
   return status.trim().length > 0;
 }
@@ -302,14 +302,14 @@ function maybeAutoCommitBible(
     if (!bibleContentChanged(repoPath, outPath)) return false;
 
     execFileSync('git', ['add', outPath], {
-      cwd: repoPath, timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'],
+      cwd: repoPath, timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
     });
     const scopeLabel = scope === 'global' ? 'global knowledge bible' : 'knowledge bible';
     const message = 'chore(kb): update ' + scopeLabel + ' -- ' + entryCount + ' confirmed entries';
     execFileSync(
       'git',
       ['-c', 'user.name=pm-kb', '-c', 'user.email=kb@pm.local', 'commit', '-m', message, '--', outPath],
-      { cwd: repoPath, timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] },
+      { cwd: repoPath, timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true },
     );
     return true;
   } catch (err) {

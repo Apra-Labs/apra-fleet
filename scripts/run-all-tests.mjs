@@ -73,7 +73,7 @@ const simulateUnkillable = process.env.APRA_TEST_SIMULATE_KILL_FAILURE === '1';
 function killTree(pid) {
     if (!pid || simulateUnkillable) return;
     if (isWindows) {
-        spawnSync('taskkill', ['/PID', String(pid), '/T', '/F']);
+        spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true });
     } else {
         try {
             // Negative pid signals the whole process group -- see the
@@ -237,6 +237,7 @@ function runBounded(suite) {
         const child = spawn(suite.cmd, suite.args, {
             stdio: 'inherit',
             shell: true,
+            windowsHide: true,
             detached: !isWindows,
         });
         currentChild = child;

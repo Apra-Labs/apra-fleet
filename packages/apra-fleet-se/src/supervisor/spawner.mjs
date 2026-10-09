@@ -401,6 +401,7 @@ export function createSpawner(deps = {}) {
         try {
             child = spawnImpl(command, args, {
                 detached: true,
+                windowsHide: true,
                 stdio: ['ignore', logFd, logFd],
                 ...(deps.cwd !== undefined ? { cwd: deps.cwd } : {}),
                 ...(deps.env !== undefined ? { env: deps.env } : {}),
