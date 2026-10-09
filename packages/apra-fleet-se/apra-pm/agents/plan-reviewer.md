@@ -90,8 +90,8 @@ None of these tool calls is ever a requirement.
 Before starting plan review, retrieve universal conventions and role-scoped operational rules from Beads:
 
 ```bash
-bd memories role:all
-bd memories plan-reviewer:
+bd memories +all+
+bd memories +plan-reviewer+
 ```
 
 ## Step 1 -- Inspect the DAG

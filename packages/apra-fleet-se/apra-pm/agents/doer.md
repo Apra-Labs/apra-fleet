@@ -104,8 +104,8 @@ these steps and proceed.
 Before starting task execution, retrieve universal conventions and role-scoped operational rules from Beads:
 
 ```bash
-bd memories role:all
-bd memories doer:
+bd memories +all+
+bd memories +doer+
 ```
 
 ## Step 1 -- Work only your assigned bead ids

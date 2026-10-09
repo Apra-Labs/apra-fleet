@@ -61,8 +61,8 @@ these steps and proceed.
 Before beginning harvest operations, retrieve universal conventions and role-scoped operational rules from Beads:
 
 ```bash
-bd memories role:all
-bd memories harvester:
+bd memories +all+
+bd memories +harvester+
 ```
 
 ## Step 1 -- Write sprint analysis artifact (FIRST, before anything else)

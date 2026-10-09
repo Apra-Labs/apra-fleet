@@ -50,8 +50,8 @@ these steps and proceed.
 Before checking CI runs, retrieve universal conventions and role-scoped operational rules from Beads:
 
 ```bash
-bd memories role:all
-bd memories ci-watcher:
+bd memories +all+
+bd memories +ci-watcher+
 ```
 
 ## Step 1 -- List recent CI runs

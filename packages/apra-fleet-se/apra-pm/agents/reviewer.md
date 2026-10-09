@@ -74,8 +74,8 @@ these steps and proceed.
 Before starting code review, retrieve universal conventions and role-scoped operational rules from Beads:
 
 ```bash
-bd memories role:all
-bd memories reviewer:
+bd memories +all+
+bd memories +reviewer+
 ```
 
 ## Step 1 -- Context recovery

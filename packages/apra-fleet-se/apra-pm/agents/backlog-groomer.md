@@ -40,8 +40,8 @@ these steps and proceed.
 Before beginning grooming decisions, retrieve universal conventions and role-scoped operational rules from Beads:
 
 ```bash
-bd memories role:all
-bd memories groomer:
+bd memories +all+
+bd memories +groomer+
 ```
 
 ## Usage modes
@@ -321,18 +321,22 @@ the right scope since most of what you learn is calibrated to one repo's backlog
 At session start: retrieve operational memories -- read and apply what past sessions recorded:
 
 ```bash
-bd memories role:all
-bd memories groomer:
+bd memories +all+
+bd memories +groomer+
 ```
 
 At session end, if you found a durable, non-obvious pattern specific to THIS repo's
 backlog (not a one-off, not already in this file):
 
 ```bash
-bd remember --key groomer:<short-slug> "<one or two sentences>"
+bd remember --key "+groomer+:<short-slug>" "<one or two sentences>"
 ```
 
-Always use the `groomer:` prefix (`bd memories groomer:`, `bd forget <key>`).
+Key scheme: wrap every role token in `+` on both sides, then `:<slug>`. Use
+`+groomer+:<slug>` for a groomer-only rule, `+groomer+planner+:<slug>` when other roles
+need it too, `+all+:<slug>` when every role does. `bd memories` is a plain substring
+search over keys and values, so a bare or one-sided prefix (`groomer:`, `reviewer:`)
+also matches other roles' keys; never write one. Remove stale entries with `bd forget <key>`.
 Record calibration ("P1 bugs older than 30 days with no repro steps are almost always
 stale duplicates in this repo"), not repo-agnostic procedure (belongs in this file) or
 transient facts. If nothing durable turned up, write nothing and say so.

@@ -94,8 +94,8 @@ tool calls is ever a requirement.
 Before starting sprint planning, retrieve universal conventions and role-scoped operational rules from Beads:
 
 ```bash
-bd memories role:all
-bd memories planner:
+bd memories +all+
+bd memories +planner+
 ```
 
 ## Step 1 -- Explore the backlog

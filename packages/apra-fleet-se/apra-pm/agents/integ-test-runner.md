@@ -103,8 +103,8 @@ of these tool calls is ever a requirement.
 Before working any feature, retrieve universal conventions and role-scoped operational rules from Beads:
 
 ```bash
-bd memories role:all
-bd memories integ-test-runner:
+bd memories +all+
+bd memories +integ-test-runner+
 ```
 
 ## Step 1 -- Work the features you were handed

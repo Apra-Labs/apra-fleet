@@ -129,8 +129,8 @@ unavailable AND the block is absent. None of these tool calls is ever a requirem
 Before beginning deploy operations, retrieve universal conventions and role-scoped operational rules from Beads:
 
 ```bash
-bd memories role:all
-bd memories deployer:
+bd memories +all+
+bd memories +deployer+
 ```
 
 ## deploy.md operations
