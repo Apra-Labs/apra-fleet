@@ -153,6 +153,11 @@ export async function kbImport(input: KbImportInput, anchor?: KbAnchor): Promise
   if (lacksGrant) {
     // namesOwnBible holds here (an explicit other path was refused above).
     const committed = await readCommittedBible(repoAnchor);
+    // No bible anywhere (a repo that has not adopted one): the plain
+    // not-found error, as for every other session -- not a grant problem.
+    if (committed === null && !fs.existsSync(ownBible)) {
+      throw new Error('kb_import: bible file not found: ' + ownBible);
+    }
     if (committed === null) {
       throw new KbMaintainerGrantError(
         `kb_import in a member session without the kb_maintainer grant imports only the committed ${OWN_BIBLE_REL} (HEAD), and this checkout has no committed copy (unborn HEAD, untracked bible, or git unavailable); the work-tree file is not trusted at its own confidence and nothing was imported.`,

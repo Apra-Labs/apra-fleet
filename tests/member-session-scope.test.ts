@@ -573,6 +573,15 @@ describe('kb_import in a member session without the grant imports only the commi
     expect(fx.confirmedCount()).toBe(0);
   });
 
+  it('no bible anywhere: the plain bible-not-found error, not a grant refusal', async () => {
+    const handle = await startServer();
+    const plain = await connect(handle.port, { member: fx.memberId });
+    const r = await callText(plain, 'kb_import', { skip_sweep: true });
+    expect(r.isError).toBe(true);
+    expect(r.text).toMatch(/kb_import: bible file not found: /);
+    expect(r.text).not.toMatch(/E-KB-MAINTAINER-REQUIRED/);
+  });
+
   it('committed bible deleted from the work tree: still imports the committed copy', async () => {
     fx.writeSrc('.fleet/kb-canonical.json', committedBible);
     commitWorkTree(fx.clone, 'committed bible');

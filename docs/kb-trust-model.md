@@ -69,11 +69,13 @@ retire CONFIRMED entries:
   `refused`. A non-CONFIRMED target is still retired. Over a remote KB
   provider the grant cannot be conveyed, so `supersedes` is dropped entirely.
 - `kb_import` with no path, or with the own path, reads the bible as committed
-  at `HEAD`, never the member-writable work-tree file; with no committed copy
-  it imports nothing (`E-KB-MAINTAINER-REQUIRED`).
+  at `HEAD`, never the member-writable work-tree file; when a work-tree bible
+  has no committed copy it imports nothing (`E-KB-MAINTAINER-REQUIRED`).
 
 ### Remaining exposure
 
-A member that can commit can still put a hand-made bible at `HEAD` and import
-it. That change is visible in the branch history and the PR diff, which is the
-review the bible channel relies on.
+A member that can commit can still put a hand-made bible at `HEAD` with a
+local commit and import it at once: the CONFIRMED rows land in the shared
+per-repo DB immediately, and review sees the change only once the commit is
+pushed (or in the maintainer's next bible diff). Pinning the import to the
+last bible commit made by the kb_maintainer would close this.

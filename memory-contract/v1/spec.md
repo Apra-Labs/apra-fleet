@@ -197,12 +197,15 @@ A MEMBER session is served an explicit tool list
   `bible_source: "HEAD"` and `worktree_ignored` (true when the work-tree file
   differs from, or is missing versus, the committed copy, so its uncommitted
   content was not imported). A clean tree or fresh clone yields the same bytes,
-  so priming is unchanged. With no committed copy (unborn HEAD, untracked
-  bible, git unavailable) the call fails with `E-KB-MAINTAINER-REQUIRED` and
-  nothing is imported. A member that can commit can still put a hand-made
-  bible at HEAD; that change is then visible in the branch history and the PR
-  diff, which is the review this channel relies on. FULL sessions and the
-  kb_maintainer session are unchanged (they read the named or work-tree file).
+  so priming is unchanged. When a work-tree bible exists but has no committed
+  copy (unborn HEAD, untracked bible, git unavailable) the call fails with
+  `E-KB-MAINTAINER-REQUIRED` and nothing is imported; with no bible at all it
+  fails with the plain bible-not-found error. Residual: a member that can
+  commit can still put a hand-made bible at HEAD with a LOCAL commit and import
+  it at once -- the CONFIRMED rows land in the per-repo DB immediately, and
+  review sees the change only once the commit is pushed (or in the
+  maintainer's next bible diff). FULL sessions and the kb_maintainer session
+  are unchanged (they read the named or work-tree file).
 - `kb_invalidate` retires entries (`ids` discards them; `files` marks
   context-cache entries invalidated), and `kb_bible_commit` removes retired
   entries from the bible, so in a member session WITHOUT the grant neither
