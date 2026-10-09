@@ -298,12 +298,14 @@ function buildSuffixOf(version: string): string {
  * Rule: a member core OLDER than the orchestrator's is always outdated; a
  * NEWER core never is (never downgrade, whatever the suffixes). At the SAME
  * core, a differing build suffix counts as outdated only when
- * `canSupplyOrchestratorBuild` -- i.e. the install source is the
- * orchestrator's own executable. A release-asset source installs the
- * release build of the core (releaseTagFor strips the suffix), so a same-core
- * build difference there is "up to date" (else it would reinstall on every
- * registration and report install-unverified). Mixed suffix/no-suffix at the
- * same core follows the same rule; identical versions are never outdated.
+ * `canSupplyOrchestratorBuild` -- i.e. the source installs exactly the
+ * orchestrator's build: its own executable, or (suffixed orchestrator) a
+ * release whose BUILD_INFO names that build (sourceSuppliesBuild). A bare
+ * release orchestrator installs whatever build its stable tag has, so a
+ * same-core build difference there is "up to date" (else it would reinstall
+ * on every registration and report install-unverified). Mixed
+ * suffix/no-suffix at the same core follows the same rule; identical
+ * versions are never outdated.
  * isNewer/parseVersion (shared with the CLI self-update check) are untouched.
  */
 export function isMemberOutdated(
@@ -352,9 +354,12 @@ export function releasePageUrl(tag: string): string {
 }
 
 /** Where a build's installer may be published, in the order the installer
- *  tries them: the exact-build prerelease first (dev/branch builds), then the
- *  stable release of the core version, accepted only when its BUILD_INFO names
- *  the same build (see buildInfoMatches). */
+ *  tries them: the STABLE release of the core version first, accepted only
+ *  when its BUILD_INFO names the same build (see buildInfoMatches) -- stable
+ *  tag builds carry a build suffix too, and their commit also gets an
+ *  unsigned prerelease when it is pushed to main, so a stable orchestrator
+ *  must get the signed stable assets -- then the exact-build prerelease
+ *  (dev/branch builds). */
 export interface ReleaseCandidate {
   tag: string;
   channel: 'prerelease' | 'stable';
@@ -363,13 +368,12 @@ export interface ReleaseCandidate {
 export function releaseCandidatesFor(version: string): ReleaseCandidate[] {
   const pre = prereleaseTagFor(version);
   return [
-    ...(pre ? [{ tag: pre, channel: 'prerelease' as const }] : []),
     { tag: releaseTagFor(version), channel: 'stable' as const },
+    ...(pre ? [{ tag: pre, channel: 'prerelease' as const }] : []),
   ];
 }
 
-/** The URL the installer tries first for `version` (the exact-build
- *  prerelease when the version carries a build suffix). */
+/** The URL the installer tries first for `version` (the stable release). */
 export function releaseAssetUrl(version: string, assetName: string): string {
   return releaseFileUrl(releaseCandidatesFor(version)[0].tag, assetName);
 }
@@ -1252,7 +1256,11 @@ export function buildManualInstallSteps(opts: {
   }
   const asset = arch ? releaseAssetNameFor({ os: targetOs, arch }) : null;
   const pre = prereleaseTagFor(orchestratorVersion);
-  const tag = releaseCandidatesFor(orchestratorVersion)[0].tag;
+  // A dev/branch build's installer lives in its exact-build prerelease; a
+  // released build's in the stable release (its BUILD_INFO names the build,
+  // and its Windows installer is signed), noted below.
+  const stableTag = releaseTagFor(orchestratorVersion);
+  const tag = pre ?? stableTag;
   const args = memberInstallArgs(provider);
   if (!asset) {
     return [
@@ -1282,6 +1290,9 @@ export function buildManualInstallSteps(opts: {
   } else {
     lines.push(`install apra-fleet ${orchestratorVersion} from ${releasePageUrl(tag)} (anonymous download, no GitHub account needed):`);
   }
+  if (pre) {
+    lines.push(`(if ${releaseFileUrl(stableTag, BUILD_INFO_ASSET)} names version=${orchestratorVersion}, this orchestrator is a released build: use tag ${stableTag} instead of ${pre} in the URLs below -- its Windows installer is signed)`);
+  }
   if (posix) {
     const shaTool = targetOs === 'macos' ? 'shasum -a 256 -c -' : 'sha256sum -c -';
     lines.push(
@@ -1291,8 +1302,10 @@ export function buildManualInstallSteps(opts: {
     );
   } else {
     lines.push(
-      `(1) download: New-Item -ItemType Directory -Force -Path ${q(staging)} | Out-Null; Invoke-WebRequest -UseBasicParsing -Uri ${q(url)} -OutFile ${q(file)}; Invoke-WebRequest -UseBasicParsing -Uri ${q(sumsUrl)} -OutFile ${q(sums)}`,
-      `(2) verify the SHA-256 (the two hashes must be equal): (Get-FileHash -Algorithm SHA256 -LiteralPath ${q(file)}).Hash.ToLower(); Select-String -LiteralPath ${q(sums)} -SimpleMatch ${q(asset)}`,
+      // $ProgressPreference / $h / $line are PowerShell variables the owner's
+      // own session sets and reads; no path or value depends on expansion.
+      `(1) download: $ProgressPreference = 'SilentlyContinue'; New-Item -ItemType Directory -Force -Path ${q(staging)} | Out-Null; Invoke-WebRequest -UseBasicParsing -Uri ${q(url)} -OutFile ${q(file)}; Invoke-WebRequest -UseBasicParsing -Uri ${q(sumsUrl)} -OutFile ${q(sums)}`,
+      `(2) verify the SHA-256 (throws on a mismatch; do not run the installer then): $h = (Get-FileHash -Algorithm SHA256 -LiteralPath ${q(file)}).Hash.ToLower(); $line = (Select-String -LiteralPath ${q(sums)} -SimpleMatch ${q(` ${asset}`)} | Select-Object -First 1).Line; if (-not $line -or ($line -split '\\s+')[0].ToLower() -ne $h) { throw ${q(`SHA-256 mismatch for ${asset}: do not run it`)} } else { 'OK' }`,
       `(3) install in member mode: & ${q(file)} ${args.map(q).join(' ')}`,
     );
   }
@@ -1311,7 +1324,7 @@ export function fleetInstallWarning(memberName: string, status: FleetMcpStatus):
   const reason = status.installFailure?.reason ?? status.reason ?? 'unknown';
   const detail = status.installFailure?.detail ?? status.detail;
   const consequence = status.state === 'available'
-    ? `the member keeps its older apra-fleet ${status.version ?? '(unknown version)'}, so its KB/code tools stay on that version until it is updated. Nothing else is affected.`
+    ? `the member keeps its installed apra-fleet ${status.version ?? '(unknown version)'} instead of this orchestrator's build, so its KB/code tools run on that build until it is updated. Nothing else is affected.`
     : 'the member will not get the KB/code tools (kb_*, code_*) of its own apra-fleet. That is the only consequence: the member works for everything else.';
   const indent = (s: string) => s.split('\n').map(l => `    ${l}`).join('\n');
   return [

@@ -92,8 +92,8 @@ const SOURCE = { kind: 'release-asset' as const, assetName: ASSET, url: PRE + AS
 const cleanup = (p: string) => fs.rmSync(p.replace(ASSET, ''), { recursive: true, force: true });
 
 describe('release candidates and BUILD_INFO matching', () => {
-  it('a dev build tries its exact-build prerelease, then the stable tag; a bare version only the stable tag', () => {
-    expect(releaseCandidatesFor(DEV)).toEqual([{ tag: DEV, channel: 'prerelease' }, { tag: 'v0.4.4', channel: 'stable' }]);
+  it('a suffixed build tries the stable tag (BUILD_INFO-gated) first, then its exact-build prerelease; a bare version only the stable tag', () => {
+    expect(releaseCandidatesFor(DEV)).toEqual([{ tag: 'v0.4.4', channel: 'stable' }, { tag: DEV, channel: 'prerelease' }]);
     expect(releaseCandidatesFor('v0.4.4')).toEqual([{ tag: 'v0.4.4', channel: 'stable' }]);
     expect(prereleaseTagFor('0.4.4_abc123')).toBe('v0.4.4_abc123');
     expect(prereleaseTagFor('v0.4.4')).toBeNull();
@@ -111,7 +111,7 @@ describe('release candidates and BUILD_INFO matching', () => {
 });
 
 describe('fetchReleaseInstaller (real downloadVerifiedAsset over a fake anonymous host)', () => {
-  it('success: the exact-build prerelease is verified and used; the stable release is not touched', async () => {
+  it('dev build: the stable release is a different build, so the exact-build prerelease is verified and used', async () => {
     const r = await fetchReleaseInstaller(viaHost(releaseHost({ [PRE]: release(DEV), [STABLE]: release('v0.4.4_ffffff') })), SOURCE, DEV);
     try {
       expect(r.tag).toBe(DEV);
@@ -119,9 +119,21 @@ describe('fetchReleaseInstaller (real downloadVerifiedAsset over a fake anonymou
     } finally { cleanup(r.localPath); }
   });
 
-  it('no prerelease (HTTP 404): falls back to a stable release whose BUILD_INFO names this build', async () => {
-    const r = await fetchReleaseInstaller(viaHost(releaseHost({ [STABLE]: release(DEV) })), SOURCE, DEV);
-    try { expect(r.tag).toBe('v0.4.4'); } finally { cleanup(r.localPath); }
+  it('released build: a matching stable release wins over the unsigned prerelease of the same commit, which is never fetched', async () => {
+    let preHit = false;
+    const host = releaseHost({ [STABLE]: release(DEV), [PRE]: release(DEV) });
+    const spy = (async (url: string, init?: RequestInit) => { if (url.startsWith(PRE)) preHit = true; return host(url, init); }) as unknown as typeof fetch;
+    const r = await fetchReleaseInstaller(viaHost(spy), SOURCE, DEV);
+    try {
+      expect(r.tag).toBe('v0.4.4');
+      expect(r.url).toBe(STABLE + ASSET);
+      expect(preHit).toBe(false);
+    } finally { cleanup(r.localPath); }
+  });
+
+  it('no stable release (HTTP 404): falls back to the exact-build prerelease', async () => {
+    const r = await fetchReleaseInstaller(viaHost(releaseHost({ [PRE]: release(DEV) })), SOURCE, DEV);
+    try { expect(r.tag).toBe(DEV); } finally { cleanup(r.localPath); }
   });
 
   it('no prerelease and a stable release of a DIFFERENT build -> no-matching-release (never installs another build)', async () => {
@@ -142,12 +154,12 @@ describe('fetchReleaseInstaller (real downloadVerifiedAsset over a fake anonymou
     expect(err.message).toContain('stable v0.4.4');
   });
 
-  it('a network failure is reported as itself and never hidden behind the stable fallback', async () => {
-    let stableHit = false;
-    const host = releaseHost({ [STABLE]: release(DEV) }, { throwFor: PRE });
-    const spy = (async (url: string, init?: RequestInit) => { if (url.startsWith(STABLE)) stableHit = true; return host(url, init); }) as unknown as typeof fetch;
+  it('a network failure is reported as itself and never hidden behind the prerelease fallback', async () => {
+    let preHit = false;
+    const host = releaseHost({ [PRE]: release(DEV) }, { throwFor: STABLE });
+    const spy = (async (url: string, init?: RequestInit) => { if (url.startsWith(PRE)) preHit = true; return host(url, init); }) as unknown as typeof fetch;
     await expect(fetchReleaseInstaller(viaHost(spy), SOURCE, DEV)).rejects.toMatchObject({ reason: 'download-failed', message: expect.stringContaining('ECONNRESET') });
-    expect(stableHit).toBe(false);
+    expect(preHit).toBe(false);
   });
 
   it('a tampered BUILD_INFO is checksum-mismatch', async () => {
@@ -247,6 +259,9 @@ describe('buildManualInstallSteps is OS-correct and expansion-free', () => {
     const s = buildManualInstallSteps({ ...base, home: 'C:\\Users\\bella', targetOs: 'windows', shell: undefined as never });
     expect(s).toContain(`Invoke-WebRequest -UseBasicParsing -Uri '${PRE}apra-fleet-installer-win-x64.exe' -OutFile 'C:\\Users\\bella\\.apra-fleet\\staging\\apra-fleet-installer-win-x64.exe'`);
     expect(s).toContain('Get-FileHash -Algorithm SHA256');
+    expect(s).toContain("$ProgressPreference = 'SilentlyContinue'");
+    expect(s).toContain("throw 'SHA-256 mismatch for apra-fleet-installer-win-x64.exe: do not run it'");
+    expect(s).toContain(`use tag v0.4.4 instead of ${DEV}`); // a released build's signed installer
     expect(s).toContain("& 'C:\\Users\\bella\\.apra-fleet\\staging\\apra-fleet-installer-win-x64.exe' 'install'");
     expect(s).not.toContain('sha256sum');
   });
@@ -275,7 +290,7 @@ describe('fleetInstallWarning', () => {
 
   it('available on an older install: says the older version is kept, not that tools are gone', () => {
     const w = fleetInstallWarning('bella', { state: 'available', version: 'v0.4.3', checkedAt: 'x', installFailure: { reason: 'download-failed', detail: 'net' }, manualInstall: 's' })!;
-    expect(w).toContain('keeps its older apra-fleet v0.4.3');
+    expect(w).toContain("keeps its installed apra-fleet v0.4.3 instead of this orchestrator's build");
     expect(w).toContain('Reason: download-failed -- net');
   });
 
@@ -355,7 +370,7 @@ describe('update_member / register_member never fail on an install that cannot h
     const out = await updateMember({ member_id: a.id, fleet_install: 'auto' } as any);
     expect(out).toContain('Member "bella" updated.');
     expect(out).toContain('fleetMcp: available (apra-fleet v0.4.3)');
-    expect(out).toContain('keeps its older apra-fleet v0.4.3');
+    expect(out).toContain("keeps its installed apra-fleet v0.4.3 instead of this orchestrator's build");
     expect(out).toContain('Reason: no-matching-release');
   });
 

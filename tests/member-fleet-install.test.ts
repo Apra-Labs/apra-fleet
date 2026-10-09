@@ -119,12 +119,12 @@ describe('install source choice', () => {
 
   it('same platform but no copyable executable (dev/npm orchestrator) falls back to the release asset', () => {
     const src = chooseInstallSource(LINUX_X64, LINUX_X64, null, 'v0.4.4_abc123');
-    // A dev build tries its exact-build prerelease first, then the stable tag.
+    // Stable first (BUILD_INFO-gated), then the exact-build prerelease.
     expect(src).toEqual({
       kind: 'release-asset',
       assetName: 'apra-fleet-installer-linux-x64',
-      url: 'https://github.com/Apra-Labs/apra-fleet/releases/download/v0.4.4_abc123/apra-fleet-installer-linux-x64',
-      candidates: [{ tag: 'v0.4.4_abc123', channel: 'prerelease' }, { tag: 'v0.4.4', channel: 'stable' }],
+      url: 'https://github.com/Apra-Labs/apra-fleet/releases/download/v0.4.4/apra-fleet-installer-linux-x64',
+      candidates: [{ tag: 'v0.4.4', channel: 'stable' }, { tag: 'v0.4.4_abc123', channel: 'prerelease' }],
     });
   });
 

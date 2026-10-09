@@ -82,7 +82,7 @@ describe('build-aware member install version check', () => {
     const t = run({ member: 'v0.4.4', orch: 'v0.4.4_bbbbbb', orchestrator: MAC_ARM });
     const r = await t.go();
     expect(t.f.installs).toBe(1);
-    expect(t.f.downloads).toEqual(['https://github.com/Apra-Labs/apra-fleet/releases/download/v0.4.4_bbbbbb/apra-fleet-installer-linux-x64']);
+    expect(t.f.downloads).toEqual(['https://github.com/Apra-Labs/apra-fleet/releases/download/v0.4.4/apra-fleet-installer-linux-x64']);
     expect(r).toMatchObject({ state: 'available', installed: true, source: 'release-asset', version: 'v0.4.4_bbbbbb' });
   });
 
