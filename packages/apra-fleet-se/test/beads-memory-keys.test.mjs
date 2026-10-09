@@ -1,9 +1,10 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
 import { mapKey, selectScopedMemories } from '../scripts/lib/beads-memory-keys.mjs';
 import { mapKey as rekeyMapKey } from '../scripts/rekey-beads-memories.mjs';
 
 describe('mapKey (old -> role-delimited beads memory keys)', () => {
-    it.each([
+    for (const [from, to] of [
         ['role:all:multi-llm-providers', '+all+:multi-llm-providers'],
         ['doer:secret-syntax', '+doer+:secret-syntax'],
         ['doer:reviewer:secret-syntax', '+doer+reviewer+:secret-syntax'],
@@ -11,26 +12,32 @@ describe('mapKey (old -> role-delimited beads memory keys)', () => {
         ['backlog-groomer:dedup-rule', '+groomer+:dedup-rule'],
         ['groomer-heuristic-stale-p0', '+groomer+:stale-p0'],
         ['plan-reviewer:dag-size', '+plan-reviewer+:dag-size'],
-    ])('maps %s -> %s', (from, to) => {
-        expect(mapKey(from)).toEqual({ kind: 'map', to });
-    });
+    ]) {
+        it(`maps ${from} -> ${to}`, () => {
+            assert.deepEqual(mapKey(from), { kind: 'map', to });
+        });
+    }
 
-    it.each(['+all+:x', '+doer+reviewer+:x', '+orchestrator+:sprint-launch'])('leaves already-new key %s alone', (key) => {
-        expect(mapKey(key)).toEqual({ kind: 'new' });
-    });
+    for (const key of ['+all+:x', '+doer+reviewer+:x', '+orchestrator+:sprint-launch']) {
+        it(`leaves already-new key ${key} alone`, () => {
+            assert.deepEqual(mapKey(key), { kind: 'new' });
+        });
+    }
 
-    it.each(['ci:flake', 'random-key', 'doer:', 'all:doer:mixed', 'unknown-role:slug'])('reports %s as unparsed', (key) => {
-        expect(mapKey(key)).toEqual({ kind: 'unparsed' });
-    });
+    for (const key of ['ci:flake', 'random-key', 'doer:', 'all:doer:mixed', 'unknown-role:slug']) {
+        it(`reports ${key} as unparsed`, () => {
+            assert.deepEqual(mapKey(key), { kind: 'unparsed' });
+        });
+    }
 
     it('can map two different old keys onto one target (the script refuses that as a duplicate)', () => {
-        expect(mapKey('role:all:x')).toEqual({ kind: 'map', to: '+all+:x' });
-        expect(mapKey('all:x')).toEqual({ kind: 'map', to: '+all+:x' });
-        expect(mapKey('backlog-groomer:y')).toEqual(mapKey('groomer:y'));
+        assert.deepEqual(mapKey('role:all:x'), { kind: 'map', to: '+all+:x' });
+        assert.deepEqual(mapKey('all:x'), { kind: 'map', to: '+all+:x' });
+        assert.deepEqual(mapKey('backlog-groomer:y'), mapKey('groomer:y'));
     });
 
     it('is re-exported unchanged by the rekey script', () => {
-        expect(rekeyMapKey).toBe(mapKey);
+        assert.equal(rekeyMapKey, mapKey);
     });
 });
 
@@ -46,7 +53,7 @@ describe('selectScopedMemories (session hook reader)', () => {
     };
 
     it('selects by key scope only, in token order, each key once', () => {
-        expect(selectScopedMemories(memories, ['+all+', '+orchestrator+'])).toEqual([
+        assert.deepEqual(selectScopedMemories(memories, ['+all+', '+orchestrator+']), [
             ['+all+:a', 'universal'],
             ['+doer+orchestrator+:c', 'shared'],
             ['+orchestrator+:b', 'orch'],
@@ -54,11 +61,11 @@ describe('selectScopedMemories (session hook reader)', () => {
     });
 
     it('delimits role tokens: +reviewer+ does not match +plan-reviewer+', () => {
-        expect(selectScopedMemories(memories, ['+reviewer+']).map(([k]) => k)).toEqual(['+reviewer+:e']);
+        assert.deepEqual(selectScopedMemories(memories, ['+reviewer+']).map(([k]) => k), ['+reviewer+:e']);
     });
 
     it('is case-insensitive and returns nothing for an unknown scope', () => {
-        expect(selectScopedMemories({ '+All+:x': 'v' }, ['+all+'])).toEqual([['+All+:x', 'v']]);
-        expect(selectScopedMemories(memories, ['+nobody+'])).toEqual([]);
+        assert.deepEqual(selectScopedMemories({ '+All+:x': 'v' }, ['+all+']), [['+All+:x', 'v']]);
+        assert.deepEqual(selectScopedMemories(memories, ['+nobody+']), []);
     });
 });

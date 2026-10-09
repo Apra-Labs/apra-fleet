@@ -20,7 +20,7 @@
 // =============================================================================
 
 import { execBdSync } from './lib/exec-bd.mjs';
-import { ROLE_TOKEN_RE, selectScopedMemories } from './lib/beads-memory-keys.mjs';
+import { ROLE_TOKEN_RE, selectScopedMemories } from '../packages/apra-fleet-se/scripts/lib/beads-memory-keys.mjs';
 
 function main() {
     const tokens = process.argv.slice(2);

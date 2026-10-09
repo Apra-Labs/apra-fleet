@@ -149,7 +149,7 @@ Kept outside the bd-managed block above so `bd setup` cannot drop it. Every `bd 
 - one role: `+<role>+:<slug>`, e.g. `+orchestrator+:sprint-launch-via-supervisor-api`
 - several roles: `+<role1>+<role2>+:<slug>`, e.g. `+doer+reviewer+:secret-placeholder-syntax`
 - roles: `planner`, `plan-reviewer`, `doer`, `reviewer`, `deployer`, `integ-test-runner`, `regression-test-runner`, `harvester`, `ci-watcher`, `groomer`, `orchestrator`.
-- Never write an unscoped key or a one-sided prefix (`reviewer:`). `node scripts/rekey-beads-memories.mjs` re-keys older `role:all:`/`<role>:` keys.
+- Never write an unscoped key or a one-sided prefix (`reviewer:`). `node packages/apra-fleet-se/scripts/rekey-beads-memories.mjs` re-keys older `role:all:`/`<role>:` keys.
 
 Readers: `bd prime --no-memories` injects no memories. Dispatched roles run `bd memories +all+` plus `bd memories +<role>+` from their role prompt (`bd memories` is a case-insensitive substring search over keys and values; the `+` on both sides keeps `+reviewer+` from matching `+plan-reviewer+`; text output truncates long values, `bd recall <key>` prints one in full). Interactive/orchestrator Claude Code sessions get `+all+` and `+orchestrator+` in full from the SessionStart/PreCompact hook `node scripts/beads-session-memories.mjs +all+ +orchestrator+` in `.claude/settings.json`; an interactive session in a tool without that hook runs the same command itself at session start.
 

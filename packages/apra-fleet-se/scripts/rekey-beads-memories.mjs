@@ -3,8 +3,8 @@
 // rekey-beads-memories.mjs -- re-key beads operational memories to the
 // role-delimited key scheme.
 //
-// Scheme (see CLAUDE.md "Role-scoped operational memories"; mapping logic in
-// scripts/lib/beads-memory-keys.mjs):
+// Scheme (the role-scoped key contract in docs/role-contracts.md of this
+// package; mapping logic in scripts/lib/beads-memory-keys.mjs):
 //   universal rule      +all+:<slug>
 //   role-scoped rule    +<role>+:<slug>            e.g. +doer+:<slug>
 //   multi-role rule     +<role1>+<role2>+:<slug>   e.g. +doer+reviewer+:<slug>
@@ -23,9 +23,10 @@
 // role query: the dry run lists them as a WARNING, and --apply exits 1 while any
 // remain (after re-keying everything else); fix or forget them by hand, re-run.
 //
-// Usage (run from the repo whose beads DB you want to re-key):
-//   node scripts/rekey-beads-memories.mjs            # dry run: print old -> new
-//   node scripts/rekey-beads-memories.mjs --apply    # remember new, verify, forget old
+// Usage (cwd = the repo whose beads DB you want to re-key; <se> is this
+// package's directory):
+//   node <se>/scripts/rekey-beads-memories.mjs            # dry run: print old -> new
+//   node <se>/scripts/rekey-beads-memories.mjs --apply    # remember new, verify, forget old
 //
 // Idempotent: a re-run after success finds nothing to do. If the new key
 // already holds the same value, only the old key is forgotten; if it holds a
@@ -41,6 +42,7 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { ROLES, mapKey } from './lib/beads-memory-keys.mjs';
 
 export { ROLES, mapKey };
@@ -145,6 +147,6 @@ function reportUnparsed(unparsed, level) {
     console.error('Re-key each by hand (bd remember --key "+<role>+:<slug>" ..., then bd forget <old-key>) or forget it, then re-run.');
 }
 
-if (process.argv[1]?.endsWith('rekey-beads-memories.mjs')) {
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
     try { main(); } catch (err) { console.error(`ERROR: ${err.message}`); process.exit(1); }
 }

@@ -1,10 +1,11 @@
-// Role-delimited beads memory key scheme (see CLAUDE.md "Role-scoped
-// operational memories"):
+// Role-delimited beads memory key scheme (see docs/role-contracts.md in this
+// package, "Operational memories: the role-scoped key contract"):
 //   universal rule      +all+:<slug>
 //   role-scoped rule    +<role>+:<slug>            e.g. +doer+:<slug>
 //   multi-role rule     +<role1>+<role2>+:<slug>   e.g. +doer+reviewer+:<slug>
-// Shared by scripts/rekey-beads-memories.mjs (old -> new key mapping) and
-// scripts/beads-session-memories.mjs (session hook reader). Pure: no I/O.
+// Shared by packages/apra-fleet-se/scripts/rekey-beads-memories.mjs (old -> new
+// key mapping) and the repo-root scripts/beads-session-memories.mjs (session
+// hook reader). Pure: no I/O.
 
 export const ROLES = Object.freeze([
     'all', 'planner', 'plan-reviewer', 'doer', 'reviewer', 'deployer',
