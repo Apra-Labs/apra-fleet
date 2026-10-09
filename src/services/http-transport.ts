@@ -443,7 +443,7 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
           onsessioninitialized: (sid) => {
             sessions.set(sid, { server: sessionServer, transport: sessionTransport, workspaceId: sessionWorkspaceId, owner: sessionOwner });
             const hasMember = !!(postClaims || fallbackMemberId);
-            logLine('session', `new sid=${sid} client=${clientInfo.name ?? 'unknown'}/${clientInfo.version ?? 'unknown'} caps=${capKeys || 'none'} member=${hasMember} scope=${toolScope.kind}`);
+            logLine('session', `new sid=${shortSid(sid)} client=${clientInfo.name ?? 'unknown'}/${clientInfo.version ?? 'unknown'} caps=${capKeys || 'none'} member=${hasMember} scope=${toolScope.kind}`);
             // Register interactive member session when JWT claims are present.
             //
             // apra-fleet-eft.28.5: carry forward the launch-time pid captured
@@ -472,7 +472,7 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
                 pid: (postClaims as any).pid ?? priorPid,
                 channelCapable,
               });
-              logLine('session', `registered member member_id=${postClaims.member_id} workspace_id=${postClaims.workspace_id} via JWT sid=${sid} channelCapable=${channelCapable}`);
+              logLine('session', `registered member member_id=${postClaims.member_id} workspace_id=${postClaims.workspace_id} via JWT sid=${shortSid(sid)} channelCapable=${channelCapable}`);
             } else if (fallbackMemberId) {
               // apra-fleet-eft.50.1: same durable launch-pid fallback as the
               // JWT branch above, so a URL-param reconnect on a retry keeps a
@@ -488,7 +488,7 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
                 // session that cannot receive those pushes; onsessionclosed
                 // skips it for the same reason.
                 const existing = sessionRegistry.get(sessionWorkspaceId, fallbackMemberId);
-                logLine('session', `tool-only member session member_id=${fallbackMemberId} sid=${sid} not registered (registry entry ${existing ? 'sid=' + (existing.sessionId ?? 'none') : 'absent'} left as is)`);
+                logLine('session', `tool-only member session member_id=${fallbackMemberId} sid=${shortSid(sid)} not registered (registry entry ${existing ? 'sid=' + shortSid(existing.sessionId) : 'absent'} left as is)`);
                 return;
               }
               const existing = sessionRegistry.get(sessionWorkspaceId, fallbackMemberId);
@@ -505,11 +505,11 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
                 pid: priorPid,
                 channelCapable,
               });
-              logLine('session', `registered member member_id=${fallbackMemberId} workspace_id=${sessionWorkspaceId} via URL param sid=${sid} channelCapable=${channelCapable}`);
+              logLine('session', `registered member member_id=${fallbackMemberId} workspace_id=${sessionWorkspaceId} via URL param sid=${shortSid(sid)} channelCapable=${channelCapable}`);
             }
           },
           onsessionclosed: (sid) => {
-            logLine('session', `closed sid=${sid}`);
+            logLine('session', `closed sid=${shortSid(sid)}`);
             // LOW-2: Close the McpServer when its session closes
             const s = sessions.get(sid);
             if (s) {
@@ -525,9 +525,9 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
               const current = sessionRegistry.get(postClaims.workspace_id, postClaims.member_id);
               if (current?.sessionId === sid) {
                 sessionRegistry.unregister(postClaims.workspace_id, postClaims.member_id);
-                logLine('session', `unregistered member member_id=${postClaims.member_id} sid=${sid}`);
+                logLine('session', `unregistered member member_id=${postClaims.member_id} sid=${shortSid(sid)}`);
               } else {
-                logLine('session', `skipped stale unregister member_id=${postClaims.member_id} sid=${sid} (superseded by sid=${current?.sessionId ?? 'none'})`);
+                logLine('session', `skipped stale unregister member_id=${postClaims.member_id} sid=${shortSid(sid)} (superseded by sid=${shortSid(current?.sessionId)})`);
               }
             } else if (fallbackMemberId && channelCapable) {
               // A tool-only ?member= session never registered (see
@@ -535,9 +535,9 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
               const current = sessionRegistry.get(sessionWorkspaceId, fallbackMemberId);
               if (current?.sessionId === sid) {
                 sessionRegistry.unregister(sessionWorkspaceId, fallbackMemberId);
-                logLine('session', `unregistered member member_id=${fallbackMemberId} sid=${sid}`);
+                logLine('session', `unregistered member member_id=${fallbackMemberId} sid=${shortSid(sid)}`);
               } else {
-                logLine('session', `skipped stale unregister member_id=${fallbackMemberId} sid=${sid} (superseded by sid=${current?.sessionId ?? 'none'})`);
+                logLine('session', `skipped stale unregister member_id=${fallbackMemberId} sid=${shortSid(sid)} (superseded by sid=${shortSid(current?.sessionId)})`);
               }
             }
           },
