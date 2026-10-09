@@ -3,7 +3,10 @@ name: CI - Build & Test
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    # feat/kb-redesign pushes also publish an unsigned prerelease (job
+    # prerelease below) so member installs of its builds have an anonymous
+    # download source.
+    branches: [main, feat/kb-redesign]
     tags: ['v*']
     paths-ignore:
       - '.github/e2e/**'
@@ -328,7 +331,7 @@ jobs:
           "
 
       - name: Inject version from tag
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '_')
         shell: bash
         run: |
           TAG="${GITHUB_REF#refs/tags/v}"
@@ -583,7 +586,7 @@ jobs:
   sign-windows:
     environment: signing
     needs: build-binary
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '_')
     runs-on: windows-latest
     permissions:
       id-token: write
@@ -624,7 +627,7 @@ jobs:
 
   release:
     needs: [package, build-binary, sign-windows]
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '_')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -674,12 +677,24 @@ jobs:
           pattern: apra-fleet-*
           merge-multiple: true
 
+      - name: Write the BUILD_INFO marker
+        run: |
+          # The exact build version the binaries report (apra-fleet --version):
+          # member installs accept this stable release for an orchestrator build
+          # only when it names that build (src/services/member-fleet-install.ts).
+          cd release-binaries
+          chmod +x apra-fleet-installer-linux-x64
+          BUILD=$(./apra-fleet-installer-linux-x64 --version | head -n1 | awk '{print $2}')
+          case "$BUILD" in v[0-9]*) ;; *) echo "::error::could not read the build version (got '$BUILD')"; exit 1 ;; esac
+          printf 'version=%s\ncommit=%s\n' "$BUILD" "$GITHUB_SHA" > BUILD_INFO
+          cat BUILD_INFO
+
       - name: Publish SHA-256 checksums for the binary assets
         run: |
           # Member installs download these assets and verify them against
           # SHA256SUMS before running them (src/services/member-fleet-install.ts).
           cd release-binaries
-          sha256sum apra-fleet-installer-linux-x64 apra-fleet-installer-darwin-arm64 apra-fleet-installer-darwin-x64 apra-fleet-installer-win-x64.exe > SHA256SUMS
+          sha256sum apra-fleet-installer-linux-x64 apra-fleet-installer-darwin-arm64 apra-fleet-installer-darwin-x64 apra-fleet-installer-win-x64.exe BUILD_INFO > SHA256SUMS
           cat SHA256SUMS
 
       - name: Create GitHub release
@@ -687,6 +702,7 @@ jobs:
         with:
           files: |
             release-binaries/SHA256SUMS
+            release-binaries/BUILD_INFO
             ${{ env.TARBALL_NAME }}
             release-binaries/apra-fleet-installer-linux-x64
             release-binaries/apra-fleet-installer-darwin-arm64
@@ -694,9 +710,97 @@ jobs:
             release-binaries/apra-fleet-installer-win-x64.exe
           generate_release_notes: true
 
+  # Unsigned prerelease of every build pushed to main / feat/kb-redesign, so a
+  # member install of an unreleased orchestrator build has an anonymous
+  # download source (Actions artifacts need auth and expire). Tag = the exact
+  # build version the binaries report (e.g. v0.4.4_d1e339). Never signed (no
+  # sign-windows dependency), never marked latest; older prereleases of the
+  # same branch are pruned to the newest $KEEP. Stable v* tag releases are
+  # untouched (release job above). Tags created with GITHUB_TOKEN trigger no
+  # workflow; the tag-gated jobs also skip any tag containing '_'.
+  prerelease:
+    needs: [package, build-binary]
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/feat/kb-redesign')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: prerelease-${{ github.ref }}
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      KEEP: '3'
+    steps:
+      - name: Download the unsigned binaries and the tarball
+        uses: actions/download-artifact@v4
+        with:
+          path: prerelease
+          pattern: apra-fleet-*
+          merge-multiple: true
+
+      - name: Read the build version from the linux binary
+        id: version
+        run: |
+          cd prerelease
+          chmod +x apra-fleet-installer-linux-x64
+          TAG=$(./apra-fleet-installer-linux-x64 --version | head -n1 | awk '{print $2}')
+          case "$TAG" in v[0-9]*_*) ;; *) echo "::error::expected a build version v<x.y.z>_<sha>, got '$TAG'"; exit 1 ;; esac
+          SUFFIX="${TAG#*_}"
+          case "$GITHUB_SHA" in "$SUFFIX"*) ;; *) echo "::error::build suffix $SUFFIX is not a prefix of $GITHUB_SHA"; exit 1 ;; esac
+          git check-ref-format "refs/tags/$TAG" || { echo "::error::git rejects the tag name $TAG"; exit 1; }
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Prerelease tag: $TAG"
+
+      - name: Write BUILD_INFO and SHA256SUMS
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          cd prerelease
+          printf 'version=%s\ncommit=%s\n' "$TAG" "$GITHUB_SHA" > BUILD_INFO
+          sha256sum apra-fleet-installer-linux-x64 apra-fleet-installer-darwin-arm64 apra-fleet-installer-darwin-x64 apra-fleet-installer-win-x64.exe BUILD_INFO > SHA256SUMS
+          cat BUILD_INFO SHA256SUMS
+          ls -l
+
+      - name: Publish the prerelease
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          MARKER="apra-fleet-prerelease-channel: $GITHUB_REF"
+          cd prerelease
+          FILES="apra-fleet-installer-linux-x64 apra-fleet-installer-darwin-arm64 apra-fleet-installer-darwin-x64 apra-fleet-installer-win-x64.exe SHA256SUMS BUILD_INFO"
+          for t in apra-fleet-*.tar.gz; do if [ -f "$t" ]; then FILES="$FILES $t"; fi; done
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            # Same build already published (a re-run, or the same commit on the
+            # other branch): only ever refresh a prerelease, never a stable one.
+            if [ "$(gh release view "$TAG" --json isPrerelease --jq .isPrerelease)" != "true" ]; then
+              echo "::error::release $TAG exists and is not a prerelease; refusing to touch it"; exit 1
+            fi
+            gh release upload "$TAG" $FILES --clobber
+          else
+            NOTES=$(printf 'Unsigned prerelease build %s of %s (commit %s), for member installs of this exact orchestrator build. Not a supported release; the Windows installer is not code-signed. Verify downloads against SHA256SUMS.\n\n<!-- %s -->\n' "$TAG" "$GITHUB_REF_NAME" "$GITHUB_SHA" "$MARKER")
+            gh release create "$TAG" $FILES --prerelease --latest=false --target "$GITHUB_SHA" --title "$TAG (prerelease, $GITHUB_REF_NAME)" --notes "$NOTES"
+          fi
+          test "$(gh release view "$TAG" --json isPrerelease --jq .isPrerelease)" = "true"
+
+      - name: Prune older prereleases of this branch
+        run: |
+          MARKER="apra-fleet-prerelease-channel: $GITHUB_REF"
+          # Only non-draft prereleases this job published for this branch
+          # (marker in the body); newest first, keep the newest $KEEP.
+          gh api --paginate "repos/$GH_REPO/releases?per_page=100" \
+            --jq '.[] | select(.prerelease == true and .draft == false) | select((.body // "") | contains("'"$MARKER"'")) | [.created_at, .tag_name] | @tsv' \
+            | sort -r | awk -F'\t' -v keep="$KEEP" 'NR > keep {print $2}' > prune.txt
+          echo "Pruning $(wc -l < prune.txt) prerelease(s):"; cat prune.txt
+          while read -r OLD; do
+            if [ -z "$OLD" ]; then continue; fi
+            if [ "$(gh release view "$OLD" --json isPrerelease --jq .isPrerelease)" != "true" ]; then echo "skip $OLD: not a prerelease"; continue; fi
+            gh release delete "$OLD" --cleanup-tag --yes
+          done < prune.txt
+
   npm-publish:
     needs: build-and-test
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '_')
     runs-on: ubuntu-latest
     permissions:
       contents: read

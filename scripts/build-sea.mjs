@@ -21,7 +21,9 @@ const root = join(__dirname, '..');
 const versionFile = JSON.parse(readFileSync(join(root, 'version.json'), 'utf-8'));
 let gitHash = '';
 try {
-  gitHash = execSync('git rev-parse --short=6 HEAD', { cwd: root, encoding: 'utf-8' }).trim();
+  // First 6 chars of the full SHA (never a longer disambiguated abbreviation):
+  // the prerelease tag and src/version.ts use the same rule.
+  gitHash = execSync('git rev-parse HEAD', { cwd: root, encoding: 'utf-8', windowsHide: true }).trim().slice(0, 6);
 } catch { /* no git */ }
 const version = gitHash ? `v${versionFile.version}_${gitHash}` : `v${versionFile.version}`;
 
