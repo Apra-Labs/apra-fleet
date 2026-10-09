@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { decide, familyOf, summarize } from '../scripts/ci/prune-actions-caches.mjs';
+import { decide, familyOf, summarize, isAlreadyGone, runDeletes } from '../scripts/ci/prune-actions-caches.mjs';
 
 const NOW = Date.parse('2026-10-09T22:00:00Z');
 const MB = 1024 * 1024;
@@ -78,10 +78,16 @@ describe('decide', () => {
   });
 
   it('>200 MB idle 3d is deleted even when it is the newest (or only) in its family', () => {
-    const rows = [cache(codeql(1), 'refs/heads/main', 270, 80, 80), cache(`big-${hex(1)}`, 'refs/heads/main', 250, 73)];
-    expect(decide(rows, NOW).map((d) => [d.action, d.rule])).toEqual([['DELETE', 'large-stale'], ['DELETE', 'large-stale']]);
+    const rows = [cache(`big-${hex(1)}`, 'refs/heads/main', 250, 73)];
+    expect(decide(rows, NOW).map((d) => [d.action, d.rule])).toEqual([['DELETE', 'large-stale']]);
     // idle under 3d is not "large-stale"
     expect(decide([cache(`big-${hex(1)}`, 'refs/heads/main', 250, 71)], NOW)[0].action).toBe('KEEP');
+  });
+
+  it('a quiet ref keeps its only (newest) codeql overlay even when >200 MB and idle 3d', () => {
+    const rows = [cache(codeql(1), 'refs/heads/main', 270, 80, 80), cache(codeql(2), 'refs/heads/main', 270, 100, 100)];
+    expect(decide(rows, NOW).map((d) => [d.action, d.rule])).toEqual([['KEEP', 'codeql-overlay'], ['DELETE', 'codeql-overlay']]);
+    expect(decide([cache(codeql(3), 'refs/heads/main', 270, 500, 500)], NOW)[0].action).toBe('KEEP');
   });
 
   it('families: keep newest 2 per (family, ref), keep older ones accessed in 3d, delete older idle ones', () => {
@@ -106,5 +112,38 @@ describe('decide', () => {
     expect(s.total).toBe(28 + 18 + 5);
     expect(s.deleteCount).toBe(24 + 6 + 1);
     expect(s.deleteBytes).toBe(24 * Math.round(270 * MB) + 6 * Math.round(28 * MB) + Math.round(24 * MB));
+  });
+});
+
+describe('delete path', () => {
+  const ghError = (stderr: string) => Object.assign(new Error('Command failed: gh cache delete 8749404123 --repo o/r'), { stderr, stdout: '' });
+  const GH_GONE = 'X Could not find a cache matching 8749404123 in o/r\n';
+
+  it('classifies the real gh "could not find" message (and 404s) as already gone', () => {
+    expect(isAlreadyGone(GH_GONE)).toBe(true);
+    expect(isAlreadyGone('HTTP 404: Not Found (https://api.github.com/repos/o/r/actions/caches/1)')).toBe(true);
+    expect(isAlreadyGone('HTTP 403: Resource not accessible by integration')).toBe(false);
+    // a cache id containing 404 is not a 404
+    expect(isAlreadyGone('HTTP 500: server error for cache 8749404123')).toBe(false);
+  });
+
+  it('counts deletes, treats already-gone as success, fails only on real errors', () => {
+    const rows = [1, 2, 3, 4].map((i) => cache(codeql(i), 'refs/heads/main', 270, 100 + i, 100 + i));
+    const ds = decide(rows, NOW); // newest kept, 3 superseded deleted
+    const ids = ds.filter((d) => d.action === 'DELETE').map((d) => d.id);
+    expect(ids).toHaveLength(3);
+    const ok = runDeletes(ds, (id: number) => { if (id === ids[1]) throw ghError(GH_GONE); });
+    expect(ok).toEqual({ deleted: 2, gone: 1, failures: [], exitCode: 0 });
+
+    const bad = runDeletes(ds, (id: number) => { if (id === ids[2]) throw ghError('HTTP 403: Resource not accessible by integration'); });
+    expect(bad.deleted).toBe(2);
+    expect(bad.failures.map((f: { id: number }) => f.id)).toEqual([ids[2]]);
+    expect(bad.exitCode).toBe(1);
+  });
+
+  it('never calls delete for KEEP decisions', () => {
+    const calls: number[] = [];
+    runDeletes(decide(fixture(), NOW), (id: number) => { calls.push(id); });
+    expect(calls).toHaveLength(24 + 6 + 1);
   });
 });

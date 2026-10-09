@@ -66,12 +66,8 @@ export const RULES = [
       now - ms(c.lastAccessedAt) < LIMITS.recentAccessMs
         ? { action: 'KEEP', reason: 'accessed in last 24h' } : null,
   },
-  {
-    name: 'large-stale',
-    apply: (c, _ctx, now) =>
-      c.sizeInBytes > LIMITS.largeBytes && now - ms(c.lastAccessedAt) >= LIMITS.staleMs
-        ? { action: 'DELETE', reason: '>200 MB and not accessed in 3d' } : null,
-  },
+  // Before large-stale: the newest overlay per ref is the useful one, so a
+  // quiet ref keeps it even when it is >200 MB and idle 3d.
   {
     name: 'codeql-overlay',
     apply: (c, ctx) => {
@@ -80,6 +76,12 @@ export const RULES = [
         ? { action: 'KEEP', reason: 'newest codeql overlay for ref' }
         : { action: 'DELETE', reason: 'superseded codeql overlay' };
     },
+  },
+  {
+    name: 'large-stale',
+    apply: (c, _ctx, now) =>
+      c.sizeInBytes > LIMITS.largeBytes && now - ms(c.lastAccessedAt) >= LIMITS.staleMs
+        ? { action: 'DELETE', reason: '>200 MB and not accessed in 3d' } : null,
   },
   {
     name: 'family',
@@ -128,6 +130,35 @@ export function formatTable(decisions) {
   return lines.join('\n');
 }
 
+const LIST_LIMIT = 1000;
+
+// A cache evicted by GitHub (or a concurrent run) between list and delete is
+// benign. gh prints "X Could not find a cache matching <id> in <repo>";
+// the REST API says 404 Not Found.
+export function isAlreadyGone(message) {
+  // No bare "404": cache ids are numbers and may contain it.
+  return /could not find|not found|HTTP 404/i.test(message);
+}
+
+// deleteFn(id) throws on failure (execFileSync style: err.stderr/err.stdout).
+// Only failures that are not "already gone" make the run fail.
+export function runDeletes(decisions, deleteFn) {
+  let deleted = 0, gone = 0;
+  const failures = [];
+  for (const d of decisions.filter((x) => x.action === 'DELETE')) {
+    try {
+      deleteFn(d.id);
+      deleted++;
+    } catch (e) {
+      // gh's own output, not err.message ("Command failed: gh cache delete <id> ...").
+      const message = (`${e?.stderr ?? ''}${e?.stdout ?? ''}`.trim() || String(e?.message ?? e)).trim();
+      if (isAlreadyGone(message)) gone++;
+      else failures.push({ id: d.id, key: d.key, message });
+    }
+  }
+  return { deleted, gone, failures, exitCode: failures.length ? 1 : 0 };
+}
+
 function parseArgs(argv) {
   const a = { repo: process.env.GITHUB_REPOSITORY, input: null, del: false };
   for (let i = 0; i < argv.length; i++) {
@@ -144,9 +175,13 @@ function main() {
   const args = parseArgs(process.argv.slice(2));
   const raw = args.input
     ? readFileSync(args.input, 'utf8')
-    : execFileSync('gh', ['cache', 'list', '--repo', args.repo, '--limit', '1000',
+    : execFileSync('gh', ['cache', 'list', '--repo', args.repo, '--limit', String(LIST_LIMIT),
       '--json', 'id,key,ref,sizeInBytes,lastAccessedAt,createdAt'], { encoding: 'utf8' });
-  const decisions = decide(JSON.parse(raw));
+  const listing = JSON.parse(raw);
+  if (listing.length >= LIST_LIMIT) {
+    console.log(`::warning::cache listing hit the ${LIST_LIMIT}-row limit; caches beyond it were not evaluated`);
+  }
+  const decisions = decide(listing);
   const s = summarize(decisions);
   const mode = args.del ? 'DELETE' : 'DRY RUN (nothing deleted)';
   const report = [
@@ -161,21 +196,11 @@ function main() {
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, report + '\n');
 
   if (!args.del) return;
-  let deleted = 0, gone = 0, failed = 0;
-  for (const d of decisions.filter((x) => x.action === 'DELETE')) {
-    try {
-      execFileSync('gh', ['cache', 'delete', String(d.id), '--repo', args.repo], { stdio: ['ignore', 'pipe', 'pipe'] });
-      deleted++;
-    } catch (e) {
-      const msg = `${e.stderr ?? ''}${e.stdout ?? ''}`;
-      // Evicted by GitHub (or a concurrent run) between list and delete: benign.
-      if (/not found|404/i.test(msg)) { gone++; continue; }
-      failed++;
-      console.error(`failed to delete cache ${d.id} (${d.key}): ${msg.trim()}`);
-    }
-  }
-  console.log(`deleted ${deleted}, already gone ${gone}, failed ${failed} (of ${s.deleteCount})`);
-  if (failed) process.exitCode = 1;
+  const r = runDeletes(decisions, (id) =>
+    execFileSync('gh', ['cache', 'delete', String(id), '--repo', args.repo], { stdio: ['ignore', 'pipe', 'pipe'] }));
+  for (const f of r.failures) console.error(`failed to delete cache ${f.id} (${f.key}): ${f.message}`);
+  console.log(`deleted ${r.deleted}, already gone ${r.gone}, failed ${r.failures.length} (of ${s.deleteCount})`);
+  process.exitCode = r.exitCode;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main();

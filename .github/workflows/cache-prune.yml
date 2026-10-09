@@ -2,9 +2,9 @@ name: Actions cache prune
 
 # Keeps the repo under its 10 GB Actions cache limit. Rules live in
 # scripts/ci/prune-actions-caches.mjs (unit-tested in
-# tests/prune-actions-caches.test.ts): newest CodeQL overlay per ref only,
-# newest 2 per hash-suffixed key family per ref, never anything accessed in
-# the last 24h, anything >200 MB idle 3d deleted.
+# tests/prune-actions-caches.test.ts): never anything accessed in the last
+# 24h, newest CodeQL overlay per ref only (kept even if idle), anything else
+# >200 MB idle 3d deleted, newest 2 per hash-suffixed key family per ref.
 #
 # Scheduled runs delete; manual dispatch defaults to a dry run.
 # No workflow_run trigger on CodeQL: the run that saves a new overlay has just
@@ -36,6 +36,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       # Runner's preinstalled node; no setup-node/npm cache (would create caches).
       - name: Prune caches
         env:
