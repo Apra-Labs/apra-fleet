@@ -80,7 +80,10 @@ export function maybeScheduleReindex(repoPath: string): boolean {
 
     let child: ChildProcess;
     try {
-      child = spawn('npx', ['gitnexus', 'analyze'], {
+      // -y is npx's flag (before the package name): never block on npx's
+      // "Ok to proceed?" install prompt -- this child is hidden, so a prompt
+      // would hang unseen. Unpinned on purpose: follow gitnexus releases.
+      child = spawn('npx', ['-y', 'gitnexus', 'analyze'], {
         cwd: repoPath,
         // win32: NOT detached. A detached child has no console, so the
         // node/git processes the cmd.exe shell starts each open a visible,

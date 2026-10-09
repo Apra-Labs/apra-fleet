@@ -117,7 +117,7 @@ describe('maybeScheduleReindex()', () => {
     expect(mockSpawn).toHaveBeenCalledTimes(1);
     const [cmd, args, options] = mockSpawn.mock.calls[0] as [string, string[], Record<string, unknown>];
     expect(cmd).toBe('npx');
-    expect(args).toEqual(['gitnexus', 'analyze']);
+    expect(args).toEqual(['-y', 'gitnexus', 'analyze']);
     expect(options.cwd).toBe('/repo/path');
     // win32: non-detached so the cmd.exe tree shares one hidden console.
     expect(options.detached).toBe(process.platform !== 'win32');
