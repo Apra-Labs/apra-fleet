@@ -59,9 +59,12 @@ search also matches value text, so apply only entries whose KEY contains `+all+`
 3. Confirm with `bd recall "+groomer+:<slug>"` that the stored value is identical; only
    then `bd forget <old key>`.
 
-Report each migrated key in `heuristicsRecorded` (new key + value) and count them in
-`notes`. This re-keys memories only, not beads, so it runs in every mode; nothing to do
-when the query returns no `groomer-heuristic-` keys. Then apply the migrated entries too.
+Steps 2-3 write, so they follow the same gate as bead mutations: only with `dry-run: false`
+and not in report-only "What needs grooming" mode. Otherwise run no `bd remember`/`bd forget`;
+list each key you would migrate (old -> new) with its exact proposed `bd` commands in `notes`.
+Report each key actually migrated in `heuristicsRecorded` (new key + value) and count them
+in `notes`. Nothing to do when the query returns no `groomer-heuristic-` keys. Either way,
+apply those entries in this session too.
 
 ## Usage modes
 

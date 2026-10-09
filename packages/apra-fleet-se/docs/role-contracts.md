@@ -70,7 +70,8 @@ gives the interactive/orchestrator session its `+all+` and `+orchestrator+`
 memories some other way (e.g. a second session-start hook that prints them).
 
 The backlog groomer re-keys older `groomer-heuristic-<slug>` memories to
-`+groomer+:<slug>` itself. For other older keys (`role:all:<slug>`,
+`+groomer+:<slug>` itself when run with `dry-run: false` (a dry run only
+reports the keys it would migrate). For other older keys (`role:all:<slug>`,
 `<role>:<slug>`), an apra-fleet source checkout has
 `packages/apra-fleet-se/scripts/rekey-beads-memories.mjs`: run it with the
 target repo as cwd (dry run; add `--apply` to re-key). It is not part of the
