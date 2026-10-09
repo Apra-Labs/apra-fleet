@@ -683,8 +683,10 @@
  *   with reason basis_mismatch, and a CONFIRMED id citing no source file is skipped with
  *   reason no_source_files. Skips are reported in the result's skipped list.
  *   Independently of ids, bible entries the KB holds as superseded or invalidated are
- *   removed and reported in the result's removed list; an empty list with nothing to
- *   remove makes no commit.
+ *   removed and reported in the result's removed list, and existing bible entries with
+ *   no source_file_hashes gain the KB's stored basis for the same id when it passes the
+ *   same rule (counted in the result's backfilled); an empty list with nothing to remove
+ *   or backfill makes no commit.
  * @property {string} baseBranch - The target base branch, written to provenance.branch.
  * @property {string} baseCommit - The base commit the entries were verified against,
  *   written to provenance.commit.
@@ -711,6 +713,14 @@
  *   (never re-hashing local files); an entry without it gets a local
  *   freshness-only basis (it can go stale) that is never exported, so it is not
  *   re-published until recaptured.
+ *   Because kb_import keeps an entry's bible confidence and carried basis, an
+ *   import from an explicit `path` is equivalent to kb_promote: a member session
+ *   without the kb_maintainer grant is refused one (E-KB-MAINTAINER-REQUIRED,
+ *   nothing imported) unless the path is its own .fleet/kb-canonical.json. Even
+ *   then (and without path) such a session imports its own bible only as
+ *   committed at HEAD, never the work-tree file; the result adds
+ *   bible_source "HEAD" and worktree_ignored, and with no committed copy the
+ *   import fails with E-KB-MAINTAINER-REQUIRED.
  */
 
 /**
@@ -1191,10 +1201,22 @@ export class ApraFleet {
      * lists each removal. Never pushes; re-running with the
      * same ids after resetting to a newer HEAD re-merges, so a rejected push can
      * be retried. Result JSON: {path, merged, skipped, removed, entry_count,
-     * committed}; extract with parseToolJson(). Each skipped item is {id, reason}
+     * backfilled, committed}; extract with parseToolJson(). backfilled counts the
+     * existing bible entries with no source_file_hashes (carried over from a
+     * v1/v2 bible) that gained this KB's stored basis for the same id, because
+     * it passes the same basis rule at HEAD and cites the same files (legacy
+     * backfill; only that field changes, nothing is dropped); a backfill alone
+     * makes a commit. Each skipped item is {id, reason}
      * with reason not_confirmed_or_unknown, no_source_files (a CONFIRMED id
      * citing no source file) or basis_mismatch. Each removed item is {id, reason}
-     * with reason superseded or invalidated.
+     * with reason superseded or invalidated. A member session without the
+     * kb_maintainer grant cannot retire a CONFIRMED entry through the kb_* tools:
+     * kb_invalidate leaves CONFIRMED entries untouched, and kb_capture with
+     * supersedes links to a CONFIRMED target (refines, both live) instead of
+     * retiring it; both list such ids in their response's refused list. The
+     * kb_maintainer session and FULL sessions are not limited, and the grant is
+     * a routing guard for agent sessions, not a boundary against a local process
+     * that can open a FULL session or write the KB directly.
      * A CONFIRMED id is admitted only if it passes the same basis rule as kb_export.
      * The removed scope keys (repo_path, repo, repo_remote_url) are refused
      * with E-SCOPE-KEY-REMOVED before anything is sent.

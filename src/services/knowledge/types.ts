@@ -122,6 +122,19 @@ export interface CaptureOpts {
   // re-exported until it is recaptured. Left undefined, capture()
   // computes the basis from local files as for every normal capture.
   carriedBasis?: Record<string, string> | null;
+  // A member session without the kb_maintainer grant (kb_capture sets it):
+  // an explicit `supersedes` whose matched target is CONFIRMED does NOT retire
+  // it -- the capture takes the implicit path instead (new entry linked
+  // 'refines', both live) and the target id comes back in `refused`.
+  keepConfirmed?: boolean;
+}
+
+/** SqliteProvider.capture() result. */
+export interface CaptureResult {
+  id: string;
+  audn_decision: AudnDecision;
+  /** CONFIRMED supersede targets left live (keepConfirmed); present only when non-empty. */
+  refused?: string[];
 }
 
 export interface EntryTrustFilter {
@@ -275,6 +288,23 @@ export interface DiscardResult {
   discarded: string[];
   not_found: string[];
   already_discarded: string[];
+  /**
+   * Live CONFIRMED ids left untouched because the call asked to keep CONFIRMED
+   * entries (keepConfirmed: a member session without the kb_maintainer grant).
+   * Present only when keepConfirmed was set.
+   */
+  refused?: string[];
+}
+
+/** Options for id-level discard / file invalidation. */
+export interface RetireOptions {
+  /** MEMBER own-scope: act only on entries carrying this tag. */
+  ownerTag?: string;
+  /**
+   * Leave CONFIRMED entries untouched and report them as refused (a member
+   * session without the kb_maintainer grant may not retire CONFIRMED).
+   */
+  keepConfirmed?: boolean;
 }
 
 export interface MemoryProvider {
@@ -286,7 +316,8 @@ export interface MemoryProvider {
   // Id-level DISCARD: sets superseded_at (and stale) so the entry drops from every
   // read path; the row is kept. ownerTag restricts the call to entries carrying
   // that tag (MEMBER own-scope); any other id is reported as not_found.
-  discard(ids: string[], opts?: { ownerTag?: string }): Promise<DiscardResult>;
+  // keepConfirmed leaves live CONFIRMED entries untouched (reported in refused).
+  discard(ids: string[], opts?: RetireOptions): Promise<DiscardResult>;
   getLinked(id: string): Promise<KBEntry[]>;
   prime(opts: PrimeOptions): Promise<PrimedContext>;
   promote(id: string, reason?: string): Promise<{ id: string; confidence_before: Confidence; confidence_after: Confidence }>;

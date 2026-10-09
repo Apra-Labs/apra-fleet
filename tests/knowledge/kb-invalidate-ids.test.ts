@@ -2,10 +2,13 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { SqliteProvider } from '../../src/services/knowledge/sqlite-provider.js';
 import type { KBEntryInput } from '../../src/services/knowledge/types.js';
 
-const memberState = vi.hoisted(() => ({ id: undefined as string | undefined }));
+const memberState = vi.hoisted(() => ({ id: undefined as string | undefined, kbMaintainer: false }));
 const providerState = vi.hoisted(() => ({ p: undefined as unknown }));
 
-vi.mock('../../src/services/tool-scope.js', () => ({ getSessionMemberId: () => memberState.id }));
+vi.mock('../../src/services/tool-scope.js', () => ({
+  getSessionMemberId: () => memberState.id,
+  getSessionKbMaintainer: () => memberState.kbMaintainer,
+}));
 vi.mock('../../src/services/knowledge/kb-self.js', () => ({
   getSelfKbProviders: async () => ({ project: providerState.p, global: {}, projectSlug: 'slug' }),
   memberOwnerTag: (anchor?: unknown) => (anchor !== undefined || memberState.id === undefined ? undefined : `member:${memberState.id}`),
@@ -31,6 +34,7 @@ beforeEach(async () => {
   await provider.init();
   providerState.p = provider;
   memberState.id = undefined;
+  memberState.kbMaintainer = false;
 });
 afterEach(() => provider.close());
 
@@ -70,6 +74,8 @@ describe('kb_invalidate {ids}', () => {
     memberState.id = A;
     const out = await run({ ids: [other.id, untagged.id, own.id] });
     expect(out.discarded).toEqual([own.id]);
+    // A member session without the kb_maintainer grant: refused is reported (empty here).
+    expect(out.refused).toEqual([]);
     expect(out.not_found.sort()).toEqual([other.id, untagged.id].sort());
     const ids = await visible();
     expect(ids).toContain(other.id);
@@ -83,6 +89,28 @@ describe('kb_invalidate {ids}', () => {
     memberState.id = A;
     const out = JSON.parse(await kbInvalidate({ ids: [other.id] } as any, { folder: '/tmp/x', remoteUrl: 'https://example.invalid/r.git' } as any));
     expect(out).toEqual({ discarded: [other.id], not_found: [], already_discarded: [] });
+  });
+
+  it('MEMBER session without the kb_maintainer grant: an own CONFIRMED entry is refused (left live), own INFERRED discarded in the same call', async () => {
+    const confirmed = await provider.capture(input('thetaone', [`member:${A}`]));
+    await provider.promote(confirmed.id, 'test fixture: verified');
+    await provider.promote(confirmed.id, 'test fixture: verified');
+    const inferred = await provider.capture(input('iotaone', [`member:${A}`]));
+    memberState.id = A;
+    const out = await run({ ids: [confirmed.id, inferred.id] });
+    expect(out).toEqual({ discarded: [inferred.id], not_found: [], already_discarded: [], refused: [confirmed.id] });
+    const row = (provider as any).getDb().prepare('SELECT superseded_at, confidence FROM entries WHERE id = ?').get(confirmed.id);
+    expect(row.superseded_at).toBeNull();
+    expect(row.confidence).toBe('CONFIRMED');
+  });
+
+  it('MEMBER session WITH the kb_maintainer grant discards an own CONFIRMED entry (no refused field)', async () => {
+    const confirmed = await provider.capture(input('kappaone', [`member:${A}`]));
+    await provider.promote(confirmed.id, 'test fixture: verified');
+    await provider.promote(confirmed.id, 'test fixture: verified');
+    memberState.id = A;
+    memberState.kbMaintainer = true;
+    expect(await run({ ids: [confirmed.id] })).toEqual({ discarded: [confirmed.id], not_found: [], already_discarded: [] });
   });
 
   it('FULL session may discard any entry', async () => {

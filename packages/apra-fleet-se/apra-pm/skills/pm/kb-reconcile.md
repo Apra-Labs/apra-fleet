@@ -29,6 +29,11 @@ already-exposed `kb_promote` surface (which can walk any entry
 way -- a bible can never smuggle an active directive; activation stays
 CLI-only (`apra-fleet kb approve-directive`).
 
+Run every step of this command from the operator's own session, not a fleet
+member session: a member session without the engine's kb_maintainer grant is
+refused an explicit `kb_import` path (`E-KB-MAINTAINER-REQUIRED`) and is not
+served `kb_reconcile_prefilter`, `kb_resolve_contradiction` or `kb_export`.
+
 ## Steps
 
 ### Step 1: Import the merged bible

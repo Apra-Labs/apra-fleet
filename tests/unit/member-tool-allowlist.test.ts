@@ -38,9 +38,9 @@ describe('member tool allowlist', () => {
     }
   });
 
-  it('never serves kb_setup or kb_export, and keeps kb_promote / kb_resolve_contradiction to the maintainer grant', () => {
+  it('never serves kb_setup or kb_export, and keeps the CONFIRMED-minting tools (kb_promote / kb_resolve_contradiction / kb_reconcile_prefilter) to the maintainer grant', () => {
     expect([...MEMBER_NEVER_TOOLS].sort()).toEqual(['kb_export', 'kb_setup']);
-    expect([...MEMBER_MAINTAINER_TOOLS].sort()).toEqual(['kb_promote', 'kb_resolve_contradiction']);
+    expect([...MEMBER_MAINTAINER_TOOLS].sort()).toEqual(['kb_promote', 'kb_reconcile_prefilter', 'kb_resolve_contradiction']);
     for (const t of [...MEMBER_NEVER_TOOLS, ...MEMBER_MAINTAINER_TOOLS]) {
       expect(MEMBER_ALLOWED_TOOLS).not.toContain(t);
       expect(isMemberAllowedTool(t)).toBe(false);
@@ -94,6 +94,22 @@ describe('member tool allowlist', () => {
     for (const t of MEMBER_CHANNEL_TOOLS) {
       expect(MEMBER_ALLOWED_TOOLS).not.toContain(t);
       expect(isMemberAllowedTool(t)).toBe(false);
+    }
+  });
+
+  it('the kb-reconciler tag profile grants a member agent session only tools a member session is served', () => {
+    const profile = JSON.parse(fs.readFileSync(path.resolve(__dirname, '../../skills/fleet/profiles/tag-kb-reconciler.json'), 'utf8')) as Record<string, string[]>;
+    const roles = Object.keys(profile);
+    expect(roles.length).toBeGreaterThan(0);
+    for (const role of roles) {
+      const fleetTools = profile[role]
+        .filter(g => g.startsWith('mcp__apra-fleet__'))
+        .map(g => g.slice('mcp__apra-fleet__'.length));
+      expect(fleetTools.length, role).toBeGreaterThan(0);
+      for (const t of fleetTools) {
+        expect(MEMBER_ALLOWED_TOOLS, `${role} grants ${t}`).toContain(t);
+        expect(MEMBER_DENIED_TOOLS, `${role} grants ${t}`).not.toContain(t);
+      }
     }
   });
 });

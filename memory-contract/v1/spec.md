@@ -154,7 +154,10 @@ stored entry `member:<caller uuid>`; `kb_promote` and `kb_invalidate` act only
 on entries carrying that tag and report any other id as not found, changing
 nothing. `kb_invalidate` takes exactly one of `files` or `ids`; `ids` discards
 the entries (sets `superseded_at`, never deletes) and returns
-`{discarded, not_found, already_discarded}`. `kb_feedback` is refused with
+`{discarded, not_found, already_discarded}`. In a member session without the
+kb_maintainer grant neither form retires a CONFIRMED entry (section 2.5a): the
+response then also carries `refused`; the same holds for `kb_capture` with
+`supersedes`. `kb_feedback` is refused with
 `E-MEMBER-VIEW-READ-ONLY`. A FULL session reads and writes the per-repo DB
 unchanged.
 
@@ -167,8 +170,10 @@ A MEMBER session is served an explicit tool list
   and `kb_export` (auto-commits into the work tree) are NEVER served to a
   member session. Calling one is an unknown-tool error; they are available to
   a FULL session.
-- `kb_promote` and `kb_resolve_contradiction` mint CONFIRMED. They are served
-  only to a member session carrying the kb_maintainer grant: an engine-opened
+- `kb_promote`, `kb_resolve_contradiction` and `kb_reconcile_prefilter` (which
+  resolves pairs through the `kb_resolve_contradiction` write path) mint
+  CONFIRMED. They are served only to a member session carrying the
+  kb_maintainer grant: an engine-opened
   member session (`origin=engine`) with `kb_maintainer=1` on its URL, which the
   engine opens only for the member it chose as a repository's kb_maintainer
   (client `connectFleetMember(id, { origin: 'engine', kbMaintainer: true })`,
@@ -176,9 +181,55 @@ A MEMBER session is served an explicit tool list
   `origin=engine` is ignored. Every other member session -- including an agent
   session on the maintainer member, which connects through the plain
   `?member=<uuid>` entry -- gets an unknown-tool error.
-- Every other `kb_*` tool (including `kb_bible_commit`, `kb_import` and
-  `kb_reconcile_prefilter`) and every `code_*` tool is served to every member
-  session.
+- Every other `kb_*` tool (including `kb_bible_commit` and `kb_import`) and
+  every `code_*` tool is served to every member session.
+- `kb_import` with an explicit `path` keeps the named bible's confidence (and a
+  v3 bible's carried hashes), which is equivalent in power to `kb_promote`. In
+  a member session WITHOUT the grant an explicit path is refused with
+  `E-KB-MAINTAINER-REQUIRED` before any KB is opened, and nothing is imported
+  (a refusal, not a clamp). A path naming the session's own
+  `.fleet/kb-canonical.json`, and a call without `path` (the engine's priming
+  import of the checkout bible), import that bible AS COMMITTED: the handler
+  reads the blob at `HEAD:./.fleet/kb-canonical.json` (git, no shell), never
+  the work-tree file, which the member's agent can edit (CONFIRMED entries
+  with v3 hashes matching HEAD would otherwise land CONFIRMED and pass
+  `kb_bible_commit` admission). The response then also carries
+  `bible_source: "HEAD"` and `worktree_ignored` (true when the work-tree file
+  differs from, or is missing versus, the committed copy, so its uncommitted
+  content was not imported). A clean tree or fresh clone yields the same bytes,
+  so priming is unchanged. When a work-tree bible exists but has no committed
+  copy (unborn HEAD, untracked bible, git unavailable) the call fails with
+  `E-KB-MAINTAINER-REQUIRED` and nothing is imported; with no bible at all it
+  fails with the plain bible-not-found error. Residual: a member that can
+  commit can still put a hand-made bible at HEAD with a LOCAL commit and import
+  it at once -- the CONFIRMED rows land in the per-repo DB immediately, and
+  review sees the change only once the commit is pushed (or in the
+  maintainer's next bible diff). FULL sessions and the kb_maintainer session
+  are unchanged (they read the named or work-tree file).
+- `kb_invalidate` retires entries (`ids` discards them; `files` marks
+  context-cache entries invalidated), and `kb_bible_commit` removes retired
+  entries from the bible, so in a member session WITHOUT the grant neither
+  form retires a CONFIRMED entry: each such live CONFIRMED entry the call would
+  have retired is left untouched and its id is listed in `refused`
+  (`E-RETIRE-NEEDS-KB-MAINTAINER`, a response-field refusal); the rest of the
+  call proceeds unchanged (INFERRED/UNVERIFIED own entries are still retired).
+  The response carries `refused` exactly when the call came from such a
+  session (possibly empty), on both forms. The engine's own discards run in
+  the kb_maintainer session and are unaffected.
+- `kb_capture` with `supersedes` retires the matched entry, and AUDN matches
+  candidates across the whole per-repo DB (not only the caller's own
+  entries), so in a member session WITHOUT the grant a CONFIRMED target is
+  never retired: the capture takes the implicit path instead (the new entry
+  is stored and linked to the target with `refines`, both stay live) and the
+  target id is listed in `refused` (`E-RETIRE-NEEDS-KB-MAINTAINER`). A
+  non-CONFIRMED target is still retired. Over a remote (HTTP) KB provider the
+  grant cannot be conveyed, so such a session's `supersedes` is dropped
+  entirely and its id listed in `refused` (fail closed). The response carries
+  `refused` exactly when such a session passed `supersedes` (possibly empty);
+  the kb_maintainer session and FULL sessions are unchanged.
+- A tool handler sees the grant through the per-call context
+  (`getSessionKbMaintainer()` next to `getSessionMemberId()` in
+  `src/services/tool-scope.ts`).
 
 The grant is an unauthenticated loopback URL parameter, like `?member=` and
 `origin=engine`: it keeps agent sessions off the CONFIRMED-minting tools, it is
@@ -274,6 +325,14 @@ for every accepted shape live in `bible/examples/`.
   the basis the bible predicate admitted the entry against -- and never
   re-hashes files at write time. An entry carried over from an older bible has
   no `source_file_hashes`; a writer keeps it as it is and never invents one.
+  The one exception is `kb_bible_commit`'s legacy backfill: when its KB holds
+  the same id, citing the same `source_files`, with a stored basis that passes
+  the bible admission predicate at HEAD, that STORED basis is attached as the
+  entry's `source_file_hashes` (copied, not re-hashed; every other field is
+  unchanged; an entry that does not qualify is kept as it is, never dropped).
+  A backfill is a change: the bible is rewritten at the current format version
+  and committed, and the response's `backfilled` counts the entries. A local
+  freshness-only basis (below) never backfills.
 - Every writer refuses (throws, file untouched) to write a bible holding two
   entries with the same `id`.
 - Readers (`kb_import`, the member bible view) accept v1 (a bare JSON array of
@@ -291,7 +350,8 @@ for every accepted shape live in `bible/examples/`.
   resolves a pair on it. The entry is therefore not re-exported until it is
   recaptured (kb_promote and kb_resolve_contradiction do not give it a
   verified basis).
-- No tool request or response shape changes with v3: the format change is
+- No tool request shape changes with v3. The only response change is
+  `kb_bible_commit`'s `backfilled` count (above); otherwise the format change is
   confined to the bible file.
 
 ## 3. Error model

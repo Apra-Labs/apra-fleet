@@ -104,6 +104,30 @@ function recordingDeps({ agentResponses = [], now = () => T0, budgets = {} } = {
 // GUARDS: createUsageLimitPauseController()'s wait-window derivation, its
 // requestPause payload, its bounded re-probe ladder, and its typed give-up.
 // ---------------------------------------------------------------------------
+describe('usage-limit controller: re-probe permission handling', () => {
+    test('the re-probe is deliberately NOT strict: its dispatch options carry no fail_on_permission_denial', async () => {
+        // GUARDS: the decision recorded at the call site -- the probe only tests
+        // whether the member answers, so a refusal must not fail it.
+        const { deps, rec } = recordingDeps({ agentResponses: ['ok'] });
+        const controller = createUsageLimitPauseController(deps);
+        await controller({ member: 'bob', roleLabel: 'Doer streak [bead-1]', signal: { resumeAt: isoAt(T0 + HOUR), resumeAtSource: 'parsed' } });
+        assert.equal(rec.probes.length, 1);
+        assert.ok(!('fail_on_permission_denial' in rec.probes[0].opts) || rec.probes[0].opts.fail_on_permission_denial !== true,
+            `probe must not be strict, got ${JSON.stringify(rec.probes[0].opts)}`);
+        assert.equal(rec.probes[0].opts.resume, false);
+    });
+
+    test('a permission_denied probe failure is not mistaken for a usage limit: inconclusive, resumes without burning a reprobe', async () => {
+        const denied = new AgentDispatchError('permission denied', { details: { reason: 'permission_denied' } });
+        const { deps, rec } = recordingDeps({ agentResponses: [denied] });
+        const controller = createUsageLimitPauseController(deps);
+        const outcome = await controller({ member: 'bob', roleLabel: 'Doer streak [bead-1]', signal: { resumeAt: isoAt(T0 + HOUR), resumeAtSource: 'parsed' } });
+        assert.deepEqual(outcome, { resumed: true });
+        assert.equal(rec.sleeps.length, 1, 'one wait only -- no reprobe loop');
+        assert.ok(rec.logs.some((m) => m.includes('was inconclusive')), JSON.stringify(rec.logs));
+    });
+});
+
 describe('usage-limit controller: wait-window derivation', () => {
     test("a parsed resumeAt 3h ahead sleeps ~3h and the pause carries resumeAt + source=parsed", async () => {
         // GUARDS: the controller trusts the provider's PARSED resumeAt as the

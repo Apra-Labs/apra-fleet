@@ -446,9 +446,15 @@ export function withFleetAccessSecret(options = {}, env = process.env) {
  *
  * `deps.kbMaintainer === true` (requires `origin: 'engine'`) adds
  * `kb_maintainer=1`: the engine's kb_maintainer grant. The server then also
- * serves kb_promote and kb_resolve_contradiction to this member session (they
- * mint CONFIRMED; no other member session sees them). memberCall sets it only
- * for the member it chose as a repository's kb_maintainer.
+ * serves kb_promote, kb_resolve_contradiction and kb_reconcile_prefilter to
+ * this member session (they mint CONFIRMED; no other member session sees
+ * them), and accepts kb_import with an explicit `path` (refused with
+ * E-KB-MAINTAINER-REQUIRED in a member session without the grant; kb_import
+ * without `path` works in every member session, but without the grant it reads
+ * the bible as committed at HEAD only), and lets kb_invalidate and kb_capture
+ * `supersedes` retire CONFIRMED entries (without the grant they are left live
+ * and listed in the response's `refused`). memberCall sets it only for
+ * the member it chose as a repository's kb_maintainer.
  *
  * @param {string} memberId registered member uuid
  * @param {object} [deps] same bag as resolveFleetServerConnection, plus `options`

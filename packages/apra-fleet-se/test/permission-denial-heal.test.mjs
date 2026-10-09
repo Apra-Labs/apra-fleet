@@ -292,6 +292,25 @@ test('a policy_deny refusal (a tool the member config denies on purpose) in acce
     assert.equal(fleet.calls.length, 0, 'a policy deny must never reach compose_permissions, not even a dry_run');
 });
 
+test('an agy member-policy refusal (policy_deny, healable false, no grants) stops not_healable with no compose_permissions call', async () => {
+    const fleet = fakeFleet();
+    const heal = createPermissionDenialHeal({ callTool: fleet.callTool, memberRoles: () => ['doer'] });
+    const agyPolicy = {
+        actions: ['mcp'],
+        denials: [{ action: 'mcp', target: 'apra-fleet/execute_prompt', suggestedGrants: [] }],
+        suggestedGrants: [],
+        hint: 'agy refused mcp "apra-fleet/execute_prompt": outside the member tool allowlist',
+        signals: ['result_json', 'transcript'],
+        healable: false,
+        cause: 'policy_deny',
+    };
+    const res = await heal({ member: 'agy1', role: 'doer', denial: agyPolicy });
+    assert.equal(res.healed, false);
+    assert.equal(res.step, 'not_healable');
+    assert.deepEqual(res.grants, []);
+    assert.equal(fleet.calls.length, 0, 'an agy policy deny must never reach compose_permissions (no no_progress abort)');
+});
+
 test('no progress: the same call refused again after its grant landed stops instead of looping', async () => {
     const fleet = fakeFleet();
     const heal = createPermissionDenialHeal({ callTool: fleet.callTool, memberRoles: () => ['doer'] });

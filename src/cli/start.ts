@@ -9,6 +9,7 @@ import {
 } from '../services/singleton.js';
 import { getServiceManager } from '../services/service-manager/index.js';
 import { LOG_FILE_PATH, FLEET_DIR, DEFAULT_HOST, isNonDefaultInstance, resolveServerPort } from '../paths.js';
+import { ensureOwnerOnlyDir, openOwnerOnlyAppend } from '../utils/owner-only-fs.js';
 import { BIN_DIR } from './config.js';
 import { serverVersion } from '../version.js';
 import { clearStoppedMarker, readStoppedMarker } from '../services/stopped-marker.js';
@@ -45,8 +46,11 @@ function directSpawn(): void {
     cmd = process.execPath;
     spawnArgs = [path.join(findProjectRoot(), 'dist', 'index.js'), '--transport', 'http'];
   }
-  fs.mkdirSync(FLEET_DIR, { recursive: true });
-  const logFd = fs.openSync(LOG_FILE_PATH, 'a');
+  // The service log and data dir are owner-only (see owner-only-fs.ts);
+  // a tightening failure is reported, never fatal.
+  const permProblems = ensureOwnerOnlyDir(FLEET_DIR);
+  const logFd = openOwnerOnlyAppend(LOG_FILE_PATH, permProblems);
+  for (const why of permProblems) console.error(`Warning: ${why}`);
   // Never hand launch markers to the long-running server.
   const env = { ...process.env };
   delete env.APRA_FLEET_AUTOSTART;

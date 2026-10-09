@@ -1,8 +1,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomInt } from 'node:crypto';
-import { FLEET_DIR } from '../paths.js';
+import { FLEET_DIR, LOG_FILE_PATH } from '../paths.js';
 import { redactSecretTokens } from '../services/secret-token.js';
+import { ensureOwnerOnlyDir, openOwnerOnlyAppend, restrictToOwner, type OwnerOnlyDeps } from './owner-only-fs.js';
 
 // The server log is written SYNCHRONOUSLY (append-mode fd + fs.writeSync), and
 // before the stderr mirror (GitHub #562): a console in QuickEdit selection or
@@ -19,14 +20,39 @@ export function getActiveLogFile(): string | null {
   return _activeLogFile;
 }
 
+/**
+ * Open this process's log (<data dir>/logs/fleet-<pid>.log) owner-only, and
+ * tighten the data dir, the logs dir and the service log (<data dir>/fleet.log,
+ * written by `apra-fleet start` and the OS service manager) to the owner too.
+ * Server logs carry member ids, paths and session handles, so they must not be
+ * group/world-readable: POSIX dirs 0700 and files 0600 (pre-existing ones are
+ * chmod-tightened); Windows strips inherited ACEs and grants only the current
+ * user (see owner-only-fs.ts). Returns the open fd and every tightening
+ * failure (never fatal: logging must keep working).
+ */
+export function openOwnerOnlyLog(dataDir: string, pid: number, deps: OwnerOnlyDeps = {}): { fd: number; logFile: string; problems: string[] } {
+  const logsDir = path.join(dataDir, 'logs');
+  const problems = [...ensureOwnerOnlyDir(dataDir, deps), ...ensureOwnerOnlyDir(logsDir, deps)];
+  const logFile = path.join(logsDir, `fleet-${pid}.log`);
+  const fd = openOwnerOnlyAppend(logFile, problems, deps);
+  const serviceLog = path.join(dataDir, path.basename(LOG_FILE_PATH));
+  if (fs.existsSync(serviceLog)) {
+    const why = restrictToOwner(serviceLog, 'file', deps);
+    if (why) problems.push(why);
+  }
+  return { fd, logFile, problems };
+}
+
 function getFd(): number | null {
   if (_fd !== null) return _fd;
   try {
-    const logsDir = path.join(FLEET_DIR, 'logs');
-    fs.mkdirSync(logsDir, { recursive: true });
-    const logFile = path.join(logsDir, `fleet-${process.pid}.log`);
-    _fd = fs.openSync(logFile, 'a');
+    const { fd, logFile, problems } = openOwnerOnlyLog(FLEET_DIR, process.pid);
+    _fd = fd;
     _activeLogFile = logFile;
+    for (const why of problems) {
+      appendLogRecord('warn', { tag: 'log', msg: `log permissions: ${why}` });
+      try { console.error(`[fleet:warn] log log permissions: ${why}`); } catch { /* ignore */ }
+    }
   } catch {
     // data dir not available
   }
@@ -167,6 +193,16 @@ export function maskSecrets(text: string): string {
   } catch {
     return text;
   }
+}
+
+/**
+ * Log form of an MCP session id: its first 8 characters. A session id is a
+ * bearer-like handle (a full id addresses the session), so log lines carry
+ * only this non-reversible prefix -- enough to correlate lines of one session.
+ */
+export function shortSid(sid: string | null | undefined): string {
+  if (!sid) return 'none';
+  return sid.length <= 8 ? sid : `${sid.slice(0, 8)}...`;
 }
 
 export function truncateForLog(text: string, maxLen = 80): string {
