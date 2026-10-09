@@ -13,7 +13,7 @@ import { WorkflowEngine } from '@apralabs/apra-fleet-workflow/engine';
 
 import { setupMinimal, buildMockFleetApi, runCmd, teardown, withScenarioMarkers } from './helpers/mock-sprint-harness.mjs';
 import { bdMode } from './helpers/bd-replay.mjs';
-import { createBeadsFixture } from './helpers/beads-fixture.mjs';
+import { createBeadsFixture, envWithoutBeadsDir } from './helpers/beads-fixture.mjs';
 import { scaledTimeout } from './helpers/scaled-timeout.mjs';
 import { buildSprintArgv } from '../src/supervisor/spawner.mjs';
 import { createDoltMutex } from '../src/supervisor/dolt-mutex.mjs';
@@ -263,19 +263,27 @@ async function bootRealSupervisor() {
     const port = await getFreePort();
     // Hermetic tracker via --beads-dir, never this repo's own .beads.
     const beadsFixture = await createBeadsFixture();
-    const proc = spawn(process.execPath, [SERVE_BIN, '--port', String(port), '--beads-dir', beadsFixture.dir], {
-        cwd: SE_PKG_ROOT,
-        stdio: ['ignore', 'ignore', 'ignore'],
-        env: { ...process.env, APRA_FLEET_DATA_DIR: dataDir, FLEET_SE_DATA_DIR: seDataDir },
-    });
-    await waitFor(async () => {
-        try {
-            const res = await httpGet(port, '/api/health');
-            return res.status === 200;
-        } catch {
-            return false;
-        }
-    }, { label: 'real supervisor /api/health to answer' });
+    let proc;
+    try {
+        proc = spawn(process.execPath, [SERVE_BIN, '--port', String(port), '--beads-dir', beadsFixture.dir], {
+            cwd: SE_PKG_ROOT,
+            stdio: ['ignore', 'ignore', 'ignore'],
+            env: envWithoutBeadsDir({ APRA_FLEET_DATA_DIR: dataDir, FLEET_SE_DATA_DIR: seDataDir }),
+            windowsHide: true,
+        });
+        await waitFor(async () => {
+            try {
+                const res = await httpGet(port, '/api/health');
+                return res.status === 200;
+            } catch {
+                return false;
+            }
+        }, { label: 'real supervisor /api/health to answer' });
+    } catch (err) {
+        if (proc && proc.pid) forceKill(proc.pid);
+        await beadsFixture.cleanup();
+        throw err;
+    }
     return { proc, port, dataDir, seDataDir, beadsFixture };
 }
 

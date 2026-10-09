@@ -8,7 +8,7 @@ import net from 'node:net';
 import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { createBeadsFixture } from './helpers/beads-fixture.mjs';
+import { createBeadsFixture, envWithoutBeadsDir } from './helpers/beads-fixture.mjs';
 
 // apra-fleet-7h6n.4 -- merged from n4lu2-packaged-supervisor-boot.test.mjs,
 // qqof-supervisor-selfcontained-audit.test.mjs, and
@@ -56,6 +56,9 @@ const ROOT = path.resolve(__dirname, '..', '..', '..');
 
 /** @type {Set<string>} */
 const tmpDirs = new Set();
+// Beads fixtures, removed via their own cleanup() (with retries) after the
+// processes using them are killed.
+const fixtureCleanups = [];
 /** @type {Set<number>} */
 const spawnedPids = new Set();
 
@@ -85,6 +88,10 @@ function forceKill(pid) {
 after(async () => {
     for (const pid of spawnedPids) forceKill(pid);
     spawnedPids.clear();
+    for (const cleanup of fixtureCleanups.splice(0)) {
+        // eslint-disable-next-line no-await-in-loop
+        await cleanup();
+    }
     for (const dir of tmpDirs) {
         // eslint-disable-next-line no-await-in-loop
         await fsp.rm(dir, { recursive: true, force: true }).catch(() => {});
@@ -445,7 +452,7 @@ describe('installed-supervisor: deployed supervisor boots without ERR_MODULE_NOT
         // is still exercised from the unrelated cwd: every import resolves at
         // load time, before serve chdir's.
         const beadsFixture = await createBeadsFixture();
-        tmpDirs.add(beadsFixture.dir);
+        fixtureCleanups.push(beadsFixture.cleanup);
         const arbitraryCwd = await mkTmp('installed-supervisor-arbitrary-cwd-');
         const dataDir = await mkTmp('installed-supervisor-data-');
         const seDataDir = await mkTmp('installed-supervisor-se-data-');
@@ -455,7 +462,8 @@ describe('installed-supervisor: deployed supervisor boots without ERR_MODULE_NOT
         const serve = spawn(process.execPath, [serveBin, '--port', String(port), '--beads-dir', beadsFixture.dir], {
             cwd: arbitraryCwd,
             stdio: ['ignore', 'ignore', 'pipe'],
-            env: { ...process.env, APRA_FLEET_DATA_DIR: dataDir, FLEET_SE_DATA_DIR: seDataDir },
+            env: envWithoutBeadsDir({ APRA_FLEET_DATA_DIR: dataDir, FLEET_SE_DATA_DIR: seDataDir }),
+            windowsHide: true,
         });
         track(serve.pid);
         serve.stderr.on('data', (chunk) => { stderrBuf += chunk.toString('utf-8'); });

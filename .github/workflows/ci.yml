@@ -65,8 +65,8 @@ jobs:
       # bd CLI, needed on PATH before "Run tests" (apra-fleet-se + exec-bd
       # tests shell out to it). CI='' defeats @beads/bd's postinstall guard
       # that otherwise skips the download in CI.
-      # Pinned to 1.3.0: this repo's Dolt DB is schema v66; older bd can't
-      # read it. Known regression: 1.3.0 still misreads a fresh dir's failed
+      # Pinned to 1.3.0: the bd version the test suites are verified against.
+      # Known regression: 1.3.0 still misreads a fresh dir's failed
       # `git ls-remote` (apra-fleet-4ipl, upstream not fixed yet).
       # Retried: the package's postinstall downloads the bd binary from GitHub
       # releases, which intermittently answers HTTP 500.

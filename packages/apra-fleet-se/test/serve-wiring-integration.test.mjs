@@ -10,7 +10,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { scaledTimeout } from './helpers/scaled-timeout.mjs';
 import { TEST_CONCURRENCY } from './helpers/test-concurrency.mjs';
-import { createBeadsFixture } from './helpers/beads-fixture.mjs';
+import { createBeadsFixture, envWithoutBeadsDir } from './helpers/beads-fixture.mjs';
 
 // =============================================================================
 // apra-fleet-eft.4.8.3 -- verification for eft.4.8: boots the REAL
@@ -36,6 +36,9 @@ const SE_PKG_ROOT = path.join(__dirname, '..');
 const spawnedPids = new Set();
 /** @type {Set<string>} */
 const tmpDirs = new Set();
+// Beads fixtures, removed via their own cleanup() (with retries) after the
+// processes using them are killed.
+const fixtureCleanups = [];
 
 function track(pid) {
     if (Number.isInteger(pid) && pid > 0) spawnedPids.add(pid);
@@ -49,6 +52,10 @@ function forceKill(pid) {
 after(async () => {
     for (const pid of spawnedPids) forceKill(pid);
     spawnedPids.clear();
+    for (const cleanup of fixtureCleanups.splice(0)) {
+        // eslint-disable-next-line no-await-in-loop
+        await cleanup();
+    }
     for (const dir of tmpDirs) {
         // eslint-disable-next-line no-await-in-loop
         await fsp.rm(dir, { recursive: true, force: true }).catch(() => {});
@@ -174,12 +181,13 @@ describe('serve.mjs wiring integration (apra-fleet-eft.4.8.3) -- boot the real s
         const seDataDir = await mkTmp('eft483-serve-se-');
         port = await getFreePort();
         beadsFixture = await createBeadsFixture();
-        tmpDirs.add(beadsFixture.dir);
+        fixtureCleanups.push(beadsFixture.cleanup);
 
         serve = spawn(process.execPath, [SERVE_BIN, '--port', String(port), '--beads-dir', beadsFixture.dir], {
             cwd: SE_PKG_ROOT,
             stdio: ['ignore', 'ignore', 'ignore'],
-            env: { ...process.env, APRA_FLEET_DATA_DIR: dataDir, FLEET_SE_DATA_DIR: seDataDir },
+            env: envWithoutBeadsDir({ APRA_FLEET_DATA_DIR: dataDir, FLEET_SE_DATA_DIR: seDataDir }),
+            windowsHide: true,
         });
         track(serve.pid);
         serve.on('exit', () => { serveExited = true; });

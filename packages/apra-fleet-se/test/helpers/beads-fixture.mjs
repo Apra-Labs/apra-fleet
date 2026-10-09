@@ -13,12 +13,16 @@ import { bdInitFromTemplate } from './bd-replay.mjs';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const DEFAULT_FIXTURE_ISSUES = path.join(__dirname, '..', 'fixtures', 'beads-fixture', 'issues.jsonl');
 
-function bdIn(args, cwd) {
-    const env = { ...process.env };
-    // An ambient BEADS_DIR would redirect bd away from the fixture.
+/** process.env plus `extra`, minus BEADS_DIR (which would redirect bd away from the fixture). */
+export function envWithoutBeadsDir(extra = {}) {
+    const env = { ...process.env, ...extra };
     delete env.BEADS_DIR;
+    return env;
+}
+
+function bdIn(args, cwd) {
     return new Promise((resolve) => {
-        exec(`bd ${args}`, { cwd, env, windowsHide: true }, (err, stdout, stderr) => resolve({ err, stdout, stderr }));
+        exec(`bd ${args}`, { cwd, env: envWithoutBeadsDir(), windowsHide: true }, (err, stdout, stderr) => resolve({ err, stdout, stderr }));
     });
 }
 
@@ -28,7 +32,6 @@ function bdIn(args, cwd) {
  * fixture's `bd list --all --json` rows.
  */
 export async function createBeadsFixture({ issuesFile = DEFAULT_FIXTURE_ISSUES } = {}) {
-    // Short name: bd derives its database name from the directory name.
     const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'bdfx-'));
     const cleanup = () => fsp.rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }).catch(() => {});
     try {
