@@ -117,9 +117,12 @@ your tool-loading tool first, before concluding they are unavailable.
 Before beginning deploy operations, retrieve universal conventions and role-scoped operational rules from Beads:
 
 ```bash
-bd memories role:all
-bd memories deployer:
+bd memories --json +all+
+bd memories --json +deployer+
 ```
+
+Each prints a JSON object of key -> full value (plus a `schema_version` entry). The
+search also matches value text, so apply only entries whose KEY contains `+all+` or `+deployer+`.
 
 ## deploy.md operations
 
