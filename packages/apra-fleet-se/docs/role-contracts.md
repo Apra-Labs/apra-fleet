@@ -69,11 +69,12 @@ memories role-scoped runs `bd prime --no-memories` in its session hooks, and
 gives the interactive/orchestrator session its `+all+` and `+orchestrator+`
 memories some other way (e.g. a second session-start hook that prints them).
 
-To migrate older keys (`role:all:<slug>`, `<role>:<slug>`,
-`groomer-heuristic-<slug>`) to this contract, run
-`node <apra-fleet-se>/scripts/rekey-beads-memories.mjs` from the target repo
-(dry run; add `--apply` to re-key). Keys it cannot map are listed and left
-alone.
+The backlog groomer re-keys older `groomer-heuristic-<slug>` memories to
+`+groomer+:<slug>` itself. For other older keys (`role:all:<slug>`,
+`<role>:<slug>`), an apra-fleet source checkout has
+`packages/apra-fleet-se/scripts/rekey-beads-memories.mjs`: run it with the
+target repo as cwd (dry run; add `--apply` to re-key). It is not part of the
+installed package. Keys it cannot map are listed and left alone.
 
 ## `contracts.mjs`: the four things it provides
 
