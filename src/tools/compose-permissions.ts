@@ -268,6 +268,37 @@ function saveLedger(projectFolder: string, ledger: Ledger): void {
 }
 
 async function detectStacks(agent: Agent, projectSubdir?: string): Promise<string[]> {
+  const found = new Set<string>();
+
+  if (agent.agentType === 'local') {
+    let localDir = agent.workFolder;
+    if (projectSubdir) {
+      const subDir = path.join(agent.workFolder, projectSubdir);
+      if (fs.existsSync(subDir)) {
+        localDir = subDir;
+      }
+    }
+    try {
+      if (fs.existsSync(localDir)) {
+        for (const [marker, stack] of Object.entries(STACK_MAP)) {
+          if (fs.existsSync(path.join(localDir, marker))) {
+            found.add(stack);
+          }
+        }
+        const entries = fs.readdirSync(localDir);
+        for (const entry of entries) {
+          if (entry.endsWith('.sln') || entry.endsWith('.csproj')) {
+            found.add('dotnet');
+            break;
+          }
+        }
+      }
+    } catch {
+      // directory missing or unreadable
+    }
+    return [...found];
+  }
+
   const strategy = getStrategy(agent);
   const markers = Object.keys(STACK_MAP).join(' ');
   // Resolve the directory to check on the member: prefer <workFolder>/<projectSubdir>,
@@ -284,19 +315,34 @@ async function detectStacks(agent: Agent, projectSubdir?: string): Promise<strin
   const cdCmd = checkDir === rootDir
     ? `cd "${rootDir}" 2>/dev/null`
     : `{ cd "${checkDir}" 2>/dev/null || cd "${rootDir}" 2>/dev/null; }`;
-  // TODO: unbranched POSIX && / || / 2>/dev/null -- same defect class as
-  // orphan-recovery.ts's pid-alive/file-read commands (apra-fleet review,
-  // fix/cross-shell-home-var). Not yet OS-branched for Windows members.
-  const result = await strategy.execCommand(`${cdCmd} && ls ${markers} 2>/dev/null || true`, 10000);
-  const found = new Set<string>();
-  for (const line of result.stdout.split('\n')) {
-    const file = line.trim();
-    if (STACK_MAP[file]) found.add(STACK_MAP[file]);
+
+  const isWindows = agent.os === 'windows';
+  const shell = getAgentShell(agent);
+  const posix = isPosixShell(isWindows, shell);
+
+  if (posix) {
+    const result = await strategy.execCommand(`${cdCmd} && ls ${markers} 2>/dev/null || true`, 10000);
+    for (const line of result.stdout.split('\n')) {
+      const file = line.trim();
+      if (STACK_MAP[file]) found.add(STACK_MAP[file]);
+    }
+    const dotnetCheck = await strategy.execCommand(`${cdCmd} && ls *.sln *.csproj 2>/dev/null || true`, LOCAL_FS_OP_TIMEOUT_MS);
+    if (dotnetCheck.stdout.trim()) found.add('dotnet');
+  } else {
+    // Windows PowerShell remote member: Get-ChildItem to enumerate files
+    const winDir = checkDir.replace(/\//g, '\\');
+    const winRootDir = rootDir.replace(/\//g, '\\');
+    const pathsToCheck = checkDir === rootDir
+      ? `'${escapePowerShellArgInner(winRootDir)}'`
+      : `'${escapePowerShellArgInner(winDir)}', '${escapePowerShellArgInner(winRootDir)}'`;
+    const psCmd = `Get-ChildItem -LiteralPath @(${pathsToCheck}) -File -ErrorAction SilentlyContinue | ForEach-Object { $_.Name }`;
+    const result = await strategy.execCommand(psCmd, 10000);
+    for (const line of result.stdout.split(/\r?\n/)) {
+      const file = line.trim();
+      if (STACK_MAP[file]) found.add(STACK_MAP[file]);
+      if (file.endsWith('.sln') || file.endsWith('.csproj')) found.add('dotnet');
+    }
   }
-  // .sln/.csproj need glob - check separately
-  // TODO: same unbranched-POSIX defect class as above -- not yet OS-branched.
-  const dotnetCheck = await strategy.execCommand(`${cdCmd} && ls *.sln *.csproj 2>/dev/null || true`, LOCAL_FS_OP_TIMEOUT_MS);
-  if (dotnetCheck.stdout.trim()) found.add('dotnet');
   return [...found];
 }
 
@@ -1032,8 +1078,13 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
       for (const p of expanded) existingAllow.add(p);
       allow = [...existingAllow];
     } else {
-      // Non-Claude: pass grants directly; provider incorporates into role-based config
-      allow = [...expanded];
+      // Non-Claude: include the role's base profile so reactive grants never strip
+      // baseline developer or reviewer permissions.
+      const baseName = mode === 'doer' ? 'base-dev' : 'base-reviewer';
+      const base = loadProfile(profilesDir, baseName);
+      const basePerms = new Set<string>(base?.permissions?.allow ?? []);
+      for (const p of expanded) basePerms.add(p);
+      allow = [...basePerms];
     }
 
     let deliveryWarnings: string[] = [];

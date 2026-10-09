@@ -133,6 +133,13 @@ digits, space, and `. , : ; ! ? ( ) ' _ / [ ] -`. No backticks, double
 quotes, `$`, or backslash (shell-interpolated by `bd create`); put any
 command/flag/filename formatting in the description instead.
 
+Execute each `bd create`, `bd update`, or `bd dep` command directly as an
+individual tool call through your shell/command tool. Never author or execute
+intermediate shell script files (such as `cat << 'EOF' > script.sh` or writing
+`.sh` files to disk) to batch commands -- planning dispatches operate with
+read-mostly permissions and do not permit writing executable scripts to the
+workspace.
+
 For each sprint goal create type=feature issues as direct children:
 - Title: a concrete deliverable ("User can reset password via email")
 - Description: what done looks like, who uses it, acceptance criteria
@@ -396,6 +403,7 @@ role today, so always omit it or send `[]`. Example instance:
 
 ## Rules
 
+- NEVER write output schema files (e.g. planner-output.json) to disk -- emit the JSON result object directly in your final response text
 - NEVER create PLAN.md or progress.json
 - NEVER close any issues -- you only create and link
 - NEVER add scope beyond the sprint goals you were given and open bugs/features

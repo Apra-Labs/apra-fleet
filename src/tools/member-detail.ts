@@ -235,24 +235,28 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
     lastLlmActivityAt: agent.lastLlmActivityAt ?? null,
   };
 
-  try {
-    const busyCheck = await strategy.execCommand(
-      cmds.fleetProcessCheck(agent.workFolder, agent.sessionId, provider.processName),
-      10000,
-    );
-    const output = busyCheck.stdout.trim().toLowerCase();
-    if (output.includes('fleet-busy')) {
-      session.status = 'busy';
-      if (agent.lastLlmActivityAt) {
-        session.idleSecs = Math.round((Date.now() - new Date(agent.lastLlmActivityAt).getTime()) / 1000);
+  if (agent.llmProvider === 'none' || !provider.processName) {
+    session.status = 'idle';
+  } else {
+    try {
+      const busyCheck = await strategy.execCommand(
+        cmds.fleetProcessCheck(agent.workFolder, agent.sessionId, provider.processName),
+        10000,
+      );
+      const output = busyCheck.stdout.trim().toLowerCase();
+      if (output.includes('fleet-busy')) {
+        session.status = 'busy';
+        if (agent.lastLlmActivityAt) {
+          session.idleSecs = Math.round((Date.now() - new Date(agent.lastLlmActivityAt).getTime()) / 1000);
+        }
+      } else if (output.includes('other-busy')) {
+        session.status = `idle (unrelated ${provider.name} processes running)`;
+      } else {
+        session.status = 'idle';
       }
-    } else if (output.includes('other-busy')) {
-      session.status = `idle (unrelated ${provider.name} processes running)`;
-    } else {
-      session.status = 'idle';
+    } catch {
+      session.status = 'unknown';
     }
-  } catch {
-    session.status = 'unknown';
   }
   result.session = session;
 

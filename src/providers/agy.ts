@@ -1,5 +1,5 @@
 import type { ProviderAdapter, PromptOptions, ParsedResponse, ParseResponseContext, ComposePermissionOptions, PermissionDenial, PermissionDenialItem, UsageLimitSignal, MemberMcpSyncContext, MemberMcpSyncResult, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult, SessionIdStrategy, ExecTimeoutSource, TargetOS } from './provider.js';
-import { joinForOS, resolveHomeDir, defaultUsageLimitSignal } from './provider.js';
+import { joinForOS, resolveHomeDir, defaultUsageLimitSignal, suggestedGrantsForDenial } from './provider.js';
 import type { LlmProvider, SSHExecResult, Agent } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
 import { classifyPromptError } from '../utils/prompt-errors.js';
@@ -11,7 +11,16 @@ import { logWarn } from '../utils/log-helpers.js';
 import { getModelOverride } from '../services/user-config.js';
 import { transformAgentForAgy } from '../cli/agent-transform.js';
 import { MEMBER_ALLOWED_TOOLS, MEMBER_DENIED_TOOLS } from '../services/member-tool-allowlist.js';
-import { agyMemberDenyRules, joinMemberPath, pruneLegacyMcpInMemberFile } from '../services/member-config-io.js';
+import {
+  agyMemberDenyRules,
+  joinMemberPath,
+  pruneLegacyMcpInMemberFile,
+  readMemberJson,
+  writeMemberJson,
+  writeSecretBearingConfig,
+  MemberConfigNotJsonError,
+  MEMBER_MCP_SERVER_NAME,
+} from '../services/member-config-io.js';
 import { isPosixShell } from '../utils/agent-helpers.js';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -106,6 +115,14 @@ export class AgyProvider implements ProviderAdapter {
     return 'standard';
   }
 
+  private resolveDisplayModel(model?: string, tier?: 'cheap' | 'standard' | 'premium'): string {
+    if (model && model !== 'cheap' && model !== 'standard' && model !== 'premium') {
+      return model;
+    }
+    const resolvedTier: 'cheap' | 'standard' | 'premium' = (model as 'cheap' | 'standard' | 'premium') ?? tier ?? 'standard';
+    return getModelOverride('agy', resolvedTier) ?? AGY_MODEL_FOR_TIER[resolvedTier];
+  }
+
   buildPromptCommand(opts: PromptOptions): string {
     const { folder, promptFile, sessionId, resuming, unattended, inv, model, tier: inputTier, agentName, projectId } = opts;
     const escapedFolder = escapeDoubleQuoted(folder);
@@ -117,8 +134,7 @@ export class AgyProvider implements ProviderAdapter {
     }
 
     // Write per-workspace model override before launching agy.
-    const tier = inputTier ?? this.resolveTierFromModel(model);
-    const displayModel = getModelOverride('agy', tier) ?? AGY_MODEL_FOR_TIER[tier];
+    const displayModel = this.resolveDisplayModel(model, inputTier);
 
     // --add-dir is REQUIRED, not cosmetic: AGY does not adopt the process's
     // working directory as its workspace. A bare `cd <folder> && agy -p ...`
@@ -250,6 +266,21 @@ export class AgyProvider implements ProviderAdapter {
       }
 
       if (!parsedObj) {
+        const firstBrace = strippedForJson.indexOf('{');
+        const lastBrace = strippedForJson.lastIndexOf('}');
+        if (firstBrace !== -1 && lastBrace > firstBrace) {
+          try {
+            const candidate = JSON.parse(strippedForJson.slice(firstBrace, lastBrace + 1));
+            const isEnvelopeStatus = candidate && (candidate.status === 'SUCCESS' || candidate.status === 'ERROR');
+            const hasEnvelopeKeys = candidate && typeof candidate === 'object' && ('conversation_id' in candidate || isEnvelopeStatus) && ('response' in candidate || 'error' in candidate);
+            if (hasEnvelopeKeys) {
+              parsedObj = candidate;
+            }
+          } catch { /* keep looking */ }
+        }
+      }
+
+      if (!parsedObj) {
         const jsonMatch = strippedForJson.match(/\{[\s\S]*?"response"\s*:[\s\S]*?\}/);
         if (jsonMatch) {
           try {
@@ -301,7 +332,7 @@ export class AgyProvider implements ProviderAdapter {
           if (sessionId === undefined && typeof entry.conversation_id === 'string' && entry.conversation_id.trim()) {
             sessionId = entry.conversation_id.trim();
           }
-          const isModelTurn = entry.source === 'MODEL' || entry.type === 'PLANNER_RESPONSE' || entry.type === 'GENERIC' || entry.type === 'MODEL_RESPONSE';
+          const isModelTurn = (entry.source === 'MODEL' || entry.type === 'PLANNER_RESPONSE' || entry.type === 'MODEL_RESPONSE') && entry.type !== 'GENERIC' && entry.source !== 'SYSTEM';
           if (
             isModelTurn &&
             entry.status === 'DONE' &&
@@ -342,8 +373,11 @@ export class AgyProvider implements ProviderAdapter {
 
   // apra-fleet-hzeb.1: AGY has no distinct usage-limit event surface, so key off
   // the raw output using the shared quota detector (guessed resume window).
+  // A successful dispatch (code 0 and !isError) must NEVER be classified as a
+  // usage limit, even if stdout transcripts happen to mention 429 in token metrics.
   detectUsageLimit(result: SSHExecResult, parsed: ParsedResponse): UsageLimitSignal | null {
-    return defaultUsageLimitSignal(result.stderr || result.stdout || parsed.result);
+    if (result.code === 0 && !parsed.isError) return null;
+    return defaultUsageLimitSignal(result.stderr || (parsed.isError ? parsed.result : ''));
   }
 
   supportsResume(): boolean {
@@ -452,20 +486,84 @@ export class AgyProvider implements ProviderAdapter {
     }];
   }
 
-  /** agy has no per-project MCP config, so no per-folder member entry is
-   *  written. The only member-MCP work is pruning the retired
-   *  apra-fleet-member url+bearer entry from agy's machine-global
-   *  ~/.gemini/config/mcp_config.json, when that file exists. */
+  /** agy configures MCP servers in machine-global ~/.gemini/config/mcp_config.json.
+   *  Writes the member's MCP URL (with ?member=<uuid>) so the member connects to the
+   *  fleet MCP server with member scope and proper KB/code identity. */
   async syncMemberMcpEntry(ctx: MemberMcpSyncContext): Promise<MemberMcpSyncResult> {
     if (!ctx.memberHomeDir) {
       throw new Error('agy: the member home directory could not be resolved, so mcp_config.json cannot be checked');
     }
     const isWindows = ctx.agentOs === 'windows';
+    const posix = isPosixShell(isWindows, ctx.shell);
     const file = joinMemberPath(ctx.memberHomeDir.trim(), '.gemini/config/mcp_config.json', isWindows, ctx.shell);
-    const pruned = await pruneLegacyMcpInMemberFile(ctx.execCommand, file, isPosixShell(isWindows, ctx.shell));
+    const pruned = await pruneLegacyMcpInMemberFile(ctx.execCommand, file, posix);
+
+    let detail: string;
+    if (ctx.url !== null) {
+      let config: Record<string, unknown>;
+      try {
+        config = await readMemberJson(ctx.execCommand, file, posix);
+      } catch (e) {
+        if (e instanceof MemberConfigNotJsonError) {
+          throw new MemberConfigNotJsonError(file, 'is not strict JSON', 'agy-config-unparseable');
+        }
+        throw e;
+      }
+      const mcpServers = (config.mcpServers && typeof config.mcpServers === 'object' && !Array.isArray(config.mcpServers))
+        ? config.mcpServers as Record<string, unknown>
+        : {};
+      const cur = mcpServers[MEMBER_MCP_SERVER_NAME] as Record<string, unknown> | undefined;
+      if (cur && typeof cur.url === 'string' && !cur.url.includes('member=')) {
+        detail = `agy: preserved user-configured ${MEMBER_MCP_SERVER_NAME} in ${file}`;
+      } else {
+        const wanted: Record<string, unknown> = {
+          url: ctx.url,
+          ...(ctx.headers && Object.keys(ctx.headers).length > 0 ? { headers: ctx.headers } : {}),
+        };
+        const current = !!cur && typeof cur === 'object' && JSON.stringify(cur) === JSON.stringify(wanted);
+        if (current && !pruned) {
+          detail = `agy: ${file} already up to date`;
+        } else {
+          mcpServers[MEMBER_MCP_SERVER_NAME] = wanted;
+          config.mcpServers = mcpServers;
+          if (ctx.headers && Object.keys(ctx.headers).length > 0) {
+            await writeSecretBearingConfig(ctx, file, JSON.stringify(config, null, 2) + '\n', posix);
+          } else {
+            await writeMemberJson(ctx.execCommand, file, config, posix);
+          }
+          detail = `agy: wrote ${MEMBER_MCP_SERVER_NAME} in ${file}`;
+        }
+      }
+    } else if (ctx.removeOnlyOwnEntry) {
+      let config: Record<string, unknown>;
+      try {
+        config = await readMemberJson(ctx.execCommand, file, posix);
+      } catch {
+        config = {};
+      }
+      const mcpServers = (config.mcpServers && typeof config.mcpServers === 'object' && !Array.isArray(config.mcpServers))
+        ? config.mcpServers as Record<string, unknown>
+        : {};
+      const cur = mcpServers[MEMBER_MCP_SERVER_NAME] as Record<string, unknown> | undefined;
+      if (cur && typeof cur.url === 'string' && cur.url.includes(`member=${encodeURIComponent(ctx.agent.id)}`)) {
+        delete mcpServers[MEMBER_MCP_SERVER_NAME];
+        if (Object.keys(mcpServers).length === 0) {
+          delete config.mcpServers;
+        } else {
+          config.mcpServers = mcpServers;
+        }
+        await writeMemberJson(ctx.execCommand, file, config, posix);
+        detail = `agy: removed ${MEMBER_MCP_SERVER_NAME} from ${file}`;
+      } else {
+        detail = pruned ? `agy: pruned apra-fleet-member from ${file}` : 'agy: no member MCP entry to remove';
+      }
+    } else {
+      detail = pruned ? `agy: pruned apra-fleet-member from ${file}` : 'agy: no per-project MCP config; nothing to write';
+    }
+
     return {
       workFolderFiles: [],
-      detail: pruned ? `agy: pruned apra-fleet-member from ${file}` : 'agy: no per-project MCP config; nothing to write',
+      detail,
     };
   }
 
@@ -514,8 +612,7 @@ export class AgyProvider implements ProviderAdapter {
 
   wrapWindowsPrompt(setupCmd: string, filePath: string, argList: string, sessionId?: string, model?: string, tier?: 'cheap' | 'standard' | 'premium'): string {
     // Write per-workspace model override before launching agy (mirrors buildPromptCommand).
-    const resolvedTier = tier ?? this.resolveTierFromModel(model);
-    const displayModel = getModelOverride('agy', resolvedTier) ?? AGY_MODEL_FOR_TIER[resolvedTier];
+    const displayModel = this.resolveDisplayModel(model, tier);
 
     let cmd = `${setupCmd}Write-Output "FLEET_PID:$pid"; ${filePath} --model "${escapeDoubleQuoted(displayModel)}" ${argList}`;
 
@@ -578,46 +675,73 @@ function stripTranscript(text: string): string {
 const SHELL_SEQUENCE_RE = /[|;`]|&&/;
 const PLAIN_COMMAND_WORD_RE = /^[\w.+-]+$/;
 
-/** The compose_permissions grants that allow one denied call, primary first.
- *  The prefix grant Bash(<first word>:*) composes to command(<word>) plus
- *  command(regex:<word> .*) on every OS, and the regex matches the full raw
- *  line, including a $(...) argument (docs/agy-provider.md section 3), so it comes first and the
- *  exact command follows as the narrow option. Linux/macOS agy reports a shell
- *  command it refuses as `unsandboxed "<command line>"` (the JSON result says
- *  `command`), so both actions are handled alike. */
+/** The compose_permissions grants that allow one denied call, delegated to shared suggestedGrantsForDenial. */
 function suggestedGrantsFor(item: PermissionDenialItem): string[] {
-  const t = item.target?.trim();
-  if (item.action === 'command' || item.action === 'unsandboxed') {
-    if (!t || SHELL_SEQUENCE_RE.test(t)) return [];
-    const first = t.split(/\s+/)[0];
-    const out: string[] = [];
-    if (PLAIN_COMMAND_WORD_RE.test(first)) out.push(`Bash(${first}:*)`);
-    if (!SHELL_CHAIN_RE.test(t) && t !== first) out.push(`Bash(${t})`);
-    return out;
-  }
-  const one = suggestedGrantFor(item);
-  return one ? [one] : [];
+  return suggestedGrantsForDenial(item);
 }
 
-function suggestedGrantFor(item: PermissionDenialItem): string | undefined {
-  const t = item.target?.trim();
-  switch (item.action) {
-    case 'command':
-      return t && !SHELL_CHAIN_RE.test(t) ? `Bash(${t})` : undefined;
-    case 'read_file':
-      return t ? `Read(${t})` : 'Read';
-    case 'write_file':
-      return t ? `Write(${t})` : 'Write';
-    case 'mcp': {
-      const m = t ? /^([^/\s]+)\/([^/\s]+)$/.exec(t) : null;
-      return m ? `mcp__${m[1]}__${m[2]}` : undefined;
-    }
-    case 'read_url':
-      return 'WebSearch';
-    default:
-      return undefined;
+function cleanArg(val: unknown): string | undefined {
+  if (typeof val !== 'string' || !val.trim()) return undefined;
+  let clean = val.trim();
+  if (clean.startsWith('"') && clean.endsWith('"') && clean.length >= 2) {
+    try { clean = JSON.parse(clean); } catch { clean = clean.slice(1, -1); }
   }
+  clean = clean.replace(/^"+|"+$/g, '').trim();
+  return clean || undefined;
 }
+
+interface ToolCallExtractor {
+  action: string;
+  reportedMatches: readonly string[];
+  matches: (toolName: string) => boolean;
+  extractTarget: (args: Record<string, unknown>, toolName: string) => string | undefined;
+}
+
+/** Declarative registry mapping AGY tool calls to denied actions and concrete targets. */
+const TOOL_CALL_EXTRACTORS: readonly ToolCallExtractor[] = [
+  {
+    action: 'command',
+    reportedMatches: ['command', 'unsandboxed'],
+    matches: (name) => name === 'run_command' || name === 'execute_command' || name === 'bash',
+    extractTarget: (args) => cleanArg(args.CommandLine || args.command || args.cmd),
+  },
+  {
+    action: 'write_file',
+    reportedMatches: ['write_file', 'filesystem'],
+    matches: (name) => name === 'write_to_file' || name === 'replace_file_content' || name === 'edit_file',
+    extractTarget: (args) => cleanArg(args.TargetFile || args.path || args.file_path),
+  },
+  {
+    action: 'read_file',
+    reportedMatches: ['read_file', 'filesystem'],
+    matches: (name) => name === 'view_file' || name === 'read_file',
+    extractTarget: (args) => cleanArg(args.AbsolutePath || args.path || args.file_path),
+  },
+  {
+    action: 'mcp',
+    reportedMatches: ['mcp'],
+    matches: (name) => name === 'call_mcp_tool' || name.startsWith('mcp_') || name.startsWith('mcp__'),
+    extractTarget: (args, name) => {
+      if (name === 'call_mcp_tool') {
+        const s = cleanArg(args.ServerName || args.server_name);
+        const t = cleanArg(args.ToolName || args.tool_name);
+        return s && t ? `${s}/${t}` : undefined;
+      }
+      const clean = name.replace(/^mcp_+/, '');
+      const sep = clean.indexOf('__');
+      if (sep > 0) return `${clean.slice(0, sep)}/${clean.slice(sep + 2)}`;
+      const singleSep = clean.indexOf('_');
+      if (singleSep > 0) return `${clean.slice(0, singleSep)}/${clean.slice(singleSep + 1)}`;
+      return clean;
+    },
+  },
+  {
+    action: 'read_url',
+    reportedMatches: ['read_url', 'execute_url'],
+    matches: (name) => name === 'read_url_content' || name === 'read_browser_page' || name === 'search_web',
+    extractTarget: (args) => cleanArg(args.Url || args.url || args.query),
+  },
+];
 
 /**
  * Detects an agy permission denial in a dispatch's output. The JSON result is
@@ -681,6 +805,31 @@ export function detectAgyPermissionDenial(result: SSHExecResult, agentOs?: Parse
         }
       }
     }
+    if (transcriptItems.length === 0 && (jsonActions.length > 0 || stderrActions.length > 0)) {
+      // When AGY auto-denies a tool in headless mode, it terminates immediately
+      // without writing an ERROR step. Extract the denied action's target from the
+      // last model turn's pending tool call in this turn that matches the reported denied actions.
+      const reported = new Set([...jsonActions, ...stderrActions]);
+      for (let i = entries.length - 1; i >= from; i--) {
+        const e = entries[i];
+        if (e && Array.isArray(e.tool_calls) && e.tool_calls.length > 0) {
+          for (const call of e.tool_calls) {
+            const name = call.name;
+            const args = (call.args || {}) as Record<string, unknown>;
+            for (const extractor of TOOL_CALL_EXTRACTORS) {
+              if (extractor.matches(name) && extractor.reportedMatches.some(r => reported.has(r))) {
+                const target = extractor.extractTarget(args, name);
+                if (target) {
+                  transcriptItems.push({ action: extractor.action, target });
+                  break;
+                }
+              }
+            }
+          }
+          if (transcriptItems.length > 0) break;
+        }
+      }
+    }
   }
   if (transcriptItems.length) signals.push('transcript');
 
@@ -698,7 +847,7 @@ export function detectAgyPermissionDenial(result: SSHExecResult, agentOs?: Parse
     if (!denials.some(d => d.action === action)) add({ action });
   }
   const actions = [...new Set(denials.map(d => d.action))];
-  const perDenial = denials.map(d => suggestedGrantsFor(d));
+  const perDenial = denials.map(d => suggestedGrantsForDenial(d));
   denials.forEach((d, i) => { d.suggestedGrants = perDenial[i]; });
   const primary = [...new Set(perDenial.map(g => g[0]).filter((g): g is string => !!g))];
   const narrow = [...new Set(perDenial.flatMap(g => g.slice(1)))].filter(g => !primary.includes(g));
@@ -969,6 +1118,11 @@ export function convertClaudeAllowToAgyPermissions(allow: string[], opts: AgyCon
     console.warn(`[fleet:warn] ${line}`);
     if (opts.warnings && !opts.warnings.includes(line)) opts.warnings.push(line);
   };
+  const addDropWarning = (item: string, reason: string) => {
+    const line = `agy: dropped "${item}" -- ${reason}`;
+    console.warn(`[fleet:warn] ${line}`);
+    if (opts.warnings && !opts.warnings.includes(line)) opts.warnings.push(line);
+  };
 
   for (const item of allow) {
     if (item === 'Read' || item === 'Glob' || item === 'Grep') {
@@ -983,9 +1137,10 @@ export function convertClaudeAllowToAgyPermissions(allow: string[], opts: AgyCon
       addPathRule('read_file', item);
     } else if (PATH_SCOPED_WRITE_RE.test(item)) {
       addPathRule('write_file', item);
-    } else if (item === 'Agent') {
+    } else if (item === 'Agent' || item.startsWith('Agent(')) {
       addRule('invoke_subagent', '*');
       addRule('send_message', '*');
+      addDropWarning(item, 'AGY permissions.allow has no subagent action; subagents are not gated by permissions.allow.');
     } else if (item.startsWith('Bash(')) {
       const inner = item.endsWith(')') ? item.slice(5, -1).trim() : '';
       if (inner && !inner.includes('*')) {
@@ -1027,7 +1182,7 @@ export function convertClaudeAllowToAgyPermissions(allow: string[], opts: AgyCon
       const rest = item.slice('mcp__'.length);
       const sep = rest.indexOf('__');
       if (sep < 0) {
-        console.warn(`[agy] warning: unmapped mcp permission token "${item}" (expected mcp__<server>__<tool>)`);
+        addDropWarning(item, 'unmapped mcp permission token (expected mcp__<server>__<tool>); grant a supported AGY permission instead.');
         addRule('custom', item);
       } else {
         addRule('mcp', `${rest.slice(0, sep)}/${rest.slice(sep + 2)}`);
@@ -1035,7 +1190,7 @@ export function convertClaudeAllowToAgyPermissions(allow: string[], opts: AgyCon
     } else if (item === 'Web' || item === 'Fetch' || item === 'WebSearch') {
       addRule('read_url', '*');
     } else {
-      console.warn(`[agy] warning: unmapped permission token "${item}"`);
+      addDropWarning(item, 'unmapped permission token; grant a supported AGY permission instead.');
       addRule('custom', item);
     }
   }

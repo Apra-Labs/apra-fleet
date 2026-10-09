@@ -153,6 +153,7 @@ export class WindowsGitBashCommands extends LinuxCommands {
     // which is always $null on 5.1. Win32_Process is the supported way to get
     // a command line, and single quotes plus .Contains() keep the interpolated
     // values literal (no regex metacharacter surprises).
+    if (processName === '') return "echo 'idle'";
     const pname = processName ?? 'claude';
     if (!/^[A-Za-z0-9._-]+$/.test(pname)) throw new Error('Invalid process name: ' + pname);
     const psLiteral = (s: string) => escapePowerShellArgInner(s);
