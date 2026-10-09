@@ -91,6 +91,28 @@ describe('kb_invalidate {ids}', () => {
     expect(out).toEqual({ discarded: [other.id], not_found: [], already_discarded: [] });
   });
 
+  it('MEMBER session without the kb_maintainer grant: an own CONFIRMED entry is refused (left live), own INFERRED discarded in the same call', async () => {
+    const confirmed = await provider.capture(input('thetaone', [`member:${A}`]));
+    await provider.promote(confirmed.id, 'test fixture: verified');
+    await provider.promote(confirmed.id, 'test fixture: verified');
+    const inferred = await provider.capture(input('iotaone', [`member:${A}`]));
+    memberState.id = A;
+    const out = await run({ ids: [confirmed.id, inferred.id] });
+    expect(out).toEqual({ discarded: [inferred.id], not_found: [], already_discarded: [], refused: [confirmed.id] });
+    const row = (provider as any).getDb().prepare('SELECT superseded_at, confidence FROM entries WHERE id = ?').get(confirmed.id);
+    expect(row.superseded_at).toBeNull();
+    expect(row.confidence).toBe('CONFIRMED');
+  });
+
+  it('MEMBER session WITH the kb_maintainer grant discards an own CONFIRMED entry (no refused field)', async () => {
+    const confirmed = await provider.capture(input('kappaone', [`member:${A}`]));
+    await provider.promote(confirmed.id, 'test fixture: verified');
+    await provider.promote(confirmed.id, 'test fixture: verified');
+    memberState.id = A;
+    memberState.kbMaintainer = true;
+    expect(await run({ ids: [confirmed.id] })).toEqual({ discarded: [confirmed.id], not_found: [], already_discarded: [] });
+  });
+
   it('FULL session may discard any entry', async () => {
     const other = await provider.capture(input('zetaone', [`member:${B}`]));
     expect((await run({ ids: [other.id] })).discarded).toEqual([other.id]);

@@ -322,6 +322,80 @@ describe('member KB write policy: kb_setup / kb_export never, kb_promote / kb_re
   });
 });
 
+/**
+ * Per-test KB fixture for the kb_maintainer-grant suites: a member whose work
+ * folder is a temp git repo with an origin remote, and a temp SqliteProvider
+ * the getKbProviders spy hands to every kb_* handler. Registers its own
+ * beforeEach/afterEach in the calling describe; one temp root, removed after.
+ */
+function useKbMemberRepo() {
+  const fx = {
+    root: '', clone: '', memberId: '',
+    provider: undefined as unknown as SqliteProvider,
+    writeSrc(rel: string, body: string): void {
+      fs.mkdirSync(path.dirname(path.join(fx.clone, rel)), { recursive: true });
+      fs.writeFileSync(path.join(fx.clone, rel), body);
+    },
+    input(overrides: Partial<KBEntryInput>): KBEntryInput {
+      return {
+        type: 'knowledge', title: 'placeholder', summary: 'placeholder summary', content: 'placeholder content',
+        source_files: ['src/a.ts'], symbols: [], tags: [], content_hash: '', content_hash_type: 'sha256',
+        flagged_for_review: false, author: 'test-agent', source: 'session', confidence: 'INFERRED',
+        ...overrides,
+      };
+    },
+    row(id: string) {
+      return (fx.provider as any).getDb()
+        .prepare('SELECT confidence, superseded_at, content_hash FROM entries WHERE id = ?').get(id) as
+        { confidence: string; superseded_at: string | null; content_hash: string } | undefined;
+    },
+    confirmedCount(): number {
+      return ((fx.provider as any).getDb()
+        .prepare("SELECT COUNT(*) AS n FROM entries WHERE confidence = 'CONFIRMED'").get() as { n: number }).n;
+    },
+    bibleIds(): string[] {
+      const p = path.join(fx.clone, '.fleet', 'kb-canonical.json');
+      if (!fs.existsSync(p)) return [];
+      return (JSON.parse(fs.readFileSync(p, 'utf-8')).entries as Array<{ id: string }>).map(e => e.id).sort();
+    },
+  };
+
+  beforeEach(async () => {
+    fx.root = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-maintainer-gate-'));
+    fx.clone = path.join(fx.root, 'clone');
+    fs.mkdirSync(fx.clone);
+    const git = (args: string[]) => execFileSync('git', args, { cwd: fx.clone, stdio: ['ignore', 'pipe', 'pipe'] });
+    git(['init', '--quiet', '-b', 'main']);
+    git(['config', 'user.name', 'test']);
+    git(['config', 'user.email', 'test@example.invalid']);
+    git(['config', 'commit.gpgsign', 'false']);
+    git(['remote', 'add', 'origin', `https://example.invalid/kb-maintainer-gate-${path.basename(fx.root)}.git`]);
+    fx.writeSrc('README.md', 'seed\n');
+    commitWorkTree(fx.clone, 'seed');
+    fx.provider = new SqliteProvider(path.join(fx.root, 'kb.sqlite'), fx.clone);
+    await fx.provider.init();
+    vi.spyOn(kbProvidersModule, 'getKbProviders').mockResolvedValue({ project: fx.provider, global: fx.provider, projectSlug: 'kb-maintainer-gate' } as any);
+    const agent = makeTestLocalAgent({ friendlyName: 'kb-gate-member', workFolder: fx.clone });
+    addAgent(agent);
+    fx.memberId = agent.id;
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    fx.provider.close();
+    fs.rmSync(fx.root, { recursive: true, force: true });
+  });
+
+  return fx;
+}
+
+async function callText(client: Client, name: string, args: Record<string, unknown>): Promise<{ text: string; isError: boolean }> {
+  const result = await client.callTool({ name, arguments: args });
+  return { text: ((result.content as Array<{ text?: string }>)?.[0]?.text ?? ''), isError: result.isError === true };
+}
+
+const MAINTAINER_PARAMS = { origin: 'engine', kb_maintainer: '1' };
+
 // The kb_maintainer grant also gates the two member-reachable paths that could
 // otherwise mint CONFIRMED: kb_reconcile_prefilter (resolves pairs through the
 // kb_resolve_contradiction write path) and kb_import with an explicit path (it
@@ -335,101 +409,52 @@ describe('member KB write policy: kb_setup / kb_export never, kb_promote / kb_re
 // in src/tools/kb-import.ts fails the kb_import test (the hand-made bible's
 // entry lands CONFIRMED in the member's DB).
 describe('kb_maintainer grant gates CONFIRMED minting via kb_reconcile_prefilter and kb_import with a path', () => {
-  let root: string;
-  let clone: string;
-  let provider: SqliteProvider;
-  let kbMemberId: string;
-
-  function writeSrc(rel: string, body: string): void {
-    fs.mkdirSync(path.dirname(path.join(clone, rel)), { recursive: true });
-    fs.writeFileSync(path.join(clone, rel), body);
-  }
-
-  function input(overrides: Partial<KBEntryInput>): KBEntryInput {
-    return {
-      type: 'knowledge', title: 'placeholder', summary: 'placeholder summary', content: 'placeholder content',
-      source_files: ['src/a.ts'], symbols: [], tags: [], content_hash: '', content_hash_type: 'sha256',
-      flagged_for_review: false, author: 'test-agent', source: 'session', confidence: 'INFERRED',
-      ...overrides,
-    };
-  }
-
-  const row = (id: string) => (provider as any).getDb()
-    .prepare('SELECT confidence, superseded_at FROM entries WHERE id = ?').get(id) as { confidence: string; superseded_at: string | null } | undefined;
-  const confirmedCount = (): number => ((provider as any).getDb()
-    .prepare("SELECT COUNT(*) AS n FROM entries WHERE confidence = 'CONFIRMED'").get() as { n: number }).n;
-
-  async function textOf(client: Client, name: string, args: Record<string, unknown>): Promise<{ text: string; isError: boolean }> {
-    const result = await client.callTool({ name, arguments: args });
-    return { text: ((result.content as Array<{ text?: string }>)?.[0]?.text ?? ''), isError: result.isError === true };
-  }
+  const fx = useKbMemberRepo();
 
   /** A genuine AUDN contradiction pair whose challenger alone still matches the worktree. */
   async function pairWithOneMatchingSide(): Promise<{ originalId: string; challengerId: string }> {
-    writeSrc('src/original.ts', 'export const original = true;\n');
-    writeSrc('src/challenger.ts', 'export const challenger = true;\n');
-    const original = await provider.capture(input({
+    fx.writeSrc('src/original.ts', 'export const original = true;\n');
+    fx.writeSrc('src/challenger.ts', 'export const challenger = true;\n');
+    const original = await fx.provider.capture(fx.input({
       title: 'gateSym is broken report', summary: 'gateSym fails under load',
       content: 'gateSym is broken when called concurrently.', symbols: ['gateSym'], source_files: ['src/original.ts'],
     }));
-    const challenger = await provider.capture(input({
+    const challenger = await fx.provider.capture(fx.input({
       title: 'gateSym is fixed report', summary: 'gateSym now works correctly',
       content: 'gateSym is fixed as of the latest release.', symbols: ['gateSym'], source_files: ['src/challenger.ts'],
     }));
     expect(challenger.audn_decision).toBe('flagged');
     // The original's file moved on; only the challenger still matches.
-    writeSrc('src/original.ts', 'export const original = false;\n');
+    fx.writeSrc('src/original.ts', 'export const original = false;\n');
     return { originalId: original.id, challengerId: challenger.id };
   }
-
-  beforeEach(async () => {
-    root = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-maintainer-gate-'));
-    clone = path.join(root, 'clone');
-    fs.mkdirSync(clone);
-    execFileSync('git', ['init', '--quiet', '-b', 'main'], { cwd: clone });
-    execFileSync('git', ['remote', 'add', 'origin', `https://example.invalid/kb-maintainer-gate-${path.basename(root)}.git`], { cwd: clone });
-    writeSrc('README.md', 'seed\n');
-    commitWorkTree(clone, 'seed');
-    provider = new SqliteProvider(path.join(root, 'kb.sqlite'), clone);
-    await provider.init();
-    vi.spyOn(kbProvidersModule, 'getKbProviders').mockResolvedValue({ project: provider, global: provider, projectSlug: 'kb-maintainer-gate' } as any);
-    const agent = makeTestLocalAgent({ friendlyName: 'kb-gate-member', workFolder: clone });
-    addAgent(agent);
-    kbMemberId = agent.id;
-  });
-
-  afterEach(() => {
-    vi.restoreAllMocks();
-    provider.close();
-    fs.rmSync(root, { recursive: true, force: true });
-  });
 
   it('kb_reconcile_prefilter: a plain ?member= session neither lists nor reaches it; the kb_maintainer session resolves a fixture pair (winner CONFIRMED)', async () => {
     const { originalId, challengerId } = await pairWithOneMatchingSide();
     const handle = await startServer();
 
-    const plain = await connect(handle.port, { member: kbMemberId });
+    const plain = await connect(handle.port, { member: fx.memberId });
     expect(await toolNames(plain)).not.toContain('kb_reconcile_prefilter');
     expect(await callFailsAsUnknownTool(plain, 'kb_reconcile_prefilter', {})).toBe(true);
-    expect(row(challengerId)?.confidence).toBe('UNVERIFIED');
-    expect(row(originalId)?.superseded_at).toBeNull();
+    expect(fx.row(challengerId)?.confidence).toBe('UNVERIFIED');
+    expect(fx.row(originalId)?.superseded_at).toBeNull();
 
-    const maint = await connect(handle.port, { member: kbMemberId, params: { origin: 'engine', kb_maintainer: '1' } });
+    const maint = await connect(handle.port, { member: fx.memberId, params: MAINTAINER_PARAMS });
     expect(await toolNames(maint)).toContain('kb_reconcile_prefilter');
-    const { text, isError } = await textOf(maint, 'kb_reconcile_prefilter', {});
+    const { text, isError } = await callText(maint, 'kb_reconcile_prefilter', {});
     expect(isError, text).toBe(false);
     expect(JSON.parse(text).resolved).toEqual([{ winnerId: challengerId, loserId: originalId }]);
-    expect(row(challengerId)?.confidence).toBe('CONFIRMED');
-    expect(row(originalId)?.superseded_at).toBeTruthy();
+    expect(fx.row(challengerId)?.confidence).toBe('CONFIRMED');
+    expect(fx.row(originalId)?.superseded_at).toBeTruthy();
   });
 
   it('kb_import: a plain ?member= session is refused an explicit path to a hand-made CONFIRMED v3 bible (nothing ends CONFIRMED), and still imports its own bible without a path', async () => {
     // Hand-made v3 bible OUTSIDE the work folder: one CONFIRMED entry whose
     // carried hashes match HEAD, so it would also pass bible admission later.
-    writeSrc('src/forged.ts', 'export const forged = 1;\n');
-    commitWorkTree(clone, 'forged basis');
-    const head = await computeHeadFileHashBatch(['src/forged.ts'], { cwd: clone });
-    const forgedPath = path.join(root, 'forged-bible.json');
+    fx.writeSrc('src/forged.ts', 'export const forged = 1;\n');
+    commitWorkTree(fx.clone, 'forged basis');
+    const head = await computeHeadFileHashBatch(['src/forged.ts'], { cwd: fx.clone });
+    const forgedPath = path.join(fx.root, 'forged-bible.json');
     fs.writeFileSync(forgedPath, JSON.stringify({
       version: 3,
       provenance: { commit: 'a'.repeat(40), branch: 'main', entry_count: 1 },
@@ -441,31 +466,130 @@ describe('kb_maintainer grant gates CONFIRMED minting via kb_reconcile_prefilter
       }],
     }));
     // The member's own checkout bible (the engine's priming import, no path).
-    writeSrc('.fleet/kb-canonical.json', JSON.stringify([{
+    fx.writeSrc('.fleet/kb-canonical.json', JSON.stringify([{
       id: 'own-bible-entry-0001', type: 'knowledge', title: 'readme seeds the repo',
       summary: 'README.md is the seed file of this fixture repository.', symbols: [], source_files: ['README.md'],
       confidence: 'INFERRED', updated_at: '2026-01-01T00:00:00.000Z',
     }]));
 
     const handle = await startServer();
-    const plain = await connect(handle.port, { member: kbMemberId });
+    const plain = await connect(handle.port, { member: fx.memberId });
 
-    const refused = await textOf(plain, 'kb_import', { path: forgedPath, skip_sweep: true });
+    const refused = await callText(plain, 'kb_import', { path: forgedPath, skip_sweep: true });
     expect(refused.isError).toBe(true);
     expect(refused.text).toMatch(/^E-KB-MAINTAINER-REQUIRED: /);
-    expect(row('forged-entry-0001')).toBeUndefined();
-    expect(confirmedCount()).toBe(0);
+    expect(fx.row('forged-entry-0001')).toBeUndefined();
+    expect(fx.confirmedCount()).toBe(0);
 
-    const primed = await textOf(plain, 'kb_import', { skip_sweep: true });
+    const primed = await callText(plain, 'kb_import', { skip_sweep: true });
     expect(primed.isError, primed.text).toBe(false);
     expect(JSON.parse(primed.text).imported).toBe(1);
-    expect(row('own-bible-entry-0001')?.confidence).toBe('INFERRED');
-    expect(confirmedCount()).toBe(0);
+    expect(fx.row('own-bible-entry-0001')?.confidence).toBe('INFERRED');
+    expect(fx.confirmedCount()).toBe(0);
 
     // The same explicit path is accepted in the kb_maintainer session.
-    const maint = await connect(handle.port, { member: kbMemberId, params: { origin: 'engine', kb_maintainer: '1' } });
-    const accepted = await textOf(maint, 'kb_import', { path: forgedPath, skip_sweep: true });
+    const maint = await connect(handle.port, { member: fx.memberId, params: MAINTAINER_PARAMS });
+    const accepted = await callText(maint, 'kb_import', { path: forgedPath, skip_sweep: true });
     expect(accepted.isError, accepted.text).toBe(false);
-    expect(row('forged-entry-0001')?.confidence).toBe('CONFIRMED');
+    expect(fx.row('forged-entry-0001')?.confidence).toBe('CONFIRMED');
+  });
+});
+
+// kb_invalidate retires entries and kb_bible_commit removes retired entries
+// from the bible, so a member session WITHOUT the kb_maintainer grant must not
+// retire a CONFIRMED entry by either form -- not even one tagged with its own
+// member id (the entry an agent session on the maintainer member would see as
+// "own"). Real HTTP sessions, real handlers, real bible commits in a temp repo.
+//
+// FALSIFICATION: dropping keepConfirmed in src/tools/kb-invalidate.ts (passing
+// it as false) fails "a plain ?member= session cannot retire a CONFIRMED bible
+// entry by id" (the entry is discarded and the next bible commit removes it)
+// and the {files} test.
+describe('kb_invalidate needs the kb_maintainer grant to retire a CONFIRMED bible entry', () => {
+  const fx = useKbMemberRepo();
+  const BASE = { baseBranch: 'main', baseCommit: 'a'.repeat(40) };
+
+  /** A CONFIRMED entry tagged member:<member>, committed into the checkout bible. */
+  async function confirmedInBible(client: Client, title: string, type: KBEntryInput['type'] = 'knowledge'): Promise<string> {
+    const file = `src/${title.toLowerCase()}.ts`;
+    fx.writeSrc(file, `export const ${title.toLowerCase()} = 1;\n`);
+    const { id } = await fx.provider.capture(fx.input({
+      type, title, summary: `Summary of ${title}`, content: `Content of ${title}.`,
+      symbols: [`sym${title}`], source_files: [file], tags: [`member:${fx.memberId}`],
+    }));
+    await fx.provider.promote(id, 'test fixture: verified');
+    await fx.provider.promote(id, 'test fixture: verified');
+    expect(fx.row(id)?.confidence).toBe('CONFIRMED');
+    commitWorkTree(fx.clone);
+    const r = await callText(client, 'kb_bible_commit', { ids: [id], ...BASE });
+    expect(r.isError, r.text).toBe(false);
+    expect(JSON.parse(r.text).merged).toEqual([id]);
+    expect(fx.bibleIds()).toContain(id);
+    return id;
+  }
+
+  async function sessions() {
+    const handle = await startServer();
+    return {
+      plain: await connect(handle.port, { member: fx.memberId }),
+      maint: await connect(handle.port, { member: fx.memberId, params: MAINTAINER_PARAMS }),
+    };
+  }
+
+  it('a plain ?member= session cannot retire a CONFIRMED bible entry by id; the next maintainer bible commit keeps it', async () => {
+    const { plain, maint } = await sessions();
+    const id = await confirmedInBible(maint, 'Alpha');
+
+    const r = await callText(plain, 'kb_invalidate', { ids: [id] });
+    expect(r.isError, r.text).toBe(false);
+    expect(JSON.parse(r.text)).toEqual({ discarded: [], not_found: [], already_discarded: [], refused: [id] });
+    expect(fx.row(id)?.superseded_at).toBeNull();
+
+    const commit = JSON.parse((await callText(maint, 'kb_bible_commit', { ids: [], ...BASE })).text);
+    expect(commit.removed).toEqual([]);
+    expect(fx.bibleIds()).toContain(id);
+  });
+
+  it('the kb_maintainer session discards the same entry and the next bible commit removes it', async () => {
+    const { maint } = await sessions();
+    const id = await confirmedInBible(maint, 'Beta');
+
+    const r = JSON.parse((await callText(maint, 'kb_invalidate', { ids: [id] })).text);
+    expect(r.discarded).toEqual([id]);
+    expect(r.refused).toBeUndefined();
+
+    const commit = JSON.parse((await callText(maint, 'kb_bible_commit', { ids: [], ...BASE })).text);
+    expect(commit.removed).toEqual([{ id, reason: 'invalidated' }]);
+    expect(fx.bibleIds()).not.toContain(id);
+  });
+
+  it('a plain ?member= session still discards its own INFERRED entry (no over-blocking)', async () => {
+    const { plain } = await sessions();
+    fx.writeSrc('src/gamma.ts', 'export const gamma = 1;\n');
+    const { id } = await fx.provider.capture(fx.input({
+      title: 'Gamma', summary: 'Summary of Gamma', content: 'Content of Gamma.', symbols: ['symGamma'],
+      source_files: ['src/gamma.ts'], tags: [`member:${fx.memberId}`],
+    }));
+    expect(fx.row(id)?.confidence).toBe('INFERRED');
+
+    const r = JSON.parse((await callText(plain, 'kb_invalidate', { ids: [id] })).text);
+    expect(r).toEqual({ discarded: [id], not_found: [], already_discarded: [], refused: [] });
+    expect(fx.row(id)?.superseded_at).toBeTruthy();
+  });
+
+  it('{files}: a plain ?member= session cannot invalidate a CONFIRMED context-cache bible entry; the maintainer session can', async () => {
+    const { plain, maint } = await sessions();
+    const id = await confirmedInBible(maint, 'Delta', 'context-cache');
+
+    const r = JSON.parse((await callText(plain, 'kb_invalidate', { files: ['src/delta.ts'] })).text);
+    expect(r).toEqual({ invalidated: 0, files: ['src/delta.ts'], refused: [id] });
+    expect(fx.row(id)?.content_hash).not.toBe('invalidated');
+    expect(JSON.parse((await callText(maint, 'kb_bible_commit', { ids: [], ...BASE })).text).removed).toEqual([]);
+    expect(fx.bibleIds()).toContain(id);
+
+    const m = JSON.parse((await callText(maint, 'kb_invalidate', { files: ['src/delta.ts'] })).text);
+    expect(m.invalidated).toBe(1);
+    expect(JSON.parse((await callText(maint, 'kb_bible_commit', { ids: [], ...BASE })).text).removed).toEqual([{ id, reason: 'invalidated' }]);
+    expect(fx.bibleIds()).not.toContain(id);
   });
 });
