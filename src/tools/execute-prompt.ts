@@ -1867,7 +1867,8 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     if (result.code !== 0 && provider.classifyError(result.stderr || result.stdout) === 'workspace_not_trusted') {
       return {
         text: `[FAIL] ${workspaceNotTrustedAdvice(agent.friendlyName)}\n${result.stderr || result.stdout}`,
-        structuredContent: { isError: true, reason: 'workspace_not_trusted' },
+        // A typed failure keeps its own reason; an incidental refusal rides along.
+        structuredContent: { isError: true, reason: 'workspace_not_trusted', ...(parsed.permissionDenial ? { permissionDenied: parsed.permissionDenial } : {}) },
       };
     }
 
