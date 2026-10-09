@@ -215,8 +215,10 @@ const KB_RESPONSE_BODIES = {
   // cites no source file; or basis_mismatch for a CONFIRMED id whose cited-file
   // basis does not match the files at HEAD); removed lists every bible entry
   // dropped because this KB holds it as superseded or invalidated (always
-  // present, possibly empty); committed is true only when a local commit of
-  // the bible path was made (never pushed).
+  // present, possibly empty); backfilled counts existing bible entries that
+  // gained source_file_hashes from this KB's stored basis (legacy backfill);
+  // committed is true only when a local commit of the bible path was made
+  // (never pushed).
   kb_bible_commit: z.object({
     path: z.string(),
     merged: z.array(z.string()),
@@ -229,6 +231,7 @@ const KB_RESPONSE_BODIES = {
       reason: z.enum(['superseded', 'invalidated']),
     })),
     entry_count: z.number(),
+    backfilled: z.number(),
     committed: z.boolean(),
   }),
   // F-9: kb_stats spreads ProviderStats (whose supported/reason/coverage are

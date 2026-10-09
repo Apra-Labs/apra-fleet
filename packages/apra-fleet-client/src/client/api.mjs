@@ -683,8 +683,10 @@
  *   with reason basis_mismatch, and a CONFIRMED id citing no source file is skipped with
  *   reason no_source_files. Skips are reported in the result's skipped list.
  *   Independently of ids, bible entries the KB holds as superseded or invalidated are
- *   removed and reported in the result's removed list; an empty list with nothing to
- *   remove makes no commit.
+ *   removed and reported in the result's removed list, and existing bible entries with
+ *   no source_file_hashes gain the KB's stored basis for the same id when it passes the
+ *   same rule (counted in the result's backfilled); an empty list with nothing to remove
+ *   or backfill makes no commit.
  * @property {string} baseBranch - The target base branch, written to provenance.branch.
  * @property {string} baseCommit - The base commit the entries were verified against,
  *   written to provenance.commit.
@@ -1195,7 +1197,12 @@ export class ApraFleet {
      * lists each removal. Never pushes; re-running with the
      * same ids after resetting to a newer HEAD re-merges, so a rejected push can
      * be retried. Result JSON: {path, merged, skipped, removed, entry_count,
-     * committed}; extract with parseToolJson(). Each skipped item is {id, reason}
+     * backfilled, committed}; extract with parseToolJson(). backfilled counts the
+     * existing bible entries with no source_file_hashes (carried over from a
+     * v1/v2 bible) that gained this KB's stored basis for the same id, because
+     * it passes the same basis rule at HEAD and cites the same files (legacy
+     * backfill; only that field changes, nothing is dropped); a backfill alone
+     * makes a commit. Each skipped item is {id, reason}
      * with reason not_confirmed_or_unknown, no_source_files (a CONFIRMED id
      * citing no source file) or basis_mismatch. Each removed item is {id, reason}
      * with reason superseded or invalidated. A CONFIRMED entry can only have been

@@ -116,6 +116,9 @@
             "entry_count": {
               "type": "number"
             },
+            "backfilled": {
+              "type": "number"
+            },
             "committed": {
               "type": "boolean"
             }
@@ -126,6 +129,7 @@
             "skipped",
             "removed",
             "entry_count",
+            "backfilled",
             "committed"
           ],
           "additionalProperties": false

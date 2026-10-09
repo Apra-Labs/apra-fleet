@@ -298,6 +298,14 @@ for every accepted shape live in `bible/examples/`.
   the basis the bible predicate admitted the entry against -- and never
   re-hashes files at write time. An entry carried over from an older bible has
   no `source_file_hashes`; a writer keeps it as it is and never invents one.
+  The one exception is `kb_bible_commit`'s legacy backfill: when its KB holds
+  the same id, citing the same `source_files`, with a stored basis that passes
+  the bible admission predicate at HEAD, that STORED basis is attached as the
+  entry's `source_file_hashes` (copied, not re-hashed; every other field is
+  unchanged; an entry that does not qualify is kept as it is, never dropped).
+  A backfill is a change: the bible is rewritten at the current format version
+  and committed, and the response's `backfilled` counts the entries. A local
+  freshness-only basis (below) never backfills.
 - Every writer refuses (throws, file untouched) to write a bible holding two
   entries with the same `id`.
 - Readers (`kb_import`, the member bible view) accept v1 (a bare JSON array of
@@ -315,7 +323,8 @@ for every accepted shape live in `bible/examples/`.
   resolves a pair on it. The entry is therefore not re-exported until it is
   recaptured (kb_promote and kb_resolve_contradiction do not give it a
   verified basis).
-- No tool request or response shape changes with v3: the format change is
+- No tool request shape changes with v3. The only response change is
+  `kb_bible_commit`'s `backfilled` count (above); otherwise the format change is
   confined to the bible file.
 
 ## 3. Error model
