@@ -68,8 +68,13 @@ jobs:
         shell: bash
         run: echo "key=nm-v1-${{ runner.os }}-${{ runner.arch }}-${{ matrix.runner }}-${ImageOS}-node$(node -v)-${{ hashFiles('package-lock.json', 'package.json', 'packages/*/package.json') }}" >> "$GITHUB_OUTPUT"
 
+      # Not on Windows here: on a cache hit the Windows vitest suite ran
+      # measurably slower and hit its 900s budget twice; the ~110s install
+      # saving came back as test time. Drop this guard once that suite has
+      # headroom. (build-binary's Windows leg stays cached.)
       - name: Restore node_modules cache
         id: nm-cache
+        if: runner.os != 'Windows'
         uses: actions/cache/restore@v4
         with:
           path: |
@@ -82,7 +87,7 @@ jobs:
         run: npm ci
 
       - name: Save node_modules cache
-        if: steps.nm-cache.outputs.cache-hit != 'true'
+        if: runner.os != 'Windows' && steps.nm-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: |
