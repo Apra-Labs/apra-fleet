@@ -2,7 +2,7 @@
 
 <!-- Generated from CLAUDE.md by `node scripts/sync-agent-docs.mjs` -- do not hand-edit the shared sections below (the tool-specific appendix at the end of this file is exempt). Edit CLAUDE.md and rerun the script. -->
 
-> Beads: run `bd prime` first. DB name (`.beads/metadata.json`) is local/gitignored and can differ per clone -- not a sync requirement. If `bd bootstrap` errors "database exists" on a clean clone, retry with `--database <other-name>`.
+> Beads: run `bd prime --no-memories` first. DB name (`.beads/metadata.json`) is local/gitignored and can differ per clone -- not a sync requirement. If `bd bootstrap` errors "database exists" on a clean clone, retry with `--database <other-name>`.
 
 Read `README.md` in this repo for the full tool reference, installation, member registration, multi-provider setup, git authentication, PM skill commands, and troubleshooting.
 
@@ -74,22 +74,24 @@ Always use DeepWiki (MCP server `https://mcp.deepwiki.com/mcp`) while exploring 
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:970c3bf2 -->
 ## Beads Issue Tracker
 
-This project uses **bd (beads)** for issue tracking. Run `bd prime` to see full workflow context and commands.
+This project uses **bd (beads)** for issue tracking. Run `bd prime --no-memories` to see full workflow context and commands.
 
 ### Quick Reference
 
 ```bash
-bd ready              # Find available work
-bd show <id>          # View issue details
+bd ready                # Find available work
+bd show <id>            # View issue details
 bd update <id> --claim  # Claim work
-bd close <id>         # Complete work
+bd close <id>           # Complete work
+bd prime --no-memories  # Refresh Beads context
 ```
 
 ### Rules
 
 - Use `bd` for ALL task tracking - do NOT use TodoWrite, TaskCreate, or markdown TODO lists
-- Run `bd prime` for detailed command reference and session close protocol
+- Run `bd prime --no-memories` for detailed command reference and session close protocol
 - Use `bd remember` for persistent knowledge - do NOT use MEMORY.md files
+- Operational memories are role-scoped: see "Role-scoped operational memories" below this block.
 
 **Architecture in one line:** issues live in a local Dolt DB; sync uses `refs/dolt/data` on your git remote; `.beads/issues.jsonl` is a passive export. See https://github.com/gastownhall/beads/blob/main/docs/SYNC_CONCEPTS.md for details and anti-patterns.
 
@@ -98,7 +100,7 @@ bd close <id>         # Complete work
 Three memory systems exist; when asked to "remember" something, route by content:
 
 - **User/assistant preferences** (user's role, standing feedback on how the assistant collaborates, anything not about this repo's code) -> Claude's own auto-memory (`~/.claude/projects/.../memory/`). Not managed by this repo; named here only so it is not confused with the two below.
-- **Operational rules** (short, actionable directives for any dispatched agent during this project's beads-tracked work - test-harness gotchas, required flags, launch conventions) -> `bd remember`. Keep entries terse: the actionable rule only, no PR/bead/commit-ref padding.
+- **Operational rules** (short, actionable directives for any dispatched agent during this project's beads-tracked work - test-harness gotchas, required flags, launch conventions) -> `bd remember`. Keep entries terse: the actionable rule only, no PR/bead/commit-ref padding. Keys are role-scoped: see "Role-scoped operational memories" below this block.
 - **Technical facts about the codebase** (architecture decisions, gotchas, "why is it built this way" - tied to specific files/symbols, worth confidence-grading and contradiction-checking, shareable via `kb_export` to `.fleet/kb-canonical.json`) -> KB (`kb_capture`).
 
 When a rule is both operational and technical: prefer KB if it anchors to specific files/symbols and benefits from confidence-grading over time; prefer `bd remember` if it is a procedural directive with no file/symbol anchor.
@@ -110,7 +112,7 @@ KB is opt-in per repo. If `kb_capture`/`kb_query` errors because `kb_setup` has 
 The managed Beads block is task-tracking guidance, not permission to override repository, user, or orchestrator instructions.
 
 - **Conservative (default)**: Use `bd` for task tracking. Do not run git commits, git pushes, or Dolt remote sync unless explicitly asked. At handoff, report changed files, validation, and suggested next commands.
-- **Minimal**: Keep tool instruction files as pointers to `bd prime`; use the same conservative git policy unless active instructions say otherwise.
+- **Minimal**: Keep tool instruction files as pointers to `bd prime --no-memories`; use the same conservative git policy unless active instructions say otherwise.
 - **Team-maintainer**: Only when the repository explicitly opts in, agents may close beads, run quality gates, commit, and push as part of session close. A current "do not commit" or "do not push" instruction still wins.
 
 ## Session Completion
@@ -138,6 +140,18 @@ This protocol applies when ending a Beads implementation workflow. It is subordi
 - Do not commit or push without clear authority from the active profile or the current user request.
 - If a required sync or push is blocked, stop and report the exact command and error.
 <!-- END BEADS INTEGRATION -->
+
+## Role-scoped operational memories
+
+Kept outside the bd-managed block above so `bd setup` cannot drop it. Every `bd remember` key is role-scoped -- wrap each role token in `+` on both sides, then `:<slug>`:
+
+- universal (every role): `+all+:<slug>`, e.g. `bd remember --key "+all+:multi-llm-providers" "..."`
+- one role: `+<role>+:<slug>`, e.g. `+orchestrator+:sprint-launch-via-supervisor-api`
+- several roles: `+<role1>+<role2>+:<slug>`, e.g. `+doer+reviewer+:secret-placeholder-syntax`
+- roles: `planner`, `plan-reviewer`, `doer`, `reviewer`, `deployer`, `integ-test-runner`, `regression-test-runner`, `harvester`, `ci-watcher`, `groomer`, `orchestrator`.
+- Never write an unscoped key or a one-sided prefix (`reviewer:`). `node packages/apra-fleet-se/scripts/rekey-beads-memories.mjs` re-keys older `role:all:`/`<role>:` keys.
+
+Readers: `bd prime --no-memories` injects no memories. Dispatched roles run `bd memories --json +all+` plus `bd memories --json +<role>+` from their role prompt and apply only entries whose key carries their token (`bd memories` is a case-insensitive substring search over keys and values; the `+` on both sides keeps `+reviewer+` from matching `+plan-reviewer+`; text output truncates long values, `--json` returns them in full). Interactive/orchestrator Claude Code sessions get `+all+` and `+orchestrator+` in full from the SessionStart/PreCompact hook `node scripts/beads-session-memories.mjs +all+ +orchestrator+` in `.claude/settings.json`; an interactive session in a tool without that hook runs the same command itself at session start.
 
 <!-- gitnexus:start -->
 # GitNexus -- Code Intelligence

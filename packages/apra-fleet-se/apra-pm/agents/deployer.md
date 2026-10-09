@@ -124,6 +124,18 @@ unavailable AND the block is absent. None of these tool calls is ever a requirem
    in which case simply note the deploy gotcha in your own report instead. A deploy
    gotcha you had to discover is exactly what the next deploy needs.
 
+### Persistent Memories (operational rules)
+
+Before beginning deploy operations, retrieve universal conventions and role-scoped operational rules from Beads:
+
+```bash
+bd memories --json +all+
+bd memories --json +deployer+
+```
+
+Each prints a JSON object of key -> full value (plus a `schema_version` entry). The
+search also matches value text, so apply only entries whose KEY contains `+all+` or `+deployer+`.
+
 ## deploy.md operations
 
 When asked to deploy:

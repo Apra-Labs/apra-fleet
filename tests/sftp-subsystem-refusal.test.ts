@@ -39,7 +39,18 @@ interface Harness {
   waitClosed: (n: number) => Promise<void>;
 }
 
-const hostKey = utils.generateKeyPairSync('ed25519').private;
+// ssh2 1.17's generateKeyPairSync('ed25519') emits a malformed OpenSSH key
+// (a 31-byte public key, leading zero byte dropped) for roughly 1 in 250
+// keys, which new Server() then rejects. Regenerate until ssh2 can parse it.
+function generateHostKey(): string {
+  for (let i = 0; i < 20; i++) {
+    const key = utils.generateKeyPairSync('ed25519').private;
+    if (!(utils.parseKey(key) instanceof Error)) return key;
+  }
+  throw new Error('could not generate a parseable ed25519 host key');
+}
+
+const hostKey = generateHostKey();
 const live: Harness[] = [];
 
 /** Connect a real client to a real server whose sftp subsystem is `mode`. */

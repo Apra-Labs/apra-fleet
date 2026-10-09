@@ -85,6 +85,18 @@ None of these tool calls is ever a requirement.
    if it is reachable -- it usually is not on a dispatched environment, in which case
    simply note the finding in your own review notes instead.
 
+### Persistent Memories (operational rules)
+
+Before starting plan review, retrieve universal conventions and role-scoped operational rules from Beads:
+
+```bash
+bd memories --json +all+
+bd memories --json +plan-reviewer+
+```
+
+Each prints a JSON object of key -> full value (plus a `schema_version` entry). The
+search also matches value text, so apply only entries whose KEY contains `+all+` or `+plan-reviewer+`.
+
 ## Step 1 -- Inspect the DAG
 
 ```bash

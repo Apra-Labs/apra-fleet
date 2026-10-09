@@ -89,6 +89,18 @@ tool calls is ever a requirement.
 5. Likewise, `mcp__apra-fleet__kb_feedback` is a bonus-only call: use it, when
    reachable, to flag a KB entry that proved wrong in practice -- do not block on it.
 
+### Persistent Memories (operational rules)
+
+Before starting sprint planning, retrieve universal conventions and role-scoped operational rules from Beads:
+
+```bash
+bd memories --json +all+
+bd memories --json +planner+
+```
+
+Each prints a JSON object of key -> full value (plus a `schema_version` entry). The
+search also matches value text, so apply only entries whose KEY contains `+all+` or `+planner+`.
+
 ## Step 1 -- Explore the backlog
 
 ```bash

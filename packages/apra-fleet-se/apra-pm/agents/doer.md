@@ -99,6 +99,18 @@ If those KB tools are not available in your environment (MCP server not running)
 these steps and proceed.
 <!-- end-tool: ToolSearch -->
 
+### Persistent Memories (operational rules)
+
+Before starting task execution, retrieve universal conventions and role-scoped operational rules from Beads:
+
+```bash
+bd memories --json +all+
+bd memories --json +doer+
+```
+
+Each prints a JSON object of key -> full value (plus a `schema_version` entry). The
+search also matches value text, so apply only entries whose KEY contains `+all+` or `+doer+`.
+
 ## Step 1 -- Work only your assigned bead ids
 
 Do NOT run bare `bd ready` to discover work -- it returns ready beads from the entire

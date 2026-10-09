@@ -155,7 +155,7 @@
         "type": "object",
         "required": ["key", "content"],
         "properties": {
-          "key": { "type": "string", "description": "The groomer-heuristic-<slug> key used with bd remember." },
+          "key": { "type": "string", "description": "The +groomer+:<slug> key (or +groomer+<role>+:<slug> when other roles need it) used with bd remember." },
           "content": { "type": "string" }
         }
       }
