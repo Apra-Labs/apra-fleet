@@ -214,7 +214,7 @@ export function execBdSync(args, options = {}, execFileSyncImpl = nodeExecFileSy
     }
     const scriptPath = resolveWindowsBd();
     if (scriptPath) {
-        const out = execFileSyncImpl(process.execPath, [scriptPath, ...args], { maxBuffer: BD_MAX_BUFFER_BYTES, ...options, shell: false });
+        const out = execFileSyncImpl(process.execPath, [scriptPath, ...args], { maxBuffer: BD_MAX_BUFFER_BYTES, windowsHide: true, ...options, shell: false });
         warnIfLargeBdOutput(args, out);
         return out;
     }
@@ -225,7 +225,7 @@ export function execBdSync(args, options = {}, execFileSyncImpl = nodeExecFileSy
     // shebang-script limitation -- see the module doc's fallback note for
     // why this one remaining path still carries the quoting risk.
     const needsShell = (process.platform === 'win32');
-    const out = execFileSyncImpl('bd', args, { maxBuffer: BD_MAX_BUFFER_BYTES, ...options, shell: needsShell });
+    const out = execFileSyncImpl('bd', args, { maxBuffer: BD_MAX_BUFFER_BYTES, windowsHide: true, ...options, shell: needsShell });
     warnIfLargeBdOutput(args, out);
     return out;
 }
@@ -295,7 +295,7 @@ export function execBdAsync(args, options = {}, execFileAsyncImpl = nodeExecFile
     // maxBuffer first so an explicit caller-supplied value still wins; without
     // it Node's 1MiB default kills the child on a large `bd list` (see the
     // BD_MAX_BUFFER_BYTES block above).
-    return Promise.resolve(execFileAsyncImpl('bd', args, { maxBuffer: BD_MAX_BUFFER_BYTES, ...options, shell: true }))
+    return Promise.resolve(execFileAsyncImpl('bd', args, { maxBuffer: BD_MAX_BUFFER_BYTES, windowsHide: true, ...options, shell: true }))
         .then((res) => {
             warnIfLargeBdOutput(args, res ? res.stdout : null, warn);
             return res;

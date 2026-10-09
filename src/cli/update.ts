@@ -115,7 +115,7 @@ export async function runUpdate(): Promise<void> {
     // `--workflows none` choice survives an update instead of silently
     // reverting to the `all` default on re-install (apra-fleet-7pm.10).
     const args = ['install', '--force', '--llm', targetLlm, '--skill', targetSkill, '--workflows', targetWorkflowsMode];
-    const installer = spawn(tmpPath, args, { detached: true, stdio: 'ignore' });
+    const installer = spawn(tmpPath, args, { detached: true, stdio: 'ignore', windowsHide: true });
     installer.unref();
     process.exit(0);
 

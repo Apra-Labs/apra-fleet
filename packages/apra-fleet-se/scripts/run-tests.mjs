@@ -60,7 +60,7 @@ const simulateUnkillable = process.env.APRA_TEST_SIMULATE_KILL_FAILURE === '1';
 function killTree(pid) {
     if (!pid || simulateUnkillable) return;
     if (isWindows) {
-        spawnSync('taskkill', ['/PID', String(pid), '/T', '/F']);
+        spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true });
     } else {
         try {
             process.kill(-pid, 'SIGKILL');
@@ -107,7 +107,7 @@ process.on('SIGTERM', () => {
 
 function runBounded(cmd, args, opts) {
     return new Promise(resolve => {
-        const child = spawn(cmd, args, { ...opts, detached: !isWindows });
+        const child = spawn(cmd, args, { windowsHide: true, ...opts, detached: !isWindows });
         activeChildPid = child.pid;
 
         let timedOut = false;

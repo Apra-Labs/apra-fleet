@@ -313,7 +313,7 @@ function killChild(child: ChildProcess): void {
   if (child.pid === undefined || child.killed) return;
   if (process.platform === 'win32') {
     try {
-      execFileSync('taskkill', ['/F', '/T', '/PID', String(child.pid)], { stdio: 'ignore' });
+      execFileSync('taskkill', ['/F', '/T', '/PID', String(child.pid)], { stdio: 'ignore', windowsHide: true });
     } catch {
       // best-effort
     }
@@ -386,6 +386,7 @@ export async function verifyDolt(
 
     child = deps.spawn(doltPath, ['sql-server', '--port', String(port), '--data-dir', scratchDir], {
       stdio: 'ignore',
+      windowsHide: true,
     });
 
     let spawnError: Error | undefined;

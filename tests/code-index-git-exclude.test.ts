@@ -45,7 +45,7 @@ function porcelain(dir: string): string {
 
 describe('fleet code index invocation', () => {
   it('runs gitnexus in index-only mode', () => {
-    expect([...GITNEXUS_ANALYZE_ARGS]).toEqual(['gitnexus@>=1.6.5', 'analyze', '--index-only']);
+    expect([...GITNEXUS_ANALYZE_ARGS]).toEqual(['-y', 'gitnexus@>=1.6.5', 'analyze', '--index-only']);
   });
 
   it('excludes the .gitnexus/ index dir', () => {
