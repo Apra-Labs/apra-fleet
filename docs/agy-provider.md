@@ -338,6 +338,28 @@ content, and uninstall removes only those entries:
 This is the orchestrator's own setup. Member grants live only in each
 member's project file (section 2).
 
+### Member MCP entry
+
+agy reads MCP servers only from the machine-global
+`~/.gemini/config/mcp_config.json`, so `compose_permissions` writes each agy
+member's `apra-fleet` entry there, in the member's home:
+
+- `url` is the member URL (`?member=<member id>`); `headers` carries
+  `X-Apra-Fleet-Member-Secret` when the member has an access secret.
+- With a header, the file is staged through the member's secret-file channel
+  and moved into place by a path-only command (never inline in a command
+  string), then made owner-only (`chmod 600` on POSIX; on Windows the staged
+  file's owner-only ACL is kept). No file channel -> compose fails with
+  `E-MEMBER-CONFIG-NO-FILE-CHANNEL` instead of writing inline.
+- An existing `apra-fleet` entry whose URL has no `member=` (a user's entry,
+  or the one `install --llm agy` writes) is preserved, not overwritten; the
+  compose result detail says so, and that member keeps using that entry.
+- Other servers in the file are kept. `remove_member` (and `update_member`
+  on a provider switch or work-folder move) removes the entry only when it
+  is this member's (`member=<its id>`).
+- Limit: the file is per OS user, so two agy members under one OS user
+  overwrite each other's entry - run one agy member per OS user.
+
 Authentication: agy uses a browser Google login per machine or the
 `ANTIGRAVITY_API_KEY` environment variable. For a remote member, provide an
 API key (`provision_llm_auth` with `api_key` stores it encrypted and sets the
