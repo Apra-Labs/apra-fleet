@@ -3,7 +3,8 @@
 // rekey-beads-memories.mjs -- re-key beads operational memories to the
 // role-delimited key scheme.
 //
-// Scheme (see CLAUDE.md "Persistent Memory"):
+// Scheme (see CLAUDE.md "Role-scoped operational memories"; mapping logic in
+// scripts/lib/beads-memory-keys.mjs):
 //   universal rule      +all+:<slug>
 //   role-scoped rule    +<role>+:<slug>            e.g. +doer+:<slug>
 //   multi-role rule     +<role1>+<role2>+:<slug>   e.g. +doer+reviewer+:<slug>
@@ -18,7 +19,9 @@
 //   <r1>:<r2>:...:<slug>            -> +r1+r2+...+:<slug>   (every rN a known role)
 //   groomer-heuristic-<slug>        -> +groomer+:<slug>     (pre-scoping groomer form)
 // Keys already in the new form are left alone. Any other key is reported as
-// unparsed and left alone -- never guessed.
+// unparsed and left alone -- never guessed. Unparsed keys are invisible to every
+// role query: the dry run lists them as a WARNING, and --apply exits 1 while any
+// remain (after re-keying everything else); fix or forget them by hand, re-run.
 //
 // Usage (run from the repo whose beads DB you want to re-key):
 //   node scripts/rekey-beads-memories.mjs            # dry run: print old -> new
@@ -38,36 +41,9 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
+import { ROLES, mapKey } from './lib/beads-memory-keys.mjs';
 
-export const ROLES = Object.freeze([
-    'all', 'planner', 'plan-reviewer', 'doer', 'reviewer', 'deployer',
-    'integ-test-runner', 'regression-test-runner', 'harvester', 'ci-watcher',
-    'groomer', 'orchestrator',
-]);
-const ROLE_ALIASES = Object.freeze({ 'backlog-groomer': 'groomer' });
-
-const NEW_KEY_RE = /^\+(?:[a-z0-9-]+\+)+:.+$/;
-
-/** Maps one key to its new form; returns { kind: 'new'|'map'|'unparsed', to? }. */
-export function mapKey(key) {
-    if (NEW_KEY_RE.test(key)) return { kind: 'new' };
-    const gh = /^groomer-heuristic-(.+)$/.exec(key);
-    if (gh) return { kind: 'map', to: `+groomer+:${gh[1]}` };
-    const parts = key.split(':');
-    if (parts.length < 2) return { kind: 'unparsed' };
-    const slug = parts.pop();
-    if (!slug) return { kind: 'unparsed' };
-    let tokens = parts;
-    if (tokens.length === 2 && tokens[0] === 'role' && tokens[1] === 'all') tokens = ['all'];
-    const roles = [];
-    for (const raw of tokens) {
-        const t = ROLE_ALIASES[raw] || raw;
-        if (!ROLES.includes(t)) return { kind: 'unparsed' };
-        if (!roles.includes(t)) roles.push(t);
-    }
-    if (roles.includes('all') && roles.length > 1) return { kind: 'unparsed' };
-    return { kind: 'map', to: `+${roles.join('+')}+:${slug}` };
-}
+export { ROLES, mapKey };
 
 function resolveBd() {
     if (process.env.BD_BIN) return process.env.BD_BIN;
@@ -127,7 +103,8 @@ function main() {
         process.exit(1);
     }
     if (!apply) {
-        console.log(plan.length ? 'Dry run. Re-run with --apply to re-key.' : 'Nothing to do.');
+        console.log(plan.length ? 'Dry run. Re-run with --apply to re-key.' : 'Nothing to re-key.');
+        reportUnparsed(unparsed, 'WARNING');
         return;
     }
 
@@ -149,11 +126,23 @@ function main() {
     }
     const after = listMemories(bd);
     console.log(`Re-keyed ${done}/${plan.length}. Memories before: ${Object.keys(before).length}, after: ${Object.keys(after).length}.`);
+    if (done > 0) {
+        console.log('Now sync the change to the remote:');
+        console.log('  bd dolt pull');
+        console.log('  bd dolt push');
+    }
     if (conflicts.length) {
         console.error(`CONFLICT (new key exists with a different value; both kept): ${conflicts.join(', ')}`);
-        process.exit(1);
     }
-    console.log('Now run: bd dolt pull && bd dolt push');
+    reportUnparsed(unparsed, 'ERROR');
+    if (conflicts.length || unparsed.length) process.exit(1);
+}
+
+function reportUnparsed(unparsed, level) {
+    if (!unparsed.length) return;
+    console.error(`${level}: ${unparsed.length} key(s) could not be mapped and were left unmigrated; no role query (bd memories +all+ / +<role>+) will ever return them:`);
+    for (const k of unparsed) console.error(`  ${k}`);
+    console.error('Re-key each by hand (bd remember --key "+<role>+:<slug>" ..., then bd forget <old-key>) or forget it, then re-run.');
 }
 
 if (process.argv[1]?.endsWith('rekey-beads-memories.mjs')) {
