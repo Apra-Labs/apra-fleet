@@ -290,13 +290,13 @@ describe('fleetInstallWarning', () => {
 
 const plain = (cmd: string): string => (cmd.includes('-EncodedCommand') ? decodePowerShellEncodedCommand(cmd) : cmd);
 
-function toolDeps(installed: string | null): MemberFleetMcpDeps {
+function toolDeps(installed: string | null, marker = true): MemberFleetMcpDeps {
   const ok = (stdout: string): SSHExecResult => ({ stdout, stderr: '', code: 0 });
   return {
     exec: async (agent, command) => {
       const c = plain(command);
       if (c.includes('member-access.key')) return ok('');
-      if (c.includes('member-install.json')) return ok('');
+      if (c.includes('member-install.json')) return marker ? ok('') : { stdout: '', stderr: '', code: 1 };
       if (c.includes("'register-member'")) return ok('registered');
       if (c.includes('command -v bd')) return ok('bd version 1.3.0\n');
       if (c.includes("'call'") && c.includes("'--list-tools'")) return ok(JSON.stringify({ tools: [{ name: 'kb_query' }, { name: 'code_query' }] }));
@@ -357,6 +357,17 @@ describe('update_member / register_member never fail on an install that cannot h
     expect(out).toContain('fleetMcp: available (apra-fleet v0.4.3)');
     expect(out).toContain('keeps its older apra-fleet v0.4.3');
     expect(out).toContain('Reason: no-matching-release');
+  });
+
+  it('update_member with a full install present (no member-install marker): "updated" + WARNING full-install-running', async () => {
+    const a = makeTestAgent({ os: 'linux', llmProvider: 'claude', workFolder: '/home/bella/repo', friendlyName: 'bella' });
+    addAgent(a);
+    __setMemberFleetMcpDeps(toolDeps('v0.4.3', false));
+    const out = await updateMember({ member_id: a.id, fleet_install: 'auto' } as any);
+    expect(out).toContain('Member "bella" updated.');
+    expect(out).toContain('WARNING: apra-fleet on member "bella"');
+    expect(out).toContain('Reason: full-install-running');
+    expect(out).toContain('follow the owner steps in the reason above');
   });
 
   it('register_member with no release: registered + WARNING', async () => {
