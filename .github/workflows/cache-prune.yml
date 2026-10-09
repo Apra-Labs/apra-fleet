@@ -1,0 +1,50 @@
+name: Actions cache prune
+
+# Keeps the repo under its 10 GB Actions cache limit. Rules live in
+# scripts/ci/prune-actions-caches.mjs (unit-tested in
+# tests/prune-actions-caches.test.ts): newest CodeQL overlay per ref only,
+# newest 2 per hash-suffixed key family per ref, never anything accessed in
+# the last 24h, anything >200 MB idle 3d deleted.
+#
+# Scheduled runs delete; manual dispatch defaults to a dry run.
+# No workflow_run trigger on CodeQL: the run that saves a new overlay has just
+# restored the previous one, so the 24h guard would keep it anyway (an
+# immediate prune frees nothing), and CodeQL here is default setup, which is
+# not a reliable workflow_run source. Daily converges to 1-2 overlays.
+
+on:
+  schedule:
+    - cron: '41 4 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Print decisions only, delete nothing'
+        type: boolean
+        default: true
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  prune:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      # Runner's preinstalled node; no setup-node/npm cache (would create caches).
+      - name: Prune caches
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DELETE_MODE: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.dry_run == false) }}
+        run: |
+          echo "event=${{ github.event_name }} delete_mode=$DELETE_MODE"
+          if [ "$DELETE_MODE" = "true" ]; then
+            node scripts/ci/prune-actions-caches.mjs --repo "$GITHUB_REPOSITORY" --delete
+          else
+            node scripts/ci/prune-actions-caches.mjs --repo "$GITHUB_REPOSITORY"
+          fi
