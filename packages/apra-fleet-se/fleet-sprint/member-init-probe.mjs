@@ -88,6 +88,7 @@ export const MEMBER_INIT_FIXES = Object.freeze({
     'server-start-failed': "start the member's fleet server by hand ('apra-fleet start' on the member) and read its log, then rerun the sprint",
     'member-tools-failed': "the member session could not list tools for a reason not recognized as an old install or a refused session (see the problem detail): read it, correct that cause on the member, then rerun the sprint",
     'member-fleet-too-old': "the member's apra-fleet predates member mode (it has no 'call' command): run update_member with fleet_install \"auto\" for the member to upgrade it to the orchestrator version, then rerun the sprint",
+    'member-secret-refused': "the member server refused the member access secret (HTTP 401, E-MEMBER-SECRET): the member-access.key file in the member install's own data directory is missing or does not match the one the server holds, usually because the sprint is running as a different user or with a different APRA_FLEET_DATA_DIR than the member install; run the member session as the install's own user with the install's own data dir (or reinstall the member so member-access.key is regenerated), then rerun the sprint",
     'member-session-refused': "the member server refused the member session (HTTP 403, the member id is not registered with the server the member talks to): run update_member with fleet_install \"auto\" for the member so it registers itself, then rerun the sprint",
     'no-llm-provider': "the member has provider none but is assigned an LLM role in this sprint: set a real llm_provider on it with update_member, or take it out of the LLM roles of the role map, then rerun the sprint",
     'member-tools-missing': "the member session does not list kb_* and code_* tools: run update_member with fleet_install \"auto\" for the member to upgrade its fleet install, then rerun the sprint",
@@ -372,6 +373,7 @@ export function createMemberInitProbe(opts = {}) {
         } catch (err) {
             const text = errText(err);
             if (/unknown (?:option|command) '?call\b/i.test(text)) problem('tools', 'member-fleet-too-old', text);
+            else if (/E-MEMBER-SECRET|HTTP 401/i.test(text)) problem('tools', 'member-secret-refused', text);
             else if (/E-MEMBER-FORBIDDEN|HTTP 403|server refused member/i.test(text)) problem('tools', 'member-session-refused', text);
             else problem('tools', 'member-tools-failed', text);
         }
@@ -527,7 +529,7 @@ export function createMemberInitProbe(opts = {}) {
         // A cause the server named for the fleetMcp refresh supersedes the
         // generic member-session tools failures, which are only symptoms of it.
         const serverCause = gating.find((p) => p.step === 'fleetMcp' && !GENERIC_FLEET_MCP_REASONS.has(p.reason));
-        const symptom = (p) => p.step === 'tools' && p.reason !== 'member-session-refused';
+        const symptom = (p) => p.step === 'tools' && p.reason !== 'member-session-refused' && p.reason !== 'member-secret-refused';
         const primary = gating.find((p) => p.step === 'provider')
             || (serverCause && gating[0] && symptom(gating[0]) ? serverCause : null)
             || gating[0] || null;
