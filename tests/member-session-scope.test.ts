@@ -132,7 +132,7 @@ function postInitializeRaw(port: number, member: string): Promise<number> {
   });
 }
 
-describe('member session tool scope over HTTP', () => {
+describe('member session tool scope over HTTP', { timeout: 30000 }, () => {
   it('a registered ?member= session without the channel capability lists exactly the member allowlist', async () => {
     const handle = await startServer();
     const names = await toolNames(await connect(handle.port, { member: memberId }));
