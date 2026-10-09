@@ -720,7 +720,7 @@ jobs:
   # workflow; the tag-gated jobs also skip any tag containing '_'.
   prerelease:
     needs: [package, build-binary]
-    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/feat/kb-redesign' || github.ref == 'refs/heads/fix/member-install-prerelease-channel')
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/feat/kb-redesign')
     runs-on: ubuntu-latest
     permissions:
       contents: write
