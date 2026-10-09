@@ -140,32 +140,37 @@ async function checkAgent(agent: ReturnType<typeof getAllAgents>[number]): Promi
     if (connResult.status === 'fulfilled' && connResult.value.ok) {
       row.status = 'online';
 
-      const cmds = getOsCommands(getAgentOS(agent), getAgentShell(agent));
       const provider = getProvider(agent.llmProvider);
 
-      // Run fleet process check and GPU utilization in parallel
-      const [busyResult, gpuResult] = await Promise.allSettled([
-        strategy.execCommand(cmds.fleetProcessCheck(agent.workFolder, agent.sessionId, provider.processName), 10000),
-        strategy.execCommand(cmds.gpuUtilization(), 10000),
-      ]);
-
-      if (busyResult.status === 'fulfilled') {
-        const output = busyResult.value.stdout.trim().toLowerCase();
-        if (output.includes('fleet-busy')) {
-          row.busy = busyLabel(agent.id);
-        } else if (output.includes('other-busy')) {
-          row.busy = 'idle*';
-        } else {
-          row.busy = 'idle';
-        }
+      if (agent.llmProvider === 'none' || !provider.processName) {
+        row.busy = 'idle';
       } else {
-        row.busy = 'unknown';
-      }
+        const cmds = getOsCommands(getAgentOS(agent), getAgentShell(agent));
 
-      if (gpuResult.status === 'fulfilled' && row.cloudInfo) {
-        const gpuNum = parseGpuUtilization(gpuResult.value.stdout);
-        if (gpuNum !== undefined) {
-          row.cloudInfo.gpuUtil = gpuNum;
+        // Run fleet process check and GPU utilization in parallel
+        const [busyResult, gpuResult] = await Promise.allSettled([
+          strategy.execCommand(cmds.fleetProcessCheck(agent.workFolder, agent.sessionId, provider.processName), 10000),
+          strategy.execCommand(cmds.gpuUtilization(), 10000),
+        ]);
+
+        if (busyResult.status === 'fulfilled') {
+          const output = busyResult.value.stdout.trim().toLowerCase();
+          if (output.includes('fleet-busy')) {
+            row.busy = busyLabel(agent.id);
+          } else if (output.includes('other-busy')) {
+            row.busy = 'idle*';
+          } else {
+            row.busy = 'idle';
+          }
+        } else {
+          row.busy = 'unknown';
+        }
+
+        if (gpuResult.status === 'fulfilled' && row.cloudInfo) {
+          const gpuNum = parseGpuUtilization(gpuResult.value.stdout);
+          if (gpuNum !== undefined) {
+            row.cloudInfo.gpuUtil = gpuNum;
+          }
         }
       }
     }
@@ -185,23 +190,27 @@ async function checkAgent(agent: ReturnType<typeof getAllAgents>[number]): Promi
     if (conn.ok) {
       row.status = 'online';
 
-      try {
-        const cmds = getOsCommands(getAgentOS(agent), getAgentShell(agent));
-        const provider = getProvider(agent.llmProvider);
-        const busyCheck = await strategy.execCommand(
-          cmds.fleetProcessCheck(agent.workFolder, agent.sessionId, provider.processName),
-          10000,
-        );
-        const output = busyCheck.stdout.trim().toLowerCase();
-        if (output.includes('fleet-busy')) {
-          row.busy = 'BUSY';
-        } else if (output.includes('other-busy')) {
-          row.busy = 'idle*';
-        } else {
-          row.busy = 'idle';
+      const provider = getProvider(agent.llmProvider);
+      if (agent.llmProvider === 'none' || !provider.processName) {
+        row.busy = 'idle';
+      } else {
+        try {
+          const cmds = getOsCommands(getAgentOS(agent), getAgentShell(agent));
+          const busyCheck = await strategy.execCommand(
+            cmds.fleetProcessCheck(agent.workFolder, agent.sessionId, provider.processName),
+            10000,
+          );
+          const output = busyCheck.stdout.trim().toLowerCase();
+          if (output.includes('fleet-busy')) {
+            row.busy = 'BUSY';
+          } else if (output.includes('other-busy')) {
+            row.busy = 'idle*';
+          } else {
+            row.busy = 'idle';
+          }
+        } catch {
+          row.busy = 'unknown';
         }
-      } catch {
-        row.busy = 'unknown';
       }
     }
   } catch {

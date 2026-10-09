@@ -8,7 +8,6 @@ import { logWarn } from '../utils/log-helpers.js';
 import { sanitizeSessionId } from '../os/os-commands.js';
 import { transformAgentForOpenCode } from '../cli/agent-transform.js';
 import { isPosixShell } from '../utils/agent-helpers.js';
-import { moveStagedFileCommand } from '../services/member-access-secret.js';
 import {
   deleteMemberFile,
   joinMemberPath,
@@ -19,6 +18,7 @@ import {
   isGitTracked,
   memberFileExists,
   writeMemberJson,
+  writeSecretBearingConfig,
   LEGACY_MEMBER_MCP_SERVER_NAME,
   MEMBER_MCP_SERVER_NAME,
 } from '../services/member-config-io.js';
@@ -119,8 +119,11 @@ export class OpenCodeProvider implements ProviderAdapter {
 
   // apra-fleet-hzeb.1: OpenCode has no distinct usage-limit event surface, so key off
   // the raw output using the shared quota detector (guessed resume window).
+  // A successful dispatch (code 0 and !isError) must NEVER be classified as a
+  // usage limit, even if stdout transcripts happen to mention 429 in token metrics.
   detectUsageLimit(result: SSHExecResult, parsed: ParsedResponse): UsageLimitSignal | null {
-    return defaultUsageLimitSignal(result.stderr || result.stdout || parsed.result);
+    if (result.code === 0 && !parsed.isError) return null;
+    return defaultUsageLimitSignal(result.stderr || (parsed.isError ? parsed.result : ''));
   }
 
   headlessInvocation(promptLiteral: string): string {
@@ -386,24 +389,5 @@ export class OpenCodeProvider implements ProviderAdapter {
     // validated --dangerously-skip-permissions flag on `opencode run` (same doc, checklist
     // item 1). No-op.
     return { seeded: false, detail: 'opencode: trust gate already bypassed via --dangerously-skip-permissions on opencode run' };
-  }
-}
-
-/**
- * Writes an opencode.json that carries the member access secret WITHOUT the
- * content ever appearing in a command string: staged in an owner-only file
- * through the secret-file channel, then moved into place by a content-free
- * command (the file stays owner-only). No channel -> throws loudly; there is
- * no inline fallback.
- */
-async function writeSecretBearingConfig(ctx: MemberMcpSyncContext, file: string, content: string, posix: boolean): Promise<void> {
-  if (!ctx.secretChannel) {
-    throw new Error(`E-MEMBER-CONFIG-NO-FILE-CHANNEL: cannot write ${file} on the member without putting the member access secret on a command line; no secret-file channel is available for this member. Enable the SFTP subsystem on the member's sshd, or use a member type with a file channel.`);
-  }
-  const staged = await ctx.secretChannel.write(content);
-  const r = await ctx.execCommand(moveStagedFileCommand(staged, file, posix), 15000);
-  if (r.code !== 0) {
-    try { await ctx.secretChannel.remove(staged); } catch { /* best effort */ }
-    throw new Error(`moving the staged opencode.json into ${file} failed (exit ${r.code}): ${(r.stderr || r.stdout || '').trim().slice(0, 300)}`);
   }
 }

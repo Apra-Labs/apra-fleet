@@ -15,7 +15,7 @@
 //  - Claude sessions execute_prompt starts: the per-session MCP config carries
 //    it as an http header (session-mcp-config.ts);
 //  - the per-folder member MCP entry compose_permissions writes (claude local
-//    scope in ~/.claude.json, opencode's opencode.json).
+//    scope in ~/.claude.json, opencode's opencode.json, agy's mcp_config.json).
 //
 // For a LOCAL member the orchestrator's own secret is used (it shares this
 // server). For a REMOTE member the orchestrator reads its install's secret on
@@ -36,7 +36,7 @@ import type { Agent } from '../types.js';
 import { FLEET_DIR } from '../paths.js';
 import { getAgentOS, getAgentShell, isPosixShell } from '../utils/agent-helpers.js';
 import { decryptPassword } from '../utils/crypto.js';
-import { joinMemberPath, quotePosixPath, quotePwshPath, readMemberFile, type MemberExecFn } from './member-config-io.js';
+import { joinMemberPath, moveStagedFileCommand, quotePosixPath, quotePwshPath, readMemberFile, type MemberExecFn } from './member-config-io.js';
 
 /** File name of the secret inside an install's data dir. */
 export const MEMBER_ACCESS_SECRET_FILE = 'member-access.key';
@@ -140,20 +140,7 @@ export function memberAccessSecretPathFor(home: string, agent: Agent): string {
   return joinMemberPath(home, `.apra-fleet/data/${MEMBER_ACCESS_SECRET_FILE}`, getAgentOS(agent) === 'windows', getAgentShell(agent));
 }
 
-/**
- * The content-free command that moves a staged secret file into `target`
- * (creating its directory). POSIX also forces 0600 on the result; the staged
- * file is owner-only already. Carries resolved, quoted paths only.
- */
-export function moveStagedFileCommand(staged: string, target: string, posix: boolean): string {
-  if (posix) {
-    const dir = target.split('/').slice(0, -1).join('/');
-    return `mkdir -p ${quotePosixPath(dir)} && mv -f ${quotePosixPath(staged)} ${quotePosixPath(target)} && chmod 600 ${quotePosixPath(target)}`;
-  }
-  const t = target.replace(/\//g, '\\');
-  const dir = t.split('\\').slice(0, -1).join('\\');
-  return `New-Item -ItemType Directory -Force -Path ${quotePwshPath(dir)} | Out-Null; Move-Item -Force -LiteralPath ${quotePwshPath(staged.replace(/\//g, '\\'))} -Destination ${quotePwshPath(t)}`;
-}
+export { moveStagedFileCommand } from './member-config-io.js';
 
 /** Stages content in a fresh owner-only file on the member; returns its path. */
 export type StageSecretFileFn = (agent: Agent, content: string) => Promise<string>;

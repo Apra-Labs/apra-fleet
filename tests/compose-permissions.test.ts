@@ -445,9 +445,9 @@ describe('composePermissions -- AGY proactive', () => {
     expect(result).toContain(`.gemini/config/projects/${AGY_PID}.json`);
 
     const writes = mockExecCommand.mock.calls.map(c => c[0] as string).filter(cmd => cmd.includes('cat >'));
-    expect(writes).toHaveLength(1);
-    const projectWrite = writes[0];
-    expect(projectWrite).toContain(`cat > "${AGY_FILE}"`);
+    expect(writes).toHaveLength(2);
+    const projectWrite = writes.find(cmd => cmd.includes(AGY_FILE))!;
+    expect(projectWrite).toBeDefined();
     expect(writes.some(cmd => cmd.includes('/home/testuser/project/.gemini'))).toBe(false);
     expect(writes.some(cmd => cmd.includes('default-cli-project'))).toBe(false);
 
@@ -1451,6 +1451,26 @@ describe('composePermissions -- project_folder whose basename is not a work-fold
       expect(stackCmd).toContain('cd "/home/testuser/repo/member-x" 2>/dev/null || cd "/home/testuser/repo" 2>/dev/null');
     } finally {
       fs.rmSync(ledgerDir, { recursive: true, force: true });
+    }
+  });
+
+  it('local member: stack detection falls back to workFolder root when project_folder is not a subfolder', async () => {
+    const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-local-work-'));
+    const ledgerBase = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-local-ledger-'));
+    fs.writeFileSync(path.join(workDir, 'package.json'), '{}');
+    const member = makeTestAgent({ agentType: 'local', friendlyName: 'claude-local-ledger', llmProvider: 'claude', os: 'linux', workFolder: workDir });
+    addAgent(member);
+    try {
+      const out = JSON.parse(await composePermissions({
+        member_id: member.id,
+        role: 'doer',
+        dry_run: true,
+        project_folder: path.join(ledgerBase, 'member-ledger-123'),
+      }));
+      expect(out.stacks).toEqual(['node']);
+    } finally {
+      fs.rmSync(workDir, { recursive: true, force: true });
+      fs.rmSync(ledgerBase, { recursive: true, force: true });
     }
   });
 

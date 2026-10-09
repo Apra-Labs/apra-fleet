@@ -96,9 +96,12 @@ export class LinuxCommands implements OsCommands {
   // --- Process check ---
 
   fleetProcessCheck(folder: string, sessionId?: string, processName?: string): string {
+    if (processName === '') return 'echo "idle"';
     const pname = processName ?? 'claude';
-    // Use bracket trick to avoid pgrep matching its own grep process
-    const bracketName = `[${pname[0]}]${pname.slice(1)}`;
+    // Use bracket trick plus boundaries to avoid pgrep matching its own grep process
+    // or folder names that contain the process name as a substring (e.g. fleet-agy).
+    // Note: use POSIX [[:space:]] instead of \s because BSD/macOS pgrep -f does not support \s.
+    const bracketName = `(^|/|[[:space:]])[${pname[0]}]${pname.slice(1)}([[:space:]]|$)`;
     const folderPattern = escapeGrepPattern(folder);
     const fleetMatch = sessionId
       ? `grep -E "(${folderPattern}|${escapeGrepPattern(sanitizeSessionId(sessionId))})"`

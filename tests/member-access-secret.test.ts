@@ -35,6 +35,7 @@ import {
 import { sessionMcpConfigContent, writeSessionMcpConfig } from '../src/services/session-mcp-config.js';
 import { ClaudeProvider } from '../src/providers/claude.js';
 import { OpenCodeProvider } from '../src/providers/opencode.js';
+import { AgyProvider } from '../src/providers/agy.js';
 import { addAgent, getAgent, recordFleetMcpStatus, updateAgent } from '../src/services/registry.js';
 import { __setMemberFleetMcpDeps, type MemberFleetMcpDeps } from '../src/services/member-fleet-install.js';
 import { updateMember } from '../src/tools/update-member.js';
@@ -173,6 +174,21 @@ describe('every member MCP config writer carries the secret; no member command c
       expect(m.commands.some(c => /mv -f|Move-Item/.test(plain(c)) && plain(c).includes('opencode.json'))).toBe(true);
     });
 
+    it(`agy per-folder entry (${f.name})`, async () => {
+      const m = fakeMember();
+      const agent = makeTestAgent({ os: f.os, shell: f.shell, workFolder: f.work, llmProvider: 'agy' });
+      const url = `http://localhost:7611/mcp?member=${agent.id}`;
+      await new AgyProvider().syncMemberMcpEntry({
+        agent, execCommand: m.exec, memberHomeDir: f.home, agentOs: f.os, shell: f.shell,
+        secretChannel: m.secretChannel, url, headers: { [MEMBER_SECRET_HEADER]: SECRET },
+      });
+      expect(m.staged).toHaveLength(1);
+      expect(JSON.parse(m.staged[0]).mcpServers['apra-fleet']).toEqual({ url, headers: { [MEMBER_SECRET_HEADER]: SECRET } });
+      expectNoSecretIn(m.commands);
+      // the move that lands it names only paths
+      expect(m.commands.some(c => /mv -f|Move-Item/.test(plain(c)) && plain(c).includes('mcp_config.json'))).toBe(true);
+    });
+
     it(`remote per-session config (${f.name})`, async () => {
       const m = fakeMember();
       const agent = makeTestAgent({ os: f.os, shell: f.shell, workFolder: f.work, memberMcpPort: 7611, encryptedMemberMcpSecret: encryptPassword(SECRET) });
@@ -192,6 +208,16 @@ describe('every member MCP config writer carries the secret; no member command c
     const agent = makeTestAgent({ os: 'linux', workFolder: '/home/bella/repo', llmProvider: 'opencode' });
     await expect(new OpenCodeProvider().syncMemberMcpEntry({
       agent, execCommand: m.exec, memberHomeDir: null, agentOs: 'linux',
+      url: `http://localhost:7611/mcp?member=${agent.id}`, headers: { [MEMBER_SECRET_HEADER]: SECRET },
+    })).rejects.toThrow(/E-MEMBER-CONFIG-NO-FILE-CHANNEL/);
+    for (const c of m.commands) expect(findSentinel(c, SECRET)).toBeNull();
+  });
+
+  it('an agy entry with the secret and no secret-file channel fails loudly instead of writing inline', async () => {
+    const m = fakeMember();
+    const agent = makeTestAgent({ os: 'linux', workFolder: '/home/bella/repo', llmProvider: 'agy' });
+    await expect(new AgyProvider().syncMemberMcpEntry({
+      agent, execCommand: m.exec, memberHomeDir: '/home/bella', agentOs: 'linux',
       url: `http://localhost:7611/mcp?member=${agent.id}`, headers: { [MEMBER_SECRET_HEADER]: SECRET },
     })).rejects.toThrow(/E-MEMBER-CONFIG-NO-FILE-CHANNEL/);
     for (const c of m.commands) expect(findSentinel(c, SECRET)).toBeNull();

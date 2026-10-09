@@ -185,8 +185,11 @@ recursively. Fleet reduces each Claude path pattern accordingly:
   its result. So is a `~` path when the member's home directory is unknown.
   Grant a directory or an exact path instead.
 
-Tokens with no agy action (`Agent`, unknown tokens) are dropped too; those
-drops are recorded in the fleet server log, not in the tool result.
+Tokens with no direct AGY action (`Agent`, unmapped tokens) are dropped from
+the composed project grants; every dropped token is surfaced under `Warnings:`
+in the `compose_permissions` result so callers are alerted to missing or
+untranslatable grants. When transforming agent prompts, `Agent` tokens map to
+`invoke_subagent` and `send_message` capabilities.
 
 ---
 
@@ -222,10 +225,16 @@ of an empty response:
   not reported again.
 - `suggestedGrants` lists the primary grant first. For a `command` or
   `unsandboxed` denial that is the prefix grant `Bash(<first word>:*)`,
-  followed by the exact command line as the narrower alternative. A line with
-  `$(...)` gets only the prefix grant; a line with `|`, `;`, `&&` or backticks
-  gets none, because `compose_permissions` refuses shell chaining. Other
-  actions map to `Read(<path>)`, `Write(<path>)`, `mcp__<server>__<tool>` or
+  followed by the exact command line as the narrower alternative. For
+  pipelined commands containing `|`, the command is decomposed into its
+  pipeline stages and suggested prefix grants are emitted for each constituent
+  command (for example, `ps aux | grep dolt` yields `Bash(ps:*)` and
+  `Bash(grep:*)`). A command with `$(...)` gets only the prefix grant; commands
+  with sequencing operators (`;`, `&&`) get none because `compose_permissions`
+  refuses shell chaining. When headless AGY auto-denies a tool call without
+  writing an ERROR transcript step, the detector inspects the turn's pending
+  tool calls to recover the target command, file, or MCP tool. Other actions
+  map to `Read(<path>)`, `Write(<path>)`, `mcp__<server>__<tool>` or
   `WebSearch`; an action with no mapping yields no suggestion and the hint
   says to grant it by hand or escalate.
 - A refusal of a fleet tool outside the member allowlist (a transcript target
@@ -259,9 +268,18 @@ agy --add-dir <workFolder> --project <agyProjectId> --model <model> --output-for
 
 - `--add-dir` is what gives agy its workspace; agy does not adopt the process
   working directory.
-- `--model` takes agy's model slug ids (as listed by `agy models`). Fleet maps
-  the cheap/standard/premium tiers to default slugs; override them per tier in
-  `config.json` in the fleet data directory (see [install](install.md)).
+- `--model` takes agy's model slug ids (as listed by `agy models`). Explicit
+  model ids passed to `execute_prompt` pass through directly to `--model`
+  without modification, allowing AGY to validate them natively. Tier-based
+  dispatches (`cheap`, `standard`, `premium`) resolve models using a strict
+  three-tier precedence:
+  1. Member-level override (`member.modelTiers[tier]` or legacy member tier fields in `registry.json`)
+  2. Machine-level mapping (`modelMapping.agy[tier]` in `config.json`)
+  3. Provider default for the tier (`AGY_MODEL_FOR_TIER[tier]`)
+- Windows local members: dispatches execute in PowerShell with CRLF line
+  endings. Output parsing handles single-line and multiline JSON envelopes with
+  CRLF, cleanly extracting inner structured output and tool responses across
+  transcript prefixes (`FLEET_PID`, `FLEET_SESSION_ID`).
 - `--agent <name>` activates a role agent from
   `<workFolder>/.gemini/antigravity-cli/agents/` or
   `~/.gemini/antigravity-cli/agents/`. Role-agent files are transformed for
@@ -341,8 +359,10 @@ variable on the member). Local members use the host's own login.
   transcript (no `denied_actions`), so the dispatch looks successful.
 - **Globs in path grants** cannot be expressed; such grants are dropped with
   a warning (section 3).
-- **Tokens without an agy action** (`Agent`, unknown tokens) are dropped and
-  logged only in the server log, not returned as warnings.
+- **Tokens without an agy action** (`Agent`, unmapped MCP syntax, unknown
+  tokens) are dropped from the project grant list and surfaced under
+  `Warnings:` in the `compose_permissions` result so callers can inspect
+  unmapped grants.
 - **Global skills** stay visible to agy members (section 6).
 - **No command deny rules** are composed today; the deny list covers fleet MCP
   tools only. A future command deny rule must use the same bare-plus-regex

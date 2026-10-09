@@ -143,6 +143,16 @@ describe('path grants (all OSes)', () => {
       expect(paths.filter(r => r.includes('*'))).toEqual(['read_file(*)']);
     }
   });
+
+  it('compose surfaces dropped unmappable tokens (e.g. Agent) through opts.warnings', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    for (const os of ['linux', 'windows'] as const) {
+      const warnings: string[] = [];
+      compose(os, 'doer', ['Agent', 'CustomToken', 'Read'], { warnings, memberHomeDir: '/home/u' });
+      expect(warnings.some(w => w.includes('"Agent"'))).toBe(true);
+      expect(warnings.some(w => w.includes('"CustomToken"'))).toBe(true);
+    }
+  });
 });
 
 describe('doer/reviewer composed output on every OS', () => {
