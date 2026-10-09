@@ -175,6 +175,16 @@ describe('windowsHide spawn guard', () => {
     expect(bad.map(s => `${s.file}:${s.line} ${s.text}`)).toEqual([]);
   });
 
+  it('MCP stdio clients go through createStdioClientTransport (the SDK transport is not hidden on win32)', () => {
+    const offenders: string[] = [];
+    for (const abs of listFiles()) {
+      const rel = path.relative(REPO_ROOT, abs).replace(/\\/g, '/');
+      if (rel === 'src/tools/hidden-stdio-transport.ts') continue;
+      if (/new\s+StdioClientTransport\s*\(/.test(fs.readFileSync(abs, 'utf8'))) offenders.push(rel);
+    }
+    expect(offenders).toEqual([]);
+  });
+
   it('allowlist entries still match a real call site (no stale exemptions)', () => {
     for (const a of ALLOWLIST) {
       const src = fs.readFileSync(path.join(REPO_ROOT, a.file), 'utf8');

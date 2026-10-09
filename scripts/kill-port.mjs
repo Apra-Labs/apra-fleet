@@ -97,7 +97,7 @@ export function findPids(port, deps = {}) {
     return parseNetstatPids(out, port);
   }
   try {
-    const out = exec('lsof', ['-ti', `tcp:`], { encoding: 'utf8', windowsHide: true });
+    const out = exec('lsof', ['-ti', `tcp:${port}`], { encoding: 'utf8', windowsHide: true });
     return parseLsofPids(out);
   } catch (err) {
     if (err && err.code === 'ENOENT') throw new ProbeToolMissingError('lsof');
