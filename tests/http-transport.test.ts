@@ -18,6 +18,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { MEMBER_SECRET_HEADER, getOrCreateMemberAccessSecret } from '../src/services/member-access-secret.js';
 import { reportStatus, reportStatusSchema } from '../src/tools/report-status.js';
+import { getActiveLogFile, shortSid } from '../src/utils/log-helpers.js';
 
 function noop(_server: McpServer): void {
   // no tools registered in these tests
@@ -942,5 +943,58 @@ describe('(n) cross-identity GET/DELETE/POST on an MCP session is refused with 4
     expect((await rawMcp(handle.port, 'GET', s)).status).toBe(200);
     expect((await rawMcp(handle.port, 'DELETE', s)).status).toBe(200);
     expect(handle.sessions.has(sid)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (o) The server log never carries a full MCP session id: every session log
+// line (new, registered, refused, closed, unregistered) uses shortSid.
+// ---------------------------------------------------------------------------
+describe('(o) session ids are logged only in shortened form', () => {
+  const memberId = 'sid-redaction-member';
+
+  afterEach(() => {
+    sessionRegistry.unregister(getTokenIssuer().workspaceId(), memberId);
+  });
+
+  it('after opening, refusing a foreign caller on, and closing a session, the log has its short form but not its full uuid', async () => {
+    const handle = await createHttpTransport({ registerTools: noop, preferredPort: 0 });
+    handles.push(handle);
+    const token = getTokenIssuer().issue({ member_id: memberId, role: 'doer', work_folder: '/tmp/sid-redaction' });
+    const client = new Client({ name: 'sid-redaction', version: '1.0.0' }, { capabilities: {} });
+    clients.push(client);
+    const transport = new StreamableHTTPClientTransport(
+      new URL(`http://127.0.0.1:${handle.port}/mcp`),
+      {
+        reconnectionOptions: { maxRetries: 0, maxReconnectionDelay: 100, initialReconnectionDelay: 100, reconnectionDelayGrowFactor: 1 },
+        requestInit: { headers: { Authorization: `Bearer ${token}` } },
+      },
+    );
+    await client.connect(transport);
+    const sid = transport.sessionId!;
+    expect(sid).toMatch(/^[0-9a-f-]{36}$/);
+
+    // A refused foreign caller logs the session too.
+    const refused = await new Promise<number>((resolve, reject) => {
+      const req = http.request(
+        { hostname: '127.0.0.1', port: handle.port, path: '/mcp', method: 'DELETE', headers: { 'mcp-session-id': sid, ...memberSecretHeaders() } },
+        (res) => { resolve(res.statusCode ?? 0); res.resume(); },
+      );
+      req.on('error', reject);
+      req.end();
+    });
+    expect(refused).toBe(403);
+
+    await transport.terminateSession();
+    await new Promise(resolve => setTimeout(resolve, 100));
+    expect(handle.sessions.size).toBe(0);
+
+    const logFile = getActiveLogFile();
+    expect(logFile).toBeTruthy();
+    const log = fs.readFileSync(logFile!, 'utf8');
+    expect(log).toContain(`new sid=${shortSid(sid)}`);
+    expect(log).toContain(`rejected DELETE on sid=${shortSid(sid)}`);
+    expect(log).toContain(`closed sid=${shortSid(sid)}`);
+    expect(log).not.toContain(sid);
   });
 });
