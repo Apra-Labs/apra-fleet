@@ -69,6 +69,18 @@ If those KB tools are not available in your environment (MCP server not running)
 these steps and proceed.
 <!-- end-tool: ToolSearch -->
 
+### Persistent Memories (operational rules)
+
+Before starting code review, retrieve universal conventions and role-scoped operational rules from Beads:
+
+```bash
+bd memories --json +all+
+bd memories --json +reviewer+
+```
+
+Each prints a JSON object of key -> full value (plus a `schema_version` entry). The
+search also matches value text, so apply only entries whose KEY contains `+all+` or `+reviewer+`.
+
 ## Step 1 -- Context recovery
 
 ```bash

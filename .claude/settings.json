@@ -15,7 +15,16 @@
       {
         "hooks": [
           {
-            "command": "bd prime",
+            "command": "bd prime --no-memories",
+            "type": "command"
+          }
+        ],
+        "matcher": ""
+      },
+      {
+        "hooks": [
+          {
+            "command": "node scripts/beads-session-memories.mjs +all+ +orchestrator+",
             "type": "command"
           }
         ],
@@ -26,7 +35,16 @@
       {
         "hooks": [
           {
-            "command": "bd prime",
+            "command": "bd prime --no-memories",
+            "type": "command"
+          }
+        ],
+        "matcher": ""
+      },
+      {
+        "hooks": [
+          {
+            "command": "node scripts/beads-session-memories.mjs +all+ +orchestrator+",
             "type": "command"
           }
         ],

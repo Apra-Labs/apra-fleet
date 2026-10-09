@@ -98,6 +98,18 @@ of these tool calls is ever a requirement.
    "knowledge" or "learning" if it is reachable -- it usually is not on a dispatched
    environment, in which case simply note the finding in your own report instead.
 
+### Persistent Memories (operational rules)
+
+Before working any feature, retrieve universal conventions and role-scoped operational rules from Beads:
+
+```bash
+bd memories --json +all+
+bd memories --json +integ-test-runner+
+```
+
+Each prints a JSON object of key -> full value (plus a `schema_version` entry). The
+search also matches value text, so apply only entries whose KEY contains `+all+` or `+integ-test-runner+`.
+
 ## Step 1 -- Work the features you were handed
 
 Your dispatch prompt hands you an **explicit list of feature ids** -- the open features in
