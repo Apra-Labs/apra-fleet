@@ -90,9 +90,8 @@
   "dependencies": {
     "@apralabs/apra-fleet-client": "file:packages/apra-fleet-client",
     "@inquirer/password": "^5.0.11",
-    "@modelcontextprotocol/sdk": "^1.27.0",
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "ajv": "^8.12.0",
-    "cross-spawn": "^7.0.6",
     "pg": "^8.22.0",
     "smol-toml": "^1.7.1",
     "ssh2": "^1.17.0",

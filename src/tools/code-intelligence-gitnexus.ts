@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from 'fs';
 import { execFileSync } from 'child_process';
 import { join } from 'path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { createStdioClientTransport } from './hidden-stdio-transport.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import type { CodeIntelligenceProvider } from './code-intelligence.js';
 import { freshnessNote } from './code-intelligence-freshness.js';
 import { maybeScheduleReindex } from './code-intelligence-reindex.js';
@@ -44,7 +44,7 @@ async function getGitNexusClient(): Promise<Client> {
   if (connectionPromise) return connectionPromise;
 
   connectionPromise = (async () => {
-    const transport = createStdioClientTransport({
+    const transport = new StdioClientTransport({
       command: 'npx',
       args: ['-y', 'gitnexus', 'mcp'],
       stderr: 'pipe',

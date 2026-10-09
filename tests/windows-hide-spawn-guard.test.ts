@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
+import { createRequire } from 'node:module';
 
 // Source-scan guard: every child_process spawn in product code (and in the
 // test runners / helper scripts the suites drive) must pass windowsHide: true.
@@ -175,14 +176,15 @@ describe('windowsHide spawn guard', () => {
     expect(bad.map(s => `${s.file}:${s.line} ${s.text}`)).toEqual([]);
   });
 
-  it('MCP stdio clients go through createStdioClientTransport (the SDK transport is not hidden on win32)', () => {
-    const offenders: string[] = [];
-    for (const abs of listFiles()) {
-      const rel = path.relative(REPO_ROOT, abs).replace(/\\/g, '/');
-      if (rel === 'src/tools/hidden-stdio-transport.ts') continue;
-      if (/new\s+StdioClientTransport\s*\(/.test(fs.readFileSync(abs, 'utf8'))) offenders.push(rel);
-    }
-    expect(offenders).toEqual([]);
+  // MCP stdio clients (gitnexus, codebase-memory) use the SDK's own
+  // StdioClientTransport. It hides its server child on win32 only from SDK
+  // 1.29.0 on (1.27.x hid it under Electron only, leaving a console window up
+  // for the client's lifetime). Fail if a downgrade brings the old line back.
+  it('installed MCP SDK stdio transport hides its child on win32', () => {
+    const pkgJson = createRequire(path.join(REPO_ROOT, 'package.json')).resolve('@modelcontextprotocol/sdk/package.json');
+    const stdioJs = path.join(path.dirname(pkgJson), 'dist', 'esm', 'client', 'stdio.js');
+    const src = fs.readFileSync(stdioJs, 'utf8');
+    expect(src).toMatch(/windowsHide:\s*process\.platform\s*===\s*['"]win32['"]\s*[,}\n]/);
   });
 
   it('allowlist entries still match a real call site (no stale exemptions)', () => {

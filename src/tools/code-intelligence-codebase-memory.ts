@@ -25,7 +25,7 @@ import { existsSync, readdirSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { createStdioClientTransport } from './hidden-stdio-transport.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import type { CodeIntelligenceProvider } from './code-intelligence.js';
 import { isTestPath } from './code-intelligence-tests.js';
 
@@ -83,7 +83,7 @@ async function getCodebaseMemoryClient(): Promise<Client> {
   if (connectionPromise) return connectionPromise;
 
   connectionPromise = (async () => {
-    const transport = createStdioClientTransport({
+    const transport = new StdioClientTransport({
       command: 'codebase-memory-mcp',
       args: ['mcp'],
       stderr: 'pipe',
