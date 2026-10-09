@@ -1,0 +1,87 @@
+name: Install node_modules (cached)
+description: >
+  npm ci with an exact-key node_modules cache, plus a workspace link check.
+  With cache 'false' it is a plain npm ci (no restore, no save).
+
+# node_modules cache (exact-key only, no restore-keys). Key covers OS, the
+# installed node's arch (process.arch, not runner.arch) and version (native
+# addon ABI), the runner label + image, and every manifest, so a hit is only
+# taken when npm ci would produce the same tree. Bump nm-v2 to bust. Saved
+# right after npm ci so the entry holds the pristine install, not
+# post-build/test state.
+# Install-time scripts audit: root `prepare` only copies git hooks into
+# .git/hooks (not needed in CI); ssh2/cpu-features/esbuild/fsevents install
+# scripts write only inside node_modules, so a hit carries their output. No
+# workspace has install scripts. apra-pm is not a workspace and is never
+# installed here, so its lockfile is not part of the key.
+# Requires checkout + setup-node first.
+
+inputs:
+  runner-label:
+    description: Runner label of the calling job (part of the cache key).
+    required: true
+  cache:
+    description: "'true' to restore/save the cache; 'false' for a plain npm ci (release builds)."
+    required: false
+    default: 'true'
+
+runs:
+  using: composite
+  steps:
+    - name: Compute node_modules cache key
+      id: nm-key
+      if: inputs.cache == 'true'
+      shell: bash
+      run: echo "key=nm-v2-${{ runner.os }}-$(node -p process.arch)-${{ inputs.runner-label }}-${ImageOS}-node$(node -v)-${{ hashFiles('package-lock.json', 'package.json', 'packages/*/package.json') }}" >> "$GITHUB_OUTPUT"
+
+    - name: Restore node_modules cache
+      id: nm-cache
+      if: inputs.cache == 'true'
+      uses: actions/cache/restore@v4
+      with:
+        path: |
+          node_modules
+          packages/*/node_modules
+        key: ${{ steps.nm-key.outputs.key }}
+
+    # Same shell npm ci ran under before this was a composite action:
+    # pwsh on Windows, bash elsewhere.
+    - name: Install dependencies (Windows)
+      if: runner.os == 'Windows' && steps.nm-cache.outputs.cache-hit != 'true'
+      shell: pwsh
+      run: npm ci
+
+    - name: Install dependencies
+      if: runner.os != 'Windows' && steps.nm-cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: npm ci
+
+    - name: Save node_modules cache
+      if: inputs.cache == 'true' && steps.nm-cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: |
+          node_modules
+          packages/*/node_modules
+        key: ${{ steps.nm-key.outputs.key }}
+
+    # A cache that dereferenced a workspace link would restore a stale copy
+    # of packages/* instead of a link to the live source. Fail loudly.
+    - name: Verify workspace links resolve to packages/
+      shell: bash
+      run: |
+        node -e "
+          const fs = require('fs'), path = require('path');
+          const lock = JSON.parse(fs.readFileSync('package-lock.json', 'utf8'));
+          let bad = 0;
+          for (const [p, v] of Object.entries(lock.packages)) {
+            if (!v.link) continue;
+            const want = fs.realpathSync(path.resolve(v.resolved));
+            let got = '<missing>';
+            try { got = fs.realpathSync(p); } catch {}
+            const ok = got === want && fs.lstatSync(p).isSymbolicLink();
+            console.log((ok ? '[OK] ' : '[FAIL] ') + p + ' -> ' + got);
+            if (!ok) bad++;
+          }
+          if (bad) { console.error('::error::' + bad + ' workspace link(s) in node_modules are not links to packages/'); process.exit(1); }
+        "
