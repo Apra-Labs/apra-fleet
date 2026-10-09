@@ -1,9 +1,9 @@
 {
-  "version": 2,
+  "version": 3,
   "provenance": {
-    "commit": "34ff160ff8ee9e2268e851270b911771d06fedca",
+    "commit": "8a8f3ce595f3f1616a6ada5f464313b5002b4bfc",
     "branch": "feat/kb-redesign",
-    "entry_count": 320
+    "entry_count": 322
   },
   "entries": [
     {
@@ -1176,6 +1176,43 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:29.432Z"
+    },
+    {
+      "id": "2b7ef211-abbf-4b9a-8d93-f6ad2ffe0e98",
+      "type": "knowledge",
+      "title": "kb_maintainer grant gates kb_reconcile_prefilter, explicit-path kb_import and CONFIRMED retirement via kb_invalidate",
+      "summary": "MEMBER_MAINTAINER_TOOLS is now kb_promote, kb_resolve_contradiction and kb_reconcile_prefilter. In a member session without the grant, kb_import with an explicit path is refused with E-KB-MAINTAINER-REQUIRED and kb_invalidate leaves CONFIRMED entries live, reporting them in refused.",
+      "symbols": [
+        "MEMBER_MAINTAINER_TOOLS",
+        "getSessionKbMaintainer",
+        "scopeHasKbMaintainer",
+        "memberLacksKbMaintainer",
+        "KbMaintainerGrantError",
+        "kbImport",
+        "kbInvalidate"
+      ],
+      "source_files": [
+        "src/services/member-tool-allowlist.ts",
+        "src/services/tool-scope.ts",
+        "src/services/tool-registry.ts",
+        "src/services/knowledge/kb-maintainer-grant.ts",
+        "src/tools/kb-import.ts",
+        "src/tools/kb-invalidate.ts",
+        "src/services/knowledge/sqlite-provider.ts",
+        "tests/member-session-scope.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-09T06:57:19.617Z",
+      "source_file_hashes": {
+        "src/services/knowledge/kb-maintainer-grant.ts": "80d105fba7b67ce25872e728ec978be6e287794a",
+        "src/services/knowledge/sqlite-provider.ts": "8e5952d340c898f916111c58a5399f02bd985cf8",
+        "src/services/member-tool-allowlist.ts": "e8c80757b1e83c2a8ab36751faa0afd752c47503",
+        "src/services/tool-registry.ts": "b7d57077f2fe9700eaf56aa987c1d0e8bbaa02ef",
+        "src/services/tool-scope.ts": "9d603a5ae927190e87877b514287831a95bfae49",
+        "src/tools/kb-import.ts": "fe7ccd947eca6eb5cde66425ef62ee02f809e9cc",
+        "src/tools/kb-invalidate.ts": "a76013ac9a149045fc53c3afc1b1e26619f194f7",
+        "tests/member-session-scope.test.ts": "dcc9266331c2067fd78b7c6c6716b1d159ab3e32"
+      }
     },
     {
       "id": "2bdd3084-be9f-4433-8525-dc32eac82784",
@@ -2375,6 +2412,31 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:30.798Z"
+    },
+    {
+      "id": "5dc84022-b3fd-4857-8fbc-5d72a3e97914",
+      "type": "learning",
+      "title": "kb_invalidate {files} can retire a CONFIRMED bible entry",
+      "summary": "SqliteProvider.invalidate marks context-cache rows content_hash='invalidated', and getRetirementReasons treats that as retired, so kb_bible_commit removes a CONFIRMED context-cache entry from the bible after a file invalidation.",
+      "symbols": [
+        "invalidate",
+        "getRetirementReasons",
+        "kbBibleCommit"
+      ],
+      "source_files": [
+        "src/services/knowledge/sqlite-provider.ts",
+        "src/tools/kb-bible-commit.ts",
+        "src/tools/kb-invalidate.ts",
+        "tests/member-session-scope.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-09T06:57:17.268Z",
+      "source_file_hashes": {
+        "src/services/knowledge/sqlite-provider.ts": "8e5952d340c898f916111c58a5399f02bd985cf8",
+        "src/tools/kb-bible-commit.ts": "ce7ee5626aaf832d7e9fceaf26a90fd8c3e9831b",
+        "src/tools/kb-invalidate.ts": "a76013ac9a149045fc53c3afc1b1e26619f194f7",
+        "tests/member-session-scope.test.ts": "dcc9266331c2067fd78b7c6c6716b1d159ab3e32"
+      }
     },
     {
       "id": "5e1d195c-cd15-41d8-9691-4b2636852be4",
