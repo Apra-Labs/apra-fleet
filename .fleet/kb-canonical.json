@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "8a8f3ce595f3f1616a6ada5f464313b5002b4bfc",
     "branch": "feat/kb-redesign",
-    "entry_count": 327
+    "entry_count": 328
   },
   "entries": [
     {
@@ -4280,6 +4280,29 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:14.389Z"
+    },
+    {
+      "id": "b8d328fa-e22b-498f-98cf-2ff10bd6370a",
+      "type": "knowledge",
+      "title": "Every /mcp request on an existing session id is bound to the identity that opened it",
+      "summary": "http-transport records a SessionOwner (jwt memberId+workspaceId, or access secret) at initialize and refuses GET/DELETE/non-initialize POST from any other identity with 403 'session identity mismatch'; any access-secret caller may use any secret-opened session regardless of ?member=.",
+      "symbols": [
+        "createHttpTransport",
+        "SessionOwner",
+        "sessionOwnerMismatch",
+        "refuseForeignCaller",
+        "callerIdentity"
+      ],
+      "source_files": [
+        "src/services/http-transport.ts",
+        "tests/http-transport.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-09T08:35:53.886Z",
+      "source_file_hashes": {
+        "src/services/http-transport.ts": "5f5473f8a1f70d3fbe4173a2124ba726cf940f0e",
+        "tests/http-transport.test.ts": "cd60757b7c0699170eb0bb5074a787d6e9738128"
+      }
     },
     {
       "id": "babb6682-bde3-49f3-9441-77a078f082a7",
