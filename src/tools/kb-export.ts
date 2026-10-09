@@ -168,12 +168,12 @@ export function readBibleEntries(outPath: string): CanonicalEntry[] | null {
  */
 export function commitBiblePath(repoPath: string, outPath: string, message: string): void {
   execFileSync('git', ['add', outPath], {
-    cwd: repoPath, timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'],
+    cwd: repoPath, timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
   });
   execFileSync(
     'git',
     ['-c', 'user.name=pm-kb', '-c', 'user.email=kb@pm.local', 'commit', '-m', message, '--', outPath],
-    { cwd: repoPath, timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] },
+    { cwd: repoPath, timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true },
   );
 }
 

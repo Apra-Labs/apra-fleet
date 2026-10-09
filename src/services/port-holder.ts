@@ -99,7 +99,7 @@ function linuxUserName(uid: number): string | undefined {
     if (u) return u;
   } catch { /* fall through to getent (LDAP/NSS users) */ }
   try {
-    const out = execFileSync('getent', ['passwd', String(uid)], { encoding: 'utf8', timeout: PROBE_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'ignore'] });
+    const out = execFileSync('getent', ['passwd', String(uid)], { encoding: 'utf8', timeout: PROBE_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true });
     return userFromPasswd(String(out), uid);
   } catch {
     return undefined;
@@ -161,7 +161,7 @@ export function parseLsofFields(out: string): PortHolder | null {
 function lsofPortHolder(port: number): PortHolder | null {
   try {
     const out = execFileSync('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-FpcLu'], {
-      encoding: 'utf8', timeout: PROBE_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'ignore'],
+      encoding: 'utf8', timeout: PROBE_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true,
     });
     return parseLsofFields(String(out));
   } catch {

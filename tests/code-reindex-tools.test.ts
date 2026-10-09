@@ -256,7 +256,7 @@ describe.skipIf(isWin)('code_reindex / code_status with a fake gitnexus', () => 
 
   it('the analyze argv carries the pinned minimum gitnexus version', () => {
     expect(GITNEXUS_PACKAGE_SPEC).toBe(`gitnexus@>=${GITNEXUS_MIN_VERSION}`);
-    expect(GITNEXUS_ANALYZE_ARGS[0]).toBe(GITNEXUS_PACKAGE_SPEC);
+    expect(GITNEXUS_ANALYZE_ARGS[1]).toBe(GITNEXUS_PACKAGE_SPEC);
   });
 
   it('a second code_reindex while one runs does not start another analyze', async () => {

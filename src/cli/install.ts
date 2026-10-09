@@ -72,7 +72,7 @@ export function _resetDoltStepDeps(): void {
 function beadsStepDeps(): BeadsInstallDeps {
   return {
     platform: process.platform,
-    exec: (cmd, args, opts) => execFileSync(cmd, args, { stdio: 'pipe', encoding: 'utf-8', shell: opts.shell }) as unknown as string,
+    exec: (cmd, args, opts) => execFileSync(cmd, args, { stdio: 'pipe', encoding: 'utf-8', shell: opts.shell, windowsHide: true }) as unknown as string,
     existsSync: p => fs.existsSync(p),
     mkdirSync: p => { fs.mkdirSync(p, { recursive: true }); },
     rmSync: p => { fs.rmSync(p, { recursive: true, force: true }); },
@@ -941,7 +941,7 @@ export function apraFleetPids(): string[] {
     } else {
       // -x = exact name match; the installer itself may be named apra-fleet,
       // so the current PID is excluded.
-      const out = execSync('pgrep -x apra-fleet', { encoding: 'utf-8', stdio: 'pipe' });
+      const out = execSync('pgrep -x apra-fleet', { encoding: 'utf-8', stdio: 'pipe', windowsHide: true });
       return out.split('\n')
         .map(line => line.trim())
         .filter(pid => pid !== '' && pid !== currentPid);
@@ -971,7 +971,7 @@ export function killApraFleet(pids: ReadonlyArray<number | string>, signal: 'SIG
       if (process.platform === 'win32') {
         // taskkill /F is already forceful -- no softer signal to escalate from,
         // so SIGKILL escalation on Windows just reissues the same command.
-        execSync(`taskkill /F /PID ${pid}`, { stdio: 'ignore' });
+        execSync(`taskkill /F /PID ${pid}`, { stdio: 'ignore', windowsHide: true });
       } else {
         process.kill(pid, signal);
       }
