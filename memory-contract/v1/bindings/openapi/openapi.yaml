@@ -112,6 +112,11 @@
       "status": 403
     },
     {
+      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-RETIRE-NEEDS-KB-MAINTAINER",
+      "title": "kb_invalidate in a MEMBER session without the kb_maintainer grant named a live CONFIRMED entry (by id, or a CONFIRMED context-cache entry by file). Retiring it would remove it from the bible at the next kb_bible_commit, so it is left untouched and its id is reported in the response's refused list; every other named entry is processed as usual.",
+      "status": 403
+    },
+    {
       "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-PROMOTE-REFUSED-DIRECTIVE",
       "title": "Promotion of a user-directive entry is refused outright; a directive can only become active through the CLI-only consent step.",
       "status": 403

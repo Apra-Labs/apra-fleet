@@ -22,7 +22,7 @@ import {
   orJoinFtsTerms,
 } from './audn.js';
 import { computeFileHashBatch } from './file-hash.js';
-import { KbCaptureRejected, type DiscardResult } from './types.js';
+import { KbCaptureRejected, type DiscardResult, type RetireOptions } from './types.js';
 import type {
   MemoryProvider,
   KBEntry,
@@ -1232,9 +1232,10 @@ export class SqliteProvider implements MemoryProvider {
     return results;
   }
 
-  async discard(ids: string[], opts?: { ownerTag?: string }): Promise<DiscardResult> {
+  async discard(ids: string[], opts?: RetireOptions): Promise<DiscardResult> {
     const db = this.getDb();
     const result: DiscardResult = { discarded: [], not_found: [], already_discarded: [] };
+    if (opts?.keepConfirmed) result.refused = [];
     const now = new Date().toISOString();
     for (const id of new Set(ids)) {
       const row = db.prepare('SELECT * FROM entries WHERE id = ?').get(id) as Record<string, unknown> | undefined;
@@ -1245,6 +1246,13 @@ export class SqliteProvider implements MemoryProvider {
       }
       if (row.superseded_at) {
         result.already_discarded.push(id);
+        continue;
+      }
+      // A member session without the kb_maintainer grant may not retire a
+      // CONFIRMED entry: a discarded row is removed from the bible at the next
+      // kb_bible_commit, so this would be a bible removal without the grant.
+      if (opts?.keepConfirmed && row.confidence === 'CONFIRMED') {
+        result.refused!.push(id);
         continue;
       }
       db.prepare("UPDATE entries SET superseded_at = ?, stale = 1, retired_reason = 'invalidated' WHERE id = ?").run(now, id);
@@ -1280,23 +1288,29 @@ export class SqliteProvider implements MemoryProvider {
     return out;
   }
 
-  async invalidate(files: string[], opts?: { ownerTag?: string }): Promise<{ invalidated: number }> {
+  async invalidate(files: string[], opts?: RetireOptions): Promise<{ invalidated: number; refused?: string[] }> {
     const db = this.getDb();
     let invalidated = 0;
+    // keepConfirmed: CONFIRMED rows are left untouched and reported (a
+    // file-invalidated row is retired, and so removed from the bible by the
+    // next kb_bible_commit -- see getRetirementReasons).
+    const refused = new Set<string>();
     // MEMBER own-scope: only entries carrying the caller's member tag.
     const ownerClause = opts?.ownerTag ? 'AND EXISTS (SELECT 1 FROM json_each(tags) WHERE value = ?)' : '';
     const ownerParams: SQLInputValue[] = opts?.ownerTag ? [opts.ownerTag] : [];
 
     for (const file of files) {
-      const rows = db.prepare(`
-        SELECT id FROM entries
+      const candidates = db.prepare(`
+        SELECT id, confidence FROM entries
         WHERE type = 'context-cache'
           AND superseded_at IS NULL
           ${ownerClause}
           AND EXISTS (
             SELECT 1 FROM json_each(source_files) WHERE value = ?
           )
-      `).all(...ownerParams, file) as { id: string }[];
+      `).all(...ownerParams, file) as { id: string; confidence: string }[];
+      const rows = opts?.keepConfirmed ? candidates.filter(r => r.confidence !== 'CONFIRMED') : candidates;
+      if (opts?.keepConfirmed) for (const r of candidates) if (r.confidence === 'CONFIRMED') refused.add(r.id);
 
       if (rows.length > 0) {
         const ids = rows.map(r => r.id);
@@ -1309,7 +1323,7 @@ export class SqliteProvider implements MemoryProvider {
       }
     }
 
-    return { invalidated };
+    return opts?.keepConfirmed ? { invalidated, refused: [...refused] } : { invalidated };
   }
 
   async getLinked(id: string): Promise<KBEntry[]> {

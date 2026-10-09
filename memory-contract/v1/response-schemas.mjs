@@ -95,15 +95,20 @@ const KB_RESPONSE_BODIES = {
     confidence_clamped: z.boolean(),
   }),
   // files path: {invalidated, files}; ids path: {discarded, not_found, already_discarded}.
+  // Both forms carry `refused` (CONFIRMED ids left untouched) exactly when the
+  // call came from a member session without the kb_maintainer grant
+  // (E-RETIRE-NEEDS-KB-MAINTAINER, spec.md section 2.5a).
   kb_invalidate: z.union([
     z.object({
       invalidated: z.number(),
       files: z.array(z.string()),
+      refused: z.array(z.string()).optional(),
     }),
     z.object({
       discarded: z.array(z.string()),
       not_found: z.array(z.string()),
       already_discarded: z.array(z.string()),
+      refused: z.array(z.string()).optional(),
     }),
   ]),
   // F-10 (my-beads-db-27m.9, caught by the live round-trip harness): `fresh`

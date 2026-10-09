@@ -1198,7 +1198,10 @@ export class ApraFleet {
      * committed}; extract with parseToolJson(). Each skipped item is {id, reason}
      * with reason not_confirmed_or_unknown, no_source_files (a CONFIRMED id
      * citing no source file) or basis_mismatch. Each removed item is {id, reason}
-     * with reason superseded or invalidated.
+     * with reason superseded or invalidated. A CONFIRMED entry can only have been
+     * retired from the kb_maintainer session (or a FULL session): kb_invalidate in
+     * a member session without the kb_maintainer grant leaves CONFIRMED entries
+     * untouched and lists their ids in its response's refused list.
      * A CONFIRMED id is admitted only if it passes the same basis rule as kb_export.
      * The removed scope keys (repo_path, repo, repo_remote_url) are refused
      * with E-SCOPE-KEY-REMOVED before anything is sent.

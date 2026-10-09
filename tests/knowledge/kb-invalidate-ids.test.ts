@@ -2,10 +2,13 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { SqliteProvider } from '../../src/services/knowledge/sqlite-provider.js';
 import type { KBEntryInput } from '../../src/services/knowledge/types.js';
 
-const memberState = vi.hoisted(() => ({ id: undefined as string | undefined }));
+const memberState = vi.hoisted(() => ({ id: undefined as string | undefined, kbMaintainer: false }));
 const providerState = vi.hoisted(() => ({ p: undefined as unknown }));
 
-vi.mock('../../src/services/tool-scope.js', () => ({ getSessionMemberId: () => memberState.id }));
+vi.mock('../../src/services/tool-scope.js', () => ({
+  getSessionMemberId: () => memberState.id,
+  getSessionKbMaintainer: () => memberState.kbMaintainer,
+}));
 vi.mock('../../src/services/knowledge/kb-self.js', () => ({
   getSelfKbProviders: async () => ({ project: providerState.p, global: {}, projectSlug: 'slug' }),
   memberOwnerTag: (anchor?: unknown) => (anchor !== undefined || memberState.id === undefined ? undefined : `member:${memberState.id}`),
@@ -31,6 +34,7 @@ beforeEach(async () => {
   await provider.init();
   providerState.p = provider;
   memberState.id = undefined;
+  memberState.kbMaintainer = false;
 });
 afterEach(() => provider.close());
 
@@ -70,6 +74,8 @@ describe('kb_invalidate {ids}', () => {
     memberState.id = A;
     const out = await run({ ids: [other.id, untagged.id, own.id] });
     expect(out.discarded).toEqual([own.id]);
+    // A member session without the kb_maintainer grant: refused is reported (empty here).
+    expect(out.refused).toEqual([]);
     expect(out.not_found.sort()).toEqual([other.id, untagged.id].sort());
     const ids = await visible();
     expect(ids).toContain(other.id);

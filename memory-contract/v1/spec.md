@@ -154,7 +154,9 @@ stored entry `member:<caller uuid>`; `kb_promote` and `kb_invalidate` act only
 on entries carrying that tag and report any other id as not found, changing
 nothing. `kb_invalidate` takes exactly one of `files` or `ids`; `ids` discards
 the entries (sets `superseded_at`, never deletes) and returns
-`{discarded, not_found, already_discarded}`. `kb_feedback` is refused with
+`{discarded, not_found, already_discarded}`. In a member session without the
+kb_maintainer grant neither form retires a CONFIRMED entry (section 2.5a): the
+response then also carries `refused`. `kb_feedback` is refused with
 `E-MEMBER-VIEW-READ-ONLY`. A FULL session reads and writes the per-repo DB
 unchanged.
 
@@ -188,6 +190,16 @@ A MEMBER session is served an explicit tool list
   `.fleet/kb-canonical.json`, and a call without `path` (the engine's priming
   import of the checkout bible), import normally. FULL sessions and the
   kb_maintainer session are unchanged.
+- `kb_invalidate` retires entries (`ids` discards them; `files` marks
+  context-cache entries invalidated), and `kb_bible_commit` removes retired
+  entries from the bible, so in a member session WITHOUT the grant neither
+  form retires a CONFIRMED entry: each such live CONFIRMED entry the call would
+  have retired is left untouched and its id is listed in `refused`
+  (`E-RETIRE-NEEDS-KB-MAINTAINER`, a response-field refusal); the rest of the
+  call proceeds unchanged (INFERRED/UNVERIFIED own entries are still retired).
+  The response carries `refused` exactly when the call came from such a
+  session (possibly empty), on both forms. The engine's own discards run in
+  the kb_maintainer session and are unaffected.
 - A tool handler sees the grant through the per-call context
   (`getSessionKbMaintainer()` next to `getSessionMemberId()` in
   `src/services/tool-scope.ts`).

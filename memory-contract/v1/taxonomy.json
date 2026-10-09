@@ -267,6 +267,21 @@
       "absence_constraint_ref": "_meta.directive_activation_absence",
       "codes": [
         {
+          "$anchor": "E-RETIRE-NEEDS-KB-MAINTAINER",
+          "code": "E-RETIRE-NEEDS-KB-MAINTAINER",
+          "meaning": "kb_invalidate in a MEMBER session without the kb_maintainer grant named a live CONFIRMED entry (by id, or a CONFIRMED context-cache entry by file). Retiring it would remove it from the bible at the next kb_bible_commit, so it is left untouched and its id is reported in the response's refused list; every other named entry is processed as usual.",
+          "raising_methods": [
+            { "method_id": "P-5", "member": "invalidate", "tool": "kb_invalidate", "position": "provider" }
+          ],
+          "source": "src/tools/kb-invalidate.ts (keepConfirmed via memberLacksKbMaintainer), src/services/knowledge/sqlite-provider.ts (discard / invalidate with keepConfirmed)",
+          "surfaced": "response-field",
+          "response_field": "refused",
+          "retryable": false,
+          "remediation": "Leave CONFIRMED entries to the kb_maintainer (the engine discards from its kb_maintainer session), or run the call from a FULL session.",
+          "group_decision": "GOVERNANCE, not authority: the refusal is about who may RETIRE an entry, regardless of the tier being written (no trust is raised).",
+          "see_also": ["Superseding and AUDN matching"]
+        },
+        {
           "$anchor": "E-PROMOTE-REFUSED-DIRECTIVE",
           "code": "E-PROMOTE-REFUSED-DIRECTIVE",
           "meaning": "Promotion of a user-directive entry is refused outright; a directive can only become active through the CLI-only consent step.",

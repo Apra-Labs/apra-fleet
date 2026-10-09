@@ -275,6 +275,23 @@ export interface DiscardResult {
   discarded: string[];
   not_found: string[];
   already_discarded: string[];
+  /**
+   * Live CONFIRMED ids left untouched because the call asked to keep CONFIRMED
+   * entries (keepConfirmed: a member session without the kb_maintainer grant).
+   * Present only when keepConfirmed was set.
+   */
+  refused?: string[];
+}
+
+/** Options for id-level discard / file invalidation. */
+export interface RetireOptions {
+  /** MEMBER own-scope: act only on entries carrying this tag. */
+  ownerTag?: string;
+  /**
+   * Leave CONFIRMED entries untouched and report them as refused (a member
+   * session without the kb_maintainer grant may not retire CONFIRMED).
+   */
+  keepConfirmed?: boolean;
 }
 
 export interface MemoryProvider {
@@ -286,7 +303,8 @@ export interface MemoryProvider {
   // Id-level DISCARD: sets superseded_at (and stale) so the entry drops from every
   // read path; the row is kept. ownerTag restricts the call to entries carrying
   // that tag (MEMBER own-scope); any other id is reported as not_found.
-  discard(ids: string[], opts?: { ownerTag?: string }): Promise<DiscardResult>;
+  // keepConfirmed leaves live CONFIRMED entries untouched (reported in refused).
+  discard(ids: string[], opts?: RetireOptions): Promise<DiscardResult>;
   getLinked(id: string): Promise<KBEntry[]>;
   prime(opts: PrimeOptions): Promise<PrimedContext>;
   promote(id: string, reason?: string): Promise<{ id: string; confidence_before: Confidence; confidence_after: Confidence }>;
