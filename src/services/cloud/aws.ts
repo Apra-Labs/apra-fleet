@@ -41,7 +41,8 @@ export class AwsCloudProvider implements CloudProvider {
   private cliAvailable = false;
 
   constructor(execFn?: ExecFn) {
-    this.run = execFn ?? (promisify(exec) as unknown as ExecFn);
+    const execAsync = promisify(exec) as unknown as ExecFn;
+    this.run = execFn ?? ((cmd, opts) => execAsync(cmd, { windowsHide: true, ...opts }));
   }
 
   private async ensureCli(): Promise<void> {

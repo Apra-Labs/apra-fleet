@@ -659,7 +659,7 @@ export class ClaudeProvider implements ProviderAdapter {
       opts.url,
       '--header', `Authorization: Bearer ${opts.token}`,
     ];
-    await execFileAsync('claude', args, { cwd: opts.workFolder });
+    await execFileAsync('claude', args, { cwd: opts.workFolder, windowsHide: true });
     return {
       mechanism: 'cli-verb',
       detail: `claude mcp add --transport http --scope ${opts.scope} apra-fleet-member <url> (cwd=${opts.workFolder})`,

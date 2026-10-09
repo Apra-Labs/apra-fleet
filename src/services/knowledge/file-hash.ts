@@ -21,7 +21,7 @@ function execFileAsync(
   opts?: { cwd?: string }
 ): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
-    execFile(cmd, args, opts ?? {}, (err, stdout, stderr) => {
+    execFile(cmd, args, { ...opts, windowsHide: true }, (err, stdout, stderr) => {
       if (err) reject(err);
       else resolve({ stdout: stdout.toString(), stderr: stderr.toString() });
     });

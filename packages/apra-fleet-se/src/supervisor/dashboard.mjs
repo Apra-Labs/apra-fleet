@@ -89,7 +89,7 @@ export async function computeBaseDrift(branch, base, opts = {}) {
     const cwd = opts.cwd ?? process.cwd();
     const exec = opts.exec ?? execFileAsync;
     try {
-        const { stdout } = await exec('git', ['rev-list', '--count', `${branch}..${base}`], { cwd, encoding: 'utf-8' });
+        const { stdout } = await exec('git', ['rev-list', '--count', `${branch}..${base}`], { cwd, encoding: 'utf-8', windowsHide: true });
         const n = parseInt(String(stdout).trim(), 10);
         return Number.isFinite(n) && n >= 0 ? n : null;
     } catch {

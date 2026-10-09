@@ -11,7 +11,7 @@ export function resolveProjectSlug(cwd?: string, remoteUrl?: string): string {
   // 1. git remote URL
   try {
     const remote = execFileSync('git', ['remote', 'get-url', 'origin'], {
-      cwd: dir, env, encoding: 'utf-8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'],
+      cwd: dir, env, encoding: 'utf-8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true,
     }).trim();
     const slug = slugify(remote);
     if (slug) return slug;
@@ -19,7 +19,7 @@ export function resolveProjectSlug(cwd?: string, remoteUrl?: string): string {
   // 2. git repo root dir name
   try {
     const root = execFileSync('git', ['rev-parse', '--show-toplevel'], {
-      cwd: dir, env, encoding: 'utf-8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'],
+      cwd: dir, env, encoding: 'utf-8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true,
     }).trim();
     const slug = slugify(path.basename(root));
     if (slug) return slug;

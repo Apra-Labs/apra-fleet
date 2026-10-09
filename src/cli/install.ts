@@ -81,7 +81,7 @@ const FLEET_SE_MIN_NODE: [number, number, number] = [22, 16, 0];
 
 function probeVersion(cmd: string, shell: boolean): string | null {
   try {
-    const out = execFileSync(cmd, ['--version'], { stdio: 'pipe', encoding: 'utf-8', timeout: 15_000, shell });
+    const out = execFileSync(cmd, ['--version'], { stdio: 'pipe', encoding: 'utf-8', timeout: 15_000, shell, windowsHide: true });
     return String(out).trim() || null;
   } catch {
     return null;
@@ -807,7 +807,7 @@ function mergeCodexConfig(paths: ProviderInstallConfig, mcpConfig: any): void {
 function run(cmd: string, opts?: Record<string, unknown>): void {
   // Windows needs a shell for .cmd executables (e.g. claude.cmd)
   const shellOpt = process.platform === 'win32' ? { shell: 'cmd.exe' } : {};
-  execSync(cmd, { stdio: 'inherit', ...shellOpt, ...opts });
+  execSync(cmd, { stdio: 'inherit', windowsHide: true, ...shellOpt, ...opts });
 }
 
 /** Is `cmd` resolvable on PATH? Used before shelling out to a provider's own
@@ -816,7 +816,7 @@ function run(cmd: string, opts?: Record<string, unknown>): void {
 function isCommandAvailable(cmd: string): boolean {
   try {
     const checkCmd = process.platform === 'win32' ? `where ${cmd}` : `command -v ${cmd}`;
-    execSync(checkCmd, { stdio: 'ignore' });
+    execSync(checkCmd, { stdio: 'ignore', windowsHide: true });
     return true;
   } catch {
     return false;
@@ -840,7 +840,7 @@ export function apraFleetPids(): string[] {
   try {
     const currentPid = process.pid.toString();
     if (process.platform === 'win32') {
-      const out = execSync('tasklist /FI "IMAGENAME eq apra-fleet.exe" /NH /FO CSV', { encoding: 'utf-8', stdio: 'pipe' });
+      const out = execSync('tasklist /FI "IMAGENAME eq apra-fleet.exe" /NH /FO CSV', { encoding: 'utf-8', stdio: 'pipe', windowsHide: true });
       // Each CSV line: "apra-fleet.exe","<PID>","..." - exclude the current installer process
       return out.split('\n')
         .map(line => line.match(/"apra-fleet\.exe","(\d+)"/))
@@ -850,7 +850,7 @@ export function apraFleetPids(): string[] {
     } else {
       // -x = exact name match; installer is apra-fleet-installer-* so won't match;
       // exclude current PID to handle self-update (installed apra-fleet binary running install)
-      const out = execSync('pgrep -x apra-fleet', { encoding: 'utf-8', stdio: 'pipe' });
+      const out = execSync('pgrep -x apra-fleet', { encoding: 'utf-8', stdio: 'pipe', windowsHide: true });
       return out.split('\n')
         .map(line => line.trim())
         .filter(pid => pid !== '' && pid !== currentPid);
@@ -868,11 +868,11 @@ export function killApraFleet(signal: 'SIGTERM' | 'SIGKILL' = 'SIGTERM'): void {
   if (process.platform === 'win32') {
     // taskkill /F is already forceful -- no softer signal to escalate from,
     // so SIGKILL escalation on Windows just reissues the same command.
-    execSync('taskkill /F /IM apra-fleet.exe', { stdio: 'ignore' });
+    execSync('taskkill /F /IM apra-fleet.exe', { stdio: 'ignore', windowsHide: true });
   } else {
     // -x = exact name match
     const cmd = signal === 'SIGKILL' ? 'pkill -9 -x apra-fleet' : 'pkill -x apra-fleet';
-    execSync(cmd, { stdio: 'ignore' });
+    execSync(cmd, { stdio: 'ignore', windowsHide: true });
   }
 }
 
@@ -1761,13 +1761,13 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
   try {
     // Check if already installed
     try {
-      execFileSync('bd', ['--version'], { stdio: 'pipe', shell: true });
+      execFileSync('bd', ['--version'], { stdio: 'pipe', shell: true, windowsHide: true });
       // already installed - skip
     } catch {
       // not installed - install it
       // apra-fleet-4ipl: bumped 1.1.2 -> 1.3.0 to match .github/workflows/ci.yml's
       // pin -- see that file's comment for why (schema v66 compatibility).
-      execFileSync('npm', ['install', '-g', '@beads/bd@1.3.0'], { stdio: 'inherit', shell: true });
+      execFileSync('npm', ['install', '-g', '@beads/bd@1.3.0'], { stdio: 'inherit', shell: true, windowsHide: true });
     }
   } catch (err) {
     // non-fatal: warn but don't fail the install
@@ -1902,7 +1902,7 @@ ${restartHint}
   // --- Done ---
   let beadsVersion = 'installed';
   try {
-    const versionOut = execFileSync('bd', ['--version'], { stdio: 'pipe', encoding: 'utf-8', shell: true });
+    const versionOut = execFileSync('bd', ['--version'], { stdio: 'pipe', encoding: 'utf-8', shell: true, windowsHide: true });
     beadsVersion = (versionOut as string).trim() || 'installed';
   } catch {
     beadsVersion = 'not available';
