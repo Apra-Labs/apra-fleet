@@ -122,6 +122,19 @@ export interface CaptureOpts {
   // re-exported until it is recaptured. Left undefined, capture()
   // computes the basis from local files as for every normal capture.
   carriedBasis?: Record<string, string> | null;
+  // A member session without the kb_maintainer grant (kb_capture sets it):
+  // an explicit `supersedes` whose matched target is CONFIRMED does NOT retire
+  // it -- the capture takes the implicit path instead (new entry linked
+  // 'refines', both live) and the target id comes back in `refused`.
+  keepConfirmed?: boolean;
+}
+
+/** SqliteProvider.capture() result. */
+export interface CaptureResult {
+  id: string;
+  audn_decision: AudnDecision;
+  /** CONFIRMED supersede targets left live (keepConfirmed); present only when non-empty. */
+  refused?: string[];
 }
 
 export interface EntryTrustFilter {

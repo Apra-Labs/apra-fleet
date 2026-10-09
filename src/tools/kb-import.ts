@@ -2,9 +2,10 @@ import { z } from 'zod';
 import { KB_REMOVED_SCOPE_KEYS_SHAPE } from '../services/knowledge/kb-removed-scope-keys.js';
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFile } from 'node:child_process';
 import { getKbProviders } from '../services/knowledge/kb-providers.js';
 import { resolveKbAnchor, type KbAnchor } from '../services/knowledge/kb-self.js';
-import { readBibleEntries, importBibleEntries } from '../services/knowledge/bible-import.js';
+import { readBibleEntries, parseBibleText, importBibleEntries } from '../services/knowledge/bible-import.js';
 import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
 import { KbMaintainerGrantError, memberLacksKbMaintainer } from '../services/knowledge/kb-maintainer-grant.js';
 
@@ -42,10 +43,20 @@ import { KbMaintainerGrantError, memberLacksKbMaintainer } from '../services/kno
 // served kb_promote. A path naming the session's own repo-resolved bible is
 // the trusted channel and is allowed, as is no path at all (the engine's
 // priming import). FULL sessions and the kb_maintainer session are unchanged.
+//
+// The own bible is only the trusted channel AS COMMITTED: the work-tree file
+// is member-writable, so a member agent could hand-edit it (CONFIRMED entries
+// plus v3 hashes matching HEAD) and import it without the grant. A member
+// session WITHOUT the grant therefore reads the committed blob
+// (HEAD:./.fleet/kb-canonical.json, git without a shell) and never the work-
+// tree file. A clean tree or fresh clone yields the same bytes, so priming is
+// unchanged; uncommitted edits are ignored and reported (worktree_ignored).
+// With no committed copy (unborn HEAD, untracked bible, no git) nothing is
+// imported: E-KB-MAINTAINER-REQUIRED, naming the cause.
 
 export const kbImportSchema = z.object({
   path: z.string().optional()
-    .describe('Explicit path to a bible JSON file (e.g. <worktree>/.fleet/kb-canonical.json). This is a file path, not a scope selector: the KB written is always the calling session\'s own (a member session -> its work folder; otherwise the server folder). When omitted, resolves to <own folder>/.fleet/kb-canonical.json. TRUST NOTE: importing the repo-resolved .fleet/kb-canonical.json is the git-reviewed trusted channel; an explicit --path bible is caller-asserted trust (equivalent in power to kb_promote). In a MEMBER session without the kb_maintainer grant an explicit path other than the session\'s own .fleet/kb-canonical.json is refused with E-KB-MAINTAINER-REQUIRED and nothing is imported. Directives are quarantined to pending proposals either way.'),
+    .describe('Explicit path to a bible JSON file (e.g. <worktree>/.fleet/kb-canonical.json). This is a file path, not a scope selector: the KB written is always the calling session\'s own (a member session -> its work folder; otherwise the server folder). When omitted, resolves to <own folder>/.fleet/kb-canonical.json. TRUST NOTE: importing the repo-resolved .fleet/kb-canonical.json as committed is the git-reviewed trusted channel; an explicit --path bible is caller-asserted trust (equivalent in power to kb_promote). In a MEMBER session without the kb_maintainer grant an explicit path other than the session\'s own .fleet/kb-canonical.json is refused with E-KB-MAINTAINER-REQUIRED and nothing is imported, and the own bible is read as committed at HEAD (never the work-tree file); with no committed copy nothing is imported (E-KB-MAINTAINER-REQUIRED). Directives are quarantined to pending proposals either way.'),
   scope: z.literal('project').optional()
     .describe('Only project scope is supported (imports into the project KB). Global bibles are a separate concern.'),
   // KB audit 2026-08-12, found by a LIVE sprint rather than by review. The
@@ -89,6 +100,33 @@ export interface KbImportReport {
    */
   rejected: number;
   sweep: { checked: number; staled: number; unstaled: number };
+  /**
+   * Present exactly for a member session without the kb_maintainer grant
+   * importing its own bible: the committed copy at HEAD was read.
+   */
+  bible_source?: 'HEAD';
+  /**
+   * With bible_source: true when the work-tree .fleet/kb-canonical.json
+   * differed from (or was missing versus) the committed copy, so its
+   * uncommitted content was not imported.
+   */
+  worktree_ignored?: boolean;
+}
+
+const OWN_BIBLE_REL = '.fleet/kb-canonical.json';
+
+/**
+ * The committed own bible at HEAD, read with git (no shell, array args, so it
+ * is the same on every OS). `./` resolves the path against `folder`, which
+ * need not be the repository top level. null when there is no committed copy
+ * (unborn HEAD, bible not tracked, not a work tree, git missing).
+ */
+function readCommittedBible(folder: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    execFile('git', ['cat-file', 'blob', 'HEAD:./' + OWN_BIBLE_REL], {
+      cwd: folder, windowsHide: true, timeout: 30_000, maxBuffer: 256 * 1024 * 1024, encoding: 'utf-8',
+    }, (err, stdout) => resolve(err ? null : stdout));
+  });
 }
 
 export async function kbImport(input: KbImportInput, anchor?: KbAnchor): Promise<string> {
@@ -97,7 +135,9 @@ export async function kbImport(input: KbImportInput, anchor?: KbAnchor): Promise
   const ownBible = path.join(repoAnchor, '.fleet', 'kb-canonical.json');
   const biblePath = input.path ?? ownBible;
 
-  if (input.path !== undefined && path.resolve(input.path) !== path.resolve(ownBible) && memberLacksKbMaintainer(anchor)) {
+  const lacksGrant = memberLacksKbMaintainer(anchor);
+  const namesOwnBible = input.path === undefined || path.resolve(input.path) === path.resolve(ownBible);
+  if (!namesOwnBible && lacksGrant) {
     throw new KbMaintainerGrantError(
       `kb_import with an explicit path ('${input.path}') keeps the bible's confidence, which is equivalent to kb_promote, so it needs the kb_maintainer grant; this member session does not carry it and nothing was imported.`,
       'Call kb_import without path to import your own checkout bible (.fleet/kb-canonical.json), or run the import from the kb_maintainer session or a FULL session.',
@@ -106,12 +146,31 @@ export async function kbImport(input: KbImportInput, anchor?: KbAnchor): Promise
 
   // Validate the file resolves and parses to the bible array shape BEFORE
   // importing anything (reject otherwise -- non-zero exit at the CLI).
-  if (!fs.existsSync(biblePath)) {
-    throw new Error('kb_import: bible file not found: ' + biblePath);
-  }
   // Parsing (both on-disk shapes) is shared with the member bible view
   // (services/knowledge/bible-import.ts); a malformed file throws KbBibleError.
-  const bibleEntries = readBibleEntries(biblePath, 'kb_import');
+  let bibleEntries: unknown[];
+  let committedSource: { worktree_ignored: boolean } | undefined;
+  if (lacksGrant) {
+    // namesOwnBible holds here (an explicit other path was refused above).
+    const committed = await readCommittedBible(repoAnchor);
+    if (committed === null) {
+      throw new KbMaintainerGrantError(
+        `kb_import in a member session without the kb_maintainer grant imports only the committed ${OWN_BIBLE_REL} (HEAD), and this checkout has no committed copy (unborn HEAD, untracked bible, or git unavailable); the work-tree file is not trusted at its own confidence and nothing was imported.`,
+        `Commit ${OWN_BIBLE_REL} (the kb_maintainer's kb_bible_commit does this), or run the import from the kb_maintainer session or a FULL session.`,
+      );
+    }
+    let worktree: string | null = null;
+    try { worktree = fs.readFileSync(ownBible, 'utf-8'); } catch { worktree = null; }
+    // Line endings are normalized for the comparison only (autocrlf checkouts).
+    const lf = (t: string) => t.replace(/\r\n/g, '\n');
+    committedSource = { worktree_ignored: worktree === null || lf(worktree) !== lf(committed) };
+    bibleEntries = parseBibleText(committed, 'HEAD:' + OWN_BIBLE_REL, 'kb_import');
+  } else {
+    if (!fs.existsSync(biblePath)) {
+      throw new Error('kb_import: bible file not found: ' + biblePath);
+    }
+    bibleEntries = readBibleEntries(biblePath, 'kb_import');
+  }
 
   // repoAnchor (resolved above) selects the KB, so an import 'for' repo B can
   // never land in whichever repo the server process happens to sit in.
@@ -145,6 +204,8 @@ export async function kbImport(input: KbImportInput, anchor?: KbAnchor): Promise
     ? { checked: 0, staled: 0, unstaled: 0 }
     : await provider.freshnessSweep(repoAnchor);
 
-  const report: KbImportReport = { imported, skipped, linked, flagged, rejected, sweep };
+  const report: KbImportReport = committedSource
+    ? { imported, skipped, linked, flagged, rejected, sweep, bible_source: 'HEAD', worktree_ignored: committedSource.worktree_ignored }
+    : { imported, skipped, linked, flagged, rejected, sweep };
   return JSON.stringify(report);
 }

@@ -249,14 +249,14 @@
         {
           "$anchor": "E-KB-MAINTAINER-REQUIRED",
           "code": "E-KB-MAINTAINER-REQUIRED",
-          "meaning": "kb_import was called with an explicit path (other than the session's own .fleet/kb-canonical.json) in a MEMBER session that does not carry the kb_maintainer grant. An explicit-path import keeps the bible's confidence, which is equivalent in power to kb_promote, so it needs the same grant. Nothing is imported.",
+          "meaning": "kb_import in a MEMBER session that does not carry the kb_maintainer grant either named an explicit path other than the session's own .fleet/kb-canonical.json, or (without path / with its own path) found no committed copy of its own bible at HEAD. An explicit-path import keeps the bible's confidence, which is equivalent in power to kb_promote, so it needs the same grant; the own bible is trusted only as committed, never as the member-writable work-tree file. Nothing is imported.",
           "raising_methods": [
             { "method_id": "P-2", "member": "capture", "tool": "kb_import", "position": "pre-provider" }
           ],
           "source": "src/services/knowledge/kb-maintainer-grant.ts (KbMaintainerGrantError), raised by src/tools/kb-import.ts",
           "surfaced": "thrown",
           "retryable": false,
-          "remediation": "Call kb_import without path to import your own checkout bible (.fleet/kb-canonical.json), or run the import from the kb_maintainer session or a FULL session.",
+          "remediation": "Call kb_import without path to import your own committed checkout bible (.fleet/kb-canonical.json at HEAD; commit it first if it is not committed), or run the import from the kb_maintainer session or a FULL session.",
           "group_decision": "AUTHORITY, not provider_internal: the request is well formed and the KB could serve it; the refusal is the INFERRED-ceiling policy applied to a member session that may not write above it. Thrown before any KB is opened (spec.md section 2.5a).",
           "see_also": ["Capture provenance and confidence clamp"]
         }
@@ -269,11 +269,12 @@
         {
           "$anchor": "E-RETIRE-NEEDS-KB-MAINTAINER",
           "code": "E-RETIRE-NEEDS-KB-MAINTAINER",
-          "meaning": "kb_invalidate in a MEMBER session without the kb_maintainer grant named a live CONFIRMED entry (by id, or a CONFIRMED context-cache entry by file). Retiring it would remove it from the bible at the next kb_bible_commit, so it is left untouched and its id is reported in the response's refused list; every other named entry is processed as usual.",
+          "meaning": "A MEMBER session without the kb_maintainer grant tried to retire a live CONFIRMED entry: kb_invalidate named it (by id, or a CONFIRMED context-cache entry by file), or kb_capture named it in supersedes and AUDN matched it. Retiring it would remove it from the bible at the next kb_bible_commit, so it is left live and its id is reported in the response's refused list. kb_invalidate processes every other named entry as usual; kb_capture still stores the new entry, linked to the CONFIRMED one (refines, both live), and on a remote KB provider drops supersedes entirely (fail closed).",
           "raising_methods": [
-            { "method_id": "P-5", "member": "invalidate", "tool": "kb_invalidate", "position": "provider" }
+            { "method_id": "P-5", "member": "invalidate", "tool": "kb_invalidate", "position": "provider" },
+            { "method_id": "P-2", "member": "capture", "tool": "kb_capture", "position": "provider" }
           ],
-          "source": "src/tools/kb-invalidate.ts (keepConfirmed via memberLacksKbMaintainer), src/services/knowledge/sqlite-provider.ts (discard / invalidate with keepConfirmed)",
+          "source": "src/tools/kb-invalidate.ts and src/tools/kb-capture.ts (keepConfirmed via memberLacksKbMaintainer), src/services/knowledge/sqlite-provider.ts (discard / invalidate / capture with keepConfirmed)",
           "surfaced": "response-field",
           "response_field": "refused",
           "retryable": false,

@@ -156,7 +156,8 @@ nothing. `kb_invalidate` takes exactly one of `files` or `ids`; `ids` discards
 the entries (sets `superseded_at`, never deletes) and returns
 `{discarded, not_found, already_discarded}`. In a member session without the
 kb_maintainer grant neither form retires a CONFIRMED entry (section 2.5a): the
-response then also carries `refused`. `kb_feedback` is refused with
+response then also carries `refused`; the same holds for `kb_capture` with
+`supersedes`. `kb_feedback` is refused with
 `E-MEMBER-VIEW-READ-ONLY`. A FULL session reads and writes the per-repo DB
 unchanged.
 
@@ -188,8 +189,20 @@ A MEMBER session is served an explicit tool list
   `E-KB-MAINTAINER-REQUIRED` before any KB is opened, and nothing is imported
   (a refusal, not a clamp). A path naming the session's own
   `.fleet/kb-canonical.json`, and a call without `path` (the engine's priming
-  import of the checkout bible), import normally. FULL sessions and the
-  kb_maintainer session are unchanged.
+  import of the checkout bible), import that bible AS COMMITTED: the handler
+  reads the blob at `HEAD:./.fleet/kb-canonical.json` (git, no shell), never
+  the work-tree file, which the member's agent can edit (CONFIRMED entries
+  with v3 hashes matching HEAD would otherwise land CONFIRMED and pass
+  `kb_bible_commit` admission). The response then also carries
+  `bible_source: "HEAD"` and `worktree_ignored` (true when the work-tree file
+  differs from, or is missing versus, the committed copy, so its uncommitted
+  content was not imported). A clean tree or fresh clone yields the same bytes,
+  so priming is unchanged. With no committed copy (unborn HEAD, untracked
+  bible, git unavailable) the call fails with `E-KB-MAINTAINER-REQUIRED` and
+  nothing is imported. A member that can commit can still put a hand-made
+  bible at HEAD; that change is then visible in the branch history and the PR
+  diff, which is the review this channel relies on. FULL sessions and the
+  kb_maintainer session are unchanged (they read the named or work-tree file).
 - `kb_invalidate` retires entries (`ids` discards them; `files` marks
   context-cache entries invalidated), and `kb_bible_commit` removes retired
   entries from the bible, so in a member session WITHOUT the grant neither
@@ -200,6 +213,17 @@ A MEMBER session is served an explicit tool list
   The response carries `refused` exactly when the call came from such a
   session (possibly empty), on both forms. The engine's own discards run in
   the kb_maintainer session and are unaffected.
+- `kb_capture` with `supersedes` retires the matched entry, and AUDN matches
+  candidates across the whole per-repo DB (not only the caller's own
+  entries), so in a member session WITHOUT the grant a CONFIRMED target is
+  never retired: the capture takes the implicit path instead (the new entry
+  is stored and linked to the target with `refines`, both stay live) and the
+  target id is listed in `refused` (`E-RETIRE-NEEDS-KB-MAINTAINER`). A
+  non-CONFIRMED target is still retired. Over a remote (HTTP) KB provider the
+  grant cannot be conveyed, so such a session's `supersedes` is dropped
+  entirely and its id listed in `refused` (fail closed). The response carries
+  `refused` exactly when such a session passed `supersedes` (possibly empty);
+  the kb_maintainer session and FULL sessions are unchanged.
 - A tool handler sees the grant through the per-call context
   (`getSessionKbMaintainer()` next to `getSessionMemberId()` in
   `src/services/tool-scope.ts`).

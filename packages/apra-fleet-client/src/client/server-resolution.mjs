@@ -450,9 +450,10 @@ export function withFleetAccessSecret(options = {}, env = process.env) {
  * this member session (they mint CONFIRMED; no other member session sees
  * them), and accepts kb_import with an explicit `path` (refused with
  * E-KB-MAINTAINER-REQUIRED in a member session without the grant; kb_import
- * without `path` works in every member session), and lets kb_invalidate retire
- * CONFIRMED entries (without the grant they are left untouched and listed in
- * the response's `refused`). memberCall sets it only for
+ * without `path` works in every member session, but without the grant it reads
+ * the bible as committed at HEAD only), and lets kb_invalidate and kb_capture
+ * `supersedes` retire CONFIRMED entries (without the grant they are left live
+ * and listed in the response's `refused`). memberCall sets it only for
  * the member it chose as a repository's kb_maintainer.
  *
  * @param {string} memberId registered member uuid

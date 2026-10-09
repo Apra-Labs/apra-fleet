@@ -89,10 +89,14 @@ export const toolTextEnvelope = z.object({
 // --- kb_* observed response bodies (INVENTORY.md 2.1) -----------------------
 
 const KB_RESPONSE_BODIES = {
+  // `refused` (CONFIRMED supersede targets left live) is present exactly when a
+  // member session without the kb_maintainer grant passed supersedes
+  // (E-RETIRE-NEEDS-KB-MAINTAINER, spec.md section 2.5a).
   kb_capture: z.object({
     id: z.string(),
     audn_decision: z.enum(['add', 'update', 'flagged', 'none']),
     confidence_clamped: z.boolean(),
+    refused: z.array(z.string()).optional(),
   }),
   // files path: {invalidated, files}; ids path: {discarded, not_found, already_discarded}.
   // Both forms carry `refused` (CONFIRMED ids left untouched) exactly when the
@@ -180,6 +184,10 @@ const KB_RESPONSE_BODIES = {
       staled: z.number(),
       unstaled: z.number(),
     }),
+    // Present exactly for a member session without the kb_maintainer grant
+    // importing its own bible: read as committed at HEAD (spec.md section 2.5a).
+    bible_source: z.literal('HEAD').optional(),
+    worktree_ignored: z.boolean().optional(),
   }),
   kb_resolve_contradiction: z.object({
     winnerId: z.string(),

@@ -183,7 +183,7 @@ describe('memory-contract/v1 round trip (sqlite provider)', () => {
   it('dispatched every committed fixture live (no case silently skipped)', () => {
     const undispatched = report.steps.filter((s) => !s.dispatched).map((s) => s.key);
     expect(undispatched).toEqual([]);
-    expect(report.steps.length).toBe(85); // one SCENARIO step per committed fixture: 84 (44 responses + 40 thrown refusals)
+    expect(report.steps.length).toBe(90); // one SCENARIO step per committed fixture: 89 (49 responses + 40 thrown refusals)
   });
 
   it('covers all 26 inventoried tools', () => {

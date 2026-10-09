@@ -923,6 +923,49 @@ await recordNonErrorOutcome('kb_capture', 'non-error-confidence-clamped', {
   }
 }
 
+// -- E-RETIRE-NEEDS-KB-MAINTAINER (governance, response field) -------------
+// PLAIN_A (repo A, no kb_maintainer grant) captures an entry that FULL_A then
+// promotes to CONFIRMED. PLAIN_A can retire it neither by kb_capture
+// supersedes (the capture links to it instead) nor by kb_invalidate ids: both
+// responses list it in refused and it stays live.
+{
+  const captureGate = await withSession('PLAIN_A', () => recordHappy('kb_capture', 'setup-for-retire-refused', {
+    type: 'knowledge',
+    title: 'Gate retire fixture entry',
+    summary: 'Set up to demonstrate E-RETIRE-NEEDS-KB-MAINTAINER.',
+    content: 'This entry is promoted to CONFIRMED, then a session without the kb_maintainer grant tries to retire it.',
+    source_files: ['src/example.ts'],
+    symbols: ['gateRetireFixture'],
+  }));
+  const idGate = parseEnvelopeText(captureGate)?.id;
+  if (idGate) {
+    await withSession('FULL_A', () => recordHappy('kb_promote', 'setup-first-promote-for-retire-refused', {
+      id: idGate,
+      reason: 'First promotion (UNVERIFIED -> INFERRED) of the entry used by the retire-refused fixtures.',
+    }));
+    await withSession('FULL_A', () => recordHappy('kb_promote', 'setup-second-promote-for-retire-refused', {
+      id: idGate,
+      reason: 'Second promotion (INFERRED -> CONFIRMED) so a no-grant retire is refused.',
+    }));
+    const refusedGate = (response) => {
+      const payload = parseEnvelopeText(response);
+      return Array.isArray(payload?.refused) && payload.refused.length === 1 && payload.refused[0] === idGate;
+    };
+    await withSession('PLAIN_A', () => recordResponseFieldRefusal('kb_capture', 'refusal-retire-needs-kb-maintainer', {
+      type: 'knowledge',
+      title: 'Gate retire fixture entry',
+      summary: 'A replacement that names the CONFIRMED entry in supersedes.',
+      content: 'A revised note on the gate retire fixture, meant to replace the earlier entry.',
+      source_files: ['src/example.ts'],
+      symbols: ['gateRetireFixture'],
+      supersedes: idGate,
+    }, 'E-RETIRE-NEEDS-KB-MAINTAINER', refusedGate));
+    await withSession('PLAIN_A', () => recordResponseFieldRefusal('kb_invalidate', 'refusal-retire-needs-kb-maintainer', {
+      ids: [idGate],
+    }, 'E-RETIRE-NEEDS-KB-MAINTAINER', refusedGate));
+  }
+}
+
 // ===========================================================================
 // Summary + named T7 gaps
 // ===========================================================================

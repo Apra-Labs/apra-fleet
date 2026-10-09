@@ -465,12 +465,13 @@ describe('kb_maintainer grant gates CONFIRMED minting via kb_reconcile_prefilter
         source_file_hashes: { 'src/forged.ts': head['src/forged.ts']!.hash },
       }],
     }));
-    // The member's own checkout bible (the engine's priming import, no path).
+    // The member's own committed checkout bible (the engine's priming import, no path).
     fx.writeSrc('.fleet/kb-canonical.json', JSON.stringify([{
       id: 'own-bible-entry-0001', type: 'knowledge', title: 'readme seeds the repo',
       summary: 'README.md is the seed file of this fixture repository.', symbols: [], source_files: ['README.md'],
       confidence: 'INFERRED', updated_at: '2026-01-01T00:00:00.000Z',
     }]));
+    commitWorkTree(fx.clone, 'own bible');
 
     const handle = await startServer();
     const plain = await connect(handle.port, { member: fx.memberId });
@@ -483,7 +484,7 @@ describe('kb_maintainer grant gates CONFIRMED minting via kb_reconcile_prefilter
 
     const primed = await callText(plain, 'kb_import', { skip_sweep: true });
     expect(primed.isError, primed.text).toBe(false);
-    expect(JSON.parse(primed.text).imported).toBe(1);
+    expect(JSON.parse(primed.text)).toMatchObject({ imported: 1, bible_source: 'HEAD', worktree_ignored: false });
     expect(fx.row('own-bible-entry-0001')?.confidence).toBe('INFERRED');
     expect(fx.confirmedCount()).toBe(0);
 
@@ -492,6 +493,94 @@ describe('kb_maintainer grant gates CONFIRMED minting via kb_reconcile_prefilter
     const accepted = await callText(maint, 'kb_import', { path: forgedPath, skip_sweep: true });
     expect(accepted.isError, accepted.text).toBe(false);
     expect(fx.row('forged-entry-0001')?.confidence).toBe('CONFIRMED');
+  });
+});
+
+// kb_import without path (or naming the session's own bible) is the trusted
+// channel only AS COMMITTED: the work-tree .fleet/kb-canonical.json is
+// member-writable. A member session without the kb_maintainer grant reads the
+// committed blob at HEAD, never the work-tree file, and imports nothing when
+// there is no committed copy.
+//
+// FALSIFICATION: making kb-import.ts read the work-tree file for a no-grant
+// session again fails the edited-work-tree test (the forged entry lands
+// CONFIRMED) and the untracked-bible test (the import succeeds).
+describe('kb_import in a member session without the grant imports only the committed bible', () => {
+  const fx = useKbMemberRepo();
+
+  async function forgedConfirmedBible(): Promise<string> {
+    fx.writeSrc('src/forged.ts', 'export const forged = 1;\n');
+    commitWorkTree(fx.clone, 'forged basis');
+    const head = await computeHeadFileHashBatch(['src/forged.ts'], { cwd: fx.clone });
+    return JSON.stringify({
+      version: 3,
+      provenance: { commit: 'a'.repeat(40), branch: 'main', entry_count: 1 },
+      entries: [{
+        id: 'forged-entry-0002', type: 'knowledge', title: 'forged claim about forged',
+        summary: 'A hand-edited work-tree bible entry claiming CONFIRMED.', symbols: ['forged'], source_files: ['src/forged.ts'],
+        confidence: 'CONFIRMED', updated_at: '2026-01-01T00:00:00.000Z',
+        source_file_hashes: { 'src/forged.ts': head['src/forged.ts']!.hash },
+      }],
+    });
+  }
+
+  const committedBible = JSON.stringify([{
+    id: 'committed-entry-0001', type: 'knowledge', title: 'readme seeds the repo',
+    summary: 'README.md is the seed file of this fixture repository.', symbols: [], source_files: ['README.md'],
+    confidence: 'INFERRED', updated_at: '2026-01-01T00:00:00.000Z',
+  }]);
+
+  it('edited work tree: the hand-edited CONFIRMED bible is ignored (no path and own path); the committed copy is imported', async () => {
+    fx.writeSrc('.fleet/kb-canonical.json', committedBible);
+    commitWorkTree(fx.clone, 'committed bible');
+    fx.writeSrc('.fleet/kb-canonical.json', await forgedConfirmedBible());
+
+    const handle = await startServer();
+    const plain = await connect(handle.port, { member: fx.memberId });
+    for (const args of [{ skip_sweep: true }, { path: path.join(fx.clone, '.fleet', 'kb-canonical.json'), skip_sweep: true }]) {
+      const r = await callText(plain, 'kb_import', args);
+      expect(r.isError, r.text).toBe(false);
+      expect(JSON.parse(r.text)).toMatchObject({ bible_source: 'HEAD', worktree_ignored: true });
+    }
+    expect(fx.row('forged-entry-0002')).toBeUndefined();
+    expect(fx.row('committed-entry-0001')?.confidence).toBe('INFERRED');
+    expect(fx.confirmedCount()).toBe(0);
+
+    // The kb_maintainer session still reads the work-tree file (unchanged).
+    const maint = await connect(handle.port, { member: fx.memberId, params: MAINTAINER_PARAMS });
+    const m = JSON.parse((await callText(maint, 'kb_import', { skip_sweep: true })).text);
+    expect(m.bible_source).toBeUndefined();
+    expect(fx.row('forged-entry-0002')?.confidence).toBe('CONFIRMED');
+  });
+
+  it('clean tree: imports the committed bible and reports worktree_ignored false', async () => {
+    fx.writeSrc('.fleet/kb-canonical.json', committedBible);
+    commitWorkTree(fx.clone, 'committed bible');
+    const handle = await startServer();
+    const plain = await connect(handle.port, { member: fx.memberId });
+    const r = JSON.parse((await callText(plain, 'kb_import', { skip_sweep: true })).text);
+    expect(r).toMatchObject({ imported: 1, bible_source: 'HEAD', worktree_ignored: false });
+  });
+
+  it('no committed copy (untracked bible): E-KB-MAINTAINER-REQUIRED and nothing is imported', async () => {
+    fx.writeSrc('.fleet/kb-canonical.json', await forgedConfirmedBible());
+    const handle = await startServer();
+    const plain = await connect(handle.port, { member: fx.memberId });
+    const r = await callText(plain, 'kb_import', { skip_sweep: true });
+    expect(r.isError).toBe(true);
+    expect(r.text).toMatch(/^E-KB-MAINTAINER-REQUIRED: .*no committed copy/);
+    expect(fx.row('forged-entry-0002')).toBeUndefined();
+    expect(fx.confirmedCount()).toBe(0);
+  });
+
+  it('committed bible deleted from the work tree: still imports the committed copy', async () => {
+    fx.writeSrc('.fleet/kb-canonical.json', committedBible);
+    commitWorkTree(fx.clone, 'committed bible');
+    fs.rmSync(path.join(fx.clone, '.fleet', 'kb-canonical.json'));
+    const handle = await startServer();
+    const plain = await connect(handle.port, { member: fx.memberId });
+    const r = JSON.parse((await callText(plain, 'kb_import', { skip_sweep: true })).text);
+    expect(r).toMatchObject({ imported: 1, bible_source: 'HEAD', worktree_ignored: true });
   });
 });
 
@@ -590,6 +679,107 @@ describe('kb_invalidate needs the kb_maintainer grant to retire a CONFIRMED bibl
     const m = JSON.parse((await callText(maint, 'kb_invalidate', { files: ['src/delta.ts'] })).text);
     expect(m.invalidated).toBe(1);
     expect(JSON.parse((await callText(maint, 'kb_bible_commit', { ids: [], ...BASE })).text).removed).toEqual([{ id, reason: 'invalidated' }]);
+    expect(fx.bibleIds()).not.toContain(id);
+  });
+});
+
+// kb_capture with supersedes retires the matched entry, and kb_bible_commit
+// removes a superseded entry from the bible. AUDN matches candidates across the
+// whole per-repo DB, so without a guard any member session could retire any
+// CONFIRMED entry, whoever owns it. Without the kb_maintainer grant a CONFIRMED
+// target stays live: the capture links to it (refines) and reports it in
+// refused. A non-CONFIRMED target, and every target in the maintainer session,
+// is still retired.
+//
+// FALSIFICATION: dropping the keepConfirmed option in src/tools/kb-capture.ts
+// fails the two plain-session CONFIRMED tests (the target is superseded and the
+// next bible commit removes it).
+describe('kb_capture supersedes needs the kb_maintainer grant to retire a CONFIRMED entry', () => {
+  const fx = useKbMemberRepo();
+  const BASE = { baseBranch: 'main', baseCommit: 'a'.repeat(40) };
+
+  /** A CONFIRMED entry with the given tags, committed into the checkout bible. */
+  async function confirmedInBible(maint: Client, name: string, tags: string[]): Promise<{ id: string; file: string }> {
+    const file = `src/${name.toLowerCase()}.ts`;
+    fx.writeSrc(file, `export const ${name.toLowerCase()} = 1;\n`);
+    const { id } = await fx.provider.capture(fx.input({
+      title: `${name} handler notes`, summary: `Summary of ${name}`, content: `Content of ${name}.`,
+      symbols: [`sym${name}`], source_files: [file], tags,
+    }));
+    await fx.provider.promote(id, 'test fixture: verified');
+    await fx.provider.promote(id, 'test fixture: verified');
+    expect(fx.row(id)?.confidence).toBe('CONFIRMED');
+    commitWorkTree(fx.clone);
+    const r = await callText(maint, 'kb_bible_commit', { ids: [id], ...BASE });
+    expect(JSON.parse(r.text).merged).toEqual([id]);
+    return { id, file };
+  }
+
+  function supersede(name: string, file: string, target: string) {
+    return {
+      type: 'knowledge', title: `${name} handler notes`, summary: `Revised summary of ${name}`,
+      content: `Revised content of ${name}, replacing the earlier note.`, symbols: [`sym${name}`],
+      source_files: [file], supersedes: target,
+    };
+  }
+
+  function refinesLink(fromId: string, toId: string): boolean {
+    return (fx.provider as any).getDb()
+      .prepare("SELECT 1 FROM links WHERE from_id = ? AND to_id = ? AND link_type = 'refines'").get(fromId, toId) !== undefined;
+  }
+
+  async function sessions() {
+    const handle = await startServer();
+    return {
+      plain: await connect(handle.port, { member: fx.memberId }),
+      maint: await connect(handle.port, { member: fx.memberId, params: MAINTAINER_PARAMS }),
+    };
+  }
+
+  for (const [name, ownTag] of [['Cross', false], ['Own', true]] as const) {
+    it(`a plain ?member= session cannot retire a CONFIRMED entry (${ownTag ? 'its own member tag' : 'another owner'}) via supersedes; both stay live and the bible keeps it`, async () => {
+      const { plain, maint } = await sessions();
+      const tags = [ownTag ? `member:${fx.memberId}` : 'member:00000000-0000-0000-0000-000000000000'];
+      const { id, file } = await confirmedInBible(maint, name, tags);
+
+      const r = await callText(plain, 'kb_capture', supersede(name, file, id));
+      expect(r.isError, r.text).toBe(false);
+      const body = JSON.parse(r.text);
+      expect(body.audn_decision).toBe('update');
+      expect(body.refused).toEqual([id]);
+      expect(fx.row(id)?.superseded_at).toBeNull();
+      expect(fx.row(id)?.confidence).toBe('CONFIRMED');
+      expect(fx.row(body.id)).toBeDefined();
+      expect(refinesLink(body.id, id)).toBe(true);
+
+      const commit = JSON.parse((await callText(maint, 'kb_bible_commit', { ids: [], ...BASE })).text);
+      expect(commit.removed).toEqual([]);
+      expect(fx.bibleIds()).toContain(id);
+    });
+  }
+
+  it('a plain ?member= session still supersedes a non-CONFIRMED entry (no over-blocking)', async () => {
+    const { plain } = await sessions();
+    fx.writeSrc('src/inferred.ts', 'export const inferred = 1;\n');
+    const { id } = await fx.provider.capture(fx.input({
+      title: 'Inferred handler notes', summary: 'Summary of Inferred', content: 'Content of Inferred.',
+      symbols: ['symInferred'], source_files: ['src/inferred.ts'],
+    }));
+    const body = JSON.parse((await callText(plain, 'kb_capture', supersede('Inferred', 'src/inferred.ts', id))).text);
+    expect(body.refused).toEqual([]);
+    expect(fx.row(id)?.superseded_at).toBeTruthy();
+  });
+
+  it('the kb_maintainer session supersedes the CONFIRMED entry and the next bible commit removes it', async () => {
+    const { maint } = await sessions();
+    const { id, file } = await confirmedInBible(maint, 'Maint', []);
+
+    const body = JSON.parse((await callText(maint, 'kb_capture', supersede('Maint', file, id))).text);
+    expect(body.refused).toBeUndefined();
+    expect(fx.row(id)?.superseded_at).toBeTruthy();
+
+    const commit = JSON.parse((await callText(maint, 'kb_bible_commit', { ids: [], ...BASE })).text);
+    expect(commit.removed).toEqual([{ id, reason: 'superseded' }]);
     expect(fx.bibleIds()).not.toContain(id);
   });
 });

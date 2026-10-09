@@ -184,6 +184,10 @@ export const ENVIRONMENT = {
     // records the E-KB-MAINTAINER-REQUIRED refusal.
     B: { member: 'contract-b', kind: 'local', repo: 'B', kbMaintainer: true },
     PLAIN_B: { member: 'contract-plain-b', kind: 'local', repo: 'B' },
+    // PLAIN_A is repo A without the grant: it captures an entry FULL_A then
+    // promotes to CONFIRMED, and records the E-RETIRE-NEEDS-KB-MAINTAINER
+    // refusals of kb_capture supersedes and kb_invalidate on it.
+    PLAIN_A: { member: 'contract-plain-a', kind: 'local', repo: 'A' },
     IMPORT_REJECTED: { member: 'contract-import-rejected', kind: 'local', repo: 'IMPORT_REJECTED', kbMaintainer: true },
     // code_* sessions pin their provider (codeIntelProvider) so the recorded
     // outcome never depends on the host's global code-intelligence config.
@@ -272,6 +276,17 @@ function assertRemovedInvalidated(parsed, ctx) {
   if (removed[0]?.id !== liveId) return `expected the removed id to be ${liveId}, got ${JSON.stringify(removed[0]?.id)}`;
   if (removed[0]?.reason !== 'invalidated') return `expected removed[0].reason === 'invalidated', got ${JSON.stringify(removed[0]?.reason)}`;
   return parsed?.committed === true ? null : `expected committed === true, got ${JSON.stringify(parsed?.committed)}`;
+}
+
+// E-RETIRE-NEEDS-KB-MAINTAINER (response field): the CONFIRMED GATE entry is
+// listed in refused, so it was left live. A schema-valid response with an
+// empty or missing refused list would otherwise pass.
+function assertRefusedGate(parsed, ctx) {
+  const gateId = ctx.ids.get('GATE')?.live;
+  const refused = parsed?.refused;
+  return Array.isArray(refused) && refused.length === 1 && refused[0] === gateId
+    ? null
+    : `expected refused to be exactly [${gateId}], got ${JSON.stringify(refused)}`;
 }
 
 function assertConfidenceClamped(parsed) {
@@ -524,6 +539,14 @@ export const SCENARIO = [
   { tool: 'kb_bible_commit', case: 'setup-merge-for-bible-removal', derive: { ids: ['REMOVAL'] }, assertParsed: assertMergedForRemoval },
   { tool: 'kb_invalidate', case: 'setup-invalidate-for-bible-removal', derive: { ids: ['REMOVAL'] } },
   { tool: 'kb_bible_commit', case: 'happy-removes-invalidated', assertParsed: assertRemovedInvalidated },
+  // A member session without the kb_maintainer grant cannot retire a CONFIRMED
+  // entry: neither kb_capture supersedes nor kb_invalidate ids. PLAIN_A
+  // captures the entry, FULL_A promotes it to CONFIRMED.
+  { tool: 'kb_capture', case: 'setup-for-retire-refused', captureId: 'GATE' },
+  { tool: 'kb_promote', case: 'setup-first-promote-for-retire-refused', derive: { id: 'GATE' } },
+  { tool: 'kb_promote', case: 'setup-second-promote-for-retire-refused', derive: { id: 'GATE' } },
+  { tool: 'kb_capture', case: 'refusal-retire-needs-kb-maintainer', derive: { supersedes: 'GATE' }, assertParsed: assertRefusedGate },
+  { tool: 'kb_invalidate', case: 'refusal-retire-needs-kb-maintainer', derive: { ids: ['GATE'] }, assertParsed: assertRefusedGate },
 ];
 
 // ---------------------------------------------------------------------------

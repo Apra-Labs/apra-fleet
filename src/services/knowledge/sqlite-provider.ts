@@ -28,6 +28,7 @@ import type {
   KBEntry,
   KBEntryInput,
   CaptureOpts,
+  CaptureResult,
   QueryOptions,
   EntryTrustFilter,
   KBResult,
@@ -36,7 +37,6 @@ import type {
   PrimedContext,
   SyncOptions,
   SyncResult,
-  AudnDecision,
   Confidence,
   CodeIntelCall,
   ProviderStats,
@@ -767,8 +767,9 @@ export class SqliteProvider implements MemoryProvider {
     newContent: string,
     now: string,
     sourceFileHashes: Record<string, string>,
-    localBasisOnly = false
-  ): { id: string; audn_decision: AudnDecision } | null {
+    localBasisOnly = false,
+    keepConfirmed = false
+  ): CaptureResult | null {
     const decision = makeAudnDecision(input, candidates, newContent);
     if (!decision) return null;
 
@@ -787,7 +788,14 @@ export class SqliteProvider implements MemoryProvider {
     if (decision.decision === 'update') {
       const newId = randomUUID();
 
-      if (input.supersedes === decision.matchedId) {
+      // keepConfirmed (a member session without the kb_maintainer grant): a
+      // CONFIRMED target is never retired by supersedes -- retiring it would
+      // remove it from the bible at the next kb_bible_commit. The capture
+      // takes the IMPLICIT path below instead (both live, 'refines' link) and
+      // the target id is reported, mirroring kb_invalidate's keepConfirmed.
+      const target = candidates.find(c => c.id === decision.matchedId);
+      const supersedeRefused = keepConfirmed && input.supersedes === decision.matchedId && target?.confidence === 'CONFIRMED';
+      if (input.supersedes === decision.matchedId && !supersedeRefused) {
         // EXPLICIT: the caller named what it replaces and AUDN independently
         // matched it. Retire it exactly as before -- superseded_at + stale = 1.
         // D2 (F2a): both flags are required so the old row is excluded from
@@ -812,7 +820,9 @@ export class SqliteProvider implements MemoryProvider {
       db.prepare(
         'INSERT OR IGNORE INTO links (from_id, to_id, link_type) VALUES (?, ?, ?)'
       ).run(newId, decision.matchedId, 'refines');
-      return { id: newId, audn_decision: 'update' };
+      return supersedeRefused
+        ? { id: newId, audn_decision: 'update', refused: [decision.matchedId] }
+        : { id: newId, audn_decision: 'update' };
     }
 
     return null;
@@ -875,7 +885,7 @@ export class SqliteProvider implements MemoryProvider {
     }
   }
 
-  async capture(input: KBEntryInput, opts?: CaptureOpts): Promise<{ id: string; audn_decision: AudnDecision }> {
+  async capture(input: KBEntryInput, opts?: CaptureOpts): Promise<CaptureResult> {
     const db = this.getDb();
     const now = new Date().toISOString();
 
@@ -1007,7 +1017,7 @@ export class SqliteProvider implements MemoryProvider {
     const verbatim = opts?.verbatim === true && opts.importMode === true && opts.preferredId !== undefined;
     const candidates = verbatim ? [] : this.findAudnCandidates(db, input);
     if (candidates.length > 0) {
-      const result = this.evaluateAudn(db, input, candidates, content, now, sourceFileHashes, localBasisOnly);
+      const result = this.evaluateAudn(db, input, candidates, content, now, sourceFileHashes, localBasisOnly, opts?.keepConfirmed === true);
       if (result) return result;
     }
 

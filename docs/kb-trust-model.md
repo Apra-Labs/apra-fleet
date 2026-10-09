@@ -64,14 +64,16 @@ retire CONFIRMED entries:
 - `kb_invalidate` (by `ids` or by `files`) keeps CONFIRMED entries live and
   reports them in `refused`; the underlying provider `discard` and `invalidate`
   take a keep-CONFIRMED flag, so the guarantee holds below the tool layer.
+- `kb_capture` with `supersedes` never retires a CONFIRMED target (whoever
+  owns it): the capture links to it (`refines`, both live) and lists it in
+  `refused`. A non-CONFIRMED target is still retired. Over a remote KB
+  provider the grant cannot be conveyed, so `supersedes` is dropped entirely.
+- `kb_import` with no path, or with the own path, reads the bible as committed
+  at `HEAD`, never the member-writable work-tree file; with no committed copy
+  it imports nothing (`E-KB-MAINTAINER-REQUIRED`).
 
-### Known gaps
+### Remaining exposure
 
-These paths can still change CONFIRMED state from a member session and are
-tracked as backlog work:
-
-- `kb_capture` with `supersedes` can retire a CONFIRMED entry (it becomes the
-  explicit-supersede target and is retired as `superseded`; the next bible
-  commit drops it).
-- `kb_import` with no path, or with the own path, reads the uncommitted bible
-  file from the work tree, which a member agent can edit.
+A member that can commit can still put a hand-made bible at `HEAD` and import
+it. That change is visible in the branch history and the PR diff, which is the
+review the bible channel relies on.

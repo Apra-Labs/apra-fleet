@@ -245,8 +245,9 @@ The KB write policy for member sessions:
 | `kb_setup` | never (it writes the install-wide provider config and stores credentials) |
 | `kb_export` | never (it auto-commits into the work tree) |
 | `kb_promote`, `kb_resolve_contradiction`, `kb_reconcile_prefilter` | only the kb_maintainer session (they mint CONFIRMED) |
-| `kb_import` | yes; but an explicit `path` (other than the session's own `.fleet/kb-canonical.json`) needs the kb_maintainer grant, else it is refused with `E-KB-MAINTAINER-REQUIRED` |
+| `kb_import` | yes; but an explicit `path` (other than the session's own `.fleet/kb-canonical.json`) needs the kb_maintainer grant, else it is refused with `E-KB-MAINTAINER-REQUIRED`; without the grant the own bible is read as committed at `HEAD` (never the work-tree file), and with no committed copy nothing is imported (`E-KB-MAINTAINER-REQUIRED`) |
 | `kb_invalidate` | yes; but without the kb_maintainer grant it never retires a CONFIRMED entry (by `ids` or `files`) -- those ids are left untouched and listed in `refused` |
+| `kb_capture` | yes; but without the kb_maintainer grant `supersedes` never retires a CONFIRMED entry -- the capture links to it (`refines`, both live) and lists it in `refused` |
 | every other `kb_*` (incl. `kb_bible_commit`) | yes |
 
 The kb_maintainer session is a member session the sprint engine opens with

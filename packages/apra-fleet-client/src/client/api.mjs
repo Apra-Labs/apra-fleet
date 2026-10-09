@@ -716,7 +716,11 @@
  *   Because kb_import keeps an entry's bible confidence and carried basis, an
  *   import from an explicit `path` is equivalent to kb_promote: a member session
  *   without the kb_maintainer grant is refused one (E-KB-MAINTAINER-REQUIRED,
- *   nothing imported) unless the path is its own .fleet/kb-canonical.json.
+ *   nothing imported) unless the path is its own .fleet/kb-canonical.json. Even
+ *   then (and without path) such a session imports its own bible only as
+ *   committed at HEAD, never the work-tree file; the result adds
+ *   bible_source "HEAD" and worktree_ignored, and with no committed copy the
+ *   import fails with E-KB-MAINTAINER-REQUIRED.
  */
 
 /**
@@ -1205,10 +1209,14 @@ export class ApraFleet {
      * makes a commit. Each skipped item is {id, reason}
      * with reason not_confirmed_or_unknown, no_source_files (a CONFIRMED id
      * citing no source file) or basis_mismatch. Each removed item is {id, reason}
-     * with reason superseded or invalidated. A CONFIRMED entry can only have been
-     * retired from the kb_maintainer session (or a FULL session): kb_invalidate in
-     * a member session without the kb_maintainer grant leaves CONFIRMED entries
-     * untouched and lists their ids in its response's refused list.
+     * with reason superseded or invalidated. A member session without the
+     * kb_maintainer grant cannot retire a CONFIRMED entry through the kb_* tools:
+     * kb_invalidate leaves CONFIRMED entries untouched, and kb_capture with
+     * supersedes links to a CONFIRMED target (refines, both live) instead of
+     * retiring it; both list such ids in their response's refused list. The
+     * kb_maintainer session and FULL sessions are not limited, and the grant is
+     * a routing guard for agent sessions, not a boundary against a local process
+     * that can open a FULL session or write the KB directly.
      * A CONFIRMED id is admitted only if it passes the same basis rule as kb_export.
      * The removed scope keys (repo_path, repo, repo_remote_url) are refused
      * with E-SCOPE-KEY-REMOVED before anything is sent.
