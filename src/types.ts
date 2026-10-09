@@ -144,6 +144,12 @@ export interface FleetMcpStatus {
    *  check, member-mode install, then update_member). register_member /
    *  update_member print it in a WARNING; the call itself still succeeds. */
   manualInstall?: string;
+  /** Set by the probe that installed the signed stable release of the
+   *  orchestrator's core (`tag`, e.g. v0.4.4) because no release carries the
+   *  exact build (`wantedBuild`); only when the member had no apra-fleet or an
+   *  older core. `why` says what was tried. register_member / update_member
+   *  print it as a NOTICE. */
+  sameCoreFallback?: { tag: string; wantedBuild: string; why: string };
 }
 
 export interface GitHubAppConfig {

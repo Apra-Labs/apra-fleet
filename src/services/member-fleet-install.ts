@@ -155,6 +155,9 @@ export type MemberFleetInstallResult =
       /** Set when this call replaced an unmarked (full) install with a member
        *  install (fleet_install "replace-full"). */
       replaced?: ReplacedFullInstall;
+      /** Set when no release carried the exact build and the signed stable
+       *  release of the same core was installed instead. */
+      sameCoreFallback?: SameCoreFallback;
     }
   | {
       state: 'unavailable';
@@ -636,7 +639,8 @@ export async function fetchReleaseInstaller(
   deps: Pick<MemberFleetInstallDeps, 'downloadReleaseAsset'>,
   source: Extract<InstallSource, { kind: 'release-asset' }>,
   orchestratorVersion: string,
-): Promise<{ localPath: string; url: string; tag: string }> {
+  opts: { allowSameCoreStable?: boolean } = {},
+): Promise<FetchedReleaseInstaller> {
   const tried: string[] = [];
   for (const c of source.candidates) {
     const url = releaseFileUrl(c.tag, source.assetName);
@@ -650,10 +654,46 @@ export async function fetchReleaseInstaller(
       throw err;
     }
   }
-  throw new ReleaseDownloadError(
-    'no-matching-release',
-    `no published release carries the ${source.assetName} installer for build ${orchestratorVersion} (tried ${tried.join('; ')})`,
-  );
+  const exactMissing = `no published release carries the ${source.assetName} installer for build ${orchestratorVersion} (tried ${tried.join('; ')})`;
+  // Same-core stable fallback (never across cores): only for a suffixed build
+  // whose exact build is unpublished, and only when the caller allows it (the
+  // member has no apra-fleet or an older core). Accepts any build of the core
+  // whose BUILD_INFO says so -- the signed stable release.
+  const core = releaseTagFor(orchestratorVersion);
+  if (opts.allowSameCoreStable && prereleaseTagFor(orchestratorVersion)) {
+    const url = releaseFileUrl(core, source.assetName);
+    try {
+      const localPath = await deps.downloadReleaseAsset(url, source.assetName, core);
+      return { localPath, url, tag: core, sameCoreFallback: { wantedBuild: orchestratorVersion, why: exactMissing } };
+    } catch (err: unknown) {
+      if (err instanceof ReleaseDownloadError && (err.reason === 'release-not-found' || err.reason === 'build-mismatch')) {
+        tried.push(`same-core stable fallback ${core}: ${err.message}`);
+        throw new ReleaseDownloadError('no-matching-release', `no published release carries the ${source.assetName} installer for build ${orchestratorVersion} or its core ${core} (tried ${tried.join('; ')})`);
+      }
+      throw err;
+    }
+  }
+  throw new ReleaseDownloadError('no-matching-release', exactMissing);
+}
+
+/** The signed stable release installed in place of an unpublished exact build. */
+export interface SameCoreFallback {
+  /** The stable tag installed, e.g. v0.4.4. */
+  tag: string;
+  /** The orchestrator build that has no published release. */
+  wantedBuild: string;
+  /** Why the exact build could not be fetched. */
+  why: string;
+}
+
+/** A fetched, verified installer and where it came from. */
+export interface FetchedReleaseInstaller {
+  localPath: string;
+  url: string;
+  tag: string;
+  /** Set when no release carries the exact build and the signed stable
+   *  release of the same core was used instead. */
+  sameCoreFallback?: { wantedBuild: string; why: string };
 }
 
 export function defaultMemberFleetInstallDeps(): MemberFleetInstallDeps {
@@ -999,11 +1039,15 @@ async function replaceFullInstall(
 
   let localPath: string;
   let downloaded = false;
+  let sameCoreFallback: SameCoreFallback | undefined;
   if (source.kind === 'orchestrator-executable') {
     localPath = source.localPath;
   } else {
     try {
-      localPath = (await fetchReleaseInstaller(deps, source, orchestratorVersion)).localPath;
+      // Same-core stable fallback only when the replaced install is an older core.
+      const fetched = await fetchReleaseInstaller(deps, source, orchestratorVersion, { allowSameCoreStable: isOlderThan(previousVersion, orchestratorVersion) });
+      localPath = fetched.localPath;
+      sameCoreFallback = fetched.sameCoreFallback ? { tag: fetched.tag, ...fetched.sameCoreFallback } : undefined;
       downloaded = true;
     } catch (err: unknown) {
       return untouched(downloadFailureReason(err), err instanceof Error ? err.message : String(err));
@@ -1044,7 +1088,7 @@ async function replaceFullInstall(
   }
 
   const after = await probeMemberFleetVersion(agent, binPath, deps);
-  if (after.kind !== 'installed' || isMemberOutdated(after.version, orchestratorVersion, sourceSuppliesBuild(source, orchestratorVersion))) {
+  if (after.kind !== 'installed' || isMemberOutdated(after.version, orchestratorVersion, !sameCoreFallback && sourceSuppliesBuild(source, orchestratorVersion))) {
     const seen = after.kind === 'installed' ? `reports ${after.version}` : after.kind === 'probe-failed' ? after.detail : after.kind;
     return failedAt('verify', `after install the member ${seen}; expected >= ${orchestratorVersion}`);
   }
@@ -1056,6 +1100,7 @@ async function replaceFullInstall(
   return {
     state: 'available', version: after.version, installed: true, source: source.kind, binPath,
     replaced: { previousVersion, removed, backupPath: plan.backupDir },
+    ...(sameCoreFallback ? { sameCoreFallback } : {}),
   };
 }
 
@@ -1320,6 +1365,14 @@ export function buildManualInstallSteps(opts: {
  * exact reason and (c) the manual steps. The tool call itself succeeds. ASCII.
  */
 export function fleetInstallWarning(memberName: string, status: FleetMcpStatus): string | null {
+  if (!status.manualInstall && status.sameCoreFallback) {
+    const f = status.sameCoreFallback;
+    return [
+      `NOTICE: member "${memberName}" got apra-fleet from the same-core stable release: installed signed stable ${f.tag}${status.version ? ` (${status.version})` : ''}, not the exact build ${f.wantedBuild}.`,
+      `  Why: ${f.why}`,
+      '  KB/code tools work on that build; to get the exact build, publish it (or run the orchestrator from a published build) and run update_member {member_id, fleet_install: "auto"} again.',
+    ].join('\n');
+  }
   if (!status.manualInstall) return null;
   const reason = status.installFailure?.reason ?? status.reason ?? 'unknown';
   const detail = status.installFailure?.detail ?? status.detail;
@@ -1425,11 +1478,16 @@ async function ensureOnce(agent: Agent, deps: MemberFleetInstallDeps, force: boo
 
   let localPath: string;
   let downloaded = false;
+  let sameCoreFallback: SameCoreFallback | undefined;
   if (source.kind === 'orchestrator-executable') {
     localPath = source.localPath;
   } else {
     try {
-      localPath = (await fetchReleaseInstaller(deps, source, orchestratorVersion)).localPath;
+      // The same-core stable fallback only when the member has no apra-fleet or
+      // an older core: a signed stable build of the core beats nothing.
+      const fetched = await fetchReleaseInstaller(deps, source, orchestratorVersion, { allowSameCoreStable: coreOutdated });
+      localPath = fetched.localPath;
+      sameCoreFallback = fetched.sameCoreFallback ? { tag: fetched.tag, ...fetched.sameCoreFallback } : undefined;
       downloaded = true;
     } catch (err: unknown) {
       return {
@@ -1470,7 +1528,7 @@ async function ensureOnce(agent: Agent, deps: MemberFleetInstallDeps, force: boo
   }
 
   const after = await probeMemberFleetVersion(agent, binPath, deps);
-  if (after.kind !== 'installed' || isMemberOutdated(after.version, orchestratorVersion, sourceSuppliesBuild(source, orchestratorVersion))) {
+  if (after.kind !== 'installed' || isMemberOutdated(after.version, orchestratorVersion, !sameCoreFallback && sourceSuppliesBuild(source, orchestratorVersion))) {
     const seen = after.kind === 'installed' ? `reports ${after.version}` : after.kind === 'probe-failed' ? after.detail : after.kind;
     return {
       state: 'unavailable',
@@ -1479,7 +1537,7 @@ async function ensureOnce(agent: Agent, deps: MemberFleetInstallDeps, force: boo
       version: priorVersion,
     };
   }
-  return { state: 'available', version: after.version, installed: true, source: source.kind, binPath };
+  return { state: 'available', version: after.version, installed: true, source: source.kind, binPath, ...(sameCoreFallback ? { sameCoreFallback } : {}) };
 }
 
 // ---------------------------------------------------------------------------
@@ -2097,12 +2155,15 @@ async function probeRemote(
   let replaced: ReplacedFullInstall | undefined;
   // Manual install steps for the member when a requested install did not happen.
   let manualInstall: string | undefined;
+  // The signed same-core stable release installed instead of the exact build.
+  let sameCoreFallback: SameCoreFallback | undefined;
   if (install) {
     const r = await ensureMemberFleetInstall(agent, deps, { force: forceInstall, replaceFull });
     if (r.state === 'available') {
       version = r.version;
       if (r.installed) { ctx.installedNow = true; installedNow = true; }
       replaced = r.replaced;
+      sameCoreFallback = r.sameCoreFallback;
     }
     // Fail closed -- with the install's OWN reason and detail, never a later
     // step's error (apra-fleet-b4g.73) -- when the installer ran or was
@@ -2134,6 +2195,7 @@ async function probeRemote(
     version,
     ...(installFailure ? { installFailure } : {}),
     ...(replaced ? { replacedFullInstall: replaced } : {}),
+    ...(sameCoreFallback ? { sameCoreFallback } : {}),
   };
   const upgradeNote = installFailure ? installFailureNote(installFailure, version) : undefined;
   const replaceNote = replaced
@@ -2253,6 +2315,7 @@ async function probeRemote(
     ...(installFailure ? { installFailure } : {}),
     ...(manualInstall ? { manualInstall } : {}),
     ...(replaced ? { replacedFullInstall: replaced } : {}),
+    ...(sameCoreFallback ? { sameCoreFallback } : {}),
     ...(finalNotes.length ? { detail: finalNotes.join('. ') } : {}),
     ...portFields,
   };

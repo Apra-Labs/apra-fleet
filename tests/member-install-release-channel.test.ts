@@ -177,7 +177,7 @@ describe('fetchReleaseInstaller (real downloadVerifiedAsset over a fake anonymou
 // ensureMemberFleetInstall: every failure class is typed and carries manual steps
 // ---------------------------------------------------------------------------
 
-function installDeps(opts: { arch?: string; download?: MemberFleetInstallDeps['downloadReleaseAsset']; installed?: string | null } = {}): MemberFleetInstallDeps & { installs: number } {
+function installDeps(opts: { arch?: string; download?: MemberFleetInstallDeps['downloadReleaseAsset']; installed?: string | null; installsVersion?: string } = {}): MemberFleetInstallDeps & { installs: number } {
   const ok = (stdout: string): SSHExecResult => ({ stdout, stderr: '', code: 0 });
   let installed = opts.installed ?? null;
   const d = {
@@ -186,7 +186,7 @@ function installDeps(opts: { arch?: string; download?: MemberFleetInstallDeps['d
       if (command.includes('--version')) return ok(installed ? `apra-fleet ${installed}\n` : `${NO_INSTALL_SENTINEL}\n`);
       if (command.includes('uname -m')) return ok(`${opts.arch ?? 'x86_64'}\n`);
       if (command.includes('member-install.json')) return ok('');
-      if (command.includes("'install'")) { d.installs++; installed = DEV; return ok('installed'); }
+      if (command.includes("'install'")) { d.installs++; installed = opts.installsVersion ?? DEV; return ok('installed'); }
       return { stdout: '', stderr: `unexpected: ${command}`, code: 127 };
     },
     transfer: async (_a: unknown, p: string[]) => ({ success: p, failed: [] }),
@@ -305,7 +305,7 @@ describe('fleetInstallWarning', () => {
 
 const plain = (cmd: string): string => (cmd.includes('-EncodedCommand') ? decodePowerShellEncodedCommand(cmd) : cmd);
 
-function toolDeps(installed: string | null, marker = true): MemberFleetMcpDeps {
+function toolDeps(installed: string | null, marker = true, download?: MemberFleetMcpDeps['downloadReleaseAsset'], installsVersion?: string): MemberFleetMcpDeps {
   const ok = (stdout: string): SSHExecResult => ({ stdout, stderr: '', code: 0 });
   return {
     exec: async (agent, command) => {
@@ -313,6 +313,7 @@ function toolDeps(installed: string | null, marker = true): MemberFleetMcpDeps {
       if (c.includes('member-access.key')) return ok('');
       if (c.includes('member-install.json')) return marker ? ok('') : { stdout: '', stderr: '', code: 1 };
       if (c.includes("'register-member'")) return ok('registered');
+      if (c.includes("'install' '--llm'")) { installed = installsVersion ?? DEV; return ok('installed'); }
       if (c.includes('command -v bd')) return ok('bd version 1.3.0\n');
       if (c.includes("'call'") && c.includes("'--list-tools'")) return ok(JSON.stringify({ tools: [{ name: 'kb_query' }, { name: 'code_query' }] }));
       if (c.includes("'call'") && c.includes("'version'")) return ok(JSON.stringify({ content: [{ type: 'text', text: `apra-fleet ${installed}` }] }));
@@ -329,7 +330,7 @@ function toolDeps(installed: string | null, marker = true): MemberFleetMcpDeps {
     orchestratorPlatform: () => ({ os: 'macos', arch: 'arm64' }),
     orchestratorExecutable: () => null,
     orchestratorVersion: () => DEV,
-    downloadReleaseAsset: async () => { throw new ReleaseDownloadError('no-matching-release', `no published release carries the ${ASSET} installer for build ${DEV}`); },
+    downloadReleaseAsset: download ?? (async () => { throw new ReleaseDownloadError('no-matching-release', `no published release carries the ${ASSET} installer for build ${DEV}`); }),
     removeLocal: () => {},
     connectLocalMember: async () => { throw new Error('no local session expected'); },
     now: () => new Date(Date.UTC(2026, 9, 9)),
@@ -394,5 +395,97 @@ describe('update_member / register_member never fail on an install that cannot h
     expect(out).toContain('Member registered successfully');
     expect(out).toContain('WARNING: apra-fleet on member "bella"');
     expect(out).toContain('Reason: no-matching-release');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Same-core stable fallback (owner decision): exact build preferred; the
+// signed stable release of the same core only when the member has no
+// apra-fleet or an older core; never across cores.
+// ---------------------------------------------------------------------------
+
+describe('same-core stable fallback', () => {
+  const OTHER = 'v0.4.4_aaaaaa';
+
+  it('allowed, no exact build anywhere: installs the signed stable of the same core and says so', async () => {
+    const r = await fetchReleaseInstaller(viaHost(releaseHost({ [STABLE]: release(OTHER) })), SOURCE, DEV, { allowSameCoreStable: true });
+    try {
+      expect(r.tag).toBe('v0.4.4');
+      expect(r.sameCoreFallback).toMatchObject({ wantedBuild: DEV });
+      expect(r.sameCoreFallback!.why).toContain(`prerelease ${DEV}`);
+    } finally { cleanup(r.localPath); }
+  });
+
+  it('allowed, but the stable release IS the exact build: no fallback flag', async () => {
+    const r = await fetchReleaseInstaller(viaHost(releaseHost({ [STABLE]: release(DEV) })), SOURCE, DEV, { allowSameCoreStable: true });
+    try { expect(r.sameCoreFallback).toBeUndefined(); } finally { cleanup(r.localPath); }
+  });
+
+  it('allowed, exact prerelease exists: the exact build wins over the same-core stable', async () => {
+    const r = await fetchReleaseInstaller(viaHost(releaseHost({ [STABLE]: release(OTHER), [PRE]: release(DEV) })), SOURCE, DEV, { allowSameCoreStable: true });
+    try { expect(r.tag).toBe(DEV); expect(r.sameCoreFallback).toBeUndefined(); } finally { cleanup(r.localPath); }
+  });
+
+  it('never across cores: a stable tag whose BUILD_INFO is another core is rejected', async () => {
+    await expect(fetchReleaseInstaller(viaHost(releaseHost({ [STABLE]: release('v0.4.5_aaaaaa') })), SOURCE, DEV, { allowSameCoreStable: true }))
+      .rejects.toMatchObject({ reason: 'no-matching-release', message: expect.stringContaining('or its core v0.4.4') });
+  });
+
+  it('allowed, nothing published: no-matching-release', async () => {
+    await expect(fetchReleaseInstaller(viaHost(releaseHost({})), SOURCE, DEV, { allowSameCoreStable: true }))
+      .rejects.toMatchObject({ reason: 'no-matching-release' });
+  });
+
+  const linux = makeTestAgent({ os: 'linux', llmProvider: 'claude' });
+  const host = () => viaHost(releaseHost({ [STABLE]: release(OTHER) })).downloadReleaseAsset;
+
+  it('member with no apra-fleet: same-core stable installed, reported as sameCoreFallback', async () => {
+    const d = installDeps({ download: host(), installsVersion: OTHER });
+    const r = await ensureMemberFleetInstall(linux, d);
+    expect(r).toMatchObject({ state: 'available', installed: true, version: OTHER, sameCoreFallback: { tag: 'v0.4.4', wantedBuild: DEV } });
+  });
+
+  it('member on an older core: same-core stable installed', async () => {
+    const d = installDeps({ download: host(), installsVersion: OTHER, installed: 'v0.4.3' });
+    const r = await ensureMemberFleetInstall(linux, d);
+    expect(r).toMatchObject({ state: 'available', installed: true, version: OTHER, sameCoreFallback: { tag: 'v0.4.4' } });
+  });
+
+  it('member already on the same core (another build): no fallback, keeps its build, no-matching-release', async () => {
+    const d = installDeps({ download: host(), installed: 'v0.4.4_bbbbbb' });
+    const r = await ensureMemberFleetInstall(linux, d);
+    expect(r).toMatchObject({ state: 'unavailable', reason: 'no-matching-release', version: 'v0.4.4_bbbbbb' });
+    expect(d.installs).toBe(0);
+  });
+
+  it('fleetInstallWarning renders a NOTICE naming the stable tag and the exact build', () => {
+    const w = fleetInstallWarning('bella', { state: 'available', version: OTHER, checkedAt: 'x', sameCoreFallback: { tag: 'v0.4.4', wantedBuild: DEV, why: 'no prerelease' } })!;
+    expect(w).toContain(`installed signed stable v0.4.4 (${OTHER}), not the exact build ${DEV}`);
+    expect(w).toContain('Why: no prerelease');
+  });
+
+  describe('tool level', () => {
+    beforeEach(() => {
+      backupAndResetRegistry();
+      vi.clearAllMocks();
+      mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
+      mockExecCommand.mockImplementation(makeConfigAwareExec());
+    });
+    afterEach(() => {
+      __setMemberFleetMcpDeps(null);
+      restoreRegistry();
+    });
+
+    it('update_member: member gets the signed same-core stable, "updated" + NOTICE, fleetMcp available', async () => {
+      const a = makeTestAgent({ os: 'linux', llmProvider: 'claude', workFolder: '/home/bella/repo', friendlyName: 'bella' });
+      addAgent(a);
+      __setMemberFleetMcpDeps(toolDeps(null, true, host(), OTHER));
+      const out = await updateMember({ member_id: a.id, fleet_install: 'auto' } as any);
+      expect(out).toContain('Member "bella" updated.');
+      expect(out).toContain(`fleetMcp: available (apra-fleet ${OTHER})`);
+      expect(out).toContain('(see NOTICE below)');
+      expect(out).toContain(`installed signed stable v0.4.4 (${OTHER}), not the exact build ${DEV}`);
+      expect(getAgent(a.id)?.fleetMcp?.sameCoreFallback).toMatchObject({ tag: 'v0.4.4', wantedBuild: DEV });
+    });
   });
 });

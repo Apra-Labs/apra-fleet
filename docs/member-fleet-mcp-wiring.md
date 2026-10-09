@@ -162,7 +162,13 @@ called with `fleet_install: "auto"`), at least as new as the orchestrator, insta
      for every push to main and feat/kb-redesign (newest 3 per branch kept;
      never `releases/latest`). Only "no release" (SHA256SUMS HTTP 404) or "different build"
      moves on to the next candidate; network, timeout and checksum failures are
-     reported as themselves. No candidate -> `no-matching-release`.
+     reported as themselves.
+  3. same-core stable fallback: when neither carries the exact build and the
+     member has no apra-fleet or an older core, the signed stable `v<x.y.z>` of
+     the same core (BUILD_INFO naming any build of that core) is installed and
+     reported as `fleetMcp.sameCoreFallback` plus a NOTICE ("installed signed
+     stable vX.Y.Z, not the exact build ..."). Never across cores; a member
+     already on that core keeps its build. Otherwise `no-matching-release`.
 - The release asset download is bounded by a timeout and verified against the
   release's published `SHA256SUMS` before use; a timeout, a checksum mismatch
   or an unavailable checksum is a typed, recoverable `fleetMcp` reason and

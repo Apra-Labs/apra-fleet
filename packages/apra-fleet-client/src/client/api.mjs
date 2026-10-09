@@ -366,6 +366,7 @@
  * @property {"marker" | "default"} [portSource] - Where port came from: the member-install marker, or the built-in default because the install recorded no port (detail says so)
  * @property {{previousVersion: string, removed: string[], backupPath: string}} [replacedFullInstall] - Set by the probe that replaced a full install with a member install (fleet_install "replace-full"): replaced version, what was removed or moved, and the timestamped backup directory on the member
  * @property {string} [manualInstall] - Set when a requested apra-fleet install/upgrade on the member did not happen (any install reason, e.g. no-matching-release, checksum-unavailable, download-failed): OS-correct manual steps to install the orchestrator build on the member by hand (anonymous release download URL, SHA-256 check, member-mode install, then update_member); register_member/update_member print them in a WARNING and still succeed
+ * @property {{tag: string, wantedBuild: string, why: string}} [sameCoreFallback] - Set when no release carries the orchestrator's exact build and the member had no apra-fleet or an older core, so the signed stable release of the same core (tag) was installed instead of wantedBuild; register_member/update_member print a NOTICE
  */
 
 /**

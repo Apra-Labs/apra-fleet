@@ -681,7 +681,7 @@ export async function registerMember(input: RegisterMemberInput, opts: RegisterM
       // is a prominent WARNING with the consequence, reason and manual steps.
       const installWarning = fleetInstallWarning(tempAgent.friendlyName, status);
       if (installWarning) {
-        fleetMcpLine += ' (see WARNING below)';
+        fleetMcpLine += installWarning.startsWith('NOTICE') ? ' (see NOTICE below)' : ' (see WARNING below)';
         warnings.unshift(installWarning);
       }
     } catch (e: any) {

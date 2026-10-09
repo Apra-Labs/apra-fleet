@@ -385,7 +385,7 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
       // a prominent WARNING with the consequence, reason and manual steps.
       const installWarning = fleetInstallWarning(updated.friendlyName, status);
       if (installWarning) {
-        fleetMcpLine += ' (see WARNING below)';
+        fleetMcpLine += installWarning.startsWith('NOTICE') ? ' (see NOTICE below)' : ' (see WARNING below)';
         warnings.unshift(installWarning);
       }
     } catch (e: any) {
