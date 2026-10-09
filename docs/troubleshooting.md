@@ -118,8 +118,10 @@ The member CLI refused a tool call. Check `healable`:
 
 By default a complete reply succeeds and only warns (`permissionWarning`). The
 dispatch fails `permission_denied` only when the caller passed
-`fail_on_permission_denial: true` (fleet-sprint does), or for a `healable: false`
-refusal whose reply was incomplete in that mode. A max_turns, auth or server
+`fail_on_permission_denial: true` (fleet-sprint does); even then a
+`healable: false` refusal on a complete reply stays a warning. Without the flag
+an incomplete reply keeps its ordinary reason (e.g. `empty_response`) with the
+refusals attached as `permissionDenied`. A max_turns, auth or server
 failure keeps its own reason, with the refusals attached as `permissionDenied`.
 
 **Permission granted but still denied on Claude**

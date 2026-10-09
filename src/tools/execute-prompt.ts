@@ -1665,16 +1665,91 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   // unattended + model let the provider tell which permission mode the
   // session ran in (Claude: a denial in auto mode is never healable).
   const parseCtx = { agentOs: agent.os, unattended: agent.unattended, model: resolvedModel };
-  // The session/usage/budget/PID bookkeeping a dispatch that RAN gets, for an
-  // early return that is not the success path (permission_denied): the
-  // member's stored session advances so a later resume continues this turn,
-  // the spend reaches the member total, the session total and the budget,
-  // and the stored PID is cleared.
-  const recordDispatchBookkeeping = async (p: ParsedResponse): Promise<void> => {
+  // Session-id assertion: the returned id must match the one we minted/resumed.
+  // apra-fleet-lmtg.5: a fork now gets the SAME assertion as any other
+  // caller-minted session. mintedId is explicitly passed to the CLI as
+  // --session-id even in fork mode (provider.forkFlag/buildForkFlag), and the
+  // CLI honors it -- so it is no longer a placeholder the CLI silently
+  // discards, and a genuine mismatch is a real signal worth catching rather
+  // than something to exempt. Shared by the success path and the
+  // permission_denied early return so the two cannot drift apart.
+  const sessionExpectation = (p: ParsedResponse): { expectedSid: string | undefined; isMismatch: boolean } => {
+    const expectedSid = resuming ? resumeTargetId : (isCallerMinted ? mintedId : undefined);
+    return { expectedSid, isMismatch: !!(expectedSid && p.sessionId && p.sessionId !== expectedSid) };
+  };
+  // A mismatch on an EXPLICIT resume/fork with no fresh-session fallback is
+  // terminal: the caller asked for that exact session and did not get it.
+  const mismatchIsTerminal = (): boolean =>
+    !allowFreshSessionFallback && (explicitResumeId !== undefined || explicitForkId !== undefined);
+  // The terminal session_not_found failure for such a mismatch, with the
+  // returned session's usage still recorded. `extra` rides on structuredContent
+  // (the permission_denied path attaches its denial).
+  const terminalMismatchFailure = async (p: ParsedResponse, expectedSid: string | undefined, extra: Record<string, unknown> = {}): Promise<ExecutePromptResult> => {
+    inFlightAgents.delete(agent.id);
+    stallDetector.remove(agent.id);
+    writeStatusline(new Map([[agent.id, 'idle']]));
+    clearStoredPid(agent.id);
     if (p.sessionId) {
       recordKnownSession(agent.id, p.sessionId);
-      touchAgent(agent.id, p.sessionId);
     }
+    if (p.usage) {
+      const prev = agent.tokenUsage ?? { input: 0, output: 0 };
+      updateAgent(agent.id, {
+        tokenUsage: {
+          input: prev.input + p.usage.input_tokens,
+          output: prev.output + p.usage.output_tokens,
+        },
+      });
+      recordSessionUsage(p.sessionId ?? expectedSid, p.usage);
+      if (budgetScope) {
+        await recordAndEvaluate({ scope: budgetScope, agent, provider, tier: resolvedTier, usage: p.usage });
+      }
+    }
+    return {
+      text: `[FAIL] execute_prompt on "${agent.friendlyName}" failed -- resumed session mismatch. Expected session "${expectedSid}", but provider returned "${p.sessionId}".`,
+      structuredContent: {
+        isError: true,
+        reason: 'session_not_found',
+        sessionId: expectedSid,
+        returnedSessionId: p.sessionId,
+        ...(p.usage ? { usage: toStructuredUsage(p.usage) } : {}),
+        ...extra,
+      },
+    };
+  };
+  // apra-fleet-eft.78.1: mark the session this dispatch actually landed on as
+  // known/resumable for this member (so a later explicit-id resume of it passes
+  // the terminal session_not_found gate), and hand the stall detector the
+  // session's real log path.
+  const recordLandedSession = (finalSid: string | undefined): void => {
+    if (!finalSid) return;
+    recordKnownSession(agent.id, finalSid);
+    let postLogPath: string | null = null;
+    try {
+      postLogPath = resolveSessionLogPath(agent.llmProvider ?? 'claude', finalSid, resolvedWorkFolder, memberPathCtx.homeDir, memberPathCtx.targetOs);
+    } catch {
+      postLogPath = null;
+    }
+    stallDetector.update(agent.id, {
+      sessionId: finalSid,
+      logFilePath: postLogPath,
+      provisional: !postLogPath,
+      thresholdMs: stallThresholdMs,
+      logPathAuthoritative: !!postLogPath && logPathAuthoritative,
+    });
+  };
+  // The session/usage/budget/PID bookkeeping a dispatch that RAN gets, for an
+  // early return that is not the success path (permission_denied): the
+  // member's stored session advances (a mismatched id is not persisted, as on
+  // the success path) so a later resume continues this turn, the stall
+  // detector learns the landed session, the spend reaches the member total,
+  // the session total and the budget, and the stored PID is cleared. Same
+  // order and side effects as the success path.
+  const recordDispatchBookkeeping = async (p: ParsedResponse, expectation = sessionExpectation(p)): Promise<void> => {
+    const { expectedSid, isMismatch } = expectation;
+    if (isMismatch) touchAgent(agent.id, undefined);
+    else touchAgent(agent.id, p.sessionId ?? expectedSid);
+    recordLandedSession(p.sessionId ?? expectedSid);
     clearStoredPid(agent.id);
     if (p.usage) {
       const prev = agent.tokenUsage ?? { input: 0, output: 0 };
@@ -1886,7 +1961,12 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
         // The turn ran: keep the session, usage, budget and PID bookkeeping
         // a completed dispatch gets, so a later resume continues THIS session
         // and the spend is recorded.
-        await recordDispatchBookkeeping(parsed);
+        const expectation = sessionExpectation(parsed);
+        if (expectation.isMismatch) {
+          scope.info(`session-id mismatch: expected=${expectation.expectedSid} got=${parsed.sessionId} -- not persisting`);
+          if (mismatchIsTerminal()) return await terminalMismatchFailure(parsed, expectation.expectedSid, { permissionDenied: denial });
+        }
+        await recordDispatchBookkeeping(parsed, expectation);
         return {
           text: `[FAIL] execute_prompt on "${agent.friendlyName}": permission denied -- ${denial.hint}${partial ? `\n[partial response]\n${partial}` : ''}`,
           structuredContent: {
@@ -2054,74 +2134,16 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       }
     }
 
-    // Session-id assertion: returned id must match the one we minted/resumed.
-    // apra-fleet-lmtg.5: a fork now gets the SAME assertion as any other
-    // caller-minted session. mintedId is explicitly passed to the CLI as
-    // --session-id even in fork mode (provider.forkFlag/buildForkFlag), and the
-    // CLI honors it -- so it is no longer a placeholder the CLI silently
-    // discards, and a genuine mismatch here is a real signal worth catching
-    // rather than something to exempt.
-    const expectedSid = resuming ? resumeTargetId : (isCallerMinted ? mintedId : undefined);
-    const isMismatch = expectedSid && parsed.sessionId && parsed.sessionId !== expectedSid;
+    // Session-id assertion (see sessionExpectation).
+    const { expectedSid, isMismatch } = sessionExpectation(parsed);
     if (isMismatch) {
       scope.info(`session-id mismatch: expected=${expectedSid} got=${parsed.sessionId} -- not persisting`);
-      if (!allowFreshSessionFallback && (explicitResumeId !== undefined || explicitForkId !== undefined)) {
-        inFlightAgents.delete(agent.id);
-        stallDetector.remove(agent.id);
-        writeStatusline(new Map([[agent.id, 'idle']]));
-        clearStoredPid(agent.id);
-        if (parsed.sessionId) {
-          recordKnownSession(agent.id, parsed.sessionId);
-        }
-        if (parsed.usage) {
-          const prev = agent.tokenUsage ?? { input: 0, output: 0 };
-          updateAgent(agent.id, {
-            tokenUsage: {
-              input: prev.input + parsed.usage.input_tokens,
-              output: prev.output + parsed.usage.output_tokens,
-            },
-          });
-          recordSessionUsage(parsed.sessionId ?? expectedSid, parsed.usage);
-          if (budgetScope) {
-            await recordAndEvaluate({ scope: budgetScope, agent, provider, tier: resolvedTier, usage: parsed.usage });
-          }
-        }
-        return {
-          text: `[FAIL] execute_prompt on "${agent.friendlyName}" failed -- resumed session mismatch. Expected session "${expectedSid}", but provider returned "${parsed.sessionId}".`,
-          structuredContent: {
-            isError: true,
-            reason: 'session_not_found',
-            sessionId: expectedSid,
-            returnedSessionId: parsed.sessionId,
-            ...(parsed.usage ? { usage: toStructuredUsage(parsed.usage) } : {}),
-          },
-        };
-      }
+      if (mismatchIsTerminal()) return await terminalMismatchFailure(parsed, expectedSid);
       touchAgent(agent.id, undefined);
     } else {
       touchAgent(agent.id, parsed.sessionId ?? expectedSid);
     }
-    // apra-fleet-eft.78.1: mark the session this dispatch actually landed on as
-    // known/resumable for this member, so a later explicit-id resume of it
-    // passes the terminal session_not_found gate above instead of being
-    // rejected as unknown.
-    const finalSid = parsed.sessionId ?? expectedSid;
-    if (finalSid) {
-      recordKnownSession(agent.id, finalSid);
-      let postLogPath: string | null = null;
-      try {
-        postLogPath = resolveSessionLogPath(agent.llmProvider ?? 'claude', finalSid, resolvedWorkFolder, memberPathCtx.homeDir, memberPathCtx.targetOs);
-      } catch {
-        postLogPath = null;
-      }
-      stallDetector.update(agent.id, {
-        sessionId: finalSid,
-        logFilePath: postLogPath,
-        provisional: !postLogPath,
-        thresholdMs: stallThresholdMs,
-        logPathAuthoritative: !!postLogPath && logPathAuthoritative,
-      });
-    }
+    recordLandedSession(parsed.sessionId ?? expectedSid);
     clearStoredPid(agent.id);
 
     if (parsed.usage) {
