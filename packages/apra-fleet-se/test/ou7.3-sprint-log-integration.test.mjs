@@ -182,6 +182,9 @@ describe('apra-fleet-ou7.3: every sprint has a traceable stdout/stderr log reach
             ledger,
             watchdog,
             expandScope: async (roots) => new Set(roots), // avoid a real `bd` call for this HTTP-layer assertion
+            // Without it the default bulk fetch runs real bd against whatever
+            // .beads cwd walks up to (this repo's own tracker).
+            listAllBeads: async () => [],
             logger: { log: () => {}, error: () => {} },
         });
         const logView = createLogView({ ledger, history });

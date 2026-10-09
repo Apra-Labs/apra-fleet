@@ -82,8 +82,10 @@ jobs:
           git config --global user.email "regression-nightly@apra-fleet.invalid"
 
       # Imports git-tracked .beads/issues.jsonl so dashboard/backlog tests
-      # have a queryable DB (the Dolt DB is gitignored). Same as ci.yml,
-      # including the retry for a concurrent `bd dolt push` moving the ref.
+      # have a queryable DB (the Dolt DB is gitignored). ci.yml no longer does
+      # this (its tests use hermetic fixture DBs); kept here until the real-bd
+      # suite is verified not to need it. Retried for a concurrent
+      # `bd dolt push` moving the ref.
       - name: Bootstrap this repo's own beads DB
         shell: bash
         run: |
