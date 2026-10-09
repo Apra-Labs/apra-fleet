@@ -8,7 +8,7 @@
 //   universal rule      +all+:<slug>
 //   role-scoped rule    +<role>+:<slug>            e.g. +doer+:<slug>
 //   multi-role rule     +<role1>+<role2>+:<slug>   e.g. +doer+reviewer+:<slug>
-// A role queries `bd memories +all+` and `bd memories +<role>+`. `bd memories`
+// A role queries `bd memories --json +all+` and `bd memories --json +<role>+`. `bd memories`
 // is a case-insensitive plain substring search over keys AND values, so each
 // role token is delimited by '+' on both sides: `+reviewer+` never matches
 // `+plan-reviewer+`. '+' has no meaning in bash, PowerShell or cmd, so the
@@ -142,7 +142,7 @@ function main() {
 
 function reportUnparsed(unparsed, level) {
     if (!unparsed.length) return;
-    console.error(`${level}: ${unparsed.length} key(s) could not be mapped and were left unmigrated; no role query (bd memories +all+ / +<role>+) will ever return them:`);
+    console.error(`${level}: ${unparsed.length} key(s) could not be mapped and were left unmigrated; no role query (bd memories --json +all+ / +<role>+) will ever return them:`);
     for (const k of unparsed) console.error(`  ${k}`);
     console.error('Re-key each by hand (bd remember --key "+<role>+:<slug>" ..., then bd forget <old-key>) or forget it, then re-run.');
 }

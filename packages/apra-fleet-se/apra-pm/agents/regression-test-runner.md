@@ -51,9 +51,12 @@ block is absent. None of these tool calls is ever a requirement.
 Before running the playbook, retrieve universal conventions and role-scoped operational rules from Beads:
 
 ```bash
-bd memories +all+
-bd memories +regression-test-runner+
+bd memories --json +all+
+bd memories --json +regression-test-runner+
 ```
+
+Each prints a JSON object of key -> full value (plus a `schema_version` entry). The
+search also matches value text, so apply only entries whose KEY contains `+all+` or `+regression-test-runner+`.
 
 You own `regression-test-playbook.md` end to end: run every part it
 defines, in its order, and if it defines a `## Teardown`, ALWAYS run it --

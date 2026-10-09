@@ -61,9 +61,12 @@ these steps and proceed.
 Before beginning harvest operations, retrieve universal conventions and role-scoped operational rules from Beads:
 
 ```bash
-bd memories +all+
-bd memories +harvester+
+bd memories --json +all+
+bd memories --json +harvester+
 ```
+
+Each prints a JSON object of key -> full value (plus a `schema_version` entry). The
+search also matches value text, so apply only entries whose KEY contains `+all+` or `+harvester+`.
 
 ## Step 1 -- Write sprint analysis artifact (FIRST, before anything else)
 

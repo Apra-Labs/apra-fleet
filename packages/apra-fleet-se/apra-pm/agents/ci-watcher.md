@@ -50,9 +50,12 @@ these steps and proceed.
 Before checking CI runs, retrieve universal conventions and role-scoped operational rules from Beads:
 
 ```bash
-bd memories +all+
-bd memories +ci-watcher+
+bd memories --json +all+
+bd memories --json +ci-watcher+
 ```
+
+Each prints a JSON object of key -> full value (plus a `schema_version` entry). The
+search also matches value text, so apply only entries whose KEY contains `+all+` or `+ci-watcher+`.
 
 ## Step 1 -- List recent CI runs
 

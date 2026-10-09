@@ -369,8 +369,8 @@ ordered by reach:
    sentences>"` writes an entry into the shared beads database, searchable via
    `bd memories <keyword>`. Every dispatched sprint role (planner, doer,
    reviewer, test runners, ...) reads it itself: its role prompt runs
-   `bd memories +all+` and `bd memories +<role>+` (e.g. `+doer+`) before it
-   starts work. So the key decides who sees a memory:
+   `bd memories --json +all+` and `bd memories --json +<role>+` (e.g. `+doer+`)
+   before it starts work (`--json` because text output truncates long values). So the key decides who sees a memory:
    `+all+:<slug>` reaches every role, `+<role>+:<slug>` one role, and
    `+<role1>+<role2>+:<slug>` each listed role; an unscoped key reaches no role
    (full contract in `packages/apra-fleet-se/docs/role-contracts.md`). The

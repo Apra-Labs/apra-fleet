@@ -41,8 +41,8 @@ themselves -- the engine does not inject memories into dispatch prompts. Each
 dispatched role runs, near the start of its procedure:
 
 ```bash
-bd memories +all+
-bd memories +<role>+     # e.g. +doer+, +reviewer+; the backlog groomer uses +groomer+
+bd memories --json +all+
+bd memories --json +<role>+     # e.g. +doer+, +reviewer+; the backlog groomer uses +groomer+
 ```
 
 So a target repo's memory keys must follow this contract to reach a role:
@@ -59,8 +59,10 @@ Role tokens are `planner`, `plan-reviewer`, `doer`, `reviewer`, `deployer`,
 supervises sprints. `bd memories` is a case-insensitive substring search over
 keys and values: the `+` on both sides keeps `+reviewer+` from matching
 `+plan-reviewer+`. Unscoped keys
-reach no role. The text output of `bd memories` truncates long values; a role
-that needs the full text runs `bd recall <key>`.
+reach no role. The text output of `bd memories` truncates long values, so roles
+use `--json`, which returns a flat object of key -> full value (plus a
+`schema_version` entry); because the search also matches value text, a role
+applies only the entries whose key carries its token.
 
 `bd prime` prints every memory regardless of scope, so a target repo that wants
 memories role-scoped runs `bd prime --no-memories` in its session hooks, and

@@ -40,9 +40,12 @@ these steps and proceed.
 Before beginning grooming decisions, retrieve universal conventions and role-scoped operational rules from Beads:
 
 ```bash
-bd memories +all+
-bd memories +groomer+
+bd memories --json +all+
+bd memories --json +groomer+
 ```
+
+Each prints a JSON object of key -> full value (plus a `schema_version` entry). The
+search also matches value text, so apply only entries whose KEY contains `+all+` or `+groomer+`.
 
 ## Usage modes
 
@@ -321,9 +324,12 @@ the right scope since most of what you learn is calibrated to one repo's backlog
 At session start: retrieve operational memories -- read and apply what past sessions recorded:
 
 ```bash
-bd memories +all+
-bd memories +groomer+
+bd memories --json +all+
+bd memories --json +groomer+
 ```
+
+Each prints a JSON object of key -> full value (plus a `schema_version` entry). The
+search also matches value text, so apply only entries whose KEY contains `+all+` or `+groomer+`.
 
 At session end, if you found a durable, non-obvious pattern specific to THIS repo's
 backlog (not a one-off, not already in this file):
