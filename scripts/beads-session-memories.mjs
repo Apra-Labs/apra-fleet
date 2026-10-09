@@ -34,8 +34,11 @@ function main() {
         const raw = execBdSync(['memories', '--json'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
         parsed = JSON.parse(String(raw || '{}'));
     } catch (err) {
-        const msg = String(err && err.message ? err.message : err).split(/\r?\n/)[0];
-        console.log(`[beads-session-memories] could not load beads memories (${msg}). Run \`bd memories ${tokens.join('` and `bd memories ')}\` by hand.`);
+        // Prefer bd's own stderr reason (e.g. "no beads database found") over Node's "Command failed: ..." line.
+        const reason = String((err && err.stderr) || '').split(/\r?\n/).map((l) => l.trim()).find(Boolean);
+        const msg = reason || String(err && err.message ? err.message : err).split(/\r?\n/)[0];
+        // Text-mode `bd memories` truncates values, so point at --json.
+        console.log(`[beads-session-memories] could not load beads memories (${msg}). Run \`bd memories --json ${tokens.join('` and `bd memories --json ')}\` by hand and apply only entries whose key matches.`);
         return;
     }
     const rows = selectScopedMemories(parsed && typeof parsed === 'object' ? parsed : {}, tokens);

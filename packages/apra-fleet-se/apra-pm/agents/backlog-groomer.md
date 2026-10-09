@@ -49,17 +49,20 @@ search also matches value text, so apply only entries whose KEY contains `+all+`
 
 **One-time key migration** (older groomer versions saved heuristics as
 `groomer-heuristic-<slug>`, which the `+groomer+` query never returns). Run
-`bd memories --json groomer-heuristic-`; for each entry whose KEY starts with
-`groomer-heuristic-`:
+`bd memories --json groomer-heuristic-` only to list keys (its JSON escapes quotes and
+`&`, `<`, `>`, so never copy values from it); for each KEY starting with `groomer-heuristic-`:
 
-1. If `+groomer+:<slug>` already exists with a different value, leave both keys and
+1. Read the value with `bd recall <old key>` (raw text).
+2. If `+groomer+:<slug>` already exists with a different value, leave both keys and
    report the conflict in `notes`.
-2. Otherwise `bd remember --key "+groomer+:<slug>" "<value>"` with the value byte-for-byte
-   (quote/escape it for your shell so quotes, `$`, backticks and `&&` survive).
-3. Confirm with `bd recall "+groomer+:<slug>"` that the stored value is identical; only
-   then `bd forget <old key>`.
+3. Otherwise `bd remember --key "+groomer+:<slug>" -- "<value>"`, quoted for your shell so
+   `$`, backticks and `&&` survive. If the value contains double quotes or other characters
+   the current shell cannot pass verbatim (e.g. Windows PowerShell 5.1 strips embedded
+   double quotes), do not migrate that key; report it in `notes` instead.
+4. `bd forget <old key>` ONLY if `bd recall <old key>` and `bd recall "+groomer+:<slug>"`
+   print identical text; otherwise keep both keys and report the mismatch in `notes`.
 
-Steps 2-3 write, so they follow the same gate as bead mutations: only with `dry-run: false`
+Steps 3-4 write, so they follow the same gate as bead mutations: only with `dry-run: false`
 and not in report-only "What needs grooming" mode. Otherwise run no `bd remember`/`bd forget`;
 list each key you would migrate (old -> new) with its exact proposed `bd` commands in `notes`.
 Report each key actually migrated in `heuristicsRecorded` (new key + value) and count them
