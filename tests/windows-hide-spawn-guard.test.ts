@@ -27,6 +27,8 @@ const SCAN_DIRS = [
   'packages/apra-fleet-client/src',
 ];
 const SCAN_FILES = [
+  'install.cjs',
+  'packages/apra-fleet-se/apra-pm/install.mjs',
   'scripts/run-all-tests.mjs',
   'scripts/with-test-sandbox.mjs',
   'scripts/kill-port.mjs',
