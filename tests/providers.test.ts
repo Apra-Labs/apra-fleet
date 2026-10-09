@@ -1103,6 +1103,43 @@ describe('AgyProvider', () => {
       'command(regex:bd .*)',
     ]);
   });
+
+  describe('detectUsageLimit', () => {
+    it('returns null when result.code === 0 and !parsed.isError, even if stdout contains "output_tokens": 429', () => {
+      const stdout = JSON.stringify({
+        conversation_id: 'conv-123',
+        status: 'SUCCESS',
+        response: 'All planned tasks created successfully',
+        usage: { input_tokens: 5000, output_tokens: 429 },
+      });
+      const result = { stdout, stderr: '', code: 0 };
+      const parsed = p.parseResponse(result);
+      expect(p.detectUsageLimit(result, parsed)).toBeNull();
+    });
+
+    it('returns a guessed usage-limit signal when result.code !== 0 and stderr contains "rate limit"', () => {
+      const result = { stdout: '', stderr: 'Error: Rate limit exceeded (429)', code: 1 };
+      const parsed = p.parseResponse(result);
+      const signal = p.detectUsageLimit(result, parsed);
+      expect(signal).not.toBeNull();
+      expect(signal?.type).toBe('usage_limit');
+      expect(signal?.resumeAtSource).toBe('guessed');
+    });
+
+    it('returns a guessed usage-limit signal when parsed.isError is true and response mentions quota exceeded', () => {
+      const stdout = JSON.stringify({
+        conversation_id: 'conv-123',
+        status: 'ERROR',
+        error: 'Resource has been exhausted (e.g. check quota)',
+      });
+      const result = { stdout, stderr: '', code: 1 };
+      const parsed = p.parseResponse(result);
+      const signal = p.detectUsageLimit(result, parsed);
+      expect(signal).not.toBeNull();
+      expect(signal?.type).toBe('usage_limit');
+      expect(signal?.resumeAtSource).toBe('guessed');
+    });
+  });
 });
 
 describe('SessionIdStrategy & Log Path Resolution', () => {

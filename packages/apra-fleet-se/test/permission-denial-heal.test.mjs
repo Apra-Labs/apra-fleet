@@ -60,6 +60,23 @@ test('classifier and accessor key on the structured reason only', () => {
     assert.equal(permissionDeniedOf(new Error('x')), null);
 });
 
+test('R1 regression guard: typed failures carrying incidental permissionDenied are NOT classified as permission_denied', () => {
+    for (const reason of ['auth', 'server', 'overloaded', 'max_turns_exhausted', 'workspace_not_trusted']) {
+        const err = new AgentDispatchError(`${reason} failure`, {
+            details: {
+                reason,
+                permissionDenied: {
+                    actions: ['command'],
+                    denials: [{ action: 'command', target: 'git status' }],
+                    suggestedGrants: ['Bash(git:*)'],
+                    hint: 'permission check failed',
+                },
+            },
+        });
+        assert.equal(isPermissionDeniedDispatchError(err), false, `expected reason '${reason}' with carried denial not to be permission_denied`);
+    }
+});
+
 test('a refused dispatch ran: its post-dispatch sync must not be skipped', () => {
     assert.equal(isNoMutationDispatchFailure(deniedError()), false);
 });

@@ -104,6 +104,15 @@ test('slow-lane log persistence', async (t) => {
   const sandboxHome = fs.mkdtempSync(path.join(os.tmpdir(), 'slow-lane-sandbox-'));
   const sandboxTempDir = path.join(sandboxHome, 'temp', '.apra-fleet-tests');
   const logFilePath = path.join(sandboxTempDir, 'test-slow-lane.log');
+  const posixSandboxTempDir = sandboxTempDir.split(path.sep).join('/');
+  const posixLogFilePath = logFilePath.split(path.sep).join('/');
+  const bashBin = process.platform === 'win32'
+    ? (fs.existsSync('C:\\Program Files\\Git\\bin\\bash.exe')
+        ? 'C:\\Program Files\\Git\\bin\\bash.exe'
+        : (fs.existsSync('C:\\Program Files (x86)\\Git\\bin\\bash.exe')
+            ? 'C:\\Program Files (x86)\\Git\\bin\\bash.exe'
+            : 'bash'))
+    : 'bash';
 
   // Snapshot the real HOME/temp directory before test (side-effect check)
   const realTempDir = path.join(os.homedir(), 'temp', '.apra-fleet-tests');
@@ -129,8 +138,8 @@ test('slow-lane log persistence', async (t) => {
       // We substitute a longer echo loop for npm run test:slow (much longer than what we'll interrupt after).
       // The structure (command group, exit marker echo inside group, redirect) stays literal.
       const shellScript = `
-        mkdir -p "${sandboxTempDir}"
-        SLOW_LANE_LOG="${logFilePath}"
+        mkdir -p "${posixSandboxTempDir}"
+        SLOW_LANE_LOG="${posixLogFilePath}"
         {
           for i in {1..100}; do
             echo "Output line $i"
@@ -141,7 +150,7 @@ test('slow-lane log persistence', async (t) => {
       `;
 
       // Spawn background process (detached so we can kill the process group)
-      const child = spawn('bash', ['-c', shellScript], {
+      const child = spawn(bashBin, ['-c', shellScript], {
         detached: process.platform !== 'win32', // Only detached on non-Windows
         stdio: 'pipe',
         env: { ...process.env, HOME: sandboxHome, USERPROFILE: sandboxHome }
@@ -208,7 +217,7 @@ test('slow-lane log persistence', async (t) => {
         done
       `;
 
-      const child = spawn('bash', ['-c', bareShellScript], {
+      const child = spawn(bashBin, ['-c', bareShellScript], {
         detached: process.platform !== 'win32',
         stdio: 'pipe',
         env: { ...process.env, HOME: sandboxHome, USERPROFILE: sandboxHome }

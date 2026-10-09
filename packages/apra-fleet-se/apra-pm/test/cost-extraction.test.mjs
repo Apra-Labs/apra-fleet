@@ -74,6 +74,7 @@ const _costJs  = extractCostJs(_costSrc);
 if (!_costJs) throw new Error('extractCostJs returned null -- PURE_FUNCTIONS markers missing in auto-sprint.js');
 const _costDir  = join(tmpdir(), 'apra-pm-test-cost-extraction');
 mkdirSync(_costDir, { recursive: true });
+writeFileSync(join(_costDir, 'package.json'), JSON.stringify({ type: 'commonjs' }));
 const _costPath = join(_costDir, 'cost.js');
 writeFileSync(_costPath, _costJs);
 const _req = createRequire(import.meta.url);

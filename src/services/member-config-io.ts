@@ -16,6 +16,7 @@
 
 import type { Agent, SSHExecResult } from '../types.js';
 import type { MemberShell } from '../os/os-commands.js';
+import type { MemberMcpSyncContext } from '../providers/provider.js';
 import { isPosixShell } from '../utils/agent-helpers.js';
 import { escapePowerShellArgInner } from '../utils/shell-escape.js';
 import { BUILTIN_DEFAULT_PORT, DEFAULT_PORT } from '../paths.js';
@@ -152,6 +153,23 @@ function dirOf(absPath: string, posix: boolean): string {
   return posix
     ? absPath.split('/').slice(0, -1).join('/')
     : absPath.replace(/\//g, '\\').split('\\').slice(0, -1).join('\\');
+}
+
+/**
+ * Command string that moves `staged` to `target`, making any missing parent
+ * directory along the way. Target directory permissions follow the member's
+ * default; only the staged file itself carries owner-only permissions
+ * (creating its directory). POSIX also forces 0600 on the result; the staged
+ * file is owner-only already. Carries resolved, quoted paths only.
+ */
+export function moveStagedFileCommand(staged: string, target: string, posix: boolean): string {
+  if (posix) {
+    const dir = target.split('/').slice(0, -1).join('/');
+    return `mkdir -p ${quotePosixPath(dir)} && mv -f ${quotePosixPath(staged)} ${quotePosixPath(target)} && chmod 600 ${quotePosixPath(target)}`;
+  }
+  const t = target.replace(/\//g, '\\');
+  const dir = t.split('\\').slice(0, -1).join('\\');
+  return `New-Item -ItemType Directory -Force -Path ${quotePwshPath(dir)} | Out-Null; Move-Item -Force -LiteralPath ${quotePwshPath(staged.replace(/\//g, '\\'))} -Destination ${quotePwshPath(t)}`;
 }
 
 /**
@@ -359,6 +377,25 @@ export async function writeMemberFile(exec: MemberExecFn, absPath: string, conte
 /** Writes a JSON object to a member-side file (pretty-printed), verified. */
 export async function writeMemberJson(exec: MemberExecFn, absPath: string, obj: Record<string, unknown>, posix: boolean): Promise<void> {
   await writeMemberFile(exec, absPath, JSON.stringify(obj, null, 2), posix);
+}
+
+/**
+ * Writes a config file that carries a member access secret WITHOUT the
+ * content ever appearing in a command string: staged in an owner-only file
+ * through the secret-file channel, then moved into place by a content-free
+ * command (the file stays owner-only, 0600 on POSIX). No channel -> throws loudly;
+ * there is no inline fallback.
+ */
+export async function writeSecretBearingConfig(ctx: MemberMcpSyncContext, file: string, content: string, posix: boolean): Promise<void> {
+  if (!ctx.secretChannel) {
+    throw new Error(`E-MEMBER-CONFIG-NO-FILE-CHANNEL: cannot write ${file} on the member without putting the member access secret on a command line; no secret-file channel is available for this member. Enable the SFTP subsystem on the member's sshd, or use a member type with a file channel.`);
+  }
+  const staged = await ctx.secretChannel.write(content);
+  const r = await ctx.execCommand(moveStagedFileCommand(staged, file, posix), FS_OP_TIMEOUT_MS);
+  if (r.code !== 0) {
+    try { await ctx.secretChannel.remove(staged); } catch { /* best effort */ }
+    throw new Error(`moving the staged config into ${file} failed (exit ${r.code}): ${(r.stderr || r.stdout || '').trim().slice(0, 300)}`);
+  }
 }
 
 /** Deletes a member-side file (no error when it is already gone). */

@@ -82,11 +82,13 @@ export function ensureTestSandbox(env = process.env) {
         return { root: existing, created: false, cleanup: () => {} };
     }
     const realHome = env[REAL_HOME_ENV] || os.homedir();
-    // realpath.native expands Windows 8.3 short names (e.g. RUNNER~1 on GitHub
-    // runners): $HOME-relative PowerShell (hashFilesRecursive) slices
-    // Get-ChildItem's long FullName by the length of the short $HOME-based
-    // prefix, so a short-name sandbox home mangles every relative path.
-    const root = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), 'apra-fleet-test-sandbox-'));
+    let baseTmp = os.tmpdir();
+    try {
+        baseTmp = fs.realpathSync.native(baseTmp);
+    } catch {
+        // Fall back to os.tmpdir() when realpathSync is restricted or fails
+    }
+    const root = fs.mkdtempSync(path.join(baseTmp, 'apra-fleet-test-sandbox-'));
     const home = path.join(root, 'home');
     const dirs = {
         home,

@@ -352,7 +352,10 @@ transits an orchestrator-readable output. Permission
 composition verifies its own delivery: a grant is read back off the target
 member and structurally compared against what was intended before it is
 reported as applied, so a failed or partial write is surfaced as an
-explicit failure rather than a false success.
+explicit failure rather than a false success. Dropped or unmappable permission
+tokens are surfaced explicitly in composition warnings, and shell pipeline
+stages are decomposed into constituent command grants to provide precise
+permission suggestions across providers.
 
 ## Email Configuration
 
@@ -462,6 +465,7 @@ third-party verticals.
 | Codebase wiki (architecture, internals, AI Q&A) | [DeepWiki](https://deepwiki.com/Apra-Labs/apra-fleet) |
 | Install, uninstall, the `--llm` flag | [docs/install.md](docs/install.md) |
 | Choosing a provider (roles, gotchas, mixing providers, OpenCode/local models) | [docs/provider-guide.md](docs/provider-guide.md) |
+| Antigravity (agy) provider (project binding, permission mapping, model resolution, Windows parity) | [docs/agy-provider.md](docs/agy-provider.md) |
 | Transport, service mode, and supported interfaces | [docs/transport-and-service-mode.md](docs/transport-and-service-mode.md) |
 | Cost model (tiering, shell-over-prompts, measured token spend) | [docs/cost-model.md](docs/cost-model.md) |
 | The PM skill (doer-reviewer sprints, `/pm` commands) | [docs/pm-skill-overview.md](docs/pm-skill-overview.md) |

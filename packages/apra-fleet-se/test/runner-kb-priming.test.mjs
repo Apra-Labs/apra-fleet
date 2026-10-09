@@ -710,6 +710,29 @@ describe('kb calls run AS the member -- no scope argument anywhere', () => {
         assert.deepEqual(primes.map((c) => c.member.id), ['id-alpha', 'id-remote-1']);
     });
 
+    test('maintainers wires KB priming to repository kb_maintainer and primes once per target', async () => {
+        const { calls, callTool, memberCall } = sprintFleet();
+        const fakeMaintainers = {
+            maintainerForMember(name) {
+                // Both alpha and remote-1 belong to the same repo maintained by alpha
+                return { member: 'alpha', record: { id: 'id-alpha', name: 'alpha', type: 'local' } };
+            },
+        };
+        const client = createKbPrimingClient({
+            callTool, memberCall, members: ['alpha', 'remote-1'],
+            maintainers: () => fakeMaintainers,
+            log: () => {},
+        });
+
+        const result = await client.primeAll();
+
+        assert.equal(result.primed, 2);
+        // Only one prime ran because both mapped to id-alpha
+        const primes = calls.filter((c) => c.name === 'kb_session_prime');
+        assert.equal(primes.length, 1);
+        assert.equal(primes[0].member.id, 'id-alpha');
+    });
+
     test('every work-client kb_* site runs as the member it is given, with no scope argument', async () => {
         const { calls, callTool, memberCall } = sprintFleet({ candidates: [] });
         const priming = createKbPrimingClient({ callTool, memberCall, members: ['remote-1'], log: () => {} });

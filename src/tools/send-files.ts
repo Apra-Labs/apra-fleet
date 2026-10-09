@@ -179,9 +179,11 @@ export async function sendFiles(input: SendFilesInput, extra?: any): Promise<str
     else
       scope.ok(`${result.success.length} file(s)`);
 
+    writeStatusline();
     return output;
   } catch (err: any) {
-    writeStatusline(new Map([[agent.id, 'offline']]));
+    const isOffline = agent.agentType !== 'local' && !!(err.message && /ssh|network|econnrefused|ehostunreach|connection timed out/i.test(err.message));
+    writeStatusline(new Map([[agent.id, isOffline ? 'offline' : 'idle']]));
     scope.abort(err.message);
     return `Failed to upload files to "${agent.friendlyName}": ${err.message}`;
   } finally {

@@ -208,7 +208,7 @@ describe.skipIf(process.platform === 'win32')('compose_permissions -- per-folder
     expect(git(wf, 'status', '--porcelain')).toBe('');
   }, 60000);
 
-  it('agy: no member MCP entry is written, deny rules are the allowlist complement, legacy pruned, clone stays clean', async () => {
+  it('agy: member MCP entry is written, deny rules are the allowlist complement, legacy pruned, clone stays clean', async () => {
     const wf = makeClone();
     const member = addMember('agy', wf);
     const projectFile = path.join(home, '.gemini', 'config', 'projects', `${AGY_PROJECT_ID}.json`);
@@ -224,9 +224,15 @@ describe.skipIf(process.platform === 'win32')('compose_permissions -- per-folder
     expect(grants.deny).toEqual(MEMBER_DENIED_TOOLS.map(t => `mcp(apra-fleet/${t})`));
     expect(JSON.stringify(grants.deny)).not.toContain('deepwiki');
 
-    // No member MCP entry anywhere: mcp_config.json only lost the legacy entry,
-    // nothing was added to the work folder, and no new home files appeared.
-    expect(readJson(mcpConfig)).toEqual({ mcpServers: { deepwiki: DEEPWIKI } });
+    // Member MCP entry is written for agy to point at member endpoint; legacy is pruned.
+    expect(readJson(mcpConfig)).toEqual({
+      mcpServers: {
+        'apra-fleet': { url: `http://localhost:7523/mcp?member=${member.id}`, headers: memberSecretHeaders() },
+        deepwiki: DEEPWIKI,
+      },
+    });
+    // It carries this install's member access secret, so the file is owner-only.
+    expect(fs.statSync(mcpConfig).mode & 0o777).toBe(0o600);
     expect(fs.existsSync(path.join(wf, 'opencode.json'))).toBe(false);
     expect(fs.existsSync(path.join(wf, '.claude'))).toBe(false);
     const added = listFiles(home).filter(f => !homeBefore.has(f));
