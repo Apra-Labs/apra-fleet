@@ -34,6 +34,39 @@ are the authoritative, human-readable source of truth for what each role
 actually does when dispatched -- `docs/overview.md`'s role summaries are
 derived from them.
 
+## Operational memories: the role-scoped key contract
+
+Role prompts read the target repo's beads operational memories (`bd remember`)
+themselves -- the engine does not inject memories into dispatch prompts. Each
+dispatched role runs, near the start of its procedure:
+
+```bash
+bd memories +all+
+bd memories +<role>+     # e.g. +doer+, +reviewer+; the backlog groomer uses +groomer+
+```
+
+So a target repo's memory keys must follow this contract to reach a role:
+
+| Key form | Reaches |
+| --- | --- |
+| `+all+:<slug>` | every role |
+| `+<role>+:<slug>` | that one role |
+| `+<role1>+<role2>+:<slug>` | each listed role |
+
+Role tokens are `planner`, `plan-reviewer`, `doer`, `reviewer`, `deployer`,
+`integ-test-runner`, `regression-test-runner`, `harvester`, `ci-watcher`,
+`groomer`, plus `orchestrator` for the interactive session that launches and
+supervises sprints. `bd memories` is a case-insensitive substring search over
+keys and values: the `+` on both sides keeps `+reviewer+` from matching
+`+plan-reviewer+`. Unscoped keys
+reach no role. The text output of `bd memories` truncates long values; a role
+that needs the full text runs `bd recall <key>`.
+
+`bd prime` prints every memory regardless of scope, so a target repo that wants
+memories role-scoped runs `bd prime --no-memories` in its session hooks, and
+gives the interactive/orchestrator session its `+all+` and `+orchestrator+`
+memories some other way (e.g. a second session-start hook that prints them).
+
 ## `contracts.mjs`: the four things it provides
 
 ### 1. The canonical role enum
