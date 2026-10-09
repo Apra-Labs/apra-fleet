@@ -110,9 +110,12 @@ credential directly:
   issue root ended in a failure the supervisor considers deterministic, a
   relaunch is refused with a 409 until you pass `overrideRelaunchGate: true`
   once you've actually fixed the cause.
-- **Multiple members must share the same git HEAD** before a multi-member
-  sprint launch -- if you're only using one member (the common case), this
-  doesn't apply.
+- **Multi-member launches align members automatically** -- every member is
+  fetched and checked out on the sprint branch at launch (uncommitted work is
+  kept in a named stash). The launch refuses only if a member is unreachable,
+  members use different origin URLs, the base branch is missing on origin, or
+  a fetch fails authentication; the message names the member and the fix. If
+  you're only using one member (the common case), none of this applies.
 
 ## Keeping it simple
 

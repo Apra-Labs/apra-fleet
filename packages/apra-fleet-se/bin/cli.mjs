@@ -16,8 +16,9 @@ import {
     getServerInfoPath,
 } from '@apralabs/apra-fleet-client/server-resolution';
 import { beadsExtension, kbCodeIntelExtension } from '../fleet-sprint/viewer-extensions.mjs';
-import { validateIssueId, validateBranchName, validateBranchPair, checkMemberTopology, createMemberReservationClient, resyncReacquiredMember, commandResultToSoftGit } from '../fleet-sprint/runner.js';
+import { validateIssueId, validateBranchName, validateBranchPair, createMemberReservationClient, resyncReacquiredMember, commandResultToSoftGit } from '../fleet-sprint/runner.js';
 import { normalizeRole } from '../fleet-sprint/contracts.mjs';
+import { prepareLaunchTopology, toAlignCommandResult } from '../fleet-sprint/member-align.mjs';
 import { ROLE_BACKLOG, resolveBacklogRoleAlias, selectBacklogMember, formatBacklogSelection } from '../fleet-sprint/backlog-role.mjs';
 import { BEADS_IDENTITY_PROBES, parseBeadsIdentity, formatBeadsIdentity, parseExpectedIdentity } from '../fleet-sprint/beads-identity.mjs';
 
@@ -884,9 +885,28 @@ async function main() {
     // the ORIGINAL single-member-trivial-pass behavior rather than a topology
     // error about having no members at all.
     const topologyMembers = topologyMembersFiltered.length > 0 ? topologyMembersFiltered : validMembers;
-    const topology = await checkMemberTopology({
+    // apra-fleet-rsd9.1.1: in legacy mode, first ALIGN every topology member
+    // to the sprint base (fetch, preserve WIP in a named stash, check out the
+    // sprint branch -- see fleet-sprint/member-align.mjs), then run the
+    // topology check against the aligned state. Members that merely sat on
+    // other commits no longer refuse the launch; only what cannot be
+    // reconciled automatically (unreachable member, differing origin, base
+    // missing on origin, fetch auth failure, diverged sprint branch) does,
+    // and then before any member is moved. Synced mode is unchanged.
+    const runAlignGit = async (cmd, member) => {
+        try {
+            return toAlignCommandResult(await fleetApi.executeCommand({ command: cmd, member_name: member }));
+        } catch (err) {
+            return toAlignCommandResult(undefined, err);
+        }
+    };
+    const topology = await prepareLaunchTopology({
         members: topologyMembers,
         mode: syncedMode ? 'synced' : 'legacy',
+        baseBranch,
+        branch: branchName,
+        runGit: runAlignGit,
+        log: (msg) => console.log(msg),
         getIdentity: (member) => runCommand('git rev-parse HEAD', member),
         getOriginUrl: (member) => runCommand('git remote get-url origin', member),
         doltProbe: (member) => runCommand('bd dolt pull', member),

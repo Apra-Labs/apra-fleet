@@ -279,9 +279,13 @@ start with no login (`loginctl enable-linger <username>`).
    `bd dolt commit` then `bd dolt push`. Members pull their own copy; a
    sprint launched before the push works from stale scope.
 2. Check no conflicting sprint is already running: `GET /api/sprints`.
-3. Multi-member sprints need all members on the SAME git HEAD, or the
-   launch crashes immediately with a topology error. If unsure, use ONE
-   member. Don't guess a member list -- ask, or default to one.
+3. Multi-member sprints align their members to the sprint base
+   automatically at launch (WIP preserved in a named stash, one `[Align]`
+   line per member) -- do not align members by hand. The launch refuses only
+   for an unreachable member, differing origin URLs, a base missing on
+   origin, a fetch auth failure or a diverged sprint branch, naming the
+   member, cause and fix. Don't guess a member list -- ask, or default to
+   one.
 
 ## 2. Start a sprint
 
