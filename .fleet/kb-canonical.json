@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "8a8f3ce595f3f1616a6ada5f464313b5002b4bfc",
     "branch": "feat/kb-redesign",
-    "entry_count": 322
+    "entry_count": 324
   },
   "entries": [
     {
@@ -1476,6 +1476,25 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:29.306Z"
+    },
+    {
+      "id": "39cb4bc6-607a-44b2-81e7-4fc19455ea84",
+      "type": "learning",
+      "title": "windows-hide-spawn-guard test fails when node_modules holds an MCP SDK older than package.json requires",
+      "summary": "tests/windows-hide-spawn-guard.test.ts reads the INSTALLED @modelcontextprotocol/sdk stdio.js and fails on a stale node_modules (e.g. 1.27.1 vs ^1.32.1), independent of any source change; rerun npm install before blaming the branch.",
+      "symbols": [],
+      "source_files": [
+        "tests/windows-hide-spawn-guard.test.ts",
+        "packages/apra-fleet-se/test/contracts-schema-dist-staleness-guard.test.mjs",
+        "package.json"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-09T07:31:24.442Z",
+      "source_file_hashes": {
+        "package.json": "20a977e17f10ae0d562664a140e5e8e704fa2fe4",
+        "packages/apra-fleet-se/test/contracts-schema-dist-staleness-guard.test.mjs": "1db1ddf04d24ac369fb510e69d39af9406640bbe",
+        "tests/windows-hide-spawn-guard.test.ts": "4c9559d8687585ef3f9e8904884d3d4403109870"
+      }
     },
     {
       "id": "3a7ed082-f56d-4a58-9dad-a1a234c19ff7",
@@ -4047,6 +4066,31 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:29.106Z"
+    },
+    {
+      "id": "b287d2c7-ecc8-4f9a-aa2c-09e474100cba",
+      "type": "knowledge",
+      "title": "gitnexus child recycle is reference-counted: retire on recycle, close when in-flight calls drain",
+      "summary": "callGitNexus no longer closes the shared gitnexus child on a recycle; it retires the ClientEntry so new calls get a fresh child, and closes the retired child when its inFlight count reaches zero.",
+      "symbols": [
+        "callGitNexus",
+        "recycleConnection",
+        "retireEntry",
+        "releaseEntry",
+        "acquireGitNexusEntry",
+        "getGitNexusEntry",
+        "ClientEntry"
+      ],
+      "source_files": [
+        "src/tools/code-intelligence-gitnexus.ts",
+        "tests/code-gitnexus-recycle-inflight.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-09T07:31:22.095Z",
+      "source_file_hashes": {
+        "src/tools/code-intelligence-gitnexus.ts": "4cdd1990546bffb8fcbe57e020e0f94a4931067d",
+        "tests/code-gitnexus-recycle-inflight.test.ts": "cfbd8657fbdf76fe87057f7ee18587de2ea60d04"
+      }
     },
     {
       "id": "b3879aa4-7d81-4dff-843c-ced977cf7993",
