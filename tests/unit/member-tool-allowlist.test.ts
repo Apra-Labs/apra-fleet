@@ -96,4 +96,20 @@ describe('member tool allowlist', () => {
       expect(isMemberAllowedTool(t)).toBe(false);
     }
   });
+
+  it('the kb-reconciler tag profile grants a member agent session only tools a member session is served', () => {
+    const profile = JSON.parse(fs.readFileSync(path.resolve(__dirname, '../../skills/fleet/profiles/tag-kb-reconciler.json'), 'utf8')) as Record<string, string[]>;
+    const roles = Object.keys(profile);
+    expect(roles.length).toBeGreaterThan(0);
+    for (const role of roles) {
+      const fleetTools = profile[role]
+        .filter(g => g.startsWith('mcp__apra-fleet__'))
+        .map(g => g.slice('mcp__apra-fleet__'.length));
+      expect(fleetTools.length, role).toBeGreaterThan(0);
+      for (const t of fleetTools) {
+        expect(MEMBER_ALLOWED_TOOLS, `${role} grants ${t}`).toContain(t);
+        expect(MEMBER_DENIED_TOOLS, `${role} grants ${t}`).not.toContain(t);
+      }
+    }
+  });
 });

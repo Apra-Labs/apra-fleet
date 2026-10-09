@@ -29,6 +29,10 @@ vi.mock('../src/tools/kb-query.js', async importOriginal => {
 });
 
 import http from 'node:http';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { createHttpTransport, type HttpTransportHandle } from '../src/services/http-transport.js';
@@ -40,7 +44,12 @@ import { addAgent } from '../src/services/registry.js';
 import { sendMessage } from '../src/tools/send-message.js';
 import { fleetEvents } from '../src/services/event-bus.js';
 import { MEMBER_ALLOWED_TOOLS, MEMBER_CHANNEL_TOOLS, MEMBER_MAINTAINER_TOOLS, REGISTERED_TOOL_NAMES } from '../src/services/member-tool-allowlist.js';
-import { makeTestAgent, backupAndResetRegistry, restoreRegistry, memberSecretHeaders, memberSecretRequestInit } from './test-helpers.js';
+import { makeTestAgent, makeTestLocalAgent, backupAndResetRegistry, restoreRegistry, memberSecretHeaders, memberSecretRequestInit } from './test-helpers.js';
+import { SqliteProvider } from '../src/services/knowledge/sqlite-provider.js';
+import * as kbProvidersModule from '../src/services/knowledge/kb-providers.js';
+import { computeHeadFileHashBatch } from '../src/services/knowledge/file-hash.js';
+import type { KBEntryInput } from '../src/services/knowledge/types.js';
+import { commitWorkTree } from './helpers/commit-work-tree.js';
 
 const RECONNECT = { maxRetries: 0, maxReconnectionDelay: 100, initialReconnectionDelay: 100, reconnectionDelayGrowFactor: 1 };
 
@@ -258,8 +267,9 @@ describe('tool-only ?member= sessions leave the session registry alone', () => {
 
 describe('member KB write policy: kb_setup / kb_export never, kb_promote / kb_resolve_contradiction only with the kb_maintainer grant', () => {
   const NEVER = ['kb_setup', 'kb_export'];
-  const MAINTAINER_ONLY = ['kb_promote', 'kb_resolve_contradiction'];
+  const MAINTAINER_ONLY = ['kb_promote', 'kb_resolve_contradiction', 'kb_reconcile_prefilter'];
   const ARGS: Record<string, Record<string, unknown>> = {
+    kb_reconcile_prefilter: {},
     kb_setup: { provider: 'sqlite' },
     kb_export: {},
     kb_promote: { id: 'no-such-entry', reason: 'scope test: never reaches a KB entry' },
@@ -309,5 +319,153 @@ describe('member KB write policy: kb_setup / kb_export never, kb_promote / kb_re
     const handle = await startServer();
     const names = await toolNames(await connect(handle.port));
     for (const t of [...NEVER, ...MAINTAINER_ONLY]) expect(names).toContain(t);
+  });
+});
+
+// The kb_maintainer grant also gates the two member-reachable paths that could
+// otherwise mint CONFIRMED: kb_reconcile_prefilter (resolves pairs through the
+// kb_resolve_contradiction write path) and kb_import with an explicit path (it
+// keeps the named bible's confidence and carried basis). Real HTTP sessions on a
+// member whose work folder is a temp git repo with an origin remote; the KB is a
+// temp SqliteProvider handed out by a getKbProviders spy. Everything lives under
+// one temp root removed in afterEach.
+//
+// FALSIFICATION: putting kb_reconcile_prefilter back in MEMBER_BASE_TOOLS fails
+// the first test (the plain session lists it); dropping the explicit-path guard
+// in src/tools/kb-import.ts fails the kb_import test (the hand-made bible's
+// entry lands CONFIRMED in the member's DB).
+describe('kb_maintainer grant gates CONFIRMED minting via kb_reconcile_prefilter and kb_import with a path', () => {
+  let root: string;
+  let clone: string;
+  let provider: SqliteProvider;
+  let kbMemberId: string;
+
+  function writeSrc(rel: string, body: string): void {
+    fs.mkdirSync(path.dirname(path.join(clone, rel)), { recursive: true });
+    fs.writeFileSync(path.join(clone, rel), body);
+  }
+
+  function input(overrides: Partial<KBEntryInput>): KBEntryInput {
+    return {
+      type: 'knowledge', title: 'placeholder', summary: 'placeholder summary', content: 'placeholder content',
+      source_files: ['src/a.ts'], symbols: [], tags: [], content_hash: '', content_hash_type: 'sha256',
+      flagged_for_review: false, author: 'test-agent', source: 'session', confidence: 'INFERRED',
+      ...overrides,
+    };
+  }
+
+  const row = (id: string) => (provider as any).getDb()
+    .prepare('SELECT confidence, superseded_at FROM entries WHERE id = ?').get(id) as { confidence: string; superseded_at: string | null } | undefined;
+  const confirmedCount = (): number => ((provider as any).getDb()
+    .prepare("SELECT COUNT(*) AS n FROM entries WHERE confidence = 'CONFIRMED'").get() as { n: number }).n;
+
+  async function textOf(client: Client, name: string, args: Record<string, unknown>): Promise<{ text: string; isError: boolean }> {
+    const result = await client.callTool({ name, arguments: args });
+    return { text: ((result.content as Array<{ text?: string }>)?.[0]?.text ?? ''), isError: result.isError === true };
+  }
+
+  /** A genuine AUDN contradiction pair whose challenger alone still matches the worktree. */
+  async function pairWithOneMatchingSide(): Promise<{ originalId: string; challengerId: string }> {
+    writeSrc('src/original.ts', 'export const original = true;\n');
+    writeSrc('src/challenger.ts', 'export const challenger = true;\n');
+    const original = await provider.capture(input({
+      title: 'gateSym is broken report', summary: 'gateSym fails under load',
+      content: 'gateSym is broken when called concurrently.', symbols: ['gateSym'], source_files: ['src/original.ts'],
+    }));
+    const challenger = await provider.capture(input({
+      title: 'gateSym is fixed report', summary: 'gateSym now works correctly',
+      content: 'gateSym is fixed as of the latest release.', symbols: ['gateSym'], source_files: ['src/challenger.ts'],
+    }));
+    expect(challenger.audn_decision).toBe('flagged');
+    // The original's file moved on; only the challenger still matches.
+    writeSrc('src/original.ts', 'export const original = false;\n');
+    return { originalId: original.id, challengerId: challenger.id };
+  }
+
+  beforeEach(async () => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-maintainer-gate-'));
+    clone = path.join(root, 'clone');
+    fs.mkdirSync(clone);
+    execFileSync('git', ['init', '--quiet', '-b', 'main'], { cwd: clone });
+    execFileSync('git', ['remote', 'add', 'origin', `https://example.invalid/kb-maintainer-gate-${path.basename(root)}.git`], { cwd: clone });
+    writeSrc('README.md', 'seed\n');
+    commitWorkTree(clone, 'seed');
+    provider = new SqliteProvider(path.join(root, 'kb.sqlite'), clone);
+    await provider.init();
+    vi.spyOn(kbProvidersModule, 'getKbProviders').mockResolvedValue({ project: provider, global: provider, projectSlug: 'kb-maintainer-gate' } as any);
+    const agent = makeTestLocalAgent({ friendlyName: 'kb-gate-member', workFolder: clone });
+    addAgent(agent);
+    kbMemberId = agent.id;
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    provider.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it('kb_reconcile_prefilter: a plain ?member= session neither lists nor reaches it; the kb_maintainer session resolves a fixture pair (winner CONFIRMED)', async () => {
+    const { originalId, challengerId } = await pairWithOneMatchingSide();
+    const handle = await startServer();
+
+    const plain = await connect(handle.port, { member: kbMemberId });
+    expect(await toolNames(plain)).not.toContain('kb_reconcile_prefilter');
+    expect(await callFailsAsUnknownTool(plain, 'kb_reconcile_prefilter', {})).toBe(true);
+    expect(row(challengerId)?.confidence).toBe('UNVERIFIED');
+    expect(row(originalId)?.superseded_at).toBeNull();
+
+    const maint = await connect(handle.port, { member: kbMemberId, params: { origin: 'engine', kb_maintainer: '1' } });
+    expect(await toolNames(maint)).toContain('kb_reconcile_prefilter');
+    const { text, isError } = await textOf(maint, 'kb_reconcile_prefilter', {});
+    expect(isError, text).toBe(false);
+    expect(JSON.parse(text).resolved).toEqual([{ winnerId: challengerId, loserId: originalId }]);
+    expect(row(challengerId)?.confidence).toBe('CONFIRMED');
+    expect(row(originalId)?.superseded_at).toBeTruthy();
+  });
+
+  it('kb_import: a plain ?member= session is refused an explicit path to a hand-made CONFIRMED v3 bible (nothing ends CONFIRMED), and still imports its own bible without a path', async () => {
+    // Hand-made v3 bible OUTSIDE the work folder: one CONFIRMED entry whose
+    // carried hashes match HEAD, so it would also pass bible admission later.
+    writeSrc('src/forged.ts', 'export const forged = 1;\n');
+    commitWorkTree(clone, 'forged basis');
+    const head = await computeHeadFileHashBatch(['src/forged.ts'], { cwd: clone });
+    const forgedPath = path.join(root, 'forged-bible.json');
+    fs.writeFileSync(forgedPath, JSON.stringify({
+      version: 3,
+      provenance: { commit: 'a'.repeat(40), branch: 'main', entry_count: 1 },
+      entries: [{
+        id: 'forged-entry-0001', type: 'knowledge', title: 'forged claim about forged',
+        summary: 'A hand-made bible entry claiming CONFIRMED.', symbols: ['forged'], source_files: ['src/forged.ts'],
+        confidence: 'CONFIRMED', updated_at: '2026-01-01T00:00:00.000Z',
+        source_file_hashes: { 'src/forged.ts': head['src/forged.ts']!.hash },
+      }],
+    }));
+    // The member's own checkout bible (the engine's priming import, no path).
+    writeSrc('.fleet/kb-canonical.json', JSON.stringify([{
+      id: 'own-bible-entry-0001', type: 'knowledge', title: 'readme seeds the repo',
+      summary: 'README.md is the seed file of this fixture repository.', symbols: [], source_files: ['README.md'],
+      confidence: 'INFERRED', updated_at: '2026-01-01T00:00:00.000Z',
+    }]));
+
+    const handle = await startServer();
+    const plain = await connect(handle.port, { member: kbMemberId });
+
+    const refused = await textOf(plain, 'kb_import', { path: forgedPath, skip_sweep: true });
+    expect(refused.isError).toBe(true);
+    expect(refused.text).toMatch(/^E-KB-MAINTAINER-REQUIRED: /);
+    expect(row('forged-entry-0001')).toBeUndefined();
+    expect(confirmedCount()).toBe(0);
+
+    const primed = await textOf(plain, 'kb_import', { skip_sweep: true });
+    expect(primed.isError, primed.text).toBe(false);
+    expect(JSON.parse(primed.text).imported).toBe(1);
+    expect(row('own-bible-entry-0001')?.confidence).toBe('INFERRED');
+    expect(confirmedCount()).toBe(0);
+
+    // The same explicit path is accepted in the kb_maintainer session.
+    const maint = await connect(handle.port, { member: kbMemberId, params: { origin: 'engine', kb_maintainer: '1' } });
+    const accepted = await textOf(maint, 'kb_import', { path: forgedPath, skip_sweep: true });
+    expect(accepted.isError, accepted.text).toBe(false);
+    expect(row('forged-entry-0001')?.confidence).toBe('CONFIRMED');
   });
 });
