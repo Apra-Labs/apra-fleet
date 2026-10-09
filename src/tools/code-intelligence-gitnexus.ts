@@ -12,16 +12,42 @@ import { indexGeneration, readGitNexusIndexState } from './code-index-state.js';
 import { logError } from '../utils/log-helpers.js';
 import { missingOnServerPathMessage, npxUnavailableReason } from '../utils/find-on-path.js';
 
-let sharedClient: Client | null = null;
-let connectionPromise: Promise<Client> | null = null;
+// ONE gitnexus child serves every repo; each live child is a ClientEntry.
+//
+// RECYCLING IS REFERENCE-COUNTED (apra-fleet-b4g.139.9.1). A recycle (a repo's
+// index generation changed, or a call failed on the child) used to close the
+// shared child immediately, so a call for ANOTHER repo already running on it
+// died with a transport error. Now a recycle only RETIRES the entry: new
+// calls get a fresh child at once, and the retired child is closed when its
+// last in-flight call finishes. Chosen over one child per repo because a
+// child per repo multiplies long-lived processes by the number of repos a
+// server ever answers for, while the shared child plus refcount keeps the
+// process count bounded (at most one retired child per recycle, alive only
+// for the duration of the calls already running on it).
+//
+// The served-generation map lives ON the entry: it records the index
+// generation each repo had when THIS child last answered for it, so an
+// answer that completes on a retired child never vouches for the fresh one.
+interface ClientEntry {
+  client: Client;
+  /** Calls currently running on this child. */
+  inFlight: number;
+  /** No new calls may start on it; close once inFlight reaches zero. */
+  retired: boolean;
+  closed: boolean;
+  /** Index generation per repo this child last answered from (see below). */
+  servedGeneration: Map<string, string>;
+}
+
+let sharedEntry: ClientEntry | null = null;
+let connectionPromise: Promise<ClientEntry> | null = null;
 
 // Index generation (indexGeneration: meta lastCommit|indexedAt) each repo had
-// when the CURRENT gitnexus child last answered for it. The child is
-// long-lived and keeps its own handle on a repo's index; when an analyze
-// replaces that index on disk, the old handle can read a half-old,
+// when a child last answered for it, kept per child (ClientEntry above). The
+// child is long-lived and keeps its own handle on a repo's index; when an
+// analyze replaces that index on disk, the old handle can read a half-old,
 // half-new graph and resolve a name to an unrelated symbol. A changed
 // generation therefore recycles the child before the next call.
-const servedGeneration = new Map<string, string>();
 
 // Structured, actionable "offline" result. Same shape as a normal MCP tool
 // result (content array of text plus isError) so callers never receive an
@@ -36,34 +62,52 @@ function offlineResult(detail?: string): { content: Array<{ type: 'text'; text: 
   return { content: [{ type: 'text', text }], isError: true };
 }
 
-// Reset the shared connection state so the next call reconnects from scratch.
-function resetConnection(): void {
-  sharedClient = null;
-  connectionPromise = null;
-  servedGeneration.clear();
+function closeEntry(entry: ClientEntry): void {
+  if (entry.closed) return;
+  entry.closed = true;
+  try {
+    const closing = (entry.client as { close?: () => Promise<void> }).close?.();
+    if (closing && typeof closing.catch === 'function') closing.catch(() => { /* already gone */ });
+  } catch { /* already gone */ }
 }
 
-/** Drop the current child (closing it) so the next call starts a fresh one. */
-function recycleConnection(): void {
-  const old = sharedClient;
-  resetConnection();
-  if (old) {
-    try {
-      const closing = (old as { close?: () => Promise<void> }).close?.();
-      if (closing && typeof closing.catch === 'function') closing.catch(() => { /* already gone */ });
-    } catch { /* already gone */ }
+/**
+ * Retire `entry`: if it is the shared child, unshare it so the next call
+ * starts a fresh one; close it now if nothing is running on it, otherwise
+ * when its last in-flight call is released.
+ */
+function retireEntry(entry: ClientEntry): void {
+  if (sharedEntry === entry) {
+    sharedEntry = null;
+    connectionPromise = null;
   }
+  entry.retired = true;
+  if (entry.inFlight === 0) closeEntry(entry);
 }
 
-async function getGitNexusClient(): Promise<Client> {
-  if (sharedClient) return sharedClient;
+/** Retire the current child (if any) so the next call starts a fresh one. */
+function recycleConnection(): void {
+  if (sharedEntry) retireEntry(sharedEntry);
+}
+
+function releaseEntry(entry: ClientEntry): void {
+  entry.inFlight -= 1;
+  if (entry.retired && entry.inFlight === 0) closeEntry(entry);
+}
+
+async function getGitNexusEntry(): Promise<ClientEntry> {
+  if (sharedEntry) return sharedEntry;
   if (connectionPromise) return connectionPromise;
 
-  connectionPromise = (async () => {
+  // Declared before the body so the body can compare it by identity (a later
+  // recycle may have replaced connectionPromise while connect was running).
+  // eslint-disable-next-line prefer-const
+  let pending: Promise<ClientEntry> | null = null;
+  pending = (async () => {
     // Fail with the cause, not a bare "spawn npx ENOENT": a service-managed
     // server only has the PATH its service definition recorded at install.
     const npxReason = npxUnavailableReason();
-    if (npxReason) throw new Error(npxReason); // callGitNexus resets the connection
+    if (npxReason) throw new Error(npxReason); // failure reset below
     const transport = new StdioClientTransport({
       command: 'npx',
       args: ['-y', GITNEXUS_PACKAGE_SPEC, 'mcp'],
@@ -74,37 +118,59 @@ async function getGitNexusClient(): Promise<Client> {
       { name: 'apra-fleet', version: '1.0.0' },
       { capabilities: {} },
     );
+    const entry: ClientEntry = { client, inFlight: 0, retired: false, closed: false, servedGeneration: new Map() };
 
     // Transport death reset: if the child process dies (close) or the
-    // transport/client errors after a successful connect, drop the cached
-    // client and promise so the next call reconnects. Guard on identity so a
-    // late handler for a client that was already replaced does not clobber a
-    // newer connection.
+    // transport/client errors after a successful connect, stop handing it
+    // out so the next call reconnects. Guard on identity so a late handler
+    // for a child that was already replaced does not clobber a newer one.
     const onDeath = (): void => {
-      if (sharedClient === client) {
-        resetConnection();
-      }
+      // retireEntry unshares only if this entry is still the shared one, and
+      // closes it (idempotently) once nothing is running on it.
+      retireEntry(entry);
     };
     transport.onclose = onDeath;
     transport.onerror = onDeath;
     client.onclose = onDeath;
     client.onerror = onDeath;
 
-    try {
-      await client.connect(transport);
-    } catch (err) {
-      // Failure reset: clear the poisoned promise (sharedClient stays null) so
-      // the NEXT call attempts a brand-new connection instead of awaiting a
-      // rejected promise forever. Rethrow so the current caller sees failure.
-      connectionPromise = null;
-      throw err;
+    await client.connect(transport);
+
+    if (connectionPromise === pending) {
+      // A child that died while connecting is never shared; clear the
+      // resolved promise too, or every later call would get it back.
+      if (entry.retired) connectionPromise = null;
+      else sharedEntry = entry;
     }
-
-    sharedClient = client;
-    return client;
+    return entry;
   })();
+  const settled: Promise<ClientEntry> = pending;
+  connectionPromise = settled;
+  // Failure reset: clear the poisoned promise (sharedEntry stays null) so the
+  // NEXT call attempts a brand-new connection instead of awaiting a rejected
+  // promise forever; the current caller still sees the rejection. Attached
+  // here, not inside the async body, because the npx check throws before the
+  // body's first await -- i.e. before connectionPromise is even assigned.
+  settled.catch(() => {
+    if (connectionPromise === settled) connectionPromise = null;
+  });
+  return settled;
+}
 
-  return connectionPromise;
+/**
+ * Take a reference on a live, non-retired child. A child retired between its
+ * connect resolving and this continuation running (another call recycled it)
+ * is skipped, never used: it may already be closed.
+ */
+async function acquireGitNexusEntry(): Promise<ClientEntry> {
+  for (;;) {
+    const entry = await getGitNexusEntry();
+    if (!entry.retired) {
+      entry.inFlight += 1;
+      return entry;
+    }
+    if (entry.inFlight === 0) closeEntry(entry);
+  }
 }
 
 // Freshness metadata (F2.2): when a call carries a `repo` param and the index
@@ -191,19 +257,25 @@ async function callGitNexus(name: string, params: Record<string, unknown>): Prom
   if (hasRepo) {
     ensureGitNexusIndexReady(repo as string);
     generation = indexGeneration(readGitNexusIndexState(repo as string));
-    const seen = servedGeneration.get(repo as string);
+    const seen = sharedEntry?.servedGeneration.get(repo as string);
     if (seen !== undefined && seen !== generation) recycleConnection();
   }
 
   let result: unknown;
+  let entry: ClientEntry | null = null;
   try {
-    const client = await getGitNexusClient();
-    result = await client.callTool({ name, arguments: params });
+    entry = await acquireGitNexusEntry();
+    result = await entry.client.callTool({ name, arguments: params });
   } catch (err) {
-    resetConnection();
+    // Retire only the child THIS call ran on -- never a fresh child another
+    // call already swapped in. A failed connect has no entry: the connect
+    // path already cleared its poisoned promise.
+    if (entry) retireEntry(entry);
     let detail = err instanceof Error ? err.message : String(err);
     if (/\bENOENT\b/.test(detail) && /npx/.test(detail)) detail = `${detail}: ${missingOnServerPathMessage('npx')}`;
     return offlineResult(detail);
+  } finally {
+    if (entry) releaseEntry(entry);
   }
 
   if (!hasRepo) return result;
@@ -211,10 +283,10 @@ async function callGitNexus(name: string, params: Record<string, unknown>): Prom
   const generationAfter = indexGeneration(readGitNexusIndexState(repo as string));
   if (!after.ready || generationAfter !== generation) {
     // The child may hold a handle on the index that just changed.
-    recycleConnection();
+    retireEntry(entry as ClientEntry);
     throw indexChangedDuringCallError(repo as string, after);
   }
-  servedGeneration.set(repo as string, generation);
+  (entry as ClientEntry).servedGeneration.set(repo as string, generation);
   const note = computeFreshnessNote(repo as string);
   return note ? appendFreshnessNote(result, note) : result;
 }
