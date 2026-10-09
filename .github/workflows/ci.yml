@@ -53,8 +53,63 @@ jobs:
         run: Add-Content $env:GITHUB_ENV "npm_config_msvs_version=2022"
         shell: pwsh
 
+      # node_modules cache (exact-key only, no restore-keys). Key covers OS,
+      # arch, runner image, the installed node -v (native addon ABI) and every
+      # manifest, so a hit is only taken when npm ci would produce the same
+      # tree. Bump nm-v1 to bust. Saved right after npm ci so the entry holds
+      # the pristine install, not post-build/test state.
+      # Install-time scripts audit: root `prepare` only copies git hooks into
+      # .git/hooks (not needed in CI); ssh2/cpu-features/esbuild/fsevents
+      # install scripts write only inside node_modules, so a hit carries their
+      # output. No workspace has install scripts. apra-pm is not a workspace
+      # and is never installed here, so its lockfile is not part of the key.
+      - name: Compute node_modules cache key
+        id: nm-key
+        shell: bash
+        run: echo "key=nm-v1-${{ runner.os }}-${{ runner.arch }}-${{ matrix.runner }}-${ImageOS}-node$(node -v)-${{ hashFiles('package-lock.json', 'package.json', 'packages/*/package.json') }}" >> "$GITHUB_OUTPUT"
+
+      - name: Restore node_modules cache
+        id: nm-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            node_modules
+            packages/*/node_modules
+          key: ${{ steps.nm-key.outputs.key }}
+
       - name: Install dependencies
+        if: steps.nm-cache.outputs.cache-hit != 'true'
         run: npm ci
+
+      - name: Save node_modules cache
+        if: steps.nm-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            node_modules
+            packages/*/node_modules
+          key: ${{ steps.nm-key.outputs.key }}
+
+      # A cache that dereferenced a workspace link would restore a stale copy
+      # of packages/* instead of a link to the live source. Fail loudly.
+      - name: Verify workspace links resolve to packages/
+        shell: bash
+        run: |
+          node -e "
+            const fs = require('fs'), path = require('path');
+            const lock = JSON.parse(fs.readFileSync('package-lock.json', 'utf8'));
+            let bad = 0;
+            for (const [p, v] of Object.entries(lock.packages)) {
+              if (!v.link) continue;
+              const want = fs.realpathSync(path.resolve(v.resolved));
+              let got = '<missing>';
+              try { got = fs.realpathSync(p); } catch {}
+              const ok = got === want && fs.lstatSync(p).isSymbolicLink();
+              console.log((ok ? '[OK] ' : '[FAIL] ') + p + ' -> ' + got);
+              if (!ok) bad++;
+            }
+            if (bad) { console.error('::error::' + bad + ' workspace link(s) in node_modules are not links to packages/'); process.exit(1); }
+          "
 
       - name: Build
         run: npm run build
@@ -235,8 +290,58 @@ jobs:
         run: Add-Content $env:GITHUB_ENV "npm_config_msvs_version=2022"
         shell: pwsh
 
+      # node_modules cache (exact-key only, no restore-keys). Key covers OS,
+      # arch, runner image, the installed node -v (native addon ABI) and every
+      # manifest, so a hit is only taken when npm ci would produce the same
+      # tree. Bump nm-v1 to bust. Saved right after npm ci so the entry holds
+      # the pristine install, not post-build/test state.
+      - name: Compute node_modules cache key
+        id: nm-key
+        shell: bash
+        run: echo "key=nm-v1-${{ runner.os }}-${{ runner.arch }}-${{ matrix.os }}-${ImageOS}-node$(node -v)-${{ hashFiles('package-lock.json', 'package.json', 'packages/*/package.json') }}" >> "$GITHUB_OUTPUT"
+
+      - name: Restore node_modules cache
+        id: nm-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            node_modules
+            packages/*/node_modules
+          key: ${{ steps.nm-key.outputs.key }}
+
       - name: Install dependencies
+        if: steps.nm-cache.outputs.cache-hit != 'true'
         run: npm ci
+
+      - name: Save node_modules cache
+        if: steps.nm-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            node_modules
+            packages/*/node_modules
+          key: ${{ steps.nm-key.outputs.key }}
+
+      # A cache that dereferenced a workspace link would restore a stale copy
+      # of packages/* instead of a link to the live source. Fail loudly.
+      - name: Verify workspace links resolve to packages/
+        shell: bash
+        run: |
+          node -e "
+            const fs = require('fs'), path = require('path');
+            const lock = JSON.parse(fs.readFileSync('package-lock.json', 'utf8'));
+            let bad = 0;
+            for (const [p, v] of Object.entries(lock.packages)) {
+              if (!v.link) continue;
+              const want = fs.realpathSync(path.resolve(v.resolved));
+              let got = '<missing>';
+              try { got = fs.realpathSync(p); } catch {}
+              const ok = got === want && fs.lstatSync(p).isSymbolicLink();
+              console.log((ok ? '[OK] ' : '[FAIL] ') + p + ' -> ' + got);
+              if (!ok) bad++;
+            }
+            if (bad) { console.error('::error::' + bad + ' workspace link(s) in node_modules are not links to packages/'); process.exit(1); }
+          "
 
       - name: Inject version from tag
         if: startsWith(github.ref, 'refs/tags/v')
