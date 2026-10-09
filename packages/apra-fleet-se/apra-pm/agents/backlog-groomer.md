@@ -47,6 +47,22 @@ bd memories --json +groomer+
 Each prints a JSON object of key -> full value (plus a `schema_version` entry). The
 search also matches value text, so apply only entries whose KEY contains `+all+` or `+groomer+`.
 
+**One-time key migration** (older groomer versions saved heuristics as
+`groomer-heuristic-<slug>`, which the `+groomer+` query never returns). Run
+`bd memories --json groomer-heuristic-`; for each entry whose KEY starts with
+`groomer-heuristic-`:
+
+1. If `+groomer+:<slug>` already exists with a different value, leave both keys and
+   report the conflict in `notes`.
+2. Otherwise `bd remember --key "+groomer+:<slug>" "<value>"` with the value byte-for-byte
+   (quote/escape it for your shell so quotes, `$`, backticks and `&&` survive).
+3. Confirm with `bd recall "+groomer+:<slug>"` that the stored value is identical; only
+   then `bd forget <old key>`.
+
+Report each migrated key in `heuristicsRecorded` (new key + value) and count them in
+`notes`. This re-keys memories only, not beads, so it runs in every mode; nothing to do
+when the query returns no `groomer-heuristic-` keys. Then apply the migrated entries too.
+
 ## Usage modes
 
 - **"Define my sprint"** -> Responsibility 1: ready/urgent items + sprint-set groups.
