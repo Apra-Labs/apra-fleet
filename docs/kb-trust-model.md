@@ -50,3 +50,28 @@ Enforcement applies only to captures made from the gate onward.
 - Auto-harvest: entries produced by the kb_harvest autowire are regex-extracted
   from session transcripts, unreviewed, and always captured at UNVERIFIED. Harvest
   can never mint CONFIRMED -- the same gate covers it.
+
+## The kb_maintainer grant protects CONFIRMED entries from member sessions
+
+A member session (one without the kb_maintainer grant) can neither mint nor
+retire CONFIRMED entries:
+
+- `kb_reconcile_prefilter` is a maintainer-only tool (it sits in the maintainer
+  tool set of the member tool allowlist), and the reconciler tag profile grants
+  no write tools.
+- `kb_import` with an explicit `path` other than the session's own bible is
+  refused with `E-KB-MAINTAINER-REQUIRED` unless the session holds the grant.
+- `kb_invalidate` (by `ids` or by `files`) keeps CONFIRMED entries live and
+  reports them in `refused`; the underlying provider `discard` and `invalidate`
+  take a keep-CONFIRMED flag, so the guarantee holds below the tool layer.
+
+### Known gaps
+
+These paths can still change CONFIRMED state from a member session and are
+tracked as backlog work:
+
+- `kb_capture` with `supersedes` can retire a CONFIRMED entry (it becomes the
+  explicit-supersede target and is retired as `superseded`; the next bible
+  commit drops it).
+- `kb_import` with no path, or with the own path, reads the uncommitted bible
+  file from the work tree, which a member agent can edit.
