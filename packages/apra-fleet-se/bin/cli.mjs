@@ -582,6 +582,37 @@ export function attachViewerErrorHandler(server, port, opts = {}) {
 // the failure -- and precisely which members block the resume -- is surfaced to
 // the operator instead of lost to a console.error line. Extracted and exported
 // so the rethrow-and-name behavior is unit-testable without a live engine.
+// Launch ordering: launch alignment (prepareLaunchTopology) stashes WIP and
+// switches branches on members, so it must never run on a member another
+// sprint holds -- that sprint's in-flight work would be moved under it. Reserve
+// first (reserveForLaunch reports members another sprint already holds and
+// then hands back what it took), align only when nothing is held, and release
+// every reservation again when alignment refuses or throws, so a refused
+// launch leaves no reservation behind. Exported so the ordering is unit-
+// testable without a live server.
+export async function reserveThenAlign({ sprintReservation, align } = {}) {
+    const { held } = await sprintReservation.reserveForLaunch();
+    if (held.length > 0) {
+        return {
+            ok: false,
+            reserved: false,
+            message: `member(s) ${held.join(', ')} are reserved by another running sprint, so no member was aligned or changed. Wait for that sprint to finish or release its reservation (member_reservation), then launch again.`,
+        };
+    }
+    let topology;
+    try {
+        topology = await align();
+    } catch (err) {
+        await sprintReservation.releaseAll();
+        throw err;
+    }
+    if (!topology || !topology.ok) {
+        await sprintReservation.releaseAll();
+        return { ...(topology || { ok: false, message: 'launch alignment returned no result' }), reserved: false };
+    }
+    return { ...topology, reserved: true };
+}
+
 export async function reReserveOnResume({ sprintReservation, resyncMember, requestPause, log = () => {} } = {}) {
     try {
         return await sprintReservation.reReserveForResume({ resyncMember });
@@ -900,7 +931,29 @@ async function main() {
             return toAlignCommandResult(undefined, err);
         }
     };
-    const topology = await prepareLaunchTopology({
+    // eft.26.1 reservation: a sprint launched directly through this CLI
+    // (never routed through the supervisor's POST /api/sprints) reserves its
+    // members server-side, on the SAME opaque sprint id runner.js uses for the
+    // dolt-mutex/allocator (the sprint branch name), so the supervisor's
+    // overlap guard and execute_prompt's dispatch-time reservedBy check can see
+    // it. It is taken BEFORE launch alignment (reserveThenAlign) and released
+    // on EVERY exit path below: a refused alignment, a viewer port failure,
+    // normal success, a caught failure/stall-abort, or SIGINT.
+    const sprintReservation = createMemberReservationClient({
+        callTool: (name, args) => mcpClient.callTool(name, args),
+        members: validMembers,
+        sprintId: branchName,
+        log: (msg) => console.log(msg),
+    });
+    // Ctrl-C between the reserve and the sprint's own SIGINT handler (below)
+    // must not leave the members reserved.
+    const onLaunchSigint = () => {
+        sprintReservation.releaseAll()
+            .catch((err) => console.error('[member-reservation] release-on-SIGINT failed:', err))
+            .finally(() => process.exit(130));
+    };
+    process.once('SIGINT', onLaunchSigint);
+    const topology = await reserveThenAlign({ sprintReservation, align: () => prepareLaunchTopology({
         members: topologyMembers,
         mode: syncedMode ? 'synced' : 'legacy',
         baseBranch,
@@ -910,7 +963,7 @@ async function main() {
         getIdentity: (member) => runCommand('git rev-parse HEAD', member),
         getOriginUrl: (member) => runCommand('git remote get-url origin', member),
         doltProbe: (member) => runCommand('bd dolt pull', member),
-    });
+    }) });
     if (!topology.ok) {
         console.error(`Error: ${topology.message}`);
         transport.stop();
@@ -981,14 +1034,18 @@ async function main() {
         onError: (message) => {
             viewerFailed = true;
             console.error(`Error: ${message}`);
-            transport.stop();
-            process.exit(1);
+            sprintReservation.releaseAll()
+                .catch((err) => console.error('[member-reservation] release on viewer failure failed:', err && err.message ? err.message : err))
+                .finally(() => {
+                    transport.stop();
+                    process.exit(1);
+                });
         },
     });
 
     console.log(`Dashboard live at http://localhost:${viewerPort}`);
 
-    if (viewerFailed) return; // process.exit already called synchronously above
+    if (viewerFailed) return; // onError releases the reservations, then exits
 
     // apra-fleet-eft.26.1 (Reservation interop gap, Hole 1): a sprint
     // launched directly through this CLI (never routed through the
@@ -1000,13 +1057,7 @@ async function main() {
     // for the dolt-mutex/allocator (the sprint branch name), and release on
     // EVERY exit path below: normal success, a caught failure/stall-abort,
     // or SIGINT.
-    const sprintReservation = createMemberReservationClient({
-        callTool: (name, args) => mcpClient.callTool(name, args),
-        members: validMembers,
-        sprintId: branchName,
-        log: (msg) => console.log(msg),
-    });
-    await sprintReservation.reserveAll();
+    // (The members were reserved above, before launch alignment.)
 
     // apra-fleet-p2to.4.2: reservation handling across a cooperative
     // pause/resume (apra-fleet-p2to.1's engine primitive). On 'paused' hand
@@ -1083,6 +1134,7 @@ async function main() {
             .catch((err) => console.error('[member-reservation] release-on-SIGINT failed:', err))
             .finally(() => process.exit(130));
     };
+    process.removeListener('SIGINT', onLaunchSigint);
     process.once('SIGINT', onSigint);
 
     try {
