@@ -794,3 +794,153 @@ describe('(k) report_status closes the busy->online/idle loop over the real MCP 
     expect(sessionRegistry.get(issuer.workspaceId(), memberId)?.status).toBe('online');
   });
 });
+
+// ---------------------------------------------------------------------------
+// (n) Every request on an existing mcp-session-id is bound to the identity that
+// opened the session: a different member JWT (or a JWT on an access-secret
+// session) is refused with 403 and the session is left intact.
+// ---------------------------------------------------------------------------
+describe('(n) cross-identity GET/DELETE/POST on an MCP session is refused with 403', () => {
+  const memberA = 'sessbind-member-a';
+  const memberB = 'sessbind-member-b';
+
+  afterEach(() => {
+    const ws = getTokenIssuer().workspaceId();
+    sessionRegistry.unregister(ws, memberA);
+    sessionRegistry.unregister(ws, memberB);
+  });
+
+  function registerEcho(server: McpServer): void {
+    server.tool('echo', 'test echo', {}, async () => ({ content: [{ type: 'text' as const, text: 'echo-ok' }] }));
+  }
+
+  async function echoServer(): Promise<HttpTransportHandle> {
+    const handle = await createHttpTransport({ registerTools: registerEcho, preferredPort: 0 });
+    handles.push(handle);
+    return handle;
+  }
+
+  function jwtHeaders(memberId: string): Record<string, string> {
+    const token = getTokenIssuer().issue({ member_id: memberId, role: 'doer', work_folder: '/tmp/sessbind' });
+    return { Authorization: `Bearer ${token}` };
+  }
+
+  function rawMcp(
+    port: number,
+    method: 'GET' | 'POST' | 'DELETE',
+    headers: Record<string, string>,
+    body?: unknown,
+  ): Promise<{ status: number; sid: string | undefined; body: string }> {
+    return new Promise((resolve, reject) => {
+      const payload = body === undefined ? undefined : JSON.stringify(body);
+      const req = http.request(
+        {
+          hostname: '127.0.0.1',
+          port,
+          path: '/mcp',
+          method,
+          headers: {
+            Accept: method === 'GET' ? 'text/event-stream' : 'application/json, text/event-stream',
+            ...(payload !== undefined ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) } : {}),
+            ...headers,
+          },
+        },
+        (res) => {
+          const sid = res.headers['mcp-session-id'] as string | undefined;
+          if (method === 'GET') {
+            // A granted GET is a long-lived SSE stream: the status is the answer.
+            resolve({ status: res.statusCode ?? 0, sid, body: '' });
+            res.destroy();
+            return;
+          }
+          const chunks: Buffer[] = [];
+          res.on('data', (c) => chunks.push(c));
+          res.on('end', () => resolve({ status: res.statusCode ?? 0, sid, body: Buffer.concat(chunks).toString('utf8') }));
+        },
+      );
+      req.on('error', reject);
+      req.end(payload);
+    });
+  }
+
+  async function openSession(port: number, headers: Record<string, string>): Promise<string> {
+    const res = await rawMcp(port, 'POST', headers, {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'initialize',
+      params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'sessbind', version: '1.0.0' } },
+    });
+    expect(res.status).toBe(200);
+    expect(res.sid).toBeTruthy();
+    return res.sid!;
+  }
+
+  const toolsCall = { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'echo', arguments: {} } };
+
+  it("member A's JWT on a session opened with member B's JWT: GET, DELETE and POST tools/call -> 403; B's session still answers B", async () => {
+    const handle = await echoServer();
+    const sid = await openSession(handle.port, jwtHeaders(memberB));
+    const a = { ...jwtHeaders(memberA), 'mcp-session-id': sid };
+
+    const get = await rawMcp(handle.port, 'GET', a);
+    expect(get.status).toBe(403);
+    const del = await rawMcp(handle.port, 'DELETE', a);
+    expect(del.status).toBe(403);
+    expect(JSON.parse(del.body).error).toBe('session identity mismatch');
+    expect(del.body).not.toContain(sid);
+    expect(handle.sessions.has(sid)).toBe(true);
+    const post = await rawMcp(handle.port, 'POST', a, toolsCall);
+    expect(post.status).toBe(403);
+    expect(post.body).not.toContain('echo-ok');
+
+    const asB = await rawMcp(handle.port, 'POST', { ...jwtHeaders(memberB), 'mcp-session-id': sid }, toolsCall);
+    expect(asB.status).toBe(200);
+    expect(asB.body).toContain('echo-ok');
+  });
+
+  it("member A's JWT on a FULL-scope (access-secret) session: GET, DELETE and POST -> 403; the session survives", async () => {
+    const handle = await echoServer();
+    const sid = await openSession(handle.port, memberSecretHeaders());
+    const a = { ...jwtHeaders(memberA), 'mcp-session-id': sid };
+
+    expect((await rawMcp(handle.port, 'GET', a)).status).toBe(403);
+    expect((await rawMcp(handle.port, 'DELETE', a)).status).toBe(403);
+    expect((await rawMcp(handle.port, 'POST', a, toolsCall)).status).toBe(403);
+    expect(handle.sessions.has(sid)).toBe(true);
+  });
+
+  it("the access secret on a session opened with a member JWT -> 403", async () => {
+    const handle = await echoServer();
+    const sid = await openSession(handle.port, jwtHeaders(memberB));
+    const s = { ...memberSecretHeaders(), 'mcp-session-id': sid };
+    expect((await rawMcp(handle.port, 'POST', s, toolsCall)).status).toBe(403);
+    expect((await rawMcp(handle.port, 'DELETE', s)).status).toBe(403);
+    expect(handle.sessions.has(sid)).toBe(true);
+  });
+
+  it("the opener's own JWT on its own session: POST tools/call, GET and DELETE behave as before", async () => {
+    const handle = await echoServer();
+    const sid = await openSession(handle.port, jwtHeaders(memberB));
+    const b = { ...jwtHeaders(memberB), 'mcp-session-id': sid };
+
+    const post = await rawMcp(handle.port, 'POST', b, toolsCall);
+    expect(post.status).toBe(200);
+    expect(post.body).toContain('echo-ok');
+    expect((await rawMcp(handle.port, 'GET', b)).status).toBe(200);
+    expect((await rawMcp(handle.port, 'DELETE', b)).status).toBe(200);
+    expect(handle.sessions.has(sid)).toBe(false);
+  });
+
+  it("the opener's own access secret on its own FULL-scope session: POST tools/call, GET and DELETE behave as before", async () => {
+    const handle = await echoServer();
+    const sid = await openSession(handle.port, memberSecretHeaders());
+    const s = { ...memberSecretHeaders(), 'mcp-session-id': sid };
+
+    const post = await rawMcp(handle.port, 'POST', s, toolsCall);
+    expect(post.status).toBe(200);
+    expect(post.body).toContain('echo-ok');
+    expect((await rawMcp(handle.port, 'GET', s)).status).toBe(200);
+    expect((await rawMcp(handle.port, 'DELETE', s)).status).toBe(200);
+    expect(handle.sessions.has(sid)).toBe(false);
+  });
+});
