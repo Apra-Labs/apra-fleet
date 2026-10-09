@@ -226,12 +226,16 @@ jobs:
         shell: pwsh
 
       # Cached install + workspace link check; key design lives in the action.
-      # v* tag builds ship these binaries: clean npm ci, no cache restore/save.
-      - name: Install dependencies (node_modules cache; clean npm ci on v* tags)
+      # Push builds ship these binaries (v* tag releases, and the prereleases
+      # of main / feat/kb-redesign pushes): clean npm ci, no cache restore or
+      # save. Only pull_request and workflow_dispatch builds, which never
+      # publish, use the cache. (build-and-test keeps its cache on push: its
+      # output does not ship.)
+      - name: Install dependencies (node_modules cache on PR/dispatch; clean npm ci on push)
         uses: ./.github/actions/node-modules-cache
         with:
           runner-label: ${{ matrix.os }}
-          cache: ${{ !startsWith(github.ref, 'refs/tags/v') && 'true' || 'false' }}
+          cache: ${{ (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch') && 'true' || 'false' }}
 
       - name: Inject version from tag
         if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '_')
@@ -645,7 +649,9 @@ jobs:
   # release members may be downloading from).
   prerelease:
     needs: [package, build-binary]
-    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/feat/kb-redesign')
+    # push only: push builds use a clean npm ci (no node_modules cache, see
+    # build-binary), dispatch/PR builds may use the cache and never publish.
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/feat/kb-redesign')
     runs-on: ubuntu-latest
     permissions:
       contents: write
