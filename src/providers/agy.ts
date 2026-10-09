@@ -717,6 +717,20 @@ export function detectAgyPermissionDenial(result: SSHExecResult, agentOs?: Parse
       ? ' On Windows, Bash(<bin>:*) composes to command(<bin>) plus command(regex:<bin> .*), which allows <bin> with any arguments.'
       : ' Bash(<bin>:*) composes to command(<bin>) plus command(regex:<bin> .*): command(<bin>) matches <bin> and its arguments by word prefix, and a command line with $(...), backticks, brace expansion or redirections needs the regex rule, which matches the full line.';
   }
+
+  // A refusal of a fleet tool outside the member allowlist hit one of the deny
+  // rules compose writes on purpose (agyMemberDenyRules): member tool policy,
+  // never a missing grant. One such call makes the whole denial non-healable
+  // with no suggested grants, exactly like the Claude provider, so a complete
+  // reply is a warning and the heal stops not_healable instead of granting.
+  const policyRules = new Set(agyMemberDenyRules());
+  const policyCalls = denials.filter(d => d.action === 'mcp' && !!d.target && policyRules.has(`mcp(${d.target.trim()})`));
+  if (policyCalls.length > 0) {
+    for (const d of denials) d.suggestedGrants = [];
+    const tools = [...new Set(policyCalls.map(d => d.target!.trim()))].join(', ');
+    const policyHint = `agy refused ${what}: ${tools} ${policyCalls.length === 1 ? 'is a fleet tool' : 'are fleet tools'} outside the member tool allowlist, denied by the member's own permission config on purpose. A member session may only use the knowledge-bank and code-intelligence tools; no grant is ever added for this. Do the work without ${policyCalls.length === 1 ? 'that tool' : 'those tools'}.`;
+    return { actions, denials, suggestedGrants: [], hint: policyHint, signals, healable: false, cause: 'policy_deny' };
+  }
   return { actions, denials, suggestedGrants, hint, signals };
 }
 

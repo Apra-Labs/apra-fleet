@@ -174,9 +174,7 @@
           "command(regex:nvidia-smi .*)",
           "command(nvidia-docker)",
           "command(regex:nvidia-docker .*)",
-          "mcp(apra-fleet/kb_resolve_contradiction)",
-          "mcp(apra-fleet/kb_list)",
-          "mcp(apra-fleet/kb_export)"
+          "mcp(apra-fleet/kb_list)"
         ],
         "deny": [
           "mcp(apra-fleet/register_member)",
@@ -214,6 +212,7 @@
           "mcp(apra-fleet/respond_to_message)",
           "mcp(apra-fleet/kb_promote)",
           "mcp(apra-fleet/kb_resolve_contradiction)",
+          "mcp(apra-fleet/kb_reconcile_prefilter)",
           "mcp(apra-fleet/kb_setup)",
           "mcp(apra-fleet/kb_export)"
         ]
@@ -322,9 +321,7 @@
           "command(regex:docker .*)",
           "command(nvidia-smi)",
           "command(regex:nvidia-smi .*)",
-          "mcp(apra-fleet/kb_resolve_contradiction)",
-          "mcp(apra-fleet/kb_list)",
-          "mcp(apra-fleet/kb_export)"
+          "mcp(apra-fleet/kb_list)"
         ],
         "deny": [
           "mcp(apra-fleet/register_member)",
@@ -362,6 +359,7 @@
           "mcp(apra-fleet/respond_to_message)",
           "mcp(apra-fleet/kb_promote)",
           "mcp(apra-fleet/kb_resolve_contradiction)",
+          "mcp(apra-fleet/kb_reconcile_prefilter)",
           "mcp(apra-fleet/kb_setup)",
           "mcp(apra-fleet/kb_export)"
         ]

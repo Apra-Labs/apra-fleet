@@ -91,13 +91,13 @@ describe('registerAllTools scope gate', () => {
     expect(isToolInScope('respond_to_message', memberToolScope('m-1', true))).toBe(true);
   });
 
-  it('kb_promote and kb_resolve_contradiction need the engine kb_maintainer grant; kb_setup and kb_export are never in member scope', () => {
+  it('kb_promote, kb_resolve_contradiction and kb_reconcile_prefilter need the engine kb_maintainer grant; kb_setup and kb_export are never in member scope', () => {
     const plain = memberToolScope('m-1', false);
     const engine = memberToolScope('m-1', false, true);
     const maintainer = memberToolScope('m-1', false, true, true);
     // The grant is engine-only: without origin=engine it is ignored.
     const grantWithoutEngine = memberToolScope('m-1', false, false, true);
-    for (const t of ['kb_promote', 'kb_resolve_contradiction']) {
+    for (const t of ['kb_promote', 'kb_resolve_contradiction', 'kb_reconcile_prefilter']) {
       expect(isToolInScope(t, plain)).toBe(false);
       expect(isToolInScope(t, engine)).toBe(false);
       expect(isToolInScope(t, grantWithoutEngine)).toBe(false);

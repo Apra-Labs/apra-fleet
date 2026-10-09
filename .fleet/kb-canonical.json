@@ -1,9 +1,9 @@
 {
-  "version": 2,
+  "version": 3,
   "provenance": {
-    "commit": "34ff160ff8ee9e2268e851270b911771d06fedca",
+    "commit": "8a8f3ce595f3f1616a6ada5f464313b5002b4bfc",
     "branch": "feat/kb-redesign",
-    "entry_count": 320
+    "entry_count": 330
   },
   "entries": [
     {
@@ -1178,6 +1178,43 @@
       "updated_at": "2026-09-25T22:26:29.432Z"
     },
     {
+      "id": "2b7ef211-abbf-4b9a-8d93-f6ad2ffe0e98",
+      "type": "knowledge",
+      "title": "kb_maintainer grant gates kb_reconcile_prefilter, explicit-path kb_import and CONFIRMED retirement via kb_invalidate",
+      "summary": "MEMBER_MAINTAINER_TOOLS is now kb_promote, kb_resolve_contradiction and kb_reconcile_prefilter. In a member session without the grant, kb_import with an explicit path is refused with E-KB-MAINTAINER-REQUIRED and kb_invalidate leaves CONFIRMED entries live, reporting them in refused.",
+      "symbols": [
+        "MEMBER_MAINTAINER_TOOLS",
+        "getSessionKbMaintainer",
+        "scopeHasKbMaintainer",
+        "memberLacksKbMaintainer",
+        "KbMaintainerGrantError",
+        "kbImport",
+        "kbInvalidate"
+      ],
+      "source_files": [
+        "src/services/member-tool-allowlist.ts",
+        "src/services/tool-scope.ts",
+        "src/services/tool-registry.ts",
+        "src/services/knowledge/kb-maintainer-grant.ts",
+        "src/tools/kb-import.ts",
+        "src/tools/kb-invalidate.ts",
+        "src/services/knowledge/sqlite-provider.ts",
+        "tests/member-session-scope.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-09T06:57:19.617Z",
+      "source_file_hashes": {
+        "src/services/knowledge/kb-maintainer-grant.ts": "80d105fba7b67ce25872e728ec978be6e287794a",
+        "src/services/knowledge/sqlite-provider.ts": "8e5952d340c898f916111c58a5399f02bd985cf8",
+        "src/services/member-tool-allowlist.ts": "e8c80757b1e83c2a8ab36751faa0afd752c47503",
+        "src/services/tool-registry.ts": "b7d57077f2fe9700eaf56aa987c1d0e8bbaa02ef",
+        "src/services/tool-scope.ts": "9d603a5ae927190e87877b514287831a95bfae49",
+        "src/tools/kb-import.ts": "fe7ccd947eca6eb5cde66425ef62ee02f809e9cc",
+        "src/tools/kb-invalidate.ts": "a76013ac9a149045fc53c3afc1b1e26619f194f7",
+        "tests/member-session-scope.test.ts": "dcc9266331c2067fd78b7c6c6716b1d159ab3e32"
+      }
+    },
+    {
       "id": "2bdd3084-be9f-4433-8525-dc32eac82784",
       "type": "knowledge",
       "title": "shell-command-guard misses shell expansions inside multi-line template literals",
@@ -1418,6 +1455,29 @@
       "updated_at": "2026-09-29T06:13:13.689Z"
     },
     {
+      "id": "36289cef-5ae0-41d2-b370-1a4b43c9484f",
+      "type": "knowledge",
+      "title": "Engine makes a removal-only kb_bible_commit (ids []) after a discard",
+      "summary": "createKbWorkClient tracks per-repo retirements (a kb_invalidate discard accepted in flushRepo); commitRepo then calls kb_bible_commit with ids [] even with no confirmations, under the same guards, and clears the flag on any successful call.",
+      "symbols": [
+        "createKbWorkClient",
+        "commitRepo",
+        "flushRepo",
+        "commitRound",
+        "bibleAttempt"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs",
+        "packages/apra-fleet-se/test/kb-bible-commit-round.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-09T07:57:52.525Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs": "45dda41a41e0082984a6ef5f078d9e6c8caf1cac",
+        "packages/apra-fleet-se/test/kb-bible-commit-round.test.mjs": "3c1e446c4ddb26b2064338e4d7713a672e270225"
+      }
+    },
+    {
       "id": "38065918-834d-4116-9dd1-153006cb7f05",
       "type": "knowledge",
       "title": "All fleet-sprint ladders are migrated, so both dispatch-pin tables' inline halves are empty and no anchor search runs",
@@ -1439,6 +1499,25 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:29.306Z"
+    },
+    {
+      "id": "39cb4bc6-607a-44b2-81e7-4fc19455ea84",
+      "type": "learning",
+      "title": "windows-hide-spawn-guard test fails when node_modules holds an MCP SDK older than package.json requires",
+      "summary": "tests/windows-hide-spawn-guard.test.ts reads the INSTALLED @modelcontextprotocol/sdk stdio.js and fails on a stale node_modules (e.g. 1.27.1 vs ^1.32.1), independent of any source change; rerun npm install before blaming the branch.",
+      "symbols": [],
+      "source_files": [
+        "tests/windows-hide-spawn-guard.test.ts",
+        "packages/apra-fleet-se/test/contracts-schema-dist-staleness-guard.test.mjs",
+        "package.json"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-09T07:31:24.442Z",
+      "source_file_hashes": {
+        "package.json": "20a977e17f10ae0d562664a140e5e8e704fa2fe4",
+        "packages/apra-fleet-se/test/contracts-schema-dist-staleness-guard.test.mjs": "1db1ddf04d24ac369fb510e69d39af9406640bbe",
+        "tests/windows-hide-spawn-guard.test.ts": "4c9559d8687585ef3f9e8904884d3d4403109870"
+      }
     },
     {
       "id": "3a7ed082-f56d-4a58-9dad-a1a234c19ff7",
@@ -2375,6 +2454,31 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:30.798Z"
+    },
+    {
+      "id": "5dc84022-b3fd-4857-8fbc-5d72a3e97914",
+      "type": "learning",
+      "title": "kb_invalidate {files} can retire a CONFIRMED bible entry",
+      "summary": "SqliteProvider.invalidate marks context-cache rows content_hash='invalidated', and getRetirementReasons treats that as retired, so kb_bible_commit removes a CONFIRMED context-cache entry from the bible after a file invalidation.",
+      "symbols": [
+        "invalidate",
+        "getRetirementReasons",
+        "kbBibleCommit"
+      ],
+      "source_files": [
+        "src/services/knowledge/sqlite-provider.ts",
+        "src/tools/kb-bible-commit.ts",
+        "src/tools/kb-invalidate.ts",
+        "tests/member-session-scope.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-09T06:57:17.268Z",
+      "source_file_hashes": {
+        "src/services/knowledge/sqlite-provider.ts": "8e5952d340c898f916111c58a5399f02bd985cf8",
+        "src/tools/kb-bible-commit.ts": "ce7ee5626aaf832d7e9fceaf26a90fd8c3e9831b",
+        "src/tools/kb-invalidate.ts": "a76013ac9a149045fc53c3afc1b1e26619f194f7",
+        "tests/member-session-scope.test.ts": "dcc9266331c2067fd78b7c6c6716b1d159ab3e32"
+      }
     },
     {
       "id": "5e1d195c-cd15-41d8-9691-4b2636852be4",
@@ -3987,6 +4091,31 @@
       "updated_at": "2026-09-25T22:26:29.106Z"
     },
     {
+      "id": "b287d2c7-ecc8-4f9a-aa2c-09e474100cba",
+      "type": "knowledge",
+      "title": "gitnexus child recycle is reference-counted: retire on recycle, close when in-flight calls drain",
+      "summary": "callGitNexus no longer closes the shared gitnexus child on a recycle; it retires the ClientEntry so new calls get a fresh child, and closes the retired child when its inFlight count reaches zero.",
+      "symbols": [
+        "callGitNexus",
+        "recycleConnection",
+        "retireEntry",
+        "releaseEntry",
+        "acquireGitNexusEntry",
+        "getGitNexusEntry",
+        "ClientEntry"
+      ],
+      "source_files": [
+        "src/tools/code-intelligence-gitnexus.ts",
+        "tests/code-gitnexus-recycle-inflight.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-09T07:31:22.095Z",
+      "source_file_hashes": {
+        "src/tools/code-intelligence-gitnexus.ts": "4cdd1990546bffb8fcbe57e020e0f94a4931067d",
+        "tests/code-gitnexus-recycle-inflight.test.ts": "cfbd8657fbdf76fe87057f7ee18587de2ea60d04"
+      }
+    },
+    {
       "id": "b3879aa4-7d81-4dff-843c-ced977cf7993",
       "type": "learning",
       "title": "Node ESM circular imports between runner.js and its extracted fleet-sprint siblings are safe when confined to function bodies",
@@ -4151,6 +4280,29 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:14.389Z"
+    },
+    {
+      "id": "b8d328fa-e22b-498f-98cf-2ff10bd6370a",
+      "type": "knowledge",
+      "title": "Every /mcp request on an existing session id is bound to the identity that opened it",
+      "summary": "http-transport records a SessionOwner (jwt memberId+workspaceId, or access secret) at initialize and refuses GET/DELETE/non-initialize POST from any other identity with 403 'session identity mismatch'; any access-secret caller may use any secret-opened session regardless of ?member=.",
+      "symbols": [
+        "createHttpTransport",
+        "SessionOwner",
+        "sessionOwnerMismatch",
+        "refuseForeignCaller",
+        "callerIdentity"
+      ],
+      "source_files": [
+        "src/services/http-transport.ts",
+        "tests/http-transport.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-09T08:35:53.886Z",
+      "source_file_hashes": {
+        "src/services/http-transport.ts": "5f5473f8a1f70d3fbe4173a2124ba726cf940f0e",
+        "tests/http-transport.test.ts": "cd60757b7c0699170eb0bb5074a787d6e9738128"
+      }
     },
     {
       "id": "babb6682-bde3-49f3-9441-77a078f082a7",
@@ -4395,6 +4547,26 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:14.111Z"
+    },
+    {
+      "id": "c34f8dbb-f289-4e23-a72c-e26ea6ed968a",
+      "type": "knowledge",
+      "title": "Guard test pins: no kb_export or exportBible in fleet-sprint engine sources",
+      "summary": "packages/apra-fleet-se/test/engine-no-bible-export-guard.test.mjs scans every non-test file under fleet-sprint/ (comments included) and fails on kb_export or exportBible, mirroring rg -g '!*test*'.",
+      "symbols": [
+        "engineSourceFiles",
+        "bibleExportHits"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/test/engine-no-bible-export-guard.test.mjs",
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-09T07:57:47.910Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs": "45dda41a41e0082984a6ef5f078d9e6c8caf1cac",
+        "packages/apra-fleet-se/test/engine-no-bible-export-guard.test.mjs": "1f78563ff11807fa38f4ede3c3047fe06510d6c8"
+      }
     },
     {
       "id": "c370a103-a884-47c3-aaa5-ac57d2572ddc",
@@ -4899,6 +5071,59 @@
       "updated_at": "2026-09-25T22:26:38.479Z"
     },
     {
+      "id": "db416de8-7817-46d1-846c-dcc7fc6235a6",
+      "type": "knowledge",
+      "title": "kb_bible_commit backfills source_file_hashes on legacy bible entries",
+      "summary": "kb_bible_commit attaches this KB's stored basis to existing bible entries with no source_file_hashes when the same live CONFIRMED id cites the same source_files set and passes the admission predicate at HEAD; the response reports backfilled and a backfill alone commits.",
+      "symbols": [
+        "kbBibleCommit",
+        "selectLegacyBibleBackfill",
+        "hasCarriedBasis",
+        "withSourceFileHashes",
+        "bibleCommitMessage"
+      ],
+      "source_files": [
+        "src/tools/kb-bible-commit.ts",
+        "src/services/knowledge/bible-basis-filter.ts",
+        "src/tools/kb-export.ts",
+        "memory-contract/v1/response-schemas.mjs",
+        "tests/knowledge/kb-bible-backfill.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-09T07:57:50.224Z",
+      "source_file_hashes": {
+        "memory-contract/v1/response-schemas.mjs": "7ac088b77e809e47795bf7fef5c16d43d6de4b2a",
+        "src/services/knowledge/bible-basis-filter.ts": "0054a4d920c29d5e12011ee61c02037de9a3760e",
+        "src/tools/kb-bible-commit.ts": "1e47c4bc35ecd892b4d62a12cc32c7fad5b28128",
+        "src/tools/kb-export.ts": "3b13cb60a6d84eaee4adf8c93356b4877589bfeb",
+        "tests/knowledge/kb-bible-backfill.test.ts": "14cb85203cfac1873a8a30c206a86b9dfa023f3c"
+      }
+    },
+    {
+      "id": "dbf606ef-52e4-46aa-a824-d45e2e330d01",
+      "type": "knowledge",
+      "title": "After launch alignment, a residual HEAD mismatch comes only from a reused local sprint branch",
+      "summary": "alignMembersToBase resets every member to origin/<branch> or origin/<base> via decideEnsureBranchAction, except when it reuses a local sprint branch (ahead of origin, or the branch is not on origin yet), so a legacy topology refusal after alignment means a member holds local-only sprint commits.",
+      "symbols": [
+        "alignMembersToBase",
+        "prepareLaunchTopology",
+        "decideEnsureBranchAction",
+        "checkMemberTopology"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/member-align.mjs",
+        "packages/apra-fleet-se/fleet-sprint/branch-ensure.mjs",
+        "packages/apra-fleet-se/fleet-sprint/git-topology.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-09T09:00:12.168Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/branch-ensure.mjs": "e9fc16ee988bbb29782099fcf7ad74b0db623109",
+        "packages/apra-fleet-se/fleet-sprint/git-topology.mjs": "6c1320594b5bd16c53eaa88e523655d12ae8e6f2",
+        "packages/apra-fleet-se/fleet-sprint/member-align.mjs": "dc691faa5f87edb33df71178c4e1f33ebd8a8194"
+      }
+    },
+    {
       "id": "dd27675b-1a7c-431f-b0ce-d7fcd1c46385",
       "type": "knowledge",
       "title": "The runner signal-path tests only run on POSIX, so Windows-only verification proves little",
@@ -5134,6 +5359,36 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:11.365Z"
+    },
+    {
+      "id": "e194f48d-bfa4-44d1-ba1d-b48cc883c57c",
+      "type": "knowledge",
+      "title": "Server logs and data dir are owner-only; MCP session ids are logged only via shortSid",
+      "summary": "log-helpers getFd calls openOwnerOnlyLog, which makes the data dir and logs/ 0700, fleet-<pid>.log and an existing fleet.log 0600 (on Windows: icacls /inheritance:r /grant:r user:F via execFile), never fatal; http-transport logs session ids only as shortSid (first 8 chars).",
+      "symbols": [
+        "openOwnerOnlyLog",
+        "restrictToOwner",
+        "ensureOwnerOnlyDir",
+        "openOwnerOnlyAppend",
+        "shortSid",
+        "getFd"
+      ],
+      "source_files": [
+        "src/utils/owner-only-fs.ts",
+        "src/utils/log-helpers.ts",
+        "src/cli/start.ts",
+        "src/services/http-transport.ts",
+        "tests/log-permissions.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-09T08:46:57.178Z",
+      "source_file_hashes": {
+        "src/cli/start.ts": "a541f7d60ed92b913b27984d4f22a28f36f53c5b",
+        "src/services/http-transport.ts": "5f5473f8a1f70d3fbe4173a2124ba726cf940f0e",
+        "src/utils/log-helpers.ts": "27f4f02a8004ceae5d1b8883ada455890a6d6997",
+        "src/utils/owner-only-fs.ts": "fc1cccafd1aaefd28ed726ba3fc60aa2db76aa23",
+        "tests/log-permissions.test.ts": "aa85ad375dd7a553e53ee00678ca4fc199bf96b2"
+      }
     },
     {
       "id": "e20a6800-90df-47e2-b2de-60d1cca70697",

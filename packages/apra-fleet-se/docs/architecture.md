@@ -446,9 +446,21 @@ inferred) when the sprint starts:
 enforces the precondition for whichever mode is selected, and refuses to
 start rather than silently degrading:
 
-- **`legacy` mode precondition** -- compares an identity signal
-  (`git rev-parse HEAD`) across every configured member and refuses to start
-  on a mismatch. Single-member sprints trivially pass (nothing to compare). A
+- **`legacy` mode precondition** -- first aligns every member to the
+  sprint base (`fleet-sprint/member-align.mjs`, `prepareLaunchTopology()`):
+  pass 1 checks every member read-only (reachable, same `origin` URL, base
+  fetchable, sprint branch not diverged, working-tree status readable) and
+  refuses -- naming member, cause and fix -- before ANY member is moved if
+  one fails; pass 2 preserves uncommitted work in a named
+  `fleet-sprint[<branch>] auto-stash ...` stash and checks out the sprint
+  branch (`origin/<branch>` when it exists, else cut from `origin/<base>`,
+  via the same `decideEnsureBranchAction()` the Ensure Sprint Branch phase
+  uses), logging one `[Align] member '<m>': <from> -> <to>` line per member.
+  Members that were merely on other commits therefore no longer block the
+  launch, and nobody aligns members by hand. It then compares an identity
+  signal (`git rev-parse HEAD`) across every configured member and refuses to
+  start on a residual mismatch (a member keeping local-only commits on the
+  sprint branch). Single-member sprints trivially pass (nothing to compare). A
   member whose signal cannot be obtained is treated as a refusal, not a
   silent skip. This is a best-effort heuristic checked once at start, not an
   ongoing guarantee: two independent checkouts that merely happen to sit on

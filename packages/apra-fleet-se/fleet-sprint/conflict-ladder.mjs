@@ -180,6 +180,18 @@ export async function dispatchConflictResolutionAgent({ agent, member, branch, u
         // Never rely on an omitted `resume`: execute_prompt defaults it to
         // true, i.e. best-effort reattachment to exactly that stale session.
         resume: false,
+        // STRICT on a refused tool call (fail_on_permission_denial, as every
+        // role dispatch passes). The runbook is a series of git commands: a
+        // Claude reply that completes after the member CLI refused one of them
+        // would otherwise be a warning, and a runbook that silently skipped a
+        // refused git command must not be read as a resolved conflict. A
+        // permission_denied outcome surfaces as a thrown dispatch error, which
+        // the caller (member-sync.mjs) already catches, logs and does NOT
+        // retry; it then re-verifies the real git state (porcelain + re-push)
+        // and, if still unresolved, restores a clean tree and fails with the
+        // typed GitDivergedError -- a clear ladder failure, never an uncaught
+        // error and never a claim taken on the agent's word.
+        fail_on_permission_denial: true,
         timeout_s: 1800,
         max_total_s: 1800,
     });

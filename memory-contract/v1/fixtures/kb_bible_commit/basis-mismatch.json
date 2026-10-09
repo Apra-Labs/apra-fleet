@@ -13,7 +13,7 @@
     "content": [
       {
         "type": "text",
-        "text": "{\"path\":\"<SCRATCH_REPO_A>/.fleet/kb-canonical.json\",\"merged\":[],\"skipped\":[{\"id\":\"612e7cc0-0019-47b0-b41f-36507fc5bef2\",\"reason\":\"basis_mismatch\"}],\"removed\":[],\"entry_count\":1,\"committed\":false}"
+        "text": "{\"path\":\"<SCRATCH_REPO_A>/.fleet/kb-canonical.json\",\"merged\":[],\"skipped\":[{\"id\":\"612e7cc0-0019-47b0-b41f-36507fc5bef2\",\"reason\":\"basis_mismatch\"}],\"removed\":[],\"entry_count\":1,\"backfilled\":0,\"committed\":false}"
       }
     ]
   }

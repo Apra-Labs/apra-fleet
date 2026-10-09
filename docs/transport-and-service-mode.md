@@ -44,6 +44,12 @@ hand-written client config needs it too, for example:
 Keep such a config out of git (a project-scope `.mcp.json` cannot carry the
 secret safely).
 
+An MCP session is bound to the identity that opened it. The server records the
+caller at `initialize`; a later GET, DELETE or non-initialize POST carrying that
+session id from a different identity is answered HTTP 403, so knowing or
+guessing a session id is not enough to use or tear down someone else's session.
+Session ids appear in logs only in shortened form.
+
 You can override the default port with the `APRA_FLEET_PORT` environment variable.
 If the configured port is already in use, the server refuses to start with an error
 naming the port, the pid recorded in `server.json` (if any) and `APRA_FLEET_PORT`.

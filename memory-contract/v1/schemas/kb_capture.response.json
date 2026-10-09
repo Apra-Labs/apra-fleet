@@ -71,6 +71,12 @@
             },
             "confidence_clamped": {
               "type": "boolean"
+            },
+            "refused": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
             }
           },
           "required": [

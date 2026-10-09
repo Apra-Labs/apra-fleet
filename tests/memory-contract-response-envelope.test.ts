@@ -199,6 +199,7 @@ describe('kb_capture.response.json accepts wrapTool\'s full envelope contract (m
         id: { type: 'string' },
         audn_decision: { type: 'string', enum: ['add', 'update', 'flagged', 'none'] },
         confidence_clamped: { type: 'boolean' },
+        refused: { type: 'array', items: { type: 'string' } },
       },
       required: ['id', 'audn_decision', 'confidence_clamped'],
       additionalProperties: false,

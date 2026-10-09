@@ -118,8 +118,10 @@ The member CLI refused a tool call. Check `healable`:
 
 By default a complete reply succeeds and only warns (`permissionWarning`). The
 dispatch fails `permission_denied` only when the caller passed
-`fail_on_permission_denial: true` (fleet-sprint does), or for a `healable: false`
-refusal whose reply was incomplete in that mode. A max_turns, auth or server
+`fail_on_permission_denial: true` (fleet-sprint does); even then a
+`healable: false` refusal on a complete reply stays a warning. Without the flag
+an incomplete reply keeps its ordinary reason (e.g. `empty_response`) with the
+refusals attached as `permissionDenied`. A max_turns, auth or server
 failure keeps its own reason, with the refusals attached as `permissionDenied`.
 
 **Permission granted but still denied on Claude**
@@ -287,6 +289,16 @@ For unexplained behavior -- missing output, silent failure, unexpected results
 ```
 $APRA_FLEET_DATA_DIR/logs/fleet-<pid>.log
 ```
+
+The logs are owner-only. On POSIX the data dir and `logs/` are 0700 and
+`fleet-<pid>.log` and the service log `fleet.log` are 0600; a server start
+tightens existing ones with chmod. On Windows the server removes inherited
+ACEs and grants only the current user full control
+(`icacls <path> /inheritance:r /grant:r <DOMAIN\user>:F`), because
+`APRA_FLEET_DATA_DIR` may point outside the user profile. A path that cannot
+be tightened produces a `log permissions:` warning line and the server keeps
+running. MCP session ids are logged only as their first 8 characters
+(`sid=1a2b3c4d...`): a full session id addresses the session.
 
 These are JSON lines. Filter by member or by tool with `jq`:
 

@@ -55,7 +55,9 @@ call. Any change to this shape must be made in the server tool and
   - auto/bypass mode: the refusal is the safety classifier or a deny rule.
     A complete reply is a success carrying the denials as `permissionWarning`
     (logged); an incomplete one fails `permission_denied` with
-    `healable: false`. No grant is ever added for it.
+    `healable: false` when the caller passed `fail_on_permission_denial: true`
+    (fleet-sprint does), and otherwise keeps its ordinary reason with the
+    denials attached as `permissionDenied`. No grant is ever added for it.
   - acceptEdits mode: the dispatch fails `permission_denied` and fleet-sprint
     heals it progressively: grant the missing tool (only within the member's
     composed policy from `compose_permissions` dry_run), retry, repeat for the
