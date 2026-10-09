@@ -263,7 +263,7 @@ function readGitNexusMeta(repoDir: string): GitNexusMeta | null {
 function currentHead(repoDir: string): string | null {
   try {
     return execFileSync('git', ['rev-parse', 'HEAD'], {
-      cwd: repoDir, encoding: 'utf-8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'],
+      cwd: repoDir, encoding: 'utf-8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true,
     }).trim();
   } catch {
     return null;
@@ -273,7 +273,7 @@ function currentHead(repoDir: string): string | null {
 function commitsBehindCount(repoDir: string, lastCommit: string, head: string): number | null {
   try {
     const out = execFileSync('git', ['rev-list', '--count', `${lastCommit}..${head}`], {
-      cwd: repoDir, encoding: 'utf-8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'],
+      cwd: repoDir, encoding: 'utf-8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true,
     }).trim();
     const count = Number.parseInt(out, 10);
     return Number.isFinite(count) ? count : null;

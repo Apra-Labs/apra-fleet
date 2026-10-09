@@ -102,7 +102,7 @@ const FLEET_SE_MIN_NODE: [number, number, number] = [22, 16, 0];
 
 function probeVersion(cmd: string, shell: boolean): string | null {
   try {
-    const out = execFileSync(cmd, ['--version'], { stdio: 'pipe', encoding: 'utf-8', timeout: 15_000, shell });
+    const out = execFileSync(cmd, ['--version'], { stdio: 'pipe', encoding: 'utf-8', timeout: 15_000, shell, windowsHide: true });
     return String(out).trim() || null;
   } catch {
     return null;
@@ -899,7 +899,7 @@ export function registeredMcpTransport(provider: LlmProvider, paths: ProviderIns
 function run(cmd: string, opts?: Record<string, unknown>): void {
   // Windows needs a shell for .cmd executables (e.g. claude.cmd)
   const shellOpt = process.platform === 'win32' ? { shell: 'cmd.exe' } : {};
-  execSync(cmd, { stdio: 'inherit', ...shellOpt, ...opts });
+  execSync(cmd, { stdio: 'inherit', windowsHide: true, ...shellOpt, ...opts });
 }
 
 /** Is `cmd` resolvable on PATH? Used before shelling out to a provider's own
@@ -908,7 +908,7 @@ function run(cmd: string, opts?: Record<string, unknown>): void {
 function isCommandAvailable(cmd: string): boolean {
   try {
     const checkCmd = process.platform === 'win32' ? `where ${cmd}` : `command -v ${cmd}`;
-    execSync(checkCmd, { stdio: 'ignore' });
+    execSync(checkCmd, { stdio: 'ignore', windowsHide: true });
     return true;
   } catch {
     return false;
@@ -931,7 +931,7 @@ export function apraFleetPids(): string[] {
   try {
     const currentPid = process.pid.toString();
     if (process.platform === 'win32') {
-      const out = execSync('tasklist /FI "IMAGENAME eq apra-fleet.exe" /NH /FO CSV', { encoding: 'utf-8', stdio: 'pipe' });
+      const out = execSync('tasklist /FI "IMAGENAME eq apra-fleet.exe" /NH /FO CSV', { encoding: 'utf-8', stdio: 'pipe', windowsHide: true });
       // Each CSV line: "apra-fleet.exe","<PID>","..." - exclude the current installer process
       return out.split('\n')
         .map(line => line.match(/"apra-fleet\.exe","(\d+)"/))

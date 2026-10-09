@@ -215,7 +215,7 @@ function gitOrNull(repoPath: string, args: string[]): string | null {
   if (!isGitRepo(repoPath)) return null;
   try {
     const out = execFileSync('git', args, {
-      cwd: repoPath, encoding: 'utf-8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'],
+      cwd: repoPath, encoding: 'utf-8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true,
     }).trim();
     return out.length > 0 ? out : null;
   } catch {
@@ -348,7 +348,7 @@ export function isGitRepo(repoPath: string): boolean {
 // brand-new untracked file on the very first export) means it changed.
 export function bibleContentChanged(repoPath: string, outPath: string): boolean {
   const status = execFileSync('git', ['status', '--porcelain', '--', outPath], {
-    cwd: repoPath, encoding: 'utf-8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'],
+    cwd: repoPath, encoding: 'utf-8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true,
   });
   return status.trim().length > 0;
 }

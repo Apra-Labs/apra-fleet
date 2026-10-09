@@ -135,7 +135,7 @@ function killPid(pid, force) {
   const n = Number(pid);
   try {
     if (process.platform === 'win32') {
-      if (force) execFileSync('taskkill', ['/F', '/PID', String(n)], { stdio: 'ignore' });
+      if (force) execFileSync('taskkill', ['/F', '/PID', String(n)], { stdio: 'ignore', windowsHide: true });
       else process.kill(n);
     } else {
       process.kill(n, force ? 'SIGKILL' : 'SIGTERM');

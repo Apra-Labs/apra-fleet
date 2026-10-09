@@ -42,7 +42,7 @@ function findBrowserOpener(): { cmd: string; args: string[] } | null {
   // Linux / BSD: needs a display and xdg-open
   if (!process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) return null;
   try {
-    execSync('which xdg-open', { stdio: 'ignore' });
+    execSync('which xdg-open', { stdio: 'ignore', windowsHide: true });
     return { cmd: 'xdg-open', args: [] };
   } catch {
     return null;

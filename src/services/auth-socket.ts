@@ -50,7 +50,7 @@ function killProcess(pid: number): void {
   if (!pid) return;
   try {
     if (process.platform === 'win32') {
-      execSync(`taskkill /F /PID ${pid}`, { stdio: 'ignore' });
+      execSync(`taskkill /F /PID ${pid}`, { stdio: 'ignore', windowsHide: true });
     } else {
       process.kill(pid, 'SIGTERM');
     }
@@ -585,7 +585,7 @@ function findLinuxTerminal(): TerminalEntry | null {
   if (termProg && termProgramMap[termProg]) {
     const entry = termProgramMap[termProg];
     try {
-      execSync(`which ${entry.bin}`, { stdio: 'ignore' });
+      execSync(`which ${entry.bin}`, { stdio: 'ignore', windowsHide: true });
       return entry;
     } catch { /* not in PATH, fall through */ }
   }
@@ -614,7 +614,7 @@ function findLinuxTerminal(): TerminalEntry | null {
 
   for (const entry of candidates) {
     try {
-      execSync(`which ${entry.bin}`, { stdio: 'ignore' });
+      execSync(`which ${entry.bin}`, { stdio: 'ignore', windowsHide: true });
       return entry;
     } catch { /* not found */ }
   }
