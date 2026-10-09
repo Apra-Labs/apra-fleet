@@ -160,10 +160,16 @@ async function getGitNexusEntry(): Promise<ClientEntry> {
 /**
  * Take a reference on a live, non-retired child. A child retired between its
  * connect resolving and this continuation running (another call recycled it)
- * is skipped, never used: it may already be closed.
+ * is skipped, never used: it may already be closed. Bounded: a child that
+ * dies on every start (a crash-on-start gitnexus build) would otherwise make
+ * this re-spawn npx forever and the code_* call never return; after
+ * GITNEXUS_ACQUIRE_ATTEMPTS retired children it throws, and callGitNexus turns
+ * that into the offline result.
  */
+const GITNEXUS_ACQUIRE_ATTEMPTS = 3;
+
 async function acquireGitNexusEntry(): Promise<ClientEntry> {
-  for (;;) {
+  for (let attempt = 1; attempt <= GITNEXUS_ACQUIRE_ATTEMPTS; attempt++) {
     const entry = await getGitNexusEntry();
     if (!entry.retired) {
       entry.inFlight += 1;
@@ -171,6 +177,9 @@ async function acquireGitNexusEntry(): Promise<ClientEntry> {
     }
     if (entry.inFlight === 0) closeEntry(entry);
   }
+  throw new Error(
+    `gitnexus child exited or was retired ${GITNEXUS_ACQUIRE_ATTEMPTS} times in a row before it could serve a call (it is crashing on start or being recycled repeatedly)`,
+  );
 }
 
 // Freshness metadata (F2.2): when a call carries a `repo` param and the index
