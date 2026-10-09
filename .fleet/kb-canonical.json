@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "8a8f3ce595f3f1616a6ada5f464313b5002b4bfc",
     "branch": "feat/kb-redesign",
-    "entry_count": 328
+    "entry_count": 329
   },
   "entries": [
     {
@@ -5335,6 +5335,36 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:11.365Z"
+    },
+    {
+      "id": "e194f48d-bfa4-44d1-ba1d-b48cc883c57c",
+      "type": "knowledge",
+      "title": "Server logs and data dir are owner-only; MCP session ids are logged only via shortSid",
+      "summary": "log-helpers getFd calls openOwnerOnlyLog, which makes the data dir and logs/ 0700, fleet-<pid>.log and an existing fleet.log 0600 (on Windows: icacls /inheritance:r /grant:r user:F via execFile), never fatal; http-transport logs session ids only as shortSid (first 8 chars).",
+      "symbols": [
+        "openOwnerOnlyLog",
+        "restrictToOwner",
+        "ensureOwnerOnlyDir",
+        "openOwnerOnlyAppend",
+        "shortSid",
+        "getFd"
+      ],
+      "source_files": [
+        "src/utils/owner-only-fs.ts",
+        "src/utils/log-helpers.ts",
+        "src/cli/start.ts",
+        "src/services/http-transport.ts",
+        "tests/log-permissions.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-09T08:46:57.178Z",
+      "source_file_hashes": {
+        "src/cli/start.ts": "a541f7d60ed92b913b27984d4f22a28f36f53c5b",
+        "src/services/http-transport.ts": "5f5473f8a1f70d3fbe4173a2124ba726cf940f0e",
+        "src/utils/log-helpers.ts": "27f4f02a8004ceae5d1b8883ada455890a6d6997",
+        "src/utils/owner-only-fs.ts": "fc1cccafd1aaefd28ed726ba3fc60aa2db76aa23",
+        "tests/log-permissions.test.ts": "aa85ad375dd7a553e53ee00678ca4fc199bf96b2"
+      }
     },
     {
       "id": "e20a6800-90df-47e2-b2de-60d1cca70697",
