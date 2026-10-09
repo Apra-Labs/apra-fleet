@@ -228,6 +228,13 @@ of an empty response:
   actions map to `Read(<path>)`, `Write(<path>)`, `mcp__<server>__<tool>` or
   `WebSearch`; an action with no mapping yields no suggestion and the hint
   says to grant it by hand or escalate.
+- A refusal of a fleet tool outside the member allowlist (a transcript target
+  that matches one of `agyMemberDenyRules()`, the deny rules compose writes on
+  purpose) is the member tool policy, not a missing grant: the whole denial is
+  marked `healable: false` with `cause: 'policy_deny'` and empty
+  `suggestedGrants`, as for Claude. With `fail_on_permission_denial` a complete
+  reply then comes back as a success carrying the denial in `permissionWarning`,
+  and the sprint heal stops `not_healable` without calling `compose_permissions`.
 - Any partial reply is kept in `response`.
 - On Linux/macOS `actions` can read `["unsandboxed", "command"]` for one
   refused shell command.

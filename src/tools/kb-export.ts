@@ -101,6 +101,15 @@ function sortedBasis(basis: Record<string, string>): Record<string, string> {
 }
 
 /**
+ * A bible entry with `basis` attached as its source_file_hashes (keys sorted,
+ * copied verbatim -- never re-hashed); every other field is left as it is.
+ * Used by kb_bible_commit's legacy backfill.
+ */
+export function withSourceFileHashes(entry: CanonicalEntry, basis: Record<string, string>): CanonicalEntry {
+  return { ...entry, source_file_hashes: sortedBasis(basis) };
+}
+
+/**
  * Map a KB entry to the bible's stable field set. Shared with kb_bible_commit.
  * `basis` is the entry's STORED per-file hash basis (the one the bible
  * predicate admitted it against); when given and non-empty it is written as

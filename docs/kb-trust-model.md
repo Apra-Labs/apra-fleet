@@ -50,3 +50,32 @@ Enforcement applies only to captures made from the gate onward.
 - Auto-harvest: entries produced by the kb_harvest autowire are regex-extracted
   from session transcripts, unreviewed, and always captured at UNVERIFIED. Harvest
   can never mint CONFIRMED -- the same gate covers it.
+
+## The kb_maintainer grant protects CONFIRMED entries from member sessions
+
+A member session (one without the kb_maintainer grant) can neither mint nor
+retire CONFIRMED entries:
+
+- `kb_reconcile_prefilter` is a maintainer-only tool (it sits in the maintainer
+  tool set of the member tool allowlist), and the reconciler tag profile grants
+  no write tools.
+- `kb_import` with an explicit `path` other than the session's own bible is
+  refused with `E-KB-MAINTAINER-REQUIRED` unless the session holds the grant.
+- `kb_invalidate` (by `ids` or by `files`) keeps CONFIRMED entries live and
+  reports them in `refused`; the underlying provider `discard` and `invalidate`
+  take a keep-CONFIRMED flag, so the guarantee holds below the tool layer.
+- `kb_capture` with `supersedes` never retires a CONFIRMED target (whoever
+  owns it): the capture links to it (`refines`, both live) and lists it in
+  `refused`. A non-CONFIRMED target is still retired. Over a remote KB
+  provider the grant cannot be conveyed, so `supersedes` is dropped entirely.
+- `kb_import` with no path, or with the own path, reads the bible as committed
+  at `HEAD`, never the member-writable work-tree file; when a work-tree bible
+  has no committed copy it imports nothing (`E-KB-MAINTAINER-REQUIRED`).
+
+### Remaining exposure
+
+A member that can commit can still put a hand-made bible at `HEAD` with a
+local commit and import it at once: the CONFIRMED rows land in the shared
+per-repo DB immediately, and review sees the change only once the commit is
+pushed (or in the maintainer's next bible diff). Pinning the import to the
+last bible commit made by the kb_maintainer would close this.

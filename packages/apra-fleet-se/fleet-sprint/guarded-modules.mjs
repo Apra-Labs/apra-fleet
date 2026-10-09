@@ -244,6 +244,13 @@ export const GUARDED_MODULES = [
     // with the extraction is what keeps dispatch-safety-guard covering it
     // instead of silently losing it the moment it left runner.js.
     'git-topology.mjs',
+    // apra-fleet-rsd9.1.1: launch-time member alignment (alignMembersToBase,
+    // prepareLaunchTopology). It issues every git command through an injected
+    // per-member runGit(cmd, member) -- fetches go through git-topology.mjs's
+    // runGitStep -- so it adds no command() call site of its own, but it
+    // builds member-bound command strings, which is exactly what the
+    // shell-command and dolt-literal guards must keep scanning.
+    'member-align.mjs',
     // apra-fleet-3swo.6.10: the per-member git sync BRACKETS that sit on top of
     // git-topology.mjs -- syncMemberBefore (G-pull), syncMemberAfter (G-push
     // plus its bounded pull-rebase retry and Tier 2 conflict dispatch),

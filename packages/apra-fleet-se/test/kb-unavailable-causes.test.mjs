@@ -63,6 +63,20 @@ const CAUSES = [
         reason: 'member-session-refused',
         action: /update_member with fleet_install "auto"/,
     },
+    {
+        name: 'member access secret refused (E-MEMBER-SECRET)',
+        listToolsError: new Error('E-MEMBER-SECRET: member access secret missing or mismatched'),
+        fleetMcp: { state: 'available' },
+        reason: 'member-secret-refused',
+        action: /member-access\.key[\s\S]*own data directory[\s\S]*own user/,
+    },
+    {
+        name: 'member access secret refused (bare HTTP 401)',
+        listToolsError: new Error('member server returned HTTP 401'),
+        fleetMcp: { state: 'available' },
+        reason: 'member-secret-refused',
+        action: /member-access\.key[\s\S]*own data directory[\s\S]*own user/,
+    },
 ];
 
 describe('KB/code unavailability: cause named at init, carried to the viewer and the sprint report', () => {

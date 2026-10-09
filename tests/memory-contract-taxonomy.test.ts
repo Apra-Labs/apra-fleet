@@ -45,7 +45,9 @@ type Taxonomy = {
 };
 
 type ResponseSchemaDef = {
-  properties?: { parsed?: { properties?: Record<string, unknown> } };
+  properties?: {
+    parsed?: { properties?: Record<string, unknown>; anyOf?: Array<{ properties?: Record<string, unknown> }> };
+  };
 };
 
 type MethodEntry = {
@@ -186,7 +188,10 @@ describe('taxonomy.json structure', () => {
           `schemas/${tool}.response.json`,
         );
         const def = schema.$defs[`v1-${tool}-response`];
-        return Object.hasOwn(def?.properties?.parsed?.properties ?? {}, field);
+        const parsed = def?.properties?.parsed;
+        // A union response (anyOf) carries the field when any branch does.
+        const branches = [parsed, ...(parsed?.anyOf ?? [])];
+        return branches.some((b) => Object.hasOwn(b?.properties ?? {}, field));
       });
 
       expect(

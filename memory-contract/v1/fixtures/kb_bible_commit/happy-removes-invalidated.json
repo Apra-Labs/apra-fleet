@@ -11,7 +11,7 @@
     "content": [
       {
         "type": "text",
-        "text": "{\"path\":\"<SCRATCH_REPO_A>/.fleet/kb-canonical.json\",\"merged\":[],\"skipped\":[],\"removed\":[{\"id\":\"f73a13d1-15d2-46c7-a319-84232fdf856b\",\"reason\":\"invalidated\"}],\"entry_count\":1,\"committed\":true}"
+        "text": "{\"path\":\"<SCRATCH_REPO_A>/.fleet/kb-canonical.json\",\"merged\":[],\"skipped\":[],\"removed\":[{\"id\":\"f73a13d1-15d2-46c7-a319-84232fdf856b\",\"reason\":\"invalidated\"}],\"entry_count\":1,\"backfilled\":0,\"committed\":true}"
       }
     ]
   }

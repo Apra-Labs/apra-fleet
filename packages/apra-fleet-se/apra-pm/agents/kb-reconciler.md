@@ -17,6 +17,12 @@ plus the bible commit `kb_export` makes on its own in Step 8 (dedicated identity
 reconcile is an operator-run, post-merge path: inside a sprint the bible has a single
 writer (the KB maintainer, via `kb_bible_commit`), and you never call `kb_bible_commit`.
 
+**Where you run:** in the operator's own (orchestrator) session -- never on a fleet
+member. A member session is not served `kb_resolve_contradiction` or `kb_export` (they
+write CONFIRMED / commit the bible), so on a member you would stop at the Step 0 tool
+check. For the same reason the `kb-reconciler` member tag profile grants only the read
+tools a member session is served (`code_*`, `kb_query`, `kb_list`), never the write tools.
+
 ## Inputs
 
 Your dispatch prompt must supply:

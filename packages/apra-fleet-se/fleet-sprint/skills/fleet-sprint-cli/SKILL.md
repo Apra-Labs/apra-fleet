@@ -77,9 +77,14 @@ on this list -- flags evolve and this skill can drift.
 2. Every `--members` name is registered with the fleet (`list_members` /
    `mcp__apra-fleet__list_members`). An unregistered member aborts the
    sprint unless `--allow-missing-members` is passed.
-3. Multi-member sprints require all members to share the same git topology
-   unless `--sync` is passed. Stick to single-member unless that is
-   verified -- see `fleet-sprint-diagram.md` in the package docs.
+3. Multi-member sprints align their members automatically: at launch every
+   member is fetched and checked out on the sprint branch (WIP preserved in a
+   named `fleet-sprint[<branch>]` stash, one `[Align]` line per member), so
+   do not align members by hand. The launch refuses, before moving any
+   member, only for an unreachable member, differing origin URLs, a base
+   missing on origin, a fetch auth failure or a diverged sprint branch --
+   fix what the message names and relaunch. See `fleet-sprint-diagram.md` in
+   the package docs.
 4. If a member's LLM session is stale or unauthenticated (dispatch fails
    with `empty_response`, or "member CLI likely died"), re-run
    `provision_llm_auth` for that member before retrying.

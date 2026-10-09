@@ -20,13 +20,19 @@
 //   - kb_setup (writes the machine-wide provider config and stores credentials)
 //     and kb_export (auto-commits into the work tree) are NEVER served to a
 //     member session -- not in any list below.
-//   - kb_promote and kb_resolve_contradiction mint CONFIRMED. They are served
+//   - kb_promote, kb_resolve_contradiction and kb_reconcile_prefilter (which
+//     resolves pairs through the same write path as kb_resolve_contradiction)
+//     mint CONFIRMED. They are served
 //     only to the repository's kb_maintainer member session, i.e. a member
 //     session opened with the engine's kb_maintainer grant (see
 //     MEMBER_MAINTAINER_TOOLS and src/services/tool-scope.ts). Every other
 //     member session -- including a role agent dispatched on the maintainer
 //     member, which connects through the plain per-folder ?member= entry --
 //     does not see them.
+//   - kb_import is served to every member session, but an explicit `path`
+//     (a caller-named bible, equivalent in power to kb_promote) is refused in
+//     a member session without the grant (src/tools/kb-import.ts); the
+//     repo-resolved checkout bible import is unchanged.
 
 /**
  * Every tool name registered by registerAllTools (src/services/tool-registry.ts).
@@ -68,7 +74,7 @@ export const MEMBER_BASE_TOOLS: readonly string[] = Object.freeze([
   'code_flow', 'code_tests', 'code_reindex', 'code_status',
   'kb_capture', 'kb_invalidate', 'kb_context', 'kb_session_prime', 'kb_query',
   'kb_list', 'kb_harvest', 'kb_freshness_sweep', 'kb_import',
-  'kb_reconcile_prefilter', 'kb_stats', 'kb_feedback', 'kb_bible_commit',
+  'kb_stats', 'kb_feedback', 'kb_bible_commit',
 ]);
 
 /**
@@ -77,7 +83,7 @@ export const MEMBER_BASE_TOOLS: readonly string[] = Object.freeze([
  * MEMBER_ALLOWED_TOOLS, so client-side deny rules keep them denied for every
  * agent session on a member.
  */
-export const MEMBER_MAINTAINER_TOOLS: readonly string[] = Object.freeze(['kb_promote', 'kb_resolve_contradiction']);
+export const MEMBER_MAINTAINER_TOOLS: readonly string[] = Object.freeze(['kb_promote', 'kb_resolve_contradiction', 'kb_reconcile_prefilter']);
 
 /**
  * kb_ tools no member session is ever served, whatever its grants. Listed so

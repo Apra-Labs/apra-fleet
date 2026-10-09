@@ -96,3 +96,72 @@ export async function filterProjectBibleCandidates<T extends BibleCandidate>(
   const currentHashes = await computeHeadFileHashBatch([...fileSet], { cwd: repoPath });
   return entries.filter(e => qualifiesForProjectBible(e, basisById.get(e.id), currentHashes));
 }
+
+/** The minimal bible-entry shape the legacy backfill reads. */
+export interface BibleFileEntry {
+  id: string;
+  source_files: string[];
+  source_file_hashes?: Record<string, string>;
+}
+
+/** True when a bible entry carries a non-empty source_file_hashes map. */
+export function hasCarriedBasis(entry: BibleFileEntry): boolean {
+  const h = entry.source_file_hashes;
+  return !!h && typeof h === 'object' && !Array.isArray(h) && Object.keys(h).length > 0;
+}
+
+function sameFileSet(a: string[], b: string[]): boolean {
+  if (!Array.isArray(a) || !Array.isArray(b)) return false;
+  const sa = new Set(a);
+  const sb = new Set(b);
+  if (sa.size !== sb.size) return false;
+  for (const f of sa) if (!sb.has(f)) return false;
+  return true;
+}
+
+// Legacy-bible backfill (kb_bible_commit).
+//
+// A bible entry written before format v3 carries no source_file_hashes, so a
+// clone importing it can only give it a local freshness-only basis and it is
+// never re-published. When the bible writer's own KB holds the SAME id with a
+// stored, verified basis, that basis can be attached to the bible entry. The
+// rule is the admission predicate itself (qualifiesForProjectBible, cited files
+// read at HEAD): nothing is re-hashed into the basis and no second rule is
+// invented. One extra guard: the KB entry must cite exactly the bible entry's
+// source_files, so the attached basis describes the files the bible entry
+// cites and nothing else. A local freshness-only basis (from kb_import) reads
+// as no basis (SqliteProvider.getSourceFileBases), so it never backfills.
+
+/**
+ * The bible entries that gain a basis: for each entry in `bibleEntries` with
+ * no carried source_file_hashes whose id is in `kbEntries` (the writer KB's
+ * live entries) with the same source_files set and a stored basis passing
+ * qualifiesForProjectBible at repoPath's HEAD, the id mapped to that stored
+ * basis. Entries that do not qualify are simply absent from the result (the
+ * caller keeps them unchanged; nothing is ever dropped). Hashes the candidate
+ * basis files once; with no candidate nothing is hashed (so no git check).
+ * Throws KbHeadHashError when there are candidates and repoPath is not inside
+ * a git work tree.
+ */
+export async function selectLegacyBibleBackfill<K extends BibleCandidate>(
+  bibleEntries: BibleFileEntry[],
+  kbEntries: K[],
+  basisById: Map<string, Record<string, string> | null>,
+  repoPath: string,
+): Promise<Map<string, Record<string, string>>> {
+  const kbById = new Map<string, K>();
+  for (const e of kbEntries) kbById.set(e.id, e);
+  const candidates: BibleCandidate[] = [];
+  for (const b of bibleEntries) {
+    if (hasCarriedBasis(b)) continue;
+    const kb = kbById.get(b.id);
+    if (!kb || !basisById.get(b.id)) continue;
+    if (!sameFileSet(kb.source_files, b.source_files)) continue;
+    candidates.push({ id: b.id, confidence: kb.confidence, source_files: b.source_files });
+  }
+  const out = new Map<string, Record<string, string>>();
+  if (candidates.length === 0) return out;
+  const passing = await filterProjectBibleCandidates(candidates, basisById, repoPath);
+  for (const c of passing) out.set(c.id, basisById.get(c.id)!);
+  return out;
+}
