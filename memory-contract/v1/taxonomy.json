@@ -245,6 +245,20 @@
           "retryable": false,
           "group_decision": "AUTHORITY, not conflict. The refusal is about the target's standing to hold a higher tier, which is the same policy as the clamp; it is not about the semantics of a contradiction pair.",
           "see_also": ["Superseding and AUDN matching"]
+        },
+        {
+          "$anchor": "E-KB-MAINTAINER-REQUIRED",
+          "code": "E-KB-MAINTAINER-REQUIRED",
+          "meaning": "kb_import was called with an explicit path (other than the session's own .fleet/kb-canonical.json) in a MEMBER session that does not carry the kb_maintainer grant. An explicit-path import keeps the bible's confidence, which is equivalent in power to kb_promote, so it needs the same grant. Nothing is imported.",
+          "raising_methods": [
+            { "method_id": "P-2", "member": "capture", "tool": "kb_import", "position": "pre-provider" }
+          ],
+          "source": "src/services/knowledge/kb-maintainer-grant.ts (KbMaintainerGrantError), raised by src/tools/kb-import.ts",
+          "surfaced": "thrown",
+          "retryable": false,
+          "remediation": "Call kb_import without path to import your own checkout bible (.fleet/kb-canonical.json), or run the import from the kb_maintainer session or a FULL session.",
+          "group_decision": "AUTHORITY, not provider_internal: the request is well formed and the KB could serve it; the refusal is the INFERRED-ceiling policy applied to a member session that may not write above it. Thrown before any KB is opened (spec.md section 2.5a).",
+          "see_also": ["Capture provenance and confidence clamp"]
         }
       ]
     },

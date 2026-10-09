@@ -178,8 +178,13 @@ export const ENVIRONMENT = {
     // kb_resolve_contradiction. kb_setup and kb_export are never served to a
     // member session, so their fixtures run in FULL_A.
     A: { member: 'contract-a', kind: 'local', repo: 'A', kbMaintainer: true },
-    B: { member: 'contract-b', kind: 'local', repo: 'B' },
-    IMPORT_REJECTED: { member: 'contract-import-rejected', kind: 'local', repo: 'IMPORT_REJECTED' },
+    // B and IMPORT_REJECTED import a bible by explicit path (repo A's file), which
+    // a member session may do only with the kb_maintainer grant (spec.md section
+    // 2.5a), so they carry it. PLAIN_B is the same repo without the grant: it
+    // records the E-KB-MAINTAINER-REQUIRED refusal.
+    B: { member: 'contract-b', kind: 'local', repo: 'B', kbMaintainer: true },
+    PLAIN_B: { member: 'contract-plain-b', kind: 'local', repo: 'B' },
+    IMPORT_REJECTED: { member: 'contract-import-rejected', kind: 'local', repo: 'IMPORT_REJECTED', kbMaintainer: true },
     // code_* sessions pin their provider (codeIntelProvider) so the recorded
     // outcome never depends on the host's global code-intelligence config.
     CODE: { member: 'contract-code', kind: 'local', repo: 'CODE', codeIntelProvider: 'gitnexus' },
@@ -444,6 +449,9 @@ export const SCENARIO = [
       },
     ],
   },
+  // A member session without the kb_maintainer grant is refused an explicit
+  // kb_import path (it would keep the bible's CONFIRMED confidence).
+  { tool: 'kb_import', case: 'refusal-kb-maintainer-required' },
   { tool: 'kb_capture', case: 'refusal-no-basis' },
   { tool: 'kb_capture', case: 'refusal-basis-missing-files' },
   {

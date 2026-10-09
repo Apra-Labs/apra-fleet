@@ -319,7 +319,8 @@ function memberNameOf(member) {
 /**
  * memberCall options for a call made AS a repository's kb_maintainer: the
  * session carries the kb_maintainer grant, so the server also serves it
- * kb_promote and kb_resolve_contradiction (see member-call.mjs).
+ * kb_promote, kb_resolve_contradiction and kb_reconcile_prefilter (see
+ * member-call.mjs).
  */
 export const KB_MAINTAINER_CALL = Object.freeze({ kbMaintainer: true });
 

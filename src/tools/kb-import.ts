@@ -6,6 +6,7 @@ import { getKbProviders } from '../services/knowledge/kb-providers.js';
 import { resolveKbAnchor, type KbAnchor } from '../services/knowledge/kb-self.js';
 import { readBibleEntries, importBibleEntries } from '../services/knowledge/bible-import.js';
 import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
+import { KbMaintainerGrantError, memberLacksKbMaintainer } from '../services/knowledge/kb-maintainer-grant.js';
 
 // T2.1 (F4, D3 HARDENED): kb_import -- the trusted-channel write path that lets a
 // warm local KB absorb a merged-in bible (.fleet/kb-canonical.json). The
@@ -32,10 +33,19 @@ import { requireSqliteProject } from '../services/knowledge/require-sqlite-proje
 // .fleet/kb-canonical.json; an explicit --path bible is CALLER-ASSERTED trust.
 // The unforgeable tier remains user-directives, which are CLI-gated -- the
 // directive gate quarantines them either way.
+//
+// MEMBER sessions: because an explicit path is equivalent in power to
+// kb_promote (it keeps bible confidence, and a v3 bible's carried hashes are
+// stored verbatim, so a hand-made bible can later pass kb_bible_commit
+// admission), a member session WITHOUT the kb_maintainer grant is refused an
+// explicit path with E-KB-MAINTAINER-REQUIRED -- the same sessions that are not
+// served kb_promote. A path naming the session's own repo-resolved bible is
+// the trusted channel and is allowed, as is no path at all (the engine's
+// priming import). FULL sessions and the kb_maintainer session are unchanged.
 
 export const kbImportSchema = z.object({
   path: z.string().optional()
-    .describe('Explicit path to a bible JSON file (e.g. <worktree>/.fleet/kb-canonical.json). This is a file path, not a scope selector: the KB written is always the calling session\'s own (a member session -> its work folder; otherwise the server folder). When omitted, resolves to <own folder>/.fleet/kb-canonical.json. TRUST NOTE: importing the repo-resolved .fleet/kb-canonical.json is the git-reviewed trusted channel; an explicit --path bible is caller-asserted trust (equivalent in power to kb_promote). Directives are quarantined to pending proposals either way.'),
+    .describe('Explicit path to a bible JSON file (e.g. <worktree>/.fleet/kb-canonical.json). This is a file path, not a scope selector: the KB written is always the calling session\'s own (a member session -> its work folder; otherwise the server folder). When omitted, resolves to <own folder>/.fleet/kb-canonical.json. TRUST NOTE: importing the repo-resolved .fleet/kb-canonical.json is the git-reviewed trusted channel; an explicit --path bible is caller-asserted trust (equivalent in power to kb_promote). In a MEMBER session without the kb_maintainer grant an explicit path other than the session\'s own .fleet/kb-canonical.json is refused with E-KB-MAINTAINER-REQUIRED and nothing is imported. Directives are quarantined to pending proposals either way.'),
   scope: z.literal('project').optional()
     .describe('Only project scope is supported (imports into the project KB). Global bibles are a separate concern.'),
   // KB audit 2026-08-12, found by a LIVE sprint rather than by review. The
@@ -84,7 +94,15 @@ export interface KbImportReport {
 export async function kbImport(input: KbImportInput, anchor?: KbAnchor): Promise<string> {
   const resolved = resolveKbAnchor(anchor);
   const repoAnchor = requireLocalFolder(resolved.folder);
-  const biblePath = input.path ?? path.join(repoAnchor, '.fleet', 'kb-canonical.json');
+  const ownBible = path.join(repoAnchor, '.fleet', 'kb-canonical.json');
+  const biblePath = input.path ?? ownBible;
+
+  if (input.path !== undefined && path.resolve(input.path) !== path.resolve(ownBible) && memberLacksKbMaintainer(anchor)) {
+    throw new KbMaintainerGrantError(
+      `kb_import with an explicit path ('${input.path}') keeps the bible's confidence, which is equivalent to kb_promote, so it needs the kb_maintainer grant; this member session does not carry it and nothing was imported.`,
+      'Call kb_import without path to import your own checkout bible (.fleet/kb-canonical.json), or run the import from the kb_maintainer session or a FULL session.',
+    );
+  }
 
   // Validate the file resolves and parses to the bible array shape BEFORE
   // importing anything (reject otherwise -- non-zero exit at the CLI).

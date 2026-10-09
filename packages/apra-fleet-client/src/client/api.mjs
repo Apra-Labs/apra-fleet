@@ -711,6 +711,10 @@
  *   (never re-hashing local files); an entry without it gets a local
  *   freshness-only basis (it can go stale) that is never exported, so it is not
  *   re-published until recaptured.
+ *   Because kb_import keeps an entry's bible confidence and carried basis, an
+ *   import from an explicit `path` is equivalent to kb_promote: a member session
+ *   without the kb_maintainer grant is refused one (E-KB-MAINTAINER-REQUIRED,
+ *   nothing imported) unless the path is its own .fleet/kb-canonical.json.
  */
 
 /**

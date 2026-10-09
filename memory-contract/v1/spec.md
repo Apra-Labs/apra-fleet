@@ -167,8 +167,10 @@ A MEMBER session is served an explicit tool list
   and `kb_export` (auto-commits into the work tree) are NEVER served to a
   member session. Calling one is an unknown-tool error; they are available to
   a FULL session.
-- `kb_promote` and `kb_resolve_contradiction` mint CONFIRMED. They are served
-  only to a member session carrying the kb_maintainer grant: an engine-opened
+- `kb_promote`, `kb_resolve_contradiction` and `kb_reconcile_prefilter` (which
+  resolves pairs through the `kb_resolve_contradiction` write path) mint
+  CONFIRMED. They are served only to a member session carrying the
+  kb_maintainer grant: an engine-opened
   member session (`origin=engine`) with `kb_maintainer=1` on its URL, which the
   engine opens only for the member it chose as a repository's kb_maintainer
   (client `connectFleetMember(id, { origin: 'engine', kbMaintainer: true })`,
@@ -176,9 +178,19 @@ A MEMBER session is served an explicit tool list
   `origin=engine` is ignored. Every other member session -- including an agent
   session on the maintainer member, which connects through the plain
   `?member=<uuid>` entry -- gets an unknown-tool error.
-- Every other `kb_*` tool (including `kb_bible_commit`, `kb_import` and
-  `kb_reconcile_prefilter`) and every `code_*` tool is served to every member
-  session.
+- Every other `kb_*` tool (including `kb_bible_commit` and `kb_import`) and
+  every `code_*` tool is served to every member session.
+- `kb_import` with an explicit `path` keeps the named bible's confidence (and a
+  v3 bible's carried hashes), which is equivalent in power to `kb_promote`. In
+  a member session WITHOUT the grant an explicit path is refused with
+  `E-KB-MAINTAINER-REQUIRED` before any KB is opened, and nothing is imported
+  (a refusal, not a clamp). A path naming the session's own
+  `.fleet/kb-canonical.json`, and a call without `path` (the engine's priming
+  import of the checkout bible), import normally. FULL sessions and the
+  kb_maintainer session are unchanged.
+- A tool handler sees the grant through the per-call context
+  (`getSessionKbMaintainer()` next to `getSessionMemberId()` in
+  `src/services/tool-scope.ts`).
 
 The grant is an unauthenticated loopback URL parameter, like `?member=` and
 `origin=engine`: it keeps agent sessions off the CONFIRMED-minting tools, it is

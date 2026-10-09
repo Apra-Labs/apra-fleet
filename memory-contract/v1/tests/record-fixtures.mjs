@@ -718,6 +718,12 @@ await recordRefusal('kb_import', 'refusal-bible-wrong-shape', {
   path: wrongShapePath,
 }, 'E-BIBLE-WRONG-SHAPE');
 
+// E-KB-MAINTAINER-REQUIRED: a member session WITHOUT the kb_maintainer grant
+// naming a bible by explicit path (here repo A's) is refused; nothing imported.
+await withSession('PLAIN_B', () => recordRefusal('kb_import', 'refusal-kb-maintainer-required', {
+  path: bibleFromA,
+}, 'E-KB-MAINTAINER-REQUIRED'));
+
 // -- admission group (all 3 codes) ----------------------------------------
 await recordRefusal('kb_capture', 'refusal-no-basis', {
   type: 'knowledge',

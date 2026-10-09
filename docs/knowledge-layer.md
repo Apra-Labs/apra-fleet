@@ -244,8 +244,9 @@ The KB write policy for member sessions:
 |------|----------------|
 | `kb_setup` | never (it writes the install-wide provider config and stores credentials) |
 | `kb_export` | never (it auto-commits into the work tree) |
-| `kb_promote`, `kb_resolve_contradiction` | only the kb_maintainer session (they mint CONFIRMED) |
-| every other `kb_*` (incl. `kb_bible_commit`, `kb_import`) | yes |
+| `kb_promote`, `kb_resolve_contradiction`, `kb_reconcile_prefilter` | only the kb_maintainer session (they mint CONFIRMED) |
+| `kb_import` | yes; but an explicit `path` (other than the session's own `.fleet/kb-canonical.json`) needs the kb_maintainer grant, else it is refused with `E-KB-MAINTAINER-REQUIRED` |
+| every other `kb_*` (incl. `kb_bible_commit`) | yes |
 
 The kb_maintainer session is a member session the sprint engine opens with
 its kb_maintainer grant: `origin=engine&kb_maintainer=1` on the member URL
@@ -255,7 +256,7 @@ only for the member it chose as a repository's kb_maintainer, to apply the
 reviewer's promotions and the bible commit there. `kb_maintainer=1` without
 `origin=engine` is ignored. Agent sessions on a member -- including on the
 maintainer -- use the plain `?member=<uuid>` entry, so they never see
-`kb_promote` or `kb_resolve_contradiction`: a role reports promotions in its
+`kb_promote`, `kb_resolve_contradiction` or `kb_reconcile_prefilter`: a role reports promotions in its
 output and the engine applies them. The grant is an unauthenticated loopback
 URL parameter like `?member=` itself: it keeps agent sessions off the
 CONFIRMED-minting tools, it is not a security boundary against a local
