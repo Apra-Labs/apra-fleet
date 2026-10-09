@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "8a8f3ce595f3f1616a6ada5f464313b5002b4bfc",
     "branch": "feat/kb-redesign",
-    "entry_count": 324
+    "entry_count": 327
   },
   "entries": [
     {
@@ -1453,6 +1453,29 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:13.689Z"
+    },
+    {
+      "id": "36289cef-5ae0-41d2-b370-1a4b43c9484f",
+      "type": "knowledge",
+      "title": "Engine makes a removal-only kb_bible_commit (ids []) after a discard",
+      "summary": "createKbWorkClient tracks per-repo retirements (a kb_invalidate discard accepted in flushRepo); commitRepo then calls kb_bible_commit with ids [] even with no confirmations, under the same guards, and clears the flag on any successful call.",
+      "symbols": [
+        "createKbWorkClient",
+        "commitRepo",
+        "flushRepo",
+        "commitRound",
+        "bibleAttempt"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs",
+        "packages/apra-fleet-se/test/kb-bible-commit-round.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-09T07:57:52.525Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs": "45dda41a41e0082984a6ef5f078d9e6c8caf1cac",
+        "packages/apra-fleet-se/test/kb-bible-commit-round.test.mjs": "3c1e446c4ddb26b2064338e4d7713a672e270225"
+      }
     },
     {
       "id": "38065918-834d-4116-9dd1-153006cb7f05",
@@ -4503,6 +4526,26 @@
       "updated_at": "2026-09-29T06:13:14.111Z"
     },
     {
+      "id": "c34f8dbb-f289-4e23-a72c-e26ea6ed968a",
+      "type": "knowledge",
+      "title": "Guard test pins: no kb_export or exportBible in fleet-sprint engine sources",
+      "summary": "packages/apra-fleet-se/test/engine-no-bible-export-guard.test.mjs scans every non-test file under fleet-sprint/ (comments included) and fails on kb_export or exportBible, mirroring rg -g '!*test*'.",
+      "symbols": [
+        "engineSourceFiles",
+        "bibleExportHits"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/test/engine-no-bible-export-guard.test.mjs",
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-09T07:57:47.910Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs": "45dda41a41e0082984a6ef5f078d9e6c8caf1cac",
+        "packages/apra-fleet-se/test/engine-no-bible-export-guard.test.mjs": "1f78563ff11807fa38f4ede3c3047fe06510d6c8"
+      }
+    },
+    {
       "id": "c370a103-a884-47c3-aaa5-ac57d2572ddc",
       "type": "knowledge",
       "title": "Tool-only ?member= sessions never write the session registry",
@@ -5003,6 +5046,35 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:38.479Z"
+    },
+    {
+      "id": "db416de8-7817-46d1-846c-dcc7fc6235a6",
+      "type": "knowledge",
+      "title": "kb_bible_commit backfills source_file_hashes on legacy bible entries",
+      "summary": "kb_bible_commit attaches this KB's stored basis to existing bible entries with no source_file_hashes when the same live CONFIRMED id cites the same source_files set and passes the admission predicate at HEAD; the response reports backfilled and a backfill alone commits.",
+      "symbols": [
+        "kbBibleCommit",
+        "selectLegacyBibleBackfill",
+        "hasCarriedBasis",
+        "withSourceFileHashes",
+        "bibleCommitMessage"
+      ],
+      "source_files": [
+        "src/tools/kb-bible-commit.ts",
+        "src/services/knowledge/bible-basis-filter.ts",
+        "src/tools/kb-export.ts",
+        "memory-contract/v1/response-schemas.mjs",
+        "tests/knowledge/kb-bible-backfill.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-09T07:57:50.224Z",
+      "source_file_hashes": {
+        "memory-contract/v1/response-schemas.mjs": "7ac088b77e809e47795bf7fef5c16d43d6de4b2a",
+        "src/services/knowledge/bible-basis-filter.ts": "0054a4d920c29d5e12011ee61c02037de9a3760e",
+        "src/tools/kb-bible-commit.ts": "1e47c4bc35ecd892b4d62a12cc32c7fad5b28128",
+        "src/tools/kb-export.ts": "3b13cb60a6d84eaee4adf8c93356b4877589bfeb",
+        "tests/knowledge/kb-bible-backfill.test.ts": "14cb85203cfac1873a8a30c206a86b9dfa023f3c"
+      }
     },
     {
       "id": "dd27675b-1a7c-431f-b0ce-d7fcd1c46385",
