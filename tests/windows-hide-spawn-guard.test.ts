@@ -181,10 +181,15 @@ describe('windowsHide spawn guard', () => {
   // 1.29.0 on (1.27.x hid it under Electron only, leaving a console window up
   // for the client's lifetime). Fail if a downgrade brings the old line back.
   it('installed MCP SDK stdio transport hides its child on win32', () => {
-    const pkgJson = createRequire(path.join(REPO_ROOT, 'package.json')).resolve('@modelcontextprotocol/sdk/package.json');
-    const stdioJs = path.join(path.dirname(pkgJson), 'dist', 'esm', 'client', 'stdio.js');
-    const src = fs.readFileSync(stdioJs, 'utf8');
-    expect(src).toMatch(/windowsHide:\s*process\.platform\s*===\s*['"]win32['"]\s*[,}\n]/);
+    // Resolve the module itself: the SDK's "./*" export maps package.json to
+    // dist/cjs/package.json, so package.json is not a reliable root anchor.
+    const cjsStdio = createRequire(path.join(REPO_ROOT, 'package.json')).resolve('@modelcontextprotocol/sdk/client/stdio.js');
+    const esmStdio = cjsStdio.replace(/([\\/])dist\1cjs\1/, '$1dist$1esm$1');
+    expect(esmStdio).not.toBe(cjsStdio);
+    for (const f of [cjsStdio, esmStdio]) {
+      const src = fs.readFileSync(f, 'utf8');
+      expect(src, f).toMatch(/windowsHide:\s*[\w.]*process\w*(?:\.default)?\.platform\s*===\s*['"]win32['"]\s*[,}\n]/);
+    }
   });
 
   it('allowlist entries still match a real call site (no stale exemptions)', () => {
