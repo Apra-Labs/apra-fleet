@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "8a8f3ce595f3f1616a6ada5f464313b5002b4bfc",
     "branch": "feat/kb-redesign",
-    "entry_count": 329
+    "entry_count": 330
   },
   "entries": [
     {
@@ -5097,6 +5097,30 @@
         "src/tools/kb-bible-commit.ts": "1e47c4bc35ecd892b4d62a12cc32c7fad5b28128",
         "src/tools/kb-export.ts": "3b13cb60a6d84eaee4adf8c93356b4877589bfeb",
         "tests/knowledge/kb-bible-backfill.test.ts": "14cb85203cfac1873a8a30c206a86b9dfa023f3c"
+      }
+    },
+    {
+      "id": "dbf606ef-52e4-46aa-a824-d45e2e330d01",
+      "type": "knowledge",
+      "title": "After launch alignment, a residual HEAD mismatch comes only from a reused local sprint branch",
+      "summary": "alignMembersToBase resets every member to origin/<branch> or origin/<base> via decideEnsureBranchAction, except when it reuses a local sprint branch (ahead of origin, or the branch is not on origin yet), so a legacy topology refusal after alignment means a member holds local-only sprint commits.",
+      "symbols": [
+        "alignMembersToBase",
+        "prepareLaunchTopology",
+        "decideEnsureBranchAction",
+        "checkMemberTopology"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/member-align.mjs",
+        "packages/apra-fleet-se/fleet-sprint/branch-ensure.mjs",
+        "packages/apra-fleet-se/fleet-sprint/git-topology.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-09T09:00:12.168Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/branch-ensure.mjs": "e9fc16ee988bbb29782099fcf7ad74b0db623109",
+        "packages/apra-fleet-se/fleet-sprint/git-topology.mjs": "6c1320594b5bd16c53eaa88e523655d12ae8e6f2",
+        "packages/apra-fleet-se/fleet-sprint/member-align.mjs": "dc691faa5f87edb33df71178c4e1f33ebd8a8194"
       }
     },
     {
