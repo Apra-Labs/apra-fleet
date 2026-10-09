@@ -169,6 +169,16 @@ export function maskSecrets(text: string): string {
   }
 }
 
+/**
+ * Log form of an MCP session id: its first 8 characters. A session id is a
+ * bearer-like handle (a full id addresses the session), so log lines carry
+ * only this non-reversible prefix -- enough to correlate lines of one session.
+ */
+export function shortSid(sid: string | null | undefined): string {
+  if (!sid) return 'none';
+  return sid.length <= 8 ? sid : `${sid.slice(0, 8)}...`;
+}
+
 export function truncateForLog(text: string, maxLen = 80): string {
   const single = text.replace(/[\n\t]/g, ' ');
   return single.length <= maxLen ? single : single.slice(0, maxLen) + '...';
