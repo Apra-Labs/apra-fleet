@@ -270,6 +270,8 @@ describe('mock sprint: KB writes route through the kb_maintainer', () => {
             const maintEntries = fleet.kbOf(MAINT).filter((e) => e.id !== OLD_ENTRY_ID);
             assert.deepEqual(maintEntries.map((e) => e.title).sort(), ['claim to confirm', 'claim to discard']);
             for (const e of maintEntries) assert.deepEqual(e.tags, [`member:${MAINT}`]);
+            // The basis (cited file) is recorded on the stored entry; it exists only in the maintainer's checkout.
+            for (const e of maintEntries) assert.deepEqual(e.source_files, [CITED]);
             assert.ok(!r.logs.some((l) => /basis check failed/.test(l)), 'the basis check must pass on the maintainer');
             assert.deepEqual(fleet.kbOf(DEV), [], "the producing doer's own KB stays empty");
 
@@ -336,6 +338,37 @@ describe('mock sprint: KB writes route through the kb_maintainer', () => {
             assert.ok(r.logs.some((l) => l.endsWith("[kb-work] WARN: member 'scratch' (doer): work folder is not a repository -- 1 capture(s) dropped")),
                 JSON.stringify(r.logs.filter((l) => l.includes('[kb-work]'))));
             assert.deepEqual(fleet.events.filter((e) => e.type === 'kb' && e.tool === 'kb_capture'), [], 'the capture is dropped, not written anywhere');
+            assert.deepEqual(fleet.orchestratorKbCalls, []);
+        });
+    });
+
+    test('a capture citing a file absent from the maintainer checkout is rejected with the basis-check reason, not stored', { timeout: scaledTimeout(240000) }, async () => {
+        await withScenarioMarkers('kb write routing basis rejected', async () => {
+            const fleet = createFakeFleet();
+            const doerHandler = async ({ opts, tempDir, runCmd }) => {
+                const ids = (opts.prompt.match(/Assigned bead ids \(comma-separated\):\s*(.+)/)?.[1] || '').split(',').map((s) => s.trim()).filter(Boolean);
+                for (const id of ids) await runCmd(`bd close ${id}`, tempDir);
+                // Deliberately NOT published: the cited file is in no checkout.
+                return { content: [{ text: JSON.stringify({ status: 'VERIFY', closedIds: ids, notes: 'done', kb_captures: [captureFor('claim with no basis')] }) }] };
+            };
+            const r = await runDevelopLoopScenario('kbroute-nobasis', {
+                members: ['maint', 'dev'],
+                roleMap: { doer: ['dev'] },
+                beadsIdentity: { maint: { repoRemote: REPO_URL }, dev: { repoRemote: REPO_URL } },
+                taskSpecs: [{ title: 'Task: kb capture citing a missing file' }],
+                doerHandler,
+                reviewerHandler: async () => ({ content: [{ text: JSON.stringify({ verdict: 'APPROVED', notes: 'Approved.', reopenIds: [], newTasks: [] }) }] }),
+                maxCycles: 1,
+                callToolFactory: (executeCommand) => buildCallTool(fleet, executeCommand),
+                onCommand: buildOnCommand(fleet),
+            });
+            assert.equal(r.error, null, `sprint error: ${r.error && r.error.message}`);
+            const attempts = fleet.events.filter((e) => e.type === 'kb' && e.tool === 'kb_capture');
+            assert.ok(attempts.length >= 1 && attempts.every((e) => e.member === 'maint'), 'the capture was attempted on the maintainer only');
+            assert.ok(r.logs.some((l) => /\[kb-work\] kb_capture (rejected|failed) .*basis check failed: src\/widget-cache\.ts not in the checkout/.test(l)),
+                JSON.stringify(r.logs.filter((l) => l.includes('[kb-work]'))));
+            assert.deepEqual(fleet.kbOf(memberUuid('maint')), [], 'a rejected capture is not stored on the maintainer');
+            assert.deepEqual(fleet.kbOf(memberUuid('dev')), [], 'nor on the producing member');
             assert.deepEqual(fleet.orchestratorKbCalls, []);
         });
     });
