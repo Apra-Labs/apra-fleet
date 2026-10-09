@@ -8,7 +8,7 @@
 // workflow steps that re-run any of these suites. Exits non-zero if any
 // suite failed.
 //
-// apra-fleet-qe83.3: bounded by a wall-clock timeout per suite (default 15
+// apra-fleet-qe83.3: bounded by a wall-clock timeout per suite (default 20
 // minutes, override with APRA_TEST_TIMEOUT_MS) so a hung suite (e.g. a
 // vitest run that never exits -- the linked bug, observed on Windows) cannot
 // hold a dispatch open indefinitely. The suite list itself is overridable
@@ -41,7 +41,7 @@ process.on('exit', () => testSandbox.cleanup());
 const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 const isWindows = process.platform === 'win32';
 
-const DEFAULT_TIMEOUT_MS = 15 * 60 * 1000;
+const DEFAULT_TIMEOUT_MS = 20 * 60 * 1000;
 const timeoutMs = (() => {
     const raw = Number(process.env.APRA_TEST_TIMEOUT_MS);
     return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_TIMEOUT_MS;

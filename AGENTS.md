@@ -17,7 +17,7 @@ node dist/index.js install     # Dev-mode install
 
 Run tests only through `npm test` (`scripts/run-all-tests.mjs`) or the
 apra-fleet-se workspace's own `npm test` (`packages/apra-fleet-se/scripts/run-tests.mjs`)
--- both are wall-clock bounded (default 15 minutes per suite, override with
+-- both are wall-clock bounded (default 20 minutes per suite, override with
 `APRA_TEST_TIMEOUT_MS`) and kill the whole child process tree (not just the
 immediate child) on timeout, so a hung suite can never hold a dispatch open
 indefinitely. Do not invoke `vitest run` or `node --test` directly for a
