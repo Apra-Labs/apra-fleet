@@ -79,6 +79,10 @@ interface FakeMember {
   /** Files that exist (absolute paths), e.g. the CLI binary. */
   files: string[];
   ps?: boolean;
+  /** Absolute path `command -v <bin>` finds on the member's default (non-login) PATH. */
+  onDefaultPath?: string;
+  /** No bash on the member: every `bash ...` command exits 127. */
+  noBash?: boolean;
 }
 
 /**
@@ -91,6 +95,9 @@ function installFakeMember(m: FakeMember): void {
     const text = m.ps ? decodePs(cmd) : cmd;
     // home dir probe (member-home.ts)
     if (text === `printf '%s' "$HOME"` || text.includes('[Console]::Out.Write($env:USERPROFILE)')) return ok(m.home);
+    if (m.noBash && text.startsWith('bash ')) return { stdout: '', stderr: 'sh: bash: not found', code: 127 };
+    // default-PATH probe (the member's own non-login shell)
+    if (text.startsWith('command -v ')) return m.onDefaultPath ? ok(`${m.onDefaultPath}\n`) : fail();
     // login-shell / Get-Command probes: the CLI is NOT on the non-interactive PATH
     if (text.startsWith('bash -lc ') && text.includes('command -v')) return fail();
     if (text.includes('Get-Command')) return ok('');
@@ -230,7 +237,7 @@ describe('LLM CLI under a user prefix or nvm is invoked by absolute path', () =>
     const res = await executePrompt({ member_id: a.id, prompt: 'hi', resume: false, timeout_s: 5 });
     expect(res.structuredContent).toMatchObject({ isError: true, reason: 'llm_cli_not_found' });
     const nf = (res.structuredContent as { llmCliNotFound: { probed: { kind: string; location: string }[]; fix: string } }).llmCliNotFound;
-    expect(nf.probed.map(p => p.kind)).toEqual(['login-shell', 'npm-prefix', 'nvm', 'local-bin', 'npm-global']);
+    expect(nf.probed.map(p => p.kind)).toEqual(['default-path', 'login-shell', 'npm-prefix', 'nvm', 'local-bin', 'npm-global']);
     expect(nf.probed.map(p => p.location)).toEqual(expect.arrayContaining([
       `${home}/.nvm/versions/node/*/bin/claude`, `${home}/.local/bin/claude`, `${home}/.npm-global/bin/claude`,
     ]));
@@ -277,5 +284,39 @@ describe('LLM CLI under a user prefix or nvm is invoked by absolute path', () =>
     expect(getAgent(a.id)?.llmCli?.path).toBe(fresh);
     expect(dispatchCommand()).toContain(`'${fresh}' -p`);
     expect(dispatchCommand()).not.toContain(stale);
+  });
+
+  it('(6) no stored path, no bash, CLI only on the default PATH (/usr/bin): resolves and dispatches -- members that worked before keep working', async () => {
+    const home = '/home/alpine';
+    const abs = '/usr/bin/claude';
+    installFakeMember({ home, files: [abs], onDefaultPath: abs, noBash: true });
+    const a = member({ friendlyName: 'alpine-box', os: 'linux', username: 'alpine' });
+    expect(a.llmCli).toBeUndefined();
+
+    const res = await executePrompt({ member_id: a.id, prompt: 'hi', resume: false, timeout_s: 5 });
+    expect(res.structuredContent).not.toMatchObject({ isError: true });
+    expect(getAgent(a.id)?.llmCli).toMatchObject({ provider: 'claude', path: abs, source: 'default-path' });
+    const dispatch = dispatchCommand();
+    expect(dispatch).toBeDefined();
+    expect(dispatch).toContain(`export PATH='/usr/bin':`);
+    expect(dispatch).toContain(`'${abs}' -p`);
+    // Resolution never needed bash.
+    const probes = commands().filter(c => c.includes('command -v'));
+    expect(probes).toEqual([`command -v 'claude' 2>/dev/null`]);
+  });
+
+  it('(7) a probe exec that throws (connection drop) is dispatch_failed, not llm_cli_not_found, and keeps the stored path', async () => {
+    const home = '/home/flaky';
+    const storedPath = `${home}/.local/bin/claude`;
+    const a = member({ friendlyName: 'flaky-box', os: 'linux', username: 'flaky', llmCli: { provider: 'claude', path: storedPath, source: 'local-bin', resolvedAt: 'x' } });
+    mockExecCommand.mockImplementation(async (cmd) => {
+      if (cmd.startsWith('if [ -x ')) throw new Error('SSH connection closed');
+      return DISPATCH_OK;
+    });
+    const res = await executePrompt({ member_id: a.id, prompt: 'hi', resume: false, timeout_s: 5 });
+    expect(res.structuredContent).toMatchObject({ isError: true, reason: 'dispatch_failed' });
+    expect(res.structuredContent).not.toHaveProperty('llmCliNotFound');
+    expect(getAgent(a.id)?.llmCli?.path).toBe(storedPath);
+    expect(dispatchCommand()).toBeUndefined();
   });
 });

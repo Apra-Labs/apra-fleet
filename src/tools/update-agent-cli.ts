@@ -101,6 +101,12 @@ async function updateSingleAgent(agent: Agent, installIfMissing: boolean): Promi
     // dirs) and run version/update by that path. A CLI found nowhere is
     // reported with every probed location and the fix.
     const located = await ensureMemberLlmCli(agent, provider);
+    // A probe exec failure (connection drop, timeout) says nothing about
+    // whether the CLI is installed: never fall through to an install on it.
+    if (!located.ok && located.reason === 'probe_failed') {
+      result.error = located.message;
+      return result;
+    }
     let cliPath = located.ok ? located.path : undefined;
 
     // Get current version

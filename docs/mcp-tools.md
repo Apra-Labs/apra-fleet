@@ -460,6 +460,14 @@ Updates -- or, on request, installs -- the LLM provider CLI on a member.
 | member identifier | string | yes | `member_id` or `member_name` |
 | `install_if_missing` | boolean | no | Default `false`. Install the CLI on the member when it is not already present |
 
+**How the member's CLI is located (all CLI-invoking tools):** `execute_prompt`, `provision_llm_auth`, `update_llm_cli` and `register_member` resolve the provider CLI once per member and store its absolute path on the member record. Every later call runs the CLI by that path, with the path's directory prepended to `PATH`. On POSIX the probes run in this order: `command -v <bin>` in the member's own non-login shell (`default-path`, which also works without bash), then `bash -lc 'command -v <bin>'` (`login-shell`), then the npm global prefix, nvm per-version bin directories, `~/.local/bin` and `~/.npm-global/bin`. On PowerShell they are `Get-Command`, the npm prefix (`AppData\Roaming\npm`) and `.local\bin`.
+
+The resolved path can come from the login-shell PATH, while the dispatch itself runs in the non-interactive environment. Prepending the path's directory to `PATH` is what makes such a CLI (for example an nvm install with a `node` shebang) run there.
+
+There are two kinds of failure:
+- **CLI found nowhere:** `execute_prompt` returns `reason: 'llm_cli_not_found'` and `llmCliNotFound`, which lists every probed location and a one-line fix. This is deterministic.
+- **A probe that could not run (connection drop, timeout):** `execute_prompt` returns `dispatch_failed`, which is transient. The stored path is never cleared because of this failure.
+
 ---
 
 ## 4. Observability Tools

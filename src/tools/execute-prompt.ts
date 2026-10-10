@@ -1015,11 +1015,19 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   // stale) so an nvm / npm-prefix / ~/.npm-global install that is not on the
   // non-interactive PATH still dispatches. A CLI found nowhere is a
   // deterministic, structured rejection naming every probed location and the
-  // fix -- never a raw shell "command not found" after the dispatch.
+  // fix -- never a raw shell "command not found" after the dispatch. A probe
+  // whose exec itself failed (connection drop, timeout) is NOT "not found":
+  // it is a transient dispatch_failed, and the stored path is kept.
   const llmCli = await ensureMemberLlmCli(agent, getProvider(agent.llmProvider));
   if (!llmCli.ok) {
     inFlightAgents.delete(agent.id);
     writeStatusline(new Map([[agent.id, 'idle']]));
+    if (llmCli.reason === 'probe_failed') {
+      return {
+        text: `[FAIL] execute_prompt on "${agent.friendlyName}" failed -- ${llmCli.message}\nNo LLM call was made.`,
+        structuredContent: { isError: true, reason: 'dispatch_failed' },
+      };
+    }
     return {
       text: `[FAIL] execute_prompt on "${agent.friendlyName}" rejected -- ${llmCli.message}\nNo LLM call was made.`,
       structuredContent: { isError: true, reason: 'llm_cli_not_found', llmCliNotFound: llmCli.notFound },
