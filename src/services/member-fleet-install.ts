@@ -138,7 +138,9 @@ export type InstallSource =
       assetName: string;
       /** The first URL tried (candidates[0]). */
       url: string;
-      /** Releases tried in order until one has a verified asset for this build. */
+      /** Releases tried in order (stable first, BUILD_INFO-gated, then the
+       *  exact-build prerelease) until one has a verified asset for this
+       *  build; see releaseCandidatesFor and fetchReleaseInstaller. */
       candidates: ReleaseCandidate[];
     };
 
@@ -362,7 +364,8 @@ export function releasePageUrl(tag: string): string {
  *  tag builds carry a build suffix too, and their commit also gets an
  *  unsigned prerelease when it is pushed to main, so a stable orchestrator
  *  must get the signed stable assets -- then the exact-build prerelease
- *  (dev/branch builds). */
+ *  (dev/branch builds). The same-core stable fallback is not a candidate: it
+ *  is a separate, opt-in last step in fetchReleaseInstaller. */
 export interface ReleaseCandidate {
   tag: string;
   channel: 'prerelease' | 'stable';
@@ -630,7 +633,10 @@ const defaultDownload = (url: string, assetName: string, expectBuild?: string): 
 
 /**
  * Fetch the verified installer for the orchestrator's build from the first
- * candidate release that has it (exact-build prerelease, then stable). Only a
+ * candidate release that has it: the stable release whose BUILD_INFO names
+ * this build, then the exact-build prerelease, then -- only with
+ * `allowSameCoreStable` (member has no apra-fleet or an older core) -- the
+ * signed stable release of the same core (never across cores). Only a
  * missing release or one that is not this build moves on to the next
  * candidate; any other failure (network, timeout, checksum) is reported as
  * itself, never hidden behind the fallback. Anonymous URLs only.

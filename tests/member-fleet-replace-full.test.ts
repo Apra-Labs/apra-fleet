@@ -20,7 +20,7 @@ import path from 'node:path';
 import { makeTestAgent, decodePowerShellEncodedCommand } from './test-helpers.js';
 import type { Agent, SSHExecResult } from '../src/types.js';
 import {
-  ensureMemberFleetInstall, buildReplaceFullInstallPlan, REPLACE_FULL_INSTALL, FLEET_MCP_FIX,
+  ensureMemberFleetInstall, buildReplaceFullInstallPlan, REPLACE_FULL_INSTALL, FLEET_MCP_FIX, ReleaseDownloadError,
   type MemberFleetInstallDeps,
 } from '../src/services/member-fleet-install.js';
 import { updateMemberSchema } from '../src/tools/update-member.js';
@@ -282,5 +282,33 @@ describe.skipIf(!hasPs)('replace-full: every emitted PowerShell step and rollbac
     });
     for (const s of plan.steps) expect(psParseErrors(decodePowerShellEncodedCommand(s.command)), s.name).toEqual([]);
     for (const lines of Object.values(plan.rollbackFor)) for (const line of lines) expect(psParseErrors(line), line).toEqual([]);
+  });
+});
+
+describe('replace-full: same-core stable fallback', () => {
+  const DEVBUILD = 'v0.4.4_d1e339';
+  /** Release host with no release for the exact build, only the stable v0.4.4
+   *  of another build: the same-core fallback (expectBuild = bare core) works. */
+  const onlySameCoreStable: MemberFleetInstallDeps['downloadReleaseAsset'] = async (url, name, expectBuild) => {
+    if (expectBuild === 'v0.4.4' && url.includes('/download/v0.4.4/')) return `/tmp/dl/${name}`;
+    throw new ReleaseDownloadError('release-not-found', `no release for ${expectBuild} at ${url}`, 404);
+  };
+  const devDeps = (h: ReturnType<typeof harness>): MemberFleetInstallDeps => ({
+    ...h.deps, orchestratorVersion: () => DEVBUILD, orchestratorExecutable: () => null, downloadReleaseAsset: onlySameCoreStable,
+  });
+
+  it('replaced install on an older core: the signed same-core stable is installed and reported', async () => {
+    const h = harness(LINUX); // full install OLD = v0.4.2
+    const r = await ensureMemberFleetInstall(agentFor(LINUX), devDeps(h), { replaceFull: true });
+    expect(r).toMatchObject({ state: 'available', installed: true, version: ORCH, sameCoreFallback: { tag: 'v0.4.4', wantedBuild: DEVBUILD } });
+    expect(destructive(h.events)).toEqual(['backup', 'uninstall', 'supervisor', 'move-data', 'install']);
+  });
+
+  it('replaced install already on the same core: no fallback, nothing on the member changed', async () => {
+    const h = harness(LINUX);
+    h.w.installed = 'v0.4.4_bbbbbb';
+    const r = await ensureMemberFleetInstall(agentFor(LINUX), devDeps(h), { replaceFull: true });
+    expect(r).toMatchObject({ state: 'unavailable', reason: 'no-matching-release' });
+    expect(destructive(h.events)).toEqual([]);
   });
 });
