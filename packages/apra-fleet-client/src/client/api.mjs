@@ -126,6 +126,10 @@
  *   present as an EXTRA field on a typed failure (max_turns_exhausted, auth, server,
  *   overloaded, ...) or a non-strict Claude failure whose turn carried refusals: the typed
  *   reason wins.
+ * @property {boolean} [replyComplete] - Present when `reason === 'permission_denied'`: true when
+ *   `response` is the turn's COMPLETE reply (clean exit, no error result, non-empty text), false
+ *   when it is missing or a fragment. A caller may judge the refusal by impact and accept a
+ *   complete reply that satisfies its own contract; never infer completeness from the text.
  * @property {PermissionDenied} [permissionWarning] - Present on a SUCCESSFUL dispatch whose
  *   session refused tool calls without failing it: a healable:false refusal (never grant it),
  *   or any Claude refusal when `fail_on_permission_denial` was not set. A logged warning.

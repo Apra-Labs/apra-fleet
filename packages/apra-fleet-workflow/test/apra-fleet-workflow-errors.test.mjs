@@ -447,6 +447,56 @@ describe('agent(): permission_denied pass-through onto AgentDispatchError.detail
             }
         );
     });
+
+    // The refused turn's reply travels with the error so the caller can judge
+    // the refusal by impact: raw text, the server's completeness verdict, and
+    // the schema-validated value when the reply satisfies the dispatch schema.
+    const SCHEMA = {
+        type: 'object',
+        required: ['verdict'],
+        properties: { verdict: { type: 'string', enum: ['APPROVED', 'CHANGES_NEEDED'] } },
+    };
+    const refusedWith = (extra) => new FleetWorkflow(createMockFleetApi({
+        executePromptImpl: async () => ({
+            content: [{ text: `[FAIL] execute_prompt on "${KNOWN_MEMBER}": permission denied` }],
+            structuredContent: {
+                isError: true, reason: 'permission_denied',
+                permissionDenied: { actions: ['Bash'], denials: [], suggestedGrants: [], hint: 'refused' },
+                ...extra,
+            },
+        }),
+    }));
+
+    test('a complete schema-valid reply is forwarded as response, replyComplete and parsedResponse', async () => {
+        const wf = refusedWith({ response: '```json\n{"verdict":"APPROVED"}\n```', replyComplete: true });
+        await assert.rejects(() => wf.agent('review', { member_name: KNOWN_MEMBER, schema: SCHEMA }), (err) => {
+            assert.ok(err instanceof AgentDispatchError);
+            assert.strictEqual(err.details.replyComplete, true);
+            assert.match(err.details.response, /APPROVED/);
+            assert.deepStrictEqual(err.details.parsedResponse, { verdict: 'APPROVED' });
+            return true;
+        });
+    });
+
+    test('a schema-invalid reply carries no parsedResponse; a missing replyComplete is false', async () => {
+        const wf = refusedWith({ response: '{"verdict":"MAYBE"}' });
+        await assert.rejects(() => wf.agent('review', { member_name: KNOWN_MEMBER, schema: SCHEMA }), (err) => {
+            assert.strictEqual(err.details.replyComplete, false);
+            assert.strictEqual(err.details.response, '{"verdict":"MAYBE"}');
+            assert.ok(!('parsedResponse' in err.details));
+            return true;
+        });
+    });
+
+    test('no response: no reply fields at all', async () => {
+        const wf = refusedWith({});
+        await assert.rejects(() => wf.agent('review', { member_name: KNOWN_MEMBER, schema: SCHEMA }), (err) => {
+            assert.ok(!('response' in err.details));
+            assert.ok(!('replyComplete' in err.details));
+            assert.ok(!('parsedResponse' in err.details));
+            return true;
+        });
+    });
 });
 
 describe('F10: resume defaulting at the workflow layer', () => {

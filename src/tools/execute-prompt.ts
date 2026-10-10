@@ -117,6 +117,12 @@ export interface ExecutePromptStructured {
    *  overloaded, workspace_not_trusted) or a non-strict Claude failure whose
    *  turn carried refusals -- the typed reason wins. */
   permissionDenied?: PermissionDenial;
+  /** Present on a 'permission_denied' failure: true when `response` is the
+   *  turn's complete reply (exit 0, no error result, non-empty text), false
+   *  when it is missing or a fragment. Lets a caller judge the refusal by its
+   *  impact -- accept a complete reply that satisfies its own contract --
+   *  without guessing completeness from the text. */
+  replyComplete?: boolean;
   /** Present on a SUCCESSFUL dispatch whose session refused tool calls
    *  without failing it: a healable:false refusal (Claude auto/bypass mode:
    *  safety classifier or deny rule -- never grant it), or any Claude refusal
@@ -1976,6 +1982,12 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
             reason: 'permission_denied',
             permissionDenied: denial,
             ...(partial ? { response: partial } : {}),
+            // Whether `response` is the turn's COMPLETE reply (clean exit, no
+            // error result, non-empty text) rather than a fragment. A caller
+            // judging the refusal by impact (fleet-sprint) may accept a
+            // complete, schema-valid reply as the result; it never has to
+            // guess completeness from the text.
+            replyComplete,
             ...(parsed.sessionId ? { sessionId: parsed.sessionId } : {}),
             ...(_epUsage ? { usage: toStructuredUsage(_epUsage) } : {}),
           },

@@ -506,6 +506,7 @@ async function runDegradeSteps(ctx, policy, err, errorClass) {
  * @returns {Promise<{ok:boolean, value:any, error:Error|null, degraded:boolean,
  *                    inconclusive:{reason:string,message:string}|null,
  *                    attempts:number, resumesIssued:number,
+ *                    permissionWarnings:Array<{member:string, role:string, actions:string[]}>,
  *                    stepResults:Record<string,any>, validation:any}>}
  */
 export async function dispatchRole(ctx, roleName, opts = {}) {
@@ -554,6 +555,7 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
     // narrows, and its prompt, its label and the tier it is priced at all
     // follow. Resolving options before the bracket opened would dispatch the
     // pre-claim scope.
+    let lastDispatchHadSchema = false;
     const runDispatch = (dispatch, defaultPrompt, defaultLabel, attemptOpts, extra = {}) => {
         const invoke = async () => {
             // In-bracket pre-dispatch steps, then the caller's own preparation.
@@ -581,6 +583,9 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
             for (const key of Object.keys(options)) {
                 if (options[key] === undefined) delete options[key];
             }
+            // Which contract the reply of THIS dispatch is held to, should a
+            // permission refusal hand its reply to judgeRefusalByImpact.
+            lastDispatchHadSchema = options.schema !== undefined;
             const inFlight = agent(prepared.prompt ?? defaultPrompt, {
                 ...options,
                 member_name: member,
@@ -742,13 +747,64 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
     // its own heals for the per-ladder cap.
     let permissionHeals = 0;
     let permissionHealRedispatch = false;
+    // Refusals judged harmless by their impact: the reply was complete and
+    // satisfied the role's contract, so it was accepted as the result. Each
+    // entry is surfaced on the outcome (permissionWarnings) and logged.
+    const permissionWarnings = [];
+
+    // A permission refusal is judged by its IMPACT on the reply, not by the
+    // mere fact of a refusal. When the refused dispatch nevertheless produced
+    // its COMPLETE reply (the server says so explicitly: replyComplete) and
+    // that reply satisfies the role's contract -- it validates against the
+    // dispatch schema (agent() did the extraction: parsedResponse) and, when
+    // the caller supplied one, passes opts.validate -- the refused call did
+    // not cost the role its result, so the reply IS the result and the
+    // refusal is recorded as a warning naming the member, role and refused
+    // calls. Anything less (no reply, a fragment, a reply that fails the
+    // contract) returns null and the refusal goes to the heal path exactly as
+    // before. A classifier/deny-rule refusal (healable:false) is never judged
+    // here: it keeps its own semantics. The server side is not weakened --
+    // fail_on_permission_denial stays true, so every refusal still reaches
+    // this judgment instead of silently riding on a success.
+    const judgeRefusalByImpact = (err) => {
+        if (!isPermissionDeniedDispatchError(err)) return null;
+        const details = err.details || {};
+        const denial = permissionDeniedOf(err);
+        if (denial && denial.healable === false) return null;
+        if (details.replyComplete !== true) return null;
+        if (typeof details.response !== 'string' || details.response.trim() === '') return null;
+        let candidate;
+        if (lastDispatchHadSchema) {
+            if (details.parsedResponse === undefined || details.parsedResponse === null) return null;
+            candidate = details.parsedResponse;
+        } else {
+            candidate = details.response;
+        }
+        if (opts.validate) {
+            let verdict;
+            try {
+                verdict = opts.validate(candidate);
+            } catch {
+                return null;
+            }
+            if (!verdict || !verdict.ok) return null;
+        }
+        const actions = refusedActionsOf(denial);
+        const warning = { member, role: policy.role, actions };
+        permissionWarnings.push(warning);
+        ctx.log(
+            `${roleLabel} dispatch WARNING: member '${member}' (role ${policy.role}) was refused tool calls: ` +
+            `${actions.length ? actions.join(', ') : 'unknown actions'}. The reply is complete and satisfies the ` +
+            `${roleLabel} contract, so it is accepted as the result; no grant was added. Review the refused calls ` +
+            'if the role should have been allowed to run them.'
+        );
+        return { value: candidate };
+    };
     // Resolves null when the heal succeeded (re-run the attempt), else the
     // MemberPermissionDeniedError that ends the sprint.
     const healPermissionDenial = async (err) => {
         const denial = permissionDeniedOf(err);
-        const actions = denial && denial.denials.length
-            ? denial.denials.map((d) => (d.target ? `${d.action} "${d.target}"` : d.action))
-            : ((denial && denial.actions) || []);
+        const actions = refusedActionsOf(denial);
         const actionText = actions.length ? actions.join(', ') : 'unknown actions';
         const suggested = (denial && denial.suggestedGrants) || [];
         const fail = (step, why, heal) => {
@@ -847,9 +903,19 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
             // re-dispatch hits the limit again.
             const redispatchMode = usageLimitRedispatch;
             usageLimitRedispatch = null;
-            value = redispatchMode === 'resume'
-                ? await redispatchViaUsageLimitResume(attemptOpts)
-                : await runAttempt(attemptOpts);
+            try {
+                value = redispatchMode === 'resume'
+                    ? await redispatchViaUsageLimitResume(attemptOpts)
+                    : await runAttempt(attemptOpts);
+            } catch (dispatchErr) {
+                // Judged INSIDE the attempt's try, so an accepted reply runs
+                // afterAttempt and the postResult steps exactly like any
+                // other result, and anything they throw is classified by the
+                // same ladder.
+                const accepted = judgeRefusalByImpact(dispatchErr);
+                if (!accepted) throw dispatchErr;
+                value = accepted.value;
+            }
             if (opts.afterAttempt) await opts.afterAttempt(value);
             // A postResult step may REJECT the result (the reviewer's
             // contract guard: a CHANGES_NEEDED verdict with nothing for the
@@ -1102,6 +1168,7 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
             inconclusive: inconclusiveOf(policy, lastErr),
             attempts: attemptsMade,
             resumesIssued,
+            permissionWarnings,
             stepResults: {},
             validation: opts.validate ? opts.validate(degradedValue).result : null,
         };
@@ -1140,9 +1207,23 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
         inconclusive: null,
         attempts: attemptsMade,
         resumesIssued,
+        permissionWarnings,
         stepResults,
         validation,
     };
+}
+
+/**
+ * The refused calls of a permission denial, as display strings
+ * ('Bash "bd show x"'), preferring the per-call targets when known.
+ * @param {ReturnType<typeof permissionDeniedOf>} denial
+ * @returns {string[]}
+ */
+function refusedActionsOf(denial) {
+    if (!denial) return [];
+    return denial.denials.length
+        ? denial.denials.map((d) => (d.target ? `${d.action} "${d.target}"` : d.action))
+        : (denial.actions || []);
 }
 
 /**

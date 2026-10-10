@@ -185,6 +185,9 @@ describe('execute_prompt -- Claude permission_denied', () => {
     expect(result.structuredContent.sessionId).toBe(SESSION);
     // The refusal-laden reply is kept as a partial response, never as the result.
     expect(result.structuredContent.response).toContain('requires approval');
+    // Clean exit, no error result, non-empty text: the server says the reply
+    // is complete, so a caller can judge the refusal by its impact.
+    expect(result.structuredContent.replyComplete).toBe(true);
     expect(result.text).toContain('permission denied');
     const block = permissionDenialOf(result);
     expect(block).not.toBeNull();
@@ -223,6 +226,7 @@ describe('execute_prompt -- Claude permission_denied', () => {
     mockExecCommand.mockResolvedValue(run(JSON.stringify({ ...JSON.parse(RESULT), result: '' })));
     const result: any = await executePrompt({ member_id: member.id, prompt: 'review the plan', resume: false, timeout_s: 5, fail_on_permission_denial: true });
     expect(result.structuredContent.reason).toBe('permission_denied');
+    expect(result.structuredContent.replyComplete).toBe(false);
     expect(result.structuredContent.permissionDenied.healable).toBe(false);
     expect(result.structuredContent.permissionDenied.suggestedGrants).toEqual([]);
     expect(permissionDenialOf(result).healable).toBe(false);
