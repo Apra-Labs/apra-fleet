@@ -226,16 +226,18 @@ jobs:
         shell: pwsh
 
       # Cached install + workspace link check; key design lives in the action.
-      # Push builds ship these binaries (v* tag releases, and the prereleases
-      # of main / feat/kb-redesign pushes): clean npm ci, no cache restore or
-      # save. Only pull_request and workflow_dispatch builds, which never
-      # publish, use the cache. (build-and-test keeps its cache on push: its
-      # output does not ship.)
-      - name: Install dependencies (node_modules cache on PR/dispatch; clean npm ci on push)
+      # Shipped binaries come from a clean npm ci (no cache restore or save):
+      # every push build (v* tag releases, main / feat/kb-redesign
+      # prereleases) and ANY build of a tag ref, including a workflow_dispatch
+      # re-run on a v* tag, which the tag-gated sign/release/npm-publish jobs
+      # would ship. Only pull_request and branch workflow_dispatch builds, which
+      # never publish, use the cache. (build-and-test keeps its cache on push:
+      # its output does not ship.)
+      - name: Install dependencies (node_modules cache on PR/branch dispatch; clean npm ci otherwise)
         uses: ./.github/actions/node-modules-cache
         with:
           runner-label: ${{ matrix.os }}
-          cache: ${{ (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch') && 'true' || 'false' }}
+          cache: ${{ (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch') && !startsWith(github.ref, 'refs/tags/') && 'true' || 'false' }}
 
       - name: Inject version from tag
         if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '_')
@@ -543,6 +545,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Setup Node.js 22.x
         uses: actions/setup-node@v4
@@ -612,7 +615,7 @@ jobs:
           # releases/latest excludes prereleases and drafts, so the notes are
           # computed against the previous STABLE release, never a prerelease
           # tag of the same commit. Empty (first release) -> GitHub's default.
-          PREV=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name 2>/dev/null || true)
+          PREV=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq '.tag_name // empty' 2>/dev/null || true)
           echo "tag=$PREV" >> "$GITHUB_OUTPUT"
           echo "Previous stable release: ${PREV:-(none)}"
 
