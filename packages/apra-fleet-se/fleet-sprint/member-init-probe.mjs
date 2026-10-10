@@ -44,6 +44,17 @@
 //                   (never re-selected): which member maintains the probed
 //                   member's repository.
 //
+// INSTALL CURRENCY (non-gating, part of step 2): after the fleetMcp refresh,
+// a member whose install core version (fleetMcp.version) is older than the
+// orchestrator's (member_detail server_version), or a REMOTE member that is
+// its repository's kb_maintainer whose install does not accept
+// `apra-fleet call --kb-maintainer` (opts.kbMaintainerCapability -- the
+// member-call capability probe, cached per member), gets a
+// member-fleet-outdated problem (step 'install') and a WARN. A version check
+// alone misses the second case (the flag landed within one core version).
+// Never gating: it does not change verified nor the first gating problem.
+// Local members are never probed for the CLI flag.
+//
 // TRANSPORT RULE: every kb_* / code_* call goes through the injected
 // memberCall (a member-scoped session). The orchestrator's callTool is used
 // ONLY for member_detail; this module never calls a kb_* or code_* tool on it.
@@ -87,6 +98,7 @@ export const MEMBER_INIT_FIXES = Object.freeze({
     'server-status-unreadable': "'apra-fleet status' on the member reported neither running nor stopped: run it by hand on the member and read its output, or run update_member with fleet_install \"auto\" for the member",
     'server-start-failed': "start the member's fleet server by hand ('apra-fleet start' on the member) and read its log, then rerun the sprint",
     'member-tools-failed': "the member session could not list tools for a reason not recognized as an old install or a refused session (see the problem detail): read it, correct that cause on the member, then rerun the sprint",
+    'member-fleet-outdated': "the member's fleet install is older than the orchestrator build (or cannot open the kb_maintainer session): run update_member with fleet_install \"auto\" for the member to upgrade it to the orchestrator build",
     'member-fleet-too-old': "the member's apra-fleet predates member mode (it has no 'call' command): run update_member with fleet_install \"auto\" for the member to upgrade it to the orchestrator version, then rerun the sprint",
     'member-secret-refused': "the member server refused the member access secret (HTTP 401, E-MEMBER-SECRET): the member-access.key file in the member install's own data directory is missing or does not match the one the server holds, usually because the sprint is running as a different user or with a different data directory than the member install; run the member session as the install's own user with the install's own data dir (or reinstall the member so member-access.key is regenerated), then rerun the sprint",
     'member-session-refused': "the member server refused the member session (HTTP 403, the member id is not registered with the server the member talks to): run update_member with fleet_install \"auto\" for the member so it registers itself, then rerun the sprint",
@@ -256,6 +268,21 @@ export function parseServerState(text) {
     return m ? m[1].toLowerCase() : null;
 }
 
+/** [major, minor, patch] of a version string ("v0.4.4_abc" -> [0, 4, 4]), or null. */
+export function coreVersionOf(version) {
+    const m = /^v?(\d+)\.(\d+)\.(\d+)/.exec(String(version || '').trim());
+    return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+}
+
+/** True when `memberVersion`'s core is older than `serverVersion`'s (false when either is unparseable). */
+export function isCoreOlder(memberVersion, serverVersion) {
+    const a = coreVersionOf(memberVersion);
+    const b = coreVersionOf(serverVersion);
+    if (!a || !b) return false;
+    for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return a[i] < b[i];
+    return false;
+}
+
 /** The one init line logged per member. */
 export function formatMemberInitLine(rec) {
     const warnSuffix = Array.isArray(rec.warnings) && rec.warnings.length > 0 ? `; WARN: ${rec.warnings.join(' | ')}` : '';
@@ -277,6 +304,8 @@ export function formatMemberInitLine(rec) {
  *   fleetApi?: { executeCommand: Function },                   remote server start-if-down
  *   resolveTarget?: Function,                                  defaults to resolveMemberTarget
  *   kbMaintainers?: { maintainerForMember?: Function, repoOf?: Function } | (() => object),
+ *   kbMaintainerCapability?: (member: object) => Promise<'supported'|'unsupported'|'inconclusive'>,
+ *                                                              remote kb_maintainer CLI-flag probe
  *   now?: () => number,
  *   sleep?: (ms: number) => Promise<void>,
  *   codeIndexBoundMs?: number,
@@ -293,6 +322,7 @@ export function createMemberInitProbe(opts = {}) {
         memberCall,
         listTools,
         fleetApi,
+        kbMaintainerCapability,
         log = () => {},
         codeIndexBoundMs = CODE_INDEX_FIRST_TICK_BOUND_MS,
         pollMs = CODE_STATUS_POLL_MS,
@@ -395,9 +425,34 @@ export function createMemberInitProbe(opts = {}) {
             const ver = f && f.version ? String(f.version).replace(/^v/, '') : null;
             const old = rec.problems.find((p) => p.reason === 'member-fleet-too-old');
             if (old && ver) old.fix = `${old.fix} (version seen on the member: ${ver})`;
+            await checkInstallCurrency(record, rec, problem, f && f.version ? String(f.version) : null, d && d.server_version ? String(d.server_version) : null);
         } catch (err) {
             problem('fleetMcp', 'fleet-mcp-refresh-failed', errText(err));
         }
+    }
+
+    /**
+     * Non-gating: a member install older than the orchestrator, or a remote
+     * kb_maintainer install that cannot open the kb_maintainer session, is
+     * reported as member-fleet-outdated (problem step 'install' plus a WARN)
+     * before any maintainer call fails mid-sprint. Never throws.
+     */
+    async function checkInstallCurrency(record, rec, problem, memberVersion, serverVersion) {
+        const causes = [];
+        if (memberVersion && serverVersion && isCoreOlder(memberVersion, serverVersion)) {
+            causes.push('its version is older than the orchestrator');
+        }
+        const isRemote = String(record.type || '').toLowerCase() !== 'local';
+        if (isRemote && rec.maintainer === record.name && typeof kbMaintainerCapability === 'function') {
+            let verdict = 'inconclusive';
+            try { verdict = await kbMaintainerCapability(record); } catch { /* inconclusive: no warning */ }
+            if (verdict === 'unsupported') causes.push("it is this repository's kb_maintainer and its call verb does not accept --kb-maintainer");
+        }
+        if (causes.length === 0) return;
+        const seen = `member version ${memberVersion || 'unknown'}, orchestrator version ${serverVersion || 'unknown'}`;
+        const fix = `${fixFor('member-fleet-outdated')} (${seen})`;
+        problem('install', 'member-fleet-outdated', causes.join('; '), fix);
+        rec.warnings.push(`member-fleet-outdated: ${causes.join('; ')}; fix: ${fix}`);
     }
 
     async function readCount(record, rec, problem) {

@@ -27,6 +27,7 @@
 import { ROLES, wrapUntrustedBlock } from './contracts.mjs';
 import { toolErrorText } from './mcp-result.mjs';
 import { cleanQueryTerms } from './kb-hints.mjs';
+import { E_MEMBER_FLEET_TOO_OLD } from './member-call.mjs';
 
 // Local, validated role constant -- mirrors runner.js's own roleConst()
 // pattern (kb.mjs does not import runner.js's private helper, to avoid a
@@ -578,6 +579,14 @@ export function createKbWorkClient(opts = {}) {
             try {
                 res = await call;
             } catch (err) {
+                if (err && err.code === E_MEMBER_FLEET_TOO_OLD) {
+                    // The maintainer's install cannot open the kb_maintainer
+                    // grant: nothing in this batch can land until it is
+                    // upgraded, so all of it stays queued.
+                    queue.unshift(...batch.slice(i));
+                    log(`[kb-work] WARNING: maintainer '${maintainer}' cannot run ${spec.tool}: ${err.message} -- ${batch.length - i} KB write(s) for ${repo} stay queued`);
+                    break;
+                }
                 if (isUnreachableError(err)) {
                     queue.unshift(...batch.slice(i));
                     log(`[kb-work] WARN: maintainer '${maintainer}' unreachable during ${spec.tool} for ${spec.subject(op.payload)} (${err.message}) -- ${batch.length - i} KB write(s) for ${repo} stay queued`);
@@ -667,7 +676,7 @@ export function createKbWorkClient(opts = {}) {
         try {
             res = await memberCall(target.record, 'kb_bible_commit', { ids, baseBranch: base.baseBranch, baseCommit: base.baseCommit }, KB_MAINTAINER_CALL);
         } catch (err) {
-            return { ok: false, stage: 'kb_bible_commit', error: errText(err) };
+            return { ok: false, stage: 'kb_bible_commit', error: errText(err), fleetTooOld: !!(err && err.code === E_MEMBER_FLEET_TOO_OLD) };
         }
         if (isToolError(res)) return { ok: false, stage: 'kb_bible_commit', error: toolErrorText(res) };
         const result = parseResult(res) || {};
@@ -821,6 +830,10 @@ export function createKbWorkClient(opts = {}) {
                 }
             }
             if (!outcome.ok && outcome.branchBlocked) return { committed: 0, pending: ids.length };
+            if (!outcome.ok && outcome.fleetTooOld) {
+                log(`[kb-work] WARNING: bible commit for ${repo} cannot run on maintainer '${maintainer}': ${outcome.error} -- ${load} stay queued for the next round`);
+                return { committed: 0, pending: ids.length };
+            }
             if (!outcome.ok) {
                 log(`[kb-work] WARN: bible commit for ${repo} on maintainer '${maintainer}' failed at ${outcome.stage} (${outcome.error}) -- ${load} stay queued for the next round`);
                 return { committed: 0, pending: ids.length };

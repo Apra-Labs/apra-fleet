@@ -39,6 +39,7 @@ function fakeFleet(spec = {}) {
         unresolved = [],
         fail = {},
         fleetMcpFix = null,
+        serverVersion = undefined,
     } = spec;
     const events = [];
     const orchestratorCalls = [];
@@ -53,6 +54,7 @@ function fakeFleet(spec = {}) {
         if (fail.memberDetailRefresh && args.refresh) throw new Error('refresh exploded');
         const memberProvider = typeof provider === 'function' ? provider(args.member_name) : provider;
         const body = { id: uuid(args.member_name), type, llmProvider: memberProvider, folder: `/w/${args.member_name}` };
+        if (serverVersion !== undefined) body.server_version = serverVersion;
         if (args.refresh && fleetMcpFix) body.fleetMcpFix = fleetMcpFix;
         if (args.refresh) body.fleetMcp = typeof fleetMcp === 'function' ? fleetMcp(args.member_name) : fleetMcp;
         return { content: [{ text: JSON.stringify(body) }] };
@@ -466,4 +468,92 @@ test('a work tree carrying a previously injected gitnexus block is warned about 
     const [rec2] = await clean.make(['m1']).probeAll();
     assert.deepEqual(rec2.warnings, []);
     assert.doesNotMatch(formatMemberInitLine(rec2), /WARN: /);
+});
+
+// -----------------------------------------------------------------------------
+// Install currency: a member install older than the orchestrator, or a remote
+// kb_maintainer whose install lacks --kb-maintainer, is a NON-GATING
+// member-fleet-outdated warning naming update_member fleet_install auto and
+// both versions.
+// -----------------------------------------------------------------------------
+
+const RECORD_KEYS = ['member', 'memberId', 'type', 'provider', 'verified', 'server', 'fleetMcp', 'kbTools', 'codeTools',
+    'confirmedCount', 'codeIndex', 'codeIndexReason', 'repo', 'maintainer', 'warnings', 'reason', 'fix', 'problems', 'steps'].sort();
+
+/** The member maintains its own repository (it is the kb_maintainer). */
+const selfMaintains = { repoOf: () => 'github.com/o/r', maintainerForMember: (name) => ({ member: name }) };
+
+function capabilityFake(verdict) {
+    const calls = [];
+    return { calls, fn: async (member) => { calls.push(member.name); return verdict; } };
+}
+
+const outdated = (rec) => rec.problems.filter((p) => p.reason === 'member-fleet-outdated');
+
+test('install currency: a member install older than the orchestrator gets a non-gating member-fleet-outdated warning naming the fix and both versions', async () => {
+    const f = fakeFleet({ fleetMcp: { state: 'available', version: 'v0.4.3_abc' }, serverVersion: '0.4.4' });
+    const [rec] = await f.make(['m1']).probeAll();
+    const [p] = outdated(rec);
+    assert.ok(p, JSON.stringify(rec.problems));
+    assert.equal(p.step, 'install');
+    assert.match(p.fix, /update_member with fleet_install "auto"/);
+    assert.match(p.fix, /member version v0\.4\.3_abc/);
+    assert.match(p.fix, /orchestrator version 0\.4\.4/);
+    assert.ok(rec.warnings.some((w) => w.startsWith('member-fleet-outdated') && w.includes(p.fix)), JSON.stringify(rec.warnings));
+    // Non-gating: the member stays verified and the stable record shape is kept.
+    assert.equal(rec.verified, true);
+    assert.equal(rec.reason, null);
+    assert.equal(rec.fix, null);
+    assert.deepEqual(Object.keys(rec).sort(), RECORD_KEYS);
+    assert.ok(MEMBER_INIT_FIXES['member-fleet-outdated']);
+    assert.match(f.logs[0], /OK member 'm1': verified .*WARN: member-fleet-outdated/);
+});
+
+test('install currency: a remote kb_maintainer at the SAME core version whose install lacks --kb-maintainer gets the same warning', async () => {
+    const f = fakeFleet({ fleetMcp: { state: 'available', version: '0.4.4' }, serverVersion: '0.4.4' });
+    const cap = capabilityFake('unsupported');
+    const [rec] = await f.make(['m1'], { kbMaintainers: selfMaintains, kbMaintainerCapability: cap.fn }).probeAll();
+    assert.deepEqual(cap.calls, ['m1']);
+    const [p] = outdated(rec);
+    assert.ok(p, JSON.stringify(rec.problems));
+    assert.match(p.detail, /--kb-maintainer/);
+    assert.match(p.fix, /update_member with fleet_install "auto".*member version 0\.4\.4, orchestrator version 0\.4\.4/);
+    assert.equal(rec.verified, true);
+    assert.equal(rec.reason, null);
+    assert.deepEqual(Object.keys(rec).sort(), RECORD_KEYS);
+});
+
+test('install currency: an up-to-date (or newer) capable install gets no warning; a non-maintainer is not probed', async () => {
+    for (const version of ['0.4.4', '0.4.5']) {
+        const f = fakeFleet({ fleetMcp: { state: 'available', version }, serverVersion: '0.4.4' });
+        const cap = capabilityFake('supported');
+        const [rec] = await f.make(['m1'], { kbMaintainers: selfMaintains, kbMaintainerCapability: cap.fn }).probeAll();
+        assert.deepEqual(outdated(rec), [], version);
+        assert.deepEqual(rec.warnings, [], version);
+        assert.equal(rec.verified, true);
+    }
+    const f = fakeFleet({ fleetMcp: { state: 'available', version: '0.4.4' }, serverVersion: '0.4.4' });
+    const cap = capabilityFake('unsupported');
+    const other = { repoOf: () => 'github.com/o/r', maintainerForMember: () => ({ member: 'someone-else' }) };
+    const [rec] = await f.make(['m1'], { kbMaintainers: other, kbMaintainerCapability: cap.fn }).probeAll();
+    assert.deepEqual(cap.calls, [], 'only a kb_maintainer is probed for the flag');
+    assert.deepEqual(outdated(rec), []);
+});
+
+test('install currency: the warning never changes the first gating problem of an unverified member', async () => {
+    const f = fakeFleet({ fleetMcp: { state: 'available', version: '0.4.3' }, serverVersion: '0.4.4', tools: { tools: [{ name: 'version' }] } });
+    const [rec] = await f.make(['m1']).probeAll();
+    assert.equal(rec.verified, false);
+    assert.equal(rec.reason, 'member-tools-missing');
+    assert.equal(outdated(rec).length, 1);
+});
+
+test('install currency: a local kb_maintainer is never probed for the CLI flag', async () => {
+    const f = fakeFleet({ type: 'local', fleetMcp: { state: 'available', version: '0.4.4' }, serverVersion: '0.4.4' });
+    const cap = capabilityFake('unsupported');
+    const [rec] = await f.make(['m1'], { kbMaintainers: selfMaintains, kbMaintainerCapability: cap.fn }).probeAll();
+    assert.deepEqual(cap.calls, []);
+    assert.ok(!f.commands.some((c) => /call --help/.test(c.command)), 'no CLI capability probe command');
+    assert.deepEqual(outdated(rec), []);
+    assert.equal(rec.verified, true);
 });

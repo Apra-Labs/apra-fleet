@@ -3,7 +3,7 @@ import assert from 'node:assert';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createMemberCall, buildRemoteCallCommand, MemberCallError } from '../fleet-sprint/member-call.mjs';
+import { createMemberCall, buildRemoteCallCommand, buildKbMaintainerProbeCommand, classifyKbMaintainerProbe, MemberCallError, E_MEMBER_FLEET_TOO_OLD } from '../fleet-sprint/member-call.mjs';
 import { getSeCommands } from '../fleet-sprint/se-os-commands.mjs';
 
 const POSIX = getSeCommands({ os: 'linux', shell: '' });
@@ -15,10 +15,19 @@ const relay = { id: MID, name: 'm-relay', type: 'relay' };
 
 function text(t, isError = false) { return { content: [{ type: 'text', text: t }], ...(isError ? { isError: true } : {}) }; }
 
-function makeFleetApi(order, { execText = '{"content":[{"type":"text","text":"ok"}]}', execError = false } = {}) {
+/** `apra-fleet call --help` output of an install that accepts --kb-maintainer. */
+const CAPABLE_USAGE = 'Usage: apra-fleet call --member <uuid> [--kb-maintainer] <tool> [--args-file <path>]';
+/** The same usage from an install that predates --kb-maintainer. */
+const OLD_USAGE = 'Usage: apra-fleet call --member <uuid> <tool> [--args-file <path>]';
+
+function makeFleetApi(order, { execText = '{"content":[{"type":"text","text":"ok"}]}', execError = false, probeText = CAPABLE_USAGE, probeError = false } = {}) {
     return {
         sendFiles: async (o) => { order.push({ op: 'send_files', o, content: fs.readFileSync(o.local_paths[0], 'utf8') }); return text('sent'); },
-        executeCommand: async (o) => { order.push({ op: 'execute_command', o }); return text(execText, execError); },
+        executeCommand: async (o) => {
+            if (o.command === 'apra-fleet call --help') { order.push({ op: 'probe', o }); return text(probeText, probeError); }
+            order.push({ op: 'execute_command', o });
+            return text(execText, execError);
+        },
     };
 }
 
@@ -295,11 +304,90 @@ describe('memberCall kb_maintainer grant', () => {
                 resolveTarget: async () => ({ os: 'linux', shell: '' }),
             });
             await mc.memberCall(remote, 'kb_promote', { id: 'e1', reason: 'r' }, grant ? { kbMaintainer: true } : undefined);
+            assert.strictEqual(order.filter(e => e.op === 'probe').length, grant ? 1 : 0);
+            order.splice(0, order.length, ...order.filter(e => e.op !== 'probe'));
             const fileName = path.basename(order[1].o.local_paths[0]);
             const flag = grant ? ' --kb-maintainer' : '';
             assert.strictEqual(order[2].o.command, `apra-fleet call --member ${MID}${flag} kb_promote --args-file .apra-call/${fileName} --rm-args-file`);
         }
         const ps = buildRemoteCallCommand({ os: 'windows', shell: '' }, { memberId: MID, tool: 'kb_promote', argsPath: '.apra-call/c.json', kbMaintainer: true });
         assert.ok(Buffer.from(ps.split(' ')[2], 'base64').toString('utf16le').includes(`--member ${MID} --kb-maintainer kb_promote`));
+    });
+});
+
+describe('memberCall --kb-maintainer capability gate (remote)', () => {
+    const linux = async () => ({ os: 'linux', shell: '' });
+    const ops = (order) => order.map(e => e.op);
+    const isTooOld = (e) => e instanceof MemberCallError && e.code === E_MEMBER_FLEET_TOO_OLD
+        && e.message.includes("member 'm-remote'") && /update_member with fleet_install auto/.test(e.message);
+
+    test('an install whose call usage lacks --kb-maintainer: typed error, no send_files, no exclude, no call', async () => {
+        const order = [];
+        const mc = createMemberCall({ fleetApi: makeFleetApi(order, { probeText: OLD_USAGE }), resolveTarget: linux });
+        await assert.rejects(() => mc.memberCall(remote, 'kb_promote', { id: 'e1', reason: 'r' }, { kbMaintainer: true }), isTooOld);
+        assert.deepStrictEqual(ops(order), ['probe'], 'only the probe ran: no args file was delivered');
+        assert.strictEqual(order.filter(e => e.op === 'send_files').length, 0);
+        // The verdict is cached: a second maintainer call fails with no further member traffic.
+        await assert.rejects(() => mc.memberCall(remote, 'kb_bible_commit', { ids: [] }, { kbMaintainer: true }), isTooOld);
+        assert.deepStrictEqual(ops(order), ['probe']);
+    });
+
+    test('reactive: inconclusive probe, then the call answers unknown option --kb-maintainer: typed error and the args file is deleted', async () => {
+        const order = [];
+        const mc = createMemberCall({
+            fleetApi: makeFleetApi(order, {
+                probeText: 'bash: apra-fleet: command not found', probeError: true,
+                execText: '{"error":{"code":"E-USAGE","message":"unknown option --kb-maintainer"}}', execError: true,
+            }),
+            resolveTarget: linux,
+        });
+        await assert.rejects(() => mc.memberCall(remote, 'kb_promote', { id: 'e1', reason: 'r' }, { kbMaintainer: true }), isTooOld);
+        const sent = order.find(e => e.op === 'send_files');
+        assert.ok(sent, 'the inconclusive probe let the call proceed');
+        const argsPath = `.apra-call/${path.basename(sent.o.local_paths[0])}`;
+        const cmds = order.filter(e => e.op === 'execute_command').map(e => e.o.command);
+        assert.ok(cmds.includes(POSIX.removeFile(argsPath)), `args-file delete ran: ${JSON.stringify(cmds)}`);
+        // Now cached as unsupported: the next maintainer call never reaches the member.
+        const before = order.length;
+        await assert.rejects(() => mc.memberCall(remote, 'kb_promote', { id: 'e1', reason: 'r' }, { kbMaintainer: true }), isTooOld);
+        assert.strictEqual(order.length, before);
+    });
+
+    test('a capable member is probed once per member per factory; a call without the grant never probes', async () => {
+        const order = [];
+        const mc = createMemberCall({ fleetApi: makeFleetApi(order), resolveTarget: linux });
+        await mc.memberCall(remote, 'kb_promote', { id: 'e1', reason: 'r' }, { kbMaintainer: true });
+        await mc.memberCall(remote, 'kb_promote', { id: 'e2', reason: 'r' }, { kbMaintainer: true });
+        assert.strictEqual(order.filter(e => e.op === 'probe').length, 1);
+        assert.strictEqual(await mc.kbMaintainerCapability(remote), 'supported');
+        assert.strictEqual(order.filter(e => e.op === 'probe').length, 1, 'the exposed verdict reuses the cache');
+
+        const plainOrder = [];
+        const plain = createMemberCall({ fleetApi: makeFleetApi(plainOrder), resolveTarget: linux });
+        await plain.memberCall(remote, 'kb_query', { query: 'x' });
+        await plain.memberCall(remote, 'kb_query', { query: 'y' }, { kbMaintainer: false });
+        assert.strictEqual(plainOrder.filter(e => e.op === 'probe').length, 0);
+    });
+
+    test('a local member with the grant is never probed and opens the grant in-process', async () => {
+        const order = [];
+        const seen = [];
+        const mc = createMemberCall({
+            fleetApi: makeFleetApi(order),
+            connectLocal: async (id, opts) => { seen.push([id, opts]); return { mcpClient: { callTool: async () => text('{"ok":1}') }, close: async () => {} }; },
+        });
+        await mc.memberCall(local, 'kb_promote', { id: 'e1', reason: 'r' }, { kbMaintainer: true });
+        assert.strictEqual(await mc.kbMaintainerCapability(local), 'supported');
+        assert.deepStrictEqual(order, [], 'no probe command (or any member command) for a local member');
+        assert.deepStrictEqual(seen, [[MID, { kbMaintainer: true }]]);
+    });
+
+    test('probe command follows the member dialect, and its output is classified three ways', () => {
+        assert.strictEqual(buildKbMaintainerProbeCommand({ os: 'linux', shell: '' }), 'apra-fleet call --help');
+        const ps = buildKbMaintainerProbeCommand({ os: 'windows', shell: 'powershell' });
+        assert.ok(Buffer.from(ps.split(' ')[2], 'base64').toString('utf16le').includes('apra-fleet call --help'));
+        assert.strictEqual(classifyKbMaintainerProbe(CAPABLE_USAGE), 'supported');
+        assert.strictEqual(classifyKbMaintainerProbe(OLD_USAGE), 'unsupported');
+        assert.strictEqual(classifyKbMaintainerProbe('command not found'), 'inconclusive');
     });
 });
