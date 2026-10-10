@@ -12,7 +12,7 @@ sprintId in your dispatch prompt>"` -- exit 0 with "nothing to tear down" is
 the normal case; it only kills processes it can prove are that sandbox's own
 (see `deploy.md` Teardown).
 
-The pass has two parts. Report one `sections` entry per part, named exactly:
+The pass has three parts. Report one `sections` entry per part, named exactly:
 
 - **`Install smoke`** -- `## Setup` then `## Teardown`: a fresh `install`
   from this checkout into a throwaway HOME, the fleet server booted on a
@@ -21,6 +21,9 @@ The pass has two parts. Report one `sections` entry per part, named exactly:
 - **`In-sprint smoke`** -- NOT RUN. Report it as `passed: false` with
   detail `NOT RUN: moved to CI`, say `NOT RUN: moved to CI` in `summary`,
   and return overall `passed: false`. File no bead for it.
+- **`Claude CLI loop canary`** -- `## Claude CLI loop canary` below: the
+  LATEST Claude Code CLI runs one shell-loop dispatch and the engine's own
+  permission handling must continue or nudge, never abort.
 
 Why `In-sprint smoke` is not run: the toy sprint (member registration,
 canary sprint, harvest) needs an LLM credential provisioned for the toy
@@ -137,6 +140,37 @@ node "<repo-root>/scripts/sandbox-lock.mjs" release "$SANDBOX" || exit 1
 node dist/index.js stop
 rm -rf "$SANDBOX"
 ```
+
+## Claude CLI loop canary
+
+Independent of Setup/Teardown (run it before Setup or after Teardown, never
+inside the sandbox HOME). Needs `npm run build` already run. It installs the
+latest unpinned Claude Code CLI into a throwaway npm prefix under the system
+temp dir (never a global install, never the operator HOME config), prints
+its version, runs one headless dispatch whose task needs a shell for-loop,
+and feeds the result through the fleet-sprint engine's permission handling.
+Bounded: about 15 seconds normally, under 2 minutes worst case (install 45s,
+version 10s, dispatch 60s timeouts).
+
+```bash
+node "<repo-root>/scripts/claude-cli-loop-canary.mjs"
+```
+
+Report the `Claude CLI loop canary` section from its last line and exit code,
+always quoting the printed `Claude CLI version` in `detail`:
+
+- exit `0`, `CANARY PASS` -- `passed: true`.
+- exit `1`, `CANARY FAIL` -- `passed: false`, detail = the FAIL reason. File
+  a `[regression][carry-over]` bug (below) naming the CLI version and the
+  engine decision; P1 when the reason is that the engine would abort the
+  sprint or granted a loop prefix, P2 otherwise.
+- exit `2`, `CANARY NOT RUN` -- no usable LLM credential already present for
+  the current user, or the CLI could not be installed. `passed: false`,
+  detail `NOT RUN: <reason>`, and say `NOT RUN` in `summary`. It is NEVER a
+  pass. File no bead for it, and do NOT provision a credential to make it
+  run (same rule as `In-sprint smoke`).
+- exit `3` -- the canary itself could not start (for example the build is
+  missing). `passed: false` with its message; fix the prerequisite, rerun.
 
 ## Reporting failures
 
