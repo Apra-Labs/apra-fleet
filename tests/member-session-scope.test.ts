@@ -610,6 +610,198 @@ describe('kb_import in a member session without the grant imports only the commi
   });
 });
 
+// The kb_import TRUST ANCHOR. Committed alone is not trusted: the member
+// controls its own .git, so a session without the kb_maintainer grant could
+// commit a hand-made bible locally, import it, and reset the commit away. A
+// no-grant import therefore succeeds only for a committed bible whose git blob
+// id the maintainer side recorded in the hub-side per-repo KB DB
+// (kb_bible_commit, or kb_import from the kb_maintainer or a FULL session).
+// Real HTTP sessions, real handlers, real temp git repos under fx.root.
+//
+// Case 5 (worktree_ignored / no committed copy / no bible) is covered by the
+// describe block above, which now records the committed bible first.
+//
+// FALSIFICATION: removing the isTrustedBibleBlob check in src/tools/kb-import.ts
+// fails the attack test (the hand-made entry lands CONFIRMED and the import
+// does not error), the maintainer flow's and the seeding test's "refused
+// first" assertions; dropping the recordTrustedBibleBlob call in
+// kb-bible-commit.ts fails the maintainer and fresh-clone tests, and dropping
+// it in kb-import.ts fails the seeding and FULL-session tests (the no-grant
+// import is refused).
+describe('kb_import trust anchor: a no-grant import needs a bible the maintainer side recorded', () => {
+  const fx = useKbMemberRepo();
+  const BASE = { baseBranch: 'main', baseCommit: 'a'.repeat(40) };
+  const BIBLE_REL = '.fleet/kb-canonical.json';
+
+  const git = (cwd: string, args: string[]) =>
+    execFileSync('git', args, { cwd, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+
+  /** A v3 bible entry claiming CONFIRMED, citing a committed file with its HEAD hash. */
+  async function carriedEntry(cwd: string, id: string, rel: string): Promise<Record<string, unknown>> {
+    const head = await computeHeadFileHashBatch([rel], { cwd });
+    return {
+      id, type: 'knowledge', title: `carried claim ${id}`,
+      summary: `A CONFIRMED bible entry ${id} with a carried basis.`, symbols: [], source_files: [rel],
+      confidence: 'CONFIRMED', updated_at: '2026-01-01T00:00:00.000Z',
+      source_file_hashes: { [rel]: head[rel]!.hash },
+    };
+  }
+
+  function v3(entries: Record<string, unknown>[]): string {
+    return JSON.stringify({ version: 3, provenance: { commit: 'b'.repeat(40), branch: 'main', entry_count: entries.length }, entries });
+  }
+
+  /** Commit a source file plus a bible holding one carried CONFIRMED entry (plain git, not the maintainer). */
+  async function commitCarriedBible(id: string, rel: string): Promise<void> {
+    fx.writeSrc(rel, `export const v = '${id}';\n`);
+    commitWorkTree(fx.clone, 'basis for ' + id);
+    fx.writeSrc(BIBLE_REL, v3([await carriedEntry(fx.clone, id, rel)]));
+    commitWorkTree(fx.clone, 'bible holding ' + id);
+  }
+
+  /** A CONFIRMED entry in the KB, then the kb_maintainer's kb_bible_commit of it. */
+  async function maintainerPublishes(maint: Client, title: string): Promise<string> {
+    const file = `src/${title.toLowerCase()}.ts`;
+    fx.writeSrc(file, `export const ${title.toLowerCase()} = 1;\n`);
+    const { id } = await fx.provider.capture(fx.input({
+      title, summary: `Summary of ${title}`, content: `Content of ${title}.`, symbols: [`sym${title}`], source_files: [file],
+    }));
+    await fx.provider.promote(id, 'test fixture: verified');
+    await fx.provider.promote(id, 'test fixture: verified');
+    commitWorkTree(fx.clone, 'basis for ' + title);
+    const r = await callText(maint, 'kb_bible_commit', { ids: [id], ...BASE });
+    expect(r.isError, r.text).toBe(false);
+    expect(JSON.parse(r.text)).toMatchObject({ merged: [id], committed: true });
+    return id;
+  }
+
+  function trustedBlobCount(): number {
+    return ((fx.provider as any).getDb().prepare('SELECT COUNT(*) AS n FROM trusted_bible_blobs').get() as { n: number }).n;
+  }
+
+  /** A second local member on a fresh clone of the member's checkout (same KB: the provider spy). */
+  async function freshCloneMember(port: number): Promise<{ dir: string; plain: Client }> {
+    const dir = path.join(fx.root, 'fresh-clone');
+    execFileSync('git', ['clone', '--quiet', fx.clone, dir], { stdio: ['ignore', 'pipe', 'pipe'] });
+    git(dir, ['remote', 'set-url', 'origin', git(fx.clone, ['remote', 'get-url', 'origin'])]);
+    const agent = makeTestLocalAgent({ friendlyName: 'kb-gate-fresh-clone', workFolder: dir });
+    addAgent(agent);
+    return { dir, plain: await connect(port, { member: agent.id }) };
+  }
+
+  it('attack: a hand-made CONFIRMED bible committed only in the checkout is refused, and after a reset nothing of it remains', async () => {
+    const prior = git(fx.clone, ['rev-parse', 'HEAD']);
+    await commitCarriedBible('forged-entry-0003', 'src/forged.ts');
+    const blob = git(fx.clone, ['rev-parse', 'HEAD:./' + BIBLE_REL]);
+
+    const handle = await startServer();
+    const plain = await connect(handle.port, { member: fx.memberId });
+    for (const args of [{ skip_sweep: true }, {}, { path: path.join(fx.clone, BIBLE_REL) }]) {
+      const r = await callText(plain, 'kb_import', args);
+      expect(r.isError, r.text).toBe(true);
+      expect(r.text).toMatch(/^E-KB-MAINTAINER-REQUIRED: .*never recorded/);
+      expect(r.text).toContain(blob);
+    }
+    git(fx.clone, ['reset', '--hard', '--quiet', prior]);
+
+    expect(fx.row('forged-entry-0003')).toBeUndefined();
+    expect(fx.confirmedCount()).toBe(0);
+    expect(fx.provider.isTrustedBibleBlob(blob)).toBe(false);
+    expect(trustedBlobCount()).toBe(0);
+  });
+
+  it('maintainer flow: kb_bible_commit records its bible, and a no-grant import of that committed bible lands CONFIRMED with bible_source HEAD', async () => {
+    // Another clone's published entry already sits in the committed bible (not in this KB).
+    await commitCarriedBible('carried-entry-0001', 'src/carried.ts');
+    const handle = await startServer();
+    const plain = await connect(handle.port, { member: fx.memberId });
+    const maint = await connect(handle.port, { member: fx.memberId, params: MAINTAINER_PARAMS });
+
+    const before = await callText(plain, 'kb_import', { skip_sweep: true });
+    expect(before.isError).toBe(true);
+    expect(before.text).toMatch(/never recorded/);
+
+    const published = await maintainerPublishes(maint, 'Epsilon');
+    const blob = git(fx.clone, ['rev-parse', 'HEAD:./' + BIBLE_REL]);
+    expect(fx.provider.isTrustedBibleBlob(blob)).toBe(true);
+    expect(fx.bibleIds()).toEqual(['carried-entry-0001', published].sort());
+
+    const r = await callText(plain, 'kb_import', { skip_sweep: true });
+    expect(r.isError, r.text).toBe(false);
+    expect(JSON.parse(r.text)).toMatchObject({ imported: 1, bible_source: 'HEAD', worktree_ignored: false });
+    expect(fx.row('carried-entry-0001')?.confidence).toBe('CONFIRMED');
+  });
+
+  it('fresh clone of a maintainer-published bible: the engine-style import (no path, skip_sweep) lands it CONFIRMED', async () => {
+    await commitCarriedBible('carried-entry-0002', 'src/carried2.ts');
+    const handle = await startServer();
+    const maint = await connect(handle.port, { member: fx.memberId, params: MAINTAINER_PARAMS });
+    await maintainerPublishes(maint, 'Zeta');
+
+    const { dir, plain } = await freshCloneMember(handle.port);
+    expect(git(dir, ['rev-parse', 'HEAD:./' + BIBLE_REL])).toBe(git(fx.clone, ['rev-parse', 'HEAD:./' + BIBLE_REL]));
+    const r = await callText(plain, 'kb_import', { skip_sweep: true });
+    expect(r.isError, r.text).toBe(false);
+    expect(JSON.parse(r.text)).toMatchObject({ imported: 1, bible_source: 'HEAD', worktree_ignored: false });
+    expect(fx.row('carried-entry-0002')?.confidence).toBe('CONFIRMED');
+  });
+
+  it('seeding: a bible this hub never saw is refused for a fresh clone until the kb_maintainer priming import records it', async () => {
+    // Committed with plain git (e.g. merged from elsewhere): never recorded here.
+    await commitCarriedBible('carried-entry-0003', 'src/carried3.ts');
+    const handle = await startServer();
+    const { plain } = await freshCloneMember(handle.port);
+
+    const refused = await callText(plain, 'kb_import', { skip_sweep: true });
+    expect(refused.isError).toBe(true);
+    expect(refused.text).toMatch(/^E-KB-MAINTAINER-REQUIRED: .*never recorded/);
+    expect(fx.row('carried-entry-0003')).toBeUndefined();
+
+    // The engine's sprint-start priming import: no path, skip_sweep, with the grant.
+    const maint = await connect(handle.port, { member: fx.memberId, params: MAINTAINER_PARAMS });
+    const seeded = await callText(maint, 'kb_import', { skip_sweep: true });
+    expect(seeded.isError, seeded.text).toBe(false);
+    expect(JSON.parse(seeded.text)).toMatchObject({ imported: 1 });
+    expect(fx.row('carried-entry-0003')?.confidence).toBe('CONFIRMED');
+    expect(fx.provider.isTrustedBibleBlob(git(fx.clone, ['rev-parse', 'HEAD:./' + BIBLE_REL]))).toBe(true);
+
+    const accepted = await callText(plain, 'kb_import', { skip_sweep: true });
+    expect(accepted.isError, accepted.text).toBe(false);
+    expect(JSON.parse(accepted.text)).toMatchObject({ imported: 0, skipped: 1, bible_source: 'HEAD' });
+  });
+
+  it('FULL session: an explicit-path import keeps bible confidence and records the bible', async () => {
+    fx.writeSrc('src/full.ts', 'export const full = 1;\n');
+    commitWorkTree(fx.clone, 'basis for full');
+    const body = v3([await carriedEntry(fx.clone, 'full-entry-0001', 'src/full.ts')]);
+    const outside = path.join(fx.root, 'reviewed-bible.json');
+    fs.writeFileSync(outside, body);
+
+    const handle = await startServer();
+    const full = await connect(handle.port);
+    // A FULL session's own folder is the server working folder: point it at the checkout.
+    const cwd = vi.spyOn(process, 'cwd').mockReturnValue(fx.clone);
+    let r: { text: string; isError: boolean };
+    try {
+      r = await callText(full, 'kb_import', { path: outside, skip_sweep: true });
+    } finally {
+      cwd.mockRestore();
+    }
+    expect(r.isError, r.text).toBe(false);
+    expect(JSON.parse(r.text)).toMatchObject({ imported: 1 });
+    expect(JSON.parse(r.text).bible_source).toBeUndefined();
+    expect(fx.row('full-entry-0001')?.confidence).toBe('CONFIRMED');
+
+    // The same bytes committed as the checkout bible are now trusted for a no-grant session.
+    fx.writeSrc(BIBLE_REL, body);
+    commitWorkTree(fx.clone, 'bible from the reviewed file');
+    const plain = await connect(handle.port, { member: fx.memberId });
+    const p = await callText(plain, 'kb_import', { skip_sweep: true });
+    expect(p.isError, p.text).toBe(false);
+    expect(JSON.parse(p.text)).toMatchObject({ imported: 0, skipped: 1, bible_source: 'HEAD' });
+  });
+});
+
 // kb_invalidate retires entries and kb_bible_commit removes retired entries
 // from the bible, so a member session WITHOUT the kb_maintainer grant must not
 // retire a CONFIRMED entry by either form -- not even one tagged with its own
