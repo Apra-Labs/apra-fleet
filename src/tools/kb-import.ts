@@ -2,12 +2,12 @@ import { z } from 'zod';
 import { KB_REMOVED_SCOPE_KEYS_SHAPE } from '../services/knowledge/kb-removed-scope-keys.js';
 import fs from 'node:fs';
 import path from 'node:path';
-import { execFile } from 'node:child_process';
 import { getKbProviders } from '../services/knowledge/kb-providers.js';
 import { resolveKbAnchor, type KbAnchor } from '../services/knowledge/kb-self.js';
 import { readBibleEntries, parseBibleText, importBibleEntries } from '../services/knowledge/bible-import.js';
 import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
 import { KbMaintainerGrantError, memberLacksKbMaintainer } from '../services/knowledge/kb-maintainer-grant.js';
+import { OWN_BIBLE_REL, bibleFileBlobId, readCommittedBibleBlob } from '../services/knowledge/bible-blob-id.js';
 
 // T2.1 (F4, D3 HARDENED): kb_import -- the trusted-channel write path that lets a
 // warm local KB absorb a merged-in bible (.fleet/kb-canonical.json). The
@@ -53,6 +53,28 @@ import { KbMaintainerGrantError, memberLacksKbMaintainer } from '../services/kno
 // unchanged; uncommitted edits are ignored and reported (worktree_ignored).
 // With no committed copy (unborn HEAD, untracked bible, no git) nothing is
 // imported: E-KB-MAINTAINER-REQUIRED, naming the cause.
+//
+// TRUST ANCHOR: committed is still not trusted on its own -- the member
+// controls its own .git, so it can commit a hand-made bible locally, import
+// it, and reset the commit away with nothing ever pushed. Pinning to a ref
+// does not help either: every ref lives in the member-writable checkout. So
+// the no-grant path imports the committed bible only when its git blob id is
+// recorded in the hub-side per-repo KB DB (trusted_bible_blobs), which the
+// maintainer side fills: kb_bible_commit records every bible it writes, and a
+// FULL or kb_maintainer kb_import records every bible it imports. An
+// unrecorded blob is refused with E-KB-MAINTAINER-REQUIRED and nothing is
+// imported. Nothing in the checkout is consulted to decide trust.
+//
+// Bootstrap: a fresh clone whose bible came from the pushed base branch
+// carries a blob the maintainer wrote (kb_bible_commit on this hub) and so
+// imports normally. A bible this hub never saw (fresh hub, bible merged from
+// elsewhere) is seeded by the engine's sprint-start priming, which imports
+// through the repository's kb_maintainer session (a grant session the member
+// agent cannot open) after launch alignment has reset the maintainer's
+// checkout to the pushed branch -- so the seeded bible is the pushed one.
+// Residual exposure: whatever is in the kb_maintainer's checkout at priming
+// (e.g. a reused local sprint branch carrying local-only commits) is trusted,
+// as it already is for every kb_maintainer write.
 
 export const kbImportSchema = z.object({
   path: z.string().optional()
@@ -113,22 +135,6 @@ export interface KbImportReport {
   worktree_ignored?: boolean;
 }
 
-const OWN_BIBLE_REL = '.fleet/kb-canonical.json';
-
-/**
- * The committed own bible at HEAD, read with git (no shell, array args, so it
- * is the same on every OS). `./` resolves the path against `folder`, which
- * need not be the repository top level. null when there is no committed copy
- * (unborn HEAD, bible not tracked, not a work tree, git missing).
- */
-function readCommittedBible(folder: string): Promise<string | null> {
-  return new Promise((resolve) => {
-    execFile('git', ['cat-file', 'blob', 'HEAD:./' + OWN_BIBLE_REL], {
-      cwd: folder, windowsHide: true, timeout: 30_000, maxBuffer: 256 * 1024 * 1024, encoding: 'utf-8',
-    }, (err, stdout) => resolve(err ? null : stdout));
-  });
-}
-
 export async function kbImport(input: KbImportInput, anchor?: KbAnchor): Promise<string> {
   const resolved = resolveKbAnchor(anchor);
   const repoAnchor = requireLocalFolder(resolved.folder);
@@ -149,10 +155,10 @@ export async function kbImport(input: KbImportInput, anchor?: KbAnchor): Promise
   // Parsing (both on-disk shapes) is shared with the member bible view
   // (services/knowledge/bible-import.ts); a malformed file throws KbBibleError.
   let bibleEntries: unknown[];
-  let committedSource: { worktree_ignored: boolean } | undefined;
+  let committedSource: { worktree_ignored: boolean; blobId: string } | undefined;
   if (lacksGrant) {
     // namesOwnBible holds here (an explicit other path was refused above).
-    const committed = await readCommittedBible(repoAnchor);
+    const committed = await readCommittedBibleBlob(repoAnchor);
     // No bible anywhere (a repo that has not adopted one): the plain
     // not-found error, as for every other session -- not a grant problem.
     if (committed === null && !fs.existsSync(ownBible)) {
@@ -168,8 +174,8 @@ export async function kbImport(input: KbImportInput, anchor?: KbAnchor): Promise
     try { worktree = fs.readFileSync(ownBible, 'utf-8'); } catch { worktree = null; }
     // Line endings are normalized for the comparison only (autocrlf checkouts).
     const lf = (t: string) => t.replace(/\r\n/g, '\n');
-    committedSource = { worktree_ignored: worktree === null || lf(worktree) !== lf(committed) };
-    bibleEntries = parseBibleText(committed, 'HEAD:' + OWN_BIBLE_REL, 'kb_import');
+    committedSource = { worktree_ignored: worktree === null || lf(worktree) !== lf(committed.text), blobId: committed.blobId };
+    bibleEntries = parseBibleText(committed.text, 'HEAD:' + OWN_BIBLE_REL, 'kb_import');
   } else {
     if (!fs.existsSync(biblePath)) {
       throw new Error('kb_import: bible file not found: ' + biblePath);
@@ -182,10 +188,36 @@ export async function kbImport(input: KbImportInput, anchor?: KbAnchor): Promise
   const providers = await getKbProviders(repoAnchor, resolved.remoteUrl);
   const provider = requireSqliteProject(providers.project, 'kb_import');
 
+  // Trust anchor (see the header): a committed bible is imported by a member
+  // session without the grant only when the maintainer side recorded its
+  // blob id in this hub-side DB. Otherwise NOTHING is imported -- refusing the
+  // whole import rather than clamping CONFIRMED entries to a lower tier,
+  // because a clamped row would occupy its id, and the id-exists skip in
+  // importBibleEntries would then keep the genuine CONFIRMED entry out when
+  // the maintainer's bible arrives later; a refusal leaves the KB untouched.
+  if (committedSource && !provider.isTrustedBibleBlob(committedSource.blobId)) {
+    throw new KbMaintainerGrantError(
+      `kb_import in a member session without the kb_maintainer grant imports the committed ${OWN_BIBLE_REL} only when the maintainer side wrote or imported that exact bible, and this checkout's committed bible (blob ${committedSource.blobId}) was never recorded by it (a bible committed only in this checkout is not trusted at its own confidence); nothing was imported.`,
+      `Import a bible the kb_maintainer published (kb_bible_commit) -- e.g. reset ${OWN_BIBLE_REL} to the base branch -- or run the import from the kb_maintainer session or a FULL session, which records the bible it imports.`,
+    );
+  }
+
   // Same entry loop the member bible view uses: import mode (bible confidence
   // preserved, directives quarantined), id-exists skip first, per-entry
   // isolation of capture basis rejections.
   const { imported, skipped, linked, flagged, rejected } = await importBibleEntries(provider, bibleEntries);
+
+  // A FULL or kb_maintainer session is trusted to import at bible confidence,
+  // so the bible it just imported becomes trusted for member sessions too:
+  // record the blob id the bytes would have as this repo's committed own
+  // bible. This is also how a hub that never saw a bible (fresh hub, bible
+  // merged from elsewhere) is seeded: the engine's sprint-start priming
+  // imports through the kb_maintainer session. A member session without the
+  // grant never records (it only reads the record).
+  if (!lacksGrant) {
+    const blobId = await bibleFileBlobId(repoAnchor, path.resolve(biblePath));
+    if (blobId !== null) provider.recordTrustedBibleBlob(blobId, 'kb_import');
+  }
 
   // After the entry loop, run freshnessSweep() (T1.3) so imported entries whose
   // basis does not match THIS worktree stale immediately rather than serving

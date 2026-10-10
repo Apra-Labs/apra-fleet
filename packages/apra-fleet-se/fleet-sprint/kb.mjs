@@ -1405,10 +1405,26 @@ export function createKbPrimingClient(opts = {}) {
                     // fire". This import exists to WARM the KB, never to audit
                     // it; prime()'s own bounded checkFreshness still guards each
                     // entry it actually returns.
+                    //
+                    // The import on a repository's kb_maintainer runs WITH the
+                    // kb_maintainer grant. A session without the grant imports
+                    // a committed bible only when the maintainer side already
+                    // recorded it as trusted in the hub-side KB, so a bible
+                    // this hub never saw (a fresh hub, or a bible merged in
+                    // from elsewhere) would never land. The grant import is
+                    // the trusted seeding path: launch alignment has already
+                    // reset the maintainer's checkout to the pushed branch, so
+                    // the bible it imports -- and thereby marks trusted for
+                    // every member of the repository -- is the pushed one. A
+                    // sprint without a maintainer selector (unit-test seam)
+                    // imports without the grant.
                     try {
-                        // No `path`: the member session imports its OWN folder's
-                        // committed bible (<work folder>/.fleet/kb-canonical.json).
-                        const imported = parseResult(await memberCall(target, 'kb_import', { skip_sweep: true }));
+                        // No `path`: the session imports its OWN folder's
+                        // bible (<work folder>/.fleet/kb-canonical.json).
+                        const importArgs = { skip_sweep: true };
+                        const imported = parseResult(sel
+                            ? await memberCall(target, 'kb_import', importArgs, KB_MAINTAINER_CALL)
+                            : await memberCall(target, 'kb_import', importArgs));
                         if (imported && typeof imported.imported === 'number' && imported.imported > 0) {
                             log(`[kb-prime] imported ${imported.imported} bible entr(ies) into the warm KB for '${member}'`);
                         }

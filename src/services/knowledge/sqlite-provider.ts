@@ -244,6 +244,41 @@ export class SqliteProvider implements MemoryProvider {
     try {
       this.db.exec('ALTER TABLE entries ADD COLUMN local_basis_only INTEGER NOT NULL DEFAULT 0');
     } catch {}
+
+    // kb_import trust anchor: git blob ids of bibles the maintainer side wrote
+    // or imported (kb_bible_commit and FULL / kb_maintainer kb_import). A
+    // member session without the kb_maintainer grant imports its committed
+    // bible only when that bible's blob id is recorded here -- this hub-side
+    // database is the one place the member's own checkout cannot write. See
+    // services/knowledge/bible-blob-id.ts. Created idempotently; existing DBs
+    // start with no rows (a fresh hub is seeded by the maintainer side).
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS trusted_bible_blobs (
+        blob_id TEXT PRIMARY KEY,
+        source TEXT NOT NULL,
+        recorded_at TEXT NOT NULL
+      );
+    `);
+  }
+
+  /**
+   * Record `blobId` (a git object id of a bible's bytes) as written or
+   * imported by the maintainer side. Idempotent: re-recording keeps the first
+   * row. Only trusted callers (kb_bible_commit and kb_import from a FULL or
+   * kb_maintainer session) may call this.
+   */
+  recordTrustedBibleBlob(blobId: string, source: 'kb_bible_commit' | 'kb_import'): void {
+    this.getDb()
+      .prepare('INSERT OR IGNORE INTO trusted_bible_blobs (blob_id, source, recorded_at) VALUES (?, ?, ?)')
+      .run(blobId.toLowerCase(), source, new Date().toISOString());
+  }
+
+  /** True when `blobId` was recorded by recordTrustedBibleBlob. */
+  isTrustedBibleBlob(blobId: string): boolean {
+    const row = this.getDb()
+      .prepare('SELECT 1 AS ok FROM trusted_bible_blobs WHERE blob_id = ?')
+      .get(blobId.toLowerCase());
+    return row !== undefined;
   }
 
   private getDb(): DatabaseSync {

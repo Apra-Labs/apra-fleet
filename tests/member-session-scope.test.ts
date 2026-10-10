@@ -353,6 +353,16 @@ function useKbMemberRepo() {
       return ((fx.provider as any).getDb()
         .prepare("SELECT COUNT(*) AS n FROM entries WHERE confidence = 'CONFIRMED'").get() as { n: number }).n;
     },
+    /**
+     * Stand-in for a maintainer-side publish of the CURRENTLY committed
+     * .fleet/kb-canonical.json: records its HEAD blob id in the hub-side KB
+     * (what kb_bible_commit / a kb_maintainer kb_import record), which a
+     * no-grant kb_import requires before trusting a committed bible.
+     */
+    trustCommittedBible(): void {
+      const blobId = execFileSync('git', ['rev-parse', 'HEAD:./.fleet/kb-canonical.json'], { cwd: fx.clone, encoding: 'utf-8' }).trim();
+      fx.provider.recordTrustedBibleBlob(blobId, 'kb_bible_commit');
+    },
     bibleIds(): string[] {
       const p = path.join(fx.clone, '.fleet', 'kb-canonical.json');
       if (!fs.existsSync(p)) return [];
@@ -472,6 +482,8 @@ describe('kb_maintainer grant gates CONFIRMED minting via kb_reconcile_prefilter
       confidence: 'INFERRED', updated_at: '2026-01-01T00:00:00.000Z',
     }]));
     commitWorkTree(fx.clone, 'own bible');
+    // The own bible was published by the maintainer side (trust anchor).
+    fx.trustCommittedBible();
 
     const handle = await startServer();
     const plain = await connect(handle.port, { member: fx.memberId });
@@ -500,7 +512,9 @@ describe('kb_maintainer grant gates CONFIRMED minting via kb_reconcile_prefilter
 // channel only AS COMMITTED: the work-tree .fleet/kb-canonical.json is
 // member-writable. A member session without the kb_maintainer grant reads the
 // committed blob at HEAD, never the work-tree file, and imports nothing when
-// there is no committed copy.
+// there is no committed copy. The committed copy must also be one the
+// maintainer side recorded (trust anchor), so tests that expect an import
+// record it first via fx.trustCommittedBible().
 //
 // FALSIFICATION: making kb-import.ts read the work-tree file for a no-grant
 // session again fails the edited-work-tree test (the forged entry lands
@@ -533,6 +547,7 @@ describe('kb_import in a member session without the grant imports only the commi
   it('edited work tree: the hand-edited CONFIRMED bible is ignored (no path and own path); the committed copy is imported', async () => {
     fx.writeSrc('.fleet/kb-canonical.json', committedBible);
     commitWorkTree(fx.clone, 'committed bible');
+    fx.trustCommittedBible();
     fx.writeSrc('.fleet/kb-canonical.json', await forgedConfirmedBible());
 
     const handle = await startServer();
@@ -556,6 +571,7 @@ describe('kb_import in a member session without the grant imports only the commi
   it('clean tree: imports the committed bible and reports worktree_ignored false', async () => {
     fx.writeSrc('.fleet/kb-canonical.json', committedBible);
     commitWorkTree(fx.clone, 'committed bible');
+    fx.trustCommittedBible();
     const handle = await startServer();
     const plain = await connect(handle.port, { member: fx.memberId });
     const r = JSON.parse((await callText(plain, 'kb_import', { skip_sweep: true })).text);
@@ -585,6 +601,7 @@ describe('kb_import in a member session without the grant imports only the commi
   it('committed bible deleted from the work tree: still imports the committed copy', async () => {
     fx.writeSrc('.fleet/kb-canonical.json', committedBible);
     commitWorkTree(fx.clone, 'committed bible');
+    fx.trustCommittedBible();
     fs.rmSync(path.join(fx.clone, '.fleet', 'kb-canonical.json'));
     const handle = await startServer();
     const plain = await connect(handle.port, { member: fx.memberId });

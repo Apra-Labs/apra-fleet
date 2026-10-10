@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { createKbWorkClient, KB_MAINTAINER_CALL } from '../fleet-sprint/kb.mjs';
+import { createKbWorkClient, createKbPrimingClient, KB_MAINTAINER_CALL } from '../fleet-sprint/kb.mjs';
 import { selfMaintainer } from './helpers/kb-maintainer-fakes.mjs';
 
 // =============================================================================
@@ -76,5 +76,36 @@ describe('kb_maintainer grant on engine KB writes', () => {
         const writes = calls.filter((c) => c.tool === 'kb_capture' || c.tool === 'kb_invalidate');
         assert.deepEqual(writes.map((c) => c.tool).sort(), ['kb_capture', 'kb_invalidate'], JSON.stringify(calls));
         for (const c of writes) assert.deepEqual(c.opts, { kbMaintainer: true }, c.tool);
+    });
+
+    // The sprint-start bible import on a repository's kb_maintainer is the
+    // trusted seeding path for the kb_import trust anchor: a session without
+    // the grant imports only a bible the maintainer side already recorded, so
+    // a bible this hub never saw would never land. The prime read itself
+    // stays a plain (grant-less) call.
+    test('the priming kb_import on the maintainer carries the grant; kb_session_prime does not', async () => {
+        const calls = [];
+        const memberCall = async (member, tool, args, ...rest) => {
+            calls.push({ tool, member: member.name, opts: rest[0], arity: 3 + rest.length });
+            if (tool === 'kb_session_prime') return { top_entries: [] };
+            return { imported: 0 };
+        };
+        const callTool = async (name, args) => (name === 'member_detail'
+            ? { id: `id-${args.member_name}`, type: 'local', folder: `/srv/${args.member_name}` }
+            : {});
+        const priming = createKbPrimingClient({
+            callTool, memberCall, members: ['reviewer-1'],
+            maintainers: selfMaintainer(MAINT, ['maint', 'reviewer-1']),
+            log: () => {},
+        });
+        await priming.primeAll();
+
+        const imp = calls.filter((c) => c.tool === 'kb_import');
+        assert.equal(imp.length, 1, JSON.stringify(calls));
+        assert.equal(imp[0].member, 'maint');
+        assert.deepEqual(imp[0].opts, { kbMaintainer: true });
+        for (const c of calls.filter((c) => c.tool === 'kb_session_prime')) {
+            assert.equal(c.opts, undefined, 'the prime read is not made with the maintainer grant');
+        }
     });
 });
