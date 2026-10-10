@@ -104,6 +104,10 @@ export type FleetInstallUnavailableReason =
   | 'checksum-mismatch'
   /** No published checksum for the asset could be fetched, so it cannot be verified; it was discarded. */
   | 'checksum-unavailable'
+  /** No published release (exact-build prerelease, or stable release whose
+   *  BUILD_INFO names this build) carries an installer for the orchestrator's
+   *  build. */
+  | 'no-matching-release'
   /** The member apra-fleet install has no member-install marker (a full install, or a member install older than the
    *  marker): it was not installed over, its server (if running) was left running, and the member was not
    *  self-registered into it. */
@@ -129,7 +133,16 @@ export type MemberFleetProbe =
 
 export type InstallSource =
   | { kind: 'orchestrator-executable'; localPath: string }
-  | { kind: 'release-asset'; assetName: string; url: string };
+  | {
+      kind: 'release-asset';
+      assetName: string;
+      /** The first URL tried (candidates[0]). */
+      url: string;
+      /** Releases tried in order (stable first, BUILD_INFO-gated, then the
+       *  exact-build prerelease) until one has a verified asset for this
+       *  build; see releaseCandidatesFor and fetchReleaseInstaller. */
+      candidates: ReleaseCandidate[];
+    };
 
 export type MemberFleetInstallResult =
   | {
@@ -144,6 +157,9 @@ export type MemberFleetInstallResult =
       /** Set when this call replaced an unmarked (full) install with a member
        *  install (fleet_install "replace-full"). */
       replaced?: ReplacedFullInstall;
+      /** Set when no release carried the exact build and the signed stable
+       *  release of the same core was installed instead. */
+      sameCoreFallback?: SameCoreFallback;
     }
   | {
       state: 'unavailable';
@@ -151,6 +167,8 @@ export type MemberFleetInstallResult =
       detail?: string;
       /** Version observed before any install attempt, if one was present. */
       version?: string;
+      /** OS-correct manual install steps for the member (buildManualInstallSteps). */
+      manualSteps?: string;
     };
 
 /** Injected transports. Production defaults come from defaultMemberFleetInstallDeps(). */
@@ -164,8 +182,11 @@ export interface MemberFleetInstallDeps {
    *  does not run as one (npm/dev mode: there is nothing self-contained to copy). */
   orchestratorExecutable(): string | null;
   orchestratorVersion(): string;
-  /** Download `url` to a local temp file named `assetName`; returns its path. Throws on failure. */
-  downloadReleaseAsset(url: string, assetName: string): Promise<string>;
+  /** Download `url` to a local temp file named `assetName`, verified against
+   *  the release's SHA256SUMS; returns its path. With `expectBuild`, the
+   *  release must also be that build (its BUILD_INFO). Throws on failure
+   *  (a ReleaseDownloadError names the reason). */
+  downloadReleaseAsset(url: string, assetName: string, expectBuild?: string): Promise<string>;
   /** Remove a local temp file created by downloadReleaseAsset. Best effort. */
   removeLocal(localPath: string): void;
   /** Clock for the full-install replacement's backup timestamp. Optional:
@@ -282,12 +303,14 @@ function buildSuffixOf(version: string): string {
  * Rule: a member core OLDER than the orchestrator's is always outdated; a
  * NEWER core never is (never downgrade, whatever the suffixes). At the SAME
  * core, a differing build suffix counts as outdated only when
- * `canSupplyOrchestratorBuild` -- i.e. the install source is the
- * orchestrator's own executable. A release-asset source installs the
- * release build of the core (releaseTagFor strips the suffix), so a same-core
- * build difference there is "up to date" (else it would reinstall on every
- * registration and report install-unverified). Mixed suffix/no-suffix at the
- * same core follows the same rule; identical versions are never outdated.
+ * `canSupplyOrchestratorBuild` -- i.e. the source installs exactly the
+ * orchestrator's build: its own executable, or (suffixed orchestrator) a
+ * release whose BUILD_INFO names that build (sourceSuppliesBuild). A bare
+ * release orchestrator installs whatever build its stable tag has, so a
+ * same-core build difference there is "up to date" (else it would reinstall
+ * on every registration and report install-unverified). Mixed
+ * suffix/no-suffix at the same core follows the same rule; identical
+ * versions are never outdated.
  * isNewer/parseVersion (shared with the CLI self-update check) are untouched.
  */
 export function isMemberOutdated(
@@ -312,13 +335,66 @@ export function releaseAssetNameFor(platform: MemberPlatform): string | null {
   return RELEASE_ASSETS[`${platform.os}/${platform.arch}`] ?? null;
 }
 
-/** `v0.4.4_abc123` -> `v0.4.4`: the release tag a build's version maps to. */
+/** `v0.4.4_abc123` -> `v0.4.4`: the STABLE release tag of a build's core version. */
 export function releaseTagFor(version: string): string {
   return `v${version.replace(/^v/, '').split('_')[0]}`;
 }
 
+/** `v0.4.4_abc123` -> `v0.4.4_abc123`: the exact-build prerelease tag CI
+ *  publishes for builds of its prerelease branches (ci.yml job prerelease),
+ *  or null for a bare release version, which has no build to match. */
+export function prereleaseTagFor(version: string): string | null {
+  const v = version.startsWith('v') ? version : `v${version}`;
+  return buildSuffixOf(v) ? v : null;
+}
+
+/** Anonymous download URL of `fileName` in the release tagged `tag`. */
+export function releaseFileUrl(tag: string, fileName: string): string {
+  return `https://github.com/${RELEASE_REPO}/releases/download/${tag}/${fileName}`;
+}
+
+/** Human-browsable page of the release tagged `tag`. */
+export function releasePageUrl(tag: string): string {
+  return `https://github.com/${RELEASE_REPO}/releases/tag/${tag}`;
+}
+
+/** Where a build's installer may be published, in the order the installer
+ *  tries them: the STABLE release of the core version first, accepted only
+ *  when its BUILD_INFO names the same build (see buildInfoMatches) -- stable
+ *  tag builds carry a build suffix too, and their commit also gets an
+ *  unsigned prerelease when it is pushed to main, so a stable orchestrator
+ *  must get the signed stable assets -- then the exact-build prerelease
+ *  (dev/branch builds). The same-core stable fallback is not a candidate: it
+ *  is a separate, opt-in last step in fetchReleaseInstaller. */
+export interface ReleaseCandidate {
+  tag: string;
+  channel: 'prerelease' | 'stable';
+}
+
+export function releaseCandidatesFor(version: string): ReleaseCandidate[] {
+  const pre = prereleaseTagFor(version);
+  return [
+    { tag: releaseTagFor(version), channel: 'stable' as const },
+    ...(pre ? [{ tag: pre, channel: 'prerelease' as const }] : []),
+  ];
+}
+
+/** The URL the installer tries first for `version` (the stable release). */
 export function releaseAssetUrl(version: string, assetName: string): string {
-  return `https://github.com/${RELEASE_REPO}/releases/download/${releaseTagFor(version)}/${assetName}`;
+  return releaseFileUrl(releaseCandidatesFor(version)[0].tag, assetName);
+}
+
+/** True when a release source supplies exactly the orchestrator's build: a
+ *  dev/branch build only ever accepts a release whose BUILD_INFO names that
+ *  build, so the installed member reports the same suffix. A bare release
+ *  version accepts any build of its core (the stable tag build). */
+function releaseSuppliesExactBuild(orchestratorVersion: string): boolean {
+  return buildSuffixOf(orchestratorVersion) !== '';
+}
+
+/** Whether the chosen source installs exactly the orchestrator's build. */
+function sourceSuppliesBuild(source: InstallSource, orchestratorVersion: string): boolean {
+  return source.kind === 'orchestrator-executable' || releaseSuppliesExactBuild(orchestratorVersion);
 }
 
 /**
@@ -339,7 +415,11 @@ export function chooseInstallSource(
   }
   const assetName = releaseAssetNameFor(member);
   if (assetName) {
-    return { kind: 'release-asset', assetName, url: releaseAssetUrl(orchestratorVersion, assetName) };
+    return {
+      kind: 'release-asset', assetName,
+      url: releaseAssetUrl(orchestratorVersion, assetName),
+      candidates: releaseCandidatesFor(orchestratorVersion),
+    };
   }
   if (samePlatform) {
     return {
@@ -398,15 +478,64 @@ export const DOWNLOAD_TIMEOUT_MS = 120_000;
 /** Name of the checksum list published next to the release assets (ci.yml release job). */
 export const CHECKSUM_ASSET = 'SHA256SUMS';
 
+/** Build marker published next to the release assets (ci.yml release and
+ *  prerelease jobs): `version=<exact build version>` and `commit=<full sha>`
+ *  lines, itself listed in SHA256SUMS. */
+export const BUILD_INFO_ASSET = 'BUILD_INFO';
+
+/** Typed download failure reasons. `release-not-found` (the tag has no
+ *  release: SHA256SUMS is HTTP 404) and `build-mismatch` (the release is not
+ *  this build) only move on to the next candidate release; when every
+ *  candidate ends that way the result is `no-matching-release`. */
+export type ReleaseDownloadReason =
+  | 'download-failed' | 'download-timeout' | 'checksum-mismatch' | 'checksum-unavailable'
+  | 'release-not-found' | 'build-mismatch' | 'no-matching-release';
+
 /** A typed download failure; ensureOnce maps `reason` onto the fleetMcp status. */
 export class ReleaseDownloadError extends Error {
   constructor(
-    public readonly reason: 'download-failed' | 'download-timeout' | 'checksum-mismatch' | 'checksum-unavailable',
+    public readonly reason: ReleaseDownloadReason,
     message: string,
+    /** HTTP status of the failed request, when it got an answer. */
+    public readonly status?: number,
   ) {
     super(message);
     this.name = 'ReleaseDownloadError';
   }
+}
+
+/** Map a download failure onto the install reason recorded in fleetMcp. */
+function downloadFailureReason(err: unknown): FleetInstallUnavailableReason {
+  if (!(err instanceof ReleaseDownloadError)) return 'download-failed';
+  if (err.reason === 'release-not-found' || err.reason === 'build-mismatch') return 'no-matching-release';
+  return err.reason;
+}
+
+/** Parse BUILD_INFO (`key=value` lines). */
+export function parseBuildInfo(text: string): { version?: string; commit?: string } {
+  const out: { version?: string; commit?: string } = {};
+  for (const line of text.split(/\r?\n/)) {
+    const m = /^\s*(version|commit)\s*=\s*(\S+)\s*$/.exec(line);
+    if (m) out[m[1] as 'version' | 'commit'] = m[2];
+  }
+  return out;
+}
+
+/**
+ * Does a release's BUILD_INFO describe the build `expected` (the
+ * orchestrator's version)? A dev/branch build `v<x.y.z>_<sha6>` matches only
+ * the same version, or the same core built from a commit starting with that
+ * sha; a bare release version `v<x.y.z>` matches any build of that core.
+ */
+export function buildInfoMatches(info: { version?: string; commit?: string }, expected: string): boolean {
+  if (!info.version) return false;
+  const norm = (v: string) => (v.startsWith('v') ? v : `v${v}`);
+  const want = norm(expected);
+  const got = norm(info.version);
+  if (releaseTagFor(got) !== releaseTagFor(want)) return false;
+  const suffix = buildSuffixOf(want);
+  if (!suffix) return true;
+  return got === want || (!!info.commit && info.commit.toLowerCase().startsWith(suffix.toLowerCase()));
 }
 
 /** The expected hex digest for `assetName` in a `sha256sum`-format list, or null. */
@@ -421,8 +550,15 @@ export function parseSha256Sums(text: string, assetName: string): string | null 
 export interface DownloadOpts {
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
+  /** The build the release must be (the orchestrator's version). When set,
+   *  the release is resolved, not assumed: SHA256SUMS HTTP 404 is
+   *  `release-not-found`, and the release's BUILD_INFO (listed in SHA256SUMS
+   *  and checksum-verified) must name this build, else `build-mismatch`. */
+  expectBuild?: string;
 }
 
+/** Anonymous GET: no Authorization header, ever (release assets of the public
+ *  repo download without a GitHub account). */
 async function boundedGet(url: string, opts: DownloadOpts): Promise<Buffer> {
   const doFetch = opts.fetchImpl ?? fetch;
   const timeoutMs = opts.timeoutMs ?? DOWNLOAD_TIMEOUT_MS;
@@ -431,7 +567,7 @@ async function boundedGet(url: string, opts: DownloadOpts): Promise<Buffer> {
       headers: { 'User-Agent': `apra-fleet/${serverVersion}` },
       signal: AbortSignal.timeout(timeoutMs),
     });
-    if (!res.ok) throw new ReleaseDownloadError('download-failed', `GET ${url} -> HTTP ${res.status}`);
+    if (!res.ok) throw new ReleaseDownloadError('download-failed', `GET ${url} -> HTTP ${res.status}`, res.status);
     return Buffer.from(await res.arrayBuffer());
   } catch (err: unknown) {
     if (err instanceof ReleaseDownloadError) throw err;
@@ -450,14 +586,36 @@ async function boundedGet(url: string, opts: DownloadOpts): Promise<Buffer> {
  * `checksum-mismatch`; nothing unverified is ever written to disk.
  */
 export async function downloadVerifiedAsset(url: string, assetName: string, opts: DownloadOpts = {}): Promise<string> {
-  const sumsUrl = url.slice(0, url.lastIndexOf('/') + 1) + CHECKSUM_ASSET;
-  let expected: string | null;
+  const base = url.slice(0, url.lastIndexOf('/') + 1);
+  const sumsUrl = base + CHECKSUM_ASSET;
+  let sums: string;
   try {
-    expected = parseSha256Sums((await boundedGet(sumsUrl, opts)).toString('utf8'), assetName);
+    sums = (await boundedGet(sumsUrl, opts)).toString('utf8');
   } catch (err: unknown) {
     if (err instanceof ReleaseDownloadError && err.reason === 'download-timeout') throw err;
+    if (opts.expectBuild && err instanceof ReleaseDownloadError && err.status === 404) {
+      throw new ReleaseDownloadError('release-not-found', `no release at ${base} (${sumsUrl} -> HTTP 404)`, 404);
+    }
+    // No HTTP answer at all (DNS, connection reset, TLS): a network failure,
+    // reported as such -- not as a missing checksum.
+    if (err instanceof ReleaseDownloadError && err.status === undefined) throw err;
     throw new ReleaseDownloadError('checksum-unavailable', `no published checksum could be fetched (${err instanceof Error ? err.message : String(err)})`);
   }
+  if (opts.expectBuild) {
+    // The release must be THIS build: its BUILD_INFO, verified against the same
+    // SHA256SUMS, names the build version and commit.
+    const infoSha = parseSha256Sums(sums, BUILD_INFO_ASSET);
+    if (!infoSha) throw new ReleaseDownloadError('build-mismatch', `${sumsUrl} lists no ${BUILD_INFO_ASSET}, so the release cannot be matched to build ${opts.expectBuild}`);
+    const infoBody = await boundedGet(base + BUILD_INFO_ASSET, opts);
+    if (crypto.createHash('sha256').update(infoBody).digest('hex') !== infoSha) {
+      throw new ReleaseDownloadError('checksum-mismatch', `${BUILD_INFO_ASSET} at ${base} does not match its published SHA256SUMS entry`);
+    }
+    const info = parseBuildInfo(infoBody.toString('utf8'));
+    if (!buildInfoMatches(info, opts.expectBuild)) {
+      throw new ReleaseDownloadError('build-mismatch', `the release at ${base} is build ${info.version ?? '(unnamed)'}${info.commit ? ` (commit ${info.commit.slice(0, 12)})` : ''}, not ${opts.expectBuild}`);
+    }
+  }
+  const expected = parseSha256Sums(sums, assetName);
   if (!expected) throw new ReleaseDownloadError('checksum-unavailable', `${sumsUrl} does not list ${assetName}`);
   const body = await boundedGet(url, opts);
   const actual = crypto.createHash('sha256').update(body).digest('hex');
@@ -470,7 +628,79 @@ export async function downloadVerifiedAsset(url: string, assetName: string, opts
   return out;
 }
 
-const defaultDownload = (url: string, assetName: string): Promise<string> => downloadVerifiedAsset(url, assetName);
+const defaultDownload = (url: string, assetName: string, expectBuild?: string): Promise<string> =>
+  downloadVerifiedAsset(url, assetName, expectBuild ? { expectBuild } : {});
+
+/**
+ * Fetch the verified installer for the orchestrator's build from the first
+ * candidate release that has it: the stable release whose BUILD_INFO names
+ * this build, then the exact-build prerelease, then -- only with
+ * `allowSameCoreStable` (member has no apra-fleet or an older core) -- the
+ * signed stable release of the same core (never across cores). Only a
+ * missing release or one that is not this build moves on to the next
+ * candidate; any other failure (network, timeout, checksum) is reported as
+ * itself, never hidden behind the fallback. Anonymous URLs only.
+ */
+export async function fetchReleaseInstaller(
+  deps: Pick<MemberFleetInstallDeps, 'downloadReleaseAsset'>,
+  source: Extract<InstallSource, { kind: 'release-asset' }>,
+  orchestratorVersion: string,
+  opts: { allowSameCoreStable?: boolean } = {},
+): Promise<FetchedReleaseInstaller> {
+  const tried: string[] = [];
+  for (const c of source.candidates) {
+    const url = releaseFileUrl(c.tag, source.assetName);
+    try {
+      return { localPath: await deps.downloadReleaseAsset(url, source.assetName, orchestratorVersion), url, tag: c.tag };
+    } catch (err: unknown) {
+      if (err instanceof ReleaseDownloadError && (err.reason === 'release-not-found' || err.reason === 'build-mismatch')) {
+        tried.push(`${c.channel} ${c.tag}: ${err.message}`);
+        continue;
+      }
+      throw err;
+    }
+  }
+  const exactMissing = `no published release carries the ${source.assetName} installer for build ${orchestratorVersion} (tried ${tried.join('; ')})`;
+  // Same-core stable fallback (never across cores): only for a suffixed build
+  // whose exact build is unpublished, and only when the caller allows it (the
+  // member has no apra-fleet or an older core). Accepts any build of the core
+  // whose BUILD_INFO says so -- the signed stable release.
+  const core = releaseTagFor(orchestratorVersion);
+  if (opts.allowSameCoreStable && prereleaseTagFor(orchestratorVersion)) {
+    const url = releaseFileUrl(core, source.assetName);
+    try {
+      const localPath = await deps.downloadReleaseAsset(url, source.assetName, core);
+      return { localPath, url, tag: core, sameCoreFallback: { wantedBuild: orchestratorVersion, why: exactMissing } };
+    } catch (err: unknown) {
+      if (err instanceof ReleaseDownloadError && (err.reason === 'release-not-found' || err.reason === 'build-mismatch')) {
+        tried.push(`same-core stable fallback ${core}: ${err.message}`);
+        throw new ReleaseDownloadError('no-matching-release', `no published release carries the ${source.assetName} installer for build ${orchestratorVersion} or its core ${core} (tried ${tried.join('; ')})`);
+      }
+      throw err;
+    }
+  }
+  throw new ReleaseDownloadError('no-matching-release', exactMissing);
+}
+
+/** The signed stable release installed in place of an unpublished exact build. */
+export interface SameCoreFallback {
+  /** The stable tag installed, e.g. v0.4.4. */
+  tag: string;
+  /** The orchestrator build that has no published release. */
+  wantedBuild: string;
+  /** Why the exact build could not be fetched. */
+  why: string;
+}
+
+/** A fetched, verified installer and where it came from. */
+export interface FetchedReleaseInstaller {
+  localPath: string;
+  url: string;
+  tag: string;
+  /** Set when no release carries the exact build and the signed stable
+   *  release of the same core was used instead. */
+  sameCoreFallback?: { wantedBuild: string; why: string };
+}
 
 export function defaultMemberFleetInstallDeps(): MemberFleetInstallDeps {
   return {
@@ -797,6 +1027,7 @@ async function replaceFullInstall(
   home: string,
   binPath: string,
   previousVersion: string,
+  ctx: InstallCtx = {},
 ): Promise<MemberFleetInstallResult> {
   const targetOs = getAgentOS(agent) as TargetOS;
   const shell = getAgentShell(agent);
@@ -807,20 +1038,25 @@ async function replaceFullInstall(
   });
 
   const arch = await probeMemberArch(agent, deps);
+  ctx.arch = arch;
   if (!arch) return untouched('arch-unknown', 'the member CPU architecture could not be probed');
   const source = chooseInstallSource({ os: targetOs, arch }, deps.orchestratorPlatform(), deps.orchestratorExecutable(), orchestratorVersion);
   if (source.kind === 'unavailable') return untouched(source.reason, source.detail);
 
   let localPath: string;
   let downloaded = false;
+  let sameCoreFallback: SameCoreFallback | undefined;
   if (source.kind === 'orchestrator-executable') {
     localPath = source.localPath;
   } else {
     try {
-      localPath = await deps.downloadReleaseAsset(source.url, source.assetName);
+      // Same-core stable fallback only when the replaced install is an older core.
+      const fetched = await fetchReleaseInstaller(deps, source, orchestratorVersion, { allowSameCoreStable: isOlderThan(previousVersion, orchestratorVersion) });
+      localPath = fetched.localPath;
+      sameCoreFallback = fetched.sameCoreFallback ? { tag: fetched.tag, ...fetched.sameCoreFallback } : undefined;
       downloaded = true;
     } catch (err: unknown) {
-      return untouched(err instanceof ReleaseDownloadError ? err.reason : 'download-failed', `${source.url}: ${err instanceof Error ? err.message : String(err)}`);
+      return untouched(downloadFailureReason(err), err instanceof Error ? err.message : String(err));
     }
   }
   const stagingDir = memberStagingDir(home, targetOs, shell);
@@ -858,7 +1094,7 @@ async function replaceFullInstall(
   }
 
   const after = await probeMemberFleetVersion(agent, binPath, deps);
-  if (after.kind !== 'installed' || isMemberOutdated(after.version, orchestratorVersion, source.kind === 'orchestrator-executable')) {
+  if (after.kind !== 'installed' || isMemberOutdated(after.version, orchestratorVersion, !sameCoreFallback && sourceSuppliesBuild(source, orchestratorVersion))) {
     const seen = after.kind === 'installed' ? `reports ${after.version}` : after.kind === 'probe-failed' ? after.detail : after.kind;
     return failedAt('verify', `after install the member ${seen}; expected >= ${orchestratorVersion}`);
   }
@@ -870,6 +1106,7 @@ async function replaceFullInstall(
   return {
     state: 'available', version: after.version, installed: true, source: source.kind, binPath,
     replaced: { previousVersion, removed, backupPath: plan.backupDir },
+    ...(sameCoreFallback ? { sameCoreFallback } : {}),
   };
 }
 
@@ -926,7 +1163,7 @@ async function stageReplacementInstaller(
       localPath = source.localPath;
     } else {
       try {
-        localPath = await deps.downloadReleaseAsset(source.url, source.assetName);
+        localPath = (await fetchReleaseInstaller(deps, source, deps.orchestratorVersion())).localPath;
         downloaded = true;
       } catch (err: unknown) {
         return notStaged(`download failed: ${err instanceof Error ? err.message : String(err)}`, target);
@@ -1008,20 +1245,164 @@ export async function ensureMemberFleetInstall(
   deps: MemberFleetInstallDeps = defaultMemberFleetInstallDeps(),
   opts: { force?: boolean; replaceFull?: boolean } = {},
 ): Promise<MemberFleetInstallResult> {
+  const ctx: InstallCtx = {};
+  let r: MemberFleetInstallResult;
   try {
-    return await ensureOnce(agent, deps, opts.force === true, opts.replaceFull === true);
+    r = await ensureOnce(agent, deps, opts.force === true, opts.replaceFull === true, ctx);
   } catch (err: unknown) {
-    return { state: 'unavailable', reason: 'probe-failed', detail: `install flow threw: ${err instanceof Error ? err.message : String(err)}` };
+    r = { state: 'unavailable', reason: 'probe-failed', detail: `install flow threw: ${err instanceof Error ? err.message : String(err)}` };
   }
+  if (r.state === 'unavailable' && !r.manualSteps) {
+    let manualSteps: string;
+    try {
+      manualSteps = buildManualInstallSteps({
+        home: ctx.home ?? null,
+        targetOs: getAgentOS(agent) as TargetOS,
+        shell: getAgentShell(agent),
+        provider: agent.llmProvider ?? 'claude',
+        arch: ctx.arch ?? null,
+        orchestratorVersion: deps.orchestratorVersion(),
+        reason: r.reason,
+      });
+    } catch (err: unknown) {
+      manualSteps = `could not build the manual steps: ${err instanceof Error ? err.message : String(err)}`;
+    }
+    r = { ...r, manualSteps };
+  }
+  return r;
 }
 
-async function ensureOnce(agent: Agent, deps: MemberFleetInstallDeps, force: boolean, replaceFull = false): Promise<MemberFleetInstallResult> {
+/** What the install flow learned about the member, for the manual steps. */
+interface InstallCtx {
+  home?: string;
+  arch?: MemberArch | null;
+}
+
+/**
+ * The exact steps an owner runs ON THE MEMBER to install this orchestrator's
+ * build by hand when the fleet could not (pure; exported for tests). Built in
+ * JS for the member's OS/shell from the probed home -- no ~, $HOME or other
+ * shell expansion -- with every path and URL quoted. The download is the
+ * anonymous release URL the fleet itself tried first (no GitHub account
+ * needed); the SHA-256 check uses the release's SHA256SUMS (sha256sum on
+ * linux and Git Bash, shasum -a 256 on macOS, Get-FileHash in PowerShell).
+ * ASCII; one step per line.
+ */
+export function buildManualInstallSteps(opts: {
+  home: string | null;
+  targetOs: TargetOS;
+  shell: MemberShell;
+  provider: LlmProvider;
+  arch: MemberArch | null;
+  orchestratorVersion: string;
+  reason: FleetInstallUnavailableReason;
+}): string {
+  const { home, targetOs, shell, provider, arch, orchestratorVersion, reason } = opts;
+  const finish = 'then on the orchestrator run update_member {member_id, fleet_install: "auto"} so the fleet self-registers the member into that install and verifies it';
+  if (reason === 'full-install-running' || reason === 'replace-failed') {
+    return `follow the owner steps in the reason above, ${finish}.`;
+  }
+  if (!home || reason === 'home-unresolved' || reason === 'probe-failed') {
+    return `make the member reachable (member_detail shows its connectivity and the error), ${finish}.`;
+  }
+  const asset = arch ? releaseAssetNameFor({ os: targetOs, arch }) : null;
+  const pre = prereleaseTagFor(orchestratorVersion);
+  // A dev/branch build's installer lives in its exact-build prerelease; a
+  // released build's in the stable release (its BUILD_INFO names the build,
+  // and its Windows installer is signed), noted below.
+  const stableTag = releaseTagFor(orchestratorVersion);
+  const tag = pre ?? stableTag;
+  const args = memberInstallArgs(provider);
+  if (!asset) {
+    return [
+      arch
+        ? `no apra-fleet installer is published for ${targetOs}/${arch}; build it from source on the member:`
+        : `the member CPU architecture could not be probed; pick the installer for its OS/arch from ${releasePageUrl(tag)}, or build it from source on the member:`,
+      `(1) git clone https://github.com/${RELEASE_REPO}.git and check out ${pre ? `commit ${buildSuffixOf(pre)}` : `tag ${tag}`}, then npm install && npm run build:binary`,
+      `(2) run the built installer (dist/apra-fleet-installer-*) with: ${args.join(' ')}`,
+      `(3) ${finish}.`,
+    ].join('\n');
+  }
+  const posix = isPosixShell(targetOs, shell);
+  const q = posix ? posixQuote : psQuote;
+  const staging = memberStagingDir(home, targetOs, shell);
+  const file = memberJoin(targetOs, shell, staging, asset);
+  const sums = memberJoin(targetOs, shell, staging, CHECKSUM_ASSET);
+  const url = releaseFileUrl(tag, asset);
+  const sumsUrl = releaseFileUrl(tag, CHECKSUM_ASSET);
+  const lines: string[] = [];
+  if (reason === 'no-matching-release') {
+    lines.push(
+      `no release for build ${orchestratorVersion} is published yet${pre ? ` (prereleases exist only for builds pushed to the release branches, newest 3 per branch)` : ''}; ` +
+      `either run the orchestrator from a published build (${`https://github.com/${RELEASE_REPO}/releases`}) and re-run update_member, or build ${asset} from source ` +
+      `(${pre ? `commit ${buildSuffixOf(pre)}` : `tag ${tag}`}: npm install && npm run build:binary) and copy it to ${file}, skip steps 1-2, and continue at step 3. ` +
+      `Once ${releasePageUrl(tag)} exists, steps 1-4 install it:`,
+    );
+  } else {
+    lines.push(`install apra-fleet ${orchestratorVersion} from ${releasePageUrl(tag)} (anonymous download, no GitHub account needed):`);
+  }
+  if (pre) {
+    lines.push(`(if ${releaseFileUrl(stableTag, BUILD_INFO_ASSET)} names version=${orchestratorVersion}, this orchestrator is a released build: use tag ${stableTag} instead of ${pre} in the URLs below -- its Windows installer is signed)`);
+  }
+  if (posix) {
+    const shaTool = targetOs === 'macos' ? 'shasum -a 256 -c -' : 'sha256sum -c -';
+    lines.push(
+      `(1) download: mkdir -p ${q(staging)} && curl -fL -o ${q(file)} ${q(url)} && curl -fL -o ${q(sums)} ${q(sumsUrl)}`,
+      `(2) verify the SHA-256 (must print OK): cd ${q(staging)} && grep ${q(` ${asset}`)} ${q(CHECKSUM_ASSET)} | ${shaTool}`,
+      `(3) install in member mode: chmod +x ${q(file)} && ${q(file)} ${args.map(q).join(' ')}`,
+    );
+  } else {
+    lines.push(
+      // $ProgressPreference / $h / $line are PowerShell variables the owner's
+      // own session sets and reads; no path or value depends on expansion.
+      `(1) download: $ProgressPreference = 'SilentlyContinue'; New-Item -ItemType Directory -Force -Path ${q(staging)} | Out-Null; Invoke-WebRequest -UseBasicParsing -Uri ${q(url)} -OutFile ${q(file)}; Invoke-WebRequest -UseBasicParsing -Uri ${q(sumsUrl)} -OutFile ${q(sums)}`,
+      `(2) verify the SHA-256 (throws on a mismatch; do not run the installer then): $h = (Get-FileHash -Algorithm SHA256 -LiteralPath ${q(file)}).Hash.ToLower(); $line = (Select-String -LiteralPath ${q(sums)} -SimpleMatch ${q(` ${asset}`)} | Select-Object -First 1).Line; if (-not $line -or ($line -split '\\s+')[0].ToLower() -ne $h) { throw ${q(`SHA-256 mismatch for ${asset}: do not run it`)} } else { 'OK' }`,
+      `(3) install in member mode: & ${q(file)} ${args.map(q).join(' ')}`,
+    );
+  }
+  lines.push(`(4) ${finish}.`);
+  return lines.join('\n');
+}
+
+/**
+ * The prominent WARNING register_member / update_member print when a
+ * requested apra-fleet install/upgrade on the member did not happen, or null
+ * when there is nothing to warn about. Names (a) the consequence, (b) the
+ * exact reason and (c) the manual steps. The tool call itself succeeds. ASCII.
+ */
+export function fleetInstallWarning(memberName: string, status: FleetMcpStatus): string | null {
+  if (!status.manualInstall && status.sameCoreFallback) {
+    const f = status.sameCoreFallback;
+    return [
+      `NOTICE: member "${memberName}" got apra-fleet from the same-core stable release: installed signed stable ${f.tag}${status.version ? ` (${status.version})` : ''}, not the exact build ${f.wantedBuild}.`,
+      `  Why: ${f.why}`,
+      '  KB/code tools work on that build; to get the exact build, publish it (or run the orchestrator from a published build) and run update_member {member_id, fleet_install: "auto"} again.',
+    ].join('\n');
+  }
+  if (!status.manualInstall) return null;
+  const reason = status.installFailure?.reason ?? status.reason ?? 'unknown';
+  const detail = status.installFailure?.detail ?? status.detail;
+  const consequence = status.state === 'available'
+    ? `the member keeps its installed apra-fleet ${status.version ?? '(unknown version)'} instead of this orchestrator's build, so its KB/code tools run on that build until it is updated. Nothing else is affected.`
+    : 'the member will not get the KB/code tools (kb_*, code_*) of its own apra-fleet. That is the only consequence: the member works for everything else.';
+  const indent = (s: string) => s.split('\n').map(l => `    ${l}`).join('\n');
+  return [
+    `WARNING: apra-fleet on member "${memberName}" was not installed/updated to this orchestrator's build.`,
+    `  Consequence: ${consequence}`,
+    `  Reason: ${reason}${detail ? ` -- ${detail}` : ''}`,
+    '  Manual steps on the member:',
+    indent(status.manualInstall),
+  ].join('\n');
+}
+
+async function ensureOnce(agent: Agent, deps: MemberFleetInstallDeps, force: boolean, replaceFull = false, ctx: InstallCtx = {}): Promise<MemberFleetInstallResult> {
   const targetOs = getAgentOS(agent) as TargetOS;
   const shell = getAgentShell(agent);
   const provider: LlmProvider = agent.llmProvider ?? 'claude';
   const orchestratorVersion = deps.orchestratorVersion();
 
   const home = await deps.resolveHome(agent);
+  if (home) ctx.home = home;
   if (!home) {
     return { state: 'unavailable', reason: 'home-unresolved', detail: 'the member home directory could not be probed' };
   }
@@ -1041,7 +1422,7 @@ async function ensureOnce(agent: Agent, deps: MemberFleetInstallDeps, force: boo
     if (marker.kind === 'probe-failed') {
       return { state: 'unavailable', reason: 'probe-failed', detail: `${marker.detail}; the opt-in full-install replacement was not run`, version: before.version };
     }
-    if (marker.kind === 'absent') return replaceFullInstall(agent, deps, home, binPath, before.version);
+    if (marker.kind === 'absent') return replaceFullInstall(agent, deps, home, binPath, before.version, ctx);
   }
   // Pre-gate: only a strictly older core is outdated for certain; a same-core
   // build difference is decided below once the install source is known.
@@ -1052,6 +1433,7 @@ async function ensureOnce(agent: Agent, deps: MemberFleetInstallDeps, force: boo
   const coreOutdated = before.kind !== 'installed' || isOlderThan(before.version, orchestratorVersion);
 
   const arch = await probeMemberArch(agent, deps);
+  ctx.arch = arch;
   if (!arch && !force && !coreOutdated && before.kind === 'installed') {
     // Build-only difference and no way to tell the source: leave it alone.
     return { state: 'available', version: before.version, installed: false, binPath };
@@ -1074,7 +1456,7 @@ async function ensureOnce(agent: Agent, deps: MemberFleetInstallDeps, force: boo
   }
   if (
     !force && !coreOutdated && before.kind === 'installed' &&
-    !isMemberOutdated(before.version, orchestratorVersion, source.kind === 'orchestrator-executable')
+    !isMemberOutdated(before.version, orchestratorVersion, sourceSuppliesBuild(source, orchestratorVersion))
   ) {
     // Same core, release-asset source: same core = up to date.
     return { state: 'available', version: before.version, installed: false, binPath };
@@ -1102,17 +1484,22 @@ async function ensureOnce(agent: Agent, deps: MemberFleetInstallDeps, force: boo
 
   let localPath: string;
   let downloaded = false;
+  let sameCoreFallback: SameCoreFallback | undefined;
   if (source.kind === 'orchestrator-executable') {
     localPath = source.localPath;
   } else {
     try {
-      localPath = await deps.downloadReleaseAsset(source.url, source.assetName);
+      // The same-core stable fallback only when the member has no apra-fleet or
+      // an older core: a signed stable build of the core beats nothing.
+      const fetched = await fetchReleaseInstaller(deps, source, orchestratorVersion, { allowSameCoreStable: coreOutdated });
+      localPath = fetched.localPath;
+      sameCoreFallback = fetched.sameCoreFallback ? { tag: fetched.tag, ...fetched.sameCoreFallback } : undefined;
       downloaded = true;
     } catch (err: unknown) {
       return {
         state: 'unavailable',
-        reason: err instanceof ReleaseDownloadError ? err.reason : 'download-failed',
-        detail: `${source.url}: ${err instanceof Error ? err.message : String(err)}`,
+        reason: downloadFailureReason(err),
+        detail: err instanceof Error ? err.message : String(err),
         version: priorVersion,
       };
     }
@@ -1147,7 +1534,7 @@ async function ensureOnce(agent: Agent, deps: MemberFleetInstallDeps, force: boo
   }
 
   const after = await probeMemberFleetVersion(agent, binPath, deps);
-  if (after.kind !== 'installed' || isMemberOutdated(after.version, orchestratorVersion, source.kind === 'orchestrator-executable')) {
+  if (after.kind !== 'installed' || isMemberOutdated(after.version, orchestratorVersion, !sameCoreFallback && sourceSuppliesBuild(source, orchestratorVersion))) {
     const seen = after.kind === 'installed' ? `reports ${after.version}` : after.kind === 'probe-failed' ? after.detail : after.kind;
     return {
       state: 'unavailable',
@@ -1156,7 +1543,7 @@ async function ensureOnce(agent: Agent, deps: MemberFleetInstallDeps, force: boo
       version: priorVersion,
     };
   }
-  return { state: 'available', version: after.version, installed: true, source: source.kind, binPath };
+  return { state: 'available', version: after.version, installed: true, source: source.kind, binPath, ...(sameCoreFallback ? { sameCoreFallback } : {}) };
 }
 
 // ---------------------------------------------------------------------------
@@ -1218,6 +1605,7 @@ export const FLEET_MCP_FIX: Record<FleetMcpUnavailableReason | FleetMcpProviderR
   'download-timeout': 'The release download did not finish in time; check the network to the release host, then run update_member with fleet_install "auto".',
   'checksum-mismatch': 'The downloaded installer did not match its published SHA256SUMS; do not install it -- run update_member with fleet_install "auto" again, and report it if it repeats.',
   'checksum-unavailable': 'No published SHA256SUMS lists this installer (release missing or incomplete); publish the release assets, then run update_member with fleet_install "auto".',
+  'no-matching-release': 'No published release carries an installer for this orchestrator build (no exact-build prerelease, and the stable release is a different build); install it on the member by hand with the steps in the update_member/register_member WARNING, or run the orchestrator from a published build, then run update_member with fleet_install "auto".',
   'full-install-running': 'The member apra-fleet install has no member-install marker (a full install, or a member install older than the marker), so the fleet leaves it alone; its owner replaces it with a member install using the steps in the detail (back up data and fleet.key, uninstall with the installed binary, run the staged current installer with install --member), then update_member {member_id, fleet_install: "auto"} -- or opts in to the fleet doing it with update_member {member_id, fleet_install: "replace-full"}.',
   'transfer-failed': 'Check file transfer to the member works (disk space, permissions), then run update_member with fleet_install "auto".',
   'install-failed': 'Run the apra-fleet installer on the member by hand and read its error, then member_detail with refresh:true.',
@@ -1771,12 +2159,17 @@ async function probeRemote(
   let installFailure: { reason: string; detail?: string } | undefined;
   // A full install this probe replaced (opt-in): reported on every outcome.
   let replaced: ReplacedFullInstall | undefined;
+  // Manual install steps for the member when a requested install did not happen.
+  let manualInstall: string | undefined;
+  // The signed same-core stable release installed instead of the exact build.
+  let sameCoreFallback: SameCoreFallback | undefined;
   if (install) {
     const r = await ensureMemberFleetInstall(agent, deps, { force: forceInstall, replaceFull });
     if (r.state === 'available') {
       version = r.version;
       if (r.installed) { ctx.installedNow = true; installedNow = true; }
       replaced = r.replaced;
+      sameCoreFallback = r.sameCoreFallback;
     }
     // Fail closed -- with the install's OWN reason and detail, never a later
     // step's error (apra-fleet-b4g.73) -- when the installer ran or was
@@ -1787,7 +2180,7 @@ async function probeRemote(
       const detail = r.version
         ? `${(r.detail ?? r.reason).replace(/\.\s*$/, '')}; the member still has apra-fleet ${r.version}, which was not used`
         : r.detail;
-      return unavailable(r.reason, detail, r.version ? { version: r.version } : {});
+      return unavailable(r.reason, detail, { ...(r.version ? { version: r.version } : {}), ...(r.manualSteps ? { manualInstall: r.manualSteps } : {}) });
     }
     // Otherwise the upgrade failed before the member was touched (no arch, no
     // source, download/checksum/transfer failure): the older install is
@@ -1796,6 +2189,7 @@ async function probeRemote(
     else {
       version = r.version;
       installFailure = { reason: r.reason, ...(r.detail ? { detail: r.detail } : {}) };
+      manualInstall = r.manualSteps;
     }
   } else {
     const p = await probeMemberFleetVersion(agent, binPath, deps);
@@ -1807,6 +2201,7 @@ async function probeRemote(
     version,
     ...(installFailure ? { installFailure } : {}),
     ...(replaced ? { replacedFullInstall: replaced } : {}),
+    ...(sameCoreFallback ? { sameCoreFallback } : {}),
   };
   const upgradeNote = installFailure ? installFailureNote(installFailure, version) : undefined;
   const replaceNote = replaced
@@ -1821,7 +2216,7 @@ async function probeRemote(
   // must never hide it, and an available status still names it.
   const fail: Unavailable = (reason, detail) => {
     const also = notes();
-    return unavailable(reason, also.length ? `${(detail ?? reason).replace(/\.\s*$/, '')}. Also: ${also.join('. ')}` : detail, { ...withVersion, ...portFields });
+    return unavailable(reason, also.length ? `${(detail ?? reason).replace(/\.\s*$/, '')}. Also: ${also.join('. ')}` : detail, { ...withVersion, ...(manualInstall ? { manualInstall } : {}), ...portFields });
   };
 
   // 2a. Self-register ONLY into a member install (marker present). An install
@@ -1836,6 +2231,7 @@ async function probeRemote(
       // Stage the current installer only when an install was requested; a plain
       // status refresh must not copy or download a binary on every probe.
       const installer = await stageReplacementInstaller(agent, deps, home, null, install);
+      if (install) manualInstall = manualInstall ?? `follow the owner steps in the reason above, then on the orchestrator run update_member {member_id, fleet_install: "auto"} so the fleet self-registers the member into that install and verifies it.`;
       return fail('full-install-running', `the apra-fleet ${version} at ${binPath} has no member-install marker, so the member was not registered into it. ${buildFullInstallReplaceHint({ home, targetOs, shell, provider: agent.llmProvider ?? 'claude', installer })}`);
     }
   }
@@ -1923,7 +2319,9 @@ async function probeRemote(
   return {
     state: 'available', version, checkedAt: checkedAt(),
     ...(installFailure ? { installFailure } : {}),
+    ...(manualInstall ? { manualInstall } : {}),
     ...(replaced ? { replacedFullInstall: replaced } : {}),
+    ...(sameCoreFallback ? { sameCoreFallback } : {}),
     ...(finalNotes.length ? { detail: finalNotes.join('. ') } : {}),
     ...portFields,
   };

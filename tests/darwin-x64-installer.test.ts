@@ -57,7 +57,9 @@ describe('member upgrade of an Intel Mac from a Windows orchestrator', () => {
   it('resolves the darwin-x64 release asset, not unsupported-platform', () => {
     const src = chooseInstallSource({ os: 'macos', arch: 'x64' } as any, { os: 'windows', arch: 'x64' } as any, 'C:\fleet.exe', 'v0.4.4_abc123');
     expect(src).toMatchObject({ kind: 'release-asset', assetName: 'apra-fleet-installer-darwin-x64' });
+    // Stable first (BUILD_INFO-gated), then the exact-build prerelease.
     expect((src as any).url).toBe('https://github.com/Apra-Labs/apra-fleet/releases/download/v0.4.4/apra-fleet-installer-darwin-x64');
+    expect((src as any).candidates.map((c: any) => c.tag)).toEqual(['v0.4.4', 'v0.4.4_abc123']);
   });
 });
 

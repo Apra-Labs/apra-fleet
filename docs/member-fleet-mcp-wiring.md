@@ -150,13 +150,35 @@ called with `fleet_install: "auto"`), at least as new as the orchestrator, insta
   otherwise download the release asset for the orchestrator's version;
   otherwise report `unavailable(<reason>)`. Absence is an observation, never a
   throw: registration still succeeds. There is no GitHub Actions-artifact
-  fallback and no node-based fallback. An untagged (dev) build, whose version
-  looks like `v0.4.4_abc123`, downloads the asset of the tag its version core
-  maps to (`v0.4.4`).
+  fallback (artifacts need a GitHub login and expire) and no node-based
+  fallback. Release lookup uses anonymous URLs only (no API, no auth):
+  1. the stable `v<x.y.z>` release (signed Windows installer), accepted only
+     when its `BUILD_INFO` asset (`version=`/`commit=` lines, listed in
+     `SHA256SUMS`) names the orchestrator's build -- a bare `v<x.y.z>`
+     orchestrator accepts any build of that core. Stable tag builds carry a
+     build suffix too and their commit also gets a prerelease, so stable must
+     come first;
+  2. the exact-build prerelease `v<x.y.z>_<sha6>` that CI publishes, unsigned,
+     for every push to main and feat/kb-redesign (newest 3 per branch kept;
+     never `releases/latest`). Only "no release" (SHA256SUMS HTTP 404) or "different build"
+     moves on to the next candidate; network, timeout and checksum failures are
+     reported as themselves.
+  3. same-core stable fallback: when neither carries the exact build and the
+     member has no apra-fleet or an older core, the signed stable `v<x.y.z>` of
+     the same core (BUILD_INFO naming any build of that core) is installed and
+     reported as `fleetMcp.sameCoreFallback` plus a NOTICE ("installed signed
+     stable vX.Y.Z, not the exact build ..."). Never across cores; a member
+     already on that core keeps its build. Otherwise `no-matching-release`.
 - The release asset download is bounded by a timeout and verified against the
   release's published `SHA256SUMS` before use; a timeout, a checksum mismatch
   or an unavailable checksum is a typed, recoverable `fleetMcp` reason and
   nothing unverified is installed.
+- A requested install/upgrade that does not happen never fails
+  register_member/update_member: the result carries a WARNING with the
+  consequence (no KB/code tools from the member's own apra-fleet, or its
+  installed build kept), the exact reason, and OS-correct manual steps
+  (`fleetMcp.manualInstall`: anonymous download, SHA-256 check, member-mode
+  install, then `update_member {member_id, fleet_install: "auto"}`).
 - A member install (`install --member`) with `--force` stops only a server a
   previous member install left behind; a running full-install server it did not
   start is refused with `E-FULL-INSTALL-RUNNING`. The fleet never overrides that

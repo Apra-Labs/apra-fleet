@@ -28,7 +28,7 @@ import { seedWorkspaceTrust } from '../utils/workspace-trust.js';
 import { composePermissions } from './compose-permissions.js';
 import { isFullyQualifiedPath, workFolderNotAbsoluteError } from '../utils/work-folder-validation.js';
 import { getMemberHomeDir } from '../services/member-home.js';
-import { beadsStatusNote, refreshMemberFleetMcp, getMemberFleetMcpDeps } from '../services/member-fleet-install.js';
+import { beadsStatusNote, refreshMemberFleetMcp, getMemberFleetMcpDeps, fleetInstallWarning } from '../services/member-fleet-install.js';
 import { ensureAgyProject } from '../services/agy-project.js';
 import { detectVcsProviderFromRemoteUrl } from '../utils/vcs-provider-detect.js';
 
@@ -77,7 +77,7 @@ export const registerMemberSchema = z.object({
   }).optional().describe('Per-member model tier map. Keys: cheap, standard, premium. Values: model IDs (e.g. "ollama/qwen3-coder:30b"). A single model fills all tiers. At least one model recommended for opencode members.'),
   code_intel_provider: z.enum(['codebase-memory', 'gitnexus', 'none']).optional().describe('Code-intelligence provider for this member (default: fleet-wide config).'),
   unreservable: z.boolean().optional().describe('Mark this member as never exclusively reservable, so it can be shared by more than one sprint at once (e.g. a member filling fleet-sprint\'s shared "backlog" role). reserve/release/force_release become no-op successes and overlap guards skip it. Default: false.'),
-  fleet_install: z.enum(['auto', 'skip', 'replace-full']).optional().default('auto').describe('Whether registration installs/updates apra-fleet on the member so it has its own fleet server (default "auto": probe the member, install or upgrade when missing/older, self-register it, write its per-folder apra-fleet MCP entry, verify a MEMBER session; local members only get the MEMBER-session probe; an install without the member-install marker, i.e. a full install, is never touched). "replace-full" does what "auto" does and explicitly opts in to REPLACING such a full install with a member install (backup of data and fleet.key, uninstall, member install, self-register); refused with no destructive command when the marker probe fails. "skip" performs no install and reports the probe result only. Registration succeeds either way; the result reports the recoverable fleetMcp status (re-probe with member_detail refresh:true).'),
+  fleet_install: z.enum(['auto', 'skip', 'replace-full']).optional().default('auto').describe('Whether registration installs/updates apra-fleet on the member so it has its own fleet server (default "auto": probe the member, install or upgrade when missing/older, self-register it, write its per-folder apra-fleet MCP entry, verify a MEMBER session; local members only get the MEMBER-session probe; an install without the member-install marker, i.e. a full install, is never touched). "replace-full" does what "auto" does and explicitly opts in to REPLACING such a full install with a member install (backup of data and fleet.key, uninstall, member install, self-register); refused with no destructive command when the marker probe fails. "skip" performs no install and reports the probe result only. Registration succeeds either way; the result reports the recoverable fleetMcp status (re-probe with member_detail refresh:true). A requested install/upgrade that cannot happen (no release for this build, checksum or download failure, unsupported platform, full install present, ...) adds a WARNING naming the consequence, the exact reason and OS-correct manual install steps (also in fleetMcp.manualInstall).'),
   shell: z.enum(['gitbash', 'pwsh7', 'powershell5']).optional().describe('Override the probed Windows shell for this member (gitbash, pwsh7, or powershell5). Windows members only -- ignored for non-windows members.'),
 });
 
@@ -677,6 +677,13 @@ export async function registerMember(input: RegisterMemberInput, opts: RegisterM
         ? `available${status.version ? ` (apra-fleet ${status.version})` : ''}${(status.installFailure || status.replacedFullInstall) && status.detail ? ` -- ${status.installFailure ? 'warning: ' : ''}${status.detail}` : ''}`
         : `unavailable (${status.reason ?? 'unknown'})${status.detail ? ` -- ${status.detail}` : ''}`;
       fleetMcpLine += beadsStatusNote(status);
+      // A requested install that did not happen never fails registration: it
+      // is a prominent WARNING with the consequence, reason and manual steps.
+      const installWarning = fleetInstallWarning(tempAgent.friendlyName, status);
+      if (installWarning) {
+        fleetMcpLine += installWarning.startsWith('NOTICE') ? ' (see NOTICE below)' : ' (see WARNING below)';
+        warnings.unshift(installWarning);
+      }
     } catch (e: any) {
       fleetMcpLine = `unavailable (probe-failed) -- ${e?.message ?? String(e)}`;
     }

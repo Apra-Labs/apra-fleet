@@ -75,19 +75,37 @@ describe('build-aware member install version check', () => {
     expect(older.f.installs).toBe(1);
   });
 
-  it('4. release-asset source: same core is up to date, no reinstall loop, no install-unverified', async () => {
+  it('4. release-asset source, dev build: same core different build upgrades to the exact build', async () => {
+    // The release source only ever accepts a release that IS the orchestrator's
+    // build (exact-build prerelease, or a stable release whose BUILD_INFO names
+    // it), so it supplies that build like the executable source does.
     const t = run({ member: 'v0.4.4', orch: 'v0.4.4_bbbbbb', orchestrator: MAC_ARM });
+    const r = await t.go();
+    expect(t.f.installs).toBe(1);
+    expect(t.f.downloads).toEqual(['https://github.com/Apra-Labs/apra-fleet/releases/download/v0.4.4/apra-fleet-installer-linux-x64']);
+    expect(r).toMatchObject({ state: 'available', installed: true, source: 'release-asset', version: 'v0.4.4_bbbbbb' });
+  });
+
+  it('4a. release-asset source, bare release orchestrator: same core is up to date, no reinstall loop', async () => {
+    const t = run({ member: 'v0.4.4_aaaaaa', orch: 'v0.4.4', orchestrator: MAC_ARM });
     const r = await t.go();
     expect(t.f.installs).toBe(0);
     expect(t.f.downloads).toEqual([]);
-    expect(r).toMatchObject({ state: 'available', installed: false, version: 'v0.4.4' });
+    expect(r).toMatchObject({ state: 'available', installed: false, version: 'v0.4.4_aaaaaa' });
   });
 
   it('4b. release-asset install of an older core is not reported install-unverified', async () => {
-    const t = run({ member: 'v0.4.3', orch: 'v0.4.4_bbbbbb', installsVersion: 'v0.4.4', orchestrator: MAC_ARM });
+    const t = run({ member: 'v0.4.3', orch: 'v0.4.4_bbbbbb', orchestrator: MAC_ARM });
     const r = await t.go();
     expect(t.f.installs).toBe(1);
-    expect(r).toMatchObject({ state: 'available', installed: true, source: 'release-asset', version: 'v0.4.4' });
+    expect(r).toMatchObject({ state: 'available', installed: true, source: 'release-asset', version: 'v0.4.4_bbbbbb' });
+  });
+
+  it('4c. a bare release orchestrator accepts the stable tag build it installs', async () => {
+    const t = run({ member: 'v0.4.3', orch: 'v0.4.4', installsVersion: 'v0.4.4_cccccc', orchestrator: MAC_ARM });
+    const r = await t.go();
+    expect(t.f.downloads).toEqual(['https://github.com/Apra-Labs/apra-fleet/releases/download/v0.4.4/apra-fleet-installer-linux-x64']);
+    expect(r).toMatchObject({ state: 'available', installed: true, source: 'release-asset', version: 'v0.4.4_cccccc' });
   });
 
   it('isMemberOutdated unit rules', () => {

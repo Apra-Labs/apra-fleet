@@ -137,6 +137,19 @@ export interface FleetMcpStatus {
    *  removed or moved, and the timestamped backup directory on the member.
    *  An observation of that probe only; not carried to later probes. */
   replacedFullInstall?: { previousVersion: string; removed: string[]; backupPath: string };
+  /** Set when a requested apra-fleet install/upgrade on the member did not
+   *  happen (any install reason, on available and unavailable statuses): the
+   *  exact manual steps, built for the member's OS/shell, to install this
+   *  orchestrator's build there by hand (anonymous download URL, SHA-256
+   *  check, member-mode install, then update_member). register_member /
+   *  update_member print it in a WARNING; the call itself still succeeds. */
+  manualInstall?: string;
+  /** Set by the probe that installed the signed stable release of the
+   *  orchestrator's core (`tag`, e.g. v0.4.4) because no release carries the
+   *  exact build (`wantedBuild`); only when the member had no apra-fleet or an
+   *  older core. `why` says what was tried. register_member / update_member
+   *  print it as a NOTICE. */
+  sameCoreFallback?: { tag: string; wantedBuild: string; why: string };
 }
 
 export interface GitHubAppConfig {
