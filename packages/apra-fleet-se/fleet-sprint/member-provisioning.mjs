@@ -50,6 +50,7 @@ import path from 'node:path';
 import { ApraFleet } from '@apralabs/apra-fleet-client';
 import { resultText } from './mcp-result.mjs';
 import { MemberPermissionConfigError } from './errors.mjs';
+import { splitShellCommands, isCompoundShellGrant } from './shell-commands.mjs';
 import { FILE_PROBE_PRESENT, FILE_PROBE_ABSENT } from './se-posix.mjs';
 
 /**
@@ -500,6 +501,11 @@ function grantAllowsCall(grant, item) {
 
 const describeCall = (d) => (d.target ? `${d.action} "${d.target}"` : d.action);
 
+/** True for a refused call that ran a shell command line (Claude's Bash, agy's
+ *  command/unsandboxed), i.e. one whose target the shell parser can split. */
+const isShellCall = (d) => (d.action === 'Bash' || d.action === 'command' || d.action === 'unsandboxed')
+    && typeof d.target === 'string' && d.target.trim() !== '';
+
 /**
  * Builds the dispatch engine's `onPermissionDenied` hook: a PROGRESSIVE heal
  * of a member whose dispatch was refused tool calls for lack of a grant.
@@ -522,6 +528,24 @@ const describeCall = (d) => (d.target ? `${d.action} "${d.target}"` : d.action);
  *   heal          compose_permissions failed or refused the grant (its
  *                 NEVER_AUTO_GRANT floor); the grants are named.
  *
+ * A refused COMPOUND shell call (a loop, an &&/||/; chain, a pipeline, a
+ * subshell or a command substitution) is parsed with a real shell parser
+ * (shell-commands.mjs) into the simple commands it would run. When every one
+ * of them is already within the member's composed policy, the outcome is a
+ * NUDGE (`nudge: { commands }`): the dispatch engine resumes the same session
+ * and asks the member to run each command as its own tool call. When any of
+ * them is outside the policy, or the call does not parse, the heal stops
+ * (no_progress) naming the cause.
+ *
+ * SECURITY: the heal NEVER grants a loop or compound prefix such as
+ * Bash(for:*), Bash(while:*), Bash(until:*), Bash(do:*) or a whole compound
+ * command string -- a loop-prefix grant would allow arbitrary loop bodies.
+ * Only grants for simple commands may ever be added, and only within the
+ * composed policy. A compound call therefore never reaches the grant step,
+ * and isCompoundShellGrant() filters every suggested grant as a backstop
+ * (the provider's suggestion for a newline-separated loop can start with the
+ * loop keyword).
+ *
  * Security model: the member never grants itself anything -- the
  * orchestrator grants on need, only grants the member's own composed policy
  * already contains (compose_permissions dry_run for its role + stacks, not a
@@ -536,8 +560,11 @@ const describeCall = (d) => (d.target ? `${d.action} "${d.target}"` : d.action);
  * member's ledger folder (`ledgerFolderFor`, passed as project_folder), so a
  * later sprint's compose of that member keeps it.
  *
- * Resolves `{ healed, step?, composeRole, grants, rejectedGrants, reason }`;
- * never throws. healed is true only when at least one new grant landed.
+ * Resolves `{ healed, step?, composeRole, grants, rejectedGrants, reason,
+ * nudge? }`; never throws. healed is true only when at least one new grant
+ * landed; `nudge` is set when the refusal is healed by running the refused
+ * compound call's commands separately (healed may then be false, step
+ * 'nudge', when no grant was needed besides).
  *
  * @param {{ callTool: Function, memberRoles?: (member: string) => string[], ledgerFolderFor?: (member: string) => string|undefined, log?: Function }} opts
  */
@@ -598,17 +625,39 @@ export function createPermissionDenialHeal(opts = {}) {
         if (denial && (denial.healable === false || denial.permissionMode === 'auto' || denial.permissionMode === 'bypassPermissions')) {
             return stop('not_healable', `the session ran in ${denial.permissionMode || 'a non-healable'} permission mode, where ${what} was refused by the safety classifier or a deny rule; no grant is ever added for that.`);
         }
-        if (st.healCount >= PERMISSION_HEAL_MEMBER_CAP) {
-            return stop('cap', `${st.healCount} permission heals already ran for this member this sprint (limit ${PERMISSION_HEAL_MEMBER_CAP}).`);
+        const capReached = () => {
+            if (st.healCount >= PERMISSION_HEAL_MEMBER_CAP) {
+                return stop('cap', `${st.healCount} permission heals already ran for this member this sprint (limit ${PERMISSION_HEAL_MEMBER_CAP}).`);
+            }
+            if (ladderHeals >= PERMISSION_HEAL_LADDER_CAP) {
+                return stop('cap', `${ladderHeals} permission heals already ran for this dispatch (limit ${PERMISSION_HEAL_LADDER_CAP}).`);
+            }
+            return null;
+        };
+        if (items.length === 0) {
+            return capReached() || stop('no_progress', 'the refusal named no tool call to grant.');
         }
-        if (ladderHeals >= PERMISSION_HEAL_LADDER_CAP) {
-            return stop('cap', `${ladderHeals} permission heals already ran for this dispatch (limit ${PERMISSION_HEAL_LADDER_CAP}).`);
+
+        // Split every refused shell call with the real parser FIRST: a
+        // compound call is never granted (see the SECURITY note above), only
+        // judged command by command against the composed policy.
+        const compoundItems = [];
+        const plainItems = [];
+        for (const item of items) {
+            if (!isShellCall(item)) { plainItems.push(item); continue; }
+            const split = splitShellCommands(item.target);
+            if (!split.ok) {
+                return capReached() || stop('no_progress', `${describeCall(item)} could not be split into simple commands (${split.reason}), so neither a grant nor a run-separately nudge can be judged safe for it.`);
+            }
+            if (split.compound) compoundItems.push({ item, commands: split.commands });
+            else plainItems.push(item);
         }
-        if (items.length === 0) return stop('no_progress', 'the refusal named no tool call to grant.');
 
         // Refused again although a landed grant covers the call: the grant
-        // did not take (a deny rule or managed setting overrides it).
-        for (const item of items) {
+        // did not take (a deny rule or managed setting overrides it). Only a
+        // SIMPLE call can be judged this way: a compound call is refused as a
+        // whole even when a landed prefix grant covers its first command.
+        for (const item of plainItems) {
             const landed = st.granted.find((g) => grantAllowsCall(g, item));
             if (landed) return stop('no_progress', `${describeCall(item)} was refused again after ${landed} was granted, so granting cannot fix it (a deny rule or managed setting likely overrides the grant).`);
         }
@@ -616,12 +665,29 @@ export function createPermissionDenialHeal(opts = {}) {
         const policy = await policyFor(member, st, composeRole);
         if (policy.error) return stop('heal', policy.error);
 
+        const nudgeSet = new Set();
+        const outsideSet = new Set();
+        for (const { commands } of compoundItems) {
+            for (const command of commands) {
+                const grant = `Bash(${command})`;
+                if (grantWithinPolicy(grant, policy.allow)) nudgeSet.add(command);
+                else outsideSet.add(grant);
+            }
+        }
+        const nudgeCommands = [...nudgeSet];
+        const outside = [...outsideSet];
+        if (outside.length) {
+            return stop('no_progress', `${outside.join(', ')} (inside ${compoundItems.map(({ item }) => describeCall(item)).join(', ')}) is outside the '${composeRole}' composed policy for this member, so the member is not asked to run it separately; an operator must grant it deliberately.`, outside);
+        }
+
         const picked = new Set();
         const alreadyGranted = new Set(st.granted);
         const rejected = [];
-        for (const item of items) {
-            const options = Array.isArray(item.suggestedGrants) ? item.suggestedGrants : (denial.suggestedGrants || []);
-            if (options.length === 0) return stop('no_progress', `no compose_permissions grant maps to ${describeCall(item)} (e.g. a chained shell command).`);
+        for (const item of plainItems) {
+            const suggested = Array.isArray(item.suggestedGrants) ? item.suggestedGrants : (denial.suggestedGrants || []);
+            // Backstop of the SECURITY rule: never a loop/compound prefix.
+            const options = suggested.filter((g) => !isCompoundShellGrant(g));
+            if (options.length === 0) return capReached() || stop('no_progress', `no compose_permissions grant maps to ${describeCall(item)}.`);
             const pick = options.find((g) => grantWithinPolicy(g, policy.allow));
             if (!pick) { rejected.push(...options); continue; }
             if (!alreadyGranted.has(pick)) picked.add(pick);
@@ -630,7 +696,18 @@ export function createPermissionDenialHeal(opts = {}) {
         if (rejected.length) {
             return stop('no_progress', `${[...new Set(rejected)].join(', ')} is outside the '${composeRole}' composed policy for this member; an operator must grant it deliberately.`, [...new Set(rejected)]);
         }
-        if (newGrants.length === 0) return stop('no_progress', `every grant for ${what} is already in place.`);
+        const nudge = nudgeCommands.length
+            ? { commands: nudgeCommands, refused: compoundItems.map(({ item }) => describeCall(item)) }
+            : null;
+        if (newGrants.length === 0) {
+            if (nudge) {
+                log(`[permission-heal] member '${member}' (${role}) was refused ${what}; every command inside is within its '${composeRole}' policy -- asking it to run them as separate calls (no grant added).`);
+                return { healed: false, step: 'nudge', composeRole, grants: [], rejectedGrants: [], reason: null, nudge };
+            }
+            return stop('no_progress', `every grant for ${what} is already in place.`);
+        }
+        const capped = capReached();
+        if (capped) return capped;
 
         const ledger = ledgerFolderFor(member);
         const ledgerArg = ledger ? { project_folder: ledger } : {};
@@ -654,7 +731,7 @@ export function createPermissionDenialHeal(opts = {}) {
         st.granted.push(...newGrants);
         st.healCount += 1;
         log(`[permission-heal] member '${member}': granted ${newGrants.join(', ')} (heal ${st.healCount}/${PERMISSION_HEAL_MEMBER_CAP} this sprint).`);
-        return { healed: true, composeRole, grants: newGrants, rejectedGrants: [], reason: null };
+        return { healed: true, composeRole, grants: newGrants, rejectedGrants: [], reason: null, ...(nudge ? { nudge } : {}) };
     };
 }
 

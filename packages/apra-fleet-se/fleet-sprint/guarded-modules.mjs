@@ -428,6 +428,11 @@ export const GUARDED_MODULES = [
     'vcs-providers/github.mjs',
     'vcs-providers/index.mjs',
     'vcs-providers/shell-helpers.mjs',
+    // The permission heal's shell-command splitter: a pure parser wrapper
+    // (unbash) with no command()/agent() call site, no push and no dolt
+    // literal -- it only ever reads a refused command line -- so it scans
+    // clean under every guard and is registered rather than exempted.
+    'shell-commands.mjs',
 ];
 
 /**

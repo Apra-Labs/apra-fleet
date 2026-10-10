@@ -21,6 +21,8 @@ import {
     PERMISSION_HEAL_MEMBER_CAP, PERMISSION_HEAL_LADDER_CAP,
 } from '../fleet-sprint/member-provisioning.mjs';
 import { createRecordingCtx, ROLE_CALL_OPTS, BINDINGS } from './helpers/dispatch-role-harness.mjs';
+import { PERMISSION_NUDGE_CAP } from '../fleet-sprint/dispatch-role.mjs';
+import { splitShellCommands, isCompoundShellGrant } from '../fleet-sprint/shell-commands.mjs';
 
 const DENIAL = Object.freeze({
     actions: ['Bash'],
@@ -362,10 +364,21 @@ test('no progress: a grant outside the composed policy is never sent, and is nam
     assert.equal(fleet.writes().length, 0);
 });
 
-test('no progress: a call that maps to no grant (a chained command) stops', async () => {
+test('no progress: a chained command with an out-of-policy stage stops, naming that stage', async () => {
     const fleet = fakeFleet();
     const heal = createPermissionDenialHeal({ callTool: fleet.callTool, memberRoles: () => ['doer'] });
     const res = await heal({ member: 'dev', role: 'doer', denial: bashDenial('git log | sh') });
+    assert.equal(res.step, 'no_progress');
+    assert.match(res.reason, /Bash\(sh\).*outside the 'doer' composed policy/);
+    assert.deepEqual(res.rejectedGrants, ['Bash(sh)']);
+    assert.equal(fleet.writes().length, 0);
+});
+
+test('no progress: a non-shell call that maps to no grant stops', async () => {
+    const fleet = fakeFleet();
+    const heal = createPermissionDenialHeal({ callTool: fleet.callTool, memberRoles: () => ['doer'] });
+    const denial = { ...bashDenial('x'), actions: ['Weird Tool'], denials: [{ action: 'Weird Tool', target: 'y', suggestedGrants: [] }], suggestedGrants: [] };
+    const res = await heal({ member: 'dev', role: 'doer', denial });
     assert.equal(res.step, 'no_progress');
     assert.match(res.reason, /no compose_permissions grant maps/);
     assert.equal(fleet.writes().length, 0);
@@ -454,6 +467,132 @@ test('grantWithinPolicy: wildcard coverage, bare tools, chained payloads', () =>
     assert.equal(grantWithinPolicy('Write', REVIEWER_POLICY), false);
     assert.equal(grantWithinPolicy('Bash(git log | sh)', ['Bash(git:*)']), false);
     assert.equal(grantWithinPolicy('mcp__apra-fleet__kb_query', REVIEWER_POLICY), true);
+});
+
+// ---------------------------------------------------------------------------
+// Refused COMPOUND shell calls: parsed with a real shell parser, healed by a
+// run-separately NUDGE (resume the same session) when every simple command is
+// within the composed policy -- never by a loop/compound prefix grant.
+// ---------------------------------------------------------------------------
+
+const FOR_LOOP = 'for r in a b; do bd graph "$r" --json; done';
+// Newline-separated: the provider's suggestion starts with the loop keyword.
+const FOR_LOOP_NL = 'for r in a b\ndo\n  bd graph "$r"\ndone';
+const LOOP_KEYWORD_GRANT_RE = /^Bash\((for|while|until|do)\b/;
+
+function deniedLoop(cmd = FOR_LOOP, sessionId = 'sess-loop') {
+    return new AgentDispatchError('[Workflow Error] Agent dispatch failed (permission_denied): denied', {
+        details: { reason: 'permission_denied', member: 'dev', permissionDenied: bashDenial(cmd), sessionId },
+    });
+}
+
+const allGrantsSent = (fleet) => fleet.writes().flatMap((c) => c.args.grant || []);
+
+test('splitShellCommands: loops, chains, pipelines and substitutions split into simple commands; unknown syntax fails', () => {
+    assert.deepEqual(splitShellCommands(FOR_LOOP), { ok: true, compound: true, commands: ['bd graph "$r" --json'] });
+    assert.deepEqual(splitShellCommands('git status && npm test 2>&1 | tail -5').commands, ['git status', 'npm test', 'tail -5']);
+    assert.deepEqual(splitShellCommands('bd show x'), { ok: true, compound: false, commands: ['bd show x'] });
+    assert.deepEqual(splitShellCommands('echo $(rm -rf /)').commands, ['rm -rf /', 'echo $(rm -rf /)']);
+    assert.equal(splitShellCommands('for x in; do').ok, false);
+    assert.equal(splitShellCommands('f() { ls; }; f').ok, false);
+    assert.equal(splitShellCommands('echo ${x:-$(id)}').ok, false);
+});
+
+test('isCompoundShellGrant: loop and compound prefixes are recognised, simple commands are not', () => {
+    for (const g of ['Bash(for:*)', 'Bash(while:*)', 'Bash(until:*)', 'Bash(do:*)', `Bash(${FOR_LOOP})`, 'Bash((cd x && y))']) {
+        assert.equal(isCompoundShellGrant(g), true, g);
+    }
+    for (const g of ['Bash(bd:*)', 'Bash(format:*)', 'Bash(done-script)', 'Read']) {
+        assert.equal(isCompoundShellGrant(g), false, g);
+    }
+});
+
+test('a refused for-loop whose inner commands are within policy is a nudge: no compose_permissions grant', async () => {
+    const fleet = fakeFleet();
+    const heal = createPermissionDenialHeal({ callTool: fleet.callTool, memberRoles: () => ['doer'] });
+    for (const cmd of [FOR_LOOP, FOR_LOOP_NL]) {
+        const res = await heal({ member: 'dev', role: 'doer', denial: bashDenial(cmd) });
+        assert.equal(res.healed, false, cmd);
+        assert.equal(res.step, 'nudge', cmd);
+        assert.ok(res.nudge && res.nudge.commands.every((c) => c.startsWith('bd graph')), JSON.stringify(res));
+    }
+    assert.deepEqual(fleet.writes(), [], 'a nudge never writes the member config');
+});
+
+test('a loop containing an out-of-policy command is not nudged and is reported as outside policy', async () => {
+    const fleet = fakeFleet();
+    const heal = createPermissionDenialHeal({ callTool: fleet.callTool, memberRoles: () => ['doer'] });
+    const res = await heal({ member: 'dev', role: 'doer', denial: bashDenial('for c in a b; do docker ps $c; done') });
+    assert.equal(res.healed, false);
+    assert.equal(res.step, 'no_progress');
+    assert.ok(!res.nudge);
+    assert.match(res.reason, /outside the 'doer' composed policy/);
+    assert.deepEqual(res.rejectedGrants, ['Bash(docker ps $c)']);
+    assert.deepEqual(fleet.writes(), []);
+});
+
+test('a refused shell call that does not parse stops, naming the parse failure', async () => {
+    const fleet = fakeFleet();
+    const heal = createPermissionDenialHeal({ callTool: fleet.callTool, memberRoles: () => ['doer'] });
+    const res = await heal({ member: 'dev', role: 'doer', denial: bashDenial('for x in; do') });
+    assert.equal(res.step, 'no_progress');
+    assert.match(res.reason, /could not be split into simple commands/);
+    assert.deepEqual(fleet.writes(), []);
+});
+
+test('engine: a nudge resumes the SAME session with the run-separately prompt, uncharged, and the reply is the result', async () => {
+    const fleet = fakeFleet();
+    const { ctx, rec } = createRecordingCtx({ responses: [deniedLoop(), APPROVED], members: { 'plan-reviewer': 'dev' } });
+    ctx.onPermissionDenied = createPermissionDenialHeal({ callTool: fleet.callTool, memberRoles: () => ['doer'] });
+    const outcome = await dispatchRole(ctx, 'plan-reviewer', planReviewOpts());
+    assert.equal(outcome.ok, true);
+    assert.deepEqual(outcome.value, APPROVED);
+    assert.equal(outcome.attempts, 1, 'the nudge is not charged to the ladder');
+    assert.equal(rec.dispatches.length, 2);
+    assert.equal(rec.dispatches[1].options.resume, 'sess-loop');
+    assert.match(rec.dispatches[1].prompt, /Run each command as its own separate tool call/);
+    assert.ok(rec.dispatches[1].prompt.includes('bd graph "$r" --json'));
+    assert.deepEqual(allGrantsSent(fleet), [], 'no compose_permissions grant call');
+    assert.ok(rec.logs.some((l) => /nudge 1 of 2/.test(l)), rec.logs.join('\n'));
+});
+
+test(`engine: after ${PERMISSION_NUDGE_CAP} nudges the next refusal fails with MemberPermissionDeniedError naming the refused call`, async () => {
+    assert.equal(PERMISSION_NUDGE_CAP, 2);
+    const fleet = fakeFleet();
+    const { ctx, rec } = createRecordingCtx({
+        responses: [deniedLoop(), deniedLoop(), deniedLoop(), APPROVED],
+        members: { 'plan-reviewer': 'dev' },
+    });
+    ctx.onPermissionDenied = createPermissionDenialHeal({ callTool: fleet.callTool, memberRoles: () => ['doer'] });
+    await assert.rejects(dispatchRole(ctx, 'plan-reviewer', planReviewOpts()), (err) => {
+        assert.ok(err instanceof MemberPermissionDeniedError, String(err));
+        assert.equal(err.step, 'cap');
+        assert.ok(err.message.includes(FOR_LOOP), err.message);
+        return true;
+    });
+    assert.equal(rec.dispatches.length, 3);
+    assert.deepEqual(allGrantsSent(fleet), []);
+});
+
+test('no scenario ever sends a Bash(for|while|until|do ...) grant to compose_permissions', async () => {
+    const loops = [
+        FOR_LOOP, FOR_LOOP_NL, 'while true; do bd ready; done', 'until bd ready; do sleep 1; done',
+        'for c in a; do docker ps; done', 'for f in *.js\ndo\n  node $f\ndone',
+    ];
+    const fleet = fakeFleet();
+    const heal = createPermissionDenialHeal({ callTool: fleet.callTool, memberRoles: () => ['doer'] });
+    for (const cmd of loops) {
+        await heal({ member: `m-${loops.indexOf(cmd)}`, role: 'doer', denial: bashDenial(cmd) });
+    }
+    // A mixed refusal: a grantable simple call next to a loop.
+    const mixed = bashDenial(FOR_LOOP_NL);
+    mixed.denials = [...mixed.denials, ...bashDenial('npm test').denials];
+    const res = await heal({ member: 'mixed', role: 'doer', denial: mixed });
+    assert.equal(res.healed, true);
+    assert.ok(res.nudge, 'the loop part is still nudged');
+    const sent = allGrantsSent(fleet);
+    assert.deepEqual(sent.filter((g) => LOOP_KEYWORD_GRANT_RE.test(g)), [], JSON.stringify(sent));
+    assert.ok(sent.every((g) => !isCompoundShellGrant(g)), JSON.stringify(sent));
 });
 
 test('permissionLedgerFolder: one folder per member, under a given base or the fleet data dir', () => {

@@ -628,7 +628,7 @@ describe('buildDevManifest resolves hoisted node_modules deps (regression for ap
       // Deps HOISTED to the top-level node_modules (npm's real behavior for a
       // single installed package). Each gets a package.json so collectPackageTree
       // has a file to emit.
-      const HOISTED_DEPS = ['ajv', 'fast-deep-equal', 'fast-uri', 'json-schema-traverse', 'require-from-string', 'undici'];
+      const HOISTED_DEPS = ['ajv', 'fast-deep-equal', 'fast-uri', 'json-schema-traverse', 'require-from-string', 'undici', 'unbash'];
       for (const dep of HOISTED_DEPS) {
         const d = pathReal.join(parent, 'node_modules', dep);
         fsReal.mkdirSync(d, { recursive: true });

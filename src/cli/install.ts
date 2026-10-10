@@ -366,6 +366,10 @@ const WORKFLOW_RUNTIME_NODE_MODULES_DEPS: ReadonlyArray<readonly [string, string
   // types-only peer dependency (no runtime require of it in undici's lib), so
   // it is intentionally not bundled here.
   ['undici', 'undici'],
+  // unbash: the shell parser fleet-sprint's permission heal splits refused
+  // compound shell calls with (packages/apra-fleet-se/fleet-sprint/
+  // shell-commands.mjs). No runtime dependencies of its own.
+  ['unbash', 'unbash'],
 ];
 
 function collectFilesFilteredRec(
