@@ -332,6 +332,63 @@ describe('a lookup that resolves to a different symbol is flagged, never HIGH', 
     expect(payloadOf(out).risk).toBe('HIGH');
   });
 
+  // Real id shapes captured from gitnexus 1.6.12: `gitnexus analyze --index-only`
+  // on a scratch git repo holding src/a.ts (function outer with a local arrow
+  // `pick` and a local function `inner`), src/issue#12/b.ts (function top, class
+  // Svc with method run) and src/@scope/pkg/c.ts (function scoped), then
+  // `gitnexus cypher "MATCH (n) RETURN n.id, n.name, n.filePath"` and
+  // `gitnexus context|impact <name>`. Function-local callables are named
+  // '<name>@<row>:<col>' (gitnexus dist/core/ingestion/workers/callable-id.js).
+  const GN_LOCAL_PICK = { name: 'pick', id: 'Function:src/a.ts:outer.pick@1:2', filePath: 'src/a.ts' };
+  const GN_LOCAL_INNER = { name: 'inner', id: 'Function:src/a.ts:outer.inner@2:2', filePath: 'src/a.ts' };
+  const GN_HASH_DIR_FN = { name: 'top', id: 'Function:src/issue#12/b.ts:top', filePath: 'src/issue#12/b.ts' };
+  const GN_HASH_DIR_METHOD = { name: 'run', id: 'Method:src/issue#12/b.ts:Svc.run#1', filePath: 'src/issue#12/b.ts' };
+  const GN_SCOPE_DIR_FN = { name: 'scoped', id: 'Function:src/@scope/pkg/c.ts:scoped', filePath: 'src/@scope/pkg/c.ts' };
+
+  it('gitnexus 1.6.12 function-local callable ids (name@row:col) resolve to their name and outer.name', () => {
+    for (const sym of [GN_LOCAL_PICK, GN_LOCAL_INNER]) {
+      expect(resolvesToRequested(sym.name, sym), sym.id).toBe(true);
+      expect(resolvesToRequested(`outer.${sym.name}`, sym), sym.id).toBe(true);
+      expect(resolvesToRequested(sym.name, { id: sym.id }), `id-only ${sym.id}`).toBe(true);
+      expect(resolvesToRequested(`outer.${sym.name}`, { id: sym.id }), `id-only ${sym.id}`).toBe(true);
+    }
+    // Still a mismatch: same name, but the id's local callable is another one, or another file.
+    expect(resolvesToRequested('pick', { ...GN_LOCAL_PICK, id: 'Function:src/a.ts:outer.inner@2:2' })).toBe(false);
+    expect(resolvesToRequested('pick', { ...GN_LOCAL_PICK, filePath: 'src/b.ts' })).toBe(false);
+  });
+
+  it('gitnexus 1.6.12 ids with #<digit> in a directory resolve, with and without a #<arity> tag', () => {
+    expect(resolvesToRequested('top', GN_HASH_DIR_FN)).toBe(true);
+    expect(resolvesToRequested('top', { id: GN_HASH_DIR_FN.id })).toBe(true);
+    expect(resolvesToRequested('run', GN_HASH_DIR_METHOD)).toBe(true);
+    expect(resolvesToRequested('Svc.run', GN_HASH_DIR_METHOD)).toBe(true);
+    expect(resolvesToRequested('run', { id: GN_HASH_DIR_METHOD.id })).toBe(true);
+    // A different file or a different method in that directory is still flagged.
+    expect(resolvesToRequested('top', { ...GN_HASH_DIR_FN, filePath: 'src/issue#13/b.ts' })).toBe(false);
+    expect(resolvesToRequested('run', { ...GN_HASH_DIR_METHOD, id: 'Method:src/issue#12/b.ts:Svc.stop#1' })).toBe(false);
+  });
+
+  it('gitnexus 1.6.12 ids under an @scope/ directory still parse as a path', () => {
+    expect(resolvesToRequested('scoped', GN_SCOPE_DIR_FN)).toBe(true);
+    expect(resolvesToRequested('scoped', { ...GN_SCOPE_DIR_FN, filePath: 'src/other/c.ts' })).toBe(false);
+  });
+
+  it('code_impact / code_context on a gitnexus 1.6.12 local-callable or #digit-dir id are not flagged', async () => {
+    const repo = newRepo(READY);
+    mockCallTool.mockResolvedValue(impactResult(GN_LOCAL_PICK));
+    const impact = await handleCodeImpact({ target: 'outer.pick', direction: 'upstream' }, { repo, memberId: 'm' }) as Record<string, unknown>;
+    expect(impact.resolution_mismatch).toBeUndefined();
+    expect(impact.confidence).not.toBe('LOW');
+    expect(payloadOf(impact).risk).toBe('HIGH');
+
+    mockCallTool.mockResolvedValue({ content: [{ type: 'text', text: JSON.stringify({
+      status: 'found', symbol: { uid: GN_HASH_DIR_METHOD.id, name: 'run', kind: 'Method', filePath: GN_HASH_DIR_METHOD.filePath }, incoming: {}, outgoing: {},
+    }) }] });
+    const ctx = await handleCodeContext({ name: 'run' }, { repo, memberId: 'm' }) as Record<string, unknown>;
+    expect(ctx.resolution_mismatch).toBeUndefined();
+    expect(ctx.confidence).not.toBe('LOW');
+  });
+
   it('code_context: a different resolved symbol is flagged', async () => {
     const repo = newRepo(READY);
     mockCallTool.mockResolvedValue(contextResult('claimBeadsBatched'));
