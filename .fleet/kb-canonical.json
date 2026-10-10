@@ -1,9 +1,9 @@
 {
   "version": 3,
   "provenance": {
-    "commit": "8a8f3ce595f3f1616a6ada5f464313b5002b4bfc",
+    "commit": "09bcac6a5fbd2259c435d180c242f8a1604ba8c7",
     "branch": "feat/kb-redesign",
-    "entry_count": 330
+    "entry_count": 331
   },
   "entries": [
     {
@@ -3634,6 +3634,29 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-10-06T12:53:45.919Z"
+    },
+    {
+      "id": "9f1497f0-f5a1-4c68-a053-4afc0ec7335b",
+      "type": "learning",
+      "title": "Every memory-contract fixture must be replayable in the round-trip harness SCENARIO",
+      "summary": "roundtrip-harness.mjs checks that SCENARIO covers every fixture file on disk, and tests/memory-contract-roundtrip.test.ts asserts the exact step count, so a new fixture needs a SCENARIO step and a count bump.",
+      "symbols": [
+        "SCENARIO",
+        "applySetup",
+        "UNTRUSTED_COMMITTED_BIBLE"
+      ],
+      "source_files": [
+        "memory-contract/v1/tests/roundtrip-harness.mjs",
+        "memory-contract/v1/tests/record-fixtures.mjs",
+        "tests/memory-contract-roundtrip.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-10T04:38:11.521Z",
+      "source_file_hashes": {
+        "memory-contract/v1/tests/record-fixtures.mjs": "6971dddd9d37b4ce75be7fd0d6dcbe620d270dc9",
+        "memory-contract/v1/tests/roundtrip-harness.mjs": "954234bac01c5924d34fefad2f386d5bceefe3f4",
+        "tests/memory-contract-roundtrip.test.ts": "e39a1f5a18f917cbe5ba5a614676031e15e0a058"
+      }
     },
     {
       "id": "9fa5c3ec-10b3-44bb-a852-07ca0a796391",
