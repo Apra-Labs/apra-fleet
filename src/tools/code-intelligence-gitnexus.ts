@@ -339,17 +339,29 @@ function endsWithSymbol(qualified: string, simple: string): boolean {
  * go before the id is split. Only the last path segment is scanned for a '~'
  * tag (a '~' in a directory name is not a tag), and a '~' right after '.' or
  * ':' starts a C++ destructor name ('Foo.~Foo'), not a tag.
+ *
+ * The '#<arity>' tag is recognised only in the last path segment and only
+ * where it ends the id or is followed by a '~'/'$' tag, so a directory or
+ * file name holding '#<digit>' ('src/issue#12/b.ts') stays part of the path.
+ *
+ * gitnexus (1.6.x callable-id) also names a function-local callable by its
+ * declaration position, '<name>@<row>:<col>' ('outer.pick@1:2'). That ':' is
+ * not an id separator, so every such position suffix in the symbol segment
+ * is dropped too ('outer.pick'); an '@' in a directory ('src/@scope/pkg') is
+ * untouched.
  */
 function stripIdTags(id: string): string {
-  const arity = id.search(/#\d/);
-  const head = arity >= 0 ? id.slice(0, arity) : id;
-  for (let i = head.lastIndexOf('/') + 1; i < head.length; i++) {
+  const lastSegment = id.lastIndexOf('/') + 1;
+  const arityMatch = /#\d+(?=$|[~$])/.exec(id.slice(lastSegment));
+  let head = arityMatch ? id.slice(0, lastSegment + arityMatch.index) : id;
+  for (let i = lastSegment; i < head.length; i++) {
     if (head[i] !== '~') continue;
     const prev = i > 0 ? head[i - 1] : '';
     if (prev === '.' || prev === ':') continue;
-    return head.slice(0, i);
+    head = head.slice(0, i);
+    break;
   }
-  return head;
+  return head.slice(0, lastSegment) + head.slice(lastSegment).replace(/@\d+:\d+(?=$|[.#])/g, '');
 }
 
 /**

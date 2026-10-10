@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "09bcac6a5fbd2259c435d180c242f8a1604ba8c7",
     "branch": "feat/kb-redesign",
-    "entry_count": 331
+    "entry_count": 335
   },
   "entries": [
     {
@@ -120,7 +120,10 @@
         "scripts/check-ascii-only.mjs"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:12.767Z"
+      "updated_at": "2026-09-29T06:13:12.767Z",
+      "source_file_hashes": {
+        "scripts/check-ascii-only.mjs": "41b4a29f5da8bab14176874fe7ae5e973f7e2d56"
+      }
     },
     {
       "id": "07003cb6-580b-41de-be4a-8827d7dcf240",
@@ -1137,7 +1140,11 @@
         "tests/execute-command-long-running-windows.test.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:13.372Z"
+      "updated_at": "2026-09-29T06:13:13.372Z",
+      "source_file_hashes": {
+        "scripts/repro/win-orphan-pipe.mjs": "2698707c5b977fb7083953d1d739142b9e4fc3ce",
+        "tests/execute-command-long-running-windows.test.ts": "ddee3c2880c7f58b6ad9280b55a5dfe87625aa43"
+      }
     },
     {
       "id": "290fef53-2b36-4221-acdc-810bdd130e57",
@@ -1673,7 +1680,11 @@
         "packages/apra-fleet-se/test/inline-ladder-guard.test.mjs"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:11.114Z"
+      "updated_at": "2026-09-29T06:13:11.114Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/inline-ladder-guard.mjs": "d43d28eca274f09e606df3dc70bacba02898a2bd",
+        "packages/apra-fleet-se/test/inline-ladder-guard.test.mjs": "81a7559f7d4d6ccb30681736eaa00366bd6f5229"
+      }
     },
     {
       "id": "416532bd-32a5-4056-8cb5-03f2219c2870",
@@ -1839,7 +1850,10 @@
         "src/services/knowledge/audn.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-25T22:26:29.791Z"
+      "updated_at": "2026-09-25T22:26:29.791Z",
+      "source_file_hashes": {
+        "src/services/knowledge/audn.ts": "7adfb0501f6fd3d5dd88406ba68d449930df3f96"
+      }
     },
     {
       "id": "4694fdaf-0c7f-4ad3-90b2-85615da53a92",
@@ -1875,7 +1889,12 @@
         "packages/apra-fleet-se/test/dispatch-pin-scanner-comments.test.mjs"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-25T22:26:29.849Z"
+      "updated_at": "2026-09-25T22:26:29.849Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/test/dispatch-pin-scanner-comments.test.mjs": "6aa13eee96d871a52c5786dad1d53d0db6be9db5",
+        "packages/apra-fleet-se/test/helpers/balanced-call-scanner.mjs": "de07cda15900ba863aeebdf1b2d9acc19455dc50",
+        "packages/apra-fleet-se/test/helpers/dispatch-pin-scanner.mjs": "fe9d2557a6994f975c5242f6e1913c25a5581029"
+      }
     },
     {
       "id": "471d7003-f3ab-4fbf-81b4-5557e22bc73a",
@@ -3015,7 +3034,11 @@
         "src/utils/agent-helpers.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-25T22:26:32.715Z"
+      "updated_at": "2026-09-25T22:26:32.715Z",
+      "source_file_hashes": {
+        "src/os/index.ts": "dd0237cc1944595a707bd180cf86719eebfb8a8a",
+        "src/utils/agent-helpers.ts": "bc94af897d048709bc49db8eb9b9aee3805e4d58"
+      }
     },
     {
       "id": "7ec3c926-46e3-42df-ba26-148260f36a61",
@@ -3633,29 +3656,9 @@
         "tests/integration/two-member-installs-one-host.test.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-10-06T12:53:45.919Z"
-    },
-    {
-      "id": "9f1497f0-f5a1-4c68-a053-4afc0ec7335b",
-      "type": "learning",
-      "title": "Every memory-contract fixture must be replayable in the round-trip harness SCENARIO",
-      "summary": "roundtrip-harness.mjs checks that SCENARIO covers every fixture file on disk, and tests/memory-contract-roundtrip.test.ts asserts the exact step count, so a new fixture needs a SCENARIO step and a count bump.",
-      "symbols": [
-        "SCENARIO",
-        "applySetup",
-        "UNTRUSTED_COMMITTED_BIBLE"
-      ],
-      "source_files": [
-        "memory-contract/v1/tests/roundtrip-harness.mjs",
-        "memory-contract/v1/tests/record-fixtures.mjs",
-        "tests/memory-contract-roundtrip.test.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-10-10T04:38:11.521Z",
+      "updated_at": "2026-10-06T12:53:45.919Z",
       "source_file_hashes": {
-        "memory-contract/v1/tests/record-fixtures.mjs": "6971dddd9d37b4ce75be7fd0d6dcbe620d270dc9",
-        "memory-contract/v1/tests/roundtrip-harness.mjs": "954234bac01c5924d34fefad2f386d5bceefe3f4",
-        "tests/memory-contract-roundtrip.test.ts": "e39a1f5a18f917cbe5ba5a614676031e15e0a058"
+        "tests/integration/two-member-installs-one-host.test.ts": "0b8c4353cb6f15d6b78d643f2a0aa59efb9f0b22"
       }
     },
     {
@@ -3981,7 +3984,11 @@
         "packages/apra-fleet-se/apra-pm/agents/_shared/GRAPH-SEMANTICS.md"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:15.483Z"
+      "updated_at": "2026-09-29T06:13:15.483Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/apra-pm/agents/_shared/GRAPH-SEMANTICS.md": "44f2ce4b7d0c8fce54234ab2cae1d546c46acc81",
+        "packages/apra-fleet-se/fleet-sprint/worklists.mjs": "ecd88d89b1408e88449f80a5c073b8c7e2b3f006"
+      }
     },
     {
       "id": "aac032f2-2932-469f-bb60-e33368c9682a",
@@ -4267,7 +4274,12 @@
         "packages/apra-fleet-se/fleet-sprint/dispatch-safety-guard.mjs"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:10.894Z"
+      "updated_at": "2026-09-29T06:13:10.894Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/dispatch-safety-guard.mjs": "a6dc8392c6ea41a1aebbfd7bb5205dc2ba6106a0",
+        "packages/apra-fleet-se/test/helpers/balanced-call-scanner.mjs": "de07cda15900ba863aeebdf1b2d9acc19455dc50",
+        "packages/apra-fleet-se/test/helpers/dispatch-pin-scanner.mjs": "fe9d2557a6994f975c5242f6e1913c25a5581029"
+      }
     },
     {
       "id": "b8a4cb3f-db8e-42ee-a2f0-3691289c98b5",
@@ -4871,7 +4883,11 @@
         "packages/apra-fleet-se/test/parent-notes-staleness.test.mjs"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:12.068Z"
+      "updated_at": "2026-09-29T06:13:12.068Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/parent-notes-staleness.mjs": "aa5830ea8afa67cb1ce918cb5a3d8099ff18207c",
+        "packages/apra-fleet-se/test/parent-notes-staleness.test.mjs": "3e790c9468b31af602b07d0fe1ca9155c2c54b30"
+      }
     },
     {
       "id": "d3ec9cb9-285c-4e61-842b-c81393237c68",
@@ -5429,7 +5445,11 @@
         "tests/execute-command-long-running-windows.test.ts"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:13.437Z"
+      "updated_at": "2026-09-29T06:13:13.437Z",
+      "source_file_hashes": {
+        "scripts/repro/win-orphan-pipe.mjs": "2698707c5b977fb7083953d1d739142b9e4fc3ce",
+        "tests/execute-command-long-running-windows.test.ts": "ddee3c2880c7f58b6ad9280b55a5dfe87625aa43"
+      }
     },
     {
       "id": "e387e211-f7aa-420e-b0f0-f2bcc7aa529f",
@@ -6015,6 +6035,114 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-10-01T23:08:16.929Z"
+    },
+    {
+      "id": "9f1497f0-f5a1-4c68-a053-4afc0ec7335b",
+      "type": "learning",
+      "title": "Every memory-contract fixture must be replayable in the round-trip harness SCENARIO",
+      "summary": "roundtrip-harness.mjs checks that SCENARIO covers every fixture file on disk, and tests/memory-contract-roundtrip.test.ts asserts the exact step count, so a new fixture needs a SCENARIO step and a count bump.",
+      "symbols": [
+        "SCENARIO",
+        "applySetup",
+        "UNTRUSTED_COMMITTED_BIBLE"
+      ],
+      "source_files": [
+        "memory-contract/v1/tests/roundtrip-harness.mjs",
+        "memory-contract/v1/tests/record-fixtures.mjs",
+        "tests/memory-contract-roundtrip.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-10T04:38:11.521Z",
+      "source_file_hashes": {
+        "memory-contract/v1/tests/record-fixtures.mjs": "6971dddd9d37b4ce75be7fd0d6dcbe620d270dc9",
+        "memory-contract/v1/tests/roundtrip-harness.mjs": "954234bac01c5924d34fefad2f386d5bceefe3f4",
+        "tests/memory-contract-roundtrip.test.ts": "e39a1f5a18f917cbe5ba5a614676031e15e0a058"
+      }
+    },
+    {
+      "id": "399f2e9b-c7d1-4c6a-9785-192062276a11",
+      "type": "learning",
+      "title": "apra-fleet-se lint rejects compound 'orchestrator' identifiers in fleet-sprint code",
+      "summary": "test/backlog-role-no-orchestrator-identifiers.test.mjs fails on any compound identifier containing 'orchestrator' (e.g. orchestratorVersion) in fleet-sprint files outside the alias module; use another name such as serverVersion.",
+      "symbols": [
+        "checkInstallCurrency",
+        "isCoreOlder"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/test/backlog-role-no-orchestrator-identifiers.test.mjs",
+        "packages/apra-fleet-se/fleet-sprint/member-init-probe.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-10T04:00:01.345Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/member-init-probe.mjs": "0d4587ee66b94998aa300aaf476b4faa8620f96a",
+        "packages/apra-fleet-se/test/backlog-role-no-orchestrator-identifiers.test.mjs": "02cc51c5452af602a3bd6d620be27558de4fdc5f"
+      }
+    },
+    {
+      "id": "7d7320d0-ed80-4b16-8ac8-c5df806cea55",
+      "type": "knowledge",
+      "title": "member-init install-currency warning is recorded under a non-gating step",
+      "summary": "checkInstallCurrency in member-init-probe.mjs records member-fleet-outdated under step 'install', which is absent from GATING_STEPS, so it never flips verified or changes the primary reason. It is invoked inside the fleetMcp try block, so it must never throw.",
+      "symbols": [
+        "checkInstallCurrency",
+        "finish",
+        "GATING_STEPS"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/member-init-probe.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-10T05:03:35.246Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/member-init-probe.mjs": "0d4587ee66b94998aa300aaf476b4faa8620f96a"
+      }
+    },
+    {
+      "id": "de37548a-89bd-4be4-9f8d-73342745e02d",
+      "type": "learning",
+      "title": "member-call caches a --kb-maintainer capability verdict per member before remote grant calls",
+      "summary": "createMemberCall probes `apra-fleet call --help` before the first kbMaintainer call to a remote member and caches supported/unsupported per member for the factory lifetime. Unsupported throws E-MEMBER-FLEET-TOO-OLD before any send_files; test fakes that answer every `apra-fleet call` command now also see this probe.",
+      "symbols": [
+        "createMemberCall",
+        "classifyKbMaintainerProbe",
+        "buildKbMaintainerProbeCommand",
+        "E_MEMBER_FLEET_TOO_OLD",
+        "bibleAttempt"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/member-call.mjs",
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs",
+        "packages/apra-fleet-se/test/member-call.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-10T04:00:01.244Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs": "70bdf843eed9471dc2dd35c07b66fb48c892d9be",
+        "packages/apra-fleet-se/fleet-sprint/member-call.mjs": "b22634a3154526e04f81effc217edf527968bb39",
+        "packages/apra-fleet-se/test/member-call.test.mjs": "9e8c0ac626c4f84f9d361d61f2f29b667910b31f"
+      }
+    },
+    {
+      "id": "e0e6b14b-ce5e-4152-89a5-34831d336e90",
+      "type": "knowledge",
+      "title": "gitnexus 1.6.x names function-local callables name@row:col in node ids",
+      "summary": "gitnexus 1.6.12 gives a callable nested inside another callable an id like Function:src/a.ts:outer.pick@1:2 (0-based row:col of the declaration). Top-level functions and class methods keep bare ids, and methods carry a #<arity> tag. stripIdTags in code-intelligence-gitnexus.ts strips both before splitting the id on its last single colon.",
+      "symbols": [
+        "stripIdTags",
+        "splitSymbolId",
+        "resolvesToRequested"
+      ],
+      "source_files": [
+        "src/tools/code-intelligence-gitnexus.ts",
+        "tests/code-index-consistency.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-10T05:03:35.145Z",
+      "source_file_hashes": {
+        "src/tools/code-intelligence-gitnexus.ts": "2f7c9a3c0a81b087631279115b104d0c5ea810cc",
+        "tests/code-index-consistency.test.ts": "088987cb271af0c1c7c5c619679b73b53e96dabc"
+      }
     }
   ]
 }

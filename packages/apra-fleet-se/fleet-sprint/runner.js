@@ -1422,6 +1422,15 @@ async function runSprintCycle(context) {
             return memberCaller.listTools(member);
         }
         : undefined;
+    // The member-call --kb-maintainer capability verdict (cached per member on
+    // the same memberCaller the KB writes use): member-init warns about a
+    // remote kb_maintainer whose install cannot open the grant.
+    const kbMaintainerCapability = canMemberCall
+        ? (member) => {
+            memberCaller ??= createMemberCall({ fleetApi: sprintScopedFleetApi({ callTool: args.callTool, log }), log });
+            return typeof memberCaller.kbMaintainerCapability === 'function' ? memberCaller.kbMaintainerCapability(member) : 'inconclusive';
+        }
+        : undefined;
     const memberInitProbe = context.memberInitProbe ?? createMemberInitProbe({
         members: physicalMembers,
         roleMap: validated.roleMap,
@@ -1430,6 +1439,7 @@ async function runSprintCycle(context) {
         listTools: kbListTools,
         fleetApi: sprintState.fleetApi,
         kbMaintainers: () => context.kbMaintainers,
+        kbMaintainerCapability,
         log,
     });
     let memberInitRecords = [];

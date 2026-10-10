@@ -2,6 +2,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { createKbWorkClient, createKbPrimingClient, KB_MAINTAINER_CALL } from '../fleet-sprint/kb.mjs';
 import { selfMaintainer } from './helpers/kb-maintainer-fakes.mjs';
+import { createMemberCall } from '../fleet-sprint/member-call.mjs';
 
 // =============================================================================
 // The kb_maintainer grant: only a member session opened with it is served
@@ -162,5 +163,66 @@ describe('kb_maintainer grant on engine KB writes', () => {
             assert.ok(calls.some((c) => c.tool === 'kb_session_prime'), 'priming itself still runs');
             assert.ok(logs.some((m) => /no base branch -- bible import skipped/.test(m)), logs.join('\n'));
         }
+    });
+});
+
+// A REMOTE maintainer whose install predates --kb-maintainer: the real
+// member-call gate throws E-MEMBER-FLEET-TOO-OLD, and both maintainer paths
+// keep their work queued and log one WARNING naming the member and the fix.
+describe('kb_maintainer writes against a member install that predates --kb-maintainer', () => {
+    const RMAINT = { id: '11111111-2222-4333-8444-555555555555', name: 'maint', type: 'remote' };
+    const OLD_USAGE = 'Usage: apra-fleet call --member <uuid> <tool> [--args-file <path>]';
+    const text = (t) => ({ content: [{ type: 'text', text: t }] });
+
+    /** memberCall: the real gate for maintainer calls (old install), plain fakes otherwise. */
+    function harness({ promoteOk = false } = {}) {
+        const lines = [];
+        const sends = [];
+        const gated = createMemberCall({
+            fleetApi: {
+                sendFiles: async (o) => { sends.push(o); return text('sent'); },
+                executeCommand: async (o) => (o.command === 'apra-fleet call --help' ? text(OLD_USAGE) : text('{}')),
+            },
+            resolveTarget: async () => ({ os: 'linux', shell: '' }),
+        });
+        const memberCall = async (member, tool, args, opts) => {
+            if (tool === 'kb_query') return { l1_results: [{ id: 'e1' }, { id: 'e2' }] };
+            if (tool === 'kb_promote' && promoteOk) return { content: [{ text: '{}' }] };
+            if (opts && opts.kbMaintainer === true) return gated.memberCall(member, tool, args, opts);
+            return { content: [{ text: '{}' }] };
+        };
+        const client = createKbWorkClient({
+            memberCall,
+            maintainers: selfMaintainer(RMAINT, ['maint', 'reviewer-1']),
+            gPull: async () => {},
+            gPush: async () => {},
+            abortRebase: async () => false,
+            bibleBase: async () => BASE,
+            bibleUnpushed: async () => ({ unpushed: false }),
+            log: (l) => lines.push(l),
+        });
+        const warnings = () => lines.filter((l) => /WARNING/.test(l) && /'maint'/.test(l) && /update_member with fleet_install auto/.test(l));
+        return { client, lines, sends, warnings };
+    }
+
+    test('promotion flush: the promote stays queued with one WARNING; no args file is delivered', async () => {
+        const { client, sends, warnings, lines } = harness();
+        await client.promotionCandidates('reviewer-1');
+        await client.apply('reviewer', 'reviewer-1', { kb_promotions: [{ id: 'e1', reason: REASON }] });
+        assert.equal(client.pendingCount(), 1, `the promote is still queued: ${lines.join('\n')}`);
+        assert.equal(warnings().length, 1, lines.join('\n'));
+        assert.equal(sends.length, 0);
+    });
+
+    test('kb_bible_commit: the confirmed ids stay queued across rounds with one WARNING per round', async () => {
+        const { client, sends, warnings, lines } = harness({ promoteOk: true });
+        await client.promotionCandidates('reviewer-1');
+        await client.apply('reviewer', 'reviewer-1', { kb_promotions: [{ id: 'e1', reason: REASON }] });
+        assert.equal(client.pendingCount(), 0);
+        assert.deepEqual(await client.commitRound('review C1'), { committed: 0, pending: 1 });
+        assert.equal(warnings().length, 1, lines.join('\n'));
+        assert.deepEqual(await client.commitRound('review C2'), { committed: 0, pending: 1 }, 'still pending for the next round');
+        assert.equal(warnings().length, 2, lines.join('\n'));
+        assert.equal(sends.length, 0);
     });
 });
