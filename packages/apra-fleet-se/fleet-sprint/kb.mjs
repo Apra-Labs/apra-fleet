@@ -1283,6 +1283,25 @@ export function createKbPrimingClient(opts = {}) {
         const m = typeof opts.maintainers === 'function' ? opts.maintainers() : opts.maintainers;
         return (m && typeof m.maintainerForMember === 'function') ? m : null;
     };
+    /**
+     * True when `target`'s kb_import accepts `ref`: always for a local member
+     * (served by this process); for a remote member only when its tools/list
+     * advertises the property. Any doubt (no listTools, an unreadable answer)
+     * is false.
+     */
+    async function supportsImportRef(target) {
+        if (String(target && (target.type || target.agentType) || '').toLowerCase() === 'local') return true;
+        if (typeof opts.listTools !== 'function') return false;
+        try {
+            const list = parseResult(await opts.listTools(target));
+            const tools = Array.isArray(list) ? list : (list && Array.isArray(list.tools) ? list.tools : []);
+            const imp = tools.find((t) => t && t.name === 'kb_import');
+            const props = imp && imp.inputSchema && imp.inputSchema.properties;
+            return !!(props && typeof props === 'object' && Object.prototype.hasOwnProperty.call(props, 'ref'));
+        } catch {
+            return false;
+        }
+    }
     /** maintainer record id -> entries primed there (a repository is imported and primed once). */
     const primedByTarget = new Map();
     const active = typeof callTool === 'function' && typeof memberCall === 'function' && members.length > 0;
@@ -1435,8 +1454,20 @@ export function createKbPrimingClient(opts = {}) {
                         if (!sel) {
                             imported = parseResult(await memberCall(target, 'kb_import', { skip_sweep: true }));
                         } else if (baseBranch) {
-                            const importArgs = { skip_sweep: true, ref: 'refs/remotes/origin/' + baseBranch };
-                            imported = parseResult(await memberCall(target, 'kb_import', importArgs, KB_MAINTAINER_CALL));
+                            const ref = 'refs/remotes/origin/' + baseBranch;
+                            // A REMOTE maintainer runs its own apra-fleet: an
+                            // older one drops the unknown `ref` key and would
+                            // grant-import (and trust) its WORK-TREE bible. Fail
+                            // closed: import only when its kb_import advertises
+                            // `ref`. A local member runs in this server.
+                            if (await supportsImportRef(target)) {
+                                imported = parseResult(await memberCall(target, 'kb_import', { skip_sweep: true, ref }, KB_MAINTAINER_CALL));
+                                if (imported && imported.bible_source !== ref) {
+                                    log(`[kb-prime] WARN kb_import on '${target.name || member}' did not report reading ${ref} (bible_source ${JSON.stringify(imported.bible_source)}) -- upgrade apra-fleet on that member`);
+                                }
+                            } else {
+                                log(`[kb-prime] WARN the apra-fleet on '${target.name || member}' has no kb_import 'ref' (older version) -- bible import skipped; upgrade apra-fleet on that member`);
+                            }
                         } else {
                             log(`[kb-prime] no base branch -- bible import skipped for '${member}' (the kb_maintainer imports only the base branch's committed bible)`);
                         }

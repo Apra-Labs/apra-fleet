@@ -137,8 +137,14 @@ function buildCallTool(fleet, executeCommand) {
             for (const p of args.local_paths || []) lastArgs = JSON.parse(fs.readFileSync(p, 'utf8'));
             return { content: [{ type: 'text', text: 'sent' }] };
         }
+        if (name === 'execute_command' && typeof args.command === 'string' && args.command.includes('apra-fleet call') && args.command.includes('--list-tools')) {
+            // A current member server: its kb_import advertises `ref` (the
+            // engine's version gate before the priming grant import).
+            fleet.events.push({ type: 'list-tools' });
+            return { content: [{ type: 'text', text: JSON.stringify({ tools: [{ name: 'kb_import', inputSchema: { type: 'object', properties: { path: { type: 'string' }, ref: { type: 'string' }, skip_sweep: { type: 'boolean' } } } }] }) }] };
+        }
         if (name === 'execute_command' && typeof args.command === 'string' && args.command.includes('apra-fleet call')) {
-            const m = /apra-fleet call --member (\S+) (?:--kb-maintainer )?(\w+) --args-file/.exec(args.command);
+            const m =/apra-fleet call --member (\S+) (?:--kb-maintainer )?(\w+) --args-file/.exec(args.command);
             const id = m && m[1];
             const tool = m && m[2];
             const member = byId.get(id);

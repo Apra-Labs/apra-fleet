@@ -1460,6 +1460,8 @@ async function runSprintCycle(context) {
         // above); its bible import reads the base branch's committed bible.
         maintainers: () => context.kbMaintainers,
         baseBranch: validated.baseBranch,
+        // A remote maintainer's kb_import must advertise `ref` (version gate).
+        listTools: kbListTools,
         log,
     });
     await kbPriming.primeAll();
