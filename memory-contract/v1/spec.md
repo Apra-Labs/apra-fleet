@@ -200,12 +200,25 @@ A MEMBER session is served an explicit tool list
   so priming is unchanged. When a work-tree bible exists but has no committed
   copy (unborn HEAD, untracked bible, git unavailable) the call fails with
   `E-KB-MAINTAINER-REQUIRED` and nothing is imported; with no bible at all it
-  fails with the plain bible-not-found error. Residual: a member that can
-  commit can still put a hand-made bible at HEAD with a LOCAL commit and import
-  it at once -- the CONFIRMED rows land in the per-repo DB immediately, and
-  review sees the change only once the commit is pushed (or in the
-  maintainer's next bible diff). FULL sessions and the kb_maintainer session
-  are unchanged (they read the named or work-tree file).
+  fails with the plain bible-not-found error. Committed is not trusted on its
+  own: the member controls its own `.git`, so it could commit a hand-made
+  bible locally, import it, and reset the commit away with nothing ever
+  pushed. The import is therefore gated on a trust anchor OUTSIDE the
+  checkout: the hub-side per-repo KB records the git blob id of every bible
+  the maintainer side wrote or imported (`kb_bible_commit`, and `kb_import`
+  from a FULL session or the kb_maintainer session; a member session without
+  the grant never records). When the committed bible's blob id is not
+  recorded the call fails with `E-KB-MAINTAINER-REQUIRED` (the message names
+  the unrecorded blob id) and nothing is imported -- a refusal, not a clamp,
+  so no row is written that could later shadow the genuine entry's id. No
+  success-response field changes. Bootstrap: a clone whose bible was published
+  by `kb_bible_commit` on this hub imports normally; a bible this hub never
+  saw (fresh hub, bible merged from elsewhere) is seeded by the engine's
+  sprint-start priming, which imports it through the kb_maintainer session.
+  Residual: whatever bible the kb_maintainer's own checkout holds at a grant
+  import is trusted, as for every other kb_maintainer write. FULL sessions
+  and the kb_maintainer session are otherwise unchanged (they read the named
+  or work-tree file).
 - `kb_invalidate` retires entries (`ids` discards them; `files` marks
   context-cache entries invalidated), and `kb_bible_commit` removes retired
   entries from the bible, so in a member session WITHOUT the grant neither

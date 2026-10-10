@@ -722,7 +722,13 @@
  *   then (and without path) such a session imports its own bible only as
  *   committed at HEAD, never the work-tree file; the result adds
  *   bible_source "HEAD" and worktree_ignored, and with no committed copy the
- *   import fails with E-KB-MAINTAINER-REQUIRED.
+ *   import fails with E-KB-MAINTAINER-REQUIRED. A committed copy is trusted
+ *   only when the maintainer side recorded its git blob id in the hub-side KB
+ *   (kb_bible_commit, or kb_import from the kb_maintainer or a FULL session,
+ *   records every bible it writes or imports); a bible committed only in the
+ *   member's own checkout fails with E-KB-MAINTAINER-REQUIRED (the message
+ *   names the unrecorded blob id) and nothing is imported. The success result
+ *   shape is unchanged.
  */
 
 /**

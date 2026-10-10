@@ -21,6 +21,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 
 import { registerAllTools } from '../src/services/tool-registry.js';
@@ -49,7 +50,7 @@ const ROSTER: string[] = [
 ];
 
 interface SetupOp {
-  op: 'write' | 'delete';
+  op: 'write' | 'delete' | 'commit';
   repo: string;
   rel: string;
   contents?: string;
@@ -138,6 +139,10 @@ class SqliteContractProvider {
         fs.writeFileSync(target, op.contents ?? '', 'utf-8');
       } else if (op.op === 'delete') {
         fs.rmSync(target, { force: true });
+      } else if (op.op === 'commit') {
+        const git = (args: string[]) => execFileSync('git', args, { cwd: repoDir, stdio: ['ignore', 'pipe', 'pipe'] });
+        git(['add', '--', op.rel]);
+        git(['-c', 'commit.gpgsign=false', 'commit', '-q', '--no-verify', '-m', 'setup: ' + op.rel, '--', op.rel]);
       } else {
         throw new Error(`unknown setup op "${op.op}"`);
       }
@@ -183,7 +188,7 @@ describe('memory-contract/v1 round trip (sqlite provider)', () => {
   it('dispatched every committed fixture live (no case silently skipped)', () => {
     const undispatched = report.steps.filter((s) => !s.dispatched).map((s) => s.key);
     expect(undispatched).toEqual([]);
-    expect(report.steps.length).toBe(90); // one SCENARIO step per committed fixture: 89 (49 responses + 40 thrown refusals)
+    expect(report.steps.length).toBe(91); // one SCENARIO step per committed fixture (91 fixture files on disk)
   });
 
   it('covers all 26 inventoried tools', () => {

@@ -100,6 +100,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 // ---------------------------------------------------------------------------
@@ -119,7 +120,7 @@ const FIXTURES_DIR = path.join(REPO_ROOT, 'memory-contract', 'v1', 'fixtures');
 
 // Synthetic scratch repos -- no real BluSKY code, credentials, or customer
 // text anywhere below. repoA/repoB are deliberately NOT git repos (no .git).
-const { ENVIRONMENT, RECORDED_REMOTE_A, RECORDED_REMOTE_B, RECORDED_REMOTE_IMPORT_REJECTED, RECORDED_REMOTE_BARE } =
+const { ENVIRONMENT, RECORDED_REMOTE_A, RECORDED_REMOTE_B, RECORDED_REMOTE_IMPORT_REJECTED, RECORDED_REMOTE_BARE, UNTRUSTED_COMMITTED_BIBLE } =
   await import(pathToFileURL(path.join(HERE, 'roundtrip-harness.mjs')).href);
 const { materializeSessionWorld } = await import(pathToFileURL(path.join(HERE, 'session-world.mjs')).href);
 const { registerAllTools } = await import(pathToFileURL(path.join(DIST, 'services', 'tool-registry.js')).href);
@@ -723,6 +724,18 @@ await recordRefusal('kb_import', 'refusal-bible-wrong-shape', {
 await withSession('PLAIN_B', () => recordRefusal('kb_import', 'refusal-kb-maintainer-required', {
   path: bibleFromA,
 }, 'E-KB-MAINTAINER-REQUIRED'));
+
+// E-KB-MAINTAINER-REQUIRED (trust anchor): a bible committed only in the
+// member's own checkout, whose blob id the maintainer side never recorded, is
+// refused for a member session without the grant; nothing imported.
+{
+  fs.mkdirSync(path.join(repoB, '.fleet'), { recursive: true });
+  fs.writeFileSync(path.join(repoB, '.fleet', 'kb-canonical.json'), UNTRUSTED_COMMITTED_BIBLE, 'utf-8');
+  const git = (args) => execFileSync('git', args, { cwd: repoB, stdio: ['ignore', 'pipe', 'pipe'] });
+  git(['add', '--', '.fleet/kb-canonical.json']);
+  git(['-c', 'commit.gpgsign=false', 'commit', '-q', '--no-verify', '-m', 'setup: .fleet/kb-canonical.json', '--', '.fleet/kb-canonical.json']);
+  await withSession('PLAIN_B', () => recordRefusal('kb_import', 'refusal-untrusted-committed-bible', {}, 'E-KB-MAINTAINER-REQUIRED'));
+}
 
 // -- admission group (all 3 codes) ----------------------------------------
 await recordRefusal('kb_capture', 'refusal-no-basis', {

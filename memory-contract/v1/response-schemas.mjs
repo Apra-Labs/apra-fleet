@@ -186,6 +186,9 @@ const KB_RESPONSE_BODIES = {
     }),
     // Present exactly for a member session without the kb_maintainer grant
     // importing its own bible: read as committed at HEAD (spec.md section 2.5a).
+    // Such an import succeeds only for a committed bible whose blob id the
+    // maintainer side recorded; otherwise it is refused with
+    // E-KB-MAINTAINER-REQUIRED, so no field here reports the trust check.
     bible_source: z.literal('HEAD').optional(),
     worktree_ignored: z.boolean().optional(),
   }),

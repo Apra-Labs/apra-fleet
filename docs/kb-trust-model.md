@@ -71,11 +71,38 @@ retire CONFIRMED entries:
 - `kb_import` with no path, or with the own path, reads the bible as committed
   at `HEAD`, never the member-writable work-tree file; when a work-tree bible
   has no committed copy it imports nothing (`E-KB-MAINTAINER-REQUIRED`).
+- Committed alone is not trusted: the member controls its own `.git`, so it
+  could commit a hand-made bible locally, import it, and `git reset` the commit
+  away with nothing ever pushed for review to see. The no-path import is
+  therefore gated on a trust anchor outside the checkout. The hub-side
+  per-repo KB database (table `trusted_bible_blobs`) records the git blob id
+  of every bible the maintainer side writes or imports: `kb_bible_commit`, and
+  `kb_import` from a FULL session or the kb_maintainer session. A member
+  session without the grant only reads that record. When the blob id of the
+  committed bible is not recorded, the import fails with
+  `E-KB-MAINTAINER-REQUIRED` naming the unrecorded blob, and nothing is
+  imported. It refuses rather than clamping CONFIRMED entries to a lower tier,
+  because a clamped row would occupy its id and the import's id-exists skip
+  would then keep the genuine CONFIRMED entry out later.
+
+### Bootstrap
+
+- A clone (including a fresh one) whose bible was published by the
+  kb_maintainer's `kb_bible_commit` on this hub carries a recorded blob id and
+  imports normally.
+- A bible this hub has never seen (a fresh hub, or a bible merged in from
+  another hub) is seeded by the engine's sprint-start priming: it imports the
+  bible through the repository's kb_maintainer session, which holds the grant,
+  so the import records the blob id. Launch alignment has already reset the
+  kb_maintainer's checkout to the pushed branch at that point, so the bible
+  seeded is the pushed one.
 
 ### Remaining exposure
 
-A member that can commit can still put a hand-made bible at `HEAD` with a
-local commit and import it at once: the CONFIRMED rows land in the shared
-per-repo DB immediately, and review sees the change only once the commit is
-pushed (or in the maintainer's next bible diff). Pinning the import to the
-last bible commit made by the kb_maintainer would close this.
+Whatever bible the kb_maintainer's own checkout holds at a grant import (for
+example a reused local sprint branch carrying local-only commits) is trusted,
+exactly as every other kb_maintainer write already is. A member session
+without the grant can no longer get a bible imported at CONFIRMED that the
+maintainer side did not write or import. A local process with access to the
+hub (which can open a FULL session or write the database file) is outside
+this model, as for the grant itself.

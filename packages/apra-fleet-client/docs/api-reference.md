@@ -550,6 +550,17 @@ session's `kb_query` / `kb_session_prime` / `kb_stats`), `E-MEMBER-VIEW-REMOTE`
 and `E-BIBLE-BASIS-NOT-GIT` (`kb_export` / `kb_bible_commit` in a folder that is
 not a git work tree).
 
+`kb_import` in a member session without the kb_maintainer grant fails with
+`E-KB-MAINTAINER-REQUIRED` and imports nothing when: it names an explicit
+`path` other than its own `.fleet/kb-canonical.json`; the own bible has no
+committed copy at `HEAD`; or the committed bible is one the maintainer side
+never wrote or imported. The last is the trust anchor: the hub-side per-repo
+KB records the git blob id of every bible `kb_bible_commit` writes and every
+bible `kb_import` imports from the kb_maintainer session or a FULL session,
+and a bible committed only in the member's own checkout is not on that record
+(the error message names the unrecorded blob id). A successful no-grant import
+returns the usual result plus `bible_source: "HEAD"` and `worktree_ignored`.
+
 #### `kbExport(options?: KbExportOptions)`
 
 Calls `kb_export` -- exports the calling session's CONFIRMED KB entries to the
@@ -581,6 +592,10 @@ CONFIRMED id citing no source file is skipped with its own reason
 entry set (nothing merged, nothing removed) makes no commit. Re-running with the same ids after resetting to a
 newer HEAD re-merges, so a rejected push can be retried without a manual
 merge. Result JSON: `{path, merged, skipped, removed, entry_count, committed}`.
+Called from the kb_maintainer session or a FULL session, it also records the
+git blob id of the bible it wrote as trusted in the hub-side KB, which is what
+lets a member session without the grant `kb_import` that bible once it is
+committed in its checkout (a call from such a member session records nothing).
 
 #### `composePermissions(options: ComposePermissionsOptions)`
 
