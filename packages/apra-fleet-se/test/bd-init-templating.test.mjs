@@ -122,3 +122,71 @@ test(
         }
     },
 );
+
+// A real-mode bd spawn must ignore an ambient BEADS_DIR: bd resolves BEADS_DIR
+// before cwd, so without stripping it a templated clone would silently read
+// and write an operator's unrelated workspace. This case makes the scenario
+// deterministic on any host by exporting BEADS_DIR at a decoy workspace.
+test(
+    'real-mode bd spawns ignore an ambient BEADS_DIR pointing at a decoy workspace',
+    { skip: BD_SKIP, timeout: scaledTimeout(90000) },
+    async () => {
+        const prevMode = process.env.APRA_FLEET_BD_MOCK;
+        const prevTemplateKey = process.env.APRA_FLEET_BD_TEMPLATE_KEY;
+        const prevBeadsDir = process.env.BEADS_DIR;
+        const prevBeadsDb = process.env.BEADS_DB;
+        const suffix = `${Date.now()}-${process.pid}`;
+        const decoyTitle = 'Decoy-workspace-only bead';
+        const decoyDir = path.join(os.tmpdir(), `apra-fleet-bd-beadsdir-decoy-${suffix}`);
+        const scratchDir = path.join(os.tmpdir(), `apra-fleet-bd-beadsdir-scratch-${suffix}`);
+        process.env.APRA_FLEET_BD_MOCK = 'real';
+        process.env.APRA_FLEET_BD_TEMPLATE_KEY = `beadsdir-decoy-test-${suffix}`;
+        const templateDir = bdInitTemplatePath();
+        // The decoy is read outside runCmd (no caches), with the redirect vars removed.
+        const readDecoy = () => {
+            const env = { ...process.env };
+            delete env.BEADS_DIR;
+            delete env.BEADS_DB;
+            const res = spawnSync('bd', ['list', '--json'], { cwd: decoyDir, env, encoding: 'utf8' });
+            assert.equal(res.status, 0, `bd list --json in decoy should succeed, stderr=${res.stderr}`);
+            return JSON.parse(res.stdout || '[]');
+        };
+        try {
+            delete process.env.BEADS_DIR;
+            delete process.env.BEADS_DB;
+            await fsp.mkdir(decoyDir, { recursive: true });
+            await fsp.mkdir(scratchDir, { recursive: true });
+            const decoyInit = await runCmd('bd init', decoyDir);
+            assert.equal(decoyInit.err, null, `decoy bd init should succeed, stderr=${decoyInit.stderr}`);
+            const decoyCreate = await runCmd(`bd create "${decoyTitle}" --silent`, decoyDir);
+            assert.equal(decoyCreate.err, null, `decoy bd create should succeed, stderr=${decoyCreate.stderr}`);
+            assert.equal(readDecoy().length, 1, 'decoy should start with exactly one bead');
+
+            process.env.BEADS_DIR = path.join(decoyDir, '.beads');
+
+            const initRes = await runCmd('bd init', scratchDir);
+            assert.equal(initRes.err, null, `scratch bd init should succeed, stderr=${initRes.stderr}`);
+            const listRes = await runCmd('bd list --json', scratchDir);
+            assert.equal(listRes.err, null, `scratch bd list should succeed, stderr=${listRes.stderr}`);
+            assert.deepEqual(JSON.parse(listRes.stdout || '[]'), [], 'scratch clone must not show the decoy bead');
+            const createRes = await runCmd('bd create "Scratch-clone bead" --silent', scratchDir);
+            assert.equal(createRes.err, null, `scratch bd create should succeed, stderr=${createRes.stderr}`);
+
+            const decoyIssues = readDecoy();
+            assert.equal(decoyIssues.length, 1, 'nothing may leak into the decoy workspace');
+            assert.equal(decoyIssues[0].title, decoyTitle);
+        } finally {
+            const restore = (name, prev) => {
+                if (prev === undefined) delete process.env[name];
+                else process.env[name] = prev;
+            };
+            restore('APRA_FLEET_BD_MOCK', prevMode);
+            restore('APRA_FLEET_BD_TEMPLATE_KEY', prevTemplateKey);
+            restore('BEADS_DIR', prevBeadsDir);
+            restore('BEADS_DB', prevBeadsDb);
+            for (const dir of [decoyDir, scratchDir, templateDir]) {
+                await fsp.rm(dir, { recursive: true, force: true }).catch(() => {});
+            }
+        }
+    },
+);

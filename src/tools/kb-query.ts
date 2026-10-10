@@ -63,7 +63,10 @@ export async function kbQuery(input: KbQueryInput, anchor?: KbAnchor): Promise<s
   // the confidence filter, so it is answered from the view too.
   // An explicit INFERRED/UNVERIFIED request in a MEMBER session goes to the
   // per-repo DB and sees only the caller's own captures (ownerTag).
-  const { providers, ownerTag } = await getSelfReadKb(anchor, input.flagged_only ? undefined : input.confidence);
+  // Under an http project provider (serverRecall) a MEMBER read of any tier
+  // goes to the server with no ownerTag, so the SQLite guard below is skipped.
+  const { providers, ownerTag } = await getSelfReadKb(
+    anchor, input.flagged_only ? undefined : input.confidence, { serverRecall: true });
   if (ownerTag !== undefined) requireSqliteProject(providers.project, 'kb_query');
 
   if (input.flagged_only) {

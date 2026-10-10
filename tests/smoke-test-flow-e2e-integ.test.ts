@@ -40,9 +40,16 @@ import { execFileSync, spawnSync } from 'node:child_process';
 // informational" rather than "push origin in Setup" (the latter breaks
 // `## Reset`'s later plain re-init). This suite pins the corrected,
 // now-actually-passing guard behavior.
+// bd resolves BEADS_DIR before it looks at cwd, so an ambient BEADS_DIR makes
+// every bd child act on the unrelated ambient database instead of the temp toy
+// repo (e.g. 'bd init' aborts with 'Found existing Dolt database'). Every child
+// that may run bd gets this env; process.env itself is never mutated.
+const BD_CHILD_ENV: NodeJS.ProcessEnv = { ...process.env };
+delete BD_CHILD_ENV.BEADS_DIR;
+
 const BD_AVAILABLE = (() => {
   try {
-    execFileSync('bd', ['--version'], { encoding: 'utf-8' });
+    execFileSync('bd', ['--version'], { encoding: 'utf-8', env: BD_CHILD_ENV });
     return true;
   } catch {
     return false;
@@ -65,7 +72,7 @@ function git(cwd: string, args: string[]): string {
 }
 
 function bd(cwd: string, args: string[]): string {
-  return execFileSync('bd', args, { cwd, encoding: 'utf-8' });
+  return execFileSync('bd', args, { cwd, encoding: 'utf-8', env: BD_CHILD_ENV });
 }
 
 // Real, non-mocked command() for fleet-sprint/runner.js's doltPushAfter /
@@ -77,7 +84,7 @@ function makeRealCommand(cwd: string) {
   return async (cmd: string) => {
     const [bin, ...args] = cmd.split(' ');
     try {
-      const output = execFileSync(bin, args, { cwd, encoding: 'utf-8' });
+      const output = execFileSync(bin, args, { cwd, encoding: 'utf-8', env: BD_CHILD_ENV });
       return { ok: true, output, error: null };
     } catch (err: unknown) {
       const e = err as { stdout?: string; stderr?: string; message: string };
@@ -230,7 +237,7 @@ describe.skipIf(!BD_AVAILABLE)(
     });
 
     function runGuard(repoPath: string, sandboxPath: string): { status: number; stdout: string; stderr: string } {
-      const res = spawnSync(process.execPath, [CHECK_SCRIPT_PATH, repoPath, sandboxPath], { encoding: 'utf-8' });
+      const res = spawnSync(process.execPath, [CHECK_SCRIPT_PATH, repoPath, sandboxPath], { encoding: 'utf-8', env: BD_CHILD_ENV });
       return { status: res.status ?? -1, stdout: res.stdout, stderr: res.stderr };
     }
 

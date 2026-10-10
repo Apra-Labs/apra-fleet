@@ -642,6 +642,19 @@
           "retryable": false,
           "remediation": "Run from a folder inside a git work tree with a resolvable HEAD.",
           "group_decision": "PROVIDER_INTERNAL, not validation: the request is well formed; the environment cannot supply the git basis."
+        },
+        {
+          "$anchor": "E-KB-HTTP-UNSUPPORTED",
+          "code": "E-KB-HTTP-UNSUPPORTED",
+          "meaning": "kb_invalidate with ids (id-level discard) while the project KB is backed by the http provider, which has no discard operation. Nothing is discarded, on the remote or in the local fallback store.",
+          "raising_methods": [
+            { "method_id": "P-5", "member": "invalidate", "tool": "kb_invalidate", "position": "provider" }
+          ],
+          "source": "src/services/knowledge/http-provider.ts (KbHttpUnsupportedError), raised by HttpKbProvider.discard",
+          "surfaced": "thrown",
+          "retryable": false,
+          "remediation": "Discard by id from a session whose KB is the local SQLite provider (kb_setup provider sqlite), or use kb_invalidate with files instead.",
+          "group_decision": "PROVIDER_INTERNAL, not validation: the request is well formed; the configured provider cannot serve this operation at all."
         }
       ]
     }

@@ -42,6 +42,41 @@ function isConnectionError(err: unknown): boolean {
   );
 }
 
+/**
+ * Human-readable text for an error-status response body. Handles
+ * problem+json (title/detail/code), the plain {error} shape, and bodies
+ * that are not JSON at all (surfaced verbatim, never as a parse failure).
+ */
+function describeErrorBody(data: string): string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(data);
+  } catch {
+    return data.trim() || '(empty response body)';
+  }
+  if (parsed === null || typeof parsed !== 'object') return data;
+  const body = parsed as Record<string, unknown>;
+  if (typeof body.error === 'string') return body.error;
+  const parts = [body.title, body.code, body.detail]
+    .filter((v): v is string => typeof v === 'string' && v.length > 0);
+  return parts.length > 0 ? parts.join(' - ') : data;
+}
+
+/**
+ * Typed refusal for an operation the http KB provider does not support (and
+ * deliberately does not emulate through the local fallback store).
+ */
+export class KbHttpUnsupportedError extends Error {
+  readonly code = 'E-KB-HTTP-UNSUPPORTED';
+  constructor(operation: string) {
+    super(
+      `E-KB-HTTP-UNSUPPORTED: ${operation} is not supported by the http KB provider; nothing was discarded. `
+      + 'Remediation: run it against a local SQLite KB (kb_setup provider sqlite), or use kb_invalidate with files.',
+    );
+    this.name = 'KbHttpUnsupportedError';
+  }
+}
+
 export class HttpKbProvider implements MemoryProvider {
   private baseUrl: string;
   private readonly token: string;
@@ -113,17 +148,15 @@ export class HttpKbProvider implements MemoryProvider {
         let data = '';
         res.on('data', (chunk: Buffer) => { data += chunk.toString(); });
         res.on('end', () => {
+          const status = res.statusCode;
+          if (status !== undefined && status >= 400) {
+            const httpErr = new Error(`HTTP ${status}: ${describeErrorBody(data)}`) as NodeJS.ErrnoException;
+            httpErr.code = `HTTP_${status}`;
+            reject(httpErr);
+            return;
+          }
           try {
-            const parsed = JSON.parse(data);
-            if (res.statusCode !== undefined && res.statusCode >= 400) {
-              const httpErr = new Error(
-                `HTTP ${res.statusCode}: ${(parsed as Record<string, string>).error ?? data}`
-              ) as NodeJS.ErrnoException;
-              httpErr.code = `HTTP_${res.statusCode}`;
-              reject(httpErr);
-            } else {
-              resolve(parsed as T);
-            }
+            resolve(JSON.parse(data) as T);
           } catch {
             reject(new Error(`Invalid JSON response from KB server`));
           }
@@ -222,7 +255,7 @@ export class HttpKbProvider implements MemoryProvider {
   }
 
   async discard(_ids: string[], _opts?: RetireOptions): Promise<DiscardResult> {
-    throw new Error('kb_invalidate {ids} (id-level discard) is not supported by the HTTP KB provider');
+    throw new KbHttpUnsupportedError('kb_invalidate {ids} (id-level discard)');
   }
 
   async invalidate(files: string[]): Promise<{ invalidated: number }> {
@@ -278,11 +311,39 @@ export class HttpKbProvider implements MemoryProvider {
     }
   }
 
+  // Remote-only: the id exists on the server, so a connection error is
+  // surfaced instead of falling back to the local store or queueing.
   async promote(
     id: string,
     reason?: string
   ): Promise<{ id: string; confidence_before: Confidence; confidence_after: Confidence }> {
-    return this.fallback.promote(id, reason);
+    const body: { id: string; reason?: string } = { id };
+    if (reason !== undefined) body.reason = reason;
+    let result: Record<string, unknown>;
+    try {
+      result = await this.rawRequest<Record<string, unknown>>('POST', '/api/kb/promote', body);
+    } catch (err) {
+      if (isConnectionError(err)) {
+        throw new Error(
+          `kb_promote failed: KB server at ${this.baseUrl} is unreachable (${(err as Error).message}); `
+          + 'nothing was promoted and no offline fallback is used for promote.',
+        );
+      }
+      throw err;
+    }
+    const before = result?.previous_confidence ?? result?.confidence_before;
+    const after = result?.new_confidence ?? result?.confidence_after;
+    if (typeof before !== 'string' || typeof after !== 'string') {
+      throw new Error(
+        `kb_promote: KB server at ${this.baseUrl} returned a promote response without `
+        + `previous_confidence/new_confidence: ${JSON.stringify(result)}`,
+      );
+    }
+    return {
+      id: typeof result.id === 'string' ? result.id : id,
+      confidence_before: before as Confidence,
+      confidence_after: after as Confidence,
+    };
   }
 
   async sync(_opts?: SyncOptions): Promise<SyncResult> {

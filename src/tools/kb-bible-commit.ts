@@ -6,7 +6,7 @@ import { getKbProviders } from '../services/knowledge/kb-providers.js';
 import { resolveKbAnchor, type KbAnchor } from '../services/knowledge/kb-self.js';
 import { filterProjectBibleCandidates, hasCarriedBasis, selectLegacyBibleBackfill } from '../services/knowledge/bible-basis-filter.js';
 import { logWarn } from '../utils/log-helpers.js';
-import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
+import { isSqliteProject } from '../services/knowledge/require-sqlite-project.js';
 import { bibleBytesBlobId } from '../services/knowledge/bible-blob-id.js';
 import { memberLacksKbMaintainer } from '../services/knowledge/kb-maintainer-grant.js';
 import {
@@ -110,7 +110,14 @@ export interface KbBibleCommitResult {
   /** How many existing bible entries gained source_file_hashes (legacy backfill). */
   backfilled: number;
   committed: boolean;
+  /** True when the call was skipped because the project KB is not SQLite-backed (http). */
+  bible_skipped?: true;
+  /** Why the call was skipped; present only with bible_skipped. */
+  reason?: string;
 }
+
+/** Reason reported when kb_bible_commit is skipped under the http KB provider. */
+export const KB_BIBLE_COMMIT_HTTP_SKIP_REASON = 'bible commit is not supported over the http KB provider';
 
 export async function kbBibleCommit(input: KbBibleCommitInput, anchor?: KbAnchor): Promise<string> {
   const resolved = resolveKbAnchor(anchor);
@@ -128,7 +135,21 @@ export async function kbBibleCommit(input: KbBibleCommitInput, anchor?: KbAnchor
   }
 
   const providers = await getKbProviders(repoPath, resolved.remoteUrl);
-  const project = requireSqliteProject(providers.project, 'kb_bible_commit');
+  const project = providers.project;
+  if (!isSqliteProject(project)) {
+    // The bible is built from the local SQLite store; over http there is
+    // nothing to merge. Skip before any KB read, write, or git commit. The
+    // bible file was only read leniently above (readBibleEntries never
+    // throws): entry_count reports its size when parseable, and an unparseable
+    // file is logged, never thrown over -- the skip is provider-wide.
+    if (existingAtStart === null && fs.existsSync(outPath)) {
+      logWarn('kb_bible_commit', 'bible file is not readable, reporting entry_count 0 under the http KB provider: ' + outPath);
+    }
+    return done({
+      merged: [], skipped: [], removed: [], entry_count: existingAtStart?.length ?? 0, backfilled: 0, committed: false,
+      bible_skipped: true, reason: KB_BIBLE_COMMIT_HTTP_SKIP_REASON,
+    });
+  }
   const confirmedEntries = await project.list({ confidence: ['CONFIRMED'] });
   const requestedSet = new Set(requested);
   // ONE admission rule with kb_export (scope=project): a CONFIRMED id is

@@ -71,10 +71,14 @@ export function bdMode() {
 
 // The original mock-sprint-harness runCmd body, unchanged: resolve (never
 // reject) with { err, stdout, stderr } from a real child process.
-// `stripBeadsDir`: drop an ambient BEADS_DIR so bd resolves `cwd` only.
-export const execCmd = (cmd, cwd, { stripBeadsDir = false } = {}) => new Promise((resolve) => {
+// Every bd command is spawned WITHOUT the variables that redirect bd away
+// from `cwd` (bd resolves BEADS_DIR, and the legacy BEADS_DB, before cwd), so
+// an operator's ambient workspace can never shadow a test clone. Non-bd
+// commands keep the ambient env. process.env itself is never mutated.
+const BD_REDIRECT_ENV_VARS = ['BEADS_DIR', 'BEADS_DB'];
+export const execCmd = (cmd, cwd) => new Promise((resolve) => {
     const env = { ...process.env, BD_ALLOW_REMOTE_MIGRATE: '1' };
-    if (stripBeadsDir) delete env.BEADS_DIR;
+    if (isBdCommand(cmd)) for (const name of BD_REDIRECT_ENV_VARS) delete env[name];
     exec(cmd, { cwd, windowsHide: true, env }, (err, stdout, stderr) => {
         resolve({ err, stdout, stderr });
     });
@@ -450,7 +454,7 @@ async function createBdInitTemplate(templateDir) {
     await fs.promises.mkdir(os.tmpdir(), { recursive: true });
     const staging = await fs.promises.mkdtemp(`${templateDir}-staging-`);
     bdInitTemplateSpawns += 1;
-    const res = await execCmd('bd init', staging, { stripBeadsDir: true });
+    const res = await execCmd('bd init', staging);
     if (res.err) {
         await fs.promises.rm(staging, { recursive: true, force: true }).catch(() => {});
         return { ...res, templateDir };

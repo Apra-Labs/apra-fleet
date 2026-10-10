@@ -149,10 +149,16 @@ In a MEMBER session the default reads (`kb_query`, `kb_session_prime`,
 `kb_list`, `kb_context`, `kb_stats`) are answered from an in-memory view of the
 member's own checkout bible (`.fleet/kb-canonical.json`), rebuilt when the file
 changes. An explicit INFERRED/UNVERIFIED read comes from the per-repo DB and
-returns only entries tagged `member:<caller uuid>`. `kb_capture` tags the
+returns only entries tagged `member:<caller uuid>`. That bible view and the
+own-scope read filter apply to a SQLite project KB: under the http project
+provider a MEMBER `kb_query`, `kb_session_prime` or `kb_context` read of any
+tier, CONFIRMED included, goes to the server, and the `member:<uuid>` own-scope
+tag is not enforced (`kb_list` and `kb_stats` keep the bible view). `kb_capture` tags the
 stored entry `member:<caller uuid>`; `kb_promote` and `kb_invalidate` act only
 on entries carrying that tag and report any other id as not found, changing
-nothing. `kb_invalidate` takes exactly one of `files` or `ids`; `ids` discards
+nothing; under the http project provider `kb_promote` goes to the server and the
+`member:<uuid>` own-scope rule is not enforced (server-side owner scoping is later
+work). `kb_invalidate` takes exactly one of `files` or `ids`; `ids` discards
 the entries (sets `superseded_at`, never deletes) and returns
 `{discarded, not_found, already_discarded}`. In a member session without the
 kb_maintainer grant neither form retires a CONFIRMED entry (section 2.5a): the
@@ -237,6 +243,10 @@ A MEMBER session is served an explicit tool list
   boundary against a process on the member's host). FULL sessions and the
   kb_maintainer session without `ref` are otherwise unchanged (they read the
   named or work-tree file).
+- Under an http project KB, `kb_invalidate {ids}` (id-level discard) is refused
+  with `E-KB-HTTP-UNSUPPORTED` (thrown): the http provider has no discard
+  operation, and nothing is discarded, on the remote or in the local fallback
+  store. `kb_invalidate {files}` is unaffected.
 - `kb_invalidate` retires entries (`ids` discards them; `files` marks
   context-cache entries invalidated), and `kb_bible_commit` removes retired
   entries from the bible, so in a member session WITHOUT the grant neither
@@ -308,7 +318,14 @@ working folder, which is typically a feature branch.
   nothing removed, or an unchanged entry set, makes no write and no commit. Re-running with
   the same ids after resetting to a newer HEAD re-merges at entry level, so a
   rejected push can be retried with no manual merge. An existing bible that
-  cannot be parsed is refused (thrown), never overwritten.
+  cannot be parsed is refused (thrown), never overwritten. Under a non-SQLite
+  (http) project KB there is no local store to build a bible from, so the call
+  is skipped before any KB read, write or git commit (the bible file itself may be read, leniently: an
+  unparseable one is logged and counted as 0, never thrown over): it returns `bible_skipped:
+  true` with a `reason`, nothing merged, skipped, removed or committed
+  (`committed` false, `entry_count` the number of entries in the existing parseable
+  bible, 0 when it is absent or unparseable); it is an answer, not an error, and has
+  no code.
 
 ### 2.7 Every code_* call is scoped to the calling session (code constraint)
 
@@ -427,8 +444,9 @@ deliberately get NO code, each with its reason. They fall into three kinds:
   that branch is the one with a code.
 - **A failure was degraded into an answer** -- the `code_*` adapters' offline
   result, the swallowed bible read, the emptied
-  `related_claims`, the unknown author role, and a provider reporting stats as
-  unsupported.
+  `related_claims`, the unknown author role, a provider reporting stats as
+  unsupported, and `kb_bible_commit` returning `bible_skipped: true` under an
+  http project KB.
 
 ### 3.3 No code in v1 is retryable
 
