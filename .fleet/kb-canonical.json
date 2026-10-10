@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "9b29f11cd59e9fd56b678a320b458b60e490310f",
     "branch": "feat/kb-redesign",
-    "entry_count": 341
+    "entry_count": 342
   },
   "entries": [
     {
@@ -1184,6 +1184,32 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:28.504Z"
+    },
+    {
+      "id": "290ffe28-86fd-495b-8dc4-0a7f1dfac39b",
+      "type": "knowledge",
+      "title": "LLM CLI resolver: default-path probe first, and probe exec failures are probe_failed, not absent",
+      "summary": "llm-cli-resolver probes POSIX members first with plain command -v in the non-login shell (kind default-path). A probe exec that throws yields reason probe_failed, keeps any stored Agent.llmCli path, and execute_prompt maps it to dispatch_failed.",
+      "symbols": [
+        "resolveLlmCli",
+        "ensureMemberLlmCli",
+        "probeExec",
+        "formatLlmCliProbeFailed"
+      ],
+      "source_files": [
+        "src/services/llm-cli-resolver.ts",
+        "src/tools/execute-prompt.ts",
+        "src/tools/update-agent-cli.ts",
+        "tests/llm-cli-path-e2e.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-10T21:29:24.980Z",
+      "source_file_hashes": {
+        "src/services/llm-cli-resolver.ts": "00e4df81ed8525487177d4b0a051ec436f6446eb",
+        "src/tools/execute-prompt.ts": "53ccea4a2edee3bfdc4edad2023991b8907fc65e",
+        "src/tools/update-agent-cli.ts": "d2d3a73bfdf3b6efab1cee25d1126ed4c96a5829",
+        "tests/llm-cli-path-e2e.test.ts": "a5d0be943bbe7a9e660dc6429e5b333c5ad4e15a"
+      }
     },
     {
       "id": "29ecc73c-9308-45dd-a82b-f2c19983829e",
