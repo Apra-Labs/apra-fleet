@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "9b29f11cd59e9fd56b678a320b458b60e490310f",
     "branch": "feat/kb-redesign",
-    "entry_count": 339
+    "entry_count": 341
   },
   "entries": [
     {
@@ -2572,6 +2572,27 @@
       "updated_at": "2026-09-30T23:07:12.100Z"
     },
     {
+      "id": "6077edcd-0532-4ccd-b009-9fa4d893932f",
+      "type": "learning",
+      "title": "Global llm-cli-resolver mock returns a state the real resolver never produces",
+      "summary": "tests/setup.ts mocks ensureMemberLlmCli to return ok:true with path undefined when nothing is stored; production returns either a path or not-found for any provider with a CLI.",
+      "symbols": [
+        "ensureMemberLlmCli"
+      ],
+      "source_files": [
+        "tests/setup.ts",
+        "src/services/llm-cli-resolver.ts",
+        "tests/llm-cli-absolute-path.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-10T20:02:26.624Z",
+      "source_file_hashes": {
+        "src/services/llm-cli-resolver.ts": "d270b603c65325a3b8e33fbf019ec24f34bb8ae2",
+        "tests/llm-cli-absolute-path.test.ts": "03e9aba4ed2910bcceb9770e38d350a3df772ec5",
+        "tests/setup.ts": "bb037bfa1eae032def011aa0769ffb62f2a02e3d"
+      }
+    },
+    {
       "id": "617f5b30-3d64-444b-83dd-85d06525060f",
       "type": "knowledge",
       "title": "inline-ladder-guard no longer skips an unresolvable member kind silently -- it throws, so the two older KB entries saying otherwise are stale",
@@ -3416,6 +3437,37 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-30T23:07:12.100Z"
+    },
+    {
+      "id": "90f9c28d-60a3-4e2c-a03f-4c4388d1ba19",
+      "type": "learning",
+      "title": "Client auto-start inside the SEA binary needs expectedVersion: member installs have no version source",
+      "summary": "In the single-executable binary the client's __dirname is ~/.apra-fleet/bin and a --workflows none member install writes no workflows/.installed.json, so clientServerVersion() is null; in-binary callers pass clientExpectedVersion() as expectedVersion.",
+      "symbols": [
+        "clientServerVersion",
+        "clientServerVersionSources",
+        "resolveFleetStartCommand",
+        "clientExpectedVersion",
+        "memberCallConnectDeps"
+      ],
+      "source_files": [
+        "packages/apra-fleet-client/src/client/auto-start.mjs",
+        "src/version.ts",
+        "src/cli/call.ts",
+        "src/cli/workflow.ts",
+        "scripts/build-sea.mjs",
+        "tests/call-member-version.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-10T20:02:25.809Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-client/src/client/auto-start.mjs": "09575226a094a709b4a40f4840d0fcfee5e274d2",
+        "scripts/build-sea.mjs": "d87d0b168c41880d27c365a9b82f2a6fdd266cfc",
+        "src/cli/call.ts": "fff708f228892e22f663958635b198747537d246",
+        "src/cli/workflow.ts": "5e9682a4fa5a8099f762fff04dfe6ce1ebc81d81",
+        "src/version.ts": "8cf68fd1aea8f734aa4f6eea1180604922006165",
+        "tests/call-member-version.test.ts": "cf26b7a28c5160ccce05877a9619d843588b1050"
+      }
     },
     {
       "id": "919a3f50-dcb3-4ee9-91d1-767fd503a3b8",
