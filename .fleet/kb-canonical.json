@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "9b29f11cd59e9fd56b678a320b458b60e490310f",
     "branch": "feat/kb-redesign",
-    "entry_count": 342
+    "entry_count": 344
   },
   "entries": [
     {
@@ -2750,6 +2750,34 @@
       "updated_at": "2026-09-25T22:26:31.598Z"
     },
     {
+      "id": "69318632-cd94-4ef7-aee6-481fc11936a8",
+      "type": "knowledge",
+      "title": "Member standalone server is started by the fleet probe, keyed on the MEMBER-STANDALONE installer line",
+      "summary": "install --member without a usable service manager prints MEMBER-STANDALONE and succeeds; probeRemote parses it and runs the member's apra-fleet start, and later probes restart a down server only when the call failure matches SERVER_DOWN_RE.",
+      "symbols": [
+        "MEMBER_STANDALONE_CODE",
+        "standaloneReason",
+        "ensureMemberServerRunning",
+        "buildMemberStartCommand",
+        "memberCallSaysServerDown",
+        "runStart"
+      ],
+      "source_files": [
+        "src/cli/install.ts",
+        "src/cli/install-guard.ts",
+        "src/services/member-fleet-install.ts",
+        "src/cli/start.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-10T21:48:46.275Z",
+      "source_file_hashes": {
+        "src/cli/install-guard.ts": "0aa13c895a22ad92d5362b90521947131b74a273",
+        "src/cli/install.ts": "479620de90a853e2299a14401d52b590eee5e8c3",
+        "src/cli/start.ts": "8f5107d4125e103cbebfaf445c082a9273b49dc1",
+        "src/services/member-fleet-install.ts": "f2efc52d9d96bb1ac5d1ce8a8450776c334cb3e0"
+      }
+    },
+    {
       "id": "69336d0b-82d8-43c6-b7e3-49540ca4e9a7",
       "type": "knowledge",
       "title": "shell-command-guard false-positives on nested templates and on any dollar-word in prose strings",
@@ -5055,6 +5083,26 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:12.550Z"
+    },
+    {
+      "id": "d2c8b715-704c-40ec-b57b-53a7fbd353af",
+      "type": "learning",
+      "title": "Claude Code 2.1.296 npm package ships a native bin/claude.exe and refuses headless for-loops",
+      "summary": "@anthropic-ai/claude-code@2.1.296 declares bin claude -> bin/claude.exe (native, installed by postinstall), and in a -p acceptEdits run it refuses a for-loop even when the inner command is allowed, yet still writes a complete reply.",
+      "symbols": [
+        "canaryVerdict",
+        "engineDecision"
+      ],
+      "source_files": [
+        "scripts/claude-cli-loop-canary.mjs",
+        "tests/fixtures/claude-loop-canary/loop-refused-complete.jsonl"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-10T21:48:46.743Z",
+      "source_file_hashes": {
+        "scripts/claude-cli-loop-canary.mjs": "c258c2bcaa08b35621bdd671bb04bfdc1253a686",
+        "tests/fixtures/claude-loop-canary/loop-refused-complete.jsonl": "4c74c8cfdb520f733f78ff3d9f48318e04d3c9bc"
+      }
     },
     {
       "id": "d3016610-0d2a-40db-ba0b-537f49ff1cbf",
