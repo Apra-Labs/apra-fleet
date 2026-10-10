@@ -186,6 +186,22 @@ called with `fleet_install: "auto"`), at least as new as the orchestrator, insta
   "Replace a full install on a member" in install.md).
 - After install the member registers itself, and a MEMBER-session is opened to
   verify the tools are really reachable.
+- Standalone server (no service manager on the member): when the installer
+  printed `MEMBER-STANDALONE`, the probe runs the member's own
+  `nohup apra-fleet start --autostart --pidfile <home>/.apra-fleet/data/standalone.pid --timeout-ms 30000`
+  (PowerShell: the same `start` call, no nohup) before the session check; the
+  server is spawned detached in its own session with its output in
+  `<data dir>/fleet.log`. Any later probe whose `call version` fails with a
+  server-down code (`AUTOSTART_*`, `SERVER_*`, `ECONNREFUSED`) runs the same
+  start and retries once. `--autostart` keeps a deliberate `apra-fleet stop`
+  in force. A start that fails, dies during startup or never answers `/health`
+  is `member-server-not-running`, with start's output (which ends with the
+  server log tail) as the detail. Not restarted on reboot until the next probe
+  -- see "Members without a service manager (standalone mode)" in install.md.
+- `apra-fleet call` (and every client run inside the apra-fleet binary) passes
+  the binary's own version to the client as `expectedVersion`, so its
+  auto-start can compare start candidates on a member install, which has no
+  `version.json` or `workflows/.installed.json` for the client to find.
 - Self-registration design: the member-side `register-member --id <uuid>`
   (the self-registration form) does NOT run `compose_permissions`. A member
   install carries no fleet skill profiles (`install --member` installs no
@@ -245,9 +261,9 @@ PowerShell `Test-Path -LiteralPath ... -PathType Leaf` per the member's shell):
   absence is `full-install-running`; a probe failure is `probe-failed` with the
   reason. `remove_member` likewise skips the member-side registration removal
   when the marker is absent or the probe failed, and its output says why.
-- `install --member` writes the marker before the auto-start registration, so a
-  failed auto-start (`E-MEMBER-AUTOSTART`) still leaves it and the next
-  `fleet_install` "auto" retries.
+- `install --member` writes the marker before the auto-start registration. A
+  host with no usable service manager is not a failure: the install succeeds in
+  standalone mode (`MEMBER-STANDALONE`) with the marker in place.
 - Either case records `fleetMcp` `unavailable(full-install-running)` with a
   detail that stages the current installer on the member and gives the manual
   replacement steps below.
