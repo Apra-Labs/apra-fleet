@@ -322,3 +322,7 @@ or as prose if you are answering a human directly.
   children, not a leaf task. Never close a leaf task bead regardless of type.
 - NEVER modify integ-test-playbook.md
 - Tag every new issue title with `[integ]` so they are searchable and distinguishable from planned work
+
+## Shell command discipline
+
+No shell loops: do not use shell loops (`for`, `while`, `until`), loop variables or command substitution to batch several operations into one tool call. Run each command as its own separate tool call instead. Headless CLIs may refuse a loop or substitution even when every inner command is individually allowed.

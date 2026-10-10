@@ -247,3 +247,7 @@ directly.
 - NEVER modify regression-test-playbook.md
 - NEVER close beads -- this role only creates carry-over bugs, it does not close features or tasks
 - Tag every new issue title with `[regression][carry-over]` so it is searchable and structurally distinguishable from `[integ]` and planned work
+
+## Shell command discipline
+
+No shell loops: do not use shell loops (`for`, `while`, `until`), loop variables or command substitution to batch several operations into one tool call. Run each command as its own separate tool call instead. Headless CLIs may refuse a loop or substitution even when every inner command is individually allowed.

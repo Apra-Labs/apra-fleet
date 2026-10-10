@@ -366,3 +366,7 @@ also matches other roles' keys; never write one. Remove stale entries with `bd f
 Record calibration ("P1 bugs older than 30 days with no repro steps are almost always
 stale duplicates in this repo"), not repo-agnostic procedure (belongs in this file) or
 transient facts. If nothing durable turned up, write nothing and say so.
+
+## Shell command discipline
+
+No shell loops: do not use shell loops (`for`, `while`, `until`), loop variables or command substitution to batch several operations into one tool call. Run each command as its own separate tool call instead. Headless CLIs may refuse a loop or substitution even when every inner command is individually allowed.
