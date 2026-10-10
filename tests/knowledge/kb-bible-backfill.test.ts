@@ -82,11 +82,16 @@ async function commitBible(): Promise<any> {
   return JSON.parse(await kbBibleCommit({ ids: [], ...BASE }, { folder: tmpDir }));
 }
 
-let tmpBefore: string[];
-const tmpListing = () => fs.readdirSync(os.tmpdir()).filter(n => !n.startsWith('kb-bible-backfill-')).sort();
+// Leak check runs against a PRIVATE per-test temp root (TMPDIR/TEMP/TMP point
+// at it), so unrelated processes using the shared OS tmpdir cannot affect it.
+let privateTmp: string;
+const savedTmpEnv: Record<string, string | undefined> = {};
+const TMP_ENV_KEYS = ['TMPDIR', 'TEMP', 'TMP'];
+const tmpListing = () => fs.readdirSync(privateTmp).filter(n => !n.startsWith('kb-bible-backfill-')).sort();
 
 beforeEach(async () => {
-  tmpBefore = tmpListing();
+  privateTmp = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'kb-bible-backfill-root-'));
+  for (const k of TMP_ENV_KEYS) { savedTmpEnv[k] = process.env[k]; process.env[k] = privateTmp; }
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-bible-backfill-'));
   git(tmpDir, ['init', '--quiet']);
   writeSrc('src/a.ts');
@@ -107,7 +112,10 @@ afterEach(() => {
   vi.restoreAllMocks();
   fs.rmSync(tmpDir, { recursive: true, force: true });
   // Nothing left behind outside the fixture's own temp dir.
-  expect(tmpListing()).toEqual(tmpBefore);
+  const leaked = tmpListing();
+  for (const k of TMP_ENV_KEYS) { if (savedTmpEnv[k] === undefined) delete process.env[k]; else process.env[k] = savedTmpEnv[k]; }
+  fs.rmSync(privateTmp, { recursive: true, force: true });
+  expect(leaked).toEqual([]);
 });
 
 describe('kb_bible_commit legacy backfill', () => {
