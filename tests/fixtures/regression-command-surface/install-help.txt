@@ -27,7 +27,9 @@ Options:
   --member                Install only the server and its user-mode auto-start. Implies
                           --skill none --workflows none; writes NO user-scope MCP entry,
                           hooks/statusline/permissions settings or ~/.claude/CLAUDE.md block.
-                          Fails with E-MEMBER-AUTOSTART if the auto-start cannot be registered.
+                          Without a usable user-mode service manager (container, WSL without
+                          systemd) the server runs standalone (MEMBER-STANDALONE): not
+                          restarted on reboot; the fleet or 'apra-fleet start' starts it.
   --workflows <mode>      Which workflow assets to install: all (default) or none. Installs
                           ~/.apra-fleet/node_modules (workflow runtime), /schemas (agent role
                           schemas), and /workflows/{fleet-sprint,hello-world} (built-in workflows).

@@ -35,7 +35,75 @@ function findProjectRoot(): string {
   throw new Error('Cannot find project root (version.json not found)');
 }
 
-function directSpawn(): void {
+/** Parsed `start` options. All optional; with none, start behaves as it always has. */
+export interface StartOptions {
+  /** Write the direct-spawned server's pid here (a standalone server the fleet started). */
+  pidfile?: string;
+  /** Same as APRA_FLEET_AUTOSTART=1: refuse (never clear) a user stop. Used by the fleet's member start. */
+  autostart: boolean;
+  /** How long to wait for /health after launching (default 2000ms). */
+  timeoutMs: number;
+}
+
+const DEFAULT_START_WAIT_MS = 2000;
+const START_POLL_MS = 500;
+/** Lines of the server log printed when the server does not come up. */
+export const START_LOG_TAIL_LINES = 20;
+
+/** Parse `start` arguments. Unknown arguments are ignored (older callers pass none). */
+export function parseStartArgs(args: string[]): StartOptions | { error: string } {
+  const out: StartOptions = { autostart: false, timeoutMs: DEFAULT_START_WAIT_MS };
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '--autostart') out.autostart = true;
+    else if (a === '--pidfile' || a === '--timeout-ms') {
+      const v = args[++i];
+      if (v === undefined || v.startsWith('--')) return { error: `${a} requires a value` };
+      if (a === '--pidfile') out.pidfile = v;
+      else {
+        const n = Number(v);
+        if (!Number.isInteger(n) || n < 0) return { error: `--timeout-ms must be a non-negative integer, got '${v}'` };
+        out.timeoutMs = Math.max(n, DEFAULT_START_WAIT_MS);
+      }
+    }
+  }
+  return out;
+}
+
+/** The last `lines` lines of the server log, or null when there is none. */
+export function serverLogTail(logPath: string = LOG_FILE_PATH, lines = START_LOG_TAIL_LINES): string | null {
+  try {
+    // Only the end of the log is read: fleet.log grows without bound.
+    const MAX = 64 * 1024;
+    const size = fs.statSync(logPath).size;
+    let text: string;
+    if (size > MAX) {
+      const fd = fs.openSync(logPath, 'r');
+      try {
+        const buf = Buffer.alloc(MAX);
+        const n = fs.readSync(fd, buf, 0, MAX, size - MAX);
+        text = buf.subarray(0, n).toString('utf8');
+      } finally {
+        fs.closeSync(fd);
+      }
+    } else {
+      text = String(fs.readFileSync(logPath, 'utf8'));
+    }
+    text = text.replace(/\s+$/, '');
+    if (!text) return null;
+    return text.split(/\r?\n/).slice(-lines).join('\n');
+  } catch {
+    return null;
+  }
+}
+
+interface SpawnedServer {
+  pid?: number;
+  /** Set once the spawned server process has exited (it died during startup). */
+  exited: () => { code: number | null; signal: string | null } | null;
+}
+
+function directSpawn(): SpawnedServer {
   let cmd: string;
   let spawnArgs: string[];
   if (isSea()) {
@@ -61,12 +129,24 @@ function directSpawn(): void {
     windowsHide: true,
     stdio: ['ignore', logFd, logFd],
   });
+  let exit: { code: number | null; signal: string | null } | null = null;
+  if (typeof (child as { once?: unknown }).once === 'function') {
+    child.once('exit', (code, signal) => { exit = { code, signal }; });
+  }
   child.unref();
   fs.closeSync(logFd);
   console.log('Server starting...');
+  return { pid: child.pid, exited: () => exit };
 }
 
-export async function runStart(_args: string[]): Promise<void> {
+export async function runStart(args: string[]): Promise<void> {
+  const opts = parseStartArgs(args);
+  if ('error' in opts) {
+    console.error(`Error: ${opts.error}`);
+    process.exit(1);
+    return;
+  }
+  if (opts.autostart) process.env.APRA_FLEET_AUTOSTART = '1';
   // An explicit start ends a user stop: clients may auto-start again. A start
   // launched BY a client auto-start (APRA_FLEET_AUTOSTART=1) must never erase
   // a stop that raced it -- it refuses instead.
@@ -123,6 +203,7 @@ export async function runStart(_args: string[]): Promise<void> {
 
   const svcMgr = await getServiceManager();
   const installed = await svcMgr.isInstalled();
+  let spawned: SpawnedServer | null = null;
 
   // A sandboxed instance (non-default port or data dir) must never touch the
   // machine-global service registration -- always direct-spawn instead of
@@ -139,18 +220,40 @@ export async function runStart(_args: string[]): Promise<void> {
       // that case svcMgr.start() fails the same way. Fall back to a direct
       // spawn instead of hard-failing, same as the "not installed" path.
       console.warn(`Service manager start failed (${err.message}); falling back to direct spawn.`);
-      directSpawn();
+      spawned = directSpawn();
     }
   } else {
-    directSpawn();
+    spawned = directSpawn();
+  }
+  // A standalone (direct-spawned) server: record its pid where the caller asked.
+  if (spawned && opts.pidfile && spawned.pid) {
+    try {
+      fs.mkdirSync(path.dirname(opts.pidfile), { recursive: true });
+      fs.writeFileSync(opts.pidfile, `${spawned.pid}\n`);
+    } catch (err: unknown) {
+      console.warn(`Warning: could not write the pidfile ${opts.pidfile}: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
-  await new Promise<void>(resolve => setTimeout(resolve, 2000));
-  const result = await checkRunningInstance();
+  // Wait for /health: the first check after 2s (as always), then poll until
+  // the requested timeout, stopping early when the spawned server died.
+  const deadline = Date.now() + opts.timeoutMs;
+  await new Promise<void>(resolve => setTimeout(resolve, DEFAULT_START_WAIT_MS));
+  let result = await checkRunningInstance();
+  while (!result.running && !spawned?.exited() && Date.now() < deadline) {
+    await new Promise<void>(resolve => setTimeout(resolve, START_POLL_MS));
+    result = await checkRunningInstance();
+  }
   if (result.running) {
     console.log(`Server started at ${result.url} pid=${result.pid}`);
-  } else {
-    console.error(`Server did not start in time. Check logs at: ${LOG_FILE_PATH}`);
-    process.exit(1);
+    return;
   }
+  const died = spawned?.exited();
+  const why = died
+    ? `Server process exited during startup (${died.signal ? `signal ${died.signal}` : `exit code ${died.code}`}).`
+    : `Server did not start in time (no /health answer within ${Math.round(opts.timeoutMs / 1000)}s).`;
+  console.error(`${why} Check logs at: ${LOG_FILE_PATH}`);
+  const tail = serverLogTail();
+  if (tail) console.error(`Last lines of ${LOG_FILE_PATH}:\n${tail}`);
+  process.exit(1);
 }

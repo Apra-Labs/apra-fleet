@@ -246,6 +246,56 @@ describe('runStart', () => {
     );
   });
 
+  // Standalone member server (no service manager): the fleet runs
+  // 'start --autostart --pidfile <p> --timeout-ms <n>' on the member.
+  it('--pidfile records the direct-spawned server pid', async () => {
+    mockCheckRunning.mockResolvedValueOnce(STOPPED).mockResolvedValueOnce(RUNNING);
+    vi.mocked(spawn).mockReturnValue({ unref: vi.fn(), pid: 4242 } as any);
+    vi.useFakeTimers();
+    const p = runStart(['--pidfile', '/data/standalone.pid']);
+    await vi.advanceTimersByTimeAsync(2001);
+    await p;
+    expect(vi.mocked(fs.writeFileSync)).toHaveBeenCalledWith('/data/standalone.pid', '4242\n');
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Server started'));
+  });
+
+  it('--autostart refuses (never clears) a deliberate user stop', async () => {
+    vi.mocked(fs.readFileSync).mockImplementation(((p: any) =>
+      String(p).includes('stopped') ? JSON.stringify({ stoppedAt: '2026-10-10T08:00:00Z', by: 'apra-fleet stop' }) : SERVER_INFO) as any);
+    await runStart(['--autostart']);
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(errSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n')).toContain('stopped by the user');
+    expect(vi.mocked(spawn)).not.toHaveBeenCalled();
+    expect(process.env.APRA_FLEET_AUTOSTART).toBeUndefined();
+  });
+
+  it('--timeout-ms keeps polling /health past the first check', async () => {
+    mockCheckRunning.mockResolvedValueOnce(STOPPED).mockResolvedValueOnce(STOPPED).mockResolvedValueOnce(STOPPED).mockResolvedValueOnce(RUNNING);
+    vi.useFakeTimers();
+    const p = runStart(['--timeout-ms', '10000']);
+    await vi.advanceTimersByTimeAsync(3100);
+    await p;
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Server started'));
+    expect(exitSpy).not.toHaveBeenCalled();
+  });
+
+  it('a server that dies during startup ends the wait early and prints the server log tail', async () => {
+    mockCheckRunning.mockResolvedValue(STOPPED);
+    vi.mocked(spawn).mockReturnValue({ unref: vi.fn(), pid: 4242, once: (_ev: string, cb: (c: number, s: null) => void) => cb(1, null) } as any);
+    vi.spyOn(fs, 'statSync').mockReturnValue({ size: 60 } as any);
+    vi.mocked(fs.readFileSync).mockImplementation(((p: any) =>
+      String(p).endsWith('fleet.log') ? 'starting\nError: listen EADDRINUSE 127.0.0.1:7523\n' : SERVER_INFO) as any);
+    vi.useFakeTimers();
+    const p = runStart(['--timeout-ms', '30000']);
+    await vi.advanceTimersByTimeAsync(2001);
+    await p;
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    const err = errSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n');
+    expect(err).toContain('exited during startup (exit code 1)');
+    expect(err).toContain('Last lines of');
+    expect(err).toContain('EADDRINUSE');
+  });
+
   it('drops APRA_FLEET_AUTOSTART / APRA_FLEET_SERVICE: consumed from its own env, never passed to the spawned server', async () => {
     mockCheckRunning.mockResolvedValueOnce(STOPPED).mockResolvedValueOnce(RUNNING);
     const saved = process.env.APRA_FLEET_SERVICE;

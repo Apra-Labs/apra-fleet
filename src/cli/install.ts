@@ -30,7 +30,7 @@ import { downloadAndExtractDolt, verifyDolt } from './dolt-install.js';
 import { installBeads, type BeadsInstallDeps } from './beads-install.js';
 import {
   classifyRunningServer, relevantServerPids, getInstallDataDir, memberForceMayStop, fullInstallRefusalText,
-  writeMemberInstallMarker, clearMemberInstallMarker, FORCE_STOP_FULL_INSTALL_FLAG,
+  writeMemberInstallMarker, clearMemberInstallMarker, FORCE_STOP_FULL_INSTALL_FLAG, MEMBER_STANDALONE_CODE,
 } from './install-guard.js';
 import { convertClaudeAllowToAgyPermissions, formatAgyPermissionRules } from '../providers/agy.js';
 import { codeIntelPathWarning } from '../utils/find-on-path.js';
@@ -1244,7 +1244,9 @@ Options:
   --member                Install only the server and its user-mode auto-start. Implies
                           --skill none --workflows none; writes NO user-scope MCP entry,
                           hooks/statusline/permissions settings or ~/.claude/CLAUDE.md block.
-                          Fails with E-MEMBER-AUTOSTART if the auto-start cannot be registered.
+                          Without a usable user-mode service manager (container, WSL without
+                          systemd) the server runs standalone (MEMBER-STANDALONE): not
+                          restarted on reboot; the fleet or 'apra-fleet start' starts it.
   --workflows <mode>      Which workflow assets to install: all (default) or none. Installs
                           ~/.apra-fleet/node_modules (workflow runtime), /schemas (agent role
                           schemas), and /workflows/{fleet-sprint,hello-world} (built-in workflows).
@@ -2095,6 +2097,8 @@ ${manualStopHint(pidsAfterStop)}
   let serviceHealthy: boolean | null = null;
   let serviceReused = false;
   let serviceRunKey = false;
+  // Set (to the reason) when a member install found no usable service manager.
+  let memberStandalone: string | null = null;
   if (serviceStep) {
     console.log(`  [${totalSteps}/${totalSteps}] Registering and starting service...`);
     // The server refuses to start when its configured port is taken (no
@@ -2146,19 +2150,23 @@ Error: ${conflict.message}
       }
     } catch (err) {
       console.warn(`    Service registration skipped: ${(err as Error).message}`);
-      // A member install exists to leave an auto-starting server behind; without
-      // the auto-start it is not a success, so say so with a typed status.
+      // A member install on a host with no usable user-mode service manager
+      // (a container, WSL without systemd, a minimal distro) still succeeds:
+      // the server runs STANDALONE. The fleet starts it detached right after
+      // this install and again on every member probe that finds it down, but
+      // nothing restarts it on reboot until that next probe -- say so loudly.
       if (memberMode) {
-        console.error(`
-Error: E-MEMBER-AUTOSTART: the member install could not register the user-mode
-auto-start (${(err as Error).message}). The server binary is installed but will
-not start automatically.
+        memberStandalone = (err as Error).message;
+        console.warn(`
+    [WARN] ${MEMBER_STANDALONE_CODE}: no user-mode service manager is usable on this host
+    (${memberStandalone}). The server runs standalone: the fleet starts it detached
+    (apra-fleet start) after this install and on each member probe that finds it down.
+    It is NOT restarted on reboot until the next probe. Check it with 'apra-fleet status';
+    start it by hand with 'apra-fleet start'.
 `);
-        process.exitCode = 1;
-        return;
       }
       // --force stopped the server; reporting success would leave it down silently.
-      if (force && (runningScope?.relevant || guardStoppedService)) {
+      if (!memberMode && force && (runningScope?.relevant || guardStoppedService)) {
         const restartHint = guardStoppedService
           ? `Start it with:\n    ${serviceRestartCommand()}\nor re-run the install from an elevated prompt.`
           : 'Start it with:\n    apra-fleet start';
@@ -2187,7 +2195,7 @@ ${restartHint}
   const forceNote = force && !memberMode ? `\nRestart ${clientName} to reload the MCP server.` : '';
   const settingsLine = memberMode ? '' : `\n  Settings:    ${paths.settingsFile}`;
   const serviceState = serviceHealthy === true ? 'registered and running' : serviceHealthy === false ? 'registered, but NOT answering /health (see the warning above)' : 'registered (health not checked)';
-  const serviceLine = serviceStep ? `\n  Service:     ${serviceRegistered ? `${serviceState}${serviceReused ? ' (existing task reused)' : ''}${serviceRunKey ? ' (logon autostart via HKCU Run, no automatic restart)' : ''}` : 'registration skipped'}` : '';
+  const serviceLine = serviceStep ? `\n  Service:     ${serviceRegistered ? `${serviceState}${serviceReused ? ' (existing task reused)' : ''}${serviceRunKey ? ' (logon autostart via HKCU Run, no automatic restart)' : ''}` : memberStandalone !== null ? `not registered -- standalone mode (${MEMBER_STANDALONE_CODE}); not restarted on reboot, start it with apra-fleet start` : 'registration skipped'}` : '';
   console.log(`
 Apra Fleet ${serverVersion} installed successfully for ${paths.name}.
   Binary:      ${BIN_DIR}
