@@ -18,6 +18,7 @@
  * memberCall passes it only when calling as a repository's kb_maintainer.
  */
 import fs from 'node:fs';
+import { clientExpectedVersion } from '../version.js';
 
 const USAGE = `apra-fleet call -- call a tool as a registered member session
 
@@ -99,6 +100,25 @@ function requiredArgs(list: unknown, tool: string): string[] {
   return Array.isArray(req) ? req.map(String) : [];
 }
 
+/**
+ * The client deps `apra-fleet call` connects its member session with:
+ * origin=engine (the engine acting as the member, so its kb_/code_ calls are
+ * not counted in session_stats), the kb_maintainer grant when asked, and this
+ * binary's own version as `expectedVersion` -- on a member install the client
+ * has no other source, and without it an auto-start of a stopped server
+ * refuses with AUTOSTART_VERSION_UNKNOWN.
+ */
+export function memberCallConnectDeps(opts: { kbMaintainer: boolean }): {
+  origin: 'engine'; kbMaintainer?: true; expectedVersion?: string;
+} {
+  const expectedVersion = clientExpectedVersion();
+  return {
+    origin: 'engine',
+    ...(opts.kbMaintainer ? { kbMaintainer: true as const } : {}),
+    ...(expectedVersion ? { expectedVersion } : {}),
+  };
+}
+
 /** Returns the process exit code. */
 export async function runCall(argv: string[], deps: CallDeps = {}): Promise<number> {
   const io: CallIo = deps.io ?? { out: t => console.log(t), err: t => console.error(t) };
@@ -133,9 +153,7 @@ export async function runCall(argv: string[], deps: CallDeps = {}): Promise<numb
 
   const connect = deps.connect ?? (async (id: string, opts: { kbMaintainer: boolean }) => {
     const m = await import('@apralabs/apra-fleet-client/server-resolution');
-    // origin=engine: this verb is the engine acting as the member (remote
-    // memberCall), so its kb_/code_ calls are not counted in session_stats.
-    return m.connectFleetMember(id, { origin: 'engine', ...(opts.kbMaintainer ? { kbMaintainer: true } : {}) });
+    return m.connectFleetMember(id, memberCallConnectDeps(opts));
   });
 
   let session;

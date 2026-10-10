@@ -15,7 +15,7 @@ import { fleetEvents } from '../src/services/event-bus.js';
 import { sessionRegistry } from '../src/services/session-registry.js';
 import { localWorkspaceId } from '../src/services/token-issuer.js';
 import { MEMBER_ALLOWED_TOOLS, MEMBER_MAINTAINER_TOOLS } from '../src/services/member-tool-allowlist.js';
-import { runCall } from '../src/cli/call.js';
+import { runCall, memberCallConnectDeps } from '../src/cli/call.js';
 import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
 // @ts-expect-error plain .mjs workspace package
 import { connectFleetMember } from '../packages/apra-fleet-client/src/client/server-resolution.mjs';
@@ -52,9 +52,8 @@ async function run(argv: string[], dataDir: string | undefined = process.env.APR
   const code = await runCall(argv, {
     io: { out: t => out.push(t), err: t => err.push(t) },
     connect: (id, opts) => connectFleetMember(id, {
-      // The verb's real connect adds origin=engine; mirror it (and the grant).
-      origin: 'engine',
-      ...(opts?.kbMaintainer ? { kbMaintainer: true } : {}),
+      // The verb's own connect deps (origin=engine, the grant, its version).
+      ...memberCallConnectDeps({ kbMaintainer: opts?.kbMaintainer === true }),
       env: { APRA_FLEET_DATA_DIR: dataDir },
       checkRunningInstance: async () => ({ running: true, url: `http://127.0.0.1:${handle.port}/mcp`, pid: process.pid }),
     }),

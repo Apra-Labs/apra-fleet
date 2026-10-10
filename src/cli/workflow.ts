@@ -26,7 +26,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
-import { serverVersion } from '../version.js';
+import { serverVersion, clientExpectedVersion } from '../version.js';
 import { WORKFLOWS_DIR, SCHEMAS_DIR, BIN_DIR, NODE_MODULES_DIR } from './config.js';
 import { extractWorkflowSubsystemAssets, BUILTIN_WORKFLOW_NAMES } from './workflow-assets.js';
 
@@ -173,7 +173,9 @@ export function defaultDeps(): WorkflowDeps {
       const { resolveFleetServerConnection } = await import(
         '@apralabs/apra-fleet-client/server-resolution'
       );
-      return resolveFleetServerConnection({ env });
+      // This binary's own version: auto-start compares start candidates against it.
+      const expectedVersion = clientExpectedVersion();
+      return resolveFleetServerConnection({ env, ...(expectedVersion ? { expectedVersion } : {}) });
     },
   };
 }

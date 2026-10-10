@@ -792,12 +792,16 @@ Resolution order:
    auto-starts per 10 minutes, then `FleetAutoStartError` `AUTOSTART_LIMIT`
    naming the newest server log. Version match: only a candidate whose
    version equals the apra-fleet version this client ships with
-   (`clientServerVersion()`: nearest `version.json`, else
-   `workflows/.installed.json` of the install) is started -- the matching
-   build is preferred, and with no match the client refuses with
-   `AUTOSTART_VERSION_SKEW` naming both versions and `apra-fleet install`
-   (`AUTOSTART_VERSION_UNKNOWN` when its own version is unknown); an older
-   server can lack guards the client relies on. Inside the test sandbox
+   (`clientServerVersion()`: `deps.expectedVersion` when given -- every client
+   run inside the apra-fleet CLI/binary, such as `apra-fleet call`, passes the
+   binary's own version, the only source on a member install -- else the
+   nearest `version.json`, else `workflows/.installed.json` of the install;
+   `clientServerVersionSources()` also returns every file it looked at) is
+   started -- the matching build is preferred, and with no match the client
+   refuses with `AUTOSTART_VERSION_SKEW` naming both versions and
+   `apra-fleet install` (`AUTOSTART_VERSION_UNKNOWN`, naming every place it
+   looked, when its own version is unknown); an older server can lack guards
+   the client relies on. Inside the test sandbox
    (`APRA_TEST_SANDBOX_ROOT`) an uninjected lookup fails with
    `AUTOSTART_TEST_UNINJECTED`. A server stopped on purpose (`apra-fleet stop`
    wrote `<data dir>/stopped-by-user.json`, see `readStoppedByUser()`) is never

@@ -17,6 +17,9 @@ declare module '@apralabs/apra-fleet-client/server-resolution' {
     dirname?: string;
     exists?: (candidate: string) => boolean;
     checkRunningInstance?: (deps?: unknown) => Promise<unknown>;
+    /** The apra-fleet version this client belongs to; a client inside the
+     *  apra-fleet CLI passes its own (clientExpectedVersion in src/version.ts). */
+    expectedVersion?: string | null;
   }
 
   export function resolveFleetServerConnection(
@@ -37,7 +40,7 @@ declare module '@apralabs/apra-fleet-client/server-resolution' {
 
   export function connectFleetMember(
     memberId: string,
-    deps?: FleetResolutionDeps & { options?: Record<string, unknown>; origin?: 'engine' },
+    deps?: FleetResolutionDeps & { options?: Record<string, unknown>; origin?: 'engine'; kbMaintainer?: boolean },
   ): Promise<{
     transport: { stop(): void; close(): Promise<void> };
     mcpClient: {

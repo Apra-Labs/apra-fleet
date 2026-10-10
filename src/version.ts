@@ -102,3 +102,15 @@ function resolveVersion(): string {
 }
 
 export const serverVersion = resolveVersion();
+
+/**
+ * The version a client running INSIDE this apra-fleet (apra-fleet call, the
+ * workflow launcher, the server's own member probe) passes to
+ * @apralabs/apra-fleet-client as `expectedVersion`, so its auto-start can
+ * always compare start candidates -- a member install has no version.json or
+ * workflows/.installed.json for the client to find. undefined when this
+ * build could not resolve its own version (the client then looks itself).
+ */
+export function clientExpectedVersion(): string | undefined {
+  return serverVersion && serverVersion !== 'v0.0.0-unknown' ? serverVersion : undefined;
+}

@@ -6,7 +6,7 @@ import path from 'node:path';
 
 import {
     autoStartFleetServer, resolveFleetStartCommand, lastServerLog, FleetAutoStartError,
-    AUTOSTART_MAX_STARTS, clientServerVersion, versionCore,
+    AUTOSTART_MAX_STARTS, clientServerVersion, clientServerVersionSources, versionCore,
 } from '../src/client/auto-start.mjs';
 import { resolveFleetServerConnection } from '../src/client/server-resolution.mjs';
 
@@ -215,6 +215,44 @@ describe('clientServerVersion', () => {
     test('this checkout: the client belongs to the repo version', () => {
         const repo = JSON.parse(fs.readFileSync(path.resolve(import.meta.dirname, '..', '..', '..', 'version.json'), 'utf8')).version;
         assert.strictEqual(versionCore(clientServerVersion()), versionCore(repo));
+    });
+});
+
+describe('expected version from the running apra-fleet CLI (member install layout)', () => {
+    // A member install (--member --workflows none) run as the single-executable
+    // binary: no version.json above the client and no workflows/.installed.json.
+    const HOME = path.join(os.tmpdir(), 'member-h');
+    const BIN = path.join(HOME, '.apra-fleet', 'bin', 'apra-fleet');
+    const layout = { clientDir: path.join(HOME, '.apra-fleet', 'bin'), execPath: BIN, homedir: () => HOME, platform: 'linux', exists: (p) => p === BIN };
+    const noFiles = { exists: () => false, readFile: () => { throw new Error('no file'); } };
+
+    test('the layout alone yields no version', () => {
+        assert.strictEqual(clientServerVersion({ clientDir: layout.clientDir, ...noFiles }), null);
+    });
+
+    test('expectedVersion from the CLI wins: the matching binary is started (no AUTOSTART_VERSION_UNKNOWN)', () => {
+        const r = resolveFleetStartCommand({ ...layout, expectedVersion: 'v0.4.4_09bcac', probeVersion: () => 'v0.4.4_09bcac' });
+        assert.deepStrictEqual(r, { command: BIN, args: ['start'], version: 'v0.4.4_09bcac' });
+    });
+
+    test('a skewed candidate is still refused with AUTOSTART_VERSION_SKEW', () => {
+        assert.throws(
+            () => resolveFleetStartCommand({ ...layout, expectedVersion: 'v0.4.4_09bcac', probeVersion: () => 'v0.4.3_95435e' }),
+            (err) => err.code === 'AUTOSTART_VERSION_SKEW',
+        );
+    });
+
+    test('no version source at all: AUTOSTART_VERSION_UNKNOWN names where it looked', () => {
+        const sources = clientServerVersionSources({ clientDir: layout.clientDir, ...noFiles });
+        assert.strictEqual(sources.version, null);
+        assert.ok(sources.looked.includes(path.join(layout.clientDir, 'version.json')));
+        assert.ok(sources.looked.includes(path.join(layout.clientDir, 'workflows', '.installed.json')));
+        assert.throws(
+            () => resolveFleetStartCommand({ ...layout, ...noFiles, exists: layout.exists, probeVersion: () => 'v0.4.4' }),
+            (err) => err.code === 'AUTOSTART_VERSION_UNKNOWN'
+                && err.message.includes(path.join(layout.clientDir, 'version.json'))
+                && err.message.includes(path.join(layout.clientDir, 'workflows', '.installed.json')),
+        );
     });
 });
 

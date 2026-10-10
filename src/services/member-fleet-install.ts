@@ -44,7 +44,7 @@ import { getMemberHomeDir } from './member-home.js';
 import { getAgentOS, getAgentShell, isPosixShell } from '../utils/agent-helpers.js';
 import { escapePowerShellArgInner, escapeShellArgInner } from '../utils/shell-escape.js';
 import { wrapPowerShellEncoded } from '../os/windows.js';
-import { serverVersion } from '../version.js';
+import { serverVersion, clientExpectedVersion } from '../version.js';
 import { BUILTIN_DEFAULT_PORT, validPort } from '../paths.js';
 import { FULL_INSTALL_RUNNING_CODE, FORCE_STOP_FULL_INSTALL_FLAG, MEMBER_STANDALONE_CODE } from '../cli/install-guard.js';
 import { parseVersion, isNewer } from './update-check.js';
@@ -1812,7 +1812,8 @@ export function defaultMemberFleetMcpDeps(): MemberFleetMcpDeps {
     ...defaultMemberFleetInstallDeps(),
     connectLocalMember: async (memberId: string) => {
       const m = await import('@apralabs/apra-fleet-client/server-resolution');
-      return m.connectFleetMember(memberId) as unknown as MemberSession;
+      const expectedVersion = clientExpectedVersion();
+      return m.connectFleetMember(memberId, expectedVersion ? { expectedVersion } : {}) as unknown as MemberSession;
     },
     now: () => new Date(),
     record: (memberId, status) => { recordFleetMcpStatus(memberId, status); },
