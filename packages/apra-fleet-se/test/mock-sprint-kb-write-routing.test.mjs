@@ -257,6 +257,16 @@ describe('mock sprint: KB writes route through the kb_maintainer', () => {
             });
             assert.equal(r.error, null, `sprint error: ${r.error && r.error.message}`);
             assert.ok(r.logs.includes(`[kb-maintainer] repository ${REPO}: maintainer 'maint' (rule: role-less)`), 'maint must be the selected maintainer');
+            // Sprint-start priming imports the bible once per repository, on
+            // the maintainer, with the grant, from the base branch's
+            // remote-tracking ref -- never the work tree or HEAD (nothing has
+            // cleaned the maintainer's checkout at priming time).
+            const imports = fleet.events.filter((e) => e.type === 'kb' && e.tool === 'kb_import');
+            assert.equal(imports.length, 1, JSON.stringify(imports));
+            assert.equal(imports[0].member, 'maint');
+            assert.equal(imports[0].grant, true, 'the priming import carries the kb_maintainer grant');
+            assert.match(String(imports[0].args && imports[0].args.ref), /^refs\/remotes\/origin\/[A-Za-z0-9_]/);
+            assert.equal(imports[0].args.path, undefined);
 
             const MAINT = memberUuid('maint');
             const DEV = memberUuid('dev');

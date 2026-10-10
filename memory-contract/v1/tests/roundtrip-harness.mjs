@@ -465,6 +465,8 @@ export const SCENARIO = [
   { tool: 'code_status', case: 'non-error-provider-not-supported', assertParsed: assertProviderNotSupported },
   { tool: 'kb_list', case: 'refusal-self-no-remote' },
   { tool: 'kb_import', case: 'refusal-bible-not-found' },
+  // `ref` naming a git ref that does not hold the bible: nothing imported.
+  { tool: 'kb_import', case: 'refusal-bible-not-found-at-ref' },
   {
     tool: 'kb_import',
     case: 'refusal-bible-not-json',

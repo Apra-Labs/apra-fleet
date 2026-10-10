@@ -560,6 +560,18 @@ bible `kb_import` imports from the kb_maintainer session or a FULL session,
 and a bible committed only in the member's own checkout is not on that record
 (the error message names the unrecorded blob id). A successful no-grant import
 returns the usual result plus `bible_source: "HEAD"` and `worktree_ignored`.
+The committed blob's bytes are hashed in-process and must equal the trusted id,
+so a replace ref or an overwritten object in the member's `.git` is refused.
+
+`kb_import` takes an optional `ref` (a plain git ref name, e.g.
+`refs/remotes/origin/main`; no rev expressions): the bible is read as committed
+at that ref, hash-verified, instead of from disk, in any session. The result
+then carries `bible_source: "<ref>"` and `worktree_ignored`; a ref that does not
+hold the bible fails with `E-BIBLE-NOT-FOUND`; a no-grant session still needs a
+recorded blob, and a kb_maintainer or FULL session records the verified blob.
+The engine's sprint-start priming uses
+`ref: "refs/remotes/origin/<base branch>"` on the kb_maintainer, so trust is
+seeded from the base branch and never from the maintainer's work tree.
 
 #### `kbExport(options?: KbExportOptions)`
 

@@ -1270,12 +1270,15 @@ export function createKbWorkClient(opts = {}) {
  * and every role contract's Step 0 already degrades gracefully when the KB
  * tools are unavailable.
  *
- * @param {{ callTool?: (name: string, args: object) => Promise<any>, memberCall?: (member: object, name: string, args: object) => Promise<any>, members?: string[], log?: Function }} opts
+ * @param {{ callTool?: (name: string, args: object) => Promise<any>, memberCall?: (member: object, name: string, args: object) => Promise<any>, members?: string[], maintainers?: object|Function, baseBranch?: string, log?: Function }} opts
  * @returns {{ primeAll: () => Promise<{primed: number, skipped: number}> }}
  */
 
 export function createKbPrimingClient(opts = {}) {
     const { callTool, memberCall, members = [], log = () => {} } = opts;
+    // A plain branch name only (it becomes refs/remotes/origin/<base>).
+    const baseBranch = (typeof opts.baseBranch === 'string' && /^[A-Za-z0-9_][A-Za-z0-9._/-]*$/.test(opts.baseBranch) && !opts.baseBranch.includes('..'))
+        ? opts.baseBranch : null;
     const maintainerSel = () => {
         const m = typeof opts.maintainers === 'function' ? opts.maintainers() : opts.maintainers;
         return (m && typeof m.maintainerForMember === 'function') ? m : null;
@@ -1412,19 +1415,31 @@ export function createKbPrimingClient(opts = {}) {
                     // recorded it as trusted in the hub-side KB, so a bible
                     // this hub never saw (a fresh hub, or a bible merged in
                     // from elsewhere) would never land. The grant import is
-                    // the trusted seeding path: launch alignment has already
-                    // reset the maintainer's checkout to the pushed branch, so
-                    // the bible it imports -- and thereby marks trusted for
-                    // every member of the repository -- is the pushed one. A
-                    // sprint without a maintainer selector (unit-test seam)
-                    // imports without the grant.
+                    // the trusted seeding path, and the bible it imports is
+                    // marked trusted for every member of the repository -- so
+                    // it must not come from the maintainer's work tree or
+                    // HEAD. Nothing has cleaned that checkout yet: launch
+                    // alignment runs only for some launch modes, branch-ensure
+                    // runs after priming, and a reused local branch keeps
+                    // local-only commits. The grant import therefore reads the
+                    // bible committed on the base branch's remote-tracking ref
+                    // (full ref name, so a local branch named origin/<base>
+                    // cannot shadow it), which the server verifies against its
+                    // blob id. No base branch: no grant import. A sprint
+                    // without a maintainer selector (unit-test seam) imports
+                    // without the grant, which never records trust.
                     try {
                         // No `path`: the session imports its OWN folder's
-                        // bible (<work folder>/.fleet/kb-canonical.json).
-                        const importArgs = { skip_sweep: true };
-                        const imported = parseResult(sel
-                            ? await memberCall(target, 'kb_import', importArgs, KB_MAINTAINER_CALL)
-                            : await memberCall(target, 'kb_import', importArgs));
+                        // bible (.fleet/kb-canonical.json), here at `ref`.
+                        let imported = null;
+                        if (!sel) {
+                            imported = parseResult(await memberCall(target, 'kb_import', { skip_sweep: true }));
+                        } else if (baseBranch) {
+                            const importArgs = { skip_sweep: true, ref: 'refs/remotes/origin/' + baseBranch };
+                            imported = parseResult(await memberCall(target, 'kb_import', importArgs, KB_MAINTAINER_CALL));
+                        } else {
+                            log(`[kb-prime] no base branch -- bible import skipped for '${member}' (the kb_maintainer imports only the base branch's committed bible)`);
+                        }
                         if (imported && typeof imported.imported === 'number' && imported.imported > 0) {
                             log(`[kb-prime] imported ${imported.imported} bible entr(ies) into the warm KB for '${member}'`);
                         }

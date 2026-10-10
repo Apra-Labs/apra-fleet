@@ -707,6 +707,12 @@ await recordRefusal('kb_import', 'refusal-bible-not-found', {
   path: path.join(repoA, '.fleet', 'no-such-bible.json'),
 }, 'E-BIBLE-NOT-FOUND');
 
+// E-BIBLE-NOT-FOUND with `ref`: the named git ref does not hold the bible
+// (the bible is read as committed at the ref, never from the file system).
+await recordRefusal('kb_import', 'refusal-bible-not-found-at-ref', {
+  ref: 'refs/remotes/origin/no-such-branch',
+}, 'E-BIBLE-NOT-FOUND');
+
 const notJsonPath = path.join(repoA, '.fleet', 'not-json.json');
 fs.writeFileSync(notJsonPath, 'this is not valid JSON {{{', 'utf-8');
 await recordRefusal('kb_import', 'refusal-bible-not-json', {

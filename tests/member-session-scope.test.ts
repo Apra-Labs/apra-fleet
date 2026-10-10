@@ -33,6 +33,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import zlib from 'node:zlib';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { createHttpTransport, type HttpTransportHandle } from '../src/services/http-transport.js';
@@ -632,6 +633,7 @@ describe('kb_import trust anchor: a no-grant import needs a bible the maintainer
   const fx = useKbMemberRepo();
   const BASE = { baseBranch: 'main', baseCommit: 'a'.repeat(40) };
   const BIBLE_REL = '.fleet/kb-canonical.json';
+  const BASE_REF = 'refs/remotes/origin/main';
 
   const git = (cwd: string, args: string[]) =>
     execFileSync('git', args, { cwd, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
@@ -757,11 +759,14 @@ describe('kb_import trust anchor: a no-grant import needs a bible the maintainer
     expect(refused.text).toMatch(/^E-KB-MAINTAINER-REQUIRED: .*never recorded/);
     expect(fx.row('carried-entry-0003')).toBeUndefined();
 
-    // The engine's sprint-start priming import: no path, skip_sweep, with the grant.
+    // The engine's sprint-start priming import: no path, skip_sweep, with the
+    // grant, reading the base branch's remote-tracking ref (here: the bible
+    // commit is what origin/main points at).
+    git(fx.clone, ['update-ref', BASE_REF, 'HEAD']);
     const maint = await connect(handle.port, { member: fx.memberId, params: MAINTAINER_PARAMS });
-    const seeded = await callText(maint, 'kb_import', { skip_sweep: true });
+    const seeded = await callText(maint, 'kb_import', { skip_sweep: true, ref: BASE_REF });
     expect(seeded.isError, seeded.text).toBe(false);
-    expect(JSON.parse(seeded.text)).toMatchObject({ imported: 1 });
+    expect(JSON.parse(seeded.text)).toMatchObject({ imported: 1, bible_source: BASE_REF, worktree_ignored: false });
     expect(fx.row('carried-entry-0003')?.confidence).toBe('CONFIRMED');
     expect(fx.provider.isTrustedBibleBlob(git(fx.clone, ['rev-parse', 'HEAD:./' + BIBLE_REL]))).toBe(true);
 
@@ -799,6 +804,154 @@ describe('kb_import trust anchor: a no-grant import needs a bible the maintainer
     const p = await callText(plain, 'kb_import', { skip_sweep: true });
     expect(p.isError, p.text).toBe(false);
     expect(JSON.parse(p.text)).toMatchObject({ imported: 0, skipped: 1, bible_source: 'HEAD' });
+  });
+
+  // ID-TO-BYTES BINDING. The trusted id comes from the HEAD tree, but the
+  // bytes come from the member-writable object store. The server reads with
+  // --no-replace-objects and hashes the bytes in-process against the id.
+  //
+  // FALSIFICATION: dropping --no-replace-objects in bible-blob-id.ts makes
+  // the replace-ref test import the forged entry (or, with the in-process
+  // hash still in place, refuse instead of importing the genuine one);
+  // dropping the in-process hash check makes the loose-object tests import
+  // the forged entry CONFIRMED.
+
+  /** Forged bible bytes: a CONFIRMED entry citing `rel` with its real HEAD hash. */
+  async function forgedBytes(id: string, rel: string): Promise<Buffer> {
+    return Buffer.from(v3([await carriedEntry(fx.clone, id, rel)]), 'utf-8');
+  }
+
+  /** Overwrite the loose object `id` in the clone with `bytes` (a valid zlib blob whose hash is NOT `id`). */
+  function overwriteLooseObject(id: string, bytes: Buffer): void {
+    const obj = path.join(fx.clone, '.git', 'objects', id.slice(0, 2), id.slice(2));
+    expect(fs.existsSync(obj), 'the bible blob is a loose object in this fixture').toBe(true);
+    fs.chmodSync(obj, 0o644);
+    fs.writeFileSync(obj, zlib.deflateSync(Buffer.concat([Buffer.from(`blob ${bytes.length}\0`, 'utf-8'), bytes])));
+    // Plain git now serves the forged bytes for the trusted id.
+    expect(execFileSync('git', ['cat-file', 'blob', id], { cwd: fx.clone }).equals(bytes)).toBe(true);
+  }
+
+  it('replace ref: a no-grant import of a trusted blob reads the genuine bytes, never the replacement', async () => {
+    await commitCarriedBible('carried-entry-0004', 'src/carried4.ts');
+    const trusted = git(fx.clone, ['rev-parse', 'HEAD:./' + BIBLE_REL]);
+    fx.provider.recordTrustedBibleBlob(trusted, 'kb_bible_commit');
+    const forgedFile = path.join(fx.root, 'forged.json');
+    fs.writeFileSync(forgedFile, await forgedBytes('forged-entry-0004', 'src/carried4.ts'));
+    const forged = git(fx.clone, ['hash-object', '-w', '--', forgedFile]);
+    git(fx.clone, ['replace', trusted, forged]);
+    expect(git(fx.clone, ['cat-file', 'blob', trusted])).toContain('forged-entry-0004');
+
+    const handle = await startServer();
+    const plain = await connect(handle.port, { member: fx.memberId });
+    const r = await callText(plain, 'kb_import', { skip_sweep: true });
+    expect(r.isError, r.text).toBe(false);
+    expect(JSON.parse(r.text)).toMatchObject({ imported: 1, bible_source: 'HEAD' });
+    expect(fx.row('carried-entry-0004')?.confidence).toBe('CONFIRMED');
+    expect(fx.row('forged-entry-0004')).toBeUndefined();
+    expect(fx.provider.isTrustedBibleBlob(forged)).toBe(false);
+  });
+
+  it('overwritten loose object (no grant): bytes that do not hash to the trusted id are refused; nothing imported', async () => {
+    await commitCarriedBible('carried-entry-0005', 'src/carried5.ts');
+    const trusted = git(fx.clone, ['rev-parse', 'HEAD:./' + BIBLE_REL]);
+    fx.provider.recordTrustedBibleBlob(trusted, 'kb_bible_commit');
+    overwriteLooseObject(trusted, await forgedBytes('forged-entry-0005', 'src/carried5.ts'));
+
+    const handle = await startServer();
+    const plain = await connect(handle.port, { member: fx.memberId });
+    const r = await callText(plain, 'kb_import', { skip_sweep: true });
+    expect(r.isError, r.text).toBe(true);
+    expect(r.text).toMatch(/do not hash to that blob id/);
+    expect(r.text).toContain(trusted);
+    expect(fx.row('forged-entry-0005')).toBeUndefined();
+    expect(fx.row('carried-entry-0005')).toBeUndefined();
+    expect(fx.confirmedCount()).toBe(0);
+  });
+
+  it('overwritten loose object (grant + ref): refused, and the forged bytes are never recorded as trusted', async () => {
+    await commitCarriedBible('carried-entry-0008', 'src/carried8.ts');
+    git(fx.clone, ['update-ref', BASE_REF, 'HEAD']);
+    const base = git(fx.clone, ['rev-parse', BASE_REF + ':./' + BIBLE_REL]);
+    overwriteLooseObject(base, await forgedBytes('forged-entry-0008', 'src/carried8.ts'));
+
+    const handle = await startServer();
+    const maint = await connect(handle.port, { member: fx.memberId, params: MAINTAINER_PARAMS });
+    const r = await callText(maint, 'kb_import', { skip_sweep: true, ref: BASE_REF });
+    expect(r.isError, r.text).toBe(true);
+    expect(r.text).toMatch(/do not hash to that blob id/);
+    expect(fx.row('forged-entry-0008')).toBeUndefined();
+    expect(fx.provider.isTrustedBibleBlob(base)).toBe(false);
+    expect(trustedBlobCount()).toBe(0);
+  });
+
+  // SPRINT-START PRIMING (grant + ref). Nothing has cleaned the maintainer's
+  // checkout when priming runs, so the seeding import reads the base branch's
+  // remote-tracking ref -- never the work tree, never HEAD.
+  //
+  // FALSIFICATION: making a grant import with `ref` read the work-tree file
+  // (or HEAD) fails both tests below (the forged / local-only entry lands
+  // CONFIRMED and its blob is recorded).
+
+  it('priming: an uncommitted work-tree bible in the maintainer checkout is neither imported nor recorded; the base bible is', async () => {
+    await commitCarriedBible('carried-entry-0006', 'src/carried6.ts');
+    git(fx.clone, ['update-ref', BASE_REF, 'HEAD']);
+    const base = git(fx.clone, ['rev-parse', BASE_REF + ':./' + BIBLE_REL]);
+    // A doer left a hand-made bible behind, uncommitted.
+    const forged = await forgedBytes('forged-entry-0006', 'src/carried6.ts');
+    fs.writeFileSync(path.join(fx.clone, BIBLE_REL), forged);
+
+    const handle = await startServer();
+    const maint = await connect(handle.port, { member: fx.memberId, params: MAINTAINER_PARAMS });
+    const r = await callText(maint, 'kb_import', { skip_sweep: true, ref: BASE_REF });
+    expect(r.isError, r.text).toBe(false);
+    expect(JSON.parse(r.text)).toMatchObject({ imported: 1, bible_source: BASE_REF, worktree_ignored: true });
+    expect(fx.row('carried-entry-0006')?.confidence).toBe('CONFIRMED');
+    expect(fx.row('forged-entry-0006')).toBeUndefined();
+    expect(fx.provider.isTrustedBibleBlob(base)).toBe(true);
+    expect(fx.provider.isTrustedBibleBlob(git(fx.clone, ['hash-object', '--no-filters', '--', path.join(fx.clone, BIBLE_REL)]))).toBe(false);
+    expect(trustedBlobCount()).toBe(1);
+  });
+
+  it('priming: a local-only commit on top of the base ref is not imported or trusted', async () => {
+    await commitCarriedBible('carried-entry-0007', 'src/carried7.ts');
+    git(fx.clone, ['update-ref', BASE_REF, 'HEAD']);
+    const base = git(fx.clone, ['rev-parse', BASE_REF + ':./' + BIBLE_REL]);
+    // A reused local sprint branch carrying an unpushed bible commit.
+    await commitCarriedBible('local-entry-0007', 'src/local7.ts');
+    const local = git(fx.clone, ['rev-parse', 'HEAD:./' + BIBLE_REL]);
+    expect(local).not.toBe(base);
+
+    const handle = await startServer();
+    const maint = await connect(handle.port, { member: fx.memberId, params: MAINTAINER_PARAMS });
+    const r = await callText(maint, 'kb_import', { skip_sweep: true, ref: BASE_REF });
+    expect(r.isError, r.text).toBe(false);
+    expect(JSON.parse(r.text)).toMatchObject({ imported: 1, bible_source: BASE_REF });
+    expect(fx.row('carried-entry-0007')?.confidence).toBe('CONFIRMED');
+    expect(fx.row('local-entry-0007')).toBeUndefined();
+    expect(fx.provider.isTrustedBibleBlob(base)).toBe(true);
+    expect(fx.provider.isTrustedBibleBlob(local)).toBe(false);
+
+    // The local-only bible stays refused for a member session without the grant.
+    const plain = await connect(handle.port, { member: fx.memberId });
+    const refused = await callText(plain, 'kb_import', { skip_sweep: true });
+    expect(refused.isError).toBe(true);
+    expect(refused.text).toMatch(/never recorded/);
+    expect(fx.row('local-entry-0007')).toBeUndefined();
+  });
+
+  it('ref: a ref without the bible is E-BIBLE-NOT-FOUND, and a non-ref value is rejected; nothing imported or recorded', async () => {
+    await commitCarriedBible('carried-entry-0009', 'src/carried9.ts');
+    const handle = await startServer();
+    const maint = await connect(handle.port, { member: fx.memberId, params: MAINTAINER_PARAMS });
+    const missing = await callText(maint, 'kb_import', { skip_sweep: true, ref: 'refs/remotes/origin/no-such-branch' });
+    expect(missing.isError).toBe(true);
+    expect(missing.text).toContain('bible file not found: refs/remotes/origin/no-such-branch:.fleet/kb-canonical.json');
+    for (const ref of ['-c', 'HEAD~1', 'HEAD:other', 'a..b']) {
+      const bad = await callText(maint, 'kb_import', { skip_sweep: true, ref });
+      expect(bad.isError, ref).toBe(true);
+    }
+    expect(fx.row('carried-entry-0009')).toBeUndefined();
+    expect(trustedBlobCount()).toBe(0);
   });
 });
 

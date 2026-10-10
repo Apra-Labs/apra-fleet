@@ -188,7 +188,7 @@ describe('memory-contract/v1 round trip (sqlite provider)', () => {
   it('dispatched every committed fixture live (no case silently skipped)', () => {
     const undispatched = report.steps.filter((s) => !s.dispatched).map((s) => s.key);
     expect(undispatched).toEqual([]);
-    expect(report.steps.length).toBe(91); // one SCENARIO step per committed fixture (91 fixture files on disk)
+    expect(report.steps.length).toBe(92); // one SCENARIO step per committed fixture (92 fixture files on disk)
   });
 
   it('covers all 26 inventoried tools', () => {

@@ -113,7 +113,7 @@
         {
           "$anchor": "E-BIBLE-NOT-FOUND",
           "code": "E-BIBLE-NOT-FOUND",
-          "meaning": "The resolved bible file does not exist.",
+          "meaning": "The resolved bible file does not exist (with ref: the named git ref does not hold it).",
           "raising_methods": [
             { "method_id": "P-2", "member": "capture", "tool": "kb_import", "position": "pre-provider" }
           ],

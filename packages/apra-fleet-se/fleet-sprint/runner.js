@@ -1456,6 +1456,10 @@ async function runSprintCycle(context) {
         callTool: (args && typeof args.callTool === 'function') ? args.callTool : undefined,
         memberCall: kbMemberCall,
         members: physicalMembers,
+        // Knowledge is primed from each repository's kb_maintainer (selected
+        // above); its bible import reads the base branch's committed bible.
+        maintainers: () => context.kbMaintainers,
+        baseBranch: validated.baseBranch,
         log,
     });
     await kbPriming.primeAll();

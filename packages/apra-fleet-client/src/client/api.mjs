@@ -727,8 +727,16 @@
  *   (kb_bible_commit, or kb_import from the kb_maintainer or a FULL session,
  *   records every bible it writes or imports); a bible committed only in the
  *   member's own checkout fails with E-KB-MAINTAINER-REQUIRED (the message
- *   names the unrecorded blob id) and nothing is imported. The success result
- *   shape is unchanged.
+ *   names the unrecorded blob id) and nothing is imported. The blob's bytes
+ *   are hashed in-process and must equal the trusted id (a replace ref or
+ *   overwritten object in the member's .git is refused).
+ *   kb_import also takes an optional `ref` (a plain git ref name, e.g.
+ *   "refs/remotes/origin/main"): the bible is then read as committed at that
+ *   ref (hash-verified) instead of from disk, in any session; the result's
+ *   bible_source is the ref, a ref without the bible fails with
+ *   E-BIBLE-NOT-FOUND, and a kb_maintainer or FULL session records that
+ *   verified blob as trusted. The engine's sprint-start priming seeds trust
+ *   this way from the base branch, never from the maintainer's work tree.
  */
 
 /**

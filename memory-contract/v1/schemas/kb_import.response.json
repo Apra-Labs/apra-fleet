@@ -93,8 +93,7 @@
               "additionalProperties": false
             },
             "bible_source": {
-              "type": "string",
-              "const": "HEAD"
+              "type": "string"
             },
             "worktree_ignored": {
               "type": "boolean"

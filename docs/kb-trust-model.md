@@ -84,6 +84,15 @@ retire CONFIRMED entries:
   imported. It refuses rather than clamping CONFIRMED entries to a lower tier,
   because a clamped row would occupy its id and the import's id-exists skip
   would then keep the genuine CONFIRMED entry out later.
+- The object store is member-writable too: a replace ref
+  (`git replace <trusted> <forged>`), an overwritten loose object, an
+  alternates entry or a crafted pack can make git return other bytes for a
+  trusted id. So the blob is read with `--no-replace-objects` and its bytes
+  are hashed in-process (`blob <len>\0<bytes>`, sha1 or sha256 by id length)
+  and refused unless they equal the id checked. Ids recorded as trusted are
+  likewise computed in-process from the exact bytes written or parsed, never
+  by `git hash-object` on a path (which would re-read the file and run the
+  checkout's member-configured clean filters).
 
 ### Bootstrap
 
@@ -93,16 +102,32 @@ retire CONFIRMED entries:
 - A bible this hub has never seen (a fresh hub, or a bible merged in from
   another hub) is seeded by the engine's sprint-start priming: it imports the
   bible through the repository's kb_maintainer session, which holds the grant,
-  so the import records the blob id. Launch alignment has already reset the
-  kb_maintainer's checkout to the pushed branch at that point, so the bible
-  seeded is the pushed one.
+  so the import records the blob id. That import passes
+  `ref: "refs/remotes/origin/<base branch>"`, so it reads the bible committed
+  on the base branch (hash-verified), never the maintainer's work tree or
+  `HEAD`. Priming runs before anything cleans the maintainer's checkout:
+  launch alignment runs only for multi-member legacy launches (not for a
+  single-member or `--sync` sprint), branch-ensure's WIP autostash runs after
+  priming, and a reused local sprint branch keeps local-only commits. With no
+  base branch the engine makes no grant import at all.
 
 ### Remaining exposure
 
-Whatever bible the kb_maintainer's own checkout holds at a grant import (for
-example a reused local sprint branch carrying local-only commits) is trusted,
-exactly as every other kb_maintainer write already is. A member session
-without the grant can no longer get a bible imported at CONFIRMED that the
-maintainer side did not write or import. A local process with access to the
-hub (which can open a FULL session or write the database file) is outside
-this model, as for the grant itself.
+- The base branch's remote-tracking ref is only as fresh as the member's last
+  fetch, and like every ref it lives in the member-writable `.git`; a process
+  that rewrites it deliberately is outside this model (next point).
+- For a remote member, kb tools run through `apra-fleet call` on the member's
+  own host, so the "hub-side" KB database holding `trusted_bible_blobs` is a
+  file on the member's own machine, writable by the member's OS user (and so
+  by an agent running there). The `--kb-maintainer` flag of `apra-fleet call`
+  is not authenticated either: an agent on the member host can open the
+  grant session itself. Both are known limits: the grant is a routing guard
+  that keeps agent sessions off the CONFIRMED-minting paths, not a security
+  boundary against a process running as the member's user.
+- A grant import or `kb_bible_commit` without `ref` (for example an explicit
+  `path` import by the reconciler) trusts the file it reads, exactly as every
+  other kb_maintainer write already is. A member session without the grant
+  can no longer get a bible imported at CONFIRMED that the maintainer side did
+  not write or import. A local process with access to the hub (which can open
+  a FULL session or write the database file) is outside this model, as for
+  the grant itself.

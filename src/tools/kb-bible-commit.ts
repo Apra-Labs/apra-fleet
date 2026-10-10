@@ -7,7 +7,7 @@ import { resolveKbAnchor, type KbAnchor } from '../services/knowledge/kb-self.js
 import { filterProjectBibleCandidates, hasCarriedBasis, selectLegacyBibleBackfill } from '../services/knowledge/bible-basis-filter.js';
 import { logWarn } from '../utils/log-helpers.js';
 import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
-import { bibleFileBlobId } from '../services/knowledge/bible-blob-id.js';
+import { bibleBytesBlobId } from '../services/knowledge/bible-blob-id.js';
 import { memberLacksKbMaintainer } from '../services/knowledge/kb-maintainer-grant.js';
 import {
   asciiSafeStringify,
@@ -230,7 +230,8 @@ export async function kbBibleCommit(input: KbBibleCommitInput, anchor?: KbAnchor
     entries,
   };
   fs.mkdirSync(path.dirname(outPath), { recursive: true });
-  fs.writeFileSync(outPath, asciiSafeStringify(bible) + '\n', 'utf-8');
+  const written = Buffer.from(asciiSafeStringify(bible) + '\n', 'utf-8');
+  fs.writeFileSync(outPath, written);
 
   let committed = false;
   if (isGitRepo(repoPath) && bibleContentChanged(repoPath, outPath)) {
@@ -252,8 +253,10 @@ export async function kbBibleCommit(input: KbBibleCommitInput, anchor?: KbAnchor
   // work-tree bible holds (possibly hand-edited), so its output must not
   // become trusted. A FULL session and the kb_maintainer session record.
   if (!memberLacksKbMaintainer(anchor)) {
-    const blobId = await bibleFileBlobId(repoPath, outPath);
-    if (blobId !== null) project.recordTrustedBibleBlob(blobId, 'kb_bible_commit');
+    // The id of the exact bytes written (LF, unfiltered), hashed in-process:
+    // never `git hash-object` on the path, which would re-read the file and
+    // run the checkout's member-configured clean filters.
+    project.recordTrustedBibleBlob(await bibleBytesBlobId(repoPath, written), 'kb_bible_commit');
   }
 
   return done({ merged, skipped, removed, entry_count: entries.length, backfilled, committed });
