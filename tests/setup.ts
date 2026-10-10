@@ -26,6 +26,25 @@ vi.mock('../src/tools/code-index-heal.js', () => ({
   scheduleIndexBuild: vi.fn(() => ({ started: true })),
 }));
 
+// Global mock: LLM CLI resolution (src/services/llm-cli-resolver.ts) never
+// issues probe execs in tests -- the real resolver runs several member-side
+// probes per member, which would shift every existing exec-call sequence
+// mock. The mock reuses a path already stored on the member (so builder
+// tests that seed agent.llmCli still see the absolute path) and otherwise
+// reports "no stored path", which callers treat as the bare-command
+// fallback. tests/llm-cli-resolver*.test.ts use vi.unmock for the real thing.
+vi.mock('../src/services/llm-cli-resolver.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/services/llm-cli-resolver.js')>();
+  return {
+    ...actual,
+    ensureMemberLlmCli: vi.fn(async (agent: { llmCli?: { provider: string; path: string } ; llmProvider?: string }, provider: { name: string }) => {
+      const stored = agent.llmCli;
+      return { ok: true, path: stored && stored.provider === provider.name ? stored.path : undefined, source: stored ? 'stored' : undefined, reprobed: false };
+    }),
+    invalidateLlmCliPath: vi.fn(),
+  };
+});
+
 process.env.NODE_ENV = 'test';
 // install's post-start /health wait: off unless a test opts in
 // (_setServiceHealthWaitOverride) -- no test may wait on a real server.

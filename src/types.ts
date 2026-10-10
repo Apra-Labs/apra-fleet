@@ -3,6 +3,17 @@ import type { CloudConfig } from './services/cloud/types.js';
 
 export type LlmProvider = 'claude' | 'codex' | 'copilot' | 'agy' | 'opencode' | 'none';
 
+/** Where the LLM CLI resolver found a member's CLI binary. */
+export type LlmCliLocationKind = 'login-shell' | 'get-command' | 'npm-prefix' | 'nvm' | 'local-bin' | 'npm-global';
+
+/** A member's resolved LLM CLI location (see Agent.llmCli). */
+export interface ResolvedLlmCli {
+  provider: LlmProvider;
+  path: string;
+  source: LlmCliLocationKind;
+  resolvedAt: string;
+}
+
 export interface Agent {
   id: string;
   friendlyName: string;
@@ -43,6 +54,12 @@ export interface Agent {
   vcsCredentialLabel?: string;
   vcsCredentialScopeUrl?: string;
   llmProvider?: LlmProvider;  // default: 'claude' for backwards compat
+  /** Absolute path of this member's LLM CLI binary, resolved once by
+   *  src/services/llm-cli-resolver.ts and reused on every invocation
+   *  (apra-fleet-fqkr.1). Keyed by provider so a provider switch never reuses
+   *  another provider's binary. Absent until first resolution, or after the
+   *  stored path went stale. */
+  llmCli?: ResolvedLlmCli;
   /** AGY only: id of the member's own agy project (~/.gemini/config/projects/<id>.json),
    *  created by `agy --new-project` and passed as `--project <id>` on every dispatch.
    *  compose_permissions writes the member's grants into that file. Absent for
