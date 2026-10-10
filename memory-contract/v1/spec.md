@@ -200,12 +200,43 @@ A MEMBER session is served an explicit tool list
   so priming is unchanged. When a work-tree bible exists but has no committed
   copy (unborn HEAD, untracked bible, git unavailable) the call fails with
   `E-KB-MAINTAINER-REQUIRED` and nothing is imported; with no bible at all it
-  fails with the plain bible-not-found error. Residual: a member that can
-  commit can still put a hand-made bible at HEAD with a LOCAL commit and import
-  it at once -- the CONFIRMED rows land in the per-repo DB immediately, and
-  review sees the change only once the commit is pushed (or in the
-  maintainer's next bible diff). FULL sessions and the kb_maintainer session
-  are unchanged (they read the named or work-tree file).
+  fails with the plain bible-not-found error. Committed is not trusted on its
+  own: the member controls its own `.git`, so it could commit a hand-made
+  bible locally, import it, and reset the commit away with nothing ever
+  pushed. The import is therefore gated on a trust anchor OUTSIDE the
+  checkout: the hub-side per-repo KB records the git blob id of every bible
+  the maintainer side wrote or imported (`kb_bible_commit`, and `kb_import`
+  from a FULL session or the kb_maintainer session; a member session without
+  the grant never records). When the committed bible's blob id is not
+  recorded the call fails with `E-KB-MAINTAINER-REQUIRED` (the message names
+  the unrecorded blob id) and nothing is imported -- a refusal, not a clamp,
+  so no row is written that could later shadow the genuine entry's id. The
+  object store is member-writable too (replace refs, alternates, overwritten
+  loose objects, crafted packs), so the blob is read with
+  `--no-replace-objects` and its bytes are hashed in-process (git object
+  format: `blob <len>\0<bytes>`, sha1 for a 40-hex id, sha256 for a 64-hex id)
+  and refused unless they equal the id checked; recorded ids are likewise
+  computed in-process from the exact bytes written or parsed (never
+  `git hash-object` with the checkout's clean filters). Optional `ref` (a
+  plain git ref name; no rev expressions) reads the bible as committed at that
+  ref instead of the file system, in any session, with the same in-process
+  verification; `bible_source` then reports the ref, a ref that does not hold
+  the bible fails with `E-BIBLE-NOT-FOUND`, a no-grant session still needs a
+  recorded blob, and a FULL or kb_maintainer session records the verified
+  blob. Bootstrap: a clone whose bible was published by `kb_bible_commit` on
+  this hub imports normally; a bible this hub never saw (fresh hub, bible
+  merged from elsewhere) is seeded by the engine's sprint-start priming,
+  which imports through the kb_maintainer session with
+  `ref: "refs/remotes/origin/<base branch>"`. Priming runs before anything
+  cleans the maintainer's checkout (launch alignment runs only for
+  multi-member legacy launches, branch-ensure runs after priming, and a
+  reused local branch keeps local-only commits), so it never reads the work
+  tree or HEAD; with no base branch it makes no grant import. Residual: the
+  remote-tracking ref is as fresh as the member's last fetch and lives in the
+  member-writable `.git` (the grant is a routing guard, not a security
+  boundary against a process on the member's host). FULL sessions and the
+  kb_maintainer session without `ref` are otherwise unchanged (they read the
+  named or work-tree file).
 - `kb_invalidate` retires entries (`ids` discards them; `files` marks
   context-cache entries invalidated), and `kb_bible_commit` removes retired
   entries from the bible, so in a member session WITHOUT the grant neither

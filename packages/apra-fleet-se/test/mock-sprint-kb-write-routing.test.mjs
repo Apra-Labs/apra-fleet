@@ -137,8 +137,14 @@ function buildCallTool(fleet, executeCommand) {
             for (const p of args.local_paths || []) lastArgs = JSON.parse(fs.readFileSync(p, 'utf8'));
             return { content: [{ type: 'text', text: 'sent' }] };
         }
+        if (name === 'execute_command' && typeof args.command === 'string' && args.command.includes('apra-fleet call') && args.command.includes('--list-tools')) {
+            // A current member server: its kb_import advertises `ref` (the
+            // engine's version gate before the priming grant import).
+            fleet.events.push({ type: 'list-tools' });
+            return { content: [{ type: 'text', text: JSON.stringify({ tools: [{ name: 'kb_import', inputSchema: { type: 'object', properties: { path: { type: 'string' }, ref: { type: 'string' }, skip_sweep: { type: 'boolean' } } } }] }) }] };
+        }
         if (name === 'execute_command' && typeof args.command === 'string' && args.command.includes('apra-fleet call')) {
-            const m = /apra-fleet call --member (\S+) (?:--kb-maintainer )?(\w+) --args-file/.exec(args.command);
+            const m =/apra-fleet call --member (\S+) (?:--kb-maintainer )?(\w+) --args-file/.exec(args.command);
             const id = m && m[1];
             const tool = m && m[2];
             const member = byId.get(id);
@@ -257,6 +263,16 @@ describe('mock sprint: KB writes route through the kb_maintainer', () => {
             });
             assert.equal(r.error, null, `sprint error: ${r.error && r.error.message}`);
             assert.ok(r.logs.includes(`[kb-maintainer] repository ${REPO}: maintainer 'maint' (rule: role-less)`), 'maint must be the selected maintainer');
+            // Sprint-start priming imports the bible once per repository, on
+            // the maintainer, with the grant, from the base branch's
+            // remote-tracking ref -- never the work tree or HEAD (nothing has
+            // cleaned the maintainer's checkout at priming time).
+            const imports = fleet.events.filter((e) => e.type === 'kb' && e.tool === 'kb_import');
+            assert.equal(imports.length, 1, JSON.stringify(imports));
+            assert.equal(imports[0].member, 'maint');
+            assert.equal(imports[0].grant, true, 'the priming import carries the kb_maintainer grant');
+            assert.match(String(imports[0].args && imports[0].args.ref), /^refs\/remotes\/origin\/[A-Za-z0-9_]/);
+            assert.equal(imports[0].args.path, undefined);
 
             const MAINT = memberUuid('maint');
             const DEV = memberUuid('dev');

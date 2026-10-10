@@ -63,6 +63,9 @@
 // repo lives on the SERVER's disk, which this module cannot touch. So the
 // preconditions are declared abstractly (SCENARIO[].setup) and executed by the
 // provider's applySetup(); the harness never calls fs.writeFileSync itself.
+// Ops: { op: 'write', repo, rel, contents } writes a file; { op: 'delete',
+// repo, rel } removes it; { op: 'commit', repo, rel } commits that one path in
+// the repo's work tree (git add + commit, the repo's local identity).
 //
 // `parsed` IS THE CONTRACT'S OWN READING, NOT A WORKAROUND
 // --------------------------------------------------------
@@ -128,6 +131,23 @@ export const RECORDED_REMOTE_B = 'https://example.test/memory-contract-fixtures-
  */
 export const RECORDED_REMOTE_IMPORT_REJECTED = 'https://example.test/memory-contract-fixtures-import-rejected.git';
 export const RECORDED_REMOTE_BARE = 'https://example.test/memory-contract-fixtures-bare.git';
+
+/**
+ * A bible committed only in a member's own checkout -- never written or
+ * imported by the maintainer side, so its blob id is not recorded in the
+ * hub-side KB. A member session without the kb_maintainer grant must refuse
+ * to import it (E-KB-MAINTAINER-REQUIRED, refusal-untrusted-committed-bible).
+ */
+export const UNTRUSTED_COMMITTED_BIBLE = JSON.stringify([{
+  id: 'untrusted-committed-entry-0001',
+  type: 'knowledge',
+  title: 'a bible committed only in this checkout',
+  summary: 'A CONFIRMED entry the maintainer side never published.',
+  symbols: [],
+  source_files: ['src/untrusted.ts'],
+  confidence: 'CONFIRMED',
+  updated_at: '2026-01-01T00:00:00.000Z',
+}]) + '\n';
 
 export const ENVIRONMENT = {
   repos: [
@@ -445,6 +465,8 @@ export const SCENARIO = [
   { tool: 'code_status', case: 'non-error-provider-not-supported', assertParsed: assertProviderNotSupported },
   { tool: 'kb_list', case: 'refusal-self-no-remote' },
   { tool: 'kb_import', case: 'refusal-bible-not-found' },
+  // `ref` naming a git ref that does not hold the bible: nothing imported.
+  { tool: 'kb_import', case: 'refusal-bible-not-found-at-ref' },
   {
     tool: 'kb_import',
     case: 'refusal-bible-not-json',
@@ -467,6 +489,17 @@ export const SCENARIO = [
   // A member session without the kb_maintainer grant is refused an explicit
   // kb_import path (it would keep the bible's CONFIRMED confidence).
   { tool: 'kb_import', case: 'refusal-kb-maintainer-required' },
+  // A member session without the grant is refused a bible committed only in
+  // its own checkout: the committed blob id was never recorded by the
+  // maintainer side (trust anchor), so nothing is imported.
+  {
+    tool: 'kb_import',
+    case: 'refusal-untrusted-committed-bible',
+    setup: [
+      { op: 'write', repo: 'B', rel: '.fleet/kb-canonical.json', contents: UNTRUSTED_COMMITTED_BIBLE },
+      { op: 'commit', repo: 'B', rel: '.fleet/kb-canonical.json' },
+    ],
+  },
   { tool: 'kb_capture', case: 'refusal-no-basis' },
   { tool: 'kb_capture', case: 'refusal-basis-missing-files' },
   {

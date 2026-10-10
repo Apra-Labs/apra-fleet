@@ -58,7 +58,7 @@
     },
     {
       "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-BIBLE-NOT-FOUND",
-      "title": "The resolved bible file does not exist.",
+      "title": "The resolved bible file does not exist (with ref: the named git ref does not hold it).",
       "status": 400
     },
     {

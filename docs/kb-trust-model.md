@@ -71,11 +71,63 @@ retire CONFIRMED entries:
 - `kb_import` with no path, or with the own path, reads the bible as committed
   at `HEAD`, never the member-writable work-tree file; when a work-tree bible
   has no committed copy it imports nothing (`E-KB-MAINTAINER-REQUIRED`).
+- Committed alone is not trusted: the member controls its own `.git`, so it
+  could commit a hand-made bible locally, import it, and `git reset` the commit
+  away with nothing ever pushed for review to see. The no-path import is
+  therefore gated on a trust anchor outside the checkout. The hub-side
+  per-repo KB database (table `trusted_bible_blobs`) records the git blob id
+  of every bible the maintainer side writes or imports: `kb_bible_commit`, and
+  `kb_import` from a FULL session or the kb_maintainer session. A member
+  session without the grant only reads that record. When the blob id of the
+  committed bible is not recorded, the import fails with
+  `E-KB-MAINTAINER-REQUIRED` naming the unrecorded blob, and nothing is
+  imported. It refuses rather than clamping CONFIRMED entries to a lower tier,
+  because a clamped row would occupy its id and the import's id-exists skip
+  would then keep the genuine CONFIRMED entry out later.
+- The object store is member-writable too: a replace ref
+  (`git replace <trusted> <forged>`), an overwritten loose object, an
+  alternates entry or a crafted pack can make git return other bytes for a
+  trusted id. So the blob is read with `--no-replace-objects` and its bytes
+  are hashed in-process (`blob <len>\0<bytes>`, sha1 or sha256 by id length)
+  and refused unless they equal the id checked. Ids recorded as trusted are
+  likewise computed in-process from the exact bytes written or parsed, never
+  by `git hash-object` on a path (which would re-read the file and run the
+  checkout's member-configured clean filters).
+
+### Bootstrap
+
+- A clone (including a fresh one) whose bible was published by the
+  kb_maintainer's `kb_bible_commit` on this hub carries a recorded blob id and
+  imports normally.
+- A bible this hub has never seen (a fresh hub, or a bible merged in from
+  another hub) is seeded by the engine's sprint-start priming: it imports the
+  bible through the repository's kb_maintainer session, which holds the grant,
+  so the import records the blob id. That import passes
+  `ref: "refs/remotes/origin/<base branch>"`, so it reads the bible committed
+  on the base branch (hash-verified), never the maintainer's work tree or
+  `HEAD`. Priming runs before anything cleans the maintainer's checkout:
+  launch alignment runs only for multi-member legacy launches (not for a
+  single-member or `--sync` sprint), branch-ensure's WIP autostash runs after
+  priming, and a reused local sprint branch keeps local-only commits. With no
+  base branch the engine makes no grant import at all.
 
 ### Remaining exposure
 
-A member that can commit can still put a hand-made bible at `HEAD` with a
-local commit and import it at once: the CONFIRMED rows land in the shared
-per-repo DB immediately, and review sees the change only once the commit is
-pushed (or in the maintainer's next bible diff). Pinning the import to the
-last bible commit made by the kb_maintainer would close this.
+- The base branch's remote-tracking ref is only as fresh as the member's last
+  fetch, and like every ref it lives in the member-writable `.git`; a process
+  that rewrites it deliberately is outside this model (next point).
+- For a remote member, kb tools run through `apra-fleet call` on the member's
+  own host, so the "hub-side" KB database holding `trusted_bible_blobs` is a
+  file on the member's own machine, writable by the member's OS user (and so
+  by an agent running there). The `--kb-maintainer` flag of `apra-fleet call`
+  is not authenticated either: an agent on the member host can open the
+  grant session itself. Both are known limits: the grant is a routing guard
+  that keeps agent sessions off the CONFIRMED-minting paths, not a security
+  boundary against a process running as the member's user.
+- A grant import or `kb_bible_commit` without `ref` (for example an explicit
+  `path` import by the reconciler) trusts the file it reads, exactly as every
+  other kb_maintainer write already is. A member session without the grant
+  can no longer get a bible imported at CONFIRMED that the maintainer side did
+  not write or import. A local process with access to the hub (which can open
+  a FULL session or write the database file) is outside this model, as for
+  the grant itself.

@@ -7,6 +7,8 @@ import { resolveKbAnchor, type KbAnchor } from '../services/knowledge/kb-self.js
 import { filterProjectBibleCandidates, hasCarriedBasis, selectLegacyBibleBackfill } from '../services/knowledge/bible-basis-filter.js';
 import { logWarn } from '../utils/log-helpers.js';
 import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
+import { bibleBytesBlobId } from '../services/knowledge/bible-blob-id.js';
+import { memberLacksKbMaintainer } from '../services/knowledge/kb-maintainer-grant.js';
 import {
   asciiSafeStringify,
   assertNoDuplicateBibleIds,
@@ -57,6 +59,10 @@ import {
 //
 // The commit is local, pathspec-scoped to the bible file, with the pm-kb
 // identity (shared with kb_export). It is NEVER pushed.
+//
+// Trust anchor: when called from a FULL or kb_maintainer session, the blob id
+// of every bible this writes is recorded in the per-repo KB DB, which is what
+// lets a member session without the grant import that bible (kb-import.ts).
 
 export const kbBibleCommitSchema = z.object({
   ids: z.array(z.string().min(1))
@@ -224,7 +230,8 @@ export async function kbBibleCommit(input: KbBibleCommitInput, anchor?: KbAnchor
     entries,
   };
   fs.mkdirSync(path.dirname(outPath), { recursive: true });
-  fs.writeFileSync(outPath, asciiSafeStringify(bible) + '\n', 'utf-8');
+  const written = Buffer.from(asciiSafeStringify(bible) + '\n', 'utf-8');
+  fs.writeFileSync(outPath, written);
 
   let committed = false;
   if (isGitRepo(repoPath) && bibleContentChanged(repoPath, outPath)) {
@@ -236,6 +243,20 @@ export async function kbBibleCommit(input: KbBibleCommitInput, anchor?: KbAnchor
       throw new Error('kb_bible_commit: bible written but the local commit failed: ' + reason);
     }
     committed = true;
+  }
+
+  // kb_import trust anchor: record the blob id of the bible just written, so
+  // a member session without the kb_maintainer grant may import it once it is
+  // committed in (or pulled into) any checkout of this repository. Only the
+  // maintainer side records: kb_bible_commit is served to every member
+  // session, and a session without the grant merges over whatever its own
+  // work-tree bible holds (possibly hand-edited), so its output must not
+  // become trusted. A FULL session and the kb_maintainer session record.
+  if (!memberLacksKbMaintainer(anchor)) {
+    // The id of the exact bytes written (LF, unfiltered), hashed in-process:
+    // never `git hash-object` on the path, which would re-read the file and
+    // run the checkout's member-configured clean filters.
+    project.recordTrustedBibleBlob(await bibleBytesBlobId(repoPath, written), 'kb_bible_commit');
   }
 
   return done({ merged, skipped, removed, entry_count: entries.length, backfilled, committed });

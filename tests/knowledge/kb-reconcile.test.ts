@@ -425,6 +425,86 @@ describe('SqliteProvider.reconcilePrefilter (T3.1, D4 HARDENED, resolution R1)',
   });
 });
 
+describe('SqliteProvider.reconcilePrefilter never retires a CONFIRMED entry by hash basis alone', () => {
+  async function setup(sym: string, originalConfidence: string, challengerConfidence: string, driftSide: 'original' | 'challenger') {
+    const originalFile = path.join(tmpDir, sym + '-original.ts');
+    const challengerFile = path.join(tmpDir, sym + '-challenger.ts');
+    fs.writeFileSync(originalFile, 'export const original = true;');
+    fs.writeFileSync(challengerFile, 'export const challenger = true;');
+    const { originalId, challengerId } = await captureContradictionPair(sym, {
+      originalFiles: [originalFile],
+      challengerFiles: [challengerFile],
+    });
+    const db = (provider as any).getDb();
+    db.prepare('UPDATE entries SET confidence = ? WHERE id = ?').run(originalConfidence, originalId);
+    db.prepare('UPDATE entries SET confidence = ? WHERE id = ?').run(challengerConfidence, challengerId);
+    fs.writeFileSync(driftSide === 'original' ? originalFile : challengerFile, 'export const drifted = 1; // changed');
+    return { originalId, challengerId };
+  }
+
+  it('case 1: CONFIRMED original with drifted basis vs matching challenger is deferred and both stay unchanged', async () => {
+    const { originalId, challengerId } = await setup('confLoserOrigSym', 'CONFIRMED', 'INFERRED', 'original');
+    const beforeO = rawRow(originalId);
+    const beforeC = rawRow(challengerId);
+
+    const report = await provider.reconcilePrefilter();
+    expect(report.resolved).toHaveLength(0);
+    expect(report.left_for_agent).toEqual([{ originalId, challengerId }]);
+    expect(rawRow(originalId)).toEqual(beforeO);
+    expect(rawRow(challengerId)).toEqual(beforeC);
+    expect(rawRow(originalId).confidence).toBe('CONFIRMED');
+    expect(rawRow(originalId).superseded_at).toBeNull();
+    expect(rawRow(challengerId).confidence).not.toBe('CONFIRMED');
+  });
+
+  it('case 2: CONFIRMED challenger with drifted basis vs matching original is deferred', async () => {
+    const { originalId, challengerId } = await setup('confLoserChalSym', 'INFERRED', 'CONFIRMED', 'challenger');
+    const report = await provider.reconcilePrefilter();
+    expect(report.resolved).toHaveLength(0);
+    expect(report.left_for_agent).toEqual([{ originalId, challengerId }]);
+    expect(rawRow(challengerId).confidence).toBe('CONFIRMED');
+    expect(rawRow(challengerId).superseded_at).toBeNull();
+    expect(rawRow(originalId).superseded_at).toBeNull();
+  });
+
+  it('case 3a: non-CONFIRMED original with drifted basis loses mechanically to the matching challenger', async () => {
+    for (const conf of ['INFERRED', 'UNVERIFIED']) {
+      const { originalId, challengerId } = await setup('regressionOrig' + conf, conf, 'UNVERIFIED', 'original');
+      const report = await provider.reconcilePrefilter();
+      expect(report.resolved).toContainEqual({ winnerId: challengerId, loserId: originalId });
+      expect(rawRow(challengerId).confidence).toBe('CONFIRMED');
+      expect(rawRow(challengerId).content).toContain('hash-basis match on merged worktree');
+      expect(rawRow(originalId).superseded_at).toBeTruthy();
+    }
+  });
+
+  it('case 3b: matching original beats a non-CONFIRMED drifted challenger', async () => {
+    const { originalId, challengerId } = await setup('regressionChalSym', 'INFERRED', 'UNVERIFIED', 'challenger');
+    const report = await provider.reconcilePrefilter();
+    expect(report.resolved).toEqual([{ winnerId: originalId, loserId: challengerId }]);
+    expect(report.left_for_agent).toHaveLength(0);
+    expect(rawRow(challengerId).superseded_at).toBeTruthy();
+  });
+
+  it('case 4: directive pairs are still counted in skipped_directive and untouched', async () => {
+    const { originalId, challengerId } = await setup('directiveSkipSym', 'INFERRED', 'UNVERIFIED', 'original');
+    const db = (provider as any).getDb();
+    db.prepare("UPDATE entries SET type = 'user-directive', confidence = 'CONFIRMED' WHERE id = ?").run(originalId);
+    const pair = {
+      original: { ...rawRow(originalId), id: originalId, type: 'user-directive', confidence: 'CONFIRMED' },
+      challenger: { ...rawRow(challengerId), id: challengerId, type: 'knowledge', confidence: 'UNVERIFIED' },
+    };
+    vi.spyOn(provider, 'flaggedPairs').mockResolvedValue([pair] as any);
+    const report = await provider.reconcilePrefilter();
+    expect(report.pairs).toBe(1);
+    expect(report.skipped_directive).toBe(1);
+    expect(report.resolved).toHaveLength(0);
+    expect(report.left_for_agent).toHaveLength(0);
+    expect(rawRow(originalId).superseded_at).toBeNull();
+    expect(rawRow(challengerId).superseded_at).toBeNull();
+  });
+});
+
 describe('kb_resolve_contradiction / kb_reconcile_prefilter tool wrappers (T3.1, R7)', () => {
   beforeEach(() => {
     vi.spyOn(kbProvidersModule, 'getKbProviders').mockResolvedValue({
