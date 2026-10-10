@@ -224,3 +224,13 @@ itself is a direct `impact` capability; `code_tests` composes it with the
   depth-bounded `cypher` traversals over `CALLS` edges (callers + callees) --
   see the "RESOLVED (yashr-5t9)" section above. A regression test asserting
   every invoked child tool exists in the child surface now guards the bug class.
+
+## Symbol id resolution check
+
+The gitnexus provider verifies that an id returned by the child resolves to the
+symbol that was asked about. Ids carry decorations that must be stripped before
+comparing: a `#<arity>` tag is only a tag when it sits in the last path segment,
+at the end of the id or just before `~`/`$` (a directory named like `#12` is a
+real path, not a tag), and a `name@row:col` suffix on the symbol part is
+dropped. `@scope` directories are left intact. Genuine mismatches must still be
+flagged; the tests pin real id shapes from the pinned gitnexus release.

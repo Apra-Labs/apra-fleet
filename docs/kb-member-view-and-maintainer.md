@@ -135,3 +135,23 @@ on a repository that other work shares, so it is conservative by construction:
   push someone else's unreviewed work as a side effect.
 - `kb_context` defaults to CONFIRMED + INFERRED; for a member that is the
   committed bible merged with the member's own captures.
+
+### Older member installs: the `--kb-maintainer` capability gate
+
+A remote member's installed `apra-fleet` may predate the `call --kb-maintainer`
+flag. Before the first maintainer call to a remote member, the engine probes
+`apra-fleet call --help` on that member and caches the answer per member; the
+probe keys on the flag appearing in the usage text. Local members are never
+probed (they open the grant in-process).
+
+If the install is too old, the call fails with the typed error
+`E-MEMBER-FLEET-TOO-OLD` before any exclude, file transfer or call runs, so no
+args file is delivered to the member. If the probe is inconclusive and the call
+is then rejected, the same error results and the args-file cleanup still runs.
+
+The failure is not fatal to the sprint: the promote batch and the bible-commit
+ids stay queued, and one `[kb-maintainer]` WARNING names the fix (update the
+member with `update_member`). Member init also reports a non-gating
+`member-fleet-outdated` warning (the `install` step never blocks a sprint) when
+the member's version is older than the server version the orchestrator sees, or
+when a remote kb_maintainer lacks the flag.
