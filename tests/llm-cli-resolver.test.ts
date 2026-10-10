@@ -60,8 +60,43 @@ describe('resolveLlmCli -- POSIX (bash) member', () => {
     const { exec, calls } = fakeExec({ 'login-shell': 'Welcome banner\n/opt/tools/bin/claude\n' });
     const r = await resolveLlmCli({ ...base, exec });
     expect(r).toMatchObject({ ok: true, path: '/opt/tools/bin/claude', source: 'login-shell' });
-    expect(calls[0].cmd).toBe(`bash -lc 'command -v claude' 2>/dev/null`);
-    expect(calls).toHaveLength(1);
+    expect(calls[0]).toEqual({ kind: 'default-path', cmd: `command -v 'claude' 2>/dev/null` });
+    expect(calls[1].cmd).toBe(`bash -lc 'command -v claude' 2>/dev/null`);
+    expect(calls).toHaveLength(2);
+  });
+
+  it('default PATH: a member WITHOUT bash (busybox/Alpine) resolves the CLI from its own non-login PATH, probed first', async () => {
+    // Every `bash ...` probe exits 127 (bash missing); plain command -v answers.
+    const calls: { kind: string; cmd: string }[] = [];
+    const exec: CliProbeExec = async (cmd, kind) => {
+      calls.push({ kind, cmd });
+      if (cmd.startsWith('bash ')) return { code: 127, stdout: '', stderr: 'sh: bash: not found' };
+      if (cmd.startsWith('command -v ')) return { code: 0, stdout: '/usr/bin/claude\n' };
+      return { code: 1, stdout: '' };
+    };
+    const r = await resolveLlmCli({ ...base, exec });
+    expect(r).toMatchObject({ ok: true, path: '/usr/bin/claude', source: 'default-path' });
+    expect(calls.map(c => c.kind)).toEqual(['default-path']);
+    expect(calls.some(c => c.cmd.includes('bash'))).toBe(false);
+  });
+
+  it('default PATH: a non-path answer (shell function/alias name) is ignored and the other probes run', async () => {
+    const target = `${HOME}/.local/bin/claude`;
+    const { exec } = fakeExec({ 'default-path': 'claude', 'local-bin': existsAnswer([target]) });
+    const r = await resolveLlmCli({ ...base, exec });
+    expect(r).toMatchObject({ ok: true, path: target, source: 'local-bin' });
+  });
+
+  it('probe exec failure (throw/timeout) is probe_failed, not not-found, and stops probing', async () => {
+    const calls: string[] = [];
+    const exec: CliProbeExec = async (_cmd, kind) => {
+      calls.push(kind);
+      if (kind === 'login-shell') throw new Error('Command timed out after 20000ms of inactivity');
+      return { code: 1, stdout: '' };
+    };
+    const r = await resolveLlmCli({ ...base, exec });
+    expect(r).toMatchObject({ ok: false, reason: 'probe_failed', probeFailed: { step: 'login-shell', binary: 'claude', error: expect.stringContaining('timed out') } });
+    expect(calls).toEqual(['default-path', 'login-shell']);
   });
 
   it('npm prefix: returns <prefix>/bin/<bin> when the login shell does not see it', async () => {
@@ -110,7 +145,8 @@ describe('resolveLlmCli -- POSIX (bash) member', () => {
     const { exec, calls } = fakeExec({ 'login-shell': '/c/Users/bella/AppData/Roaming/npm/claude' });
     const r = await resolveLlmCli({ ...base, os: 'windows', shell: 'gitbash', homeDir: '/c/Users/bella', exec });
     expect(r).toMatchObject({ ok: true, path: '/c/Users/bella/AppData/Roaming/npm/claude', source: 'login-shell' });
-    expect(calls[0].cmd).toContain('bash -lc');
+    expect(calls[0].kind).toBe('default-path');
+    expect(calls[1].cmd).toContain('bash -lc');
   });
 
   it('not found: names every probed location and a one-line fix', async () => {
@@ -118,13 +154,15 @@ describe('resolveLlmCli -- POSIX (bash) member', () => {
     const r = await resolveLlmCli({ ...base, exec, installHint: 'curl -fsSL https://claude.ai/install.sh | bash' });
     expect(r.ok).toBe(false);
     if (r.ok) return;
-    expect(r.notFound.probed.map(p => p.kind)).toEqual(['login-shell', 'npm-prefix', 'nvm', 'local-bin', 'npm-global']);
+    if (r.reason !== 'not_found') throw new Error('expected not_found');
+    expect(r.notFound.probed.map(p => p.kind)).toEqual(['default-path', 'login-shell', 'npm-prefix', 'nvm', 'local-bin', 'npm-global']);
     const msg = formatLlmCliNotFound(r.notFound, 'bella-box');
     expect(msg).toContain('claude CLI "claude" not found on member "bella-box"');
     expect(msg).toContain(`${HOME}/.nvm/versions/node/*/bin/claude`);
     expect(msg).toContain(`${HOME}/.local/bin/claude`);
     expect(msg).toContain(`${HOME}/.npm-global/bin/claude`);
     expect(msg).toContain("login shell (bash -lc 'command -v claude')");
+    expect(msg).toContain('default PATH (command -v claude)');
     const fix = msg.split('\n').pop()!;
     expect(fix).toMatch(/^Fix: symlink the CLI into ~\/\.local\/bin .* or reinstall it/);
     expect(fix).toContain('curl -fsSL https://claude.ai/install.sh | bash');
@@ -135,6 +173,7 @@ describe('resolveLlmCli -- POSIX (bash) member', () => {
     const r = await resolveLlmCli({ ...base, homeDir: null, exec });
     expect(r.ok).toBe(false);
     if (r.ok) return;
+    if (r.reason !== 'not_found') throw new Error('expected not_found');
     expect(r.notFound.probed.filter(p => p.location.includes('skipped'))).toHaveLength(3);
   });
 });
@@ -209,7 +248,8 @@ describe('provider coverage', () => {
     const { exec, calls } = fakeExec({ 'npm-global': existsAnswer([target]) });
     const r = await resolveLlmCli({ binary: bin, provider: prov, os: 'linux', homeDir: HOME, exec });
     expect(r).toMatchObject({ ok: true, path: target, source: 'npm-global' });
-    expect(calls[0].cmd).toContain(`command -v ${bin}`);
+    expect(calls[0].cmd).toBe(`command -v '${bin}' 2>/dev/null`);
+    expect(calls[1].cmd).toContain(`command -v ${bin}`);
   });
 
   it('the none provider has no CLI', () => {
@@ -281,11 +321,46 @@ describe('ensureMemberLlmCli -- persistence and staleness', () => {
     const r = await ensureMemberLlmCli(a, getProvider('claude'), { exec, homeDir: HOME, persist: (_i, v) => persisted.push(v), now });
     expect(r.ok).toBe(false);
     if (r.ok) return;
-    expect(r.notFound.binary).toBe('claude');
+    expect(r.reason).toBe('not_found');
+    expect(r.notFound?.binary).toBe('claude');
     expect(r.message).toContain('Probed locations:');
     expect(r.message).toContain('Fix:');
     expect(a.llmCli).toBeUndefined();
     expect(persisted).toEqual([undefined]);
+  });
+
+  it('a verify exec failure keeps the stored path and reports probe_failed (never cleared on a transport error)', async () => {
+    const stored = { provider: 'claude' as const, path: `${HOME}/.local/bin/claude`, source: 'local-bin' as const, resolvedAt: 'x' };
+    const a = agent({ llmCli: { ...stored } });
+    const persist = vi.fn();
+    const calls: string[] = [];
+    const exec: CliProbeExec = async (_c, kind) => { calls.push(kind); throw new Error('SSH connection closed'); };
+    const r = await ensureMemberLlmCli(a, getProvider('claude'), { exec, homeDir: HOME, persist, now });
+    expect(r).toMatchObject({ ok: false, reason: 'probe_failed', probeFailed: { step: 'verify', error: 'SSH connection closed' } });
+    if (r.ok) return;
+    expect(r.notFound).toBeUndefined();
+    expect(r.message).toContain('not a missing CLI');
+    expect(calls).toEqual(['verify']);
+    expect(a.llmCli).toEqual(stored);
+    expect(persist).not.toHaveBeenCalled();
+    // Not marked verified: the next call checks again and, once reachable, reuses the path.
+    const ok2 = fakeExec({ verify: existsAnswer([stored.path]) });
+    const r2 = await ensureMemberLlmCli(a, getProvider('claude'), { exec: ok2.exec, homeDir: HOME, persist, now });
+    expect(r2).toMatchObject({ ok: true, path: stored.path, source: 'stored' });
+  });
+
+  it('a resolution exec failure after a stale verify keeps the stored path (not cleared, not persisted)', async () => {
+    const stored = { provider: 'claude' as const, path: '/gone/claude', source: 'login-shell' as const, resolvedAt: 'x' };
+    const a = agent({ llmCli: { ...stored } });
+    const persist = vi.fn();
+    const exec: CliProbeExec = async (_c, kind) => {
+      if (kind === 'verify') return { code: 0, stdout: '' };
+      throw new Error('Command timed out after 20000ms of inactivity');
+    };
+    const r = await ensureMemberLlmCli(a, getProvider('claude'), { exec, homeDir: HOME, persist, now });
+    expect(r).toMatchObject({ ok: false, reason: 'probe_failed', probeFailed: { step: 'default-path' } });
+    expect(a.llmCli).toEqual(stored);
+    expect(persist).not.toHaveBeenCalled();
   });
 
   it('the none provider resolves to no path without probing', async () => {

@@ -106,7 +106,8 @@
  * @property {string} provider - The member's LLM provider (claude, agy, opencode, codex, copilot).
  * @property {string} binary - The bare CLI binary name that was searched for.
  * @property {Array<{kind: string, location: string}>} probed - Every location probed, in order
- *   (kind: login-shell | get-command | npm-prefix | nvm | local-bin | npm-global).
+ *   (kind: default-path | login-shell | get-command | npm-prefix | nvm | local-bin | npm-global;
+ *   default-path is the member's own non-login shell PATH, probed first on POSIX).
  * @property {string} fix - One-line remediation.
  */
 
@@ -129,7 +130,8 @@
  *   no LLM call was made) |
  *   'llm_cli_not_found' (the member's LLM CLI is not at any location the server probed --
  *   see `llmCliNotFound`; deterministic until the CLI is installed or linked; no LLM call
- *   was made) | ...
+ *   was made. A locate probe that could not RUN -- connection drop, timeout -- is instead
+ *   'dispatch_failed', transient, and keeps the member's stored CLI path) | ...
  * @property {LlmCliNotFound} [llmCliNotFound] - Present when `reason === 'llm_cli_not_found'`.
  * @property {PermissionDenied} [permissionDenied] - Present when `reason === 'permission_denied'`:
  *   the member CLI refused tool calls (AGY headless mode auto-denies them and exits 0; Claude

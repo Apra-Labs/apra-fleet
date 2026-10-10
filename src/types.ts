@@ -4,7 +4,7 @@ import type { CloudConfig } from './services/cloud/types.js';
 export type LlmProvider = 'claude' | 'codex' | 'copilot' | 'agy' | 'opencode' | 'none';
 
 /** Where the LLM CLI resolver found a member's CLI binary. */
-export type LlmCliLocationKind = 'login-shell' | 'get-command' | 'npm-prefix' | 'nvm' | 'local-bin' | 'npm-global';
+export type LlmCliLocationKind = 'default-path' | 'login-shell' | 'get-command' | 'npm-prefix' | 'nvm' | 'local-bin' | 'npm-global';
 
 /** A member's resolved LLM CLI location (see Agent.llmCli). */
 export interface ResolvedLlmCli {
