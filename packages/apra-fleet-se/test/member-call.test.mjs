@@ -15,10 +15,19 @@ const relay = { id: MID, name: 'm-relay', type: 'relay' };
 
 function text(t, isError = false) { return { content: [{ type: 'text', text: t }], ...(isError ? { isError: true } : {}) }; }
 
-function makeFleetApi(order, { execText = '{"content":[{"type":"text","text":"ok"}]}', execError = false } = {}) {
+/** `apra-fleet call --help` output of an install that accepts --kb-maintainer. */
+const CAPABLE_USAGE = 'Usage: apra-fleet call --member <uuid> [--kb-maintainer] <tool> [--args-file <path>]';
+/** The same usage from an install that predates --kb-maintainer. */
+const OLD_USAGE = 'Usage: apra-fleet call --member <uuid> <tool> [--args-file <path>]';
+
+function makeFleetApi(order, { execText = '{"content":[{"type":"text","text":"ok"}]}', execError = false, probeText = CAPABLE_USAGE } = {}) {
     return {
         sendFiles: async (o) => { order.push({ op: 'send_files', o, content: fs.readFileSync(o.local_paths[0], 'utf8') }); return text('sent'); },
-        executeCommand: async (o) => { order.push({ op: 'execute_command', o }); return text(execText, execError); },
+        executeCommand: async (o) => {
+            if (o.command === 'apra-fleet call --help') { order.push({ op: 'probe', o }); return text(probeText); }
+            order.push({ op: 'execute_command', o });
+            return text(execText, execError);
+        },
     };
 }
 
@@ -295,6 +304,8 @@ describe('memberCall kb_maintainer grant', () => {
                 resolveTarget: async () => ({ os: 'linux', shell: '' }),
             });
             await mc.memberCall(remote, 'kb_promote', { id: 'e1', reason: 'r' }, grant ? { kbMaintainer: true } : undefined);
+            assert.strictEqual(order.filter(e => e.op === 'probe').length, grant ? 1 : 0);
+            order.splice(0, order.length, ...order.filter(e => e.op !== 'probe'));
             const fileName = path.basename(order[1].o.local_paths[0]);
             const flag = grant ? ' --kb-maintainer' : '';
             assert.strictEqual(order[2].o.command, `apra-fleet call --member ${MID}${flag} kb_promote --args-file .apra-call/${fileName} --rm-args-file`);
