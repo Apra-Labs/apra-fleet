@@ -23,10 +23,14 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { fileURLToPath } from 'node:url';
 
 import { registerAllTools } from '../src/services/tool-registry.js';
 import { memberToolScope } from '../src/services/tool-scope.js';
 import { addAgent, removeAgent } from '../src/services/registry.js';
+import { kbSetup } from '../src/tools/kb-setup.js';
+import { resetKbProviders } from '../src/services/knowledge/kb-providers.js';
+import { FLEET_DIR } from '../src/paths.js';
 import { resolveProjectSlug } from '../src/services/knowledge/project-slug.js';
 import {
   runRoundTrip,
@@ -34,6 +38,7 @@ import {
   RECORDED_REMOTE_B,
   RECORDED_REMOTE_IMPORT_REJECTED,
   RECORDED_REMOTE_BARE,
+  RECORDED_REMOTE_HTTP,
 } from '../memory-contract/v1/tests/roundtrip-harness.mjs';
 import { materializeSessionWorld } from '../memory-contract/v1/tests/session-world.mjs';
 import { KB_MODULES, CODE_EXPORTS } from '../memory-contract/v1/generate-contract.mjs';
@@ -67,7 +72,30 @@ const RECORDED_REMOTES: Record<string, string> = {
   B: RECORDED_REMOTE_B,
   IMPORT_REJECTED: RECORDED_REMOTE_IMPORT_REJECTED,
   BARE: RECORDED_REMOTE_BARE,
+  HTTP: RECORDED_REMOTE_HTTP,
 };
+
+// The http-backed session's KB server is never contacted (both of its recorded
+// outcomes are decided before any request), so a loopback port nothing listens
+// on is enough. The token is the committed obviously-fake fixture value.
+const HTTP_KB_URL = 'http://127.0.0.1:9';
+const HTTP_KB_TOKEN_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), 'knowledge', 'fixtures', 'kb-http-test-token.txt');
+const KB_CONFIG_PATH = path.join(FLEET_DIR, 'knowledge', 'config.json');
+
+/** Runs fn with the project KB configured as http, then restores the prior config and provider cache. */
+async function withHttpKb<T>(fn: () => Promise<T>): Promise<T> {
+  const prior = fs.existsSync(KB_CONFIG_PATH) ? fs.readFileSync(KB_CONFIG_PATH) : null;
+  resetKbProviders();
+  try {
+    const token = fs.readFileSync(HTTP_KB_TOKEN_PATH, 'utf-8').trim();
+    await kbSetup({ provider: 'http', remote: HTTP_KB_URL, token }, { folder: os.tmpdir() });
+    return await fn();
+  } finally {
+    if (prior === null) fs.rmSync(KB_CONFIG_PATH, { force: true });
+    else fs.writeFileSync(KB_CONFIG_PATH, prior);
+    resetKbProviders();
+  }
+}
 
 /**
  * The sqlite adapter. It owns everything provider-specific: the scratch repos
@@ -109,6 +137,7 @@ class SqliteContractProvider {
       removeAgent,
       registerAllTools,
       memberToolScope,
+      withHttpKb,
     });
     this.repoPaths = world.repoPaths;
     this.sessionHandlers = world.sessionHandlers as Map<string, Map<string, ToolHandler>>;
@@ -188,7 +217,7 @@ describe('memory-contract/v1 round trip (sqlite provider)', () => {
   it('dispatched every committed fixture live (no case silently skipped)', () => {
     const undispatched = report.steps.filter((s) => !s.dispatched).map((s) => s.key);
     expect(undispatched).toEqual([]);
-    expect(report.steps.length).toBe(92); // one SCENARIO step per committed fixture (92 fixture files on disk)
+    expect(report.steps.length).toBe(94); // one SCENARIO step per committed fixture (94 fixture files on disk)
   });
 
   it('covers all 26 inventoried tools', () => {

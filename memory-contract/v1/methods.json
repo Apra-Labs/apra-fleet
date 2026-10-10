@@ -106,7 +106,7 @@
       ],
       "side_effect_class": "trust-mutating",
       "idempotent": true,
-      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-PATH-TRAVERSAL", "E-RETIRE-NEEDS-KB-MAINTAINER", "E-PROVIDER-UNINITIALIZED"],
+      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-PATH-TRAVERSAL", "E-RETIRE-NEEDS-KB-MAINTAINER", "E-PROVIDER-UNINITIALIZED", "E-KB-HTTP-UNSUPPORTED"],
       "see_also": ["Freshness and content hashing"]
     },
     {

@@ -37,6 +37,8 @@ function git(cwd, args) {
  * @param {(id: string) => boolean} deps.removeAgent
  * @param {(server: object, scope?: object) => Promise<void>} deps.registerAllTools  (no scope = FULL)
  * @param {(memberId: string, channelCapable: boolean, engineOrigin?: boolean, kbMaintainer?: boolean) => object} deps.memberToolScope
+ * @param {<T>(fn: () => Promise<T>) => Promise<T>} [deps.withHttpKb]  runs fn with the project KB provider
+ *   configured as http (restoring the prior config after); required when a session sets `kbHttp`
  */
 export async function materializeSessionWorld(env, root, deps) {
   const repoPaths = new Map();
@@ -122,6 +124,14 @@ export async function materializeSessionWorld(env, root, deps) {
     // kb_setup or kb_export; the corpus runs those in a FULL session.
     const maintainer = session.kbMaintainer === true;
     await deps.registerAllTools(fakeServer, deps.memberToolScope(id, false, maintainer, maintainer));
+    if (session.kbHttp === true) {
+      // The KB config is host-global, so an http-backed session scopes it to
+      // each of its own calls instead of leaving it set for the other sessions.
+      if (!deps.withHttpKb) throw new Error(`session ${key} sets kbHttp but deps.withHttpKb was not supplied`);
+      for (const [name, handler] of [...handlers]) {
+        handlers.set(name, (input, extra) => deps.withHttpKb(() => handler(input, extra)));
+      }
+    }
     sessionHandlers.set(key, handlers);
   }
 

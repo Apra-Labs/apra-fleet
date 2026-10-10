@@ -230,7 +230,10 @@ const KB_RESPONSE_BODIES = {
   // present, possibly empty); backfilled counts existing bible entries that
   // gained source_file_hashes from this KB's stored basis (legacy backfill);
   // committed is true only when a local commit of the bible path was made
-  // (never pushed).
+  // (never pushed). Under the http KB provider the call is skipped, not
+  // failed: bible_skipped is the literal true, reason says why, and nothing was
+  // written or committed (every list empty, committed false; entry_count is the
+  // size of the existing parseable bible, else 0).
   kb_bible_commit: z.object({
     path: z.string(),
     merged: z.array(z.string()),
@@ -245,6 +248,8 @@ const KB_RESPONSE_BODIES = {
     entry_count: z.number(),
     backfilled: z.number(),
     committed: z.boolean(),
+    bible_skipped: z.literal(true).optional(),
+    reason: z.string().optional(),
   }),
   // F-9: kb_stats spreads ProviderStats (whose supported/reason/coverage are
   // only present for a provider that cannot compute stats at all) and adds

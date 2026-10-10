@@ -290,6 +290,7 @@ describe('operations MemorEYES X-1 depends on work over http: capture, query, co
   // on OUR side (the handler) before the request left the process, not
   // because the remote happened to enforce it.
   let lastCaptureBody: Record<string, unknown> | null = null;
+  let lastPromoteBody: Record<string, unknown> | null = null;
 
   beforeAll(async () => {
     token = loadTestToken();
@@ -303,6 +304,14 @@ describe('operations MemorEYES X-1 depends on work over http: capture, query, co
           lastCaptureBody = JSON.parse(body);
           res.writeHead(201, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ id: 'guard-e2e-server-id', audn_decision: 'add' }));
+        } else if (url === '/api/kb/promote' && method === 'POST') {
+          lastPromoteBody = JSON.parse(body);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            id: lastPromoteBody?.id,
+            previous_confidence: 'INFERRED',
+            new_confidence: 'CONFIRMED',
+          }));
         } else if (url.startsWith('/api/kb/query') && method === 'GET') {
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ results: [], total: 0, l1_only: false }));
@@ -388,24 +397,19 @@ describe('operations MemorEYES X-1 depends on work over http: capture, query, co
     await expect(providers.project.prime({})).resolves.toMatchObject({ session_warm: true });
   });
 
-  it('promote does not raise over an http-configured project (delegates to the local fallback, per http-provider.ts design)', async () => {
+  it('promote does not raise over an http-configured project (goes to the server, no local fallback)', async () => {
     const repoPath = makeRepoPath();
     const remoteUrl = `https://example.invalid/kb-http-ops-promote-${crypto.randomUUID()}.git`;
     const providers = await getKbProviders(repoPath, remoteUrl);
     expect(providers.project).toBeInstanceOf(HttpKbProvider);
 
-    // promote() is delegated straight to the fallback (http-provider.ts),
-    // so the entry must exist there -- captured directly against the
-    // fallback, not through the remote server, to seed it.
-    const fallback = (providers.project as unknown as { fallback: SqliteProvider }).fallback;
-    const { id } = await fallback.capture(seedEntry({ symbols: ['httpOpsPromote'] }));
-
-    await expect(
-      providers.project.promote(id, 'kb-sqlite-http-guard test: verified against the fallback fixture directly'),
-    ).resolves.toMatchObject({
+    const id = 'guard-e2e-promote-id';
+    const reason = 'kb-sqlite-http-guard test: promoted on the server';
+    await expect(providers.project.promote(id, reason)).resolves.toEqual({
       id,
       confidence_before: 'INFERRED',
       confidence_after: 'CONFIRMED',
     });
+    expect(lastPromoteBody).toEqual({ id, reason });
   });
 });
