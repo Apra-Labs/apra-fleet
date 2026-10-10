@@ -75,7 +75,7 @@ export default {
     "src/tools/setup-git-app.ts": 8,
     "src/tools/setup-ssh-key.ts": 7,
     "src/tools/stop-prompt.ts": 3,
-    "src/tools/update-agent-cli.ts": 5,
+    "src/tools/update-agent-cli.ts": 4,
     "src/tools/update-member.ts": 15,
     "src/utils/agent-helpers.ts": 14,
     "src/utils/collect-secret.ts": 9,

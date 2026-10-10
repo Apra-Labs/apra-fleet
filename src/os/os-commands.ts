@@ -34,6 +34,11 @@ export interface ForkDescriptor {
  */
 export interface PromptOptions extends BasePromptOptions {
   fork?: ForkDescriptor;
+  /** Absolute path of the member's resolved LLM CLI (Agent.llmCli,
+   *  src/services/llm-cli-resolver.ts). When set, the CLI is invoked by this
+   *  quoted path and its directory is prepended to PATH; absent, the bare
+   *  command name resolves through PATH exactly as before. */
+  cliPath?: string;
 }
 
 /**
@@ -57,10 +62,12 @@ export interface OsCommands {
   fleetProcessCheck(folder: string, sessionId?: string, processName?: string): string;
 
   // --- Generic agent CLI (provider-agnostic) ---
-  agentCommand(provider: ProviderAdapter, args: string): string;
-  agentVersion(provider: ProviderAdapter): string;
+  /** `cliPath` (optional, every CLI builder): the member's resolved absolute
+   *  CLI path -- invoked quoted, with its directory prepended to PATH. */
+  agentCommand(provider: ProviderAdapter, args: string, cliPath?: string): string;
+  agentVersion(provider: ProviderAdapter, cliPath?: string): string;
   installAgent(provider: ProviderAdapter): string;
-  updateAgent(provider: ProviderAdapter): string;
+  updateAgent(provider: ProviderAdapter, cliPath?: string): string;
 
   // --- Filesystem ---
   mkdir(folder: string): string;

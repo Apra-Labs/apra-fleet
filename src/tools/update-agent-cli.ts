@@ -4,6 +4,7 @@ import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
 import { getProvider } from '../providers/index.js';
 import { getAgentOS, getAgentShell } from '../utils/agent-helpers.js';
+import { ensureMemberLlmCli, invalidateLlmCliPath } from '../services/llm-cli-resolver.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import type { Agent, SSHExecResult } from '../types.js';
 import type { AgentStrategy } from '../services/strategy.js';
@@ -95,13 +96,27 @@ async function updateSingleAgent(agent: Agent, installIfMissing: boolean): Promi
   };
 
   try {
+    // apra-fleet-fqkr.1.2: locate the CLI first (stored absolute path, or a
+    // fresh resolution over the login shell / npm prefix / nvm / user bin
+    // dirs) and run version/update by that path. A CLI found nowhere is
+    // reported with every probed location and the fix.
+    const located = await ensureMemberLlmCli(agent, provider);
+    let cliPath = located.ok ? located.path : undefined;
+
     // Get current version
-    const vBefore = await strategy.execCommand(cmds.agentVersion(provider), 15000);
-    const cliFound = vBefore.code === 0 && vBefore.stdout.trim().length > 0;
-    result.oldVersion = cliFound ? vBefore.stdout.trim() : 'not installed';
+    let cliFound = false;
+    if (located.ok) {
+      const vBefore = await strategy.execCommand(cmds.agentVersion(provider, cliPath), 15000);
+      cliFound = vBefore.code === 0 && vBefore.stdout.trim().length > 0;
+      result.oldVersion = cliFound ? vBefore.stdout.trim() : 'not installed';
+    } else {
+      result.oldVersion = 'not installed';
+    }
 
     if (!cliFound && !installIfMissing) {
-      result.error = `${provider.name} CLI not found — use install_if_missing: true to install`;
+      result.error = located.ok
+        ? `${provider.name} CLI not found -- use install_if_missing: true to install`
+        : `${located.message} (or use install_if_missing: true to install)`;
       return result;
     }
 
@@ -117,7 +132,7 @@ async function updateSingleAgent(agent: Agent, installIfMissing: boolean): Promi
       }
       result.installed = true;
     } else {
-      const updateResult = await runCliStep(strategy, cmds, 'update', cmds.updateAgent(provider), UPDATE_INACTIVITY_TIMEOUT_MS, INSTALL_MAX_TOTAL_MS);
+      const updateResult = await runCliStep(strategy, cmds, 'update', cmds.updateAgent(provider, cliPath), UPDATE_INACTIVITY_TIMEOUT_MS, INSTALL_MAX_TOTAL_MS);
       if ('timeoutError' in updateResult) {
         result.error = updateResult.timeoutError;
         return result;
@@ -127,8 +142,20 @@ async function updateSingleAgent(agent: Agent, installIfMissing: boolean): Promi
       }
     }
 
+    // An install or update may move the binary (new nvm version, a fresh
+    // installer location): re-resolve before reading the new version.
+    if (result.installed || cliPath) {
+      invalidateLlmCliPath(agent);
+      const relocated = await ensureMemberLlmCli(agent, provider);
+      if (!relocated.ok) {
+        result.error = relocated.message;
+        return result;
+      }
+      cliPath = relocated.path;
+    }
+
     // Get new version
-    const vAfter = await strategy.execCommand(cmds.agentVersion(provider), 15000);
+    const vAfter = await strategy.execCommand(cmds.agentVersion(provider, cliPath), 15000);
     result.newVersion = vAfter.stdout.trim() || 'unknown';
     result.success = true;
 

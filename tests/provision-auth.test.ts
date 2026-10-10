@@ -102,6 +102,47 @@ describe('provisionAuth', () => {
     expect(cmds.some(c => c.includes('sk-ant-api03-TESTKEY'))).toBe(false);
   });
 
+  // apra-fleet-fqkr.1.2: the post-deploy CLI check runs the resolved absolute path.
+  it('verifies through the stored absolute CLI path with its directory on PATH (POSIX)', async () => {
+    const abs = '/home/testuser/.npm-global/bin/claude';
+    const member = makeTestAgent({ friendlyName: 'npm-global-member', os: 'linux', llmCli: { provider: 'claude', path: abs, source: 'npm-global', resolvedAt: 'x' } });
+    addAgent(member);
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
+    mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
+
+    await provisionAuth({ member_id: member.id, api_key: 'sk-ant-api03-TESTKEY' });
+    const cmds = mockExecCommand.mock.calls.map(c => c[0]);
+    expect(cmds.some(c => c.includes(`export PATH='/home/testuser/.npm-global/bin':`) && c.includes(`'${abs}' -p "hello"`))).toBe(true);
+  });
+
+  it('verifies through the stored absolute CLI path on a PowerShell member (non-claude provider)', async () => {
+    const abs = 'C:\\Users\\testuser\\AppData\\Roaming\\npm\\codex.cmd';
+    const member = makeTestAgent({ friendlyName: 'win-codex', os: 'windows', shell: 'pwsh7', llmProvider: 'codex', llmCli: { provider: 'codex', path: abs, source: 'npm-prefix', resolvedAt: 'x' } });
+    addAgent(member);
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
+    mockExecCommand.mockResolvedValue({ stdout: 'codex 1.0', stderr: '', code: 0 });
+
+    await provisionAuth({ member_id: member.id, api_key: 'sk-TESTKEY-0123456789' });
+    const cmds = mockExecCommand.mock.calls.map(c => c[0]);
+    expect(cmds.some(c => c.includes(`& '${abs}' --version`) && c.includes(`$env:Path = 'C:\\Users\\testuser\\AppData\\Roaming\\npm;'`))).toBe(true);
+  });
+
+  it('reports the structured not-found result when the member CLI is found nowhere', async () => {
+    const { ensureMemberLlmCli } = await import('../src/services/llm-cli-resolver.js');
+    const notFound = { provider: 'claude', binary: 'claude', probed: [{ kind: 'nvm' as const, location: '/home/testuser/.nvm/versions/node/*/bin/claude' }], fix: 'Fix: symlink the CLI into ~/.local/bin, or reinstall it.' };
+    vi.mocked(ensureMemberLlmCli).mockResolvedValueOnce({ ok: false, notFound, message: 'claude CLI "claude" not found on member "no-cli". Probed locations:\n  - nvm: /home/testuser/.nvm/versions/node/*/bin/claude\nFix: symlink the CLI into ~/.local/bin, or reinstall it.' });
+    const member = makeTestAgent({ friendlyName: 'no-cli' });
+    addAgent(member);
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
+    mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
+
+    const { text, structuredContent } = await provisionAuth({ member_id: member.id, api_key: 'sk-ant-api03-TESTKEY' });
+    expect(structuredContent.verified).toBe(false);
+    expect(structuredContent.llmCliNotFound).toEqual(notFound);
+    expect(text).toContain('Probed locations:');
+    expect(text).not.toContain('command not found');
+  });
+
   it('deploys master credentials when no api_key and creds exist', async () => {
     const member = makeTestAgent({ friendlyName: 'oauth-member' });
     addAgent(member);

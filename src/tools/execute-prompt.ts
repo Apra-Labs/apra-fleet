@@ -47,6 +47,7 @@ import type { ParsedResponse, PermissionDenial, TokenUsage, UsageLimitSignal } f
 import { isMaxTurnsResponse } from '../providers/provider.js';
 import { preflightCheck } from '../services/preflight-check.js';
 import { ensureAgyProject } from '../services/agy-project.js';
+import { ensureMemberLlmCli, invalidateLlmCliPath, type LlmCliNotFound } from '../services/llm-cli-resolver.js';
 import { sessionMcpInjectionAvailable, sessionMcpConfigPath, sessionMcpConfigIsPerDispatch, writeSessionMcpConfig, resolveSessionMcpAlwaysLoad } from '../services/session-mcp-config.js';
 
 
@@ -85,7 +86,10 @@ export function toStructuredUsage(u: TokenUsage): StructuredUsage {
 
 export interface ExecutePromptStructured {
   isError?: boolean;
-  reason?: 'busy' | 'reserved' | 'dispatch_failed' | 'nonzero_exit' | 'max_turns_exhausted' | 'empty_response' | 'orphan_recovery_timeout' | 'workspace_not_trusted' | 'auth' | 'server' | 'overloaded' | 'insufficient_context_headroom' | 'budget_exhausted' | 'session_not_found' | 'fork_unsupported' | 'stalled' | 'agent_never_started' | 'max_total_time' | 'preflight_offline' | 'preflight_auth_missing' | 'preflight_auth_expired' | 'usage_limit' | 'permission_denied' | 'secret_delivery_unavailable';
+  reason?: 'busy' | 'reserved' | 'dispatch_failed' | 'nonzero_exit' | 'max_turns_exhausted' | 'empty_response' | 'orphan_recovery_timeout' | 'workspace_not_trusted' | 'auth' | 'server' | 'overloaded' | 'insufficient_context_headroom' | 'budget_exhausted' | 'session_not_found' | 'fork_unsupported' | 'stalled' | 'agent_never_started' | 'max_total_time' | 'preflight_offline' | 'preflight_auth_missing' | 'preflight_auth_expired' | 'usage_limit' | 'permission_denied' | 'secret_delivery_unavailable' | 'llm_cli_not_found';
+  /** Present on a 'llm_cli_not_found' rejection (apra-fleet-fqkr.1.2): every
+   *  location the resolver probed and a one-line fix. No LLM call was made. */
+  llmCliNotFound?: LlmCliNotFound;
   // The LLM's actual reply text on success. Callers that dispatch execute_prompt
   // via an MCP client only ever see structuredContent (the content array is
   // dropped when structuredContent is also present) -- this field exists so the
@@ -1006,6 +1010,22 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     }
   }
 
+  // apra-fleet-fqkr.1.2: invoke the member's LLM CLI by its resolved absolute
+  // path (stored on the member; resolved here on first use, re-resolved when
+  // stale) so an nvm / npm-prefix / ~/.npm-global install that is not on the
+  // non-interactive PATH still dispatches. A CLI found nowhere is a
+  // deterministic, structured rejection naming every probed location and the
+  // fix -- never a raw shell "command not found" after the dispatch.
+  const llmCli = await ensureMemberLlmCli(agent, getProvider(agent.llmProvider));
+  if (!llmCli.ok) {
+    inFlightAgents.delete(agent.id);
+    writeStatusline(new Map([[agent.id, 'idle']]));
+    return {
+      text: `[FAIL] execute_prompt on "${agent.friendlyName}" rejected -- ${llmCli.message}\nNo LLM call was made.`,
+      structuredContent: { isError: true, reason: 'llm_cli_not_found', llmCliNotFound: llmCli.notFound },
+    };
+  }
+
   await ensureAgentFilesProvisioned(agent);
   const stallDetector = getStallDetector();
   let clearedByStall = false;
@@ -1253,6 +1273,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     fork: forkDescriptor,
     projectId: agyProjectId,
     ...(sessionMcpPath ? { mcpConfigPath: sessionMcpPath } : {}),
+    ...(llmCli.path ? { cliPath: llmCli.path } : {}),
   };
 
   // apra-fleet issue #390: session log paths live on the MEMBER's machine, under
@@ -1541,7 +1562,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     const loadPolicy = await resolveSessionMcpAlwaysLoad(
       agent,
       provider.mcpAlwaysLoadMinVersion?.(),
-      cmds.agentVersion(provider),
+      cmds.agentVersion(provider, llmCli.path),
       memberExec,
     );
     if (loadPolicy.warning) scope.warn(`session MCP config: ${loadPolicy.warning}`);
@@ -2003,6 +2024,10 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       // stderr tail plus the last result/error event (logLine applies the
       // usual secret redaction). Success paths log nothing extra.
       logLine('prompt_failure_output', formatPromptFailureTail(result), { id: agent.id, friendlyName: agent.friendlyName }, scope.getInv());
+      // apra-fleet-fqkr.1.2: exit 127 with a stored absolute CLI path means
+      // the binary went away mid-process (reinstall, nvm version removed).
+      // Drop the stored path so the next dispatch re-resolves it.
+      if (result.code === 127 && llmCli.path) invalidateLlmCliPath(agent);
       // apra-fleet-391: surface an auth failure as a STRUCTURED reason (not
       // just prose in `text`) so callers -- notably fleet-sprint's
       // isAuthDispatchError -- can key off it directly instead of regexing
