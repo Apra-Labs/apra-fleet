@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "09bcac6a5fbd2259c435d180c242f8a1604ba8c7",
     "branch": "feat/kb-redesign",
-    "entry_count": 332
+    "entry_count": 334
   },
   "entries": [
     {
@@ -3061,6 +3061,25 @@
       }
     },
     {
+      "id": "7d7320d0-ed80-4b16-8ac8-c5df806cea55",
+      "type": "knowledge",
+      "title": "member-init install-currency warning is recorded under a non-gating step",
+      "summary": "checkInstallCurrency in member-init-probe.mjs records member-fleet-outdated under step 'install', which is absent from GATING_STEPS, so it never flips verified or changes the primary reason. It is invoked inside the fleetMcp try block, so it must never throw.",
+      "symbols": [
+        "checkInstallCurrency",
+        "finish",
+        "GATING_STEPS"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/member-init-probe.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-10T05:03:35.246Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/member-init-probe.mjs": "0d4587ee66b94998aa300aaf476b4faa8620f96a"
+      }
+    },
+    {
       "id": "7ec3c926-46e3-42df-ba26-148260f36a61",
       "type": "knowledge",
       "title": "kb_bible_commit removes bible entries the maintainer KB holds as superseded or invalidated",
@@ -5428,6 +5447,27 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:15.109Z"
+    },
+    {
+      "id": "e0e6b14b-ce5e-4152-89a5-34831d336e90",
+      "type": "knowledge",
+      "title": "gitnexus 1.6.x names function-local callables name@row:col in node ids",
+      "summary": "gitnexus 1.6.12 gives a callable nested inside another callable an id like Function:src/a.ts:outer.pick@1:2 (0-based row:col of the declaration). Top-level functions and class methods keep bare ids, and methods carry a #<arity> tag. stripIdTags in code-intelligence-gitnexus.ts strips both before splitting the id on its last single colon.",
+      "symbols": [
+        "stripIdTags",
+        "splitSymbolId",
+        "resolvesToRequested"
+      ],
+      "source_files": [
+        "src/tools/code-intelligence-gitnexus.ts",
+        "tests/code-index-consistency.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-10T05:03:35.145Z",
+      "source_file_hashes": {
+        "src/tools/code-intelligence-gitnexus.ts": "2f7c9a3c0a81b087631279115b104d0c5ea810cc",
+        "tests/code-index-consistency.test.ts": "088987cb271af0c1c7c5c619679b73b53e96dabc"
+      }
     },
     {
       "id": "e1673449-1192-4948-bd32-7b743635a820",
