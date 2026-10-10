@@ -1876,7 +1876,9 @@ export class SqliteProvider implements MemoryProvider {
   // union of every basis file across every pair -- same batching discipline as
   // freshnessSweep): exactly one side fully matches -> that side WINS
   // mechanically via resolveContradiction with the verbatim evidence string
-  // "hash-basis match on merged worktree". Both match, both mismatch, or
+  // "hash-basis match on merged worktree" -- EXCEPT when the would-be loser is
+  // CONFIRMED: a CONFIRMED entry is never retired by hash basis alone, so such
+  // a pair is left for the reconciler agent. Both match, both mismatch, or
   // EITHER side has an empty/missing basis -> left untouched for the T3.2
   // reconciler agent. Directive pairs are already excluded by flaggedPairs()
   // itself (MEDIUM-3 liveness contract); the explicit re-check here is
@@ -1933,7 +1935,14 @@ export class SqliteProvider implements MemoryProvider {
       const originalMatches = originalBasis ? this.basisFullyMatches(originalBasis, currentHashes) : false;
       const challengerMatches = challengerBasis ? this.basisFullyMatches(challengerBasis, currentHashes) : false;
 
-      if (originalMatches && !challengerMatches) {
+      // A CONFIRMED entry is never retired by hash basis alone: a member can
+      // capture a contradiction against a drifted CONFIRMED entry, and basis
+      // match is no content judgement. Defer to the reconciler agent.
+      const wouldLose = originalMatches && !challengerMatches ? pair.challenger
+        : challengerMatches && !originalMatches ? pair.original : null;
+      if (wouldLose && wouldLose.confidence === 'CONFIRMED') {
+        left_for_agent.push({ originalId: pair.original.id, challengerId: pair.challenger.id });
+      } else if (originalMatches && !challengerMatches) {
         await this.resolveContradiction(pair.original.id, pair.challenger.id, 'hash-basis match on merged worktree');
         resolved.push({ winnerId: pair.original.id, loserId: pair.challenger.id });
       } else if (challengerMatches && !originalMatches) {

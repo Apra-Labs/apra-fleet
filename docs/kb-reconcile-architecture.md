@@ -115,7 +115,10 @@ against the merged worktree:
 
 - **Exactly one side matches** -> that side wins mechanically. The prefilter
   calls `resolveContradiction(winnerId, loserId, "hash-basis match on merged
-  worktree")`. No agent needed.
+  worktree")`. No agent needed. **Exception:** if the would-be loser is
+  `CONFIRMED`, the pair is NOT resolved mechanically (a CONFIRMED entry is
+  never retired by hash basis alone); it goes to `left_for_agent` and both
+  entries stay unchanged.
 - **Both match, both mismatch, or either side has an empty/missing basis** ->
   the pair is left for the agent rung.
 - **Active user-directive in the pair** (`type='user-directive'` AND
