@@ -76,7 +76,7 @@ function fakeFleet() {
     const callTool = async (name, args) => {
         calls.push({ name, args });
         if (args.dry_run) return { content: [{ type: 'text', text: JSON.stringify({ dry_run: true, mode: args.role, stacks: [], allow: PLANNER_POLICY }) }] };
-        return { content: [{ type: 'text', text: args.grant ? `✅ Granted ${args.grant.length} permissions` : '✅ Permissions composed' }] };
+        return { content: [{ type: 'text', text: args.grant ? `\u2705 Granted ${args.grant.length} permissions` : '\u2705 Permissions composed' }] };
     };
     return { calls, callTool, grants: () => calls.filter((c) => !c.args.dry_run).flatMap((c) => c.args.grant || []) };
 }
