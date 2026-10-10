@@ -7,11 +7,21 @@
  * update_member and member_detail call) with a FAKE member exec -- no real
  * host, no real server.
  *
+ * Assertions: (1) a service-less Linux member install issues a detached
+ * start with a pidfile and ends with fleetMcp available; (2) a server found
+ * down at a later probe is started again; (3) a server that never becomes
+ * healthy is member-server-not-running with the cause and a one-line fix;
+ * (5) a Windows member gets PowerShell, never POSIX-only syntax. Assertion (4)
+ * -- apra-fleet call on a member-install layout never throws
+ * AUTOSTART_VERSION_UNKNOWN -- lives in tests/call-member-version.test.ts and
+ * packages/apra-fleet-client/test/auto-start.test.mjs.
+ *
  * Revert check (stated, and re-run by hand when this file changes): with the
  * start step in probeRemote removed (src/services/member-fleet-install.ts,
- * steps 3c and the step-4 retry), "install on a service-less Linux member ..."
- * fails -- no start command is issued and the status is
- * unavailable(member-session-failed) instead of available.
+ * steps 3c and the step-4 retry), assertion (1) "install on a service-less
+ * Linux member ..." fails -- no start command is issued and the status is
+ * unavailable(member-session-failed) instead of available. Building the start
+ * command as POSIX for a Windows member fails the assertion (5) tests.
  */
 import { describe, it, expect } from 'vitest';
 import { makeTestAgent, decodePowerShellEncodedCommand } from './test-helpers.js';
@@ -55,7 +65,7 @@ const INSTALL_STANDALONE_OUTPUT = [
   'Apra Fleet v0.4.4 installed successfully for Claude Code.',
 ].join('\n');
 
-function fakeDeps(world: World): MemberFleetMcpDeps {
+function fakeDeps(world: World, orchestrator: { os: 'linux' | 'windows'; arch: string } = { os: 'linux', arch: 'x64' }, home = HOME): MemberFleetMcpDeps {
   return {
     exec: async (_agent, command) => {
       const c = plain(command);
@@ -71,8 +81,8 @@ function fakeDeps(world: World): MemberFleetMcpDeps {
         }
         return {
           stdout: 'Server starting...\n',
-          stderr: `Server process exited during startup (exit code 1). Check logs at: ${HOME}/.apra-fleet/data/fleet.log\n`
-            + `Last lines of ${HOME}/.apra-fleet/data/fleet.log:\nError: listen EADDRINUSE: address already in use 127.0.0.1:7523`,
+          stderr: `Server process exited during startup (exit code 1). Check logs at: ${home}/.apra-fleet/data/fleet.log\n`
+            + `Last lines of ${home}/.apra-fleet/data/fleet.log:\nError: listen EADDRINUSE: address already in use 127.0.0.1:7523`,
           code: 1,
         };
       }
@@ -92,8 +102,8 @@ function fakeDeps(world: World): MemberFleetMcpDeps {
       return { stdout: '', stderr: `unexpected: ${c}`, code: 127 };
     },
     transfer: async (_a, localPaths) => ({ success: localPaths, failed: [] }),
-    resolveHome: async () => HOME,
-    orchestratorPlatform: () => ({ os: 'linux', arch: 'x64' }),
+    resolveHome: async () => home,
+    orchestratorPlatform: () => orchestrator,
     orchestratorExecutable: () => '/opt/fleet/apra-fleet',
     orchestratorVersion: () => VERSION,
     downloadReleaseAsset: async () => '/tmp/fake-release-asset',
@@ -184,7 +194,7 @@ describe('standalone member server: a server that cannot be kept running is repo
 
 describe('standalone member server: commands are built for the member OS/shell', () => {
   it('POSIX: quoted literal paths, no shell variable expansion', () => {
-    const cmd = buildMemberStartCommand(BIN, PIDFILE, 'linux', 'bash' as never);
+    const cmd = buildMemberStartCommand(BIN, PIDFILE, 'linux', undefined);
     expect(cmd).not.toMatch(/\$|~|`/);
     expect(cmd.startsWith('nohup ')).toBe(true);
   });
@@ -192,12 +202,50 @@ describe('standalone member server: commands are built for the member OS/shell',
   it('Windows PowerShell: an encoded PowerShell call of start, no POSIX-only syntax', () => {
     const home = 'C:\\Users\\bella';
     const bin = `${home}\\.apra-fleet\\bin\\apra-fleet.exe`;
-    const pid = memberStandalonePidPath(home, 'windows', 'powershell' as never);
+    const pid = memberStandalonePidPath(home, 'windows', undefined);
     expect(pid).toBe(`${home}\\.apra-fleet\\data\\standalone.pid`);
-    const cmd = buildMemberStartCommand(bin, pid, 'windows', 'powershell' as never);
+    const cmd = buildMemberStartCommand(bin, pid, 'windows', undefined);
     expect(cmd).toContain('-EncodedCommand');
     const ps = decodePowerShellEncodedCommand(cmd);
     expect(ps).toContain(`& '${bin}' 'start' '--autostart' '--pidfile' '${pid}'`);
     expect(ps).not.toMatch(/nohup|\/dev\/null|2>&1/);
+  });
+  it('Git Bash on Windows: POSIX quoting, no nohup (no SIGHUP there, and its nohup is not guaranteed)', () => {
+    const cmd = buildMemberStartCommand('/c/Users/bella/.apra-fleet/bin/apra-fleet.exe', '/c/Users/bella/.apra-fleet/data/standalone.pid', 'windows', 'gitbash');
+    expect(cmd).not.toContain('-EncodedCommand');
+    expect(cmd.startsWith("'/c/Users/bella/.apra-fleet/bin/apra-fleet.exe' 'start'")).toBe(true);
+    expect(cmd).not.toMatch(/nohup|\$|~|`/);
+  });
+});
+
+describe('standalone member server: a Windows (PowerShell) member keeps its path', () => {
+  const WIN_HOME = 'C:\\Users\\bella';
+  const winMember = (): Agent => makeTestAgent({ os: 'windows', username: 'bella', workFolder: `${WIN_HOME}\\repo`, llmProvider: 'claude' });
+  const WINDOWS_ORCH = { os: 'windows' as const, arch: 'x64' };
+
+  it('standalone install on Windows: the start is an encoded PowerShell call and no POSIX-only syntax reaches PowerShell', async () => {
+    const w = newWorld();
+    const deps = fakeDeps(w, WINDOWS_ORCH, WIN_HOME);
+    const raw: string[] = [];
+    const exec = deps.exec;
+    deps.exec = async (agent, command, t) => { raw.push(command); return exec(agent, command, t); };
+    const status = await probeMemberFleetMcp(winMember(), deps, { install: true });
+    expect(status.state).toBe('available');
+    const starts = startCmds(w);
+    expect(starts).toHaveLength(1);
+    expect(starts[0]).toContain(`& '${WIN_HOME}\\.apra-fleet\\bin\\apra-fleet.exe' 'start' '--autostart' '--pidfile' '${WIN_HOME}\\.apra-fleet\\data\\standalone.pid'`);
+    // The start reaches the member as an encoded PowerShell command, and no
+    // command the fleet sent (decoded) carries POSIX-only syntax.
+    const rawStart = raw.find(c => plain(c).includes("'start'"))!;
+    expect(rawStart).toContain('-EncodedCommand');
+    expect(raw.length).toBeGreaterThan(5);
+    for (const c of w.log) expect(c).not.toMatch(/\bnohup\b|\/dev\/null|command -v/);
+  });
+
+  it('a Windows member whose install registered its service (task) issues no start', async () => {
+    const w = newWorld({ noServiceManager: false, serverUp: true });
+    const status = await probeMemberFleetMcp(winMember(), fakeDeps(w, WINDOWS_ORCH, WIN_HOME), { install: true });
+    expect(status.state).toBe('available');
+    expect(startCmds(w)).toEqual([]);
   });
 });
