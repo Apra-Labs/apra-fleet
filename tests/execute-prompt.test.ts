@@ -274,6 +274,50 @@ describe('executePrompt', () => {
     expect(mockExecCommand).toHaveBeenCalledTimes(4);
   });
 
+  // apra-fleet-fqkr.1.2: the resolved LLM CLI path is invoked by absolute path.
+  it('invokes a stored absolute CLI path with its directory prepended to PATH', async () => {
+    const abs = '/home/testuser/.nvm/versions/node/v20.11.1/bin/claude';
+    const member = makeTestAgent({ friendlyName: 'nvm-member', os: 'linux', llmCli: { provider: 'claude', path: abs, source: 'nvm', resolvedAt: 'x' } });
+    addAgent(member);
+    mockExecCommand.mockResolvedValue({ stdout: JSON.stringify({ result: 'done', session_id: 'sess-n' }), stderr: '', code: 0 });
+
+    await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+    const main = mockExecCommand.mock.calls[1][0];
+    expect(main).toContain(`export PATH='/home/testuser/.nvm/versions/node/v20.11.1/bin':"$HOME/.local/bin:$PATH:$HOME/.apra-fleet/bin"`);
+    expect(main).toContain(`'${abs}' -p`);
+  });
+
+  it('invokes a stored absolute CLI path on a PowerShell member via & with the dir on $env:Path', async () => {
+    const abs = 'C:\\Users\\testuser\\AppData\\Roaming\\npm\\claude.cmd';
+    const member = makeTestAgent({ friendlyName: 'win-npm-member', os: 'windows', shell: 'powershell5', workFolder: 'C:\\work', llmCli: { provider: 'claude', path: abs, source: 'npm-prefix', resolvedAt: 'x' } });
+    addAgent(member);
+    mockExecCommand.mockResolvedValue({ stdout: JSON.stringify({ result: 'done', session_id: 'sess-w' }), stderr: '', code: 0 });
+
+    await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+    const all = mockExecCommand.mock.calls.map(c => c[0]).join('\n');
+    expect(all).toContain(`$env:Path = 'C:\\Users\\testuser\\AppData\\Roaming\\npm;'`);
+    expect(all).toContain(`& '${abs}' `);
+  });
+
+  it('rejects with a structured llm_cli_not_found error (no dispatch) when the CLI is found nowhere', async () => {
+    const { ensureMemberLlmCli } = await import('../src/services/llm-cli-resolver.js');
+    const notFound = {
+      provider: 'claude', binary: 'claude',
+      probed: [{ kind: 'login-shell' as const, location: "login shell (bash -lc 'command -v claude')" }, { kind: 'local-bin' as const, location: '/home/testuser/.local/bin/claude' }],
+      fix: 'Fix: symlink the CLI into ~/.local/bin, or reinstall it.',
+    };
+    vi.mocked(ensureMemberLlmCli).mockResolvedValueOnce({ ok: false, notFound, message: 'claude CLI "claude" not found on member "no-cli". Probed locations:\n  - local-bin: /home/testuser/.local/bin/claude\nFix: symlink the CLI into ~/.local/bin, or reinstall it.' });
+    const member = makeTestAgent({ friendlyName: 'no-cli' });
+    addAgent(member);
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+    expect(result.structuredContent).toMatchObject({ isError: true, reason: 'llm_cli_not_found', llmCliNotFound: notFound });
+    expect(resultText(result)).toContain('Probed locations:');
+    expect(resultText(result)).not.toContain('command not found');
+    expect(mockExecCommand).not.toHaveBeenCalled();
+    expect(inFlightAgents.has(member.id)).toBe(false);
+  });
+
   it('passes model parameter to the generated command', async () => {
     const member = makeTestAgent({ friendlyName: 'model-member' });
     addAgent(member);

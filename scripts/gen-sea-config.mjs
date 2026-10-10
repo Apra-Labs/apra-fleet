@@ -164,19 +164,27 @@ const workflowRuntime = {
   // workspace node_modules was still resolvable next to dist/. undici has no
   // runtime dependencies of its own, so the single tree suffices.
   ...collectPackageTree(join(root, 'node_modules', 'undici'), 'undici'),
+  // unbash: the shell parser fleet-sprint's permission heal splits refused
+  // compound shell calls with (packages/apra-fleet-se/fleet-sprint/
+  // shell-commands.mjs). Zero runtime dependencies of its own.
+  ...collectPackageTree(join(root, 'node_modules', 'unbash'), 'unbash'),
 };
 
-// Guard against this list silently drifting from apra-fleet-client's real
-// dependency set again: every dependency the client package declares must be
+// Guard against this list silently drifting from the real dependency sets
+// again: every dependency apra-fleet-client or the fleet-sprint package
+// (apra-fleet-se, shipped verbatim as the built-in workflow) declares must be
 // shipped in the runtime tree above (or be one of the @apralabs packages).
-const clientPkg = JSON.parse(readFileSync(join(root, 'packages', 'apra-fleet-client', 'package.json'), 'utf-8'));
-for (const dep of Object.keys(clientPkg.dependencies ?? {})) {
+const runtimeDepOwners = ['apra-fleet-client', 'apra-fleet-se'];
+const declaredRuntimeDeps = new Set(runtimeDepOwners.flatMap((pkgDir) => Object.keys(
+  JSON.parse(readFileSync(join(root, 'packages', pkgDir, 'package.json'), 'utf-8')).dependencies ?? {},
+)));
+for (const dep of declaredRuntimeDeps) {
   if (dep.startsWith('@apralabs/')) continue;
   // collectPackageTree keys assets as '<manifestPrefix>/<pathInPackage>', so a
   // shipped dependency appears as 'undici/package.json', 'ajv/dist/...', etc.
   const shipped = Object.keys(workflowRuntime).some((assetName) => assetName === dep || assetName.startsWith(`${dep}/`));
   if (!shipped) {
-    console.error(`Error: @apralabs/apra-fleet-client depends on '${dep}' but gen-sea-config.mjs does not ship it in the workflow runtime tree.`);
+    console.error(`Error: ${runtimeDepOwners.join(' or ')} depends on '${dep}' but gen-sea-config.mjs does not ship it in the workflow runtime tree.`);
     console.error('Add a collectPackageTree(...) entry for it above.');
     process.exit(1);
   }

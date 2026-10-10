@@ -55,7 +55,7 @@ import { ReconnectingHttpTransport } from './reconnecting-transport.mjs';
 
 export {
     autoStartFleetServer, resolveFleetStartCommand, lastServerLog, FleetAutoStartError,
-    readStoppedByUser, stoppedByUserError, STOPPED_BY_USER_FILE,
+    clientServerVersion, clientServerVersionSources, readStoppedByUser, stoppedByUserError, STOPPED_BY_USER_FILE,
     AUTOSTART_MAX_STARTS, AUTOSTART_WINDOW_MS, AUTOSTART_TIMEOUT_MS,
 } from './auto-start.mjs';
 export { ReconnectingHttpTransport, isNeverDeliveredError } from './reconnecting-transport.mjs';

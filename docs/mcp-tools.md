@@ -329,7 +329,7 @@ is rejected for them and `execute_command` should be used instead.
   - `auto` / `bypassPermissions`: the refusal came from the safety classifier or a deny rule. `healable: false` and `suggestedGrants` is empty (overall and per call): never grant it.
   - Any mode, a fleet tool outside the member allowlist (denied by the member's own `.claude/settings.local.json` on purpose): `healable: false`, `cause: "policy_deny"`, `suggestedGrants` empty -- the whole denial, even when other calls in it were missing an allow rule. Never grant it. Member-allowlisted tools (kb_*, code_*, ...) always have an allow rule in the composed config, so an acceptEdits session is not refused them.
   - Default (no `fail_on_permission_denial`): the reply stands, as in v0.4.3. A complete reply is a success carrying the refusals in `structuredContent.permissionWarning` (logged, `[WARN]` in the text); an incomplete one keeps its ordinary reason (e.g. `empty_response`) with the refusals attached as `permissionDenied`.
-  - `fail_on_permission_denial: true` (fleet-sprint passes it): any refusal fails `reason: "permission_denied"` with the `permissionDenied` block, any partial reply in `response`, and the same session/usage/budget bookkeeping as a completed dispatch -- except a `healable: false` refusal on a complete reply, which stays a `permissionWarning`.
+  - `fail_on_permission_denial: true` (fleet-sprint passes it): any refusal fails `reason: "permission_denied"` with the `permissionDenied` block, any partial reply in `response` (with `replyComplete: true` when that reply is the turn's complete reply, `false` otherwise), and the same session/usage/budget bookkeeping as a completed dispatch -- except a `healable: false` refusal on a complete reply, which stays a `permissionWarning`.
   - Either way a typed failure wins: a `max_turns_exhausted`, `auth`, `server`, `overloaded` or `workspace_not_trusted` result keeps its reason, with the refusals attached as `permissionDenied`.
 - `compose_permissions` `dry_run: true` returns the allow list it would deliver for the role/tags (plus detected stacks, plus the ledger when `project_folder` is given) as JSON `{"dry_run":true,"mode","stacks","allow"}` and writes nothing -- use it to check whether a grant is within the member's composed policy.
 - AGY: a tool call refused for lack of a grant returns `reason: "permission_denied"` with a `permissionDenied` block (denied actions, targets, `suggestedGrants`, `hint`); heal it with `compose_permissions` `grant` and re-dispatch. A refusal of a fleet tool outside the member allowlist is member policy instead: `healable: false`, `cause: "policy_deny"`, no suggested grants, and a warning (not a failure) on a complete reply. An agy member whose own agy project cannot be created or verified is rejected with `dispatch_failed` and no LLM call. See [agy-provider.md](agy-provider.md).
@@ -459,6 +459,14 @@ Updates -- or, on request, installs -- the LLM provider CLI on a member.
 |------|------|----------|-------------|
 | member identifier | string | yes | `member_id` or `member_name` |
 | `install_if_missing` | boolean | no | Default `false`. Install the CLI on the member when it is not already present |
+
+**How the member's CLI is located (all CLI-invoking tools):** `execute_prompt`, `provision_llm_auth`, `update_llm_cli` and `register_member` resolve the provider CLI once per member and store its absolute path on the member record. Every later call runs the CLI by that path, with the path's directory prepended to `PATH`. On POSIX the probes run in this order: `command -v <bin>` in the member's own non-login shell (`default-path`, which also works without bash), then `bash -lc 'command -v <bin>'` (`login-shell`), then the npm global prefix, nvm per-version bin directories, `~/.local/bin` and `~/.npm-global/bin`. On PowerShell they are `Get-Command`, the npm prefix (`AppData\Roaming\npm`) and `.local\bin`.
+
+The resolved path can come from the login-shell PATH, while the dispatch itself runs in the non-interactive environment. Prepending the path's directory to `PATH` is what makes such a CLI (for example an nvm install with a `node` shebang) run there.
+
+There are two kinds of failure:
+- **CLI found nowhere:** `execute_prompt` returns `reason: 'llm_cli_not_found'` and `llmCliNotFound`, which lists every probed location and a one-line fix. This is deterministic.
+- **A probe that could not run (connection drop, timeout):** `execute_prompt` returns `dispatch_failed`, which is transient. The stored path is never cleared because of this failure.
 
 ---
 

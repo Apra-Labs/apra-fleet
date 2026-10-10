@@ -506,6 +506,7 @@ async function runDegradeSteps(ctx, policy, err, errorClass) {
  * @returns {Promise<{ok:boolean, value:any, error:Error|null, degraded:boolean,
  *                    inconclusive:{reason:string,message:string}|null,
  *                    attempts:number, resumesIssued:number,
+ *                    permissionWarnings:Array<{member:string, role:string, actions:string[]}>,
  *                    stepResults:Record<string,any>, validation:any}>}
  */
 export async function dispatchRole(ctx, roleName, opts = {}) {
@@ -554,6 +555,7 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
     // narrows, and its prompt, its label and the tier it is priced at all
     // follow. Resolving options before the bracket opened would dispatch the
     // pre-claim scope.
+    let lastDispatchHadSchema = false;
     const runDispatch = (dispatch, defaultPrompt, defaultLabel, attemptOpts, extra = {}) => {
         const invoke = async () => {
             // In-bracket pre-dispatch steps, then the caller's own preparation.
@@ -562,6 +564,10 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
             const prepared = opts.prepare ? await opts.prepare({ dispatch, ...extra }) : {};
             const localBindings = { ...bindingsFor(extra.resumeAttempt || 0), ...(prepared.bindings || {}) };
             const localOpts = prepared.resumeArg !== undefined ? { ...opts, resumeArg: prepared.resumeArg } : opts;
+            // A permission nudge (extra.nudge) resumes the SAME session the
+            // refusal came from with its own instruction: neither the
+            // caller's prepared prompt nor its resume argument applies.
+            const nudge = extra.nudge || null;
             const options = {
                 agentType: dispatch.agentType ?? undefined,
                 model: resolveModelTier(ctx, dispatch.model, localBindings),
@@ -569,9 +575,9 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
                 max_total_s: resolveBudget(ctx, dispatch.timeouts.maxTotalS),
                 max_turns: resolveMaxTurns(dispatch.maxTurns, localBindings),
                 schema: resolveSchema(ctx, dispatch.schema),
-                resume: resolveResumeArg(dispatch.resumeArg, localOpts),
+                resume: nudge ? nudge.sessionId : resolveResumeArg(dispatch.resumeArg, localOpts),
                 onSessionId: opts.onSessionId,
-                label: prepared.label ?? defaultLabel,
+                label: nudge ? `${prepared.label ?? defaultLabel ?? roleLabel} (permission nudge)` : (prepared.label ?? defaultLabel),
                 // Strict permission handling: a refused tool call fails the
                 // dispatch (permission_denied) so no role trusts a result made
                 // without the refused tool's output, and the progressive heal
@@ -581,7 +587,10 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
             for (const key of Object.keys(options)) {
                 if (options[key] === undefined) delete options[key];
             }
-            const inFlight = agent(prepared.prompt ?? defaultPrompt, {
+            // Which contract the reply of THIS dispatch is held to, should a
+            // permission refusal hand its reply to judgeRefusalByImpact.
+            lastDispatchHadSchema = options.schema !== undefined;
+            const inFlight = agent(nudge ? nudge.prompt : (prepared.prompt ?? defaultPrompt), {
                 ...options,
                 member_name: member,
             });
@@ -742,13 +751,76 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
     // its own heals for the per-ladder cap.
     let permissionHeals = 0;
     let permissionHealRedispatch = false;
+    // Run-separately nudges issued in this ladder (bounded by
+    // PERMISSION_NUDGE_CAP) and the one pending for the next loop pass.
+    let permissionNudges = 0;
+    let pendingPermissionNudge = null;
+    // Refusals judged harmless by their impact: the reply was complete and
+    // satisfied the role's contract, so it was accepted as the result. Each
+    // entry is surfaced on the outcome (permissionWarnings) and logged.
+    const permissionWarnings = [];
+
+    // A permission refusal is judged by its IMPACT on the reply, not by the
+    // mere fact of a refusal. When the refused dispatch nevertheless produced
+    // its COMPLETE reply (the server says so explicitly: replyComplete) and
+    // that reply satisfies the role's contract -- it validates against the
+    // dispatch schema (agent() did the extraction: parsedResponse) and, when
+    // the caller supplied one, passes opts.validate -- the refused call did
+    // not cost the role its result, so the reply IS the result and the
+    // refusal is recorded as a warning naming the member, role and refused
+    // calls. Anything less (no reply, a fragment, a reply that fails the
+    // contract) returns null and the refusal goes to the heal path exactly as
+    // before. A classifier/deny-rule refusal (healable:false) is never judged
+    // here: it keeps its own semantics. The server side is not weakened --
+    // fail_on_permission_denial stays true, so every refusal still reaches
+    // this judgment instead of silently riding on a success.
+    const judgeRefusalByImpact = (err) => {
+        if (!isPermissionDeniedDispatchError(err)) return null;
+        const details = err.details || {};
+        const denial = permissionDeniedOf(err);
+        if (denial && denial.healable === false) return null;
+        if (details.replyComplete !== true) return null;
+        if (typeof details.response !== 'string' || details.response.trim() === '') return null;
+        let candidate;
+        if (lastDispatchHadSchema) {
+            if (details.parsedResponse === undefined || details.parsedResponse === null) return null;
+            candidate = details.parsedResponse;
+        } else {
+            candidate = details.response;
+        }
+        if (opts.validate) {
+            let verdict;
+            try {
+                verdict = opts.validate(candidate);
+            } catch {
+                return null;
+            }
+            if (!verdict || !verdict.ok) return null;
+        }
+        const actions = refusedActionsOf(denial);
+        const warning = { member, role: policy.role, actions };
+        permissionWarnings.push(warning);
+        ctx.log(
+            `${roleLabel} dispatch WARNING: member '${member}' (role ${policy.role}) was refused tool calls: ` +
+            `${actions.length ? actions.join(', ') : 'unknown actions'}. The reply is complete and satisfies the ` +
+            `${roleLabel} contract, so it is accepted as the result; no grant was added. Review the refused calls ` +
+            'if the role should have been allowed to run them.'
+        );
+        return { value: candidate };
+    };
     // Resolves null when the heal succeeded (re-run the attempt), else the
     // MemberPermissionDeniedError that ends the sprint.
+    // Resumes the refused session with the run-separately instruction. Runs
+    // the main dispatch's own pre-dispatch steps first, like any attempt.
+    const runPermissionNudge = async (nudge, attemptOpts) => {
+        const shortCircuit = await runPreDispatchSteps(ctx, policy, member, opts, {});
+        if (shortCircuit) return shortCircuit.value;
+        return runDispatch(policy, opts.prompt, opts.label, attemptOpts, { nudge });
+    };
+
     const healPermissionDenial = async (err) => {
         const denial = permissionDeniedOf(err);
-        const actions = denial && denial.denials.length
-            ? denial.denials.map((d) => (d.target ? `${d.action} "${d.target}"` : d.action))
-            : ((denial && denial.actions) || []);
+        const actions = refusedActionsOf(denial);
         const actionText = actions.length ? actions.join(', ') : 'unknown actions';
         const suggested = (denial && denial.suggestedGrants) || [];
         const fail = (step, why, heal) => {
@@ -793,6 +865,28 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
             heal = await ctx.onPermissionDenied({ member, role: policy.role, roleLabel, denial, ladderHeals: permissionHeals });
         } catch (healErr) {
             heal = { healed: false, reason: healErr && healErr.message ? healErr.message : String(healErr) };
+        }
+        // A refused compound shell call whose every command is within the
+        // member's policy: resume the SAME session and ask it to run them as
+        // separate calls. Bounded (PERMISSION_NUDGE_CAP per ladder) and not
+        // charged to the ladder; never a grant for the compound call itself.
+        if (heal && heal.nudge) {
+            const sessionId = err && err.details && typeof err.details.sessionId === 'string' ? err.details.sessionId : null;
+            if (!sessionId) {
+                return fail('no_progress', 'The refused session reported no session id, so it cannot be resumed with a run-separately instruction.', heal);
+            }
+            if (permissionNudges >= PERMISSION_NUDGE_CAP) {
+                return fail('cap', `The member was already asked ${permissionNudges} times in this dispatch to run the commands as separate calls (limit ${PERMISSION_NUDGE_CAP}) and was refused again.`, heal);
+            }
+            if (heal.healed) permissionHeals += 1;
+            permissionNudges += 1;
+            ctx.log(
+                `${roleLabel} dispatch: member '${member}' was refused ${actionText}` +
+                `${heal.healed && heal.grants && heal.grants.length ? ` (granted ${heal.grants.join(', ')})` : ''}; every command inside is within ` +
+                `its policy -- resuming session ${sessionId} and asking it to run them as separate calls ` +
+                `(nudge ${permissionNudges} of ${PERMISSION_NUDGE_CAP}, not charged to the ladder).`
+            );
+            return { nudge: { sessionId, prompt: permissionNudgePrompt(heal.nudge) } };
         }
         if (!heal || !heal.healed) {
             const step = (heal && heal.step) || 'heal';
@@ -847,9 +941,22 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
             // re-dispatch hits the limit again.
             const redispatchMode = usageLimitRedispatch;
             usageLimitRedispatch = null;
-            value = redispatchMode === 'resume'
-                ? await redispatchViaUsageLimitResume(attemptOpts)
-                : await runAttempt(attemptOpts);
+            const nudge = pendingPermissionNudge;
+            pendingPermissionNudge = null;
+            try {
+                if (nudge) value = await runPermissionNudge(nudge, attemptOpts);
+                else value = redispatchMode === 'resume'
+                    ? await redispatchViaUsageLimitResume(attemptOpts)
+                    : await runAttempt(attemptOpts);
+            } catch (dispatchErr) {
+                // Judged INSIDE the attempt's try, so an accepted reply runs
+                // afterAttempt and the postResult steps exactly like any
+                // other result, and anything they throw is classified by the
+                // same ladder.
+                const accepted = judgeRefusalByImpact(dispatchErr);
+                if (!accepted) throw dispatchErr;
+                value = accepted.value;
+            }
             if (opts.afterAttempt) await opts.afterAttempt(value);
             // A postResult step may REJECT the result (the reviewer's
             // contract guard: a CHANGES_NEEDED verdict with nothing for the
@@ -925,8 +1032,9 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
             // wired, the sprint ends with MemberPermissionDeniedError naming
             // member, the denied actions and the fix.
             if (!completedButSyncFailed && isPermissionDeniedDispatchError(err)) {
-                const healError = await healPermissionDenial(err);
-                if (healError) throw healError;
+                const healResult = await healPermissionDenial(err);
+                if (healResult instanceof Error) throw healResult;
+                if (healResult && healResult.nudge) pendingPermissionNudge = healResult.nudge;
                 permissionHealRedispatch = true;
                 attempt -= 1;
                 continue;
@@ -1102,6 +1210,7 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
             inconclusive: inconclusiveOf(policy, lastErr),
             attempts: attemptsMade,
             resumesIssued,
+            permissionWarnings,
             stepResults: {},
             validation: opts.validate ? opts.validate(degradedValue).result : null,
         };
@@ -1140,9 +1249,53 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
         inconclusive: null,
         attempts: attemptsMade,
         resumesIssued,
+        permissionWarnings,
         stepResults,
         validation,
     };
+}
+
+/**
+ * Run-separately nudges per dispatch ladder: a refused compound shell call
+ * whose commands are all within the member's policy resumes the same session
+ * with permissionNudgePrompt() at most this many times; the next refusal
+ * fails with MemberPermissionDeniedError (step 'cap').
+ */
+export const PERMISSION_NUDGE_CAP = 2;
+
+/**
+ * The instruction a permission nudge resumes the refused session with.
+ * Generic by design (the engine runs sprints for any repository): it names
+ * only the refused calls the member itself made.
+ * @param {{ commands: string[], refused?: string[] }} nudge
+ */
+export function permissionNudgePrompt(nudge) {
+    const refused = (nudge && nudge.refused) || [];
+    const commands = (nudge && nudge.commands) || [];
+    return [
+        'Some of your shell tool calls were refused by the permission system because each one combined several '
+        + 'commands in a single call (a loop, a chain such as && or ;, a pipeline, or a command substitution).',
+        ...(refused.length ? ['', 'Refused calls:', ...refused.map((r) => `- ${r}`)] : []),
+        ...(commands.length ? ['', 'Each command inside them is allowed on its own:', ...commands.map((c) => `- ${c}`)] : []),
+        '',
+        'Do not retry the combined form. Run each command as its own separate tool call, one command per call, '
+        + 'with no loops, no loop variables, no &&, ; or | and no command substitution -- write out each concrete value instead of '
+        + 'iterating over a list. Then continue the task from where you stopped and finish with your complete final '
+        + 'reply in the format the task asked for.',
+    ].join('\n');
+}
+
+/**
+ * The refused calls of a permission denial, as display strings
+ * ('Bash "bd show x"'), preferring the per-call targets when known.
+ * @param {ReturnType<typeof permissionDeniedOf>} denial
+ * @returns {string[]}
+ */
+function refusedActionsOf(denial) {
+    if (!denial) return [];
+    return denial.denials.length
+        ? denial.denials.map((d) => (d.target ? `${d.action} "${d.target}"` : d.action))
+        : (denial.actions || []);
 }
 
 /**

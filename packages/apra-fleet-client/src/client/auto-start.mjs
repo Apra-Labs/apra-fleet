@@ -102,28 +102,53 @@ function readJsonVersion(file, exists, readFile) {
 }
 
 /**
- * The apra-fleet version this client package ships with: the nearest
- * version.json above this module (dev monorepo) or the workflows/.installed.json
- * written by the install that extracted it (~/.apra-fleet/node_modules/...).
+ * The apra-fleet version this client package ships with, and every file it
+ * looked at to find it.
+ *
+ * `deps.expectedVersion` wins when given: a client running INSIDE the
+ * apra-fleet CLI/binary (`apra-fleet call`, the workflow launcher, the
+ * server's own member probe) passes the running binary's own version, the one
+ * reliable source -- a member install (`install --member --workflows none`,
+ * run as the single-executable binary) has neither file below. Otherwise: the
+ * nearest version.json above this module (dev monorepo) or the
+ * workflows/.installed.json written by the install that extracted it
+ * (~/.apra-fleet/node_modules/...).
+ * @param {{ expectedVersion?: string|null, clientDir?: string,
+ *           exists?: (p: string) => boolean, readFile?: (p: string) => string }} [deps]
+ * @returns {{ version: string|null, looked: string[] }}
+ */
+export function clientServerVersionSources(deps = {}) {
+    if (deps.expectedVersion !== undefined && deps.expectedVersion !== null) {
+        return { version: deps.expectedVersion, looked: ['expectedVersion (from the running apra-fleet)'] };
+    }
+    const exists = deps.exists || fs.existsSync;
+    const readFile = deps.readFile || ((f) => fs.readFileSync(f, 'utf8'));
+    let dir = deps.clientDir || __dirname;
+    try { dir = fs.realpathSync(dir); } catch { /* keep */ }
+    const looked = [];
+    for (let i = 0; i < 8; i++) {
+        for (const file of [path.join(dir, 'version.json'), path.join(dir, 'workflows', '.installed.json')]) {
+            looked.push(file);
+            const v = readJsonVersion(file, exists, readFile);
+            if (v) return { version: v, looked };
+        }
+        const up = path.dirname(dir);
+        if (up === dir) break;
+        dir = up;
+    }
+    return { version: null, looked };
+}
+
+/**
+ * The apra-fleet version this client package ships with (see
+ * clientServerVersionSources), or null when no source names it.
  * @param {{ expectedVersion?: string|null, clientDir?: string,
  *           exists?: (p: string) => boolean, readFile?: (p: string) => string }} [deps]
  * @returns {string|null}
  */
 export function clientServerVersion(deps = {}) {
-    if (deps.expectedVersion !== undefined) return deps.expectedVersion;
-    const exists = deps.exists || fs.existsSync;
-    const readFile = deps.readFile || ((f) => fs.readFileSync(f, 'utf8'));
-    let dir = deps.clientDir || __dirname;
-    try { dir = fs.realpathSync(dir); } catch { /* keep */ }
-    for (let i = 0; i < 8; i++) {
-        const v = readJsonVersion(path.join(dir, 'version.json'), exists, readFile)
-            || readJsonVersion(path.join(dir, 'workflows', '.installed.json'), exists, readFile);
-        if (v) return v;
-        const up = path.dirname(dir);
-        if (up === dir) break;
-        dir = up;
-    }
-    return null;
+    if (deps.expectedVersion === null) return null;
+    return clientServerVersionSources(deps).version;
 }
 
 /**
@@ -207,12 +232,15 @@ export function resolveFleetStartCommand(deps = {}) {
         );
     }
 
-    const expected = clientServerVersion(deps);
+    const sources = deps.expectedVersion === null ? { version: null, looked: ['expectedVersion (null)'] } : clientServerVersionSources(deps);
+    const expected = sources.version;
     if (!versionCore(expected)) {
         throw new FleetAutoStartError(
             'The apra-fleet HTTP server is not running, and this client cannot tell which apra-fleet version it ' +
-                "belongs to, so it will not start one. Start the server yourself ('apra-fleet start').",
-            { code: 'AUTOSTART_VERSION_UNKNOWN' },
+                "belongs to, so it will not start one. Start the server yourself ('apra-fleet start'). " +
+                `Looked for a version in: ${sources.looked.join(', ')}${expected ? ` (found unparseable '${expected}')` : ''}. ` +
+                'A client run inside apra-fleet passes expectedVersion.',
+            { code: 'AUTOSTART_VERSION_UNKNOWN', details: { looked: sources.looked } },
         );
     }
     const seen = [];

@@ -468,6 +468,7 @@ third-party verticals.
 | The PM skill (doer-reviewer sprints, `/pm` commands) | [docs/pm-skill-overview.md](docs/pm-skill-overview.md) |
 | FAQ | [docs/FAQ.md](docs/FAQ.md) |
 | Troubleshooting | [docs/troubleshooting.md](docs/troubleshooting.md) |
+| Member LLM CLI path, standalone member servers, shell-loop refusal handling | [docs/member-host-and-cli-robustness.md](docs/member-host-and-cli-robustness.md) |
 | Keeping Fleet updated (`apra-fleet update`) | [docs/features/update.md](docs/features/update.md) |
 | Live member activity (`apra-fleet watch`, `logging.previewChars`) | [docs/features/watch.md](docs/features/watch.md) |
 | Secret variables and passwords | [docs/secret-variables.md](docs/secret-variables.md) - [docs/features/oob-auth.md](docs/features/oob-auth.md) |

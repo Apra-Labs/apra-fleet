@@ -9,7 +9,34 @@ import { escapeShellArg } from '../utils/shell-escape.js';
 // stays authoritative. $HOME is expanded by the member's own POSIX shell: these
 // builders have no probed home to resolve in JS, same as the .local/bin entry.
 export const FLEET_BIN_PATH_POSIX = '$HOME/.apra-fleet/bin';
-const CLI_PATH = `export PATH="$HOME/.local/bin:$PATH:${FLEET_BIN_PATH_POSIX}" && unset ANTIGRAVITY_SOURCE_METADATA CLAUDE_SOURCE_METADATA COPILOT_SOURCE_METADATA CODEX_SOURCE_METADATA && `;
+const CLI_ENV_UNSET = 'unset ANTIGRAVITY_SOURCE_METADATA CLAUDE_SOURCE_METADATA COPILOT_SOURCE_METADATA CODEX_SOURCE_METADATA && ';
+const CLI_PATH = `export PATH="$HOME/.local/bin:$PATH:${FLEET_BIN_PATH_POSIX}" && ${CLI_ENV_UNSET}`;
+
+/**
+ * PATH/env setup for one CLI invocation (apra-fleet-fqkr.1.2). With a resolved
+ * absolute CLI path, its directory is PREPENDED: an nvm or npm-prefix install
+ * is a `#!/usr/bin/env node` script that needs the sibling node on PATH. The
+ * existing ~/.local/bin prepend and fleet-bin append are kept.
+ */
+export function posixCliSetup(cliPath?: string): string {
+  if (!cliPath) return CLI_PATH;
+  const slash = cliPath.lastIndexOf('/');
+  const dir = slash > 0 ? cliPath.slice(0, slash) : '/';
+  return `export PATH=${escapeShellArg(dir)}:"$HOME/.local/bin:$PATH:${FLEET_BIN_PATH_POSIX}" && ${CLI_ENV_UNSET}`;
+}
+
+/**
+ * Replace the provider command's leading bare binary name (`claude ...`)
+ * with the single-quoted absolute path. A command that does not start with
+ * the binary (e.g. `npm update -g ...`) is returned unchanged -- the PATH
+ * prepend from posixCliSetup still puts the resolved directory first.
+ */
+export function posixAbsoluteCli(cmd: string, provider: ProviderAdapter, cliPath?: string): string {
+  if (!cliPath) return cmd;
+  const bin = provider.cliCommand('').trim();
+  if (cmd === bin || cmd.startsWith(`${bin} `)) return `${escapeShellArg(cliPath)}${cmd.slice(bin.length)}`;
+  return cmd;
+}
 
 /**
  * Wrap a bash command string with PID capture.
@@ -116,20 +143,20 @@ export class LinuxCommands implements OsCommands {
 
   // --- Generic agent CLI ---
 
-  agentCommand(provider: ProviderAdapter, args: string): string {
-    return `${CLI_PATH}${provider.cliCommand(args)}`;
+  agentCommand(provider: ProviderAdapter, args: string, cliPath?: string): string {
+    return `${posixCliSetup(cliPath)}${posixAbsoluteCli(provider.cliCommand(args), provider, cliPath)}`;
   }
 
-  agentVersion(provider: ProviderAdapter): string {
-    return `${CLI_PATH}${provider.versionCommand()}`;
+  agentVersion(provider: ProviderAdapter, cliPath?: string): string {
+    return `${posixCliSetup(cliPath)}${posixAbsoluteCli(provider.versionCommand(), provider, cliPath)}`;
   }
 
   installAgent(provider: ProviderAdapter): string {
     return provider.installCommand('linux');
   }
 
-  updateAgent(provider: ProviderAdapter): string {
-    return `${CLI_PATH}${provider.updateCommand()}`;
+  updateAgent(provider: ProviderAdapter, cliPath?: string): string {
+    return `${posixCliSetup(cliPath)}${posixAbsoluteCli(provider.updateCommand(), provider, cliPath)}`;
   }
 
   buildAgentPromptCommand(provider: ProviderAdapter, opts: PromptOptions): string {
@@ -151,12 +178,15 @@ export class LinuxCommands implements OsCommands {
       : provider.buildPromptCommand(opts);
     // Provider command starts with `cd "folder" && <cli> ...`
     // Inject PATH prepend after the cd so the binary is findable
+    // apra-fleet-fqkr.1.2: with a resolved CLI path the binary is invoked by
+    // its quoted absolute path and its directory is prepended to PATH.
     const cdPrefix = `cd "${escapedFolder}" && `;
+    const setup = posixCliSetup(opts.cliPath);
     let innerCmd: string;
     if (providerCmd.startsWith(cdPrefix)) {
-      innerCmd = `${cdPrefix}${CLI_PATH}${providerCmd.slice(cdPrefix.length)}`;
+      innerCmd = `${cdPrefix}${setup}${posixAbsoluteCli(providerCmd.slice(cdPrefix.length), provider, opts.cliPath)}`;
     } else {
-      innerCmd = `${CLI_PATH}${providerCmd}`;
+      innerCmd = `${setup}${posixAbsoluteCli(providerCmd, provider, opts.cliPath)}`;
     }
     // apra-fleet-6z8.1: mirror the CLI's stdout to a durable per-invocation file
     // so a torn-down SSH channel cannot destroy an otherwise-complete result.

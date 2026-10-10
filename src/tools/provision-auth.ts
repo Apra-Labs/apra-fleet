@@ -17,6 +17,7 @@ import { logLine, logWarn } from '../utils/log-helpers.js';
 import { findSecretTokens, legacyTokenWarning } from '../services/secret-token.js';
 import { invalidatePreflightCache } from '../services/preflight-check.js';
 import { stageEnvVars, writeMemberSecretFile, removeMemberSecretFile, SecretDeliveryError } from '../services/member-secret-env.js';
+import { ensureMemberLlmCli, type LlmCliNotFound } from '../services/llm-cli-resolver.js';
 import type { Agent, SSHExecResult } from '../types.js';
 import type { ProviderAdapter } from '../providers/index.js';
 
@@ -115,6 +116,13 @@ interface ProvisionAuthFields {
   memberId: string | null;
   /** Friendly name of the resolved member, or null. */
   memberName: string | null;
+  /**
+   * Present only when the post-deploy check could not run because the
+   * member's LLM CLI was not found anywhere the resolver probed
+   * (src/services/llm-cli-resolver.ts): the probed locations and a one-line
+   * fix, instead of a raw shell "command not found".
+   */
+  llmCliNotFound?: LlmCliNotFound;
 }
 
 export interface ProvisionAuthStructured extends ProvisionAuthFields {
@@ -161,6 +169,7 @@ function authResult(
       verified: fields.verified ?? false,
       memberId: fields.memberId ?? null,
       memberName: fields.memberName ?? null,
+      ...(fields.llmCliNotFound ? { llmCliNotFound: fields.llmCliNotFound } : {}),
     },
   };
 }
@@ -195,6 +204,8 @@ export const SUPERSEDED_CREDENTIAL_SUFFIX = '.fleet-superseded';
 export interface AuthCheck {
   ok: boolean;
   detail: string | null;
+  /** Set when the member's LLM CLI could not be located (apra-fleet-fqkr.1.2). */
+  llmCliNotFound?: LlmCliNotFound;
 }
 
 /**
@@ -249,10 +260,12 @@ export function interpretClaudeAuthResult(result: SSHExecResult, secret?: string
 async function verifyWithClaudePrompt(agent: Agent, env?: Record<string, string>, secret?: string): Promise<AuthCheck> {
   const cmds = getOsCommands(getAgentOS(agent), getAgentShell(agent));
   const provider = getProvider('claude');
+  const cli = await ensureMemberLlmCli(agent, provider);
+  if (!cli.ok) return { ok: false, detail: cli.message, llmCliNotFound: cli.notFound };
   const strategy = getStrategy(agent);
   const escapedFolder = escapeDoubleQuoted(agent.workFolder);
   return runWithStagedEnv(agent, env, secret,
-    (prefix) => strategy.execCommand(`${prefix}cd "${escapedFolder}" && ${cmds.agentCommand(provider, '-p "hello" --output-format json --max-turns 1')}`, AUTH_TEST_IDLE_TIMEOUT_MS, AUTH_TEST_MAX_TOTAL_MS),
+    (prefix) => strategy.execCommand(`${prefix}cd "${escapedFolder}" && ${cmds.agentCommand(provider, '-p "hello" --output-format json --max-turns 1', cli.path)}`, AUTH_TEST_IDLE_TIMEOUT_MS, AUTH_TEST_MAX_TOTAL_MS),
     (result) => interpretClaudeAuthResult(result, secret));
 }
 
@@ -291,9 +304,11 @@ async function runWithStagedEnv(
  */
 async function verifyWithVersion(agent: Agent, provider: ProviderAdapter, env?: Record<string, string>, secret?: string): Promise<AuthCheck> {
   const cmds = getOsCommands(getAgentOS(agent), getAgentShell(agent));
+  const cli = await ensureMemberLlmCli(agent, provider);
+  if (!cli.ok) return { ok: false, detail: cli.message, llmCliNotFound: cli.notFound };
   const strategy = getStrategy(agent);
   return runWithStagedEnv(agent, env, secret,
-    (prefix) => strategy.execCommand(`${prefix}${cmds.agentVersion(provider)}`, 30000, AUTH_TEST_MAX_TOTAL_MS),
+    (prefix) => strategy.execCommand(`${prefix}${cmds.agentVersion(provider, cli.path)}`, 30000, AUTH_TEST_MAX_TOTAL_MS),
     (result) => {
       if (result.code === 0) return { ok: true, detail: null };
       const raw = (result.stderr ?? '').trim() || (result.stdout ?? '').trim() || `CLI exited with code ${result.code}`;
@@ -432,7 +447,7 @@ async function provisionOAuthCopy(agent: Agent, provider: ProviderAdapter, clear
 `
     + `  Credential files were written -- try running a prompt to confirm.${suffix}${clearedNote}`
     + (authCheck.detail ? `\n  Auth test error: ${authCheck.detail}` : ''),
-    { ...who, reason: 'deployed_unverified', credentialLabel: 'oauth', expiresAt, verified: false });
+    { ...who, reason: 'deployed_unverified', credentialLabel: 'oauth', expiresAt, verified: false, llmCliNotFound: authCheck.llmCliNotFound });
 }
 
 
@@ -579,6 +594,7 @@ async function provisionApiKey(agent: Agent, apiKey: string, provider: ProviderA
     credentialLabel: envVarName,
     expiresAt: null,
     verified: authWorks,
+    llmCliNotFound: authCheck.llmCliNotFound,
   });
 }
 

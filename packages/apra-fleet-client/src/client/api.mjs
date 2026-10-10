@@ -99,6 +99,19 @@
  */
 
 /**
+ * The member's LLM CLI could not be located (execute_prompt reason 'llm_cli_not_found',
+ * provision_llm_auth / update_llm_cli verification). Mirrors
+ * src/services/llm-cli-resolver.ts's LlmCliNotFound.
+ * @typedef {Object} LlmCliNotFound
+ * @property {string} provider - The member's LLM provider (claude, agy, opencode, codex, copilot).
+ * @property {string} binary - The bare CLI binary name that was searched for.
+ * @property {Array<{kind: string, location: string}>} probed - Every location probed, in order
+ *   (kind: default-path | login-shell | get-command | npm-prefix | nvm | local-bin | npm-global;
+ *   default-path is the member's own non-login shell PATH, probed first on POSIX).
+ * @property {string} fix - One-line remediation.
+ */
+
+/**
  * Result-side shape of execute_prompt's `structuredContent` -- the single place callers
  * should read the outcome of a dispatch rather than re-parsing the display text. This is
  * NOT exhaustive of every `reason` value (see src/tools/execute-prompt.ts's
@@ -114,7 +127,12 @@
  *   'max_total_time' (max_total_s, measured from the call including setup, ran out) |
  *   'secret_delivery_unavailable' (the member's stored credentials cannot be delivered
  *   without a command line -- relay member or SFTP disabled; deterministic, do not retry;
- *   no LLM call was made) | ...
+ *   no LLM call was made) |
+ *   'llm_cli_not_found' (the member's LLM CLI is not at any location the server probed --
+ *   see `llmCliNotFound`; deterministic until the CLI is installed or linked; no LLM call
+ *   was made. A locate probe that could not RUN -- connection drop, timeout -- is instead
+ *   'dispatch_failed', transient, and keeps the member's stored CLI path) | ...
+ * @property {LlmCliNotFound} [llmCliNotFound] - Present when `reason === 'llm_cli_not_found'`.
  * @property {PermissionDenied} [permissionDenied] - Present when `reason === 'permission_denied'`:
  *   the member CLI refused tool calls (AGY headless mode auto-denies them and exits 0; Claude
  *   reports them in its result event's non-empty `permission_denials`). For Claude this needs the
@@ -126,6 +144,10 @@
  *   present as an EXTRA field on a typed failure (max_turns_exhausted, auth, server,
  *   overloaded, ...) or a non-strict Claude failure whose turn carried refusals: the typed
  *   reason wins.
+ * @property {boolean} [replyComplete] - Present when `reason === 'permission_denied'`: true when
+ *   `response` is the turn's COMPLETE reply (clean exit, no error result, non-empty text), false
+ *   when it is missing or a fragment. A caller may judge the refusal by impact and accept a
+ *   complete reply that satisfies its own contract; never infer completeness from the text.
  * @property {PermissionDenied} [permissionWarning] - Present on a SUCCESSFUL dispatch whose
  *   session refused tool calls without failing it: a healable:false refusal (never grant it),
  *   or any Claude refusal when `fail_on_permission_denial` was not set. A logged warning.
@@ -545,6 +567,9 @@
  * @property {boolean} verified - True when the post-deploy auth check confirmed working auth.
  * @property {string|null} memberId - Registry id of the resolved member, or null.
  * @property {string|null} memberName - Friendly name of the resolved member, or null.
+ * @property {LlmCliNotFound} [llmCliNotFound] - Present only when the post-deploy check could
+ *   not run because the member's LLM CLI was not found anywhere the server probed: the probed
+ *   locations and a one-line fix (credentials were still deployed; reason is deployed_unverified).
  *
  * Mirrors src/tools/provision-auth.ts's ProvisionAuthStructured field-for-field
  * (apra-fleet-3swo.7.2). Carries no plaintext credential of any kind.

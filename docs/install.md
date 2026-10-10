@@ -254,6 +254,52 @@ If the fleet server is running, uninstall aborts and tells you to re-run with
 tree, and ends with a "Kept (intentionally)" list (`data/`, `fleet.key`, user workflows).
 Full detail: [docs/features/uninstall.md](features/uninstall.md).
 
+## Members without a service manager (standalone mode)
+
+A member install (`install --member`) normally registers a user-mode auto-start:
+a systemd user unit on Linux, a launchd agent on macOS, a scheduled task (or a
+logon Run entry) on Windows. Some member hosts have no usable service manager:
+Docker containers, WSL without systemd, minimal distros, or a non-root user with
+no systemd user session. On those hosts the member install still succeeds and
+prints `[WARN] MEMBER-STANDALONE: ...` with the reason; its summary shows
+`Service: not registered -- standalone mode (MEMBER-STANDALONE)`.
+
+In standalone mode the server is started by the fleet, not by the host:
+
+- Right after the install, `register_member` / `update_member` run the
+  member's own `apra-fleet start` (under `nohup`, with
+  `--autostart --pidfile <home>/.apra-fleet/data/standalone.pid`). The server
+  is spawned detached in its own session, so it survives the SSH session; its
+  output goes to `<home>/.apra-fleet/data/fleet.log` and its pid to
+  `standalone.pid`.
+- Every later member probe (`update_member`, `member_detail` with
+  `refresh: true`, the sprint's member init) that finds the server down starts
+  it again the same way and retries the check.
+- A deliberate `apra-fleet stop` on the member is respected: the fleet does not
+  restart a server its user stopped.
+- When the server cannot be kept running (start fails, it dies during startup,
+  it never answers `/health`, or its user stopped it), `fleetMcp` is
+  `unavailable(member-server-not-running)`. The detail carries the exact cause,
+  including the last lines of the member's server log, and the `fleetMcp fix:`
+  line gives the one-line remedy.
+
+> **WARNING: a standalone member server is NOT restarted on reboot.** After the
+> member host (or container) restarts, the server stays down until the next
+> member probe starts it (`update_member`, `member_detail` with
+> `refresh: true`, or a sprint's member init), or until someone starts it by
+> hand. Until then the member has no KB/code tools from its own apra-fleet.
+
+Check and start it by hand, on the member, as the member user:
+
+```bash
+~/.apra-fleet/bin/apra-fleet status   # State: running / stopped; Service: not installed
+~/.apra-fleet/bin/apra-fleet start    # starts the standalone server detached
+```
+
+To get a restart on reboot, give the host a working user-mode service manager
+(for example enable systemd in WSL, or run the container with an init system),
+then run `update_member {member_id, fleet_install: "auto"}` again.
+
 ## Replace a full install on a member
 
 A fleet member machine needs a **member install only** (`apra-fleet install
@@ -352,9 +398,10 @@ f. On the orchestrator, for every member on that Unix user run `update_member`
 
 - `<home>/.apra-fleet/bin/apra-fleet --version` shows the orchestrator version.
 - `<home>/.apra-fleet/data/member-install.json` exists (a member install writes
-  it before the auto-start step, so it is present even if the auto-start failed;
-  the exit is then non-zero with `E-MEMBER-AUTOSTART`, and re-running step f
-  retries).
+  it before the auto-start step). On a host with no usable service manager the
+  install still succeeds in standalone mode (`MEMBER-STANDALONE`, see "Members
+  without a service manager (standalone mode)" above) and step f starts the
+  server.
 - `apra-fleet call --member <uuid> --list-tools` lists the `kb_*` and `code_*`
   tools and none of `execute_*`, `register_*` or `credential_*`.
 - `member_detail` with `refresh: true` shows `fleetMcp` `available`.

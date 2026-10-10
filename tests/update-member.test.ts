@@ -130,6 +130,23 @@ describe('updateMember', () => {
     expect(mockInvalidatePreflightCache).toHaveBeenCalledWith(agent.id);
   });
 
+  // apra-fleet-fqkr.1: the stored LLM CLI path belongs to one provider on one machine.
+  it('drops the stored LLM CLI path when host or provider changes, keeps it otherwise', async () => {
+    const llmCli = { provider: 'claude' as const, path: '/home/u/.local/bin/claude', source: 'local-bin' as const, resolvedAt: 'x' };
+    const keep = makeTestAgent({ id: 'member-cli-keep', host: '10.0.0.1', workFolder: '/srv/k', llmCli });
+    const moved = makeTestAgent({ id: 'member-cli-host', host: '10.0.0.2', workFolder: '/srv/h', llmCli });
+    const switched = makeTestAgent({ id: 'member-cli-prov', host: '10.0.0.3', workFolder: '/srv/p', llmCli });
+    addAgent(keep); addAgent(moved); addAgent(switched);
+
+    await updateMember({ member_id: keep.id, category: 'x' });
+    await updateMember({ member_id: moved.id, host: '10.0.0.8' });
+    await updateMember({ member_id: switched.id, llm_provider: 'codex' });
+    const byId = (id: string) => getAllAgents().find(a => a.id === id)!;
+    expect(byId(keep.id).llmCli).toEqual(llmCli);
+    expect(byId(moved.id).llmCli).toBeUndefined();
+    expect(byId(switched.id).llmCli).toBeUndefined();
+  });
+
   it('invalidates the preflight cache when auth_type changes', async () => {
     const agent = makeTestAgent({ id: 'member-cache-2', authType: 'password' });
     addAgent(agent);

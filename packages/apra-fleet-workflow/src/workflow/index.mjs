@@ -228,6 +228,25 @@ function extractStructuredOutput(text, compiledSchema) {
 }
 
 /**
+ * The reply a permission_denied dispatch carried, for the caller to judge:
+ * `response` (raw text), `replyComplete` (the server's verdict -- true only
+ * when it says so explicitly), and `parsedResponse` when a schema was given
+ * and the reply validates against it (absent otherwise). Without a schema
+ * there is nothing to parse; the raw text is the value a schema-less
+ * dispatch would have returned.
+ * @param {{response: string, replyComplete?: boolean}} structured
+ * @param {Function|null|undefined} compiledSchema
+ */
+function refusedReplyDetails(structured, compiledSchema) {
+    const details = { response: structured.response, replyComplete: structured.replyComplete === true };
+    if (compiledSchema && structured.response.trim() !== '') {
+        const extraction = extractStructuredOutput(structured.response, compiledSchema);
+        if (extraction.ok) details.parsedResponse = extraction.parsed;
+    }
+    return details;
+}
+
+/**
  * Summarizes why every extraction attempt failed, for both the repair-prompt
  * re-ask and the final AgentOutputError message.
  * @param {Array<{raw: string, parseError?: Error, validationErrors?: object[]}>} attempts
@@ -1325,7 +1344,19 @@ export class FleetWorkflow extends EventEmitter {
                     // result forwards its permissionDenied block the same way, and
                     // dispatched:false (nothing was sent to the member) is kept so a
                     // caller can tell a setup-time failure from one where the agent ran.
-                    throw new AgentDispatchError(`[Workflow Error] Agent dispatch failed (${structured.reason || 'unknown'}): ${text}`, { details: { text, reason: structured.reason, member: opts.member_name || opts.member_id, ...(structured.usageLimit ? { usageLimit: structured.usageLimit } : {}), ...(structured.permissionDenied ? { permissionDenied: structured.permissionDenied } : {}), ...(structured.sessionId ? { sessionId: structured.sessionId } : {}), ...(structured.dispatched === false ? { dispatched: false } : {}) } });
+                    //
+                    // A permission_denied result also forwards the turn's reply
+                    // (`response`), whether the server judged it COMPLETE
+                    // (`replyComplete`), and -- when this dispatch carried a
+                    // schema and the reply satisfies it -- the validated value
+                    // (`parsedResponse`), extracted exactly as a successful
+                    // dispatch's would be. No policy here either: the caller
+                    // decides whether a complete, valid reply outweighs the
+                    // refusal (fleet-sprint's dispatch-role judges it by impact).
+                    const refusedReply = structured.reason === 'permission_denied' && typeof structured.response === 'string'
+                        ? refusedReplyDetails(structured, compiledSchema)
+                        : {};
+                    throw new AgentDispatchError(`[Workflow Error] Agent dispatch failed (${structured.reason || 'unknown'}): ${text}`, { details: { text, reason: structured.reason, member: opts.member_name || opts.member_id, ...(structured.usageLimit ? { usageLimit: structured.usageLimit } : {}), ...(structured.permissionDenied ? { permissionDenied: structured.permissionDenied } : {}), ...(structured.sessionId ? { sessionId: structured.sessionId } : {}), ...(structured.dispatched === false ? { dispatched: false } : {}), ...refusedReply } });
                 }
 
                 // A fleet TOOL/TRANSPORT failure that carries no

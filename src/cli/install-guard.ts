@@ -225,6 +225,15 @@ export const FORCE_STOP_FULL_INSTALL_FLAG = '--force-stop-full-install';
 /** Machine-readable code printed on the refusal (the fleet-side install maps it to a typed status). */
 export const FULL_INSTALL_RUNNING_CODE = 'E-FULL-INSTALL-RUNNING';
 
+/**
+ * Printed by `install --member` when no user-mode service manager is usable on
+ * the host (a container, WSL without systemd, a minimal distro): the install
+ * still succeeds and the server runs STANDALONE -- the fleet starts it detached
+ * after the install and on each member probe. The fleet reads this code in the
+ * installer output (src/services/member-fleet-install.ts).
+ */
+export const MEMBER_STANDALONE_CODE = 'MEMBER-STANDALONE';
+
 export function memberInstallMarkerPath(): string {
   return path.join(getInstallDataDir(), 'member-install.json');
 }

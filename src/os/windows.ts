@@ -48,7 +48,34 @@ export function wrapPowerShellEncoded(psScript: string): string {
 
 // The member's own fleet bin dir, APPENDED (see linux.ts FLEET_BIN_PATH_POSIX).
 export const FLEET_BIN_PATH_WINDOWS = '$env:USERPROFILE\\.apra-fleet\\bin';
-const CLI_PATH = '$env:Path = "$env:USERPROFILE\\.local\\bin;$env:Path;' + FLEET_BIN_PATH_WINDOWS + '"; \'ANTIGRAVITY_SOURCE_METADATA\',\'CLAUDE_SOURCE_METADATA\',\'COPILOT_SOURCE_METADATA\',\'CODEX_SOURCE_METADATA\' | ForEach-Object { Remove-Item "env:$_" -ErrorAction SilentlyContinue }; ';
+const CLI_ENV_UNSET_WINDOWS = '\'ANTIGRAVITY_SOURCE_METADATA\',\'CLAUDE_SOURCE_METADATA\',\'COPILOT_SOURCE_METADATA\',\'CODEX_SOURCE_METADATA\' | ForEach-Object { Remove-Item "env:$_" -ErrorAction SilentlyContinue }; ';
+const CLI_PATH = '$env:Path = "$env:USERPROFILE\\.local\\bin;$env:Path;' + FLEET_BIN_PATH_WINDOWS + '"; ' + CLI_ENV_UNSET_WINDOWS;
+
+/**
+ * PowerShell PATH/env setup for one CLI invocation (apra-fleet-fqkr.1.2). With
+ * a resolved absolute CLI path, its directory is PREPENDED (single-quoted, so
+ * nothing in it is expanded): an npm-prefix .cmd shim needs the sibling
+ * node.exe. The existing .local\bin prepend and fleet-bin append are kept.
+ */
+export function powershellCliSetup(cliPath?: string): string {
+  if (!cliPath) return CLI_PATH;
+  const cut = Math.max(cliPath.lastIndexOf('\\'), cliPath.lastIndexOf('/'));
+  const dir = cut > 0 ? cliPath.slice(0, cut) : cliPath;
+  return `$env:Path = '${escapePowerShellArgInner(dir)};' + "$env:USERPROFILE\\.local\\bin;$env:Path;${FLEET_BIN_PATH_WINDOWS}"; ${CLI_ENV_UNSET_WINDOWS}`;
+}
+
+/** The PowerShell invocation of a resolved CLI: `& '<abs path>'` (call operator required for a quoted path). */
+export function powershellCliInvocation(cliPath: string): string {
+  return `& '${escapePowerShellArgInner(cliPath)}'`;
+}
+
+/** Replace the provider command's leading bare binary with the `& '<abs>'` invocation (unchanged when it does not start with it). */
+export function powershellAbsoluteCli(cmd: string, provider: ProviderAdapter, cliPath?: string): string {
+  if (!cliPath) return cmd;
+  const bin = provider.cliCommand('').trim();
+  if (cmd === bin || cmd.startsWith(`${bin} `)) return `${powershellCliInvocation(cliPath)}${cmd.slice(bin.length)}`;
+  return cmd;
+}
 
 /**
  * Wrap PowerShell setup commands and a CLI invocation with PID capture.
@@ -150,20 +177,20 @@ export class WindowsCommands implements OsCommands {
 
   // --- Generic agent CLI ---
 
-  agentCommand(provider: ProviderAdapter, args: string): string {
-    return `${CLI_PATH}${provider.cliCommand(args)}`;
+  agentCommand(provider: ProviderAdapter, args: string, cliPath?: string): string {
+    return `${powershellCliSetup(cliPath)}${powershellAbsoluteCli(provider.cliCommand(args), provider, cliPath)}`;
   }
 
-  agentVersion(provider: ProviderAdapter): string {
-    return `${CLI_PATH}${provider.versionCommand()}`;
+  agentVersion(provider: ProviderAdapter, cliPath?: string): string {
+    return `${powershellCliSetup(cliPath)}${powershellAbsoluteCli(provider.versionCommand(), provider, cliPath)}`;
   }
 
   installAgent(provider: ProviderAdapter): string {
     return provider.installCommand('windows');
   }
 
-  updateAgent(provider: ProviderAdapter): string {
-    return `${CLI_PATH}${provider.updateCommand()}`;
+  updateAgent(provider: ProviderAdapter, cliPath?: string): string {
+    return `${powershellCliSetup(cliPath)}${powershellAbsoluteCli(provider.updateCommand(), provider, cliPath)}`;
   }
 
   buildAgentPromptCommand(provider: ProviderAdapter, opts: PromptOptions): string {
@@ -182,10 +209,11 @@ export class WindowsCommands implements OsCommands {
     }
 
     // Setup: working directory + PATH so the CLI executable is resolvable
-    const setupCmd = `Set-Location "${escapedFolder}"; ${CLI_PATH}`;
+    const setupCmd = `Set-Location "${escapedFolder}"; ${powershellCliSetup(opts.cliPath)}`;
 
-    // Executable extracted from provider (e.g. "claude" from "claude <args>")
-    const filePath = provider.cliCommand('').trim();
+    // Executable extracted from provider (e.g. "claude" from "claude <args>"),
+    // or the resolved absolute path's `& '<path>'` invocation (apra-fleet-fqkr.1.2).
+    const filePath = opts.cliPath ? powershellCliInvocation(opts.cliPath) : provider.cliCommand('').trim();
 
     // Build argument list (everything that follows the executable)
     let argList = `${provider.headlessInvocation(instruction)} ${provider.jsonOutputFlag()}`;

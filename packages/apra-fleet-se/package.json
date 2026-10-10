@@ -22,8 +22,9 @@
     "update-golden": "node -e \"require('child_process').execFileSync(process.execPath,['--test','test/golden-transcript.test.mjs'],{stdio:'inherit',env:{...process.env,UPDATE_GOLDEN:'1'}})\""
   },
   "dependencies": {
-    "@apralabs/apra-fleet-workflow": "*",
     "@apralabs/apra-fleet-client": "*",
-    "ajv": "^8.12.0"
+    "@apralabs/apra-fleet-workflow": "*",
+    "ajv": "^8.12.0",
+    "unbash": "^5.0.0"
   }
 }

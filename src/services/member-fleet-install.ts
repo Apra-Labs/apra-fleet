@@ -44,9 +44,9 @@ import { getMemberHomeDir } from './member-home.js';
 import { getAgentOS, getAgentShell, isPosixShell } from '../utils/agent-helpers.js';
 import { escapePowerShellArgInner, escapeShellArgInner } from '../utils/shell-escape.js';
 import { wrapPowerShellEncoded } from '../os/windows.js';
-import { serverVersion } from '../version.js';
+import { serverVersion, clientExpectedVersion } from '../version.js';
 import { BUILTIN_DEFAULT_PORT, validPort } from '../paths.js';
-import { FULL_INSTALL_RUNNING_CODE, FORCE_STOP_FULL_INSTALL_FLAG } from '../cli/install-guard.js';
+import { FULL_INSTALL_RUNNING_CODE, FORCE_STOP_FULL_INSTALL_FLAG, MEMBER_STANDALONE_CODE } from '../cli/install-guard.js';
 import { parseVersion, isNewer } from './update-check.js';
 import { recordFleetMcpStatus, updateAgent } from './registry.js';
 import { encryptPassword } from '../utils/crypto.js';
@@ -160,6 +160,9 @@ export type MemberFleetInstallResult =
       /** Set when no release carried the exact build and the signed stable
        *  release of the same core was installed instead. */
       sameCoreFallback?: SameCoreFallback;
+      /** Set when THIS call's installer reported MEMBER-STANDALONE: the member
+       *  has no usable user-mode service manager, so nothing started its server. */
+      standalone?: string;
     }
   | {
       state: 'unavailable';
@@ -1080,6 +1083,7 @@ async function replaceFullInstall(
       : `replacing the full install failed at ${label}: ${why}. The backup is at ${plan.backupDir}. To roll back, run on the member: ${plan.rollbackFor[name].join('; ')}`;
     return { state: 'unavailable', reason: 'replace-failed', detail, version: previousVersion };
   };
+  let standalone: string | undefined;
   for (const step of plan.steps) {
     let r: SSHExecResult;
     try {
@@ -1091,6 +1095,7 @@ async function replaceFullInstall(
       return failedAt(step.name, `exited ${r.code}: ${(r.stderr.trim() || r.stdout.trim()).slice(-400)}`);
     }
     if (step.name === 'supervisor' && r.stdout.includes(SUPERVISOR_MOVED_SENTINEL)) supervisorMoved = true;
+    if (step.name === 'install') standalone = standaloneReason(`${r.stdout}\n${r.stderr}`);
   }
 
   const after = await probeMemberFleetVersion(agent, binPath, deps);
@@ -1107,6 +1112,7 @@ async function replaceFullInstall(
     state: 'available', version: after.version, installed: true, source: source.kind, binPath,
     replaced: { previousVersion, removed, backupPath: plan.backupDir },
     ...(sameCoreFallback ? { sameCoreFallback } : {}),
+    ...(standalone !== undefined ? { standalone } : {}),
   };
 }
 
@@ -1485,6 +1491,7 @@ async function ensureOnce(agent: Agent, deps: MemberFleetInstallDeps, force: boo
   let localPath: string;
   let downloaded = false;
   let sameCoreFallback: SameCoreFallback | undefined;
+  let standalone: string | undefined;
   if (source.kind === 'orchestrator-executable') {
     localPath = source.localPath;
   } else {
@@ -1529,6 +1536,7 @@ async function ensureOnce(agent: Agent, deps: MemberFleetInstallDeps, force: boo
       }
       return { state: 'unavailable', reason: 'install-failed', detail: `installer exited ${run.code}: ${tail}`, version: priorVersion };
     }
+    standalone = standaloneReason(`${run.stdout}\n${run.stderr}`);
   } finally {
     if (downloaded) deps.removeLocal(localPath);
   }
@@ -1543,7 +1551,110 @@ async function ensureOnce(agent: Agent, deps: MemberFleetInstallDeps, force: boo
       version: priorVersion,
     };
   }
-  return { state: 'available', version: after.version, installed: true, source: source.kind, binPath, ...(sameCoreFallback ? { sameCoreFallback } : {}) };
+  return {
+    state: 'available', version: after.version, installed: true, source: source.kind, binPath,
+    ...(sameCoreFallback ? { sameCoreFallback } : {}),
+    ...(standalone !== undefined ? { standalone } : {}),
+  };
+}
+
+/** The MEMBER-STANDALONE line an installer printed (its text after the code),
+ *  or undefined when the install registered a service. */
+function standaloneReason(out: string): string | undefined {
+  const at = out.indexOf(MEMBER_STANDALONE_CODE);
+  if (at < 0) return undefined;
+  const rest = out.slice(at + MEMBER_STANDALONE_CODE.length).replace(/^[:\s]+/, '');
+  return rest.split(/\r?\n\s*\r?\n/)[0].replace(/\s+/g, ' ').trim() || 'no user-mode service manager is usable on the member';
+}
+
+// ---------------------------------------------------------------------------
+// Standalone server on a member with no service manager
+// ---------------------------------------------------------------------------
+
+/** How long the member's `apra-fleet start` waits for /health before giving up. */
+export const MEMBER_START_HEALTH_TIMEOUT_MS = 30_000;
+/** Exec budget for the start command: its own health wait plus slack. */
+const MEMBER_START_EXEC_TIMEOUT_MS = MEMBER_START_HEALTH_TIMEOUT_MS + 30_000;
+
+/** Pidfile of a standalone server the fleet started: <home>/.apra-fleet/data/standalone.pid. */
+export function memberStandalonePidPath(home: string, targetOs: TargetOS, shell: MemberShell): string {
+  return memberJoin(targetOs, shell, home, '.apra-fleet', 'data', 'standalone.pid');
+}
+
+/**
+ * The member command that starts its apra-fleet server when it is down
+ * (exported for tests). It runs the member's own `apra-fleet start`, which is
+ * idempotent ("already running" exits 0), goes through a registered service
+ * when one works, and otherwise spawns the server DETACHED in its own session
+ * (setsid via a detached spawn) with stdio appended to the server log
+ * (<data dir>/fleet.log), writing its pid to `pidPath`. On POSIX members it
+ * also runs under nohup with stdin from /dev/null, so the start survives the
+ * SSH session even if that ends mid-start. `--autostart` keeps a deliberate
+ * `apra-fleet stop` on the member in force (start refuses, naming it);
+ * `--timeout-ms` lets start wait for /health and print the server log tail
+ * when it never answers. Built in JS for the member OS/shell from resolved
+ * paths: no shell variable expansion.
+ */
+export function buildMemberStartCommand(binPath: string, pidPath: string, targetOs: TargetOS, shell: MemberShell): string {
+  const args = ['start', '--autostart', '--pidfile', pidPath, '--timeout-ms', String(MEMBER_START_HEALTH_TIMEOUT_MS)];
+  // nohup exists on every POSIX member (coreutils, busybox, macOS); Git Bash on
+  // Windows has no SIGHUP to guard against, and its nohup is not guaranteed.
+  const nohup = targetOs === 'windows' ? '' : 'nohup ';
+  return memberCommandFor(targetOs, shell, {
+    posix: `${nohup}${posixQuote(binPath)} ${args.map(posixQuote).join(' ')} < /dev/null 2>&1`,
+    powershell: `& ${psQuote(binPath)} ${args.map(psQuote).join(' ')}`,
+  });
+}
+
+/** Outcome of making sure the member's server runs. */
+export type MemberServerStart =
+  | { ok: true; started: boolean; note?: string }
+  | { ok: false; detail: string };
+
+/**
+ * Start the member's apra-fleet server when it is down, and wait for /health.
+ * Never throws. A failure names the exact cause: start's own output, which
+ * carries the server log tail when the server died or never answered.
+ */
+export async function ensureMemberServerRunning(
+  agent: Agent,
+  home: string,
+  binPath: string,
+  deps: Pick<MemberFleetInstallDeps, 'exec'>,
+): Promise<MemberServerStart> {
+  const targetOs = getAgentOS(agent) as TargetOS;
+  const shell = getAgentShell(agent);
+  const pidPath = memberStandalonePidPath(home, targetOs, shell);
+  let r: SSHExecResult;
+  try {
+    r = await deps.exec(agent, buildMemberStartCommand(binPath, pidPath, targetOs, shell), MEMBER_START_EXEC_TIMEOUT_MS);
+  } catch (err: unknown) {
+    return { ok: false, detail: `the member's apra-fleet start could not be run: ${err instanceof Error ? err.message : String(err)}` };
+  }
+  const out = `${r.stdout}\n${r.stderr}`.trim();
+  if (r.code !== 0) {
+    return {
+      ok: false,
+      detail: `the apra-fleet server on the member is not running and '${binPath} start' failed (exit ${r.code}): ${memberErrorDetail(out) || '(no output)'}`,
+    };
+  }
+  const m = /Server started at (\S+) pid=(\d+)/.exec(out);
+  if (m) {
+    return {
+      ok: true, started: true,
+      note: `started the apra-fleet server on the member (pid ${m[2]}, pidfile ${pidPath}); without a service manager it runs standalone and is not restarted on reboot until the next member probe`,
+    };
+  }
+  return { ok: true, started: false };
+}
+
+/** A failed `apra-fleet call` that means "the member's server is down" (the
+ *  client could not reach or auto-start it), not a session/tool failure. */
+const SERVER_DOWN_RE = /\b(?:AUTOSTART_[A-Z_]+|SERVER_UNRESPONSIVE|SERVER_STOPPED_BY_USER|ECONNREFUSED)\b|no healthy apra-fleet HTTP singleton/;
+
+/** True when a failed member call detail says the member's server is down (exported for tests). */
+export function memberCallSaysServerDown(detail: string): boolean {
+  return SERVER_DOWN_RE.test(detail);
 }
 
 // ---------------------------------------------------------------------------
@@ -1583,6 +1694,10 @@ export type FleetMcpUnavailableReason =
   | 'member-session-failed'
   /** The MEMBER session answered but did not list kb_* and code_* tools. */
   | 'member-tools-missing'
+  /** The member's apra-fleet server is down and the fleet could not start it
+   *  (start failed, died during startup, never answered /health, or the
+   *  member user stopped it); the detail carries the cause and log tail. */
+  | 'member-server-not-running'
   /** The member install's member access secret (which its server requires on
    *  a ?member= session) could not be read, or created when missing. */
   | 'member-secret-unavailable';
@@ -1623,6 +1738,7 @@ export const FLEET_MCP_FIX: Record<FleetMcpUnavailableReason | FleetMcpProviderR
   'opencode-config-tracked': 'Untrack opencode.json from git (add it to .gitignore), then re-run compose_permissions.',
   'opencode-config-unparseable': 'Make the work folder opencode.json strict JSON (no comments), then re-run compose_permissions.',
   'member-session-failed': 'Check the member apra-fleet server is running (apra-fleet status / start on the member), then member_detail with refresh:true.',
+  'member-server-not-running': 'Fix the cause in the detail (it includes the member server log tail), then run apra-fleet start on the member as the member user and member_detail with refresh:true.',
   'member-tools-missing': 'Run update_member {member_id, fleet_install: "auto"} to upgrade apra-fleet on the member so its session lists kb_* and code_* tools, then member_detail with refresh:true.',
   'member-secret-unavailable': 'Check the member access secret file named in the detail is readable by the member user (and that SFTP works on the member, which creates it), then run update_member {member_id, fleet_install: "auto"}.',
   'no-per-tool-deny': 'opencode cannot deny individual tools, so its roles get injected knowledge only. Use another provider for KB/code tools.',
@@ -1696,7 +1812,8 @@ export function defaultMemberFleetMcpDeps(): MemberFleetMcpDeps {
     ...defaultMemberFleetInstallDeps(),
     connectLocalMember: async (memberId: string) => {
       const m = await import('@apralabs/apra-fleet-client/server-resolution');
-      return m.connectFleetMember(memberId) as unknown as MemberSession;
+      const expectedVersion = clientExpectedVersion();
+      return m.connectFleetMember(memberId, expectedVersion ? { expectedVersion } : {}) as unknown as MemberSession;
     },
     now: () => new Date(),
     record: (memberId, status) => { recordFleetMcpStatus(memberId, status); },
@@ -2163,6 +2280,9 @@ async function probeRemote(
   let manualInstall: string | undefined;
   // The signed same-core stable release installed instead of the exact build.
   let sameCoreFallback: SameCoreFallback | undefined;
+  // Set when this probe's install reported MEMBER-STANDALONE (no usable
+  // service manager on the member): nothing started its server.
+  let standaloneInstall: string | undefined;
   if (install) {
     const r = await ensureMemberFleetInstall(agent, deps, { force: forceInstall, replaceFull });
     if (r.state === 'available') {
@@ -2170,6 +2290,7 @@ async function probeRemote(
       if (r.installed) { ctx.installedNow = true; installedNow = true; }
       replaced = r.replaced;
       sameCoreFallback = r.sameCoreFallback;
+      standaloneInstall = r.standalone;
     }
     // Fail closed -- with the install's OWN reason and detail, never a later
     // step's error (apra-fleet-b4g.73) -- when the installer ran or was
@@ -2211,7 +2332,9 @@ async function probeRemote(
   // note about it ride on every later outcome, like a failed upgrade.
   let portFields: Partial<FleetMcpStatus> = {};
   let portNote: string | undefined;
-  const notes = (): string[] => [replaceNote, upgradeNote, portNote].filter((n): n is string => !!n);
+  // Set when this probe started the member's server (standalone mode).
+  let startNote: string | undefined;
+  const notes = (): string[] => [replaceNote, upgradeNote, portNote, startNote].filter((n): n is string => !!n);
   // Every later outcome keeps a failed upgrade visible: a later step's error
   // must never hide it, and an available status still names it.
   const fail: Unavailable = (reason, detail) => {
@@ -2301,12 +2424,36 @@ async function probeRemote(
     }
   }
 
+  // 3c. Standalone server: an install that found no usable service manager
+  // started nothing, so the fleet starts the server detached now (and step 4
+  // starts it again whenever a later probe finds it down).
+  let startTried = false;
+  const startServer = async (why: string): Promise<FleetMcpStatus | null> => {
+    startTried = true;
+    const st = await ensureMemberServerRunning(agent, home, binPath, deps);
+    if (!st.ok) return fail('member-server-not-running', `${st.detail.replace(/\.\s*$/, '')}. (${why})`);
+    if (st.note) startNote = st.note;
+    return null;
+  };
+  if (standaloneInstall !== undefined) {
+    const failed = await startServer(`the member install reported standalone mode: ${standaloneInstall}`);
+    if (failed) return failed;
+  }
+
   // 4. A MEMBER session on the member answers version and lists kb_* / code_*.
   const argsPath = memberJoin(targetOs, shell, home, '.apra-fleet', `version-args-${agent.id}.json`);
-  const v = parseCallOutput(
+  const callVersion = async () => parseCallOutput(
     await deps.exec(agent, buildMemberCallCommand(binPath, agent.id, 'version', argsPath, targetOs, shell), MEMBER_CALL_TIMEOUT_MS),
     'call version',
   );
+  let v = await callVersion();
+  // The member's server is down (the call could not reach or auto-start it):
+  // start it the same way and retry once.
+  if (!v.ok && !startTried && memberCallSaysServerDown(v.detail)) {
+    const failed = await startServer(`the member session call found the server down: ${v.detail}`);
+    if (failed) return failed;
+    v = await callVersion();
+  }
   if (!v.ok) return fail('member-session-failed', v.detail);
   const l = parseCallOutput(
     await deps.exec(agent, buildMemberCallCommand(binPath, agent.id, 'list-tools', argsPath, targetOs, shell), MEMBER_CALL_TIMEOUT_MS),

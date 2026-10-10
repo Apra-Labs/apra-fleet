@@ -238,6 +238,16 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
     updates.encryptedPassword = encryptPassword(resolvedPassword);
   }
   if (input.key_path) updates.keyPath = input.key_path;
+  // apra-fleet-fqkr.1: a stored LLM CLI path belongs to one provider on one
+  // machine/user/shell. Any change to those drops it so the next CLI use
+  // re-resolves (src/services/llm-cli-resolver.ts) instead of invoking a
+  // binary that may not exist on the new target.
+  if ((input.llm_provider !== undefined && input.llm_provider !== (existing.llmProvider ?? 'claude'))
+    || (input.host && input.host !== existing.host)
+    || (input.username && input.username !== existing.username)
+    || (input.shell !== undefined && input.shell !== existing.shell)) {
+    updates.llmCli = undefined;
+  }
   if (input.work_folder) updates.workFolder = input.work_folder;
   if (input.git_access) updates.gitAccess = input.git_access;
   if (input.git_repos) updates.gitRepos = input.git_repos;

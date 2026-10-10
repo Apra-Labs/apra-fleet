@@ -28,6 +28,7 @@ import { seedWorkspaceTrust } from '../utils/workspace-trust.js';
 import { composePermissions } from './compose-permissions.js';
 import { isFullyQualifiedPath, workFolderNotAbsoluteError } from '../utils/work-folder-validation.js';
 import { getMemberHomeDir } from '../services/member-home.js';
+import { ensureMemberLlmCli } from '../services/llm-cli-resolver.js';
 import { beadsStatusNote, refreshMemberFleetMcp, getMemberFleetMcpDeps, fleetInstallWarning } from '../services/member-fleet-install.js';
 import { ensureAgyProject } from '../services/agy-project.js';
 import { detectVcsProviderFromRemoteUrl } from '../utils/vcs-provider-detect.js';
@@ -573,6 +574,19 @@ export async function registerMember(input: RegisterMemberInput, opts: RegisterM
     void getMemberHomeDir(tempAgent).catch(() => { /* best effort -- falls back to the guess */ });
   }
 
+  // apra-fleet-fqkr.1: resolve the member's LLM CLI location ONCE and store the
+  // absolute path on the member record, so every later invocation runs it by
+  // absolute path instead of trusting the member's non-interactive PATH (an
+  // nvm/npm-prefix install is otherwise "command not found"). Never fails
+  // registration: a CLI that cannot be found is a warning naming every probed
+  // location and the fix.
+  let llmCliLine: string | undefined;
+  if (!skipSshOps && connResult.ok && (input.llm_provider ?? 'claude') !== 'none') {
+    const cli = await ensureMemberLlmCli(tempAgent, getProvider(input.llm_provider ?? 'claude'));
+    if (cli.ok && cli.path) llmCliLine = cli.path;
+    else if (!cli.ok) warnings.push(cli.message);
+  }
+
   // --- Auto-run compose_permissions for the member's role/tags (apra-fleet-5oo.1) ---
   // register_member must not leave a member with an attribution-only settings
   // stub: compose_permissions is the single source of truth for the member's
@@ -700,6 +714,7 @@ export async function registerMember(input: RegisterMemberInput, opts: RegisterM
   result += `  OS:      ${detectedOS}\n`;
   result += `  Folder:  ${tempAgent.workFolder}\n`;
   result += `  Provider: ${tempAgent.llmProvider ?? 'claude'}\n`;
+  if (llmCliLine) result += `  LLM CLI: ${llmCliLine}\n`;
   if (tempAgent.llmProvider === 'agy' && tempAgent.agyProjectId) {
     result += `  AGY project: ${tempAgent.agyProjectId}\n`;
   }

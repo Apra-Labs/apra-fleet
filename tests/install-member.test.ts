@@ -4,6 +4,7 @@ import os from 'node:os';
 import { execSync } from 'node:child_process';
 import { runInstall, _setSeaOverride, _setManifestOverride, MEMBER_INSTALL_NEXT_STEP, resolveMemberInstallPort } from '../src/cli/install.js';
 import { _setPortHolderProbeOverride, PORT_HELD_BY_OTHER_USER_CODE } from '../src/services/port-holder.js';
+import { MEMBER_STANDALONE_CODE } from '../src/cli/install-guard.js';
 
 // `apra-fleet install --member`: server + user-mode auto-start only. Runs
 // against an in-memory filesystem rooted at a fake HOME (os/fs/child_process
@@ -145,20 +146,24 @@ describe('install --member', () => {
     expect(JSON.parse(vi.mocked(fs.writeFileSync).mock.calls.filter(c => String(c[0]).replace(/\\/g, '/').endsWith('/.claude.json')).pop()![1] as string).mcpServers['apra-fleet'].type).toBe('http');
   });
 
-  it('reports a typed non-success status when the auto-start cannot be registered', async () => {
+  it('without a usable service manager it succeeds in standalone mode with a typed warning naming the reboot limitation', async () => {
     mockSvcMgr.register.mockRejectedValueOnce(new Error('systemd --user unavailable'));
     await runInstall(['--transport', 'http', '--member']);
-    expect(process.exitCode).toBe(1);
-    const err = vi.mocked(console.error).mock.calls.flat().join('\n');
-    expect(err).toContain('E-MEMBER-AUTOSTART');
-    expect(vi.mocked(console.log).mock.calls.flat().join('\n')).not.toContain('installed successfully');
+    expect(process.exitCode ?? 0).toBe(0);
+    const warn = vi.mocked(console.warn).mock.calls.flat().join('\n');
+    expect(warn).toContain(MEMBER_STANDALONE_CODE);
+    expect(warn).toContain('systemd --user unavailable');
+    expect(warn).toContain('NOT restarted on reboot');
+    expect(vi.mocked(console.error).mock.calls.flat().join('\n')).not.toContain('E-MEMBER-AUTOSTART');
+    const out = vi.mocked(console.log).mock.calls.flat().join('\n');
+    expect(out).toContain('installed successfully');
+    expect(out).toMatch(/Service:\s+not registered -- standalone mode \(MEMBER-STANDALONE\)/);
   });
 
-  it('a failed auto-start still leaves data/member-install.json (the fleet owns the install it started)', async () => {
+  it('standalone mode still leaves data/member-install.json (the fleet owns the install it started)', async () => {
     mockSvcMgr.register.mockRejectedValueOnce(new Error('systemd --user unavailable'));
     await runInstall(['--transport', 'http', '--member']);
-    expect(process.exitCode).toBe(1);
-    expect(vi.mocked(console.error).mock.calls.flat().join('\n')).toContain('E-MEMBER-AUTOSTART');
+    expect(process.exitCode ?? 0).toBe(0);
     expect([...files.keys()].filter(k => k.includes('member-install'))).toEqual([expect.stringContaining('member-install.json')]);
   });
 

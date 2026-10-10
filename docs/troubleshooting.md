@@ -13,6 +13,20 @@ or ask in [Discussions](https://github.com/Apra-Labs/apra-fleet/discussions).
 - If SSH works but the member is still offline, re-provision auth: ask Fleet to
   "Provision auth for `<member>`".
 
+**`fleetMcp` unavailable with `member-server-not-running`, or a member's server is down after a reboot**
+
+The member has no usable service manager (container, WSL without systemd,
+minimal distro), so its member install runs the server standalone
+(`MEMBER-STANDALONE`) and nothing restarts it on reboot. The next member probe
+(`update_member`, `member_detail` with `refresh: true`, a sprint's member init)
+starts it again. If that start fails, the reason is
+`member-server-not-running` and the detail carries the cause and the last lines
+of the member's `~/.apra-fleet/data/fleet.log`. Fix that cause, then on the
+member run `apra-fleet status` and `apra-fleet start` as the member user. A
+server the member user stopped with `apra-fleet stop` is never restarted by the
+fleet. See "Members without a service manager (standalone mode)" in
+[install.md](install.md).
+
 **Empty response from a member**
 
 Usually an expired auth token. Ask Fleet to "Provision auth for `<member>`".
