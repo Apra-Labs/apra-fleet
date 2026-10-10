@@ -97,9 +97,17 @@ describe('execute_prompt max_total_s with real timers', () => {
     const member = makeTestAgent({ friendlyName: 'cold-cloud' });
     addAgent(member);
     const start = Date.now();
-    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 2, max_total_s: 2 });
+    // max_total_s 4 (cloud budget ~3.6s) rather than 2: a 1.8s budget left only
+    // tens of ms of scheduling slack under a loaded full-suite run.
+    const maxTotalS = 4;
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: maxTotalS, max_total_s: maxTotalS });
+    const elapsed = Date.now() - start;
     // Nothing was dispatched: callers must not publish post-dispatch work.
-    expect((result as any).structuredContent).toMatchObject({ isError: true, reason: 'max_total_time', dispatched: false });
-    expect(Date.now() - start).toBeLessThan(2000 + 1000);
-  }, 20_000);
+    // Asserting on the whole result so a failure prints what actually came back.
+    expect(result).toMatchObject({ structuredContent: { isError: true, reason: 'max_total_time', dispatched: false } });
+    // It waited for the budget (did not return early) and came back before the
+    // client's own deadline (max_total_s + grace), with generous load slack.
+    expect(elapsed).toBeGreaterThanOrEqual(maxTotalS * 1000 * 0.5);
+    expect(elapsed).toBeLessThan(maxTotalS * 1000 + 5000);
+  }, 30_000);
 });

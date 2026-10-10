@@ -195,6 +195,11 @@
       "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-BIBLE-BASIS-NOT-GIT",
       "title": "The folder is not inside a git work tree, so file content at HEAD cannot be read and the bible's file hashes cannot be computed. Nothing is written.",
       "status": 500
+    },
+    {
+      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-KB-HTTP-UNSUPPORTED",
+      "title": "kb_invalidate with ids (id-level discard) while the project KB is backed by the http provider, which has no discard operation. Nothing is discarded, on the remote or in the local fallback store.",
+      "status": 500
     }
   ]
 }

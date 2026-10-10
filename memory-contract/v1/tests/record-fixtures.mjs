@@ -120,18 +120,41 @@ const FIXTURES_DIR = path.join(REPO_ROOT, 'memory-contract', 'v1', 'fixtures');
 
 // Synthetic scratch repos -- no real BluSKY code, credentials, or customer
 // text anywhere below. repoA/repoB are deliberately NOT git repos (no .git).
-const { ENVIRONMENT, RECORDED_REMOTE_A, RECORDED_REMOTE_B, RECORDED_REMOTE_IMPORT_REJECTED, RECORDED_REMOTE_BARE, UNTRUSTED_COMMITTED_BIBLE } =
+const { ENVIRONMENT, RECORDED_REMOTE_A, RECORDED_REMOTE_B, RECORDED_REMOTE_IMPORT_REJECTED, RECORDED_REMOTE_BARE, UNTRUSTED_COMMITTED_BIBLE, RECORDED_REMOTE_HTTP } =
   await import(pathToFileURL(path.join(HERE, 'roundtrip-harness.mjs')).href);
 const { materializeSessionWorld } = await import(pathToFileURL(path.join(HERE, 'session-world.mjs')).href);
 const { registerAllTools } = await import(pathToFileURL(path.join(DIST, 'services', 'tool-registry.js')).href);
 const { memberToolScope } = await import(pathToFileURL(path.join(DIST, 'services', 'tool-scope.js')).href);
 const { addAgent, removeAgent } = await import(pathToFileURL(path.join(DIST, 'services', 'registry.js')).href);
+const { kbSetup } = await import(pathToFileURL(path.join(DIST, 'tools', 'kb-setup.js')).href);
+const { resetKbProviders } = await import(pathToFileURL(path.join(DIST, 'services', 'knowledge', 'kb-providers.js')).href);
+
+// The http-backed session's KB server is never contacted (both recorded
+// outcomes are decided before any request), so an unused loopback port and the
+// committed obviously-fake test token are enough. The config is scoped to each
+// of that session's calls and the prior one restored afterwards.
+const HTTP_KB_CONFIG_PATH = path.join(process.env.APRA_FLEET_DATA_DIR, 'knowledge', 'config.json');
+const HTTP_KB_TOKEN_PATH = path.join(REPO_ROOT, 'tests', 'knowledge', 'fixtures', 'kb-http-test-token.txt');
+async function withHttpKb(fn) {
+  const prior = fs.existsSync(HTTP_KB_CONFIG_PATH) ? fs.readFileSync(HTTP_KB_CONFIG_PATH) : null;
+  resetKbProviders();
+  try {
+    const token = fs.readFileSync(HTTP_KB_TOKEN_PATH, 'utf-8').trim();
+    await kbSetup({ provider: 'http', remote: 'http://127.0.0.1:9', token }, { folder: os.tmpdir() });
+    return await fn();
+  } finally {
+    if (prior === null) fs.rmSync(HTTP_KB_CONFIG_PATH, { force: true });
+    else fs.writeFileSync(HTTP_KB_CONFIG_PATH, prior);
+    resetKbProviders();
+  }
+}
 
 const RECORDED_REMOTES = {
   A: RECORDED_REMOTE_A,
   B: RECORDED_REMOTE_B,
   IMPORT_REJECTED: RECORDED_REMOTE_IMPORT_REJECTED,
   BARE: RECORDED_REMOTE_BARE,
+  HTTP: RECORDED_REMOTE_HTTP,
 };
 
 const world = await materializeSessionWorld(ENVIRONMENT, SCRATCH_ROOT, {
@@ -140,10 +163,12 @@ const world = await materializeSessionWorld(ENVIRONMENT, SCRATCH_ROOT, {
   removeAgent,
   registerAllTools,
   memberToolScope,
+  withHttpKb,
 });
 const repoA = world.repoPaths.get('A');
 const repoB = world.repoPaths.get('B');
 const repoCode = world.repoPaths.get('CODE');
+const repoHttp = world.repoPaths.get('HTTP');
 
 // Every record* call below dispatches as `currentSession`; withSession() runs
 // one call as another session and stamps that session into the fixture.
@@ -178,6 +203,7 @@ const RAW_PATH_PAIRS = [
   [repoA, '<SCRATCH_REPO_A>'],
   [repoB, '<SCRATCH_REPO_B>'],
   [repoCode, '<SCRATCH_REPO_CODE>'],
+  [repoHttp, '<SCRATCH_REPO_HTTP>'],
   [SCRATCH_ROOT, '<SCRATCH_ROOT>'],
 ];
 const PATH_REPLACEMENTS = RAW_PATH_PAIRS.flatMap(([search, replacement]) => {
@@ -983,6 +1009,20 @@ await recordNonErrorOutcome('kb_capture', 'non-error-confidence-clamped', {
       ids: [idGate],
     }, 'E-RETIRE-NEEDS-KB-MAINTAINER', refusedGate));
   }
+}
+
+// Over an http project KB (HTTP_A): kb_bible_commit skips with bible_skipped
+// and kb_invalidate {ids} is refused, both before any request to the server.
+{
+  const httpId = '4b0c2b5e-7d3a-4c1e-9a55-0f6d2e8a1c77';
+  await withSession('HTTP_A', () => recordHappy('kb_bible_commit', 'http-skip', {
+    ids: [httpId],
+    baseBranch: 'main',
+    baseCommit: '0123456789abcdef0123456789abcdef01234567',
+  }));
+  await withSession('HTTP_A', () => recordRefusal('kb_invalidate', 'refusal-kb-http-unsupported', {
+    ids: [httpId],
+  }, 'E-KB-HTTP-UNSUPPORTED'));
 }
 
 // ===========================================================================

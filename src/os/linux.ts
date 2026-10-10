@@ -2,6 +2,7 @@ import { execSync } from 'node:child_process';
 import type { OsCommands, ProviderAdapter, PromptOptions } from './os-commands.js';
 import { escapeDoubleQuoted, escapeGrepPattern, sanitizeSessionId } from './os-commands.js';
 import { escapeShellArg } from '../utils/shell-escape.js';
+import { ensureNodeDirOnPath, runningNodeDir } from './node-path.js';
 
 // The member's own fleet bin dir (<home>/.apra-fleet/bin: the member-install
 // apra-fleet, dolt, and bd when the installer could not place it on the system
@@ -75,6 +76,9 @@ export class LinuxCommands implements OsCommands {
       const idx = entry.indexOf('=');
       if (idx > 0) env[entry.slice(0, idx)] = entry.slice(idx + 1);
     }
+    // A host may add node to PATH only in interactive shells (~/.bashrc), which
+    // a login shell never reads; keep the node running fleet reachable.
+    env.PATH = ensureNodeDirOnPath(env.PATH, runningNodeDir());
     this.cachedEnv = env;
     return env;
   }

@@ -118,6 +118,7 @@ export const PATH_PLACEHOLDERS = {
   REPO_A: '<SCRATCH_REPO_A>',
   REPO_B: '<SCRATCH_REPO_B>',
   REPO_CODE: '<SCRATCH_REPO_CODE>',
+  REPO_HTTP: '<SCRATCH_REPO_HTTP>',
 };
 
 export const RECORDED_REMOTE_A = 'https://example.test/memory-contract-fixtures-a.git';
@@ -131,6 +132,7 @@ export const RECORDED_REMOTE_B = 'https://example.test/memory-contract-fixtures-
  */
 export const RECORDED_REMOTE_IMPORT_REJECTED = 'https://example.test/memory-contract-fixtures-import-rejected.git';
 export const RECORDED_REMOTE_BARE = 'https://example.test/memory-contract-fixtures-bare.git';
+export const RECORDED_REMOTE_HTTP = 'https://example.test/memory-contract-fixtures-http.git';
 
 /**
  * A bible committed only in a member's own checkout -- never written or
@@ -181,12 +183,17 @@ export const ENVIRONMENT = {
     // name must not start with another repo's dir name, e.g. repo-b: the
     // recorder's path sanitiser would rewrite that prefix.)
     { key: 'BARE', dir: 'bare-repo', placeholder: null, git: true, bare: true, remote: 'BARE', files: {} },
+    // A repository whose project KB is the http provider: its session scopes an
+    // http KB config to each call (never contacted -- both recorded outcomes are
+    // decided before any request is made).
+    { key: 'HTTP', dir: 'repo-http', placeholder: PATH_PLACEHOLDERS.REPO_HTTP, git: true, remote: 'HTTP', files: {} },
   ],
   remotes: {
     A: RECORDED_REMOTE_A,
     B: RECORDED_REMOTE_B,
     IMPORT_REJECTED: RECORDED_REMOTE_IMPORT_REJECTED,
     BARE: RECORDED_REMOTE_BARE,
+    HTTP: RECORDED_REMOTE_HTTP,
   },
   // Each session is one registered member. `repo` names a scratch repo above;
   // `dir` names a folder under the scratch root that is never created. A
@@ -228,6 +235,9 @@ export const ENVIRONMENT = {
     // shares repo A's KB with session A (same origin remote), but its reads and
     // writes go to the live KB, not a member's read-only checkout bible view.
     FULL_A: { kind: 'full', repo: 'A' },
+    // A kb_maintainer member session over an http project KB (kbHttp): records
+    // kb_bible_commit's bible_skipped and kb_invalidate ids' E-KB-HTTP-UNSUPPORTED.
+    HTTP_A: { member: 'contract-http-a', kind: 'local', repo: 'HTTP', kbMaintainer: true, kbHttp: true },
   },
   defaultSession: 'A',
 };
@@ -296,6 +306,16 @@ function assertRemovedInvalidated(parsed, ctx) {
   if (removed[0]?.id !== liveId) return `expected the removed id to be ${liveId}, got ${JSON.stringify(removed[0]?.id)}`;
   if (removed[0]?.reason !== 'invalidated') return `expected removed[0].reason === 'invalidated', got ${JSON.stringify(removed[0]?.reason)}`;
   return parsed?.committed === true ? null : `expected committed === true, got ${JSON.stringify(parsed?.committed)}`;
+}
+
+// kb_bible_commit over an http project KB: skipped, with nothing merged,
+// removed or committed. A schema-valid ordinary response (no bible_skipped)
+// would otherwise pass.
+function assertBibleSkipped(parsed) {
+  if (parsed?.bible_skipped !== true) return `expected bible_skipped === true, got ${JSON.stringify(parsed?.bible_skipped)}`;
+  if (typeof parsed?.reason !== 'string' || parsed.reason.length === 0) return 'expected a non-empty reason';
+  const empty = ['merged', 'skipped', 'removed'].every((k) => Array.isArray(parsed[k]) && parsed[k].length === 0);
+  return empty && parsed.committed === false ? null : `expected nothing merged, skipped, removed or committed, got ${JSON.stringify(parsed)}`;
 }
 
 // E-RETIRE-NEEDS-KB-MAINTAINER (response field): the CONFIRMED GATE entry is
@@ -580,6 +600,10 @@ export const SCENARIO = [
   { tool: 'kb_promote', case: 'setup-second-promote-for-retire-refused', derive: { id: 'GATE' } },
   { tool: 'kb_capture', case: 'refusal-retire-needs-kb-maintainer', derive: { supersedes: 'GATE' }, assertParsed: assertRefusedGate },
   { tool: 'kb_invalidate', case: 'refusal-retire-needs-kb-maintainer', derive: { ids: ['GATE'] }, assertParsed: assertRefusedGate },
+  // Over an http project KB: kb_bible_commit skips (nothing merged or
+  // committed) and kb_invalidate {ids} is refused with a typed code.
+  { tool: 'kb_bible_commit', case: 'http-skip', assertParsed: assertBibleSkipped },
+  { tool: 'kb_invalidate', case: 'refusal-kb-http-unsupported' },
 ];
 
 // ---------------------------------------------------------------------------

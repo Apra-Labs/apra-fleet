@@ -680,6 +680,10 @@ export function createKbWorkClient(opts = {}) {
         }
         if (isToolError(res)) return { ok: false, stage: 'kb_bible_commit', error: toolErrorText(res) };
         const result = parseResult(res) || {};
+        // The tool skipped the whole call (e.g. the project KB is remote and has
+        // no bible to commit to): nothing was committed, so there is nothing to
+        // check or push. Return before the publication check and the G-push.
+        if (result.bible_skipped === true) return { ok: true, result, pushed: false, bibleSkipped: true };
         // Nothing committed (every id skipped, or the entry set unchanged).
         // That alone does not mean the entries are published: an earlier
         // round's bible commit may still sit unpushed on the maintainer (its
@@ -837,6 +841,17 @@ export function createKbWorkClient(opts = {}) {
             if (!outcome.ok) {
                 log(`[kb-work] WARN: bible commit for ${repo} on maintainer '${maintainer}' failed at ${outcome.stage} (${outcome.error}) -- ${load} stay queued for the next round`);
                 return { committed: 0, pending: ids.length };
+            }
+            if (outcome.bibleSkipped) {
+                // The skip is provider-wide, so a retry cannot succeed: drop the
+                // repo's queue state (as for any non-retryable skip) so later
+                // rounds do not repeat the call or warn about pending ids.
+                const reason = typeof outcome.result.reason === 'string' && outcome.result.reason ? outcome.result.reason : 'no reason given';
+                confirmations.delete(repo);
+                skipRounds.delete(repo);
+                retirements.delete(repo);
+                log(`[kb-work] kb_bible_commit skipped for ${repo} on maintainer '${maintainer}': ${reason} -- ${ids.length} confirmation(s) dropped from the bible queue.`);
+                return { committed: 0, pending: 0 };
             }
             // The call succeeded: whatever retirements the maintainer held were
             // removed by it (kb_bible_commit drops them at every call).

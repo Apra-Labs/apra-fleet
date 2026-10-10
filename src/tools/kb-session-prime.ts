@@ -182,7 +182,9 @@ export async function kbSessionPrime(input: KbSessionPrimeInput, anchor?: KbAnch
   // That explicit request is answered from the per-repo DB with only the
   // caller's own captures (ownerTag): every block below honours it, and the
   // bible cold-seeds are skipped (bible entries are nobody's own capture).
-  const { providers, anchor: resolved, ownerTag } = await getSelfReadKb(anchor, input.confidence);
+  // Under an http project provider (serverRecall) a MEMBER prime of any tier
+  // is answered by the server with no ownerTag.
+  const { providers, anchor: resolved, ownerTag } = await getSelfReadKb(anchor, input.confidence, { serverRecall: true });
   if (ownerTag !== undefined) requireSqliteProject(providers.project, 'kb_session_prime');
 
   // Default-trusted reads: CONFIRMED + undisputed unless the caller lists tiers.

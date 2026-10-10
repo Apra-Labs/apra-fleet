@@ -24,7 +24,7 @@ const BASE = { baseBranch: 'main', baseCommit: 'a'.repeat(40) };
  * A fake maintainer: records every event in order. `pushFailures` is how many
  * G-pushes fail before one succeeds.
  */
-function harness({ pushFailures = 0, committed = true, unpushed = false, skipped = [], removed, bibleSkipRetryRounds } = {}) {
+function harness({ pushFailures = 0, committed = true, unpushed = false, skipped = [], removed, bibleSkipRetryRounds, httpSkip = false } = {}) {
     const events = [];
     const logs = [];
     let pushesLeftToFail = pushFailures;
@@ -33,6 +33,7 @@ function harness({ pushFailures = 0, committed = true, unpushed = false, skipped
         // not part of the round's call order.
         if (tool === 'kb_query') return { l1_results: offeredEntries.map((id) => ({ id })) };
         events.push({ ev: tool, member: member.name, args });
+        if (tool === 'kb_bible_commit' && httpSkip) return { content: [{ text: JSON.stringify(HTTP_SKIP_RESULT) }] };
         if (tool === 'kb_bible_commit') {
             // `skipped` is a fixed list, or a function of the call's ids (a
             // per-round answer); only skips for ids actually sent are returned.
@@ -790,4 +791,58 @@ describe('bibleUnpushed: does origin hold the maintainer checkout\'s bible?', ()
             assert.ok(r.reason);
         });
     }
+});
+
+// =============================================================================
+// An http-backed maintainer KB: kb_bible_commit answers with a structured skip
+// (bible_skipped) instead of an error. The round must finish, log one line,
+// and drop the queue -- retrying cannot help, the skip is provider-wide.
+// =============================================================================
+
+// The exact result src/tools/kb-bible-commit.ts returns under the http KB
+// provider. The reason literal MUST stay in sync with
+// KB_BIBLE_COMMIT_HTTP_SKIP_REASON in that file.
+const HTTP_SKIP_REASON = 'bible commit is not supported over the http KB provider';
+const HTTP_SKIP_RESULT = {
+    path: '.fleet/kb-canonical.json',
+    merged: [],
+    skipped: [],
+    removed: [],
+    entry_count: 0,
+    backfilled: 0,
+    committed: false,
+    bible_skipped: true,
+    reason: HTTP_SKIP_REASON,
+};
+
+describe('commitRound: a maintainer whose kb_bible_commit is skipped (http KB provider)', () => {
+    test('the round completes with one skip line, no push, no publication check, no reset, and an empty queue', async () => {
+        const { client, events, logs } = harness({ httpSkip: true });
+        await confirm(client, ['e1', 'e2']);
+
+        const out = await client.commitRound('review C1');
+
+        assert.deepEqual(out, { committed: 0, pending: 0 });
+        const skipLines = logs.filter((l) => l.includes('kb_bible_commit skipped') && l.includes(HTTP_SKIP_REASON));
+        assert.equal(skipLines.length, 1, logs.join('\n'));
+        assert.match(skipLines[0], /2 confirmation\(s\) dropped/);
+        assert.ok(!logs.some((l) => /failed at kb_bible_commit|publication check/.test(l)), logs.join('\n'));
+        const kinds = events.map((e) => e.ev);
+        assert.ok(!kinds.includes('G-push'), kinds.join(','));
+        assert.ok(!kinds.includes('G-pull(reset)'), kinds.join(','));
+        assert.ok(!kinds.includes('publication-check'), kinds.join(','));
+        assert.deepEqual(client.pendingConfirmations(), []);
+    });
+
+    test('a second round with no new confirmations makes no kb_bible_commit call', async () => {
+        const { client, events } = harness({ httpSkip: true });
+        await confirm(client, ['e1']);
+        await client.commitRound('review C1');
+        const mark = events.length;
+
+        const out = await client.commitRound('review C2');
+
+        assert.deepEqual(out, { committed: 0, pending: 0 });
+        assert.equal(events.slice(mark).filter((e) => e.ev === 'kb_bible_commit').length, 0);
+    });
 });
