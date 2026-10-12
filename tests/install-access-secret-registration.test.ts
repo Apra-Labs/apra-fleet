@@ -73,6 +73,59 @@ describe('registerClaudeHttpMcp', () => {
     expect(fs.existsSync(path.join(tmpHome, '.claude.json'))).toBe(false);
   });
 
+  it('a symlinked ~/.claude.json keeps its link; the real target gets the registration', () => {
+    const real = path.join(tmpHome, 'dotfiles', 'claude.json');
+    fs.mkdirSync(path.dirname(real));
+    fs.writeFileSync(real, JSON.stringify({ numStartups: 2 }));
+    const link = path.join(tmpHome, '.claude.json');
+    try { fs.symlinkSync(real, link, 'file'); } catch (err) {
+      if (process.platform === 'win32') return; // symlink creation not permitted on this Windows host
+      throw err;
+    }
+    registerClaudeHttpMcp(URL_, { [HEADER]: SECRET });
+    expect(fs.lstatSync(link).isSymbolicLink()).toBe(true);
+    const j = JSON.parse(read(real));
+    expect(j.numStartups).toBe(2);
+    expect(j.mcpServers['apra-fleet'].headers[HEADER]).toBe(SECRET);
+    expect(fs.readdirSync(path.dirname(real)).filter(f => f.endsWith('.tmp'))).toEqual([]);
+  });
+
+  it('a config owned by another uid (install under sudo) is written in place, never renamed over', () => {
+    const f = path.join(tmpHome, '.claude.json');
+    fs.writeFileSync(f, '{}');
+    const proc = process as { getuid?: () => number };
+    const orig = proc.getuid;
+    const realUid = fs.statSync(f).uid;
+    proc.getuid = () => realUid + 1;
+    const renameSpy = vi.spyOn(fs, 'renameSync');
+    try {
+      registerClaudeHttpMcp(URL_, { [HEADER]: SECRET });
+      expect(renameSpy).not.toHaveBeenCalled();
+      expect(JSON.parse(read(f)).mcpServers['apra-fleet'].headers[HEADER]).toBe(SECRET);
+    } finally {
+      renameSpy.mockRestore();
+      if (orig) proc.getuid = orig; else delete proc.getuid;
+    }
+  });
+
+  it('a config owned by the current user is replaced by rename (atomic)', () => {
+    const f = path.join(tmpHome, '.claude.json');
+    fs.writeFileSync(f, '{}');
+    const proc = process as { getuid?: () => number };
+    const orig = proc.getuid;
+    const realUid = fs.statSync(f).uid;
+    proc.getuid = () => realUid;
+    const renameSpy = vi.spyOn(fs, 'renameSync');
+    try {
+      registerClaudeHttpMcp(URL_, { [HEADER]: SECRET });
+      expect(renameSpy).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(read(f)).mcpServers['apra-fleet'].headers[HEADER]).toBe(SECRET);
+    } finally {
+      renameSpy.mockRestore();
+      if (orig) proc.getuid = orig; else delete proc.getuid;
+    }
+  });
+
   it('refuses to overwrite an unparseable claude config', () => {
     const f = path.join(tmpHome, '.claude.json');
     fs.writeFileSync(f, '{ not json');
