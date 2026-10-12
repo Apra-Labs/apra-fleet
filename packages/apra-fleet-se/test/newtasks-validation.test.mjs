@@ -1,6 +1,12 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
 import { validateNewTask } from '../fleet-sprint/runner.js';
+import * as abortModule from '../fleet-sprint/abort.mjs';
+
+// Looked up off the namespace (not named imports) so this file still loads
+// against an abort.mjs that predates them and fails per-test instead.
+const buildFallbackNewTask = (...args) => abortModule.buildFallbackNewTask(...args);
+const escapeToAsciiJson = (...args) => abortModule.escapeToAsciiJson(...args);
 
 // apra-fleet-unw2.3 (N3): reviewer-authored newTasks (title/description/
 // priority) are LLM output whose own context includes the diff under
@@ -263,5 +269,101 @@ describe('validateNewTask', () => {
             assert.strictEqual(result.ok, false, `expected title "${title}" to be rejected`);
             assert.match(result.reason, /title/);
         }
+    });
+});
+
+// Reviewer newTask titles containing arrows or comparison operators used to
+// be rejected outright (SAFE_TEXT_RE admits none of > < = &), so the finding
+// never became a bead. sanitizeNewTaskTitle() now spells them out from a
+// FIXED table; sanitizeNewTaskDescription() maps Unicode arrows to ASCII.
+// Unicode code points are written as \u escapes so this file stays ASCII.
+describe('validateNewTask -- arrows and comparison operators', () => {
+    const ok = (title, description = 'Safe description.') => {
+        const result = validateNewTask({ title, description, priority: 'P2' });
+        assert.strictEqual(result.ok, true, `expected ${JSON.stringify(title)} to be accepted: ${result.reason}`);
+        return result;
+    };
+
+    test('ASCII arrows map to " to " in a title', () => {
+        assert.strictEqual(ok('a -> b').title, 'a to b');
+        assert.strictEqual(ok('a => b').title, 'a to b');
+        assert.strictEqual(ok('a-->b').title, 'a to b');
+        assert.strictEqual(ok('a <-> b').title, 'a to/from b');
+    });
+
+    test('Unicode arrows map to words in a title', () => {
+        assert.strictEqual(ok('Route a \u2192 b').title, 'Route a to b');
+        assert.strictEqual(ok('a \u21D2 b').title, 'a to b');
+        assert.strictEqual(ok('a \u27F6 b').title, 'a to b');
+        assert.strictEqual(ok('a \u2190 b').title, 'a from b');
+        assert.strictEqual(ok('a \u2194 b').title, 'a to/from b');
+        // em dash followed by > is an arrow too (the dash rewrite runs first)
+        assert.strictEqual(ok('a \u2014> b').title, 'a to b');
+    });
+
+    test('comparison operators and & map to words in a title (multi-char before single)', () => {
+        assert.strictEqual(ok('x >= y').title, 'x at least y');
+        assert.strictEqual(ok('x <= y').title, 'x at most y');
+        assert.strictEqual(ok('x\u2265y').title, 'x at least y');
+        assert.strictEqual(ok('x > y').title, 'x gt y');
+        assert.strictEqual(ok('x<y').title, 'x lt y');
+        assert.strictEqual(ok('x = y').title, 'x eq y');
+        assert.strictEqual(ok('x == y').title, 'x eq y');
+        assert.strictEqual(ok('x != y').title, 'x ne y');
+        assert.strictEqual(ok('Tom & Jerry').title, 'Tom and Jerry');
+        assert.strictEqual(ok('a && b').title, 'a and b');
+    });
+
+    test('repeated spaces are collapsed and the title is trimmed', () => {
+        assert.strictEqual(ok('  retry  ->  backoff  ').title, 'retry to backoff');
+    });
+
+    test('a description with Unicode arrows passes and becomes ASCII arrows', () => {
+        const result = ok('Safe title', 'Flow: a \u2192 b \u21D2 c, x \u2265 1');
+        assert.strictEqual(result.description, 'Flow: a -> b => c, x >= 1');
+    });
+
+    test('", $ and backslash still hard-reject in a title even next to an arrow', () => {
+        for (const title of ['a -> "b"', 'a -> $HOME', 'a -> b\\']) {
+            const result = validateNewTask({ title, description: 'Safe description.', priority: 'P2' });
+            assert.strictEqual(result.ok, false, `expected ${JSON.stringify(title)} to stay rejected`);
+            assert.match(result.reason, /title/);
+        }
+    });
+});
+
+describe('buildFallbackNewTask -- unsanitisable titles', () => {
+    test('strips only the fallback title and escapes the original title to ASCII in the description', () => {
+        const original = 'Fix $HOME "x" caf\u00E9 \u2192 y';
+        assert.strictEqual(validateNewTask({ title: original, description: 'Body.', priority: 'P1' }).ok, false);
+        const fallback = buildFallbackNewTask({ title: original, description: 'Body.', priority: 'P1' });
+        assert.ok(fallback && fallback.ok);
+        assert.strictEqual(fallback.title, 'Fix HOME x caf to y');
+        assert.strictEqual(
+            fallback.description,
+            'Original title (JSON-escaped, non-ASCII as \\uXXXX): "Fix $HOME \\"x\\" caf\\u00E9 \\u2192 y"\n\nBody.',
+        );
+        assert.match(fallback.description, /^[\t\n\r\x20-\x7E]+$/);
+        const escaped = fallback.description.split('\n')[0].replace(/^[^"]*/, '');
+        assert.strictEqual(JSON.parse(escaped), original);
+        assert.strictEqual(fallback.priority, 'P1');
+    });
+
+    test('uses a placeholder title when nothing survives the strip', () => {
+        const fallback = buildFallbackNewTask({ title: '$$$', description: 'Body.', priority: 'P2' });
+        assert.strictEqual(fallback.title, 'Follow-up finding (original title not shell-safe)');
+    });
+
+    test('does not rescue a priority or description failure', () => {
+        assert.strictEqual(buildFallbackNewTask({ title: '$x', description: 'Body.', priority: 'P9' }), null);
+        assert.strictEqual(buildFallbackNewTask({ title: '$x', description: '', priority: 'P2' }), null);
+        assert.strictEqual(buildFallbackNewTask({ title: '$x', description: 'emoji \u{1F600}', priority: 'P2' }), null);
+    });
+
+    test('escapeToAsciiJson round-trips through JSON.parse', () => {
+        const s = 'a\u2192b "q" \\ \u{1F600}';
+        const out = escapeToAsciiJson(s);
+        assert.match(out, /^[\x20-\x7E]+$/);
+        assert.strictEqual(JSON.parse(out), s);
     });
 });

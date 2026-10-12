@@ -71,35 +71,120 @@ export async function persistNewTaskBestEffort({ createFn, command, member, pare
 const SAFE_DESCRIPTION_RE = /^[\t\n\r\x20-\x7E]+$/;
 const SAFE_PRIORITY_RE = /^P[0-4]$/;
 
+// Unicode arrow code points the newTask sanitisers recognise (kept as \u
+// escapes so this source stays ASCII-only):
+//   right:        U+2192, U+27F6, U+21A6, U+2794, U+279C, U+27A1, U+2B62, U+21E8
+//   double right: U+21D2, U+27F9
+//   left:         U+2190, U+27F5      double left: U+21D0, U+27F8
+//   both:         U+2194, U+27F7      double both: U+21D4, U+27FA
+const UNICODE_RIGHT_ARROW_RE = /[\u2192\u27F6\u21A6\u2794\u279C\u27A1\u2B62\u21E8]/g;
+const UNICODE_DOUBLE_RIGHT_ARROW_RE = /[\u21D2\u27F9]/g;
+const UNICODE_LEFT_ARROW_RE = /[\u2190\u27F5]/g;
+const UNICODE_DOUBLE_LEFT_ARROW_RE = /[\u21D0\u27F8]/g;
+const UNICODE_BOTH_ARROW_RE = /[\u2194\u27F7]/g;
+const UNICODE_DOUBLE_BOTH_ARROW_RE = /[\u21D4\u27FA]/g;
+
 /**
- * Rewrites the handful of common non-ASCII punctuation characters LLM
- * reviewers routinely emit in newTask descriptions -- em/en dashes, curly
- * quotes, ellipsis -- to ASCII equivalents before SAFE_DESCRIPTION_RE
- * validation, so a description is not rejected wholesale over characters that
- * lose no meaning when normalized. This is a fixed substitution table, not a
- * general Unicode stripper: anything still outside the allowlist afterwards is
- * still a hard rejection. See sanitizeNewTaskTitle() below for title's own,
- * stricter table.
+ * Fixed substitution table for newTask DESCRIPTIONS. Description only has to
+ * pass SAFE_DESCRIPTION_RE (printable ASCII), so every entry maps to its
+ * plain-ASCII spelling: Unicode arrows become `->` / `=>` / `<-` / `<=` /
+ * `<->` / `<=>`, Unicode comparison signs become `>=` / `<=` / `!=`.
+ */
+const DESCRIPTION_SUBSTITUTIONS = [
+    [/[\u2014\u2013]/g, '--'], // em dash (\u2014), en dash (\u2013)
+    [/[\u2018\u2019]/g, "'"], // curly single quotes (\u2018 \u2019)
+    [/[\u201C\u201D]/g, '"'], // curly double quotes (\u201C \u201D)
+    [/\u2026/g, '...'], // horizontal ellipsis (\u2026)
+    [UNICODE_DOUBLE_BOTH_ARROW_RE, '<=>'],
+    [UNICODE_BOTH_ARROW_RE, '<->'],
+    [UNICODE_DOUBLE_RIGHT_ARROW_RE, '=>'],
+    [UNICODE_RIGHT_ARROW_RE, '->'],
+    [UNICODE_DOUBLE_LEFT_ARROW_RE, '<='],
+    [UNICODE_LEFT_ARROW_RE, '<-'],
+    [/\u2265/g, '>='], // greater-than or equal (\u2265)
+    [/\u2264/g, '<='], // less-than or equal (\u2264)
+    [/\u2260/g, '!='], // not equal (\u2260)
+];
+
+/**
+ * Fixed substitution table for newTask TITLES. Title must pass SAFE_TEXT_RE,
+ * which admits none of `>`, `<`, `=`, `&`, so arrows and comparison operators
+ * are spelled out as words. ORDER MATTERS: multi-character tokens come before
+ * the single characters they contain (`<=>` before `<=` before `<`, `->`
+ * before a lone `>`, `>=` before `=`), and the Unicode dash rewrite runs
+ * first so an em-dash arrow (U+2014 followed by `>`) is caught by the `->`
+ * entry. Every replacement is space-padded; sanitizeNewTaskTitle() collapses
+ * runs of spaces and trims afterwards.
+ */
+const TITLE_SUBSTITUTIONS = [
+    [/[\u2014\u2013]/g, '--'], // em dash (\u2014), en dash (\u2013)
+    [/[\u2018\u2019]/g, "'"], // curly single quotes (\u2018 \u2019)
+    [/[\u201C\u201D]/g, "'"], // curly double quotes -> single quote (a literal `"` stays disallowed in title, unlike description)
+    [/\u2026/g, '...'], // horizontal ellipsis (\u2026)
+    [/`/g, "'"], // backtick (Markdown inline-code marker) -> single quote
+    // Bidirectional arrows first (they contain both `<` and `>`).
+    [UNICODE_DOUBLE_BOTH_ARROW_RE, ' to/from '],
+    [UNICODE_BOTH_ARROW_RE, ' to/from '],
+    [/<=+>|<-+>/g, ' to/from '],
+    // Right arrows.
+    [UNICODE_DOUBLE_RIGHT_ARROW_RE, ' to '],
+    [UNICODE_RIGHT_ARROW_RE, ' to '],
+    [/-+>|=+>/g, ' to '],
+    // Unicode left arrows. An ASCII `<-` is deliberately NOT treated as an
+    // arrow (`x<-1` is more often a comparison), so it falls through to ` lt `.
+    [UNICODE_DOUBLE_LEFT_ARROW_RE, ' from '],
+    [UNICODE_LEFT_ARROW_RE, ' from '],
+    // Comparison operators, multi-character before single.
+    [/\u2265/g, ' at least '], // greater-than or equal (\u2265)
+    [/\u2264/g, ' at most '], // less-than or equal (\u2264)
+    [/\u2260/g, ' ne '], // not equal (\u2260)
+    [/>=/g, ' at least '],
+    [/<=/g, ' at most '],
+    [/!=/g, ' ne '],
+    [/==+/g, ' eq '],
+    [/&&/g, ' and '],
+    [/>/g, ' gt '],
+    [/</g, ' lt '],
+    [/=/g, ' eq '],
+    [/&/g, ' and '],
+];
+
+function applySubstitutions(text, table) {
+    let out = text;
+    for (const [re, replacement] of table) out = out.replace(re, replacement);
+    return out;
+}
+
+/**
+ * Rewrites common non-ASCII punctuation LLM reviewers routinely emit in
+ * newTask descriptions -- em/en dashes, curly quotes, ellipsis, Unicode
+ * arrows and comparison signs -- to ASCII equivalents before
+ * SAFE_DESCRIPTION_RE validation, so a description is not rejected wholesale
+ * over characters that lose no meaning when normalized. This is a FIXED
+ * substitution table (DESCRIPTION_SUBSTITUTIONS), not a general Unicode
+ * stripper: anything still outside the allowlist afterwards is still a hard
+ * rejection. See sanitizeNewTaskTitle() below for title's own, stricter table.
  * @param {string} description
  * @returns {string}
  */
 export function sanitizeNewTaskDescription(description) {
-    return String(description ?? '')
-        .replace(/[\u2014\u2013]/g, '--') // em dash (\u2014), en dash (\u2013)
-        .replace(/[\u2018\u2019]/g, "'") // curly single quotes (\u2018 \u2019)
-        .replace(/[\u201C\u201D]/g, '"') // curly double quotes (\u201C \u201D)
-        .replace(/\u2026/g, '...'); // horizontal ellipsis (\u2026)
+    return applySubstitutions(String(description ?? ''), DESCRIPTION_SUBSTITUTIONS);
 }
 
 /**
  * Same idea as sanitizeNewTaskDescription() above, for title -- but with a
- * STRICTER substitution table, since title still has to pass the tighter
- * SAFE_TEXT_RE shell-safety allowlist afterwards (it is interpolated inline
- * into a `bd create "..."` command; description is not). Every substitution
- * here maps to a character SAFE_TEXT_RE already admits, so this never
- * reopens the injection surface that allowlist exists to close -- it only
- * rescues titles that would otherwise be needlessly rejected over benign,
- * common LLM punctuation choices. Observed live (apra-fleet-vk0a's sibling
+ * STRICTER substitution table (TITLE_SUBSTITUTIONS), since title still has
+ * to pass the tighter SAFE_TEXT_RE shell-safety allowlist afterwards (it is
+ * interpolated inline into a `bd create "..."` command; description is not).
+ * Every substitution here maps to characters SAFE_TEXT_RE already admits, so
+ * this never reopens the injection surface that allowlist exists to close --
+ * it only rescues titles that would otherwise be needlessly rejected over
+ * benign, common LLM punctuation choices:
+ *  - arrows (`->`, `=>`, Unicode right arrows) -> " to ", Unicode left
+ *    arrows -> " from ", bidirectional arrows -> " to/from ";
+ *  - `>=` / `<=` -> " at least " / " at most ", `!=` -> " ne ", lone `>` /
+ *    `<` -> " gt " / " lt ", `=` -> " eq ", `&` -> " and ";
+ * then runs of spaces are collapsed and the result is trimmed. Observed live (apra-fleet-vk0a's sibling
  * finding): a reviewer wrote a title referencing a CLI command in backticks
  * (`` `apra-fleet status` ``, ordinary Markdown inline-code style), which
  * SAFE_TEXT_RE rejects outright (backtick is excluded as a POSIX
@@ -115,12 +200,55 @@ export function sanitizeNewTaskDescription(description) {
  * @returns {string}
  */
 export function sanitizeNewTaskTitle(title) {
-    return String(title ?? '')
-        .replace(/[\u2014\u2013]/g, '--') // em dash (\u2014), en dash (\u2013)
-        .replace(/[\u2018\u2019]/g, "'") // curly single quotes (\u2018 \u2019)
-        .replace(/[\u201C\u201D]/g, "'") // curly double quotes -> single quote (a literal `"` stays disallowed in title, unlike description)
-        .replace(/\u2026/g, '...') // horizontal ellipsis (\u2026)
-        .replace(/`/g, "'"); // backtick (Markdown inline-code marker) -> single quote
+    return applySubstitutions(String(title ?? ''), TITLE_SUBSTITUTIONS)
+        .replace(/ {2,}/g, ' ')
+        .trim();
+}
+
+/**
+ * Escapes a value to pure printable ASCII: JSON.stringify (quotes, control
+ * characters, backslashes) plus \uXXXX for every remaining non-ASCII UTF-16
+ * code unit. The result always passes SAFE_DESCRIPTION_RE and JSON.parse
+ * decodes it back to the original string.
+ * @param {unknown} value
+ * @returns {string}
+ */
+export function escapeToAsciiJson(value) {
+    return JSON.stringify(String(value ?? '')).replace(
+        /[^\x20-\x7E]/g,
+        (ch) => `\\u${ch.charCodeAt(0).toString(16).toUpperCase().padStart(4, '0')}`,
+    );
+}
+
+const FALLBACK_TITLE_PLACEHOLDER = 'Follow-up finding (original title not shell-safe)';
+
+/**
+ * Builds a filable variant of a newTask whose TITLE still fails
+ * validateNewTask() after sanitizeNewTaskTitle(). The catch-all strip applies
+ * ONLY here, to this fallback title: every character SAFE_TEXT_RE does not
+ * admit becomes a space (spaces collapsed, trimmed; a fixed placeholder when
+ * nothing survives). The ORIGINAL title is preserved at the top of the
+ * description, escaped by escapeToAsciiJson() so SAFE_DESCRIPTION_RE passes.
+ * The result is re-validated through validateNewTask(); a priority or
+ * description failure is NOT rescued -- null is returned and the caller keeps
+ * its normal rejection path.
+ * @param {{ title: unknown, description: unknown, priority: unknown }} newTask
+ * @returns {{ ok: true, title: string, description: string, priority: string } | null}
+ */
+export function buildFallbackNewTask(newTask) {
+    // Only a TITLE failure is rescued: priority and description must already
+    // pass on their own (checked with a known-safe stand-in title).
+    if (!validateNewTask({ ...(newTask || {}), title: FALLBACK_TITLE_PLACEHOLDER }).ok) return null;
+    const originalTitle = newTask && newTask.title;
+    const stripped = sanitizeNewTaskTitle(originalTitle)
+        .replace(/[^A-Za-z0-9 .,:;!?()'_/+[\]-]/g, ' ')
+        .replace(/ {2,}/g, ' ')
+        .trim();
+    const fallbackTitle = stripped && SAFE_TEXT_RE.test(stripped) ? stripped : FALLBACK_TITLE_PLACEHOLDER;
+    const originalDescription = String((newTask && newTask.description) ?? '');
+    const description = `Original title (JSON-escaped, non-ASCII as \\uXXXX): ${escapeToAsciiJson(originalTitle)}\n\n${originalDescription}`;
+    const result = validateNewTask({ title: fallbackTitle, description, priority: newTask && newTask.priority });
+    return result.ok ? result : null;
 }
 
 /**
