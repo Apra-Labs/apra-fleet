@@ -10,27 +10,23 @@ or ask in [Discussions](https://github.com/Apra-Labs/apra-fleet/discussions).
 
 Cause: the server refuses an `/mcp` request without this install's access
 secret (header `X-Apra-Fleet-Member-Secret`, value in
-`~/.apra-fleet/data/member-access.key`) with HTTP 401. Claude Code treats any
+`~/.apra-fleet/data/member-access.key`) with HTTP 401. Claude Code treats the
 401 as "OAuth needed", tries dynamic client registration, gets 404, and shows
-that message instead of the server's explanation. The entry Claude used had no
-secret. Claude resolves a server name local scope first
-(`~/.claude.json` `projects[<path>].mcpServers`), then project scope
-(`<repo>/.mcp.json`), then user scope (`~/.claude.json` `mcpServers`) -- so an
-old header-less local or project entry hides the user-scope one `install`
-writes. 0.4.3's install doc said `claude mcp add apra-fleet ...` without
-`--scope`, which creates a local-scope entry.
+that message instead of the server's explanation.
 
 Fix:
 
-- Run `apra-fleet status`: it lists every shadowing local/project entry it can
-  see (`[!]` lines with the file and the fix).
-- Re-run `apra-fleet install`: it rewrites the user-scope registration and
-  every local-scope apra-fleet entry for this server with the secret.
-- A project `.mcp.json` is never given the secret (it is usually tracked):
-  remove its apra-fleet entry -- the user-scope registration already serves
-  it.
-- Restart every open Claude Code (or other LLM CLI) session; a running session
-  keeps the MCP config it started with.
+1. Restart the Claude Code (or other LLM CLI) session. A session started
+   before `apra-fleet install` / upgrade keeps its old MCP config without the
+   secret.
+2. If it persists, an apra-fleet entry without the header in a local-scope
+   (`~/.claude.json` `projects[<path>].mcpServers`) or project-scope
+   (`<repo>/.mcp.json`) config is shadowing the user-scope one install writes
+   (Claude resolves local, then project, then user scope). Remove it, e.g.
+   `claude mcp remove apra-fleet --scope local` (or delete the entry from
+   `.mcp.json`), then restart the session. Re-running `apra-fleet install`
+   also rewrites local-scope apra-fleet entries for this server with the
+   secret.
 
 ## Members
 

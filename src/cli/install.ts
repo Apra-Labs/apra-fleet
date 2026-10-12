@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import { getOrCreateMemberAccessSecret, MEMBER_SECRET_HEADER, readMemberAccessSecret } from '../services/member-access-secret.js';
-import { claudeUserConfigPath, describeShadowingEntry, findProjectMcpJsonShadowing, refreshClaudeLocalScopeEntries } from '../services/mcp-registration-audit.js';
+import { claudeUserConfigPath, refreshClaudeLocalScopeEntries } from '../services/claude-local-scope-mcp.js';
 import path from 'node:path';
 import os from 'node:os';
 import { execSync, execFileSync } from 'node:child_process';
@@ -828,7 +828,7 @@ function mergeCodexConfig(paths: ProviderInstallConfig, mcpConfig: any): void {
   writeConfig(paths, settings, { ownerOnly: !!mcpConfig.headers });
 }
 
-export { claudeUserConfigPath } from '../services/mcp-registration-audit.js';
+export { claudeUserConfigPath } from '../services/claude-local-scope-mcp.js';
 
 /**
  * Register the http apra-fleet server in claude's user scope WITHOUT putting
@@ -1672,13 +1672,11 @@ ${manualStopHint(pidsAfterStop)}
     // header-less: rewrite them with the secret too.
     try {
       const rewritten = refreshClaudeLocalScopeEntries(claudeUserConfigPath(), fleetUrl, fleetAccessHeaders);
-      for (const e of rewritten) console.log(`    claude: local-scope '${e.name}' for ${e.project} rewritten with the access secret`);
+      for (const project of rewritten) console.log(`    claude: local-scope apra-fleet entry for ${project} rewritten with the access secret`);
       if (rewritten.length) registrationChanged = true;
     } catch (err) {
       console.warn(`    [!] could not refresh claude local-scope apra-fleet entries: ${err instanceof Error ? err.message : String(err)}`);
     }
-    // A project .mcp.json is usually tracked: report it, never write the secret into it.
-    for (const e of findProjectMcpJsonShadowing(process.cwd(), fleetUrl)) console.warn(`    ${describeShadowingEntry(e)}`);
   } else {
     // 'run --transport stdio' starts the stdio MCP server; passed as trailing args so
     // LLM providers invoke `apra-fleet run` (or `node dist/index.js run`) and the no-arg

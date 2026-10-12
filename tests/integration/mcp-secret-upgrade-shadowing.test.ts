@@ -1,14 +1,12 @@
 /**
- * Upgrade from 0.4.3 with a header-less Claude LOCAL-scope apra-fleet entry
- * (`claude mcp add apra-fleet <url>` without --scope, which the 0.4.3 install
- * doc told users to run). Claude resolves that entry before the user-scope
- * one, so after the access-secret gate it got 401 and reported "Dynamic
- * Client Registration rejected (HTTP 404)".
+ * Upgrade with a header-less Claude LOCAL-scope apra-fleet entry (a hand-run
+ * `claude mcp add apra-fleet <url>` without --scope). Claude resolves that
+ * entry before the user-scope one, so after the access-secret gate it got 401
+ * and reported "Dynamic Client Registration rejected (HTTP 404)".
  *
- * Chain: 0.4.3-shaped ~/.claude.json -> the install's local-scope refresh ->
+ * Chain: pre-upgrade ~/.claude.json -> the install's local-scope refresh ->
  * the headers of the entry Claude resolves for that project -> the real /mcp
  * gate answers MCP initialize with 200 (and 401 for the pre-upgrade entry).
- * Stands in for an upgrade-leg check in the nightly fresh-install harness.
  */
 import { describe, it, expect, afterEach } from 'vitest';
 import fs from 'node:fs';
@@ -16,7 +14,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { createHttpTransport, type HttpTransportHandle } from '../../src/services/http-transport.js';
-import { refreshClaudeLocalScopeEntries } from '../../src/services/mcp-registration-audit.js';
+import { refreshClaudeLocalScopeEntries } from '../../src/services/claude-local-scope-mcp.js';
 import { MEMBER_SECRET_HEADER } from '../../src/services/member-access-secret.js';
 
 const handles: HttpTransportHandle[] = [];
