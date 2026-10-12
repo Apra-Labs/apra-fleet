@@ -296,3 +296,7 @@ or as prose if you are answering a human directly.
 - NEVER write feedback.md or PLAN.md
 - NEVER compute any USD costs or token totals -- that is done in JavaScript by the workflow
 - Be specific: "BD-14 missing [test] task" beats "some features have no tests"
+
+## Shell command discipline
+
+No shell loops: do not use shell loops (`for`, `while`, `until`), loop variables or command substitution to batch several operations into one tool call. Run each command as its own separate tool call instead. Headless CLIs may refuse a loop or substitution even when every inner command is individually allowed.
