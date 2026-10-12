@@ -12,7 +12,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { MEMBER_SECRET_HEADER } from './member-access-secret.js';
-import { writeOwnerOnlyFile } from '../cli/config.js';
+import { writeOwnerOnlyFileAtomic } from '../cli/config.js';
 
 /** The claude user-scope config file: $CLAUDE_CONFIG_DIR/.claude.json when set, else ~/.claude.json. */
 export function claudeUserConfigPath(): string {
@@ -41,9 +41,8 @@ export function isThisInstallMcpUrl(url: unknown, fleetUrl: string): boolean {
 
 /**
  * Rewrites every local-scope http entry for this install (exact `fleetUrl`)
- * whose access-secret header is missing or differs, with the shape install
- * writes for user scope ({ type: 'http', url, headers }), keeping any other
- * headers. stdio entries, bearer-authenticated entries, `?member=` entries and
+ * whose access-secret header is missing or differs: the header is merged in,
+ * every other field and header of the entry is kept. stdio entries, bearer-authenticated entries, `?member=` entries and
  * other URLs are left alone; no entry is created. Writes owner-only, and only
  * when something changed. Returns the rewritten projects[] keys. Throws when
  * the file exists but is not valid JSON.
@@ -68,10 +67,10 @@ export function refreshClaudeLocalScopeEntries(configFile: string, fleetUrl: str
       const k = Object.keys(h).find(x => x.toLowerCase() === want);
       if (k !== undefined && h[k] === headers[MEMBER_SECRET_HEADER]) continue;
       const kept = Object.fromEntries(Object.entries(h).filter(([x]) => x.toLowerCase() !== want));
-      p.mcpServers[name] = { type: 'http', url: e.url, headers: { ...kept, ...headers } };
+      p.mcpServers[name] = { ...e, headers: { ...kept, ...headers } };
       rewritten.push(project);
     }
   }
-  if (rewritten.length) writeOwnerOnlyFile(configFile, JSON.stringify(json, null, 2) + '\n');
+  if (rewritten.length) writeOwnerOnlyFileAtomic(configFile, JSON.stringify(json, null, 2) + '\n');
   return rewritten;
 }

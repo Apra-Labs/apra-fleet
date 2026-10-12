@@ -184,6 +184,26 @@ export function writeOwnerOnlyFile(file: string, content: string): void {
   fs.chmodSync(file, 0o600);
 }
 
+/**
+ * writeOwnerOnlyFile for a file another process saves concurrently (Claude
+ * Code's ~/.claude.json): the content goes to an owner-only temp file in the
+ * same directory, then replaces the target by rename, so a crash or a racing
+ * save never leaves it truncated. When the rename fails (e.g. the target is
+ * briefly locked on Windows) it falls back to the in-place owner-only write.
+ */
+export function writeOwnerOnlyFileAtomic(file: string, content: string): void {
+  const tmp = path.join(path.dirname(file), `.${path.basename(file)}.${process.pid}.${Date.now()}.tmp`);
+  try {
+    fs.writeFileSync(tmp, content, { mode: 0o600, flag: 'wx' });
+    fs.chmodSync(tmp, 0o600);
+    fs.renameSync(tmp, file);
+    return;
+  } catch {
+    try { fs.unlinkSync(tmp); } catch { /* not created / already moved */ }
+  }
+  writeOwnerOnlyFile(file, content);
+}
+
 export function writeConfig(paths: ProviderInstallConfig, config: any, opts: { ownerOnly?: boolean } = {}): void {
   fs.mkdirSync(paths.configDir, { recursive: true });
   let content = '';

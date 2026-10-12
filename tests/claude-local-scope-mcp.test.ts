@@ -84,6 +84,14 @@ describe('refreshClaudeLocalScopeEntries', () => {
     expect(JSON.parse(fs.readFileSync(file, 'utf8')).projects['/r'].mcpServers['apra-fleet'].headers).toEqual({ 'X-Other': '1', [HEADER]: SECRET });
   });
 
+  it('keeps the entry\'s other fields when merging the header; writes atomically (no temp file left)', () => {
+    const file = claudeUserConfigPath();
+    fs.writeFileSync(file, JSON.stringify({ projects: { '/r': { mcpServers: { 'apra-fleet': { type: 'sse', url: URL_, timeout: 5 } } } } }));
+    refreshClaudeLocalScopeEntries(file, URL_, { [HEADER]: SECRET });
+    expect(JSON.parse(fs.readFileSync(file, 'utf8')).projects['/r'].mcpServers['apra-fleet']).toEqual({ type: 'sse', url: URL_, timeout: 5, headers: { [HEADER]: SECRET } });
+    expect(fs.readdirSync(tmp).filter(f => f.endsWith('.tmp'))).toEqual([]);
+  });
+
   it('is a no-op without a config file, and refuses an unparseable one without writing', () => {
     const file = claudeUserConfigPath();
     expect(refreshClaudeLocalScopeEntries(file, URL_, { [HEADER]: SECRET })).toEqual([]);

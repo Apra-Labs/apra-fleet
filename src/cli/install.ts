@@ -18,6 +18,7 @@ import {
   readConfig,
   readInstallConfig,
   writeOwnerOnlyFile,
+  writeOwnerOnlyFileAtomic,
   writeConfig,
   writeInstallConfig,
   PROVIDER_STANDARD_MODELS,
@@ -850,7 +851,7 @@ export function registerClaudeHttpMcp(url: string, headers: Record<string, strin
   }
   settings.mcpServers = settings.mcpServers || {};
   settings.mcpServers['apra-fleet'] = { type: 'http', url, headers };
-  writeOwnerOnlyFile(file, JSON.stringify(settings, null, 2) + '\n');
+  writeOwnerOnlyFileAtomic(file, JSON.stringify(settings, null, 2) + '\n');
 }
 
 /** Write the http (url + access-secret header) apra-fleet registration for one provider. */
@@ -862,12 +863,28 @@ export function registerHttpMcp(provider: LlmProvider, paths: ProviderInstallCon
   else if (provider === 'opencode') mergeOpenCodeConfig(paths, { url, headers });
 }
 
-/** The raw content of the file holding `provider`'s apra-fleet MCP registration ('' when absent/unreadable). */
+/** The apra-fleet MCP entry `provider` has registered (parsed), or undefined. Never throws. */
+function registeredMcpEntry(provider: LlmProvider, paths: ProviderInstallConfig): any {
+  try {
+    if (provider === 'claude') return readJsonOrEmpty(claudeUserConfigPath()).mcpServers?.['apra-fleet'];
+    if (provider === 'agy') return readJsonOrEmpty(path.join(os.homedir(), '.gemini', 'config', 'mcp_config.json')).mcpServers?.['apra-fleet'];
+    const settings = readConfig(paths);
+    if (provider === 'codex') return settings.mcp_servers?.['apra-fleet'];
+    if (provider === 'copilot') return settings.mcpServers?.['apra-fleet'];
+    if (provider === 'opencode') return settings.mcp?.['apra-fleet'];
+  } catch { /* unreadable -> unknown */ }
+  return undefined;
+}
+
+/**
+ * Key-order-independent serialization of `provider`'s apra-fleet entry, to
+ * tell whether a registration write changed it (formatting and the rest of
+ * the file do not count).
+ */
 function mcpRegistrationSnapshot(provider: LlmProvider, paths: ProviderInstallConfig): string {
-  const file = provider === 'claude' ? claudeUserConfigPath()
-    : provider === 'agy' ? path.join(os.homedir(), '.gemini', 'config', 'mcp_config.json')
-    : paths.settingsFile;
-  try { return fs.existsSync(file) ? String(fs.readFileSync(file, 'utf-8') ?? '') : ''; } catch { return ''; }
+  const canon = (v: any): any => Array.isArray(v) ? v.map(canon)
+    : v && typeof v === 'object' ? Object.fromEntries(Object.keys(v).sort().map(k => [k, canon(v[k])])) : v;
+  return JSON.stringify(canon(registeredMcpEntry(provider, paths)) ?? null);
 }
 
 function readJsonOrEmpty(file: string): any {
@@ -887,18 +904,11 @@ function readJsonOrEmpty(file: string): any {
 export function registeredMcpTransport(provider: LlmProvider, paths: ProviderInstallConfig): 'http' | 'stdio' | undefined {
   const classify = (e: any): 'http' | 'stdio' | undefined =>
     !e || typeof e !== 'object' ? undefined : e.url ? 'http' : e.command ? 'stdio' : undefined;
-  try {
-    if (provider === 'claude') return classify(readJsonOrEmpty(claudeUserConfigPath()).mcpServers?.['apra-fleet']);
-    if (provider === 'agy') return classify(readJsonOrEmpty(path.join(os.homedir(), '.gemini', 'config', 'mcp_config.json')).mcpServers?.['apra-fleet']);
-    const settings = readConfig(paths);
-    if (provider === 'codex') return classify(settings.mcp_servers?.['apra-fleet']);
-    if (provider === 'copilot') return classify(settings.mcpServers?.['apra-fleet']);
-    if (provider === 'opencode') {
-      const e = settings.mcp?.['apra-fleet'];
-      return e?.type === 'remote' || e?.url ? 'http' : e?.type === 'local' || e?.command ? 'stdio' : undefined;
-    }
-  } catch { /* unreadable -> unknown */ }
-  return undefined;
+  const e = registeredMcpEntry(provider, paths);
+  if (provider === 'opencode') {
+    return e?.type === 'remote' || e?.url ? 'http' : e?.type === 'local' || e?.command ? 'stdio' : undefined;
+  }
+  return classify(e);
 }
 
 function run(cmd: string, opts?: Record<string, unknown>): void {
@@ -1636,7 +1646,8 @@ ${manualStopHint(pidsAfterStop)}
   const fleetAccessHeaders = { [MEMBER_SECRET_HEADER]: getOrCreateMemberAccessSecret() };
   // Open LLM CLI sessions keep the MCP config they started with; a new secret
   // or a rewritten registration needs them restarted (reported at the end).
-  let registrationChanged = !secretExisted;
+  // stdio registrations are not gated by the secret.
+  let registrationChanged = !secretExisted && transport === 'http';
 
   if (memberMode) {
     // The per-folder member entry is written by compose_permissions; a member
