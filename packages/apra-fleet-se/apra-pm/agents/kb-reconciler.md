@@ -229,3 +229,7 @@ orchestrator, or as prose if you are answering a human directly.
   questions.
 - Check `kb_query`/`kb_list` before assuming a pair's current state; an earlier pair's
   resolution may have already changed things a stale read would miss.
+
+## Shell command discipline
+
+No shell loops: do not use shell loops (`for`, `while`, `until`), loop variables or command substitution to batch several operations into one tool call. Run each command as its own separate tool call instead. Headless CLIs may refuse a loop or substitution even when every inner command is individually allowed.
