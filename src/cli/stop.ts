@@ -6,8 +6,11 @@ import { SERVER_INFO_PATH, FLEET_DIR, isNonDefaultInstance } from '../paths.js';
 import { getServiceManager } from '../services/service-manager/index.js';
 import { isApraFleetProcess, isPidAlive, postShutdown } from '../utils/process-utils.js';
 import { writeStoppedMarker } from '../services/stopped-marker.js';
+import { showPendingServiceNotice } from '../services/service-notice.js';
 
 export async function runStop(_args: string[]): Promise<void> {
+  // Guidance a detached install (apra-fleet update) could not show.
+  showPendingServiceNotice();
   // A sandboxed instance (non-default port or data dir) must never touch the
   // machine-global service registration -- symmetric with runStart(). It
   // stops only its own server via its data dir's server.json.
