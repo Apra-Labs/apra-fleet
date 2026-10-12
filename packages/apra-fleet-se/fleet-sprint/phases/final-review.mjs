@@ -134,6 +134,10 @@ export async function runFinalReviewPhase({
     // deploy succeeded or no deploy.md exists. Non-null forces a FAIL verdict
     // (see the deploy-failure verdict gate in ./deploy.mjs).
     lastDeployFailure = null,
+    // GitHub #715: bead ids a failed doer of this run left 'in_progress' that
+    // hit the in-run re-dispatch cap and were left as they are. Named in the
+    // verdict notes (never changes the verdict) so a human sees them.
+    reclaimCappedIds = [],
     // runSprintCycle-scoped locals and runner-module-private values, injected
     // rather than imported (see header).
     bdListScoped,
@@ -278,6 +282,12 @@ export async function runFinalReviewPhase({
         const llmVerdict = finalVerdictResult && finalVerdictResult.verdict;
         finalVerdictResult = applyDeployFailureVerdictGate(finalVerdictResult, lastDeployFailure);
         log(`Final Review: sprint verdict forced to FAIL (Final Review returned ${llmVerdict ?? '(none)'}) -- ${formatDeployFailureReason(lastDeployFailure)}`);
+    }
+    if (finalVerdictResult && Array.isArray(reclaimCappedIds) && reclaimCappedIds.length > 0) {
+        const cappedNote = `${reclaimCappedIds.length} bead(s) were left 'in_progress' by failed doer streaks of this sprint more often than the re-dispatch cap allows and were NOT re-laned again -- needs human investigation: ${reclaimCappedIds.join(', ')}.`;
+        const prior = typeof finalVerdictResult.notes === 'string' ? finalVerdictResult.notes : '';
+        finalVerdictResult = { ...finalVerdictResult, notes: prior ? `${prior}\n\n${cappedNote}` : cappedNote };
+        log(`Final Review: ${cappedNote}`);
     }
     // No duplicate log() dump -- see dispatchReview() for why.
     // `finalVerdictResult.verdict` also surfaces via the generic,

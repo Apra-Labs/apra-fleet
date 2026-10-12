@@ -1187,13 +1187,25 @@ describe('role policy table: pre-dispatch and post-result steps match runner.js'
             'The engine must kill a stale session in exactly ONE generic place -- a second site would be a per-role ' +
             'special case creeping back into the engine.'
         );
+        // GitHub #715: the ONE kill site that is not a resume. The in-run
+        // orphaned-claim reclaim (runner.js reclaimInRunOrphanedClaims) stops
+        // a failed doer streak's session before re-laning the bead it left
+        // in_progress -- a liveness guard before a RE-DISPATCH to possibly
+        // another doer, not a resume of the same session, so no policy row
+        // owns it. Counted by name so a second non-resume site still trips
+        // this census.
+        const reclaimKillSites = (stripComments(
+            fs.readFileSync(path.join(FLEET_SPRINT_DIR, 'runner.js'), 'utf8'),
+        ).match(/async function reclaimInRunOrphanedClaims\([\s\S]*?\n    \}\n/) || [''])[0]
+            .match(/memberSessionGuard\.killIfAlive\(/g)?.length ?? 0;
+        assert.strictEqual(reclaimKillSites, 1, 'reclaimInRunOrphanedClaims must stop the failed doer session exactly once per member.');
         const killSites = (stripComments(SRC).match(/memberSessionGuard\.killIfAlive\(/g) || []).length;
         assert.strictEqual(
             killSites,
-            inlineKillers.length + extraInfraKills + engineKillSites,
+            inlineKillers.length + extraInfraKills + engineKillSites + reclaimKillSites,
             `The scanned module set has ${killSites} session-kill sites; the table accounts for ` +
             `${inlineKillers.length} still-inline resume dispatches plus ${extraInfraKills} infra-recovery resumes ` +
-            `plus the engine's ${engineKillSites} shared site.`
+            `plus the engine's ${engineKillSites} shared site plus ${reclaimKillSites} in-run orphan-reclaim stop.`
         );
     });
 

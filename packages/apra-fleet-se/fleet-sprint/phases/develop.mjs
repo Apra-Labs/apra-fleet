@@ -64,6 +64,7 @@ import {
 import { isPostDispatchSyncFailure } from '../errors.mjs';
 import { isPermissionScopePostDispatchSyncFailure } from '../dispatch-failure.mjs';
 import { policyFor } from '../role-policies.mjs';
+import { CLAIMED_ELSEWHERE_REASON } from '../orphan-reclaim.mjs';
 
 /**
  * Runs ONE Develop round: streak grouping, per-doer worklist packing, and the
@@ -314,6 +315,13 @@ export async function runDevelopPhase({
         try {
         let actualBeadIds = streak.map((b) => b.id);  // May be reduced by claiming if assignee is set
         let hasClaimedBeads = false;  // Track whether we've done claiming yet
+        // Set when the claim found every bead of this streak already held by
+        // another sprint. Carried onto the failed outcome as the STRUCTURED
+        // failureReason the in-run orphan reclaim (runner.js) keys on, so a
+        // claim another sprint holds is identified without reading message
+        // text -- and sticky, so a retried attempt refuses the same way
+        // instead of dispatching a doer on beads it does not own.
+        let claimedElsewhere = false;
 
         // The base turn budget the resume ladder escalates from. Read
         // out of the ENGINE's TURN_BASES (apra-fleet-3swo.5.7) rather
@@ -386,6 +394,11 @@ export async function runDevelopPhase({
             // multi-id --claim contract (non-atomic, JSON-array-only
             // success signal) this relies on.
             claimBeads: async () => {
+                const claimedElsewhereError = () => new WorkflowError(
+                    `All beads already claimed by other sprints`,
+                    { details: { beadIds: actualBeadIds, reason: CLAIMED_ELSEWHERE_REASON } }
+                );
+                if (claimedElsewhere) throw claimedElsewhereError();
                 if (hasClaimedBeads) return;
                 hasClaimedBeads = true;
                 if (!validated.assignee) return;
@@ -396,10 +409,8 @@ export async function runDevelopPhase({
                     // All beads in this streak are already claimed by
                     // other sprints. Skip this streak entirely.
                     log(`Doer streak: all beads ${streakScope()} are already claimed by other sprints -- skipping this streak.`);
-                    throw new WorkflowError(
-                        `All beads already claimed by other sprints`,
-                        { beadIds: actualBeadIds, reason: 'all-beads-already-claimed' }
-                    );
+                    claimedElsewhere = true;
+                    throw claimedElsewhereError();
                 }
                 if (skippedBeadIds.length > 0) {
                     actualBeadIds = claimedBeadIds; // Only the successfully claimed ones
@@ -627,6 +638,17 @@ export async function runDevelopPhase({
             }));
             const closedIds = actualBeadIds.filter((id) => !unclosedIds.includes(id));
             log(`Doer streak attribution [${actualBeadIds.join(', ')}]: closed=[${closedIds.join(', ')}] failed=[${unclosedIds.join(', ')}] (dispatch error: ${dispatchError.message}).`);
+            // Structured failure facts for the in-run orphan reclaim
+            // (runner.js, ../orphan-reclaim.mjs): WHY the streak failed, read
+            // off the error's own fields (never its message text), and
+            // whether the turn COMPLETED with only its post-dispatch sync
+            // failing (work committed locally -- never re-laned).
+            const failureFacts = {
+                failureReason: claimedElsewhere
+                    ? CLAIMED_ELSEWHERE_REASON
+                    : ((dispatchError.details && dispatchError.details.reason) || 'dispatch-error'),
+                ...(isPostDispatchSyncFailure(dispatchError) ? { postDispatchSyncFailed: true } : {}),
+            };
             // NOTE ON `outcome` STAYING 'failed' HERE (never 'publish-blocked')
             // EVEN FOR THE PERMISSION-SCOPE CASE: review.mjs's ONLY read of
             // this field is `streakOutcomes.filter((o) => o.outcome !== 'failed')`
@@ -667,6 +689,7 @@ export async function runDevelopPhase({
                         outcome: subUnclosed.length > 0 ? 'failed' : 'success',
                         ...(subUnclosed.length > 0 ? {
                             error: dispatchError.message,
+                            ...failureFacts,
                             ...(permissionScopeBlocked ? { publishBlocked: true } : {}),
                         } : {}),
                     });
@@ -675,6 +698,7 @@ export async function runDevelopPhase({
                 streakOutcomes.push({
                     beadIds: actualBeadIds, doerMember, outcome: 'failed', wasRetried,
                     report: null, unclosedIds, closedIds, error: dispatchError.message,
+                    ...failureFacts,
                     ...(permissionScopeBlocked ? { publishBlocked: true } : {}),
                 });
             }
@@ -737,6 +761,9 @@ export async function runDevelopPhase({
         // whatever already closed here).
         log(`Doer streak attribution [${actualBeadIds.join(', ')}]: closed=[${closedIds.join(', ')}] failed=[${unclosedIds.join(', ')}].`);
 
+        // The doer RETURNED (its session ended) but left bead(s) open: a
+        // BLOCKED report, or a success-looking report the bd read disproves.
+        const leftOpenReason = report && report.status === 'BLOCKED' ? 'blocked' : 'left-open';
         if (unclosedIds.length > 0) {
             log(`Doer streak [${actualBeadIds.join(', ')}] reported status '${report ? report.status : 'unknown'}' but bead(s) still open: ${unclosedIds.join(', ')} -- treating streak as FAILED.`);
         }
@@ -754,12 +781,14 @@ export async function runDevelopPhase({
                     beadIds: subIds, doerMember, wasRetried, report,
                     unclosedIds: subUnclosed, closedIds: subClosed,
                     outcome: subUnclosed.length > 0 ? 'failed' : (wasRetried ? 'retried' : 'success'),
+                    ...(subUnclosed.length > 0 ? { failureReason: leftOpenReason } : {}),
                 });
             }
         } else {
             streakOutcomes.push({
                 beadIds: actualBeadIds, doerMember, wasRetried, report, unclosedIds, closedIds,
                 outcome: unclosedIds.length > 0 ? 'failed' : (wasRetried ? 'retried' : 'success'),
+                ...(unclosedIds.length > 0 ? { failureReason: leftOpenReason } : {}),
             });
         }
         await updateDashboard();

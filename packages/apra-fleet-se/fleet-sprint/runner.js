@@ -310,6 +310,10 @@ import {
 // (apra-fleet-3swo.6.15); imported only to be re-exported below, unchanged, so
 // no importer of runner.js is edited by the move.
 import { DEFAULT_CONTEXT_CEILING, createRoundSessionRegistry } from './round-session.mjs';
+// GitHub #715: run-scoped bookkeeping of beads THIS sprint's doers were
+// dispatched on, so a claim a failed doer of this run left in_progress is
+// re-laned in the same sprint (see reclaimInRunOrphanedClaims below).
+import { createOrphanClaimTracker } from './orphan-reclaim.mjs';
 // The dispatch-outcome classification surface: isTerminalSprintFailure,
 // isNoMutationDispatchFailure and withDispatchWatchdog. Extracted out of
 // runner.js (apra-fleet-3swo.6.15); imported only to be re-exported below,
@@ -2020,9 +2024,15 @@ async function runSprintCycle(context) {
     /**
      * Reclaims 'in_progress' beads that are safe to redispatch to 'open':
      * no unmet `blocks` dependencies (nothing left to wait on) AND claimed
-     * BEFORE this sprint incarnation's own launch time -- so a genuinely
-     * live claim, including this very sprint's own in-flight work from an
-     * earlier point in the SAME cycle, is never touched. A bead with no
+     * BEFORE this sprint incarnation's own launch time -- so this very
+     * sprint's own in-flight work is never touched here (a claim a failed doer
+     * of THIS run left behind is reclaimed separately, by
+     * reclaimInRunOrphanedClaims). The pre-launch rule is NOT safe against
+     * concurrency on its own: a claim an EARLIER-launched sprint that is
+     * still running holds also predates this launch and would be reclaimed;
+     * only the supervisor's issue-scope overlap guard (which refuses to launch
+     * two sprints over overlapping scope) keeps such a claim out of this
+     * sprint's scope. A bead with no
      * parseable `started_at` is treated as predating this sprint (`bd
      * update --claim` always stamps `started_at`, so a bead claimed by
      * THIS sprint always has one -- an unparseable/absent value can only
@@ -2044,9 +2054,12 @@ async function runSprintCycle(context) {
      * on relaunch) was invisible to every later cycle, so the sprint just
      * spun Plan-finds-nothing -> Deploy forever until the stall detector
      * eventually gave up, burning cycles/cost for zero progress. This is
-     * now also called at the top of every cycle's readiness check, so an
-     * orphaned claim self-heals on the very next cycle instead of silently
-     * persisting for the rest of the run.
+     * now also called at the top of every cycle's readiness check (when the
+     * ready set is empty), so a PRE-LAUNCH orphaned claim self-heals on the
+     * very next cycle instead of silently persisting for the rest of the run.
+     * It never reclaims a claim made after the launch -- including one a
+     * crashed doer of THIS run left -- which is reclaimInRunOrphanedClaims'
+     * job.
      * @param {{ notDoneBeads: object[], reasonTag: string }} opts
      * @returns {Promise<{ reclaimedIds: string[], cappedIds: string[] }>}
      */
@@ -2081,6 +2094,105 @@ async function runSprintCycle(context) {
             log(`${reasonTag}: ${cappedIds.length} bead(s) hit the stale-in_progress reclaim bounce cap (limit ${STALE_IN_PROGRESS_RECLAIM_LIMIT}) and were left 'in_progress' rather than reclaimed again -- needs human investigation: ${cappedIds.join(', ')}.`);
         }
         return { reclaimedIds, cappedIds };
+    }
+
+    /**
+     * GitHub #715: re-lanes beads a failed doer of THIS run left
+     * 'in_progress'. reclaimStaleInProgress() above cannot: it only reclaims
+     * claims older than the sprint launch, so a doer of this run that claimed
+     * a bead and then died, exhausted its resumes or returned BLOCKED left the
+     * bead -- and its whole `blocks` chain -- hidden from `bd ready` for the
+     * rest of the sprint, which then ended FAIL through the stall net.
+     *
+     * Called at the top of every cycle, before Plan. Costs NOTHING on the
+     * common path: with no failed doer dispatch on record it returns before
+     * any bd call. Otherwise, per candidate (./orphan-reclaim.mjs decides who
+     * is one, from each bead's latest streak outcome):
+     *
+     *   1. FRESH READ. The cached snapshot only pre-filters; it can lag a full
+     *      cycle (see beads-scope.mjs), so it never authorizes a write. The
+     *      orchestrator's beads clone is D-pulled (a remote doer closes in its
+     *      OWN clone) and the candidates are re-read with `bd show`. Only a
+     *      bead that is STILL in_progress proceeds; one found closed is
+     *      dropped from the record and never reopened.
+     *   2. LIVENESS. A returned dispatch does not prove the doer session is
+     *      dead (a stalled-but-alive session can outlive its dispatch), so the
+     *      failed streak's doer session is STOPPED (memberSessionGuard
+     *      .killIfAlive) before its bead is re-laned. Chosen over skipping
+     *      reclaim for may-still-be-running failures: skipping would leave
+     *      exactly those beads stuck, which is the bug.
+     *   3. GUARDED WRITE. `--if-status in_progress` makes the write itself
+     *      refuse a bead that closed after the fresh read (bd exits non-zero,
+     *      logged, nothing changes). The stale assignee is cleared because a
+     *      different doer's `bd update --claim` refuses a bead another actor
+     *      still holds; `--force` is bd's documented override for exactly this
+     *      abandoned-claim case.
+     *
+     * Claims another sprint holds are identified by the structured
+     * all-beads-already-claimed failure reason on the streak outcome and are
+     * never touched. A reclaimed id leaves the record and only returns when a
+     * doer of this run is dispatched on it again, so a later claim of the same
+     * bead by another actor is never reset. NOT a concurrency guarantee: with
+     * no engine-side claim (no assignee configured) a concurrent sprint that
+     * claimed the bead between this sprint's ready read and its own doer's
+     * claim is indistinguishable from this run's doer here; as for the
+     * pre-launch rule, only the supervisor's issue-scope overlap guard keeps
+     * two sprints off the same beads. Each bead is re-laned at most
+     * ORPHAN_RECLAIM_LIMIT times; a bead past the cap stays in_progress and is
+     * named in the final sprint notes.
+     *
+     * Introduces no launch timestamp of its own: in-run orphans are found by
+     * this run's own dispatch record, and the sprint keeps the single launch
+     * time sprintState.startedAtMs (read only by reclaimStaleInProgress).
+     * @param {{ reasonTag: string }} opts
+     * @returns {Promise<string[]>} the reclaimed bead ids
+     */
+    async function reclaimInRunOrphanedClaims({ reasonTag }) {
+        if (!orphanClaims.hasFailed()) return [];
+        const { candidates, newlyCappedIds } = orphanClaims.candidates(await fetchAllBeadsShared());
+        if (newlyCappedIds.length > 0) {
+            log(`${reasonTag}: ${newlyCappedIds.length} bead(s) a failed doer of this run left 'in_progress' already hit the re-dispatch cap (limit ${orphanClaims.limit}) and are left as they are -- needs human investigation: ${newlyCappedIds.join(', ')}.`);
+        }
+        if (candidates.length === 0) return [];
+
+        const settleShell = await resolveSettleShell({ args, member: backlogMember, log, sprintState });
+        await gitSync.syncBeadsBefore(backlogMember, { fatal: true, settle: buildSettleCallback(backlogMember, { command, log, shell: settleShell }) });
+        const ids = candidates.map((c) => c.id);
+        const showLabel = `bd show ${ids.join(' ')} --json`;
+        const fresh = parseBdJson(await command(showLabel, { member_name: backlogMember, silent: true }), showLabel);
+        const freshStatusById = new Map((Array.isArray(fresh) ? fresh : []).map((b) => [b.id, b.status]));
+
+        const confirmed = [];
+        for (const c of candidates) {
+            const status = freshStatusById.get(c.id);
+            if (status === 'in_progress') {
+                confirmed.push(c);
+                continue;
+            }
+            if (status === 'closed') orphanClaims.forget(c.id);
+            log(`${reasonTag}: ${c.id} looked orphaned 'in_progress' in the cached snapshot but a fresh read shows '${status || 'unknown'}' -- not reclaiming it.`);
+        }
+        if (confirmed.length === 0) return [];
+
+        const doerMembers = [...new Set(confirmed.map((c) => c.doerMember).filter(Boolean))];
+        for (const member of doerMembers) {
+            log(`${reasonTag}: stopping any still-running session on doer member '${member}' before re-laning the bead(s) its failed streak left 'in_progress'.`);
+            await memberSessionGuard.killIfAlive(member);
+        }
+
+        const reclaimedIds = [];
+        for (const c of confirmed) {
+            try {
+                await command(`bd update ${c.id} --status open --assignee= --force --if-status in_progress`, { member_name: backlogMember, silent: true });
+            } catch (err) {
+                log(`${reasonTag}: re-laning ${c.id} was refused (${err.message}) -- leaving it as it is.`);
+                continue;
+            }
+            const attempt = orphanClaims.markReclaimed(c.id);
+            log(`${reasonTag}: ${c.id} was left 'in_progress' by a failed doer streak of this run (member '${c.doerMember || 'unknown'}') -- confirmed by a fresh read and reclaimed to 'open' so it is dispatched again this sprint (attempt ${attempt}/${orphanClaims.limit}).`);
+            reclaimedIds.push(c.id);
+        }
+        return reclaimedIds;
     }
 
     /**
@@ -2626,6 +2738,11 @@ async function runSprintCycle(context) {
     // every verdict site: Review, Re-Review and Final Review.
     const workedOnBeadIds = new Set();
 
+    // GitHub #715: the run-scoped "dispatched to a doer this run" record, by
+    // each bead's LATEST streak outcome. See ./orphan-reclaim.mjs for the
+    // rules and reclaimInRunOrphanedClaims() for the fresh-read/stop/write.
+    const orphanClaims = createOrphanClaimTracker();
+
     // The develop loop's ready set: readyLeafBeads() minus below-goal beads
     // that neither (transitively) block an open in-goal bead nor were already
     // dispatched by this sprint (see partitionReadyByGoal in beads-scope.mjs).
@@ -2802,6 +2919,12 @@ async function runSprintCycle(context) {
         if (verifySetThisCycle.length > 0) {
             log(`Route C${cycle}: ${verifySetThisCycle.length} bead(s) implementation-complete, routed to verify (excluded from Plan/Develop): ${verifySetThisCycle.join(', ')}`);
         }
+
+        // GitHub #715: re-lane beads a failed doer of THIS run left
+        // in_progress, before Plan and before readiness is computed, so they
+        // (and the beads they block) are dispatchable again this cycle. No bd
+        // call at all unless a doer streak of this run failed.
+        await reclaimInRunOrphanedClaims({ reasonTag: `Cycle ${cycle} in-run reclaim` });
 
         // =======================
         // 1. Planning Loop
@@ -3058,6 +3181,7 @@ async function runSprintCycle(context) {
             for (const o of streakOutcomes) {
                 for (const id of (o.beadIds || [])) workedOnBeadIds.add(id);
             }
+            orphanClaims.recordOutcomes(streakOutcomes);
 
             // --- Review: self-contained, schema-validated, orchestrator-applied ---
             // The phase body lives in ./phases/review.mjs
@@ -3540,6 +3664,7 @@ async function runSprintCycle(context) {
         deployFailures, integFailures, rejectedNewTasks, verifyEverIds,
         lastDeployFailure,
         bdListScoped, decomposedParentIds, goalMax, NOT_DONE_STATUSES,
+        reclaimCappedIds: orphanClaims.cappedIds(),
         workedOnIds: workedOnBeadIds,
         kbPriming, kbWork, kbInjection, kbSprintContext, getMemberForRole,
         childIdAllocator, sprintMutexId, resolveSettleShell,
