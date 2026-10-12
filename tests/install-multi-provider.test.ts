@@ -75,6 +75,30 @@ describe('runInstall multi-provider', () => {
     expect(vi.mocked(execSync).mock.calls.some(c => c[0].toString().includes('claude mcp add'))).toBe(false);
   });
 
+  it('tells the user to restart open LLM CLI sessions when it created the secret / rewrote a registration, and not on an unchanged re-run', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const restartNote = () => logSpy.mock.calls.map(c => c.join(' ')).join('\n').includes('Restart every open LLM CLI session');
+    try {
+      await runInstall([]); // fresh: secret created, registration written
+      expect(restartNote()).toBe(true);
+      logSpy.mockClear();
+      await runInstall([]); // same secret, same registration bytes
+      expect(restartNote()).toBe(false);
+      // a header-less local-scope entry (0.4.3 `claude mcp add` without --scope) is rewritten -> note again
+      const claudeJson = vi.mocked(fs.writeFileSync).mock.calls.map(c => c[0].toString()).find(p => p.replace(/\\/g, '/').endsWith('/mock/home/.claude.json'))!;
+      const cfg = JSON.parse(String(vi.mocked(fs.readFileSync)(claudeJson)));
+      cfg.projects = { '/mock/repo': { mcpServers: { 'apra-fleet': { type: 'http', url: 'http://localhost:7523/mcp' } } } };
+      vi.mocked(fs.writeFileSync)(claudeJson, JSON.stringify(cfg));
+      logSpy.mockClear();
+      await runInstall([]);
+      expect(restartNote()).toBe(true);
+      const after = JSON.parse(String(vi.mocked(fs.readFileSync)(claudeJson)));
+      expect(after.projects['/mock/repo'].mcpServers['apra-fleet'].headers['X-Apra-Fleet-Member-Secret']).toMatch(/^[0-9a-f]{64}$/);
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
   it('degrades gracefully (warns, does not throw, does not run claude mcp add) when the claude CLI is not on PATH (stdio registration)', async () => {
     vi.mocked(execSync).mockImplementation((cmd: any) => {
       const cmdStr = cmd.toString();

@@ -3,9 +3,29 @@ import http from 'node:http';
 import { checkRunningInstance, describePreviousServer } from '../services/singleton.js';
 import { getServiceManager } from '../services/service-manager/index.js';
 import type { ServiceStatus } from '../services/service-manager/types.js';
-import { SERVER_INFO_PATH } from '../paths.js';
+import { DEFAULT_PORT, SERVER_INFO_PATH } from '../paths.js';
 import { readStoppedMarker, describeStoppedMarker } from '../services/stopped-marker.js';
 import { serverVersion } from '../version.js';
+import { readMemberAccessSecret } from '../services/member-access-secret.js';
+import { claudeUserConfigPath, describeShadowingEntry, findShadowingMcpEntries } from '../services/mcp-registration-audit.js';
+
+/**
+ * Lines reporting Claude local-/project-scope MCP entries for this server that
+ * lack the access secret and shadow the user-scope registration (empty when
+ * none). Never throws; never prints the secret.
+ */
+export function shadowingMcpReport(fleetUrl: string, cwd: string = process.cwd()): string[] {
+  try {
+    return findShadowingMcpEntries({ configFile: claudeUserConfigPath(), cwd, fleetUrl, secret: readMemberAccessSecret() })
+      .map(e => `  ${describeShadowingEntry(e)}`);
+  } catch {
+    return [];
+  }
+}
+
+function printShadowing(fleetUrl: string): void {
+  for (const line of shadowingMcpReport(fleetUrl)) console.log(line);
+}
 
 function versionCore(v: string | undefined): string | null {
   // Capped like the client's versionCore: v comes from a server's /health reply.
@@ -83,6 +103,7 @@ export async function runStatus(_args: string[]): Promise<void> {
     console.log(`  URL:      ${instance.url}`);
     console.log(`  Service:  ${serviceLabel}`);
     console.log('  The server process is alive but not answering /health. Run "apra-fleet stop" to stop it.');
+    printShadowing(instance.url);
     return;
   }
 
@@ -91,6 +112,7 @@ export async function runStatus(_args: string[]): Promise<void> {
     console.log('apra-fleet status');
     console.log(`  State:    ${marker ? `stopped (${describeStoppedMarker(marker)})` : 'stopped'}`);
     console.log(`  Service:  ${serviceLabel}`);
+    printShadowing(`http://localhost:${DEFAULT_PORT}/mcp`);
     return;
   }
 
@@ -114,4 +136,5 @@ export async function runStatus(_args: string[]): Promise<void> {
   if (runningCore && ownCore && runningCore !== ownCore) {
     console.log(`  Warning:  the running server is ${health!.version} but this apra-fleet is ${serverVersion} -- stop it ('apra-fleet stop'), then run 'apra-fleet install' and 'apra-fleet start'.`);
   }
+  printShadowing(instance.url);
 }

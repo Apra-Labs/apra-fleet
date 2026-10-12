@@ -1,0 +1,157 @@
+/**
+ * Upgrade from 0.4.3: Claude local-scope (~/.claude.json projects[*]) and
+ * project-scope (.mcp.json) apra-fleet entries without the access secret
+ * shadow the user-scope registration. install rewrites the local-scope ones,
+ * only reports the project ones (never writes the secret into .mcp.json), and
+ * `apra-fleet status` reports what still shadows. HOME and USERPROFILE are
+ * sandboxed: the real home is never touched.
+ */
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import {
+  isThisInstallMcpUrl, refreshClaudeLocalScopeEntries, findProjectMcpJsonShadowing,
+  findShadowingMcpEntries, describeShadowingEntry, claudeUserConfigPath,
+} from '../src/services/mcp-registration-audit.js';
+import { shadowingMcpReport } from '../src/cli/status.js';
+
+const HEADER = 'X-Apra-Fleet-Member-Secret';
+const SECRET = 'ab'.repeat(32);
+const URL_ = 'http://localhost:7523/mcp';
+
+let tmp: string;
+const saved: Record<string, string | undefined> = {};
+beforeEach(() => {
+  tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-shadow-'));
+  for (const k of ['HOME', 'USERPROFILE', 'CLAUDE_CONFIG_DIR']) saved[k] = process.env[k];
+  process.env.HOME = tmp;
+  process.env.USERPROFILE = tmp;
+  delete process.env.CLAUDE_CONFIG_DIR;
+});
+afterEach(() => {
+  for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+/** A ~/.claude.json the way 0.4.3 left it: user-scope entry plus `claude mcp add apra-fleet` (local scope, no header). */
+function v043ClaudeJson(): any {
+  return {
+    numStartups: 3,
+    mcpServers: { 'apra-fleet': { type: 'http', url: URL_ } },
+    projects: {
+      '/home/u/repo-a': { allowedTools: [], mcpServers: { 'apra-fleet': { type: 'http', url: URL_ } } },
+      '/home/u/repo-b': { mcpServers: {
+        'apra-fleet': { type: 'stdio', command: '/home/u/.apra-fleet/bin/apra-fleet', args: ['run', '--transport', 'stdio'] },
+      } },
+      '/home/u/repo-c': { mcpServers: { 'apra-fleet': { type: 'http', url: 'http://localhost:9999/mcp' } } },
+      '/home/u/member': { mcpServers: { 'apra-fleet': { type: 'http', url: `${URL_}?member=11111111-2222-3333-4444-555555555555` } } },
+      '/home/u/repo-d': { mcpServers: { other: { type: 'http', url: 'https://example.com/mcp' } } },
+    },
+  };
+}
+
+describe('isThisInstallMcpUrl', () => {
+  it('matches the exact endpoint and loopback spellings only', () => {
+    expect(isThisInstallMcpUrl(URL_, URL_)).toBe(true);
+    expect(isThisInstallMcpUrl('http://127.0.0.1:7523/mcp/', URL_)).toBe(true);
+    expect(isThisInstallMcpUrl('http://localhost:7524/mcp', URL_)).toBe(false);
+    expect(isThisInstallMcpUrl(`${URL_}?member=x`, URL_)).toBe(false);
+    expect(isThisInstallMcpUrl('http://example.com:7523/mcp', URL_)).toBe(false);
+    expect(isThisInstallMcpUrl(undefined, URL_)).toBe(false);
+  });
+});
+
+describe('refreshClaudeLocalScopeEntries (install upgrade path)', () => {
+  it('rewrites only header-less local-scope http entries for this URL, keeping everything else', () => {
+    const file = claudeUserConfigPath();
+    expect(file.startsWith(tmp)).toBe(true);
+    const before = v043ClaudeJson();
+    fs.writeFileSync(file, JSON.stringify(before));
+    const rewritten = refreshClaudeLocalScopeEntries(file, URL_, { [HEADER]: SECRET });
+    expect(rewritten.map(e => e.project)).toEqual(['/home/u/repo-a']);
+    const after = JSON.parse(fs.readFileSync(file, 'utf8'));
+    expect(after.projects['/home/u/repo-a'].mcpServers['apra-fleet']).toEqual({ type: 'http', url: URL_, headers: { [HEADER]: SECRET } });
+    expect(after.projects['/home/u/repo-a'].allowedTools).toEqual([]);
+    for (const k of ['/home/u/repo-b', '/home/u/repo-c', '/home/u/member', '/home/u/repo-d']) {
+      expect(after.projects[k]).toEqual(before.projects[k]);
+    }
+    expect(after.numStartups).toBe(3);
+    if (process.platform !== 'win32') expect(fs.statSync(file).mode & 0o077).toBe(0);
+    // idempotent: a second run changes nothing and does not rewrite the file
+    const mtime = fs.statSync(file).mtimeMs;
+    expect(refreshClaudeLocalScopeEntries(file, URL_, { [HEADER]: SECRET })).toEqual([]);
+    expect(fs.statSync(file).mtimeMs).toBe(mtime);
+  });
+
+  it('replaces a stale secret (case-insensitive header key) and keeps other headers', () => {
+    const file = claudeUserConfigPath();
+    fs.writeFileSync(file, JSON.stringify({ projects: { '/r': { mcpServers: { 'apra-fleet': { type: 'http', url: URL_, headers: { 'x-apra-fleet-member-secret': 'cd'.repeat(32), 'X-Other': '1' } } } } } }));
+    expect(refreshClaudeLocalScopeEntries(file, URL_, { [HEADER]: SECRET })).toHaveLength(1);
+    expect(JSON.parse(fs.readFileSync(file, 'utf8')).projects['/r'].mcpServers['apra-fleet'].headers).toEqual({ 'X-Other': '1', [HEADER]: SECRET });
+  });
+
+  it('is a no-op without a config file, and refuses an unparseable one without writing', () => {
+    const file = claudeUserConfigPath();
+    expect(refreshClaudeLocalScopeEntries(file, URL_, { [HEADER]: SECRET })).toEqual([]);
+    expect(fs.existsSync(file)).toBe(false);
+    fs.writeFileSync(file, '{ nope');
+    expect(() => refreshClaudeLocalScopeEntries(file, URL_, { [HEADER]: SECRET })).toThrow(/not valid JSON/);
+    expect(fs.readFileSync(file, 'utf8')).toBe('{ nope');
+  });
+});
+
+describe('project .mcp.json shadowing (reported, never written)', () => {
+  function repoWithMcpJson(entry: Record<string, unknown>): { repo: string; file: string; bytes: string } {
+    const repo = path.join(tmp, 'repo');
+    fs.mkdirSync(path.join(repo, '.git'), { recursive: true });
+    fs.mkdirSync(path.join(repo, 'sub'), { recursive: true });
+    const file = path.join(repo, '.mcp.json');
+    const bytes = JSON.stringify({ mcpServers: { deepwiki: { type: 'http', url: 'https://mcp.deepwiki.com/mcp' }, 'apra-fleet': entry } }, null, 2);
+    fs.writeFileSync(file, bytes);
+    return { repo, file, bytes };
+  }
+
+  it('finds a header-less entry from the repo root or a subdirectory; the file stays byte-identical', () => {
+    const { repo, file, bytes } = repoWithMcpJson({ type: 'http', url: URL_ });
+    for (const cwd of [repo, path.join(repo, 'sub')]) {
+      const found = findProjectMcpJsonShadowing(cwd, URL_);
+      expect(found).toEqual([{ scope: 'project', file, name: 'apra-fleet' }]);
+    }
+    const msg = describeShadowingEntry(findProjectMcpJsonShadowing(repo, URL_)[0]);
+    expect(msg).toMatch(/^\[!\] /);
+    expect(msg).toContain(file);
+    expect(msg).toContain("remove the 'apra-fleet' entry");
+    // install's local-scope refresh never touches the project file
+    fs.writeFileSync(claudeUserConfigPath(), JSON.stringify(v043ClaudeJson()));
+    refreshClaudeLocalScopeEntries(claudeUserConfigPath(), URL_, { [HEADER]: SECRET });
+    expect(fs.readFileSync(file, 'utf8')).toBe(bytes);
+    expect(fs.readFileSync(file, 'utf8')).not.toContain(SECRET);
+  });
+
+  it('ignores an entry that carries the header (e.g. env-expanded) or a bearer, or targets another port', () => {
+    expect(findProjectMcpJsonShadowing(repoWithMcpJson({ type: 'http', url: URL_, headers: { [HEADER]: '${APRA_SECRET}' } }).repo, URL_)).toEqual([]);
+    fs.rmSync(path.join(tmp, 'repo'), { recursive: true, force: true });
+    expect(findProjectMcpJsonShadowing(repoWithMcpJson({ type: 'http', url: URL_, headers: { Authorization: 'Bearer x' } }).repo, URL_)).toEqual([]);
+    fs.rmSync(path.join(tmp, 'repo'), { recursive: true, force: true });
+    expect(findProjectMcpJsonShadowing(repoWithMcpJson({ type: 'http', url: 'http://localhost:1/mcp' }).repo, URL_)).toEqual([]);
+  });
+});
+
+describe('status report of shadowing entries', () => {
+  it('lists local-scope entries lacking the current secret and the project .mcp.json entry; nothing when clean', () => {
+    const repo = path.join(tmp, 'repo');
+    fs.mkdirSync(path.join(repo, '.git'), { recursive: true });
+    expect(shadowingMcpReport(URL_, repo)).toEqual([]);
+
+    fs.writeFileSync(claudeUserConfigPath(), JSON.stringify(v043ClaudeJson()));
+    fs.writeFileSync(path.join(repo, '.mcp.json'), JSON.stringify({ mcpServers: { 'apra-fleet': { type: 'http', url: URL_ } } }));
+    const found = findShadowingMcpEntries({ configFile: claudeUserConfigPath(), cwd: repo, fleetUrl: URL_, secret: SECRET });
+    expect(found.map(e => `${e.scope}:${e.project ?? e.file}`)).toEqual([`local:/home/u/repo-a`, `project:${path.join(repo, '.mcp.json')}`]);
+
+    const lines = shadowingMcpReport(URL_, repo);
+    expect(lines).toHaveLength(2);
+    expect(lines.join('\n')).toContain('/home/u/repo-a');
+    expect(lines.join('\n')).not.toContain(SECRET);
+  });
+});

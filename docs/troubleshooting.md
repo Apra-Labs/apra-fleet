@@ -4,6 +4,34 @@ Common symptoms and how to resolve them. If something here does not match what
 you see, search [GitHub Issues](https://github.com/Apra-Labs/apra-fleet/issues)
 or ask in [Discussions](https://github.com/Apra-Labs/apra-fleet/discussions).
 
+## MCP connection
+
+**Claude Code: `Dynamic Client Registration rejected (HTTP 404)` for apra-fleet**
+
+Cause: the server refuses an `/mcp` request without this install's access
+secret (header `X-Apra-Fleet-Member-Secret`, value in
+`~/.apra-fleet/data/member-access.key`) with HTTP 401. Claude Code treats any
+401 as "OAuth needed", tries dynamic client registration, gets 404, and shows
+that message instead of the server's explanation. The entry Claude used had no
+secret. Claude resolves a server name local scope first
+(`~/.claude.json` `projects[<path>].mcpServers`), then project scope
+(`<repo>/.mcp.json`), then user scope (`~/.claude.json` `mcpServers`) -- so an
+old header-less local or project entry hides the user-scope one `install`
+writes. 0.4.3's install doc said `claude mcp add apra-fleet ...` without
+`--scope`, which creates a local-scope entry.
+
+Fix:
+
+- Run `apra-fleet status`: it lists every shadowing local/project entry it can
+  see (`[!]` lines with the file and the fix).
+- Re-run `apra-fleet install`: it rewrites the user-scope registration and
+  every local-scope apra-fleet entry for this server with the secret.
+- A project `.mcp.json` is never given the secret (it is usually tracked):
+  remove its apra-fleet entry -- the user-scope registration already serves
+  it.
+- Restart every open Claude Code (or other LLM CLI) session; a running session
+  keeps the MCP config it started with.
+
 ## Members
 
 **Member shows as offline**
