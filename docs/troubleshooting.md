@@ -4,6 +4,30 @@ Common symptoms and how to resolve them. If something here does not match what
 you see, search [GitHub Issues](https://github.com/Apra-Labs/apra-fleet/issues)
 or ask in [Discussions](https://github.com/Apra-Labs/apra-fleet/discussions).
 
+## MCP connection
+
+**Claude Code: `Dynamic Client Registration rejected (HTTP 404)` for apra-fleet**
+
+Cause: the server refuses an `/mcp` request without this install's access
+secret (header `X-Apra-Fleet-Member-Secret`, value in
+`~/.apra-fleet/data/member-access.key`) with HTTP 401. Claude Code treats the
+401 as "OAuth needed", tries dynamic client registration, gets 404, and shows
+that message instead of the server's explanation.
+
+Fix:
+
+1. Restart the Claude Code (or other LLM CLI) session. A session started
+   before `apra-fleet install` / upgrade keeps its old MCP config without the
+   secret.
+2. If it persists, an apra-fleet entry without the header in a local-scope
+   (`~/.claude.json` `projects[<path>].mcpServers`) or project-scope
+   (`<repo>/.mcp.json`) config is shadowing the user-scope one install writes
+   (Claude resolves local, then project, then user scope). Remove it, e.g.
+   `claude mcp remove apra-fleet --scope local` (or delete the entry from
+   `.mcp.json`), then restart the session. Re-running `apra-fleet install`
+   also rewrites local-scope apra-fleet entries for this server with the
+   secret.
+
 ## Members
 
 **Member shows as offline**

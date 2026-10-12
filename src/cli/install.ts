@@ -1,5 +1,6 @@
 import fs from 'node:fs';
-import { getOrCreateMemberAccessSecret, MEMBER_SECRET_HEADER } from '../services/member-access-secret.js';
+import { getOrCreateMemberAccessSecret, MEMBER_SECRET_HEADER, readMemberAccessSecret } from '../services/member-access-secret.js';
+import { claudeUserConfigPath, refreshClaudeLocalScopeEntries } from '../services/claude-local-scope-mcp.js';
 import path from 'node:path';
 import os from 'node:os';
 import { execSync, execFileSync } from 'node:child_process';
@@ -17,6 +18,7 @@ import {
   readConfig,
   readInstallConfig,
   writeOwnerOnlyFile,
+  writeOwnerOnlyFileAtomic,
   writeConfig,
   writeInstallConfig,
   PROVIDER_STANDARD_MODELS,
@@ -827,11 +829,7 @@ function mergeCodexConfig(paths: ProviderInstallConfig, mcpConfig: any): void {
   writeConfig(paths, settings, { ownerOnly: !!mcpConfig.headers });
 }
 
-/** The claude user-scope config file: $CLAUDE_CONFIG_DIR/.claude.json when set, else ~/.claude.json. */
-export function claudeUserConfigPath(): string {
-  const dir = process.env.CLAUDE_CONFIG_DIR;
-  return dir ? path.join(dir, '.claude.json') : path.join(os.homedir(), '.claude.json');
-}
+export { claudeUserConfigPath } from '../services/claude-local-scope-mcp.js';
 
 /**
  * Register the http apra-fleet server in claude's user scope WITHOUT putting
@@ -853,7 +851,7 @@ export function registerClaudeHttpMcp(url: string, headers: Record<string, strin
   }
   settings.mcpServers = settings.mcpServers || {};
   settings.mcpServers['apra-fleet'] = { type: 'http', url, headers };
-  writeOwnerOnlyFile(file, JSON.stringify(settings, null, 2) + '\n');
+  writeOwnerOnlyFileAtomic(file, JSON.stringify(settings, null, 2) + '\n');
 }
 
 /** Write the http (url + access-secret header) apra-fleet registration for one provider. */
@@ -863,6 +861,30 @@ export function registerHttpMcp(provider: LlmProvider, paths: ProviderInstallCon
   else if (provider === 'copilot') mergeCopilotConfig(paths, { url, type: 'http', headers });
   else if (provider === 'agy') mergeAgyConfig(paths, { url, headers });
   else if (provider === 'opencode') mergeOpenCodeConfig(paths, { url, headers });
+}
+
+/** The apra-fleet MCP entry `provider` has registered (parsed), or undefined. Never throws. */
+function registeredMcpEntry(provider: LlmProvider, paths: ProviderInstallConfig): any {
+  try {
+    if (provider === 'claude') return readJsonOrEmpty(claudeUserConfigPath()).mcpServers?.['apra-fleet'];
+    if (provider === 'agy') return readJsonOrEmpty(path.join(os.homedir(), '.gemini', 'config', 'mcp_config.json')).mcpServers?.['apra-fleet'];
+    const settings = readConfig(paths);
+    if (provider === 'codex') return settings.mcp_servers?.['apra-fleet'];
+    if (provider === 'copilot') return settings.mcpServers?.['apra-fleet'];
+    if (provider === 'opencode') return settings.mcp?.['apra-fleet'];
+  } catch { /* unreadable -> unknown */ }
+  return undefined;
+}
+
+/**
+ * Key-order-independent serialization of `provider`'s apra-fleet entry, to
+ * tell whether a registration write changed it (formatting and the rest of
+ * the file do not count).
+ */
+function mcpRegistrationSnapshot(provider: LlmProvider, paths: ProviderInstallConfig): string {
+  const canon = (v: any): any => Array.isArray(v) ? v.map(canon)
+    : v && typeof v === 'object' ? Object.fromEntries(Object.keys(v).sort().map(k => [k, canon(v[k])])) : v;
+  return JSON.stringify(canon(registeredMcpEntry(provider, paths)) ?? null);
 }
 
 function readJsonOrEmpty(file: string): any {
@@ -882,18 +904,11 @@ function readJsonOrEmpty(file: string): any {
 export function registeredMcpTransport(provider: LlmProvider, paths: ProviderInstallConfig): 'http' | 'stdio' | undefined {
   const classify = (e: any): 'http' | 'stdio' | undefined =>
     !e || typeof e !== 'object' ? undefined : e.url ? 'http' : e.command ? 'stdio' : undefined;
-  try {
-    if (provider === 'claude') return classify(readJsonOrEmpty(claudeUserConfigPath()).mcpServers?.['apra-fleet']);
-    if (provider === 'agy') return classify(readJsonOrEmpty(path.join(os.homedir(), '.gemini', 'config', 'mcp_config.json')).mcpServers?.['apra-fleet']);
-    const settings = readConfig(paths);
-    if (provider === 'codex') return classify(settings.mcp_servers?.['apra-fleet']);
-    if (provider === 'copilot') return classify(settings.mcpServers?.['apra-fleet']);
-    if (provider === 'opencode') {
-      const e = settings.mcp?.['apra-fleet'];
-      return e?.type === 'remote' || e?.url ? 'http' : e?.type === 'local' || e?.command ? 'stdio' : undefined;
-    }
-  } catch { /* unreadable -> unknown */ }
-  return undefined;
+  const e = registeredMcpEntry(provider, paths);
+  if (provider === 'opencode') {
+    return e?.type === 'remote' || e?.url ? 'http' : e?.type === 'local' || e?.command ? 'stdio' : undefined;
+  }
+  return classify(e);
 }
 
 function run(cmd: string, opts?: Record<string, unknown>): void {
@@ -1627,14 +1642,21 @@ ${manualStopHint(pidsAfterStop)}
   // The server refuses an /mcp session without this install's access secret
   // (an owner-only file in its data dir), so every http registration carries
   // it as a header. Re-running install rewrites existing registrations.
+  const secretExisted = readMemberAccessSecret() !== null;
   const fleetAccessHeaders = { [MEMBER_SECRET_HEADER]: getOrCreateMemberAccessSecret() };
+  // Open LLM CLI sessions keep the MCP config they started with; a new secret
+  // or a rewritten registration needs them restarted (reported at the end).
+  // stdio registrations are not gated by the secret.
+  let registrationChanged = !secretExisted && transport === 'http';
 
   if (memberMode) {
     // The per-folder member entry is written by compose_permissions; a member
     // install must never register apra-fleet in any provider's user-scope config.
     console.log('    Skipped (--member): no user-scope MCP registration.');
   } else if (transport === 'http') {
+    const before = mcpRegistrationSnapshot(llm, paths);
     registerHttpMcp(llm, paths, fleetUrl, fleetAccessHeaders);
+    if (mcpRegistrationSnapshot(llm, paths) !== before) registrationChanged = true;
     // Upgrade path: every OTHER provider this install registered earlier holds a
     // header-less http entry the server now refuses; rewrite those too. Each
     // provider keeps its own transport: a stdio entry (its own server process,
@@ -1649,10 +1671,22 @@ ${manualStopHint(pidsAfterStop)}
           console.log(`    ${other}: ${existing === 'stdio' ? 'stdio registration kept as is' : 'no apra-fleet registration, skipped'}`);
           continue;
         }
+        const otherBefore = mcpRegistrationSnapshot(other, otherPaths);
         registerHttpMcp(other, otherPaths, fleetUrl, fleetAccessHeaders);
+        if (mcpRegistrationSnapshot(other, otherPaths) !== otherBefore) registrationChanged = true;
       } catch (err) {
         console.warn(`    [!] could not refresh the ${other} MCP registration with the access secret: ${err instanceof Error ? err.message : String(err)}`);
       }
+    }
+    // Claude LOCAL-scope entries for this URL (e.g. an older `claude mcp add
+    // apra-fleet` without --scope) win over the user-scope entry and stay
+    // header-less: rewrite them with the secret too.
+    try {
+      const rewritten = refreshClaudeLocalScopeEntries(claudeUserConfigPath(), fleetUrl, fleetAccessHeaders);
+      for (const project of rewritten) console.log(`    claude: local-scope apra-fleet entry for ${project} rewritten with the access secret`);
+      if (rewritten.length) registrationChanged = true;
+    } catch (err) {
+      console.warn(`    [!] could not refresh claude local-scope apra-fleet entries: ${err instanceof Error ? err.message : String(err)}`);
     }
   } else {
     // 'run --transport stdio' starts the stdio MCP server; passed as trailing args so
@@ -2181,6 +2215,9 @@ ${restartHint}
     ? MEMBER_INSTALL_NEXT_STEP
     : llm === 'claude' ? 'Run /mcp in Claude Code to load the server.' : `Restart ${paths.name} to load the server.`;
   const forceNote = force && !memberMode ? `\nRestart ${clientName} to reload the MCP server.` : '';
+  const accessNote = registrationChanged && !memberMode
+    ? '\n[!] Restart every open LLM CLI session (Claude Code, Codex, ...): sessions started before this install keep their old MCP registration without the access secret, and the server refuses them (Claude Code shows "Dynamic Client Registration rejected (HTTP 404)").'
+    : '';
   const settingsLine = memberMode ? '' : `\n  Settings:    ${paths.settingsFile}`;
   const serviceState = serviceHealthy === true ? 'registered and running' : serviceHealthy === false ? 'registered, but NOT answering /health (see the warning above)' : 'registered (health not checked)';
   const serviceLine = serviceStep ? `\n  Service:     ${serviceRegistered ? `${serviceState}${serviceReused ? ' (existing task reused)' : ''}${serviceRunKey ? ' (logon autostart via HKCU Run, no automatic restart)' : ''}` : 'registration skipped'}` : '';
@@ -2192,7 +2229,7 @@ Apra Fleet ${serverVersion} installed successfully for ${paths.name}.
   Beads:       ${beadsVersion}
   Dolt:        ${doltVersion}${serviceLine}
 
-${instructions}${forceNote}
+${instructions}${forceNote}${accessNote}
 `);
 
   if (llm === 'claude' && installPm) {

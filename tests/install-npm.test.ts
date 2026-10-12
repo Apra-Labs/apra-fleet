@@ -298,7 +298,8 @@ describe('install MCP config in npm mode', () => {
 
     await runInstall([]);
 
-    const w = vi.mocked(fs.writeFileSync).mock.calls.filter(c => String(c[0]).replace(/\\/g, '/').endsWith('/.claude.json'));
+    // written atomically: owner-only temp file in the same dir, then renamed
+    const w = vi.mocked(fs.writeFileSync).mock.calls.filter(c => /\.claude\.json(\.\d+\.\d+\.tmp)?$/.test(String(c[0])));
     expect(w.length).toBeGreaterThan(0);
     const entry = JSON.parse(String(w[w.length - 1][1])).mcpServers['apra-fleet'];
     expect(entry.type).toBe('http');

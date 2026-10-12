@@ -140,9 +140,11 @@ describe('install --member', () => {
     await runInstall(['--transport', 'http', '--skill', 'none']);
     // registered via a direct write to ~/.claude.json (no secret in argv), not 'claude mcp add'
     expect(mcpAdds().length).toBe(0);
-    const f = writtenPaths().filter(p => p.endsWith('/.claude.json'));
+    // written atomically: owner-only temp file in the same dir, then renamed
+    const claudeJson = /\.claude\.json(\.\d+\.\d+\.tmp)?$/;
+    const f = writtenPaths().filter(p => claudeJson.test(p));
     expect(f.length).toBeGreaterThan(0);
-    expect(JSON.parse(vi.mocked(fs.writeFileSync).mock.calls.filter(c => String(c[0]).replace(/\\/g, '/').endsWith('/.claude.json')).pop()![1] as string).mcpServers['apra-fleet'].type).toBe('http');
+    expect(JSON.parse(vi.mocked(fs.writeFileSync).mock.calls.filter(c => claudeJson.test(String(c[0]))).pop()![1] as string).mcpServers['apra-fleet'].type).toBe('http');
   });
 
   it('reports a typed non-success status when the auto-start cannot be registered', async () => {

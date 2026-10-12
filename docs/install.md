@@ -97,6 +97,14 @@ without the secret (HTTP 401 `access secret required`); re-run
 `apra-fleet install` to rewrite a registration that lacks it. (A `--transport
 stdio` install needs no secret and still registers with `claude mcp add`.)
 
+Restart open LLM CLI sessions after an install or upgrade so they pick up the
+secret (install says so when it created the secret or changed a
+registration). Never register apra-fleet by hand (`claude mcp add`, in any
+scope): a hand-added entry has no access-secret header, and a local- or
+project-scope one also wins over the user-scope entry. Re-run `apra-fleet
+install` to (re)register. See "Dynamic Client Registration rejected (HTTP 404)" in
+[Troubleshooting](troubleshooting.md).
+
 ### Two sprint entry points -- do not confuse them
 
 `apra-fleet` ships **two separate, independently maintained** sprint

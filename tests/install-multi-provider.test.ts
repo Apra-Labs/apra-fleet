@@ -16,13 +16,16 @@ vi.mock('node:os', () => ({
 vi.mock('node:fs');
 vi.mock('node:child_process');
 
-/** The apra-fleet entry written to ~/.claude.json by the last install, with the file mode it was written with. */
+/** The apra-fleet entry written to ~/.claude.json by the last install (atomically, via an owner-only temp file), with the file mode it was written with. */
 function claudeHttpRegistration(): { entry: any; mode: unknown } {
-  const writes = vi.mocked(fs.writeFileSync).mock.calls.filter(c => c[0].toString().replace(/\\/g, '/').endsWith('/mock/home/.claude.json'));
+  const writes = vi.mocked(fs.writeFileSync).mock.calls.filter(c => /[\\/]mock[\\/]home[\\/]\.\.claude\.json\.\d+\.\d+\.tmp$|[\\/]mock[\\/]home[\\/]\.claude\.json$/.test(c[0].toString()));
   expect(writes.length).toBeGreaterThan(0);
   const last = writes[writes.length - 1];
   return { entry: JSON.parse(String(last[1])).mcpServers['apra-fleet'], mode: (last[2] as any)?.mode };
 }
+
+/** The ~/.claude.json path the mocked fs holds. */
+const claudeJsonPath = () => path.join('/mock/home', '.claude.json');
 
 describe('runInstall multi-provider', () => {
   const mockHome = '/mock/home';
@@ -53,6 +56,11 @@ describe('runInstall multi-provider', () => {
     vi.mocked(fs.writeFileSync).mockImplementation((p: any, content: any) => {
       fileState.set(p.toString(), content.toString());
     });
+    // atomic writes (temp file + rename) land at the target
+    vi.mocked(fs.renameSync).mockImplementation((from: any, to: any) => {
+      const c = fileState.get(from.toString());
+      if (c !== undefined) { fileState.delete(from.toString()); fileState.set(to.toString(), c); }
+    });
 
     vi.mocked(fs.readdirSync).mockReturnValue([] as any);
   });
@@ -73,6 +81,47 @@ describe('runInstall multi-provider', () => {
     expect(reg.entry).toMatchObject({ type: 'http', url: 'http://localhost:7523/mcp' });
     expect(reg.mode).toBe(0o600);
     expect(vi.mocked(execSync).mock.calls.some(c => c[0].toString().includes('claude mcp add'))).toBe(false);
+  });
+
+  it('tells the user to restart open LLM CLI sessions when it created the secret / rewrote a registration, and not on an unchanged re-run', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const restartNote = () => logSpy.mock.calls.map(c => c.join(' ')).join('\n').includes('Restart every open LLM CLI session');
+    try {
+      await runInstall([]); // fresh: secret created, registration written
+      expect(restartNote()).toBe(true);
+      logSpy.mockClear();
+      await runInstall([]); // same secret, same registration bytes
+      expect(restartNote()).toBe(false);
+      // Claude Code re-saved the file: other keys, different key order and formatting, no trailing newline -> no note
+      const claudeJson = claudeJsonPath();
+      const saved = JSON.parse(String(vi.mocked(fs.readFileSync)(claudeJson)));
+      const entry = saved.mcpServers['apra-fleet'];
+      vi.mocked(fs.writeFileSync)(claudeJson, JSON.stringify({ numStartups: 9, mcpServers: { 'apra-fleet': { headers: entry.headers, url: entry.url, type: entry.type } } }));
+      logSpy.mockClear();
+      await runInstall([]);
+      expect(restartNote()).toBe(false);
+      // a header-less local-scope entry (hand-run `claude mcp add` without --scope) is rewritten -> note again
+      const cfg = JSON.parse(String(vi.mocked(fs.readFileSync)(claudeJson)));
+      cfg.projects = { '/mock/repo': { mcpServers: { 'apra-fleet': { type: 'http', url: 'http://localhost:7523/mcp' } } } };
+      vi.mocked(fs.writeFileSync)(claudeJson, JSON.stringify(cfg));
+      logSpy.mockClear();
+      await runInstall([]);
+      expect(restartNote()).toBe(true);
+      const after = JSON.parse(String(vi.mocked(fs.readFileSync)(claudeJson)));
+      expect(after.projects['/mock/repo'].mcpServers['apra-fleet'].headers['X-Apra-Fleet-Member-Secret']).toMatch(/^[0-9a-f]{64}$/);
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it('a stdio install that only created the secret prints no restart note (stdio is not gated)', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      await runInstall(['--transport', 'stdio']);
+      expect(logSpy.mock.calls.map(c => c.join(' ')).join('\n')).not.toContain('Restart every open LLM CLI session');
+    } finally {
+      logSpy.mockRestore();
+    }
   });
 
   it('degrades gracefully (warns, does not throw, does not run claude mcp add) when the claude CLI is not on PATH (stdio registration)', async () => {
@@ -894,6 +943,11 @@ describe('runInstall multi-provider', () => {
     vi.mocked(fs.writeFileSync).mockImplementation((p: any, content: any) => {
       fileState.set(p.toString(), content.toString());
     });
+    // atomic writes (temp file + rename) land at the target
+    vi.mocked(fs.renameSync).mockImplementation((from: any, to: any) => {
+      const c = fileState.get(from.toString());
+      if (c !== undefined) { fileState.delete(from.toString()); fileState.set(to.toString(), c); }
+    });
 
     return fileState;
   }
@@ -1050,6 +1104,11 @@ describe('runInstall multi-provider', () => {
     vi.mocked(fs.writeFileSync).mockImplementation((p: any, content: any) => {
       fileState.set(p.toString(), content.toString());
     });
+    // atomic writes (temp file + rename) land at the target
+    vi.mocked(fs.renameSync).mockImplementation((from: any, to: any) => {
+      const c = fileState.get(from.toString());
+      if (c !== undefined) { fileState.delete(from.toString()); fileState.set(to.toString(), c); }
+    });
 
     await runInstall(['--llm', 'opencode']);
 
@@ -1071,6 +1130,11 @@ describe('runInstall multi-provider', () => {
     vi.mocked(fs.writeFileSync).mockImplementation((p: any, content: any) => {
       fileState.set(p.toString(), content.toString());
     });
+    // atomic writes (temp file + rename) land at the target
+    vi.mocked(fs.renameSync).mockImplementation((from: any, to: any) => {
+      const c = fileState.get(from.toString());
+      if (c !== undefined) { fileState.delete(from.toString()); fileState.set(to.toString(), c); }
+    });
 
     await runInstall(['--llm', 'opencode', '--transport', 'stdio']);
 
@@ -1090,6 +1154,11 @@ describe('runInstall multi-provider', () => {
     const fileState = new Map<string, string>();
     vi.mocked(fs.writeFileSync).mockImplementation((p: any, content: any) => {
       fileState.set(p.toString(), content.toString());
+    });
+    // atomic writes (temp file + rename) land at the target
+    vi.mocked(fs.renameSync).mockImplementation((from: any, to: any) => {
+      const c = fileState.get(from.toString());
+      if (c !== undefined) { fileState.delete(from.toString()); fileState.set(to.toString(), c); }
     });
 
     await runInstall(['--llm', 'opencode']);
@@ -1123,6 +1192,11 @@ describe('runInstall multi-provider', () => {
     });
     vi.mocked(fs.writeFileSync).mockImplementation((p: any, content: any) => {
       fileState.set(p.toString(), content.toString());
+    });
+    // atomic writes (temp file + rename) land at the target
+    vi.mocked(fs.renameSync).mockImplementation((from: any, to: any) => {
+      const c = fileState.get(from.toString());
+      if (c !== undefined) { fileState.delete(from.toString()); fileState.set(to.toString(), c); }
     });
     vi.mocked(fs.readdirSync).mockReturnValue([] as any);
 
@@ -1158,6 +1232,11 @@ describe('runInstall multi-provider', () => {
     });
     vi.mocked(fs.writeFileSync).mockImplementation((p: any, content: any) => {
       fileState.set(p.toString(), content.toString());
+    });
+    // atomic writes (temp file + rename) land at the target
+    vi.mocked(fs.renameSync).mockImplementation((from: any, to: any) => {
+      const c = fileState.get(from.toString());
+      if (c !== undefined) { fileState.delete(from.toString()); fileState.set(to.toString(), c); }
     });
     vi.mocked(fs.readdirSync).mockReturnValue([] as any);
 
@@ -1195,6 +1274,11 @@ describe('runInstall multi-provider', () => {
     });
     vi.mocked(fs.writeFileSync).mockImplementation((p: any, content: any) => {
       fileState.set(p.toString(), content.toString());
+    });
+    // atomic writes (temp file + rename) land at the target
+    vi.mocked(fs.renameSync).mockImplementation((from: any, to: any) => {
+      const c = fileState.get(from.toString());
+      if (c !== undefined) { fileState.delete(from.toString()); fileState.set(to.toString(), c); }
     });
     vi.mocked(fs.readdirSync).mockReturnValue([] as any);
 
