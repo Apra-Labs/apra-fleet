@@ -227,6 +227,37 @@ returns 503 with it; a sprint child prints it on stderr). See
 
 - Windows: re-run `apra-fleet install` to get the new task definition (hidden launcher, revive
   trigger). An existing onlogon task keeps working (logon start only, no revive) until then.
+- Windows, upgrading from 0.4.3 or earlier: those versions registered the task with
+  `schtasks /sc onlogon`, which needs admin, so the old task is elevated-owned and a normal shell
+  can neither replace nor disable it (`/create /xml /f` and `/change /disable` are "Access is
+  denied"). Install detects such a legacy task -- its `schtasks /query /xml` has no repeating
+  TimeTrigger (`<Repetition><Interval>`), or an "any user" LogonTrigger (no `<UserId>`), or (when
+  Windows Script Host works) an action other than `wscript.exe` + our launcher, or the wrapper path
+  split at a space into Command + Arguments (0.4.3 passed it to `/tr` unquoted, so a profile like
+  `C:\Users\John Smith` ran `C:\Users\John` and the server never started; such a task is still
+  recognised as ours instead of failing the install, and install adds the HKCU Run entry so the
+  server still starts at logon, and `apra-fleet start` uses that entry) -- and:
+  - apra-fleet never elevates anything itself. The old task stays in use and install prints what
+    is missing (no automatic revive after a crash, visible console window, `apra-fleet stop`
+    cannot disable the task) and the fix: from an elevated prompt (Run as administrator)
+    `schtasks /delete /tn ApraFleet /f`, then from a normal prompt `apra-fleet install --force`
+    (do not run the install itself elevated; `--force` because the old task's server is normally
+    still running). Because a detached install (`apra-fleet update`) has no console, the guidance
+    is also saved to `<data dir>/service-notice.json` and appended to `fleet.log`; the next
+    `apra-fleet status`, `stop` or `update` prints it once (stderr; an interactive install that
+    already printed it marks it shown). Installing the current task (or uninstall) removes the
+    file. `apra-fleet update` says to run `apra-fleet status` after the background install.
+  - while a legacy task is installed, `apra-fleet status` shows
+    `installed (enabled -- legacy task (upgrade needed: ...))` plus the fix, and `apra-fleet stop`
+    prints it when disabling is denied (the stop still holds: the stopped-by-user marker makes every
+    task launch exit without starting the server). The elevated `schtasks /delete` step is only
+    suggested for an elevated-owned task; an old-form task the user owns just needs
+    `apra-fleet install --force`. A task named ApraFleet that does not run our wrapper or launcher
+    gets no upgrade advice.
+  - when `/create` fails and there is no task to reuse, install prints the schtasks error before
+    falling back to the HKCU Run entry.
+  A task XML without a `<Triggers>` section is never classed legacy. apra-fleet never suggests an
+  elevated install.
 - Scripts and workflows that relied on the client's private stdio self-spawn now start the SHARED
   HTTP server, which keeps running after they exit. Set `APRA_FLEET_TRANSPORT=stdio` to keep the
   old private, per-process server.
