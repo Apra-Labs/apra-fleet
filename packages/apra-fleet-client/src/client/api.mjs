@@ -143,8 +143,11 @@
  *   `packages/apra-fleet-workflow` forwards it onto `AgentDispatchError.details.dispatched`.
  * @property {string} [response] - The LLM's actual reply text on success.
  * @property {string} [sessionId] - The session id this dispatch landed on, when known --
- *   present on success AND on a 'usage_limit'/'max_turns_exhausted' failure so the SAME
- *   session can be resumed later instead of losing context to a fresh one.
+ *   present on success AND on a 'usage_limit' or typed-failure result ('max_turns_exhausted',
+ *   'empty_response', 'dispatch_failed', 'nonzero_exit', 'auth', 'server', 'overloaded') whenever
+ *   the provider parsed one, so the SAME session can be resumed by explicit id later instead of
+ *   losing context to a fresh one. The server also records it as a known session. Absent when
+ *   the provider supplied none.
  * @property {ExecutePromptUsage} [usage]
  */
 
