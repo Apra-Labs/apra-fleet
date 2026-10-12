@@ -973,7 +973,7 @@ async function main() {
         console.log(topology.message);
     }
 
-    console.log('Starting Auto-Sprint');
+    console.log('Starting fleet-sprint');
     console.log(`Target Issues: ${targetIssues.join(', ')}`);
     console.log(`Sprint Branch: ${branchName} (Base: ${baseBranch})`);
     console.log(`Goal Constraint: ${goal}`);
@@ -1011,7 +1011,7 @@ async function main() {
         runId: effectiveRunId,
         // BOUNDARY-COMPAT/user-facing convention (apra-fleet-eft.37.1): core's
         // crash-net snapshot defaults are domain-neutral (workflow-logs/run_)
-        // now that sprintId->runId is renamed; auto-sprint keeps its historical
+        // now that sprintId->runId is renamed; fleet-sprint keeps its historical
         // sprint-logs/sprint_<HHMMSS>.json convention by passing these
         // explicitly rather than picking up the new core defaults.
         stateSnapshotDir: 'sprint-logs',

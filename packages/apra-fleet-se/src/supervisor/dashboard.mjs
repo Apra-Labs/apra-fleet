@@ -1,5 +1,5 @@
 // =============================================================================
-// Auto-sprint supervisor -- sprint-stack index dashboard (apra-fleet-eft.6.1,
+// fleet-sprint supervisor -- sprint-stack index dashboard (apra-fleet-eft.6.1,
 // Plan Part 2.3)
 // =============================================================================
 //

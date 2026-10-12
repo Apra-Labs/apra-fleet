@@ -1,5 +1,5 @@
 // =============================================================================
-// Auto-sprint supervisor -- restart re-adoption of live children by PID
+// fleet-sprint supervisor -- restart re-adoption of live children by PID
 // (apra-fleet-eft.4.5, Plan Part 2.2, pairs with eft.5.4's restart reconciler)
 // =============================================================================
 //

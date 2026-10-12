@@ -270,7 +270,7 @@ export function isTypedAbortError(err) {
 //   1. counts commits on the sprint branch beyond base, which decides whether
 //      there is anything for a human to look at;
 //   2. with >=1 commit, pushes the branch and raises an idempotent
-//      'Auto-sprint [ABORTED]: <branch>' PR whose body carries the error's
+//      'fleet-sprint [ABORTED]: <branch>' PR whose body carries the error's
 //      code/message/details, sanitized by sanitizePrText for the same reason
 //      the PASS/FAIL step sanitizes reviewer notes;
 //   3. with 0 commits, raises no PR -- there is no diff, so the PR would be
@@ -401,7 +401,7 @@ export async function finalizeAbort({ error, branch, baseBranch, member, command
         return { prUrl: null, reason: 'non-hosted-remote', pushed: true, commitCount };
     }
 
-    const prTitle = `Auto-sprint [ABORTED]: ${branch}`;
+    const prTitle = `fleet-sprint [ABORTED]: ${branch}`;
     // The error's code/message/details can originate from agent output, and
     // this text is embedded in a VCSModule-built PR body -- same sanitization
     // rationale as the PASS/FAIL Publish PR step.

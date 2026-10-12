@@ -247,7 +247,7 @@ test('finalizeAbort (Azure DevOps): an existing PR is found and rewritten to the
     const findCmd = log.find((c) => /^curl -sS -X GET\b/.test(c));
     check(!!findCmd && findCmd.includes('searchCriteria.sourceRefName=refs%2Fheads%2Fauto-sprint%2Fabort-ado-relaunch'), `Expected the find to search by source ref, got: ${findCmd}`);
     check(!!patched && /\/pullrequests\/777\?api-version=7\.1$/.test(patched.url), `Expected a PATCH of PR 777, got: ${JSON.stringify(patched)}`);
-    check(patched.payload.title === `Auto-sprint [ABORTED]: ${branch}`, `Expected the ABORTED title, got: ${patched.payload.title}`);
+    check(patched.payload.title === `fleet-sprint [ABORTED]: ${branch}`, `Expected the ABORTED title, got: ${patched.payload.title}`);
     check(
         patched.payload.description.startsWith('## Sprint verdict: ABORTED')
             && patched.payload.description.includes('- `run-earlier` (2026-09-30T08:00Z): PASS'),

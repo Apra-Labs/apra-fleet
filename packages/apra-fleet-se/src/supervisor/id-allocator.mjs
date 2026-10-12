@@ -1,5 +1,5 @@
 // =============================================================================
-// Auto-sprint supervisor -- globally-coordinated child-id allocator
+// fleet-sprint supervisor -- globally-coordinated child-id allocator
 // (apra-fleet-eft.9.3, Plan Part 3.4)
 // =============================================================================
 //

@@ -697,7 +697,7 @@ export function renderBeadsHtml(sprintTasks, backlogTasks, collapsedIds) {
 }
 
 /**
- * apra-fleet-eft.37.3: pure HTML-string builder for the auto-sprint verdict
+ * apra-fleet-eft.37.3: pure HTML-string builder for the fleet-sprint verdict
  * badge + PR link, moved OUT of the generic workflow core (which used to
  * mint `state.verdict`/`state.prUrl` by name -- see
  * docs/workflow-core-boundary-refactoring.md M2) and into this se-owned
@@ -706,11 +706,11 @@ export function renderBeadsHtml(sprintTasks, backlogTasks, collapsedIds) {
  * SCALAR fields as a generic, unstyled key/value strip (src/viewer/
  * index.mjs's `#result-strip`). This function reads the SAME
  * `state.result` object, but knows the two keys that are meaningful for an
- * auto-sprint run specifically -- `verdict` (colored by outcome) and
+ * fleet-sprint run specifically -- `verdict` (colored by outcome) and
  * `prUrl` (link-ified) -- exactly the se-domain knowledge that has no
  * business living in the generic engine.
  *
- * Returns '' when `result` carries neither key (e.g. a non-auto-sprint
+ * Returns '' when `result` carries neither key (e.g. a non-fleet-sprint
  * workflow, or a run that hasn't finished yet), so the caller can hide its
  * container entirely rather than show an empty badge strip.
  *
@@ -720,7 +720,7 @@ export function renderBeadsHtml(sprintTasks, backlogTasks, collapsedIds) {
 export function renderResultExtrasHtml(result) {
     const verdict = result && typeof result === 'object' ? result.verdict : undefined;
     const prUrl = result && typeof result === 'object' ? result.prUrl : undefined;
-    // Nothing se-meaningful to show (non-auto-sprint workflow, or a run that
+    // Nothing se-meaningful to show (non-fleet-sprint workflow, or a run that
     // hasn't finished yet) -- let the caller hide its container entirely.
     if (verdict == null && prUrl == null) return '';
 
@@ -916,7 +916,7 @@ export const beadsExtension = {
         ${renderProgressPlaceholderHtml.toString()}
         ${renderBeadsSummaryProgressHtml.toString()}
 
-        // apra-fleet-eft.37.3: mounts the auto-sprint verdict badge + PR
+        // apra-fleet-eft.37.3: mounts the fleet-sprint verdict badge + PR
         // link into the header, next to core's generic (unstyled)
         // #result-strip -- see viewer/index.mjs's 'workflow:result'
         // CustomEvent, dispatched on every renderState() with
@@ -1111,7 +1111,7 @@ export const beadsExtension = {
             renderBeadsPanel();
         });
 
-        // apra-fleet-eft.37.3: mounts the auto-sprint verdict badge + PR
+        // apra-fleet-eft.37.3: mounts the fleet-sprint verdict badge + PR
         // link into the header, next to core's generic (unstyled)
         // #result-strip -- see viewer/index.mjs's 'workflow:result'
         // CustomEvent, dispatched on every renderState() with
