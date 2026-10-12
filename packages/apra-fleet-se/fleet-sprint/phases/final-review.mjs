@@ -90,6 +90,7 @@ import { buildSettleCallback } from '../dolt-settle.mjs';
 // verdict would then FAIL a sprint the loop had just declared complete.
 import { partitionDeferredBeads } from '../beads-scope.mjs';
 import { applyDeployFailureVerdictGate, formatDeployFailureReason } from './deploy.mjs';
+import { applyVerifyBlockVerdictGate } from '../verify-block.mjs';
 
 /**
  * Runs the Final Review phase: the sprint's closing evidence-based verdict,
@@ -138,6 +139,9 @@ export async function runFinalReviewPhase({
     // hit the in-run re-dispatch cap and were left as they are. Named in the
     // verdict notes (never changes the verdict) so a human sees them.
     reclaimCappedIds = [],
+    // GitHub #717: the named verify-block deadlock diagnosis the cycle loop
+    // exited on, or null. Non-null forces a FAIL verdict (never PASS).
+    verifyBlockDiagnosis = null,
     // runSprintCycle-scoped locals and runner-module-private values, injected
     // rather than imported (see header).
     bdListScoped,
@@ -282,6 +286,11 @@ export async function runFinalReviewPhase({
         const llmVerdict = finalVerdictResult && finalVerdictResult.verdict;
         finalVerdictResult = applyDeployFailureVerdictGate(finalVerdictResult, lastDeployFailure);
         log(`Final Review: sprint verdict forced to FAIL (Final Review returned ${llmVerdict ?? '(none)'}) -- ${formatDeployFailureReason(lastDeployFailure)}`);
+    }
+    if (verifyBlockDiagnosis) {
+        const llmVerdict = finalVerdictResult && finalVerdictResult.verdict;
+        finalVerdictResult = applyVerifyBlockVerdictGate(finalVerdictResult, verifyBlockDiagnosis);
+        log(`Final Review: sprint verdict forced to FAIL (Final Review returned ${llmVerdict ?? '(none)'}) -- ${verifyBlockDiagnosis}`);
     }
     if (finalVerdictResult && Array.isArray(reclaimCappedIds) && reclaimCappedIds.length > 0) {
         const cappedNote = `${reclaimCappedIds.length} bead(s) were left 'in_progress' by failed doer streaks of this sprint more often than the re-dispatch cap allows and were NOT re-laned again -- needs human investigation: ${reclaimCappedIds.join(', ')}.`;

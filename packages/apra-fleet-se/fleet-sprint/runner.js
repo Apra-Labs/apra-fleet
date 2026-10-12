@@ -314,6 +314,11 @@ import { DEFAULT_CONTEXT_CEILING, createRoundSessionRegistry } from './round-ses
 // dispatched on, so a claim a failed doer of this run left in_progress is
 // re-laned in the same sprint (see reclaimInRunOrphanedClaims below).
 import { createOrphanClaimTracker } from './orphan-reclaim.mjs';
+// GitHub #717: the verify-block deadlock diagnosis -- a bead blocked only by
+// verify-routed beads while the Integration Test phase cannot run.
+import {
+    integCanRun, integBlockCause, findVerifyBlockedBeads, partitionByGoal, buildVerifyBlockDiagnosis,
+} from './verify-block.mjs';
 // The dispatch-outcome classification surface: isTerminalSprintFailure,
 // isNoMutationDispatchFailure and withDispatchWatchdog. Extracted out of
 // runner.js (apra-fleet-3swo.6.15); imported only to be re-exported below,
@@ -2720,6 +2725,43 @@ async function runSprintCycle(context) {
         }
     }
 
+    // GitHub #717: a bead whose only unmet `blocks` dependencies are
+    // verify-routed beads (all children closed; only the Integration Test
+    // phase closes them) can never become ready while that phase cannot run
+    // -- no integ-test-playbook.md or no deploy.md. Runs AFTER the pre-sprint
+    // stale-claim reclaim above, from the shared snapshot those reads already
+    // fetched (no extra bd call on the common path); the two runbook probes
+    // run only when the shape exists. A goal-priority bead in that shape stops
+    // the sprint here, before any cycle is paid for, with a diagnosis naming
+    // the bead, its blockers and the exact fix; a below-goal one only warns.
+    // Diagnose only: the DAG is never rewritten.
+    {
+        const allForVerifyBlock = await fetchAllBeadsShared();
+        const { verifyIds: verifyIdsForBlockCheck } = classifyVerifySet(allForVerifyBlock, targetIssues);
+        const blockedByVerify = findVerifyBlockedBeads(await bdListScoped(''), allForVerifyBlock, verifyIdsForBlockCheck);
+        if (blockedByVerify.length > 0) {
+            const hasDeployPreSprint = await probeFileExists('deploy.md', getMemberForRole('deployer'));
+            const hasPlaybookPreSprint = await probeFileExists('integ-test-playbook.md', getMemberForRole('integ-test-runner'));
+            const cause = integBlockCause({ hasPlaybook: hasPlaybookPreSprint, hasDeploy: hasDeployPreSprint });
+            if (cause) {
+                const { atGoal, belowGoal } = partitionByGoal(blockedByVerify, goalPriorityMax(validated.goal));
+                if (belowGoal.length > 0) {
+                    log(`Pre-sprint validation: WARNING -- ${buildVerifyBlockDiagnosis({ blocked: belowGoal, cause })} These bead(s) are below goal priority ${validated.goal}, so the sprint is not stopped for them.`);
+                }
+                if (atGoal.length > 0) {
+                    throw new PreSprintValidationError(
+                        `Pre-sprint validation failed: ${buildVerifyBlockDiagnosis({ blocked: atGoal, cause })}`,
+                        {
+                            reason: PRE_SPRINT_REFUSAL_REASONS.VERIFY_BLOCKED,
+                            scope: sprintFilter,
+                            details: { cause, blocked: atGoal },
+                        }
+                    );
+                }
+            }
+        }
+    }
+
     // =======================
     // Goal-priority exit condition + stall-abort bookkeeping
     // =======================
@@ -2845,6 +2887,9 @@ async function runSprintCycle(context) {
     // (see the deploy-failure verdict gate in ./phases/deploy.mjs).
     let lastDeployFailure = null;
     let deployBlockedCycles = 0;
+    // GitHub #717: set (to the named diagnosis) when the cycle loop exits on a
+    // verify-block deadlock; Final Review then forces the verdict to FAIL.
+    let verifyBlockDiagnosis = null;
 
     // apra-fleet-nwh.1: integ-test-runner's own tracked spend, broken out of
     // the harvester's cost block so it is never silently folded into
@@ -3478,14 +3523,41 @@ async function runSprintCycle(context) {
         }
 
         // apra-fleet-jfo D5: if the ONLY open-at-goal beads remaining are
-        // verify-routed and no playbook exists to verify them, no further
-        // cycle can make progress by construction -- exit to Finalization
-        // directly rather than let the stall net eventually convert
-        // "finished but unverifiable" into an ABORT.
-        if (!hasPlaybook && openAtGoal.length > 0 && openAtGoal.every((b) => verifyEverIds.has(b.id))) {
-            log(`Cycle ${cycle}: all ${openAtGoal.length} remaining open-at-goal bead(s) are verify-routed (${openAtGoal.map((b) => b.id).join(', ')}) and no integ-test-playbook.md exists to verify them -- exiting cycle loop, cannot make further progress by construction.`);
+        // verify-routed and the Integration Test phase cannot run to verify
+        // them, no further cycle can make progress by construction -- exit to
+        // Finalization directly rather than let the stall net eventually
+        // convert "finished but unverifiable" into an ABORT. GitHub #717: keyed
+        // on the one integCanRun predicate (playbook AND deploy.md AND the
+        // deploy did not fail this cycle), not on the playbook alone.
+        const integCanRunThisCycle = integCanRun({ hasPlaybook, hasDeploy, deployAttempted: hasDeploy, deployedThisCycle });
+        if (!integCanRunThisCycle && openAtGoal.length > 0 && openAtGoal.every((b) => verifyEverIds.has(b.id))) {
+            log(`Cycle ${cycle}: all ${openAtGoal.length} remaining open-at-goal bead(s) are verify-routed (${openAtGoal.map((b) => b.id).join(', ')}) and the Integration Test phase cannot run to verify them (it needs integ-test-playbook.md, deploy.md and a successful deploy) -- exiting cycle loop, cannot make further progress by construction.`);
             endGroup();
             break;
+        }
+
+        // GitHub #717, mid-run: the same deadlock the pre-sprint check stops,
+        // arising while the sprint runs (a blocker's last child closed, or the
+        // deploy failed). When the Integration Test phase cannot run this cycle
+        // and every remaining open-at-goal bead is verify-routed or blocked
+        // ONLY by verify-routed beads, no cycle can progress: exit with the
+        // named diagnosis, and Final Review forces the verdict to FAIL. Read
+        // from this cycle's own fresh closed list and verify set -- no extra
+        // bd call.
+        if (!integCanRunThisCycle && openAtGoal.length > 0) {
+            const knownClosed = [...closedIdsNow].map((id) => ({ id, status: 'closed' }));
+            const blockedAtGoal = findVerifyBlockedBeads(openAtGoal, knownClosed, verifySetThisCycle);
+            const blockedAtGoalIds = new Set(blockedAtGoal.map((b) => b.id));
+            if (blockedAtGoal.length > 0 && openAtGoal.every((b) => verifyEverIds.has(b.id) || blockedAtGoalIds.has(b.id))) {
+                verifyBlockDiagnosis = buildVerifyBlockDiagnosis({
+                    blocked: blockedAtGoal,
+                    cause: integBlockCause({ hasPlaybook, hasDeploy, deployAttempted: hasDeploy, deployedThisCycle }),
+                    deployNotes: lastDeployFailure && lastDeployFailure.notes ? lastDeployFailure.notes : null,
+                });
+                log(`Cycle ${cycle}: ${verifyBlockDiagnosis} Exiting cycle loop; the sprint verdict will be FAIL.`);
+                endGroup();
+                break;
+            }
         }
 
         // The exit decision below must never rely on a verdict from an EARLIER
@@ -3665,6 +3737,7 @@ async function runSprintCycle(context) {
         lastDeployFailure,
         bdListScoped, decomposedParentIds, goalMax, NOT_DONE_STATUSES,
         reclaimCappedIds: orphanClaims.cappedIds(),
+        verifyBlockDiagnosis,
         workedOnIds: workedOnBeadIds,
         kbPriming, kbWork, kbInjection, kbSprintContext, getMemberForRole,
         childIdAllocator, sprintMutexId, resolveSettleShell,
