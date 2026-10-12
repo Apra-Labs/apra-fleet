@@ -82,7 +82,7 @@ these steps and proceed.
 
 Before beginning harvest operations, retrieve universal conventions and role-scoped operational rules from Beads:
 
-```bash
+```
 bd memories --json +all+
 bd memories --json +harvester+
 ```
