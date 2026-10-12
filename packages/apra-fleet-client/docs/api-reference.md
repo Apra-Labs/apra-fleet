@@ -761,7 +761,7 @@ client-side timeout itself.
 
 The single, shared implementation of "how does a client process reach the
 apra-fleet MCP server." Both `src/cli/workflow.ts` (the `apra-fleet
-workflow` launcher) and `packages/apra-fleet-se/bin/cli.mjs` (auto-sprint)
+workflow` launcher) and `packages/apra-fleet-se/bin/cli.mjs` (fleet-sprint)
 depend on this module rather than duplicating the resolution logic.
 Binding design doc: `docs/adr-workflow-server-resolution.md`.
 
@@ -817,7 +817,7 @@ Resolution order:
    (`resolveFleetServerCommand()`'s four tiers: CMD string, BIN via `PATH`,
    bundled sibling `index.js`, dev `../../../dist/index.js`).
 
-The launcher/auto-sprint client and the MCP server are always separate
+The launcher/fleet-sprint client and the MCP server are always separate
 processes; this module only decides the transport, it never merges them.
 Every branch takes an injectable `deps` bag (`env`, `readFile`, `unlink`,
 `pidAlive`, `health`, `dirname`, `exists`, `checkRunningInstance`) so each

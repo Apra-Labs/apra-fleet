@@ -1,5 +1,5 @@
 // =============================================================================
-// Auto-sprint supervisor -- issue-scope overlap guard via live-expanded subtree
+// fleet-sprint supervisor -- issue-scope overlap guard via live-expanded subtree
 // recomputation (apra-fleet-eft.5.3, Plan Part 2.2)
 // =============================================================================
 //

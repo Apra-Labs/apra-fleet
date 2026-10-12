@@ -88,7 +88,7 @@ function usesPowerShellQuoting(os, shell) {
  *  NOT toggle on it -- so for a value carrying BOTH whitespace and quotes
  *  the two parsers disagree about whether that whitespace is "inside
  *  quotes", the binder skips its wrapping, and the CRT splits the argument
- *  at the whitespace (observed: a JSON title 'Auto-sprint [PASS]: x'
+ *  at the whitespace (observed: a JSON title 'fleet-sprint [PASS]: x'
  *  arrived as two argv entries). There is no escape sequence both parsers
  *  read the same way, so a caller must keep such a value whitespace-free --
  *  see shQuoteJson() below, which does exactly that for JSON payloads (the

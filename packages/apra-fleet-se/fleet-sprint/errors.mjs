@@ -1,4 +1,4 @@
-// apra-fleet-unw.15 -- typed error(s) local to the auto-sprint runner.
+// apra-fleet-unw.15 -- typed error(s) local to the fleet-sprint runner.
 //
 // SprintPlanRejectedError is sprint-specific (it is only ever thrown by
 // runner.js's Plan phase) so it lives here rather than in

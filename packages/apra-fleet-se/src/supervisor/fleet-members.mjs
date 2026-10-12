@@ -1,5 +1,5 @@
 // =============================================================================
-// Auto-sprint supervisor -- fleet-backed member listing (apra-fleet-eft.4.8.1
+// fleet-sprint supervisor -- fleet-backed member listing (apra-fleet-eft.4.8.1
 // wiring helper)
 // =============================================================================
 //

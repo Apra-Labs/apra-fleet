@@ -1050,7 +1050,8 @@ After the cycle loop exits (goal met, or `max_cycles` reached):
    same cost block is rendered by the engine in the PR body (`### Cost`).
 3. **Publish PR** -- pushes the sprint branch (`git push -u origin
    <branch>`), then raises (never merges) a PR via `gh pr create`, whose
-   title (`Auto-sprint [PASS|FAIL]: <branch>`) and body state the final
+   title (`fleet-sprint [PASS|FAIL]: <branch>`; PRs from before the
+   rename carry `Auto-sprint [...]`) and body state the final
    verdict plainly, with the reviewer's (sanitized) notes appended. PR
    creation is idempotent: a `gh pr create` failure whose message matches
    `/already exists/i` is treated as success (the desired end state -- a PR

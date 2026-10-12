@@ -4,7 +4,7 @@
  *
  * Binding design doc: docs/adr-workflow-server-resolution.md (apra-fleet-7pm.6).
  * Consumers: src/cli/workflow.ts (the `apra-fleet workflow` launcher) and
- * packages/apra-fleet-se/bin/cli.mjs (auto-sprint). Neither duplicates this logic.
+ * packages/apra-fleet-se/bin/cli.mjs (fleet-sprint). Neither duplicates this logic.
  *
  * Resolution order (ADR Decision 1):
  *   1. APRA_FLEET_TRANSPORT override ('http' | 'stdio').
@@ -35,7 +35,7 @@
  * Claude Code and other MCP hosts connect by URL and never use this module;
  * they are covered by the OS user-level service (install), not by this.
  *
- * Scope guard (ADR): the launcher/auto-sprint client and the MCP server are ALWAYS
+ * Scope guard (ADR): the launcher/fleet-sprint client and the MCP server are ALWAYS
  * separate processes. This module decides only the transport, never merges them.
  *
  * Every branch is unit-testable: all filesystem/env/network access goes through the

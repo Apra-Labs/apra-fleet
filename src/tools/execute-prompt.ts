@@ -397,7 +397,7 @@ export { knownRepoRemoteUrl };
 /**
  * The sprint id this server process dispatches on behalf of, or undefined when
  * run outside a sprint (e.g. a manual cli.mjs invocation). Sourced from
- * APRA_FLEET_SPRINT_ID, which the auto-sprint spawner stamps into the per-sprint
+ * APRA_FLEET_SPRINT_ID, which the fleet-sprint spawner stamps into the per-sprint
  * server's environment (apra-fleet-eft.10.3). Read on every dispatch so a
  * reservation set/cleared mid-run is observed without a restart.
  */
