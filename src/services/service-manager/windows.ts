@@ -43,6 +43,8 @@ export interface WindowsServiceOptions {
   probeWsh?: (env: Record<string, string | undefined>, dir: string) => boolean;
   /** Whether `apra-fleet stop` left the stopped-by-user marker (default: read it). */
   stoppedByUser?: () => boolean;
+  /** Whether install output reaches a console (default: stdout is a TTY; apra-fleet update runs install detached). */
+  interactive?: () => boolean;
   /** Pending-notice file for guidance a detached install could not show (default: SERVICE_NOTICE_PATH). */
   noticePath?: string;
 }
@@ -307,10 +309,12 @@ export function legacyTaskProblems(
   if (!repeating) problems.push('no-revive');
   const command = taskXmlCommand(xml);
   const args = taskXmlArguments(xml);
-  if (opts.launcherExpected && !runsOurLauncher(command, args, opts.launcherPath)) {
+  const split = !!opts.wrapperPath && runsSplitWrapper(command, args, opts.wrapperPath);
+  // A split task never starts the server, so it has no console to speak of.
+  if (!split && opts.launcherExpected && !runsOurLauncher(command, args, opts.launcherPath)) {
     problems.push('visible-console');
   }
-  if (opts.wrapperPath && runsSplitWrapper(command, args, opts.wrapperPath)) problems.push('split-path');
+  if (split) problems.push('split-path');
   const logonTriggers = [...triggers.matchAll(/<LogonTrigger\b[^>]*>([\s\S]*?)<\/LogonTrigger>|<LogonTrigger\b[^>]*\/>/gi)];
   if (logonTriggers.some(m => !/<UserId>\s*\S[\s\S]*?<\/UserId>/i.test(m[1] ?? ''))) problems.push('elevated');
   return problems;
@@ -332,18 +336,19 @@ export function legacyTaskDetail(problems: LegacyTaskProblem[]): string {
  * The exact manual fix, shared by install, status and stop. The elevated
  * delete is only needed for an elevated-owned task ('elevated'); a user-owned
  * old-form task is replaced by a plain re-install. apra-fleet never runs
- * anything elevated itself and never needs an elevated install. If the server
- * the old task started is still running, install says to re-run with --force.
+ * anything elevated itself and never needs an elevated install. --force: the
+ * server the old task started is normally still running, and install refuses
+ * to replace a running server without it.
  */
 export function legacyTaskFix(problems: LegacyTaskProblem[]): string {
   if (!problems.includes('elevated')) {
-    return ['To upgrade it, run from a normal prompt:', '    apra-fleet install'].join('\n');
+    return ['To upgrade it, run from a normal prompt:', '    apra-fleet install --force'].join('\n');
   }
   return [
     'To upgrade it, run once from an elevated prompt (Run as administrator):',
     `    schtasks /delete /tn ${WINDOWS_TASK_NAME} /f`,
     'then, from a normal prompt (do not run the install itself elevated):',
-    '    apra-fleet install',
+    '    apra-fleet install --force',
   ].join('\n');
 }
 
@@ -455,6 +460,7 @@ export class WindowsServiceManager implements ServiceManager {
   private readonly spawnDetached: (cmd: string, args: string[], verbatim?: boolean) => void;
   private readonly probeWsh: (env: Record<string, string | undefined>, dir: string) => boolean;
   private readonly stoppedByUser: () => boolean;
+  private readonly interactive: () => boolean;
   private readonly noticePath: string;
 
   constructor(
@@ -469,6 +475,7 @@ export class WindowsServiceManager implements ServiceManager {
     this.spawnDetached = opts.spawnDetached ?? defaultSpawnDetached;
     this.probeWsh = opts.probeWsh ?? defaultProbeWsh;
     this.stoppedByUser = opts.stoppedByUser ?? (() => readStoppedMarker() !== null);
+    this.interactive = opts.interactive ?? (() => !!process.stdout.isTTY);
     this.noticePath = opts.noticePath ?? SERVICE_NOTICE_PATH;
   }
 
@@ -551,19 +558,31 @@ export class WindowsServiceManager implements ServiceManager {
     const runsWrapper = command !== null && normalizeTaskPath(command) === normalizeTaskPath(this.wrapperPath);
     const runsSplit = runsSplitWrapper(command, taskArgs, this.wrapperPath);
     const runsLauncher = runsOurLauncher(command, taskArgs, launcherPath);
-    if (taskFound && (runsWrapper || runsSplit || runsLauncher)) {
+    /** Prints the manual fix for a legacy task /create could not replace, and persists it. */
+    const reportLegacy = (problems: LegacyTaskProblem[]): void => {
+      // /create was just refused, so this task cannot be disabled either.
+      // apra-fleet never elevates: the user gets the exact manual fix.
+      if (!problems.includes('elevated')) problems.push('elevated');
+      const guidance = legacyTaskGuidance(problems);
+      console.warn(indent(guidance));
+      // A detached install (apra-fleet update) has no console: persist it
+      // for the next service verb (already shown when this one is
+      // interactive), and leave it in the service log.
+      writeServiceNotice(guidance, this.noticePath, new Date(), this.interactive());
+      appendServiceLog(logPath, guidance);
+    };
+    // A split task runs "C:\Users\John" and never starts the server: reusing
+    // it would leave no autostart. Report it and fall through to the HKCU Run
+    // entry below until the user replaces the task.
+    const splitTask = taskFound && runsSplit;
+    if (splitTask) {
       const problems = legacyTaskProblems(existing, { launcherPath, launcherExpected: hidden, wrapperPath: this.wrapperPath });
-      if (runsSplit && !problems.includes('split-path')) problems.push('split-path');
+      if (!problems.includes('split-path')) problems.push('split-path');
+      reportLegacy(problems);
+    } else if (taskFound && (runsWrapper || runsLauncher)) {
+      const problems = legacyTaskProblems(existing, { launcherPath, launcherExpected: hidden, wrapperPath: this.wrapperPath });
       if (problems.length > 0) {
-        // /create was just refused, so this task cannot be disabled either.
-        // apra-fleet never elevates: the user gets the exact manual fix.
-        if (!problems.includes('elevated')) problems.push('elevated');
-        const guidance = legacyTaskGuidance(problems);
-        console.warn(indent(guidance));
-        // A detached install (apra-fleet update) has no console: persist it
-        // for the next service verb, and leave it in the service log.
-        writeServiceNotice(guidance, this.noticePath);
-        appendServiceLog(logPath, guidance);
+        reportLegacy(problems);
       } else {
         clearServiceNotice(this.noticePath);
       }
@@ -573,7 +592,7 @@ export class WindowsServiceManager implements ServiceManager {
       if (runsWrapper && !hidden) visibleFallback();
       return 'reused';
     }
-    if (taskFound) {
+    if (taskFound && !splitTask) {
       throw new Error(
         `schtasks /create failed and the existing ${WINDOWS_TASK_NAME} task runs ${command ?? '(unknown)'}, ` +
         `not ${this.wrapperPath}: ${createMsg}`,
@@ -585,12 +604,13 @@ export class WindowsServiceManager implements ServiceManager {
     // without it the fallback is undiagnosable.
     console.warn(`    schtasks /create failed: ${schtasksErrorReason(createMsg)}`);
     if (!hidden) visibleFallback();
-    clearServiceNotice(this.noticePath);
+    if (!splitTask) clearServiceNotice(this.noticePath);
     try {
       this.runReg(['add', RUN_KEY, '/v', RUN_VALUE, '/t', 'REG_SZ', '/d', runValue, '/f']);
     } catch (regErr) {
       throw new Error(
-        `schtasks /create failed and no existing ${WINDOWS_TASK_NAME} task was found: ${createMsg}; ` +
+        `schtasks /create failed and ${splitTask ? `the existing ${WINDOWS_TASK_NAME} task cannot start the server`
+          : `no existing ${WINDOWS_TASK_NAME} task was found`}: ${createMsg}; ` +
         `the HKCU Run fallback also failed: ${(regErr as Error).message}`,
       );
     }
@@ -609,6 +629,15 @@ export class WindowsServiceManager implements ServiceManager {
 
   private legacyProblemsOf(raw: Buffer | string): LegacyTaskProblem[] {
     const launcherPath = launcherPathFor(this.wrapperPath);
+    // Only OUR task (wrapper, split wrapper, or wscript + our launcher) gets
+    // upgrade advice: a foreign task named ApraFleet must not be told to
+    // delete itself.
+    const command = taskXmlCommand(raw);
+    const args = taskXmlArguments(raw);
+    const ours = (command !== null && normalizeTaskPath(command) === normalizeTaskPath(this.wrapperPath))
+      || runsSplitWrapper(command, args, this.wrapperPath)
+      || runsOurLauncher(command, args, launcherPath);
+    if (!ours) return [];
     // install keeps the launcher only when the task should use it (WSH works).
     let launcherExpected = false;
     try { launcherExpected = fs.existsSync(launcherPath); } catch { /* treat as absent */ }
@@ -630,7 +659,12 @@ export class WindowsServiceManager implements ServiceManager {
   async start(): Promise<void> {
     // An explicit start is never skipped by the failed-start backoff.
     clearServiceStartFailures();
-    if (!this.taskExists()) {
+    const task = this.taskExists();
+    // A 0.4.3 task split at a space never starts the server: install then
+    // added the Run entry, which start must use instead of the task. (A task
+    // this install just reused is never a split one.)
+    if (!task || (!this.reusedExistingTask && this.runKeyExists()
+      && this.installedLegacyProblems().includes('split-path'))) {
       if (this.runKeyExists()) {
         // HKCU Run fallback: no task to run -- launch the way the Run entry
         // does: the hidden launcher, or (no launcher) cmd with the wrapper

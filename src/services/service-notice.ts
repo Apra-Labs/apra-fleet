@@ -18,10 +18,12 @@ interface ServiceNoticeFile {
   shownAt?: string;
 }
 
-export function writeServiceNotice(text: string, file = SERVICE_NOTICE_PATH, now = new Date()): void {
+/** `shown`: the text was already printed to a console, so the next service verb does not repeat it. */
+export function writeServiceNotice(text: string, file = SERVICE_NOTICE_PATH, now = new Date(), shown = false): void {
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, JSON.stringify({ createdAt: now.toISOString(), text } satisfies ServiceNoticeFile, null, 2));
+    const n: ServiceNoticeFile = { createdAt: now.toISOString(), text, ...(shown ? { shownAt: now.toISOString() } : {}) };
+    fs.writeFileSync(file, JSON.stringify(n, null, 2));
   } catch { /* best-effort: never fail registration on the notice */ }
 }
 

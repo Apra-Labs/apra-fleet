@@ -165,7 +165,7 @@ describe('register() with a legacy task it cannot replace', () => {
     expect(text).toContain("'apra-fleet stop' cannot disable the task");
     expect(text).toContain('Run as administrator');
     expect(text).toContain('schtasks /delete /tn ApraFleet /f');
-    expect(text).toMatch(/then, from a normal prompt \(do not run the install itself elevated\):\s+apra-fleet install$/m);
+    expect(text).toMatch(/then, from a normal prompt \(do not run the install itself elevated\):\s+apra-fleet install --force$/m);
   });
 
   it('persists the guidance for a detached install: notice file + service log', async () => {
@@ -190,16 +190,46 @@ describe('register() with a legacy task it cannot replace', () => {
     expect(vi.mocked(fs.writeFileSync).mock.calls.some(c => c[0] === NOTICE)).toBe(false);
   });
 
-  it('0.4.3 wrapper split at a space (unquoted /tr) is recognised as ours -> reuse with guidance, not a throw', async () => {
+  it('an interactive install marks the persisted notice as already shown', async () => {
+    const mgr = new WindowsServiceManager(legacyWorld().schtasks, WRAPPER, {
+      runReg: vi.fn(), env: ENV, probeWsh: () => true, noticePath: NOTICE, interactive: () => true,
+    });
+    await mgr.register('x.exe', [], LOG);
+    const saved = JSON.parse(String(vi.mocked(fs.writeFileSync).mock.calls.find(c => c[0] === NOTICE)![1]));
+    expect(saved.shownAt).toBeDefined();
+  });
+
+  it('0.4.3 wrapper split at a space (unquoted /tr): ours, no throw -> guidance + HKCU Run autostart', async () => {
     const spaced = 'C:\\Users\\John Smith\\.apra-fleet\\bin\\apra-fleet-service.bat';
     const splitXml = LEGACY_XML.replace(`<Command>${WRAPPER}</Command>`,
       '<Command>C:\\Users\\John</Command><Arguments>Smith\\.apra-fleet\\bin\\apra-fleet-service.bat</Arguments>');
+    // The split task never starts the server: no "visible console" claim.
     expect(legacyTaskProblems(splitXml, { launcherPath: launcherPathFor(spaced), launcherExpected: true, wrapperPath: spaced }))
-      .toEqual(['no-revive', 'visible-console', 'split-path', 'elevated']);
+      .toEqual(['no-revive', 'split-path', 'elevated']);
     const w = legacyWorld({ legacyXml: splitXml });
-    expect(await mgrFor(w, spaced).register('x.exe', [], LOG)).toBe('reused');
+    expect(await mgrFor(w, spaced).register('x.exe', [], LOG)).toBe('run-key');
+    expect(w.reg).toHaveBeenCalledWith(expect.arrayContaining(['add']));
     expect(out()).toContain('the task command is split at a space in the install path');
+    expect(out()).not.toContain('visible console window');
     expect(out()).toContain('schtasks /delete /tn ApraFleet /f');
+    // The guidance stays pending for a detached install (not cleared by the Run-key path).
+    expect(vi.mocked(fs.writeFileSync).mock.calls.some(c => c[0] === NOTICE)).toBe(true);
+    expect(vi.mocked(fs.unlinkSync).mock.calls.some(c => c[0] === NOTICE)).toBe(false);
+  });
+
+  it('start() with a split task and the Run entry launches the Run-entry way, not the broken task', async () => {
+    const spaced = 'C:\\Users\\John Smith\\.apra-fleet\\bin\\apra-fleet-service.bat';
+    const splitXml = LEGACY_XML.replace(`<Command>${WRAPPER}</Command>`,
+      '<Command>C:\\Users\\John</Command><Arguments>Smith\\.apra-fleet\\bin\\apra-fleet-service.bat</Arguments>');
+    const calls: string[][] = [];
+    const schtasks = vi.fn((args: string[]) => { calls.push(args); return args.includes('/xml') ? splitXml : ''; });
+    const spawnDetached = vi.fn();
+    const mgr = new WindowsServiceManager(schtasks, spaced, {
+      runReg: vi.fn(() => ''), env: ENV, probeWsh: () => true, noticePath: NOTICE, spawnDetached,
+    });
+    await mgr.start();
+    expect(calls.some(c => c[0] === '/run')).toBe(false);
+    expect(spawnDetached).toHaveBeenCalledWith(expect.stringMatching(/wscript\.exe$/i), expect.arrayContaining(['//B']));
   });
 
   it('a task running some OTHER program is still refused loudly', async () => {
@@ -251,8 +281,17 @@ describe('status and stop with a legacy task installed', () => {
       'To upgrade it, run once from an elevated prompt (Run as administrator):',
       '    schtasks /delete /tn ApraFleet /f',
       'then, from a normal prompt (do not run the install itself elevated):',
-      '    apra-fleet install',
+      '    apra-fleet install --force',
     ].join('\n'));
+  });
+
+  it('status and stop give no legacy advice for a foreign task named ApraFleet', async () => {
+    const foreign = LEGACY_XML.replace(`<Command>${WRAPPER}</Command>`, '<Command>C:\\other\\x.bat</Command>');
+    const st = await new WindowsServiceManager(queryRunner(foreign), WRAPPER, { runReg: vi.fn(), stoppedByUser: () => false }).query();
+    expect(st.notice).toBeUndefined();
+    expect(st.detail ?? '').not.toMatch(/legacy/);
+    await new WindowsServiceManager(queryRunner(foreign), WRAPPER, { runReg: vi.fn() }).stop();
+    expect(warn.mock.calls.map(c => c.join(' ')).join('\n')).not.toContain('schtasks /delete');
   });
 
   it('status of a current task has no legacy hint', async () => {
@@ -270,7 +309,7 @@ describe('status and stop with a legacy task installed', () => {
     expect(text).toMatch(/Could not disable the ApraFleet task \(ERROR: Access is denied\.\)/);
     expect(text).toContain('no automatic revive after a crash');
     expect(text).toContain('schtasks /delete /tn ApraFleet /f');
-    expect(text).toMatch(/then, from a normal prompt[^\n]*:\s+apra-fleet install/);
+    expect(text).toMatch(/then, from a normal prompt[^\n]*:\s+apra-fleet install --force/);
     expect(text).toMatch(/A stop made with 'apra-fleet stop' still holds/);
   });
 
@@ -289,7 +328,7 @@ describe('status and stop with a legacy task installed', () => {
     const userOwnedOld = CURRENT_QUERIED_XML.replace(/<Repetition>[\s\S]*?<\/Repetition>/, '');
     const st = await new WindowsServiceManager(queryRunner(userOwnedOld), WRAPPER, { runReg: vi.fn(), stoppedByUser: () => false }).query();
     expect(st.detail).toBe('legacy task (upgrade needed: no automatic revive after a crash)');
-    expect(st.notice).toBe('To upgrade it, run from a normal prompt:\n    apra-fleet install');
+    expect(st.notice).toBe('To upgrade it, run from a normal prompt:\n    apra-fleet install --force');
     expect(st.notice).not.toMatch(/elevated|schtasks/);
     expect(legacyTaskGuidance(['no-revive'])).not.toMatch(/elevated|schtasks \/delete/);
     expect(legacyTaskFix(['no-revive', 'elevated'])).toContain('schtasks /delete /tn ApraFleet /f');
