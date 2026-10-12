@@ -11,6 +11,8 @@
 //   --launchagent   macOS only: launchctl bootout (|| true), install, then
 //                   launchctl kickstart -k when the installer reports
 //                   "registration skipped". Hard-fails on any other platform.
+//   --llm <name>    appended to `install --force` (no bare `--` needed; PowerShell
+//                   may drop it).
 //   anything after `--` is appended to `install --force` (e.g. `-- --llm agy`).
 //
 // Exit codes: the installer's own exit code; 2 on usage / platform errors.
@@ -64,7 +66,11 @@ export function parseArgs(argv) {
     if (a === '--') { out.extra = argv.slice(i + 1); break; }
     if (a === '--launchagent') out.launchagent = true;
     else if (a === '--print-path') out.printPath = true;
-    else throw new DeployInstallError(`unknown argument: ${a}`);
+    else if (a === '--llm') {
+      const v = argv[++i];
+      if (v === undefined) throw new DeployInstallError('--llm requires a value');
+      out.extra.push('--llm', v);
+    } else throw new DeployInstallError(`unknown argument: ${a}`);
   }
   return out;
 }

@@ -76,13 +76,12 @@ This is the sanctioned recovery -- take the LaunchAgent out of the picture
 first, then install, then bring it back. Do not invent a wrapper script or an
 alternate kill loop; those only re-race launchd.
 
-```bash
-# macOS only. One command: launchctl bootout (|| true), install --force, then
-# launchctl kickstart -k if the installer reports "registration skipped". It
-# resolves the uid and the installer path itself (see scripts/deploy-install.mjs).
-node scripts/deploy-install.mjs --launchagent
-pgrep -x apra-fleet || echo "server is down"
-```
+In the Deploy script below, at the install step (which comes AFTER the
+active-sprints gate), run the `--launchagent` form instead of the plain line:
+`node scripts/deploy-install.mjs --launchagent`. It does launchctl bootout
+(|| true), install --force, then launchctl kickstart -k if the installer reports
+"registration skipped", resolving the uid and installer path itself. Do not run
+it before the gate.
 
 Never leave the LaunchAgent booted out: the machine's shared singleton server
 stays down for every sprint until it is bootstrapped again.
@@ -161,8 +160,10 @@ node scripts/check-foreign-sprints.mjs --self-sprint-id "<your-sprint-id>"
 # `install --force` with inherited stdio (exit code propagated). Add
 # `--print-path` to only print the resolved installer path.
 node scripts/deploy-install.mjs
+# macOS where the LaunchAgent wins the race (see recovery section above):
+# use `node scripts/deploy-install.mjs --launchagent` instead of the plain line.
 # Agy-dedicated sprint (target issue is about the agy/Antigravity provider):
-# use `node scripts/deploy-install.mjs -- --llm agy` instead, so the agy role-prompt
+# use `node scripts/deploy-install.mjs --llm agy` instead, so the agy role-prompt
 # transform built from this branch is what gets deployed.
 
 # Use `run`, not `start` -- `start`'s Windows scheduled task requires an

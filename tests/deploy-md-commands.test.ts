@@ -81,6 +81,8 @@ describe('scripts/deploy-install.mjs', () => {
 
   it('parses flags and passthrough args, rejects unknown ones', () => {
     expect(parseArgs(['--launchagent', '--', '--llm', 'agy'])).toEqual({ launchagent: true, printPath: false, extra: ['--llm', 'agy'] });
+    expect(parseArgs(['--llm', 'agy'])).toEqual({ launchagent: false, printPath: false, extra: ['--llm', 'agy'] });
+    expect(() => parseArgs(['--llm'])).toThrow(/requires a value/);
     expect(() => parseArgs(['--bogus'])).toThrow(/unknown argument/);
   });
 });
