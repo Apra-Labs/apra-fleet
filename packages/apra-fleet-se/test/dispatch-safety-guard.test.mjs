@@ -1130,7 +1130,12 @@ const MEMBER_SYNC_PATH = path.join(__dirname, '../fleet-sprint/member-sync.mjs')
 // which issues its read-only git reads (rev-parse, ls-remote, fetch,
 // rev-list) with member_name: member, outside runGitStep because each is a
 // best-effort verification read, not a sync step to retry or self-heal.
-const EXPECTED_MEMBER_SYNC_COMMAND_COUNT = 2;
+// 2 -> 3 (retry salvage, GitHub #716): salvageBeforeReset()'s single `run`
+// helper, which issues the local-only rev-parse, rev-list, stash create and
+// branch -f with member_name: member, outside runGitStep because none of them
+// is a credential/transient failure to self-heal or retry; any failure fails
+// the salvage closed and blocks the reset.
+const EXPECTED_MEMBER_SYNC_COMMAND_COUNT = 3;
 
 test('every command() call site in member-sync.mjs passes member_name or member_id', () => {
     const { sites, violations } = checkPath(MEMBER_SYNC_PATH);

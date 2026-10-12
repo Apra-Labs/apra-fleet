@@ -830,6 +830,19 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
             // never fast-forward. Only after a failure that may have committed:
             // an auth/trust failure provably ran nothing, so its retry keeps
             // plain ff-only pre-dispatch sync.
+            //
+            // This is deliberately BROADER than isNoMutationDispatchFailure
+            // (dispatch-failure.mjs): a stall kill or a transport drop is
+            // classed no-mutation there (so the post-dispatch push is skipped),
+            // yet the member may still have committed or edited files before
+            // the channel died. The two are reconciled by making the reset
+            // itself non-destructive rather than by re-classifying those
+            // failures: syncMemberBefore's resetToRemoteTip mode always pins
+            // unpublished commits and uncommitted tracked changes on a local
+            // fleet-salvage/ side ref first and refuses to reset if it cannot
+            // (salvageBeforeReset in member-sync.mjs). Treating a failure as
+            // possibly-mutating here is therefore always safe, and nothing a
+            // killed attempt left behind is lost to the retry.
             const retryFollowsPossibleMutation = attempt > 1 && lastErr
                 && !isNonRetryableDispatchError(lastErr);
             const attemptOpts = {

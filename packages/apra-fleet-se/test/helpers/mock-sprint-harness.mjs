@@ -1404,6 +1404,21 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
                     return mockCmdResult(0, originUrl, '');
                 }
 
+                // Retry salvage (GitHub #716): a retried doer's reset onto the
+                // remote tip first reads `git rev-parse HEAD <remote>/<branch>`
+                // and runs `git stash create`, parsing both outputs and failing
+                // closed on anything unparseable. This mock has no real
+                // checkout, so answer them as a clean, up-to-date one: HEAD
+                // equals the remote tip and there is no tracked WIP (empty
+                // stash output), i.e. nothing to salvage.
+                if (/^git rev-parse HEAD \S+\s*$/.test(opts.command)) {
+                    const sha = '0'.repeat(40);
+                    return mockCmdResult(0, `${sha}\n${sha}\n`, '');
+                }
+                if (/^git (?:-c \S+ )*stash create\s*$/.test(opts.command)) {
+                    return mockCmdResult(0, '', '');
+                }
+
                 return mockCmdResult(0, 'ok (mocked -- no real git remote in this mock sprint)', '');
             }
 
