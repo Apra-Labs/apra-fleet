@@ -150,7 +150,21 @@ export class MacOSServiceManager implements ServiceManager {
     // An explicit start is never skipped by the MCP server's failed-start
     // backoff (the backoff state belongs to the MCP server service only).
     if (this.descriptor.gracefulStopViaServerJson) clearServiceStartFailures();
+    // stop() of a non-server service boots the job out of the domain, after
+    // which kickstart alone fails. Re-bootstrap from the plist when not loaded.
+    if (!this.descriptor.gracefulStopViaServerJson && !this.isLoaded()) {
+      execFileSync('launchctl', ['bootstrap', domain(), this.plistPath]);
+    }
     execFileSync('launchctl', ['kickstart', this.target()]);
+  }
+
+  private isLoaded(): boolean {
+    try {
+      execFileSync('launchctl', ['print', this.target()], { stdio: 'pipe' });
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   async stop(): Promise<boolean> {
@@ -159,8 +173,8 @@ export class MacOSServiceManager implements ServiceManager {
     }
     // Services other than the MCP server never write server.json -- take them
     // down through launchd itself. bootout also unloads the job, so a later
-    // start() re-bootstraps via register(); callers that only want a pause
-    // should use kickstart semantics instead.
+    // start() re-bootstraps it from the plist (launchctl bootstrap) before
+    // kickstart; register() is not involved.
     try { execFileSync('launchctl', ['bootout', this.target()], { stdio: 'pipe', timeout: 30_000 }); } catch {}
     return true;
   }

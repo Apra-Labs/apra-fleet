@@ -63,6 +63,7 @@ vi.mock('../src/services/singleton.js', async (importOriginal) => ({
 
 vi.mock('../src/services/service-manager/index.js', () => ({
   getServiceManager: mockGetSvcMgr,
+  getServiceManagers: async (ids: string[]) => Promise.all(ids.map(id => (mockGetSvcMgr as any)(id))),
 }));
 
 // Auto-mock (no factory) so named imports get stubs -- auto-mocks clean up

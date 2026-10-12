@@ -32,6 +32,7 @@ const { mockGetSvcMgr, mcpMgr, supervisorMgr, mockCheckRunning } = vi.hoisted(()
 
 vi.mock('../src/services/service-manager/index.js', () => ({
   getServiceManager: mockGetSvcMgr,
+  getServiceManagers: async (ids: string[]) => Promise.all(ids.map(id => (mockGetSvcMgr as any)(id))),
 }));
 // runStart also probes the configured port (GitHub #584): keep the real
 // helpers and report the port free, as tests/cli-verbs.test.ts does.

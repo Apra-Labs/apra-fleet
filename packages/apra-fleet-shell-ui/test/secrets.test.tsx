@@ -133,7 +133,7 @@ describe("Secrets screen (apra-fleet-9h9j.3.3)", () => {
     vi.stubGlobal("open", openSpy);
     const { fn, calls } = makeFetchMock({
       "/api/fleet/credential-store-set": jsonResponse(200, {
-        url: "http://127.0.0.1:9000/collect/abc123",
+        url: "http://127.0.0.1:9000/ui/#/secret-entry/" + "a1b2c3d4".repeat(8),
         expiresAt: "2026-10-01T00:00:00Z"
       })
     });
@@ -153,7 +153,14 @@ describe("Secrets screen (apra-fleet-9h9j.3.3)", () => {
     });
 
     expect(openSpy).toHaveBeenCalledTimes(1);
-    expect(openSpy).toHaveBeenCalledWith("http://127.0.0.1:9000/collect/abc123", "_blank", "noopener");
+    expect(openSpy).toHaveBeenCalledWith("http://127.0.0.1:9000/ui/#/secret-entry/" + "a1b2c3d4".repeat(8), "_blank", "noopener");
+
+    // apra-fleet-i9ag.11.24: a confirmation naming the credential, but never
+    // the one-time token (or the url that embeds it) in the DOM.
+    const dom = container.innerHTML;
+    expect(container.textContent ?? "").toContain("new-secret");
+    expect(dom).not.toContain("a1b2c3d4a1b2c3d4");
+    expect(dom).not.toContain("secret-entry/");
 
     for (const call of calls) {
       expect(JSON.stringify(call.body ?? "")).not.toContain(SENTINEL);

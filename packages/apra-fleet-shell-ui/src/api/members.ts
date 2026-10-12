@@ -1,3 +1,4 @@
+import { apiUrl } from "./base-path";
 // Thin fetch wrapper over the /api/fleet/ console routes this page needs.
 // Each page gets its own api module (apra-fleet-9h9j.2.1) so the members and
 // secrets/health lanes never contend for one shared src/api/fleet.ts file.
@@ -95,7 +96,7 @@ export interface MemberActionResult {
 }
 
 async function postJson(path: string, body: unknown): Promise<MemberActionResult> {
-  const response = await fetch(path, {
+  const response = await fetch(apiUrl(path), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body ?? {})
@@ -120,7 +121,7 @@ async function postJson(path: string, body: unknown): Promise<MemberActionResult
  *  background refresh -- callers decide how to fold a successful result into
  *  their own render state. */
 export async function fetchMembers(): Promise<FleetMember[]> {
-  const response = await fetch("/api/fleet/members");
+  const response = await fetch(apiUrl("/api/fleet/members"));
   if (!response.ok) {
     throw new Error(`request failed with status ${response.status}`);
   }

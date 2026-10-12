@@ -41,6 +41,14 @@ const thisFile = path.basename(fileURLToPath(import.meta.url));
 const REAL_PROCESS_SIGNATURES = [
     /function resolveBdBinary/,
     /\b(?:spawn|spawnSync|execFile|execFileSync)\(\s*process\.execPath/,
+    // apra-fleet-i9ag.19.49: a real child launched through a resolved path
+    // held in a variable (not process.execPath) evaded the guard. Flag any
+    // spawn-family call whose FIRST argument is not a string/template literal
+    // (an identifier or member expression), and any use of the
+    // buildRecordedNode() helper, which exists to mint a runnable node binary
+    // at a path that is NOT process.execPath.
+    /\b(?:spawn|spawnSync|execFile|execFileSync)\(\s*(?!['"`]|process\.execPath)[A-Za-z_$][\w$.]*\s*,/,
+    /\bbuildRecordedNode\(/,
 ];
 
 // Widening REAL_PROCESS_SIGNATURES above (to close the spawnSync/execFileSync
@@ -82,6 +90,10 @@ const KNOWN_LIGHT_PROCESS_SPAWNS = {
     'cli-robustness.test.mjs': "spawnSync(process.execPath, [cliPath, '--branch', 'main', '--base', 'origin/main', ...]) runs bin/cli.mjs once and it refuses branch == base before any fleet connection, bd call or server start (main #628).",
     'stopped-by-user-launch.test.mjs': 'spawnSync(process.execPath, [bin/cli.mjs, ...]) runs the sprint CLI once against a stopped-by-user marker; it prints the stop message and exits 1 before connecting anywhere (main #629).',
     'viewer-back-link-direct-threading.test.mjs': "spawnSync(process.execPath, [bin/cli.mjs, ..., '--viewer-back-url', 'javascript:...']) runs the sprint CLI once; it rejects the invalid back URL and exits 1 before connecting anywhere.",
+    // apra-fleet-i9ag.19.49: variable-first-argument spawns found by the widened signature.
+    'newtask-body-member-side-transport.test.mjs': "spawnSync(bin/POWERSHELL.bin, ['-NoProfile', ...]) runs short one-shot PowerShell commands (a version probe and a sandboxed command); no server, Dolt bootstrap or nested suite.",
+    'supervisor-dolt-orphan-sweep.test.mjs': "spawnSync(bin/POWERSHELL.bin, ['-NoProfile', ...]) runs a one-shot PowerShell version probe and a short script file; no server, Dolt bootstrap or nested suite.",
+    'se-os-commands-ensure-file.test.mjs': "spawnSync(cmd/exe, ...) runs one-shot shell/PowerShell availability probes and bounded ensure-file commands in a temp dir; no server, Dolt bootstrap or nested suite.",
     'run-tests-script-wiring.test.mjs':"spawnSync(process.execPath, derivedArgs, ...) runs scripts/run-tests.mjs against exactly ONE lightweight probe file (test/helpers/run-tests-wiring-probe.mjs), not the real suite.",
 };
 
@@ -153,4 +165,12 @@ test('every serial-process-suites.mjs entry still refers to an existing test fil
         `test/helpers/serial-process-suites.mjs lists file(s) that no longer exist under test/: ` +
         `${stale.join(', ')}. Fix or remove the stale entry.`
     );
+});
+
+test('self-test: a variable-held spawn path or buildRecordedNode use is flagged; a literal light spawn is not', () => {
+    assert.equal(matchesRealProcessSignature('const bin = resolveIt();\nspawn(bin, ["--serve"]);'), true);
+    assert.equal(matchesRealProcessSignature('execFileSync(paths.node, ["x.mjs"]);'), true);
+    assert.equal(matchesRealProcessSignature('const { nodePath } = buildRecordedNode(dir);'), true);
+    assert.equal(matchesRealProcessSignature("spawnSync('git', ['status']);"), false);
+    assert.equal(matchesRealProcessSignature('execFileSync("bd", ["--version"]);'), false);
 });

@@ -280,6 +280,7 @@ export function buildSprintArgv(opts = {}) {
  *   command?: string,
  *   resolveRunner?: (deps?: { configuredNodePath?: string, configuredNodeVersion?: string }) => { command: string, source: string, version: string },
  *   configuredNodePath?: string,
+ *   configuredBdPath?: string,
  *   configuredNodeVersion?: string,
  *   cliPath?: string,
  *   cwd?: string,
@@ -354,6 +355,9 @@ export function createSpawner(deps = {}) {
     // zero-arg closure that ignores whatever argument it is called with, so
     // this cannot change any existing test's behaviour.
     const configuredNodePath = deps.configuredNodePath;
+    // apra-fleet-hap8: the recorded bd path (bin/serve.mjs), whose directory is
+    // prepended to the sprint child's PATH alongside node's.
+    const configuredBdPath = deps.configuredBdPath;
     // apra-fleet-i9ag.19.35: the version bin/serve.mjs's startup
     // `validateRecordedToolchain()` ACCEPTED for exactly that recorded path,
     // in this same process (passed only when its `nodeOk` was true). Threaded
@@ -393,7 +397,8 @@ export function createSpawner(deps = {}) {
         });
         cachedRunner = resolved;
         logger.log?.(
-            `[spawner] resolved sprint runner: ${resolved.command} (source: ${resolved.source}, version: ${resolved.version})`,
+            `[spawner] resolved sprint runner: ${resolved.command} (source: ${resolved.source}, version: ${resolved.version}`
+            + `${resolved.resolvedFrom ? `, behind Windows shim ${resolved.resolvedFrom}` : ''})`,
         );
         return resolved.command;
     }
@@ -560,11 +565,27 @@ export function createSpawner(deps = {}) {
             // is ever reached, so this line never executes for a broken
             // recording -- but a future change must not assume this guard
             // implies validity.
-            if (typeof configuredNodePath === 'string' && configuredNodePath.trim().length > 0) {
+            //
+            // apra-fleet-hap8: the recorded bd's directory is prepended too. An
+            // npm global prefix can sit OUTSIDE node's own directory (npm
+            // config prefix, nvm/volta layouts), so node's dir alone leaves
+            // `bd` unresolvable in the child. Both dirs go AHEAD of every
+            // inherited entry (node's first), inherited order is preserved, and
+            // a dir equal to one already added is not added twice. No recorded
+            // bdPath -> exactly the node-only behaviour above.
+            const recordedDirs = [];
+            for (const recorded of [configuredNodePath, configuredBdPath]) {
+                if (typeof recorded === 'string' && recorded.trim().length > 0) {
+                    const dir = path.dirname(recorded.trim());
+                    if (!recordedDirs.includes(dir)) recordedDirs.push(dir);
+                }
+            }
+            if (recordedDirs.length > 0) {
                 if (spawnEnv === baseEnv) {
                     spawnEnv = { ...spawnEnv };
                 }
-                prependToPathEnv(spawnEnv, path.dirname(configuredNodePath.trim()));
+                // Prepend in reverse so recordedDirs[0] (node) ends up first.
+                for (const dir of [...recordedDirs].reverse()) prependToPathEnv(spawnEnv, dir);
             }
             child = spawnImpl(command, args, {
                 detached: true,

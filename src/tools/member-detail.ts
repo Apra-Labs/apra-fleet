@@ -158,7 +158,7 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
   try {
     const versionResult = await strategy.execCommand(cmds.agentVersion(provider), 10000);
     cli.version = versionResult.stdout.trim();
-    // Strip provider prefix: "Claude Code 2.1.92" → "2.1.92"
+    // Strip provider prefix: "Claude Code 2.1.92" -> "2.1.92"
     const vMatch = String(cli.version).match(/(\d+\.\d+\.\d+.*)$/);
     if (vMatch) cli.version = vMatch[1];
   } catch {
@@ -191,7 +191,7 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
   }
 
   if (apiKeyExists && oauthFilesExist) {
-    cli.auth = 'api-key (WARNING: OAuth also present — API key takes precedence)';
+    cli.auth = 'api-key (WARNING: OAuth also present - API key takes precedence)';
   } else if (apiKeyExists) {
     cli.auth = 'api-key';
   } else if (oauthFilesExist) {
@@ -291,7 +291,7 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
       branch = branchName;
       updateAgent(agent.id, { lastBranch: branch });
     }
-  } catch { /* not a git repo — ignore */ }
+  } catch { /* not a git repo - ignore */ }
 
   if (branch) {
     result.branch = branch;

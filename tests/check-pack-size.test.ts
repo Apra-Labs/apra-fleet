@@ -195,19 +195,19 @@ describe('malformed/empty/missing-unpackedSize JSON fails loudly (not a silent p
 
 describe('check-pack-size.mjs script process behavior (fixture stdin, no npm pack invocation)', () => {
   it('exits non-zero and prints ::error:: with the byte count for an oversized fixture', () => {
-    const fixture = JSON.stringify([{ name: 'apra-fleet', unpackedSize: 10000001 }]);
+    const fixture = JSON.stringify([{ name: 'apra-fleet', unpackedSize: DEFAULT_THRESHOLD_BYTES + 1 }]);
     const { status, stderr } = runScript([], fixture);
     expect(status).not.toBe(0);
     expect(stderr).toContain('::error::');
-    expect(stderr).toContain('10000001');
+    expect(stderr).toContain(String(DEFAULT_THRESHOLD_BYTES + 1));
   });
 
   it('exits 0 with no ::error:: for a fixture below the threshold', () => {
-    const fixture = JSON.stringify([{ name: 'apra-fleet', unpackedSize: 9999999 }]);
+    const fixture = JSON.stringify([{ name: 'apra-fleet', unpackedSize: DEFAULT_THRESHOLD_BYTES - 1 }]);
     const { status, stdout, stderr } = runScript([], fixture);
     expect(status).toBe(0);
     expect(stderr).not.toContain('::error::');
-    expect(stdout).toContain('9999999');
+    expect(stdout).toContain(String(DEFAULT_THRESHOLD_BYTES - 1));
   });
 
   it('regression fixture (scrapes to "4", real size over threshold) is rejected by the script', () => {

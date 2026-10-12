@@ -348,7 +348,27 @@ function saveLedger(projectFolder: string, ledger: Ledger): void {
   fs.writeFileSync(ledgerPath, JSON.stringify(ledger, null, 2) + '\n');
 }
 
+/**
+ * Stack detection for a LOCAL member: its work folder is on this machine, so
+ * check the marker files in-process instead of spawning two member shells
+ * (each a PowerShell cold start on Windows, where the POSIX `cd && ls` probe
+ * below is not even valid Windows PowerShell 5.1 syntax).
+ */
+function detectLocalStacks(workFolder: string, projectSubdir?: string): string[] {
+  const subdirPath = projectSubdir ? path.join(workFolder, projectSubdir) : null;
+  const checkDir = subdirPath && fs.existsSync(subdirPath) ? subdirPath : workFolder;
+  const found = new Set<string>();
+  for (const [marker, stack] of Object.entries(STACK_MAP)) {
+    if (fs.existsSync(path.join(checkDir, marker))) found.add(stack);
+  }
+  try {
+    if (fs.readdirSync(checkDir).some(f => f.endsWith('.sln') || f.endsWith('.csproj'))) found.add('dotnet');
+  } catch { /* missing folder: no stacks */ }
+  return [...found];
+}
+
 async function detectStacks(agent: Agent, projectSubdir?: string): Promise<string[]> {
+  if (agent.agentType === 'local') return detectLocalStacks(agent.workFolder, projectSubdir);
   const strategy = getStrategy(agent);
   const markers = Object.keys(STACK_MAP).join(' ');
   // Resolve the directory to check on the member: prefer <workFolder>/<projectSubdir>,
@@ -785,7 +805,9 @@ async function syncMemberMcpConfig(
 ): Promise<MemberMcpSyncOutcome> {
   const agentOs = (agent.os ?? 'linux') as 'linux' | 'macos' | 'windows';
   const shell = getAgentShell(agent);
-  const exec = (cmd: string, t?: number) => strategy.execCommand(cmd, t);
+  // Every member-side exec carries an explicit timeout, even when a helper
+  // passes none (the strategy default is an implicit 30s).
+  const exec = (cmd: string, t?: number) => strategy.execCommand(cmd, t ?? LOCAL_FS_OP_TIMEOUT_MS);
   const workFolderFiles = permissionPaths.filter(p => !isHomeAnchored(p));
   try {
     if (provider.syncMemberMcpEntry) {
@@ -894,7 +916,9 @@ export async function removeComposedMemberConfig(agent: Agent): Promise<string[]
   const isWindows = agentOs === 'windows';
   const shell = getAgentShell(agent);
   const posix = isPosixShell(isWindows, shell);
-  const exec = (cmd: string, t?: number) => strategy.execCommand(cmd, t);
+  // Every member-side exec carries an explicit timeout, even when a helper
+  // passes none (the strategy default is an implicit 30s).
+  const exec = (cmd: string, t?: number) => strategy.execCommand(cmd, t ?? LOCAL_FS_OP_TIMEOUT_MS);
   const details: string[] = [];
 
   let paths: string[] = [];

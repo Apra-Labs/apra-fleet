@@ -106,7 +106,7 @@ describe('memberDetail auth detection', () => {
     });
 
     const result = JSON.parse(await memberDetail({ member_id: member.id, format: 'json' }));
-    expect(result.llm_cli.auth).toBe('api-key (WARNING: OAuth also present — API key takes precedence)');
+    expect(result.llm_cli.auth).toBe('api-key (WARNING: OAuth also present - API key takes precedence)');
   });
 
   it('detects API key only', async () => {

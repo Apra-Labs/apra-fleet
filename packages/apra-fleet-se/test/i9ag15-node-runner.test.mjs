@@ -720,6 +720,31 @@ describe('apra-fleet-i9ag.19.5: resolveSprintRunnerCommand() CONFIGURED tier', (
         assert.equal(calls.length, 1, 'ENOENT is a genuine finding on the first attempt -- classifyIncompleteProbe() deliberately excludes it');
     });
 
+    test('apra-fleet-i9ag.19.47: the REAL execFileSync timeout shape (ETIMEDOUT, killed undefined) is worded as "could not be probed within Ns"', () => {
+        const timeoutErr = () => Object.assign(new Error('spawnSync node ETIMEDOUT'), { code: 'ETIMEDOUT', killed: undefined, signal: 'SIGTERM', status: null });
+        const { exec, calls } = fakeExecSequence('/opt/toolchain/node', [
+            { error: timeoutErr() },
+            { error: timeoutErr() },
+        ]);
+        assert.throws(
+            () => resolveSprintRunnerCommand({
+                env: {},
+                execPath: '/opt/apra-fleet/apra-fleet',
+                isSea: () => true,
+                exec,
+                platform: 'linux',
+                configuredNodePath: '/opt/toolchain/node',
+            }),
+            (err) => {
+                assert.ok(err instanceof SprintRunnerResolutionError);
+                assert.match(err.message, new RegExp(`could not be probed within ${SPRINT_RUNNER_PROBE_TIMEOUT_MS / 1_000}s`));
+                assert.ok(!err.message.includes('does not resolve'));
+                return true;
+            },
+        );
+        assert.equal(calls.length, 2);
+    });
+
     test('apra-fleet-i9ag.19.35: a timeout that persists through the bounded retry is worded distinguishably from a broken recording', () => {
         const timeoutErr = () => Object.assign(new Error('spawn ETIMEDOUT'), { killed: true });
         const { exec, calls } = fakeExecSequence('/opt/toolchain/node', [

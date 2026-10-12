@@ -1,3 +1,4 @@
+import { apiUrl } from "./base-path";
 // Thin fetch wrapper over the /api/fleet/status route, for the Health screen
 // (S3, apra-fleet-9h9j.3.1). Its own module, separate from secrets.ts and
 // members.ts, per this lane's file-ownership rule.
@@ -62,7 +63,7 @@ export function deriveDataDir(logFile: string | undefined | null): string | null
 }
 
 export async function fetchFleetStatus(): Promise<FleetStatusPayload> {
-  const response = await fetch("/api/fleet/status", {
+  const response = await fetch(apiUrl("/api/fleet/status"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ format: "json" })

@@ -258,7 +258,7 @@ describe('resolveFleetSeToolchainPaths (apra-fleet-i9ag.19.1)', () => {
       '/usr/local/bin/bd --version': 'bd version 1.2.3\n',
     });
 
-    const result = resolveFleetSeToolchainPaths({ exec, platform: 'linux' });
+    const result = resolveFleetSeToolchainPaths({ exec, platform: 'linux', realpath: (p) => p });
 
     expect(result.node).toEqual({
       path: '/opt/nvm/versions/node/v22.16.0/bin/node',
@@ -276,7 +276,7 @@ describe('resolveFleetSeToolchainPaths (apra-fleet-i9ag.19.1)', () => {
     // absolute bdPath, never a fresh bare-'bd' PATH lookup that could
     // silently resolve to a different binary.
     expect(exec).toHaveBeenCalledWith('/usr/local/bin/bd', ['--version'], {
-      shell: true,
+      shell: false,
       timeout: PREREQ_PROBE_TIMEOUT_MS,
     });
     expect(exec).not.toHaveBeenCalledWith('bd', ['--version'], expect.anything());
@@ -309,10 +309,53 @@ describe('resolveFleetSeToolchainPaths (apra-fleet-i9ag.19.1)', () => {
     // Same exec, POSIX platform: resolveBdPath() must ask 'which bd', which
     // this fake does not know how to answer -> bd.ok false. This is what
     // makes the win32 assertion above non-vacuous.
-    const linuxResult = resolveFleetSeToolchainPaths({ exec, platform: 'linux' });
+    const linuxResult = resolveFleetSeToolchainPaths({ exec, platform: 'linux', realpath: (p) => p });
     expect(linuxResult.bd.ok).toBe(false);
     expect(linuxResult.bd.path).toBeNull();
     expect(exec).toHaveBeenCalledWith('which', ['bd'], { shell: true, timeout: PREREQ_PROBE_TIMEOUT_MS });
+  });
+
+  // apra-fleet-i9ag.19.48: the win32 probe runs through cmd.exe (shell:true), which
+  // word-splits a spaced path -- so it is quoted there, and ONLY there.
+  it('win32 quotes a spaced bd path in the --version probe but records it unquoted', () => {
+    const spaced = 'C:\\Program Files\\nodejs\\bd.cmd';
+    const exec = makeArgvExec({
+      'node -p process.execPath': 'C:\\nvm4w\\nodejs\\node.exe\n',
+      'node --version': 'v22.16.0\n',
+      'where bd': `${spaced}\n`,
+      [`"${spaced}" --version`]: '1.2.3\n',
+    });
+    const result = resolveFleetSeToolchainPaths({ exec, platform: 'win32' });
+    expect(result.bd.path).toBe(spaced);
+    expect(result.bd.version).toBe('1.2.3');
+    expect(result.bd.reason).toBeNull();
+    expect(exec).toHaveBeenCalledWith(`"${spaced}"`, ['--version'], { shell: true, timeout: PREREQ_PROBE_TIMEOUT_MS });
+    expect(exec).not.toHaveBeenCalledWith(spaced, ['--version'], expect.anything());
+  });
+
+  it('win32 does not quote a bd path with no space', () => {
+    const plain = 'C:\\Users\\dev\\AppData\\Roaming\\npm\\bd.cmd';
+    const exec = makeArgvExec({
+      'node -p process.execPath': 'C:\\nvm4w\\nodejs\\node.exe\n',
+      'node --version': 'v22.16.0\n',
+      'where bd': `${plain}\n`,
+      [`${plain} --version`]: '1.2.3\n',
+    });
+    resolveFleetSeToolchainPaths({ exec, platform: 'win32' });
+    expect(exec).toHaveBeenCalledWith(plain, ['--version'], { shell: true, timeout: PREREQ_PROBE_TIMEOUT_MS });
+  });
+
+  it('POSIX never quotes a spaced bd path (shell-less argv semantics)', () => {
+    const spaced = '/opt/my tools/bin/bd';
+    const exec = makeArgvExec({
+      'node -p process.execPath': '/usr/bin/node\n',
+      'node --version': 'v22.16.0\n',
+      'which bd': `${spaced}\n`,
+      [`${spaced} --version`]: '1.2.3\n',
+    });
+    const result = resolveFleetSeToolchainPaths({ exec, platform: 'linux', realpath: (p) => p });
+    expect(result.bd.version).toBe('1.2.3');
+    expect(exec).toHaveBeenCalledWith(spaced, ['--version'], { shell: false, timeout: PREREQ_PROBE_TIMEOUT_MS });
   });
 
   // apra-fleet-i9ag.19.1 AMENDED AC (judge D2, PR #561): npm installs bd as
@@ -402,7 +445,7 @@ describe('resolveFleetSeToolchainPaths (apra-fleet-i9ag.19.1)', () => {
       '/usr/local/bin/bd --version': '1.2.3\n',
     });
 
-    const result = resolveFleetSeToolchainPaths({ exec, platform: 'linux' });
+    const result = resolveFleetSeToolchainPaths({ exec, platform: 'linux', realpath: (p) => p });
 
     expect(result.bd.path).toBe('/usr/local/bin/bd');
     expect(result.bd.ok).toBe(true);
@@ -417,7 +460,7 @@ describe('resolveFleetSeToolchainPaths (apra-fleet-i9ag.19.1)', () => {
 
     let result: ReturnType<typeof resolveFleetSeToolchainPaths> | undefined;
     expect(() => {
-      result = resolveFleetSeToolchainPaths({ exec, platform: 'linux' });
+      result = resolveFleetSeToolchainPaths({ exec, platform: 'linux', realpath: (p) => p });
     }).not.toThrow();
 
     expect(result!.node.ok).toBe(false);
@@ -433,7 +476,7 @@ describe('resolveFleetSeToolchainPaths (apra-fleet-i9ag.19.1)', () => {
       '/usr/local/bin/bd --version': '1.2.3\n',
     });
 
-    const result = resolveFleetSeToolchainPaths({ exec, platform: 'linux' });
+    const result = resolveFleetSeToolchainPaths({ exec, platform: 'linux', realpath: (p) => p });
 
     expect(result.node.ok).toBe(false);
     expect(result.node.path).toBe('/usr/bin/node');
@@ -448,7 +491,7 @@ describe('resolveFleetSeToolchainPaths (apra-fleet-i9ag.19.1)', () => {
       'node --version': 'v22.16.0\n',
     });
 
-    const result = resolveFleetSeToolchainPaths({ exec, platform: 'linux' });
+    const result = resolveFleetSeToolchainPaths({ exec, platform: 'linux', realpath: (p) => p });
 
     expect(result.bd.ok).toBe(false);
     expect(result.bd.path).toBeNull();
@@ -476,7 +519,7 @@ describe('resolveFleetSeToolchainPaths (apra-fleet-i9ag.19.1)', () => {
       '/usr/local/bin/bd --version': Object.assign(new Error('spawn bd ENOENT'), { code: 'ENOENT' }),
     });
 
-    const result = resolveFleetSeToolchainPaths({ exec, platform: 'linux' });
+    const result = resolveFleetSeToolchainPaths({ exec, platform: 'linux', realpath: (p) => p });
 
     // Path resolution succeeded -- bd IS on PATH -- so ok reflects that,
     // even though its version could not be determined.
@@ -493,9 +536,49 @@ describe('resolveFleetSeToolchainPaths (apra-fleet-i9ag.19.1)', () => {
     // bdVersion (or, here, the reason it is null) provably describes the
     // recorded bdPath.
     expect(exec).toHaveBeenCalledWith('/usr/local/bin/bd', ['--version'], {
-      shell: true,
+      shell: false,
       timeout: PREREQ_PROBE_TIMEOUT_MS,
     });
     expect(exec).not.toHaveBeenCalledWith('bd', ['--version'], expect.anything());
+  });
+});
+
+describe('resolveFleetSeToolchainPaths -- POSIX bd realpath (apra-fleet-xvu6.1)', () => {
+  it('records the symlink-resolved real path and probes that path', () => {
+    const exec = makeArgvExec({
+      'node -p process.execPath': '/opt/node/bin/node\n',
+      'node --version': 'v22.16.0\n',
+      'which bd': '/tmp/fnm_multishells/123/bin/bd\n',
+      '/usr/lib/node_modules/@beads/bd/bin/bd.js --version': 'bd version 1.2.3\n',
+    });
+    const realpath = vi.fn((p: string) => (p === '/tmp/fnm_multishells/123/bin/bd' ? '/usr/lib/node_modules/@beads/bd/bin/bd.js' : p));
+    const result = resolveFleetSeToolchainPaths({ exec, platform: 'linux', realpath });
+    expect(result.bd).toEqual({ path: '/usr/lib/node_modules/@beads/bd/bin/bd.js', version: '1.2.3', ok: true, reason: null });
+  });
+
+  it('a realpath failure keeps the PATH-found path with ok:true and an advisory reason', () => {
+    const exec = makeArgvExec({
+      'node -p process.execPath': '/opt/node/bin/node\n',
+      'node --version': 'v22.16.0\n',
+      'which bd': '/usr/local/bin/bd\n',
+      '/usr/local/bin/bd --version': 'bd version 1.2.3\n',
+    });
+    const realpath = () => { throw new Error('EACCES'); };
+    const result = resolveFleetSeToolchainPaths({ exec, platform: 'linux', realpath });
+    expect(result.bd.path).toBe('/usr/local/bin/bd');
+    expect(result.bd.ok).toBe(true);
+    expect(result.bd.reason).toEqual(expect.stringContaining('EACCES'));
+  });
+
+  it('win32 never calls realpath', () => {
+    const exec = makeArgvExec({
+      'node -p process.execPath': 'C:\\node\\node.exe\n',
+      'node --version': 'v22.16.0\n',
+      'where bd': 'C:\\npm\\bd.cmd\n',
+      'C:\\npm\\bd.cmd --version': '1.2.3\n',
+    });
+    const realpath = vi.fn((p: string) => p);
+    resolveFleetSeToolchainPaths({ exec, platform: 'win32', realpath });
+    expect(realpath).not.toHaveBeenCalled();
   });
 });

@@ -1,9 +1,9 @@
 {
   "version": 2,
   "provenance": {
-    "commit": "4f1d90d5877af2cd2ac19cb250fc46b9f3b9c951",
+    "commit": "85a04bf2d353ca960d30b447246bbe3a55ddb4b8",
     "branch": "v0.5_dashboard",
-    "entry_count": 434
+    "entry_count": 442
   },
   "entries": [
     {
@@ -1274,6 +1274,23 @@
       "updated_at": "2026-09-25T22:26:32.535Z"
     },
     {
+      "id": "22acaf96-84dc-4815-ac4f-cb822b20677d",
+      "type": "knowledge",
+      "title": "probeVersion misclassifies a real execFileSync timeout as a genuine failure",
+      "summary": "node-version.mjs classifyIncompleteProbe only treats err.killed === true as a timeout. A synchronous execFileSync timeout gives { code: 'ETIMEDOUT', killed: undefined, signal: 'SIGTERM' }, so node-runner's sync probes get incomplete:null after one attempt and no retry.",
+      "symbols": [
+        "classifyIncompleteProbe",
+        "probeVersion",
+        "resolveSprintRunnerCommand"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/src/supervisor/node-version.mjs",
+        "packages/apra-fleet-se/src/supervisor/node-runner.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T15:32:12.537Z"
+    },
+    {
       "id": "22dd4e68-3702-4ecd-a500-df6e9b27f4b3",
       "type": "knowledge",
       "title": "check-generic-boundary.mjs does not scan fleet-sprint/skills/*.md",
@@ -1496,6 +1513,24 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-14T01:54:53.596Z"
+    },
+    {
+      "id": "2955ceb0-6bea-4d37-b0b1-13d1a10967be",
+      "type": "knowledge",
+      "title": "register_member seeds workspace trust only via compose_permissions unless skipCompose",
+      "summary": "Proactive composePermissions calls seedWorkspaceTrust itself, so register_member now seeds trust directly only when opts.skipCompose is set; tests pin ensureWorkspaceTrusted called once per registration.",
+      "symbols": [
+        "registerMember",
+        "composePermissions",
+        "seedWorkspaceTrust"
+      ],
+      "source_files": [
+        "src/tools/register-member.ts",
+        "src/tools/compose-permissions.ts",
+        "tests/register-member-provisioning.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T17:25:03.382Z"
     },
     {
       "id": "29ecc73c-9308-45dd-a82b-f2c19983829e",
@@ -2543,6 +2578,25 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:13.727Z"
+    },
+    {
+      "id": "4b424889-b6ea-4de4-91b1-5441219cf35f",
+      "type": "learning",
+      "title": "runStatus now needs getServiceManagers on every service-manager index mock",
+      "summary": "src/cli/status.ts runStatus calls getServiceManagers (plural), so any test that vi.mocks src/services/service-manager/index.js and drives runStatus must export getServiceManagers too, or every status test fails with a missing-export error.",
+      "symbols": [
+        "runStatus",
+        "getServiceManagers",
+        "getServiceManager"
+      ],
+      "source_files": [
+        "src/cli/status.ts",
+        "src/services/service-manager/index.ts",
+        "tests/stopped-marker.test.ts",
+        "tests/cli-verbs.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T17:25:03.880Z"
     },
     {
       "id": "4b900de5-4eef-481f-baa9-3c5d17475142",
@@ -5387,6 +5441,26 @@
       "updated_at": "2026-09-29T06:13:24.852Z"
     },
     {
+      "id": "a7e340f8-ba1a-471c-b91f-480d357b4b40",
+      "type": "knowledge",
+      "title": "register_member probe steps are bounded by RegistrationTimer and reported as Degraded",
+      "summary": "Each register_member probe runs through RegistrationTimer.run with a per-step wall-clock bound (DEFAULT_STEP_BOUNDS_MS); a timeout adds a 'Degraded: <step> (timed out after X)' result line and warning, and opts.stepBoundsMs overrides bounds in tests.",
+      "symbols": [
+        "RegistrationTimer",
+        "DEFAULT_STEP_BOUNDS_MS",
+        "registerMember",
+        "RegisterMemberOptions"
+      ],
+      "source_files": [
+        "src/services/registration-steps.ts",
+        "src/tools/register-member.ts",
+        "tests/registration-steps.test.ts",
+        "tests/register-member-local-probe-bounds.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T19:32:14.533Z"
+    },
+    {
       "id": "a8b20071-c096-4ad4-8ce5-7defb5db33be",
       "type": "knowledge",
       "title": "guarded-modules-coverage's isAccountedFor() must compare full relative paths, not basenames, to avoid a nested-module collision",
@@ -6113,6 +6187,24 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:14.111Z"
+    },
+    {
+      "id": "c34e61db-0c72-4f5d-9771-31c96f7d2133",
+      "type": "learning",
+      "title": "fleetMcp writeMcpEntry only runs in the remote probe path",
+      "summary": "probeMemberFleetMcp sends local members to probeLocal, which never calls deps.writeMcpEntry; the ProbeOpts.writeMcpEntry flag only affects probeRemote, so toggling it for a local member has no effect.",
+      "symbols": [
+        "probeMemberFleetMcp",
+        "probeLocal",
+        "probeRemote",
+        "refreshMemberFleetMcp"
+      ],
+      "source_files": [
+        "src/services/member-fleet-install.ts",
+        "src/tools/register-member.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T17:25:02.952Z"
     },
     {
       "id": "c3759d44-b36e-4f9b-a736-befe83bfb769",
@@ -7174,6 +7266,25 @@
       "updated_at": "2026-09-29T06:13:11.619Z"
     },
     {
+      "id": "e47bb3a2-e8b9-498f-830e-2ee9b59077f6",
+      "type": "knowledge",
+      "title": "Shell UI resolves every API and ext URL through apiUrl() for sub-path mounts",
+      "summary": "packages/apra-fleet-shell-ui/src/api/base-path.ts derives the console mount prefix from window.location.pathname (the part before /ui) at call time; every fetch and extSrc must go through apiUrl(), and a grep test fails on a root-relative fetch literal.",
+      "symbols": [
+        "consoleBasePath",
+        "apiUrl",
+        "extSrc"
+      ],
+      "source_files": [
+        "packages/apra-fleet-shell-ui/src/api/base-path.ts",
+        "packages/apra-fleet-shell-ui/test/no-root-relative-fetch.test.ts",
+        "packages/apra-fleet-shell-ui/test/subpath-mount.test.ts",
+        "docs/console-architecture.md"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T19:32:13.540Z"
+    },
+    {
       "id": "e61e7193-182c-47cf-bce4-8c71d3d45177",
       "type": "knowledge",
       "title": "update_member must keep owner in its zod schema and refuse it explicitly -- omitting the key would silently drop it",
@@ -7818,6 +7929,25 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:14.250Z"
+    },
+    {
+      "id": "fc458d8d-5959-4636-87cc-1a5ca81babfc",
+      "type": "knowledge",
+      "title": "RegistrationTimer stops waiting for a timed-out step but never cancels it",
+      "summary": "In register_member a step that exceeds its bound is abandoned, not aborted: its promise keeps running in the background. A compose-permissions timeout is a hard registration error, not a Degraded line.",
+      "symbols": [
+        "RegistrationTimer",
+        "registerMember",
+        "probeLocal",
+        "DEFAULT_STEP_BOUNDS_MS"
+      ],
+      "source_files": [
+        "src/services/registration-steps.ts",
+        "src/tools/register-member.ts",
+        "src/services/member-fleet-install.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-06T18:49:10.626Z"
     },
     {
       "id": "fc4f7390-e183-420b-b518-5d9fe2bd56c2",

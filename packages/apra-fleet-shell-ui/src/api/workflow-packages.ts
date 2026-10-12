@@ -1,3 +1,4 @@
+import { apiUrl } from "./base-path";
 // Thin fetch wrapper over the workflow-package registry (GET
 // /api/workflow-packages), plus the view types the shell renders from.
 //
@@ -70,7 +71,7 @@ export interface WorkflowPackagesResult {
 export async function fetchWorkflowPackages(): Promise<WorkflowPackagesResult> {
   let response: Response;
   try {
-    response = await fetch("/api/workflow-packages");
+    response = await fetch(apiUrl("/api/workflow-packages"));
   } catch {
     return { packages: [], error: true };
   }
@@ -117,5 +118,5 @@ export function extHash(packageId: string, path: string): string {
  *  Same origin is the point: the console cookie rides along, so the package
  *  UI is authenticated without a second credential. */
 export function extSrc(packageId: string, path: string): string {
-  return `/ext/${encodeURIComponent(packageId)}${path}`;
+  return apiUrl(`/ext/${encodeURIComponent(packageId)}${path}`);
 }

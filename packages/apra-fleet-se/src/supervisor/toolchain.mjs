@@ -201,6 +201,7 @@ import {
     defaultIsSea,
 } from './node-version.mjs';
 import { prependToPathEnv } from './lib/child-path-env.mjs';
+import { resolveWin32BdShimInvocation } from './lib/exec-bd.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -365,7 +366,10 @@ function withNodeFirstBdExec(exec, nodePath, platform) {
  *   platform?: NodeJS.Platform,
  *   isSea?: () => boolean,
  *   probeTimeoutMs?: number,
- * }} [deps] `probeTimeoutMs` is TEST-ONLY (apra-fleet-i9ag.19.44): no real
+ *   resolveConfiguredWindowsBd?: (bdPath: string, deps?: object) => string|null,
+ * }} [deps] `resolveConfiguredWindowsBd` is TEST-ONLY (apra-fleet-aolt.1): an
+ *   injectable stand-in for exec-bd.mjs's shim reader, so the win32 shim
+ *   probe route is exercisable on any host. `probeTimeoutMs` is TEST-ONLY (apra-fleet-i9ag.19.44): no real
  *   production caller (bin/serve.mjs's startup wiring) ever sets it, so
  *   every real installation still gets exactly `TOOLCHAIN_PROBE_TIMEOUT_MS`
  *   -- the flat, deliberately-unscaled 15s SLA apra-fleet-i9ag.19.35
@@ -479,8 +483,29 @@ export async function validateRecordedToolchain(deps = {}) {
     // `toolchain` (and therefore `nodePath`) was already confirmed truthy by
     // the `!toolchain` early return above. POSIX-only (see that function's
     // doc comment) -- a no-op on win32.
+    //
+    // apra-fleet-aolt.1 (win32): when the recorded bd is an npm `.cmd` shim
+    // that resolves to its wrapped node script, probe it as
+    // `<recorded node> <bd script> --version` via execFile with NO shell --
+    // the shim's own bare `node` lookup fails under a Windows-task PATH that
+    // lacks node (anything but an MSI node install). Same resolver
+    // exec-bd.mjs's runtime invocation uses, so probe and runtime agree. An
+    // unresolvable shim keeps the existing `{ shell: true }` probe below.
+    const bdShim = bdRecorded
+        ? resolveWin32BdShimInvocation({
+            platform,
+            nodePath,
+            bdPath,
+            resolveConfiguredWindowsBd: deps.resolveConfiguredWindowsBd,
+        })
+        : null;
     const bdExec = bdRecorded ? withNodeFirstBdExec(exec, nodePath, platform) : exec;
-    const bdProbePromise = bdRecorded ? probeVersion(bdExec, platform, bdPath, ['--version'], probeOptions) : null;
+    let bdProbePromise = null;
+    if (bdShim) {
+        bdProbePromise = probeVersion(exec, platform, bdShim.nodePath, [bdShim.scriptPath, '--version'], { ...probeOptions, shell: false });
+    } else if (bdRecorded) {
+        bdProbePromise = probeVersion(bdExec, platform, bdPath, ['--version'], probeOptions);
+    }
     const [nodeProbe, bdProbe] = await Promise.all([nodeProbePromise, bdProbePromise]);
 
     // Node: the ONLY input to `ok` (see this file's header for why) --

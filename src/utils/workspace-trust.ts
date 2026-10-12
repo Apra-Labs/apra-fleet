@@ -92,6 +92,9 @@ export function sftpHomePath(home: string, agentOs: Agent['os']): string {
  * @param tag Log tag identifying the call site (e.g. 'register_member').
  */
 
+/** Default exec timeout for a workspace-trust step whose adapter passes none. */
+const WORKSPACE_TRUST_EXEC_TIMEOUT_MS = 15_000;
+
 export async function seedWorkspaceTrust(agent: Agent, strategy?: AgentStrategy, tag = 'workspace-trust'): Promise<void> {
   try {
     const provider = getProvider(agent.llmProvider);
@@ -104,7 +107,8 @@ export async function seedWorkspaceTrust(agent: Agent, strategy?: AgentStrategy,
     const memberHomeDir = await getMemberHomeDir(agent);
     const result = await provider.ensureWorkspaceTrusted(
       agent.workFolder,
-      (command: string, timeoutMs?: number) => strat.execCommand(command, timeoutMs),
+      // Explicit timeout on every exec, even when the adapter passes none.
+      (command: string, timeoutMs?: number) => strat.execCommand(command, timeoutMs ?? WORKSPACE_TRUST_EXEC_TIMEOUT_MS),
       agent.os,
       // The member's REGISTERED shell, not just its OS: a gitbash Windows
       // member needs POSIX trust-seeding strings (apra-fleet-7dir.2.8).

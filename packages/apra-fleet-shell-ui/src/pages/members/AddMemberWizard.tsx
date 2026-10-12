@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Drawer, RadioGroup, SelectField, TextField, Wizard, type WizardStep } from "@apralabs/apra-fleet-ui-kit";
 import { registerMember, type RegisterMemberBody } from "../../api/members";
 
@@ -71,6 +71,21 @@ export function AddMemberWizard({ open, onClose, onRegistered }: AddMemberWizard
   const [state, setState] = useState<WizardFormState>(INITIAL_STATE);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  // Registration probes the member (shell, CLI, permissions, member session)
+  // and can take tens of seconds on a cold Windows host, so while the request
+  // is in flight the drawer shows a live status with the elapsed time.
+  const [elapsedSec, setElapsedSec] = useState(0);
+  // Synchronous guard: the Wizard's submit button cannot be disabled, so a
+  // second click while a registration is pending must not send another one.
+  const inFlight = useRef(false);
+
+  useEffect(() => {
+    if (!submitting) return undefined;
+    setElapsedSec(0);
+    const startedAt = Date.now();
+    const id = setInterval(() => setElapsedSec(Math.floor((Date.now() - startedAt) / 1000)), 1000);
+    return () => clearInterval(id);
+  }, [submitting]);
 
   function update<K extends keyof WizardFormState>(key: K, value: WizardFormState[K]) {
     setState((prev) => ({ ...prev, [key]: value }));
@@ -83,6 +98,8 @@ export function AddMemberWizard({ open, onClose, onRegistered }: AddMemberWizard
   }
 
   async function handleSubmit() {
+    if (inFlight.current) return;
+    inFlight.current = true;
     setSubmitError(null);
     setSubmitting(true);
     try {
@@ -94,6 +111,8 @@ export function AddMemberWizard({ open, onClose, onRegistered }: AddMemberWizard
     } catch (err) {
       setSubmitting(false);
       setSubmitError(err instanceof Error ? err.message : "unknown error");
+    } finally {
+      inFlight.current = false;
     }
   }
 
@@ -229,17 +248,20 @@ export function AddMemberWizard({ open, onClose, onRegistered }: AddMemberWizard
     key: "review",
     title: "Review",
     content: (
-      <p>
-        {submitting
-          ? "Registering member..."
-          : `Ready to register ${state.friendlyName || "this member"} (${state.memberKind}).`}
-      </p>
+      <p>{`Ready to register ${state.friendlyName || "this member"} (${state.memberKind}).`}</p>
     )
   });
 
   return (
     <Drawer open={open} title="Add member" onClose={handleClose}>
       <Wizard steps={steps} onSubmit={() => void handleSubmit()} submitLabel="Register" submitError={submitError} />
+      {submitting && (
+        <p role="status" aria-live="polite" aria-busy="true" data-testid="register-progress">
+          {`Registering ${state.friendlyName || "member"}... ${elapsedSec}s elapsed. ` +
+            "Checking the member shell, CLI, permissions and member session; this can take up to a minute on a " +
+            "freshly installed host."}
+        </p>
+      )}
     </Drawer>
   );
 }

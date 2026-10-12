@@ -47,6 +47,8 @@ export const SERIAL_PROCESS_TEST_FILES = [
     'i9ag19-11-serve-startup-toolchain.test.mjs',
     'i9ag19-14-pathless-service-launch.test.mjs',
     'i9ag34-sprints-console-hop-e2e.test.mjs',
+    'i9ag3-10-launch-appears-on-sprints-page.test.mjs',
+    'hap8-sprint-child-bd-resolution.test.mjs',
     'installed-supervisor.test.mjs',
     'registration-convergence.test.mjs',
     'registration.test.mjs',
@@ -82,4 +84,19 @@ export const SERIAL_PROCESS_TEST_FILES = [
     // whether a separate bug currently keeps it from doing real work.
     'phase0-seams-facade.test.mjs',
     'vcs-auth-extraction-facade.test.mjs',
+
+    // Windows-only real-process cases: a stub bd.cmd shim run through the
+    // real execBdAsync()/startup toolchain probe, i.e. real node children
+    // launched via a resolved node path rather than a literal
+    // process.execPath call (skipped off Windows).
+    'aolt-win32-recorded-node-bd.test.mjs',
+
+    // apra-fleet-i9ag.19.49: spawns a real node child through the
+    // buildRecordedNode() path (not process.execPath) under a flat 15s probe
+    // SLA, so it is contention-sensitive like the suites above.
+    'i9ag19-9-toolchain.test.mjs',
+
+    // apra-fleet-i9ag.19.47: drives probeVersion with the real execFileSync
+    // against a deliberately hanging child under a short timeout.
+    'i9ag19-16-node-version.test.mjs',
 ];

@@ -1247,6 +1247,83 @@ describe('createSpawner -- recorded node directory on the sprint child\'s PATH (
     });
 });
 
+describe('createSpawner -- recorded bd directory on the sprint child\'s PATH (apra-fleet-hap8)', () => {
+    async function envFor(deps) {
+        const { spawnFn, calls } = makeFakeSpawn([801]);
+        const spawner = createSpawner({
+            spawn: spawnFn,
+            command: '/fake/runner-command',
+            basePort: 9410,
+            isPortAvailable: async () => true,
+            dataDir: FAKE_DATA_DIR,
+            fs: makeFakeFs().fs,
+            ...deps,
+        });
+        await spawner.spawnSprint({ issue: 'i1', members: 'm1', branch: 'b1', base: 'main' });
+        return calls[0].opts;
+    }
+
+    test('node dir and bd dir are both prepended ahead of every inherited entry, node first, inherited order preserved', async () => {
+        const opts = await envFor({
+            configuredNodePath: '/opt/node-a/bin/node',
+            configuredBdPath: '/opt/npm-prefix/bin/bd',
+            env: { PATH: '/usr/bin:/bin', FOO: 'bar' },
+        });
+        const d = path.delimiter;
+        assert.deepEqual(opts.env, {
+            PATH: `/opt/node-a/bin${d}/opt/npm-prefix/bin${d}/usr/bin:/bin`,
+            FOO: 'bar',
+        });
+    });
+
+    test('equal node and bd directories yield ONE entry, not a duplicate', async () => {
+        const opts = await envFor({
+            configuredNodePath: '/opt/shared/bin/node',
+            configuredBdPath: '/opt/shared/bin/bd',
+            env: { PATH: '/usr/bin' },
+        });
+        assert.equal(opts.env.PATH, `/opt/shared/bin${path.delimiter}/usr/bin`);
+    });
+
+    test('a bd path with no node path still prepends the bd directory', async () => {
+        const opts = await envFor({ configuredBdPath: '/opt/npm-prefix/bin/bd', env: { PATH: '/usr/bin' } });
+        assert.equal(opts.env.PATH, `/opt/npm-prefix/bin${path.delimiter}/usr/bin`);
+    });
+
+    test('a win32-shaped env spelling "Path" gets no second PATH key', async () => {
+        const opts = await envFor({
+            configuredNodePath: '/opt/node-a/bin/node',
+            configuredBdPath: '/opt/npm-prefix/bin/bd',
+            env: { Path: 'C:\\Windows\\System32' },
+        });
+        assert.equal('PATH' in opts.env, false);
+        assert.equal(Object.keys(opts.env).filter((k) => k.toLowerCase() === 'path').length, 1);
+        assert.equal(opts.env.Path, `/opt/node-a/bin${path.delimiter}/opt/npm-prefix/bin${path.delimiter}C:\\Windows\\System32`);
+    });
+
+    test('a blank bd path and no node path leave the env exactly as today (same object, unchanged)', async () => {
+        const originalEnv = { PATH: '/usr/bin:/bin', FOO: 'bar' };
+        const opts = await envFor({ configuredBdPath: '   ', env: originalEnv });
+        assert.equal(opts.env, originalEnv);
+        const none = await envFor({});
+        assert.equal('env' in none, false);
+    });
+
+    test('the original deps.env is never mutated and a second launch does not compound', async () => {
+        const originalEnv = { PATH: '/usr/bin' };
+        const { spawnFn, calls } = makeFakeSpawn([802, 803]);
+        const spawner = createSpawner({
+            spawn: spawnFn, command: '/fake/runner-command', configuredBdPath: '/opt/p/bin/bd',
+            env: originalEnv, basePort: 9411, isPortAvailable: async () => true,
+            dataDir: FAKE_DATA_DIR, fs: makeFakeFs().fs,
+        });
+        await spawner.spawnSprint({ issue: 'i1', members: 'm1', branch: 'b1', base: 'main' });
+        await spawner.spawnSprint({ issue: 'i2', members: 'm1', branch: 'b2', base: 'main' });
+        assert.deepEqual(originalEnv, { PATH: '/usr/bin' });
+        assert.equal(calls[1].opts.env.PATH, `/opt/p/bin${path.delimiter}/usr/bin`);
+    });
+});
+
 describe('createSpawner -- unspawnable cwd surfaces to the caller', () => {
     test('a REAL spawn with a nonexistent cwd rejects the launch with the cause, not only a log line', async () => {
         const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-spawner-nocwd-'));

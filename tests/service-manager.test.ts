@@ -196,7 +196,7 @@ describe('WindowsServiceManager', () => {
       expect(args.slice(0, 3)).toEqual(['-NoProfile', '-NonInteractive', '-EncodedCommand']);
       const script = decodedProbeScripts()[0];
       expect(script).toContain('Get-ScheduledTask');
-      expect(script).toContain("-TaskName 'ApraFleet'");
+      expect(script).toContain("@('ApraFleet')");
       // Numeric state enum, so the mapping is locale-independent.
       expect(script).toContain('[int]$t.State');
       expect(script).not.toContain('$env:');
@@ -207,8 +207,8 @@ describe('WindowsServiceManager', () => {
       mockHost({ probe: '4\r\n' });
       await new WindowsServiceManager('fleet-supervisor').query();
       const script = decodedProbeScripts()[0];
-      expect(script).toContain("-TaskName 'ApraFleetSupervisor'");
-      expect(script).not.toContain("-TaskName 'ApraFleet'");
+      expect(script).toContain("@('ApraFleetSupervisor')");
+      expect(script).not.toContain("'ApraFleet'");
       for (const [cmd, args] of vi.mocked(execFileSync).mock.calls) {
         if (cmd === 'schtasks') expect(args as string[]).toContain('ApraFleetSupervisor');
       }
@@ -249,6 +249,26 @@ describe('WindowsServiceManager', () => {
         mockHost({ probe: 'Get-ScheduledTask : Access denied\r\n', csv: '"ApraFleet","N/A","Running"\r\n' });
         expect(await new WindowsServiceManager().query())
           .toEqual({ installed: true, running: true, enabled: true });
+      });
+
+      it('uses the CSV fallback when the probe exits 0 printing PROBEFAIL', async () => {
+        mockHost({ probe: 'PROBEFAIL\r\n', csv: '"ApraFleet","N/A","Running"\r\n' });
+        expect(await new WindowsServiceManager().query())
+          .toEqual({ installed: true, running: true, enabled: true });
+        expect(vi.mocked(execFileSync).mock.calls.some(([cmd]) => cmd === 'schtasks')).toBe(true);
+      });
+
+      it('a cmdlet-missing host with a registered task is installed, not "not installed"', async () => {
+        // The probe script must guard on the cmdlet's presence and emit
+        // PROBEFAIL (never NOTFOUND) for that case.
+        mockHost({ probe: 'PROBEFAIL\r\n', csv: '"ApraFleet","N/A","Ready"\r\n' });
+        const status = await new WindowsServiceManager().query();
+        expect(status.installed).toBe(true);
+        const script = decodedProbeScripts()[0];
+        expect(script).toMatch(/Get-Command Get-ScheduledTask[^\n]*\n[^\n]*\n[^\n]*\n[^\n]*/);
+        expect(script).toContain('if (-not $have) { "$n|PROBEFAIL" }');
+        expect(script).toContain("-ErrorAction Stop");
+        expect(script).toMatch(/ObjectNotFound'\) \{ "\$n\|NOTFOUND" \}/);
       });
 
       it('returns not installed when neither probe nor schtasks can answer', async () => {
@@ -1155,5 +1175,135 @@ describe('MacOSServiceManager', () => {
       vi.mocked(fs.existsSync).mockReturnValue(false);
       expect(await new MacOSServiceManager().isInstalled()).toBe(false);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// macOS: stop() then start() must leave the job running (launchd bootout unloads it)
+// ---------------------------------------------------------------------------
+describe('MacOSServiceManager -- stop then start cycle', () => {
+  let loaded: boolean;
+  const seq: string[] = [];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    seq.length = 0;
+    loaded = true;
+    vi.mocked(fs.existsSync).mockReturnValue(true);
+    vi.mocked(execFileSync).mockImplementation(((cmd: string, args: string[]) => {
+      if (cmd !== 'launchctl') return '' as any;
+      const sub = args[0];
+      if (sub === 'bootout') { seq.push('bootout'); loaded = false; return '' as any; }
+      if (sub === 'print') { if (!loaded) throw new Error('Could not find service'); return '' as any; }
+      if (sub === 'bootstrap') {
+        seq.push('bootstrap');
+        expect(args[1]).toMatch(/^gui\/\d+$/);
+        expect(args[2]).toContain('com.apra-fleet.supervisor.plist');
+        loaded = true;
+        return '' as any;
+      }
+      if (sub === 'kickstart') {
+        if (!loaded) throw new Error('Could not find service');
+        seq.push('kickstart');
+        return '' as any;
+      }
+      return '' as any;
+    }) as any);
+  });
+
+  it('fleet-supervisor: start() after stop() re-bootstraps before kickstart, ending running', async () => {
+    const mgr = new MacOSServiceManager('fleet-supervisor');
+    await mgr.stop();
+    expect(loaded).toBe(false);
+    await mgr.start();
+    expect(seq).toEqual(['bootout', 'bootstrap', 'kickstart']);
+    expect(loaded).toBe(true);
+  });
+
+  it('fleet-supervisor: start() on an already-loaded job only kickstarts', async () => {
+    await new MacOSServiceManager('fleet-supervisor').start();
+    expect(seq).toEqual(['kickstart']);
+  });
+
+  it('mcp-server: stop() is the graceful path and start() only kickstarts (unchanged)', async () => {
+    const mgr = new MacOSServiceManager('mcp-server');
+    await mgr.stop();
+    expect(mockGracefulStop).toHaveBeenCalled();
+    await mgr.start();
+    expect(seq).toEqual(['kickstart']);
+    const subs = vi.mocked(execFileSync).mock.calls.map(c => (c[1] as string[])[0]);
+    expect(subs).not.toContain('bootout');
+    expect(subs).not.toContain('bootstrap');
+    expect(subs).not.toContain('print');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// apra-fleet status on Windows: progress suppressed, ONE batched task probe
+// ---------------------------------------------------------------------------
+describe('getServiceManagers (windows) -- batched scheduled-task probe', () => {
+  const origPlatform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+
+  function decodedPsScripts(): string[] {
+    return vi.mocked(execFileSync).mock.calls
+      .filter(([cmd]) => cmd === 'powershell')
+      .map(([, args]) => Buffer.from(String((args as string[])[3]), 'base64').toString('utf16le'));
+  }
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+    vi.mocked(execFileSync).mockImplementation(((cmd: string, args: string[]) => {
+      if (cmd === 'powershell') return 'ApraFleet|4\r\nApraFleetSupervisor|PROBEFAIL\r\n' as any;
+      if (cmd === 'schtasks') {
+        if (args.includes('/xml')) throw new Error('no xml');
+        return '"ApraFleetSupervisor","N/A","Ready"\r\n' as any;
+      }
+      if (cmd === 'reg') throw new Error('not found');
+      return '' as any;
+    }) as any);
+  });
+
+  afterEach(() => {
+    Object.defineProperty(process, 'platform', origPlatform);
+  });
+
+  it('issues exactly one powershell spawn for all services and attributes results per service', async () => {
+    const { getServiceManagers } = await vi.importActual<typeof import('../src/services/service-manager/index.js')>('../src/services/service-manager/index.js');
+    const [mcp, sup] = await getServiceManagers(['mcp-server', 'fleet-supervisor']);
+    const mcpStatus = await mcp.query();
+    const supStatus = await sup.query();
+
+    expect(decodedPsScripts()).toHaveLength(1);
+    expect(mcpStatus).toEqual({ installed: true, running: true, enabled: true });
+    // PROBEFAIL for the supervisor only -> CSV fallback for it alone.
+    expect(supStatus).toEqual({ installed: true, running: false });
+    const schtasksTargets = vi.mocked(execFileSync).mock.calls
+      .filter(([cmd]) => cmd === 'schtasks').map(([, a]) => a as string[]);
+    expect(schtasksTargets.length).toBeGreaterThan(0);
+    for (const a of schtasksTargets) expect(a).toContain('ApraFleetSupervisor');
+  });
+
+  it('the batched script probes both task names and suppresses progress before any cmdlet', async () => {
+    const { getServiceManagers } = await vi.importActual<typeof import('../src/services/service-manager/index.js')>('../src/services/service-manager/index.js');
+    const [mcp] = await getServiceManagers(['mcp-server', 'fleet-supervisor']);
+    await mcp.query();
+    const script = decodedPsScripts()[0];
+    expect(script).toContain("@('ApraFleet', 'ApraFleetSupervisor')");
+    const progressAt = script.indexOf("$ProgressPreference = 'SilentlyContinue'");
+    expect(progressAt).toBe(0);
+    expect(progressAt).toBeLessThan(script.indexOf('Get-'));
+  });
+
+  it('every powershell script the manager runs (including stop discovery) suppresses progress first', async () => {
+    const mgr = new WindowsServiceManager('fleet-supervisor');
+    vi.mocked(execFileSync).mockImplementation(((cmd: string) => (cmd === 'powershell' ? '' : '')) as any);
+    await mgr.query();
+    await mgr.stop().catch(() => {});
+    const scripts = decodedPsScripts();
+    expect(scripts.length).toBeGreaterThanOrEqual(2);
+    for (const script of scripts) {
+      expect(script.startsWith("$ProgressPreference = 'SilentlyContinue'")).toBe(true);
+    }
   });
 });
