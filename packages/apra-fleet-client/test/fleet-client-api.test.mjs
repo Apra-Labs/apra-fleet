@@ -89,6 +89,18 @@ describe('ApraFleet', () => {
         assert.deepStrictEqual(result, { status: 'success' });
     });
 
+    test('executeCommand passes a multi-line heredoc command through byte-for-byte', async () => {
+        // The server hands the command to its POSIX wrapper as data, so the
+        // client must not trim, join or re-quote it (a trailing heredoc
+        // terminator, CRLF or trailing `&` must all arrive intact).
+        let calledArgs;
+        const mockClient = { async callTool(_name, args) { calledArgs = args; return {}; } };
+        const command = "cat <<'EOF'\r\nit's $HOME\r\nEOF\r\nsleep 1 &";
+        await new ApraFleet(mockClient).executeCommand({ command, timeoutMs: 5000 });
+        assert.strictEqual(calledArgs.command, command);
+        assert.strictEqual('timeoutMs' in calledArgs, false);
+    });
+
     test('listMembers', async () => {
         let calledName, calledArgs;
         const mockClient = {
