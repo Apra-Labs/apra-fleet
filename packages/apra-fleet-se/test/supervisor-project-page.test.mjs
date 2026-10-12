@@ -112,24 +112,38 @@ describe('GET /ui/projects (apra-fleet-i9ag.17.2.2)', () => {
         }
     });
 
-    // apra-fleet-50j6.6: a plain view sets no cookie; only the ?token=
-    // exchange sets one, carrying the DERIVED value, and 302s token-free.
-    test('an unauthenticated view sets no cookie and never embeds the token; the ?token= exchange sets the derived cookie', async () => {
+    // apra-fleet-50j6.6 / 50j6.12: a plain view sets no cookie and offers the
+    // paste-token form; a ?token= in the URL -- right or wrong -- is refused
+    // with 400 and never sets a cookie.
+    test('an unauthenticated view sets no cookie and never embeds the token; a ?token= URL is refused without a cookie', async () => {
         const token = 'x'.repeat(64);
         const { status, headers, html } = await renderPath(PROJECTS_UI_PATH, { token });
         assert.equal(status, 200);
         assert.equal(headers['set-cookie'], undefined);
         assert.ok(!html.includes(token), 'the raw token must never appear in the HTML body');
         assert.ok(html.includes('auth-notice'), 'unauthenticated view shows the sign-in notice');
+        assert.match(html, /<form[^>]*method="post"[^>]*action="\/signin"/, 'the notice carries the paste-token form');
 
-        const ex = await renderPath(PROJECTS_UI_PATH, { token, query: `?token=${token}` });
-        assert.equal(ex.status, 302);
-        assert.equal(ex.headers.location, PROJECTS_UI_PATH);
-        assert.equal(ex.headers['set-cookie'], `${TOKEN_COOKIE_NAME}=${deriveDashboardCookie(token)}; Path=/; SameSite=Strict; HttpOnly`);
+        for (const query of [`?token=${token}`, '?token=wrong']) {
+            // eslint-disable-next-line no-await-in-loop
+            const ex = await renderPath(PROJECTS_UI_PATH, { token, query });
+            assert.equal(ex.status, 400, query);
+            assert.equal(ex.headers['set-cookie'], undefined, query);
+            assert.ok(!ex.html.includes(token), 'the refusal page must not echo the token');
+        }
+    });
 
-        const bad = await renderPath(PROJECTS_UI_PATH, { token, query: '?token=wrong' });
-        assert.equal(bad.status, 401);
-        assert.equal(bad.headers['set-cookie'], undefined);
+    test('a token provider function is read per request (live token)', async () => {
+        let current = null;
+        const handler = createProjectsPageHandler({ token: () => current });
+        const render = async () => {
+            const res = mockRes();
+            await handler({ url: PROJECTS_UI_PATH, headers: {} }, res, { url: new URL(PROJECTS_UI_PATH, 'http://localhost') });
+            return res;
+        };
+        assert.ok(!String((await render()).body).includes('auth-notice'), 'no token configured -> no sign-in notice');
+        current = 'y'.repeat(64);
+        assert.ok(String((await render()).body).includes('auth-notice'), 'a token that appears later is honoured without rebuilding the handler');
     });
 
     test('no token configured -> no set-cookie header at all', async () => {

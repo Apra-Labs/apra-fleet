@@ -713,3 +713,51 @@ describe.each(CREDENTIAL_LEAK_CASES)('credential route $path is secret-free', (l
     walk(parsed);
   });
 });
+
+// ---------------------------------------------------------------------------
+// POST /api/fleet/credential-store-value -- direct masked-form value entry
+// (apra-fleet-9h9j.7). Uses the real credential store under the isolated
+// home, not a stub, so "stored" means the list actually shows the name.
+// ---------------------------------------------------------------------------
+
+describe('POST /api/fleet/credential-store-value', () => {
+  const VALUE_SENTINEL = 'SENTINEL-SECRET-DO-NOT-LEAK-9h9j7';
+  const PATH = '/api/fleet/credential-store-value';
+
+  afterEach(async () => {
+    const { credentialList, credentialDelete } = await import('../src/services/credential-store.js');
+    for (const c of credentialList()) credentialDelete(c.name);
+  });
+
+  it('stores the value (list shows the name) and no response body contains it', async () => {
+    const { credentialList } = await import('../src/services/credential-store.js');
+    const out = await post(PATH, { name: 'console-pat', value: VALUE_SENTINEL });
+    expect(out.status).toBe(200);
+    expect(JSON.parse(out.body)).toEqual({ name: 'console-pat' });
+    expect(out.body).not.toContain(VALUE_SENTINEL);
+    expect(credentialList().map((c) => c.name)).toContain('console-pat');
+  });
+
+  it('a second POST for the same name replaces the stored value', async () => {
+    const { credentialResolve } = await import('../src/services/credential-store.js');
+    await post(PATH, { name: 'console-upd', value: 'first-value' });
+    const out = await post(PATH, { name: 'console-upd', value: 'second-value' });
+    expect(out.status).toBe(200);
+    expect(out.body).not.toContain('second-value');
+    const resolved = credentialResolve('console-upd') as any;
+    expect(resolved.plaintext).toBe('second-value');
+  });
+
+  it('a validation failure is a 400 that never echoes the submitted value', async () => {
+    const out = await post(PATH, { name: 'bad name with spaces', value: VALUE_SENTINEL });
+    expect(out.status).toBe(400);
+    expect(out.body).not.toContain(VALUE_SENTINEL);
+    expect(out.body).toContain('name');
+  });
+
+  it('a missing value is a 400 naming the field', async () => {
+    const out = await post(PATH, { name: 'console-pat' });
+    expect(out.status).toBe(400);
+    expect(out.body).toContain('value');
+  });
+});

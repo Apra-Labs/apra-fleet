@@ -22,7 +22,23 @@
 // not perf assertions, so overshooting costs nothing but a slower failure
 // path while undershooting reintroduces the false-negative flakiness this
 // helper exists to remove.
+import { TEST_CONCURRENCY } from './test-concurrency.mjs';
+
 const DEFAULT_MULTIPLIER = 3;
+
+/**
+ * Resolve the concurrency level from the env var. Undefined, empty and
+ * unparseable values alike fall back to TEST_CONCURRENCY (the single source of
+ * truth run-tests.mjs also uses): Number('') is 0, which is finite and <= 1, so
+ * without this guard an empty export would silently disable all scaling.
+ */
+function envConcurrency(raw) {
+    if (raw !== undefined && raw !== null && String(raw).trim() !== '') {
+        const n = Number(raw);
+        if (Number.isFinite(n)) return n;
+    }
+    return TEST_CONCURRENCY;
+}
 
 /**
  * Derive a scaled timeout budget from the active test concurrency.
@@ -32,14 +48,17 @@ const DEFAULT_MULTIPLIER = 3;
  * @param {object} [opts]
  * @param {number} [opts.concurrency] - overrides the concurrency level
  *   instead of reading APRA_FLEET_TEST_CONCURRENCY from the environment.
+ * @param {object} [opts.env] - env object to read instead of process.env
+ *   (lets a caller drive the real env-read path with a synthetic object).
  * @param {number} [opts.multiplier] - overrides DEFAULT_MULTIPLIER.
- * @returns {number} baseMs when concurrency <= 1 (or unset/unparseable),
- *   otherwise baseMs * multiplier.
+ * @returns {number} baseMs when concurrency <= 1 (or an explicit
+ *   opts.concurrency is unparseable), otherwise baseMs * multiplier.
  */
 export function scaledTimeout(baseMs, opts = {}) {
-    const rawConcurrency =
-        opts.concurrency ?? process.env.APRA_FLEET_TEST_CONCURRENCY;
-    const concurrency = Number(rawConcurrency);
+    // An explicit opts.concurrency wins verbatim; only the env path falls back.
+    const concurrency = opts.concurrency !== undefined
+        ? Number(opts.concurrency)
+        : envConcurrency((opts.env ?? process.env).APRA_FLEET_TEST_CONCURRENCY);
     const multiplier = opts.multiplier ?? DEFAULT_MULTIPLIER;
 
     if (!Number.isFinite(concurrency) || concurrency <= 1) {

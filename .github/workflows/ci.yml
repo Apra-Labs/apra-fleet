@@ -59,13 +59,6 @@ jobs:
       - name: Build
         run: npm run build
 
-      # Build UI workspaces if they exist (root script lands with the UI shell
-      # sprint; until then this is a no-op that exits 0). The pack-size check
-      # (check-pack-size.mjs in prepublishOnly) counts the shell-ui dist, since
-      # packages/apra-fleet-shell-ui/dist/ is in the package.json files list.
-      - name: Build UI workspaces (if present)
-        run: npm run build:ui --if-present
-
       - name: Verify build output
         run: node -e "require('fs').existsSync('dist/index.js') || (console.error('Build output dist/index.js not found'), process.exit(1))"
 
@@ -243,13 +236,11 @@ jobs:
         if: runner.os == 'Windows'
         run: npm install -g rcedit
 
-      # Build UI workspaces if they exist (root script lands with the UI shell
-      # sprint; until then this is a no-op that exits 0). The pack-size check
-      # (check-pack-size.mjs in prepublishOnly) counts the shell-ui dist, since
-      # packages/apra-fleet-shell-ui/dist/ is in the package.json files list.
+      # The SEA bundle embeds the built shell UI (gen-sea-config --require-ui),
+      # and this job never runs `npm test` (whose pretest builds the UI via
+      # build:ui:checked), so the UI must be built explicitly before the bundle.
       - name: Build UI workspaces (if present)
         run: npm run build:ui --if-present
-
       - name: Build SEA bundle
         run: node scripts/build-sea.mjs
 

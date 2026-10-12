@@ -138,6 +138,8 @@ const SATISFIED: FleetSePrereqResult = {
   missing: [],
 };
 
+const ORIGINAL_DATA_DIR = process.env.APRA_FLEET_DATA_DIR;
+
 describe('installer fleet-se prerequisite gate (apra-fleet-i9ag.13.7.3)', () => {
   let logSpy: ReturnType<typeof vi.spyOn>;
   let warnSpy: ReturnType<typeof vi.spyOn>;
@@ -154,6 +156,13 @@ describe('installer fleet-se prerequisite gate (apra-fleet-i9ag.13.7.3)', () => 
     // APRA_FLEET_ENABLE_DOLT_INSTALL's identical escape hatch for the dolt
     // step in tests/install-dolt.test.ts.
     process.env.APRA_FLEET_ENABLE_FLEET_SE_PREREQ_CHECK = '1';
+    // apra-fleet-q1ku: fleet.key and install-config follow APRA_FLEET_DATA_DIR
+    // through the shared resolver, which tests/setup.ts already loaded with the
+    // REAL node:os (before this file's os mock existed), so a mocked homedir
+    // never reaches it. Point the instance inside the mocked home instead, so
+    // every write this suite asserts on still lands under it (restored in
+    // afterEach).
+    process.env.APRA_FLEET_DATA_DIR = path.join(mockHome, '.apra-fleet', 'data');
     logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -164,6 +173,8 @@ describe('installer fleet-se prerequisite gate (apra-fleet-i9ag.13.7.3)', () => 
     _setManifestOverride(null);
     _resetFleetSePrereqStepDeps();
     delete process.env.APRA_FLEET_ENABLE_FLEET_SE_PREREQ_CHECK;
+    if (ORIGINAL_DATA_DIR === undefined) delete process.env.APRA_FLEET_DATA_DIR;
+    else process.env.APRA_FLEET_DATA_DIR = ORIGINAL_DATA_DIR;
     logSpy.mockRestore();
     warnSpy.mockRestore();
     errorSpy.mockRestore();

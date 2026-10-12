@@ -264,10 +264,11 @@ describe('supervisor-guard-e2e (apra-fleet-ky2l.1.3): real bin/serve.mjs, fleet-
         const seDataDir = await mkTmp('supervisor-guard-e2e-se-');
         const port = await getFreePort();
 
-        // 1. write a 64-hex fleet.key under <tempHome>/.apra-fleet/.
-        const fleetKeyDir = path.join(home, '.apra-fleet');
-        await fsp.mkdir(fleetKeyDir, { recursive: true });
-        await fsp.writeFile(path.join(fleetKeyDir, 'fleet.key'), VALID_FLEET_KEY, 'utf8');
+        // 1. write a 64-hex fleet.key where this instance keeps it. The child
+        //    runs with its own APRA_FLEET_DATA_DIR, so (apra-fleet-q1ku, shared
+        //    fleet-path resolver) that is <APRA_FLEET_DATA_DIR>/fleet.key, not
+        //    <tempHome>/.apra-fleet/fleet.key.
+        await fsp.writeFile(path.join(dataDir, 'fleet.key'), VALID_FLEET_KEY, 'utf8');
 
         // A pre-existing private/token fallback with a DIFFERENT value, so
         // case 3 below can prove fleet.key wins over it (not just over an
@@ -286,8 +287,8 @@ describe('supervisor-guard-e2e (apra-fleet-ky2l.1.3): real bin/serve.mjs, fleet-
                 ...process.env,
                 // isolated-home-allow: HOME/USERPROFILE point at a fleet-home
                 // sandbox, but APRA_FLEET_DATA_DIR is deliberately a SEPARATE
-                // temp dir (not home/.apra-fleet/data) -- this test proves
-                // fleet.key resolution independent of the data dir, so it
+                // temp dir (not home/.apra-fleet/data) -- a non-default
+                // instance, whose fleet.key lives inside that dir -- so it
                 // cannot use the shared helper's builder, which colocates
                 // the two.
                 HOME: home,

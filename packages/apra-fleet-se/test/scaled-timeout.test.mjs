@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { scaledTimeout } from './helpers/scaled-timeout.mjs';
+import { TEST_CONCURRENCY } from './helpers/test-concurrency.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -22,11 +23,12 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BASE_MS = 1000;
 const DEFAULT_MULTIPLIER = 3; // must track scaled-timeout.mjs's DEFAULT_MULTIPLIER
 
-test('unit: scaledTimeout(baseMs) === baseMs when concurrency is unset', () => {
+test('unit: scaledTimeout(baseMs) falls back to TEST_CONCURRENCY (scaled) when the env var is unset', () => {
     const prev = process.env.APRA_FLEET_TEST_CONCURRENCY;
     delete process.env.APRA_FLEET_TEST_CONCURRENCY;
     try {
-        assert.equal(scaledTimeout(BASE_MS), BASE_MS);
+        assert.ok(TEST_CONCURRENCY > 1, 'precondition: the suite default concurrency scales');
+        assert.equal(scaledTimeout(BASE_MS), BASE_MS * DEFAULT_MULTIPLIER);
     } finally {
         if (prev === undefined) delete process.env.APRA_FLEET_TEST_CONCURRENCY;
         else process.env.APRA_FLEET_TEST_CONCURRENCY = prev;
@@ -62,6 +64,27 @@ test('unit: scaledTimeout reads APRA_FLEET_TEST_CONCURRENCY from the env when op
         if (prev === undefined) delete process.env.APRA_FLEET_TEST_CONCURRENCY;
         else process.env.APRA_FLEET_TEST_CONCURRENCY = prev;
     }
+});
+
+test('unit: empty-string and garbage env values fall back to TEST_CONCURRENCY, giving the scaled (not base) value', () => {
+    for (const bad of ['', '   ', 'garbage', 'NaN']) {
+        assert.equal(scaledTimeout(BASE_MS, { env: { APRA_FLEET_TEST_CONCURRENCY: bad } }), BASE_MS * DEFAULT_MULTIPLIER, `env value ${JSON.stringify(bad)}`);
+    }
+    // Same through the real process.env path.
+    const prev = process.env.APRA_FLEET_TEST_CONCURRENCY;
+    try {
+        for (const bad of ['', 'garbage']) {
+            process.env.APRA_FLEET_TEST_CONCURRENCY = bad;
+            assert.equal(scaledTimeout(BASE_MS), BASE_MS * DEFAULT_MULTIPLIER, `process.env value ${JSON.stringify(bad)}`);
+        }
+    } finally {
+        if (prev === undefined) delete process.env.APRA_FLEET_TEST_CONCURRENCY;
+        else process.env.APRA_FLEET_TEST_CONCURRENCY = prev;
+    }
+});
+
+test('unit: an explicit opts.concurrency of 1 still wins over a bad env value', () => {
+    assert.equal(scaledTimeout(BASE_MS, { concurrency: 1, env: { APRA_FLEET_TEST_CONCURRENCY: '' } }), BASE_MS);
 });
 
 test('unit: opts.concurrency overrides the env when both are present', () => {

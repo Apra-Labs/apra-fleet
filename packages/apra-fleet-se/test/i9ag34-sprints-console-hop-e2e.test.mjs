@@ -249,8 +249,10 @@ async function bootSupervisor() {
     const workDir = await mkTmp('i9ag34-cwd-');
 
     const fleetKey = crypto.randomBytes(32).toString('hex');
-    await fsp.mkdir(path.join(homeDir, '.apra-fleet'), { recursive: true });
-    await fsp.writeFile(path.join(homeDir, '.apra-fleet', 'fleet.key'), fleetKey, 'utf-8');
+    // apra-fleet-q1ku: the child runs with its own APRA_FLEET_DATA_DIR, so its
+    // fleet.key is <APRA_FLEET_DATA_DIR>/fleet.key (shared fleet-path resolver),
+    // not <home>/.apra-fleet/fleet.key.
+    await fsp.writeFile(path.join(dataDir, 'fleet.key'), fleetKey, 'utf-8');
     await fsp.writeFile(
         path.join(dataDir, 'server.json'),
         JSON.stringify({ pid: process.pid, port: stub.port, url: `${stub.origin}/mcp` }),
@@ -265,9 +267,9 @@ async function bootSupervisor() {
     const child = spawn(process.execPath, [SERVE_BIN, '--port', String(port)], {
         cwd: workDir,
         stdio: ['ignore', 'pipe', 'pipe'],
-        // The child's home is isolated to homeDir (where the fleet.key above was
-        // written); its data dirs are this case's own, hence the explicit values
-        // AFTER the helper's spread.
+        // The child's home is isolated to homeDir; its data dirs (including the
+        // fleet.key written into dataDir above) are this case's own, hence the
+        // explicit values AFTER the helper's spread.
         env: {
             ...buildIsolatedHomeEnv(homeDir),
             APRA_FLEET_DATA_DIR: dataDir,

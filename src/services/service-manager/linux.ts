@@ -60,6 +60,7 @@ export class LinuxServiceManager implements ServiceManager {
       // npx and node (#651). Written for BOTH services: the supervisor also spawns
       // node-based tooling (fleet-sprint, bd npm shim).
       systemdEnvironmentLine('PATH', computeServicePath({ platform: 'linux' })),
+      ...Object.entries(options.env ?? {}).map(([k, v]) => systemdEnvironmentLine(k, v)),
       `StandardOutput=append:${logPath}`,
       `StandardError=append:${logPath}`,
       '',

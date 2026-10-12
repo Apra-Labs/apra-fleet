@@ -1,3 +1,4 @@
+import { classifyGitProbeOutput, gitRefusalGuidance } from '../services/git-access.js';
 import { z } from 'zod';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
@@ -296,6 +297,14 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
   if (branch) {
     result.branch = branch;
   }
+
+  // Same condition register_member refuses on (apra-fleet-wgpx): surface it
+  // for an already-registered member as a warning field.
+  try {
+    const probe = await strategy.execCommand(cmds.gitRepoAccessProbe(agent.workFolder), 10000);
+    const verdict = classifyGitProbeOutput(probe.stdout);
+    if (!verdict.ok) result.gitWarning = gitRefusalGuidance(agent.workFolder, verdict);
+  } catch { /* best effort */ }
 
   if (cloudSection) {
     result.cloud = cloudSection;

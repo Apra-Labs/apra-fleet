@@ -14,7 +14,10 @@
 //
 // This module owns:
 //   readLocalToken(dataDir, opts) -- resolve the shared credential: prefer
-//     <home>/.apra-fleet/fleet.key, fall back to <dataDir>/private/token.
+//     fleet.key (path from ../fleet-paths.mjs fleetKeyPath(): the SAME file
+//     src/services/jwt.ts signs with -- ~/.apra-fleet/fleet.key by default,
+//     <APRA_FLEET_DATA_DIR>/fleet.key for a non-default instance), fall back
+//     to <dataDir>/private/token.
 //   loadOrCreateToken(dataDir) -- idempotent mint-or-reuse of the
 //     private/token fallback file.
 //   isAuthorized(req, token, opts) -- does this request carry `token`, via
@@ -36,8 +39,8 @@
 
 import crypto from 'node:crypto';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
+import { fleetKeyPath as resolveFleetKeyPath } from '../fleet-paths.mjs';
 
 /** Subdirectory of a caller's data root that holds operator-private state. */
 export const PRIVATE_DIRNAME = 'private';
@@ -72,19 +75,6 @@ const TOKEN_PATTERN = new RegExp(`^[0-9a-f]{${TOKEN_BYTES * 2}}$`);
  * dispatcher can never disagree about which route a URL names.
  */
 const NORMALIZATION_BASE = 'http://localhost';
-
-/**
- * Subdirectory of `home` holding the shared fleet key (src/services/jwt.ts's
- * KEY_PATH, which is hardcoded to `os.homedir()` and does NOT honor
- * APRA_FLEET_DATA_DIR -- see jwt.ts line 6). `home` is overridable here only
- * so a test can point it at a fixture; jwt.ts itself has no such override,
- * so every OTHER reader/writer of this file always uses the real
- * `os.homedir()`.
- */
-const FLEET_KEY_DIRNAME = '.apra-fleet';
-
-/** Filename of the shared fleet key inside FLEET_KEY_DIRNAME (jwt.ts's KEY_PATH). */
-const FLEET_KEY_FILENAME = 'fleet.key';
 
 /** True when this process is running on Windows (Git Bash included). */
 function isWindows() {
@@ -152,6 +142,23 @@ function enforcePosixTokenMode(file) {
         throw new Error(
             `Service token file has mode 0${mode.toString(8)}, expected 0600: ${file}`,
         );
+    }
+}
+
+/**
+ * Is `file` provably owner-only on POSIX? True only when a stat shows no
+ * group/other permission bits (0600, 0400, ...). Read-only: never chmods, so
+ * the shared fleet.key -- owned by src/services/jwt.ts, not this module -- is
+ * never modified by a reader. A file that vanished or cannot be stat'ed is
+ * unproven (false). Callers handle Windows separately (no POSIX mode bits).
+ * @param {string} file
+ * @returns {boolean}
+ */
+function isPosixOwnerOnly(file) {
+    try {
+        return (fs.statSync(file).mode & 0o077) === 0;
+    } catch {
+        return false;
     }
 }
 
@@ -244,10 +251,13 @@ function readPrivateTokenOnly(dir) {
 }
 
 /**
- * Resolve a caller's local credential: prefer the shared
- * `<home>/.apra-fleet/fleet.key` (the SAME file src/services/jwt.ts's
- * getOrCreateKey() reads/mints, so every local caller can share one token)
- * over the `<dataDir>/private/token` file `loadOrCreateToken()` mints.
+ * Resolve a caller's local credential: prefer the shared fleet.key (the SAME
+ * file src/services/jwt.ts's getOrCreateKey() reads/mints, so every local
+ * caller can share one token) over the `<dataDir>/private/token` file
+ * `loadOrCreateToken()` mints. The fleet.key path comes from the shared
+ * resolver (../fleet-paths.mjs fleetKeyPath(), apra-fleet-q1ku), which jwt.ts
+ * also uses: `~/.apra-fleet/fleet.key` for the default instance,
+ * `<APRA_FLEET_DATA_DIR>/fleet.key` when that env var is set.
  *
  * This function never MINTS fleet.key itself -- jwt.ts owns creation -- it
  * only reads one if already present and well-formed (a trimmed 64-char
@@ -270,21 +280,24 @@ function readPrivateTokenOnly(dir) {
  *
  * @param {string} dataDir caller's data root (passed through to
  *   loadOrCreateToken() for the private/token fallback)
- * @param {{ home?: string, logger?: { warn?: Function }, createIfMissing?: boolean }} [opts]
- *   `home` overrides where the fleet-key lookup is rooted -- tests MUST pass
- *   a temp dir here (jwt.ts's own KEY_PATH has no such override, so
- *   `loadOrCreateToken`'s fallback is otherwise the only test-isolated path).
- *   `home` defaults to the real `os.homedir()`, matching production.
+ * @param {{ home?: string, env?: Record<string, string|undefined>, logger?: { warn?: Function }, createIfMissing?: boolean }} [opts]
+ *   `env` (default `process.env`) is the environment the fleet.key path is
+ *   resolved against -- pass the TARGET instance's env when probing a
+ *   different instance than this process's own (e.g. a sandbox).
+ *   `home` is a test seam: it roots the DEFAULT-instance layout at that dir
+ *   (`<home>/.apra-fleet/fleet.key`) and takes precedence over
+ *   APRA_FLEET_DATA_DIR. Production never passes it.
  *   `createIfMissing` defaults to `true`; pass `false` for a read-only probe.
  * @returns {{ token: string, path: string, source: 'fleet-key'|'private-token', aclVerified: boolean, created: boolean }|null}
  *   `null` only when `createIfMissing: false` and no token exists at either
  *   source.
  */
 export function readLocalToken(dataDir, opts = {}) {
-    const home = typeof opts.home === 'string' && opts.home.length > 0 ? opts.home : os.homedir();
+    const home = typeof opts.home === 'string' && opts.home.length > 0 ? opts.home : undefined;
+    const env = opts.env && typeof opts.env === 'object' ? opts.env : process.env;
     const logger = opts.logger && typeof opts.logger.warn === 'function' ? opts.logger : console;
     const createIfMissing = opts.createIfMissing !== false;
-    const fleetKeyPath = path.join(home, FLEET_KEY_DIRNAME, FLEET_KEY_FILENAME);
+    const fleetKeyPath = resolveFleetKeyPath(env, home ? { home } : {});
 
     let raw = null;
     try {
@@ -299,7 +312,13 @@ export function readLocalToken(dataDir, opts = {}) {
     if (raw !== null) {
         const trimmed = raw.trim();
         if (TOKEN_PATTERN.test(trimmed)) {
-            return { token: trimmed, path: fleetKeyPath, source: 'fleet-key', aclVerified: !isWindows(), created: false };
+            // aclVerified is EARNED here exactly as loadOrCreateToken() earns it
+            // for private/token: only a stat proving the key is owner-only
+            // counts. A world/group-readable fleet.key (e.g. 0644) reports
+            // false so callers can surface TOKEN_ACL_UNVERIFIED_WARNING; the
+            // key is never chmod-healed from this reader. Windows: always false.
+            const aclVerified = !isWindows() && isPosixOwnerOnly(fleetKeyPath);
+            return { token: trimmed, path: fleetKeyPath, source: 'fleet-key', aclVerified, created: false };
         }
         logger.warn(
             `[local-token] WARNING: fleet.key at ${fleetKeyPath} is malformed (expected ${TOKEN_BYTES * 2} lowercase-hex chars) -- `

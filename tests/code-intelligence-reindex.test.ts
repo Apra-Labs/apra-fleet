@@ -39,7 +39,12 @@ const sandbox = vi.hoisted(() => {
   fs.writeFileSync(path.join(dir, 'bin', process.platform === 'win32' ? 'npx.cmd' : 'npx'), '');
   return { dir, bin: path.join(dir, 'bin') };
 });
-vi.mock('../src/paths.js', () => ({ FLEET_DIR: sandbox.dir }));
+// codeIntelligenceDir: the config.json read (readFileSync, faked above) is
+// resolved through it (apra-fleet-q1ku), so the mock must supply it too.
+vi.mock('../src/paths.js', () => ({
+  FLEET_DIR: sandbox.dir,
+  codeIntelligenceDir: () => `${sandbox.dir}/code-intelligence`,
+}));
 vi.mock('../src/services/knowledge/project-slug.js', () => ({ resolveProjectSlug: () => 'slug' }));
 
 import { afterAll } from 'vitest';

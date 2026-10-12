@@ -692,6 +692,9 @@ async function bootServe(extraEnv, opts = {}) {
     const dataDir = await mkTmp('g6ap23-serve-data-');
     const seDataDir = await mkTmp('g6ap23-serve-se-');
     const homeDir = opts.homeDir ?? await mkTmp('g6ap23-home-');
+    // apra-fleet-q1ku: the child runs with its own APRA_FLEET_DATA_DIR, so its
+    // fleet.key lives at <dataDir>/fleet.key (shared fleet-path resolver).
+    if (opts.fleetKey) await fsp.writeFile(path.join(dataDir, 'fleet.key'), opts.fleetKey, 'utf-8');
     const port = await getFreePort();
 
     // console.warn/error write to stderr (installSelfLogTee only tees them
@@ -781,11 +784,7 @@ describe('registration waits and retries instead of skipping (real bin/serve.mjs
     });
 
     test('no apra-fleet HTTP server URL yet -> logs that registration is being RETRIED, supervisor still starts', async () => {
-        const homeDir = await mkTmp('g6ap23-home-fleetkey-');
-        await fsp.mkdir(path.join(homeDir, '.apra-fleet'), { recursive: true });
-        await fsp.writeFile(path.join(homeDir, '.apra-fleet', 'fleet.key'), crypto.randomBytes(32).toString('hex'), 'utf-8');
-
-        const serve = await bootServe({ APRA_FLEET_TRANSPORT: 'stdio' }, { homeDir });
+        const serve = await bootServe({ APRA_FLEET_TRANSPORT: 'stdio' }, { fleetKey: crypto.randomBytes(32).toString('hex') });
         try {
             const stdout = serve.getStdout();
             assert.ok(stdout.includes('[registration]'), `expected a loud registration log line, got:\n${stdout}`);

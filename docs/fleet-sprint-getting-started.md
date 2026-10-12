@@ -344,23 +344,25 @@ so point-and-click and API launches can never diverge.
 
 Open the supervisor's page in a browser (`http://localhost:8787`). A plain
 visit is a read-only view: to use the Stop, Restart and launch controls, sign
-the browser in once by opening the page with the supervisor's service token
-appended as `?token=` -- the token is the contents of `~/.apra-fleet/fleet.key`,
-or of `private/token` under the supervisor data directory when that file does
-not exist (the supervisor's startup log names the file and port in use). For
-example:
+the browser in once by pasting the supervisor's service token into the sign-in
+form at the top of the page -- the token is the contents of
+`~/.apra-fleet/fleet.key`, or of `private/token` under the supervisor data
+directory when that file does not exist (the supervisor's startup log names the
+file and port in use). Copy it to the clipboard without putting it on a command
+line or in a URL, for example:
 
 ```bash
-open "http://localhost:8787/?token=$(cat ~/.apra-fleet/fleet.key 2>/dev/null || cat ~/.apra-fleet-se/private/token)"
+pbcopy < ~/.apra-fleet/fleet.key            # Linux: xclip -selection clipboard < ~/.apra-fleet/fleet.key
 ```
 
 ```powershell
-Start-Process "http://localhost:8787/?token=$(if (Test-Path "$HOME\.apra-fleet\fleet.key") { Get-Content "$HOME\.apra-fleet\fleet.key" } else { Get-Content "$HOME\.apra-fleet-se\private\token" })"
+Get-Content "$HOME\.apra-fleet\fleet.key" -Raw | Set-Clipboard
 ```
 
-The supervisor swaps the token for an HttpOnly session cookie that carries a
-derived value (never the token itself) and redirects to the same page with the
-token stripped from the address bar. The page renders three things, and they
+The form posts the token in the request body; the supervisor swaps it for an
+HttpOnly session cookie that carries a derived value (never the token itself)
+and redirects back to the page. A token in the page address (`?token=`) is
+refused and never sets a cookie. The page renders three things, and they
 answer the three questions stakeholders actually ask:
 
 - **What is running right now?** One section per live sprint: branch, goal, a

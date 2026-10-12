@@ -224,7 +224,9 @@ function jsonError(res: http.ServerResponse, status: number, body: Record<string
  *  is reachable immediately, with no proxy-side cache to invalidate. */
 function defaultResolveBaseUrl(packageId: string): string | null {
   const hit = workflowPackageService.list().find((p) => p.id === packageId);
-  return hit ? hit.baseUrl : null;
+  // A config-declared entry with a configError (e.g. a bad scheme) is not
+  // proxyable: treat it as no such package so the decision lives here.
+  return hit && hit.configError === null ? hit.baseUrl : null;
 }
 
 /**
@@ -285,13 +287,39 @@ export function rewriteLocation(location: string, upstreamUrl: URL, baseUrl: URL
   return mountPath + rest + target.search + target.hash;
 }
 
-/** Response headers to relay: hop-by-hop dropped, and any attempt by an
- *  upstream to set the CONSOLE's own cookie refused -- packages all share
- *  the console's origin, so an unfiltered Set-Cookie would let one of them
- *  overwrite the console credential in the browser. */
-function filterResponseHeaders(
+/** The cookie NAME of one Set-Cookie header value: the text before the first
+ *  '=' of the first `;`-separated pair, trimmed. Matching on the parsed name
+ *  (never a regex built from a caller-supplied name) cannot be widened or
+ *  broken by regex metacharacters in the reserved name. */
+function setCookieName(setCookie: string): string {
+  const pair = setCookie.split(';', 1)[0];
+  const eq = pair.indexOf('=');
+  return (eq === -1 ? pair : pair.slice(0, eq)).trim();
+}
+
+/** Re-scope one upstream Set-Cookie to the package's mount path: any Path
+ *  and Domain attribute the upstream chose is dropped and Path=<mountPath>
+ *  is appended. Every other attribute (HttpOnly, Secure, SameSite, Max-Age,
+ *  Expires, ...) is preserved as sent. */
+function scopeSetCookie(setCookie: string, mountPath: string): string {
+  const [pair, ...attrs] = setCookie.split(';');
+  const kept = attrs.filter((attr) => {
+    const attrName = attr.split('=', 1)[0].trim().toLowerCase();
+    return attrName !== 'path' && attrName !== 'domain';
+  });
+  return [pair.trim(), ...kept.map((a) => a.trim()), `Path=${mountPath}`].join('; ');
+}
+
+/** Response headers to relay: hop-by-hop dropped, any attempt by an
+ *  upstream to set the CONSOLE's own cookie refused, and every other
+ *  upstream cookie re-scoped to the package's mount path with no Domain --
+ *  packages all share the console's origin, so an unfiltered Set-Cookie
+ *  would let one of them overwrite the console credential, or set cookies
+ *  that are sent to another package or the shell. */
+export function filterResponseHeaders(
   headers: http.IncomingHttpHeaders,
   reservedCookieName: string,
+  mountPath: string,
 ): http.OutgoingHttpHeaders {
   const out: http.OutgoingHttpHeaders = {};
   for (const [name, value] of Object.entries(headers)) {
@@ -300,9 +328,9 @@ function filterResponseHeaders(
     if (HOP_BY_HOP.has(lower)) continue;
     if (lower === 'content-length') continue; // may not survive the hop; Node recomputes/chunks
     if (lower === 'set-cookie') {
-      const cookies = (Array.isArray(value) ? value : [value]).filter(
-        (c) => !new RegExp(`^\\s*${reservedCookieName}\\s*=`).test(c),
-      );
+      const cookies = (Array.isArray(value) ? value : [value])
+        .filter((c) => setCookieName(c) !== reservedCookieName)
+        .map((c) => scopeSetCookie(c, mountPath));
       if (cookies.length > 0) out['set-cookie'] = cookies;
       continue;
     }
@@ -457,7 +485,7 @@ export async function handleExtProxyRequest(
       },
       (upstreamRes) => {
         const status = upstreamRes.statusCode ?? 502;
-        const headers = filterResponseHeaders(upstreamRes.headers, options.reservedCookieName);
+        const headers = filterResponseHeaders(upstreamRes.headers, options.reservedCookieName, mountPath);
 
         const location = upstreamRes.headers.location;
         if (typeof location === 'string') {

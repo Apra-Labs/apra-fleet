@@ -20,6 +20,8 @@ import { createLiveProxy, registerLiveRoutes } from '../src/supervisor/proxy.mjs
 import { createHistoryView, registerHistoryViewRoutes } from '../src/supervisor/history-view.mjs';
 import { createReconciler, registerReservationRoutes } from '../src/supervisor/reconcile.mjs';
 import { createSupervisor } from '../src/supervisor/server.mjs';
+import { scaledTimeout } from './helpers/scaled-timeout.mjs';
+import { waitForChildUp } from './helpers/viewer-child-wait.mjs';
 
 // =============================================================================
 // apra-fleet-eft.6.6 -- dashboard integration: stack, backlog exclusion,
@@ -83,8 +85,22 @@ async function mkTmp(prefix) {
     return dir;
 }
 
+// Contention-aware default wait budget: 10s standalone, scaled (3x) under the
+// bounded runner's parallel lane, where a viewer child can take well over 10s
+// to answer /state while sibling suites load the machine.
+const WAIT_BUDGET_MS = scaledTimeout(10000);
+
+// Port note: each describe's REAL spawner gets a --viewer-port band of its own
+// (basePort 19681 for the main suite, 19691 for the auth suite). With the
+// shared default base (DEFAULT_SPAWNER_BASE_PORT 8081) this file and
+// supervisor-stop-restart-integration.test.mjs, running concurrently under the
+// bounded runner, both allocated 8081: the loser's child died on EADDRINUSE
+// while the OTHER file's child answered /state on that port. The two describes
+// here run in sequence, but separate bands keep them independent too. Keep
+// these distinct from every other basePort under test/.
+
 /** Poll until `pred()` is truthy or the deadline passes; throws on timeout. */
-async function waitFor(pred, { timeoutMs = 10000, intervalMs = 50, label = 'condition' } = {}) {
+async function waitFor(pred, { timeoutMs = WAIT_BUDGET_MS, intervalMs = 50, label = 'condition' } = {}) {
     const deadline = Date.now() + timeoutMs;
     for (;;) {
         // eslint-disable-next-line no-await-in-loop
@@ -226,6 +242,8 @@ describe('dashboard integration (apra-fleet-eft.6.6) -- stack, backlog, launch, 
             // this suite's ledger/history, distinct from the child fixture's own
             // APRA_FLEET_DATA_DIR above.
             dataDir,
+            // A --viewer-port band of its own (see the port note at the top).
+            basePort: 19681,
         });
 
         // Mirrors proxy.mjs's own defaultResolvePort: sprintId -> ledger childPid
@@ -322,14 +340,7 @@ describe('dashboard integration (apra-fleet-eft.6.6) -- stack, backlog, launch, 
 
         // Wait for the real child to actually be answering before any later test
         // depends on it.
-        await waitFor(async () => {
-            try {
-                const r = await httpGet(childPort, '/state');
-                return r.status === 200;
-            } catch {
-                return false;
-            }
-        }, { label: 'viewer-child /state to answer' });
+        await waitForChildUp(childPort, childPid, { timeoutMs: WAIT_BUDGET_MS, label: 'viewer-child /state to answer' });
     });
 
     // -------------------------------------------------------------------------
@@ -536,6 +547,7 @@ describe('dashboard integration auth (apra-fleet-50j6.2.2) -- Stop/force-release
             env: { ...process.env, APRA_FLEET_DATA_DIR: dataDir },
             logger: silentLogger,
             dataDir,
+            basePort: 19691,
         });
 
         function resolvePort(id) {
@@ -645,28 +657,37 @@ describe('dashboard integration auth (apra-fleet-50j6.2.2) -- Stop/force-release
         childPid = track(res.json.pid);
         childPort = res.json.port;
 
-        await waitFor(async () => {
-            try {
-                const r = await httpGet(childPort, '/state');
-                return r.status === 200;
-            } catch {
-                return false;
-            }
-        }, { label: 'auth-suite viewer-child /state to answer' });
+        await waitForChildUp(childPort, childPid, { timeoutMs: WAIT_BUDGET_MS, label: 'auth-suite viewer-child /state to answer' });
     });
 
     // -------------------------------------------------------------------------
-    // apra-fleet-50j6.6: a plain GET / sets NO cookie; the GET /?token=
-    // exchange sets the se_token cookie to the DERIVED value (re-proved here
+    // apra-fleet-50j6.6 / 50j6.12: a plain GET / sets NO cookie; a GET
+    // /?token= is refused (400, no cookie); the paste-token form's POST
+    // /signin sets the se_token cookie to the DERIVED value (re-proved here
     // against a REAL running supervisor+sprint, not just the unit-level check
-    // in supervisor-dashboard.test.mjs).
+    // in supervisor-dashboard-cookie-harvest.test.mjs).
     // -------------------------------------------------------------------------
-    test('GET / sets no cookie; GET /?token= sets the derived se_token cookie', async () => {
+    test('GET / sets no cookie; GET /?token= is refused; POST /signin sets the derived se_token cookie', async () => {
         const plain = await httpGet(port, '/');
         assert.equal(plain.status, 200);
         assert.equal(plain.headers['set-cookie'], undefined);
-        const res = await httpGet(port, `/?token=${encodeURIComponent(token)}`);
-        assert.equal(res.status, 302);
+        const inUrl = await httpGet(port, `/?token=${encodeURIComponent(token)}`);
+        assert.equal(inUrl.status, 400);
+        assert.equal(inUrl.headers['set-cookie'], undefined);
+        const form = `token=${encodeURIComponent(token)}`;
+        const res = await new Promise((resolve, reject) => {
+            const req = http.request({
+                host: '127.0.0.1', port, path: '/signin', method: 'POST',
+                headers: {
+                    'content-type': 'application/x-www-form-urlencoded',
+                    'content-length': Buffer.byteLength(form),
+                    origin: `http://127.0.0.1:${port}`,
+                },
+            }, (r) => { r.resume(); r.on('end', () => resolve({ status: r.statusCode, headers: r.headers })); });
+            req.on('error', reject);
+            req.end(form);
+        });
+        assert.equal(res.status, 303);
         // Node's http client normalizes the (single) 'set-cookie' response
         // header into a one-element array, unlike every other header.
         const setCookie = Array.isArray(res.headers['set-cookie'])

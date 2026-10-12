@@ -36,6 +36,33 @@
 // /api/backlog, POST /api/sprints, etc.) are added by eft.4.4 by registering
 // routes via `supervisor.route()`; this skeleton implements only the two the
 // lifecycle itself owns: POST /api/shutdown and GET /api/health.
+//
+// -----------------------------------------------------------------------------
+// API GUARD TOKEN: LIVE RE-RESOLUTION (apra-fleet-hwxd)
+// -----------------------------------------------------------------------------
+// The token guarding the /api surface may come from a PROVIDER
+// (deps.resolveToken, e.g. a read-only resolveServiceToken(dataDir,
+// { createIfMissing: false })) instead of being pinned at startup. A supervisor
+// started before fleet.key existed boots on the private/token fallback; once
+// fleet.key appears the provider starts answering with it, and the guard must
+// follow without a restart (otherwise the console's /ext/se hop, which bears
+// deriveUpstreamCredential(fleetKey, 'se'), 401s for the process lifetime).
+//
+// Re-resolution is lazy so the steady state costs no file read per request:
+// the guard checks the CURRENT token first and only on a failed check
+// re-resolves once and retries. The exported `token` getter also re-resolves,
+// so the dashboard's token exchange / cookie derivation follows the same
+// current token. A wrong credential is still 401 after the retry (fail closed).
+//
+// The PREVIOUS token after a switch: it stays accepted for a bounded grace
+// window (deps.retiredTokenGraceMs, default RETIRED_TOKEN_GRACE_MS) and is
+// dropped once that window passes. This keeps an already-connected client
+// (a browser holding the old se_token cookie, a sprint child holding the old
+// bearer in FLEET_SE_SERVICE_TOKEN) working mid-session, while never accepting
+// the stale credential indefinitely once the key is the source. A further
+// switch replaces the retired slot, so at most one previous token is honoured.
+//
+// No token value is ever logged: only the source name and file path.
 // =============================================================================
 
 import http from 'node:http';
@@ -132,6 +159,21 @@ function sendUnauthorized(res) {
 }
 
 /**
+ * apra-fleet-hwxd: how long the PREVIOUS api guard token stays accepted after
+ * the token provider switches to a new one (see the header section "API GUARD
+ * TOKEN: LIVE RE-RESOLUTION"). Bounded so a stale credential is never honoured
+ * indefinitely; long enough to cover a typical browser session or sprint run.
+ */
+/**
+ * apra-fleet-ky2l.25: logged once by createSupervisor() when it is given no
+ * token source at all, so an entry point that forgets the dep is visible.
+ */
+export const NO_TOKEN_SOURCE_WARNING = '[supervisor] WARNING: no service token source configured '
+    + '(deps.token, deps.resolveToken or deps.dataDir) -- the /api auth guard is DISABLED';
+
+export const RETIRED_TOKEN_GRACE_MS = 24 * 60 * 60 * 1000;
+
+/**
  * Creates (but does not start) the always-on supervisor. Returns a handle whose
  * `start()`/`stop()` own the full lifecycle; `route()` lets later tasks register
  * additional endpoints against the same error-isolated dispatcher.
@@ -140,6 +182,9 @@ function sendUnauthorized(res) {
  *   port?: number,
  *   bind?: string,
  *   token?: string,
+ *   resolveToken?: () => ({ token: string, source?: string, path?: string }|null),
+ *   retiredTokenGraceMs?: number,
+ *   nowMs?: () => number,
  *   dataDir?: string,
  *   ledger?: object,
  *   spawner?: object,
@@ -243,9 +288,72 @@ export function createSupervisor(deps = {}) {
     // deliberate back-compat for the many existing unit tests that build a
     // supervisor with no auth concept at all and call handleRequest()
     // directly with header-less mock requests.
+    //
+    // apra-fleet-hwxd: deps.resolveToken is a token PROVIDER (returns
+    // { token, source?, path? } or null) re-consulted lazily -- see the
+    // "API GUARD TOKEN: LIVE RE-RESOLUTION" header section. Supplying it
+    // (even when its first answer is null) turns the guard ON: with no
+    // current token every guarded request fails closed.
+    const resolveTokenDep = typeof deps.resolveToken === 'function' ? deps.resolveToken : null;
+    const nowMs = typeof deps.nowMs === 'function' ? deps.nowMs : () => Date.now();
+    const retiredTokenGraceMs = Number.isFinite(deps.retiredTokenGraceMs) && deps.retiredTokenGraceMs >= 0
+        ? deps.retiredTokenGraceMs
+        : RETIRED_TOKEN_GRACE_MS;
+    const readProvider = () => {
+        let r;
+        try {
+            r = resolveTokenDep();
+        } catch (err) {
+            // Never the token: only the failure message.
+            logError(`[supervisor] api guard token re-resolution failed: ${err && err.message ? err.message : String(err)}`);
+            return null;
+        }
+        return r && typeof r.token === 'string' && r.token.length > 0 ? r : null;
+    };
     let token = typeof deps.token === 'string' && deps.token.length > 0 ? deps.token : null;
+    if (!token && resolveTokenDep) {
+        token = readProvider()?.token ?? null;
+    }
     if (!token && typeof deps.dataDir === 'string' && deps.dataDir.length > 0) {
         token = loadOrCreateToken(deps.dataDir).token;
+    }
+    const guardEnabled = token !== null || resolveTokenDep !== null;
+    // apra-fleet-ky2l.25: with no token source at all (no deps.token, no
+    // deps.resolveToken provider, no deps.dataDir) the whole /api surface is
+    // served unauthenticated. Kept for header-less unit tests, but never
+    // silently: exactly one loud line through the injected logger. Names
+    // the missing sources only -- there is no token value to leak.
+    if (!guardEnabled) {
+        logError(NO_TOKEN_SOURCE_WARNING);
+    }
+    // { token, until } -- the previous token after a switch, honoured until
+    // `until` (epoch ms). See the header section for the policy.
+    let retired = null;
+    /**
+     * Re-consult the provider; adopt its answer when it differs from the
+     * current token. @returns {boolean} true when the token changed.
+     */
+    function refreshToken() {
+        if (!resolveTokenDep) return false;
+        const r = readProvider();
+        if (!r || r.token === token) return false;
+        retired = token ? { token, until: nowMs() + retiredTokenGraceMs } : null;
+        token = r.token;
+        log(`[supervisor] api guard token source is now ${r.source ?? 'provider'}${r.path ? ` (${r.path})` : ''}`);
+        return true;
+    }
+    /** Does this request carry the current (or a still-in-grace retired) token? */
+    function authorizeRequest(req) {
+        if (token && isAuthorized(req, token)) return true;
+        if (refreshToken() && isAuthorized(req, token)) return true;
+        if (retired) {
+            if (nowMs() < retired.until) {
+                if (isAuthorized(req, retired.token)) return true;
+            } else {
+                retired = null;
+            }
+        }
+        return false;
     }
     // Optional backlog-member state handle (src/supervisor/backlog-member.mjs,
     // wired by bin/serve.mjs); surfaced on GET /api/health as `backlogMember`
@@ -351,7 +459,7 @@ export function createSupervisor(deps = {}) {
             // service token. Runs first so a guarded mutating route (e.g.
             // POST /sprints/:id/live/stop) never reaches its handler/proxy
             // call at all on an unauthorized request.
-            if (token && requiresAuth(method, path) && !isAuthorized(req, token)) {
+            if (guardEnabled && requiresAuth(method, path) && !authorizeRequest(req)) {
                 sendUnauthorized(res);
                 return;
             }
@@ -524,7 +632,9 @@ export function createSupervisor(deps = {}) {
         // GET / cookie-setter) can hand it back out to a trusted, loopback-
         // only client without a second source of truth. `null` when auth was
         // never configured (see the deps.token/deps.dataDir comment above).
-        get token() { return token; },
+        // apra-fleet-hwxd: re-resolves through deps.resolveToken (when wired)
+        // so the getter always answers the CURRENT token.
+        get token() { refreshToken(); return token; },
         // apra-fleet-i9ag.19.10: the startup recorded-toolchain validation
         // report (see the deps.toolchain comment above), or null when none was
         // wired -- read by apra-fleet-i9ag.19.12's health/dashboard surfacing.

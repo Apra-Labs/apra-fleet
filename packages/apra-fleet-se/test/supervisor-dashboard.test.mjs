@@ -1225,9 +1225,10 @@ describe('dashboard -- registerDashboardRoutes / GET /', () => {
     });
 
     // apra-fleet-50j6.6: an unauthenticated GET / sets NO cookie (it used to
-    // hand out the raw token); the GET /?token= exchange sets the DERIVED
-    // se_token cookie the page's own same-origin fetches then carry.
-    test('GET / sets no cookie; GET /?token=<token> sets the derived se_token cookie and 302s', async () => {
+    // hand out the raw token). apra-fleet-50j6.12: a GET /?token= -- right or
+    // wrong -- is refused with 400 and no cookie; sign-in is the paste-token
+    // form's POST /signin (see supervisor-dashboard-cookie-harvest.test.mjs).
+    test('GET / sets no cookie; GET /?token=<token> is refused 400 with no cookie', async () => {
         const dashboard = createDashboard({
             ledger: fakeLedger([]),
             watchdog: fakeWatchdog({}),
@@ -1242,13 +1243,16 @@ describe('dashboard -- registerDashboardRoutes / GET /', () => {
         assert.equal(res.headers['set-cookie'], undefined);
         assert.ok(res.body.includes('auth-notice'), 'unauthenticated view shows the sign-in notice');
 
+        assert.ok(res.body.includes('action="/signin"'), 'the notice carries the paste-token sign-in form');
+
         const ex = await request(supervisor, 'GET', '/?token=test-token-abc123&x=1');
-        assert.equal(ex.statusCode, 302);
-        assert.equal(ex.headers.location, '/?x=1');
-        assert.equal(ex.headers['set-cookie'], `se_token=${deriveDashboardCookie('test-token-abc123')}; Path=/; SameSite=Strict; HttpOnly`);
+        assert.equal(ex.statusCode, 400);
+        assert.equal(ex.headers['set-cookie'], undefined);
+        assert.ok(!ex.body.includes('test-token-abc123'), 'the refusal page must not echo the token');
+        assert.ok(ex.body.includes('name="next" value="/?x=1"'), 'the form returns to the page minus the token parameter');
 
         const bad = await request(supervisor, 'GET', '/?token=nope');
-        assert.equal(bad.statusCode, 401);
+        assert.equal(bad.statusCode, 400);
         assert.equal(bad.headers['set-cookie'], undefined);
     });
 

@@ -232,4 +232,54 @@ describe("Members screen (apra-fleet-9h9j.2.3)", () => {
     expect(container.textContent ?? "").toContain("gamma");
     expect(container.textContent ?? "").not.toContain("alpha");
   });
+
+  describe("background refresh failure", () => {
+    async function runStale(secondResponse: () => Promise<unknown>) {
+      vi.useFakeTimers();
+      let n = 0;
+      const fn = vi.fn((input: unknown) => {
+        if (String(input) !== "/api/fleet/members") return Promise.resolve(jsonResponse(200, {}));
+        n += 1;
+        if (n === 1) return Promise.resolve(jsonResponse(200, MEMBERS_A));
+        if (n === 2) return secondResponse();
+        return Promise.resolve(jsonResponse(200, MEMBERS_B));
+      });
+      vi.stubGlobal("fetch", fn);
+      await renderMembers(1000);
+      expect(container.textContent ?? "").toContain("alpha");
+      await act(async () => {
+        vi.advanceTimersByTime(1000);
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+    }
+
+    it("a rejected refresh keeps the rows, shows a stale note, and a later success clears it", async () => {
+      await runStale(() => Promise.reject(new Error("network down")));
+      const text = container.textContent ?? "";
+      expect(text).toContain("alpha");
+      expect(text).toContain("Showing stale data: last updated");
+      expect(text).not.toContain("Failed to load members");
+      expect(container.querySelector('[role="alert"]')).toBeNull();
+
+      await act(async () => {
+        vi.advanceTimersByTime(1000);
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(container.textContent ?? "").toContain("gamma");
+      expect(container.textContent ?? "").not.toContain("Showing stale data");
+    });
+
+    it("a 500 refresh keeps the rows and shows the stale note without an error screen", async () => {
+      await runStale(() => Promise.resolve(jsonResponse(500, { error: "boom" })));
+      const text = container.textContent ?? "";
+      expect(text).toContain("alpha");
+      expect(text).toContain("Showing stale data: last updated");
+      expect(text).not.toContain("Failed to load members");
+      expect(container.querySelector('[role="alert"]')).toBeNull();
+    });
+  });
 });

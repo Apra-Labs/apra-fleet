@@ -171,7 +171,7 @@ describe('auth-socket', () => {
       expect(encPw).not.toBeNull();
       expect(encPw).toContain(':'); // encrypted format is iv:authTag:ciphertext
 
-      // Entry consumed – should be gone
+      // Entry consumed -- should be gone
       expect(hasPendingAuth('web1')).toBe(false);
     });
 
@@ -264,7 +264,7 @@ describe('auth-socket', () => {
       expect(resp.error).toContain('Invalid message');
     });
 
-    it('is idempotent – calling ensureAuthSocket twice does not error', async () => {
+    it('is idempotent -- calling ensureAuthSocket twice does not error', async () => {
       await ensureAuthSocket();
       await ensureAuthSocket(); // should be no-op
       createPendingAuth('test');
@@ -368,7 +368,7 @@ describe('auth-socket', () => {
         });
       });
 
-      // Now wait – should resolve immediately since password is already there
+      // Now wait -- should resolve immediately since password is already there
       const encPw = await waitForPassword('fast-test', 1000);
       expect(encPw).toContain(':');
     });
@@ -563,7 +563,7 @@ describe('auth-socket', () => {
     });
   });
 
-  describe('collectOobApiKey — 500ms grace period', () => {
+  describe('collectOobApiKey -- 500ms grace period', () => {
     afterEach(async () => {
       await cleanupAuthSocket();
     });
@@ -930,7 +930,7 @@ describe('auth-socket', () => {
     });
   });
 
-  describe('waitForPassword — kills spawned PID on timeout', () => {
+  describe('waitForPassword -- kills spawned PID on timeout', () => {
     afterEach(async () => {
       await cleanupAuthSocket();
     });

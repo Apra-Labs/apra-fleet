@@ -8,11 +8,10 @@ import { execFileSync, spawn, type ChildProcess } from 'child_process';
 import {
   closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, statSync, writeFileSync,
 } from 'fs';
-import { homedir } from 'os';
 import { dirname, isAbsolute, join } from 'path';
 import { logWarn, logError } from '../utils/log-helpers.js';
 import { findExecutableOnPath, missingOnServerPathMessage, npxUnavailableReason } from '../utils/find-on-path.js';
-import { FLEET_DIR } from '../paths.js';
+import { FLEET_DIR, codeIntelligenceDir } from '../paths.js';
 import { resolveProjectSlug } from '../services/knowledge/project-slug.js';
 import { isPidAlive, readGitNexusIndexState } from './code-index-state.js';
 import { excludeLineFor } from '../services/member-config-io.js';
@@ -45,7 +44,11 @@ interface ReindexEntry {
 // server is long-lived, and a restart just means one extra reindex.
 const state = new Map<string, ReindexEntry>();
 
-const CONFIG_PATH = join(homedir(), '.apra-fleet', 'data', 'code-intelligence', 'config.json');
+// apra-fleet-q1ku: per-instance (honours APRA_FLEET_DATA_DIR), resolved
+// lazily through the shared fleet-path resolver.
+function configPath(): string {
+  return join(codeIntelligenceDir(), 'config.json');
+}
 
 export const DEFAULT_COOLDOWN_MS = 120000;
 
@@ -78,7 +81,7 @@ interface AutoReindexConfig {
 // config degrades to defaults (enabled: true).
 function readAutoReindexConfig(): AutoReindexConfig {
   try {
-    const raw = readFileSync(CONFIG_PATH, 'utf8');
+    const raw = readFileSync(configPath(), 'utf8');
     const parsed = JSON.parse(raw) as { autoReindex?: AutoReindexConfig };
     return parsed.autoReindex ?? {};
   } catch {

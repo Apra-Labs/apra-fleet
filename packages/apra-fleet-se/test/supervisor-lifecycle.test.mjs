@@ -93,30 +93,17 @@ const SE_PKG_ROOT = path.join(__dirname, '..');
 // subtests in this suite. The real call site below (module-load default)
 // still resolves against the real process.env via the default parameter.
 //
-// Also fixes the concurrency-fallback bug named by apra-fleet-ecjf.6: an
-// empty-string APRA_FLEET_TEST_CONCURRENCY used to parse as Number('') = 0,
-// and Number.isFinite(0) is true, so the fallback to TEST_CONCURRENCY was
-// silently skipped and scaledTimeout() got concurrency 0 (== unscaled
-// base) -- reverting the exact contention-scaling fix this resolver exists
-// for. envConcurrency is now only computed from a defined, non-empty raw
-// value; anything else (undefined, '', unparseable) falls through to
-// TEST_CONCURRENCY.
+// The empty-string / unparseable APRA_FLEET_TEST_CONCURRENCY fallback to
+// TEST_CONCURRENCY now lives in scaledTimeout() itself (apra-fleet-ecjf.10);
+// this resolver passes its injectable `env` through and leans on it.
 function resolveSupervisorHealthBudgetMs({ concurrency, override, env = process.env } = {}) {
     const rawOverride = override !== undefined ? override : env.APRA_TEST_SUPERVISOR_HEALTH_BUDGET_MS;
     const numOverride = Number(rawOverride);
     if (rawOverride !== undefined && rawOverride !== null && Number.isFinite(numOverride) && numOverride > 0) {
         return numOverride;
     }
-    const resolvedConcurrency = concurrency !== undefined
-        ? concurrency
-        : (() => {
-            const rawConcurrency = env.APRA_FLEET_TEST_CONCURRENCY;
-            const envConcurrency = rawConcurrency !== undefined && rawConcurrency !== null && rawConcurrency !== ''
-                ? Number(rawConcurrency)
-                : NaN;
-            return Number.isFinite(envConcurrency) ? envConcurrency : TEST_CONCURRENCY;
-        })();
-    return scaledTimeout(15000, { concurrency: resolvedConcurrency });
+    // scaledTimeout owns the undefined/empty/unparseable -> TEST_CONCURRENCY fallback.
+    return scaledTimeout(15000, concurrency !== undefined ? { concurrency } : { env });
 }
 
 const SUPERVISOR_HEALTH_TIMEOUT_MS = resolveSupervisorHealthBudgetMs();

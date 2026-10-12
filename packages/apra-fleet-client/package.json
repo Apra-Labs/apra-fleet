@@ -13,6 +13,7 @@
     "./factory": "./src/client/factory.mjs",
     "./transport": "./src/client/transport.mjs",
     "./server-resolution": "./src/client/server-resolution.mjs",
+    "./fleet-paths": "./src/fleet-paths.mjs",
     "./auth/*": "./src/auth/*.mjs",
     "./beads/*": "./src/beads/*.mjs",
     "./registration/*": "./src/registration/*.mjs"

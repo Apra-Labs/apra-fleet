@@ -42,7 +42,9 @@
 // that inheritance from here, so we do NOT claim it: the returned descriptor
 // carries `aclVerified: false`, which GET /api/health surfaces later as the
 // TOKEN_ACL_UNVERIFIED_WARNING string. POSIX returns `aclVerified: true` because
-// the mode assertion below actually proved it.
+// the mode assertion below actually proved it. The fleet.key source earns it
+// the same way: true on POSIX only when a stat shows the key is owner-only (a
+// 0644 fleet.key reports false; the shared key is never chmod-ed by a reader).
 //
 // The platform branch is on `process.platform`, never on which shell/tools are
 // present: node under Git Bash on Windows still reports 'win32'.
@@ -85,7 +87,7 @@ export const TOKEN_COOKIE_NAME = 'se_token';
 
 /**
  * apra-fleet-ky2l.1.2 (DQ-20): resolve the supervisor's service token,
- * preferring the shared `<home>/.apra-fleet/fleet.key` (the SAME file
+ * preferring the shared fleet.key (the SAME file
  * src/services/jwt.ts's getOrCreateKey() reads/mints, so the supervisor and
  * the fleet MCP server's JWT auth share one token) over the private/token
  * file `loadOrCreateToken()` mints under the supervisor's own data root.
@@ -99,10 +101,13 @@ export const TOKEN_COOKIE_NAME = 'se_token';
  *
  * @param {string} dir supervisor data root (passed through to
  *   loadOrCreateToken() for the private/token fallback)
- * @param {{ home?: string, logger?: { warn?: Function }, createIfMissing?: boolean }} [opts]
- *   `home` overrides where the fleet-key lookup is rooted -- tests MUST pass
- *   a temp dir here. `createIfMissing` defaults to `true`; pass `false` for a
- *   read-only probe.
+ * @param {{ home?: string, env?: Record<string, string|undefined>, logger?: { warn?: Function }, createIfMissing?: boolean }} [opts]
+ *   fleet.key is located by the shared resolver
+ *   (@apralabs/apra-fleet-client/fleet-paths, apra-fleet-q1ku):
+ *   `<APRA_FLEET_DATA_DIR>/fleet.key` when `env` (default process.env) sets
+ *   it, else `~/.apra-fleet/fleet.key`. `home` is a test seam that roots the
+ *   default layout at a temp dir (wins over APRA_FLEET_DATA_DIR).
+ *   `createIfMissing` defaults to `true`; pass `false` for a read-only probe.
  * @returns {{ token: string, path: string, source: 'fleet-key'|'private-token', aclVerified: boolean, created: boolean }|null}
  *   `null` only when `createIfMissing: false` and no token exists at either
  *   source.

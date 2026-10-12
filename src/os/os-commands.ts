@@ -161,6 +161,18 @@ export interface OsCommands {
    */
   gitRemoteOrigin(folder: string): string;
 
+  /**
+   * Probe whether git will operate on `folder` from THIS member's context.
+   * Prints NOTHING when git is happy (including: not a repo is reported by git
+   * on stderr, which IS printed -- see classifyGitProbeOutput in
+   * services/git-access.ts, which tells "not a git repository" (fine) from a
+   * refusal such as "detected dubious ownership in repository"). Unlike
+   * gitRemoteOrigin the failure is deliberately OBSERVABLE: git's stderr is
+   * folded into stdout and printed only when git exits non-zero; the command
+   * itself still exits 0.
+   */
+  gitRepoAccessProbe(folder: string): string;
+
   // --- GPU activity ---
   gpuProcessCheck(): string;  // outputs "busy"|"idle", exits 2 if nvidia-smi not available
   gpuUtilization(): string;   // outputs GPU utilization 0-100 (integer), or empty if unavailable

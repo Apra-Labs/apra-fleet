@@ -251,7 +251,13 @@ beforeAll(async () => {
   // Written verbatim in the real server's shape (src/index.ts) -- including the
   // '/mcp' suffix -- so this test exercises the real resolution path rather
   // than a convenient fiction.
-  const supervisorFleetDataDir = await mkTmp('i9ag34-sv-fleet-data-');
+  // apra-fleet-q1ku: fleet.key is per-instance (<APRA_FLEET_DATA_DIR>/fleet.key
+  // unless that dir is the default ~/.apra-fleet/data), so the supervisor runs
+  // in the SAME instance as the key minted above -- the isolated home's
+  // default data dir, exactly as a production supervisor shares its server's
+  // data dir -- rather than a separate one that would carry no fleet.key.
+  const supervisorFleetDataDir = home.dataDir;
+  await fsp.mkdir(supervisorFleetDataDir, { recursive: true });
   const supervisorSeDataDir = await mkTmp('i9ag34-sv-se-data-');
   const supervisorCwd = await mkTmp('i9ag34-sv-cwd-');
   await fsp.writeFile(
@@ -264,10 +270,9 @@ beforeAll(async () => {
   supervisor = spawn(process.execPath, [SERVE_BIN, '--port', String(supervisorPort)], {
     cwd: supervisorCwd,
     stdio: ['ignore', 'pipe', 'pipe'],
-    // The supervisor child gets the SAME isolated home as this process (so it
-    // reads the one fleet key minted above) but its OWN data dirs, which is
-    // why the two APRA_FLEET_DATA_DIR/FLEET_SE_DATA_DIR values below are set
-    // AFTER the helper's spread rather than left at the helper's defaults.
+    // The supervisor child gets the SAME isolated home and fleet instance as
+    // this process (so it reads the one fleet key minted above) but its OWN
+    // se data dir, set AFTER the helper's spread.
     env: {
       ...buildIsolatedHomeEnv(tempHome),
       APRA_FLEET_DATA_DIR: supervisorFleetDataDir,

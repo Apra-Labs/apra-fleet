@@ -45,13 +45,13 @@ import fs from 'node:fs';
 import http from 'node:http';
 import net from 'node:net';
 import path from 'node:path';
-import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { StdioTransport, StreamableHttpTransport } from './transport.mjs';
 import { McpClient } from './client.mjs';
 import { ApraFleet } from './api.mjs';
 import { autoStartFleetServer, readStoppedByUser, stoppedByUserError } from './auto-start.mjs';
 import { ReconnectingHttpTransport } from './reconnecting-transport.mjs';
+import { fleetDataDir } from '../fleet-paths.mjs';
 
 export {
     autoStartFleetServer, resolveFleetStartCommand, lastServerLog, FleetAutoStartError,
@@ -64,7 +64,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /** @returns {string} ~/.apra-fleet/data (honors APRA_FLEET_DATA_DIR, like src/paths.ts) */
 export function getFleetDataDir(env = process.env) {
-    return env.APRA_FLEET_DATA_DIR ?? path.join(os.homedir(), '.apra-fleet', 'data');
+    return fleetDataDir(env);
 }
 
 /** @returns {string} path to the running server's server.json */

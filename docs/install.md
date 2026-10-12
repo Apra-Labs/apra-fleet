@@ -531,7 +531,12 @@ pointing these env vars at throwaway locations before running
 - `HOME` (or `USERPROFILE` on Windows) -- so the default data dir and install
   prefix resolve under a temp directory instead of your real home.
 - `APRA_FLEET_DATA_DIR` -- overrides the data dir directly if you want it
-  separate from `HOME`.
+  separate from `HOME`. Every per-instance file then lives inside it:
+  `fleet.key`, the supervisor id-allocator dir (`supervisor/`),
+  `install-config.json` and `code-intelligence/` (unset, they stay at
+  `~/.apra-fleet/fleet.key`, `~/.apra-fleet/supervisor` and
+  `~/.apra-fleet/data/...`). The resolver and its full layout are in
+  `packages/apra-fleet-client/src/fleet-paths.mjs`.
 - The install prefix (where the packed CLI is installed) -- point it at a
   clean temp directory distinct from any prefix an existing server was
   installed into.
@@ -543,3 +548,23 @@ unrelated servers so a differently-scoped install can proceed. As long as
 the data dir and install prefix are isolated from any running server, a
 plain `apra-fleet install` (no `--force`) completes without the guard
 firing.
+
+## Non-default instance: `--data-dir` and `--mcp-scope`
+
+`apra-fleet install --data-dir <path>` installs a self-contained non-default
+instance. `<path>` is resolved to an absolute path, applied as
+`APRA_FLEET_DATA_DIR` for the rest of the install, and `install-config.json` is
+written under it. The same variable (plus `APRA_FLEET_PORT` when set) is written
+into the OS service definition of every service the installer registers (MCP
+server and supervisor): systemd `Environment=` lines, the launchd
+`EnvironmentVariables` dict, and `set "NAME=value"` lines in the Windows wrapper
+`.bat`. A service never runs against `~/.apra-fleet/data` for such an install.
+The OS service names are per-user and shared, so this replaces any existing
+registration of the same service.
+
+`--mcp-scope user|project|none` chooses where `claude mcp add` registers
+apra-fleet (default `user`, the historical behaviour). `none` skips MCP
+registration entirely; `project` is valid only with `--llm claude`. An invalid
+value is an error listing the allowed values. The matching `claude mcp remove`
+uses the same scope. A fully isolated install is typically
+`apra-fleet install --data-dir <path> --mcp-scope none`.

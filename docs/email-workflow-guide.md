@@ -124,8 +124,13 @@ if (!hasCredential) {
 }
 ```
 
-The `credential_store_set` call opens the OOB terminal. The user types the
-secret once. All subsequent `send_email` calls resolve it automatically.
+When the server has no TTY (the normal MCP server case) or `return_url: true`
+is passed, `credential_store_set` returns immediately with
+`structuredContent: {url, expiresAt}` -- a one-time browser URL the user opens
+to enter the secret; it is stored when the form is submitted. Only when a TTY
+is attached and `return_url` is not passed does the call block on the OOB
+terminal until the user types the secret. Either way the user enters the
+secret once, and all subsequent `send_email` calls resolve it automatically.
 
 ## CI / Pipeline: setting credentials programmatically
 

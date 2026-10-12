@@ -28,7 +28,7 @@
  * function.
  */
 import fs from 'node:fs';
-import { SUPERVISOR_LOG_FILE_PATH, isNonDefaultInstance } from '../paths.js';
+import { supervisorLogFilePath, isNonDefaultInstance } from '../paths.js';
 import { SUPERVISOR_SERVE_SCRIPT, SUPERVISOR_WORKING_DIR } from '../cli/supervisor.js';
 import { getServiceManager } from './service-manager/index.js';
 
@@ -67,6 +67,7 @@ export interface SupervisorRegistrationResult {
  */
 export async function registerSupervisorService(
   binaryPath: string,
+  options: { env?: Record<string, string> } = {},
 ): Promise<SupervisorRegistrationResult> {
   if (!SERVICE_CAPABLE_PLATFORMS.has(process.platform)) {
     return {
@@ -80,7 +81,9 @@ export async function registerSupervisorService(
   // A machine-global unit records no APRA_FLEET_DATA_DIR / APRA_FLEET_PORT, so it
   // would boot the supervisor against the DEFAULT instance while this operator
   // installed an overridden one -- a unit that silently serves the wrong data.
-  if (isNonDefaultInstance()) {
+  // An explicit env (install --data-dir) is written INTO the unit, so the unit
+  // then runs against the instance it was installed for.
+  if (isNonDefaultInstance() && !options.env?.APRA_FLEET_DATA_DIR) {
     return {
       registered: false,
       reason:
@@ -109,8 +112,9 @@ export async function registerSupervisorService(
 
   const mgr = await getServiceManager('fleet-supervisor');
   try {
-    await mgr.register(binaryPath, [SUPERVISOR_SUBCOMMAND, SUPERVISOR_MANAGED_SERVICE_FLAG], SUPERVISOR_LOG_FILE_PATH, {
+    await mgr.register(binaryPath, [SUPERVISOR_SUBCOMMAND, SUPERVISOR_MANAGED_SERVICE_FLAG], supervisorLogFilePath(), {
       workingDirectory: SUPERVISOR_WORKING_DIR,
+      ...(options.env ? { env: options.env } : {}),
     });
   } catch (err) {
     return { registered: false, reason: (err as Error).message };

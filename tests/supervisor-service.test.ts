@@ -54,7 +54,7 @@ import {
   SUPERVISOR_SERVE_SCRIPT,
   SUPERVISOR_WORKING_DIR,
 } from '../src/cli/supervisor.js';
-import { SUPERVISOR_LOG_FILE_PATH } from '../src/paths.js';
+import { supervisorLogFilePath } from '../src/paths.js';
 import { WORKFLOWS_DIR } from '../src/cli/config.js';
 import { runStart } from '../src/cli/start.js';
 import { runStop, stopSupervisorServiceIfInstalled } from '../src/cli/stop.js';
@@ -115,7 +115,7 @@ describe('registerSupervisorService', () => {
     expect(supervisorMgr.register).toHaveBeenCalledWith(
       BINARY,
       [SUPERVISOR_SUBCOMMAND, '--managed-service'],
-      SUPERVISOR_LOG_FILE_PATH,
+      supervisorLogFilePath(),
       { workingDirectory: SUPERVISOR_WORKING_DIR },
     );
     expect(SUPERVISOR_SUBCOMMAND).toBe('supervisor');

@@ -50,3 +50,23 @@ what drives the decision.
   its own token on the same sprint id (any other re-acquire is refused rather than silently
   handing over the lock).
 - Tests that construct a mutex must use a temp `dataDir` so they never share a `mutex.json`.
+
+## Service token re-resolves lazily, with a bounded grace for the old token
+
+The supervisor's API guard does not capture its service token once at start.
+It re-resolves the token source on demand, so a supervisor started before
+`fleet.key` existed converges on the key-derived credential without a restart.
+When the token changes, the previous token is still accepted for a bounded grace
+window (24 hours) so in-flight callers are not cut off mid-rotation. When
+`createSupervisor` has no token source at all it warns once rather than failing
+silently.
+
+## Dashboard sign-in is a same-origin POST, never a URL token
+
+The dashboard session is established by a paste-token form that POSTs to
+`/signin`. The handler checks `Sec-Fetch-Site` and `Origin`/`Host` first, then
+compares the token with a constant-time comparison, caps the body (8 KiB), and
+sanitizes `next` to a root-relative path. A `GET` carrying `?token=` is refused
+with 400 and never compared or turned into a cookie, because tokens in URLs leak
+via history, logs and referrers. Instructions and examples must keep the key out
+of argv and URLs (use clipboard or stdin paths).

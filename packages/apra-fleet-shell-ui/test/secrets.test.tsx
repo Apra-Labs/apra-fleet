@@ -4,7 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { Secrets } from "../src/pages/Secrets";
 
 // apra-fleet-9h9j.3.3: Secrets screen (S2, apra-fleet-9h9j.3.1) against a
-// mocked fetch and window.open -- list rendering, the out-of-band add flow,
+// mocked fetch and window.open -- list rendering, the masked direct-entry add and update flows,
 // update, delete-behind-confirm, GitHub App setup, and secret non-leakage.
 // Same react-dom/client + act rendering pattern as test/app.test.tsx.
 
@@ -128,14 +128,11 @@ describe("Secrets screen (apra-fleet-9h9j.3.3)", () => {
     expect(text).not.toContain(SENTINEL);
   });
 
-  it("the add flow calls window.open with exactly the url the credential-set route returned, with no secret value in any request body", async () => {
+  it("add: value input is masked, the eye toggles it, submit posts the value, clears the field and never opens a tab", async () => {
     const openSpy = vi.fn();
     vi.stubGlobal("open", openSpy);
     const { fn, calls } = makeFetchMock({
-      "/api/fleet/credential-store-set": jsonResponse(200, {
-        url: "http://127.0.0.1:9000/collect/abc123",
-        expiresAt: "2026-10-01T00:00:00Z"
-      })
+      "/api/fleet/credential-store-value": jsonResponse(200, { name: "new-secret" })
     });
     vi.stubGlobal("fetch", fn);
 
@@ -145,19 +142,73 @@ describe("Secrets screen (apra-fleet-9h9j.3.3)", () => {
       clickButton("Add credential");
     });
     setValue(findByLabel("Name"), "new-secret");
-    setValue(findByLabel("Prompt"), "Enter the new secret");
+    const valueInput = findByLabel("Value") as HTMLInputElement;
+    expect(valueInput.type).toBe("password");
+    expect(valueInput.getAttribute("autocomplete")).toBe("off");
+    setValue(valueInput, "typed-secret-1");
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('button[aria-label="Show value"]')!.click();
+    });
+    expect((findByLabel("Value") as HTMLInputElement).type).toBe("text");
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('button[aria-label="Hide value"]')!.click();
+    });
+    expect((findByLabel("Value") as HTMLInputElement).type).toBe("password");
 
     await act(async () => {
       clickButton("Submit");
       await flush();
     });
 
-    expect(openSpy).toHaveBeenCalledTimes(1);
-    expect(openSpy).toHaveBeenCalledWith("http://127.0.0.1:9000/collect/abc123", "_blank", "noopener");
+    expect(openSpy).not.toHaveBeenCalled();
+    const valueCalls = calls.filter((c) => c.url === "/api/fleet/credential-store-value");
+    expect(valueCalls.length).toBe(1);
+    expect(valueCalls[0].body).toEqual({ name: "new-secret", value: "typed-secret-1" });
+    expect(calls.some((c) => c.url === "/api/fleet/credential-store-set")).toBe(false);
+    // The form closed; reopening it shows an empty value field.
+    expect(container.textContent ?? "").not.toContain("typed-secret-1");
+    await act(async () => {
+      clickButton("Add credential");
+    });
+    expect((findByLabel("Value") as HTMLInputElement).value).toBe("");
+    expect(container.textContent ?? "").not.toContain(SENTINEL);
+  });
 
-    for (const call of calls) {
-      expect(JSON.stringify(call.body ?? "")).not.toContain(SENTINEL);
-    }
+  it("update with a new value replaces the stored value via the value route, clears the field, and never renders an existing value", async () => {
+    const openSpy = vi.fn();
+    vi.stubGlobal("open", openSpy);
+    const { fn, calls } = makeFetchMock({
+      "/api/fleet/credential-store-value": jsonResponse(200, { name: "github-pat" })
+    });
+    vi.stubGlobal("fetch", fn);
+
+    await renderSecrets();
+
+    await act(async () => {
+      clickButton("Update");
+    });
+    const valueInput = findByLabel("New value") as HTMLInputElement;
+    expect(valueInput.type).toBe("password");
+    expect(valueInput.value).toBe("");
+    setValue(valueInput, "replacement-value");
+
+    await act(async () => {
+      clickButton("Save");
+      await flush();
+    });
+
+    expect(openSpy).not.toHaveBeenCalled();
+    const valueCalls = calls.filter((c) => c.url === "/api/fleet/credential-store-value");
+    expect(valueCalls.length).toBe(1);
+    expect(valueCalls[0].body).toMatchObject({
+      name: "github-pat",
+      value: "replacement-value",
+      network_policy: "confirm",
+      members: "*"
+    });
+    expect(calls.some((c) => c.url === "/api/fleet/credential-store-update")).toBe(false);
+    expect(container.textContent ?? "").not.toContain("replacement-value");
     expect(container.textContent ?? "").not.toContain(SENTINEL);
   });
 

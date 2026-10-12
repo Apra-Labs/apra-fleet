@@ -15,14 +15,11 @@ export interface CredentialEntry extends Record<string, unknown> {
   created_at?: string;
 }
 
-export interface CredentialCollectionUrl {
-  url: string;
-  expiresAt?: string;
-}
-
-export interface SetCredentialInput {
+/** Direct value entry: the value goes in the POST body to the console and
+ *  is never returned. Omitted options take the server defaults. */
+export interface SetCredentialValueInput {
   name: string;
-  prompt: string;
+  value: string;
   persist?: boolean;
   network_policy?: "allow" | "confirm" | "deny";
   members?: string;
@@ -75,8 +72,8 @@ export async function listCredentials(): Promise<CredentialEntry[]> {
   return data.credentials ?? [];
 }
 
-export function setCredential(input: SetCredentialInput): Promise<CredentialCollectionUrl> {
-  return postJson("/api/fleet/credential-store-set", input);
+export function setCredentialValue(input: SetCredentialValueInput): Promise<{ name: string }> {
+  return postJson("/api/fleet/credential-store-value", input);
 }
 
 export function updateCredential(input: UpdateCredentialInput): Promise<Record<string, unknown>> {

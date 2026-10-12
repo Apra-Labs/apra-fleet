@@ -42,7 +42,10 @@ import net from 'node:net';
 import { createHttpTransport, type HttpTransportHandle } from '../src/services/http-transport.js';
 import { getOrCreateKey } from '../src/services/jwt.js';
 import { FLEET_DIR } from '../src/paths.js';
-import { deriveUpstreamCredential, MOUNT_PATH_HEADER } from '../src/console/proxy.js';
+import { deriveUpstreamCredential, filterResponseHeaders, MOUNT_PATH_HEADER } from '../src/console/proxy.js';
+import fs from 'node:fs';
+import path from 'node:path';
+import { _resetCache as resetUserConfigCache } from '../src/services/user-config.js';
 import { workflowPackageService } from '../src/services/workflow-packages.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { applyIsolatedHome } from './helpers/isolated-home.mjs';
@@ -877,6 +880,81 @@ describe('/ext proxy: guarded/unguarded method split', () => {
 
     const stillAlive = await rawRequest(console_.port, 'GET', '/health');
     expect(stillAlive.status).toBe(200);
+  });
+});
+
+describe('/ext proxy: Set-Cookie handling (apra-fleet-iywi.14, .16)', () => {
+  it('filterResponseHeaders matches the reserved cookie by parsed name, not a regex built from it', () => {
+    const out = filterResponseHeaders(
+      { 'set-cookie': ['axb=1; Path=/', 'a.b=2; Path=/', ' a.b =3'] },
+      'a.b',
+      '/ext/p',
+    );
+    const cookies = out['set-cookie'] as string[];
+    expect(cookies).toHaveLength(1);
+    expect(cookies[0]).toMatch(/^axb=1; /);
+  });
+
+  it('scopes every relayed cookie to Path=/ext/<id> with no Domain, preserving other attributes', () => {
+    const out = filterResponseHeaders(
+      {
+        'set-cookie': [
+          'a=1',
+          'b=2; Path=/',
+          'c=3; Path=/other',
+          'd=4; Domain=example.com; Path=/x; HttpOnly; Secure; SameSite=Strict; Max-Age=60',
+          'e=5; domain=.example.com',
+        ],
+      },
+      'apra_console_token',
+      '/ext/pkg%20one',
+    );
+    const cookies = out['set-cookie'] as string[];
+    expect(cookies).toHaveLength(5);
+    for (const c of cookies) {
+      expect(c).toMatch(/; Path=\/ext\/pkg%20one$/);
+      expect(c.match(/Path=/gi)).toHaveLength(1);
+      expect(c).not.toMatch(/domain/i);
+    }
+    expect(cookies[3]).toBe('d=4; HttpOnly; Secure; SameSite=Strict; Max-Age=60; Path=/ext/pkg%20one');
+  });
+
+  it('end to end: an upstream Set-Cookie of apra_console_token never reaches the client, others are path-scoped', async () => {
+    const upstream = await startUpstream((_req, res) => {
+      res.writeHead(200, {
+        'Set-Cookie': ['apra_console_token=evil; Path=/', 'sess=1; Path=/; Domain=127.0.0.1; HttpOnly'],
+      });
+      res.end('ok');
+    });
+    const id = uniqueId('pkg-cookie');
+    await registerPackage(id, upstream.baseUrl);
+    const console_ = await startConsole();
+
+    const res = await rawRequest(console_.port, 'GET', `/ext/${id}/x`);
+    expect(res.status).toBe(200);
+    expect(res.headers['set-cookie']).toEqual([`sess=1; HttpOnly; Path=/ext/${id}`]);
+  });
+});
+
+describe('/ext proxy: config-declared package with a bad scheme (apra-fleet-iywi.18)', () => {
+  it('answers 404 (treated as no such package; the config error is surfaced via the registry, not the proxy) and keeps serving', async () => {
+    const configFile = path.join(FLEET_DIR, 'config.json');
+    fs.mkdirSync(FLEET_DIR, { recursive: true });
+    fs.writeFileSync(configFile, JSON.stringify({ workflowPackages: [{ id: 'pkg-cfg-ftp', baseUrl: 'ftp://127.0.0.1:1' }] }), 'utf-8');
+    resetUserConfigCache();
+    try {
+      const listed = workflowPackageService.list().find((p) => p.id === 'pkg-cfg-ftp');
+      expect(listed?.configError).not.toBeNull();
+
+      const console_ = await startConsole();
+      const res = await rawRequest(console_.port, 'GET', '/ext/pkg-cfg-ftp/x');
+      expect(res.status).toBe(404);
+      const after = await rawRequest(console_.port, 'GET', `/ext/${uniqueId('after-cfg')}/x`);
+      expect(after.status).toBe(404);
+    } finally {
+      fs.rmSync(configFile, { force: true });
+      resetUserConfigCache();
+    }
   });
 });
 

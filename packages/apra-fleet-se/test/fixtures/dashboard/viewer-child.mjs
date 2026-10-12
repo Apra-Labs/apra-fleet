@@ -27,7 +27,9 @@
 //                        short delay -- proves incremental (non-buffered)
 //                        delivery through the supervisor's proxy.
 //   GET  /state          JSON state blob (also the watchdog's HTTP-reachability
-//                        probe target).
+//                        probe target). Carries this process's own `pid`, so
+//                        a harness can tell ITS child from any other process
+//                        answering on the same port (a raced/recycled port).
 //   POST /finish         Body: { sprintId, state? }. Writes a terminal state
 //                        file to <APRA_FLEET_DATA_DIR>/old_sprints/<sprintId>.json
 //                        (the eft.2.3 layout the watchdog + history-view read),
@@ -107,7 +109,7 @@ const server = http.createServer(async (req, res) => {
 
         if (req.method === 'GET' && (req.url === '/state' || req.url.startsWith('/state?'))) {
             res.writeHead(200, { 'content-type': 'application/json' });
-            res.end(JSON.stringify({ state: 'running' }));
+            res.end(JSON.stringify({ state: 'running', pid: process.pid }));
             return;
         }
 

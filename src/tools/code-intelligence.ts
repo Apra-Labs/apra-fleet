@@ -1,6 +1,6 @@
 import { readFile } from 'fs/promises';
-import { homedir } from 'os';
 import { join } from 'path';
+import { codeIntelligenceDir } from '../paths.js';
 import { z } from 'zod';
 import { GitNexusProvider } from './code-intelligence-gitnexus.js';
 import { CodebaseMemoryProvider } from './code-intelligence-codebase-memory.js';
@@ -20,7 +20,11 @@ export interface CodeIntelligenceProvider {
   tests(params: Record<string, unknown>): Promise<unknown>;
 }
 
-const CONFIG_PATH = join(homedir(), '.apra-fleet', 'data', 'code-intelligence', 'config.json');
+// apra-fleet-q1ku: per-instance (honours APRA_FLEET_DATA_DIR), resolved
+// lazily through the shared fleet-path resolver.
+function configPath(): string {
+  return join(codeIntelligenceDir(), 'config.json');
+}
 
 // provider 'none': every method throws E-CODE-INTEL-DISABLED -- never an ok
 // result that merely says "disabled".
@@ -260,7 +264,7 @@ export async function getProvider(memberId?: string): Promise<CodeIntelligencePr
   // Fall back to the global config.
   let providerKey = 'codebase-memory';
   try {
-    const raw = await readFile(CONFIG_PATH, 'utf8');
+    const raw = await readFile(configPath(), 'utf8');
     const config = JSON.parse(raw) as { provider?: string };
     if (config.provider) providerKey = config.provider;
   } catch {

@@ -14,6 +14,7 @@ import { createSprintController, registerSprintRoutes } from '../src/supervisor/
 import { formatStopError } from '../src/supervisor/dashboard.mjs';
 import { formatLaunchError } from '../src/supervisor/launch-form.mjs';
 import { createSupervisor } from '../src/supervisor/server.mjs';
+import { waitForChildUp as waitForChildUpWithPid } from './helpers/viewer-child-wait.mjs';
 
 // =============================================================================
 // apra-fleet-3i3.4 -- Sprint Stack Stop/Restart, end to end against a REAL
@@ -142,16 +143,13 @@ function httpPostJson(port, urlPath, payload, host = '127.0.0.1') {
     });
 }
 
-/** Waits for a just-spawned viewer-child fixture to actually be answering. */
-async function waitForChildUp(childPort) {
-    await waitFor(async () => {
-        try {
-            const r = await httpGet(childPort, '/state');
-            return r.status === 200;
-        } catch {
-            return false;
-        }
-    }, { label: 'viewer-child /state to answer' });
+/**
+ * Waits for a just-spawned viewer-child fixture to be answering GET /state AS
+ * ITSELF: only a 200 whose body pid equals `expectedPid` (the pid POST
+ * /api/sprints returned) counts -- see test/helpers/viewer-child-wait.mjs.
+ */
+function waitForChildUp(childPort, expectedPid) {
+    return waitForChildUpWithPid(childPort, expectedPid, { timeoutMs: 10000 });
 }
 
 /** Finds a named member's row in a GET /api/members response body. */
@@ -184,6 +182,13 @@ describe('Sprint Stack Stop/Restart (apra-fleet-3i3.4) -- end to end against a r
             cliPath: VIEWER_FIXTURE,
             env: { ...process.env, APRA_FLEET_DATA_DIR: dataDir },
             logger: silentLogger,
+            // A --viewer-port band of its own: with the shared default base
+            // (DEFAULT_SPAWNER_BASE_PORT 8081) this file and
+            // supervisor-dashboard-integration.test.mjs, running concurrently,
+            // both allocated 8081 for their children -- the loser's child died
+            // on EADDRINUSE while the OTHER file's child answered /state on that
+            // port. Keep distinct from every other basePort under test/.
+            basePort: 19781,
         });
 
         // apra-fleet-3i3.1: the REAL killPid export (process.kill(pid,
@@ -223,7 +228,7 @@ describe('Sprint Stack Stop/Restart (apra-fleet-3i3.4) -- end to end against a r
         const sprintId = launchRes.json.sprintId;
         const pid = track(launchRes.json.pid);
         const childPort = launchRes.json.port;
-        await waitForChildUp(childPort);
+        await waitForChildUp(childPort, pid);
 
         // The member is genuinely reserved while the sprint is live.
         const beforeMembers = await httpGet(port, '/api/members');
@@ -287,7 +292,7 @@ describe('Sprint Stack Stop/Restart (apra-fleet-3i3.4) -- end to end against a r
         const oldSprintId = launchRes.json.sprintId;
         const oldPid = track(launchRes.json.pid);
         const oldChildPort = launchRes.json.port;
-        await waitForChildUp(oldChildPort);
+        await waitForChildUp(oldChildPort, oldPid);
 
         // -- Step 1 (SPRINT_RESTART_SCRIPT): the SAME force-release route Stop
         // uses -- no separate manual Stop call precedes this.
@@ -324,7 +329,7 @@ describe('Sprint Stack Stop/Restart (apra-fleet-3i3.4) -- end to end against a r
 
         // The new child is genuinely alive -- a real relaunch, not just a
         // ledger bookkeeping update.
-        await waitForChildUp(newChildPort);
+        await waitForChildUp(newChildPort, newPid);
         assert.ok(isPidAlive(newPid));
 
         // The scope is now claimed under the NEW sprint id.
@@ -348,7 +353,7 @@ describe('Sprint Stack Stop/Restart (apra-fleet-3i3.4) -- end to end against a r
         assert.equal(launchRes.status, 201, JSON.stringify(launchRes.json));
         const oldSprintId = launchRes.json.sprintId;
         const oldPid = track(launchRes.json.pid);
-        await waitForChildUp(launchRes.json.port);
+        await waitForChildUp(launchRes.json.port, oldPid);
 
         const releaseRes = await httpPostJson(port, `/api/reservations/${encodeURIComponent(oldSprintId)}/force-release`, {
             reason: 'restarted via Sprint Stack Restart button',
@@ -362,8 +367,8 @@ describe('Sprint Stack Stop/Restart (apra-fleet-3i3.4) -- end to end against a r
             issue: 'interloper', members: ['dave'], branch: 'feat/interloper', base: 'main',
         });
         assert.equal(interloperRes.status, 201, JSON.stringify(interloperRes.json));
-        track(interloperRes.json.pid);
-        await waitForChildUp(interloperRes.json.port);
+        const interloperPid = track(interloperRes.json.pid);
+        await waitForChildUp(interloperRes.json.port, interloperPid);
 
         // Step 2 of the restart now conflicts (409): 'dave' is claimed by the
         // interloper sprint.

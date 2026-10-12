@@ -38,25 +38,28 @@ order.
 ### Opening the dashboard in a browser
 
 A plain visit to `http://localhost:8787/` renders a read-only view with a
-sign-in notice and sets no cookie. To sign the browser in, open the page once
-with the service token appended as `?token=`. The supervisor checks it, sets
-an HttpOnly `se_token` cookie carrying a value DERIVED from the token (never
-the token itself), and redirects to the same page with the token removed from
-the address bar. A wrong token sets no cookie and answers 401. The cookie then
-authorizes the page's own Stop/Restart/launch controls. The raw token is only
-ever accepted as an `Authorization: Bearer` header, never as the cookie.
+sign-in form and sets no cookie. To sign the browser in, paste the service
+token into that form once. The form POSTs the token in the request body (never
+the URL) to the same supervisor's `/signin` route, which checks it, sets an
+HttpOnly `se_token` cookie carrying a value DERIVED from the token (never the
+token itself), and redirects back to the page. A wrong token sets no cookie and
+answers 401. The cookie then authorizes the page's own Stop/Restart/launch
+controls. The raw token is only ever accepted as an `Authorization: Bearer`
+header, never as the cookie. A page address carrying `?token=` is refused
+(400, no cookie): never put the token in a URL or on a command line.
 
-Build and open the link (bash; macOS uses `open`, Linux `xdg-open`):
+Copy the token to the clipboard without it appearing on a command line (bash;
+macOS `pbcopy`, Linux `xclip -selection clipboard`):
 ```bash
-open "http://localhost:8787/?token=$(cat ~/.apra-fleet/fleet.key 2>/dev/null || cat <dataDir>/private/token)"
+pbcopy < ~/.apra-fleet/fleet.key    # or: pbcopy < <dataDir>/private/token
 ```
 PowerShell:
 ```powershell
-Start-Process "http://localhost:8787/?token=$(if (Test-Path "$HOME\.apra-fleet\fleet.key") { Get-Content "$HOME\.apra-fleet\fleet.key" } else { Get-Content <dataDir>\private\token })"
+Get-Content "$HOME\.apra-fleet\fleet.key" -Raw | Set-Clipboard
 ```
 The supervisor's startup log line `dashboard sign-in: open
-http://localhost:<port>/?token=<contents of <file>>` names the exact port and
-token file in use; it never prints the token value.
+http://localhost:<port>/ and paste the contents of <file> into the sign-in form`
+names the exact port and token file in use; it never prints the token value.
 
 ## 0. Start the supervisor (if not already running)
 

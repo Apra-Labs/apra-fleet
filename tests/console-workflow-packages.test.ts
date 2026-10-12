@@ -38,6 +38,10 @@ import {
 } from '../src/services/workflow-packages.js';
 import { deriveUpstreamCredential } from '@apralabs/apra-fleet-client/auth/local-token';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { PassThrough } from 'node:stream';
+import {
+  readJsonBody, MAX_BODY_BYTES, BODY_READ_TIMEOUT_MS, workflowPackagesRoutes,
+} from '../src/console/routes/workflow-packages.js';
 import { applyIsolatedHome } from './helpers/isolated-home.mjs';
 
 function noop(_server: McpServer): void {
@@ -1091,5 +1095,54 @@ describe('workflow-package checkOwnerRef', () => {
     const result = await svc.checkOwnerRef('pkg-bad-refs', 'ref-known');
     expect(result).toHaveProperty('error');
     expect((result as { error: string }).error).toMatch(/refs/);
+  });
+});
+
+describe('register route body bounds (apra-fleet-iywi.17)', () => {
+  it('readJsonBody rejects an oversized body without accumulating more than the cap', async () => {
+    const req = new PassThrough();
+    const seen: number[] = [];
+    const p = readJsonBody(req as unknown as http.IncomingMessage, 100, 5000);
+    req.on('data', (c: Buffer) => seen.push(c.length));
+    req.write(Buffer.alloc(60));
+    req.write(Buffer.alloc(60));
+    await expect(p).rejects.toThrow(/exceeds 100 bytes/);
+    // The listener is detached once the cap trips, so later chunks are not buffered.
+    expect(req.listenerCount('data')).toBe(1); // only this test's own observer
+  });
+
+  it('the register route answers 413 and destroys the request for a body over the cap', async () => {
+    const route = workflowPackagesRoutes.find((r) => r.path === '/api/workflow-packages/register')!;
+    const req = new PassThrough() as unknown as http.IncomingMessage;
+    const destroy = vi.spyOn(req, 'destroy');
+    const out: { status?: number; body: string; headers?: Record<string, string> } = { body: '' };
+    const res = {
+      writeHead(status: number, headers?: Record<string, string>) { out.status = status; out.headers = headers; return res; },
+      end(chunk?: string, cb?: () => void) { out.body += chunk ?? ''; cb?.(); },
+    } as unknown as http.ServerResponse;
+    const done = route.handler(req, res);
+    (req as unknown as PassThrough).write(Buffer.alloc(MAX_BODY_BYTES + 1));
+    await done;
+    expect(out.status).toBe(413);
+    expect(destroy).toHaveBeenCalled();
+  });
+
+  it('a body that stalls past the read timeout is answered 408', async () => {
+    vi.useFakeTimers();
+    try {
+      const route = workflowPackagesRoutes.find((r) => r.path === '/api/workflow-packages/register')!;
+      const req = new PassThrough() as unknown as http.IncomingMessage;
+      const out: { status?: number } = {};
+      const res = {
+        writeHead(status: number) { out.status = status; return res; },
+        end(_c?: string, cb?: () => void) { cb?.(); },
+      } as unknown as http.ServerResponse;
+      const done = route.handler(req, res);
+      await vi.advanceTimersByTimeAsync(BODY_READ_TIMEOUT_MS + 1);
+      await done;
+      expect(out.status).toBe(408);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

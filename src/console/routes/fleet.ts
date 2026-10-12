@@ -41,6 +41,20 @@
  *    found ...") is NOT sniffed into a 4xx: it is a 200 whose body carries
  *    that text, exactly as the MCP surface reports it.
  *
+ *  - UNCALLED ROUTES (apra-fleet-9h9j.6). POST /api/fleet/execute-command
+ *    and POST /api/fleet/version have route tests but no shell page calls
+ *    them yet: Health.tsx reads the version out of the /api/fleet/status
+ *    payload, and no screen runs commands. They exist for a later Members
+ *    drawer "run command" action and a later Health version-detail view
+ *    respectively; an execute-command control must land behind the
+ *    console auth guard. Do not re-flag them as dead surface.
+ *
+ *  - DIRECT VALUE ENTRY. POST /api/fleet/credential-store-value is the one
+ *    route that accepts a secret VALUE (Secrets page masked form). It is a
+ *    console /api path, so the console guard covers it; the value goes
+ *    straight to credentialSet and is never echoed in a response, error or
+ *    log. The MCP credential_store_set keeps its out-of-band flow.
+ *
  *  - SECRETS. No response body may contain a secret VALUE. The credential
  *    routes therefore build their responses from an explicit whitelist
  *    (name / scope / network policy / members / expiry) instead of passing
@@ -73,6 +87,8 @@ import { setupGitAppSchema } from '../../tools/setup-git-app.js';
 import { fleetStatusSchema } from '../../tools/check-status.js';
 import { versionSchema } from '../../tools/version.js';
 import { executeCommandSchema } from '../../tools/execute-command.js';
+import { credentialSet } from '../../services/credential-store.js';
+import { logLine } from '../../utils/log-helpers.js';
 
 // ---------------------------------------------------------------------------
 // Request/response plumbing
@@ -327,6 +343,58 @@ function whitelistCredentialEntry(entry: unknown): Record<string, unknown> {
 }
 
 // ---------------------------------------------------------------------------
+// Direct secret-value entry (the console Secrets page's masked form)
+// ---------------------------------------------------------------------------
+
+/** POST /api/fleet/credential-store-value body. The value arrives in the
+ *  POST body from the console-guarded, same-origin session and goes straight
+ *  to the credential store: no one-time token, no collection URL. */
+const consoleCredentialValueSchema = z.object({
+  name: credentialStoreSetSchema.shape.name,
+  value: z.string().min(1, 'must be a non-empty string'),
+  persist: z.boolean().default(true),
+  network_policy: credentialStoreSetSchema.shape.network_policy,
+  members: credentialStoreSetSchema.shape.members,
+  ttl_seconds: credentialStoreSetSchema.shape.ttl_seconds,
+});
+
+/** Every failure here is answered with a fixed or field-name-only message:
+ *  never the submitted value, and never a thrown error's text. */
+async function handleCredentialValue(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  let raw: string;
+  try {
+    raw = await readBody(req);
+  } catch {
+    sendError(res, 400, 'request body could not be read');
+    return;
+  }
+  let parsed: unknown;
+  try {
+    parsed = raw.trim() === '' ? {} : JSON.parse(raw);
+  } catch {
+    sendError(res, 400, 'invalid JSON body');
+    return;
+  }
+  const validated = consoleCredentialValueSchema.safeParse(parsed);
+  if (!validated.success) {
+    // zodMessage names fields and rule text only; zod issue messages for
+    // these schemas never embed the received input.
+    sendError(res, 400, `invalid request body: ${zodMessage(validated.error)}`);
+    return;
+  }
+  const input = validated.data;
+  try {
+    const members = input.members === '*' ? '*' : input.members.split(',').map((s) => s.trim()).filter(Boolean);
+    credentialSet(input.name, input.value, input.persist, input.network_policy, members, input.ttl_seconds);
+  } catch {
+    sendError(res, 500, 'failed to store credential');
+    return;
+  }
+  logLine('credential_store_set', `name=${input.name} persist=${input.persist} via=console_form`);
+  sendJson(res, 200, { name: input.name });
+}
+
+// ---------------------------------------------------------------------------
 // Console-specific schema narrowings
 // ---------------------------------------------------------------------------
 
@@ -449,6 +517,12 @@ export const fleetRoutes: ConsoleRoute[] = [
       sendJson(res, 200, { url, expiresAt: typeof expiresAt === 'string' ? expiresAt : undefined });
     },
   }),
+
+  {
+    method: 'POST',
+    path: '/api/fleet/credential-store-value',
+    handler: handleCredentialValue,
+  },
 
   postRoute({
     path: '/api/fleet/credential-store-list',

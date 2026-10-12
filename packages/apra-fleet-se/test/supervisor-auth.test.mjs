@@ -15,6 +15,7 @@ import {
     TOKEN_FILE_MODE,
     TOKEN_ACL_UNVERIFIED_WARNING,
     deriveDashboardCookie,
+    resolveServiceToken,
 } from '../src/supervisor/auth.mjs';
 
 // =============================================================================
@@ -166,6 +167,51 @@ describe('loadOrCreateToken', () => {
 
     test('rejects an empty dir argument', () => {
         assert.throws(() => loadOrCreateToken(''), TypeError);
+    });
+});
+
+// The fleet-key source must EARN aclVerified the same way private/token does:
+// a stat proving the key is owner-only. The key is placed where the shared
+// fleet-path resolver puts it for an instance whose APRA_FLEET_DATA_DIR is
+// `dir` (<dir>/fleet.key), passed as an explicit env so nothing reads or
+// writes the real home.
+describe('resolveServiceToken: fleet-key aclVerified', () => {
+    const KEY = 'd'.repeat(64);
+    function writeKey(mode) {
+        const keyPath = path.join(dir, 'fleet.key');
+        fs.writeFileSync(keyPath, KEY, 'utf8');
+        fs.chmodSync(keyPath, mode);
+        return keyPath;
+    }
+    function resolve() {
+        return resolveServiceToken(path.join(dir, 'se'), {
+            env: { APRA_FLEET_DATA_DIR: dir },
+            createIfMissing: false,
+        });
+    }
+
+    test('POSIX: a world-readable (0644) fleet.key reports aclVerified false and is left untouched', { skip: IS_WINDOWS }, () => {
+        const keyPath = writeKey(0o644);
+        const result = resolve();
+        assert.equal(result.source, 'fleet-key');
+        assert.equal(result.path, keyPath);
+        assert.equal(result.token, KEY);
+        assert.equal(result.aclVerified, false);
+        // Never healed by the reader: mode and bytes unchanged.
+        assert.equal(fs.statSync(keyPath).mode & 0o777, 0o644);
+        assert.equal(fs.readFileSync(keyPath, 'utf8'), KEY);
+    });
+
+    test('POSIX: a 0600 fleet.key reports aclVerified true', { skip: IS_WINDOWS }, () => {
+        writeKey(0o600);
+        const result = resolve();
+        assert.equal(result.source, 'fleet-key');
+        assert.equal(result.aclVerified, true);
+    });
+
+    test('Windows: a fleet.key always reports aclVerified false', { skip: !IS_WINDOWS }, () => {
+        writeKey(0o600);
+        assert.equal(resolve().aclVerified, false);
     });
 });
 
