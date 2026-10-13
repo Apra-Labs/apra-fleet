@@ -196,9 +196,45 @@ export async function startKbServer(port: number, generateToken: boolean, dbPath
           ?.split(',')
           .filter((c): c is Confidence => c === 'CONFIRMED' || c === 'INFERRED' || c === 'UNVERIFIED');
         const exclude_disputed = url.searchParams.get('exclude_disputed') === 'true';
+        // tag: exact-match tag filter (HttpKbProvider uses it for the member
+        // own-scope lookup, tag=member:<uuid>); a tag alone lists every entry
+        // carrying it. include_stale / include_superseded as in kb_query.
+        const tag = url.searchParams.get('tag') || undefined;
+        const include_stale = url.searchParams.get('include_stale') === 'true';
+        const include_superseded = url.searchParams.get('include_superseded') === 'true';
 
-        const result = await provider.query({ query, type, limit, l1_only, confidence, exclude_disputed });
+        const result = await provider.query({
+          query, type, tag, limit, l1_only, confidence, exclude_disputed, include_stale, include_superseded,
+        });
         return jsonResponse(res, 200, result as unknown as Record<string, unknown>);
+      }
+
+      // POST /api/kb/promote  {id, reason} -> {id, previous_confidence, new_confidence}
+      // Same reply shape as the kb_promote tool. An unknown id is 404; any
+      // other refusal of the promote ladder (reason, superseded, directive,
+      // unresolved basis) is 422 with the provider's message.
+      if (pathname === '/api/kb/promote' && method === 'POST') {
+        const { id, reason } = JSON.parse(await readBody(req)) as { id?: unknown; reason?: unknown };
+        if (typeof id !== 'string' || id.length === 0) {
+          return jsonResponse(res, 400, { error: 'id must be a non-empty string', code: 'BAD_REQUEST' });
+        }
+        if (reason !== undefined && typeof reason !== 'string') {
+          return jsonResponse(res, 400, { error: 'reason must be a string', code: 'BAD_REQUEST' });
+        }
+        try {
+          const result = await provider.promote(id, reason);
+          return jsonResponse(res, 200, {
+            id: result.id,
+            previous_confidence: result.confidence_before,
+            new_confidence: result.confidence_after,
+          });
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          if (message.startsWith('Entry not found')) {
+            return jsonResponse(res, 404, { error: message, code: 'NOT_FOUND' });
+          }
+          return jsonResponse(res, 422, { error: message, code: 'PROMOTE_REFUSED' });
+        }
       }
 
       // POST /api/kb/invalidate

@@ -560,6 +560,18 @@ The client writes this to `~/.apra-fleet/data/knowledge/config.json`:
 
 The token is stored AES-256-GCM encrypted. It is never written in plaintext.
 
+Routes the http provider uses (all except `/health` need the bearer token).
+Another server can stand in for `kb-server` by serving the same routes:
+
+| Route | Used for |
+|---|---|
+| `POST /api/kb/capture` | kb_capture |
+| `GET /api/kb/query` (`query`, `type`, `tag`, `limit`, `l1_only`, `confidence`, `exclude_disputed`, `include_stale`, `include_superseded`) | kb_query, and the member own-scope lookup (`tag=member:<uuid>`); entries must carry their `tags` |
+| `GET /api/kb/context` | kb_context |
+| `POST /api/kb/prime` | kb_session_prime |
+| `POST /api/kb/invalidate` (`{files}`) | kb_invalidate with files |
+| `POST /api/kb/promote` (`{id, reason}` -> `{id, previous_confidence, new_confidence}`; 404 unknown id, 422 refused) | kb_promote |
+
 ### 3. GitNexus (optional, codebase plane)
 
 Install GitNexus as an MCP server in `.mcp.json` (already done if you used the
@@ -764,11 +776,11 @@ Design notes:
   file (read without touching the KB) and logs, rather than throws, when the
   bible is unreadable.
 
-#### How-to: Point fleet at a central MemorEYES server
+#### How-to: Point fleet at a central KB server
 
-To redirect every repo on a fleet install to a central KB server (like
-MemorEYES), configure the HTTP provider from a FULL session (orchestrator or
-local CLI). This setting is install-wide: one config file covers every repo
+To redirect every repo on a fleet install to a central KB server (fleet's own
+`kb-server`, or any server that implements the same HTTP routes), configure
+the HTTP provider from a FULL session (orchestrator or local CLI). This setting is install-wide: one config file covers every repo
 served by the fleet install, though each repo retains its own KB database.
 
 **Command:**
@@ -780,9 +792,8 @@ kb_setup with provider='http', remote='<server-url>', token='<bearer-token>'
 **Setup steps:**
 
 1. Obtain the server URL and a bearer token from the central KB server's
-   operator (for MemorEYES, the token is issued by that service). Fleet's own
-   `node dist/index.js kb-server` (with `--generate-token`) is a separate,
-   fleet-hosted server, relevant only if you run that one.
+   operator. For fleet's own `node dist/index.js kb-server`, the token comes
+   from `--generate-token` (see [Central server](#2-central-server-http-team-shared)).
 
 2. On each client machine (one per fleet install), call the `kb_setup` MCP tool
    from a FULL session (orchestrator or local session) with the server URL and

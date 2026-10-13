@@ -1,12 +1,15 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import http from 'node:http';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { startKbServer, KbServerHttpProviderRefusedError } from '../../src/commands/kb-server.js';
 import { FLEET_DIR } from '../../src/paths.js';
 import { encryptPassword } from '../../src/utils/crypto.js';
 import { resetKbProviders } from '../../src/services/knowledge/kb-providers.js';
+import { HttpKbProvider } from '../../src/services/knowledge/http-provider.js';
+import { SqliteProvider } from '../../src/services/knowledge/sqlite-provider.js';
 
 const TEST_PORT = 17878;
 const TOKEN_DIR = path.join(FLEET_DIR, 'knowledge');
@@ -60,6 +63,94 @@ beforeAll(async () => {
 afterAll(async () => {
   await new Promise<void>((resolve) => server.close(() => resolve()));
   try { fs.unlinkSync(TOKEN_PATH); } catch { /* ignore */ }
+});
+
+// Declared before the main suite on purpose: its rate-limit test exhausts
+// the per-IP bucket (module-level, 60s window), and these requests would
+// then get 429.
+// POST /api/kb/promote and the query tag filter: the routes HttpKbProvider
+// uses for promote and for the member own-scope lookup, served by fleet's own
+// reference server so the http provider has a fleet-defined counterpart.
+describe('kb-server promote and tag filter', () => {
+  const PROMOTE_REASON = 'Checked against src/commands/kb-server.ts: the route exists and is served.';
+
+  async function captureTagged(tags: string[]): Promise<string> {
+    const marker = crypto.randomUUID();
+    const res = await request('POST', '/api/kb/capture', {
+      body: {
+        type: 'knowledge',
+        title: `kb-server promote route check ${marker}`,
+        summary: `Entry ${marker} captured to exercise the promote route.`,
+        content: `Unique content ${marker} for the kb-server promote route test.`,
+        source_files: ['src/commands/kb-server.ts'],
+        symbols: [], tags, content_hash: '', content_hash_type: 'sha256',
+        flagged_for_review: false, author: 'test', source: 'doer', confidence: 'INFERRED',
+      },
+    });
+    expect(res.status).toBe(201);
+    return res.body.id as string;
+  }
+
+  it('promotes an INFERRED entry to CONFIRMED and answers {id, previous_confidence, new_confidence}', async () => {
+    const id = await captureTagged([]);
+    const res = await request('POST', '/api/kb/promote', { body: { id, reason: PROMOTE_REASON } });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ id, previous_confidence: 'INFERRED', new_confidence: 'CONFIRMED' });
+  });
+
+  it('answers 404 NOT_FOUND for an unknown id', async () => {
+    const res = await request('POST', '/api/kb/promote', { body: { id: 'no-such-entry', reason: PROMOTE_REASON } });
+    expect(res.status).toBe(404);
+    expect(res.body).toMatchObject({ code: 'NOT_FOUND', error: 'Entry not found: no-such-entry' });
+  });
+
+  it('answers 422 PROMOTE_REFUSED when the promote ladder refuses (trivial reason) and leaves the entry INFERRED', async () => {
+    const tag = `owner:${crypto.randomUUID()}`;
+    const id = await captureTagged([tag]);
+    const res = await request('POST', '/api/kb/promote', { body: { id, reason: 'ok' } });
+    expect(res.status).toBe(422);
+    expect(res.body.code).toBe('PROMOTE_REFUSED');
+    expect(res.body.error).toMatch(/requires a reason/);
+    const after = await request('GET', `/api/kb/query?tag=${encodeURIComponent(tag)}&confidence=INFERRED,CONFIRMED`);
+    expect(after.body.results.map((e: { id: string; confidence: string }) => [e.id, e.confidence])).toEqual([[id, 'INFERRED']]);
+  });
+
+  it('answers 400 BAD_REQUEST without an id', async () => {
+    const res = await request('POST', '/api/kb/promote', { body: { reason: PROMOTE_REASON } });
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('BAD_REQUEST');
+  });
+
+  it('GET /api/kb/query?tag= returns only entries carrying that tag, with their tags', async () => {
+    const tag = `owner:${crypto.randomUUID()}`;
+    const tagged = await captureTagged([tag]);
+    await captureTagged([`owner:${crypto.randomUUID()}`]);
+    const res = await request('GET', `/api/kb/query?tag=${encodeURIComponent(tag)}&confidence=INFERRED`);
+    expect(res.status).toBe(200);
+    expect(res.body.results.map((e: { id: string }) => e.id)).toEqual([tagged]);
+    expect(res.body.results[0].tags).toContain(tag);
+  });
+
+  it('HttpKbProvider against this server: member own-scope promote works for the owner and is not-found for anyone else', async () => {
+    const owner = `member:${crypto.randomUUID()}`;
+    const id = await captureTagged([owner]);
+    const fallbackDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-server-http-provider-'));
+    const provider = new HttpKbProvider(
+      `http://127.0.0.1:${TEST_PORT}`, testToken, new SqliteProvider(path.join(fallbackDir, 'kb.sqlite')),
+    );
+    try {
+      await expect(provider.promote(id, PROMOTE_REASON, { ownerTag: `member:${crypto.randomUUID()}` }))
+        .rejects.toThrow(`Entry not found: ${id}`);
+      const stillInferred = await request('GET', `/api/kb/query?tag=${encodeURIComponent(owner)}&confidence=INFERRED`);
+      expect(stillInferred.body.results.map((e: { id: string }) => e.id)).toEqual([id]);
+
+      await expect(provider.promote(id, PROMOTE_REASON, { ownerTag: owner }))
+        .resolves.toEqual({ id, confidence_before: 'INFERRED', confidence_after: 'CONFIRMED' });
+    } finally {
+      provider.dispose();
+      fs.rmSync(fallbackDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('kb-server', () => {

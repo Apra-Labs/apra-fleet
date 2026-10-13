@@ -57,7 +57,8 @@ const requests: RecordedRequest[] = [];
 const serverEntries = new Map<string, string[]>();
 const serverIds = { add: (id: string, tags: string[] = []) => { serverEntries.set(id, tags); } };
 let omitTagsInQuery = false;
-let responseSpelling: 'previous_new' | 'before_after' = 'previous_new';
+// When set, the promote route answers 200 with a reply missing the contract fields.
+let malformedPromoteReply = false;
 let refusalOverride: { status: number; body: Record<string, unknown> | string } | null = null;
 
 function startServer(listenPort: number): Promise<void> {
@@ -82,9 +83,9 @@ function startServer(listenPort: number): Promise<void> {
         }
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(
-          responseSpelling === 'previous_new'
-            ? { id, previous_confidence: 'INFERRED', new_confidence: 'CONFIRMED' }
-            : { id, confidence_before: 'INFERRED', confidence_after: 'CONFIRMED' },
+          malformedPromoteReply
+            ? { id, confidence_before: 'INFERRED', confidence_after: 'CONFIRMED' }
+            : { id, previous_confidence: 'INFERRED', new_confidence: 'CONFIRMED' },
         ));
       } else if (req.url === '/api/kb/capture' && req.method === 'POST') {
         const id = `srv-${crypto.randomUUID()}`;
@@ -159,7 +160,7 @@ afterEach(() => {
   serverEntries.clear();
   omitTagsInQuery = false;
   refusalOverride = null;
-  responseSpelling = 'previous_new';
+  malformedPromoteReply = false;
 });
 
 afterAll(async () => {
@@ -169,25 +170,29 @@ afterAll(async () => {
 });
 
 describe('HttpKbProvider.promote', () => {
-  it('1. posts {id, reason} once and maps both response spellings', async () => {
+  it('1. posts {id, reason} once and maps {previous_confidence, new_confidence}', async () => {
     const { provider } = await httpProject();
-    for (const spelling of ['previous_new', 'before_after'] as const) {
-      responseSpelling = spelling;
-      requests.length = 0;
-      const { id } = await provider.capture({
-        type: 'knowledge', title: 'promote http', summary: 'Entry captured for promote over http.',
-        content: 'promote http content', source_files: [], symbols: [], tags: [], content_hash: '',
-        content_hash_type: 'sha256', flagged_for_review: false, author: 'doer', source: 'session',
-        confidence: 'INFERRED',
-      });
-      requests.length = 0;
-      const result = await provider.promote(id, REASON);
-      expect(result).toEqual({ id, confidence_before: 'INFERRED', confidence_after: 'CONFIRMED' });
-      expect(requests).toHaveLength(1);
-      expect(requests[0].method).toBe('POST');
-      expect(requests[0].url).toBe('/api/kb/promote');
-      expect(requests[0].body).toEqual({ id, reason: REASON });
-    }
+    const { id } = await provider.capture({
+      type: 'knowledge', title: 'promote http', summary: 'Entry captured for promote over http.',
+      content: 'promote http content', source_files: [], symbols: [], tags: [], content_hash: '',
+      content_hash_type: 'sha256', flagged_for_review: false, author: 'doer', source: 'session',
+      confidence: 'INFERRED',
+    });
+    requests.length = 0;
+    const result = await provider.promote(id, REASON);
+    expect(result).toEqual({ id, confidence_before: 'INFERRED', confidence_after: 'CONFIRMED' });
+    expect(requests).toHaveLength(1);
+    expect(requests[0].method).toBe('POST');
+    expect(requests[0].url).toBe('/api/kb/promote');
+    expect(requests[0].body).toEqual({ id, reason: REASON });
+  });
+
+  it('1b. rejects a reply without previous_confidence/new_confidence', async () => {
+    const { provider } = await httpProject();
+    serverIds.add('malformed-reply-id');
+    malformedPromoteReply = true;
+    await expect(provider.promote('malformed-reply-id', REASON))
+      .rejects.toThrow(/without previous_confidence\/new_confidence/);
   });
 
   it('2. promotes a server-only id and leaves the fallback store without a row', async () => {

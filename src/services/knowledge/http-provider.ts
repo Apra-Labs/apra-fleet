@@ -384,8 +384,8 @@ export class HttpKbProvider implements MemoryProvider {
       }
       throw err;
     }
-    const before = result?.previous_confidence ?? result?.confidence_before;
-    const after = result?.new_confidence ?? result?.confidence_after;
+    const before = result?.previous_confidence;
+    const after = result?.new_confidence;
     if (typeof before !== 'string' || typeof after !== 'string') {
       throw new Error(
         `kb_promote: KB server at ${this.baseUrl} returned a promote response without `
