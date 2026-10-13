@@ -443,8 +443,12 @@ export async function runDevelopPhase({
             },
             // Built INSIDE the bracket, after the claim: the streak this
             // dispatch actually owns is only known once the claim has run.
-            prepare: async ({ dispatch, resumeAttempt }) => {
-                if (dispatch.kind === 'max-turns-resume') {
+            prepare: async ({ dispatch, resumeAttempt, freshSession }) => {
+                // freshSession: the engine has no explicit session id to resume
+                // (or the id was not found), so this secondary dispatch is a
+                // FRESH session and gets the FULL streak prompt below, with the
+                // worklist's warm-session resume suppressed.
+                if (dispatch.kind === 'max-turns-resume' && !freshSession) {
                     const resumeTurns = BASE_DOER_MAX_TURNS * (2 ** resumeAttempt);
                     log(
                         `Doer streak ${streakScope()} on member '${doerMember}' exhausted its turn limit ` +
@@ -509,7 +513,7 @@ export async function runDevelopPhase({
                 // fall back to a FRESH session carrying the FULL prompt --
                 // never a delta prompt into a fresh session.
                 let worklistResumeArg = false;
-                if (worklistCtx && worklistCtx.sessionId) {
+                if (worklistCtx && worklistCtx.sessionId && !freshSession) {
                     if (hasContextHeadroomForResume(worklistCtx.usage)) {
                         worklistResumeArg = worklistCtx.sessionId;
                     } else {
@@ -597,8 +601,8 @@ export async function runDevelopPhase({
             // NEXT streak starts from a FRESH session with the full
             // prompt, mirroring createRoundSessionRegistry's
             // clear-on-failure rule. (The max-turns ladder is unaffected:
-            // it resumes the member's last session via `resume: true`,
-            // not this id.)
+            // it resumes the failed dispatch's own explicit session id, or
+            // starts a fresh full-prompt session, never this worklist id.)
             if (worklistCtx) {
                 worklistCtx.sessionId = null;
                 worklistCtx.usage = null;

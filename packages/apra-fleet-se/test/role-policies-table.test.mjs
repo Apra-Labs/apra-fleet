@@ -44,6 +44,7 @@ import {
     FIXED_ROLE_TIER,
     SCHEMAS,
     turnExhaustionError,
+    FAILED_SESSION_ID,
     authError,
     trustError,
     busyError,
@@ -977,7 +978,7 @@ describe('role policy table: retry ladders match runner.js', () => {
             responses: Array.from({ length: p.retry.resumeAttempts + 1 }, () => turnExhaustionError()),
         });
         await dispatchRole(ctx, 'doer', ROLE_CALL_OPTS.doer);
-        const resumes = rec.dispatches.filter((d) => d.options.resume === true);
+        const resumes = rec.dispatches.filter((d) => d.options.resume === FAILED_SESSION_ID);
         assert.strictEqual(
             resumes.length,
             p.retry.resumeAttempts,
@@ -1732,7 +1733,7 @@ describe('role policy table: migrated roles re-derived by running the engine', (
                 // silently reattach a one-off dispatch to a stale session.
                 const expectedResume = p.resumeArg === null || p.resumeArg.kind === 'fresh-session'
                     ? false
-                    : (p.resumeArg.kind === 'same-session' ? true : (opts.resumeArg ?? false));
+                    : (p.resumeArg.kind === 'same-session' ? FAILED_SESSION_ID : (opts.resumeArg ?? false));
                 assert.strictEqual(o.resume ?? null, expectedResume, `${row.name}: resume argument.`);
                 assert.strictEqual(o.agentType ?? null, p.agentType, `${row.name}: persona.`);
                 assert.strictEqual(

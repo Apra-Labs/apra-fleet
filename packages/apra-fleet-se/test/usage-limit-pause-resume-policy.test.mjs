@@ -363,7 +363,7 @@ describe('dispatchRole usage-limit hook', () => {
             ROLE_CALL_OPTS.reviewer.resumePrompt,
             'the re-dispatch used the RESUME prompt (same-session continuation)'
         );
-        assert.equal(rec.dispatches[1].options.resume, true, 'the resume dispatch continues the same session');
+        assert.equal(rec.dispatches[1].options.resume, 'sess-limited-1', 'the resume dispatch names the limited session by its explicit id');
         assert.ok(rec.kills.length >= 1, 'the resume path ran its kill-stale-session pre-dispatch step');
     });
 

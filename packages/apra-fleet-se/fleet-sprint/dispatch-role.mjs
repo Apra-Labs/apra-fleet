@@ -226,9 +226,21 @@ function turnBaseValue(name) {
     return base;
 }
 
+/** The session id a failed dispatch's error reports, or null. */
+function sessionIdOfError(err) {
+    const id = err && err.details && err.details.sessionId;
+    return typeof id === 'string' && id ? id : null;
+}
+
 /**
  * The resume argument, resolved from `policy.resumeArg`:
- *   'same-session'  -- true (an in-dispatch continuation of the session just run)
+ *   'same-session'  -- opts.resumeSessionId, the EXPLICIT id of the session just
+ *                      run (the failed dispatch's err.details.sessionId). NEVER
+ *                      `true`: the server resolves `true` to the member's last
+ *                      SUCCESSFUL session, which on a member shared by several
+ *                      roles can be a reviewer's or planner's session. With no id
+ *                      it yields false (the caller starts a fresh full-prompt
+ *                      session instead of resuming)
  *   'fresh-session' -- false (a self-contained one-off instruction)
  *   'round-session' -- opts.resumeArg, the runner's per-round session lookup
  *   'worklist'      -- opts.resumeArg, the doer's per-worklist resume argument
@@ -247,7 +259,9 @@ function turnBaseValue(name) {
  */
 export function resolveResumeArg(resumeArg, opts) {
     if (!resumeArg) return false;
-    if (resumeArg.kind === 'same-session') return true;
+    if (resumeArg.kind === 'same-session') {
+        return typeof opts.resumeSessionId === 'string' && opts.resumeSessionId ? opts.resumeSessionId : false;
+    }
     if (resumeArg.kind === 'fresh-session') return false;
     // A runner-supplied argument: already `false` or an explicit session id at
     // every call site today. `?? false` keeps the never-undefined guarantee if
@@ -559,9 +573,16 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
             // In-bracket pre-dispatch steps, then the caller's own preparation.
             const inBracket = await runPreDispatchSteps(ctx, dispatch, member, opts, extra, 'in-bracket');
             if (inBracket) return inBracket.value;
-            const prepared = opts.prepare ? await opts.prepare({ dispatch, ...extra }) : {};
+            const prepared = opts.prepare ? { ...(await opts.prepare({ dispatch, ...extra })) } : {};
+            // A fresh-session fallback (no explicit session id to resume) must
+            // never carry a resume argument, whatever prepare offered.
+            if (extra.freshSession) prepared.resumeArg = false;
             const localBindings = { ...bindingsFor(extra.resumeAttempt || 0), ...(prepared.bindings || {}) };
-            const localOpts = prepared.resumeArg !== undefined ? { ...opts, resumeArg: prepared.resumeArg } : opts;
+            const localOpts = {
+                ...opts,
+                ...(prepared.resumeArg !== undefined ? { resumeArg: prepared.resumeArg } : {}),
+                resumeSessionId: extra.resumeSessionId || null,
+            };
             const options = {
                 agentType: dispatch.agentType ?? undefined,
                 model: resolveModelTier(ctx, dispatch.model, localBindings),
@@ -641,8 +662,15 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
             // turns can fix, so the escalation stops there.
             let resumeAttempt = 0;
             let lastResumeErr = err;
+            // The EXPLICIT id of the session the failed dispatch ran in. A
+            // resume targets exactly this id; with none, the resume becomes a
+            // fresh session carrying the FULL role prompt (never resume: true,
+            // which could reattach another role's session on a shared member).
+            let resumeSessionId = sessionIdOfError(err);
+            let sessionLostOnce = false;
             while (resumeAttempt < Math.max(retry.resumeAttempts, resumesOnInfra ? 1 : 0)) {
                 resumeAttempt += 1;
+                const freshFallback = !resumeSessionId;
                 // A resume follows an agent that DID run (max_turns_exhausted is
                 // a resumable partial-work case, not a no-mutation failure), so
                 // it always runs the full pre-dispatch sync -- no attemptOpts.
@@ -675,14 +703,45 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
                         `(attempt ${resumeAttempt}/${retry.resumeAttempts}).`
                     );
                 }
+                if (freshFallback) {
+                    ctx.log(
+                        `${roleLabel}: starting a FRESH session with the full role prompt instead of resuming -- ` +
+                        (sessionLostOnce
+                            ? 'the session to resume was not found on the member.'
+                            : 'the failed dispatch reported no session id, so there is no explicit session to resume.')
+                    );
+                } else {
+                    ctx.log(`${roleLabel}: resuming explicit session '${resumeSessionId}'.`);
+                }
                 resumesIssued += 1;
                 try {
-                    return await runDispatch(secondary, opts.resumePrompt, opts.resumeLabel, undefined, { resumeAttempt });
+                    return await runDispatch(
+                        secondary,
+                        freshFallback ? opts.prompt : opts.resumePrompt,
+                        freshFallback ? opts.label : opts.resumeLabel,
+                        undefined,
+                        { resumeAttempt, resumeSessionId, freshSession: freshFallback },
+                    );
                 } catch (resumeErr) {
                     lastResumeErr = resumeErr;
                     const exhaustedAgain = resumeErr instanceof AgentDispatchError
                         && resumeErr.details && resumeErr.details.reason === 'max_turns_exhausted';
-                    if (retry.maxTurnsResume && exhaustedAgain) continue;
+                    // The explicit session is gone: fall back to a fresh
+                    // full-prompt session, without charging the ladder.
+                    const sessionNotFound = resumeErr instanceof AgentDispatchError
+                        && resumeErr.details && resumeErr.details.reason === 'session_not_found';
+                    if (sessionNotFound && !freshFallback) {
+                        sessionLostOnce = true;
+                        resumeSessionId = null;
+                        resumeAttempt -= 1;
+                        continue;
+                    }
+                    if (retry.maxTurnsResume && exhaustedAgain) {
+                        // A re-exhaustion moves the resume target to the NEW
+                        // session's id (none -> a fresh full-prompt session).
+                        resumeSessionId = sessionIdOfError(resumeErr);
+                        continue;
+                    }
                     throw resumeErr;
                 }
             }
@@ -703,11 +762,12 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
     // fresh one. Only reached when the failing attempt reported a sessionId and
     // the role actually has a max-turns resume secondary; otherwise the caller
     // re-runs runAttempt fresh.
-    const redispatchViaUsageLimitResume = async (attemptOpts) => {
+    const redispatchViaUsageLimitResume = async (attemptOpts, sessionId) => {
         const secondary = policy.secondary;
         const shortCircuit = await runPreDispatchSteps(ctx, secondary, member, opts, { resumeAttempt: 1 });
         if (shortCircuit) return shortCircuit.value;
-        return runDispatch(secondary, opts.resumePrompt ?? opts.prompt, opts.resumeLabel ?? opts.label, attemptOpts, { resumeAttempt: 1 });
+        // Resumes the session the limit hit, by its explicit id.
+        return runDispatch(secondary, opts.resumePrompt ?? opts.prompt, opts.resumeLabel ?? opts.label, attemptOpts, { resumeAttempt: 1, resumeSessionId: sessionId });
     };
 
     let lastErr = null;
@@ -733,6 +793,8 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
     // resume ladder. A usage-limit re-dispatch does NOT consume a ladder
     // attempt (see the hook below), so it also skips the retry backoff.
     let usageLimitRedispatch = null;
+    // The explicit id of the session the usage limit hit (for the resume above).
+    let usageLimitSessionId = null;
     // A permission-refusal heal is PROGRESSIVE: each refusal is handed to
     // ctx.onPermissionDenied, which grants what the member is missing (within
     // its composed policy) and reports healed:true only when a new grant
@@ -861,7 +923,7 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
             const redispatchMode = usageLimitRedispatch;
             usageLimitRedispatch = null;
             value = redispatchMode === 'resume'
-                ? await redispatchViaUsageLimitResume(attemptOpts)
+                ? await redispatchViaUsageLimitResume(attemptOpts, usageLimitSessionId)
                 : await runAttempt(attemptOpts);
             if (opts.afterAttempt) await opts.afterAttempt(value);
             // A postResult step may REJECT the result (the reviewer's
@@ -983,6 +1045,7 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
                     const canResumeSession = Boolean(failedSessionId) && retry.resumeAttempts > 0
                         && policy.secondary && policy.secondary.kind === 'max-turns-resume';
                     usageLimitRedispatch = canResumeSession ? 'resume' : 'fresh';
+                    usageLimitSessionId = canResumeSession ? failedSessionId : null;
                     attempt -= 1;
                     continue;
                 }
