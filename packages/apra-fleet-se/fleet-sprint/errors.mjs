@@ -862,6 +862,10 @@ export const PRE_SPRINT_REFUSAL_REASONS = Object.freeze({
     NOTHING_TO_DO: 'NOTHING_TO_DO',
     CYCLE_REPAIR_FAILED: 'CYCLE_REPAIR_FAILED',
     DEADLOCKED: 'DEADLOCKED',
+    // GitHub #717: a goal-priority bead is blocked only by verify-routed beads
+    // and the Integration Test phase cannot run (no integ-test-playbook.md or
+    // no deploy.md), so it can never become ready.
+    VERIFY_BLOCKED: 'VERIFY_BLOCKED',
 });
 
 /**

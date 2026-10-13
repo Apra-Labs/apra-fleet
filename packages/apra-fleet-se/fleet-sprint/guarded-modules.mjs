@@ -421,6 +421,12 @@ export const GUARDED_MODULES = [
     // member-bound command channel (fleetApi.executeCommand, command strings
     // built by getSeCommands().wrapForMember) for the remote start-if-down.
     'member-init-probe.mjs',
+    // In-run orphaned-claim bookkeeping (pure): no command() or agent() site;
+    // runner.js owns the fresh read, the session stop and the write.
+    'orphan-reclaim.mjs',
+    // Verify-block deadlock diagnosis (pure): no command() or agent() site;
+    // runner.js owns the runbook probes, the stop and the mid-run exit.
+    'verify-block.mjs',
     'vcs-providers/azure-devops.mjs',
     'vcs-providers/bitbucket.mjs',
     'vcs-providers/dolt.mjs',

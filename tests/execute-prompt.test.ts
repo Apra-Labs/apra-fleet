@@ -2932,3 +2932,88 @@ describe('executePrompt -- preflight reason code mapping', () => {
   });
 });
 
+
+// Typed failures return and record the session id the provider parsed, so an
+// explicit-id resume of that exact session passes the isKnownSession gate.
+describe('execute_prompt: typed failures carry a known sessionId', () => {
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  const ok = { stdout: '', stderr: '', code: 0 };
+
+  it('max_turns_exhausted carries sessionId S, records it, and a follow-up resume of S is not session_not_found', async () => {
+    const member = makeTestAgent({ friendlyName: 'typed-fail-maxturns' });
+    addAgent(member);
+    mockExecCommand
+      .mockResolvedValueOnce(ok)  // writePromptFile
+      .mockResolvedValueOnce({
+        stdout: JSON.stringify({ type: 'result', subtype: 'error_max_turns', terminal_reason: 'max_turns', result: 'stopped', session_id: 'sess-S' }),
+        stderr: '',
+        code: 1,
+      })
+      .mockResolvedValueOnce(ok);  // deletePromptFile
+
+    expect(isKnownSession(member.id, 'sess-S')).toBe(false);
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+    expect(result.structuredContent).toMatchObject({ isError: true, reason: 'max_turns_exhausted', sessionId: 'sess-S' });
+    expect(isKnownSession(member.id, 'sess-S')).toBe(true);
+
+    mockExecCommand
+      .mockResolvedValueOnce(ok)
+      .mockResolvedValueOnce({ stdout: JSON.stringify({ type: 'result', result: 'resumed', session_id: 'sess-S' }), stderr: '', code: 0 })
+      .mockResolvedValueOnce(ok);
+    const follow = await executePrompt({ member_id: member.id, prompt: 'continue', resume: 'sess-S', timeout_s: 5 } as any);
+    expect(follow.structuredContent?.reason).not.toBe('session_not_found');
+    expect(follow.structuredContent).toMatchObject({ response: 'resumed' });
+  });
+
+  it('empty_response (exit 0, empty result) carries and records the parsed sessionId', async () => {
+    const member = makeTestAgent({ friendlyName: 'typed-fail-empty' });
+    addAgent(member);
+    mockExecCommand
+      .mockResolvedValueOnce(ok)
+      .mockResolvedValueOnce({ stdout: JSON.stringify({ type: 'result', result: '', session_id: 'sess-E' }), stderr: '', code: 0 })
+      .mockResolvedValueOnce(ok);
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+    expect(result.structuredContent).toMatchObject({ isError: true, reason: 'empty_response', sessionId: 'sess-E' });
+    expect(isKnownSession(member.id, 'sess-E')).toBe(true);
+  });
+
+  it('dispatch_failed after a parse carries and records the parsed sessionId', async () => {
+    const member = makeTestAgent({ friendlyName: 'typed-fail-dispatch' });
+    addAgent(member);
+    mockExecCommand
+      .mockResolvedValueOnce(ok)
+      .mockResolvedValueOnce({ stdout: JSON.stringify({ type: 'result', result: 'boom', session_id: 'sess-D' }), stderr: 'x', code: 1 })
+      .mockResolvedValueOnce(ok);
+    // A throw after the provider parse lands in the outer catch -> dispatch_failed.
+    vi.spyOn(ClaudeProvider.prototype, 'classifyError').mockImplementation(() => { throw new Error('classifier exploded'); });
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+    expect(result.structuredContent).toMatchObject({ isError: true, reason: 'dispatch_failed', sessionId: 'sess-D' });
+    expect(isKnownSession(member.id, 'sess-D')).toBe(true);
+  });
+
+  it('no session_id in output -> no sessionId field and nothing recorded', async () => {
+    const member = makeTestAgent({ friendlyName: 'typed-fail-nosid' });
+    addAgent(member);
+    mockExecCommand
+      .mockResolvedValueOnce(ok)
+      .mockResolvedValueOnce({ stdout: JSON.stringify({ type: 'result', subtype: 'error_max_turns', terminal_reason: 'max_turns', result: 'stopped' }), stderr: '', code: 1 })
+      .mockResolvedValueOnce(ok);
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+    expect(result.structuredContent).toMatchObject({ isError: true, reason: 'max_turns_exhausted' });
+    expect(result.structuredContent).not.toHaveProperty('sessionId');
+  });
+});

@@ -140,11 +140,24 @@ export function validateNewTask(newTask) {
     if (!SAFE_PRIORITY_RE.test(priority)) {
         return { ok: false, reason: `priority '${priority}' does not match required pattern ${SAFE_PRIORITY_RE}` };
     }
-    const title = sanitizeNewTaskTitle(newTask && newTask.title);
-    if (!title || !SAFE_TEXT_RE.test(title)) {
-        return { ok: false, reason: `title fails safe-character allowlist ${SAFE_TEXT_RE} (or is empty): ${JSON.stringify(title)}` };
+    const sanitizedTitle = sanitizeNewTaskTitle(newTask && newTask.title);
+    if (!sanitizedTitle || !SAFE_TEXT_RE.test(sanitizedTitle)) {
+        return { ok: false, reason: `title fails safe-character allowlist ${SAFE_TEXT_RE} (or is empty): ${JSON.stringify(sanitizedTitle)}` };
     }
-    const description = sanitizeNewTaskDescription(newTask && newTask.description);
+    // The title is the first positional argument of `bd create`, so a leading
+    // '-' would be parsed as a flag. Strip leading dashes (and the whitespace
+    // after them) shell-independently; when anything was stripped, keep the
+    // original title (JSON-escaped, ASCII) at the top of the description so
+    // nothing is lost. A title that is only dashes becomes empty and is
+    // rejected below, falling through to the parent-notes fallback.
+    const title = sanitizedTitle.replace(/^[-\s]+/, '');
+    if (!title) {
+        return { ok: false, reason: `title is empty after removing leading dashes: ${JSON.stringify(sanitizedTitle)}` };
+    }
+    let description = sanitizeNewTaskDescription(newTask && newTask.description);
+    if (description && title !== sanitizedTitle) {
+        description = `Original title: ${JSON.stringify(sanitizedTitle)}\n\n${description}`;
+    }
     if (!description || !SAFE_DESCRIPTION_RE.test(description)) {
         return { ok: false, reason: `description fails ASCII-printable validation ${SAFE_DESCRIPTION_RE} (or is empty): ${JSON.stringify(description)}` };
     }

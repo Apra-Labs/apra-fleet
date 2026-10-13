@@ -134,9 +134,20 @@ export const BINDINGS = Object.freeze({
     maxTurns: 1000,
 });
 
-/** An AgentDispatchError whose details.reason marks the turn budget spent. */
-export function turnExhaustionError(message = 'max turns spent') {
-    return new AgentDispatchError(message, { details: { reason: 'max_turns_exhausted' } });
+/**
+ * The session id the server reports on a typed failure (execute_prompt now
+ * returns and records it on max_turns_exhausted / empty_response /
+ * dispatch_failed). A same-session resume must target exactly this id.
+ */
+export const FAILED_SESSION_ID = 'failed-session-1';
+
+/**
+ * An AgentDispatchError whose details.reason marks the turn budget spent,
+ * shaped like the real server's envelope (reason plus the failed sessionId).
+ * Pass sessionId = null for an envelope that carries none.
+ */
+export function turnExhaustionError(message = 'max turns spent', sessionId = FAILED_SESSION_ID) {
+    return new AgentDispatchError(message, { details: { reason: 'max_turns_exhausted', ...(sessionId ? { sessionId } : {}) } });
 }
 
 /** An LLM-credential dispatch failure (self-healable, and non-retryable). */

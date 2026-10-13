@@ -1,9 +1,9 @@
 {
   "version": 3,
   "provenance": {
-    "commit": "09bcac6a5fbd2259c435d180c242f8a1604ba8c7",
+    "commit": "2d4ec99e655df61dfc565635d3beb895347b015e",
     "branch": "feat/kb-redesign",
-    "entry_count": 335
+    "entry_count": 339
   },
   "entries": [
     {
@@ -1050,6 +1050,23 @@
       "updated_at": "2026-09-29T06:13:12.829Z"
     },
     {
+      "id": "238087ba-6b1d-4de1-b767-809e13503347",
+      "type": "learning",
+      "title": "windows-hide-spawn-guard SDK test fails when node_modules MCP SDK drifts from the lockfile",
+      "summary": "tests/windows-hide-spawn-guard.test.ts reads the INSTALLED @modelcontextprotocol/sdk stdio.js and asserts its windowsHide expression. With node_modules at 1.27.1 against a lock pin of 1.32.1, it fails even when the branch touches no package files.",
+      "symbols": [],
+      "source_files": [
+        "tests/windows-hide-spawn-guard.test.ts",
+        "package-lock.json"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-12T23:58:14.608Z",
+      "source_file_hashes": {
+        "package-lock.json": "9c402d6e4056881a678917343c92530fd367882c",
+        "tests/windows-hide-spawn-guard.test.ts": "4c9559d8687585ef3f9e8904884d3d4403109870"
+      }
+    },
+    {
       "id": "2405734f-e88a-42b5-83bb-abce9a2215db",
       "type": "knowledge",
       "title": "A deferred stall probe must skip the threshold comparison in the same branch",
@@ -1506,6 +1523,26 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:29.306Z"
+    },
+    {
+      "id": "399f2e9b-c7d1-4c6a-9785-192062276a11",
+      "type": "learning",
+      "title": "apra-fleet-se lint rejects compound 'orchestrator' identifiers in fleet-sprint code",
+      "summary": "test/backlog-role-no-orchestrator-identifiers.test.mjs fails on any compound identifier containing 'orchestrator' (e.g. orchestratorVersion) in fleet-sprint files outside the alias module; use another name such as serverVersion.",
+      "symbols": [
+        "checkInstallCurrency",
+        "isCoreOlder"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/test/backlog-role-no-orchestrator-identifiers.test.mjs",
+        "packages/apra-fleet-se/fleet-sprint/member-init-probe.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-10T04:00:01.345Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/member-init-probe.mjs": "0d4587ee66b94998aa300aaf476b4faa8620f96a",
+        "packages/apra-fleet-se/test/backlog-role-no-orchestrator-identifiers.test.mjs": "02cc51c5452af602a3bd6d620be27558de4fdc5f"
+      }
     },
     {
       "id": "39cb4bc6-607a-44b2-81e7-4fc19455ea84",
@@ -3041,6 +3078,25 @@
       }
     },
     {
+      "id": "7d7320d0-ed80-4b16-8ac8-c5df806cea55",
+      "type": "knowledge",
+      "title": "member-init install-currency warning is recorded under a non-gating step",
+      "summary": "checkInstallCurrency in member-init-probe.mjs records member-fleet-outdated under step 'install', which is absent from GATING_STEPS, so it never flips verified or changes the primary reason. It is invoked inside the fleetMcp try block, so it must never throw.",
+      "symbols": [
+        "checkInstallCurrency",
+        "finish",
+        "GATING_STEPS"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/member-init-probe.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-10T05:03:35.246Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/member-init-probe.mjs": "0d4587ee66b94998aa300aaf476b4faa8620f96a"
+      }
+    },
+    {
       "id": "7ec3c926-46e3-42df-ba26-148260f36a61",
       "type": "knowledge",
       "title": "kb_bible_commit removes bible entries the maintainer KB holds as superseded or invalidated",
@@ -3662,6 +3718,29 @@
       }
     },
     {
+      "id": "9f1497f0-f5a1-4c68-a053-4afc0ec7335b",
+      "type": "learning",
+      "title": "Every memory-contract fixture must be replayable in the round-trip harness SCENARIO",
+      "summary": "roundtrip-harness.mjs checks that SCENARIO covers every fixture file on disk, and tests/memory-contract-roundtrip.test.ts asserts the exact step count, so a new fixture needs a SCENARIO step and a count bump.",
+      "symbols": [
+        "SCENARIO",
+        "applySetup",
+        "UNTRUSTED_COMMITTED_BIBLE"
+      ],
+      "source_files": [
+        "memory-contract/v1/tests/roundtrip-harness.mjs",
+        "memory-contract/v1/tests/record-fixtures.mjs",
+        "tests/memory-contract-roundtrip.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-10T04:38:11.521Z",
+      "source_file_hashes": {
+        "memory-contract/v1/tests/record-fixtures.mjs": "6971dddd9d37b4ce75be7fd0d6dcbe620d270dc9",
+        "memory-contract/v1/tests/roundtrip-harness.mjs": "954234bac01c5924d34fefad2f386d5bceefe3f4",
+        "tests/memory-contract-roundtrip.test.ts": "e39a1f5a18f917cbe5ba5a614676031e15e0a058"
+      }
+    },
+    {
       "id": "9fa5c3ec-10b3-44bb-a852-07ca0a796391",
       "type": "knowledge",
       "title": "makeTestLocalAgent defaults member os to the host platform, silently neutering OS-forcing test mocks",
@@ -3718,6 +3797,29 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:34.788Z"
+    },
+    {
+      "id": "a1a279ec-5537-4820-a23a-c9a7737f2507",
+      "type": "knowledge",
+      "title": "Review scope is built from engine-verified closedIds, not outcome status",
+      "summary": "reviewScopeBeadIds in phases/review.mjs unions each streak outcome's closedIds (engine bd read-back), skipping outcomes flagged publishBlocked or postDispatchSyncFailed. A failed or BLOCKED streak therefore still contributes the beads it closed.",
+      "symbols": [
+        "reviewScopeBeadIds",
+        "runReviewPhase",
+        "runDevelopPhase"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/phases/review.mjs",
+        "packages/apra-fleet-se/fleet-sprint/phases/develop.mjs",
+        "packages/apra-fleet-se/test/mock-sprint-review-scope-failed-streak-closes.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-13T00:36:01.420Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/phases/develop.mjs": "95b3752f2049b201e649e091520f35645fd8d96e",
+        "packages/apra-fleet-se/fleet-sprint/phases/review.mjs": "a46b352c41915e4939ff7bf5f7cbe114f71ae587",
+        "packages/apra-fleet-se/test/mock-sprint-review-scope-failed-streak-closes.test.mjs": "7c4da5a1456c538d32f32a8592ef0db7bce9a27f"
+      }
     },
     {
       "id": "a26226fc-8c81-47c7-bf1a-c975a8b123d8",
@@ -5248,6 +5350,31 @@
       "updated_at": "2026-09-25T22:26:37.685Z"
     },
     {
+      "id": "de37548a-89bd-4be4-9f8d-73342745e02d",
+      "type": "learning",
+      "title": "member-call caches a --kb-maintainer capability verdict per member before remote grant calls",
+      "summary": "createMemberCall probes `apra-fleet call --help` before the first kbMaintainer call to a remote member and caches supported/unsupported per member for the factory lifetime. Unsupported throws E-MEMBER-FLEET-TOO-OLD before any send_files; test fakes that answer every `apra-fleet call` command now also see this probe.",
+      "symbols": [
+        "createMemberCall",
+        "classifyKbMaintainerProbe",
+        "buildKbMaintainerProbeCommand",
+        "E_MEMBER_FLEET_TOO_OLD",
+        "bibleAttempt"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/member-call.mjs",
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs",
+        "packages/apra-fleet-se/test/member-call.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-10T04:00:01.244Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs": "70bdf843eed9471dc2dd35c07b66fb48c892d9be",
+        "packages/apra-fleet-se/fleet-sprint/member-call.mjs": "b22634a3154526e04f81effc217edf527968bb39",
+        "packages/apra-fleet-se/test/member-call.test.mjs": "9e8c0ac626c4f84f9d361d61f2f29b667910b31f"
+      }
+    },
+    {
       "id": "deeaaf96-ce12-4249-834c-f7562dda6013",
       "type": "knowledge",
       "title": "Naming a test file mock-sprint-* enrolls it in phase3's nested run and real-bd budget",
@@ -5383,6 +5510,27 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:15.109Z"
+    },
+    {
+      "id": "e0e6b14b-ce5e-4152-89a5-34831d336e90",
+      "type": "knowledge",
+      "title": "gitnexus 1.6.x names function-local callables name@row:col in node ids",
+      "summary": "gitnexus 1.6.12 gives a callable nested inside another callable an id like Function:src/a.ts:outer.pick@1:2 (0-based row:col of the declaration). Top-level functions and class methods keep bare ids, and methods carry a #<arity> tag. stripIdTags in code-intelligence-gitnexus.ts strips both before splitting the id on its last single colon.",
+      "symbols": [
+        "stripIdTags",
+        "splitSymbolId",
+        "resolvesToRequested"
+      ],
+      "source_files": [
+        "src/tools/code-intelligence-gitnexus.ts",
+        "tests/code-index-consistency.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-10T05:03:35.145Z",
+      "source_file_hashes": {
+        "src/tools/code-intelligence-gitnexus.ts": "2f7c9a3c0a81b087631279115b104d0c5ea810cc",
+        "tests/code-index-consistency.test.ts": "088987cb271af0c1c7c5c619679b73b53e96dabc"
+      }
     },
     {
       "id": "e1673449-1192-4948-bd32-7b743635a820",
@@ -5572,6 +5720,31 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-10-01T22:08:20.219Z"
+    },
+    {
+      "id": "e9f7d4a8-575a-4f4f-9342-9bf47b017b6f",
+      "type": "knowledge",
+      "title": "Doer retry reset salvages local work to a fleet-salvage side ref and fails closed",
+      "summary": "syncMemberBefore with resetToRemoteTip first calls salvageBeforeReset. It pins unpublished commits and tracked uncommitted edits (git stash create) on a local fleet-salvage/<slug>/<sha12> ref without moving the sprint branch. Any salvage failure throws GitSyncError and the reset is skipped.",
+      "symbols": [
+        "salvageBeforeReset",
+        "syncMemberBefore",
+        "outputOf"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/member-sync.mjs",
+        "packages/apra-fleet-se/fleet-sprint/git-sync.mjs",
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs",
+        "packages/apra-fleet-se/test/helpers/mock-sprint-harness.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-13T00:36:01.522Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/git-sync.mjs": "408b544aafd53f232839c5c9dc0ca2ea6421b0b6",
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs": "7e22b1e41486daf8647bf83ad899c52a6a8c5263",
+        "packages/apra-fleet-se/fleet-sprint/member-sync.mjs": "65991cdb22cbbe9e77d581117e0aa3144317891f",
+        "packages/apra-fleet-se/test/helpers/mock-sprint-harness.mjs": "27961b4e2d49ff0510e4c8abc9fa4f174238435c"
+      }
     },
     {
       "id": "ea3bc985-569c-4eed-846d-1785c17be33f",
@@ -5960,6 +6133,29 @@
       "updated_at": "2026-09-29T06:13:14.250Z"
     },
     {
+      "id": "fbf058a3-a2de-45e1-b97f-ec58b048cbc4",
+      "type": "knowledge",
+      "title": "Same-session resume in dispatchRole is the explicit failed session id, never resume true",
+      "summary": "resolveResumeArg for 'same-session' returns opts.resumeSessionId (the failed dispatch's err.details.sessionId) or false. With no id the engine runs the secondary dispatch as a fresh full-prompt session and passes freshSession to opts.prepare.",
+      "symbols": [
+        "resolveResumeArg",
+        "sessionIdOfError",
+        "dispatchRole"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/dispatch-role.mjs",
+        "packages/apra-fleet-se/fleet-sprint/phases/develop.mjs",
+        "packages/apra-fleet-se/test/doer-max-turns-resume-explicit-session.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-13T00:36:01.319Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/dispatch-role.mjs": "bd92d5073942148377413cf030e6787cf1a3f679",
+        "packages/apra-fleet-se/fleet-sprint/phases/develop.mjs": "95b3752f2049b201e649e091520f35645fd8d96e",
+        "packages/apra-fleet-se/test/doer-max-turns-resume-explicit-session.test.mjs": "725d0dab768d2ad2c42aad09ca0c12c5137c6c79"
+      }
+    },
+    {
       "id": "fd51b285-3514-4f10-95b9-087df82f0bbd",
       "type": "knowledge",
       "title": "Only scripts/run-tests.mjs makes scaledTimeout() non-inert in the apra-fleet-se suite",
@@ -6035,114 +6231,6 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-10-01T23:08:16.929Z"
-    },
-    {
-      "id": "9f1497f0-f5a1-4c68-a053-4afc0ec7335b",
-      "type": "learning",
-      "title": "Every memory-contract fixture must be replayable in the round-trip harness SCENARIO",
-      "summary": "roundtrip-harness.mjs checks that SCENARIO covers every fixture file on disk, and tests/memory-contract-roundtrip.test.ts asserts the exact step count, so a new fixture needs a SCENARIO step and a count bump.",
-      "symbols": [
-        "SCENARIO",
-        "applySetup",
-        "UNTRUSTED_COMMITTED_BIBLE"
-      ],
-      "source_files": [
-        "memory-contract/v1/tests/roundtrip-harness.mjs",
-        "memory-contract/v1/tests/record-fixtures.mjs",
-        "tests/memory-contract-roundtrip.test.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-10-10T04:38:11.521Z",
-      "source_file_hashes": {
-        "memory-contract/v1/tests/record-fixtures.mjs": "6971dddd9d37b4ce75be7fd0d6dcbe620d270dc9",
-        "memory-contract/v1/tests/roundtrip-harness.mjs": "954234bac01c5924d34fefad2f386d5bceefe3f4",
-        "tests/memory-contract-roundtrip.test.ts": "e39a1f5a18f917cbe5ba5a614676031e15e0a058"
-      }
-    },
-    {
-      "id": "399f2e9b-c7d1-4c6a-9785-192062276a11",
-      "type": "learning",
-      "title": "apra-fleet-se lint rejects compound 'orchestrator' identifiers in fleet-sprint code",
-      "summary": "test/backlog-role-no-orchestrator-identifiers.test.mjs fails on any compound identifier containing 'orchestrator' (e.g. orchestratorVersion) in fleet-sprint files outside the alias module; use another name such as serverVersion.",
-      "symbols": [
-        "checkInstallCurrency",
-        "isCoreOlder"
-      ],
-      "source_files": [
-        "packages/apra-fleet-se/test/backlog-role-no-orchestrator-identifiers.test.mjs",
-        "packages/apra-fleet-se/fleet-sprint/member-init-probe.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-10-10T04:00:01.345Z",
-      "source_file_hashes": {
-        "packages/apra-fleet-se/fleet-sprint/member-init-probe.mjs": "0d4587ee66b94998aa300aaf476b4faa8620f96a",
-        "packages/apra-fleet-se/test/backlog-role-no-orchestrator-identifiers.test.mjs": "02cc51c5452af602a3bd6d620be27558de4fdc5f"
-      }
-    },
-    {
-      "id": "7d7320d0-ed80-4b16-8ac8-c5df806cea55",
-      "type": "knowledge",
-      "title": "member-init install-currency warning is recorded under a non-gating step",
-      "summary": "checkInstallCurrency in member-init-probe.mjs records member-fleet-outdated under step 'install', which is absent from GATING_STEPS, so it never flips verified or changes the primary reason. It is invoked inside the fleetMcp try block, so it must never throw.",
-      "symbols": [
-        "checkInstallCurrency",
-        "finish",
-        "GATING_STEPS"
-      ],
-      "source_files": [
-        "packages/apra-fleet-se/fleet-sprint/member-init-probe.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-10-10T05:03:35.246Z",
-      "source_file_hashes": {
-        "packages/apra-fleet-se/fleet-sprint/member-init-probe.mjs": "0d4587ee66b94998aa300aaf476b4faa8620f96a"
-      }
-    },
-    {
-      "id": "de37548a-89bd-4be4-9f8d-73342745e02d",
-      "type": "learning",
-      "title": "member-call caches a --kb-maintainer capability verdict per member before remote grant calls",
-      "summary": "createMemberCall probes `apra-fleet call --help` before the first kbMaintainer call to a remote member and caches supported/unsupported per member for the factory lifetime. Unsupported throws E-MEMBER-FLEET-TOO-OLD before any send_files; test fakes that answer every `apra-fleet call` command now also see this probe.",
-      "symbols": [
-        "createMemberCall",
-        "classifyKbMaintainerProbe",
-        "buildKbMaintainerProbeCommand",
-        "E_MEMBER_FLEET_TOO_OLD",
-        "bibleAttempt"
-      ],
-      "source_files": [
-        "packages/apra-fleet-se/fleet-sprint/member-call.mjs",
-        "packages/apra-fleet-se/fleet-sprint/kb.mjs",
-        "packages/apra-fleet-se/test/member-call.test.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-10-10T04:00:01.244Z",
-      "source_file_hashes": {
-        "packages/apra-fleet-se/fleet-sprint/kb.mjs": "70bdf843eed9471dc2dd35c07b66fb48c892d9be",
-        "packages/apra-fleet-se/fleet-sprint/member-call.mjs": "b22634a3154526e04f81effc217edf527968bb39",
-        "packages/apra-fleet-se/test/member-call.test.mjs": "9e8c0ac626c4f84f9d361d61f2f29b667910b31f"
-      }
-    },
-    {
-      "id": "e0e6b14b-ce5e-4152-89a5-34831d336e90",
-      "type": "knowledge",
-      "title": "gitnexus 1.6.x names function-local callables name@row:col in node ids",
-      "summary": "gitnexus 1.6.12 gives a callable nested inside another callable an id like Function:src/a.ts:outer.pick@1:2 (0-based row:col of the declaration). Top-level functions and class methods keep bare ids, and methods carry a #<arity> tag. stripIdTags in code-intelligence-gitnexus.ts strips both before splitting the id on its last single colon.",
-      "symbols": [
-        "stripIdTags",
-        "splitSymbolId",
-        "resolvesToRequested"
-      ],
-      "source_files": [
-        "src/tools/code-intelligence-gitnexus.ts",
-        "tests/code-index-consistency.test.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-10-10T05:03:35.145Z",
-      "source_file_hashes": {
-        "src/tools/code-intelligence-gitnexus.ts": "2f7c9a3c0a81b087631279115b104d0c5ea810cc",
-        "tests/code-index-consistency.test.ts": "088987cb271af0c1c7c5c619679b73b53e96dabc"
-      }
     }
   ]
 }

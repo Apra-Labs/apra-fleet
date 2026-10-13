@@ -46,6 +46,7 @@ import {
     infraError,
     trustError,
     turnExhaustionError,
+    FAILED_SESSION_ID,
     TURN_BASES,
     sentinelNotePolicies,
 } from './helpers/dispatch-role-harness.mjs';
@@ -669,7 +670,7 @@ describe('execution-role dispatch: retry and degrade ladders', () => {
             responses: Array.from({ length: p.retry.resumeAttempts + 1 }, () => turnExhaustionError()),
         });
         await dispatchRole(escalating.ctx, 'doer', opts);
-        const resumes = escalating.rec.dispatches.filter((d) => d.options.resume === true);
+        const resumes = escalating.rec.dispatches.filter((d) => d.options.resume === FAILED_SESSION_ID);
         assert.strictEqual(resumes.length, p.retry.resumeAttempts, 'The escalation is bounded, never unbounded.');
         assert.deepStrictEqual(
             resumes.map((d) => d.options.max_turns),
@@ -1241,7 +1242,7 @@ describe('execution-role dispatch ladders: per-dispatch pins (engine-served)', (
             );
 
             // --- same-session resume flag ---------------------------------------
-            const expectedResume = pin.resume === 'call-site' ? opts.resumeArg : pin.resume;
+            const expectedResume = pin.resume === 'call-site' ? opts.resumeArg : (pin.resume === true ? FAILED_SESSION_ID : pin.resume);
             assert.strictEqual(o.resume ?? null, expectedResume ?? null, `${pin.name}: same-session resume argument.`);
 
             // --- git sync bracketing and push flags -----------------------------

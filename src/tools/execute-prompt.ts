@@ -1638,6 +1638,15 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   let _epError: string | undefined;
   let _epUsage: TokenUsage | undefined;
   let _epOffline = false;
+  // The last session id a provider parse produced. Typed failures that follow a
+  // parse (max_turns_exhausted, empty_response, dispatch_failed) carry it so an
+  // explicit-id resume of that exact session passes isKnownSession.
+  let _epParsedSid: string | undefined;
+  const sessionIdField = (sid: string | undefined): { sessionId?: string } => {
+    if (!sid) return {};
+    recordKnownSession(agent.id, sid);
+    return { sessionId: sid };
+  };
   // GitHub #563: the typed result for a dispatch that ran out of max_total_s
   // (measured from handler entry), so callers never see a raw transport timeout.
   // dispatched=false: the budget ran out before anything was sent to the
@@ -1770,6 +1779,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   // token counts instead.
   const parseDispatch = (r: SSHExecResult): ParsedResponse => {
     const p = provider.parseResponse(r, parseCtx);
+    _epParsedSid = p.sessionId;
     if (typeof p.sessionCostUsd === 'number') {
       const landedOn = p.sessionId ?? (lastAttemptContinues && !forkDescriptor ? lastAttemptContinues : undefined);
       const cost = dispatchCostFromCumulative(p.sessionCostUsd, landedOn, lastAttemptContinues);
@@ -2026,6 +2036,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
           // stats.totalCost of $0). Attach it here whenever it's available so
           // the caller can record the real partial cost instead of nothing.
           ...(_epUsage ? { usage: toStructuredUsage(_epUsage) } : {}),
+          ...sessionIdField(parsed.sessionId),
           ...carriedDenialField,
         },
       };
@@ -2131,7 +2142,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
           text: trustClassified
             ? `[FAIL] ${workspaceNotTrustedAdvice(agent.friendlyName)}\n${stderrTail}`
             : `[FAIL] execute_prompt on "${agent.friendlyName}" exited 0 but produced no parseable output (empty result -- the member CLI likely died mid-turn without printing its result envelope).${stderrTail ? `\n[stderr tail]\n${stderrTail}` : ''}`,
-          structuredContent: { isError: true, reason: trustClassified ? 'workspace_not_trusted' : 'empty_response', ...carriedDenialField },
+          structuredContent: { isError: true, reason: trustClassified ? 'workspace_not_trusted' : 'empty_response', ...(trustClassified ? {} : sessionIdField(parsed.sessionId)), ...carriedDenialField },
         };
       }
     }
@@ -2283,7 +2294,7 @@ session: ${parsed.sessionId}`;
     _epError = err.message;
     return {
       text: `[FAIL] Failed to execute prompt on "${agent.friendlyName}": ${err.message}`,
-      structuredContent: { isError: true, reason: 'dispatch_failed' },
+      structuredContent: { isError: true, reason: 'dispatch_failed', ...sessionIdField(_epParsedSid) },
     };
   } finally {
     extra?.signal?.removeEventListener('abort', abortHandler);

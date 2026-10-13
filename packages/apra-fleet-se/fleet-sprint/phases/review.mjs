@@ -71,6 +71,29 @@ import {
 } from '../abort.mjs';
 
 /**
+ * The bead ids a round's Review covers: the union of every streak outcome's
+ * `closedIds` (the ENGINE's read-back of the shared beads DB -- the
+ * verify-streak-closed step on success, verifyDoerStreakClosed on the error
+ * path; never the doer's own claim), de-duplicated, minus outcomes whose
+ * closes were not published (`publishBlocked` for a permission-scope G-push
+ * refusal, `postDispatchSyncFailed` for any other post-dispatch sync failure:
+ * a failed G-push skips the D-push, so those closes never reached the shared
+ * DB). A failed or BLOCKED streak therefore still contributes the beads it
+ * verifiably closed; one that closed nothing contributes nothing.
+ *
+ * @param {object[]} streakOutcomes
+ * @returns {string[]} de-duplicated bead ids, in first-seen order
+ */
+export function reviewScopeBeadIds(streakOutcomes) {
+    const seen = new Set();
+    for (const o of streakOutcomes || []) {
+        if (!o || o.publishBlocked || o.postDispatchSyncFailed) continue;
+        for (const id of Array.isArray(o.closedIds) ? o.closedIds : []) seen.add(id);
+    }
+    return [...seen];
+}
+
+/**
  * Runs ONE Review round: reviewer dispatch plus the orchestrator-applied
  * transitions its verdict asks for.
  *
@@ -133,9 +156,10 @@ export async function runReviewPhase({
     // Sort by (title, id) -- not raw outcome-recording order -- so this
     // evidence-gathering step is deterministic. See the readyTitleById
     // comment just above.
-    // Failed streaks' beadIds are excluded from this round's review
-    // scope.
-    const assignedBeadIds = streakOutcomes.filter((o) => o.outcome !== 'failed').flatMap((o) => o.beadIds)
+    // Review scope = every bead the engine's own read-back confirmed
+    // closed AND published (see reviewScopeBeadIds), including beads a
+    // failed or BLOCKED streak closed before it stopped.
+    const assignedBeadIds = reviewScopeBeadIds(streakOutcomes)
         .slice().sort((a, b) => {
             const ta = readyTitleById.get(a) || a;
             const tb = readyTitleById.get(b) || b;
