@@ -176,6 +176,12 @@ describe('viewer run summary (GET /state?summary=1)', () => {
             r = await httpGetJson(port, '/state?summary=1');
             assert.deepStrictEqual(r.body.stats, { totalCost: 0.5, totalTokens: 42 });
 
+            // Prompt-cache tokens are billed tokens: the dashboard total
+            // includes them (total_tokens alone excludes them by design).
+            wf.emit('activity:end', { id: 'a2', type: 'agent', usage: { input_tokens: 60, output_tokens: 40, total_tokens: 100, cache_read_input_tokens: 1000, cache_creation_input_tokens: 50 }, cost: 0.25 });
+            r = await httpGetJson(port, '/state?summary=1');
+            assert.deepStrictEqual(r.body.stats, { totalCost: 0.75, totalTokens: 42 + 100 + 1000 + 50 });
+
             wf.emit('end', { status: 'success' });
             r = await httpGetJson(port, '/state?summary=1');
             assert.strictEqual(r.body.status, 'success');

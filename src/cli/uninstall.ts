@@ -31,7 +31,7 @@ import { BUILTIN_WORKFLOW_NAMES } from './workflow-assets.js';
 
 function run(cmd: string, opts?: Record<string, unknown>): void {
   const shellOpt = process.platform === 'win32' ? { shell: 'cmd.exe' } : {};
-  execSync(cmd, { stdio: 'inherit', ...shellOpt, ...opts });
+  execSync(cmd, { stdio: 'inherit', windowsHide: true, ...shellOpt, ...opts });
 }
 
 function cleanupSettings(paths: ProviderInstallConfig, dryRun: boolean): boolean {

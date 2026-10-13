@@ -1,0 +1,20 @@
+{
+  "tool": "kb_invalidate",
+  "case": "refusal-retire-needs-kb-maintainer",
+  "kind": "refusal",
+  "request": {
+    "ids": [
+      "d7152240-ecc5-453c-92e1-0002f3ebf944"
+    ]
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"discarded\":[],\"not_found\":[],\"already_discarded\":[],\"refused\":[\"d7152240-ecc5-453c-92e1-0002f3ebf944\"]}"
+      }
+    ]
+  },
+  "expected_error_code": "E-RETIRE-NEEDS-KB-MAINTAINER",
+  "session": "PLAIN_A"
+}

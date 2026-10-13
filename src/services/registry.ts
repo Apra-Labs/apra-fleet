@@ -123,7 +123,14 @@ export function updateAgent(id: string, updates: Partial<Agent>): Agent | undefi
  *  member, and observation-only writers (compose errors) must not drop it. */
 export function recordFleetMcpStatus(id: string, status: FleetMcpStatus): Agent | undefined {
   const stamp = status.fleetInstalledAt ?? getAgent(id)?.fleetMcp?.fleetInstalledAt;
-  return updateAgent(id, { fleetMcp: stamp ? { ...status, fleetInstalledAt: stamp } : status });
+  const fleetMcp = stamp ? { ...status, fleetInstalledAt: stamp } : status;
+  // The member's MCP port is persisted only from a probe that resolved it: a
+  // probe that failed before reading the member's install keeps the recorded
+  // port (falling back to the default there would point sessions at whatever
+  // else listens on it).
+  if (status.portSource === 'marker' && status.port !== undefined) return updateAgent(id, { fleetMcp, memberMcpPort: status.port });
+  if (status.portSource === 'default') return updateAgent(id, { fleetMcp, memberMcpPort: undefined });
+  return updateAgent(id, { fleetMcp });
 }
 
 export function removeAgent(id: string): boolean {

@@ -50,7 +50,7 @@ export class StdioTransport extends EventEmitter {
     }
 
     start() {
-        this.process = spawn(this.command, this.args, this.options);
+        this.process = spawn(this.command, this.args, { windowsHide: true, ...this.options });
         
         this.process.stdout.on('data', (chunk) => {
             this.buffer += chunk.toString();

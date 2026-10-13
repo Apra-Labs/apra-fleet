@@ -760,14 +760,14 @@ function main() {
 
   // beads check -- install automatically if missing
   console.log('');
-  const bdCheck = spawnSync('bd', ['--version'], { encoding: 'utf-8', shell: true });
+  const bdCheck = spawnSync('bd', ['--version'], { encoding: 'utf-8', shell: true, windowsHide: true });
   if (bdCheck.error || bdCheck.status !== 0) {
     console.log('  beads (bd) not found -- installing via npm...');
-    const bdInstall = spawnSync('npm', ['install', '-g', '@beads/bd@1.1.2'], { encoding: 'utf-8', shell: true, stdio: 'inherit' });
+    const bdInstall = spawnSync('npm', ['install', '-g', '@beads/bd@1.1.2'], { encoding: 'utf-8', shell: true, stdio: 'inherit', windowsHide: true });
     if (bdInstall.error || bdInstall.status !== 0) {
       console.error('  [!] beads install failed. Run manually:  npm install -g @beads/bd@1.1.2');
     } else {
-      const bdRecheck = spawnSync('bd', ['--version'], { encoding: 'utf-8', shell: true });
+      const bdRecheck = spawnSync('bd', ['--version'], { encoding: 'utf-8', shell: true, windowsHide: true });
       console.log(`  beads OK: ${bdRecheck.stdout.trim()}`);
     }
   } else {

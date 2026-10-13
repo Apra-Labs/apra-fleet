@@ -44,6 +44,17 @@
 //                   (never re-selected): which member maintains the probed
 //                   member's repository.
 //
+// INSTALL CURRENCY (non-gating, part of step 2): after the fleetMcp refresh,
+// a member whose install core version (fleetMcp.version) is older than the
+// orchestrator's (member_detail server_version), or a REMOTE member that is
+// its repository's kb_maintainer whose install does not accept
+// `apra-fleet call --kb-maintainer` (opts.kbMaintainerCapability -- the
+// member-call capability probe, cached per member), gets a
+// member-fleet-outdated problem (step 'install') and a WARN. A version check
+// alone misses the second case (the flag landed within one core version).
+// Never gating: it does not change verified nor the first gating problem.
+// Local members are never probed for the CLI flag.
+//
 // TRANSPORT RULE: every kb_* / code_* call goes through the injected
 // memberCall (a member-scoped session). The orchestrator's callTool is used
 // ONLY for member_detail; this module never calls a kb_* or code_* tool on it.
@@ -83,24 +94,30 @@ export const CODE_INDEX_STATES = Object.freeze({
 export const MEMBER_INIT_FIXES = Object.freeze({
     'member-unresolved': 'register the member with the fleet (member_detail returned no id for it), then rerun the sprint',
     'member-offline': 'bring the member back online (member_detail reports it offline), then rerun the sprint',
-    'server-status-failed': "make 'apra-fleet status' succeed on the member (its fleet install may be missing or broken), then rerun the sprint",
-    'server-status-unreadable': "check 'apra-fleet status' on the member by hand: its output reported neither running nor stopped",
+    'server-status-failed': "'apra-fleet status' failed on the member, so its fleet install is missing or broken: run update_member with fleet_install \"auto\" for the member (or install apra-fleet on it by hand), then rerun the sprint",
+    'server-status-unreadable': "'apra-fleet status' on the member reported neither running nor stopped: run it by hand on the member and read its output, or run update_member with fleet_install \"auto\" for the member",
     'server-start-failed': "start the member's fleet server by hand ('apra-fleet start' on the member) and read its log, then rerun the sprint",
-    'member-tools-failed': "make 'apra-fleet call --member <id> --list-tools' succeed on the member, then rerun the sprint",
-    'member-tools-missing': "the member session does not list kb_* and code_* tools: update the member's fleet install, then rerun the sprint",
-    'fleet-mcp-refresh-failed': 'member_detail refresh:true failed for the member; fix the reported error and re-probe',
+    'member-tools-failed': "the member session could not list tools for a reason not recognized as an old install or a refused session (see the problem detail): read it, correct that cause on the member, then rerun the sprint",
+    'member-fleet-outdated': "the member's fleet install is older than the orchestrator build (or cannot open the kb_maintainer session): run update_member with fleet_install \"auto\" for the member to upgrade it to the orchestrator build",
+    'member-fleet-too-old': "the member's apra-fleet predates member mode (it has no 'call' command): run update_member with fleet_install \"auto\" for the member to upgrade it to the orchestrator version, then rerun the sprint",
+    'member-secret-refused': "the member server refused the member access secret (HTTP 401, E-MEMBER-SECRET): the member-access.key file in the member install's own data directory is missing or does not match the one the server holds, usually because the sprint is running as a different user or with a different data directory than the member install; run the member session as the install's own user with the install's own data dir (or reinstall the member so member-access.key is regenerated), then rerun the sprint",
+    'member-session-refused': "the member server refused the member session (HTTP 403, the member id is not registered with the server the member talks to): run update_member with fleet_install \"auto\" for the member so it registers itself, then rerun the sprint",
+    'no-llm-provider': "the member has provider none but is assigned an LLM role in this sprint: set a real llm_provider on it with update_member, or take it out of the LLM roles of the role map, then rerun the sprint",
+    'member-tools-missing': "the member session does not list kb_* and code_* tools: run update_member with fleet_install \"auto\" for the member to upgrade its fleet install, then rerun the sprint",
+    'fleet-mcp-refresh-failed': 'member_detail refresh:true failed for the member, so its fleet MCP status is unknown: read the reported error, correct that cause, then re-probe with member_detail refresh:true',
     'mcp-entry-missing': 'run compose_permissions for the member so its per-folder fleet MCP entry ends with ?member=<uuid>, then re-probe with member_detail refresh:true',
     'role-agents-hide-member-tools': "the role agent files the member's CLI loads (--agent <role>) do not grant the kb_* and code_* tools and the automatic rewrite failed: run update_member for a remote member, or make the role files writable (or re-install apra-fleet on the orchestrator) for a local one, then re-probe with member_detail refresh:true",
     'no-per-tool-deny': 'opencode cannot deny individual tools, so this member is never verified; use a claude member for verified knowledge-bank access',
     'no-per-project-mcp': 'agy has no per-project MCP config, so this member is never verified; use a claude member for verified knowledge-bank access',
-    'fleet-mcp-unavailable': "fix the cause of the member's unavailable fleetMcp status, then re-probe with member_detail refresh:true",
-    'confirmed-count-unreadable': 'kb_stats failed on the member session; check the member knowledge bank (kb_stats on the member)',
+    'fleet-mcp-unavailable': "the member's fleetMcp status is unavailable for a cause the server did not name: read member_detail fleetMcp.detail, correct that cause, then re-probe with member_detail refresh:true",
+    'confirmed-count-unreadable': 'kb_stats failed on the member session, so the knowledge-bank entry count is unknown: run kb_stats on the member and read its error',
     'code-intel-disabled': 'code intelligence is off for this member; enable the gitnexus provider to get a code index',
     'code-provider-not-supported': "the member's code-intelligence provider manages its own index; nothing to do unless gitnexus is wanted",
     'code-index-timeout': 'the first code-index tick did not arrive within the bound; check code_status on the member (the index keeps building)',
-    'code-index-failed': 'code_reindex failed on the member; read its analyze log (code_status logPath) and rerun code_reindex',
+    'code-intel-npx-missing': "npx or node is not on the apra-fleet service PATH, so code intelligence is unavailable: reinstall the service so it records node/npx (re-run the fleet installer on the host), or add node and npx to the service PATH and restart the server, then rerun code_reindex",
+    'code-index-failed': 'code_reindex failed on the member: read its analyze log (code_status logPath) and rerun code_reindex',
     'code-index-gitnexus-too-old': "the member's gitnexus is too old to support --index-only: upgrade gitnexus (npx -y gitnexus@latest analyze --index-only) or clear the npx cache (npm cache clean --force) on the member, then rerun code_reindex",
-    'code-index-unrecognized': 'code_reindex returned an unrecognized answer; check that the member fleet install is current',
+    'code-index-unrecognized': 'code_reindex returned an unrecognized answer: run update_member with fleet_install "auto" for the member so its fleet install is current',
 });
 
 /** One-line fix for a reason (falls back to the fleetMcp generic fix). */
@@ -143,6 +160,29 @@ export function fixFor(reason) {
  * @property {string[]} steps           the steps actually run, in order
  */
 
+/**
+ * The members that run an LLM role in this sprint. A member named ONLY in the
+ * backlog role list (roleMap.backlog) runs no LLM role: it only runs bd
+ * commands, so probing it and counting it as unverified is a false alarm.
+ * A member named in any other role list, or in no list at all, is kept.
+ * Applicability comes from the role assignment, not from the provider name.
+ *
+ * @param {string[]} members
+ * @param {Record<string,string[]>|null|undefined} roleMap
+ * @returns {string[]}
+ */
+export function llmRoleMembersOf(members, roleMap) {
+    const list = Array.isArray(members) ? members : [];
+    if (!roleMap || typeof roleMap !== 'object') return list.slice();
+    const backlog = new Set(Array.isArray(roleMap.backlog) ? roleMap.backlog : []);
+    const otherRole = new Set();
+    for (const [role, names] of Object.entries(roleMap)) {
+        if (role === 'backlog' || !Array.isArray(names)) continue;
+        for (const m of names) otherRole.add(m);
+    }
+    return list.filter((m) => !backlog.has(m) || otherRole.has(m));
+}
+
 function errText(err) {
     return err && err.message ? err.message : String(err);
 }
@@ -170,6 +210,11 @@ export function confirmedCountOf(stats) {
     return typeof n === 'number' && Number.isFinite(n) ? n : null;
 }
 
+/** True when a code tool answer or error names a missing npx/node on the server PATH. */
+function isNpxMissingText(text) {
+    return /(?:npx|node)[^.]{0,40} was not found on the apra-fleet server's PATH/i.test(String(text || ''));
+}
+
 function isDisabledError(err) {
     return /E-CODE-INTEL-DISABLED|code intelligence is (?:off|disabled)|\bdisabled\b/i.test(errText(err));
 }
@@ -191,6 +236,7 @@ export function classifyReindex(res) {
         case 'starting':
             return { state: 'pending', reason: null };
         case 'not-started':
+            if (res.reason === 'npx-not-found' || isNpxMissingText(res.detail)) return { state: 'unavailable', reason: 'code-intel-npx-missing', detail: res.detail };
             if (res.reason === 'provider-not-supported') return { state: 'unavailable', reason: 'code-provider-not-supported', detail: res.detail };
             if (res.reason === 'gitnexus-too-old') return { state: 'failed', reason: 'code-index-gitnexus-too-old', detail: res.detail };
             return { state: 'failed', reason: 'code-index-failed', detail: [res.reason, res.detail].filter(Boolean).join(': ') };
@@ -222,6 +268,21 @@ export function parseServerState(text) {
     return m ? m[1].toLowerCase() : null;
 }
 
+/** [major, minor, patch] of a version string ("v0.4.4_abc" -> [0, 4, 4]), or null. */
+export function coreVersionOf(version) {
+    const m = /^v?(\d+)\.(\d+)\.(\d+)/.exec(String(version || '').trim());
+    return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+}
+
+/** True when `memberVersion`'s core is older than `serverVersion`'s (false when either is unparseable). */
+export function isCoreOlder(memberVersion, serverVersion) {
+    const a = coreVersionOf(memberVersion);
+    const b = coreVersionOf(serverVersion);
+    if (!a || !b) return false;
+    for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return a[i] < b[i];
+    return false;
+}
+
 /** The one init line logged per member. */
 export function formatMemberInitLine(rec) {
     const warnSuffix = Array.isArray(rec.warnings) && rec.warnings.length > 0 ? `; WARN: ${rec.warnings.join(' | ')}` : '';
@@ -243,6 +304,8 @@ export function formatMemberInitLine(rec) {
  *   fleetApi?: { executeCommand: Function },                   remote server start-if-down
  *   resolveTarget?: Function,                                  defaults to resolveMemberTarget
  *   kbMaintainers?: { maintainerForMember?: Function, repoOf?: Function } | (() => object),
+ *   kbMaintainerCapability?: (member: object) => Promise<'supported'|'unsupported'|'inconclusive'>,
+ *                                                              remote kb_maintainer CLI-flag probe
  *   now?: () => number,
  *   sleep?: (ms: number) => Promise<void>,
  *   codeIndexBoundMs?: number,
@@ -253,15 +316,18 @@ export function formatMemberInitLine(rec) {
  */
 export function createMemberInitProbe(opts = {}) {
     const {
-        members = [],
+        members: allMembers = [],
+        roleMap = null,
         callTool,
         memberCall,
         listTools,
         fleetApi,
+        kbMaintainerCapability,
         log = () => {},
         codeIndexBoundMs = CODE_INDEX_FIRST_TICK_BOUND_MS,
         pollMs = CODE_STATUS_POLL_MS,
     } = opts;
+    const members = llmRoleMembersOf(allMembers, roleMap);
     const resolveTarget = opts.resolveTarget || resolveMemberTarget;
     const now = opts.now || (() => Date.now());
     const sleep = opts.sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
@@ -335,7 +401,11 @@ export function createMemberInitProbe(opts = {}) {
                 problem('tools', 'member-tools-missing', `member session tools/list lacks ${missing} (got ${names.length} tools)`);
             }
         } catch (err) {
-            problem('tools', 'member-tools-failed', errText(err));
+            const text = errText(err);
+            if (/unknown (?:option|command) '?call\b/i.test(text)) problem('tools', 'member-fleet-too-old', text);
+            else if (/E-MEMBER-SECRET|HTTP 401/i.test(text)) problem('tools', 'member-secret-refused', text);
+            else if (/E-MEMBER-FORBIDDEN|HTTP 403|server refused member/i.test(text)) problem('tools', 'member-session-refused', text);
+            else problem('tools', 'member-tools-failed', text);
         }
         // Record the member's fleetMcp status from a fresh server-side probe.
         rec.steps.push('fleetMcp');
@@ -347,11 +417,42 @@ export function createMemberInitProbe(opts = {}) {
                 problem('fleetMcp', 'fleet-mcp-refresh-failed', 'member_detail refresh:true returned no fleetMcp status');
             } else if (f.state !== 'available' || f.unverified === true) {
                 const reason = f.reason ? String(f.reason) : 'fleet-mcp-unavailable';
-                problem('fleetMcp', reason, f.detail ? String(f.detail) : undefined);
+                // The server owns the remedy text for its own reasons: forward it.
+                const serverFix = typeof d.fleetMcpFix === 'string' && d.fleetMcpFix.trim() ? d.fleetMcpFix.trim() : null;
+                problem('fleetMcp', reason, f.detail ? String(f.detail) : undefined, serverFix);
             }
+            // Name the version seen when the member's install predates member mode.
+            const ver = f && f.version ? String(f.version).replace(/^v/, '') : null;
+            const old = rec.problems.find((p) => p.reason === 'member-fleet-too-old');
+            if (old && ver) old.fix = `${old.fix} (version seen on the member: ${ver})`;
+            await checkInstallCurrency(record, rec, problem, f && f.version ? String(f.version) : null, d && d.server_version ? String(d.server_version) : null);
         } catch (err) {
             problem('fleetMcp', 'fleet-mcp-refresh-failed', errText(err));
         }
+    }
+
+    /**
+     * Non-gating: a member install older than the orchestrator, or a remote
+     * kb_maintainer install that cannot open the kb_maintainer session, is
+     * reported as member-fleet-outdated (problem step 'install' plus a WARN)
+     * before any maintainer call fails mid-sprint. Never throws.
+     */
+    async function checkInstallCurrency(record, rec, problem, memberVersion, serverVersion) {
+        const causes = [];
+        if (memberVersion && serverVersion && isCoreOlder(memberVersion, serverVersion)) {
+            causes.push('its version is older than the orchestrator');
+        }
+        const isRemote = String(record.type || '').toLowerCase() !== 'local';
+        if (isRemote && rec.maintainer === record.name && typeof kbMaintainerCapability === 'function') {
+            let verdict = 'inconclusive';
+            try { verdict = await kbMaintainerCapability(record); } catch { /* inconclusive: no warning */ }
+            if (verdict === 'unsupported') causes.push("it is this repository's kb_maintainer and its call verb does not accept --kb-maintainer");
+        }
+        if (causes.length === 0) return;
+        const seen = `member version ${memberVersion || 'unknown'}, orchestrator version ${serverVersion || 'unknown'}`;
+        const fix = `${fixFor('member-fleet-outdated')} (${seen})`;
+        problem('install', 'member-fleet-outdated', causes.join('; '), fix);
+        rec.warnings.push(`member-fleet-outdated: ${causes.join('; ')}; fix: ${fix}`);
     }
 
     async function readCount(record, rec, problem) {
@@ -384,6 +485,7 @@ export function createMemberInitProbe(opts = {}) {
             if (dirty.length > 0) rec.warnings.push(`${dirty.join(', ')} carries a gitnexus block injected by an earlier plain 'gitnexus analyze' run; fix: remove the block between <!-- gitnexus:start --> and <!-- gitnexus:end --> and commit`);
         } catch (err) {
             if (isDisabledError(err)) return setCode(CODE_INDEX_STATES.UNAVAILABLE, 'code-intel-disabled', errText(err));
+            if (isNpxMissingText(errText(err))) return setCode(CODE_INDEX_STATES.UNAVAILABLE, 'code-intel-npx-missing', errText(err));
             return setCode(CODE_INDEX_STATES.FAILED, 'code-index-failed', errText(err));
         }
         while (verdict.state === 'pending') {
@@ -394,6 +496,7 @@ export function createMemberInitProbe(opts = {}) {
                 verdict = classifyStatus(parseToolJson(await memberCall(record, 'code_status', {})));
             } catch (err) {
                 if (isDisabledError(err)) return setCode(CODE_INDEX_STATES.UNAVAILABLE, 'code-intel-disabled', errText(err));
+                if (isNpxMissingText(errText(err))) return setCode(CODE_INDEX_STATES.UNAVAILABLE, 'code-intel-npx-missing', errText(err));
                 return setCode(CODE_INDEX_STATES.FAILED, 'code-index-failed', errText(err));
             }
         }
@@ -417,6 +520,7 @@ export function createMemberInitProbe(opts = {}) {
         const p = String(provider || '').toLowerCase();
         if (p === 'opencode') return 'no-per-tool-deny';
         if (p === 'agy') return 'no-per-project-mcp';
+        if (p === 'none') return 'no-llm-provider';
         return null;
     }
 
@@ -430,8 +534,8 @@ export function createMemberInitProbe(opts = {}) {
             repo: null, maintainer: null, warnings: [],
             reason: null, fix: null, problems: [], steps: [],
         };
-        const problem = (step, reason, detail) => {
-            rec.problems.push({ step, reason, fix: fixFor(reason), ...(detail ? { detail: String(detail).slice(0, 300) } : {}) });
+        const problem = (step, reason, detail, fix) => {
+            rec.problems.push({ step, reason, fix: fix || fixFor(reason), ...(detail ? { detail: String(detail).slice(0, 300) } : {}) });
         };
         try {
             recordMaintainer(name, rec);
@@ -469,13 +573,21 @@ export function createMemberInitProbe(opts = {}) {
         return finish(rec);
     }
 
+    const GENERIC_FLEET_MCP_REASONS = new Set(['fleet-mcp-refresh-failed', 'fleet-mcp-unavailable']);
+
     /** Steps whose failure makes a member unverified (count/code are reported, not gating). */
     const GATING_STEPS = new Set(['resolve', 'provider', 'server', 'tools', 'fleetMcp', 'probe']);
 
     function finish(rec) {
         const gating = rec.problems.filter((p) => GATING_STEPS.has(p.step));
         // A provider override is permanent, so it is the reason a human sees first.
-        const primary = gating.find((p) => p.step === 'provider') || gating[0] || null;
+        // A cause the server named for the fleetMcp refresh supersedes the
+        // generic member-session tools failures, which are only symptoms of it.
+        const serverCause = gating.find((p) => p.step === 'fleetMcp' && !GENERIC_FLEET_MCP_REASONS.has(p.reason));
+        const symptom = (p) => p.step === 'tools' && p.reason !== 'member-session-refused' && p.reason !== 'member-secret-refused';
+        const primary = gating.find((p) => p.step === 'provider')
+            || (serverCause && gating[0] && symptom(gating[0]) ? serverCause : null)
+            || gating[0] || null;
         rec.verified = !primary && rec.kbTools === true && rec.codeTools === true
             && !!rec.fleetMcp && rec.fleetMcp.state === 'available';
         if (rec.verified) {

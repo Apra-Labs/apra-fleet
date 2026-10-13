@@ -35,6 +35,10 @@ function makeCommandMock(script) {
 }
 
 const OK = { ok: true, output: '', error: null };
+const SHA_A = 'a'.repeat(40);
+const SHA_B = 'b'.repeat(40);
+const SHA_S = 'c'.repeat(40);
+const lines = (...l) => l.map((x) => `${x}\n`).join('');
 const fail = (error) => ({ ok: false, output: '', error });
 
 // =============================================================================
@@ -52,6 +56,10 @@ test('retried doer dispatch: pre-dispatch sync resets onto the remote tip (fetch
         'git fetch': [OK, OK],
         'git merge --ff-only': [OK],
         [`git reset --hard origin/${branch}`]: [OK],
+        // Retry salvage (GitHub #716): HEAD equals the remote tip and the
+        // tree is clean, so there is nothing to pin and no side ref is made.
+        [`git rev-parse HEAD origin/${branch}`]: [{ ok: true, output: lines(SHA_A, SHA_A), error: null }],
+        'stash create': [OK],
         'git push': [OK, OK],
     });
 
@@ -84,6 +92,17 @@ test('retried doer dispatch: pre-dispatch sync resets onto the remote tip (fetch
     const resetIdx = calls.findIndex((c) => /git reset --hard/.test(c.cmd));
     check(resetIdx !== -1 && resetIdx >= commit2IdxBefore && resetIdx < commit2Idx, `reset must occur inside the retry's pre-dispatch sync, before the retry's commit step (resetIdx=${resetIdx}, commit2Idx=${commit2Idx})`);
 
+    // The new retry sequence: fetch, salvage reads (HEAD/remote tip, stash
+    // snapshot), then the reset. Nothing to save here, so no side ref.
+    const retryCmds = calls.slice(commit2IdxBefore, commit2Idx).map((c) => c.cmd);
+    assert.deepEqual(retryCmds, [
+        `git fetch origin ${branch}`,
+        `git rev-parse HEAD origin/${branch}`,
+        'git -c user.name=fleet-salvage -c user.email=fleet-salvage.invalid stash create',
+        `git reset --hard origin/${branch}`,
+    ], 'retry pre-dispatch sync must salvage-check before the reset, in this exact order');
+    check(calls.every((c) => !/git branch -f/.test(c.cmd)), 'a clean, up-to-date checkout must not get a salvage side ref');
+
     // The retry must NOT re-issue a plain ff-only merge (that was the
     // pre-fix behaviour under skipPreDispatchSync's absence -- exactly what
     // let the retry diverge from an already-published commit).
@@ -100,6 +119,59 @@ test('retried doer dispatch: pre-dispatch sync resets onto the remote tip (fetch
     check(pushCalls.length === 2, `expected exactly one push per attempt (2 total), saw ${pushCalls.length}`);
     const fetchCalls = calls.filter((c) => /^git fetch/.test(c.cmd));
     check(fetchCalls.length === 2, `expected one pre-dispatch fetch per attempt (2 total), saw ${fetchCalls.length}`);
+});
+
+test('retry reset with unpublished commits and tracked WIP: a fleet-salvage side ref pins the stash commit BEFORE the reset, the sprint branch is never committed on, and the log names the ref and recovery commands', async () => {
+    const branch = 'feat/salvage-x';
+    const logs = [];
+    const { command, calls } = makeCommandMock({
+        'git fetch': [OK],
+        [`git rev-parse HEAD origin/${branch}`]: [{ ok: true, output: lines(SHA_A, SHA_B), error: null }],
+        'git rev-list --count': [{ ok: true, output: lines('2'), error: null }],
+        'stash create': [{ ok: true, output: lines(SHA_S), error: null }],
+    });
+    const res = await syncMemberBefore('doer-x', { command, branch, resetToRemoteTip: true, log: (m) => logs.push(m) });
+    const ref = `fleet-salvage/feat-salvage-x/${SHA_S.slice(0, 12)}`;
+    assert.equal(res.salvageRef, ref);
+    const cmds = calls.map((c) => c.cmd);
+    assert.deepEqual(cmds, [
+        `git fetch origin ${branch}`,
+        `git rev-parse HEAD origin/${branch}`,
+        `git rev-list --count ${SHA_A} --not ${SHA_B}`,
+        'git -c user.name=fleet-salvage -c user.email=fleet-salvage.invalid stash create',
+        `git branch -f ${ref} ${SHA_S}`,
+        `git reset --hard origin/${branch}`,
+    ]);
+    check(cmds.every((c) => !/git add|git commit|git push|git stash (push|save)/.test(c)), 'salvage must never stage, commit, push or move WIP off the work tree');
+    check(calls.every((c) => c.opts.member_name === 'doer-x'), 'every salvage command carries the explicit member_name');
+    const line = logs.find((l) => l.includes(ref)) || '';
+    check(line.includes(`git stash apply ${SHA_S}`) && line.includes(`git cherry-pick ${SHA_B}..${SHA_A}`) && line.includes(`git log ${ref}`), `log must name the ref and the recovery commands, got: ${line}`);
+});
+
+test('retry reset fails closed: an unreadable HEAD, a failed stash snapshot, or a conflicting side-ref name throws GitSyncError and never runs the reset', async () => {
+    const branch = 'b1';
+    const scenarios = [
+        { name: 'unparseable rev-parse', script: { [`git rev-parse HEAD origin/${branch}`]: [{ ok: true, output: 'ok (mocked)', error: null }] }, re: /Retry salvage .* failed/ },
+        { name: 'stash create fails', script: { [`git rev-parse HEAD origin/${branch}`]: [{ ok: true, output: lines(SHA_A, SHA_A), error: null }], 'stash create': [fail('fatal: boom')] }, re: /NOT resetting/ },
+        {
+            name: 'D/F ref conflict',
+            script: {
+                [`git rev-parse HEAD origin/${branch}`]: [{ ok: true, output: lines(SHA_A, SHA_A), error: null }],
+                'stash create': [{ ok: true, output: lines(SHA_S), error: null }],
+                'git branch -f': [fail("error: 'refs/heads/fleet-salvage/b1' exists; cannot create 'refs/heads/fleet-salvage/b1/cccccccccccc'")],
+            },
+            re: /existing ref 'fleet-salvage\/b1'.*git branch -D fleet-salvage\/b1/,
+        },
+    ];
+    for (const sc of scenarios) {
+        const { command, calls } = makeCommandMock({ 'git fetch': [OK], ...sc.script });
+        await assert.rejects(
+            syncMemberBefore('m1', { command, branch, resetToRemoteTip: true }),
+            (err) => err.name === 'GitSyncError' && sc.re.test(err.message),
+            sc.name,
+        );
+        check(calls.every((c) => !/git reset --hard/.test(c.cmd)), `${sc.name}: the reset must not run`);
+    }
 });
 
 test('syncMemberBefore: resetToRemoteTip defaults false, so a non-retry (or non-mutating-retry) call keeps the exact prior ff-only-merge behaviour, never resetting', async () => {

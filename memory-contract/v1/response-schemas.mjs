@@ -89,21 +89,30 @@ export const toolTextEnvelope = z.object({
 // --- kb_* observed response bodies (INVENTORY.md 2.1) -----------------------
 
 const KB_RESPONSE_BODIES = {
+  // `refused` (CONFIRMED supersede targets left live) is present exactly when a
+  // member session without the kb_maintainer grant passed supersedes
+  // (E-RETIRE-NEEDS-KB-MAINTAINER, spec.md section 2.5a).
   kb_capture: z.object({
     id: z.string(),
     audn_decision: z.enum(['add', 'update', 'flagged', 'none']),
     confidence_clamped: z.boolean(),
+    refused: z.array(z.string()).optional(),
   }),
   // files path: {invalidated, files}; ids path: {discarded, not_found, already_discarded}.
+  // Both forms carry `refused` (CONFIRMED ids left untouched) exactly when the
+  // call came from a member session without the kb_maintainer grant
+  // (E-RETIRE-NEEDS-KB-MAINTAINER, spec.md section 2.5a).
   kb_invalidate: z.union([
     z.object({
       invalidated: z.number(),
       files: z.array(z.string()),
+      refused: z.array(z.string()).optional(),
     }),
     z.object({
       discarded: z.array(z.string()),
       not_found: z.array(z.string()),
       already_discarded: z.array(z.string()),
+      refused: z.array(z.string()).optional(),
     }),
   ]),
   // F-10 (my-beads-db-27m.9, caught by the live round-trip harness): `fresh`
@@ -193,6 +202,14 @@ const KB_RESPONSE_BODIES = {
       staled: z.number(),
       unstaled: z.number(),
     }),
+    // Present exactly when the bible was read from git, not the file system:
+    // the ref read -- "HEAD" for a member session without the kb_maintainer
+    // grant and no `ref` (spec.md section 2.5a), otherwise the `ref` given.
+    // A no-grant import succeeds only for a committed bible whose blob id the
+    // maintainer side recorded; otherwise it is refused with
+    // E-KB-MAINTAINER-REQUIRED, so no field here reports the trust check.
+    bible_source: z.string().optional(),
+    worktree_ignored: z.boolean().optional(),
   }),
   kb_resolve_contradiction: z.object({
     winnerId: z.string(),
@@ -230,8 +247,10 @@ const KB_RESPONSE_BODIES = {
   // basis does not match the files at HEAD; or not_demoted_or_unknown for a
   // demoted_ids id that is not a local demoted entry); removed lists every bible
   // entry dropped because this KB holds it as superseded or invalidated (always
-  // present, possibly empty); committed is true only when a local commit of
-  // the bible path was made (never pushed).
+  // present, possibly empty); backfilled counts existing bible entries that
+  // gained source_file_hashes from this KB's stored basis (legacy backfill);
+  // committed is true only when a local commit of the bible path was made
+  // (never pushed).
   // demoted names the ids admitted from demoted_ids: removed from entries and
   // tombstoned in the bible's demotions array. OPTIONAL so bibles/fixtures
   // recorded before tombstones existed still validate; the handler always emits
@@ -249,6 +268,7 @@ const KB_RESPONSE_BODIES = {
       reason: z.enum(['superseded', 'invalidated']),
     })),
     entry_count: z.number(),
+    backfilled: z.number(),
     committed: z.boolean(),
   }),
   // F-9: kb_stats spreads ProviderStats (whose supported/reason/coverage are

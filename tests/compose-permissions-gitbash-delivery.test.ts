@@ -38,6 +38,10 @@ const mockExecCommand = vi.fn<(cmd: string, timeout?: number) => Promise<SSHExec
 vi.mock('../src/services/strategy.js', () => ({
   getStrategy: () => ({
     execCommand: mockExecCommand,
+    // The member file channel (b4g.101): ~/.claude.json content never rides a command line.
+    transferFiles: async (paths: string[]) => ({ success: paths, failed: [] }),
+    writeSecretFile: async () => '/c/Users/gitbash-member/.apra-fleet-secret',
+    removeSecretFile: async () => undefined,
   }),
 }));
 

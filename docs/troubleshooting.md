@@ -4,6 +4,30 @@ Common symptoms and how to resolve them. If something here does not match what
 you see, search [GitHub Issues](https://github.com/Apra-Labs/apra-fleet/issues)
 or ask in [Discussions](https://github.com/Apra-Labs/apra-fleet/discussions).
 
+## MCP connection
+
+**Claude Code: `Dynamic Client Registration rejected (HTTP 404)` for apra-fleet**
+
+Cause: the server refuses an `/mcp` request without this install's access
+secret (header `X-Apra-Fleet-Member-Secret`, value in
+`~/.apra-fleet/data/member-access.key`) with HTTP 401. Claude Code treats the
+401 as "OAuth needed", tries dynamic client registration, gets 404, and shows
+that message instead of the server's explanation.
+
+Fix:
+
+1. Restart the Claude Code (or other LLM CLI) session. A session started
+   before `apra-fleet install` / upgrade keeps its old MCP config without the
+   secret.
+2. If it persists, an apra-fleet entry without the header in a local-scope
+   (`~/.claude.json` `projects[<path>].mcpServers`) or project-scope
+   (`<repo>/.mcp.json`) config is shadowing the user-scope one install writes
+   (Claude resolves local, then project, then user scope). Remove it, e.g.
+   `claude mcp remove apra-fleet --scope local` (or delete the entry from
+   `.mcp.json`), then restart the session. Re-running `apra-fleet install`
+   also rewrites local-scope apra-fleet entries for this server with the
+   secret.
+
 ## Members
 
 **Member shows as offline**
@@ -61,6 +85,16 @@ before any LLM call and is not retried:
 `execute_command` still runs on such a member, without the stored credential
 env vars, and says so in its result (`storedEnvNotDelivered`).
 
+**`Failed to authenticate: OAuth session expired and could not be refreshed`**
+
+`execute_prompt` reports this as reason `auth`, and fleet-sprint runs
+`provision_llm_auth` for the member once and retries once (no generic server
+retries). If the heal fails, re-login on the source machine with `/login`, then
+run `provision_llm_auth`, or provision an API key. Copied OAuth sessions are
+shared and refresh-token-rotated across every holder, so a refresh on one
+machine can invalidate the copies elsewhere; use an API key for unattended
+members.
+
 **Auth error (401 / 403)**
 
 - GitHub App tokens: re-mint with `provision_vcs_auth`.
@@ -94,6 +128,25 @@ Fleet can configure member permissions. Ask it to, for example, "Grant
 | Claude | `.claude/settings.local.json` |
 | Codex | `.codex/config.toml` (approval mode) |
 | Copilot | `.github/copilot/settings.local.json` |
+
+**A Claude dispatch reports `permissionWarning`, or `permission_denied`**
+
+The member CLI refused a tool call. Check `healable`:
+
+- `healable: false` (auto or bypass mode): the safety classifier or a deny rule
+  refused it. That is a deliberate block, not a missing grant: `suggestedGrants`
+  is empty and fleet-sprint never grants it. Grant it by hand with
+  `compose_permissions` `grant` only if the action is really intended.
+- `healable: true` (acceptEdits mode, e.g. Haiku): a missing allow rule. Grant
+  from its `suggestedGrants`.
+
+By default a complete reply succeeds and only warns (`permissionWarning`). The
+dispatch fails `permission_denied` only when the caller passed
+`fail_on_permission_denial: true` (fleet-sprint does); even then a
+`healable: false` refusal on a complete reply stays a warning. Without the flag
+an incomplete reply keeps its ordinary reason (e.g. `empty_response`) with the
+refusals attached as `permissionDenied`. A max_turns, auth or server
+failure keeps its own reason, with the refusals attached as `permissionDenied`.
 
 **Permission granted but still denied on Claude**
 
@@ -161,6 +214,67 @@ non-interactive credential source instead: `gh auth setup-git` (GitHub) or the
 token minted by `provision_vcs_auth`, which writes a scoped credential entry
 that needs no prompt.
 
+**git spawned by bd/dolt fails with "Not enough memory resources are available to process this command" (Windows)**
+
+Symptom: `bd dolt pull`/`bd dolt push` on a Windows host fails with
+`fork/exec C:\Program Files\Git\mingw64\bin\git.exe: Not enough memory
+resources are available to process this command`, while plenty of RAM is
+free. Dolt then appends `hint: dolt does not support interactive credential
+prompts`, which points at credentials -- it is not a credential problem: git
+never started, so no credential was consulted.
+
+Cause: the text is `ERROR_NOT_ENOUGH_MEMORY` (8) returned by Windows
+`CreateProcess`. With RAM free, the two known causes are (a) an oversized
+environment block handed to the child -- each hop (fleet server -> shell ->
+bd -> dolt -> git) copies the whole block -- and (b) desktop-heap
+exhaustion in a non-interactive session (service / scheduled-task context),
+which grows with the number of live console processes.
+
+Evidence (measured 2026-10-06):
+
+- NOT reproduced on Windows: no Windows member was reachable from the
+  session that did this work, so the failure itself was not re-triggered and
+  neither cause is confirmed on the affected host.
+- Product code that can inflate the block was found by reading it:
+  `WindowsCommands.getCleanEnv()` (src/os/windows.ts) builds `Path` as
+  Machine Path + `;` + User Path with no dedupe, and
+  `WindowsGitBashCommands.cleanExec()` (src/os/windows-gitbash.ts) passes the
+  fleet server's whole env to the child, including whatever PATH growth
+  nested Git Bash logins added.
+- `scripts/repro/win-env-block-size.mjs` measures a block (this process's
+  env, or a captured one via `--env-json`) before and after bounding. On the
+  Linux dev host the block was 1361 chars, 37 vars, PATH 12 entries and 0
+  duplicates. That is far under any limit, so a Linux measurement says nothing
+  about the Windows host. A synthetic Windows-shaped env (Machine + User Path,
+  3 nested Git Bash PATH prefixes, one 40000-char inherited variable)
+  measured 40636 chars and 20 PATH entries with 8 duplicates; after bounding
+  it was 408 chars and 12 entries with 0 duplicates, and the oversized
+  variable was dropped.
+- To confirm on the affected host, run the script there in the fleet
+  server's own context (`npm run build` first). A block near or above 32767
+  chars, or heavy PATH duplication, supports cause (a). A small block points
+  to cause (b): raise the non-interactive desktop heap (the third
+  `SharedSection` value under
+  `HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\SubSystems\Windows`)
+  or run the fleet server in an interactive session.
+
+Fix in the product:
+
+- The env passed to local Windows children (both the PowerShell and the
+  Git Bash variants) is bounded by `boundChildEnv()`
+  (src/os/child-env-bound.ts). PATH entries are deduplicated
+  (case-insensitive, trailing slash ignored, first occurrence wins). If the
+  block is still over 32767 UTF-16 chars, the largest non-protected variables
+  are dropped until it fits. PATH, HOME/USERPROFILE, the Windows session
+  vars, git/ssh/proxy config, provider prefixes and anything credential-named
+  are never dropped. A warning is logged whenever a variable is dropped, or
+  when the protected variables alone exceed the cap.
+- The fleet-sprint Dolt sync (`surfaceDoltFailureText` in
+  packages/apra-fleet-se/fleet-sprint/dolt-sync.mjs) names the Windows
+  process-creation limit in the surfaced error and strips the misleading
+  credential hint lines. The failure is still classified as a transient spawn
+  outage and retried as before.
+
 **`bd init` errors "already initialized" on a second run**
 
 `bd init` is not idempotent. Any script or playbook that bootstraps beads must
@@ -199,6 +313,16 @@ For unexplained behavior -- missing output, silent failure, unexpected results
 ```
 $APRA_FLEET_DATA_DIR/logs/fleet-<pid>.log
 ```
+
+The logs are owner-only. On POSIX the data dir and `logs/` are 0700 and
+`fleet-<pid>.log` and the service log `fleet.log` are 0600; a server start
+tightens existing ones with chmod. On Windows the server removes inherited
+ACEs and grants only the current user full control
+(`icacls <path> /inheritance:r /grant:r <DOMAIN\user>:F`), because
+`APRA_FLEET_DATA_DIR` may point outside the user profile. A path that cannot
+be tightened produces a `log permissions:` warning line and the server keeps
+running. MCP session ids are logged only as their first 8 characters
+(`sid=1a2b3c4d...`): a full session id addresses the session.
 
 These are JSON lines. Filter by member or by tool with `jq`:
 

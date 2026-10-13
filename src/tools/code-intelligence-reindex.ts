@@ -220,7 +220,9 @@ export function recordedIndexBuild(repo: string): RecordedIndexBuild | null {
 // does). One constant feeds both the analyze argv and the MCP child argv.
 export const GITNEXUS_MIN_VERSION = '1.6.5';
 export const GITNEXUS_PACKAGE_SPEC = `gitnexus@>=${GITNEXUS_MIN_VERSION}`;
-export const GITNEXUS_ANALYZE_ARGS: readonly string[] = [GITNEXUS_PACKAGE_SPEC, 'analyze', '--index-only'];
+// -y is npx's own flag (before the package): the analyze child is hidden, so
+// npx's "Ok to proceed?" install prompt would hang it unseen.
+export const GITNEXUS_ANALYZE_ARGS: readonly string[] = ['-y', GITNEXUS_PACKAGE_SPEC, 'analyze', '--index-only'];
 
 /**
  * An npx argv that is safe under a shell. On Windows spawn() runs through
@@ -260,7 +262,7 @@ export const GITNEXUS_REPO_ARTIFACTS: readonly string[] = ['.gitnexus/'];
 export function ensureLocalGitExcluded(repoPath: string, relPaths: readonly string[]): boolean {
   try {
     const out = execFileSync('git', ['rev-parse', '--git-path', 'info/exclude'], {
-      cwd: repoPath, encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'],
+      cwd: repoPath, encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true,
     }).trim().split(/\r?\n/)[0]?.trim() ?? '';
     if (!out) return false;
     const excludePath = isAbsolute(out) ? out : join(repoPath, out);
@@ -315,7 +317,7 @@ export type SpawnAnalyzeOutcome =
   | { started: false; reason: NotStartedReason; detail?: string };
 
 /**
- * Synchronously start `npx gitnexus analyze --index-only` detached in `repoPath`, with
+ * Synchronously start `npx -y gitnexus analyze --index-only` in `repoPath` (detached off win32), with
  * stdout+stderr going straight to analyze.log (a file descriptor, so the run
  * outlives this server) and status.json kept current until exit. Never
  * throws. Does NOT apply config/cooldown -- callers decide whether to start.
@@ -354,7 +356,13 @@ export function spawnAnalyze(repoPath: string, opts: { auto?: boolean } = {}): S
   try {
     child = spawn('npx', npxArgsForShell(GITNEXUS_ANALYZE_ARGS, process.platform === 'win32'), {
       cwd: repoPath,
-      detached: true,
+      // win32: NOT detached. A detached child has no console, so the
+      // node/git processes the cmd.exe shell starts each open a visible,
+      // focus-stealing console window; non-detached + windowsHide gives
+      // the whole tree one hidden console. The reindex still outlives the
+      // server: libuv lets grandchildren break away from its job object.
+      detached: process.platform !== 'win32',
+      windowsHide: true,
       stdio: ['ignore', fd, fd],
       shell: process.platform === 'win32',
     });

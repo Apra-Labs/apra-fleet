@@ -8,10 +8,11 @@ import { getTokenIssuer, localWorkspaceId } from './token-issuer.js';
 import { sessionRegistry } from './session-registry.js';
 import { FULL_TOOL_SCOPE, memberToolScope, type ToolScope } from './tool-scope.js';
 import { getAgent, findAgentByName } from './registry.js';
-import { DEFAULT_PORT, DEFAULT_HOST } from '../paths.js';
+import { DEFAULT_HOST, resolveServerPort } from '../paths.js';
 import { serverVersion } from '../version.js';
-import { logLine } from '../utils/log-helpers.js';
+import { logLine, shortSid } from '../utils/log-helpers.js';
 import { recordShutdown } from './server-lifecycle.js';
+import { getOrCreateMemberAccessSecret, memberAccessSecretMatches, memberAccessSecretPath, readMemberAccessSecret, MEMBER_SECRET_HEADER } from './member-access-secret.js';
 
 interface Session {
   server: McpServer;
@@ -20,6 +21,44 @@ interface Session {
    *  else the local workspace (127.0.0.1-only trust boundary). Event broadcast
    *  is scoped by this -- events never cross a workspace wall. */
   workspaceId: string;
+  /** Identity that opened this session (see SessionOwner). Every later
+   *  GET/DELETE/POST on the session id must come from the same identity. */
+  owner: SessionOwner;
+}
+
+/**
+ * The identity a /mcp request carries, derived the same way at initialize and
+ * on every later request on that session:
+ *  - `jwt`: a VERIFIED member JWT (Authorization: Bearer); bound by its
+ *    member_id + workspace_id claims.
+ *  - `secret`: no bearer, so the pre-route gate already required this
+ *    install's access secret (X-Apra-Fleet-Member-Secret). `member` is the
+ *    resolved ?member= id at initialize (null for a FULL-scope session).
+ *
+ * Binding rule (apra-fleet-b4g.138.6): a JWT caller may address only a
+ * session opened with a JWT for the same member and workspace; an access-secret
+ * caller may address only a session opened with the access secret. Within the
+ * secret kind any secret-opened session is addressable, whatever ?member= the
+ * opener used: the secret holder can open a FULL-scope session (a superset of
+ * every member session) at will, and ?member= is an unauthenticated label, so
+ * binding on it would add no security boundary while breaking clients whose
+ * later requests do not repeat the initialize URL's query string.
+ */
+export type SessionOwner =
+  | { kind: 'jwt'; memberId: string; workspaceId: string }
+  | { kind: 'secret'; member: string | null; engineOrigin: boolean; kbMaintainer: boolean };
+
+/** Why `caller` may not address a session owned by `owner`, or null when it may. */
+export function sessionOwnerMismatch(owner: SessionOwner, caller: SessionOwner): string | null {
+  if (owner.kind === 'jwt') {
+    if (caller.kind !== 'jwt') return 'session was opened with a member JWT; the caller presented the access secret';
+    if (caller.memberId !== owner.memberId || caller.workspaceId !== owner.workspaceId) {
+      return 'session was opened by a different member JWT';
+    }
+    return null;
+  }
+  if (caller.kind !== 'secret') return 'session was opened with the access secret; the caller presented a member JWT';
+  return null;
 }
 
 export interface HttpTransportOptions {
@@ -29,6 +68,9 @@ export interface HttpTransportOptions {
    *  implementation that ignores it registers whatever it always did. */
   registerTools: (server: McpServer, scope: ToolScope) => void | Promise<void>;
   preferredPort?: number;
+  /** The member access secret file a `?member=` request is checked against
+   *  (default: <data dir>/member-access.key; created when missing). */
+  memberSecretPath?: string;
 }
 
 /** Thrown by createHttpTransport when the configured (non-zero) port is already bound. */
@@ -142,6 +184,10 @@ function extractBearer(req: http.IncomingMessage): string | null {
 export async function createHttpTransport(options: HttpTransportOptions): Promise<HttpTransportHandle> {
   const { registerTools, preferredPort } = options;
   const sessions = new Map<string, Session>();
+  // Every install has its member access secret from the first server start
+  // (install creates it too): a `?member=` request must present it.
+  const memberSecretPath = options.memberSecretPath ?? memberAccessSecretPath();
+  getOrCreateMemberAccessSecret(memberSecretPath);
   const startedAt = Date.now();
 
   // LOW-1: Track event listener references for cleanup in close()
@@ -160,7 +206,40 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
       res.end('Session not found');
       return;
     }
+    if (refuseForeignCaller(req, res, sessionId, session)) return;
     await session.transport.handleRequest(req, res);
+  }
+
+  /** The identity this request carries. Called only past the pre-route gate,
+   *  so a bearer here has already verified (re-verified to read its claims). */
+  function callerIdentity(req: http.IncomingMessage): SessionOwner | null {
+    const bearer = extractBearer(req);
+    if (bearer !== null) {
+      const claims = getTokenIssuer().verify(bearer);
+      return claims ? { kind: 'jwt', memberId: claims.member_id, workspaceId: claims.workspace_id } : null;
+    }
+    const params = new URL(req.url ?? '/', 'http://localhost').searchParams;
+    return {
+      kind: 'secret',
+      member: params.get('member'),
+      engineOrigin: params.get('origin') === 'engine',
+      kbMaintainer: params.get('kb_maintainer') === '1',
+    };
+  }
+
+  /** 403 (and true) when the caller is not the identity that opened `session`;
+   *  the session is left untouched and no session detail is returned. */
+  function refuseForeignCaller(req: http.IncomingMessage, res: http.ServerResponse, sessionId: string, session: Session): boolean {
+    const caller = callerIdentity(req);
+    const why = caller ? sessionOwnerMismatch(session.owner, caller) : 'caller identity could not be verified';
+    if (why === null) return false;
+    logLine('session', `rejected ${req.method} on sid=${shortSid(sessionId)}: caller=${caller?.kind ?? 'unverified'} owner=${session.owner.kind} (${why})`);
+    res.writeHead(403, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      error: 'session identity mismatch',
+      detail: `This MCP session belongs to a different caller identity (${why}). A session can be used only with the credential that opened it; open a new session instead.`,
+    }));
+    return true;
   }
 
   const httpServer = http.createServer(async (req, res) => {
@@ -206,6 +285,44 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
       res.writeHead(404);
       res.end();
       return;
+    }
+
+    // Every /mcp request without a member JWT must present this install's
+    // member access secret (an owner-only file in its data dir). The server
+    // binds loopback, where every local user can connect; the secret is what
+    // keeps another user's session -- or one configured for another install --
+    // out. That covers the ?member= route (a session acting as that member)
+    // AND the no-member route (a FULL-scope session, which includes command
+    // execution on this install's local members). Read per request so a
+    // replaced secret takes effect at once; a missing one refuses (never fails
+    // open). A member JWT (Authorization: Bearer) is its own credential, but
+    // only a VERIFIED one replaces the secret: any bearer that fails JWT
+    // verification is refused here for every method, so `Bearer x` cannot
+    // carry a GET (SSE stream) or DELETE (session teardown) past this gate.
+    {
+      const memberRouteParam = new URL(url, 'http://localhost').searchParams.get('member');
+      const gateBearer = extractBearer(req);
+      if (gateBearer !== null) {
+        if (!getTokenIssuer().verify(gateBearer)) {
+          logLine('session', `rejected ${req.method}: jwt verify failed member_param=${memberRouteParam ?? 'none'}`);
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'invalid token' }));
+          return;
+        }
+      } else {
+        const expected = readMemberAccessSecret(memberSecretPath);
+        if (!memberAccessSecretMatches(req.headers[MEMBER_SECRET_HEADER.toLowerCase()], expected)) {
+          const why = req.headers[MEMBER_SECRET_HEADER.toLowerCase()] === undefined ? 'missing' : 'wrong';
+          const route = memberRouteParam !== null ? 'member route' : 'full-scope route';
+          logLine('session', `rejected ${req.method} on ${route}: access secret ${why} member_param=${memberRouteParam ?? 'none'}`);
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            error: memberRouteParam !== null ? 'member secret required' : 'access secret required',
+            detail: `An /mcp session must present this apra-fleet install's access secret in the ${MEMBER_SECRET_HEADER} header (the secret was ${why}). It is in member-access.key in the install's data dir, readable only by the install's user; a session configured for another install or another user is refused. Re-run 'apra-fleet install' to rewrite this machine's user-scope MCP registration (a project-scope .mcp.json cannot carry the secret: remove its apra-fleet URL entry or add the header from member-access.key in a git-ignored local config)${memberRouteParam !== null ? ', or compose_permissions / update_member with fleet_install "auto" to rewrite the member MCP config' : ''}.`,
+          }));
+          return;
+        }
+      }
     }
 
     if (req.method === 'POST') {
@@ -313,6 +430,10 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
           ? memberToolScope(sessionMemberId, channelCapable, engineOrigin, kbMaintainerParam)
           : FULL_TOOL_SCOPE;
 
+        const sessionOwner: SessionOwner = postClaims
+          ? { kind: 'jwt', memberId: postClaims.member_id, workspaceId: postClaims.workspace_id }
+          : { kind: 'secret', member: fallbackMemberId, engineOrigin, kbMaintainer: kbMaintainerParam };
+
         const sessionServer = new McpServer(
           { name: `apra fleet server ${serverVersion}`, version: serverVersion },
           { capabilities: { logging: {}, experimental: { 'claude/channel': {} } } }
@@ -320,9 +441,9 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
         const sessionTransport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => crypto.randomUUID(),
           onsessioninitialized: (sid) => {
-            sessions.set(sid, { server: sessionServer, transport: sessionTransport, workspaceId: sessionWorkspaceId });
+            sessions.set(sid, { server: sessionServer, transport: sessionTransport, workspaceId: sessionWorkspaceId, owner: sessionOwner });
             const hasMember = !!(postClaims || fallbackMemberId);
-            logLine('session', `new sid=${sid} client=${clientInfo.name ?? 'unknown'}/${clientInfo.version ?? 'unknown'} caps=${capKeys || 'none'} member=${hasMember} scope=${toolScope.kind}`);
+            logLine('session', `new sid=${shortSid(sid)} client=${clientInfo.name ?? 'unknown'}/${clientInfo.version ?? 'unknown'} caps=${capKeys || 'none'} member=${hasMember} scope=${toolScope.kind}`);
             // Register interactive member session when JWT claims are present.
             //
             // apra-fleet-eft.28.5: carry forward the launch-time pid captured
@@ -351,7 +472,7 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
                 pid: (postClaims as any).pid ?? priorPid,
                 channelCapable,
               });
-              logLine('session', `registered member member_id=${postClaims.member_id} workspace_id=${postClaims.workspace_id} via JWT sid=${sid} channelCapable=${channelCapable}`);
+              logLine('session', `registered member member_id=${postClaims.member_id} workspace_id=${postClaims.workspace_id} via JWT sid=${shortSid(sid)} channelCapable=${channelCapable}`);
             } else if (fallbackMemberId) {
               // apra-fleet-eft.50.1: same durable launch-pid fallback as the
               // JWT branch above, so a URL-param reconnect on a retry keeps a
@@ -367,7 +488,7 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
                 // session that cannot receive those pushes; onsessionclosed
                 // skips it for the same reason.
                 const existing = sessionRegistry.get(sessionWorkspaceId, fallbackMemberId);
-                logLine('session', `tool-only member session member_id=${fallbackMemberId} sid=${sid} not registered (registry entry ${existing ? 'sid=' + (existing.sessionId ?? 'none') : 'absent'} left as is)`);
+                logLine('session', `tool-only member session member_id=${fallbackMemberId} sid=${shortSid(sid)} not registered (registry entry ${existing ? 'sid=' + shortSid(existing.sessionId) : 'absent'} left as is)`);
                 return;
               }
               const existing = sessionRegistry.get(sessionWorkspaceId, fallbackMemberId);
@@ -384,11 +505,11 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
                 pid: priorPid,
                 channelCapable,
               });
-              logLine('session', `registered member member_id=${fallbackMemberId} workspace_id=${sessionWorkspaceId} via URL param sid=${sid} channelCapable=${channelCapable}`);
+              logLine('session', `registered member member_id=${fallbackMemberId} workspace_id=${sessionWorkspaceId} via URL param sid=${shortSid(sid)} channelCapable=${channelCapable}`);
             }
           },
           onsessionclosed: (sid) => {
-            logLine('session', `closed sid=${sid}`);
+            logLine('session', `closed sid=${shortSid(sid)}`);
             // LOW-2: Close the McpServer when its session closes
             const s = sessions.get(sid);
             if (s) {
@@ -404,9 +525,9 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
               const current = sessionRegistry.get(postClaims.workspace_id, postClaims.member_id);
               if (current?.sessionId === sid) {
                 sessionRegistry.unregister(postClaims.workspace_id, postClaims.member_id);
-                logLine('session', `unregistered member member_id=${postClaims.member_id} sid=${sid}`);
+                logLine('session', `unregistered member member_id=${postClaims.member_id} sid=${shortSid(sid)}`);
               } else {
-                logLine('session', `skipped stale unregister member_id=${postClaims.member_id} sid=${sid} (superseded by sid=${current?.sessionId ?? 'none'})`);
+                logLine('session', `skipped stale unregister member_id=${postClaims.member_id} sid=${shortSid(sid)} (superseded by sid=${shortSid(current?.sessionId)})`);
               }
             } else if (fallbackMemberId && channelCapable) {
               // A tool-only ?member= session never registered (see
@@ -414,9 +535,9 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
               const current = sessionRegistry.get(sessionWorkspaceId, fallbackMemberId);
               if (current?.sessionId === sid) {
                 sessionRegistry.unregister(sessionWorkspaceId, fallbackMemberId);
-                logLine('session', `unregistered member member_id=${fallbackMemberId} sid=${sid}`);
+                logLine('session', `unregistered member member_id=${fallbackMemberId} sid=${shortSid(sid)}`);
               } else {
-                logLine('session', `skipped stale unregister member_id=${fallbackMemberId} sid=${sid} (superseded by sid=${current?.sessionId ?? 'none'})`);
+                logLine('session', `skipped stale unregister member_id=${fallbackMemberId} sid=${shortSid(sid)} (superseded by sid=${shortSid(current?.sessionId)})`);
               }
             }
           },
@@ -439,6 +560,7 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
         res.end('Session not found');
         return;
       }
+      if (refuseForeignCaller(req, res, sessionId, session)) return;
       await session.transport.handleRequest(req, res, parsedBody);
       return;
     }
@@ -488,7 +610,7 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
   // logged opt-in: several unauthenticated code paths in this file (the
   // ?member= URL-param fallback, /shutdown's admin-key check) were
   // written assuming only same-machine callers can reach this server.
-  const targetPort = preferredPort ?? DEFAULT_PORT;
+  const targetPort = preferredPort ?? resolveServerPort();
   const bindHost = DEFAULT_HOST;
   if (bindHost !== '127.0.0.1') {
     logLine('session', `WARNING: binding to ${bindHost} (not loopback-only) -- unauthenticated requests (the ?member= URL-param fallback, /shutdown) are now reachable from any host that can route to this address, not just this machine. Set APRA_FLEET_HOST=127.0.0.1 (or unset it) to restore the loopback-only default.`);

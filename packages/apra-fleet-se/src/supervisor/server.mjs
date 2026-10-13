@@ -1,5 +1,5 @@
 // =============================================================================
-// Auto-sprint supervisor -- HTTP server skeleton (Plan Part 2.1, process model B)
+// fleet-sprint supervisor -- HTTP server skeleton (Plan Part 2.1, process model B)
 // =============================================================================
 //
 // This module stands up the always-on `fleet-se serve` supervisor process.

@@ -203,7 +203,7 @@
   <polygon points="1124,216 1134,211 1134,221" fill="#F59E0B"/>
   <polygon points="1124,654 1134,649 1134,659" fill="#F59E0B"/>
   <circle cx="1156" cy="435" r="4" fill="#F59E0B"/>
-  <text transform="translate(1170, 435) rotate(90)" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="16.5" font-weight="700" fill="#FBBF24">all roles, via the bd prime session hook</text>
+  <text transform="translate(1170, 435) rotate(90)" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="16.5" font-weight="700" fill="#FBBF24">each role, via role-scoped bd memories</text>
 
   <!-- Bottom annotation strip -->
   <rect x="50" y="690" width="1166" height="48" rx="12" fill="#F59E0B" fill-opacity="0.12" stroke="#F59E0B" stroke-width="1.2"/>

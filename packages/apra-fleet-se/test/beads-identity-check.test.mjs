@@ -317,7 +317,7 @@ describe('verifyBeadsIdentity', () => {
         assert.ok(calls.every((c) => c.opts.member_name === 'orch'));
     });
 
-    test('profile noise naming another binary, or git missing for the origin probe, stays a WARNING', async () => {
+    test('profile noise naming another binary, or git missing for the origin probe, stays a WARNING (non-reader member)', async () => {
         const { command } = fakeCommand({
             orch: identityAnswers(),
             m1: {

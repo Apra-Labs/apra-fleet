@@ -46,7 +46,7 @@ function argsFile(content: string): string {
   return p;
 }
 
-async function run(argv: string[]) {
+async function run(argv: string[], dataDir: string | undefined = process.env.APRA_FLEET_DATA_DIR) {
   const out: string[] = [];
   const err: string[] = [];
   const code = await runCall(argv, {
@@ -55,7 +55,7 @@ async function run(argv: string[]) {
       // The verb's real connect adds origin=engine; mirror it (and the grant).
       origin: 'engine',
       ...(opts?.kbMaintainer ? { kbMaintainer: true } : {}),
-      env: {},
+      env: { APRA_FLEET_DATA_DIR: dataDir },
       checkRunningInstance: async () => ({ running: true, url: `http://127.0.0.1:${handle.port}/mcp`, pid: process.pid }),
     }),
   });
@@ -113,6 +113,18 @@ describe('apra-fleet call', () => {
     const e = JSON.parse(r.err).error;
     expect(e.code).toBe('E-MEMBER-FORBIDDEN');
     expect(e.status).toBe(403);
+  });
+
+  it("run from another install's data dir (another user) it fails as a typed 401 with non-zero exit", async () => {
+    const otherDataDir = path.join(tmp, 'other-install-data');
+    fs.mkdirSync(otherDataDir, { recursive: true });
+    fs.writeFileSync(path.join(otherDataDir, 'member-access.key'), 'c'.repeat(64) + '\n');
+    const r = await run(['--member', memberId, 'version', '--args-file', argsFile('{}')], otherDataDir);
+    expect(r.code).not.toBe(0);
+    const e = JSON.parse(r.err).error;
+    expect(e.code).toBe('E-MEMBER-SECRET');
+    expect(e.status).toBe(401);
+    expect(sessionRegistry.get(localWorkspaceId(), memberId)).toBeUndefined();
   });
 
   it('invalid args return the tool schema validation error', async () => {

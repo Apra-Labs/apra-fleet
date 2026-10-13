@@ -38,3 +38,7 @@ Options:
   --force-stop-full-install
                           With --member --force: also stop a running server that was not started
                           by a member install (e.g. a full install on a shared machine).
+  --port <n>              With --member: the port this member install's server listens on
+                          (default: APRA_FLEET_PORT, else the port a previous member install
+                          recorded, else 7523). Recorded in the member-install marker; use a
+                          different port for each Unix user's member install on one host.

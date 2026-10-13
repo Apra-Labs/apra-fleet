@@ -136,7 +136,7 @@ export async function probeBeadsIdentity(opts = {}) {
     const cwd = path.resolve(opts.cwd ?? process.cwd());
     const execBd = opts.execBd ?? execBdAsync;
     const execGit = opts.execGit ?? nodeExecFileAsync;
-    const execOpts = { cwd, encoding: 'utf-8' };
+    const execOpts = { cwd, encoding: 'utf-8', windowsHide: true };
 
     let where;
     try {

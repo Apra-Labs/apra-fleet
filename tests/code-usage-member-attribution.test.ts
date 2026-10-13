@@ -28,7 +28,7 @@ import { addAgent } from '../src/services/registry.js';
 import { fleetEvents } from '../src/services/event-bus.js';
 import { FLEET_DIR } from '../src/paths.js';
 import { USAGE_LOG_PATH } from '../src/tools/code-intelligence-telemetry.js';
-import { makeTestLocalAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
+import { makeTestLocalAgent, backupAndResetRegistry, restoreRegistry, memberSecretRequestInit } from './test-helpers.js';
 
 const RECONNECT = { maxRetries: 0, maxReconnectionDelay: 100, initialReconnectionDelay: 100, reconnectionDelayGrowFactor: 1 };
 
@@ -62,7 +62,7 @@ async function connect(member?: string): Promise<Client> {
   const url = new URL(`http://127.0.0.1:${handle.port}/mcp`);
   if (member) url.searchParams.set('member', member);
   const c = new Client({ name: 'usage-attr-client', version: '1.0.0' }, { capabilities: {} });
-  await c.connect(new StreamableHTTPClientTransport(url, { reconnectionOptions: RECONNECT }));
+  await c.connect(new StreamableHTTPClientTransport(url, { reconnectionOptions: RECONNECT, requestInit: memberSecretRequestInit() }));
   client = c;
   return c;
 }

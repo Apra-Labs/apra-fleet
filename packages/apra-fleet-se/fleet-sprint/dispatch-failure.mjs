@@ -62,9 +62,12 @@ export function isTerminalSprintFailure(err) {
 //     worked for the whole budget, so partial work may exist. EXCEPT when the
 //     server marked it dispatched:false (details.dispatched === false): the
 //     budget ran out during setup, before anything was sent, so nothing ran.
+//   - 'permission_denied': the agent ran its turn and some of its tool calls
+//     were refused for lack of a grant (the dispatch engine heals it via
+//     compose_permissions). Calls it WAS allowed may have committed work.
 // ('agent_never_started' is deliberately NOT here: the member process never
 // produced a session, so nothing ran and nothing was mutated.)
-const AGENT_RAN_DISPATCH_REASONS = new Set(['max_turns_exhausted', 'watchdog_timeout', 'max_total_time']);
+const AGENT_RAN_DISPATCH_REASONS = new Set(['max_turns_exhausted', 'watchdog_timeout', 'max_total_time', 'permission_denied']);
 
 function agentRan(details) {
     return AGENT_RAN_DISPATCH_REASONS.has(details.reason) && details.dispatched !== false;
@@ -96,6 +99,12 @@ function agentRan(details) {
 //     command() throw it from inside the dispatch closure BEFORE any dispatch
 //     is issued (packages/apra-fleet-workflow/src/workflow/errors.mjs), so it
 //     alone provably mutated nothing.
+//
+// NOT a guarantee the member checkout is untouched: a transport drop can sever
+// the channel while the member keeps working. The doer retry ladder therefore
+// does not trust this predicate for its reset-onto-remote-tip decision; that
+// reset salvages local work to a fleet-salvage/ side ref first (see the comment
+// at retryFollowsPossibleMutation in dispatch-role.mjs).
 export function isNoMutationDispatchFailure(err) {
     if (!err) return false;
     if (err instanceof AgentOutputError) return false;

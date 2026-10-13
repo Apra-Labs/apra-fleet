@@ -7,8 +7,11 @@ import { parseVersion, isNewer } from '../services/update-check.js';
 import { FLEET_DIR } from '../paths.js';
 import { readInstallConfig } from './config.js';
 import { isSea, isNpmGlobalInstall } from './install.js';
+import { showPendingServiceNotice } from '../services/service-notice.js';
 
 export async function runUpdate(): Promise<void> {
+  // Guidance the previous (detached) install could not show.
+  showPendingServiceNotice();
   if (!isSea()) {
     if (isNpmGlobalInstall()) {
       console.log('apra-fleet is installed via npm. To update, run:');
@@ -115,8 +118,11 @@ export async function runUpdate(): Promise<void> {
     // `--workflows none` choice survives an update instead of silently
     // reverting to the `all` default on re-install (apra-fleet-7pm.10).
     const args = ['install', '--force', '--llm', targetLlm, '--skill', targetSkill, '--workflows', targetWorkflowsMode];
-    const installer = spawn(tmpPath, args, { detached: true, stdio: 'ignore' });
+    const installer = spawn(tmpPath, args, { detached: true, stdio: 'ignore', windowsHide: true });
     installer.unref();
+    // The installer runs detached with no console: anything it has to tell
+    // the user about the service is shown by the next status/stop/update.
+    console.log("The update is installing in the background. Run 'apra-fleet status' in a minute to check the service.");
     process.exit(0);
 
   } catch (e) {

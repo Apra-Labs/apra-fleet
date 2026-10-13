@@ -100,6 +100,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 // ---------------------------------------------------------------------------
@@ -132,7 +133,7 @@ const RECORD_ONLY = process.env.RECORD_ONLY
 
 // Synthetic scratch repos -- no real BluSKY code, credentials, or customer
 // text anywhere below. repoA/repoB are deliberately NOT git repos (no .git).
-const { ENVIRONMENT, RECORDED_REMOTE_A, RECORDED_REMOTE_B, RECORDED_REMOTE_IMPORT_REJECTED, RECORDED_REMOTE_BARE } =
+const { ENVIRONMENT, RECORDED_REMOTE_A, RECORDED_REMOTE_B, RECORDED_REMOTE_IMPORT_REJECTED, RECORDED_REMOTE_BARE, UNTRUSTED_COMMITTED_BIBLE } =
   await import(pathToFileURL(path.join(HERE, 'roundtrip-harness.mjs')).href);
 const { materializeSessionWorld } = await import(pathToFileURL(path.join(HERE, 'session-world.mjs')).href);
 const { registerAllTools } = await import(pathToFileURL(path.join(DIST, 'services', 'tool-registry.js')).href);
@@ -785,6 +786,12 @@ await recordRefusal('kb_import', 'refusal-bible-not-found', {
   path: path.join(repoA, '.fleet', 'no-such-bible.json'),
 }, 'E-BIBLE-NOT-FOUND');
 
+// E-BIBLE-NOT-FOUND with `ref`: the named git ref does not hold the bible
+// (the bible is read as committed at the ref, never from the file system).
+await recordRefusal('kb_import', 'refusal-bible-not-found-at-ref', {
+  ref: 'refs/remotes/origin/no-such-branch',
+}, 'E-BIBLE-NOT-FOUND');
+
 const notJsonPath = path.join(repoA, '.fleet', 'not-json.json');
 fs.writeFileSync(notJsonPath, 'this is not valid JSON {{{', 'utf-8');
 await recordRefusal('kb_import', 'refusal-bible-not-json', {
@@ -796,6 +803,24 @@ fs.writeFileSync(wrongShapePath, JSON.stringify({ not: 'an array or an entries e
 await recordRefusal('kb_import', 'refusal-bible-wrong-shape', {
   path: wrongShapePath,
 }, 'E-BIBLE-WRONG-SHAPE');
+
+// E-KB-MAINTAINER-REQUIRED: a member session WITHOUT the kb_maintainer grant
+// naming a bible by explicit path (here repo A's) is refused; nothing imported.
+await withSession('PLAIN_B', () => recordRefusal('kb_import', 'refusal-kb-maintainer-required', {
+  path: bibleFromA,
+}, 'E-KB-MAINTAINER-REQUIRED'));
+
+// E-KB-MAINTAINER-REQUIRED (trust anchor): a bible committed only in the
+// member's own checkout, whose blob id the maintainer side never recorded, is
+// refused for a member session without the grant; nothing imported.
+{
+  fs.mkdirSync(path.join(repoB, '.fleet'), { recursive: true });
+  fs.writeFileSync(path.join(repoB, '.fleet', 'kb-canonical.json'), UNTRUSTED_COMMITTED_BIBLE, 'utf-8');
+  const git = (args) => execFileSync('git', args, { cwd: repoB, stdio: ['ignore', 'pipe', 'pipe'] });
+  git(['add', '--', '.fleet/kb-canonical.json']);
+  git(['-c', 'commit.gpgsign=false', 'commit', '-q', '--no-verify', '-m', 'setup: .fleet/kb-canonical.json', '--', '.fleet/kb-canonical.json']);
+  await withSession('PLAIN_B', () => recordRefusal('kb_import', 'refusal-untrusted-committed-bible', {}, 'E-KB-MAINTAINER-REQUIRED'));
+}
 
 // -- admission group (all 3 codes) ----------------------------------------
 await recordRefusal('kb_capture', 'refusal-no-basis', {
@@ -993,6 +1018,49 @@ await recordNonErrorOutcome('kb_capture', 'non-error-confidence-clamped', {
       baseBranch: 'main',
       baseCommit: '0123456789abcdef0123456789abcdef01234567',
     });
+  }
+}
+
+// -- E-RETIRE-NEEDS-KB-MAINTAINER (governance, response field) -------------
+// PLAIN_A (repo A, no kb_maintainer grant) captures an entry that FULL_A then
+// promotes to CONFIRMED. PLAIN_A can retire it neither by kb_capture
+// supersedes (the capture links to it instead) nor by kb_invalidate ids: both
+// responses list it in refused and it stays live.
+{
+  const captureGate = await withSession('PLAIN_A', () => recordHappy('kb_capture', 'setup-for-retire-refused', {
+    type: 'knowledge',
+    title: 'Gate retire fixture entry',
+    summary: 'Set up to demonstrate E-RETIRE-NEEDS-KB-MAINTAINER.',
+    content: 'This entry is promoted to CONFIRMED, then a session without the kb_maintainer grant tries to retire it.',
+    source_files: ['src/example.ts'],
+    symbols: ['gateRetireFixture'],
+  }));
+  const idGate = parseEnvelopeText(captureGate)?.id;
+  if (idGate) {
+    await withSession('FULL_A', () => recordHappy('kb_promote', 'setup-first-promote-for-retire-refused', {
+      id: idGate,
+      reason: 'First promotion (UNVERIFIED -> INFERRED) of the entry used by the retire-refused fixtures.',
+    }));
+    await withSession('FULL_A', () => recordHappy('kb_promote', 'setup-second-promote-for-retire-refused', {
+      id: idGate,
+      reason: 'Second promotion (INFERRED -> CONFIRMED) so a no-grant retire is refused.',
+    }));
+    const refusedGate = (response) => {
+      const payload = parseEnvelopeText(response);
+      return Array.isArray(payload?.refused) && payload.refused.length === 1 && payload.refused[0] === idGate;
+    };
+    await withSession('PLAIN_A', () => recordResponseFieldRefusal('kb_capture', 'refusal-retire-needs-kb-maintainer', {
+      type: 'knowledge',
+      title: 'Gate retire fixture entry',
+      summary: 'A replacement that names the CONFIRMED entry in supersedes.',
+      content: 'A revised note on the gate retire fixture, meant to replace the earlier entry.',
+      source_files: ['src/example.ts'],
+      symbols: ['gateRetireFixture'],
+      supersedes: idGate,
+    }, 'E-RETIRE-NEEDS-KB-MAINTAINER', refusedGate));
+    await withSession('PLAIN_A', () => recordResponseFieldRefusal('kb_invalidate', 'refusal-retire-needs-kb-maintainer', {
+      ids: [idGate],
+    }, 'E-RETIRE-NEEDS-KB-MAINTAINER', refusedGate));
   }
 }
 

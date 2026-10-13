@@ -84,7 +84,7 @@ describe('renderKbCodeIntelHtml', () => {
         ] });
         assert.doesNotMatch(html, /<img/);
         assert.doesNotMatch(html, /<b>doer/);
-        assert.doesNotMatch(html, /<script>/);
+        assert.doesNotMatch(html, /<script\b/i);
         assert.doesNotMatch(html, /<l>/);
         assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;/);
         assert.match(html, /&lt;b&gt;doer&lt;\/b&gt;/);

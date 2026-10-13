@@ -10,8 +10,9 @@ const __dirname = dirname(__filename);
 import { getStrategy } from '../services/strategy.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { getProvider } from '../providers/index.js';
-import { seedWorkspaceTrust, workspaceTrustTransportFor } from '../utils/workspace-trust.js';
+import { seedWorkspaceTrust, workspaceTrustTransportFor, memberSecretFileChannelFor } from '../utils/workspace-trust.js';
 import { perFolderMcpEntryNeeded, REMOTE_SESSION_MCP_FILE } from '../services/session-mcp-config.js';
+import { memberMcpHeaders } from '../services/member-access-secret.js';
 import {
   deleteMemberFile,
   ensureGitExcluded,
@@ -22,6 +23,7 @@ import {
   quotePwshPath,
   MemberConfigError,
   MEMBER_MCP_SERVER_NAME,
+  memberMcpAllowRules,
   readMemberJson,
   removeGitExcluded,
   writeMemberJson,
@@ -42,6 +44,7 @@ export const composePermissionsSchema = z.object({
   project_folder: z.string().optional().describe('Local project folder containing permissions.json ledger. Omit to skip ledger merge.'),
   grant: z.array(z.string()).optional().describe('Reactive mode: additional permissions to grant (e.g. ["Bash(docker:*)", "Bash(docker-compose:*)"]). Appended to current permissions and re-delivered.'),
   grant_reason: z.string().optional().describe('Reason for the grant (stored in ledger)'),
+  dry_run: z.boolean().optional().describe('Compose only: return the allow list the role/tags (plus detected stacks, plus the ledger when project_folder is given) would deliver, as JSON text {"dry_run":true,"mode","stacks","allow"}, without writing anything to the member. Ignored with grant. Use it to check whether a grant is within the member\'s composed policy.'),
 });
 
 export type ComposePermissionsInput = z.infer<typeof composePermissionsSchema>;
@@ -257,32 +260,89 @@ function loadLedger(projectFolder: string): Ledger {
 }
 
 function saveLedger(projectFolder: string, ledger: Ledger): void {
+  // A caller may name a ledger folder that does not exist yet (fleet-sprint
+  // keeps one per member so grants survive into the next sprint).
+  fs.mkdirSync(projectFolder, { recursive: true });
   const ledgerPath = path.join(projectFolder, 'permissions.json');
   fs.writeFileSync(ledgerPath, JSON.stringify(ledger, null, 2) + '\n');
 }
 
 async function detectStacks(agent: Agent, projectSubdir?: string): Promise<string[]> {
+  const found = new Set<string>();
+
+  if (agent.agentType === 'local') {
+    let localDir = agent.workFolder;
+    if (projectSubdir) {
+      const subDir = path.join(agent.workFolder, projectSubdir);
+      if (fs.existsSync(subDir)) {
+        localDir = subDir;
+      }
+    }
+    try {
+      if (fs.existsSync(localDir)) {
+        for (const [marker, stack] of Object.entries(STACK_MAP)) {
+          if (fs.existsSync(path.join(localDir, marker))) {
+            found.add(stack);
+          }
+        }
+        const entries = fs.readdirSync(localDir);
+        for (const entry of entries) {
+          if (entry.endsWith('.sln') || entry.endsWith('.csproj')) {
+            found.add('dotnet');
+            break;
+          }
+        }
+      }
+    } catch {
+      // directory missing or unreadable
+    }
+    return [...found];
+  }
+
   const strategy = getStrategy(agent);
   const markers = Object.keys(STACK_MAP).join(' ');
   // Resolve the directory to check on the member: prefer <workFolder>/<projectSubdir>,
   // fall back to workFolder root. Using an absolute cd ensures remote (SSH) members
   // check the right directory instead of defaulting to their home directory.
+  const rootDir = agent.workFolder.replace(/\\/g, '/');
   const checkDir = projectSubdir
     ? `${agent.workFolder}/${projectSubdir}`.replace(/\\/g, '/')
-    : agent.workFolder.replace(/\\/g, '/');
-  // TODO: unbranched POSIX && / || / 2>/dev/null -- same defect class as
-  // orphan-recovery.ts's pid-alive/file-read commands (apra-fleet review,
-  // fix/cross-shell-home-var). Not yet OS-branched for Windows members.
-  const result = await strategy.execCommand(`cd "${checkDir}" 2>/dev/null && ls ${markers} 2>/dev/null || true`, 10000);
-  const found = new Set<string>();
-  for (const line of result.stdout.split('\n')) {
-    const file = line.trim();
-    if (STACK_MAP[file]) found.add(STACK_MAP[file]);
+    : rootDir;
+  // The fallback to the work folder root is real: `cd <sub> || cd <root>`.
+  // A project_folder whose basename is not a subfolder of the work folder
+  // (e.g. a ledger folder kept elsewhere) used to detect NO stacks at all and
+  // silently drop the stack grants (npm/node/...) from the composed config.
+  const cdCmd = checkDir === rootDir
+    ? `cd "${rootDir}" 2>/dev/null`
+    : `{ cd "${checkDir}" 2>/dev/null || cd "${rootDir}" 2>/dev/null; }`;
+
+  const isWindows = agent.os === 'windows';
+  const shell = getAgentShell(agent);
+  const posix = isPosixShell(isWindows, shell);
+
+  if (posix) {
+    const result = await strategy.execCommand(`${cdCmd} && ls ${markers} 2>/dev/null || true`, 10000);
+    for (const line of result.stdout.split('\n')) {
+      const file = line.trim();
+      if (STACK_MAP[file]) found.add(STACK_MAP[file]);
+    }
+    const dotnetCheck = await strategy.execCommand(`${cdCmd} && ls *.sln *.csproj 2>/dev/null || true`, LOCAL_FS_OP_TIMEOUT_MS);
+    if (dotnetCheck.stdout.trim()) found.add('dotnet');
+  } else {
+    // Windows PowerShell remote member: Get-ChildItem to enumerate files
+    const winDir = checkDir.replace(/\//g, '\\');
+    const winRootDir = rootDir.replace(/\//g, '\\');
+    const pathsToCheck = checkDir === rootDir
+      ? `'${escapePowerShellArgInner(winRootDir)}'`
+      : `'${escapePowerShellArgInner(winDir)}', '${escapePowerShellArgInner(winRootDir)}'`;
+    const psCmd = `Get-ChildItem -LiteralPath @(${pathsToCheck}) -File -ErrorAction SilentlyContinue | ForEach-Object { $_.Name }`;
+    const result = await strategy.execCommand(psCmd, 10000);
+    for (const line of result.stdout.split(/\r?\n/)) {
+      const file = line.trim();
+      if (STACK_MAP[file]) found.add(STACK_MAP[file]);
+      if (file.endsWith('.sln') || file.endsWith('.csproj')) found.add('dotnet');
+    }
   }
-  // .sln/.csproj need glob - check separately
-  // TODO: same unbranched-POSIX defect class as above -- not yet OS-branched.
-  const dotnetCheck = await strategy.execCommand(`cd "${checkDir}" 2>/dev/null && ls *.sln *.csproj 2>/dev/null || true`, LOCAL_FS_OP_TIMEOUT_MS);
-  if (dotnetCheck.stdout.trim()) found.add('dotnet');
   return [...found];
 }
 
@@ -290,6 +350,8 @@ function compose(profilesDir: string, role: string, stacks: string[], ledger: Le
   const baseName = role === 'doer' ? 'base-dev' : 'base-reviewer';
   const base = loadProfile(profilesDir, baseName);
   const perms = new Set<string>(base?.permissions?.allow ?? []);
+  // Every member-allowlisted fleet tool (kb_*, code_*, ...): see memberMcpAllowRules.
+  for (const rule of memberMcpAllowRules()) perms.add(rule);
 
   const roleKey = role === 'doer' ? 'dev' : 'reviewer';
   for (const stack of stacks) {
@@ -327,6 +389,8 @@ function composeFromTags(profilesDir: string, mode: 'doer' | 'reviewer', tags: s
   const baseName = mode === 'doer' ? 'base-dev' : 'base-reviewer';
   const base = loadProfile(profilesDir, baseName);
   const perms = new Set<string>(base?.permissions?.allow ?? []);
+  // Every member-allowlisted fleet tool (kb_*, code_*, ...): see memberMcpAllowRules.
+  for (const rule of memberMcpAllowRules()) perms.add(rule);
 
   const profileKey = mode === 'doer' ? 'dev' : 'reviewer';
 
@@ -724,8 +788,11 @@ async function syncMemberMcpConfig(
         agentOs,
         shell,
         transport: workspaceTrustTransportFor(agent, strategy),
+        secretChannel: memberSecretFileChannelFor(agent),
         url: perFolder ? memberMcpUrl(agent) : null,
-        ...(perFolder ? {} : { removeOnlyOwnEntry: true }),
+        // The member install's access secret: its server refuses a ?member=
+        // session without it. Written only through file channels.
+        ...(perFolder ? memberHeadersField(agent) : { removeOnlyOwnEntry: true }),
       });
       workFolderFiles.push(...result.workFolderFiles);
     }
@@ -770,6 +837,12 @@ async function syncMemberMcpConfig(
     };
   }
   return {};
+}
+
+/** `{ headers }` for a member whose access secret is known, else nothing. */
+function memberHeadersField(agent: Agent): { headers?: Record<string, string> } {
+  const headers = memberMcpHeaders(agent);
+  return headers ? { headers } : {};
 }
 
 /**
@@ -885,6 +958,7 @@ export async function removeComposedMemberConfig(agent: Agent): Promise<string[]
       agentOs,
       shell,
       transport: workspaceTrustTransportFor(agent, strategy),
+      secretChannel: memberSecretFileChannelFor(agent),
       url: null,
       // Only the entry fleet wrote for THIS member (?member=<uuid>): a human's
       // own apra-fleet entry for that folder is never removed.
@@ -918,6 +992,20 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
 
   const provider = getProvider(agent.llmProvider);
   const strategy = getStrategy(agent);
+
+  // Dry run: the allow list a proactive compose would deliver (role/tags +
+  // detected stacks + ledger when project_folder is given), with nothing
+  // written to the member or the ledger. Callers derive their grant policy
+  // from it (fleet-sprint's permission heal) instead of a hand-kept copy.
+  if (input.dry_run && !input.grant?.length) {
+    const profilesDirDry = findProfilesDir();
+    const ledgerDry = input.project_folder ? loadLedger(input.project_folder) : { stacks: [], granted: [] };
+    const stacksDry = await detectStacks(agent, input.project_folder ? path.basename(input.project_folder) : undefined);
+    const allowDry = input.tags?.length
+      ? composeFromTags(profilesDirDry, mode, input.tags, stacksDry, ledgerDry)
+      : compose(profilesDirDry, mode, stacksDry, ledgerDry);
+    return JSON.stringify({ dry_run: true, mode, stacks: stacksDry, allow: allowDry });
+  }
 
   // Reactive grant mode -- validate dangerous grants FIRST before any member probe or command
   if (input.grant?.length) {
@@ -990,8 +1078,13 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
       for (const p of expanded) existingAllow.add(p);
       allow = [...existingAllow];
     } else {
-      // Non-Claude: pass grants directly; provider incorporates into role-based config
-      allow = [...expanded];
+      // Non-Claude: include the role's base profile so reactive grants never strip
+      // baseline developer or reviewer permissions.
+      const baseName = mode === 'doer' ? 'base-dev' : 'base-reviewer';
+      const base = loadProfile(profilesDir, baseName);
+      const basePerms = new Set<string>(base?.permissions?.allow ?? []);
+      for (const p of expanded) basePerms.add(p);
+      allow = [...basePerms];
     }
 
     let deliveryWarnings: string[] = [];

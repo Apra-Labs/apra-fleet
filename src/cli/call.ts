@@ -13,7 +13,8 @@
  * structured JSON error on stderr and the exit code is non-zero.
  *
  * --kb-maintainer adds the engine's kb_maintainer grant (kb_maintainer=1): the
- * session is also served kb_promote and kb_resolve_contradiction. Remote
+ * session is also served kb_promote, kb_resolve_contradiction and
+ * kb_reconcile_prefilter, and may pass kb_import an explicit path. Remote
  * memberCall passes it only when calling as a repository's kb_maintainer.
  */
 import fs from 'node:fs';
@@ -144,6 +145,9 @@ export async function runCall(argv: string[], deps: CallDeps = {}): Promise<numb
     const err = e as Error & { status?: number; code?: string };
     if (err.status === 403) {
       return fail(io, 'E-MEMBER-FORBIDDEN', `server refused member ${parsed.member}: not a registered member (HTTP 403)`, { status: 403 });
+    }
+    if (err.status === 401) {
+      return fail(io, 'E-MEMBER-SECRET', `server refused the member session for ${parsed.member}: the member access secret (member-access.key in this install's data dir) was missing or did not match (HTTP 401). Run this as the install's own user, with the same APRA_FLEET_DATA_DIR as its server.`, { status: 401 });
     }
     return fail(io, err.code ?? 'E-CONNECT', err.message);
   }

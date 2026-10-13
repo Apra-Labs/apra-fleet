@@ -110,7 +110,7 @@ export default {
     "tests/install-force.test.ts": 9,
     "tests/install-multi-provider.test.ts": 99,
     "tests/install.test.ts": 3,
-    "tests/integration/pid-lifecycle.test.ts": 7,
+    "tests/integration/pid-lifecycle.test.ts": 4,
     "tests/integration/session-lifecycle.test.ts": 190,
     "tests/member-home-warm.test.ts": 1,
     "tests/onboarding-smoke.mjs": 3,

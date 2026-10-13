@@ -4,10 +4,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { getKbProviders } from '../services/knowledge/kb-providers.js';
 import { resolveKbAnchor, type KbAnchor } from '../services/knowledge/kb-self.js';
-import { filterProjectBibleCandidates } from '../services/knowledge/bible-basis-filter.js';
+import { filterProjectBibleCandidates, hasCarriedBasis, selectLegacyBibleBackfill } from '../services/knowledge/bible-basis-filter.js';
 import { logWarn } from '../utils/log-helpers.js';
 import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
 import type { BibleDemotion } from '../services/knowledge/bible-import.js';
+import { bibleBytesBlobId } from '../services/knowledge/bible-blob-id.js';
+import { memberLacksKbMaintainer } from '../services/knowledge/kb-maintainer-grant.js';
 import {
   asciiSafeStringify,
   assertNoDuplicateBibleIds,
@@ -19,6 +21,7 @@ import {
   readBibleDocument,
   requireLocalFolder,
   toCanonicalEntry,
+  withSourceFileHashes,
   type CanonicalBible,
   type CanonicalEntry,
 } from './kb-export.js';
@@ -41,12 +44,26 @@ import {
 //
 // kb_export is untouched by this: it stays additive-only.
 //
+// Legacy backfill: an entry already in the bible with no source_file_hashes
+// (carried over from a v1/v2 bible) gains the STORED basis this KB holds for
+// the same id, when that basis passes the bible admission predicate at HEAD and
+// the KB entry cites exactly the bible entry's source_files
+// (selectLegacyBibleBackfill). Only source_file_hashes is added; id, text,
+// confidence and every other field stay as they are, and an entry that does not
+// qualify is kept unchanged (never dropped). A backfill is a change: the bible
+// is rewritten at the current format version and committed, and the response
+// and the commit message report the number of backfilled entries.
+//
 // Provenance records the sprint's TARGET BASE branch and the base commit the
 // entries were verified against, as given by the caller -- never the HEAD of
 // the working folder, which is typically a feature branch.
 //
 // The commit is local, pathspec-scoped to the bible file, with the pm-kb
 // identity (shared with kb_export). It is NEVER pushed.
+//
+// Trust anchor: when called from a FULL or kb_maintainer session, the blob id
+// of every bible this writes is recorded in the per-repo KB DB, which is what
+// lets a member session without the grant import that bible (kb-import.ts).
 
 export const kbBibleCommitSchema = z.object({
   ids: z.array(z.string().min(1))
@@ -99,6 +116,8 @@ export interface KbBibleCommitResult {
   removed: KbBibleCommitRemoval[];
   /** ENTRIES only -- a tombstone is not an entry. */
   entry_count: number;
+  /** How many existing bible entries gained source_file_hashes (legacy backfill). */
+  backfilled: number;
   committed: boolean;
 }
 
@@ -123,7 +142,7 @@ export async function kbBibleCommit(input: KbBibleCommitInput, anchor?: KbAnchor
     && (existingAtStart === null || existingAtStart.length === 0)) {
     return done({
       merged: [], demoted: [], skipped: [], removed: [],
-      entry_count: existingAtStart?.length ?? 0, committed: false,
+      entry_count: existingAtStart?.length ?? 0, backfilled: 0, committed: false,
     });
   }
 
@@ -198,8 +217,25 @@ export async function kbBibleCommit(input: KbBibleCommitInput, anchor?: KbAnchor
     .map(e => ({ id: e.id, reason: retired.get(e.id)! }))
     .sort(compareById);
 
-  if (merged.length === 0 && removed.length === 0 && admittedDemotions.length === 0) {
-    return done({ merged, demoted, skipped, removed, entry_count: existing?.length ?? 0, committed: false });
+  // Legacy backfill: existing entries with no carried basis, not merged (a
+  // merged id gets its fresh entry and basis anyway) and not removed. The
+  // predicate needs a git work tree; a folder that is not one has nothing
+  // backfilled (no disk fallback) rather than failing a removal-only call.
+  const mergedSet = new Set(merged);
+  const removedSet = new Set(removed.map(r => r.id));
+  const legacy = (existing ?? []).filter(e => !hasCarriedBasis(e) && !mergedSet.has(e.id) && !removedSet.has(e.id));
+  let backfill = new Map<string, Record<string, string>>();
+  if (legacy.length > 0 && isGitRepo(repoPath)) {
+    const legacyIds = new Set(legacy.map(e => e.id));
+    const kbLegacy = confirmedEntries.filter(e => legacyIds.has(e.id));
+    if (kbLegacy.length > 0) {
+      backfill = await selectLegacyBibleBackfill(legacy, kbLegacy, project.getSourceFileBases(kbLegacy.map(e => e.id)), repoPath);
+    }
+  }
+  const backfilled = backfill.size;
+
+  if (merged.length === 0 && removed.length === 0 && admittedDemotions.length === 0 && backfilled === 0) {
+    return done({ merged, demoted, skipped, removed, entry_count: existing?.length ?? 0, backfilled, committed: false });
   }
 
   // Duplicate-id guard: an existing file holding one id twice would otherwise
@@ -207,7 +243,10 @@ export async function kbBibleCommit(input: KbBibleCommitInput, anchor?: KbAnchor
   // before anything is written.
   assertNoDuplicateBibleIds(existing ?? [], 'kb_bible_commit');
   const byId = new Map<string, CanonicalEntry>();
-  for (const e of existing ?? []) byId.set(e.id, e);
+  for (const e of existing ?? []) {
+    const basis = backfill.get(e.id);
+    byId.set(e.id, basis ? withSourceFileHashes(e, basis) : e);
+  }
   for (const r of removed) byId.delete(r.id);
   for (const id of merged) byId.set(id, confirmed.get(id)!);
   // An admitted demotion REMOVES the entry -- the only path by which this tool
@@ -233,7 +272,7 @@ export async function kbBibleCommit(input: KbBibleCommitInput, anchor?: KbAnchor
     === asciiSafeStringify(demotions);
   if (existing !== null && demotionsUnchanged
     && asciiSafeStringify(existing) === asciiSafeStringify(entries)) {
-    return done({ merged, demoted, skipped, removed, entry_count: entries.length, committed: false });
+    return done({ merged, demoted, skipped, removed, entry_count: entries.length, backfilled, committed: false });
   }
 
   const bible: CanonicalBible = {
@@ -250,11 +289,12 @@ export async function kbBibleCommit(input: KbBibleCommitInput, anchor?: KbAnchor
     ...(demotions.length > 0 ? { demotions } : {}),
   };
   fs.mkdirSync(path.dirname(outPath), { recursive: true });
-  fs.writeFileSync(outPath, asciiSafeStringify(bible) + '\n', 'utf-8');
+  const written = Buffer.from(asciiSafeStringify(bible) + '\n', 'utf-8');
+  fs.writeFileSync(outPath, written);
 
   let committed = false;
   if (isGitRepo(repoPath) && bibleContentChanged(repoPath, outPath)) {
-    const message = bibleCommitMessage(merged.length, removed, entries.length, demoted.length);
+    const message = bibleCommitMessage(merged.length, removed, entries.length, backfilled, demoted.length);
     try {
       commitBiblePath(repoPath, outPath, message);
     } catch (err) {
@@ -264,20 +304,38 @@ export async function kbBibleCommit(input: KbBibleCommitInput, anchor?: KbAnchor
     committed = true;
   }
 
-  return done({ merged, demoted, skipped, removed, entry_count: entries.length, committed });
+  // kb_import trust anchor: record the blob id of the bible just written, so
+  // a member session without the kb_maintainer grant may import it once it is
+  // committed in (or pulled into) any checkout of this repository. Only the
+  // maintainer side records: kb_bible_commit is served to every member
+  // session, and a session without the grant merges over whatever its own
+  // work-tree bible holds (possibly hand-edited), so its output must not
+  // become trusted. A FULL session and the kb_maintainer session record.
+  if (!memberLacksKbMaintainer(anchor)) {
+    // The id of the exact bytes written (LF, unfiltered), hashed in-process:
+    // never `git hash-object` on the path, which would re-read the file and
+    // run the checkout's member-configured clean filters.
+    project.recordTrustedBibleBlob(await bibleBytesBlobId(repoPath, written), 'kb_bible_commit');
+  }
+
+  return done({ merged, demoted, skipped, removed, entry_count: entries.length, backfilled, committed });
 }
 
 /**
  * The bible commit message. The subject counts merged, removed and demoted
  * entries; when entries were removed, the body lists each one as
- * '- <id> (<reason>)'. With no removals and no demotions the message is the
- * single pre-existing subject line.
+ * '- <id> (<reason>)'. With no removals and no backfill the message is the
+ * single pre-existing subject line. A legacy backfill (existing entries that
+ * gained source_file_hashes) adds a body line 'Backfilled source_file_hashes on
+ * <n> existing entries.'; a backfill-only commit names the count in its own subject.
  */
 export function bibleCommitMessage(
-  mergedCount: number, removed: KbBibleCommitRemoval[], total: number, demotedCount = 0,
+  mergedCount: number, removed: KbBibleCommitRemoval[], total: number, backfilled = 0, demotedCount = 0,
 ): string {
   let head: string;
-  if (removed.length === 0) {
+  if (mergedCount === 0 && removed.length === 0 && backfilled > 0) {
+    head = 'chore(kb): backfill source_file_hashes on ' + backfilled + ' knowledge bible entries';
+  } else if (removed.length === 0) {
     head = 'chore(kb): commit ' + mergedCount + ' confirmed entries to the knowledge bible';
   } else if (mergedCount === 0) {
     head = 'chore(kb): remove ' + removed.length + ' superseded/invalidated entries from the knowledge bible';
@@ -287,6 +345,10 @@ export function bibleCommitMessage(
   }
   const demotedClause = demotedCount > 0 ? ', ' + demotedCount + ' demoted' : '';
   const subject = head + demotedClause + ' -- ' + total + ' total';
-  if (removed.length === 0) return subject;
-  return subject + '\n\nRemoved:\n' + removed.map(r => '- ' + r.id + ' (' + r.reason + ')').join('\n');
+  const body: string[] = [];
+  if (removed.length > 0) body.push('Removed:\n' + removed.map(r => '- ' + r.id + ' (' + r.reason + ')').join('\n'));
+  // A backfill-only subject already names the count.
+  if (backfilled > 0 && (mergedCount > 0 || removed.length > 0)) body.push('Backfilled source_file_hashes on ' + backfilled + ' existing entries.');
+  if (body.length === 0) return subject;
+  return subject + '\n\n' + body.join('\n\n');
 }

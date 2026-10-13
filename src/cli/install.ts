@@ -1,10 +1,12 @@
 import fs from 'node:fs';
+import { getOrCreateMemberAccessSecret, MEMBER_SECRET_HEADER, readMemberAccessSecret } from '../services/member-access-secret.js';
+import { claudeUserConfigPath, refreshClaudeLocalScopeEntries } from '../services/claude-local-scope-mcp.js';
 import path from 'node:path';
 import os from 'node:os';
 import { execSync, execFileSync } from 'node:child_process';
 import { serverVersion } from '../version.js';
 import type { LlmProvider } from '../types.js';
-import { DEFAULT_PORT, DEFAULT_HOST, LOG_FILE_PATH } from '../paths.js';
+import { BUILTIN_DEFAULT_PORT, DEFAULT_PORT, DEFAULT_HOST, LOG_FILE_PATH, recordedMemberInstallPort, resolveServerPort, validPort } from '../paths.js';
 import { getServiceManager } from '../services/service-manager/index.js';
 import type { ServiceManager } from '../services/service-manager/types.js';
 import { LINUX_UNIT_NAME, MACOS_PLIST_LABEL, WINDOWS_TASK_NAME } from '../services/service-manager/types.js';
@@ -14,6 +16,9 @@ import {
   SCRIPTS_DIR,
   getProviderInstallConfig,
   readConfig,
+  readInstallConfig,
+  writeOwnerOnlyFile,
+  writeOwnerOnlyFileAtomic,
   writeConfig,
   writeInstallConfig,
   PROVIDER_STANDARD_MODELS,
@@ -30,6 +35,8 @@ import {
   writeMemberInstallMarker, clearMemberInstallMarker, FORCE_STOP_FULL_INSTALL_FLAG,
 } from './install-guard.js';
 import { convertClaudeAllowToAgyPermissions, formatAgyPermissionRules } from '../providers/agy.js';
+import { codeIntelPathWarning } from '../utils/find-on-path.js';
+import { gitBashCandidates } from '../os/git-bash-candidates.js';
 
 // --- Dolt CLI install step: injectable deps + explicit gate ---
 //
@@ -67,7 +74,7 @@ export function _resetDoltStepDeps(): void {
 function beadsStepDeps(): BeadsInstallDeps {
   return {
     platform: process.platform,
-    exec: (cmd, args, opts) => execFileSync(cmd, args, { stdio: 'pipe', encoding: 'utf-8', shell: opts.shell }) as unknown as string,
+    exec: (cmd, args, opts) => execFileSync(cmd, args, { stdio: 'pipe', encoding: 'utf-8', shell: opts.shell, windowsHide: true }) as unknown as string,
     existsSync: p => fs.existsSync(p),
     mkdirSync: p => { fs.mkdirSync(p, { recursive: true }); },
     rmSync: p => { fs.rmSync(p, { recursive: true, force: true }); },
@@ -97,7 +104,7 @@ const FLEET_SE_MIN_NODE: [number, number, number] = [22, 16, 0];
 
 function probeVersion(cmd: string, shell: boolean): string | null {
   try {
-    const out = execFileSync(cmd, ['--version'], { stdio: 'pipe', encoding: 'utf-8', timeout: 15_000, shell });
+    const out = execFileSync(cmd, ['--version'], { stdio: 'pipe', encoding: 'utf-8', timeout: 15_000, shell, windowsHide: true });
     return String(out).trim() || null;
   } catch {
     return null;
@@ -735,10 +742,15 @@ function configureStatusline(paths: ProviderInstallConfig, scriptPath: string, l
 
   if (process.platform === 'win32') {
     if (llm === 'agy') {
-      const gitBash = 'C:\\Program Files\\Git\\bin\\bash.exe';
-      const bashBin = fs.existsSync(gitBash) ? `"${gitBash}"` : 'bash';
       const formattedScriptPath = scriptPath.replace(/\\/g, '/');
-      command = `${bashBin} "${formattedScriptPath}"`;
+      const candidates = gitBashCandidates(process.env.LOCALAPPDATA);
+      const gitBash = candidates.find(c => fs.existsSync(c));
+      if (gitBash) {
+        const gitBin = path.dirname(gitBash);
+        command = `set PATH=${gitBin};%PATH% && bash '${formattedScriptPath}'`;
+      } else {
+        command = `bash '${formattedScriptPath}'`;
+      }
     } else {
       command = `bash "${scriptPath}"`;
     }
@@ -768,7 +780,9 @@ function mergeAgyConfig(paths: ProviderInstallConfig, mcpConfig: any): void {
   settings.mcpServers = settings.mcpServers || {};
   settings.mcpServers['apra-fleet'] = mcpConfig;
 
-  fs.writeFileSync(mcpConfigFile, JSON.stringify(settings, null, 2) + '\n');
+  const out = JSON.stringify(settings, null, 2) + '\n';
+  if (mcpConfig.headers) writeOwnerOnlyFile(mcpConfigFile, out);
+  else fs.writeFileSync(mcpConfigFile, out);
 }
 
 function writeDefaultModel(paths: ProviderInstallConfig, standardModel: string): void {
@@ -784,27 +798,27 @@ function mergeCopilotConfig(paths: ProviderInstallConfig, mcpConfig: any): void 
   settings.mcpServers = settings.mcpServers || {};
   settings.mcpServers['apra-fleet'] = mcpConfig;
 
-  writeConfig(paths, settings);
+  writeConfig(paths, settings, { ownerOnly: !!mcpConfig.headers });
 }
 
 function mergeOpenCodeConfig(paths: ProviderInstallConfig, mcpConfig: any): void {
   const settings = readConfig(paths);
   settings.mcp = settings.mcp || {};
   settings.mcp['apra-fleet'] = mcpConfig.url
-    ? { type: 'remote', url: mcpConfig.url, enabled: true }
+    ? { type: 'remote', url: mcpConfig.url, enabled: true, ...(mcpConfig.headers ? { headers: mcpConfig.headers } : {}) }
     : {
         type: 'local',
         command: [mcpConfig.command, ...(mcpConfig.args || [])],
         enabled: true,
       };
-  writeConfig(paths, settings);
+  writeConfig(paths, settings, { ownerOnly: !!mcpConfig.headers });
 }
 
 function mergeCodexConfig(paths: ProviderInstallConfig, mcpConfig: any): void {
   const settings = readConfig(paths);
   settings.mcp_servers = settings.mcp_servers || {};
   if (mcpConfig.url) {
-    settings.mcp_servers['apra-fleet'] = { url: mcpConfig.url };
+    settings.mcp_servers['apra-fleet'] = { url: mcpConfig.url, ...(mcpConfig.headers ? { http_headers: mcpConfig.headers } : {}) };
   } else {
     settings.mcp_servers['apra-fleet'] = {
       command: mcpConfig.command.replace(/\\/g, '/'),
@@ -812,13 +826,95 @@ function mergeCodexConfig(paths: ProviderInstallConfig, mcpConfig: any): void {
     };
   }
 
-  writeConfig(paths, settings);
+  writeConfig(paths, settings, { ownerOnly: !!mcpConfig.headers });
+}
+
+export { claudeUserConfigPath } from '../services/claude-local-scope-mcp.js';
+
+/**
+ * Register the http apra-fleet server in claude's user scope WITHOUT putting
+ * the access secret in argv (`claude mcp add --header` is visible to other
+ * local users via ps): the entry is merged into the claude config file
+ * directly, which is kept owner-only. An unparseable existing file is never
+ * overwritten.
+ */
+export function registerClaudeHttpMcp(url: string, headers: Record<string, string>): void {
+  const file = claudeUserConfigPath();
+  let settings: any = {};
+  if (fs.existsSync(file)) {
+    const raw = fs.readFileSync(file, 'utf-8').trim();
+    if (raw) {
+      try { settings = JSON.parse(raw); } catch {
+        throw new Error(`${file} is not valid JSON; fix or remove it, then re-run 'apra-fleet install'`);
+      }
+    }
+  }
+  settings.mcpServers = settings.mcpServers || {};
+  settings.mcpServers['apra-fleet'] = { type: 'http', url, headers };
+  writeOwnerOnlyFileAtomic(file, JSON.stringify(settings, null, 2) + '\n');
+}
+
+/** Write the http (url + access-secret header) apra-fleet registration for one provider. */
+export function registerHttpMcp(provider: LlmProvider, paths: ProviderInstallConfig, url: string, headers: Record<string, string>): void {
+  if (provider === 'claude') registerClaudeHttpMcp(url, headers);
+  else if (provider === 'codex') mergeCodexConfig(paths, { url, headers });
+  else if (provider === 'copilot') mergeCopilotConfig(paths, { url, type: 'http', headers });
+  else if (provider === 'agy') mergeAgyConfig(paths, { url, headers });
+  else if (provider === 'opencode') mergeOpenCodeConfig(paths, { url, headers });
+}
+
+/** The apra-fleet MCP entry `provider` has registered (parsed), or undefined. Never throws. */
+function registeredMcpEntry(provider: LlmProvider, paths: ProviderInstallConfig): any {
+  try {
+    if (provider === 'claude') return readJsonOrEmpty(claudeUserConfigPath()).mcpServers?.['apra-fleet'];
+    if (provider === 'agy') return readJsonOrEmpty(path.join(os.homedir(), '.gemini', 'config', 'mcp_config.json')).mcpServers?.['apra-fleet'];
+    const settings = readConfig(paths);
+    if (provider === 'codex') return settings.mcp_servers?.['apra-fleet'];
+    if (provider === 'copilot') return settings.mcpServers?.['apra-fleet'];
+    if (provider === 'opencode') return settings.mcp?.['apra-fleet'];
+  } catch { /* unreadable -> unknown */ }
+  return undefined;
+}
+
+/**
+ * Key-order-independent serialization of `provider`'s apra-fleet entry, to
+ * tell whether a registration write changed it (formatting and the rest of
+ * the file do not count).
+ */
+function mcpRegistrationSnapshot(provider: LlmProvider, paths: ProviderInstallConfig): string {
+  const canon = (v: any): any => Array.isArray(v) ? v.map(canon)
+    : v && typeof v === 'object' ? Object.fromEntries(Object.keys(v).sort().map(k => [k, canon(v[k])])) : v;
+  return JSON.stringify(canon(registeredMcpEntry(provider, paths)) ?? null);
+}
+
+function readJsonOrEmpty(file: string): any {
+  try {
+    return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf-8')) : {};
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * The transport of the apra-fleet MCP entry `provider` currently has
+ * registered, read from the provider's own config (install-config.json
+ * records no transport): 'stdio' (a command entry), 'http' (a url entry), or
+ * undefined (no entry / unreadable config). Never throws.
+ */
+export function registeredMcpTransport(provider: LlmProvider, paths: ProviderInstallConfig): 'http' | 'stdio' | undefined {
+  const classify = (e: any): 'http' | 'stdio' | undefined =>
+    !e || typeof e !== 'object' ? undefined : e.url ? 'http' : e.command ? 'stdio' : undefined;
+  const e = registeredMcpEntry(provider, paths);
+  if (provider === 'opencode') {
+    return e?.type === 'remote' || e?.url ? 'http' : e?.type === 'local' || e?.command ? 'stdio' : undefined;
+  }
+  return classify(e);
 }
 
 function run(cmd: string, opts?: Record<string, unknown>): void {
   // Windows needs a shell for .cmd executables (e.g. claude.cmd)
   const shellOpt = process.platform === 'win32' ? { shell: 'cmd.exe' } : {};
-  execSync(cmd, { stdio: 'inherit', ...shellOpt, ...opts });
+  execSync(cmd, { stdio: 'inherit', windowsHide: true, ...shellOpt, ...opts });
 }
 
 /** Is `cmd` resolvable on PATH? Used before shelling out to a provider's own
@@ -827,7 +923,7 @@ function run(cmd: string, opts?: Record<string, unknown>): void {
 function isCommandAvailable(cmd: string): boolean {
   try {
     const checkCmd = process.platform === 'win32' ? `where ${cmd}` : `command -v ${cmd}`;
-    execSync(checkCmd, { stdio: 'ignore' });
+    execSync(checkCmd, { stdio: 'ignore', windowsHide: true });
     return true;
   } catch {
     return false;
@@ -850,7 +946,7 @@ export function apraFleetPids(): string[] {
   try {
     const currentPid = process.pid.toString();
     if (process.platform === 'win32') {
-      const out = execSync('tasklist /FI "IMAGENAME eq apra-fleet.exe" /NH /FO CSV', { encoding: 'utf-8', stdio: 'pipe' });
+      const out = execSync('tasklist /FI "IMAGENAME eq apra-fleet.exe" /NH /FO CSV', { encoding: 'utf-8', stdio: 'pipe', windowsHide: true });
       // Each CSV line: "apra-fleet.exe","<PID>","..." - exclude the current installer process
       return out.split('\n')
         .map(line => line.match(/"apra-fleet\.exe","(\d+)"/))
@@ -860,7 +956,7 @@ export function apraFleetPids(): string[] {
     } else {
       // -x = exact name match; the installer itself may be named apra-fleet,
       // so the current PID is excluded.
-      const out = execSync('pgrep -x apra-fleet', { encoding: 'utf-8', stdio: 'pipe' });
+      const out = execSync('pgrep -x apra-fleet', { encoding: 'utf-8', stdio: 'pipe', windowsHide: true });
       return out.split('\n')
         .map(line => line.trim())
         .filter(pid => pid !== '' && pid !== currentPid);
@@ -890,7 +986,7 @@ export function killApraFleet(pids: ReadonlyArray<number | string>, signal: 'SIG
       if (process.platform === 'win32') {
         // taskkill /F is already forceful -- no softer signal to escalate from,
         // so SIGKILL escalation on Windows just reissues the same command.
-        execSync(`taskkill /F /PID ${pid}`, { stdio: 'ignore' });
+        execSync(`taskkill /F /PID ${pid}`, { stdio: 'ignore', windowsHide: true });
       } else {
         process.kill(pid, signal);
       }
@@ -1093,6 +1189,40 @@ export const MEMBER_INSTALL_NEXT_STEP =
   'Next step (on the orchestrator): run update_member {member_id, fleet_install: "auto"} (or register_member) for this member; ' +
   'it registers the member on this install and writes its per-folder apra-fleet MCP entry.';
 
+/**
+ * The port a member install records: --port <n> / --port=<n>, else
+ * APRA_FLEET_PORT, else the port an earlier member install in this data dir
+ * recorded (an upgrade keeps it), else the built-in default. `explicit` is
+ * true when --port was passed. --port that disagrees with APRA_FLEET_PORT is
+ * an error: the two would put the server and its record on different ports.
+ */
+export function resolveMemberInstallPort(
+  args: string[],
+  envPort: string | undefined,
+  recordedPort: number | undefined,
+): { port: number; explicit: boolean } | { error: string } {
+  let raw: string | undefined;
+  const eq = args.find(a => a.startsWith('--port='));
+  if (eq) raw = eq.slice('--port='.length);
+  else {
+    const i = args.indexOf('--port');
+    if (i >= 0) {
+      raw = args[i + 1];
+      if (raw === undefined || raw.startsWith('-')) return { error: '--port requires a port number (1-65535).' };
+    }
+  }
+  const env = envPort !== undefined && envPort !== '' ? validPort(envPort) : undefined;
+  if (raw !== undefined) {
+    const port = validPort(raw);
+    if (port === undefined) return { error: `--port must be a port number (1-65535), got "${raw}".` };
+    if (env !== undefined && env !== port) {
+      return { error: `--port ${port} disagrees with APRA_FLEET_PORT=${env}; pass one of them.` };
+    }
+    return { port, explicit: true };
+  }
+  return { port: env ?? recordedPort ?? BUILTIN_DEFAULT_PORT, explicit: false };
+}
+
 export async function runInstall(args: string[]): Promise<void> {
   // --help / -h guard - must come first, before any side effects (#142)
   if (args.includes('--help') || args.includes('-h')) {
@@ -1135,7 +1265,11 @@ Options:
                           is stopped; anything else is refused (E-FULL-INSTALL-RUNNING).
   --force-stop-full-install
                           With --member --force: also stop a running server that was not started
-                          by a member install (e.g. a full install on a shared machine).`);
+                          by a member install (e.g. a full install on a shared machine).
+  --port <n>              With --member: the port this member install's server listens on
+                          (default: APRA_FLEET_PORT, else the port a previous member install
+                          recorded, else 7523). Recorded in the member-install marker; use a
+                          different port for each Unix user's member install on one host.`);
     process.exit(0);
     return;
   }
@@ -1252,8 +1386,8 @@ Options:
     workflowsMode = 'none';
   }
 
-  const knownFlagPrefixes = ['--llm=', '--skill=', '--transport=', '--workflows='];
-  const knownFlagExact = new Set(['--member', '--llm', '--skill', '--no-skill', '--workflows', '--force', FORCE_STOP_FULL_INSTALL_FLAG, '--transport', '--help', '-h']);
+  const knownFlagPrefixes = ['--llm=', '--skill=', '--transport=', '--workflows=', '--port='];
+  const knownFlagExact = new Set(['--member', '--llm', '--skill', '--no-skill', '--workflows', '--force', FORCE_STOP_FULL_INSTALL_FLAG, '--transport', '--port', '--help', '-h']);
   for (const a of args) {
     if (knownFlagExact.has(a)) continue;
     if (knownFlagPrefixes.some(p => a.startsWith(p))) continue;
@@ -1261,6 +1395,20 @@ Options:
     console.error(`Error: Unknown option "${a}". Run apra-fleet install --help for usage.`);
     process.exit(1);
   }
+
+  // The port a member install's server listens on, recorded in the marker
+  // (the server reads it back at launch; the orchestrator reads it for the
+  // member's MCP URL). Only a member install takes --port.
+  const memberPortChoice = resolveMemberInstallPort(args, process.env.APRA_FLEET_PORT, recordedMemberInstallPort());
+  if ('error' in memberPortChoice) {
+    console.error(`Error: ${memberPortChoice.error}`);
+    process.exit(1);
+  }
+  if (memberPortChoice.explicit && !memberMode) {
+    console.error('Error: --port is only valid with --member (a full install uses APRA_FLEET_PORT).');
+    process.exit(1);
+  }
+  const memberPort = memberPortChoice.port;
 
   const installFleet = skillMode === 'fleet' || skillMode === 'pm' || skillMode === 'all';
   const installPm = skillMode === 'pm' || skillMode === 'all';
@@ -1491,34 +1639,54 @@ ${manualStopHint(pidsAfterStop)}
 
   const fleetPort = DEFAULT_PORT;
   const fleetUrl = `http://localhost:${fleetPort}/mcp`;
+  // The server refuses an /mcp session without this install's access secret
+  // (an owner-only file in its data dir), so every http registration carries
+  // it as a header. Re-running install rewrites existing registrations.
+  const secretExisted = readMemberAccessSecret() !== null;
+  const fleetAccessHeaders = { [MEMBER_SECRET_HEADER]: getOrCreateMemberAccessSecret() };
+  // Open LLM CLI sessions keep the MCP config they started with; a new secret
+  // or a rewritten registration needs them restarted (reported at the end).
+  // stdio registrations are not gated by the secret.
+  let registrationChanged = !secretExisted && transport === 'http';
 
   if (memberMode) {
     // The per-folder member entry is written by compose_permissions; a member
     // install must never register apra-fleet in any provider's user-scope config.
     console.log('    Skipped (--member): no user-scope MCP registration.');
   } else if (transport === 'http') {
-    if (llm === 'claude') {
-      if (!isCommandAvailable('claude')) {
-        console.warn(
-          `  Warning: the 'claude' CLI was not found on PATH -- skipping MCP server registration.\n` +
-          `  Install Claude Code (https://claude.com/claude-code), then re-run 'apra-fleet install'\n` +
-          `  to register apra-fleet with it, or register manually with:\n` +
-          `    claude mcp add --scope user --transport http apra-fleet ${fleetUrl}`
-        );
-      } else {
-        try {
-          run('claude mcp remove apra-fleet --scope user', { stdio: 'ignore' });
-        } catch { /* not registered */ }
-        run(`claude mcp add --scope user --transport http apra-fleet ${fleetUrl}`);
+    const before = mcpRegistrationSnapshot(llm, paths);
+    registerHttpMcp(llm, paths, fleetUrl, fleetAccessHeaders);
+    if (mcpRegistrationSnapshot(llm, paths) !== before) registrationChanged = true;
+    // Upgrade path: every OTHER provider this install registered earlier holds a
+    // header-less http entry the server now refuses; rewrite those too. Each
+    // provider keeps its own transport: a stdio entry (its own server process,
+    // not gated by the access secret) is left untouched, and a provider with
+    // no apra-fleet entry is not given one by another provider's install.
+    for (const other of Object.keys(readInstallConfig().providers) as LlmProvider[]) {
+      if (other === llm || !INSTALLABLE_LLM_PROVIDERS.includes(other)) continue;
+      try {
+        const otherPaths = getProviderInstallConfig(other);
+        const existing = registeredMcpTransport(other, otherPaths);
+        if (existing !== 'http') {
+          console.log(`    ${other}: ${existing === 'stdio' ? 'stdio registration kept as is' : 'no apra-fleet registration, skipped'}`);
+          continue;
+        }
+        const otherBefore = mcpRegistrationSnapshot(other, otherPaths);
+        registerHttpMcp(other, otherPaths, fleetUrl, fleetAccessHeaders);
+        if (mcpRegistrationSnapshot(other, otherPaths) !== otherBefore) registrationChanged = true;
+      } catch (err) {
+        console.warn(`    [!] could not refresh the ${other} MCP registration with the access secret: ${err instanceof Error ? err.message : String(err)}`);
       }
-    } else if (llm === 'codex') {
-      mergeCodexConfig(paths, { url: fleetUrl });
-    } else if (llm === 'copilot') {
-      mergeCopilotConfig(paths, { url: fleetUrl, type: 'http' });
-    } else if (llm === 'agy') {
-      mergeAgyConfig(paths, { url: fleetUrl });
-    } else if (llm === 'opencode') {
-      mergeOpenCodeConfig(paths, { url: fleetUrl });
+    }
+    // Claude LOCAL-scope entries for this URL (e.g. an older `claude mcp add
+    // apra-fleet` without --scope) win over the user-scope entry and stay
+    // header-less: rewrite them with the secret too.
+    try {
+      const rewritten = refreshClaudeLocalScopeEntries(claudeUserConfigPath(), fleetUrl, fleetAccessHeaders);
+      for (const project of rewritten) console.log(`    claude: local-scope apra-fleet entry for ${project} rewritten with the access secret`);
+      if (rewritten.length) registrationChanged = true;
+    } catch (err) {
+      console.warn(`    [!] could not refresh claude local-scope apra-fleet entries: ${err instanceof Error ? err.message : String(err)}`);
     }
   } else {
     // 'run --transport stdio' starts the stdio MCP server; passed as trailing args so
@@ -1901,6 +2069,11 @@ ${manualStopHint(pidsAfterStop)}
     console.warn('    [!] Code intelligence config skipped:', err instanceof Error ? err.message : String(err));
   }
 
+  // Code intelligence runs through npx: warn now (inside this step, no new
+  // numbered step) when node/npx cannot be resolved from the installer PATH.
+  const codeIntelPathWarn = codeIntelPathWarning();
+  if (codeIntelPathWarn) console.warn(`    [!] ${codeIntelPathWarn}`);
+
   // Write code intelligence routing instruction to ~/.claude/CLAUDE.md
   // (never for a --member install: that file belongs to the member's user)
   if (!memberMode) try {
@@ -1929,6 +2102,24 @@ ${manualStopHint(pidsAfterStop)}
   // Write install-config.json (merge provider entry)
   writeInstallConfig(llm, skillMode, workflowsMode);
 
+  // The fleet owns this install from here on: record the marker BEFORE the
+  // auto-start registration, which can fail. A failed auto-start still exits
+  // non-zero (E-MEMBER-AUTOSTART) but leaves the marker, so the next fleet_install
+  // "auto" recognises its own half-finished install and retries.
+  if (memberMode) writeMemberInstallMarker(serverVersion, memberPort);
+
+  // Every install holds a member access secret (owner-only, in its data dir):
+  // its server accepts a ?member= session only with it, so another local
+  // user's session cannot use this install. Created once, kept on reinstall
+  // (sessions configured with it keep working). Best effort here -- the server
+  // creates it at start too.
+  try {
+    const { getOrCreateMemberAccessSecret, memberAccessSecretPath } = await import('../services/member-access-secret.js');
+    getOrCreateMemberAccessSecret(memberAccessSecretPath(getInstallDataDir()));
+  } catch (err) {
+    console.warn('    [!] member access secret not created:', err instanceof Error ? err.message : String(err));
+  }
+
   // --- Step N: Register and start service (SEA + HTTP mode only) ---
   let serviceRegistered = false;
   let serviceHealthy: boolean | null = null;
@@ -1942,8 +2133,21 @@ ${manualStopHint(pidsAfterStop)}
     {
       const { checkRunningInstance, isPortInUse, portInUseMessage, readServerInfoPid } = await import('../services/singleton.js');
       const probe = await checkRunningInstance();
-      if (probe.state === 'gone' && await isPortInUse(DEFAULT_PORT, DEFAULT_HOST)) {
-        console.warn(`    Warning: ${portInUseMessage(DEFAULT_PORT, readServerInfoPid())}`);
+      const serverPort = resolveServerPort();
+      if (probe.state === 'gone' && await isPortInUse(serverPort, DEFAULT_HOST)) {
+        const { findPortHolder, describePortConflict } = await import('../services/port-holder.js');
+        const conflict = describePortConflict(serverPort, portInUseMessage(serverPort, readServerInfoPid()), await findPortHolder(serverPort));
+        // Another user's process holds this install's port (a second member
+        // install on this host): the server can never start here, so fail
+        // now with who holds it and the remedy, not after a dead service.
+        if (conflict.foreign) {
+          console.error(`
+Error: ${conflict.message}
+`);
+          process.exitCode = 1;
+          return;
+        }
+        console.warn(`    Warning: ${conflict.message}`);
       }
     }
     const svcMgr = await getServiceManager();
@@ -1986,7 +2190,7 @@ not start automatically.
       // --force stopped the server; reporting success would leave it down silently.
       if (force && (runningScope?.relevant || guardStoppedService)) {
         const restartHint = guardStoppedService
-          ? `Start it with:\n    ${serviceRestartCommand()}\nor re-run the install from an elevated prompt.`
+          ? `Start it with:\n    ${serviceRestartCommand()}\nthen run 'apra-fleet status' for how to repair the service (apra-fleet never needs an elevated install).`
           : 'Start it with:\n    apra-fleet start';
         console.error(`
 Error: install --force stopped the running apra-fleet server, but the service
@@ -1999,7 +2203,7 @@ ${restartHint}
   }
 
   // --- Done ---
-  if (memberMode) writeMemberInstallMarker(serverVersion); else clearMemberInstallMarker();
+  if (!memberMode) clearMemberInstallMarker();
   const beadsVersion = beadsResult.state === 'missing'
     ? `not available -- ${beadsResult.reason}. Fix: ${beadsResult.fix}`
     : `${beadsResult.version}${beadsResult.location === 'bin-dir' ? ` (${beadsResult.binPath})` : ''}`;
@@ -2011,6 +2215,9 @@ ${restartHint}
     ? MEMBER_INSTALL_NEXT_STEP
     : llm === 'claude' ? 'Run /mcp in Claude Code to load the server.' : `Restart ${paths.name} to load the server.`;
   const forceNote = force && !memberMode ? `\nRestart ${clientName} to reload the MCP server.` : '';
+  const accessNote = registrationChanged && !memberMode
+    ? '\n[!] Restart every open LLM CLI session (Claude Code, Codex, ...): sessions started before this install keep their old MCP registration without the access secret, and the server refuses them (Claude Code shows "Dynamic Client Registration rejected (HTTP 404)").'
+    : '';
   const settingsLine = memberMode ? '' : `\n  Settings:    ${paths.settingsFile}`;
   const serviceState = serviceHealthy === true ? 'registered and running' : serviceHealthy === false ? 'registered, but NOT answering /health (see the warning above)' : 'registered (health not checked)';
   const serviceLine = serviceStep ? `\n  Service:     ${serviceRegistered ? `${serviceState}${serviceReused ? ' (existing task reused)' : ''}${serviceRunKey ? ' (logon autostart via HKCU Run, no automatic restart)' : ''}` : 'registration skipped'}` : '';
@@ -2022,7 +2229,7 @@ Apra Fleet ${serverVersion} installed successfully for ${paths.name}.
   Beads:       ${beadsVersion}
   Dolt:        ${doltVersion}${serviceLine}
 
-${instructions}${forceNote}
+${instructions}${forceNote}${accessNote}
 `);
 
   if (llm === 'claude' && installPm) {

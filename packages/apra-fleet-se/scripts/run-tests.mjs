@@ -11,7 +11,7 @@
 // Extra args after the mode are passed through to `node --test` (e.g. a
 // specific test file path).
 //
-// apra-fleet-qe83.3: bounded by a wall-clock timeout (default 15 minutes,
+// apra-fleet-qe83.3: bounded by a wall-clock timeout (default 20 minutes,
 // override with APRA_TEST_TIMEOUT_MS) so a hung test (e.g. a test file that
 // never resolves and keeps the event loop alive) cannot hold this process --
 // and therefore whatever invoked it, e.g. scripts/run-all-tests.mjs's own
@@ -37,7 +37,7 @@ if (!Object.prototype.hasOwnProperty.call(MODES, mode)) {
     process.exit(2);
 }
 
-const DEFAULT_TIMEOUT_MS = 15 * 60 * 1000;
+const DEFAULT_TIMEOUT_MS = 20 * 60 * 1000;
 const timeoutMs = (() => {
     const raw = Number(process.env.APRA_TEST_TIMEOUT_MS);
     return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_TIMEOUT_MS;
@@ -60,7 +60,7 @@ const simulateUnkillable = process.env.APRA_TEST_SIMULATE_KILL_FAILURE === '1';
 function killTree(pid) {
     if (!pid || simulateUnkillable) return;
     if (isWindows) {
-        spawnSync('taskkill', ['/PID', String(pid), '/T', '/F']);
+        spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true });
     } else {
         try {
             process.kill(-pid, 'SIGKILL');
@@ -107,7 +107,7 @@ process.on('SIGTERM', () => {
 
 function runBounded(cmd, args, opts) {
     return new Promise(resolve => {
-        const child = spawn(cmd, args, { ...opts, detached: !isWindows });
+        const child = spawn(cmd, args, { windowsHide: true, ...opts, detached: !isWindows });
         activeChildPid = child.pid;
 
         let timedOut = false;

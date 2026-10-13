@@ -23,12 +23,13 @@ import {
 } from './audn.js';
 import { computeFileHashBatch } from './file-hash.js';
 import { validateFilePaths } from './path-validation.js';
-import { KbCaptureRejected, type DiscardResult } from './types.js';
+import { KbCaptureRejected, type DiscardResult, type RetireOptions } from './types.js';
 import type {
   MemoryProvider,
   KBEntry,
   KBEntryInput,
   CaptureOpts,
+  CaptureResult,
   QueryOptions,
   EntryTrustFilter,
   KBResult,
@@ -37,7 +38,6 @@ import type {
   PrimedContext,
   SyncOptions,
   SyncResult,
-  AudnDecision,
   Confidence,
   CodeIntelCall,
   ProviderStats,
@@ -322,6 +322,41 @@ export class SqliteProvider implements MemoryProvider {
     try {
       this.db.exec("ALTER TABLE entries ADD COLUMN demoted_basis_hashes TEXT NOT NULL DEFAULT '{}'");
     } catch {}
+
+    // kb_import trust anchor: git blob ids of bibles the maintainer side wrote
+    // or imported (kb_bible_commit and FULL / kb_maintainer kb_import). A
+    // member session without the kb_maintainer grant imports its committed
+    // bible only when that bible's blob id is recorded here -- this hub-side
+    // database is the one place the member's own checkout cannot write. See
+    // services/knowledge/bible-blob-id.ts. Created idempotently; existing DBs
+    // start with no rows (a fresh hub is seeded by the maintainer side).
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS trusted_bible_blobs (
+        blob_id TEXT PRIMARY KEY,
+        source TEXT NOT NULL,
+        recorded_at TEXT NOT NULL
+      );
+    `);
+  }
+
+  /**
+   * Record `blobId` (a git object id of a bible's bytes) as written or
+   * imported by the maintainer side. Idempotent: re-recording keeps the first
+   * row. Only trusted callers (kb_bible_commit and kb_import from a FULL or
+   * kb_maintainer session) may call this.
+   */
+  recordTrustedBibleBlob(blobId: string, source: 'kb_bible_commit' | 'kb_import'): void {
+    this.getDb()
+      .prepare('INSERT OR IGNORE INTO trusted_bible_blobs (blob_id, source, recorded_at) VALUES (?, ?, ?)')
+      .run(blobId.toLowerCase(), source, new Date().toISOString());
+  }
+
+  /** True when `blobId` was recorded by recordTrustedBibleBlob. */
+  isTrustedBibleBlob(blobId: string): boolean {
+    const row = this.getDb()
+      .prepare('SELECT 1 AS ok FROM trusted_bible_blobs WHERE blob_id = ?')
+      .get(blobId.toLowerCase());
+    return row !== undefined;
   }
 
   private getDb(): DatabaseSync {
@@ -923,8 +958,9 @@ export class SqliteProvider implements MemoryProvider {
     newContent: string,
     now: string,
     sourceFileHashes: Record<string, string>,
-    localBasisOnly = false
-  ): { id: string; audn_decision: AudnDecision } | null {
+    localBasisOnly = false,
+    keepConfirmed = false
+  ): CaptureResult | null {
     const decision = makeAudnDecision(input, candidates, newContent);
     if (!decision) return null;
 
@@ -943,7 +979,14 @@ export class SqliteProvider implements MemoryProvider {
     if (decision.decision === 'update') {
       const newId = randomUUID();
 
-      if (input.supersedes === decision.matchedId) {
+      // keepConfirmed (a member session without the kb_maintainer grant): a
+      // CONFIRMED target is never retired by supersedes -- retiring it would
+      // remove it from the bible at the next kb_bible_commit. The capture
+      // takes the IMPLICIT path below instead (both live, 'refines' link) and
+      // the target id is reported, mirroring kb_invalidate's keepConfirmed.
+      const target = candidates.find(c => c.id === decision.matchedId);
+      const supersedeRefused = keepConfirmed && input.supersedes === decision.matchedId && target?.confidence === 'CONFIRMED';
+      if (input.supersedes === decision.matchedId && !supersedeRefused) {
         // EXPLICIT: the caller named what it replaces and AUDN independently
         // matched it. Retire it exactly as before -- superseded_at + stale = 1.
         // D2 (F2a): both flags are required so the old row is excluded from
@@ -968,7 +1011,9 @@ export class SqliteProvider implements MemoryProvider {
       db.prepare(
         'INSERT OR IGNORE INTO links (from_id, to_id, link_type) VALUES (?, ?, ?)'
       ).run(newId, decision.matchedId, 'refines');
-      return { id: newId, audn_decision: 'update' };
+      return supersedeRefused
+        ? { id: newId, audn_decision: 'update', refused: [decision.matchedId] }
+        : { id: newId, audn_decision: 'update' };
     }
 
     return null;
@@ -1031,7 +1076,7 @@ export class SqliteProvider implements MemoryProvider {
     }
   }
 
-  async capture(input: KBEntryInput, opts?: CaptureOpts): Promise<{ id: string; audn_decision: AudnDecision }> {
+  async capture(input: KBEntryInput, opts?: CaptureOpts): Promise<CaptureResult> {
     const db = this.getDb();
     const now = new Date().toISOString();
 
@@ -1163,7 +1208,7 @@ export class SqliteProvider implements MemoryProvider {
     const verbatim = opts?.verbatim === true && opts.importMode === true && opts.preferredId !== undefined;
     const candidates = verbatim ? [] : this.findAudnCandidates(db, input);
     if (candidates.length > 0) {
-      const result = this.evaluateAudn(db, input, candidates, content, now, sourceFileHashes, localBasisOnly);
+      const result = this.evaluateAudn(db, input, candidates, content, now, sourceFileHashes, localBasisOnly, opts?.keepConfirmed === true);
       if (result) return result;
     }
 
@@ -1388,9 +1433,10 @@ export class SqliteProvider implements MemoryProvider {
     return results;
   }
 
-  async discard(ids: string[], opts?: { ownerTag?: string }): Promise<DiscardResult> {
+  async discard(ids: string[], opts?: RetireOptions): Promise<DiscardResult> {
     const db = this.getDb();
     const result: DiscardResult = { discarded: [], not_found: [], already_discarded: [] };
+    if (opts?.keepConfirmed) result.refused = [];
     const now = new Date().toISOString();
     for (const id of new Set(ids)) {
       const row = db.prepare('SELECT * FROM entries WHERE id = ?').get(id) as Record<string, unknown> | undefined;
@@ -1401,6 +1447,13 @@ export class SqliteProvider implements MemoryProvider {
       }
       if (row.superseded_at) {
         result.already_discarded.push(id);
+        continue;
+      }
+      // A member session without the kb_maintainer grant may not retire a
+      // CONFIRMED entry: a discarded row is removed from the bible at the next
+      // kb_bible_commit, so this would be a bible removal without the grant.
+      if (opts?.keepConfirmed && row.confidence === 'CONFIRMED') {
+        result.refused!.push(id);
         continue;
       }
       db.prepare("UPDATE entries SET superseded_at = ?, stale = 1, retired_reason = 'invalidated' WHERE id = ?").run(now, id);
@@ -1436,23 +1489,29 @@ export class SqliteProvider implements MemoryProvider {
     return out;
   }
 
-  async invalidate(files: string[], opts?: { ownerTag?: string }): Promise<{ invalidated: number }> {
+  async invalidate(files: string[], opts?: RetireOptions): Promise<{ invalidated: number; refused?: string[] }> {
     const db = this.getDb();
     let invalidated = 0;
+    // keepConfirmed: CONFIRMED rows are left untouched and reported (a
+    // file-invalidated row is retired, and so removed from the bible by the
+    // next kb_bible_commit -- see getRetirementReasons).
+    const refused = new Set<string>();
     // MEMBER own-scope: only entries carrying the caller's member tag.
     const ownerClause = opts?.ownerTag ? 'AND EXISTS (SELECT 1 FROM json_each(tags) WHERE value = ?)' : '';
     const ownerParams: SQLInputValue[] = opts?.ownerTag ? [opts.ownerTag] : [];
 
     for (const file of files) {
-      const rows = db.prepare(`
-        SELECT id FROM entries
+      const candidates = db.prepare(`
+        SELECT id, confidence FROM entries
         WHERE type = 'context-cache'
           AND superseded_at IS NULL
           ${ownerClause}
           AND EXISTS (
             SELECT 1 FROM json_each(source_files) WHERE value = ?
           )
-      `).all(...ownerParams, file) as { id: string }[];
+      `).all(...ownerParams, file) as { id: string; confidence: string }[];
+      const rows = opts?.keepConfirmed ? candidates.filter(r => r.confidence !== 'CONFIRMED') : candidates;
+      if (opts?.keepConfirmed) for (const r of candidates) if (r.confidence === 'CONFIRMED') refused.add(r.id);
 
       if (rows.length > 0) {
         const ids = rows.map(r => r.id);
@@ -1465,7 +1524,7 @@ export class SqliteProvider implements MemoryProvider {
       }
     }
 
-    return { invalidated };
+    return opts?.keepConfirmed ? { invalidated, refused: [...refused] } : { invalidated };
   }
 
   async getLinked(id: string): Promise<KBEntry[]> {
@@ -2229,7 +2288,9 @@ export class SqliteProvider implements MemoryProvider {
   // union of every basis file across every pair -- same batching discipline as
   // freshnessSweep): exactly one side fully matches -> that side WINS
   // mechanically via resolveContradiction with the verbatim evidence string
-  // "hash-basis match on merged worktree". Both match, both mismatch, or
+  // "hash-basis match on merged worktree" -- EXCEPT when the would-be loser is
+  // CONFIRMED: a CONFIRMED entry is never retired by hash basis alone, so such
+  // a pair is left for the reconciler agent. Both match, both mismatch, or
   // EITHER side has an empty/missing basis -> left untouched for the T3.2
   // reconciler agent. Directive pairs are already excluded by flaggedPairs()
   // itself (MEDIUM-3 liveness contract); the explicit re-check here is
@@ -2286,7 +2347,14 @@ export class SqliteProvider implements MemoryProvider {
       const originalMatches = originalBasis ? this.basisFullyMatches(originalBasis, currentHashes) : false;
       const challengerMatches = challengerBasis ? this.basisFullyMatches(challengerBasis, currentHashes) : false;
 
-      if (originalMatches && !challengerMatches) {
+      // A CONFIRMED entry is never retired by hash basis alone: a member can
+      // capture a contradiction against a drifted CONFIRMED entry, and basis
+      // match is no content judgement. Defer to the reconciler agent.
+      const wouldLose = originalMatches && !challengerMatches ? pair.challenger
+        : challengerMatches && !originalMatches ? pair.original : null;
+      if (wouldLose && wouldLose.confidence === 'CONFIRMED') {
+        left_for_agent.push({ originalId: pair.original.id, challengerId: pair.challenger.id });
+      } else if (originalMatches && !challengerMatches) {
         await this.resolveContradiction(pair.original.id, pair.challenger.id, 'hash-basis match on merged worktree');
         resolved.push({ winnerId: pair.original.id, loserId: pair.challenger.id });
       } else if (challengerMatches && !originalMatches) {

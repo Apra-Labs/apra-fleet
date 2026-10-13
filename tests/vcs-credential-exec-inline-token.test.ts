@@ -58,11 +58,22 @@ function stubCredentialHelper(token: string, dispatchResult: Partial<SSHExecResu
   });
 }
 
-/** The dispatched (non credential-read) command sent to execCommand. */
+/**
+ * The dispatched (non credential-read) command sent to execCommand, with its
+ * FLEET_PID wrapper removed. The dispatch always runs under the member
+ * dialect's wrapPidCapture (POSIX subshell or PowerShell prefix) so a
+ * timeout kills the remote tree; this asserts the wrapper is there and
+ * returns the command it wraps.
+ */
 function dispatchedCommand(): string {
   const call = mockExecCommand.mock.calls.find(([cmd]) => !(cmd as string).includes('.fleet-git-credential'));
   if (!call) throw new Error('no dispatched command was captured by the mock');
-  return call[0] as string;
+  const wrapped = call[0] as string;
+  const posix = /^\{ ([\s\S]*); \} & _fleet_pid=\$!; printf 'FLEET_PID:%s\\n' "\$_fleet_pid"; wait "\$_fleet_pid"; exit \$\?$/.exec(wrapped);
+  if (posix) return posix[1];
+  const psh = /^Write-Output "FLEET_PID:\$pid"; ([\s\S]*)$/.exec(wrapped);
+  if (psh) return psh[1];
+  throw new Error(`dispatched command is not under the FLEET_PID wrapper: ${wrapped}`);
 }
 
 describe('vcs_credential_exec: inline token substitution (apra-fleet-3swo.7.17)', () => {

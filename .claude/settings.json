@@ -20,6 +20,15 @@
           }
         ],
         "matcher": ""
+      },
+      {
+        "hooks": [
+          {
+            "command": "node scripts/beads-session-memories.mjs +all+ +orchestrator+",
+            "type": "command"
+          }
+        ],
+        "matcher": ""
       }
     ],
     "SessionStart": [
@@ -27,6 +36,15 @@
         "hooks": [
           {
             "command": "bd prime --no-memories",
+            "type": "command"
+          }
+        ],
+        "matcher": ""
+      },
+      {
+        "hooks": [
+          {
+            "command": "node scripts/beads-session-memories.mjs +all+ +orchestrator+",
             "type": "command"
           }
         ],

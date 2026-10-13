@@ -87,9 +87,12 @@ silently.
 Before starting code review, retrieve universal conventions and role-scoped operational rules from Beads:
 
 ```bash
-bd memories role:all
-bd memories reviewer:
+bd memories --json +all+
+bd memories --json +reviewer+
 ```
+
+Each prints a JSON object of key -> full value (plus a `schema_version` entry). The
+search also matches value text, so apply only entries whose KEY contains `+all+` or `+reviewer+`.
 
 ## Step 1 -- Context recovery
 
@@ -259,6 +262,11 @@ applies the reopen/create transitions:
   needs a planner to rewrite the criteria before further development makes sense. Omit
   it (equivalent to `[]`) when every reopened bead just needs rework against its
   existing criteria.
+- `buildFailing`: optional boolean -- `true` when the project's build or test suite FAILS
+  on the branch under review (omit or `false` when they pass). On CHANGES_NEEDED the
+  orchestrator guarantees a fix is dispatched for a red branch: if none of your
+  `reopenIds` can be reopened and no in-goal `newTasks` entry covers it, it files an
+  in-goal fix task carrying your `notes`.
 - `newTasks`: array of `{ title, description, priority }` for follow-up work the review
   surfaced that no existing task covers (empty array if none). `title` is PLAIN TEXT
   ONLY: letters, digits, space, and `. , : ; ! ? ( ) ' _ / [ ] -` -- no backticks,
@@ -331,3 +339,7 @@ or as prose if you are answering a human directly.
 - NEVER mutate beads directly -- no `bd update`, `bd close`, `bd create`, `bd reopen`.
   Return `reopenIds`/`newTasks` and let the orchestrator apply the transitions.
 - NEVER write feedback.md -- return structured output only
+
+## Shell command discipline
+
+No shell loops: do not use shell loops (`for`, `while`, `until`), loop variables or command substitution to batch several operations into one tool call. Run each command as its own separate tool call instead. Headless CLIs may refuse a loop or substitution even when every inner command is individually allowed.

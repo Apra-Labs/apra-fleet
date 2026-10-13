@@ -1,6 +1,6 @@
-import { escapePowerShellArgInner } from '../utils/shell-escape.js';
+import { escapeForDoubleQuotes } from '../utils/shell-escape.js';
 import { randomBytes } from 'node:crypto';
-import type { ProviderAdapter, PromptOptions, ParsedResponse, UsageLimitSignal, MemberMcpSyncContext, MemberMcpSyncResult, WorkspaceTrustExecFn, WorkspaceTrustTransport, EnsureWorkspaceTrustedResult, SessionIdStrategy, ExecTimeoutSource, TargetOS } from './provider.js';
+import type { ProviderAdapter, PromptOptions, ParsedResponse, ParseResponseContext, PermissionDenial, PermissionDenialItem, UsageLimitSignal, MemberMcpSyncContext, MemberMcpSyncResult, WorkspaceTrustExecFn, WorkspaceTrustTransport, MemberSecretFileChannel, EnsureWorkspaceTrustedResult, SessionIdStrategy, ExecTimeoutSource, TargetOS } from './provider.js';
 import { buildResumeFlag, buildSessionIdFlag, buildForkFlag, encodeClaudeProjectDir, joinForOS, resolveHomeDir, guessedUsageLimitSignal } from './provider.js';
 import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
@@ -16,10 +16,61 @@ import {
   quotePosixPath,
   quotePwshPath,
   readMemberJson,
+  resolveClaudeProjectKey,
+  normalizeProjectKey,
   LEGACY_MEMBER_MCP_SERVER_NAME,
   MEMBER_MCP_SERVER_NAME,
 } from '../services/member-config-io.js';
+import { detectClaudePermissionDenial } from './claude-permission-denial.js';
 
+
+/**
+ * Whether Claude Code's auto permission mode works with this model. Per the
+ * Claude Code permission-modes docs, auto needs Opus 4.6+, Sonnet 4.6+ or
+ * Fable; "Older models, including ... Haiku ... are not supported on any
+ * provider", and such a session silently starts in Manual (default) mode,
+ * which in a headless -p dispatch denies even Edit/Write in the work folder
+ * (observed: every haiku dispatch on an unattended=auto member recorded
+ * permissionMode "default"). Undefined model = the CLI's default model, which
+ * is a supported one.
+ */
+export function claudeModelSupportsAuto(model: string | undefined): boolean {
+  if (!model) return true;
+  const m = model.toLowerCase();
+  if (m.includes('haiku')) return false;
+  if (/claude-3/.test(m)) return false;
+  const v = /claude-(?:sonnet|opus)-(\d+)(?:[-.](\d+))?/.exec(m);
+  if (v) {
+    const major = Number(v[1]);
+    const minor = v[2] !== undefined && v[2].length <= 2 ? Number(v[2]) : 0;
+    if (major < 4) return false;
+    if (major === 4 && minor < 6) return false;
+  }
+  return true;
+}
+
+/** The permission mode a Claude dispatch's session runs in. */
+export type ClaudePermissionMode = 'auto' | 'acceptEdits' | 'bypassPermissions';
+
+/**
+ * The ONE place that decides a Claude session's permission mode from the
+ * member's unattended setting and the dispatch's model: both the CLI flag
+ * (resolvePermissionFlag) and the treatment of a denial (parseResponse) read
+ * it. 'auto' on a model without auto support falls back to acceptEdits rather
+ * than letting the CLI start the session in the stricter Manual mode.
+ *
+ * Residual gap: a CLI that drops auto for another reason (a CLI older than
+ * 2.1.281, managed disableAutoMode, a classifier outage) still counts as auto
+ * here. That errs toward never granting on its denials -- the safe direction.
+ */
+export function claudePermissionMode(
+  unattended: false | 'auto' | 'dangerous' | undefined,
+  model: string | undefined,
+): ClaudePermissionMode {
+  if (unattended === 'dangerous') return 'bypassPermissions';
+  if (unattended === 'auto' && claudeModelSupportsAuto(model)) return 'auto';
+  return 'acceptEdits';
+}
 
 // apra-fleet-iuc.1 / apra-fleet-ekm: reliable max_turns detection in the CLI
 // transcript. A max_turns-terminated session must ALWAYS classify as max_turns,
@@ -232,7 +283,7 @@ export class ClaudeProvider implements ProviderAdapter {
     } else if (sessionId) {
       cmd += ` ${buildSessionIdFlag(sessionId)}`;
     }
-    const permFlag = this.resolvePermissionFlag(unattended);
+    const permFlag = this.resolvePermissionFlag(unattended, model);
     if (permFlag) cmd += ` ${permFlag}`;
     if (model) {
       cmd += ` --model "${escapeDoubleQuoted(model)}"`;
@@ -247,6 +298,22 @@ export class ClaudeProvider implements ProviderAdapter {
 
   mcpConfigFlag(absPath: string, posix: boolean): string {
     return `--mcp-config ${posix ? quotePosixPath(absPath) : quotePwshPath(absPath.replace(/\//g, '\\'))}`;
+  }
+
+  /**
+   * Claude Code defers MCP tools behind its tool-search tool, so a role
+   * session would have to discover kb_* / code_* before calling them. A
+   * `--mcp-config` server entry with `alwaysLoad: true` keeps that server's
+   * tools loaded from the first turn (per server, so other servers keep
+   * their deferral). The non-deferral mechanism therefore lives in the config
+   * file the --mcp-config flag names -- no env var or extra flag in the
+   * member command string. Relied on: Claude Code 2.1.291 (verified that its
+   * --mcp-config schema accepts alwaysLoad and that the key is present in
+   * 2.1.288-2.1.291); 2.1.288 is the oldest version verified, so it is the
+   * floor. Older CLIs get the config without the key and a dispatch WARN.
+   */
+  mcpAlwaysLoadMinVersion(): string {
+    return '2.1.288';
   }
 
   skipPermissionsFlag(): string {
@@ -264,9 +331,12 @@ export class ClaudeProvider implements ProviderAdapter {
     return '--permission-mode acceptEdits';
   }
 
-  resolvePermissionFlag(unattended: false | 'auto' | 'dangerous' | undefined): string {
-    if (unattended === 'auto') return '--permission-mode auto';
-    if (unattended === 'dangerous') return '--dangerously-skip-permissions';
+  resolvePermissionFlag(unattended: false | 'auto' | 'dangerous' | undefined, model?: string): string {
+    // One mode function decides both the flag and how a denial from the
+    // session is treated (parseResponse), so the two cannot drift apart.
+    const mode = claudePermissionMode(unattended, model);
+    if (mode === 'auto') return '--permission-mode auto';
+    if (mode === 'bypassPermissions') return '--dangerously-skip-permissions';
     // apra-fleet-eft.65.1: interactive-session parity for the work folder.
     // A headless `-p` dispatch cannot present a permission prompt, so with no
     // permission-mode flag the CLI HARD-BLOCKS Edit/Write of a brand-new file
@@ -279,13 +349,72 @@ export class ClaudeProvider implements ProviderAdapter {
     return this.workspaceEditPermissionFlag() ?? '';
   }
 
-  parseResponse(result: SSHExecResult): ParsedResponse {
+  /** Parses the run's result and, when Claude refused tool calls (a
+   *  non-empty permission_denials on the result event), attaches the denial
+   *  with the session's permission mode. In acceptEdits mode a refusal is a
+   *  missing allow rule (healable by a grant); in auto or bypass mode it comes
+   *  from the safety classifier or a deny rule and is never healable
+   *  (execute_prompt reports it as a warning when the reply is complete). */
+  parseResponse(result: SSHExecResult, ctx?: ParseResponseContext): ParsedResponse {
+    const parsed = this.parseResult(result);
+    const denial = detectClaudePermissionDenial(result.stdout);
+    if (denial) {
+      const mode = claudePermissionMode(ctx?.unattended, ctx?.model);
+      denial.permissionMode = mode;
+      // A refusal of a fleet tool outside the member allowlist hit one of the
+      // deny rules compose writes on purpose (claudeMemberDenyRules), in ANY
+      // mode: it is policy, never a missing grant. One such call makes the
+      // whole denial non-healable -- a grant must never override the member
+      // tool policy, and suggestedGrants stays empty whenever healable is
+      // false -- so a complete reply is a warning and the heal never runs.
+      const policyRules = new Set(claudeMemberDenyRules());
+      const policyCalls = denial.denials.filter(d => policyRules.has(d.action));
+      if (policyCalls.length > 0) {
+        denial.healable = false;
+        denial.cause = 'policy_deny';
+        denial.suggestedGrants = [];
+        for (const d of denial.denials) d.suggestedGrants = [];
+        const tools = [...new Set(policyCalls.map(d => d.action))].join(', ');
+        const what = denial.denials.map(d => (d.target ? `${d.action} "${d.target}"` : d.action)).join(', ');
+        denial.hint = `claude (${mode} mode) refused ${what}: ${tools} ${policyCalls.length === 1 ? 'is a fleet tool' : 'are fleet tools'} outside the member tool allowlist, denied by the member's own permission config on purpose. A member session may only use the knowledge-bank and code-intelligence tools; no grant is ever added for this. Do the work without ${policyCalls.length === 1 ? 'that tool' : 'those tools'}.`;
+        parsed.permissionDenial = denial;
+        return parsed;
+      }
+      denial.healable = mode === 'acceptEdits';
+      if (!denial.healable) {
+        // A classifier or deny-rule refusal must never come with a
+        // ready-to-paste grant: blank every suggestion, overall and per call.
+        denial.suggestedGrants = [];
+        for (const d of denial.denials) d.suggestedGrants = [];
+        const what = denial.denials.map(d => (d.target ? `${d.action} "${d.target}"` : d.action)).join(', ');
+        denial.hint = `claude (${mode} mode) refused ${what}: in this mode a refusal comes from the safety classifier or a deny rule, not from a missing grant, so no grant is ever added for it automatically. Review the refused calls; change the member's permissions by hand only if the action is really intended.`;
+      }
+      parsed.permissionDenial = denial;
+    }
+    return parsed;
+  }
+
+  private parseResult(result: SSHExecResult): ParsedResponse {
     const raw = result.stdout.trim();
 
+    // Claude reports prompt-cache traffic in two fields separate from (not
+    // included in) input_tokens; both are billed, so they are carried through
+    // (0 when the CLI omits them) for cost/budget accounting downstream.
+    const cacheCount = (n: unknown): number => (typeof n === 'number' && Number.isFinite(n) && n > 0 ? n : 0);
     const extractUsage = (u: any) =>
       u && typeof u.input_tokens === 'number' && typeof u.output_tokens === 'number'
-        ? { input_tokens: u.input_tokens, output_tokens: u.output_tokens }
+        ? {
+          input_tokens: u.input_tokens,
+          output_tokens: u.output_tokens,
+          cache_read_input_tokens: cacheCount(u.cache_read_input_tokens),
+          cache_creation_input_tokens: cacheCount(u.cache_creation_input_tokens),
+        }
         : undefined;
+    // The CLI's own cost figure (list price, model- and cache-TTL-correct).
+    // CUMULATIVE for the session across --resume; execute_prompt turns it into
+    // the dispatch's delta (services/session-cost.ts).
+    const extractCost = (c: unknown): number | undefined =>
+      (typeof c === 'number' && Number.isFinite(c) && c >= 0 ? c : undefined);
 
     // apra-fleet-eft.28.6: first non-blank string wins. Used so an EMPTY
     // (present-but-blank) result field on the `type:result` event falls back to
@@ -331,6 +460,7 @@ export class ClaudeProvider implements ProviderAdapter {
         isError: obj.is_error === true || obj.subtype === 'error' || result.code !== 0,
         raw,
         usage: extractUsage(obj.usage),
+        sessionCostUsd: extractCost(obj.total_cost_usd),
         subtype: obj.subtype,
         terminalReason: obj.terminal_reason ?? (maxTurns ? 'max_turns' : undefined),
         apiErrorStatus: extractApiErrorStatus(obj),
@@ -358,6 +488,7 @@ export class ClaudeProvider implements ProviderAdapter {
           isError: parsed.is_error === true || result.code !== 0,
           raw,
           usage: extractUsage(parsed.usage),
+          sessionCostUsd: extractCost(parsed.total_cost_usd),
           subtype: parsed.subtype,
           terminalReason: parsed.terminal_reason ?? (maxTurns ? 'max_turns' : undefined),
           apiErrorStatus: extractApiErrorStatus(parsed),
@@ -525,7 +656,7 @@ export class ClaudeProvider implements ProviderAdapter {
   }
 
   // The member's apra-fleet MCP entry is NOT written here: it lives in Claude's
-  // LOCAL scope (~/.claude.json projects[<workFolder>].mcpServers), written by
+  // LOCAL scope (~/.claude.json projects[<repo root of workFolder>].mcpServers), written by
   // syncMemberMcpEntry. This file only carries the client-side deny rules for
   // every registered fleet tool outside the member allowlist.
   composePermissionConfig(_role: 'doer' | 'reviewer', allow: string[] = []): Array<Record<string, unknown> | string> {
@@ -541,7 +672,10 @@ export class ClaudeProvider implements ProviderAdapter {
     const exec = checkedExec(ctx.execCommand);
 
     const config = await readMemberJson(ctx.execCommand, target.file, posix);
-    const key = agent.workFolder.replace(/\\/g, '/').replace(/\/+$/, '');
+    // Claude Code keys local-scope servers by the git repository ROOT of the
+    // folder (the exact folder only outside a git repo) -- the same resolver
+    // the fleetMcp probe reads back with.
+    const key = await resolveClaudeProjectKey(exec, agent.workFolder, isWindows, posix);
     let changed = false;
 
     // User-scope legacy entry (top-level mcpServers).
@@ -562,8 +696,9 @@ export class ClaudeProvider implements ProviderAdapter {
       }
       if (url !== null) {
         const current = servers[MEMBER_MCP_SERVER_NAME];
-        if (!isRecord(current) || current.type !== 'http' || current.url !== url || Object.keys(current).length !== 2) {
-          servers[MEMBER_MCP_SERVER_NAME] = { type: 'http', url };
+        const wanted: Record<string, unknown> = { type: 'http', url, ...(ctx.headers ? { headers: ctx.headers } : {}) };
+        if (!isRecord(current) || JSON.stringify(current) !== JSON.stringify(wanted)) {
+          servers[MEMBER_MCP_SERVER_NAME] = wanted;
           changed = true;
         }
       } else if (MEMBER_MCP_SERVER_NAME in servers) {
@@ -580,6 +715,28 @@ export class ClaudeProvider implements ProviderAdapter {
       config.projects = projects;
     }
 
+    // An older compose keyed the entry by the work folder exactly as
+    // registered. The resolved key differs when the folder sits below its
+    // repository root, or when git reports the root symlink-resolved
+    // (macOS /var -> /private/var). Clean up what this member left
+    // under that spelling: the legacy entry and its OWN apra-fleet entry,
+    // never someone else's.
+    const folderKey = normalizeProjectKey(agent.workFolder);
+    const aliased = folderKey !== key && isRecord(projects[folderKey]) ? projects[folderKey] as Record<string, unknown> : null;
+    if (aliased && isRecord(aliased.mcpServers)) {
+      const servers = aliased.mcpServers as Record<string, unknown>;
+      if (LEGACY_MEMBER_MCP_SERVER_NAME in servers) {
+        delete servers[LEGACY_MEMBER_MCP_SERVER_NAME];
+        changed = true;
+      }
+      const stale = servers[MEMBER_MCP_SERVER_NAME];
+      if (isRecord(stale) && typeof stale.url === 'string' && stale.url.endsWith(`?member=${encodeURIComponent(agent.id)}`)) {
+        delete servers[MEMBER_MCP_SERVER_NAME];
+        changed = true;
+      }
+      config.projects = projects;
+    }
+
     if (!changed) {
       return { workFolderFiles: [], detail: `claude: ${target.file} already up to date for ${key}` };
     }
@@ -592,10 +749,12 @@ export class ClaudeProvider implements ProviderAdapter {
       // The file channel writes relative to the member's HOME, so it only fits
       // when the config file is home-anchored (not a CLAUDE_CONFIG_DIR override).
       transport: target.homeAnchored ? ctx.transport : undefined,
-      homeFile: target.file,
-      tmpFile: joinMemberPath(target.dir, staging.tmpRel, isWindows, ctx.shell),
-      b64File: joinMemberPath(target.dir, staging.b64Rel, isWindows, ctx.shell),
+      // Embedded inside "..." in the delivery commands: escape what is live
+      // there for the member's shell (the read above quotes the path itself).
+      homeFile: escapeForDoubleQuotes(target.file, !posix),
+      tmpFile: escapeForDoubleQuotes(joinMemberPath(target.dir, staging.tmpRel, isWindows, ctx.shell), !posix),
       staging,
+      secretChannel: ctx.secretChannel,
     });
     const what = url !== null ? `wrote ${MEMBER_MCP_SERVER_NAME} (local scope)` : `removed ${MEMBER_MCP_SERVER_NAME}`;
     return { workFolderFiles: [], detail: `claude: ${what} for ${key} in ${target.file}` };
@@ -672,7 +831,7 @@ export class ClaudeProvider implements ProviderAdapter {
     return `-p "${promptLiteral}"`;
   }
 
-  async ensureWorkspaceTrusted(workFolder: string, execCommand: WorkspaceTrustExecFn, agentOs: 'linux' | 'macos' | 'windows' = 'linux', shell?: MemberShell, transport?: WorkspaceTrustTransport, memberHomeDir?: string | null): Promise<EnsureWorkspaceTrustedResult> {
+  async ensureWorkspaceTrusted(workFolder: string, execCommand: WorkspaceTrustExecFn, agentOs: 'linux' | 'macos' | 'windows' = 'linux', shell?: MemberShell, transport?: WorkspaceTrustTransport, memberHomeDir?: string | null, secretChannel?: MemberSecretFileChannel): Promise<EnsureWorkspaceTrustedResult> {
     // apra-fleet-eft.40: Claude gates project-scoped permissions.allow entries on
     // projects[<key>].hasTrustDialogAccepted in the member-side ~/.claude.json -- an
     // untrusted workspace silently DROPS them (not merely a cosmetic warning), degrading
@@ -709,20 +868,24 @@ export class ClaudeProvider implements ProviderAdapter {
       console.error(`[claude] workspace trust: ${detail}`);
       return { seeded: false, detail, mcpServersSeeded: [] };
     }
-    const homeDir = isWindows
-      ? resolvedHome.replace(/\//g, '\\').replace(/\\+$/, '')
-      : resolvedHome.replace(/\\/g, '/').replace(/\/+$/, '');
+    // Every path below is embedded inside "..." in a member-bound command, and
+    // the resolved home is environment-derived (os.homedir() for a local
+    // member), so escape what is live inside double quotes for the target shell.
+    const homeDir = escapeForDoubleQuotes(
+      isWindows
+        ? resolvedHome.replace(/\//g, '\\').replace(/\\+$/, '')
+        : resolvedHome.replace(/\\/g, '/').replace(/\/+$/, ''),
+      isWindows);
     const inHome = (rel: string) => (isWindows ? `${homeDir}\\${rel}` : `${homeDir}/${rel}`);
     const homeFile = inHome('.claude.json');
     const tmpFile = inHome(staging.tmpRel);
-    const b64File = inHome(staging.b64Rel);
 
     // apra-fleet-9oo: the project's .mcp.json lives in the MEMBER's work folder, not on
     // the orchestrator host, so it must be read through the same execCommand channel --
     // never local node:fs. It rides along in the SAME read command as ~/.claude.json:
     // one round-trip, and (crucially) the already-satisfied case still costs exactly one
     // exec, so the "no write when nothing to do" contract is observable as before.
-    const mcpFile = `${key}/.mcp.json`;
+    const mcpFile = `${escapeForDoubleQuotes(key, isWindows)}/.mcp.json`;
     const SPLIT = '---FLEET_MCP_SPLIT---';
     const HOME_UNREADABLE = 'FLEET_HOME_CONFIG_UNREADABLE';
 
@@ -819,18 +982,12 @@ export class ClaudeProvider implements ProviderAdapter {
     // real file in one filesystem operation -- a crash or concurrent read mid-write can
     // never observe a partially-written ~/.claude.json.
     //
-    // GitHub #499: the staged content must NOT ride the command line on a Windows
-    // host. A real ~/.claude.json grows to tens of KB (84 KB in the report), and
-    // Windows caps a process command line at 32767 chars (cmd.exe at 8191) -- a
-    // single WriteAllText(...'<whole file>'...) or `bash -c '<heredoc>'` spawn fails
-    // with ENAMETOOLONG and trust is never seeded. Delivery order:
-    //   1. transport.writeHomeFile (node:fs for a local member, SFTP for SSH) --
-    //      no command line carries the content at all;
-    //   2. one exec when the command comfortably fits (unchanged behaviour);
-    //   3. otherwise base64 chunks appended with several small execs, then one
-    //      decode+move -- works for both PowerShell and gitbash members.
-    // Non-Windows POSIX hosts keep the heredoc: their ARG_MAX is far larger.
-    await deliverWorkspaceTrustFile(contentStr, { isWindows, agentOs, execCommand, transport, homeFile, tmpFile, b64File, staging });
+    // The merged content must NEVER ride a command line: ~/.claude.json can hold
+    // other MCP servers' headers/tokens and OAuth state, and a command line is
+    // visible in process listings (and is capped at 32767 chars on Windows).
+    // Delivery is the file channel (node:fs / SFTP) or the owner-only secret
+    // file, then a content-free move into place; with neither, it fails loudly.
+    await deliverWorkspaceTrustFile(contentStr, { isWindows, agentOs, execCommand, transport, homeFile, tmpFile, staging, secretChannel });
 
     const mcpNote = serversToAdd.length > 0 ? `; enabled MCP servers: ${serversToAdd.join(', ')}` : '';
     // eft.40.1 requires logging distinctly when trust is SEEDED vs already present --
@@ -850,7 +1007,6 @@ export class ClaudeProvider implements ProviderAdapter {
  *  channel and the exec-based fallbacks so every path stages in the same place. */
 export interface WorkspaceTrustStagingNames {
   tmpRel: string;
-  b64Rel: string;
 }
 
 export function workspaceTrustStagingNames(): WorkspaceTrustStagingNames {
@@ -859,86 +1015,27 @@ export function workspaceTrustStagingNames(): WorkspaceTrustStagingNames {
   const token = `${process.pid}-${randomBytes(4).toString('hex')}`;
   return {
     tmpRel: `.claude.json.fleet-trust-${token}.tmp`,
-    b64Rel: `.claude.json.fleet-trust-${token}.b64`,
   };
 }
 
-/** Longest single command string ensureWorkspaceTrusted will hand to execCommand on
- *  a Windows host. The hard caps are CreateProcess's 32767 chars (LocalStrategy
- *  spawns powershell.exe/bash.exe directly; a Windows sshd hands the command to
- *  its default shell the same way) and cmd.exe's 8191 (only when sshd's default
- *  shell is cmd.exe, where these PowerShell/bash commands would not run anyway).
- *  8000 is deliberately conservative: it is under BOTH caps with room for any
- *  wrapper a strategy may add, and the cost is only more round-trips on the
- *  chunked FALLBACK path (the file channel is the primary path), e.g. ~31 execs
- *  for a 128 KB file. */
-export const WORKSPACE_TRUST_MAX_COMMAND_CHARS = 8000;
-
-/** Base64 characters per chunk command: chunk + ~200 chars of PowerShell/bash
- *  scaffolding stays well under WORKSPACE_TRUST_MAX_COMMAND_CHARS. */
-const TRUST_CHUNK_CHARS = 6000;
-
 export interface WorkspaceTrustWritePlan {
   /** How the content reached the member. */
-  mechanism: 'file-channel' | 'single-exec' | 'chunked-exec';
-  /** Every command string handed to execCommand, in order. */
+  mechanism: 'file-channel' | 'secret-file';
+  /** Every command string handed to execCommand, in order. None of them carries
+   *  the delivered content: only a move of an already-staged file. */
   commands: string[];
 }
 
 /**
- * Build the command sequence that delivers `contentStr` to `homeFile` on a Windows
- * host without any single command exceeding the CreateProcess/cmd.exe limits:
- * base64 chunks appended to a staging file, then one decode + atomic move. Base64
- * keeps every chunk free of quotes/newlines, so no escaping can drift between the
- * PowerShell and gitbash flavours. Exported for tests (GitHub #499).
+ * Deliver `contentStr` (a merged ~/.claude.json) to `homeFile` on the member
+ * WITHOUT it ever appearing in an exec string -- not raw, not base64, not
+ * chunked, not inside -EncodedCommand. Two channels only:
+ *   1. transport.writeHomeFile (node:fs for a local member, SFTP for SSH)
+ *      stages it next to the target, then a content-free move lands it;
+ *   2. the owner-only secret file (opts.secretChannel), then the same move.
+ * Neither available (or both failing) -> throws an error naming the missing
+ * channel; there is no inline fallback.
  */
-export function buildChunkedTrustWriteCommands(contentStr: string, opts: { posix: boolean; homeFile: string; tmpFile: string; b64File: string; chunkChars?: number }): string[] {
-  const chunkChars = opts.chunkChars ?? TRUST_CHUNK_CHARS;
-  const b64 = Buffer.from(contentStr, 'utf8').toString('base64');
-  const chunks: string[] = [];
-  for (let i = 0; i < b64.length; i += chunkChars) chunks.push(b64.slice(i, i + chunkChars));
-  if (chunks.length === 0) chunks.push('');
-
-  const cmds: string[] = [];
-  if (opts.posix) {
-    // gitbash on a Windows host: bash.exe -c '<cmd>' is still one CreateProcess call.
-    chunks.forEach((chunk, i) => {
-      cmds.push(`printf '%s' '${chunk}' ${i === 0 ? '>' : '>>'} "${opts.b64File}"`);
-    });
-    cmds.push(`base64 -d "${opts.b64File}" > "${opts.tmpFile}" && rm -f "${opts.b64File}" && mv "${opts.tmpFile}" "${opts.homeFile}"`);
-  } else {
-    chunks.forEach((chunk, i) => {
-      const method = i === 0 ? 'WriteAllText' : 'AppendAllText';
-      cmds.push(`[System.IO.File]::${method}("${opts.b64File}", '${chunk}')`);
-    });
-    // WriteAllBytes of the decoded UTF-8 bytes: no BOM, no encoding round-trip.
-    // Error-gated (see psGated): a decode failure must never let the Move-Item run.
-    cmds.push(psGated(`[System.IO.File]::WriteAllBytes("${opts.tmpFile}", [System.Convert]::FromBase64String([System.IO.File]::ReadAllText("${opts.b64File}"))); Remove-Item -Force "${opts.b64File}"; Move-Item -Force "${opts.tmpFile}" "${opts.homeFile}"`));
-  }
-  return cmds;
-}
-
-/**
- * Gate a multi-statement PowerShell write so a failure in an earlier statement
- * aborts the whole command with exit 1. Without this, a .NET exception (e.g. in
- * WriteAllText/WriteAllBytes) is only STATEMENT-terminating: the trailing
- * Move-Item still runs, moves whatever stale tmp exists over the real
- * ~/.claude.json, and the command exits 0. The single-command write is the
- * cheapest path; it is still gated by the same helper.
- */
-function psGated(script: string): string {
-  return `$ErrorActionPreference = 'Stop'; try { ${script} } catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }`;
-}
-
-/** The single-exec write command ensureWorkspaceTrusted has always used -- still the
- *  cheapest path when it fits. The PowerShell form is error-gated (psGated); the
- *  POSIX heredoc form is unchanged. */
-export function buildSingleTrustWriteCommand(contentStr: string, opts: { isWindows: boolean; homeFile: string; tmpFile: string }): string {
-  return opts.isWindows
-    ? psGated(`[System.IO.File]::WriteAllText("${opts.tmpFile}", '${escapePowerShellArgInner(contentStr)}', (New-Object System.Text.UTF8Encoding($false))); Move-Item -Force "${opts.tmpFile}" "${opts.homeFile}"`)
-    : `cat > "${opts.tmpFile}" << 'FLEET_TRUST_EOF'\n${contentStr}\nFLEET_TRUST_EOF\nmv "${opts.tmpFile}" "${opts.homeFile}"`;
-}
-
 export async function deliverWorkspaceTrustFile(
   contentStr: string,
   opts: {
@@ -950,13 +1047,14 @@ export async function deliverWorkspaceTrustFile(
     tmpFile: string;
     staging: WorkspaceTrustStagingNames;
     homeRel?: string;
-    /** Fully resolved member-side path for the chunked-delivery base64 staging
-     *  file, resolved in JS (never a shell home variable). */
-    b64File: string;
+    secretChannel?: MemberSecretFileChannel;
   },
 ): Promise<WorkspaceTrustWritePlan> {
-  const { isWindows, agentOs, execCommand, transport, homeFile, tmpFile, staging, homeRel } = opts;
-  const onWindowsHost = agentOs === 'windows';
+  const { isWindows, execCommand, transport, homeFile, tmpFile, staging, homeRel, secretChannel } = opts;
+  const moveCmd = (from: string) => (isWindows
+    ? `Move-Item -Force "${from}" "${homeFile}"`
+    : `mv "${from}" "${homeFile}"`);
+  const failures: string[] = [];
 
   // 1. Out-of-band file channel: content never touches a command line.
   if (transport?.writeHomeFile) {
@@ -966,42 +1064,35 @@ export async function deliverWorkspaceTrustFile(
       if (homeRel) {
         return { mechanism: 'file-channel', commands: [] };
       }
-      const moveCmd = isWindows
-        ? `Move-Item -Force "${tmpFile}" "${homeFile}"`
-        : `mv "${tmpFile}" "${homeFile}"`;
-      const r = await execCommand(moveCmd, 10000);
+      const cmd = moveCmd(tmpFile);
+      const r = await execCommand(cmd, 10000);
       if (r.code !== 0) throw new Error(`move into place failed (exit ${r.code}): ${(r.stderr || r.stdout).trim().slice(0, 300)}`);
-      return { mechanism: 'file-channel', commands: [moveCmd] };
+      return { mechanism: 'file-channel', commands: [cmd] };
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error(`[claude] workspace trust: file channel failed (${msg}); falling back to exec delivery`);
+      failures.push(`file channel: ${err instanceof Error ? err.message : String(err)}`);
     }
+  } else {
+    failures.push('file channel (SFTP / local file copy): not available for this member');
   }
 
-  // 2. One exec when it fits. Non-Windows hosts always take this path (heredoc,
-  //    unchanged); a Windows host only when the whole command is under the limit.
-  const single = buildSingleTrustWriteCommand(contentStr, { isWindows, homeFile, tmpFile });
-  if (!onWindowsHost || single.length <= WORKSPACE_TRUST_MAX_COMMAND_CHARS) {
-    await execCommand(single, 10000);
-    return { mechanism: 'single-exec', commands: [single] };
+  // 2. Owner-only secret file, then a content-free move.
+  if (secretChannel) {
+    let staged: string | null = null;
+    try {
+      staged = await secretChannel.write(contentStr);
+      const cmd = moveCmd(escapeForDoubleQuotes(staged, isWindows));
+      const r = await execCommand(cmd, 10000);
+      if (r.code !== 0) throw new Error(`move into place failed (exit ${r.code}): ${(r.stderr || r.stdout).trim().slice(0, 300)}`);
+      return { mechanism: 'secret-file', commands: [cmd] };
+    } catch (err: unknown) {
+      if (staged) { try { await secretChannel.remove(staged); } catch { /* best-effort */ } }
+      failures.push(`secret-file channel: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  } else {
+    failures.push('secret-file channel: not available for this member');
   }
 
-  // 3. Chunked delivery for a Windows host (either shell flavour).
-  const b64File = opts.b64File;
-  const cmds = buildChunkedTrustWriteCommands(contentStr, { posix: !isWindows, homeFile, tmpFile, b64File });
-  for (const cmd of cmds) {
-    const r = await execCommand(cmd, 10000);
-    if (r.code !== 0) {
-      // Best-effort member-side cleanup of the partial staging files, mirroring
-      // the orchestrator-side temp-dir cleanup in the file channel.
-      const cleanup = isWindows
-        ? `Remove-Item -Force -ErrorAction SilentlyContinue "${b64File}", "${tmpFile}"`
-        : `rm -f "${b64File}" "${tmpFile}"`;
-      try { await execCommand(cleanup, 10000); } catch { /* best-effort */ }
-      throw new Error(`chunked write of ~/.claude.json failed on a Windows member (exit ${r.code}, ${cmds.length} commands of <=${WORKSPACE_TRUST_MAX_COMMAND_CHARS} chars): ${(r.stderr || r.stdout).trim().slice(0, 300)}`);
-    }
-  }
-  return { mechanism: 'chunked-exec', commands: cmds };
+  throw new Error(`E-MEMBER-CONFIG-NO-FILE-CHANNEL: cannot write ${homeFile} on the member without putting its content on a command line (it can carry other MCP servers' tokens); ${failures.join('; ')}. Enable the SFTP subsystem on the member's sshd, or use a member type with a file channel.`);
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {

@@ -6,6 +6,9 @@ import {
     isInfraDispatchFailure,
     isUsageLimitDispatchError,
     usageLimitOf,
+    isPermissionDeniedDispatchError,
+    permissionDeniedOf,
+    MemberPermissionDeniedError,
 } from './errors.mjs';
 import { AgentOutputError, AgentDispatchError, FleetTransportError, WorkflowError } from '@apralabs/apra-fleet-workflow';
 
@@ -223,9 +226,21 @@ function turnBaseValue(name) {
     return base;
 }
 
+/** The session id a failed dispatch's error reports, or null. */
+function sessionIdOfError(err) {
+    const id = err && err.details && err.details.sessionId;
+    return typeof id === 'string' && id ? id : null;
+}
+
 /**
  * The resume argument, resolved from `policy.resumeArg`:
- *   'same-session'  -- true (an in-dispatch continuation of the session just run)
+ *   'same-session'  -- opts.resumeSessionId, the EXPLICIT id of the session just
+ *                      run (the failed dispatch's err.details.sessionId). NEVER
+ *                      `true`: the server resolves `true` to the member's last
+ *                      SUCCESSFUL session, which on a member shared by several
+ *                      roles can be a reviewer's or planner's session. With no id
+ *                      it yields false (the caller starts a fresh full-prompt
+ *                      session instead of resuming)
  *   'fresh-session' -- false (a self-contained one-off instruction)
  *   'round-session' -- opts.resumeArg, the runner's per-round session lookup
  *   'worklist'      -- opts.resumeArg, the doer's per-worklist resume argument
@@ -244,7 +259,9 @@ function turnBaseValue(name) {
  */
 export function resolveResumeArg(resumeArg, opts) {
     if (!resumeArg) return false;
-    if (resumeArg.kind === 'same-session') return true;
+    if (resumeArg.kind === 'same-session') {
+        return typeof opts.resumeSessionId === 'string' && opts.resumeSessionId ? opts.resumeSessionId : false;
+    }
     if (resumeArg.kind === 'fresh-session') return false;
     // A runner-supplied argument: already `false` or an explicit session id at
     // every call site today. `?? false` keeps the never-undefined guarantee if
@@ -556,9 +573,16 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
             // In-bracket pre-dispatch steps, then the caller's own preparation.
             const inBracket = await runPreDispatchSteps(ctx, dispatch, member, opts, extra, 'in-bracket');
             if (inBracket) return inBracket.value;
-            const prepared = opts.prepare ? await opts.prepare({ dispatch, ...extra }) : {};
+            const prepared = opts.prepare ? { ...(await opts.prepare({ dispatch, ...extra })) } : {};
+            // A fresh-session fallback (no explicit session id to resume) must
+            // never carry a resume argument, whatever prepare offered.
+            if (extra.freshSession) prepared.resumeArg = false;
             const localBindings = { ...bindingsFor(extra.resumeAttempt || 0), ...(prepared.bindings || {}) };
-            const localOpts = prepared.resumeArg !== undefined ? { ...opts, resumeArg: prepared.resumeArg } : opts;
+            const localOpts = {
+                ...opts,
+                ...(prepared.resumeArg !== undefined ? { resumeArg: prepared.resumeArg } : {}),
+                resumeSessionId: extra.resumeSessionId || null,
+            };
             const options = {
                 agentType: dispatch.agentType ?? undefined,
                 model: resolveModelTier(ctx, dispatch.model, localBindings),
@@ -569,6 +593,11 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
                 resume: resolveResumeArg(dispatch.resumeArg, localOpts),
                 onSessionId: opts.onSessionId,
                 label: prepared.label ?? defaultLabel,
+                // Strict permission handling: a refused tool call fails the
+                // dispatch (permission_denied) so no role trusts a result made
+                // without the refused tool's output, and the progressive heal
+                // (onPermissionDenied) can grant the missing permission.
+                fail_on_permission_denial: true,
             };
             for (const key of Object.keys(options)) {
                 if (options[key] === undefined) delete options[key];
@@ -633,8 +662,15 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
             // turns can fix, so the escalation stops there.
             let resumeAttempt = 0;
             let lastResumeErr = err;
+            // The EXPLICIT id of the session the failed dispatch ran in. A
+            // resume targets exactly this id; with none, the resume becomes a
+            // fresh session carrying the FULL role prompt (never resume: true,
+            // which could reattach another role's session on a shared member).
+            let resumeSessionId = sessionIdOfError(err);
+            let sessionLostOnce = false;
             while (resumeAttempt < Math.max(retry.resumeAttempts, resumesOnInfra ? 1 : 0)) {
                 resumeAttempt += 1;
+                const freshFallback = !resumeSessionId;
                 // A resume follows an agent that DID run (max_turns_exhausted is
                 // a resumable partial-work case, not a no-mutation failure), so
                 // it always runs the full pre-dispatch sync -- no attemptOpts.
@@ -667,14 +703,45 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
                         `(attempt ${resumeAttempt}/${retry.resumeAttempts}).`
                     );
                 }
+                if (freshFallback) {
+                    ctx.log(
+                        `${roleLabel}: starting a FRESH session with the full role prompt instead of resuming -- ` +
+                        (sessionLostOnce
+                            ? 'the session to resume was not found on the member.'
+                            : 'the failed dispatch reported no session id, so there is no explicit session to resume.')
+                    );
+                } else {
+                    ctx.log(`${roleLabel}: resuming explicit session '${resumeSessionId}'.`);
+                }
                 resumesIssued += 1;
                 try {
-                    return await runDispatch(secondary, opts.resumePrompt, opts.resumeLabel, undefined, { resumeAttempt });
+                    return await runDispatch(
+                        secondary,
+                        freshFallback ? opts.prompt : opts.resumePrompt,
+                        freshFallback ? opts.label : opts.resumeLabel,
+                        undefined,
+                        { resumeAttempt, resumeSessionId, freshSession: freshFallback },
+                    );
                 } catch (resumeErr) {
                     lastResumeErr = resumeErr;
                     const exhaustedAgain = resumeErr instanceof AgentDispatchError
                         && resumeErr.details && resumeErr.details.reason === 'max_turns_exhausted';
-                    if (retry.maxTurnsResume && exhaustedAgain) continue;
+                    // The explicit session is gone: fall back to a fresh
+                    // full-prompt session, without charging the ladder.
+                    const sessionNotFound = resumeErr instanceof AgentDispatchError
+                        && resumeErr.details && resumeErr.details.reason === 'session_not_found';
+                    if (sessionNotFound && !freshFallback) {
+                        sessionLostOnce = true;
+                        resumeSessionId = null;
+                        resumeAttempt -= 1;
+                        continue;
+                    }
+                    if (retry.maxTurnsResume && exhaustedAgain) {
+                        // A re-exhaustion moves the resume target to the NEW
+                        // session's id (none -> a fresh full-prompt session).
+                        resumeSessionId = sessionIdOfError(resumeErr);
+                        continue;
+                    }
                     throw resumeErr;
                 }
             }
@@ -695,11 +762,12 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
     // fresh one. Only reached when the failing attempt reported a sessionId and
     // the role actually has a max-turns resume secondary; otherwise the caller
     // re-runs runAttempt fresh.
-    const redispatchViaUsageLimitResume = async (attemptOpts) => {
+    const redispatchViaUsageLimitResume = async (attemptOpts, sessionId) => {
         const secondary = policy.secondary;
         const shortCircuit = await runPreDispatchSteps(ctx, secondary, member, opts, { resumeAttempt: 1 });
         if (shortCircuit) return shortCircuit.value;
-        return runDispatch(secondary, opts.resumePrompt ?? opts.prompt, opts.resumeLabel ?? opts.label, attemptOpts, { resumeAttempt: 1 });
+        // Resumes the session the limit hit, by its explicit id.
+        return runDispatch(secondary, opts.resumePrompt ?? opts.prompt, opts.resumeLabel ?? opts.label, attemptOpts, { resumeAttempt: 1, resumeSessionId: sessionId });
     };
 
     let lastErr = null;
@@ -725,9 +793,88 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
     // resume ladder. A usage-limit re-dispatch does NOT consume a ladder
     // attempt (see the hook below), so it also skips the retry backoff.
     let usageLimitRedispatch = null;
+    // The explicit id of the session the usage limit hit (for the resume above).
+    let usageLimitSessionId = null;
+    // A permission-refusal heal is PROGRESSIVE: each refusal is handed to
+    // ctx.onPermissionDenied, which grants what the member is missing (within
+    // its composed policy) and reports healed:true only when a new grant
+    // landed; the attempt is then re-run without charging the ladder (and
+    // without the backoff). The hook owns every stop rule (auto-mode refusal,
+    // no progress, per-member and per-ladder caps); this ladder only counts
+    // its own heals for the per-ladder cap.
+    let permissionHeals = 0;
+    let permissionHealRedispatch = false;
+    // Resolves null when the heal succeeded (re-run the attempt), else the
+    // MemberPermissionDeniedError that ends the sprint.
+    const healPermissionDenial = async (err) => {
+        const denial = permissionDeniedOf(err);
+        const actions = denial && denial.denials.length
+            ? denial.denials.map((d) => (d.target ? `${d.action} "${d.target}"` : d.action))
+            : ((denial && denial.actions) || []);
+        const actionText = actions.length ? actions.join(', ') : 'unknown actions';
+        const suggested = (denial && denial.suggestedGrants) || [];
+        const fail = (step, why, heal) => {
+            const composeRole = (heal && heal.composeRole) || 'the role of its sprint roles';
+            const rejected = (heal && heal.rejectedGrants) || [];
+            const grantFix = rejected.length
+                ? ` and grant ${JSON.stringify(rejected)} if that role should have them (they are outside the role policy, so the sprint never auto-grants them)`
+                : (suggested.length ? ` (suggested grants: ${JSON.stringify(suggested)})` : '');
+            if (step === 'not_healable') {
+                return new MemberPermissionDeniedError(
+                    `${roleLabel} dispatch on member '${member}' was refused tool calls by its permission mode's safety checks: ${actionText}. ` +
+                    `${why} The reply was not complete, so this is not a ${roleLabel} result. ` +
+                    'No grant is added for a classifier or deny-rule refusal. To fix: review the refused calls; if the action is really intended, ' +
+                    `grant it on member '${member}' by hand (compose_permissions grant) or change the role's task, then rerun the sprint.`,
+                    {
+                        member, role: policy.role, actions, suggestedGrants: [], rejectedGrants: [], step,
+                        details: { hint: denial ? denial.hint : '' }, cause: err,
+                    },
+                );
+            }
+            return new MemberPermissionDeniedError(
+                `${roleLabel} dispatch on member '${member}' was refused tool calls for lack of a permission grant: ${actionText}. ` +
+                `${why} This is a missing-permission failure, not a ${roleLabel} result. ` +
+                `To fix: run compose_permissions for member '${member}' with role ${composeRole}${grantFix}, then rerun the sprint.`,
+                {
+                    member,
+                    role: policy.role,
+                    actions,
+                    suggestedGrants: suggested,
+                    rejectedGrants: rejected,
+                    step,
+                    details: { hint: denial ? denial.hint : '' },
+                    cause: err,
+                },
+            );
+        };
+        if (typeof ctx.onPermissionDenied !== 'function') {
+            return fail('heal', 'No permission heal is wired for this run, so nothing re-composed the member.', null);
+        }
+        let heal;
+        try {
+            heal = await ctx.onPermissionDenied({ member, role: policy.role, roleLabel, denial, ladderHeals: permissionHeals });
+        } catch (healErr) {
+            heal = { healed: false, reason: healErr && healErr.message ? healErr.message : String(healErr) };
+        }
+        if (!heal || !heal.healed) {
+            const step = (heal && heal.step) || 'heal';
+            const why = step === 'heal'
+                ? `The permission heal failed: ${(heal && heal.reason) || 'no result'}.`
+                : `The permission heal can make no further progress: ${(heal && heal.reason) || step}.`;
+            return fail(step, why, heal);
+        }
+        permissionHeals += 1;
+        ctx.log(
+            `${roleLabel} dispatch: member '${member}' was refused ${actionText}; granted ` +
+            `${(heal.grants || []).join(', ') || 'its missing permissions'} -- retrying (heal ${permissionHeals} of this dispatch, not charged to the ladder).`
+        );
+        return null;
+    };
 
     for (let attempt = 1; attempt <= attempts; attempt++) {
-        if (!usageLimitRedispatch && backoffMs && backoffMs[attempt - 1] > 0) {
+        const skipBackoff = Boolean(usageLimitRedispatch) || permissionHealRedispatch;
+        permissionHealRedispatch = false;
+        if (!skipBackoff && backoffMs && backoffMs[attempt - 1] > 0) {
             ctx.log(
                 `${roleLabel} dispatch: waiting ${backoffMs[attempt - 1] / 1000}s before retry attempt ` +
                 `${attempt}/${backoffMs.length}...`
@@ -745,6 +892,19 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
             // never fast-forward. Only after a failure that may have committed:
             // an auth/trust failure provably ran nothing, so its retry keeps
             // plain ff-only pre-dispatch sync.
+            //
+            // This is deliberately BROADER than isNoMutationDispatchFailure
+            // (dispatch-failure.mjs): a stall kill or a transport drop is
+            // classed no-mutation there (so the post-dispatch push is skipped),
+            // yet the member may still have committed or edited files before
+            // the channel died. The two are reconciled by making the reset
+            // itself non-destructive rather than by re-classifying those
+            // failures: syncMemberBefore's resetToRemoteTip mode always pins
+            // unpublished commits and uncommitted tracked changes on a local
+            // fleet-salvage/ side ref first and refuses to reset if it cannot
+            // (salvageBeforeReset in member-sync.mjs). Treating a failure as
+            // possibly-mutating here is therefore always safe, and nothing a
+            // killed attempt left behind is lost to the retry.
             const retryFollowsPossibleMutation = attempt > 1 && lastErr
                 && !isNonRetryableDispatchError(lastErr);
             const attemptOpts = {
@@ -763,7 +923,7 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
             const redispatchMode = usageLimitRedispatch;
             usageLimitRedispatch = null;
             value = redispatchMode === 'resume'
-                ? await redispatchViaUsageLimitResume(attemptOpts)
+                ? await redispatchViaUsageLimitResume(attemptOpts, usageLimitSessionId)
                 : await runAttempt(attemptOpts);
             if (opts.afterAttempt) await opts.afterAttempt(value);
             // A postResult step may REJECT the result (the reviewer's
@@ -825,6 +985,28 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
                 skipPreDispatchSyncNext = ctx.isNoMutationDispatchFailure(err);
             }
 
+            // An agent permission refusal (reason 'permission_denied': the
+            // member CLI refused tool calls for lack of a grant) is a
+            // MISSING-PERMISSION failure, for every role -- never a role
+            // outcome. It is never degraded (a plan-reviewer's refusal text
+            // must not become a CHANGES_NEEDED verdict and charge a planning
+            // round), never retried blindly (the same config refuses the same
+            // call), and healed progressively: ctx.onPermissionDenied grants
+            // the missing permission within the member's composed policy, then
+            // the attempt is re-run without charging the ladder; a refusal of
+            // a different tool next time is healed the same way. When the hook
+            // can make no further progress (auto-mode refusal, refused again
+            // after its grant, outside policy, cap reached) or no hook is
+            // wired, the sprint ends with MemberPermissionDeniedError naming
+            // member, the denied actions and the fix.
+            if (!completedButSyncFailed && isPermissionDeniedDispatchError(err)) {
+                const healError = await healPermissionDenial(err);
+                if (healError) throw healError;
+                permissionHealRedispatch = true;
+                attempt -= 1;
+                continue;
+            }
+
             // Usage-limit pause/resume (apra-fleet-hzeb.4.2). A provider
             // rate/usage limit is neither a failure of this role nor something a
             // retry ladder can out-wait on its own budget -- it needs a real
@@ -863,6 +1045,7 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
                     const canResumeSession = Boolean(failedSessionId) && retry.resumeAttempts > 0
                         && policy.secondary && policy.secondary.kind === 'max-turns-resume';
                     usageLimitRedispatch = canResumeSession ? 'resume' : 'fresh';
+                    usageLimitSessionId = canResumeSession ? failedSessionId : null;
                     attempt -= 1;
                     continue;
                 }
@@ -899,12 +1082,18 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
                 }
                 ctx.log(
                     `${roleLabel} dispatch threw a non-retryable error (auth/trust): ${err.message}. Aborting ` +
-                    "retries -- fix the member's credentials/trust and re-run."
+                    `retries -- fix member '${member}' credentials/trust and re-run (for an LLM auth failure: re-login on the source machine with /login, then provision_llm_auth; or provision an API key).`
                 );
                 // A ladder whose own failure legitimately fails the whole
                 // sprint propagates instead of degrading: with the dispatch
                 // channel walled off there is no judgement to fabricate.
-                if (retry.rethrowsUnhealedNonRetryable) throw err;
+                if (retry.rethrowsUnhealedNonRetryable) {
+                    if (isAuthDispatchError(err) && err && typeof err.message === 'string'
+                        && !err.message.includes('provision_llm_auth')) {
+                        err.message += ` [LLM auth heal failed for member '${member}': re-login on the source machine with /login, then provision_llm_auth; or provision an API key]`;
+                    }
+                    throw err;
+                }
                 break;
             }
 

@@ -397,8 +397,11 @@ describe('own_scope: the eligibility set kb_demote accepts is expressible', () =
     expect(row(flaggedId)!.flagged_for_review).toBe(1);
     expect(row(flaggedId)!.confidence).toBe('CONFIRMED');
 
-    // SUPERSEDED: a real discard by id, in the owner's own session.
-    const discarded = JSON.parse(await asA(() => kbInvalidate({ ids: [supersededId] })));
+    // SUPERSEDED: a real discard by id on the provider. A member session
+    // without the kb_maintainer grant may not retire a CONFIRMED entry through
+    // kb_invalidate (it is reported in refused), so the discard is made on the
+    // repository KB directly, as the maintainer side would.
+    const discarded = await db.discard([supersededId]);
     expect(discarded.discarded).toEqual([supersededId]);
     expect(row(supersededId)!.superseded_at).not.toBeNull();
   });

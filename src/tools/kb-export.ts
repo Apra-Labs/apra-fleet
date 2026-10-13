@@ -118,6 +118,15 @@ function sortedBasis(basis: Record<string, string>): Record<string, string> {
 }
 
 /**
+ * A bible entry with `basis` attached as its source_file_hashes (keys sorted,
+ * copied verbatim -- never re-hashed); every other field is left as it is.
+ * Used by kb_bible_commit's legacy backfill.
+ */
+export function withSourceFileHashes(entry: CanonicalEntry, basis: Record<string, string>): CanonicalEntry {
+  return { ...entry, source_file_hashes: sortedBasis(basis) };
+}
+
+/**
  * Map a KB entry to the bible's stable field set. Shared with kb_bible_commit.
  * `basis` is the entry's STORED per-file hash basis (the one the bible
  * predicate admitted it against); when given and non-empty it is written as
@@ -199,12 +208,12 @@ export function readBibleDocument(outPath: string): CanonicalBibleDocument | nul
  */
 export function commitBiblePath(repoPath: string, outPath: string, message: string): void {
   execFileSync('git', ['add', outPath], {
-    cwd: repoPath, timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'],
+    cwd: repoPath, timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
   });
   execFileSync(
     'git',
     ['-c', 'user.name=pm-kb', '-c', 'user.email=kb@pm.local', 'commit', '-m', message, '--', outPath],
-    { cwd: repoPath, timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] },
+    { cwd: repoPath, timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true },
   );
 }
 
@@ -246,7 +255,7 @@ function gitOrNull(repoPath: string, args: string[]): string | null {
   if (!isGitRepo(repoPath)) return null;
   try {
     const out = execFileSync('git', args, {
-      cwd: repoPath, encoding: 'utf-8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'],
+      cwd: repoPath, encoding: 'utf-8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true,
     }).trim();
     return out.length > 0 ? out : null;
   } catch {
@@ -379,7 +388,7 @@ export function isGitRepo(repoPath: string): boolean {
 // brand-new untracked file on the very first export) means it changed.
 export function bibleContentChanged(repoPath: string, outPath: string): boolean {
   const status = execFileSync('git', ['status', '--porcelain', '--', outPath], {
-    cwd: repoPath, encoding: 'utf-8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'],
+    cwd: repoPath, encoding: 'utf-8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true,
   });
   return status.trim().length > 0;
 }

@@ -1,7 +1,10 @@
 import { describe, it, expect } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { computeServicePath, computeServicePathEntries, systemdEnvironmentLine } from '../src/services/service-manager/service-path.js';
 import { buildPlist } from '../src/services/service-manager/macos.js';
-import { findExecutableOnPath, npxUnavailableReason } from '../src/utils/find-on-path.js';
+import { findExecutableOnPath, npxUnavailableReason, splitPath } from '../src/utils/find-on-path.js';
 
 // Injected file table: no real PATH or filesystem is consulted.
 const filesIn = (...files: string[]) => (p: string) => files.includes(p);
@@ -96,5 +99,28 @@ describe('npxUnavailableReason', () => {
     const isFile = filesIn('C:\\nodejs\\npx.cmd');
     expect(findExecutableOnPath('npx', { platform: 'win32', envPath: 'C:\\nodejs', pathExt: '.exe;.cmd', isFile })).toBe('C:\\nodejs\\npx.cmd');
     expect(npxUnavailableReason({ platform: 'win32', envPath: 'C:\\nodejs', pathExt: '.exe;.cmd', isFile })).toBeNull();
+  });
+});
+
+describe('splitPath', () => {
+  it('win32 strips surrounding double quotes from entries and drops empties', () => {
+    expect(splitPath('"C:\\Program Files\\nodejs";C:\\bin;;"D:\\x"', 'win32')).toEqual(['C:\\Program Files\\nodejs', 'C:\\bin', 'D:\\x']);
+  });
+  it('posix leaves quotes alone', () => {
+    expect(splitPath('/a:/b::', 'linux')).toEqual(['/a', '/b']);
+  });
+});
+
+describe.skipIf(process.platform === 'win32')('findExecutableOnPath exec bit (real files)', () => {
+  it('a non-executable file named node is not resolved; an executable one is', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'exec-bit-'));
+    try {
+      const f = path.join(dir, 'node');
+      fs.writeFileSync(f, '#!/bin/sh\n', { mode: 0o644 });
+      fs.chmodSync(f, 0o644);
+      expect(findExecutableOnPath('node', { platform: 'linux', envPath: dir })).toBeNull();
+      fs.chmodSync(f, 0o755);
+      expect(findExecutableOnPath('node', { platform: 'linux', envPath: dir })).toBe(f);
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
   });
 });

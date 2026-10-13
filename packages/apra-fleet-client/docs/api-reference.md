@@ -165,7 +165,12 @@ session is never served `kb_setup` or `kb_export`. Always `await close()` when d
 resolution (a member identity rides on the URL). An unregistered uuid rejects
 with `err.status === 403` / `err.code === 'HTTP_403'` (raised by
 `StreamableHttpTransport.start()` for any non-OK initialize response as
-`HTTP_<status>`).
+`HTTP_<status>`). The server accepts a `?member=` session only with its
+install's member access secret: `connectFleetMember` reads it from
+`<data dir>/member-access.key` (`readMemberAccessSecret(env)`, the same data dir
+the server was resolved from) and sends it in the `X-Apra-Fleet-Member-Secret`
+header (`MEMBER_SECRET_HEADER`) on every request. A missing or wrong secret
+rejects with `err.status === 401` (`HTTP_401`).
 
 ## `src/client/errors.mjs`
 
@@ -292,7 +297,12 @@ session is member-scoped whatever the folder or user config says; other MCP
 servers stay available (`--strict-mcp-config` is not used). A remote member
 gets it only while its recorded `fleetMcp` says its own server answers a
 member session; otherwise, or when the file cannot be written, the session
-runs with its own MCP config (the per-folder entry).
+runs with its own MCP config (the per-folder entry). The entry carries
+`alwaysLoad: true` when the member's claude CLI is at or above the provider's
+minimum version (probed per member, cached for 10 minutes), so the session's
+`kb_*`/`code_*` tools are loaded from the first turn instead of being deferred
+behind tool search. When the CLI is older or its version cannot be read, the
+file is written without the key and the dispatch logs a WARN naming the cause.
 
 | Field | Type | Notes |
 |---|---|---|
@@ -320,7 +330,7 @@ Calls `execute_command` -- runs a shell command on a member. Same
 
 | Field | Type | Notes |
 |---|---|---|
-| `command` | `string` | The shell command to execute. |
+| `command` | `string` | The shell command to execute. Multi-line commands and heredocs are supported; on POSIX members (linux, macos, windows Git Bash) the whole command runs inside the member work folder (or `run_from`), and a syntax error in it is reported as `eval: line N: ...` on stderr. |
 | `long_running` | `boolean?` | Run as a background task. Supported on linux and windows (windows launches detached via `Invoke-CimMethod Win32_Process.Create`, session 0); darwin gets an advisory warning only. |
 | `max_retries` | `number?` | Max crash retries (long-running only). |
 | `member_id` | `string?` | UUID of the member. |
@@ -366,7 +376,7 @@ session (`session.id`, the current session ID or `null`), work folder
 | `format` | `"compact" \| "json"?` | Output format (default: `"compact"`). |
 | `refresh` | `boolean?` | Re-probe the member's own apra-fleet MCP now and record the new `fleetMcp` status. Without it the recorded status is returned and nothing is probed. |
 
-`fleetMcp` (`{state, reason?, version?, checkedAt, detail?, unverified?, fleetInstalledAt?, installFailure?, beads?}` or `null`) is the last recorded status of the member's own apra-fleet MCP server; `fleetInstalledAt` is the ISO 8601 time this fleet's own install last succeeded on the member (absent if it never did). `installFailure` (`{reason, detail?}`) is set when a requested upgrade failed before the member was touched and the older install stayed in use (also named in `detail`; `fleetMcpFix` then carries the upgrade fix even when `available`). `fleetMcpFix` (`string` or `null`) is a one-line operator fix, present when `fleetMcp` is `unavailable` or `unverified` and `null` when the member's KB/code tools are usable; the text output prints it as a `fleetMcp fix:` line. `beads` (`{state: "missing"|"broken", detail, fix}`) is present only when the bd CLI is not usable on a remote member (neither on its PATH nor in `<home>/.apra-fleet/bin`); it is independent of `state`, and the text output prints it as `bd=` and `bd fix:` lines.
+`fleetMcp` (`{state, reason?, version?, checkedAt, detail?, unverified?, fleetInstalledAt?, installFailure?, beads?, port?, portSource?, replacedFullInstall?, manualInstall?, sameCoreFallback?}` or `null`) is the last recorded status of the member's own apra-fleet MCP server; `fleetInstalledAt` is the ISO 8601 time this fleet's own install last succeeded on the member (absent if it never did). `installFailure` (`{reason, detail?}`) is set when a requested upgrade failed before the member was touched and the older install stayed in use (also named in `detail`; `fleetMcpFix` then carries the upgrade fix even when `available`). `fleetMcpFix` (`string` or `null`) is a one-line operator fix, present when `fleetMcp` is `unavailable` or `unverified` and `null` when the member's KB/code tools are usable; the text output prints it as a `fleetMcp fix:` line. `beads` (`{state: "missing"|"broken", detail, fix}`) is present only when the bd CLI is not usable on a remote member (neither on its PATH nor in `<home>/.apra-fleet/bin`); it is independent of `state`, and the text output prints it as `bd=` and `bd fix:` lines. `port` is the remote member install's port from its member-install marker (`portSource` `"marker"`, or `"default"` when the install recorded none). `replacedFullInstall` (`{previousVersion, removed, backupPath}`) is set by the probe that replaced a full install with a member install (`fleet_install` `"replace-full"`): the replaced version, what was removed or moved, and the timestamped backup directory on the member. `manualInstall` (`string`) is set when a requested apra-fleet install/upgrade on the member did not happen (any install reason, e.g. `no-matching-release`): the OS-correct manual steps (anonymous release download URL, SHA-256 check against the release SHA256SUMS, member-mode install, then `update_member`). `sameCoreFallback` (`{tag, wantedBuild, why}`) is set when no release carries the exact orchestrator build and the member had no apra-fleet or an older core, so the signed stable release of the same core was installed instead (a NOTICE in the register/update result); never across cores.
 
 Returns a plain multi-line text summary for `"compact"`, or the structured
 `MemberDetailResult` object for `"json"` -- `server_version`, `name`, `icon`,
@@ -437,7 +447,7 @@ Calls `register_member` -- adds a machine to the fleet.
 | `tags` | `string[]?` | Optional list of free-form labels (max 10 tags, each max 64 chars). Used for filtering and grouping. |
 | `code_intel_provider` | `"codebase-memory" \| "gitnexus" \| "none"?` | Code-intelligence provider for this member. Omit for fleet-wide default. |
 | `unreservable` | `boolean?` | Mark this member as never exclusively reservable, so it can be shared by more than one sprint (e.g. fleet-sprint's shared "backlog" role). Default: `false`. |
-| `fleet_install` | `"auto" \| "skip"?` | Install/update apra-fleet on the member, write its per-folder apra-fleet MCP entry and verify its own MCP (default `"auto"`); `"skip"` only reports the probe result. Registration succeeds either way; the result reports `fleetMcp`. |
+| `fleet_install` | `"auto" \| "skip" \| "replace-full"?` | Install/update apra-fleet on the member, write its per-folder apra-fleet MCP entry and verify its own MCP (default `"auto"`; local members only get the MEMBER-session probe). `"auto"` never touches a full install (one without the member-install marker). `"replace-full"`: `"auto"` plus an explicit opt-in to replace such a full install with a member install (back up data and fleet.key to a timestamped dir, uninstall, member install, self-register); refused with no destructive command when the marker probe fails. `"skip"` only reports the probe result. Registration succeeds either way; the result reports `fleetMcp` (with `replacedFullInstall` when a full install was replaced), plus a `WARNING` (consequence, exact reason, OS-correct manual install steps; also `fleetMcp.manualInstall`) when a requested install/upgrade did not happen. |
 | `shell` | `"gitbash" \| "pwsh7" \| "powershell5"?` | Override the probed Windows shell for this member. Windows members only -- ignored for non-Windows members. |
 
 
@@ -452,7 +462,7 @@ error naming the key (the member is not updated) -- they are no longer silently 
 |---|---|---|
 | `member_id` | `string?` | UUID of the member. |
 | `member_name` | `string?` | Friendly name of the member. |
-| `fleet_install` | `"auto" \| "skip"?` | `"auto"`: for a remote member, probe it and install/upgrade its own apra-fleet when missing or older than the orchestrator (build-aware: same-core different builds upgrade, newer cores never downgrade), self-register, write its per-folder apra-fleet MCP entry and verify (for a claude member the entry is only the fallback of the per-session `--mcp-config`, so neither its write nor its check gates `fleetMcp`), even when nothing else changed; the result includes the `fleetMcp` line (then `member_detail` with `refresh: true`). `"skip"`: no install. Omitted: install only on a provider change. |
+| `fleet_install` | `"auto" \| "skip" \| "replace-full"?` | `"auto"`: for a remote member, probe it and install/upgrade its own apra-fleet when missing or older than the orchestrator (build-aware: same-core different builds upgrade, newer cores never downgrade), self-register, write its per-folder apra-fleet MCP entry and verify (for a claude member the entry is only the fallback of the per-session `--mcp-config`, so neither its write nor its check gates `fleetMcp`), even when nothing else changed; the result includes the `fleetMcp` line (then `member_detail` with `refresh: true`); a full install (no member-install marker) is never touched. `"replace-full"`: everything `"auto"` does, plus an explicit opt-in to replace such a full install with a member install (back up data and fleet.key to a timestamped dir, uninstall with the installed binary, stop the linux fleet-supervisor unit, move data aside, member install, self-register); refused with no destructive command when the marker probe fails; `fleetMcp.replacedFullInstall` reports it. `"skip"`: no install. Omitted: install only on a provider change. A requested install/upgrade that cannot happen (no release for the orchestrator build, checksum or download failure, unsupported platform, full install present, ...) never fails the update: the result adds a `WARNING` naming the consequence (no KB/code tools from the member's own apra-fleet, or its installed build kept), the exact reason and OS-correct manual install steps (also `fleetMcp.manualInstall`). |
 | `friendly_name` | `string?` | New friendly name. |
 | `work_folder` | `string?` | New working directory. For non-local (remote/relay) members, must be a fully-qualified/absolute path (e.g. `/home/bella/repo` or `C:\Users\bella\repo`) -- tilde and relative paths are rejected. A folder may hold at most one LLM member and one LLM-less (llm_provider none) member. A real change removes what `compose_permissions` wrote in the OLD folder (per-folder `apra-fleet` MCP entry, permission keys, `.git/info/exclude` lines) and re-runs `compose_permissions`, so the new folder gets its `?member=<uuid>` entry at once. |
 | `host` | `string?` | New host (remote members only). |
@@ -484,7 +494,7 @@ error naming the key (the member is not updated) -- they are no longer silently 
 
 #### `removeMember(options: RemoveMemberOptions)`
 
-Calls `remove_member` -- removes a member from the fleet. Before the member is deleted (and before the fleet's own SSH key is removed from the member), it removes what `compose_permissions` wrote for the member (per-folder `apra-fleet` MCP entry, permission keys, `.git/info/exclude` lines); anything it could not remove, or could not reach, is reported as a warning in the result. A local member's per-session MCP config file (`session-mcp/<uuid>.json` in the server data dir) is deleted too.
+Calls `remove_member` -- removes a member from the fleet. Before the member is deleted (and before the fleet's own SSH key is removed from the member), it removes what `compose_permissions` wrote for the member (per-folder `apra-fleet` MCP entry, permission keys, `.git/info/exclude` lines); anything it could not remove, or could not reach, is reported as a warning in the result. The registration on the member's own apra-fleet install is removed only when that install carries the member-install marker; an unmarked install, or a failed marker probe, is skipped and the warning says so and why. A local member's per-session MCP config file (`session-mcp/<uuid>.json` in the server data dir) is deleted too.
 
 | Field | Type | Notes |
 |---|---|---|
@@ -539,6 +549,29 @@ session's `kb_query` / `kb_session_prime` / `kb_stats`), `E-MEMBER-VIEW-REMOTE`
 (a remote member's checkout bible is unreachable; the same three read tools)
 and `E-BIBLE-BASIS-NOT-GIT` (`kb_export` / `kb_bible_commit` in a folder that is
 not a git work tree).
+
+`kb_import` in a member session without the kb_maintainer grant fails with
+`E-KB-MAINTAINER-REQUIRED` and imports nothing when: it names an explicit
+`path` other than its own `.fleet/kb-canonical.json`; the own bible has no
+committed copy at `HEAD`; or the committed bible is one the maintainer side
+never wrote or imported. The last is the trust anchor: the hub-side per-repo
+KB records the git blob id of every bible `kb_bible_commit` writes and every
+bible `kb_import` imports from the kb_maintainer session or a FULL session,
+and a bible committed only in the member's own checkout is not on that record
+(the error message names the unrecorded blob id). A successful no-grant import
+returns the usual result plus `bible_source: "HEAD"` and `worktree_ignored`.
+The committed blob's bytes are hashed in-process and must equal the trusted id,
+so a replace ref or an overwritten object in the member's `.git` is refused.
+
+`kb_import` takes an optional `ref` (a plain git ref name, e.g.
+`refs/remotes/origin/main`; no rev expressions): the bible is read as committed
+at that ref, hash-verified, instead of from disk, in any session. The result
+then carries `bible_source: "<ref>"` and `worktree_ignored`; a ref that does not
+hold the bible fails with `E-BIBLE-NOT-FOUND`; a no-grant session still needs a
+recorded blob, and a kb_maintainer or FULL session records the verified blob.
+The engine's sprint-start priming uses
+`ref: "refs/remotes/origin/<base branch>"` on the kb_maintainer, so trust is
+seeded from the base branch and never from the maintainer's work tree.
 
 #### `kbExport(options?: KbExportOptions)`
 
@@ -599,6 +632,10 @@ untouched. Like `kbExport` / `kbBibleCommit`, the removed scope keys
 `E-SCOPE-KEY-REMOVED` before anything is sent.
 
 Result JSON: `{id, previous_confidence, new_confidence}`.
+Called from the kb_maintainer session or a FULL session, it also records the
+git blob id of the bible it wrote as trusted in the hub-side KB, which is what
+lets a member session without the grant `kb_import` that bible once it is
+committed in its checkout (a call from such a member session records nothing).
 
 #### `composePermissions(options: ComposePermissionsOptions)`
 
@@ -608,7 +645,10 @@ both `base-dev.json` and `base-reviewer.json`) are checked by most recent
 installation date, then by the remaining supported providers in deterministic
 order. Options: `member_id?`, `member_name?`, `role?`
 (`"doer" | "reviewer"`), `tags?`, `project_folder?`, `grant?`,
-`grant_reason?`. Provide at least one of `role` or `tags`; `tags` containing
+`grant_reason?`, `dry_run?`. `dry_run: true` returns the composed allow list
+(role/tags + detected stacks, + the ledger when `project_folder` is given) as
+JSON text `{"dry_run":true,"mode","stacks","allow"}` and writes nothing.
+Provide at least one of `role` or `tags`; `tags` containing
 `"doer"`/`"reviewer"` sets the primary mode and wins over `role`. Each
 `grant` entry is checked against the `NEVER_AUTO_GRANT` denylist, which is
 wildcard-matched (not exact-matched) against a normalized form of the
@@ -749,7 +789,7 @@ client-side timeout itself.
 
 The single, shared implementation of "how does a client process reach the
 apra-fleet MCP server." Both `src/cli/workflow.ts` (the `apra-fleet
-workflow` launcher) and `packages/apra-fleet-se/bin/cli.mjs` (auto-sprint)
+workflow` launcher) and `packages/apra-fleet-se/bin/cli.mjs` (fleet-sprint)
 depend on this module rather than duplicating the resolution logic.
 Binding design doc: `docs/adr-workflow-server-resolution.md`.
 
@@ -805,7 +845,7 @@ Resolution order:
    (`resolveFleetServerCommand()`'s four tiers: CMD string, BIN via `PATH`,
    bundled sibling `index.js`, dev `../../../dist/index.js`).
 
-The launcher/auto-sprint client and the MCP server are always separate
+The launcher/fleet-sprint client and the MCP server are always separate
 processes; this module only decides the transport, it never merges them.
 Every branch takes an injectable `deps` bag (`env`, `readFile`, `unlink`,
 `pidAlive`, `health`, `dirname`, `exists`, `checkRunningInstance`) so each
@@ -921,22 +961,16 @@ Behavior:
    config.workflowArgs || {})`, and `new WorkflowEngine(fleetWorkflow)`.
 6. Resolves with `{ transport, mcpClient, apraFleet, fleetWorkflow, engine }`.
 
-**Known issue.** Steps 4-5 import `FleetWorkflow` from
-`'../workflow/index.mjs'` and `WorkflowEngine` from
-`'../workflow/engine.mjs'` -- paths relative to
-`packages/apra-fleet-client/src/client/`, which would resolve to
-`packages/apra-fleet-client/src/workflow/*`. That directory does not exist
-in this package; the real `FleetWorkflow`/`WorkflowEngine` implementation
-lives in the separate `@apralabs/apra-fleet-workflow` package
-(`packages/apra-fleet-workflow/src/workflow/index.mjs` and `engine.mjs`).
-`apra-fleet-workflow` depends on `apra-fleet-client` (see its
-`package.json`), not the reverse, so an import in the other direction from
-inside `apra-fleet-client` would in any case create a circular package
-dependency. As written, calling `createWorkflowEngine()` (or importing
-`./factory` at all) will fail to resolve these two imports. There is no
-test file covering `factory.mjs` (the suite under `test/` covers `api.mjs`,
-`client.mjs`, `transport.mjs`, and the api.mjs/server-schema typedef
-parity), which is consistent with this path being unexercised. The `.`,
-`./client`,
-and `./transport` exports are unaffected -- `ApraFleet`, `McpClient`, and
-the transports can be used standalone without going through this factory.
+**Access secret.** For `'http'`, `config.options` is passed through
+`withFleetAccessSecret(options, config.env || process.env)`, so every request
+carries the local install's `X-Apra-Fleet-Member-Secret` header (read from
+`<data dir>/member-access.key`; `config.env.APRA_FLEET_DATA_DIR` selects the
+data dir). An explicit header in `config.options.headers` wins. Without it the
+server refuses the session with HTTP 401.
+
+**Workflow classes.** `FleetWorkflow` and `WorkflowEngine` live in
+`@apralabs/apra-fleet-workflow`, which depends on this package. The factory
+imports them lazily (dynamic `import()` before `transport.start()`), so
+importing `./factory` never needs that package; calling
+`createWorkflowEngine()` does. Covered by
+`test/factory-access-secret.test.mjs`.

@@ -364,24 +364,25 @@ There is no dedicated "architecture decision record" input to fleet-sprint. Here
 is what actually exists, verified against the code and the shipped role contracts,
 ordered by reach:
 
-1. **`bd remember` -- durable knowledge that reaches every role.** Beads has a
-   persistent-memory store: `bd remember --key <key> "<one or two sentences>"`
-   writes an entry into the shared beads database, and `bd prime` (beads'
-   context-recovery command) prints every stored memory in a "Persistent Memories"
-   section, searchable via `bd memories <keyword>`. The delivery path: beads'
-   convention -- used by this repo itself, whose checked-in
-   `.claude/settings.json` is exactly this -- is a Claude Code `SessionStart` hook
-   that runs `bd prime`, so *every* agent session opened in the repo gets the
-   memories as session context. Since each dispatched sprint role (planner, doer,
-   reviewer, test runners) runs as a Claude Code session inside the member's
-   working copy, a repo carrying that hook delivers your recorded conventions to
-   all of them. Two verified caveats: the fleet-sprint engine does **not** run
-   `bd prime` or inject memories into dispatch prompts itself (the hook in your
-   repo is the whole mechanism), and it is a Claude Code/Codex hook convention;
-   other provider CLIs handle session context differently. For standing direction
+1. **`bd remember` -- durable knowledge, scoped to the roles that need it.**
+   Beads has a persistent-memory store: `bd remember --key <key> "<one or two
+   sentences>"` writes an entry into the shared beads database, searchable via
+   `bd memories <keyword>`. Every dispatched sprint role (planner, doer,
+   reviewer, test runners, ...) reads it itself: its role prompt runs
+   `bd memories --json +all+` and `bd memories --json +<role>+` (e.g. `+doer+`)
+   before it starts work (`--json` because text output truncates long values). So the key decides who sees a memory:
+   `+all+:<slug>` reaches every role, `+<role>+:<slug>` one role, and
+   `+<role1>+<role2>+:<slug>` each listed role; an unscoped key reaches no role
+   (full contract in `packages/apra-fleet-se/docs/role-contracts.md`). The
+   interactive session you launch and supervise sprints from is the
+   `orchestrator` role: no role prompt runs there, so give it its memories with a
+   session-start hook (e.g. a Claude Code `SessionStart` hook that prints
+   `+all+` and `+orchestrator+` memories). If your repo's hooks run plain
+   `bd prime`, every memory lands in every session regardless of scope; use
+   `bd prime --no-memories` to keep sessions scoped. For standing direction
    like "all new endpoints go through the gateway service" or "no new runtime
-   dependencies without approval", this is the closest thing to a real cross-role
-   channel that exists.
+   dependencies without approval", an `+all+` memory is the closest thing to a
+   real cross-role channel that exists.
 2. **The requirements file (`requirementsFile` on the launch request).** The one
    explicit per-sprint channel: the engine reads the file and pastes its content
    verbatim into the **planner's** prompt. Use it for sprint-specific technical
@@ -406,8 +407,8 @@ ordered by reach:
    (how we deploy, what "healthy" means, what we verify) as enforced behavior,
    since agents execute them literally.
 
-> **Rule of thumb:** durable cross-cutting conventions -> `bd remember` plus the
-> `bd prime` session hook (and `CLAUDE.md` as belt-and-suspenders); sprint-scoped
+> **Rule of thumb:** durable cross-cutting conventions -> `bd remember` under an
+> `+all+` or `+<role>+` key (and `CLAUDE.md` as belt-and-suspenders); sprint-scoped
 > direction -> the requirements file; per-work-item constraints -> bead acceptance
 > criteria.
 
@@ -447,8 +448,8 @@ API in `packages/apra-fleet-se/src/supervisor/api.mjs`. The Azure DevOps and
 GitHub Issues import claims were checked against the beads project's documentation
 and confirmed against the installed `bd` CLI (`bd github --help`,
 `bd github sync --help`, `bd ado --help`, `bd import --help`). The
-`bd remember`/`bd prime` delivery path was verified against `bd prime`'s actual
-output and this repo's checked-in `.claude/settings.json` hook. The supervisor and
+`bd remember` delivery path was verified against the role prompts' `bd memories`
+queries and `bd memories` search behavior. The supervisor and
 sprint screenshots are unretouched captures of a running supervisor. Claims about
 what agents refuse to do (improvising deploys, inventing scope, self-granting
 permissions) are taken from the role contracts verbatim.*

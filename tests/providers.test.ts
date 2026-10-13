@@ -141,7 +141,34 @@ describe('ClaudeProvider', () => {
   it('extracts usage tokens when present in JSON response', () => {
     const payload = JSON.stringify({ result: 'done', session_id: 'sid-1', usage: { input_tokens: 123, output_tokens: 456 } });
     const resp = p.parseResponse(makeResult(payload));
-    expect(resp.usage).toEqual({ input_tokens: 123, output_tokens: 456 });
+    expect(resp.usage).toEqual({ input_tokens: 123, output_tokens: 456, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 });
+  });
+
+  it('extracts cache-read and cache-write tokens from a recorded Claude result event', () => {
+    // Shape of a real `claude -p --output-format json` result event's usage
+    // (cache counts are reported separately from, not inside, input_tokens).
+    const payload = JSON.stringify({
+      type: 'result',
+      subtype: 'success',
+      is_error: false,
+      result: 'done',
+      session_id: 'sid-cache',
+      usage: {
+        input_tokens: 42,
+        cache_creation_input_tokens: 18_311,
+        cache_read_input_tokens: 512_904,
+        output_tokens: 3_187,
+        server_tool_use: { web_search_requests: 0 },
+        service_tier: 'standard',
+      },
+    });
+    const resp = p.parseResponse(makeResult(payload));
+    expect(resp.usage).toEqual({
+      input_tokens: 42,
+      output_tokens: 3_187,
+      cache_read_input_tokens: 512_904,
+      cache_creation_input_tokens: 18_311,
+    });
   });
 
   it('returns undefined usage when usage field is absent', () => {
@@ -266,7 +293,7 @@ describe('ClaudeProvider', () => {
     expect(resp.result).toBe('Here is the full answer.');
     expect(resp.sessionId).toBe('sid-recover');
     expect(resp.isError).toBe(false);
-    expect(resp.usage).toEqual({ input_tokens: 5, output_tokens: 7 });
+    expect(resp.usage).toEqual({ input_tokens: 5, output_tokens: 7, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 });
   });
 
   it('recovers assistant text from a JSON-array stream when the result event text is blank', () => {
@@ -1075,6 +1102,43 @@ describe('AgyProvider', () => {
       'command(bd)',
       'command(regex:bd .*)',
     ]);
+  });
+
+  describe('detectUsageLimit', () => {
+    it('returns null when result.code === 0 and !parsed.isError, even if stdout contains "output_tokens": 429', () => {
+      const stdout = JSON.stringify({
+        conversation_id: 'conv-123',
+        status: 'SUCCESS',
+        response: 'All planned tasks created successfully',
+        usage: { input_tokens: 5000, output_tokens: 429 },
+      });
+      const result = { stdout, stderr: '', code: 0 };
+      const parsed = p.parseResponse(result);
+      expect(p.detectUsageLimit(result, parsed)).toBeNull();
+    });
+
+    it('returns a guessed usage-limit signal when result.code !== 0 and stderr contains "rate limit"', () => {
+      const result = { stdout: '', stderr: 'Error: Rate limit exceeded (429)', code: 1 };
+      const parsed = p.parseResponse(result);
+      const signal = p.detectUsageLimit(result, parsed);
+      expect(signal).not.toBeNull();
+      expect(signal?.type).toBe('usage_limit');
+      expect(signal?.resumeAtSource).toBe('guessed');
+    });
+
+    it('returns a guessed usage-limit signal when parsed.isError is true and response mentions quota exceeded', () => {
+      const stdout = JSON.stringify({
+        conversation_id: 'conv-123',
+        status: 'ERROR',
+        error: 'Resource has been exhausted (e.g. check quota)',
+      });
+      const result = { stdout, stderr: '', code: 1 };
+      const parsed = p.parseResponse(result);
+      const signal = p.detectUsageLimit(result, parsed);
+      expect(signal).not.toBeNull();
+      expect(signal?.type).toBe('usage_limit');
+      expect(signal?.resumeAtSource).toBe('guessed');
+    });
   });
 });
 

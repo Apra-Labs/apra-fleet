@@ -147,6 +147,36 @@ export interface ExecuteCommandResult {
   structuredContent?: ExecuteCommandStructured;
 }
 
+/**
+ * Machine-readable reasons an execute_command call failed before it could
+ * report a real exit code. 'timeout' is the inactivity timeout, 'max_total_time'
+ * the hard total-time cap, 'transport_error' any other rejection from the
+ * strategy (connection refused/reset, ssh channel failure, ...).
+ */
+export type ExecuteCommandFailureReason = 'timeout' | 'max_total_time' | 'transport_error';
+
+/** Classify a rejection from strategy.execCommand into a failure reason. */
+export function classifyExecFailure(err: unknown): ExecuteCommandFailureReason {
+  const message = err instanceof Error ? err.message : String(err ?? '');
+  if (/exceeded max total time/i.test(message)) return 'max_total_time';
+  if (/\btimed out\b/i.test(message)) return 'timeout';
+  return 'transport_error';
+}
+
+/**
+ * Build the failure result for a command that never produced an exit code.
+ * The text keeps the human-readable "Failed to ..." wording; the structured
+ * channel carries isError + reason so a programmatic caller (e.g.
+ * FleetWorkflow.command()) cannot mistake it for success. exitCode is -1, never
+ * a fake 0.
+ */
+function execFailureResult(text: string, reason: ExecuteCommandFailureReason | 'cloud_start_failed', detail: string): ExecuteCommandResult {
+  return {
+    text,
+    structuredContent: { isError: true, reason, exitCode: -1, stdout: '', stderr: detail },
+  };
+}
+
 export async function executeCommand(input: ExecuteCommandInput, extra?: any): Promise<string | ExecuteCommandResult> {
   const agentOrError = resolveMember(input.member_id, input.member_name);
   if (typeof agentOrError === 'string') return agentOrError;
@@ -154,7 +184,7 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
   try {
     agent = await ensureCloudReady(agentOrError as Agent); // auto-start if stopped
   } catch (err: any) {
-    return `Failed to execute command on "${(agentOrError as Agent).friendlyName}": ${err.message}`;
+    return execFailureResult(`Failed to execute command on "${(agentOrError as Agent).friendlyName}": ${err.message}`, 'cloud_start_failed', err.message);
   }
 
   // Pre-dispatch connectivity check (apra-fleet preflight-check): verify the
@@ -339,7 +369,8 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
 
     writeStatusline(new Map([[agent.id, 'busy']]));
     try {
-      const launchResult = await strategy.execCommand(launchCmd, input.timeout_s * 1000, undefined, onPidCaptured);
+      const timeoutMs = (input.timeout_s ?? 120) * 1000;
+      const launchResult = await strategy.execCommand(launchCmd, timeoutMs, undefined, onPidCaptured);
       touchAgent(agent.id);
       writeStatusline();
       // Redact credential values from any output returned by the launch command (H2)
@@ -350,8 +381,9 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
       const legacySuffix = legacyWarnings.length > 0 ? `\n${legacyWarnings.join('\n')}` : '';
       return `${longRunningOsWarning}Task launched: task_id=${taskId}\nUse monitor_task to track progress.${legacySuffix}`;
     } catch (err: any) {
-      writeStatusline(new Map([[agent.id, 'offline']]));
-      return `Failed to launch task on "${agent.friendlyName}": ${err.message}`;
+      const isOffline = agent.agentType !== 'local' && !!(err.message && /ssh|network|econnrefused|ehostunreach|connection timed out/i.test(err.message));
+      writeStatusline(new Map([[agent.id, isOffline ? 'offline' : 'idle']]));
+      return execFailureResult(`Failed to launch task on "${agent.friendlyName}": ${err.message}`, classifyExecFailure(err), err.message);
     }
   }
 
@@ -361,7 +393,20 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
   // no PID protocol of its own (unlike a provider launch) leaves the remote
   // process running forever past the timeout, since ssh has no local child
   // handle to fall back on the way LocalStrategy does.
-  const wrapped = cmds.wrapPidCapture(cmds.wrapInWorkFolder(folder, resolvedCommand));
+  //
+  // POSIX members: the user command is passed to the wrapper as DATA
+  // (`eval '<single-quoted command>'`), never spliced in as raw syntax.
+  // Splicing it into `{ cd ... && CMD; } & ...` broke any command whose
+  // last token cannot be followed by `; }` on the same line -- a heredoc
+  // at the end (its terminator line became `EOF; } & ...`), a trailing
+  // `&`, `;`, `|`, `&&`, `#` comment, or an empty command -- and made `cd`
+  // cover only the first `&`-separated list. eval is a builtin, so it adds
+  // no process layer: FLEET_PID is still the parent of the user's
+  // processes. PowerShell members are unchanged.
+  const payload = isPosixShell(agentOs, agentShell)
+    ? 'eval ' + escapeShellArg(resolvedCommand)
+    : resolvedCommand;
+  const wrapped = cmds.wrapPidCapture(cmds.wrapInWorkFolder(folder, payload));
 
   // Mark agent as busy in statusline
   writeStatusline(new Map([[agent.id, 'busy']]));
@@ -386,7 +431,8 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
       logWarn('execute_command', 'stored env vars not delivered (secret_delivery_unavailable)', agent);
     }
     stagedEnvPath = staged.path;
-    const result = await strategy.execCommand(staged.prefix + wrapped, input.timeout_s * 1000, undefined, onPidCaptured);
+    const timeoutMs = (input.timeout_s ?? 120) * 1000;
+    const result = await strategy.execCommand(staged.prefix + wrapped, timeoutMs, undefined, onPidCaptured);
     stagedEnvConsumed = result.code === 0;
     touchAgent(agent.id); // T7: idle manager resets its timer via touchAgent
 
@@ -427,9 +473,10 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
       structuredContent: { exitCode: result.code, stdout: redactedStdout, stderr: redactedStderr, ...(storedEnvNotDelivered ? { storedEnvNotDelivered: 'secret_delivery_unavailable' as const } : {}) },
     };
   } catch (err: any) {
-    writeStatusline(new Map([[agent.id, 'offline']]));
+    const isOffline = agent.agentType !== 'local' && !!(err.message && /ssh|network|econnrefused|ehostunreach|connection timed out/i.test(err.message));
+    writeStatusline(new Map([[agent.id, isOffline ? 'offline' : 'idle']]));
     scope.abort(err.message);
-    return `Failed to execute command on "${agent.friendlyName}": ${err.message}`;
+    return execFailureResult(`Failed to execute command on "${agent.friendlyName}": ${err.message}`, classifyExecFailure(err), err.message);
   } finally {
     // The prefix deletes the file once loaded; a failed/aborted run may not
     // have reached it.

@@ -105,7 +105,9 @@ export async function removeMember(input: RemoveMemberInput): Promise<string> {
   if (agent.agentType === 'remote') {
     try {
       const r = await removeMemberFromOwnInstall(agent, getMemberFleetMcpDeps());
-      if (!r.removed && 'reason' in r) {
+      if ('skipped' in r && r.skipped) {
+        warnings.push(`Member-side registration removal skipped (${r.reason}): ${r.detail}`);
+      } else if (!r.removed && 'reason' in r) {
         warnings.push(`Could not remove the member's registration from its own apra-fleet install (${r.reason}): ${r.detail}`);
       }
     } catch (e: unknown) {

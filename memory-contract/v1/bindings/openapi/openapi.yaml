@@ -58,7 +58,7 @@
     },
     {
       "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-BIBLE-NOT-FOUND",
-      "title": "The resolved bible file does not exist.",
+      "title": "The resolved bible file does not exist (with ref: the named git ref does not hold it).",
       "status": 400
     },
     {
@@ -124,6 +124,16 @@
     {
       "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-DEMOTE-SUPERSEDED",
       "title": "The target entry is already superseded, so it has dropped out of every read path and lowering its confidence would be a write with no observable meaning.",
+      "status": 403
+    },
+    {
+      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-KB-MAINTAINER-REQUIRED",
+      "title": "kb_import in a MEMBER session that does not carry the kb_maintainer grant either named an explicit path other than the session's own .fleet/kb-canonical.json, or (without path / with its own path) found no committed copy of its own bible at HEAD. An explicit-path import keeps the bible's confidence, which is equivalent in power to kb_promote, so it needs the same grant; the own bible is trusted only as committed, never as the member-writable work-tree file. Nothing is imported.",
+      "status": 403
+    },
+    {
+      "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-RETIRE-NEEDS-KB-MAINTAINER",
+      "title": "A MEMBER session without the kb_maintainer grant tried to retire a live CONFIRMED entry: kb_invalidate named it (by id, or a CONFIRMED context-cache entry by file), or kb_capture named it in supersedes and AUDN matched it. Retiring it would remove it from the bible at the next kb_bible_commit, so it is left live and its id is reported in the response's refused list. kb_invalidate processes every other named entry as usual; kb_capture still stores the new entry, linked to the CONFIRMED one (refines, both live), and on a remote KB provider drops supersedes entirely (fail closed).",
       "status": 403
     },
     {

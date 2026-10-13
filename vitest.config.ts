@@ -31,6 +31,15 @@ const NODE_SQLITE_DEPENDENT_TESTS = [
   'tests/category.test.ts',
 ];
 
+// Slow pack/install proof (npm pack + npm install into a scratch consumer
+// project, 2-3 min on Windows): kept out of the default `npm test` / CI run
+// to stay inside the per-suite wall-clock budget. It runs in the nightly
+// install/upgrade proof workflow (.github/workflows/regression.yml, job
+// undici-pack-install), which sets APRA_RUN_PACK_INSTALL=1 to opt it back in.
+const NIGHTLY_ONLY_TESTS = process.env.APRA_RUN_PACK_INSTALL === '1'
+  ? []
+  : ['tests/undici-pack-install.test.ts'];
+
 const sqliteAvailable = hasNodeSqlite();
 if (!sqliteAvailable) {
   // eslint-disable-next-line no-console
@@ -46,7 +55,11 @@ export default defineConfig({
     globals: true,
     environment: 'node',
     include: ['tests/**/*.test.ts', 'packages/*/tests/**/*.test.ts'],
-    exclude: sqliteAvailable ? defaultExclude : [...defaultExclude, ...NODE_SQLITE_DEPENDENT_TESTS],
+    exclude: [
+      ...defaultExclude,
+      ...NIGHTLY_ONLY_TESTS,
+      ...(sqliteAvailable ? [] : NODE_SQLITE_DEPENDENT_TESTS),
+    ],
     setupFiles: ['tests/setup.ts'],
     globalSetup: ['tests/global-setup.ts'],
     fileParallelism: false,  // Tests share registry.json in temp dir (unique per run, see global-setup.ts)

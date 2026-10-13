@@ -37,29 +37,44 @@ class MockStream extends MockChannel {
 
 type Cb = (err: Error | null) => void;
 
+type StepOpts = { step?: (transferred: number, chunk: number, total: number) => void } | undefined;
+
 class MockSFTP extends MockChannel {
   private pending: Cb[] = [];
+  /** In-flight 'slow' transfers: the test drives their progress and completion. */
+  slow: Array<{ step: () => void; done: () => void }> = [];
   end = vi.fn(() => {
     this.markClosed();
     // ssh2 fails outstanding requests when the channel goes away.
     const p = this.pending; this.pending = [];
     for (const cb of p) cb(new Error('No response from server'));
   });
-  private op(remote: string, cb: Cb): void {
+  private op(remote: string, cb: Cb, opts?: StepOpts): void {
     if (this.closed) { cb(new Error('channel closed')); return; }
     if (remote.includes('hang')) { this.pending.push(cb); return; }
+    if (remote.includes('slow')) {
+      this.pending.push(cb);
+      this.slow.push({
+        step: () => opts?.step?.(1, 1, 10),
+        done: () => { this.pending = this.pending.filter((c) => c !== cb); cb(null); },
+      });
+      return;
+    }
     if (remote.includes('bad')) { cb(new Error('Permission denied')); return; }
     cb(null);
   }
-  mkdir = (p: string, cb: Cb) => this.op(p.includes('baddir') ? 'bad' : 'ok', cb);
-  fastPut = (_l: string, r: string, cb: Cb) => this.op(r, cb);
-  fastGet = (r: string, _l: string, cb: Cb) => this.op(r, cb);
+  mkdir = (p: string, cb: Cb) => this.op(p.includes('baddir') ? 'bad' : p.includes('hangdir') ? 'hang' : 'ok', cb);
+  fastPut = (_l: string, r: string, o: StepOpts, cb: Cb) => this.op(r, cb, o);
+  fastGet = (r: string, _l: string, o: StepOpts, cb: Cb) => this.op(r, cb, o);
   writeFile = (r: string, _d: Buffer, cb: Cb) => this.op(r, cb);
 }
 
 let clients: MockClient[] = [];
 let maxSessionsForNewClients = 10;
 let deferExec = false;
+// While set, sftp() session opens are parked until the test releases them.
+let deferSftpOpen = false;
+const deferredSftpOpens: Array<() => void> = [];
 const deferred: Array<() => void> = [];
 // Number of upcoming connects whose socket closes after the banner but
 // before 'ready' (ssh2 emits 'close' with no 'error' in that case).
@@ -93,6 +108,7 @@ class MockClient extends EventEmitter {
     if (deferExec) deferred.push(run); else run();
   }
   sftp(cb: (err: Error | null, sftp?: MockSFTP) => void): void {
+    if (deferSftpOpen) { deferredSftpOpens.push(() => this.sftp(cb)); return; }
     const err = this.admit();
     if (err) { cb(err); return; }
     const s = new MockSFTP(this);
@@ -136,6 +152,8 @@ describe('SSH layer closes every channel it opens', () => {
     maxSessionsForNewClients = 10;
     deferExec = false;
     deferred.length = 0;
+    deferSftpOpen = false;
+    deferredSftpOpens.length = 0;
     closeBeforeReadyConnects = 0;
     ssh = await import('../src/services/ssh.js');
     sftp = await import('../src/services/sftp.js');
@@ -347,6 +365,77 @@ describe('SSH layer closes every channel it opens', () => {
     expect(totalLive()).toBe(0);
   });
 
+  it('a timeout on the LAST channel of a retired connection: the connection ends on release and the kill still goes out on the fresh one', async () => {
+    const agent = makeTestAgent();
+    const running: Array<Promise<unknown>> = [];
+    for (let i = 0; i < 10; i++) {
+      const p = ssh.execCommand(agent, `long ${i}`, i === 0 ? 1000 : 60000);
+      p.catch(() => {});
+      running.push(p);
+      await flush();
+    }
+    clients[0].streams[0].emit('data', Buffer.from('FLEET_PID:5151\n'));
+    const eleventh = ssh.execCommand(agent, 'eleventh', 60000);
+    await flush();
+    expect(clients).toHaveLength(2);
+    // every other command on the retired connection finishes first
+    clients[0].streams.slice(1).forEach((s) => s.finish(0));
+    await Promise.allSettled(running.slice(1));
+    expect(clients[0].end).not.toHaveBeenCalled();
+
+    // the PID-carrying command is now the retired connection's only channel
+    await vi.advanceTimersByTimeAsync(1000);
+    await expect(running[0]).rejects.toThrow(/timed out/);
+    // its release ended the retired connection ...
+    expect(clients[0].end).toHaveBeenCalledTimes(1);
+    // ... and the kill was still sent, leased on the fresh connection
+    expect(clients[1].execCalls.filter((c) => c.includes('5151'))).toHaveLength(1);
+    expect(clients[0].execCalls.filter((c) => c.includes('5151'))).toHaveLength(0);
+
+    clients[1].streams.forEach((s) => s.finish(0));
+    await expect(eleventh).resolves.toMatchObject({ code: 0 });
+    expect(totalLive()).toBe(0);
+  });
+
+  it('update_llm_cli: an install that outlives its timeout is killed explicitly (FLEET_PID kill sent) and reported as a timeout kill', async () => {
+    const helpers = await import('./test-helpers.js');
+    const { addAgent } = await import('../src/services/registry.js');
+    const { updateAgentCli, INSTALL_INACTIVITY_TIMEOUT_MS } = await import('../src/tools/update-agent-cli.js');
+    helpers.backupAndResetRegistry();
+    try {
+      const agent = makeTestAgent({ friendlyName: 'install-hang', os: 'linux' });
+      addAgent(agent);
+      const report = updateAgentCli({ member_id: agent.id, install_if_missing: true });
+      await flush();
+      // version probe: CLI not installed
+      clients[0].streams[0].emit('data', Buffer.from(''));
+      clients[0].streams[0].finish(127);
+      await flush();
+
+      // the install runs under the FLEET_PID wrapper, reports its PID, then goes silent
+      const install = clients[0].streams[1];
+      expect(clients[0].execCalls[1]).toMatch(/_fleet_pid=\$!; printf 'FLEET_PID:%s\\n'/);
+      install.emit('data', Buffer.from('FLEET_PID:6161\n'));
+      await vi.advanceTimersByTimeAsync(60_000);
+      install.emit('data', Buffer.from('downloading...\n'));
+      await vi.advanceTimersByTimeAsync(INSTALL_INACTIVITY_TIMEOUT_MS);
+
+      const text = await report;
+      // the remote tree was killed on a fresh leased channel, not just cut
+      expect(clients[0].execCalls.filter((c) => c.includes('_fleet_kill_tree 6161'))).toHaveLength(1);
+      expect(install.close).toHaveBeenCalled();
+      expect(text).toContain(
+        `CLI install killed on timeout after running ${60 + INSTALL_INACTIVITY_TIMEOUT_MS / 1000}s: ` +
+        `it produced no output for ${INSTALL_INACTIVITY_TIMEOUT_MS / 1000}s; its remote process tree (PID 6161) was killed.`,
+      );
+      // the kill channel closes itself (safety timer) -- nothing leaks
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(totalLive()).toBe(0);
+    } finally {
+      helpers.restoreRegistry();
+    }
+  });
+
   it('refused again on the fresh connection: a transport error naming the member and the session-limit cause', async () => {
     const agent = makeTestAgent({ friendlyName: 'kbr-remote' });
     maxSessionsForNewClients = 0;
@@ -359,5 +448,97 @@ describe('SSH layer closes every channel it opens', () => {
 
     await expect(sftp.uploadViaSFTP(agent, ['/l/a.txt'], 'dest')).rejects.toThrow(/kbr-remote.*MaxSessions/s);
     expect(totalLive()).toBe(0);
+  });
+
+  describe('SFTP inactivity timeout', () => {
+    const T = 120_000; // SFTP_INACTIVITY_TIMEOUT_MS
+
+    /** End the pooled connection only if no channel is leased on it (cleanupEntry semantics). */
+    const reapIfIdle = (agent: Agent) => ssh.closeConnection(agent);
+
+    it('a transfer that never completes rejects after the timeout naming member, path and budget; its session ends and its lease is released', async () => {
+      expect(sftp.SFTP_INACTIVITY_TIMEOUT_MS).toBe(T);
+      const agent = makeTestAgent({ friendlyName: 'sftp-hang-member' });
+      const p = sftp.uploadViaSFTP(agent, ['/l/hang.txt', '/l/next.txt'], 'dest');
+      p.catch(() => {});
+      await flush();
+      expect(totalLive()).toBe(1);
+
+      await vi.advanceTimersByTimeAsync(T - 1);
+      expect(clients[0].sftps[0].end).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      const err = await p.then(() => null, (e: Error) => e);
+      expect(err).toBeInstanceOf(sftp.SftpTimeoutError);
+      expect(err!.message).toMatch(/upload on member "sftp-hang-member" \(testuser@test-host-[a-z0-9]+:22\) made no progress for 120000ms on \/home\/testuser\/work\/dest\/hang\.txt/);
+      // the timeout failed the whole transfer: the next file never started
+      expect(clients[0].sftps).toHaveLength(1);
+      expect(clients[0].sftps[0].end).toHaveBeenCalled();
+      expect(totalLive()).toBe(0);
+      // lease released: activeChannels is back to 0, so the idle reap ends the connection now
+      reapIfIdle(agent);
+      expect(clients[0].end).toHaveBeenCalledTimes(1);
+    });
+
+    it('download and content writes are bounded too (fastGet, mkdir)', async () => {
+      const agent = makeTestAgent();
+      vi.spyOn((await import('node:fs')).default, 'mkdirSync').mockImplementation((() => undefined) as any);
+      const down = sftp.downloadViaSFTP(agent, ['hang.log'], '/tmp/out');
+      down.catch(() => {});
+      const write = sftp.uploadContentToHome(agent, [{ relPath: 'x.json', content: '{}' }], 'hangdir');
+      write.catch(() => {});
+      await flush();
+      expect(totalLive()).toBe(2);
+      await vi.advanceTimersByTimeAsync(T);
+      await expect(down).rejects.toThrow(/download on member .* made no progress for 120000ms on \/home\/testuser\/work\/hang\.log/);
+      await expect(write).rejects.toThrow(/mkdir on member .* on hangdir;/);
+      expect(totalLive()).toBe(0);
+    });
+
+    it('a transfer that completes before the timeout is unaffected, and its session still ends', async () => {
+      const agent = makeTestAgent();
+      const p = sftp.uploadViaSFTP(agent, ['/l/slow.txt'], 'dest');
+      await flush();
+      await vi.advanceTimersByTimeAsync(T - 1000);
+      clients[0].sftps[0].slow[0].done();
+      await expect(p).resolves.toEqual({ success: ['slow.txt'], failed: [] });
+      // no timer left behind to fire later
+      await vi.advanceTimersByTimeAsync(T * 2);
+      expect(clients[0].sftps[0].end).toHaveBeenCalledTimes(1);
+      expect(totalLive()).toBe(0);
+    });
+
+    it('a transfer that keeps making progress is not killed even when it runs far past the timeout', async () => {
+      const agent = makeTestAgent();
+      const p = sftp.uploadViaSFTP(agent, ['/l/slow.txt'], 'dest');
+      p.catch(() => {});
+      await flush();
+      const xfer = clients[0].sftps[0].slow[0];
+      for (let i = 0; i < 5; i++) {
+        await vi.advanceTimersByTimeAsync(T - 1000);
+        xfer.step();
+      }
+      expect(clients[0].sftps[0].end).not.toHaveBeenCalled();
+      xfer.done();
+      await expect(p).resolves.toEqual({ success: ['slow.txt'], failed: [] });
+      expect(totalLive()).toBe(0);
+    });
+
+    it('a session open that never answers rejects after the timeout; the channel that arrives late is closed', async () => {
+      const agent = makeTestAgent({ friendlyName: 'sftp-open-member' });
+      deferSftpOpen = true;
+      const p = sftp.uploadViaSFTP(agent, ['/l/a.txt'], 'dest');
+      p.catch(() => {});
+      await flush();
+      await vi.advanceTimersByTimeAsync(T);
+      await expect(p).rejects.toThrow(/session open on member "sftp-open-member".*made no progress for 120000ms/);
+      deferSftpOpen = false;
+      deferredSftpOpens.splice(0).forEach((open) => open());
+      await flush();
+      expect(clients[0].sftps).toHaveLength(1);
+      expect(clients[0].sftps[0].end).toHaveBeenCalled();
+      expect(totalLive()).toBe(0);
+      reapIfIdle(agent);
+      expect(clients[0].end).toHaveBeenCalledTimes(1);
+    });
   });
 });

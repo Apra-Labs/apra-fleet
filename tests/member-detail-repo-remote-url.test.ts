@@ -184,3 +184,52 @@ describe('member_detail surfaces the member\'s registered git access level (apra
     expect(typedefBlock).toMatch(/@property\s+\{[^}]*\}\s+\[gitAccess\]/);
   });
 });
+
+/**
+ * The fleet-sprint member preflight re-composes a dispatch member's per-folder
+ * permission config when it is missing (re-clone, git clean -xdf). It has no
+ * provider layer of its own, so member_detail reports which files the
+ * member's provider composes -- straight from the ProviderAdapter, never an
+ * engine-side guess that assumes Claude.
+ */
+describe('member_detail reports the provider permission config paths', () => {
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+    setupDefaultMock();
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+  });
+
+  it('a Claude member reports .claude/settings.local.json', async () => {
+    const member = makeTestAgent({ friendlyName: 'perm-claude', llmProvider: 'claude' });
+    addAgent(member);
+    const result = JSON.parse(await memberDetail({ member_id: member.id, format: 'json' })) as Record<string, unknown>;
+    expect(result.permissionConfigPaths).toEqual(['.claude/settings.local.json']);
+  });
+
+  it('a Codex member reports its own provider path, not Claude\'s', async () => {
+    const member = makeTestAgent({ friendlyName: 'perm-codex', llmProvider: 'codex' });
+    addAgent(member);
+    const result = JSON.parse(await memberDetail({ member_id: member.id, format: 'json' })) as Record<string, unknown>;
+    expect(result.permissionConfigPaths).toEqual(['.codex/config.toml']);
+  });
+
+  it('an agy member with no provisioned project reports [] instead of failing member_detail', async () => {
+    const member = makeTestAgent({ friendlyName: 'perm-agy', llmProvider: 'agy' });
+    addAgent(member);
+    const result = JSON.parse(await memberDetail({ member_id: member.id, format: 'json' })) as Record<string, unknown>;
+    expect(result.permissionConfigPaths).toEqual([]);
+  });
+
+  it('is reported for an offline member too (a static provider fact)', async () => {
+    mockTestConnection.mockResolvedValue({ ok: false, latencyMs: 0, error: 'unreachable' });
+    const member = makeTestAgent({ friendlyName: 'perm-offline', llmProvider: 'claude' });
+    addAgent(member);
+    const result = JSON.parse(await memberDetail({ member_id: member.id, format: 'json' })) as Record<string, unknown>;
+    expect(result.offline).toBe(true);
+    expect(result.permissionConfigPaths).toEqual(['.claude/settings.local.json']);
+  });
+});

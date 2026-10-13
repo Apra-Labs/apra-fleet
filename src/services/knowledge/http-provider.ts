@@ -18,6 +18,7 @@ import type {
   Confidence,
   ProviderStats,
   DiscardResult,
+  RetireOptions,
 } from './types.js';
 
 const MAX_QUEUE_SIZE = 1000;
@@ -220,7 +221,7 @@ export class HttpKbProvider implements MemoryProvider {
     }
   }
 
-  async discard(_ids: string[], _opts?: { ownerTag?: string }): Promise<DiscardResult> {
+  async discard(_ids: string[], _opts?: RetireOptions): Promise<DiscardResult> {
     throw new Error('kb_invalidate {ids} (id-level discard) is not supported by the HTTP KB provider');
   }
 
