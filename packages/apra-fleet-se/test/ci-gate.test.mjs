@@ -94,7 +94,9 @@ describe('(1) configured gate + successful run', () => {
         assert.ok(calls.filter((c) => c.action === 'ci-get-run').length >= 2, 'the run must be polled until completed');
         // The recorded result reaches the sprint log too.
         const passLine = logs.find((l) => l.includes('PASS'));
-        assert.ok(passLine && passLine.includes('4242') && passLine.includes(RUN_URL) && passLine.includes(SHA), `PASS log line must carry run id/url/sha: ${passLine}`);
+        assert.ok(passLine, 'a PASS log line must be written');
+        assert.match(passLine, /PASS: workflow 'ci\.yml' run 4242 \(https:\/\/github\.example\/o\/r\/actions\/runs\/4242\) on feat\/x@0123456789abcdef0123456789abcdef01234567; jobs: /,
+            `PASS log line must carry run id/url/sha: ${passLine}`);
     });
 
     test('no run for the head sha: the gate triggers the workflow on the branch, then finds and awaits the new run', async () => {
@@ -180,8 +182,9 @@ describe('(3) a run that never completes', () => {
         assert.equal(result.outcome, CI_GATE_OUTCOME.TIMEOUT);
         assert.notEqual(result.outcome, CI_GATE_OUTCOME.PASS);
         assert.equal(result.runUrl, RUN_URL);
-        assert.ok(result.reason.includes(RUN_URL), `the timeout reason must carry the run url: ${result.reason}`);
-        assert.ok(logs.some((l) => l.includes('ERROR') && l.includes('TIMEOUT') && l.includes(RUN_URL)));
+        assert.equal(result.reason, `run did not complete within 1s (last status: in_progress); see ${RUN_URL}.`, 'the timeout reason must carry the run url');
+        const timeoutLine = /ERROR: TIMEOUT for workflow 'ci\.yml' on feat\/x@0123456789abcdef0123456789abcdef01234567 \(run 4242, https:\/\/github\.example\/o\/r\/actions\/runs\/4242\): /;
+        assert.ok(logs.some((l) => timeoutLine.test(l)), `an ERROR TIMEOUT log line must carry the run url: ${logs.join(' | ')}`);
         assert.ok(elapsed < 5000, `the gate must stop at its bounded timeout (took ${elapsed}ms)`);
         assert.ok(elapsed >= 900, `the gate must actually wait for its timeout (took ${elapsed}ms)`);
     });
