@@ -803,8 +803,13 @@ install starts reading and writing the server immediately. Verify the flow
 works before scaling to production.
 
 **Authentication**: only `Authorization: Bearer <token>` is sent in HTTP
-headers. Member own-scope tags and ownership checks are not enforced server-side
-yet; the token is the sole credential.
+headers; the token is the sole credential the server sees. Member own-scope is
+enforced by fleet, not by the server: a MEMBER kb_promote first reads the
+caller's own entries (tag member:<uuid>) and sends the promote only for one of
+them (another id is not found, nothing sent), and MEMBER reads of INFERRED or
+UNVERIFIED keep only entries carrying that tag. This needs the server to return
+each entry's tags: when it does not, the promote is refused with
+E-KB-HTTP-UNSUPPORTED and untagged entries are dropped from those reads.
 
 **Capabilities over HTTP**: see the [MemoryProvider operations](#memoryprovider-operations)
 table above. In summary:

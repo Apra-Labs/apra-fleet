@@ -183,9 +183,9 @@ export const ENVIRONMENT = {
     // name must not start with another repo's dir name, e.g. repo-b: the
     // recorder's path sanitiser would rewrite that prefix.)
     { key: 'BARE', dir: 'bare-repo', placeholder: null, git: true, bare: true, remote: 'BARE', files: {} },
-    // A repository whose project KB is the http provider: its session scopes an
-    // http KB config to each call (never contacted -- both recorded outcomes are
-    // decided before any request is made).
+    // A repository whose project KB is the http provider: its sessions scope an
+    // http KB config to each call, pointed at kb-http-stand-in.mjs (which holds
+    // one INFERRED entry owned by a member outside every session).
     { key: 'HTTP', dir: 'repo-http', placeholder: PATH_PLACEHOLDERS.REPO_HTTP, git: true, remote: 'HTTP', files: {} },
   ],
   remotes: {
@@ -235,9 +235,14 @@ export const ENVIRONMENT = {
     // shares repo A's KB with session A (same origin remote), but its reads and
     // writes go to the live KB, not a member's read-only checkout bible view.
     FULL_A: { kind: 'full', repo: 'A' },
-    // A kb_maintainer member session over an http project KB (kbHttp): records
-    // kb_bible_commit's bible_skipped and kb_invalidate ids' E-KB-HTTP-UNSUPPORTED.
-    HTTP_A: { member: 'contract-http-a', kind: 'local', repo: 'HTTP', kbMaintainer: true, kbHttp: true },
+    // A kb_maintainer member session over an http project KB (kbHttp names the
+    // stand-in variant): records kb_bible_commit's bible_skipped, kb_invalidate
+    // ids' E-KB-HTTP-UNSUPPORTED, and member own-scope over http (another
+    // member's entry is not found for kb_promote and absent from kb_query).
+    HTTP_A: { member: 'contract-http-a', kind: 'local', repo: 'HTTP', kbMaintainer: true, kbHttp: 'tagged' },
+    // The same over a server that returns entries without tags: member own-scope
+    // cannot be decided, so a member kb_promote is refused with a typed code.
+    HTTP_UNTAGGED: { member: 'contract-http-untagged', kind: 'local', repo: 'HTTP', kbMaintainer: true, kbHttp: 'untagged' },
   },
   defaultSession: 'A',
 };
@@ -306,6 +311,13 @@ function assertRemovedInvalidated(parsed, ctx) {
   if (removed[0]?.id !== liveId) return `expected the removed id to be ${liveId}, got ${JSON.stringify(removed[0]?.id)}`;
   if (removed[0]?.reason !== 'invalidated') return `expected removed[0].reason === 'invalidated', got ${JSON.stringify(removed[0]?.reason)}`;
   return parsed?.committed === true ? null : `expected committed === true, got ${JSON.stringify(parsed?.committed)}`;
+}
+
+// kb_query INFERRED over an http project KB: the stand-in returns another
+// member's entry; a member read must not show it.
+function assertNoForeignEntry(parsed) {
+  const rows = [...(parsed?.l1_results ?? []), ...(parsed?.l2_expanded ?? [])];
+  return rows.length === 0 ? null : `expected no entries (the only server entry is another member's), got ${JSON.stringify(rows.map((r) => r.id))}`;
 }
 
 // kb_bible_commit over an http project KB: skipped, with nothing merged,
@@ -604,6 +616,13 @@ export const SCENARIO = [
   // committed) and kb_invalidate {ids} is refused with a typed code.
   { tool: 'kb_bible_commit', case: 'http-skip', assertParsed: assertBibleSkipped },
   { tool: 'kb_invalidate', case: 'refusal-kb-http-unsupported' },
+  // Member own-scope over an http project KB, enforced fleet-side on the
+  // entries' tags: another member's entry is not found for kb_promote and
+  // absent from an INFERRED kb_query; a server that returns no tags refuses
+  // the promote with a typed code.
+  { tool: 'kb_promote', case: 'refusal-http-not-own' },
+  { tool: 'kb_promote', case: 'refusal-kb-http-unsupported' },
+  { tool: 'kb_query', case: 'http-own-scope', assertParsed: assertNoForeignEntry },
 ];
 
 // ---------------------------------------------------------------------------

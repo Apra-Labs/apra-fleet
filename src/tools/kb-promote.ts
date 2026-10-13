@@ -1,7 +1,6 @@
 import { z } from 'zod';
 import { KB_REMOVED_SCOPE_KEYS_SHAPE } from '../services/knowledge/kb-removed-scope-keys.js';
 import { getSelfKbProviders, memberOwnerTag, type KbAnchor } from '../services/knowledge/kb-self.js';
-import { isSqliteProject } from '../services/knowledge/require-sqlite-project.js';
 
 export const kbPromoteSchema = z.object({
   id: z.string().min(1).describe('ID of the KB entry to promote'),
@@ -16,15 +15,13 @@ export type KbPromoteInput = z.infer<typeof kbPromoteSchema>;
 export async function kbPromote(input: KbPromoteInput, anchor?: KbAnchor): Promise<string> {
   const providers = await getSelfKbProviders(anchor);
 
-  // MEMBER session over a SQLite project: only the caller's own captures
-  // (member:<uuid>) can be promoted; any other id is the same not-found as an
-  // unknown id. Over an http project the request goes to the server as-is: the
-  // member own-scope rule is not enforced there.
+  // MEMBER session: only the caller's own captures (member:<uuid>) can be
+  // promoted; any other id is the same not-found as an unknown id. Both
+  // providers enforce it (the http one checks the entry's tags fleet-side).
   const ownerTag = memberOwnerTag(anchor);
-  const project = providers.project;
-  const result = ownerTag !== undefined && isSqliteProject(project)
-    ? await project.promote(input.id, input.reason, { ownerTag })
-    : await project.promote(input.id, input.reason);
+  const result = ownerTag !== undefined
+    ? await providers.project.promote(input.id, input.reason, { ownerTag })
+    : await providers.project.promote(input.id, input.reason);
   return JSON.stringify({
     id: result.id,
     previous_confidence: result.confidence_before,

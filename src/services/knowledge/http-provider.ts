@@ -23,6 +23,9 @@ import type {
 
 const MAX_QUEUE_SIZE = 1000;
 const REQUEST_TIMEOUT_MS = 5000;
+// Most entries one owner-tag lookup reads back. An owned entry beyond it is
+// reported not-found (a refusal, never a wrong promote).
+const OWNED_LOOKUP_LIMIT = 1000;
 
 type QueuedOperation =
   | { op: 'capture'; input: KBEntryInput }
@@ -42,24 +45,44 @@ function isConnectionError(err: unknown): boolean {
   );
 }
 
+/** Longest server error text carried into a tool result. */
+export const MAX_ERROR_TEXT_CHARS = 300;
+
+/**
+ * Server error text made safe for a tool result: markup stripped, whitespace
+ * collapsed, and capped at MAX_ERROR_TEXT_CHARS (a proxy or a crashed server
+ * can answer with a whole HTML page).
+ */
+export function boundErrorText(text: string): string {
+  const plain = text.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+  if (plain.length === 0) return '(empty response body)';
+  if (plain.length <= MAX_ERROR_TEXT_CHARS) return plain;
+  return `${plain.slice(0, MAX_ERROR_TEXT_CHARS)}... (truncated, ${plain.length} chars)`;
+}
+
 /**
  * Human-readable text for an error-status response body. Handles
  * problem+json (title/detail/code), the plain {error} shape, and bodies
- * that are not JSON at all (surfaced verbatim, never as a parse failure).
+ * that are not JSON at all (never a parse failure). Always bounded.
  */
 function describeErrorBody(data: string): string {
   let parsed: unknown;
   try {
     parsed = JSON.parse(data);
   } catch {
-    return data.trim() || '(empty response body)';
+    return boundErrorText(data);
   }
-  if (parsed === null || typeof parsed !== 'object') return data;
+  if (parsed === null || typeof parsed !== 'object') return boundErrorText(data);
   const body = parsed as Record<string, unknown>;
-  if (typeof body.error === 'string') return body.error;
+  if (typeof body.error === 'string') return boundErrorText(body.error);
   const parts = [body.title, body.code, body.detail]
     .filter((v): v is string => typeof v === 'string' && v.length > 0);
-  return parts.length > 0 ? parts.join(' - ') : data;
+  return boundErrorText(parts.length > 0 ? parts.join(' - ') : data);
+}
+
+/** True when the entry carries `tag`; an entry without a tags array is never owned. */
+function hasTag(entry: { tags?: unknown }, tag: string): boolean {
+  return Array.isArray(entry.tags) && entry.tags.includes(tag);
 }
 
 /**
@@ -68,10 +91,14 @@ function describeErrorBody(data: string): string {
  */
 export class KbHttpUnsupportedError extends Error {
   readonly code = 'E-KB-HTTP-UNSUPPORTED';
-  constructor(operation: string) {
+  constructor(
+    operation: string,
+    outcome = 'nothing was discarded',
+    remediation = 'run it against a local SQLite KB (kb_setup provider sqlite), or use kb_invalidate with files.',
+  ) {
     super(
-      `E-KB-HTTP-UNSUPPORTED: ${operation} is not supported by the http KB provider; nothing was discarded. `
-      + 'Remediation: run it against a local SQLite KB (kb_setup provider sqlite), or use kb_invalidate with files.',
+      `E-KB-HTTP-UNSUPPORTED: ${operation} is not supported by the http KB provider; ${outcome}. `
+      + `Remediation: ${remediation}`,
     );
     this.name = 'KbHttpUnsupportedError';
   }
@@ -225,9 +252,14 @@ export class HttpKbProvider implements MemoryProvider {
     if (opts.include_superseded) params.include_superseded = 'true';
     if (opts.confidence?.length) params.confidence = opts.confidence.join(',');
     if (opts.exclude_disputed) params.exclude_disputed = 'true';
+    // MEMBER own-scope: the server narrows on the owner tag when the caller
+    // set no tag of its own; the result is re-filtered below either way.
+    const tag = opts.tag ?? opts.owner_tag;
+    if (tag) params.tag = tag;
 
     try {
-      return await this.rawRequest<KBResult>('GET', '/api/kb/query', undefined, params);
+      const result = await this.rawRequest<KBResult>('GET', '/api/kb/query', undefined, params);
+      return opts.owner_tag ? this.keepOwned(result, opts.owner_tag, opts.tag) : result;
     } catch (err) {
       if (isConnectionError(err)) {
         return this.fallback.query(opts);
@@ -236,7 +268,12 @@ export class HttpKbProvider implements MemoryProvider {
     }
   }
 
-  async context(files: string[], confidence?: Confidence[], excludeDisputed?: boolean): Promise<FileContextResult[]> {
+  async context(
+    files: string[],
+    confidence?: Confidence[],
+    excludeDisputed?: boolean,
+    ownerTag?: string,
+  ): Promise<FileContextResult[]> {
     await this.tryFlushQueue();
     try {
       const ctxParams: Record<string, string> = { files: files.join(',') };
@@ -245,10 +282,11 @@ export class HttpKbProvider implements MemoryProvider {
       const result = await this.rawRequest<{ results: FileContextResult[] }>(
         'GET', '/api/kb/context', undefined, ctxParams
       );
-      return result.results;
+      if (!ownerTag) return result.results;
+      return this.keepOwnedSummaries(result.results, await this.ownedIds(ownerTag));
     } catch (err) {
       if (isConnectionError(err)) {
-        return this.fallback.context(files, confidence, excludeDisputed);
+        return this.fallback.context(files, confidence, excludeDisputed, ownerTag);
       }
       throw err;
     }
@@ -301,8 +339,18 @@ export class HttpKbProvider implements MemoryProvider {
 
   async prime(opts: PrimeOptions): Promise<PrimedContext> {
     await this.tryFlushQueue();
+    // owner_tag is internal (never part of the contract body); it is applied
+    // to the server's answer here instead.
+    const { owner_tag: ownerTag, ...body } = opts;
     try {
-      return await this.rawRequest<PrimedContext>('POST', '/api/kb/prime', opts);
+      const primed = await this.rawRequest<PrimedContext>('POST', '/api/kb/prime', body);
+      if (!ownerTag) return primed;
+      const owned = await this.ownedIds(ownerTag);
+      return {
+        ...primed,
+        top_entries: (primed.top_entries ?? []).filter(e => hasTag(e, ownerTag)),
+        fresh_summaries: this.keepOwnedSummaries(primed.fresh_summaries ?? [], owned),
+      };
     } catch (err) {
       if (isConnectionError(err)) {
         return this.fallback.prime(opts);
@@ -313,14 +361,19 @@ export class HttpKbProvider implements MemoryProvider {
 
   // Remote-only: the id exists on the server, so a connection error is
   // surfaced instead of falling back to the local store or queueing.
+  // opts.ownerTag (MEMBER own-scope): the entry must carry that tag, checked
+  // fleet-side before the promote is sent; any other id is the same
+  // not-found the SQLite provider gives.
   async promote(
     id: string,
-    reason?: string
+    reason?: string,
+    opts?: { ownerTag?: string },
   ): Promise<{ id: string; confidence_before: Confidence; confidence_after: Confidence }> {
     const body: { id: string; reason?: string } = { id };
     if (reason !== undefined) body.reason = reason;
     let result: Record<string, unknown>;
     try {
+      if (opts?.ownerTag) await this.requireOwnedEntry(id, opts.ownerTag);
       result = await this.rawRequest<Record<string, unknown>>('POST', '/api/kb/promote', body);
     } catch (err) {
       if (isConnectionError(err)) {
@@ -344,6 +397,62 @@ export class HttpKbProvider implements MemoryProvider {
       confidence_before: before as Confidence,
       confidence_after: after as Confidence,
     };
+  }
+
+  /**
+   * Every live entry the server holds with `ownerTag`, any tier. Asks the
+   * server to narrow on the tag and re-checks each entry, so a server that
+   * ignores the tag parameter cannot widen the result. Throws
+   * KbHttpUnsupportedError when the server returns entries without a tags
+   * array: ownership cannot be decided then.
+   */
+  private async ownedEntries(ownerTag: string): Promise<KBEntry[]> {
+    const result = await this.rawRequest<KBResult>('GET', '/api/kb/query', undefined, {
+      tag: ownerTag,
+      confidence: 'CONFIRMED,INFERRED,UNVERIFIED',
+      include_stale: 'true',
+      limit: String(OWNED_LOOKUP_LIMIT),
+    });
+    const entries = result.results ?? [];
+    if (entries.some(e => !Array.isArray((e as { tags?: unknown }).tags))) {
+      throw new KbHttpUnsupportedError(
+        'member own-scope (the server returned entries without tags)',
+        'nothing was promoted or read',
+        'use a KB server that returns entry tags, or a local SQLite KB (kb_setup provider sqlite).',
+      );
+    }
+    return entries.filter(e => hasTag(e, ownerTag));
+  }
+
+  private async ownedIds(ownerTag: string): Promise<Set<string>> {
+    return new Set((await this.ownedEntries(ownerTag)).map(e => e.id));
+  }
+
+  private async requireOwnedEntry(id: string, ownerTag: string): Promise<void> {
+    const owned = await this.ownedIds(ownerTag);
+    if (!owned.has(id)) throw new Error(`Entry not found: ${id}`);
+  }
+
+  /**
+   * Query results restricted to entries carrying ownerTag (and the caller's
+   * own tag filter, when it set one). Filtering happens after the server's
+   * limit, so a member can get fewer results than it asked for.
+   */
+  private keepOwned(result: KBResult, ownerTag: string, tag?: string): KBResult {
+    const results = (result.results ?? [])
+      .filter(e => hasTag(e, ownerTag) && (tag === undefined || hasTag(e, tag)));
+    return { ...result, results, total: results.length };
+  }
+
+  /**
+   * Context summaries carry only an entry id, so ownership is decided against
+   * the caller's own entry ids. A summary from another member's entry is
+   * reported as missing for that file, as the SQLite provider does when the
+   * caller has no entry for it.
+   */
+  private keepOwnedSummaries(results: FileContextResult[], owned: Set<string>): FileContextResult[] {
+    return results.map(r =>
+      r.entry_id !== undefined && !owned.has(r.entry_id) ? { file: r.file, status: 'missing' as const } : r);
   }
 
   async sync(_opts?: SyncOptions): Promise<SyncResult> {

@@ -27,7 +27,7 @@ import { getSessionMemberId } from '../tool-scope.js';
 import { getAgent } from '../registry.js';
 import type { Agent } from '../../types.js';
 import { knownRepoRemoteUrl } from '../member-remote-url.js';
-import { getKbProviders, getGlobalKbProvider, getProjectSlug, type KbProviders } from './kb-providers.js';
+import { getKbProviders, getGlobalKbProvider, getProjectSlug, kbConfigSelectsHttp, type KbProviders } from './kb-providers.js';
 import { getMemberBibleView } from './member-bible-view.js';
 import { isSqliteProject } from './require-sqlite-project.js';
 
@@ -243,9 +243,10 @@ export interface SelfReadKb {
  * `opts.serverRecall` (passed only by kb_query, kb_session_prime and
  * kb_context): when the KB config selects a non-SQLite (http) project
  * provider, a MEMBER session reads that provider for every tier, CONFIRMED
- * included -- the checkout bible is not fed from the server. No ownerTag is
- * set on that path: the http server has no member owner model. kb_list and
- * kb_stats do not pass it and keep the routing above under either provider.
+ * included -- the checkout bible is not fed from the server. A request naming
+ * INFERRED/UNVERIFIED carries ownerTag exactly as on SQLite; the http provider
+ * enforces it fleet-side on the entries' tags. kb_list and kb_stats do not
+ * pass it and keep the routing above under either provider.
  */
 export interface SelfReadKbOptions {
   serverRecall?: boolean;
@@ -258,13 +259,15 @@ export async function getSelfReadKb(
 ): Promise<SelfReadKb> {
   const resolved = resolveKbAnchor(anchor);
   const isMemberSelf = anchor === undefined && getSessionMemberId() !== undefined;
-  if (isMemberSelf && opts.serverRecall) {
+  const namesUnconfirmedTier = (confidence ?? []).some(c => c !== 'CONFIRMED');
+  // Decided from the config, so the default (SQLite) path opens no store here.
+  if (isMemberSelf && opts.serverRecall && kbConfigSelectsHttp()) {
     const providers = await getKbProviders(resolved.folder, resolved.remoteUrl);
     if (!isSqliteProject(providers.project)) {
-      return { providers, anchor: resolved, memberView: false };
+      const ownerTag = namesUnconfirmedTier ? memberOwnerTag(anchor) : undefined;
+      return { providers, anchor: resolved, memberView: false, ...(ownerTag !== undefined ? { ownerTag } : {}) };
     }
   }
-  const namesUnconfirmedTier = (confidence ?? []).some(c => c !== 'CONFIRMED');
   if (isMemberSelf && !namesUnconfirmedTier) {
     const [project, global] = await Promise.all([getMemberBibleView(resolved), getGlobalKbProvider()]);
     return {

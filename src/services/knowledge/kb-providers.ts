@@ -169,6 +169,20 @@ async function selectProjectProvider(projectProvider: SqliteProvider, configFing
   return httpProvider;
 }
 
+/**
+ * True when the KB config selects the http project provider, decided from the
+ * config file alone: no provider is built and no per-repo kb.sqlite is opened.
+ * A config that fails to read gives false, the same SQLite decision
+ * selectProjectProvider makes for it (and warns about on the next provider build).
+ */
+export function kbConfigSelectsHttp(): boolean {
+  try {
+    return readKbConfigFromDisk().provider === 'http';
+  } catch {
+    return false;
+  }
+}
+
 // Keyed by (slug, repoPath), NOT slug alone and NOT a single slot. The fleet
 // server is a long-lived process serving many members across many repos; a
 // single memoised provider meant the first kb_* call bound every later call

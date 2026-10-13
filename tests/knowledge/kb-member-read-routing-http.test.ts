@@ -7,7 +7,7 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { addAgent } from '../../src/services/registry.js';
 import { runWithSessionMember } from '../../src/services/tool-scope.js';
-import { getKbProviders, resetKbProviders } from '../../src/services/knowledge/kb-providers.js';
+import { getKbProviders, getProjectSlug, resetKbProviders } from '../../src/services/knowledge/kb-providers.js';
 import { requireSqliteProject } from '../../src/services/knowledge/require-sqlite-project.js';
 import { importBibleEntries } from '../../src/services/knowledge/bible-import.js';
 import { HttpKbProvider } from '../../src/services/knowledge/http-provider.js';
@@ -23,7 +23,9 @@ import { makeTestLocalAgent, backupAndResetRegistry, restoreRegistry } from '../
 
 // MEMBER-session recall under the http project provider. kb_query,
 // kb_session_prime and kb_context must reach the KB server for every tier
-// (the checkout bible is not fed from the server), while kb_list and kb_stats
+// (the checkout bible is not fed from the server) and keep member own-scope
+// there: INFERRED/UNVERIFIED reads return only the caller's own captures,
+// enforced fleet-side on the entries' tags. kb_list and kb_stats
 // keep the bible view and a SQLite install keeps the bible view for all of
 // them. Real member session (runWithSessionMember), real git checkout with an
 // origin remote, real kb_setup, real HttpKbProvider and a real local
@@ -55,6 +57,7 @@ interface RecordedRequest {
   method: string;
   path: string;
   params: URLSearchParams;
+  body: Record<string, unknown> | null;
 }
 
 // ---- KB server stand-in -------------------------------------------------
@@ -72,7 +75,14 @@ function serverEntry(id: string, confidence: string, over: Record<string, unknow
 }
 
 const SERVER_CONFIRMED = [serverEntry('srv-c1', 'CONFIRMED'), serverEntry('srv-c2', 'CONFIRMED')];
-const SERVER_INFERRED = [serverEntry('srv-i1', 'INFERRED')];
+// One INFERRED capture of the calling member, one of another member. Built
+// lazily: the member id exists only after beforeAll registered it.
+const serverInferred = () => [
+  serverEntry('srv-i-own', 'INFERRED', { tags: [`member:${memberId}`] }),
+  serverEntry('srv-i-other', 'INFERRED', { tags: ['member:another-member'] }),
+];
+// When set, the stand-in answers queries without the tags field.
+let omitTags = false;
 const SERVER_PRIME = [serverEntry('srv-p1', 'CONFIRMED'), serverEntry('srv-p2', 'CONFIRMED'), serverEntry('srv-p3', 'CONFIRMED')];
 const SERVER_CTX_ID = 'srv-ctx';
 
@@ -80,28 +90,38 @@ let server: http.Server | null = null;
 let port = 0;
 const requests: RecordedRequest[] = [];
 
-function handle(req: http.IncomingMessage, res: http.ServerResponse): void {
+function handle(req: http.IncomingMessage, res: http.ServerResponse, raw: string): void {
   const url = new URL(req.url ?? '/', 'http://stand-in');
-  requests.push({ method: req.method ?? '', path: url.pathname, params: url.searchParams });
+  const body = raw ? (JSON.parse(raw) as Record<string, unknown>) : null;
+  requests.push({ method: req.method ?? '', path: url.pathname, params: url.searchParams, body });
   const json = (status: number, body: unknown) => {
     res.writeHead(status, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(body));
   };
   if (req.method === 'GET' && url.pathname === '/api/kb/query') {
     const tiers = (url.searchParams.get('confidence') ?? 'CONFIRMED').split(',');
-    const results = [...SERVER_CONFIRMED, ...SERVER_INFERRED].filter(e => tiers.includes(String(e.confidence)));
+    // Deliberately ignores the tag parameter: the client must re-filter.
+    const results = [...SERVER_CONFIRMED, ...serverInferred()]
+      .filter(e => tiers.includes(String(e.confidence)))
+      .map(e => (omitTags ? { ...e, tags: undefined } : e));
     json(200, { results, total: results.length, l1_only: url.searchParams.get('l1_only') === 'true' });
   } else if (req.method === 'POST' && url.pathname === '/api/kb/prime') {
+    const tiers = Array.isArray(body?.confidence) ? (body!.confidence as string[]) : ['CONFIRMED'];
     json(200, {
-      session_warm: true, stale_files: [], top_entries: SERVER_PRIME, fresh_summaries: [],
-      recommended_code_calls: [], token_estimate: 42,
+      session_warm: true, stale_files: [],
+      top_entries: [...SERVER_PRIME, ...serverInferred()].filter(e => tiers.includes(String(e.confidence))),
+      fresh_summaries: [], recommended_code_calls: [], token_estimate: 42,
     });
   } else if (req.method === 'GET' && url.pathname === '/api/kb/context') {
     const files = (url.searchParams.get('files') ?? '').split(',').filter(Boolean);
+    const tiers = (url.searchParams.get('confidence') ?? 'CONFIRMED').split(',');
+    // src/other.ts has only another member's INFERRED summary.
     json(200, {
-      results: files.map(file => file === 'src/gizmo.ts'
-        ? { file, status: 'fresh', entry_id: SERVER_CTX_ID, summary: 'Gizmo summary from the server.' }
-        : { file, status: 'missing' }),
+      results: files.map(file => {
+        if (file === 'src/gizmo.ts') return { file, status: 'fresh', entry_id: SERVER_CTX_ID, summary: 'Gizmo summary from the server.' };
+        if (file === 'src/other.ts' && tiers.includes('INFERRED')) return { file, status: 'fresh', entry_id: 'srv-i-other', summary: 'Another member summary.' };
+        return { file, status: 'missing' };
+      }),
     });
   } else {
     json(404, { error: 'not found' });
@@ -110,8 +130,9 @@ function handle(req: http.IncomingMessage, res: http.ServerResponse): void {
 
 function startServer(listenPort: number): Promise<void> {
   server = http.createServer((req, res) => {
-    req.resume();
-    req.on('end', () => handle(req, res));
+    let raw = '';
+    req.on('data', (chunk: Buffer) => { raw += chunk.toString(); });
+    req.on('end', () => handle(req, res, raw));
   });
   return new Promise<void>(resolve => server!.listen(listenPort, '127.0.0.1', resolve));
 }
@@ -202,6 +223,7 @@ beforeAll(async () => {
 
 beforeEach(() => {
   requests.length = 0;
+  omitTags = false;
   writeBible(BIBLE);
 });
 
@@ -243,22 +265,38 @@ describe('MEMBER recall under the http provider reaches the KB server', () => {
     expect(out.token_estimate).toBe(42);
   });
 
-  it('3. kb_context (default confidence) reads /api/kb/context and reflects the server status', async () => {
+  it('3. kb_context (default confidence) merges every CONFIRMED summary with only the member\'s own INFERRED ones', async () => {
     await configureHttp();
     const out = JSON.parse(await asMember(() => kbContext({ files: ['src/gizmo.ts', 'src/other.ts'] })));
     const ctxRequests = requests.filter(r => r.path === '/api/kb/context');
-    expect(ctxRequests).toHaveLength(1);
-    expect(ctxRequests[0].params.get('confidence')).toBe('CONFIRMED,INFERRED');
+    expect(ctxRequests.map(r => r.params.get('confidence'))).toEqual(['CONFIRMED', 'CONFIRMED,INFERRED']);
     expect(out.fresh.map((r: { entry_id: string }) => r.entry_id)).toEqual([SERVER_CTX_ID]);
+    // src/other.ts has only another member's INFERRED summary on the server.
     expect(out.missing).toEqual(['src/other.ts']);
   });
 
-  it('4. kb_query INFERRED reaches the server instead of throwing', async () => {
+  it('4. kb_query INFERRED returns only the caller\'s own captures, asking the server for its owner tag', async () => {
     await configureHttp();
     const out = JSON.parse(await asMember(() => kbQuery({ query: 'gizmo', confidence: ['INFERRED'] })));
     const queryRequest = requests.find(r => r.path === '/api/kb/query');
     expect(queryRequest?.params.get('confidence')).toBe('INFERRED');
-    expect(ids(out.l1_results)).toEqual(['srv-i1']);
+    expect(queryRequest?.params.get('tag')).toBe(`member:${memberId}`);
+    expect(ids(out.l1_results)).toEqual(['srv-i-own']);
+  });
+
+  it('4b. kb_session_prime INFERRED keeps only own top_entries and never sends owner_tag', async () => {
+    await configureHttp();
+    const out = JSON.parse(await asMember(() => kbSessionPrime({ hint_modules: ['gizmo'], confidence: ['INFERRED'] })));
+    const prime = requests.find(r => r.path === '/api/kb/prime');
+    expect(prime?.body).not.toHaveProperty('owner_tag');
+    expect(ids(out.top_entries)).toEqual(['srv-i-own']);
+  });
+
+  it('4c. kb_query INFERRED drops entries the server returned without tags (ownership unknown)', async () => {
+    await configureHttp();
+    omitTags = true;
+    const out = JSON.parse(await asMember(() => kbQuery({ query: 'gizmo', confidence: ['INFERRED'] })));
+    expect(out.l1_results).toEqual([]);
   });
 });
 
@@ -277,6 +315,26 @@ describe('routing that must not change', () => {
     const stats = JSON.parse(await asMember(() => kbStats({})));
     expect(stats.totals.by_confidence.CONFIRMED).toBe(2);
     expect(stats.bible).toMatchObject({ present: true, entries: 2 });
+    expect(requests).toEqual([]);
+  });
+
+  it('8. SQLite provider: a MEMBER read decides the provider from the config and creates no per-repo kb.sqlite', async () => {
+    const fresh = path.join(scratch, 'fresh-checkout');
+    fs.mkdirSync(path.join(fresh, '.fleet'), { recursive: true });
+    execFileSync('git', ['init', '-q'], { cwd: fresh });
+    execFileSync('git', ['remote', 'add', 'origin', `https://example.test/kb-member-read-fresh-${RUN}.git`], { cwd: fresh });
+    const agent = makeTestLocalAgent({ friendlyName: `kb-member-read-fresh-${RUN}`, workFolder: fresh });
+    addAgent(agent);
+    const projectDb = path.join(FLEET_DIR, 'knowledge', getProjectSlug(fresh), 'kb.sqlite');
+
+    for (const read of [
+      () => kbQuery({ query: 'gizmo', confidence: ['CONFIRMED'] }),
+      () => kbSessionPrime({ hint_modules: ['gizmo'] }),
+      () => kbContext({ files: ['src/gizmo.ts'], confidence: ['CONFIRMED'] }),
+    ]) {
+      await runWithSessionMember(agent.id, read);
+    }
+    expect(fs.existsSync(projectDb)).toBe(false);
     expect(requests).toEqual([]);
   });
 

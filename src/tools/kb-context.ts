@@ -52,7 +52,8 @@ export async function kbContext(input: KbContextInput, anchor?: KbAnchor): Promi
   // MEMBER session -> the checkout bible view (kb-self.ts getSelfReadKb) for
   // the CONFIRMED tier; an INFERRED/UNVERIFIED request goes to the per-repo DB,
   // own captures only (ownerTag). Under an http project provider (serverRecall)
-  // a MEMBER read goes straight to the server: no bible merge, no ownerTag.
+  // a MEMBER read goes straight to the server: no bible merge; an
+  // INFERRED/UNVERIFIED request keeps ownerTag, enforced by either provider.
   const read = await getSelfReadKb(anchor, explicit, { serverRecall: true });
   const { providers } = read;
   let results: FileResult[];
@@ -66,8 +67,16 @@ export async function kbContext(input: KbContextInput, anchor?: KbAnchor): Promi
     const fromOwn = await requireSqliteProject(own.providers.project, 'kb_context')
       .context(input.files, confidence, excludeDisputed, own.ownerTag);
     results = mergeByFile(fromBible, fromOwn);
+  } else if (explicit === undefined && memberOwnerTag(anchor) !== undefined) {
+    // MEMBER default over an http project (no bible view): the same merge as
+    // above, both halves from the server -- every CONFIRMED summary, plus the
+    // member's OWN CONFIRMED/INFERRED ones, so another member's INFERRED
+    // capture never shows.
+    const fromServer = await providers.project.context(input.files, ['CONFIRMED'], excludeDisputed);
+    const fromOwn = await providers.project.context(input.files, confidence, excludeDisputed, memberOwnerTag(anchor));
+    results = mergeByFile(fromServer, fromOwn);
   } else if (read.ownerTag !== undefined) {
-    results = await requireSqliteProject(providers.project, 'kb_context').context(input.files, confidence, excludeDisputed, read.ownerTag);
+    results = await providers.project.context(input.files, confidence, excludeDisputed, read.ownerTag);
   } else {
     results = await providers.project.context(input.files, confidence, excludeDisputed);
   }

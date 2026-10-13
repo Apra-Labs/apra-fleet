@@ -149,16 +149,23 @@ In a MEMBER session the default reads (`kb_query`, `kb_session_prime`,
 `kb_list`, `kb_context`, `kb_stats`) are answered from an in-memory view of the
 member's own checkout bible (`.fleet/kb-canonical.json`), rebuilt when the file
 changes. An explicit INFERRED/UNVERIFIED read comes from the per-repo DB and
-returns only entries tagged `member:<caller uuid>`. That bible view and the
-own-scope read filter apply to a SQLite project KB: under the http project
-provider a MEMBER `kb_query`, `kb_session_prime` or `kb_context` read of any
-tier, CONFIRMED included, goes to the server, and the `member:<uuid>` own-scope
-tag is not enforced (`kb_list` and `kb_stats` keep the bible view). `kb_capture` tags the
+returns only entries tagged `member:<caller uuid>`. The bible view applies to a
+SQLite project KB: under the http project provider a MEMBER `kb_query`,
+`kb_session_prime` or `kb_context` read of any tier, CONFIRMED included, goes to
+the server (`kb_list` and `kb_stats` keep the bible view). Own-scope holds
+there too, enforced by fleet on the entry tags the server returns: an explicit
+INFERRED/UNVERIFIED read returns only entries tagged `member:<caller uuid>` (an
+entry returned without tags counts as not the caller's), and the default
+`kb_context` read merges every CONFIRMED summary with the caller's own
+CONFIRMED/INFERRED ones. Filtering happens after the server's `limit`, so such a
+read can return fewer entries than asked for. `kb_capture` tags the
 stored entry `member:<caller uuid>`; `kb_promote` and `kb_invalidate` act only
 on entries carrying that tag and report any other id as not found, changing
-nothing; under the http project provider `kb_promote` goes to the server and the
-`member:<uuid>` own-scope rule is not enforced (server-side owner scoping is later
-work). `kb_invalidate` takes exactly one of `files` or `ids`; `ids` discards
+nothing. Under the http project provider a MEMBER `kb_promote` first looks the
+caller's own entries up on the server (`tag` = `member:<caller uuid>`) and sends
+the promote only when the id is among them; any other id is `E-ENTRY-NOT-FOUND`
+with nothing sent, and a server that returns entries without tags is refused
+with `E-KB-HTTP-UNSUPPORTED` (ownership cannot be decided). `kb_invalidate` takes exactly one of `files` or `ids`; `ids` discards
 the entries (sets `superseded_at`, never deletes) and returns
 `{discarded, not_found, already_discarded}`. In a member session without the
 kb_maintainer grant neither form retires a CONFIRMED entry (section 2.5a): the

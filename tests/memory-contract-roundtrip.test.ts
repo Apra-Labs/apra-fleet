@@ -41,6 +41,7 @@ import {
   RECORDED_REMOTE_HTTP,
 } from '../memory-contract/v1/tests/roundtrip-harness.mjs';
 import { materializeSessionWorld } from '../memory-contract/v1/tests/session-world.mjs';
+import { startKbHttpStandIn } from '../memory-contract/v1/tests/kb-http-stand-in.mjs';
 import { KB_MODULES, CODE_EXPORTS } from '../memory-contract/v1/generate-contract.mjs';
 
 type ToolHandler = (input: unknown, extra?: unknown) => Promise<{ content: { type: string; text: string }[] }>;
@@ -75,20 +76,20 @@ const RECORDED_REMOTES: Record<string, string> = {
   HTTP: RECORDED_REMOTE_HTTP,
 };
 
-// The http-backed session's KB server is never contacted (both of its recorded
-// outcomes are decided before any request), so a loopback port nothing listens
-// on is enough. The token is the committed obviously-fake fixture value.
-const HTTP_KB_URL = 'http://127.0.0.1:9';
+// The http-backed sessions' KB server is kb-http-stand-in.mjs, started for
+// the suite. The token is the committed obviously-fake fixture value.
+let kbHttpStandIn: Awaited<ReturnType<typeof startKbHttpStandIn>> | null = null;
 const HTTP_KB_TOKEN_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), 'knowledge', 'fixtures', 'kb-http-test-token.txt');
 const KB_CONFIG_PATH = path.join(FLEET_DIR, 'knowledge', 'config.json');
 
-/** Runs fn with the project KB configured as http, then restores the prior config and provider cache. */
-async function withHttpKb<T>(fn: () => Promise<T>): Promise<T> {
+/** Runs fn with the project KB configured as http (stand-in variant), then restores the prior config and provider cache. */
+async function withHttpKb<T>(fn: () => Promise<T>, variant: string): Promise<T> {
+  if (!kbHttpStandIn) throw new Error('withHttpKb: the kb-http stand-in was not started');
   const prior = fs.existsSync(KB_CONFIG_PATH) ? fs.readFileSync(KB_CONFIG_PATH) : null;
   resetKbProviders();
   try {
     const token = fs.readFileSync(HTTP_KB_TOKEN_PATH, 'utf-8').trim();
-    await kbSetup({ provider: 'http', remote: HTTP_KB_URL, token }, { folder: os.tmpdir() });
+    await kbSetup({ provider: 'http', remote: kbHttpStandIn.urlFor(variant), token }, { folder: os.tmpdir() });
     return await fn();
   } finally {
     if (prior === null) fs.rmSync(KB_CONFIG_PATH, { force: true });
@@ -196,6 +197,16 @@ class SqliteContractProvider {
   }
 }
 
+// File level: every describe below runs the full round trip, http sessions included.
+beforeAll(async () => {
+  kbHttpStandIn = await startKbHttpStandIn();
+});
+
+afterAll(async () => {
+  await kbHttpStandIn?.close();
+  kbHttpStandIn = null;
+});
+
 describe('memory-contract/v1 round trip (sqlite provider)', () => {
   let report: Awaited<ReturnType<typeof runRoundTrip>>;
   const provider = new SqliteContractProvider();
@@ -217,7 +228,7 @@ describe('memory-contract/v1 round trip (sqlite provider)', () => {
   it('dispatched every committed fixture live (no case silently skipped)', () => {
     const undispatched = report.steps.filter((s) => !s.dispatched).map((s) => s.key);
     expect(undispatched).toEqual([]);
-    expect(report.steps.length).toBe(94); // one SCENARIO step per committed fixture (94 fixture files on disk)
+    expect(report.steps.length).toBe(97); // one SCENARIO step per committed fixture (97 fixture files on disk)
   });
 
   it('covers all 26 inventoried tools', () => {

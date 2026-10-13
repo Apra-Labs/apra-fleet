@@ -129,18 +129,21 @@ const { addAgent, removeAgent } = await import(pathToFileURL(path.join(DIST, 'se
 const { kbSetup } = await import(pathToFileURL(path.join(DIST, 'tools', 'kb-setup.js')).href);
 const { resetKbProviders } = await import(pathToFileURL(path.join(DIST, 'services', 'knowledge', 'kb-providers.js')).href);
 
-// The http-backed session's KB server is never contacted (both recorded
-// outcomes are decided before any request), so an unused loopback port and the
-// committed obviously-fake test token are enough. The config is scoped to each
-// of that session's calls and the prior one restored afterwards.
+// The http-backed sessions' KB server is kb-http-stand-in.mjs (one entry owned
+// by another member); the token is the committed obviously-fake test value.
+// The config is scoped to each of those sessions' calls and the prior one
+// restored afterwards.
+const { startKbHttpStandIn, HTTP_FOREIGN_ENTRY_ID } =
+  await import(pathToFileURL(path.join(HERE, 'kb-http-stand-in.mjs')).href);
+const kbHttpStandIn = await startKbHttpStandIn();
 const HTTP_KB_CONFIG_PATH = path.join(process.env.APRA_FLEET_DATA_DIR, 'knowledge', 'config.json');
 const HTTP_KB_TOKEN_PATH = path.join(REPO_ROOT, 'tests', 'knowledge', 'fixtures', 'kb-http-test-token.txt');
-async function withHttpKb(fn) {
+async function withHttpKb(fn, variant) {
   const prior = fs.existsSync(HTTP_KB_CONFIG_PATH) ? fs.readFileSync(HTTP_KB_CONFIG_PATH) : null;
   resetKbProviders();
   try {
     const token = fs.readFileSync(HTTP_KB_TOKEN_PATH, 'utf-8').trim();
-    await kbSetup({ provider: 'http', remote: 'http://127.0.0.1:9', token }, { folder: os.tmpdir() });
+    await kbSetup({ provider: 'http', remote: kbHttpStandIn.urlFor(variant), token }, { folder: os.tmpdir() });
     return await fn();
   } finally {
     if (prior === null) fs.rmSync(HTTP_KB_CONFIG_PATH, { force: true });
@@ -1024,6 +1027,22 @@ await recordNonErrorOutcome('kb_capture', 'non-error-confidence-clamped', {
     ids: [httpId],
   }, 'E-KB-HTTP-UNSUPPORTED'));
 }
+
+// Member own-scope over an http project KB, checked fleet-side on the
+// entries' tags: the stand-in's only entry belongs to another member.
+{
+  const reason = 'Attempting to promote an entry another member captured.';
+  await withSession('HTTP_A', () => recordRefusal('kb_promote', 'refusal-http-not-own', {
+    id: HTTP_FOREIGN_ENTRY_ID, reason,
+  }, 'E-ENTRY-NOT-FOUND'));
+  await withSession('HTTP_UNTAGGED', () => recordRefusal('kb_promote', 'refusal-kb-http-unsupported', {
+    id: HTTP_FOREIGN_ENTRY_ID, reason,
+  }, 'E-KB-HTTP-UNSUPPORTED'));
+  await withSession('HTTP_A', () => recordHappy('kb_query', 'http-own-scope', {
+    query: 'widget batching', confidence: ['INFERRED'],
+  }));
+}
+await kbHttpStandIn.close();
 
 // ===========================================================================
 // Summary + named T7 gaps

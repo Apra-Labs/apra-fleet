@@ -10,7 +10,7 @@ import { kbSetup } from '../../src/tools/kb-setup.js';
 import { kbPromote } from '../../src/tools/kb-promote.js';
 import { kbCapture } from '../../src/tools/kb-capture.js';
 import { getKbProviders, resetKbProviders } from '../../src/services/knowledge/kb-providers.js';
-import { HttpKbProvider } from '../../src/services/knowledge/http-provider.js';
+import { HttpKbProvider, MAX_ERROR_TEXT_CHARS } from '../../src/services/knowledge/http-provider.js';
 import { SqliteProvider } from '../../src/services/knowledge/sqlite-provider.js';
 import { addAgent } from '../../src/services/registry.js';
 import { runWithSessionMember } from '../../src/services/tool-scope.js';
@@ -19,7 +19,8 @@ import { makeTestLocalAgent, backupAndResetRegistry, restoreRegistry } from '../
 
 // Promote over an http project KB, at provider and kb_promote tool level.
 // Real local http.Server stand-in (stateful: it only promotes ids it has been
-// told about), real HttpKbProvider and SqliteProvider, real member sessions.
+// told about, and keeps each entry's tags for the member own-scope lookup),
+// real HttpKbProvider and SqliteProvider, real member sessions.
 // No mocks of code under test.
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -52,9 +53,12 @@ let port = 0;
 let token: string;
 let scratch: string;
 const requests: RecordedRequest[] = [];
-const serverIds = new Set<string>();
+// id -> tags, as captured. The query route answers the owner-tag lookup.
+const serverEntries = new Map<string, string[]>();
+const serverIds = { add: (id: string, tags: string[] = []) => { serverEntries.set(id, tags); } };
+let omitTagsInQuery = false;
 let responseSpelling: 'previous_new' | 'before_after' = 'previous_new';
-let refusalOverride: { status: number; body: Record<string, unknown> } | null = null;
+let refusalOverride: { status: number; body: Record<string, unknown> | string } | null = null;
 
 function startServer(listenPort: number): Promise<void> {
   server = http.createServer((req, res) => {
@@ -65,12 +69,13 @@ function startServer(listenPort: number): Promise<void> {
       requests.push({ method: req.method ?? '', url: req.url ?? '', body, headers: req.headers });
       if (req.url === '/api/kb/promote' && req.method === 'POST') {
         if (refusalOverride) {
-          res.writeHead(refusalOverride.status, { 'Content-Type': 'application/problem+json' });
-          res.end(JSON.stringify(refusalOverride.body));
+          const raw = typeof refusalOverride.body === 'string';
+          res.writeHead(refusalOverride.status, { 'Content-Type': raw ? 'text/html' : 'application/problem+json' });
+          res.end(raw ? (refusalOverride.body as string) : JSON.stringify(refusalOverride.body));
           return;
         }
         const id = String(body?.id);
-        if (!serverIds.has(id)) {
+        if (!serverEntries.has(id)) {
           res.writeHead(404, { 'Content-Type': 'application/problem+json' });
           res.end(JSON.stringify({ title: 'Entry not found', status: 404, code: 'KB-NOT-FOUND', detail: id }));
           return;
@@ -83,9 +88,16 @@ function startServer(listenPort: number): Promise<void> {
         ));
       } else if (req.url === '/api/kb/capture' && req.method === 'POST') {
         const id = `srv-${crypto.randomUUID()}`;
-        serverIds.add(id);
+        serverIds.add(id, Array.isArray(body?.tags) ? (body!.tags as string[]) : []);
         res.writeHead(201, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ id, audn_decision: 'add' }));
+      } else if (req.url?.startsWith('/api/kb/query') && req.method === 'GET') {
+        const tag = new URL(req.url, 'http://stand-in').searchParams.get('tag');
+        const results = [...serverEntries]
+          .filter(([, tags]) => tag === null || tags.includes(tag))
+          .map(([id, tags]) => (omitTagsInQuery ? { id, confidence: 'INFERRED' } : { id, tags, confidence: 'INFERRED' }));
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ results, total: results.length }));
       } else {
         res.writeHead(404, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'not found' }));
@@ -144,7 +156,8 @@ afterEach(() => {
   fs.rmSync(KB_CONFIG_PATH, { force: true });
   resetKbProviders();
   requests.length = 0;
-  serverIds.clear();
+  serverEntries.clear();
+  omitTagsInQuery = false;
   refusalOverride = null;
   responseSpelling = 'previous_new';
 });
@@ -210,6 +223,22 @@ describe('HttpKbProvider.promote', () => {
     }
   });
 
+  it('9. bounds an HTML error page: markup stripped, text capped', async () => {
+    const { provider } = await httpProject();
+    const filler = 'upstream proxy failure detail '.repeat(400);
+    refusalOverride = {
+      status: 502,
+      body: `<!doctype html><html><head><title>502</title></head><body><h1>Bad Gateway</h1><p>${filler}</p></body></html>`,
+    };
+    const err = await provider.promote('any-id', REASON).then(() => null, (e: Error) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(err!.message).toMatch(/^HTTP 502: /);
+    expect(err!.message).toContain('Bad Gateway');
+    expect(err!.message).not.toMatch(/<[a-z!/]/i);
+    expect(err!.message).toContain('(truncated, ');
+    expect(err!.message.length).toBeLessThan(MAX_ERROR_TEXT_CHARS + 60);
+  });
+
   it('7. identifies the caller only by Authorization: Bearer', async () => {
     const { provider } = await httpProject();
     serverIds.add('hdr-id');
@@ -221,22 +250,56 @@ describe('HttpKbProvider.promote', () => {
   });
 });
 
-describe('kb_promote in a MEMBER session', () => {
-  it('5. over http reaches the server and returns the tool shape', async () => {
-    const origin = `https://example.test/kb-promote-member-http-${RUN}.git`;
-    const folder = makeCheckout('member-http', origin);
-    const agent = makeTestLocalAgent({ friendlyName: `kb-promote-http-${RUN}`, workFolder: folder });
-    addAgent(agent);
-    await configureHttp(folder);
-    serverIds.add('member-srv-id');
+function captureInput(title: string) {
+  return {
+    type: 'knowledge' as const, title,
+    summary: `Entry ${title} captured for the own-scope promote check.`,
+    content: `${title} content for the own-scope promote check`, source_files: ['src/widget.ts'],
+    symbols: ['widgetOwnScope'],
+  };
+}
 
-    const out = await runWithSessionMember(agent.id, () => kbPromote({ id: 'member-srv-id', reason: REASON }));
+describe('kb_promote in a MEMBER session', () => {
+  it('5. over http keeps own-scope: own capture promotes, another member gets not-found and nothing is sent', async () => {
+    const origin = `https://example.test/kb-promote-member-http-${RUN}.git`;
+    const folderA = makeCheckout('member-http-a', origin);
+    const folderB = makeCheckout('member-http-b', origin);
+    const a = makeTestLocalAgent({ friendlyName: `kb-promote-http-a-${RUN}`, workFolder: folderA });
+    const b = makeTestLocalAgent({ friendlyName: `kb-promote-http-b-${RUN}`, workFolder: folderB });
+    addAgent(a);
+    addAgent(b);
+    await configureHttp(folderA);
+
+    const captured = JSON.parse(await runWithSessionMember(a.id, () => kbCapture(captureInput('member a http entry'))));
+    expect(serverEntries.get(captured.id)).toContain(`member:${a.id}`);
+
+    requests.length = 0;
+    await expect(runWithSessionMember(b.id, () => kbPromote({ id: captured.id, reason: REASON })))
+      .rejects.toThrow(`Entry not found: ${captured.id}`);
+    expect(requests.filter(r => r.url === '/api/kb/promote')).toHaveLength(0);
+
+    const out = await runWithSessionMember(a.id, () => kbPromote({ id: captured.id, reason: REASON }));
     expect(JSON.parse(out)).toEqual({
-      id: 'member-srv-id', previous_confidence: 'INFERRED', new_confidence: 'CONFIRMED',
+      id: captured.id, previous_confidence: 'INFERRED', new_confidence: 'CONFIRMED',
     });
     const promote = requests.filter(r => r.url === '/api/kb/promote');
     expect(promote).toHaveLength(1);
-    expect(promote[0].body).toEqual({ id: 'member-srv-id', reason: REASON });
+    expect(promote[0].body).toEqual({ id: captured.id, reason: REASON });
+  });
+
+  it('8. over http refuses with E-KB-HTTP-UNSUPPORTED when the server returns entries without tags', async () => {
+    const origin = `https://example.test/kb-promote-member-notags-${RUN}.git`;
+    const folder = makeCheckout('member-http-notags', origin);
+    const agent = makeTestLocalAgent({ friendlyName: `kb-promote-notags-${RUN}`, workFolder: folder });
+    addAgent(agent);
+    await configureHttp(folder);
+    const captured = JSON.parse(await runWithSessionMember(agent.id, () => kbCapture(captureInput('untagged entry'))));
+    omitTagsInQuery = true;
+
+    requests.length = 0;
+    await expect(runWithSessionMember(agent.id, () => kbPromote({ id: captured.id, reason: REASON })))
+      .rejects.toThrow(/^E-KB-HTTP-UNSUPPORTED: member own-scope/);
+    expect(requests.filter(r => r.url === '/api/kb/promote')).toHaveLength(0);
   });
 
   it('6. over SQLite keeps own-scope: own id promotes, another member id is not found', async () => {
