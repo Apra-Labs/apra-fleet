@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "2d4ec99e655df61dfc565635d3beb895347b015e",
     "branch": "feat/kb-redesign",
-    "entry_count": 336
+    "entry_count": 339
   },
   "entries": [
     {
@@ -3799,6 +3799,29 @@
       "updated_at": "2026-09-25T22:26:34.788Z"
     },
     {
+      "id": "a1a279ec-5537-4820-a23a-c9a7737f2507",
+      "type": "knowledge",
+      "title": "Review scope is built from engine-verified closedIds, not outcome status",
+      "summary": "reviewScopeBeadIds in phases/review.mjs unions each streak outcome's closedIds (engine bd read-back), skipping outcomes flagged publishBlocked or postDispatchSyncFailed. A failed or BLOCKED streak therefore still contributes the beads it closed.",
+      "symbols": [
+        "reviewScopeBeadIds",
+        "runReviewPhase",
+        "runDevelopPhase"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/phases/review.mjs",
+        "packages/apra-fleet-se/fleet-sprint/phases/develop.mjs",
+        "packages/apra-fleet-se/test/mock-sprint-review-scope-failed-streak-closes.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-13T00:36:01.420Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/phases/develop.mjs": "95b3752f2049b201e649e091520f35645fd8d96e",
+        "packages/apra-fleet-se/fleet-sprint/phases/review.mjs": "a46b352c41915e4939ff7bf5f7cbe114f71ae587",
+        "packages/apra-fleet-se/test/mock-sprint-review-scope-failed-streak-closes.test.mjs": "7c4da5a1456c538d32f32a8592ef0db7bce9a27f"
+      }
+    },
+    {
       "id": "a26226fc-8c81-47c7-bf1a-c975a8b123d8",
       "type": "learning",
       "title": "An escaped backtick in any GUARDED_MODULES file trips the shell-command guard, even inside an Error message",
@@ -5699,6 +5722,31 @@
       "updated_at": "2026-10-01T22:08:20.219Z"
     },
     {
+      "id": "e9f7d4a8-575a-4f4f-9342-9bf47b017b6f",
+      "type": "knowledge",
+      "title": "Doer retry reset salvages local work to a fleet-salvage side ref and fails closed",
+      "summary": "syncMemberBefore with resetToRemoteTip first calls salvageBeforeReset. It pins unpublished commits and tracked uncommitted edits (git stash create) on a local fleet-salvage/<slug>/<sha12> ref without moving the sprint branch. Any salvage failure throws GitSyncError and the reset is skipped.",
+      "symbols": [
+        "salvageBeforeReset",
+        "syncMemberBefore",
+        "outputOf"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/member-sync.mjs",
+        "packages/apra-fleet-se/fleet-sprint/git-sync.mjs",
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs",
+        "packages/apra-fleet-se/test/helpers/mock-sprint-harness.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-13T00:36:01.522Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/git-sync.mjs": "408b544aafd53f232839c5c9dc0ca2ea6421b0b6",
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs": "7e22b1e41486daf8647bf83ad899c52a6a8c5263",
+        "packages/apra-fleet-se/fleet-sprint/member-sync.mjs": "65991cdb22cbbe9e77d581117e0aa3144317891f",
+        "packages/apra-fleet-se/test/helpers/mock-sprint-harness.mjs": "27961b4e2d49ff0510e4c8abc9fa4f174238435c"
+      }
+    },
+    {
       "id": "ea3bc985-569c-4eed-846d-1785c17be33f",
       "type": "knowledge",
       "title": "The child-id collision probe reads bd's error payload out of CommandError.details.text, and depends on structuredContent.exitCode",
@@ -6083,6 +6131,29 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:14.250Z"
+    },
+    {
+      "id": "fbf058a3-a2de-45e1-b97f-ec58b048cbc4",
+      "type": "knowledge",
+      "title": "Same-session resume in dispatchRole is the explicit failed session id, never resume true",
+      "summary": "resolveResumeArg for 'same-session' returns opts.resumeSessionId (the failed dispatch's err.details.sessionId) or false. With no id the engine runs the secondary dispatch as a fresh full-prompt session and passes freshSession to opts.prepare.",
+      "symbols": [
+        "resolveResumeArg",
+        "sessionIdOfError",
+        "dispatchRole"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/dispatch-role.mjs",
+        "packages/apra-fleet-se/fleet-sprint/phases/develop.mjs",
+        "packages/apra-fleet-se/test/doer-max-turns-resume-explicit-session.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-13T00:36:01.319Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/dispatch-role.mjs": "bd92d5073942148377413cf030e6787cf1a3f679",
+        "packages/apra-fleet-se/fleet-sprint/phases/develop.mjs": "95b3752f2049b201e649e091520f35645fd8d96e",
+        "packages/apra-fleet-se/test/doer-max-turns-resume-explicit-session.test.mjs": "725d0dab768d2ad2c42aad09ca0c12c5137c6c79"
+      }
     },
     {
       "id": "fd51b285-3514-4f10-95b9-087df82f0bbd",
