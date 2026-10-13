@@ -103,13 +103,3 @@ Per-member totals:
 - member 'fleet-mac1': 33 dispatch(es), kb_* calls: 37, code_* calls: 28.
 - member 'fleet-mac1-deploy': 7 dispatch(es), kb_* calls: 0, code_* calls: 0.
 
-## Cost
-
-```
-Budget ceiling: not set (no --budget flag) -- unlimited for this run.
-Tracked spend (priced dispatches only): $64.9030.
-Remaining budget: unknown/unbounded.
-Integ-test-runner spend: $0.1784 across 3 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
-Pricing source: all 40 priced dispatch(es) used real per-member rates (get_member_model_pricing).
-Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
-```
