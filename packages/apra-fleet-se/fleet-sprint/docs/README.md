@@ -91,7 +91,7 @@ Watch progress there rather than tailing raw stdout.
 | `--viewer-port <port>` | | no | `8080` | Port for the local dashboard viewer. |
 | `--budget <usd>` | | no | unlimited | USD ceiling for this run's total estimated spend. |
 | `--dispatch-timeout-s <s>` | | no | `9000` | Per-dispatch total time budget in seconds -- the hard ceiling on every agent dispatch (integ-test dispatch ceiling is 2x, regression-test ceiling is 3x). Minimum 60. The inactivity/stall threshold used to detect a hung dispatch is derived from this value but capped separately at 30 minutes, so raising this budget for a large sprint does not also grant a stalled dispatch a correspondingly longer grace period before it is killed. Lower it for small sprints so a hung dispatch costs minutes, not 2.5 hours. |
-| `--sync` | | no | off | Synced topology mode (orchestrator-bracketed git sync): members may sit on differing HEADs but must share the same origin URL and pass a `bd dolt pull` probe. Omitted uses shared-workspace mode (all members on the same HEAD). |
+| `--sync` | | no | off | Synced topology mode (orchestrator-bracketed git sync): members may sit on differing HEADs but must share the same origin URL and pass a `bd dolt pull` probe. Omitted uses shared-workspace mode: at launch every member is aligned to the sprint branch automatically (WIP preserved in a named stash), then must share the same HEAD. |
 | `--help` | `-h` | | | Show the engine's help. |
 
 Unrecognized flags fail loudly rather than being silently ignored, so a typo
@@ -115,10 +115,15 @@ resumed sprint's resync step still runs real git commands against every
 - Every `--members` name must be registered with the fleet
   (`list_members`); an unregistered member aborts the sprint unless
   `--allow-missing-members` is passed.
-- Multi-member sprints require all configured members to share the same
-  git HEAD (`checkMemberTopology`) unless `--sync` is passed -- see
-  `fleet-sprint-diagram.md` for the supported-topology notes. Stick to
-  single-member unless that is verified.
+- Multi-member sprints do not need members aligned by hand: at launch
+  (without `--sync`) every member is fetched and checked out on the sprint
+  branch (from `origin/<branch>`, else `origin/<base>`), uncommitted work is
+  preserved in a named `fleet-sprint[<branch>]` stash, and one `[Align]` line
+  per member is logged before the same-HEAD check (`checkMemberTopology`)
+  runs. The launch refuses -- before moving any member -- only for what
+  cannot be reconciled: an unreachable member, differing origin URLs, a base
+  missing on origin, a fetch auth failure, or a diverged sprint branch. See
+  `fleet-sprint-diagram.md` for the supported-topology notes.
 - If a member's LLM session is stale or unauthenticated (dispatch fails with
   `empty_response`, or "member CLI likely died"), re-run `provision_llm_auth`
   for that member before retrying.

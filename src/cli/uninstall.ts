@@ -8,6 +8,11 @@ import type { LlmProvider } from '../types.js';
 import { isApraFleetRunning } from './install.js';
 import { getServiceManager } from '../services/service-manager/index.js';
 import {
+  cleanupSupervisorService,
+  type SupervisorCleanupResult,
+  type SupervisorRegistration,
+} from '../services/supervisor-service-cleanup.js';
+import {
   BIN_DIR,
   HOOKS_DIR,
   SCRIPTS_DIR,
@@ -170,11 +175,18 @@ function cleanupSettings(paths: ProviderInstallConfig, dryRun: boolean): boolean
 // dry-run prints the identical plan without mutating the filesystem -- every
 // mutation below is gated by `!dryRun` while the console output that
 // describes the plan runs unconditionally, mirroring cleanupSettings() above.
-function cleanupWorkflows(dryRun: boolean): boolean {
+interface WorkflowsCleanupResult {
+  anythingRemoved: boolean;
+  /** User-authored workflows/<name>/ dirs left in place (workflows/ root kept). */
+  keptUserWorkflows: string[];
+}
+
+function cleanupWorkflows(dryRun: boolean): WorkflowsCleanupResult {
   let anythingRemoved = false;
+  let keptUserWorkflows: string[] = [];
 
   if (!fs.existsSync(WORKFLOWS_DIR) && !fs.existsSync(NODE_MODULES_DIR) && !fs.existsSync(SCHEMAS_DIR)) {
-    return false;
+    return { anythingRemoved: false, keptUserWorkflows };
   }
 
   console.log('Cleaning up workflow subsystem...');
@@ -206,7 +218,7 @@ function cleanupWorkflows(dryRun: boolean): boolean {
 
     const entries = (fs.readdirSync(WORKFLOWS_DIR, { withFileTypes: true }) || []) as fs.Dirent[];
     const dirNames = entries.filter(e => e.isDirectory()).map(e => e.name);
-    const keptUserWorkflows = dirNames.filter(name => !builtinNames.includes(name));
+    keptUserWorkflows = dirNames.filter(name => !builtinNames.includes(name));
 
     for (const name of dirNames) {
       if (!builtinNames.includes(name)) continue;
@@ -225,7 +237,62 @@ function cleanupWorkflows(dryRun: boolean): boolean {
     }
   }
 
-  return anythingRemoved;
+  return { anythingRemoved, keptUserWorkflows };
+}
+
+/**
+ * Full-uninstall "Kept (intentionally)" section: every top-level entry under
+ * FLEET_BASE that is still present (real run) or that the plan would leave
+ * (dry-run), plus any fleet-supervisor registration left in place because it
+ * is not ours -- so nothing is left behind silently.
+ *
+ * Real run: lists what actually exists AFTER cleanup (a failed delete still
+ * shows up). Dry-run: subtracts the entries the plan removes.
+ */
+function printKeptSection(
+  dryRun: boolean,
+  keptUserWorkflows: string[],
+  keptSupervisorRegs: SupervisorRegistration[],
+): void {
+  const plannedRemovals = new Set<string>();
+  if (dryRun) {
+    for (const p of [BIN_DIR, HOOKS_DIR, SCRIPTS_DIR, NODE_MODULES_DIR, SCHEMAS_DIR]) plannedRemovals.add(path.basename(p));
+    if (keptUserWorkflows.length === 0) plannedRemovals.add(path.basename(WORKFLOWS_DIR));
+  }
+
+  let topLevel: string[] = [];
+  try {
+    topLevel = ((fs.readdirSync(FLEET_BASE) || []) as unknown[]).map(e => String(e));
+  } catch { /* FLEET_BASE absent: nothing else to list */ }
+  const names = ['data', 'fleet.key', ...topLevel.filter(n => n !== 'data' && n !== 'fleet.key')];
+
+  const lines: string[] = [];
+  const seen = new Set<string>();
+  for (const name of names) {
+    if (seen.has(name)) continue;
+    seen.add(name);
+    if (plannedRemovals.has(name)) continue;
+    const abs = path.join(FLEET_BASE, name);
+    if (!fs.existsSync(abs)) continue;
+    let reason: string;
+    if (name === 'data') {
+      reason = 'registry, logs and credentials (kept so a reinstall keeps your fleet)';
+    } else if (name === 'fleet.key') {
+      reason = 'JWT signing key -- lives OUTSIDE data/, so back it up separately from data/';
+    } else if (name === path.basename(WORKFLOWS_DIR) && keptUserWorkflows.length > 0) {
+      reason = `user-authored workflows: ${keptUserWorkflows.join(', ')}`;
+    } else {
+      reason = 'left in place (uninstall does not remove it)';
+    }
+    lines.push(`  - ${abs}: ${reason}`);
+  }
+  for (const reg of keptSupervisorRegs) {
+    lines.push(`  - fleet-supervisor service registration ${reg.name} (target: ${reg.target ?? 'unknown'}): not installed by apra-fleet, left in place`);
+  }
+
+  if (lines.length === 0) return;
+  console.log('\nKept (intentionally):');
+  for (const line of lines) console.log(line);
 }
 
 export async function runUninstall(args: string[]): Promise<void> {
@@ -421,11 +488,30 @@ Options:
 
   // Workflow subsystem removal (Phase 3 - Task 8): shared ~/.apra-fleet assets,
   // not tied to any specific --llm target.
+  const isFullUninstall = targetLlm === 'all' && skillMode === 'all';
+  let supervisorCleanup: SupervisorCleanupResult = { removed: [], kept: [], failed: [] };
+  let keptUserWorkflows: string[] = [];
   if (skillMode === 'all' || skillMode === 'workflows') {
-    if (cleanupWorkflows(dryRun)) anythingRemoved = true;
+    // The fleet-sprint supervisor OS service runs serve.mjs out of
+    // workflows/fleet-sprint, so it is stopped and unregistered BEFORE that
+    // tree is deleted -- and unconditionally here, not inside
+    // cleanupWorkflows(), which returns early when the tree is already gone
+    // (a re-run after an uninstall that left the unit behind).
+    supervisorCleanup = cleanupSupervisorService(dryRun);
+    if (supervisorCleanup.removed.length > 0 || supervisorCleanup.failed.length > 0) anythingRemoved = true;
+    // A full uninstall reports foreign registrations in its Kept section
+    // below; a partial one reports them here.
+    if (!isFullUninstall) {
+      for (const reg of supervisorCleanup.kept) {
+        console.log(`  - Keeping fleet-supervisor service registration ${reg.name} (target: ${reg.target ?? 'unknown'}): not installed by apra-fleet, left in place`);
+      }
+    }
+    const workflowsCleanup = cleanupWorkflows(dryRun);
+    if (workflowsCleanup.anythingRemoved) anythingRemoved = true;
+    keptUserWorkflows = workflowsCleanup.keptUserWorkflows;
   }
 
-  if (!dryRun && targetLlm === 'all' && skillMode === 'all') {
+  if (!dryRun && isFullUninstall) {
     console.log('\nCleaning up global fleet files...');
     if (fs.existsSync(BIN_DIR)) {
       console.log(`  - Removing binary dir: ${BIN_DIR}`);
@@ -447,12 +533,27 @@ Options:
     }
   }
 
+  if (isFullUninstall) {
+    printKeptSection(dryRun, keptUserWorkflows, supervisorCleanup.kept);
+  }
+
+  // One final status line: "Uninstall complete." only when nothing failed;
+  // a failed supervisor removal ends with "Uninstall incomplete" + exit 1.
+  const incomplete = supervisorCleanup.failed.length > 0;
   if (anythingRemoved) {
-    console.log('\nUninstall complete.');
+    if (!incomplete) console.log('\nUninstall complete.');
     console.log('\n⚠ Note: Surgical cleanup of settings (MCP, permissions, hooks) was performed.');
     console.log('  If you manually modified these settings, some entries might remain.');
     console.log('  Please review your provider settings files if you suspect residual config.');
   } else {
     console.log('\nNothing to remove — no apra-fleet installation found for the specified scope.');
+  }
+
+  if (incomplete) {
+    console.error('\nUninstall incomplete: the following fleet-supervisor service registration(s) could not be removed:');
+    for (const { reg, error } of supervisorCleanup.failed) {
+      console.error(`  - ${reg.name}: ${error}`);
+    }
+    process.exit(1);
   }
 }

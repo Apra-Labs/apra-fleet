@@ -56,12 +56,12 @@ function readJson<T>(...segments: string[]): T {
  */
 function projectableRefs(taxonomy: Taxonomy): Set<string> {
   const refs = new Set<string>();
-  for (const [group, body] of Object.entries(taxonomy.groups)) {
-    body.codes.forEach((entry, index) => {
+  for (const body of Object.values(taxonomy.groups)) {
+    for (const entry of body.codes) {
       if (entry.surfaced === 'thrown' || entry.surfaced === 'response-field') {
-        refs.add(`${TAXONOMY_ID_BASE}#/groups/${group}/codes/${index}`);
+        refs.add(`${TAXONOMY_ID_BASE}#${entry.code}`);
       }
-    });
+    }
   }
   return refs;
 }
@@ -154,6 +154,72 @@ describe('memory-contract taxonomy-to-projection parity, both directions (my-bea
   it('cites no x-error-catalog entry absent from the projectable taxonomy.json set', () => {
     for (const ref of catalogRefs) {
       expect(expectedRefs.has(ref), `${ref}: x-error-catalog cites this, not a projectable taxonomy.json code`).toBe(true);
+    }
+  });
+});
+
+// Taxonomy refs must be stable under insertion (taxonomy.json _meta.ref_rule):
+// projections reference a code BY ID (its $anchor, which equals its code), so
+// inserting, removing or reordering codes can never make an existing ref name
+// a different code. A positional JSON Pointer (#/groups/<g>/codes/<i>) would
+// silently shift meaning on a mid-array insertion -- these tests fail if one
+// ever reappears, or if an anchor stops matching the code it labels.
+describe('memory-contract taxonomy refs are by id, stable under insertion', () => {
+  type AnchoredEntry = { code: string; $anchor?: string };
+  const taxonomy = readJson<{
+    groups: Record<string, { codes: AnchoredEntry[] }>;
+    excluded_from_closed_set: { codes: AnchoredEntry[] };
+  }>(V1_DIR, 'taxonomy.json');
+  const groupCodes = new Set(Object.values(taxonomy.groups).flatMap((g) => g.codes.map((c) => c.code)));
+
+  function allProjectionRefs(): string[] {
+    const refs: string[] = [];
+    for (const tool of bindingToolNames()) {
+      const binding = readJson<{ errors: { $ref: string }[] }>(BINDINGS_MCP_DIR, `${tool}.json`);
+      refs.push(...binding.errors.map((e) => e.$ref));
+    }
+    const openapi = readJson<{ 'x-error-catalog': { type: string }[] }>(OPENAPI_PATH);
+    refs.push(...openapi['x-error-catalog'].map((e) => e.type));
+    return refs;
+  }
+
+  it('gives every groups code a $anchor equal to its code string', () => {
+    for (const body of Object.values(taxonomy.groups)) {
+      for (const entry of body.codes) {
+        expect(entry.$anchor, `${entry.code}: $anchor`).toBe(entry.code);
+      }
+    }
+  });
+
+  it('gives no excluded_from_closed_set code an anchor (directive-activation absence)', () => {
+    for (const entry of taxonomy.excluded_from_closed_set.codes) {
+      expect(entry.$anchor, `${entry.code}: excluded code must not be addressable`).toBeUndefined();
+    }
+  });
+
+  it('references every code by id, never by a positional pointer, and every id resolves to a groups code', () => {
+    const refs = allProjectionRefs();
+    expect(refs.length).toBeGreaterThan(0);
+    for (const ref of refs) {
+      expect(ref.startsWith(`${TAXONOMY_ID_BASE}#`), `${ref}: not a taxonomy.json ref`).toBe(true);
+      const fragment = ref.slice(TAXONOMY_ID_BASE.length + 1);
+      expect(fragment.includes('/'), `${ref}: positional JSON Pointer -- shifts meaning on insertion`).toBe(false);
+      expect(groupCodes.has(fragment), `${ref}: fragment names no taxonomy.json groups code`).toBe(true);
+    }
+  });
+
+  it('a ref keeps naming the same code when a code is inserted at the head of every group', () => {
+    // Resolve each ref against the real taxonomy and against a copy with a
+    // new code inserted mid-array everywhere; by-id resolution must agree.
+    const resolve = (groups: Record<string, { codes: AnchoredEntry[] }>, fragment: string): string | undefined =>
+      Object.values(groups).flatMap((g) => g.codes).find((c) => c.$anchor === fragment)?.code;
+    const shifted: Record<string, { codes: AnchoredEntry[] }> = {};
+    for (const [group, body] of Object.entries(taxonomy.groups)) {
+      shifted[group] = { codes: [{ code: `E-INSERTED-${group}`, $anchor: `E-INSERTED-${group}` }, ...body.codes] };
+    }
+    for (const ref of allProjectionRefs()) {
+      const fragment = ref.slice(TAXONOMY_ID_BASE.length + 1);
+      expect(resolve(shifted, fragment), `${ref}: meaning changed under insertion`).toBe(resolve(taxonomy.groups, fragment));
     }
   });
 });

@@ -21,6 +21,7 @@ Call `kb_query(flagged_only=true)`.
 
 - If the response says "No flagged contradictions found -- KB is clean.", report that to the user and stop.
 - Otherwise, collect all returned entries.
+- `flagged_only` is exempt from the default CONFIRMED-only read filter, so it returns disputed entries of every tier. If you need to look up any other entry (for example a counterpart that is not in the flagged list), a plain `kb_query`/`kb_list` returns only CONFIRMED undisputed entries by default -- pass an explicit `confidence: ["CONFIRMED", "INFERRED", "UNVERIFIED"]` list to see the rest.
 
 ### Step 2: Group into contradiction pairs
 

@@ -44,6 +44,7 @@ import {
     FIXED_ROLE_TIER,
     SCHEMAS,
     turnExhaustionError,
+    FAILED_SESSION_ID,
     authError,
     trustError,
     busyError,
@@ -977,7 +978,7 @@ describe('role policy table: retry ladders match runner.js', () => {
             responses: Array.from({ length: p.retry.resumeAttempts + 1 }, () => turnExhaustionError()),
         });
         await dispatchRole(ctx, 'doer', ROLE_CALL_OPTS.doer);
-        const resumes = rec.dispatches.filter((d) => d.options.resume === true);
+        const resumes = rec.dispatches.filter((d) => d.options.resume === FAILED_SESSION_ID);
         assert.strictEqual(
             resumes.length,
             p.retry.resumeAttempts,
@@ -1122,8 +1123,8 @@ const STEP_EVIDENCE = {
         scope: 'global',
         pattern: (p) => ({
             doer: /kbWork\.apply\(ROLE_DOER,/,
-            reviewer: /kbWork\.apply\(ROLE_REVIEWER, kbPriming\.folderOf\(/,
-            'final-review': /kbWork\.apply\(ROLE_REVIEWER, finalReviewRepoPath,/,
+            reviewer: /kbWork\.apply\(ROLE_REVIEWER, kbMember\(/,
+            'final-review': /kbWork\.apply\(ROLE_REVIEWER, finalReviewKbMember,/,
             harvester: /kbWork\.apply\('harvester',/,
         }[p.ladder]),
     },
@@ -1187,13 +1188,25 @@ describe('role policy table: pre-dispatch and post-result steps match runner.js'
             'The engine must kill a stale session in exactly ONE generic place -- a second site would be a per-role ' +
             'special case creeping back into the engine.'
         );
+        // GitHub #715: the ONE kill site that is not a resume. The in-run
+        // orphaned-claim reclaim (runner.js reclaimInRunOrphanedClaims) stops
+        // a failed doer streak's session before re-laning the bead it left
+        // in_progress -- a liveness guard before a RE-DISPATCH to possibly
+        // another doer, not a resume of the same session, so no policy row
+        // owns it. Counted by name so a second non-resume site still trips
+        // this census.
+        const reclaimKillSites = (stripComments(
+            fs.readFileSync(path.join(FLEET_SPRINT_DIR, 'runner.js'), 'utf8'),
+        ).match(/async function reclaimInRunOrphanedClaims\([\s\S]*?\n    \}\n/) || [''])[0]
+            .match(/memberSessionGuard\.killIfAlive\(/g)?.length ?? 0;
+        assert.strictEqual(reclaimKillSites, 1, 'reclaimInRunOrphanedClaims must stop the failed doer session exactly once per member.');
         const killSites = (stripComments(SRC).match(/memberSessionGuard\.killIfAlive\(/g) || []).length;
         assert.strictEqual(
             killSites,
-            inlineKillers.length + extraInfraKills + engineKillSites,
+            inlineKillers.length + extraInfraKills + engineKillSites + reclaimKillSites,
             `The scanned module set has ${killSites} session-kill sites; the table accounts for ` +
             `${inlineKillers.length} still-inline resume dispatches plus ${extraInfraKills} infra-recovery resumes ` +
-            `plus the engine's ${engineKillSites} shared site.`
+            `plus the engine's ${engineKillSites} shared site plus ${reclaimKillSites} in-run orphan-reclaim stop.`
         );
     });
 
@@ -1720,7 +1733,7 @@ describe('role policy table: migrated roles re-derived by running the engine', (
                 // silently reattach a one-off dispatch to a stale session.
                 const expectedResume = p.resumeArg === null || p.resumeArg.kind === 'fresh-session'
                     ? false
-                    : (p.resumeArg.kind === 'same-session' ? true : (opts.resumeArg ?? false));
+                    : (p.resumeArg.kind === 'same-session' ? FAILED_SESSION_ID : (opts.resumeArg ?? false));
                 assert.strictEqual(o.resume ?? null, expectedResume, `${row.name}: resume argument.`);
                 assert.strictEqual(o.agentType ?? null, p.agentType, `${row.name}: persona.`);
                 assert.strictEqual(

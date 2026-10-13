@@ -92,7 +92,7 @@ describe('codeIntelligenceHealth()', () => {
 describe('codeIntelligenceCompactLine()', () => {
   it('renders the no-index line verbatim when absent', () => {
     const line = codeIntelligenceCompactLine({ present: false });
-    expect(line).toBe("code-intel: no index (run 'npx gitnexus analyze' or /pm index)");
+    expect(line).toBe("code-intel: no index (run 'npx gitnexus analyze --index-only' or /pm index)");
   });
 
   it('renders nodes/edges/files, indexedAt, and matching HEAD', () => {
@@ -163,7 +163,7 @@ describe('codeIntelligenceCompactLine()', () => {
       present: false,
       topSymbols: [{ target: 'x', count: 1 }],
     });
-    expect(line).toBe("code-intel: no index (run 'npx gitnexus analyze' or /pm index) | top symbols (30d): x (1)");
+    expect(line).toBe("code-intel: no index (run 'npx gitnexus analyze --index-only' or /pm index) | top symbols (30d): x (1)");
   });
 });
 
@@ -196,6 +196,14 @@ describe('computeTopSymbols()', () => {
 
   afterEach(() => {
     rmSync(usageDir, { recursive: true, force: true });
+  });
+
+  it('reads old-shape and member-attributed rows together', () => {
+    const ts = new Date(NOW - 24 * 60 * 60 * 1000).toISOString();
+    const old = JSON.stringify({ ts, tool: 'code_query', target: 'sym', repo: null });
+    const attributed = JSON.stringify({ ts, tool: 'code_query', target: 'sym', repo: '/r', memberId: 'm-1', sessionId: 's-1' });
+    writeFileSync(usagePath, [old, attributed].join('\n') + '\n');
+    expect(computeTopSymbols(NOW, usagePath, rotatedPath)).toEqual([{ target: 'sym', count: 2 }]);
   });
 
   it('returns undefined when neither usage file exists', () => {

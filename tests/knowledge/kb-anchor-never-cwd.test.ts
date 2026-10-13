@@ -100,10 +100,8 @@ describe('a repo_path that does not exist on this host never anchors at the serv
     const fakeRemotePath = `C:\\Users\\member\\work\\anchor-cwd-prime-${tok}`;
 
     await kbSessionPrime({
-      repo_path: fakeRemotePath,
-      repo_remote_url: remoteUrl,
       hint_symbols: [`anchorCwdPrimeSymbol${tok}`],
-    } as any);
+    } as any, { folder: fakeRemotePath, remoteUrl: remoteUrl });
 
     const { providers } = onlyCall();
     expect(providers.projectSlug).toBe(resolveProjectSlug(undefined, remoteUrl));
@@ -116,7 +114,7 @@ describe('a repo_path that does not exist on this host never anchors at the serv
     const remoteUrl = `git@github.com:acme/anchor-cwd-stats-${tok}.git`;
     const fakeRemotePath = `C:\\Users\\member\\work\\anchor-cwd-stats-${tok}`;
 
-    await kbStats({ repo_path: fakeRemotePath, repo_remote_url: remoteUrl } as any);
+    await kbStats({} as any, { folder: fakeRemotePath, remoteUrl: remoteUrl });
 
     const { providers } = onlyCall();
     expect(providers.projectSlug).toBe(resolveProjectSlug(undefined, remoteUrl));
@@ -129,7 +127,7 @@ describe('a repo_path that does not exist on this host never anchors at the serv
     const remoteUrl = `git@github.com:acme/anchor-cwd-stats-alias-${tok}.git`;
     const fakeRemotePath = `C:\\Users\\member\\work\\anchor-cwd-stats-alias-${tok}`;
 
-    await kbStats({ repo: fakeRemotePath, repo_remote_url: remoteUrl } as any);
+    await kbStats({} as any, { folder: fakeRemotePath, remoteUrl: remoteUrl });
 
     const { providers } = onlyCall();
     expect(providers.project.repoPath).toBe(fakeRemotePath);
@@ -141,7 +139,7 @@ describe('a repo_path that does not exist on this host never anchors at the serv
     const fakeRemotePath = `C:\\Users\\member\\work\\anchor-cwd-export-${tok}`;
 
     await expect(
-      kbExport({ repo_path: fakeRemotePath, repo_remote_url: remoteUrl } as any),
+      kbExport({} as any, { folder: fakeRemotePath, remoteUrl: remoteUrl }),
     ).rejects.toThrow(/does not exist or is not a directory/);
 
     // The throw happens before getKbProviders, so no provider -- and in
@@ -156,10 +154,8 @@ describe('a repo_path that DOES exist still anchors at that path (apra-fleet-b4g
     const localClone = makeClone('local-clone', remoteUrl);
 
     await kbSessionPrime({
-      repo_path: localClone,
-      repo_remote_url: remoteUrl,
       hint_symbols: [`anchorCwdLocalSymbol${tok}`],
-    } as any);
+    } as any, { folder: localClone, remoteUrl: remoteUrl });
 
     const { providers } = onlyCall();
     expect(providers.project.repoPath).toBe(localClone);
@@ -174,7 +170,7 @@ describe('a repo_path that DOES exist still anchors at that path (apra-fleet-b4g
       JSON.stringify([{ id: 'b1', updated_at: '2026-01-01T00:00:00.000Z' }]),
     );
 
-    const out = JSON.parse(await kbStats({ repo_path: localClone, repo_remote_url: remoteUrl } as any));
+    const out = JSON.parse(await kbStats({} as any, { folder: localClone, remoteUrl: remoteUrl }));
 
     const { providers } = onlyCall();
     expect(providers.project.repoPath).toBe(localClone);

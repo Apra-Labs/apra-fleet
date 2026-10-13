@@ -23,6 +23,11 @@ vi.mock('../src/services/strategy.js', () => ({
     execCommand: mockExecCommand,
     testConnection: mockTestConnection,
     transferFiles: vi.fn(),
+    // The owner-only secret-file channel every real strategy has: an opencode
+    // member's per-folder entry carries the member access secret, so it is
+    // staged here and moved into place (never written through a command).
+    writeSecretFile: vi.fn(async (name: string) => `/tmp/${name}`),
+    removeSecretFile: vi.fn(async () => undefined),
     close: vi.fn(),
   }),
 }));

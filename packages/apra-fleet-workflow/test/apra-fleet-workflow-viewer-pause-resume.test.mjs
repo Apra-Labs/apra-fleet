@@ -94,9 +94,31 @@ function httpPost(port, urlPath) {
 // below compare against actual field values rather than tripping over the
 // dedup table whenever two fields happen to carry an identical string (e.g.
 // two timestamps minted in the same millisecond during a fast test run).
-async function getState(port) {
-    const payload = JSON.parse(await httpGet(port, '/state'));
-    return resolveStringRefs(payload, payload._strings || []);
+async function getState(port, { retries = 10, delayMs = 50 } = {}) {
+    let lastError;
+    for (let i = 0; i < retries; i++) {
+        try {
+            const body = await httpGet(port, '/state');
+            if (!body) {
+                lastError = new Error('Empty response body from GET /state');
+                if (i < retries - 1) {
+                    await new Promise((resolve) => setTimeout(resolve, delayMs));
+                    continue;
+                }
+                throw lastError;
+            }
+            const payload = JSON.parse(body);
+            return resolveStringRefs(payload, payload._strings || []);
+        } catch (err) {
+            lastError = err;
+            if (i < retries - 1) {
+                await new Promise((resolve) => setTimeout(resolve, delayMs));
+                continue;
+            }
+            throw err;
+        }
+    }
+    throw lastError;
 }
 
 async function waitFor(predicate, { timeoutMs = 2000, intervalMs = 5 } = {}) {

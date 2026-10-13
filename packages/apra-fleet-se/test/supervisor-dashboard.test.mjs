@@ -1012,6 +1012,7 @@ describe('dashboard -- registerDashboardRoutes / GET /', () => {
         const dashboard = createDashboard({
             ledger: fakeLedger([]),
             watchdog: fakeWatchdog({}),
+            listAllBeads: async () => [],
         });
         const supervisor = createSupervisor({ logger: { log() {}, error() {} } });
         registerDashboardRoutes(supervisor, dashboard);
@@ -1052,6 +1053,7 @@ describe('dashboard -- registerDashboardRoutes / GET /', () => {
         const dashboard = createDashboard({
             ledger: fakeLedger([]),
             watchdog: fakeWatchdog({}),
+            listAllBeads: async () => [],
             eventsIntervalMs: 1000,
         });
         const supervisor = createSupervisor({ logger: { log() {}, error() {} } });

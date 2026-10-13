@@ -1,5 +1,7 @@
 import { escapeHtml } from '@apralabs/apra-fleet-workflow/viewer/html-utils';
 import { computeSprintProgress } from './sprint-progress.mjs';
+import { DISPATCH_TOOL_CALLS_STATE_NAMESPACE } from './dispatch-accounting.mjs';
+import { MEMBER_INIT_STATE_NAMESPACE } from './member-init-probe.mjs';
 
 /**
  * apra-fleet-x8r.1: pure HTML-string builder for the beads-closed/required
@@ -695,7 +697,7 @@ export function renderBeadsHtml(sprintTasks, backlogTasks, collapsedIds) {
 }
 
 /**
- * apra-fleet-eft.37.3: pure HTML-string builder for the auto-sprint verdict
+ * apra-fleet-eft.37.3: pure HTML-string builder for the fleet-sprint verdict
  * badge + PR link, moved OUT of the generic workflow core (which used to
  * mint `state.verdict`/`state.prUrl` by name -- see
  * docs/workflow-core-boundary-refactoring.md M2) and into this se-owned
@@ -704,11 +706,11 @@ export function renderBeadsHtml(sprintTasks, backlogTasks, collapsedIds) {
  * SCALAR fields as a generic, unstyled key/value strip (src/viewer/
  * index.mjs's `#result-strip`). This function reads the SAME
  * `state.result` object, but knows the two keys that are meaningful for an
- * auto-sprint run specifically -- `verdict` (colored by outcome) and
+ * fleet-sprint run specifically -- `verdict` (colored by outcome) and
  * `prUrl` (link-ified) -- exactly the se-domain knowledge that has no
  * business living in the generic engine.
  *
- * Returns '' when `result` carries neither key (e.g. a non-auto-sprint
+ * Returns '' when `result` carries neither key (e.g. a non-fleet-sprint
  * workflow, or a run that hasn't finished yet), so the caller can hide its
  * container entirely rather than show an empty badge strip.
  *
@@ -718,7 +720,7 @@ export function renderBeadsHtml(sprintTasks, backlogTasks, collapsedIds) {
 export function renderResultExtrasHtml(result) {
     const verdict = result && typeof result === 'object' ? result.verdict : undefined;
     const prUrl = result && typeof result === 'object' ? result.prUrl : undefined;
-    // Nothing se-meaningful to show (non-auto-sprint workflow, or a run that
+    // Nothing se-meaningful to show (non-fleet-sprint workflow, or a run that
     // hasn't finished yet) -- let the caller hide its container entirely.
     if (verdict == null && prUrl == null) return '';
 
@@ -914,7 +916,7 @@ export const beadsExtension = {
         ${renderProgressPlaceholderHtml.toString()}
         ${renderBeadsSummaryProgressHtml.toString()}
 
-        // apra-fleet-eft.37.3: mounts the auto-sprint verdict badge + PR
+        // apra-fleet-eft.37.3: mounts the fleet-sprint verdict badge + PR
         // link into the header, next to core's generic (unstyled)
         // #result-strip -- see viewer/index.mjs's 'workflow:result'
         // CustomEvent, dispatched on every renderState() with
@@ -1109,7 +1111,7 @@ export const beadsExtension = {
             renderBeadsPanel();
         });
 
-        // apra-fleet-eft.37.3: mounts the auto-sprint verdict badge + PR
+        // apra-fleet-eft.37.3: mounts the fleet-sprint verdict badge + PR
         // link into the header, next to core's generic (unstyled)
         // #result-strip -- see viewer/index.mjs's 'workflow:result'
         // CustomEvent, dispatched on every renderState() with
@@ -1118,5 +1120,167 @@ export const beadsExtension = {
         document.addEventListener('workflow:result', (e) => {
             renderResultExtras(e.detail);
         });
+    `
+};
+
+/**
+ * Pure HTML-string builder for the Knowledge and Code Intel tab: per-member and
+ * per-dispatch kb_* / code_* tool call counts, from the records
+ * dispatch-accounting.mjs publishes (`{ dispatches: [{ index, member, role,
+ * label, kb, code, reason }] }` -- session_stats snapshots taken before and
+ * after each dispatch). It never re-derives a count from anything else.
+ *
+ * A count is either a non-negative integer or unknown: anything that is not
+ * an integer (the 'unknown' marker, a missing or malformed value) renders as
+ * the word "unknown", never as 0. A member total is unknown when any of its
+ * dispatches is unknown for that kind.
+ *
+ * Same embed rule as renderBeadsHtml above: string concatenation only (this
+ * source is embedded verbatim into the browser script via .toString()), every
+ * interpolated value through escapeHtml, every helper nested inside so the one
+ * embed captures everything, and a try/catch backstop so a malformed record
+ * can never take the dashboard down.
+ *
+ * @param {{ dispatches?: object[] }|null|undefined} data
+ * @returns {string}
+ */
+export function renderKbCodeIntelHtml(data, init) {
+    try {
+        function isCount(n) {
+            return typeof n === 'number' && Number.isInteger(n) && n >= 0;
+        }
+        function countCell(n, title) {
+            if (isCount(n)) {
+                return '<td style="padding: 2px 8px; font-size: 11px; text-align: right;">' + escapeHtml(String(n)) + '</td>';
+            }
+            const tip = title ? ' title="' + escapeHtml(String(title)) + '"' : '';
+            return '<td data-kb-panel-unknown="true" style="padding: 2px 8px; font-size: 11px; text-align: right; color: #f59e0b;"' + tip + '>unknown</td>';
+        }
+        function textCell(v) {
+            return '<td style="padding: 2px 8px; font-size: 11px;">' + escapeHtml(String(v)) + '</td>';
+        }
+        function th(label) {
+            return '<th style="padding: 2px 8px; font-size: 10px; color: #71717a; text-align: left;">' + escapeHtml(label) + '</th>';
+        }
+        // Why a member's totals are unknown: the first unknown dispatch's reason,
+        // else the member-init record when that member's tools were unavailable.
+        function memberUnknownReason(name, firstReason) {
+            if (firstReason) return String(firstReason);
+            const ms = (init && typeof init === 'object' && Array.isArray(init.members)) ? init.members : [];
+            for (const m of ms) {
+                if (m && m.member === name && m.verified !== true) return 'member tools unavailable: ' + String(m.reason || 'unverified');
+            }
+            return 'at least one dispatch count is unknown';
+        }
+        const records = (data && typeof data === 'object' && Array.isArray(data.dispatches))
+            ? data.dispatches.filter(function (r) { return r && typeof r === 'object'; })
+            : [];
+
+        // Lower-quality-of-service section (b4g.65): the sprint banner and one
+        // line per NON-verified member with its reason and one-line fix.
+        // Verified members get no line; with all verified nothing renders.
+        function lowerQualityHtml() {
+            const members = (init && typeof init === 'object' && Array.isArray(init.members))
+                ? init.members.filter(function (m) { return m && typeof m === 'object' && m.verified !== true; })
+                : [];
+            if (members.length === 0) return '';
+            let out = '';
+            if (init && typeof init.banner === 'string' && init.banner) {
+                out += '<div data-kb-lower-quality-banner="true" style="font-size: 11px; font-weight: 600; color: #f59e0b; padding: 4px 8px;">' + escapeHtml(init.banner) + '</div>';
+            }
+            for (const m of members) {
+                out += '<div data-kb-lower-quality-member="' + escapeHtml(String(m.member || '(unknown member)')) + '" style="font-size: 11px; color: #f59e0b; padding: 2px 8px;">'
+                    + escapeHtml(String(m.member || '(unknown member)')) + ': ' + escapeHtml(String(m.reason || 'unverified'))
+                    + ' -- fix: ' + escapeHtml(String(m.fix || '(none recorded)')) + '</div>';
+            }
+            return out;
+        }
+
+        let html = '<div data-kb-code-intel="true" style="padding: 8px;">' + lowerQualityHtml();
+        html += '<div style="font-size: 11px; color: #a1a1aa; padding: 2px 8px;">kb_* and code_* tool calls counted by each member\'s own fleet server, read before and after every dispatch. "unknown" means the count could not be read -- it is not zero.</div>';
+        if (records.length === 0) {
+            html += '<div data-kb-panel-empty="true" style="font-size: 11px; color: #71717a; padding: 8px;">(no dispatches recorded yet)</div>';
+            return html + '</div>';
+        }
+
+        // Per-member totals, in first-dispatch order.
+        const order = [];
+        const totals = {};
+        for (const r of records) {
+            const name = String(r.member || '(unknown member)');
+            if (!Object.prototype.hasOwnProperty.call(totals, name)) {
+                totals[name] = { dispatches: 0, kb: 0, code: 0, reason: null };
+                order.push(name);
+            }
+            const t = totals[name];
+            t.dispatches++;
+            if (!t.reason && r.reason && (!isCount(r.kb) || !isCount(r.code))) t.reason = String(r.reason);
+            t.kb = isCount(t.kb) && isCount(r.kb) ? t.kb + r.kb : 'unknown';
+            t.code = isCount(t.code) && isCount(r.code) ? t.code + r.code : 'unknown';
+        }
+        html += '<div style="font-size: 11px; font-weight: 600; color: #a1a1aa; padding: 8px 8px 2px 8px;">Per member</div>';
+        html += '<table data-kb-panel-members="true" style="border-collapse: collapse;"><tr>' + th('member') + th('dispatches') + th('kb_* calls') + th('code_* calls') + '</tr>';
+        for (const name of order) {
+            const t = totals[name];
+            html += '<tr data-member="' + escapeHtml(name) + '">' + textCell(name) + textCell(t.dispatches)
+                + countCell(t.kb, memberUnknownReason(name, t.reason)) + countCell(t.code, memberUnknownReason(name, t.reason)) + '</tr>';
+        }
+        html += '</table>';
+        // Visible reason for every member whose totals are unknown.
+        for (const name of order) {
+            const t = totals[name];
+            if (isCount(t.kb) && isCount(t.code)) continue;
+            html += '<div data-kb-unknown-reason="' + escapeHtml(name) + '" style="font-size: 11px; color: #f59e0b; padding: 2px 8px;">'
+                + escapeHtml(name) + ': kb_* and code_* counts unknown (' + escapeHtml(memberUnknownReason(name, t.reason)) + ')</div>';
+        }
+
+        html += '<div style="font-size: 11px; font-weight: 600; color: #a1a1aa; padding: 8px 8px 2px 8px;">Per dispatch</div>';
+        html += '<table data-kb-panel-dispatches="true" style="border-collapse: collapse;"><tr>' + th('#') + th('member') + th('role') + th('label') + th('kb_* calls') + th('code_* calls') + '</tr>';
+        for (const r of records) {
+            html += '<tr>' + textCell(isCount(r.index) ? r.index : '-') + textCell(r.member || '(unknown member)')
+                + textCell(r.role || '-') + textCell(r.label || '-')
+                + countCell(r.kb, r.reason) + countCell(r.code, r.reason) + '</tr>';
+        }
+        html += '</table>';
+        return html + '</div>';
+    } catch (err) {
+        return '<div data-kb-code-intel="true" data-kb-code-intel-error="true" style="font-size: 11px; color: #71717a; padding: 8px;">(Knowledge and Code Intel panel unavailable)</div>';
+    }
+}
+
+/**
+ * The Knowledge and Code Intel tab: its own dashboardExtensions entry
+ * (registered alongside beadsExtension in bin/cli.mjs), subscribed to
+ * dispatch-accounting.mjs's publishState namespace.
+ */
+export const kbCodeIntelExtension = {
+    id: 'kb-code-intel',
+    title: 'Knowledge & Code Intel',
+    js: `
+        ${escapeHtml.toString()}
+        ${renderKbCodeIntelHtml.toString()}
+
+        let lastDispatchToolCalls = null;
+        let lastMemberInit = null;
+
+        function renderKbCodeIntelPanel() {
+            const container = document.getElementById('extension-kb-code-intel');
+            if (!container) return;
+            container.innerHTML = renderKbCodeIntelHtml(lastDispatchToolCalls, lastMemberInit);
+        }
+
+        document.addEventListener('workflow:state:' + ${JSON.stringify(MEMBER_INIT_STATE_NAMESPACE)}, (e) => {
+            lastMemberInit = e.detail || null;
+            renderKbCodeIntelPanel();
+        });
+
+        // String-concat form (not a quoted interpolation) so the per-line
+        // shell-command guard does not read it as a member-bound command.
+        document.addEventListener('workflow:state:' + ${JSON.stringify(DISPATCH_TOOL_CALLS_STATE_NAMESPACE)}, (e) => {
+            lastDispatchToolCalls = e.detail || null;
+            renderKbCodeIntelPanel();
+        });
+
+        renderKbCodeIntelPanel();
     `
 };

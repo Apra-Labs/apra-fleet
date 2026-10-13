@@ -1,7 +1,7 @@
 // P4a KB enrichment for code_context (T3.3, design D4). The gitnexus
 // provider file (code-intelligence-gitnexus.ts) must NOT import the KB
 // service -- that would create a src/tools <-> src/services cycle. This
-// helper is imported ONLY by the code_context handler in src/index.ts: the
+// helper is imported ONLY by the code_context handler in src/services/tool-registry.ts: the
 // handler calls the provider, then this helper, then merges the two results.
 import { getKbProviders } from '../services/knowledge/kb-providers.js';
 
@@ -44,11 +44,12 @@ export async function enrichContextWithKb(
   if (isErrorResult(result)) return result;
 
   try {
-    // Enrich from the KB of the repo the code_context call is about; without
-    // this the server's cwd decides, and one repo's knowledge annotates
-    // another's symbols. remoteUrl (repo_remote_url on the code_context
-    // input) lets a remote member's call resolve the correct project KB even
-    // when repoPath is a path on another host that this process cannot stat.
+    // Enrich from the KB of the repo the code_context call is about -- the
+    // calling session's resolved (self) folder; without this the server's cwd
+    // decides, and one repo's knowledge annotates another's symbols. remoteUrl
+    // (a remote member's single known origin remote) lets a remote member's
+    // call resolve the correct project KB even when repoPath is a path on
+    // another host that this process cannot stat.
     const providers = await getKbProviders(repoPath, remoteUrl);
     const kbResult = await providers.project.query({
       query: name,

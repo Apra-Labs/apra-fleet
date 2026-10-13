@@ -6,6 +6,7 @@ import type { ServiceManager, ServiceStatus } from './types.js';
 import { MACOS_PLIST_LABEL, SERVICE_ENV_MARKER } from './types.js';
 import { gracefulStopByServerJson } from './index.js';
 import { clearServiceStartFailures } from '../service-start-guard.js';
+import { computeServicePath } from './service-path.js';
 
 const PLIST_DIR = path.join(os.homedir(), 'Library', 'LaunchAgents');
 const PLIST_PATH = path.join(PLIST_DIR, `${MACOS_PLIST_LABEL}.plist`);
@@ -22,7 +23,8 @@ function xmlEscape(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-function buildPlist(binaryPath: string, args: string[], logPath: string): string {
+/** servicePath: PATH for the server (launchd's default lacks Homebrew/nvm node and npx). */
+export function buildPlist(binaryPath: string, args: string[], logPath: string, servicePath: string): string {
   const argElements = [binaryPath, ...args]
     .map(a => `        <string>${xmlEscape(a)}</string>`)
     .join('\n');
@@ -41,6 +43,8 @@ function buildPlist(binaryPath: string, args: string[], logPath: string): string
     '    <dict>',
     `        <key>${SERVICE_ENV_MARKER}</key>`,
     '        <string>1</string>',
+    '        <key>PATH</key>',
+    `        <string>${xmlEscape(servicePath)}</string>`,
     '    </dict>',
     '    <key>RunAtLoad</key>',
     '    <true/>',
@@ -79,7 +83,7 @@ export function macosLabelEnabled(label: string, printDisabled: () => string): b
 export class MacOSServiceManager implements ServiceManager {
   async register(binaryPath: string, args: string[], logPath: string): Promise<void> {
     fs.mkdirSync(PLIST_DIR, { recursive: true });
-    fs.writeFileSync(PLIST_PATH, buildPlist(binaryPath, args, logPath), 'utf8');
+    fs.writeFileSync(PLIST_PATH, buildPlist(binaryPath, args, logPath, computeServicePath({ platform: 'darwin' })), 'utf8');
     // Bootout first to make register idempotent
     try { execFileSync('launchctl', ['bootout', `${domain()}/${MACOS_PLIST_LABEL}`]); } catch {}
     execFileSync('launchctl', ['bootstrap', domain(), PLIST_PATH]);

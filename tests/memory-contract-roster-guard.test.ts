@@ -116,7 +116,7 @@ describe('generator roster matches the registered kb_*/code_* tool surface (my-b
     expect([...roster].sort()).toEqual([...emitted].sort());
   });
 
-  it('baseline: 16 kb_* + 7 code_* = 23 registered tools, 46 emitted schema documents', async () => {
+  it('baseline: 17 kb_* + 9 code_* = 26 registered tools, 52 emitted schema documents', async () => {
     const registered = kbAndCodeToolNames(await registeredToolNames());
     const kbCount = [...registered].filter((n) => n.startsWith('kb_')).length;
     const codeCount = [...registered].filter((n) => n.startsWith('code_')).length;
@@ -126,12 +126,12 @@ describe('generator roster matches the registered kb_*/code_* tool surface (my-b
     // fails on the set-equality assertions above before this baseline check
     // is even reached for a wrong reason; this check exists to name the
     // number INVENTORY.md section 1 arbitrates, not to gate on it blindly.
-    expect(kbCount).toBe(16);
-    expect(codeCount).toBe(7);
-    expect(registered.size).toBe(23);
+    expect(kbCount).toBe(17);
+    expect(codeCount).toBe(9);
+    expect(registered.size).toBe(26);
 
     const emittedFiles = readdirSync(SCHEMAS_DIR).filter((f) => f.endsWith('.json'));
-    expect(emittedFiles.length).toBe(46);
+    expect(emittedFiles.length).toBe(52);
   });
 });
 
@@ -149,6 +149,53 @@ describe('bindings/mcp descriptions match the live registerAllTools() descriptio
       expect(binding.description, `${tool}: bindings/mcp/${tool}.json description is stale vs the live registration`).toBe(
         live,
       );
+    }
+  });
+});
+
+/**
+ * Parses INVENTORY.md Appendix A into tool -> verbatim block text. Each entry
+ * is a `### <tool>` heading followed by a ```text fenced block holding the
+ * registration description. CRLF-tolerant so a Windows checkout parses the same.
+ */
+function inventoryAppendixA(): Map<string, string> {
+  const inventory = readFileSync(path.join(path.dirname(BINDINGS_MCP_DIR), '..', 'INVENTORY.md'), 'utf8');
+  const start = inventory.indexOf('## Appendix A');
+  expect(start, 'INVENTORY.md has no "## Appendix A" section').toBeGreaterThanOrEqual(0);
+  const rest = inventory.slice(start + 1);
+  const nextSection = rest.search(/^## /m);
+  const appendix = nextSection >= 0 ? rest.slice(0, nextSection) : rest;
+  const blocks = new Map<string, string>();
+  const re = /^### (\S+)\r?\n\r?\n```text\r?\n([\s\S]*?)\r?\n```/gm;
+  for (let m = re.exec(appendix); m; m = re.exec(appendix)) {
+    expect(blocks.has(m[1]), `INVENTORY.md Appendix A lists ${m[1]} twice`).toBe(false);
+    blocks.set(m[1], m[2]);
+  }
+  return blocks;
+}
+
+// INVENTORY.md Appendix A claims to hold every kb_*/code_* registration
+// description byte-exact, but contract:check only compares bindings/ and
+// schemas/, so an edited registration left the appendix stale unnoticed.
+// The appendix carries descriptions only (no schema text); request schemas
+// are already pinned by contract:check's regenerate-and-compare.
+describe('INVENTORY.md Appendix A matches the live registerAllTools() descriptions', () => {
+  it('Appendix A covers exactly the registered kb_*/code_* tools', async () => {
+    const registered = kbAndCodeToolNames(await registeredToolNames());
+    const appendix = inventoryAppendixA();
+
+    expect([...appendix.keys()].sort()).toEqual([...registered].sort());
+  });
+
+  it('every Appendix A block equals the description registerAllTools() passes to server.tool()', async () => {
+    const liveDescriptions = await registeredToolDescriptions();
+    const appendix = inventoryAppendixA();
+
+    for (const [tool, text] of [...appendix].sort(([a], [b]) => a.localeCompare(b))) {
+      expect(
+        text,
+        `${tool}: INVENTORY.md Appendix A block is stale vs the live registration -- re-capture it from registerAllTools()`,
+      ).toBe(liveDescriptions.get(tool));
     }
   });
 });

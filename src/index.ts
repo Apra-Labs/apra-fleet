@@ -40,6 +40,9 @@ Usage:
   apra-fleet install --skill none      Skip skill installation
   apra-fleet install --no-skill        Same as --skill none
   apra-fleet register-member --name <name> --path <folder> [options]  Register a fleet member from the shell (see 'register-member --help')
+  apra-fleet remove-member --id <uuid> [--force]   Remove a member registration from this install (see 'remove-member --help')
+  apra-fleet call --member <uuid> <tool> [--args-file <path>] Call a tool as a member session (see 'call --help')
+  apra-fleet call --member <uuid> --list-tools                List the member session's tools
   apra-fleet uninstall                 Remove binary, hooks, and MCP registration
   apra-fleet secret --set <name>       Deliver a secret to a waiting request
   apra-fleet secret --list             List secrets
@@ -75,6 +78,14 @@ if (arg === 'install') {
   import('./cli/register-member.js')
     .then(m => m.runRegisterMember(process.argv.slice(3)))
     .catch(err => { logError('cli', `Register-member failed: ${err.message}`); process.exit(1); });
+} else if (arg === 'remove-member') {
+  import('./cli/remove-member.js')
+    .then(m => m.runRemoveMember(process.argv.slice(3)))
+    .catch(err => { logError('cli', `Remove-member failed: ${err.message}`); process.exit(1); });
+} else if (arg === 'call') {
+  import('./cli/call.js')
+    .then(m => m.runCallCli(process.argv.slice(3)))
+    .catch(err => { logError('cli', `Call failed: ${err.message}`); process.exit(1); });
 } else if (arg === 'uninstall') {
   import('./cli/uninstall.js')
     .then(m => m.runUninstall(process.argv.slice(3)))
@@ -465,7 +476,9 @@ async function startHttpServer() {
   } catch (err) {
     lock.release();
     if (err instanceof PortInUseError) {
-      logError('startup', portInUseMessage(err.port, readServerInfoPid()));
+      const { findPortHolder, describePortConflict } = await import('./services/port-holder.js');
+      const conflict = describePortConflict(err.port, portInUseMessage(err.port, readServerInfoPid()), await findPortHolder(err.port));
+      logError('startup', conflict.message);
       process.exit(await refusalExitCode());
     }
     throw err;

@@ -278,7 +278,7 @@ async function handleOAuth(args: string[]): Promise<void> {
   // member's registry.json encryptedEnvVars.CLAUDE_CODE_OAUTH_TOKEN instead
   // of writing a credentials file. This is the PRIMARY, cross-platform
   // smoke-test path (register_member/update_member's own persisted field --
-  // see src/utils/auth-env.ts#buildAuthEnvPrefix and src/os/*.ts#getCleanEnv):
+  // see src/services/member-secret-env.ts#stageAuthEnv and src/os/*.ts#getCleanEnv):
   // LocalStrategy's clean-env dispatch (env -i ... bash -l -c ...) exports
   // this env var directly into the child shell for every dispatch, which the
   // real Claude CLI accepts without needing a synthesized credentials-file
@@ -369,8 +369,10 @@ async function provisionEnvVarForMember(provider: string, token: string, memberN
     const { encryptPassword } = await import('../utils/crypto.js');
     const { updateAgent } = await import('../services/registry.js');
     const bearerToken = extractBearerTokenFromSecret(token);
+    // Drop a stored API key: it would outrank the OAuth token at dispatch.
+    const { ANTHROPIC_API_KEY: _staleApiKey, ...otherVars } = agentOrError.encryptedEnvVars ?? {};
     const updated = updateAgent(agentOrError.id, {
-      encryptedEnvVars: { ...agentOrError.encryptedEnvVars, [envVarName]: encryptPassword(bearerToken) },
+      encryptedEnvVars: { ...otherVars, [envVarName]: encryptPassword(bearerToken) },
     });
     if (!updated) {
       console.error(`✗ Failed to update member "${memberName}" -- not found in registry.`);
@@ -380,6 +382,9 @@ async function provisionEnvVarForMember(provider: string, token: string, memberN
     console.log(`✓ ${envVarName} provisioned for member "${updated.friendlyName}"`);
     console.log(`  Stored encrypted in registry.json's encryptedEnvVars (never plaintext).`);
     console.log(`  LocalStrategy's clean-env dispatch injects it into every dispatch's child shell.`);
+    if (_staleApiKey) {
+      console.log(`  Cleared the member's stored ANTHROPIC_API_KEY (it would take precedence over ${envVarName}).`);
+    }
   } catch (err: any) {
     console.error(`✗ Failed to provision member env var: ${err.message}`);
     process.exit(1);

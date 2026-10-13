@@ -46,7 +46,9 @@ export function wrapPowerShellEncoded(psScript: string): string {
   return `powershell -EncodedCommand ${encoded}`;
 }
 
-const CLI_PATH = '$env:Path = "$env:USERPROFILE\\.local\\bin;$env:Path"; \'ANTIGRAVITY_SOURCE_METADATA\',\'CLAUDE_SOURCE_METADATA\',\'COPILOT_SOURCE_METADATA\',\'CODEX_SOURCE_METADATA\' | ForEach-Object { Remove-Item "env:$_" -ErrorAction SilentlyContinue }; ';
+// The member's own fleet bin dir, APPENDED (see linux.ts FLEET_BIN_PATH_POSIX).
+export const FLEET_BIN_PATH_WINDOWS = '$env:USERPROFILE\\.apra-fleet\\bin';
+const CLI_PATH = '$env:Path = "$env:USERPROFILE\\.local\\bin;$env:Path;' + FLEET_BIN_PATH_WINDOWS + '"; \'ANTIGRAVITY_SOURCE_METADATA\',\'CLAUDE_SOURCE_METADATA\',\'COPILOT_SOURCE_METADATA\',\'CODEX_SOURCE_METADATA\' | ForEach-Object { Remove-Item "env:$_" -ErrorAction SilentlyContinue }; ';
 
 /**
  * Wrap PowerShell setup commands and a CLI invocation with PID capture.
@@ -134,6 +136,7 @@ export class WindowsCommands implements OsCommands {
   // --- Process check ---
 
   fleetProcessCheck(folder: string, sessionId?: string, processName?: string): string {
+    if (processName === '') return "echo 'idle'";
     const pname = processName ?? 'claude';
     const escapedFolder = escapeWindowsArg(folder.replace(/\\/g, '\\\\'));
     const sessionFilter = sessionId ? ` -or $_.CommandLine -match '${escapeWindowsArg(sanitizeSessionId(sessionId))}'` : '';
@@ -223,6 +226,11 @@ export class WindowsCommands implements OsCommands {
     if (model) {
       argList += ` ${provider.modelFlag(escapeWindowsArg(model))}`;
     }
+    // Per-session member MCP config, quoted by the provider for PowerShell.
+    // Appended LAST: Claude's --mcp-config is variadic.
+    if (opts.mcpConfigPath && provider.mcpConfigFlag) {
+      argList += ` ${provider.mcpConfigFlag(opts.mcpConfigPath, false)}`;
+    }
 
     return provider.wrapWindowsPrompt(setupCmd, filePath, argList, sessionId, model, opts.tier);
   }
@@ -301,8 +309,20 @@ $merged | ConvertTo-Json -Depth 99 | Set-Content -Path $p -NoNewline;
     return wrapPowerShellEncoded(psScript);
   }
 
+  credentialFileInstall(stagedPath: string, destPath: string): string {
+    // Move-Item keeps the staged file's ACL (created under the user profile).
+    const psScript = `$s='${escapePowerShellArgInner(stagedPath)}'; $p="${escapeWindowsArg(destPath)}"; New-Item -Path (Split-Path -Path $p -Parent) -ItemType Directory -Force | Out-Null; Move-Item -LiteralPath $s -Destination $p -Force`;
+    return wrapPowerShellEncoded(psScript);
+  }
+
   credentialFileRemove(destPath: string): string {
     return `Remove-Item "${escapeWindowsArg(destPath)}" -Force -ErrorAction SilentlyContinue`;
+  }
+
+  credentialFileMoveAside(destPath: string, suffix: string): string {
+    if (!/^[A-Za-z0-9._-]+$/.test(suffix)) throw new Error('Invalid backup suffix: ' + suffix);
+    const p = escapeWindowsArg(destPath);
+    return `if (Test-Path "${p}") { Move-Item -Path "${p}" -Destination "${p}${suffix}" -Force; echo "moved" }`;
   }
 
   apiKeyCheck(envVarName?: string): string {
@@ -311,20 +331,21 @@ $merged | ConvertTo-Json -Depth 99 | Set-Content -Path $p -NoNewline;
     return `if ($env:${varName}) { $env:${varName}.Substring(0,10) } else { echo "" }`;
   }
 
-  setEnv(name: string, value: string): string[] {
+  // base64 so the file is parsed, never executed (no quoting exposure).
+  persistEnvFileContent(name: string, value: string): string {
     if (!/^[A-Z_][A-Z0-9_]*$/i.test(name)) throw new Error('Invalid env var name: ' + name);
-    const escaped = escapePowerShellArgInner(value);
-    return [`[Environment]::SetEnvironmentVariable('${name}', '${escaped}', 'User')`];
+    return Buffer.from(value, 'utf-8').toString('base64');
+  }
+
+  persistEnvFromFile(name: string, filePath: string): string {
+    if (!/^[A-Z_][A-Z0-9_]*$/i.test(name)) throw new Error('Invalid env var name: ' + name);
+    const q = `'${escapePowerShellArgInner(filePath)}'`;
+    return `$f = ${q}; try { $v = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String(([IO.File]::ReadAllText($f)).Trim())); [Environment]::SetEnvironmentVariable('${name}', $v, 'User') } catch { [Console]::Error.WriteLine('apra-fleet: could not apply the staged env file'); exit 1 } finally { Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue }`;
   }
 
   unsetEnv(name: string): string[] {
     if (!/^[A-Z_][A-Z0-9_]*$/i.test(name)) throw new Error('Invalid env var name: ' + name);
     return [`[Environment]::SetEnvironmentVariable('${name}', $null, 'User')`];
-  }
-
-  envPrefix(name: string, value: string): string {
-    const escaped = escapePowerShellArgInner(value);
-    return `$env:${name}='${escaped}';`;
   }
 
   // --- Git credential helper ---
@@ -410,7 +431,7 @@ $merged | ConvertTo-Json -Depth 99 | Set-Content -Path $p -NoNewline;
   // --- Shell ---
 
   wrapInWorkFolder(folder: string, command: string): string {
-    return `Set-Location "${escapeWindowsArg(folder)}"; ${command}`;
+    return `Set-Location "${escapeWindowsArg(folder)}"; $env:Path = "$env:Path;${FLEET_BIN_PATH_WINDOWS}"; ${command}`;
   }
 
   wrapPidCapture(command: string): string {

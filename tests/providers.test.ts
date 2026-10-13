@@ -7,6 +7,7 @@ import { getProvider } from '../src/providers/index.js';
 import { buildResumeFlag, buildSessionIdFlag, buildForkFlag, isMaxTurnsResponse } from '../src/providers/provider.js';
 import { isMaxTurnsSignal, parseClaudeResetTime } from '../src/providers/claude.js';
 import type { SSHExecResult } from '../src/types.js';
+import { MEMBER_DENIED_TOOLS } from '../src/services/member-tool-allowlist.js';
 
 // --- Helpers -----------------------------------------------------------------
 
@@ -410,16 +411,20 @@ describe('ClaudeProvider', () => {
     expect(p.supportsApiKey()).toBe(true);
   });
 
-  it('composePermissionConfig disables fleet-mcp for doer (#151)', () => {
-    const [settings] = p.composePermissionConfig('doer') as [Record<string, unknown>];
-    const mcpServers = settings.mcpServers as Record<string, unknown>;
-    expect(mcpServers?.['apra-fleet']).toMatchObject({ disabled: true });
+  it('composePermissionConfig no longer writes the blanket apra-fleet {disabled:true} switch', () => {
+    for (const role of ['doer', 'reviewer'] as const) {
+      const [settings] = p.composePermissionConfig(role) as [Record<string, unknown>];
+      expect(settings.mcpServers).toBeUndefined();
+      expect(JSON.stringify(settings)).not.toContain('"disabled"');
+    }
   });
 
-  it('composePermissionConfig disables fleet-mcp for reviewer (#151)', () => {
-    const [settings] = p.composePermissionConfig('reviewer') as [Record<string, unknown>];
-    const mcpServers = settings.mcpServers as Record<string, unknown>;
-    expect(mcpServers?.['apra-fleet']).toMatchObject({ disabled: true });
+  it('composePermissionConfig denies exactly the complement of the member allowlist on apra-fleet', () => {
+    const [settings] = p.composePermissionConfig('doer', ['Read']) as [{ permissions: { allow: string[]; deny: string[] } }];
+    expect(settings.permissions.allow).toEqual(['Read']);
+    expect(settings.permissions.deny).toEqual(MEMBER_DENIED_TOOLS.map(t => `mcp__apra-fleet__${t}`));
+    expect(settings.permissions.deny.some(r => r.includes('deepwiki'))).toBe(false);
+    expect(settings.permissions.deny).not.toContain('mcp__apra-fleet__kb_query');
   });
 });
 
@@ -1097,6 +1102,43 @@ describe('AgyProvider', () => {
       'command(bd)',
       'command(regex:bd .*)',
     ]);
+  });
+
+  describe('detectUsageLimit', () => {
+    it('returns null when result.code === 0 and !parsed.isError, even if stdout contains "output_tokens": 429', () => {
+      const stdout = JSON.stringify({
+        conversation_id: 'conv-123',
+        status: 'SUCCESS',
+        response: 'All planned tasks created successfully',
+        usage: { input_tokens: 5000, output_tokens: 429 },
+      });
+      const result = { stdout, stderr: '', code: 0 };
+      const parsed = p.parseResponse(result);
+      expect(p.detectUsageLimit(result, parsed)).toBeNull();
+    });
+
+    it('returns a guessed usage-limit signal when result.code !== 0 and stderr contains "rate limit"', () => {
+      const result = { stdout: '', stderr: 'Error: Rate limit exceeded (429)', code: 1 };
+      const parsed = p.parseResponse(result);
+      const signal = p.detectUsageLimit(result, parsed);
+      expect(signal).not.toBeNull();
+      expect(signal?.type).toBe('usage_limit');
+      expect(signal?.resumeAtSource).toBe('guessed');
+    });
+
+    it('returns a guessed usage-limit signal when parsed.isError is true and response mentions quota exceeded', () => {
+      const stdout = JSON.stringify({
+        conversation_id: 'conv-123',
+        status: 'ERROR',
+        error: 'Resource has been exhausted (e.g. check quota)',
+      });
+      const result = { stdout, stderr: '', code: 1 };
+      const parsed = p.parseResponse(result);
+      const signal = p.detectUsageLimit(result, parsed);
+      expect(signal).not.toBeNull();
+      expect(signal?.type).toBe('usage_limit');
+      expect(signal?.resumeAtSource).toBe('guessed');
+    });
   });
 });
 

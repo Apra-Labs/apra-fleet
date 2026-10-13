@@ -28,6 +28,12 @@ import type { PermissionDenial, PermissionDenialItem } from './provider.js';
  * rule. Those denials are marked healable:false; a complete reply then comes
  * back as a success carrying them as a logged warning, and no caller may ever
  * add a grant for them.
+ *
+ * Second exception, in ANY mode: a refused call to a fleet tool outside the
+ * member allowlist hit a deny rule compose writes on purpose
+ * (claudeMemberDenyRules). parseResponse marks the whole denial healable:false
+ * with cause 'policy_deny' and blanks every suggested grant, so it is handled
+ * like an auto-mode refusal and the denied tool is never granted.
  */
 
 const SHELL_CHAIN_RE = /[|;&`<>]|\$\(/;

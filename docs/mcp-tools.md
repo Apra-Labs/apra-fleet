@@ -36,8 +36,8 @@ this pair as "member identifier" rather than repeating it.
 **Authentication and git:** `provision_llm_auth`, `setup_ssh_key`, `setup_git_app`,
 `provision_vcs_auth`, `revoke_vcs_auth`, `vcs_credential_exec`.
 
-**Status and maintenance:** `fleet_status`, `member_detail`, `update_llm_cli`,
-`shutdown_server`, `version`, `compose_permissions`, `cloud_control`.
+**Status and maintenance:** `fleet_status`, `member_detail`, `session_stats`,
+`update_llm_cli`, `shutdown_server`, `version`, `compose_permissions`, `cloud_control`.
 
 **Credential store:** `credential_store_set`, `credential_store_list`,
 `credential_store_update`, `credential_store_delete`.
@@ -166,6 +166,7 @@ Modifies an existing member's registration. All fields except `member_id` are op
 | `shell` | `"gitbash"` \| `"pwsh7"` \| `"powershell5"` | no | Override the probed Windows shell |
 | `unreservable` | boolean | no | Make the member shareable across sprints |
 | `cloud_region` / `cloud_profile` / `cloud_idle_timeout_min` / `cloud_activity_command` | - | no | Cloud settings; pass an empty string to clear `cloud_activity_command` |
+| `fleet_install` | `"auto"` \| `"skip"` \| `"replace-full"` | no | `"auto"`: for a remote member, installs or upgrades its own apra-fleet when missing or older (build-aware) even when nothing else changed, then self-registers and verifies; a local member gets only the MEMBER-session probe; the result carries the `fleetMcp` line. `"skip"`: never installs (a refresh triggered by another change runs with install off). Omitted: install only on a provider change. A member whose apra-fleet lacks the member-install marker is not touched and records `full-install-running` (see docs/member-fleet-mcp-wiring.md). `"replace-full"`: everything `"auto"` does, plus an explicit opt-in to REPLACE such an unmarked (full) install with a member install. Allowed only when the marker probe answers cleanly "absent" on a working install; a marker probe failure refuses with no destructive command (`probe-failed`). The installer is fetched and staged first; then, each command built per member OS/shell: (1) copy `<home>/.apra-fleet/data` and `<home>/.apra-fleet/fleet.key` into `<home>/.apra-fleet-replace-backup-<UTC stamp>`; (2) `<home>/.apra-fleet/bin/apra-fleet uninstall --force --yes` with the installed binary; (3) linux: stop and disable the `fleet-supervisor` user unit if its unit file exists, move the file into the backup, `daemon-reload`; (4) move `data` aside to `<home>/.apra-fleet/data.replaced-<stamp>`; (5) run the staged current installer `install --member --llm <provider> --force`; then self-register and write the per-folder MCP entry as `"auto"` does. The `fleetMcp` line and `fleetMcp.replacedFullInstall` report what was removed, the backup path and the new version. A failure records `replace-failed` naming the failed step and, from step 2 on, the rollback commands. A marked install is upgraded as with `"auto"` (no replace). `register_member` accepts the same value |
 
 **What it does:**
 
@@ -316,7 +317,7 @@ is rejected for them and `execute_command` should be used instead.
 7. **Handles stale sessions** -- when resuming via `resume=true` (the member's own stored session), a command failure after a resume attempt is retried transparently with a fresh minted session ID. This transparent fallback does **not** apply when `resume` was an explicit session-id string: an unresolvable explicit id is rejected outright as `session_not_found` with no LLM call made, since silently switching to a different session would defeat the caller's reason for naming one. The caller must explicitly re-dispatch (typically with `resume=false`) to recover.
 8. **Updates registry** -- stores the new `sessionId` (Claude) and `lastUsed` timestamp.
 
-**Output:** `structuredContent.response` carries the agent's reply text; `structuredContent.usage` carries token counts when available; `structuredContent.sessionId` carries the session ID if one was returned.
+**Output:** `structuredContent.response` carries the agent's reply text; `structuredContent.usage` carries token counts when available; `structuredContent.sessionId` carries the session ID if one was returned, including on failure outcomes (max turns, auth, server, overloaded, non-zero exit, empty response, dispatch failed) so callers can resume that session.
 
 **Error handling:**
 - If the prompt fails due to an authentication issue, returns actionable guidance (`provision_llm_auth`) instead of raw error output.
@@ -326,11 +327,12 @@ is rejected for them and `execute_command` should be used instead.
 - Claude permission refusals (a result whose `permission_denials` is non-empty: tool calls refused, `is_error` still false). The `permissionDenied` / `permissionWarning` block also carries `permissionMode` (the mode the session ran in) and `healable`:
   - `acceptEdits` (no `unattended`, `unattended: false`, or `auto` on a model without auto support such as Haiku): `healable: true`; the refusal is a missing allow rule, healable with `compose_permissions` `grant`.
   - `auto` / `bypassPermissions`: the refusal came from the safety classifier or a deny rule. `healable: false` and `suggestedGrants` is empty (overall and per call): never grant it.
+  - Any mode, a fleet tool outside the member allowlist (denied by the member's own `.claude/settings.local.json` on purpose): `healable: false`, `cause: "policy_deny"`, `suggestedGrants` empty -- the whole denial, even when other calls in it were missing an allow rule. Never grant it. Member-allowlisted tools (kb_*, code_*, ...) always have an allow rule in the composed config, so an acceptEdits session is not refused them.
   - Default (no `fail_on_permission_denial`): the reply stands, as in v0.4.3. A complete reply is a success carrying the refusals in `structuredContent.permissionWarning` (logged, `[WARN]` in the text); an incomplete one keeps its ordinary reason (e.g. `empty_response`) with the refusals attached as `permissionDenied`.
   - `fail_on_permission_denial: true` (fleet-sprint passes it): any refusal fails `reason: "permission_denied"` with the `permissionDenied` block, any partial reply in `response`, and the same session/usage/budget bookkeeping as a completed dispatch -- except a `healable: false` refusal on a complete reply, which stays a `permissionWarning`.
   - Either way a typed failure wins: a `max_turns_exhausted`, `auth`, `server`, `overloaded` or `workspace_not_trusted` result keeps its reason, with the refusals attached as `permissionDenied`.
 - `compose_permissions` `dry_run: true` returns the allow list it would deliver for the role/tags (plus detected stacks, plus the ledger when `project_folder` is given) as JSON `{"dry_run":true,"mode","stacks","allow"}` and writes nothing -- use it to check whether a grant is within the member's composed policy.
-- AGY: a tool call refused for lack of a grant returns `reason: "permission_denied"` with a `permissionDenied` block (denied actions, targets, `suggestedGrants`, `hint`); heal it with `compose_permissions` `grant` and re-dispatch. An agy member whose own agy project cannot be created or verified is rejected with `dispatch_failed` and no LLM call. See [agy-provider.md](agy-provider.md).
+- AGY: a tool call refused for lack of a grant returns `reason: "permission_denied"` with a `permissionDenied` block (denied actions, targets, `suggestedGrants`, `hint`); heal it with `compose_permissions` `grant` and re-dispatch. A refusal of a fleet tool outside the member allowlist is member policy instead: `healable: false`, `cause: "policy_deny"`, no suggested grants, and a warning (not a failure) on a complete reply. An agy member whose own agy project cannot be created or verified is rejected with `dispatch_failed` and no LLM call. See [agy-provider.md](agy-provider.md).
 
 **Token accumulation:**
 After each successful prompt response, the server automatically accumulates `input_tokens` and `output_tokens` from the provider's usage metadata onto the member record. Running totals are accessible via `member_detail` and `fleet_status`.
@@ -371,7 +373,7 @@ Runs a shell command directly on a member without spinning up Claude. Use for qu
 
 1. Looks up the member.
 2. Resolves the working directory -- uses `run_from` if provided, otherwise the member's registered `workFolder`.
-3. Wraps the command with a `cd` (Unix) or `Set-Location` (Windows) into the resolved folder.
+3. Wraps the command with a `cd` (Unix) or `Set-Location` (Windows) into the resolved folder. On POSIX shells (Linux, macOS, Windows Git Bash) the command is passed to the wrapper as data (`eval '<command>'`), so multi-line commands, heredocs (including one at the very end), trailing `&`/`;`/`#` comments and empty commands all work, and the `cd` covers the whole command (a failed `cd` runs none of it). A syntax error in the command itself is reported as `eval: line N: ...` (previously `-c: line N: ...`).
 4. Executes via `strategy.execCommand()` with the specified timeout.
 5. Returns stdout, stderr, and exit code.
 
@@ -473,6 +475,7 @@ Provides a quick summary table of all fleet members.
 | Name | Type | Required | Description |
 |------|------|----------|-------------|
 | `format` | `"compact"` \| `"json"` | no | Default `"compact"`. `"json"` returns structured data |
+| `repo_path` | string | no | Absolute path to a repo checkout. Adds that repo's code-intelligence index health and the canonical-bible drift of its KB scope. The server's own working directory is never used. |
 
 **What it does:**
 
@@ -494,6 +497,29 @@ Provides a quick summary table of all fleet members.
 | Last Activity | relative time (e.g. "5m ago", "2d ago") | When `execute_prompt` or `send_files` last touched this member |
 | Tokens | `in: N / out: N` or omitted | Accumulated token totals for this member |
 
+**Fleet-wide sections (independent of the server's working directory):** the fleet server is one long-lived process serving every project, so `fleet_status` never derives a project or repo from its own cwd.
+
+- **KB health** enumerates every KB scope on disk (`<data dir>/knowledge/<project-slug>/kb.sqlite`) and reports one line per non-empty project scope, labeled `kb[<slug>]`, plus `kb[global]`; empty scopes are collapsed into one `kb: empty scope(s): ...` line. JSON: `kbHealth: { projectProvider, scopes: [{ scope, totals, stale, flagged, superseded, retrieval, promote_ratio, bible }], global, errors, totalEntries }`. Bible drift needs a repo checkout, so it is computed only for the scope of `repo_path`; other scopes report `bible: { computable: false, reason }`.
+- **Code intelligence** indexes are per repo (`<repo>/.gitnexus`). Without `repo_path` the line reads `code-intel: per-repo index; ...` (JSON: `{ present: false, computable: false, reason }`); the 30-day top-symbols telemetry is fleet-wide and always shown.
+
+### `session_stats`
+
+A member's `kb_*` and `code_*` tool call counts on THIS server, aggregated
+across all of the member's sessions since the server started. Member-allowed.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `member_id` | string | no | Omit on a member session (the calling member is reported; another id is refused). Required on a non-member session |
+
+**Returns** JSON `{ member_id, since, kb, code, total, tools }` -- `since` is
+when counting started (server start), `tools` the per-tool counts. Calls made
+from sessions opened with `origin=engine` (the engine's `memberCall` and the
+`apra-fleet call` verb) are not counted, and non-member sessions are never
+counted. fleet-sprint reads it before and after every dispatch to report calls
+per member per dispatch; see [knowledge-layer.md](knowledge-layer.md).
+
 ### `member_detail`
 
 Deep-dive status for a single member -- connectivity, provider CLI, session state, and system resources.
@@ -514,5 +540,6 @@ Assembles a multi-section report covering:
 - **System Resources:** CPU load, memory usage, and working folder disk space.
 - **Git:** Current branch in the member's working folder.
 - **Token Usage:** Accumulated lifetime token totals.
+- **Code intelligence** (`codeIntel`): `{ provider, available, cause?, remedy? }` for local members. `available: false` names the cause and remedy, e.g. `npx` or `node` not found on the apra-fleet service PATH (reinstall the service so it records node/npx, or add them to the PATH) or provider `none`. `null` for remote members, whose code tools run on their own host. Compact format adds a `codeIntel=` line (plus cause and fix lines when unavailable).
 - **Registry facts** (`"json"` format): the member's recorded VCS provider (`vcsProvider`), repo origin URL (`repo_remote_url`), and git access level (`gitAccess`, from `register_member`/`update_member`'s `git_access`). `member_detail` is the only MCP surface exposing these, and fleet-sprint -- which keeps no registry of its own -- reads them from here to scope credentials and to warn before a push its credential level cannot carry (e.g. a `.github/workflows/**` change on a level without GitHub's `workflows` permission).
 - **Permission config paths** (`"json"` format, `permissionConfigPaths`): the file(s) the member's LLM provider composes with `compose_permissions` (work-folder-relative, or home-anchored `~/...`), straight from the provider adapter -- e.g. `.claude/settings.local.json` for Claude, `.codex/config.toml` for Codex; `[]` when the provider cannot name them yet. Reported even for an offline member. fleet-sprint's member preflight probes these before any dispatch and re-composes a config lost to a re-clone or `git clean -xdf`.

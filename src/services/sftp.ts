@@ -285,6 +285,68 @@ export async function uploadContentToHome(
   });
 }
 
+function sftpRealpath(s: SftpSession, p: string): Promise<string> {
+  return s.guard('realpath', p, () => new Promise((resolve, reject) => {
+    s.sftp.realpath(p, (err, abs) => {
+      if (err) reject(err);
+      else resolve(abs);
+    });
+  }));
+}
+
+/**
+ * SFTP reports a Windows (Win32-OpenSSH) path as "/C:/Users/x"; every member
+ * shell (PowerShell or Git Bash) wants "C:/Users/x". POSIX paths pass through.
+ */
+export function sftpPathToShellPath(p: string): string {
+  return /^\/[A-Za-z]:/.test(p) ? p.slice(1) : p;
+}
+
+/**
+ * Write a secret-bearing file into the connecting user's home directory over
+ * SFTP, so the value never appears in any command line on the member. The
+ * file is created owner-only (0600; Windows ignores the mode -- the user
+ * profile ACL is the boundary there). Returns the absolute path in the form
+ * the member's shell accepts, resolved by the SFTP server itself (never a
+ * guessed home directory).
+ */
+export async function writeSecretFileInHome(agent: Agent, fileName: string, content: string): Promise<string> {
+  if (!/^[A-Za-z0-9._-]+$/.test(fileName)) throw new Error(`Unsafe secret file name: ${fileName}`);
+  return withSftpSession(agent, undefined, async (s) => {
+    const home = (await sftpRealpath(s, '.')).replace(/\/+$/, '');
+    const remotePath = `${home}/${fileName}`;
+    // open (0600) -> fchmod -> write -> close: a server that ignores the
+    // open-time mode is still owner-only BEFORE any content lands. Windows
+    // servers ignore/reject the chmod -- not fatal there (profile ACL).
+    // Every step runs under the session's inactivity guard; the cleanup steps
+    // are best-effort (a timed-out session is already ended).
+    const data = Buffer.from(content, 'utf-8');
+    const handle = await s.guard('open', remotePath, () => new Promise<Buffer>((resolve, reject) => {
+      s.sftp.open(remotePath, 'w', { mode: 0o600 }, (err, h) => (err ? reject(err) : resolve(h)));
+    }));
+    let written = false;
+    try {
+      await s.guard('chmod', remotePath, () => new Promise<void>((resolve) => { s.sftp.fchmod(handle, 0o600, () => resolve()); }));
+      await s.guard('write', remotePath, () => new Promise<void>((resolve, reject) => {
+        s.sftp.write(handle, data, 0, data.length, 0, (err) => (err ? reject(err) : resolve()));
+      }));
+      written = true;
+    } finally {
+      await s.guard('close', remotePath, () => new Promise<void>((resolve) => { s.sftp.close(handle, () => resolve()); })).catch(() => {});
+      if (!written) await s.guard('unlink', remotePath, () => new Promise<void>((resolve) => { s.sftp.unlink(remotePath, () => resolve()); })).catch(() => {});
+    }
+    return sftpPathToShellPath(remotePath);
+  });
+}
+
+/** Best-effort removal of a file written by writeSecretFileInHome. */
+export async function removeSecretFile(agent: Agent, shellPath: string): Promise<void> {
+  const sftpPath = /^[A-Za-z]:/.test(shellPath) ? `/${shellPath}` : shellPath;
+  await withSftpSession(agent, undefined, (s) => s.guard('unlink', sftpPath, () => new Promise<void>((resolve) => {
+    s.sftp.unlink(sftpPath, () => resolve());
+  }))).catch(() => { /* best-effort */ });
+}
+
 export async function downloadViaSFTP(
   agent: Agent,
   remotePaths: string[],

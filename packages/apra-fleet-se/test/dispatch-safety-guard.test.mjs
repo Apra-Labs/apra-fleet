@@ -416,7 +416,12 @@ const DISPATCH_ROLE_PATH = path.join(__dirname, '../fleet-sprint/dispatch-role.m
 // unguarded: beads-children.mjs is registered in GUARDED_MODULES, so the
 // aggregate checkModules(guardedModulePaths()) test below scans it, and it
 // gets its own explicit baseline count below.
-const EXPECTED_COMMAND_COUNT = 4;
+// Bumped 4 -> 5: the KB injection's diff-file listing (`git diff --name-only`,
+// role hint source for reviewer/harvester) passes member_name and is failSoft.
+// 6 -> 8 (GitHub #715): reclaimInRunOrphanedClaims adds its fresh-read
+// `bd show` and its guarded `bd update --status open` write, both on the
+// backlog member with member_name.
+const EXPECTED_COMMAND_COUNT = 8;
 // Bumped 9 -> 10 (2026-07-18): the doer max_turns-exhaustion resume path
 // (dispatchDoerResume) adds one new agent() call site -- a resume-and-continue
 // dispatch on the SAME session with an escalated max_turns, verified compliant
@@ -1125,7 +1130,12 @@ const MEMBER_SYNC_PATH = path.join(__dirname, '../fleet-sprint/member-sync.mjs')
 // which issues its read-only git reads (rev-parse, ls-remote, fetch,
 // rev-list) with member_name: member, outside runGitStep because each is a
 // best-effort verification read, not a sync step to retry or self-heal.
-const EXPECTED_MEMBER_SYNC_COMMAND_COUNT = 2;
+// 2 -> 3 (retry salvage, GitHub #716): salvageBeforeReset()'s single `run`
+// helper, which issues the local-only rev-parse, rev-list, stash create and
+// branch -f with member_name: member, outside runGitStep because none of them
+// is a credential/transient failure to self-heal or retry; any failure fails
+// the salvage closed and blocks the reset.
+const EXPECTED_MEMBER_SYNC_COMMAND_COUNT = 3;
 
 test('every command() call site in member-sync.mjs passes member_name or member_id', () => {
     const { sites, violations } = checkPath(MEMBER_SYNC_PATH);
@@ -1763,4 +1773,37 @@ test('adding a second path to the shared list makes the guard scan it and name i
 
 test('checkModules() rejects a non-array argument rather than silently scanning nothing', () => {
     assert.throws(() => checkModules(RUNNER_PATH), /must be an array/);
+});
+
+// =============================================================================
+// ci-gate.mjs -- the engine CI gate.
+//
+// Its command() baseline is ONE: the origin-remote read on the git-capable
+// member named explicitly. Its agent() baseline is ZERO: the gate makes REST
+// calls through vcs_credential_exec, it never dispatches a role.
+// =============================================================================
+const CI_GATE_PATH = path.join(__dirname, '../fleet-sprint/ci-gate.mjs');
+const EXPECTED_CI_GATE_COMMAND_COUNT = 1;
+
+test('every command() call site in ci-gate.mjs passes member_name or member_id', () => {
+    const { sites, violations } = checkPath(CI_GATE_PATH);
+
+    const commandSites = sites.filter((s) => s.fnName === 'command');
+    assert.strictEqual(
+        commandSites.length,
+        EXPECTED_CI_GATE_COMMAND_COUNT,
+        `Expected ${EXPECTED_CI_GATE_COMMAND_COUNT} command() call site(s) in ci-gate.mjs, found ${commandSites.length}. ` +
+        'If a call site was intentionally added or removed, update EXPECTED_CI_GATE_COMMAND_COUNT after confirming ' +
+        'every site still passes member_name/member_id.'
+    );
+    assert.strictEqual(
+        sites.filter((s) => s.fnName === 'agent').length,
+        0,
+        'ci-gate.mjs must never dispatch an agent() -- the CI gate is an orchestrator REST step, not a role ladder.'
+    );
+    assert.deepStrictEqual(
+        violations,
+        [],
+        `Found ${violations.length} dispatch-safety violation(s):\n${violations.join('\n')}`
+    );
 });

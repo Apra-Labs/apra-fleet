@@ -177,6 +177,17 @@ describe('ensureCloudReady - F5 re-provisioning after start', () => {
     );
   });
 
+  it('re-provisions with member_id only (no api_key, no force_oauth_copy) so a stored member credential is re-deployed, not replaced', async () => {
+    mockGetInstanceState.mockResolvedValue('stopped');
+    const member = makeStoppedCloudAgent();
+    addAgent(member);
+
+    const { ensureCloudReady } = await import('../src/services/cloud/lifecycle.js');
+    await ensureCloudReady(member);
+
+    expect(mockProvisionAuth).toHaveBeenCalledWith({ member_id: member.id });
+  });
+
   it('does NOT call provisionVcsAuth when member has no git repos', async () => {
     mockGetInstanceState.mockResolvedValue('stopped');
     const member = makeStoppedCloudAgent({ gitAccess: undefined, gitRepos: undefined });

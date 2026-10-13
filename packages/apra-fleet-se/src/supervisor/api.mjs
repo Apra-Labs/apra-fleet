@@ -1,5 +1,5 @@
 // =============================================================================
-// Auto-sprint supervisor -- operator HTTP endpoints (apra-fleet-eft.4.4)
+// fleet-sprint supervisor -- operator HTTP endpoints (apra-fleet-eft.4.4)
 // members / backlog / sprints CRUD / stop proxy
 // =============================================================================
 //
