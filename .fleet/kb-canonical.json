@@ -3,26 +3,9 @@
   "provenance": {
     "commit": "308072047d0168bad3bdc22bedb5e1fb39daf653",
     "branch": "feat/kb-redesign",
-    "entry_count": 107
+    "entry_count": 96
   },
   "entries": [
-    {
-      "id": "025f20b0-69c1-4ea4-bf1b-7db4dd3540ea",
-      "type": "learning",
-      "title": "Permission-heal retry reuses the same attempt number, so it never resumes onto the remote tip",
-      "summary": "dispatchRole's permission_denied heal re-runs the attempt with attempt -= 1. A heal on attempt 1 therefore retries as attempt 1, where retryFollowsPossibleMutation is false and resumeOntoRemoteTip is not set, even though permission_denied counts as agent-ran.",
-      "symbols": [
-        "dispatchRole",
-        "agentRan",
-        "isNoMutationDispatchFailure"
-      ],
-      "source_files": [
-        "packages/apra-fleet-se/fleet-sprint/dispatch-role.mjs",
-        "packages/apra-fleet-se/fleet-sprint/dispatch-failure.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-10-06T09:41:40.896Z"
-    },
     {
       "id": "0b6a7734-3224-4b5e-b407-6353af651e29",
       "type": "learning",
@@ -359,27 +342,6 @@
       "updated_at": "2026-09-29T06:13:14.441Z"
     },
     {
-      "id": "35bb20cf-12bd-4762-9123-bc8abd44899e",
-      "type": "knowledge",
-      "title": "A src/tools/ function is not automatically MCP-server-only: src/index.ts routes subcommands straight into them",
-      "summary": "The register-member CLI subcommand calls the shared registerMember() tool function in a short-lived process, so lifetime/handle arguments that assume every execCommand caller is the long-lived MCP server are wrong.",
-      "symbols": [
-        "runRegisterMember",
-        "registerMember",
-        "execCommand",
-        "completesOnProcessExit"
-      ],
-      "source_files": [
-        "src/index.ts",
-        "src/cli/register-member.ts",
-        "src/tools/register-member.ts",
-        "src/services/strategy.ts",
-        "src/services/ssh.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:13.689Z"
-    },
-    {
       "id": "399f2e9b-c7d1-4c6a-9785-192062276a11",
       "type": "learning",
       "title": "apra-fleet-se lint rejects compound 'orchestrator' identifiers in fleet-sprint code",
@@ -398,21 +360,6 @@
         "packages/apra-fleet-se/fleet-sprint/member-init-probe.mjs": "0d4587ee66b94998aa300aaf476b4faa8620f96a",
         "packages/apra-fleet-se/test/backlog-role-no-orchestrator-identifiers.test.mjs": "02cc51c5452af602a3bd6d620be27558de4fdc5f"
       }
-    },
-    {
-      "id": "3c011e6f-b099-492c-80dc-9705e6a74b97",
-      "type": "knowledge",
-      "title": "Supervisor shutdown stops seams only -- sprint children survive as orphans",
-      "summary": "POST /api/shutdown and signals run stop(), which closes the HTTP server and stops seams but never kills spawned sprint children; stop a sprint via POST /api/sprints/:id/stop before deleting its directories.",
-      "symbols": [
-        "createSupervisor"
-      ],
-      "source_files": [
-        "packages/apra-fleet-se/src/supervisor/server.mjs",
-        "packages/apra-fleet-se/src/supervisor/api.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:12.891Z"
     },
     {
       "id": "3fe69283-7266-44c7-9f6d-d376847b4873",
@@ -589,50 +536,6 @@
       "updated_at": "2026-09-29T06:13:13.727Z"
     },
     {
-      "id": "4b900de5-4eef-481f-baa9-3c5d17475142",
-      "type": "knowledge",
-      "title": "Windows dispatch completion is process exit plus a drain window, not pipe EOF",
-      "summary": "On Windows members, local and SSH exec settle on process exit plus a FLEET_EXIT_DRAIN_MS (default 2000ms) drain window, because grandchildren inheriting stdio withhold pipe EOF indefinitely.",
-      "symbols": [
-        "completesOnProcessExit",
-        "exitDrainMs",
-        "LocalStrategy.execCommand",
-        "execCommand",
-        "buildOrphanPipeParentScript"
-      ],
-      "source_files": [
-        "src/services/exit-drain.ts",
-        "src/services/strategy.ts",
-        "src/services/ssh.ts",
-        "tests/execute-command-long-running-windows.test.ts",
-        "scripts/repro/win-orphan-pipe.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:14.734Z"
-    },
-    {
-      "id": "4d57347c-81ee-4139-93f4-c05ca705422c",
-      "type": "learning",
-      "title": "Changing ProviderStats silently drifts the kb_stats memory contract",
-      "summary": "ProviderStats flows unfiltered into the kb_stats MCP response, whose contract schema closes parsed with additionalProperties false, so adding a provider field breaks the published contract while contract:check stays green.",
-      "symbols": [
-        "ProviderStats",
-        "kbStats",
-        "HttpKbProvider"
-      ],
-      "source_files": [
-        "src/tools/kb-stats.ts",
-        "src/services/knowledge/types.ts",
-        "src/services/knowledge/http-provider.ts",
-        "memory-contract/v1/schemas/kb_stats.response.json",
-        "memory-contract/v1/fixtures/kb_stats/happy.json",
-        "memory-contract/v1/generate-contract.mjs",
-        "tests/memory-contract-fixture-response-schema.test.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:53.836Z"
-    },
-    {
       "id": "4e315af5-d8ab-460e-850a-36d1d38ce19a",
       "type": "knowledge",
       "title": "runner.js's re-export of fatal-diagnostics.mjs is load-bearing for abort.mjs, not just compatibility sugar",
@@ -739,24 +642,6 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:11.708Z"
-    },
-    {
-      "id": "5e37f970-fc03-4975-8f86-140caebea16c",
-      "type": "knowledge",
-      "title": "vcs-auth.mjs's facade pin fails on ADDED top-level symbols, not just removed ones",
-      "summary": "vcs-auth-extraction-facade.test.mjs asserts its two MOVED_*_SYMBOLS lists and vcs-auth.mjs's top-level declarations agree symbol-for-symbol, so introducing a new top-level helper turns the gate red exactly like deleting one does.",
-      "symbols": [
-        "MOVED_PUBLIC_SYMBOLS",
-        "MOVED_PRIVATE_SYMBOLS"
-      ],
-      "source_files": [
-        "packages/apra-fleet-se/test/vcs-auth-extraction-facade.test.mjs",
-        "packages/apra-fleet-se/fleet-sprint/vcs-auth.mjs",
-        "packages/apra-fleet-se/test/coordination-extraction.test.mjs",
-        "packages/apra-fleet-se/test/phase1-leaf-facade-completeness.test.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-30T23:07:12.100Z"
     },
     {
       "id": "64bedb7a-8a2d-46ba-9586-6254a88f6dcd",
@@ -1020,24 +905,6 @@
       "updated_at": "2026-09-25T22:26:32.922Z"
     },
     {
-      "id": "837dd6ce-bf64-40e8-a9f3-8a85745e0354",
-      "type": "learning",
-      "title": "bd-replay record mode bypasses the real-mode caches, so recordings are 1:1 with issued calls",
-      "summary": "runCmd applies the dolt-sync/sync.remote/read caches only when bdMode() === 'real'; record mode sends every bd call other than dolt-sync and the synthesized ones (bd where, bd memories --json, bd forget) to recordBd, and recordBd rewrites the whole fixture with writeFileSync rather than appending.",
-      "symbols": [
-        "runCmd",
-        "recordBd",
-        "replayBd",
-        "bdMode"
-      ],
-      "source_files": [
-        "packages/apra-fleet-se/test/helpers/bd-replay.mjs",
-        "packages/apra-fleet-se/test/fixtures/bd-recordings/apra-fleet-mock-sprint-plannerstalledsession.jsonl"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-30T23:07:12.100Z"
-    },
-    {
       "id": "84258482-2b78-4c46-a077-7698d06fc4b4",
       "type": "knowledge",
       "title": "After a handled terminating signal, run-all-tests.mjs deferred hard-kill timer must own the exit",
@@ -1278,65 +1145,6 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:15.733Z"
-    },
-    {
-      "id": "a6ec7ce9-dc8d-4eb1-bd61-0595765ed066",
-      "type": "knowledge",
-      "title": "Extracting a fleet-sprint module out of runner.js breaks dispatch-safety-guard's EXPECTED_COMMAND_COUNT",
-      "summary": "test/dispatch-safety-guard.test.mjs hard-asserts the number of command()/agent() call sites in runner.js, so any move-only extraction that carries a command() call site out of runner.js fails that test even though every site stays compliant.",
-      "symbols": [
-        "EXPECTED_COMMAND_COUNT",
-        "EXPECTED_VCS_AUTH_COMMAND_COUNT",
-        "checkPath",
-        "GUARDED_MODULES"
-      ],
-      "source_files": [
-        "packages/apra-fleet-se/test/dispatch-safety-guard.test.mjs",
-        "packages/apra-fleet-se/fleet-sprint/dispatch-safety-guard.mjs",
-        "packages/apra-fleet-se/fleet-sprint/guarded-modules.mjs",
-        "packages/apra-fleet-se/fleet-sprint/vcs-auth.mjs",
-        "packages/apra-fleet-se/fleet-sprint/runner.js"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-25T22:26:38.263Z"
-    },
-    {
-      "id": "a95b9663-7487-45c1-b916-b25b4857cbf2",
-      "type": "knowledge",
-      "title": "install --force restarts a service it stopped, once the binary copy finishes",
-      "summary": "If the --force guard stopped a registered service, install restarts it after the binary copy (or lets the final service step re-register/start it), and always prints the restart command.",
-      "symbols": [
-        "serviceRestartCommand",
-        "registeredServiceManager"
-      ],
-      "source_files": [
-        "src/cli/install.ts",
-        "docs/install.md"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:53.856Z"
-    },
-    {
-      "id": "aa5c6a57-a70f-4fce-82e1-a0d75851d351",
-      "type": "knowledge",
-      "title": "A blocks edge inside a streak lane splits the lane instead of sequencing it",
-      "summary": "groupStreaksFromLaneMetadata groups only the CURRENT ready set, so two co-laned beads joined by a blocks edge are never ready together and the lane degrades to one bead per round. streakOrder, not blocks, sequences work inside a lane.",
-      "symbols": [
-        "groupStreaksFromLaneMetadata",
-        "assignDoerWorklists",
-        "beadBlocksDependencyIds",
-        "computeLaneEffort"
-      ],
-      "source_files": [
-        "packages/apra-fleet-se/fleet-sprint/worklists.mjs",
-        "packages/apra-fleet-se/apra-pm/agents/_shared/GRAPH-SEMANTICS.md"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:15.483Z",
-      "source_file_hashes": {
-        "packages/apra-fleet-se/apra-pm/agents/_shared/GRAPH-SEMANTICS.md": "44f2ce4b7d0c8fce54234ab2cae1d546c46acc81",
-        "packages/apra-fleet-se/fleet-sprint/worklists.mjs": "ecd88d89b1408e88449f80a5c073b8c7e2b3f006"
-      }
     },
     {
       "id": "b03effcd-0488-452b-9b49-ab21049c0ece",
@@ -1684,25 +1492,6 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:13.312Z"
-    },
-    {
-      "id": "e0b8a040-9cb5-4bb3-af1f-e32eb8aca83b",
-      "type": "knowledge",
-      "title": "strategy.execCommand resolves on non-zero exit; it rejects only on timeout, spawn/connection error or abort",
-      "summary": "Both LocalStrategy and RemoteStrategy resolve {stdout, stderr, code} regardless of exit status. A tool that must treat a failing command as a normal answer branches on result.code; one that relies on a throw for failure detection will never see a non-zero exit.",
-      "symbols": [
-        "execCommand",
-        "LocalStrategy",
-        "RemoteStrategy",
-        "wrapPowerShellEncoded"
-      ],
-      "source_files": [
-        "src/services/strategy.ts",
-        "src/services/ssh.ts",
-        "src/os/windows.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:16.436Z"
     },
     {
       "id": "e0d3a928-0df8-49c1-bd69-3674ad65310a",
