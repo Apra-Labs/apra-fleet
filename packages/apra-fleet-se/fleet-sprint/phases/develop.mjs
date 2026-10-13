@@ -649,26 +649,25 @@ export async function runDevelopPhase({
                     : ((dispatchError.details && dispatchError.details.reason) || 'dispatch-error'),
                 ...(isPostDispatchSyncFailure(dispatchError) ? { postDispatchSyncFailed: true } : {}),
             };
-            // NOTE ON `outcome` STAYING 'failed' HERE (never 'publish-blocked')
-            // EVEN FOR THE PERMISSION-SCOPE CASE: review.mjs's ONLY read of
-            // this field is `streakOutcomes.filter((o) => o.outcome !== 'failed')`
-            // to build the round's REVIEW SCOPE, on the invariant that every
-            // non-'failed' outcome's beads are ACTUALLY closed (this file's own
-            // success path only ever records 'success'/'retried' when
-            // unclosedIds is empty). A permission-scope failure's beads are
-            // NOT closed in the shared beads DB (D-push was skipped -- see
-            // member-sync.mjs's syncMemberAfterOrdered) even though the doer's
-            // own local clone may show them closed, so feeding them to review.mjs
-            // would violate that invariant: the reviewer would be asked to
-            // evaluate acceptance criteria for beads with no evidence and no
-            // report, which risks a self-contradictory CHANGES_NEEDED verdict
-            // and dispatchReview()'s ReviewerContractViolationError -- a hard
-            // sprint ABORT, i.e. turning "the sprint spins" into "the sprint
-            // crashes". So `outcome` is kept 'failed' (review.mjs's existing,
-            // CORRECT exclusion for not-actually-done work) and the
-            // work-done/publish-blocked distinction is carried on the
-            // additional `publishBlocked` flag below instead, which review.mjs
-            // does not read.
+            // NOTE ON REVIEW SCOPE: review.mjs's reviewScopeBeadIds() builds the
+            // round's review scope from each outcome's `closedIds` -- this
+            // engine's own read-back of the shared beads DB just above, never the
+            // doer's claim -- so a failed or BLOCKED streak still contributes the
+            // beads it verifiably closed. Two flags carry "the close was not
+            // published" and make reviewScopeBeadIds skip the outcome: `publishBlocked`
+            // (permission-scope G-push refusal; the App/token cannot push, see
+            // member-sync.mjs's syncMemberAfterOrdered) and `postDispatchSyncFailed`
+            // (any other post-dispatch sync failure: a failed G-push skips the
+            // D-push, so the closes never reached the shared DB even though the
+            // doer's own clone shows them closed). Both are set on EVERY outcome
+            // of the dispatch, including sub-outcomes whose beads all closed.
+            // A single-streak dispatch error whose beads ALL verified closed is
+            // recorded as success/retried (the work stands); only still-open
+            // beads make an outcome 'failed' and eligible for re-laning.
+            const unpublishedFlags = {
+                ...(permissionScopeBlocked ? { publishBlocked: true } : {}),
+                ...(isPostDispatchSyncFailure(dispatchError) ? { postDispatchSyncFailed: true } : {}),
+            };
             if (batchStreaks) {
                 // Mode (i): PER-STREAK attribution for a failed batch
                 // dispatch -- a sub-streak whose beads all verifiably
@@ -686,20 +685,25 @@ export async function runDevelopPhase({
                     streakOutcomes.push({
                         beadIds: subIds, doerMember, wasRetried, report: null,
                         unclosedIds: subUnclosed, closedIds: subClosed,
-                        outcome: subUnclosed.length > 0 ? 'failed' : 'success',
+                        outcome: subUnclosed.length > 0 ? 'failed' : (wasRetried ? 'retried' : 'success'),
                         ...(subUnclosed.length > 0 ? {
                             error: dispatchError.message,
                             ...failureFacts,
-                            ...(permissionScopeBlocked ? { publishBlocked: true } : {}),
                         } : {}),
+                        ...unpublishedFlags,
                     });
                 }
             } else {
                 streakOutcomes.push({
-                    beadIds: actualBeadIds, doerMember, outcome: 'failed', wasRetried,
-                    report: null, unclosedIds, closedIds, error: dispatchError.message,
+                    beadIds: actualBeadIds, doerMember, wasRetried,
+                    // A claimed-elsewhere streak never ran, so its beads (possibly
+                    // closed by another sprint) stay 'failed' here.
+                    outcome: unclosedIds.length > 0 || claimedElsewhere ? 'failed' : (wasRetried ? 'retried' : 'success'),
+                    report: null, unclosedIds,
+                    closedIds: claimedElsewhere ? [] : closedIds,
+                    error: dispatchError.message,
                     ...failureFacts,
-                    ...(permissionScopeBlocked ? { publishBlocked: true } : {}),
+                    ...unpublishedFlags,
                 });
             }
             if (permissionScopeBlocked) {
