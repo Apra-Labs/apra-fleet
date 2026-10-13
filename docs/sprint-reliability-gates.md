@@ -117,7 +117,7 @@ Design record for sprint-engine hardening around work that gets stranded mid-run
   a pre-sprint stop, a mid-run exit, and a verdict gate. Trade-off to know: the
   mid-run exit shares the "integration can run this cycle" condition with the deploy
   step, so a single transient deploy failure in that state ends the sprint without
-  a redeploy retry, bypassing the deploy retry cycle budget. Tracked as backlog.
+  a redeploy retry, bypassing the deploy retry cycle budget. Tracked as a follow-up.
 - **Review scope.** The reviewer's scope is the union of beads the engine verified
   as closed, minus beads whose publish was blocked or whose post-dispatch sync
   failed. A failed streak that still closed beads is therefore reviewed.

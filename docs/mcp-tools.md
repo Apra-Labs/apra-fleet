@@ -317,7 +317,7 @@ is rejected for them and `execute_command` should be used instead.
 7. **Handles stale sessions** -- when resuming via `resume=true` (the member's own stored session), a command failure after a resume attempt is retried transparently with a fresh minted session ID. This transparent fallback does **not** apply when `resume` was an explicit session-id string: an unresolvable explicit id is rejected outright as `session_not_found` with no LLM call made, since silently switching to a different session would defeat the caller's reason for naming one. The caller must explicitly re-dispatch (typically with `resume=false`) to recover.
 8. **Updates registry** -- stores the new `sessionId` (Claude) and `lastUsed` timestamp.
 
-**Output:** `structuredContent.response` carries the agent's reply text; `structuredContent.usage` carries token counts when available; `structuredContent.sessionId` carries the session ID if one was returned.
+**Output:** `structuredContent.response` carries the agent's reply text; `structuredContent.usage` carries token counts when available; `structuredContent.sessionId` carries the session ID if one was returned, including on failure outcomes (max turns, auth, server, overloaded, non-zero exit, empty response, dispatch failed) so callers can resume that session.
 
 **Error handling:**
 - If the prompt fails due to an authentication issue, returns actionable guidance (`provision_llm_auth`) instead of raw error output.
