@@ -210,15 +210,27 @@ export function parseWindowsPortHolder(out: string): PortHolder | null {
   }
 }
 
-function windowsPortHolder(port: number): PortHolder | null {
+/** Windows probe (exported with seams for tests). */
+export function windowsPortHolder(
+  port: number,
+  runProbe: (cmd: string) => string = (cmd) => String(execSync(cmd, {
+    encoding: 'utf8', timeout: PROBE_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true,
+  }) ?? ''),
+  kill?: (pid: number, sig: number) => unknown,
+): PortHolder | null {
   try {
-    const out = execSync(wrapPowerShellEncoded(windowsPortHolderScript(port)), {
-      encoding: 'utf8', timeout: PROBE_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true,
-    });
-    const holder = parseWindowsPortHolder(String(out ?? ''));
-    if (holder) return holder;
+    const holder = parseWindowsPortHolder(runProbe(wrapPowerShellEncoded(windowsPortHolderScript(port))));
+    if (holder) {
+      // GetOwner on another user's process returns access denied without
+      // throwing, leaving no user: classify the pid by signal 0 instead.
+      if (!holder.user && holder.pid !== undefined) {
+        const otherUser = pidOwnedByOtherUser(holder.pid, kill);
+        if (otherUser !== undefined) holder.otherUser = otherUser;
+      }
+      return holder;
+    }
   } catch { /* CIM denied (standard user on a network/SSH logon): fall back below */ }
-  return netstatPortHolder(port);
+  return netstatPortHolder(port, undefined, kill);
 }
 
 /**

@@ -451,14 +451,14 @@ describe('killChild: bounded dolt verify termination on every OS', () => {
     expect(warn).toHaveBeenCalledWith(expect.stringMatching(/\[!\].*pid 4242.*Stop-Process -Id 4242/));
   });
 
-  it('POSIX: falls back to the process-group kill and still returns bounded', async () => {
+  it('POSIX: a child that survives SIGKILL is reported and unref\'d in bounded time, no taskkill', async () => {
     const child = killableChild({ killExits: false, pid: 999999 });
-    const pk = vi.spyOn(process, 'kill').mockImplementation(() => { throw Object.assign(new Error('ESRCH'), { code: 'ESRCH' }); });
+    const exec = vi.fn();
     const warn = vi.fn();
-    try {
-      await killChild(child as any, { platform: 'linux', waitMs: 50, warn });
-      expect(pk).toHaveBeenCalledWith(-999999, 'SIGKILL');
-    } finally { pk.mockRestore(); }
+    const t0 = Date.now();
+    await killChild(child as any, { platform: 'linux', execFileSync: exec as any, waitMs: 50, warn });
+    expect(Date.now() - t0).toBeLessThan(2000);
+    expect(exec).not.toHaveBeenCalled();
     expect(child.unref).toHaveBeenCalled();
     expect(warn).toHaveBeenCalledWith(expect.stringMatching(/kill -9 999999/));
   });

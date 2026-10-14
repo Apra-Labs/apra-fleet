@@ -8,7 +8,7 @@ import { describe, it, expect } from 'vitest';
 import {
   parseProcNetTcp, userFromPasswd, parseLsofFields, parseWindowsPortHolder, windowsPortHolderScript,
   heldByOtherUser, describePortConflict, PORT_HELD_BY_OTHER_USER_CODE,
-  parseNetstatListenPid, pidOwnedByOtherUser, netstatPortHolder, lsofPortHolder,
+  parseNetstatListenPid, pidOwnedByOtherUser, netstatPortHolder, lsofPortHolder, windowsPortHolder,
 } from '../src/services/port-holder.js';
 
 const PROC_NET_TCP = [
@@ -120,6 +120,15 @@ describe('holder owned by another OS user whose name is not visible (standard us
     expect(r.message).toContain(PORT_HELD_BY_OTHER_USER_CODE);
     expect(r.message).toContain('another OS user (pid 4321)');
     expect(r.message).toContain('APRA_FLEET_PORT');
+  });
+
+  it('windows (CIM works, GetOwner denied -> no user): signal-0 EPERM still names another OS user', () => {
+    const eperm = () => { throw Object.assign(new Error('EPERM'), { code: 'EPERM' }); };
+    const holder = windowsPortHolder(7523, () => '{"pid":4321,"name":"apra-fleet.exe","user":null}', eperm);
+    expect(holder).toEqual({ pid: 4321, command: 'apra-fleet.exe', otherUser: true });
+    expect(describePortConflict(7523, 'generic', holder, me).foreign).toBe(true);
+    // A named owner is left to the name comparison.
+    expect(windowsPortHolder(7523, () => '{"pid":4321,"name":"x","user":"bob"}', eperm)).toEqual({ pid: 4321, command: 'x', user: 'bob' });
   });
 
   it('windows: this user\'s own holder stays a same-user conflict', () => {

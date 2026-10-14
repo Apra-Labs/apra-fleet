@@ -334,8 +334,7 @@ function waitForExit(child: ChildProcess, ms: number): Promise<boolean> {
  * Terminate the dolt verify child in bounded time on every OS. child.kill()
  * first (TerminateProcess on Windows, SIGKILL on POSIX): it needs no WMI, so it
  * works for a standard user on a network (SSH) logon, where taskkill /T is
- * denied. A tree kill (taskkill /F /T on Windows, the process group on POSIX)
- * is only the fallback. The child is always unref'd so a survivor can never
+ * denied. taskkill /F /T is only the Windows fallback. The child is always unref'd so a survivor can never
  * keep the installer from exiting; a survivor is reported, not silently left.
  */
 export async function killChild(child: ChildProcess, opts: KillChildOpts = {}): Promise<void> {
@@ -345,14 +344,14 @@ export async function killChild(child: ChildProcess, opts: KillChildOpts = {}): 
     if (child.pid === undefined || !childAlive(child)) return;
     try { child.kill(platform === 'win32' ? undefined : 'SIGKILL'); } catch { /* fallback below */ }
     if (await waitForExit(child, waitMs)) return;
-    try {
-      if (platform === 'win32') {
+    // POSIX already sent SIGKILL (the child is not a process-group leader, so
+    // there is no tree to kill); Windows falls back to taskkill /T.
+    if (platform === 'win32') {
+      try {
         (opts.execFileSync ?? execFileSync)('taskkill', ['/F', '/T', '/PID', String(child.pid)], { stdio: 'ignore', windowsHide: true, timeout: 10_000 });
-      } else {
-        process.kill(-child.pid, 'SIGKILL');
-      }
-    } catch { /* not a group leader, or denied: reported below */ }
-    if (await waitForExit(child, waitMs)) return;
+      } catch { /* denied: reported below */ }
+      if (await waitForExit(child, waitMs)) return;
+    }
     const how = platform === 'win32' ? `Stop-Process -Id ${child.pid} -Force` : `kill -9 ${child.pid}`;
     (opts.warn ?? ((m: string) => console.warn(m)))(`    [!] the dolt verify server (pid ${child.pid}) did not exit; stop it by hand: ${how}`);
   } finally {
