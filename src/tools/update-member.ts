@@ -18,7 +18,7 @@ import { getStrategy } from '../services/strategy.js';
 import { seedWorkspaceTrust } from '../utils/workspace-trust.js';
 import { ensureAgyProject } from '../services/agy-project.js';
 import { beadsStatusNote, refreshMemberFleetMcp, getMemberFleetMcpDeps, fleetInstallWarning } from '../services/member-fleet-install.js';
-import { composePermissions, removeComposedMemberConfig } from './compose-permissions.js';
+import { composePermissions, removeComposedMemberConfig, missingClaudeAllowRules } from './compose-permissions.js';
 import { memberMcpAllowRules } from '../services/member-config-io.js';
 import { isFullyQualifiedPath, workFolderNotAbsoluteError } from '../utils/work-folder-validation.js';
 
@@ -396,10 +396,15 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
       // member install here). Grant mode ADDS the member tool rules to the
       // existing allow list, so the member's role and reactive grants are kept.
       // Skipped when the provider or folder block above already composed.
-      const installChanged = status.fleetInstalledAt !== existing.fleetMcp?.fleetInstalledAt
+      // Also runs whenever the install is available, not only on a recorded
+      // transition: a member_detail refresh between `apra-fleet start` and
+      // this update already recorded available. The grant is skipped (no
+      // NOTICE, no file rewrite) when the allow list already has every rule.
+      const mayNeedMemberRules = status.fleetInstalledAt !== existing.fleetMcp?.fleetInstalledAt
         || !!status.replacedFullInstall
-        || (status.state === 'available' && existing.fleetMcp?.state !== 'available');
-      if (install && installChanged && !providerChanged && !workFolderMoved && (updated.llmProvider ?? 'claude') === 'claude') {
+        || status.state === 'available';
+      if (install && mayNeedMemberRules && !providerChanged && !workFolderMoved && (updated.llmProvider ?? 'claude') === 'claude'
+        && (await missingClaudeAllowRules(updated, memberMcpAllowRules())).length > 0) {
         let recompose: string;
         try {
           recompose = await composePermissions({ member_id: updated.id, role: 'doer', tags: updated.tags, grant: memberMcpAllowRules() });
