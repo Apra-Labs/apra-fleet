@@ -10,7 +10,7 @@
  */
 
 import { execSync, spawnSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -67,6 +67,34 @@ export function reportAndCheckPostjectResult(result) {
   }
 }
 
+// The SEA fuse sentinel postject looks for in the node binary it injects into.
+export const SEA_FUSE_SENTINEL = 'NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2';
+
+/**
+ * Check, BEFORE copying, that `execPath` is a node binary postject can inject
+ * into. A launcher stub (e.g. Homebrew's node, a ~37 KB launcher linked to
+ * libnode.dylib) has no fuse, and postject then fails late with a cryptic
+ * "Could not find the sentinel". Returns { ok: true } or { ok: false, message }.
+ */
+export function checkSeaFuse(execPath, deps = {}) {
+  const read = deps.readFileSync ?? readFileSync;
+  let bytes;
+  try {
+    bytes = read(execPath);
+  } catch (err) {
+    return { ok: false, message: `cannot read the node binary ${execPath} to check it for the SEA fuse: ${err.message}` };
+  }
+  if (Buffer.from(bytes).includes(SEA_FUSE_SENTINEL)) return { ok: true };
+  return {
+    ok: false,
+    message:
+      `the node binary ${execPath} (${Buffer.from(bytes).length} bytes) has no SEA fuse (${SEA_FUSE_SENTINEL}), so a ` +
+      `single-executable blob cannot be injected into it. It is probably a launcher stub (for example Homebrew's node, ` +
+      `which loads libnode.dylib) rather than a self-contained node. Fix: run this script with an official node from ` +
+      `nodejs.org (the tarball or installer for this platform), not a package-manager launcher.`,
+  };
+}
+
 function main() {
   const distDir = join(root, 'dist');
   const seaConfig = join(distDir, 'sea-config.json');
@@ -102,6 +130,11 @@ function main() {
   }
 
   // Step 2: Copy node binary
+  const fuse = checkSeaFuse(process.execPath);
+  if (!fuse.ok) {
+    console.error(`Error: ${fuse.message}`);
+    process.exit(1);
+  }
   console.log('  [2/3] Copying Node.js binary...');
   copyFileSync(process.execPath, outputBinary);
 
@@ -149,7 +182,7 @@ function main() {
     `"${outputBinary}"`,
     'NODE_SEA_BLOB',
     `"${blob}"`,
-    '--sentinel-fuse', 'NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2',
+    '--sentinel-fuse', SEA_FUSE_SENTINEL,
   ];
 
   if (platform === 'darwin') {

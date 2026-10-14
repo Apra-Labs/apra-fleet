@@ -19,18 +19,16 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCRIPT = path.join(__dirname, '..', 'scripts', 'merge-kb-canonical.mjs');
 
 // =============================================================================
-// Title-keyed three-way merge of the knowledge-bank canonical export.
+// Id-keyed three-way merge of the knowledge-bank canonical export (bible).
 //
 // The invariant this suite locks in is the identity key: the merge matches
-// entries across base/ours/theirs by TRIMMED TITLE, never by `id`. `id` is
-// re-minted per export -- measured on two real consecutive exports of this
-// repo's own canonical file, only 76.5% of base ids survived while 99.0% of
-// titles did, and 45 entries were byte-identical in content yet carried a
-// different id. An id-keyed merge would read those 45 as delete+add pairs.
-// The reexport() helper below is the regression guard for that: every
-// scenario deliberately re-mints ids between sides, so any future switch back
-// to id-keyed matching fails loudly here instead of silently duplicating or
-// dropping harvested entries in production.
+// entries across base/ours/theirs by `id` ONLY, never by title. kb_import
+// preserves bible ids (preferredId) and the v3 bible carries them, so an id
+// survives re-export; title matching made a same-id title edit merge as
+// delete+add (a stale and a corrected copy under duplicate ids). reexport()
+// below keeps the id and refreshes only updated_at, the way a real re-export
+// does; the 'different ids, same title' tests guard against any return of a
+// title key.
 // =============================================================================
 
 let idCounter = 0;
@@ -50,10 +48,9 @@ function entry(title, overrides = {}) {
     };
 }
 
-/** Re-export an entry: same content, brand-new id and timestamp. */
+/** Re-export an entry: same id and content, fresh timestamp. */
 function reexport(e, overrides = {}) {
-    idCounter += 1;
-    return { ...e, id: `id-${idCounter}-reexport`, updated_at: new Date().toISOString(), ...overrides };
+    return { ...e, updated_at: new Date().toISOString(), ...overrides };
 }
 
 function doc(entries, extra = {}) {
@@ -62,24 +59,32 @@ function doc(entries, extra = {}) {
 
 const titlesOf = (result) => result.merged.entries.map((e) => e.title);
 
-test('identity is the trimmed title, not the id', () => {
+test('identity is the id only, never the title', () => {
     const a = entry('Same finding');
-    const b = reexport(a, { title: '  Same finding  ' });
-    assert.notStrictEqual(a.id, b.id);
-    assert.strictEqual(entryIdentity(a), entryIdentity(b));
-    assert.strictEqual(contentSignature(a), contentSignature(b));
+    assert.strictEqual(entryIdentity(a), a.id);
+    assert.strictEqual(entryIdentity(reexport(a, { title: 'Renamed' })), a.id);
+    assert.notStrictEqual(entryIdentity(entry('Same finding')), entryIdentity(a), 'same title, different id: different identity');
+    for (const bad of [{ title: 'no id' }, { id: '' }, { id: '   ' }, { id: 7 }, null]) {
+        assert.strictEqual(entryIdentity(bad), null);
+    }
 });
 
-test('content signature ignores id and updated_at', () => {
+test('content signature ignores id and updated_at, but includes title and source_file_hashes', () => {
     assert.ok(!CONTENT_FIELDS.includes('id'));
     assert.ok(!CONTENT_FIELDS.includes('updated_at'));
-    const a = entry('X');
+    assert.ok(CONTENT_FIELDS.includes('title'));
+    assert.ok(CONTENT_FIELDS.includes('source_file_hashes'));
+    const a = entry('X', { source_file_hashes: { 'src/a.js': 'h1', 'src/b.js': 'h2' } });
     assert.strictEqual(contentSignature(a), contentSignature(reexport(a)));
+    // Key order of the hash map is not a change.
+    assert.strictEqual(contentSignature(a), contentSignature(reexport(a, { source_file_hashes: { 'src/b.js': 'h2', 'src/a.js': 'h1' } })));
+    assert.notStrictEqual(contentSignature(a), contentSignature(reexport(a, { title: 'Y' })));
+    assert.notStrictEqual(contentSignature(a), contentSignature(reexport(a, { source_file_hashes: { 'src/a.js': 'h9', 'src/b.js': 'h2' } })));
 });
 
-test('identical-content passthrough: re-minted ids do not look like changes', () => {
+test('identical-content passthrough: re-exported entries do not look like changes', () => {
     const base = doc([entry('A'), entry('B'), entry('C')]);
-    // Both sides re-exported the same three findings with fresh ids.
+    // Both sides re-exported the same three findings (same ids, fresh timestamps).
     const ours = doc(base.entries.map((e) => reexport(e)));
     const theirs = doc(base.entries.map((e) => reexport(e)));
 
@@ -116,7 +121,7 @@ test('pure addition by theirs only is kept', () => {
     assert.deepStrictEqual(titlesOf(result), ['A', 'Theirs new']);
 });
 
-test('both sides add the same title: de-duplicated to one entry', () => {
+test('both sides add the same id: de-duplicated to one entry', () => {
     const base = doc([entry('A')]);
     const shared = entry('Both discovered this');
     const ours = doc([reexport(base.entries[0]), reexport(shared)]);
@@ -131,12 +136,13 @@ test('both sides add the same title: de-duplicated to one entry', () => {
     assert.strictEqual(result.summary.mergedEntries, 2);
 });
 
-test('both sides add the same title with different content: still one entry, not a conflict', () => {
+test('both sides add the same id with different content: still one entry, not a conflict', () => {
     // No common ancestor exists for a both-sides addition, so there is nothing
     // to arbitrate against -- de-dup rather than block the whole merge.
     const base = doc([]);
-    const ours = doc([entry('Shared title', { summary: 'ours wording' })]);
-    const theirs = doc([entry('Shared title', { summary: 'theirs wording' })]);
+    const added = entry('Shared title', { summary: 'ours wording' });
+    const ours = doc([added]);
+    const theirs = doc([reexport(added, { summary: 'theirs wording' })]);
 
     const result = mergeKbCanonical(base, ours, theirs);
     assert.deepStrictEqual(result.conflicts, []);
@@ -202,7 +208,7 @@ test('both sides make the SAME change: taken, not flagged', () => {
     assert.strictEqual(result.merged.entries[0].summary, 'agreed wording');
 });
 
-test('genuine conflict: same title changed differently by both sides is reported, never resolved', () => {
+test('genuine conflict: same id changed differently by both sides is reported, never resolved', () => {
     const base = doc([entry('Contested'), entry('Fine')]);
     const ours = doc([reexport(base.entries[0], { summary: 'ours says X' }), reexport(base.entries[1])]);
     const theirs = doc([reexport(base.entries[0], { summary: 'theirs says Y' }), reexport(base.entries[1])]);
@@ -210,7 +216,8 @@ test('genuine conflict: same title changed differently by both sides is reported
     const result = mergeKbCanonical(base, ours, theirs);
     assert.strictEqual(result.summary.genuineConflicts, 1);
     assert.strictEqual(result.conflicts.length, 1);
-    assert.strictEqual(result.conflicts[0].identity, 'Contested');
+    assert.strictEqual(result.conflicts[0].identity, base.entries[0].id);
+    assert.strictEqual(result.conflicts[0].kind, 'content');
     assert.strictEqual(result.conflicts[0].ours.summary, 'ours says X');
     assert.strictEqual(result.conflicts[0].theirs.summary, 'theirs says Y');
     assert.strictEqual(result.merged, null, 'a conflicted merge must not hand back a document to write');
@@ -232,15 +239,83 @@ test('merged document carries a corrected entry_count and a base-first order', (
     assert.strictEqual(result.merged.version, 2);
 });
 
-test('duplicate titles within one side are dropped, first occurrence wins', () => {
-    const base = doc([]);
-    const ours = doc([entry('Dup', { summary: 'first' }), entry('Dup', { summary: 'second' })]);
-    const theirs = doc([]);
+test('two entries with the same title and different ids both survive as separate entries', () => {
+    const baseTwin = entry('Twin title', { summary: 'base twin' });
+    const base = doc([baseTwin]);
+    const oursTwin = entry('Twin title', { summary: 'ours twin' });
+    const theirsTwin = entry('Twin title', { summary: 'theirs twin' });
+    const ours = doc([reexport(baseTwin), oursTwin]);
+    const theirs = doc([reexport(baseTwin), theirsTwin]);
 
     const result = mergeKbCanonical(base, ours, theirs);
-    assert.strictEqual(result.merged.entries.length, 1);
-    assert.strictEqual(result.merged.entries[0].summary, 'first');
-    assert.strictEqual(result.summary.duplicateIdentitiesDropped, 1);
+    assert.deepStrictEqual(result.conflicts, []);
+    assert.deepStrictEqual(result.merged.entries.map((e) => e.id), [baseTwin.id, oursTwin.id, theirsTwin.id]);
+    assert.deepStrictEqual(titlesOf(result), ['Twin title', 'Twin title', 'Twin title']);
+    assert.strictEqual(result.summary.addedByOurs, 1);
+    assert.strictEqual(result.summary.addedByTheirs, 1);
+});
+
+test('a same-id title change on one side merges as ONE updated entry, not delete+add', () => {
+    const renamed = entry('Old title');
+    const other = entry('Other');
+    const base = doc([renamed, other]);
+    const ours = doc([reexport(renamed, { title: 'Corrected title' }), reexport(other)]);
+    const theirs = doc([reexport(renamed), reexport(other)]);
+
+    const result = mergeKbCanonical(base, ours, theirs);
+    assert.deepStrictEqual(result.conflicts, []);
+    assert.strictEqual(result.merged.entries.length, 2);
+    assert.deepStrictEqual(titlesOf(result), ['Corrected title', 'Other']);
+    assert.strictEqual(result.merged.entries[0].id, renamed.id);
+    assert.strictEqual(result.summary.changedByOurs, 1);
+    assert.strictEqual(result.summary.addedByOurs, 0);
+    assert.strictEqual(result.summary.removedByOurs, 0);
+    assert.strictEqual(result.summary.removedByTheirs, 0);
+});
+
+test('source_file_hashes survives the merge from the side whose content was taken', () => {
+    const a = entry('Hashed', { source_file_hashes: { 'src/Hashed.js': 'base-hash' } });
+    const b = entry('Also hashed', { source_file_hashes: { 'src/Also-hashed.js': 'base-hash-b' } });
+    const base = doc([a, b], { version: 3 });
+    // Ours changes a's summary (content AND its re-verified basis); theirs leaves a alone.
+    const ours = doc([reexport(a, { summary: 'ours refined', source_file_hashes: { 'src/Hashed.js': 'ours-hash' } }), reexport(b)], { version: 3 });
+    // Theirs re-verified b's basis: a hashes-only change.
+    const theirs = doc([reexport(a), reexport(b, { source_file_hashes: { 'src/Also-hashed.js': 'theirs-hash-b' } })], { version: 3 });
+
+    const result = mergeKbCanonical(base, ours, theirs);
+    assert.deepStrictEqual(result.conflicts, []);
+    assert.strictEqual(result.summary.changedByOurs, 1);
+    assert.strictEqual(result.summary.changedByTheirs, 1, 'a hashes-only change is a change and is taken');
+    assert.deepStrictEqual(result.merged.entries[0].source_file_hashes, { 'src/Hashed.js': 'ours-hash' });
+    assert.strictEqual(result.merged.entries[0].summary, 'ours refined');
+    assert.deepStrictEqual(result.merged.entries[1].source_file_hashes, { 'src/Also-hashed.js': 'theirs-hash-b' });
+});
+
+test('the merged envelope keeps the highest input version (a v3 input yields v3)', () => {
+    const a = entry('A');
+    assert.strictEqual(mergeKbCanonical(doc([a]), doc([reexport(a)]), doc([reexport(a)], { version: 3 })).merged.version, 3);
+    assert.strictEqual(mergeKbCanonical(doc([a], { version: 3 }), doc([reexport(a)]), doc([reexport(a)])).merged.version, 3);
+    assert.strictEqual(mergeKbCanonical(doc([a]), doc([reexport(a)]), doc([reexport(a)])).merged.version, 2);
+});
+
+test('duplicate ids within one input are a genuine conflict and nothing is merged', () => {
+    const first = entry('Dup', { summary: 'first' });
+    const second = { ...entry('Dup again', { summary: 'second' }), id: first.id };
+    const result = mergeKbCanonical(doc([]), doc([first, second]), doc([]));
+    assert.strictEqual(result.merged, null);
+    assert.strictEqual(result.summary.duplicateIds, 1);
+    assert.strictEqual(result.summary.genuineConflicts, 1);
+    assert.deepStrictEqual(result.conflicts, [{ kind: 'duplicate-id', identity: first.id, side: 'ours', indexes: [0, 1] }]);
+    assert.match(formatConflicts(result.conflicts), new RegExp(`duplicate id ${first.id}: ours has 2 entries`));
+});
+
+test('an entry without a usable id is malformed input, never title-matched', () => {
+    const ok = entry('Fine');
+    const noId = { ...entry('No id here') };
+    delete noId.id;
+    assert.throws(() => mergeKbCanonical(doc([ok]), doc([reexport(ok), noId]), doc([reexport(ok)])),
+        (err) => err.name === 'MalformedInputError' && /ours entry #1 \(title "No id here"\) has no usable id/.test(err.message));
+    assert.throws(() => mergeKbCanonical(doc([{ ...ok, id: '' }]), doc([]), doc([])), /base entry #0 .*has no usable id/);
 });
 
 test('a non-canonical input throws rather than merging garbage', () => {
@@ -327,11 +402,38 @@ test('CLI exits non-zero on a genuine conflict and writes nothing', () => {
         const res = runCli(dir, [base, ours, theirs], ['--out', out]);
         assert.strictEqual(res.status, 1);
         assert.match(res.stderr, /genuine conflict/i);
-        assert.match(res.stderr, /Contested/);
+        assert.match(res.stderr, new RegExp(base.entries[0].id));
         assert.match(res.stderr, /ours says X/);
         assert.match(res.stderr, /theirs says Y/);
         assert.strictEqual(res.stdout, '', 'a conflicted run must not emit a document');
         assert.strictEqual(fs.existsSync(out), false, 'a conflicted run must not write an output file');
+    });
+});
+
+test('CLI exits 2 and writes nothing when an input entry has no id', () => {
+    withTmpDir((dir) => {
+        const ok = entry('Fine');
+        const noId = { ...entry('Missing id') };
+        delete noId.id;
+        const out = path.join(dir, 'merged.json');
+        const res = runCli(dir, [doc([ok]), doc([reexport(ok)]), doc([reexport(ok), noId])], ['--out', out]);
+        assert.strictEqual(res.status, 2, res.stderr);
+        assert.match(res.stderr, /theirs entry #1 \(title "Missing id"\) has no usable id/);
+        assert.strictEqual(res.stdout, '');
+        assert.strictEqual(fs.existsSync(out), false);
+    });
+});
+
+test('CLI exits 1 and writes nothing when an input carries a duplicate id', () => {
+    withTmpDir((dir) => {
+        const a = entry('A');
+        const dup = { ...entry('B'), id: a.id };
+        const out = path.join(dir, 'merged.json');
+        const res = runCli(dir, [doc([a]), doc([reexport(a)]), doc([reexport(a), dup])], ['--out', out]);
+        assert.strictEqual(res.status, 1, res.stderr);
+        assert.match(res.stderr, new RegExp(`duplicate id ${a.id}: theirs has 2 entries`));
+        assert.strictEqual(res.stdout, '');
+        assert.strictEqual(fs.existsSync(out), false);
     });
 });
 

@@ -9,10 +9,6 @@
         "symbol": {
           "type": "string",
           "description": "Function, class, or method name to find transitive test callers for"
-        },
-        "repo": {
-          "type": "string",
-          "description": "Absolute path to the repository root. Required when multiple repositories are indexed."
         }
       },
       "required": [

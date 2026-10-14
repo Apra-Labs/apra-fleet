@@ -228,7 +228,7 @@ function reviewPhaseHarness({ verdict, scope, workedOnIds }) {
         gitSync: { syncBeadsAfter: async () => {} },
         replanIds: new Set(), replannedThisCycle: new Set(), perBeadFeedback: new Map(), rejectedNewTasks: [],
         devRounds: 1,
-        streakOutcomes: [{ beadIds: ['in-goal-task'], outcome: 'success' }],
+        streakOutcomes: [{ beadIds: ['in-goal-task'], outcome: 'success', closedIds: ['in-goal-task'] }],
         readyTitleById: new Map(),
         lastReviewVerdict: undefined, reviewedThisCycle: false, pendingRejectedNewTasks: [],
         dispatchReview: async () => verdict,

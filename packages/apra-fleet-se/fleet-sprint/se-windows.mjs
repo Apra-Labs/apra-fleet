@@ -145,8 +145,9 @@ export class SeWindowsCommands {
    *    not Add-Content's platform CRLF, and no backtick escape is used
    *    anywhere -- the only variables are script-local ones this string
    *    assigns; nothing reads the member's environment ($env:, ~/).
-   * Caller: beads-identity-check.mjs member beads set-up (new untracked
-   * beads paths are excluded so the target work tree stays clean).
+   * Callers: member-call.mjs runRemote (args-file cleanup);
+   * beads-identity-check.mjs member beads set-up (new untracked beads paths
+   * are excluded so the target work tree stays clean).
    * @param {string} entry validated
    * @returns {string}
    */
@@ -165,6 +166,17 @@ export class SeWindowsCommands {
       `$global:LASTEXITCODE = 0`,
     ].join('; ');
     return this.wrapForMember(script);
+  }
+
+  /**
+   * Delete a work-folder-relative file, never erroring when it is absent.
+   * Caller: member-call.mjs runRemote (engine-side args-file delete).
+   * @param {string} relPath validated
+   * @returns {string}
+   */
+  removeFile(relPath) {
+    const p = assertSafeRelativePath(relPath, 'file path');
+    return this.wrapForMember(`if (Test-Path -LiteralPath '${p}') { Remove-Item -LiteralPath '${p}' -Force }`);
   }
 
   /**

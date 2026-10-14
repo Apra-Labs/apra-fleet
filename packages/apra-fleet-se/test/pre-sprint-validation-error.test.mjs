@@ -131,59 +131,12 @@ test('the verify-only sprint path is still outside the refusal block and cannot 
         guardAt > -1,
         'the refusal block must stay guarded on BOTH an empty ready set and an empty verify set'
     );
-    // The one deliberate exception is the unreachable-verify-block refusal
-    // (see the next test): it exists precisely for the verify-only shape, so
-    // it is raised from outside that guard.
-    const verifyBlockThrowAt = unreachableVerifyBlockThrowAt();
     for (const site of throwSitesFor(RUNNER_SRC, 'Pre-sprint validation failed:')) {
-        if (site.index === verifyBlockThrowAt) continue;
         assert.ok(
             site.index > guardAt,
             'every pre-sprint refusal must sit inside the "no ready AND no verify-routed beads" guard'
         );
     }
-});
-
-/** Index of the `throw new` that raises UNREACHABLE_VERIFY_BLOCK, or -1. */
-function unreachableVerifyBlockThrowAt() {
-    const reasonAt = RUNNER_SRC.indexOf('PRE_SPRINT_REFUSAL_REASONS.UNREACHABLE_VERIFY_BLOCK');
-    if (reasonAt === -1) return -1;
-    return RUNNER_SRC.lastIndexOf('throw new ', reasonAt);
-}
-
-test('a bead blocked only by verify-routed beads is refused pre-sprint, without touching the DAG', () => {
-    // No integ-test playbook means verify-routed beads can never close, so a
-    // bead whose only unmet blockers are verify-routed can never become
-    // ready. Pre-sprint must refuse with its own reason, naming the beads and
-    // the exact bd dep command -- whether or not other work is ready and even
-    // for a verify-only sprint, so this check sits outside the empty-ready
-    // guard and runs only after the stale-claim reclaim.
-    assert.ok(
-        Object.prototype.hasOwnProperty.call(PRE_SPRINT_REFUSAL_REASONS, 'UNREACHABLE_VERIFY_BLOCK'),
-        'the refusal vocabulary must declare UNREACHABLE_VERIFY_BLOCK'
-    );
-    const throwAt = unreachableVerifyBlockThrowAt();
-    assert.ok(throwAt > -1, 'runner.js must raise PRE_SPRINT_REFUSAL_REASONS.UNREACHABLE_VERIFY_BLOCK');
-    assert.ok(
-        RUNNER_SRC.startsWith('throw new PreSprintValidationError(', throwAt),
-        'the unreachable-verify-block refusal must be a PreSprintValidationError'
-    );
-
-    const detectAt = RUNNER_SRC.indexOf('findUnreachableVerifyBlocks(');
-    assert.ok(detectAt > -1 && detectAt < throwAt, 'the refusal must be driven by findUnreachableVerifyBlocks()');
-    const loopAt = RUNNER_SRC.indexOf('while (cycle <= MAX_CYCLES)');
-    assert.ok(throwAt < loopAt, 'the refusal must be raised pre-sprint, before the cycle loop');
-
-    // Its own playbook probe: hasPlaybook is only computed per cycle.
-    const probeAt = RUNNER_SRC.lastIndexOf("probeFileExists('integ-test-playbook.md'", throwAt);
-    assert.ok(probeAt > detectAt, 'pre-sprint must probe for integ-test-playbook.md itself before refusing');
-
-    // Diagnosis only: no dependency mutation between detection and refusal.
-    assert.doesNotMatch(
-        RUNNER_SRC.slice(detectAt, throwAt),
-        /command\(`bd dep /,
-        'the unreachable-verify-block path must not rewrite the DAG; it names the command for the operator'
-    );
 });
 
 test('PreSprintValidationError carries its reason and the generic taxonomy still catches it', () => {

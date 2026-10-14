@@ -446,9 +446,21 @@ inferred) when the sprint starts:
 enforces the precondition for whichever mode is selected, and refuses to
 start rather than silently degrading:
 
-- **`legacy` mode precondition** -- compares an identity signal
-  (`git rev-parse HEAD`) across every configured member and refuses to start
-  on a mismatch. Single-member sprints trivially pass (nothing to compare). A
+- **`legacy` mode precondition** -- first aligns every member to the
+  sprint base (`fleet-sprint/member-align.mjs`, `prepareLaunchTopology()`):
+  pass 1 checks every member read-only (reachable, same `origin` URL, base
+  fetchable, sprint branch not diverged, working-tree status readable) and
+  refuses -- naming member, cause and fix -- before ANY member is moved if
+  one fails; pass 2 preserves uncommitted work in a named
+  `fleet-sprint[<branch>] auto-stash ...` stash and checks out the sprint
+  branch (`origin/<branch>` when it exists, else cut from `origin/<base>`,
+  via the same `decideEnsureBranchAction()` the Ensure Sprint Branch phase
+  uses), logging one `[Align] member '<m>': <from> -> <to>` line per member.
+  Members that were merely on other commits therefore no longer block the
+  launch, and nobody aligns members by hand. It then compares an identity
+  signal (`git rev-parse HEAD`) across every configured member and refuses to
+  start on a residual mismatch (a member keeping local-only commits on the
+  sprint branch). Single-member sprints trivially pass (nothing to compare). A
   member whose signal cannot be obtained is treated as a refusal, not a
   silent skip. This is a best-effort heuristic checked once at start, not an
   ongoing guarantee: two independent checkouts that merely happen to sit on
@@ -1038,7 +1050,8 @@ After the cycle loop exits (goal met, or `max_cycles` reached):
    same cost block is rendered by the engine in the PR body (`### Cost`).
 3. **Publish PR** -- pushes the sprint branch (`git push -u origin
    <branch>`), then raises (never merges) a PR via `gh pr create`, whose
-   title (`Auto-sprint [PASS|FAIL]: <branch>`) and body state the final
+   title (`fleet-sprint [PASS|FAIL]: <branch>`; PRs from before the
+   rename carry `Auto-sprint [...]`) and body state the final
    verdict plainly, with the reviewer's (sanitized) notes appended. PR
    creation is idempotent: a `gh pr create` failure whose message matches
    `/already exists/i` is treated as success (the desired end state -- a PR
@@ -1600,25 +1613,12 @@ The approach was a strangler-fig extraction, not a rewrite:
   (a `WorkflowError` subclass, `errors.mjs`) replaces an untyped `Error`
   distinguishable only by prose with a `reason` discriminator drawn from a
   frozen vocabulary (`TARGET_NOT_VISIBLE`, `NOTHING_TO_DO`,
-  `CYCLE_REPAIR_FAILED`, `DEADLOCKED`, `UNREACHABLE_VERIFY_BLOCK`), plus
-  reason-specific structured fields (e.g. `invisibleTargets`, `cyclePairs`,
-  `deadlockedIds`, `details.unreachableVerifyBlocks`).
-  `UNREACHABLE_VERIFY_BLOCK` is the one refusal raised whether or not other
-  work is ready: with no `integ-test-playbook.md`, a bead whose only unmet
-  `blocks` dependencies are verify-routed beads can never become ready, so
-  if that bead is at or above the goal priority the sprint refuses up front
-  and names the exact `bd dep remove` / `bd dep add ... --type related`
-  commands instead of rewriting the DAG. A below-goal bead in the same shape
-  only gets a pre-sprint warning with the same commands, because the
-  goal-priority exit condition never waits on it. The same shape arising
-  mid-run among goal-priority beads makes the cycle loop exit (no
-  stall-abort) and the final notes name each such bead as unfinished; that
-  run is never a PASS. For the reasons that predate the typed error, the
+  `CYCLE_REPAIR_FAILED`, `DEADLOCKED`), plus reason-specific structured
+  fields (e.g. `invisibleTargets`, `cyclePairs`, `deadlockedIds`). The
   human-readable message is unchanged from the prose each refusal already
-  emitted -- the type and discriminator were added without restyling
-  operator-facing text; `UNREACHABLE_VERIFY_BLOCK` is a newer refusal with
-  its own message. The error is never caught inside the pre-sprint block,
-  so it still fails the run before any dispatch occurs.
+  emitted -- this adds a type and discriminator without restyling
+  operator-facing text -- and the error is never caught inside the
+  pre-sprint block, so it still fails the run before any dispatch occurs.
   Constructing one with a `reason` outside the frozen vocabulary throws a
   `TypeError` at construction, rather than shipping a refusal that only
   looks typed.

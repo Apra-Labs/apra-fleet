@@ -1,0 +1,25 @@
+{
+  "tool": "kb_capture",
+  "case": "setup-for-bible-removal",
+  "kind": "happy",
+  "request": {
+    "type": "knowledge",
+    "title": "Entry merged into the bible and then invalidated",
+    "summary": "Set up to demonstrate kb_bible_commit removing an invalidated bible entry.",
+    "content": "This entry cites the committed src/helper.ts, is merged into the bible, then discarded by id.",
+    "source_files": [
+      "src/helper.ts"
+    ],
+    "symbols": [
+      "helperRemovalFixture"
+    ]
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"id\":\"f73a13d1-15d2-46c7-a319-84232fdf856b\",\"audn_decision\":\"add\",\"confidence_clamped\":false}"
+      }
+    ]
+  }
+}

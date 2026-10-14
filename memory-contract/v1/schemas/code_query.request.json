@@ -9,10 +9,6 @@
         "query": {
           "type": "string",
           "description": "Code search query (symbol, pattern, or concept)"
-        },
-        "repo": {
-          "type": "string",
-          "description": "Absolute path to the repository root. Required when multiple repositories are indexed."
         }
       },
       "required": [

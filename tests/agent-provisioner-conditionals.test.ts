@@ -41,10 +41,14 @@ describe('loadCanonicalAgentSet -- tool-conditional markers', () => {
     });
   }
 
-  it('claude: doer.md keeps the ToolSearch branch and drops the else branch', () => {
-    const doer = loadCanonicalAgentSet('claude').find(f => f.relPath === 'doer.md');
-    expect(doer).toBeDefined();
-    expect(doer!.content).toContain('Run ToolSearch with query');
-    expect(doer!.content).not.toContain('No tool-discovery step is needed on this provider');
+  // kb-reconciler.md is the role prompt that still carries the ToolSearch
+  // if-tool/else-tool branches (the other roles use the kb_* tools directly).
+  it('claude: kb-reconciler.md keeps the ToolSearch branch and drops the else branch', () => {
+    const src = loadAgentAssets().find(a => a.relPath === 'kb-reconciler.md');
+    expect(src?.content, 'premise: the source carries both branches').toMatch(/<!-- else-tool: ToolSearch -->/);
+    const rec = loadCanonicalAgentSet('claude').find(f => f.relPath === 'kb-reconciler.md');
+    expect(rec).toBeDefined();
+    expect(rec!.content).toContain('Run ToolSearch with query');
+    expect(rec!.content).not.toContain('No tool-discovery step is needed on this provider');
   });
 });

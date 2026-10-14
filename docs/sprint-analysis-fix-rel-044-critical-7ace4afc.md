@@ -105,13 +105,3 @@ Per-member totals:
 - member 'fleet-lin1': 43 dispatch(es), kb_* calls: 50, code_* calls: 44.
 - member 'fleet-lin1-deploy': 15 dispatch(es), kb_* calls: 2, code_* calls: 0.
 
-## Cost
-
-```
-Budget ceiling: not set (no --budget flag) -- unlimited for this run.
-Tracked spend (priced dispatches only): $60.2206.
-Remaining budget: unknown/unbounded.
-Integ-test-runner spend: $0.2812 across 7 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
-Pricing source: all 58 priced dispatch(es) used real per-member rates (get_member_model_pricing).
-Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
-```

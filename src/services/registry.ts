@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import type { Agent, FleetRegistry } from '../types.js';
+import type { Agent, FleetMcpStatus, FleetRegistry } from '../types.js';
 import { encryptPassword } from '../utils/crypto.js';
 import { enforceOwnerOnly } from '../utils/file-permissions.js';
 import { FLEET_DIR } from '../paths.js';
@@ -115,6 +115,22 @@ export function updateAgent(id: string, updates: Partial<Agent>): Agent | undefi
   registry.agents[idx] = { ...registry.agents[idx], ...updates };
   saveRegistry(registry);
   return registry.agents[idx];
+}
+
+/** Record the latest fleetMcp observation for a member (overwrites; never sticky),
+ *  except that the CURRENT fleetInstalledAt stamp is carried forward unless the
+ *  new status sets its own -- it is the only signal this fleet installed the
+ *  member, and observation-only writers (compose errors) must not drop it. */
+export function recordFleetMcpStatus(id: string, status: FleetMcpStatus): Agent | undefined {
+  const stamp = status.fleetInstalledAt ?? getAgent(id)?.fleetMcp?.fleetInstalledAt;
+  const fleetMcp = stamp ? { ...status, fleetInstalledAt: stamp } : status;
+  // The member's MCP port is persisted only from a probe that resolved it: a
+  // probe that failed before reading the member's install keeps the recorded
+  // port (falling back to the default there would point sessions at whatever
+  // else listens on it).
+  if (status.portSource === 'marker' && status.port !== undefined) return updateAgent(id, { fleetMcp, memberMcpPort: status.port });
+  if (status.portSource === 'default') return updateAgent(id, { fleetMcp, memberMcpPort: undefined });
+  return updateAgent(id, { fleetMcp });
 }
 
 export function removeAgent(id: string): boolean {

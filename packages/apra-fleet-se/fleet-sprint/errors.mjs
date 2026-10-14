@@ -1,4 +1,4 @@
-// apra-fleet-unw.15 -- typed error(s) local to the auto-sprint runner.
+// apra-fleet-unw.15 -- typed error(s) local to the fleet-sprint runner.
 //
 // SprintPlanRejectedError is sprint-specific (it is only ever thrown by
 // runner.js's Plan phase) so it lives here rather than in
@@ -497,6 +497,12 @@ export function isAuthDispatchError(err) {
 //                                 from the call, setup included) and was
 //                                 stopped. Before this reason existed the same
 //                                 kill surfaced as 'dispatch_failed'.
+//   - 'transport_failure'       -- the fleet tool call itself failed at the
+//                                 transport (e.g. the SSH channel to the member
+//                                 could not be opened) and the server reported
+//                                 it as a bare tool error, not a classified
+//                                 execute_prompt result (agent() in the
+//                                 workflow engine). No result envelope exists.
 //
 // For an integ-test-runner dispatch, all of these mean "no test verdict was
 // ever produced" -- the run never reported pass or fail. Treating them as a
@@ -505,7 +511,7 @@ export function isAuthDispatchError(err) {
 // check on an infra fault. Callers use this classifier to (a) retry once via a
 // session resume and (b) failing that, record the cycle as INCONCLUSIVE rather
 // than a test FAIL -- exactly as the part-2 stale-evidence path already does.
-const INFRA_DISPATCH_REASONS = new Set(['empty_response', 'dispatch_failed', 'orphan_recovery_timeout', 'stalled', 'agent_never_started', 'max_total_time', 'preflight_offline']);
+const INFRA_DISPATCH_REASONS = new Set(['empty_response', 'dispatch_failed', 'orphan_recovery_timeout', 'stalled', 'agent_never_started', 'max_total_time', 'preflight_offline', 'transport_failure']);
 
 /**
  * True when a dispatch error is an INFRASTRUCTURE failure (the member CLI never
@@ -844,15 +850,6 @@ export class ConcurrentSyncBracketError extends WorkflowError {
 //   DEADLOCKED           Not-done beads remain in scope but none are ready,
 //                        and the repairable cycle shape does not explain it.
 //                        Needs a human to break the dependency deadlock.
-//   UNREACHABLE_VERIFY_BLOCK
-//                        No integ-test playbook exists, and one or more
-//                        not-done beads are blocked ONLY by verify-routed
-//                        beads. Those close only through the integ-test
-//                        phase, which never runs without a playbook, so the
-//                        blocked beads can never become ready. Raised whether
-//                        or not other work is ready. The DAG is left
-//                        untouched; the message names each bead, its
-//                        blockers and the exact `bd dep` commands to run.
 //
 // NOT in this vocabulary, deliberately: the VERIFY-ONLY sprint path. An empty
 // ready set with implementation-complete beads routed to verify PROCEEDS, so
@@ -865,7 +862,10 @@ export const PRE_SPRINT_REFUSAL_REASONS = Object.freeze({
     NOTHING_TO_DO: 'NOTHING_TO_DO',
     CYCLE_REPAIR_FAILED: 'CYCLE_REPAIR_FAILED',
     DEADLOCKED: 'DEADLOCKED',
-    UNREACHABLE_VERIFY_BLOCK: 'UNREACHABLE_VERIFY_BLOCK',
+    // GitHub #717: a goal-priority bead is blocked only by verify-routed beads
+    // and the Integration Test phase cannot run (no integ-test-playbook.md or
+    // no deploy.md), so it can never become ready.
+    VERIFY_BLOCKED: 'VERIFY_BLOCKED',
 });
 
 /**
@@ -927,7 +927,9 @@ export class PreSprintValidationError extends WorkflowError {
 
 export const BEADS_IDENTITY_FAILURE_REASONS = Object.freeze({
     MISMATCH: 'MISMATCH',
-    // The member cannot run bd at all (not installed / not on PATH).
+    // The member cannot run bd at all (not installed / not on PATH): every
+    // bd a role or the engine runs there would fail mid-sprint, so refuse up
+    // front.
     MISSING_TOOL: 'MISSING_TOOL',
     // A beads-reading member had no usable beads database (or no
     // sync.remote) and the preflight could not set one up from the sprint's
@@ -944,10 +946,10 @@ export const BEADS_IDENTITY_FAILURE_REASONS = Object.freeze({
  * own identity) on a field that resolved on both sides (reason MISMATCH), or
  * when a member cannot run bd at all -- a bd probe failed because bd is not
  * installed or not on PATH (reason MISSING_TOOL), so every later bd command
- * there would fail too. Any other probe that fails or cannot be parsed is a
- * logged warning, never this error -- except BEADS_SETUP_FAILED: a
- * beads-reading member had no database / no sync.remote and setting it up
- * from the expected remote failed.
+ * there would fail too, or (reason BEADS_SETUP_FAILED) when a beads-reading
+ * member had no database / no sync.remote and setting it up from the
+ * expected remote failed. Any other probe that fails or cannot be parsed is a
+ * logged warning, never this error.
  *
  * A WorkflowError so main()'s terminal record names the reason, but
  * deliberately NOT a typed abort: nothing has been dispatched or mutated, so

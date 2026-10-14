@@ -60,6 +60,23 @@ test('classifier and accessor key on the structured reason only', () => {
     assert.equal(permissionDeniedOf(new Error('x')), null);
 });
 
+test('R1 regression guard: typed failures carrying incidental permissionDenied are NOT classified as permission_denied', () => {
+    for (const reason of ['auth', 'server', 'overloaded', 'max_turns_exhausted', 'workspace_not_trusted']) {
+        const err = new AgentDispatchError(`${reason} failure`, {
+            details: {
+                reason,
+                permissionDenied: {
+                    actions: ['command'],
+                    denials: [{ action: 'command', target: 'git status' }],
+                    suggestedGrants: ['Bash(git:*)'],
+                    hint: 'permission check failed',
+                },
+            },
+        });
+        assert.equal(isPermissionDeniedDispatchError(err), false, `expected reason '${reason}' with carried denial not to be permission_denied`);
+    }
+});
+
 test('a refused dispatch ran: its post-dispatch sync must not be skipped', () => {
     assert.equal(isNoMutationDispatchFailure(deniedError()), false);
 });
@@ -269,6 +286,46 @@ test('auto-mode (classifier / deny rule) refusal is never healed: no compose cal
         return true;
     });
     assert.equal(rec.dispatches.length, 1);
+});
+
+test('a policy_deny refusal (a tool the member config denies on purpose) in acceptEdits mode is never healed', async () => {
+    const fleet = fakeFleet();
+    const heal = createPermissionDenialHeal({ callTool: fleet.callTool, memberRoles: () => ['doer'] });
+    const denial = {
+        actions: ['mcp__fleet__admin_tool', 'Bash'],
+        denials: [{ action: 'mcp__fleet__admin_tool', suggestedGrants: [] }, { action: 'Bash', target: 'npm test', suggestedGrants: [] }],
+        suggestedGrants: [],
+        hint: 'policy',
+        signals: ['result_json'],
+        permissionMode: 'acceptEdits',
+        healable: false,
+        cause: 'policy_deny',
+    };
+    const res = await heal({ member: 'dev', role: 'doer', denial });
+    assert.equal(res.healed, false);
+    assert.equal(res.step, 'not_healable');
+    assert.deepEqual(res.grants, []);
+    assert.match(res.reason, /deny rule the member's own permission config carries on purpose/);
+    assert.equal(fleet.calls.length, 0, 'a policy deny must never reach compose_permissions, not even a dry_run');
+});
+
+test('an agy member-policy refusal (policy_deny, healable false, no grants) stops not_healable with no compose_permissions call', async () => {
+    const fleet = fakeFleet();
+    const heal = createPermissionDenialHeal({ callTool: fleet.callTool, memberRoles: () => ['doer'] });
+    const agyPolicy = {
+        actions: ['mcp'],
+        denials: [{ action: 'mcp', target: 'apra-fleet/execute_prompt', suggestedGrants: [] }],
+        suggestedGrants: [],
+        hint: 'agy refused mcp "apra-fleet/execute_prompt": outside the member tool allowlist',
+        signals: ['result_json', 'transcript'],
+        healable: false,
+        cause: 'policy_deny',
+    };
+    const res = await heal({ member: 'agy1', role: 'doer', denial: agyPolicy });
+    assert.equal(res.healed, false);
+    assert.equal(res.step, 'not_healable');
+    assert.deepEqual(res.grants, []);
+    assert.equal(fleet.calls.length, 0, 'an agy policy deny must never reach compose_permissions (no no_progress abort)');
 });
 
 test('no progress: the same call refused again after its grant landed stops instead of looping', async () => {

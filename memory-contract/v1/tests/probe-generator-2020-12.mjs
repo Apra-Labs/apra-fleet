@@ -234,7 +234,7 @@ function probeDeterminism() {
 }
 
 // ---------------------------------------------------------------------------
-// Section 6 -- the full inventoried surface: all 23 tools
+// Section 6 -- the full inventoried surface: all 24 tools
 // ---------------------------------------------------------------------------
 const KB_MODULES = [
   ['kb_capture', 'kb-capture.js', 'kbCaptureSchema'],
@@ -253,6 +253,7 @@ const KB_MODULES = [
   ['kb_export', 'kb-export.js', 'kbExportSchema'],
   ['kb_stats', 'kb-stats.js', 'kbStatsSchema'],
   ['kb_feedback', 'kb-feedback.js', 'kbFeedbackSchema'],
+  ['kb_bible_commit', 'kb-bible-commit.js', 'kbBibleCommitSchema'],
 ];
 const CODE_EXPORTS = [
   ['code_graph', 'codeGraphSchema'],
@@ -265,7 +266,7 @@ const CODE_EXPORTS = [
 ];
 
 async function probeWholeSurface() {
-  console.log('\n6. the whole inventoried surface (16 kb_* + 7 code_* = 23 tools)');
+  console.log('\n6. the whole inventoried surface (17 kb_* + 7 code_* = 24 tools)');
   const entries = [];
   for (const [tool, file, exportName] of KB_MODULES) {
     const mod = await import(`${DIST}/${file}`);
@@ -274,8 +275,8 @@ async function probeWholeSurface() {
   const code = await import(`${DIST}/code-intelligence.js`);
   for (const [tool, exportName] of CODE_EXPORTS) entries.push([tool, code[exportName]]);
 
-  if (entries.length === 23) pass('23 request schemas loaded, matching the INVENTORY.md tool count');
-  else fail(`expected 23 schemas, loaded ${entries.length}`);
+  if (entries.length === 24) pass('24 request schemas loaded, matching the INVENTORY.md tool count');
+  else fail(`expected 24 schemas, loaded ${entries.length}`);
 
   let rawBad = 0;
   let fixedBad = 0;
@@ -289,10 +290,10 @@ async function probeWholeSurface() {
   }
   // rawBad counts documents that stay metaschema-INVALID even if you cheat the
   // dialect string in by hand, i.e. those needing a structural fix. Zero is the
-  // expected answer for today's surface: every one of the 23 still needs the
+  // expected answer for today's surface: every one of the 24 still needs the
   // postprocess for its DIALECT DECLARATION, since the draft-07 emit declares
   // draft-07, and the criterion is 2020-12 exactly.
-  if (fixedBad === 0) pass(`all 23 tools emit metaschema-valid draft-2020-12 after postprocess (${rawBad} of 23 also needed a structural fix)`);
+  if (fixedBad === 0) pass(`all 24 tools emit metaschema-valid draft-2020-12 after postprocess (${rawBad} of 24 also needed a structural fix)`);
 
   // The single real-surface field that forces the fallback path.
   const codeMapRaw = zodToJsonSchema(code.codeMapSchema, { target: 'jsonSchema2020-12' });
