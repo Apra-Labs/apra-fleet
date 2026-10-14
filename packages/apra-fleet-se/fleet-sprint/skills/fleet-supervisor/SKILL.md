@@ -171,7 +171,9 @@ restart command exists:
 with. Before upgrading, let running sprints finish (or stop them) and stop
 the supervisor; start it again afterwards. A
 supervisor started under 0.4.3 does not send the install's access secret, so
-a 0.4.4 fleet server refuses its requests with HTTP 401.
+a 0.4.4 fleet server refuses its requests with HTTP 401. If a sprint was
+still running during the upgrade, the first launch may 409 on its stale
+member reservations -- see "Common launch-time crashes" below.
 
 ## Auto-start on login/boot
 
@@ -402,6 +404,13 @@ only use it once you know why the prior run died.
 - **Unregistered member**: `GET /api/members` to see valid names.
 - **Stale LLM auth**: dispatch fails with `empty_response`. Re-run
   `provision_llm_auth` for that member.
+- **Stale member reservation** (`409 member overlap rejects launch: sprint
+  '<id or branch>' already claims [...]` while `GET /api/sprints` shows no
+  such sprint): a sprint died uncleanly (crash, or an upgrade with
+  `--ignore-running-sprints`) and left its members reserved on the fleet
+  server. Clear each listed member with the fleet MCP tool
+  `member_reservation {member_name: "<member>", action: "force_release"}`
+  (no supervisor HTTP route does this), then relaunch.
 
 ## Member layout: isolate deploy/test roles from dev roles
 

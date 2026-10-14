@@ -164,7 +164,9 @@ Open the dashboard, watch your fleet PLAN->BUILD->REVIEW->TEST->SHIP in a loop t
 fleet-sprint ...` command above is the same one command for everyone --
 whether you installed via `npm install -g @apralabs/apra-fleet`, the
 standalone binary, or a git-clone dev checkout. There is no separate
-`fleet-sprint` command to install or remember. See
+`fleet-sprint` command to install or remember. (Standalone installer: the
+binary is not on PATH, so use `~/.apra-fleet/bin/apra-fleet` or add
+`~/.apra-fleet/bin` to PATH -- see step 1.) See
 [the full flag reference](packages/apra-fleet-se/fleet-sprint/docs/README.md)
 for every option.
 

@@ -29,7 +29,10 @@ apra-fleet workflow fleet-sprint \
 This is the ONE command for every install method -- git-clone dev checkout,
 `npm install -g @apralabs/apra-fleet`, and the pre-built standalone binary
 all resolve it identically; there is no separate npm-only invocation to
-learn. The launcher resolves the workflow from
+learn. The standalone installer does not add `apra-fleet` to PATH: run it
+as `~/.apra-fleet/bin/apra-fleet` (PowerShell:
+`& "$HOME\.apra-fleet\bin\apra-fleet.exe"`) or add that folder to PATH.
+The launcher resolves the workflow from
 `~/.apra-fleet/workflows/fleet-sprint` (installed by `apra-fleet install`,
 self-healed on demand). Everything after the workflow name is passed
 through verbatim, so `apra-fleet workflow fleet-sprint --help` prints the
@@ -135,6 +138,11 @@ resumed sprint's resync step still runs real git commands against every
   cannot be reconciled: an unreachable member, differing origin URLs, a base
   missing on origin, a fetch auth failure, or a diverged sprint branch. See
   `fleet-sprint-diagram.md` for the supported-topology notes.
+- A GitHub target needs a GitHub App configured on the fleet
+  (`setup_git_app`; see `docs/github-app-setup.md` in the apra-fleet repo):
+  the publish step mints its own `push+pr` credential through it. With only
+  a PAT the sprint still pushes the branch, but logs `[Publish PR Skipped]
+  ... GitHub App not configured` and opens no PR.
 - If a member's LLM session is stale or unauthenticated (dispatch fails with
   `empty_response`, or "member CLI likely died"), re-run `provision_llm_auth`
   for that member before retrying.
@@ -181,8 +189,12 @@ the full algorithm and worked examples.
 
 ## Recovering a wedged member reservation (launched via the supervisor)
 
-If a sprint was launched through the supervisor (`bin/serve.mjs`, installed
-as `fleet-se-serve`; `POST /api/sprints`) and its child process crashes or is killed, the supervisor's
+If a sprint was launched through the supervisor (`POST /api/sprints`; the
+supervisor is `bin/serve.mjs`, which no install puts on PATH -- start it with
+`node ~/.apra-fleet/workflows/fleet-sprint/bin/serve.mjs`, or in PowerShell
+`node "$HOME\.apra-fleet\workflows\fleet-sprint\bin\serve.mjs"`, from the
+project folder holding `.beads` or with `--beads-dir <project folder>`)
+and its child process crashes or is killed, the supervisor's
 reservation ledger does **not** release that sprint's claim on its own during
 normal runtime -- only a supervisor restart, or an explicit operator call,
 clears it. Symptom: relaunching against the same member(s) is rejected with
@@ -218,5 +230,15 @@ mcp__apra-fleet__member_reservation  action: "force_release"  member_name: "<mem
 ```
 
 A crashed sprint can leave either axis wedged independently of the other --
-check both. See `packages/apra-fleet-se/docs/architecture.md` ("Supervisor:
+check both.
+
+After a supervisor restart or an apra-fleet upgrade (for example one run
+with `--ignore-running-sprints` while a sprint was live), the ledger is
+already empty, so the curl above answers `404 no live reservation for
+sprint '<id>'` -- that axis is clear, skip it. The 409 then comes only from
+the fleet server's `reservedBy`, and the name it prints is whatever id the
+dead sprint reserved with (often its branch name), so it does not appear in
+`GET /api/sprints`. Run the `member_reservation` force_release above once
+per member listed in the 409. It is a fleet MCP tool (call it from your
+agent); the supervisor has no HTTP route for it. See `packages/apra-fleet-se/docs/architecture.md` ("Supervisor:
 process model" / "Manual force-release") for the full mechanism.
