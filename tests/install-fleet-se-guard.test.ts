@@ -29,8 +29,10 @@ function fakeProbes(o: {
   health?: Record<number, unknown>;
   sprints?: Record<number, unknown>;
   log?: string;
+  cmd?: Record<number, string | null>;
 } = {}): FleetSeProbes {
   const alive = new Set(o.alive ?? []);
+  const cmd = o.cmd ?? {};
   return {
     lockDir: () => LOCK_DIR,
     supervisorLogPath: () => '/se/logs/supervisor.log',
@@ -41,6 +43,7 @@ function fakeProbes(o: {
       return o.locks && name in o.locks ? o.locks[name] : ENOENT();
     },
     isPidAlive: (pid: number) => alive.has(pid),
+    commandLine: (pid: number) => (pid in cmd ? cmd[pid] : 'node /home/u/.apra-fleet/workflows/fleet-sprint/bin/cli.mjs --branch b'),
     getJson: async (url: string) => {
       const m = url.match(/:(\d+)\/api\/(health|sprints)$/);
       if (!m) return null;
@@ -54,7 +57,23 @@ const SUPERVISOR_HEALTH = { status: 'ok', pid: 500, seams: { ledger: 'wired' } }
 
 describe('detectRunningFleetSe', () => {
   it('nothing running: no lock dir, no supervisor', async () => {
-    expect(await detectRunningFleetSe(fakeProbes())).toEqual({ supervisor: null, sprints: [] });
+    expect(await detectRunningFleetSe(fakeProbes())).toEqual({ supervisor: null, sprints: [], warnings: [] });
+  });
+
+  it('a stale lock whose pid was reused by an unrelated process is not a running sprint', async () => {
+    const r = await detectRunningFleetSe(fakeProbes({
+      locks: { 'a.lock': '111', 'b.lock': '222' },
+      alive: [111, 222],
+      cmd: { 111: 'C:\\Windows\\System32\\svchost.exe -k netsvcs', 222: 'apra-fleet workflow fleet-sprint --branch b' },
+    }));
+    expect(r.sprints).toEqual([{ pid: 222, lockFile: path.join(LOCK_DIR, 'b.lock') }]);
+    expect(r.warnings).toEqual([]);
+  });
+
+  it('an unreadable command line fails open: lock skipped with a warning', async () => {
+    const r = await detectRunningFleetSe(fakeProbes({ locks: { 'a.lock': '111' }, alive: [111], cmd: { 111: null } }));
+    expect(r.sprints).toEqual([]);
+    expect(r.warnings?.[0]).toContain('could not read the command line of pid 111');
   });
 
   it('a live sprint lock is a running sprint; a dead pid (or another user, EPERM) is not', async () => {
@@ -102,6 +121,8 @@ describe('fleetSeRefusalText', () => {
       { platform: 'win32', rerunLines: ['C:\\inst.exe install --force'], ignoreLines: ['C:\\inst.exe install --force --ignore-running-sprints'] },
     );
     expect(text).toContain('E-FLEET-SE-RUNNING');
+    expect(text).toContain('replaces\nthe fleet server underneath it');
+    expect(text).toContain('started before the member access secret existed (0.4.3 and earlier)');
     expect(text).toContain('HTTP 401');
     expect(text).toContain('fleet-sprint supervisor: pid 500, http://localhost:8787');
     expect(text).toContain('sprint sprint-1: pid 700');
@@ -176,9 +197,31 @@ describe('runInstall running fleet-sprint guard', () => {
     expect(errors()).not.toContain('E-FLEET-SE-RUNNING');
   });
 
-  it('nothing running: no refusal', async () => {
+  it('nothing running: no refusal, and an obsolete persisted refusal notice is cleared', async () => {
     _setFleetSeProbes(fakeProbes());
+    vi.mocked(fs.readFileSync).mockImplementation(((p: unknown) => {
+      if (String(p).endsWith('service-notice.json')) return JSON.stringify({ createdAt: 'x', text: 'Error: E-FLEET-SE-RUNNING: ...' });
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    }) as any);
     await runInstall([]).catch(() => {});
+    expect(errors()).not.toContain('E-FLEET-SE-RUNNING');
+    expect(vi.mocked(fs.unlinkSync).mock.calls.some(c => String(c[0]).endsWith('service-notice.json'))).toBe(true);
+  });
+
+  it('an unrelated pending notice is kept', async () => {
+    _setFleetSeProbes(fakeProbes());
+    vi.mocked(fs.readFileSync).mockImplementation(((p: unknown) => {
+      if (String(p).endsWith('service-notice.json')) return JSON.stringify({ createdAt: 'x', text: 'legacy task guidance' });
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    }) as any);
+    await runInstall([]).catch(() => {});
+    expect(vi.mocked(fs.unlinkSync).mock.calls.some(c => String(c[0]).endsWith('service-notice.json'))).toBe(false);
+  });
+
+  it('detection warnings (unverifiable lock pid) are printed and the install proceeds', async () => {
+    _setFleetSeProbes(fakeProbes({ locks: { 'a.lock': '111' }, alive: [111], cmd: { 111: null } }));
+    await runInstall([]).catch(() => {});
+    expect(vi.mocked(console.warn).mock.calls.map(c => c.join(' ')).join('\n')).toContain('WARNING: could not read the command line of pid 111');
     expect(errors()).not.toContain('E-FLEET-SE-RUNNING');
   });
 

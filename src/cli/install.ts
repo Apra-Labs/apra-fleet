@@ -35,7 +35,7 @@ import {
   writeMemberInstallMarker, clearMemberInstallMarker, FORCE_STOP_FULL_INSTALL_FLAG,
 } from './install-guard.js';
 import { detectRunningFleetSe, fleetSeRefusalText, realFleetSeProbes, IGNORE_RUNNING_SPRINTS_FLAG, type FleetSeProbes } from './fleet-se-guard.js';
-import { writeServiceNotice } from '../services/service-notice.js';
+import { writeServiceNotice, clearServiceNoticeContaining } from '../services/service-notice.js';
 import { convertClaudeAllowToAgyPermissions, formatAgyPermissionRules } from '../providers/agy.js';
 import { codeIntelPathWarning } from '../utils/find-on-path.js';
 import { gitBashCandidates } from '../os/git-bash-candidates.js';
@@ -1460,8 +1460,9 @@ Options:
     try {
       found = await detectRunningFleetSe(fleetSeProbes);
     } catch (err) {
-      console.warn(`WARNING: could not check for a running fleet-sprint supervisor or sprint (${(err as Error).message}). If one is running, stop it before upgrading or it will fail with HTTP 401.`);
+      console.warn(`WARNING: could not check for a running fleet-sprint supervisor or sprint (${(err as Error).message}). If one is running, stop it before upgrading.`);
     }
+    for (const w of found?.warnings ?? []) console.warn(`WARNING: ${w}`);
     if (found && (found.supervisor || found.sprints.length > 0)) {
       const self = (a: string[]) => selfInvocationLines({
         platform: process.platform, execPath: process.execPath, scriptPath: process.argv[1], sea: isSea(), args: ['install', ...a],
@@ -1479,6 +1480,10 @@ Options:
       return;
     }
   }
+  // Past the guard: a refusal persisted by an earlier (detached) install is
+  // obsolete and must not be shown after this install succeeds. All OSes --
+  // only the Windows service manager clears notices on registration.
+  clearServiceNoticeContaining('E-FLEET-SE-RUNNING');
 
   const serviceStep = isSea() && transport === 'http';
   // A member install exists to leave an auto-starting server behind. With no

@@ -159,6 +159,10 @@ node scripts/check-foreign-sprints.mjs --self-sprint-id "<your-sprint-id>"
 # Resolves dist/apra-fleet-installer-<platform>-<arch>[.exe] and runs
 # `install --force` with inherited stdio (exit code propagated). Add
 # `--print-path` to only print the resolved installer path.
+# Only after the gate above passes: it adds --ignore-running-sprints (your own
+# sprint/supervisor keep running) when the host already has a 0.4.4+ member
+# access key. Without one, install exits 1 with E-FLEET-SE-RUNNING: return
+# `deployed: false` quoting its stop/restart steps -- never add the flag yourself.
 node scripts/deploy-install.mjs
 # macOS where the LaunchAgent wins the race (see recovery section above):
 # use `node scripts/deploy-install.mjs --launchagent` instead of the plain line.

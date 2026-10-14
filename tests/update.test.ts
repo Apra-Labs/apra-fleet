@@ -154,6 +154,7 @@ describe('runUpdate (T6)', () => {
       readDir: () => { throw Object.assign(new Error('x'), { code: 'ENOENT' }); },
       readFile: () => { throw Object.assign(new Error('x'), { code: 'ENOENT' }); },
       isPidAlive: () => true,
+      commandLine: () => null,
       getJson: async (url: string) => url.endsWith('/api/health') ? { status: 'ok', seams: {}, pid: 4242 } : { sprints: [] },
     });
     const prevExitCode = process.exitCode;

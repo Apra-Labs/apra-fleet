@@ -2,10 +2,12 @@
  * Install-time guard against upgrading under a running fleet-sprint
  * supervisor or sprint.
  *
- * A supervisor or sprint started under the previous apra-fleet keeps running
- * the old code after an upgrade: it does not send the member access secret the
- * new server requires and every call it makes gets HTTP 401 -- the sprint
- * fails silently mid-run. install therefore refuses while one is running for
+ * A supervisor or sprint keeps running its old code after an upgrade, and
+ * install --force replaces the fleet server underneath it. One started before
+ * the member access secret existed (0.4.3 and earlier) never sends it, so
+ * every call it makes gets HTTP 401 -- the sprint fails silently mid-run. In
+ * general a running sprint should not have its server replaced underneath it,
+ * so install refuses while one is running for
  * this OS user, unless the user explicitly passes IGNORE_RUNNING_SPRINTS_FLAG.
  * --force does NOT bypass this: --force only means "stop the running fleet
  * server", and `apra-fleet update` always passes it.
@@ -14,13 +16,16 @@
  * a supervisor OS service (see services/supervisor-service-cleanup.ts), and the
  * supervisor writes no server.json, so there is nothing install could restart.
  *
- * Signals (no command-line matching):
+ * Signals:
  *   - sprints: every fleet-sprint engine run (supervisor-launched or a direct
  *     `apra-fleet workflow fleet-sprint`) holds a pidfile lock under
  *     APRA_FLEET_SPRINT_LOCK_DIR or <tmpdir>/apra-fleet-sprint-locks
  *     (fleet-sprint/sprint-lock.mjs). A lock whose pid is alive is a running
  *     sprint. isPidAlive() is false on EPERM, so another user's sprints in a
- *     shared /tmp do not count.
+ *     shared /tmp do not count. A lock left behind by a killed run can name a
+ *     pid since reused by an unrelated process, so the pid's command line must
+ *     also look like a fleet-sprint run; when it cannot be read the lock is
+ *     skipped with a WARNING (fail open).
  *   - supervisor: GET /api/health on the default port 8787 and on the port the
  *     supervisor last logged in <FLEET_SE_DATA_DIR or ~/.apra-fleet-se>/logs/
  *     supervisor.log; a 200 with status ok + seams + a live pid is the
@@ -29,14 +34,28 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { isPidAlive } from '../utils/process-utils.js';
+import { isPidAlive, processCommandLine } from '../utils/process-utils.js';
 
 export const IGNORE_RUNNING_SPRINTS_FLAG = '--ignore-running-sprints';
 export const DEFAULT_SUPERVISOR_PORT = 8787;
 
 export interface RunningSupervisor { pid: number; port: number }
 export interface RunningSprint { pid: number; sprintId?: string; lockFile?: string }
-export interface RunningFleetSe { supervisor: RunningSupervisor | null; sprints: RunningSprint[] }
+export interface RunningFleetSe {
+  supervisor: RunningSupervisor | null;
+  sprints: RunningSprint[];
+  /** Detection caveats the caller prints as WARNINGs. */
+  warnings?: string[];
+}
+
+/**
+ * A fleet-sprint engine run: the supervisor's `node .../bin/cli.mjs ...`
+ * (installed tree or an apra-fleet-se checkout) or the SEA's
+ * `apra-fleet workflow fleet-sprint ...`.
+ */
+export function isFleetSprintCommandLine(cmd: string): boolean {
+  return /apra-fleet|fleet-sprint|fleet-se|runner\.js|cli\.mjs/i.test(cmd);
+}
 
 export interface FleetSeProbes {
   lockDir: () => string;
@@ -44,6 +63,8 @@ export interface FleetSeProbes {
   readDir: (dir: string) => string[];
   readFile: (file: string) => string;
   isPidAlive: (pid: number) => boolean;
+  /** Command line of a live pid, or null when it cannot be read. */
+  commandLine: (pid: number) => string | null;
   /** Parsed JSON body of a 200 response, or null (refused, timeout, non-200, bad JSON). */
   getJson: (url: string) => Promise<unknown>;
 }
@@ -70,6 +91,7 @@ export const realFleetSeProbes: FleetSeProbes = {
   readDir: dir => fs.readdirSync(dir),
   readFile: file => fs.readFileSync(file, 'utf8'),
   isPidAlive,
+  commandLine: processCommandLine,
   getJson: getJsonWithTimeout,
 };
 
@@ -92,6 +114,7 @@ function loggedSupervisorPort(probes: FleetSeProbes): number | null {
  */
 export async function detectRunningFleetSe(probes: FleetSeProbes = realFleetSeProbes): Promise<RunningFleetSe> {
   const sprints = new Map<number, RunningSprint>();
+  const warnings: string[] = [];
 
   const lockDir = probes.lockDir();
   let lockFiles: string[] = [];
@@ -100,7 +123,14 @@ export async function detectRunningFleetSe(probes: FleetSeProbes = realFleetSePr
     const lockFile = path.join(lockDir, f);
     let pid: number;
     try { pid = parseInt(probes.readFile(lockFile).trim(), 10); } catch (err) { if (isEnoent(err)) continue; throw err; }
-    if (Number.isInteger(pid) && pid > 0 && pid !== process.pid && probes.isPidAlive(pid)) sprints.set(pid, { pid, lockFile });
+    if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid || !probes.isPidAlive(pid)) continue;
+    const cmd = probes.commandLine(pid);
+    if (cmd === null) {
+      warnings.push(`could not read the command line of pid ${pid} (sprint lock ${lockFile}), so it is not treated as a running sprint. If it is one, stop it before upgrading.`);
+      continue;
+    }
+    // Otherwise a stale lock whose pid was reused by an unrelated process.
+    if (isFleetSprintCommandLine(cmd)) sprints.set(pid, { pid, lockFile });
   }
 
   let supervisor: RunningSupervisor | null = null;
@@ -123,7 +153,7 @@ export async function detectRunningFleetSe(probes: FleetSeProbes = realFleetSePr
     break;
   }
 
-  return { supervisor, sprints: [...sprints.values()] };
+  return { supervisor, sprints: [...sprints.values()], warnings };
 }
 
 /** The refusal printed when fleet-se work is running. */
@@ -163,9 +193,10 @@ export function fleetSeRefusalText(found: RunningFleetSe, opts: {
     : '  4. Relaunch the sprints.');
   return [
     '',
-    'Error: E-FLEET-SE-RUNNING: fleet-sprint work is running for this user. Upgrading now breaks it:',
-    'a process started under the old version does not send the new member access secret, so its',
-    'calls to the fleet server fail with HTTP 401. Nothing was stopped or installed.',
+    'Error: E-FLEET-SE-RUNNING: fleet-sprint work is running for this user. Installing now replaces',
+    'the fleet server underneath it while it keeps running its old code; a supervisor or sprint',
+    'started before the member access secret existed (0.4.3 and earlier) then fails every call',
+    'with HTTP 401. Nothing was stopped or installed.',
     '',
     'Running:',
     ...running,
