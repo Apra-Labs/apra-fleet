@@ -82,12 +82,26 @@ async function commitBible(): Promise<any> {
   return JSON.parse(await kbBibleCommit({ ids: [], ...BASE }, { folder: tmpDir }));
 }
 
-let tmpBefore: string[];
-const tmpListing = () => fs.readdirSync(os.tmpdir()).filter(n => !n.startsWith('kb-bible-backfill-')).sort();
+// os.tmpdir() is redirected per test to a test-owned empty dir, so "nothing
+// left behind in tmp" is asserted on files only the code under test could
+// have written. The real os.tmpdir() is shared with unrelated processes (on
+// macOS runners the per-user $TMPDIR gains entries like .AddressBookLocks at
+// any time), so diffing its raw listing was a flake, not a check.
+const TMP_ENV_KEYS = ['TMPDIR', 'TMP', 'TEMP'] as const;
+let rootDir: string;
+let sandboxTmp: string;
+let savedTmpEnv: Record<string, string | undefined>;
 
 beforeEach(async () => {
-  tmpBefore = tmpListing();
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-bible-backfill-'));
+  rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-bible-backfill-'));
+  tmpDir = path.join(rootDir, 'repo');
+  sandboxTmp = path.join(rootDir, 'tmp');
+  fs.mkdirSync(tmpDir);
+  fs.mkdirSync(sandboxTmp);
+  savedTmpEnv = Object.fromEntries(TMP_ENV_KEYS.map(k => [k, process.env[k]]));
+  for (const k of TMP_ENV_KEYS) process.env[k] = sandboxTmp;
+  expect(os.tmpdir()).toBe(sandboxTmp);
+
   git(tmpDir, ['init', '--quiet']);
   writeSrc('src/a.ts');
   writeSrc('src/b.ts');
@@ -105,9 +119,14 @@ beforeEach(async () => {
 afterEach(() => {
   provider.close();
   vi.restoreAllMocks();
-  fs.rmSync(tmpDir, { recursive: true, force: true });
-  // Nothing left behind outside the fixture's own temp dir.
-  expect(tmpListing()).toEqual(tmpBefore);
+  for (const k of TMP_ENV_KEYS) {
+    if (savedTmpEnv[k] === undefined) delete process.env[k];
+    else process.env[k] = savedTmpEnv[k];
+  }
+  // Nothing left behind in os.tmpdir() as the code under test saw it.
+  const leftovers = fs.readdirSync(sandboxTmp);
+  fs.rmSync(rootDir, { recursive: true, force: true });
+  expect(leftovers).toEqual([]);
 });
 
 describe('kb_bible_commit legacy backfill', () => {
