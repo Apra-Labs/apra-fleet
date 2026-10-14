@@ -14,7 +14,8 @@
  * @property {string} [member_id] - UUID of the member
  * @property {string} [member_name] - Friendly name of the member
  * @property {string} [model] - Model tier ("cheap", "standard", "premium") or a specific model ID
- * @property {boolean|string} [resume] - Resume the previous session if one exists. Defaults to
+ * @property {boolean|string} [resume] - Resume the previous session if one exists (`true` starts
+ *   fresh instead when the stored session was recorded by a different server build). Defaults to
  *   true at this client/transport layer when the field is omitted entirely. NOTE: the
  *   FleetWorkflow.agent() workflow layer (packages/apra-fleet-workflow/src/workflow/index.mjs)
  *   always sends this field explicitly, defaulting it to `false` for workflow-authored
