@@ -118,9 +118,11 @@ resumed sprint's resync step still runs real git commands against every
 - Every `--members` name must be registered with the fleet
   (`list_members`); an unregistered member aborts the sprint unless
   `--allow-missing-members` is passed.
-- Every member that reads beads needs `bd` on its PATH (`apra-fleet install`
-  provides it). Before any dispatch the engine checks each member's beads: a
-  missing `bd` aborts the sprint, a beads-reading member with no beads
+- Every member the sprint uses (including the backlog member and
+  deployer/ci-watcher-only members) needs `bd` runnable in its work folder
+  (`apra-fleet install` provides it). Before any dispatch the engine checks
+  each member's beads: a missing `bd` aborts the sprint, a beads-reading
+  member with no beads
   database yet is set up from the expected beads remote (or the sprint aborts
   if that set-up fails), and a member resolving to a different beads project
   aborts. Each error names the member and the fix.

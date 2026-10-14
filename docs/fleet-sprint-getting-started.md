@@ -66,7 +66,8 @@ Concretely, after a run finishes, here is what has changed in your world:
 - Your issue tracker (beads -- see Section 2) has the sprint's issues decomposed,
   worked, and closed-with-evidence or left open with filed bugs explaining why.
 - A sprint analysis document is committed to the branch
-  (`docs/sprint-analysis-<branch>.md`), and the run's raw log is retained on
+  (`docs/sprint-analysis-<branch>-<hash>.md`: `/` in the branch name becomes
+  `-`, plus an 8-character hash), and the run's raw log is retained on
   disk. No `CHANGELOG.md` entry is written; the cost breakdown is in the PR body.
 
 What it is *not*: it does not invent product scope (the planner is explicitly
@@ -249,13 +250,14 @@ Alternatively, download the standalone installer for your platform from
 [GitHub Releases](https://github.com/Apra-Labs/apra-fleet/releases)
 (`apra-fleet-installer-darwin-arm64`, `apra-fleet-installer-linux-x64`,
 `apra-fleet-installer-win-x64.exe`) and run it -- installation is the default
-action, and it registers and starts a user-level service. Either way, the fleet
-runtime is unpacked into `~/.apra-fleet/`, with the `apra-fleet` binary in
-`~/.apra-fleet/bin` and fleet-sprint in `~/.apra-fleet/workflows/fleet-sprint`.
+action, and it registers and starts a user-level service, with the
+`apra-fleet` binary in `~/.apra-fleet/bin` (not added to PATH). Either way,
+fleet-sprint is installed into `~/.apra-fleet/workflows/fleet-sprint`.
 
-Every member that runs sprint roles needs `bd` (beads); the install provides it.
-A member without `bd` fails the sprint's preflight before any work is
-dispatched, with an error naming the member and the fix.
+Every member a sprint uses needs `bd` (beads) runnable in its work folder; the
+install provides it (it needs npm on that machine). A member without `bd` fails
+the sprint's preflight before any work is dispatched, with an error naming the
+member and the fix.
 
 Then load the fleet MCP server in Claude Code (`/mcp`) and register members
 conversationally -- registration is driven through your agent in plain language,
@@ -301,13 +303,17 @@ holding `.beads`), or pass `--beads-dir <project folder>`:
 
 ```bash
 node ~/.apra-fleet/workflows/fleet-sprint/bin/serve.mjs              # macOS / Linux
+```
+
+```powershell
 node "$HOME\.apra-fleet\workflows\fleet-sprint\bin\serve.mjs"    # Windows PowerShell
 ```
 
 At startup the supervisor sets up its own **backlog member**: a local member with
 no LLM whose work folder is that project folder. It adopts an LLM-less local
 member already registered there (name kept), or registers one named
-`backlog-<folder>`. Every sprint it launches runs its own `bd`/`git` commands and
+`backlog-<folderName>` (the folder name in camelCase, ASCII letters and digits
+only). Every sprint it launches runs its own `bd`/`git` commands and
 the PR call through that member, so leave the `backlog` role out of your launch
 request (naming any other member for it is an HTTP 400). If the supervisor found
 no `.beads`, it still starts, but every launch answers HTTP 503 until you restart
@@ -458,8 +464,9 @@ ordered by reach:
 6. **The Knowledge Bank (optional).** If you use apra-fleet's KB for the repo,
    the engine adds a short knowledge block to role prompts. Only CONFIRMED
    entries that are not disputed (flagged for review or part of an open
-   contradiction) are injected; INFERRED and UNVERIFIED captures never reach a
-   prompt until they are promoted.
+   contradiction) are injected as knowledge; INFERRED and UNVERIFIED captures
+   are not injected until they are promoted (the reviewer may be shown INFERRED
+   entries as promotion candidates to verify, never as facts).
 
 > **Rule of thumb:** durable cross-cutting conventions -> `bd remember` under an
 > `+all+` or `+<role>+` key (and `CLAUDE.md` as belt-and-suspenders); sprint-scoped

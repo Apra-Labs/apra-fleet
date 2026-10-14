@@ -28,9 +28,12 @@ throughout) -- see the main apra-fleet `README.md` if you don't yet.
 - A system Node.js 22.16+ and npm on PATH on the machine that runs the
   supervisor (the apra-fleet installer checks this before installing
   fleet-se and stops if either is missing).
-- `bd` on every member that runs sprint roles. `apra-fleet install` provides
-  it; a member without `bd` fails the sprint's preflight before any
-  dispatch.
+- `bd` runnable in the work folder of every member a sprint uses, and on
+  the supervisor's PATH (it probes its own `.beads` with `bd`). `apra-fleet
+  install` provides `bd` (it needs npm on that machine; when global npm is
+  not writable it places `bd` in `~/.apra-fleet/bin`, which you may need to
+  add to PATH for the supervisor). A member without `bd` fails the sprint's
+  preflight before any dispatch.
 - At least one machine with a full git checkout of the target project --
   this is where your `doer`/`reviewer`/`planner` members live.
 
@@ -153,19 +156,27 @@ launches so the engine can verify each member's own `bd where` against it.
 
 If no `.beads` is reachable from the working directory (or the identity
 probe fails: `bd` not on PATH, project not initialised), the supervisor
-STILL STARTS but warns loudly, runs with its beads identity unknown, and
-has no backlog member, so it cannot launch sprints (every launch answers
-`503`):
+STILL STARTS but warns loudly and runs with its beads identity unknown:
 
 ```
 [supervisor] WARNING: no beads database found walking up from <cwd>. Backlog and scope-overlap checks are disabled and sprints will verify against the backlog member's beads instead. To fix: restart fleet-se from inside the project folder, or pass --beads-dir <project-or-.beads-path>, then GET /api/health?refresh=1.
 ```
 
 In that state `GET /api/health` returns `beads: null` plus `beadsWarning`
-(the same text) and `backlogMember.status: "degraded"` naming
-`--beads-dir`, and the dashboard header shows an amber `Beads: NOT RESOLVED
--- ...` line in place of the identity line. Restart from the right folder /
-with `--beads-dir`.
+(the same text) and the dashboard header shows an amber `Beads: NOT
+RESOLVED -- ...` line in place of the identity line.
+
+- **No `.beads` found at all:** the supervisor has no backlog member
+  (`backlogMember.status: "degraded"`, reason naming `--beads-dir`), so
+  every launch answers `503`. Only a restart from the right folder / with
+  `--beads-dir` fixes it. (The warning's "sprints will verify against the
+  backlog member's beads" and `refresh=1` hints predate this and do not
+  apply here.)
+- **`.beads` found but its probe failed:** the backlog member is still set
+  up and launches proceed, without `--expect-beads` (the engine takes the
+  expectation from the backlog member's own `bd where`). Fix the
+  environment and call `GET /api/health?refresh=1` to recover the identity
+  without a restart.
 
 Default port 8787. Smoke test:
 ```bash

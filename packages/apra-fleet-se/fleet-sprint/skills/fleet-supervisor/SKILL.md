@@ -39,9 +39,12 @@ top of the dashboard, and every sprint it launches is told to verify its
 members against it. If NO `.beads` is found (or its probe fails) it still
 starts, but logs `[supervisor] WARNING: no beads database found walking up
 from <cwd> ... To fix: ...`, reports `beads: null` plus `beadsWarning` on
-`/api/health`, shows an amber `Beads: NOT RESOLVED -- ...` header on the
-dashboard, and has no backlog member, so every launch answers `503`.
-Restart it from the right folder or with `--beads-dir`. `--port <n>`
+`/api/health`, and shows an amber `Beads: NOT RESOLVED -- ...` header on the
+dashboard. With NO `.beads` found it also has no backlog member, so every
+launch answers `503` until you restart it from the right folder or with
+`--beads-dir`. With a `.beads` found but a failed probe, launches still
+work (without `--expect-beads`); fix the environment and hit
+`GET /api/health?refresh=1` to recover without a restart. `--port <n>`
 overrides the default (8787). Self-logs to
 `<dataDir>/logs/supervisor.log` in addition to stdout.
 
@@ -348,8 +351,9 @@ Field names, exactly as the API expects them:
 Response has `sprintId`, `pid`, `port` (its own dashboard), `logPath`, and
 `warnings` (e.g. the deprecation notice when `roleMap.orchestrator` was
 used). A `503` means nothing was launched: the backlog member is not ready,
-the fleet member list could not be read, or the beads could not be verified
-fresh -- the `error` says which.
+the fleet member list could not be read, the fleet server was stopped by its
+user (`apra-fleet stop`), or the beads could not be verified fresh -- the
+`error` says which.
 **A 201 response does NOT mean the sprint is alive** -- it can crash in the
 first few seconds (bad topology, bad member, etc). Always verify (step 3)
 a few seconds after launch.
