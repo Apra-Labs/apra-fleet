@@ -109,7 +109,9 @@ export { isMissingRemoteRefError };
  * re-committing over) a divergence its own prior attempt left behind. It must
  * only be set on a retry that may have mutated state (withGitSync's
  * resumeOntoRemoteTip); omitting it keeps the ff-only-merge behaviour for every
- * first attempt.
+ * first attempt. Before the reset, any unpublished local commits and
+ * uncommitted tracked changes are pinned on a local fleet-salvage/ side ref
+ * (see salvageBeforeReset); if that fails, no reset happens.
  *
  * apra-fleet-417.7: an optional injected `resolveMemberProvider` (see
  * createMemberVcsProviderResolver) is resolved ONCE at the top of this call
@@ -159,25 +161,33 @@ export async function syncMemberBefore(member, opts = {}) {
     // because every subsequent push/merge fails non-fast-forward. Hard-resetting
     // onto the freshly fetched remote tip makes the retry resume ON TOP of
     // already-published work instead of re-committing it. Only the code checkout
-    // is touched (beads live in a separate Dolt clone); a local commit that was
-    // never published is intentionally dropped and simply re-done by the retry,
-    // which is what prevents the divergent duplicate commit. A concrete branch
-    // is required to name a remote tip; without one this falls through to the
+    // is touched (beads live in a separate Dolt clone). A concrete branch is
+    // required to name a remote tip; without one this falls through to the
     // ff-only merge below.
+    //
+    // SALVAGE FIRST (GitHub #716). The reset must never be the only copy of
+    // the prior attempt's work: a stall kill or a transport drop can leave real
+    // unpublished commits and uncommitted tracked edits behind. Before every
+    // reset, salvageBeforeReset() pins them on a LOCAL side ref
+    // (fleet-salvage/<branch-slug>/<short-sha>) without moving the sprint
+    // branch, staging anything, or touching untracked files. If the salvage
+    // cannot be completed the reset does not run (fail closed).
     if (resetToRemoteTip && branch) {
         const resetTarget = `${remote}/${branch}`;
+        const salvage = await salvageBeforeReset(member, { command, log, remote, branch });
         const reset = await runGitStep({
             command, member, cmd: `git reset --hard ${resetTarget}`,
             label: `G-pull reset-to-remote-tip for '${member}'`, log, maxTransientRetries, onAuthFailure, provider,
         });
         if (!reset.ok) {
+            const salvageNote = salvage ? ` The prior work is also saved on local ref '${salvage.ref}'.` : '';
             throw new GitSyncError(
-                `[Sync] G-pull reset-to-remote-tip failed for member '${member}': ${reset.error}`,
-                { member, gitOutput: reset.error },
+                `[Sync] G-pull reset-to-remote-tip failed for member '${member}'; the local branch was left at its prior tip.${salvageNote} ${reset.error}`,
+                { member, gitOutput: reset.error, details: salvage ? { salvageRef: salvage.ref } : undefined },
             );
         }
         log(`[Sync] G-pull for member '${member}': hard-reset local branch onto '${resetTarget}' so a retried dispatch resumes on the published tip instead of re-committing.`);
-        return { ok: true, member };
+        return salvage ? { ok: true, member, salvageRef: salvage.ref } : { ok: true, member };
     }
 
     const mergeCmd = branch ? `git merge --ff-only ${remote}/${branch}` : 'git merge --ff-only';
@@ -217,6 +227,148 @@ const GIT_SHA_RE = /^[0-9a-f]{40,64}$/i;
 function outputOf(res) {
     if (!res || res.ok === false) return null;
     return String((typeof res === 'object' ? res.output : res) ?? '');
+}
+
+// ---------------------------------------------------------------------------
+// Retry salvage (GitHub #716)
+// ---------------------------------------------------------------------------
+//
+// syncMemberBefore's resetToRemoteTip mode runs `git reset --hard` on a member
+// checkout whose prior attempt may have been killed mid-work. That reset must
+// never destroy work that exists nowhere else, so salvageBeforeReset() first
+// pins it on a LOCAL side ref:
+//
+//   - `git rev-parse HEAD <remote>/<branch>` and `git rev-list --count` decide
+//     whether the local branch has commits the remote tip lacks;
+//   - `git stash create` snapshots uncommitted TRACKED changes as a dangling
+//     commit WITHOUT touching the index, the work tree or the stash reflog
+//     (untracked files -- .env, build output, provider permission files the
+//     fleet writes into the work folder -- are excluded by design and are not
+//     deleted by `reset --hard` either). The stash commit's first parent is
+//     HEAD, so one ref on it reaches both the WIP and every local commit;
+//   - `git branch -f fleet-salvage/<branch-slug>/<short-sha> <sha>` creates
+//     the ref. The sprint branch itself is never moved, nothing is staged and
+//     nothing is committed on it, and the ref is never pushed (every push in
+//     this module names the sprint branch explicitly).
+//
+// Every command is a plain token list: no shell expansion, no revision
+// operators beyond `--not`, and every output is parsed here in JavaScript, so
+// the same strings run unchanged in a POSIX shell or PowerShell. These local
+// commands deliberately do not go through runGitStep: a failure here is never
+// a credential problem, so the auth self-heal and transient retries do not
+// apply. Any failure or unparseable output throws GitSyncError and the caller
+// does not reset (fail closed).
+
+const SALVAGE_REF_PREFIX = 'fleet-salvage';
+// Identity for `git stash create` only (it writes a commit object, which needs
+// a committer even on a member with no git identity configured). Plain tokens:
+// no spaces, no angle brackets, no '@'.
+const SALVAGE_IDENTITY_ARGS = '-c user.name=fleet-salvage -c user.email=fleet-salvage.invalid';
+const FULL_SHA_LINE_RE = /^[0-9a-f]{40,64}$/i;
+
+/** Lines of a command's output, trimmed, blanks dropped. */
+function outputLines(text) {
+    return String(text || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+}
+
+/** A single-component ref slug for `branch`: anything outside [A-Za-z0-9_-] becomes '-'. */
+export function salvageBranchSlug(branch) {
+    const slug = String(branch || '').replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '');
+    return slug || 'branch';
+}
+
+/**
+ * Pin a member's unpublished commits and uncommitted tracked changes on a
+ * local fleet-salvage/ ref before a reset onto `<remote>/<branch>`. Resolves
+ * null when there is nothing to save; throws GitSyncError when the salvage
+ * could not be completed (the caller must then not reset).
+ *
+ * @param {string} member
+ * @param {{ command: Function, log?: Function, remote: string, branch: string }} opts
+ * @returns {Promise<null|{ ref: string, target: string, headSha: string, remoteTipSha: string, ahead: number, stashSha: string|null }>}
+ */
+export async function salvageBeforeReset(member, { command, log = () => {}, remote, branch }) {
+    const remoteRef = `${remote}/${branch}`;
+    const fail = (what, output) => {
+        throw new GitSyncError(
+            `[Sync] Retry salvage for member '${member}' failed (${what}); NOT resetting onto '${remoteRef}', so the local branch and its uncommitted changes are left exactly as they were.${output ? ` Output: ${output}` : ''}`,
+            { member, gitOutput: output || null, details: { kind: 'retry-salvage-failed' } },
+        );
+    };
+    const run = async (cmd, label) => {
+        let res;
+        try {
+            res = await command(cmd, { member_name: member, silent: true, failSoft: true, label: `${label} for '${member}'` });
+        } catch (err) {
+            res = { ok: false, error: (err && err.message) || String(err) };
+        }
+        return res || { ok: false, error: 'no result' };
+    };
+
+    // 1. Local HEAD and the freshly fetched remote tip, in one read.
+    const revs = await run(`git rev-parse HEAD ${remoteRef}`, 'Retry salvage: HEAD and remote tip read');
+    const revOut = outputOf(revs);
+    if (revOut === null) fail(`could not read HEAD and ${remoteRef}`, revs.error);
+    const shas = outputLines(revOut).filter((l) => FULL_SHA_LINE_RE.test(l)).map((l) => l.toLowerCase());
+    if (shas.length !== 2) fail(`unrecognized output reading HEAD and ${remoteRef}`, revOut.trim());
+    const [headSha, remoteTipSha] = shas;
+
+    // 2. Commits on the local branch that the remote tip lacks.
+    let ahead = 0;
+    if (headSha !== remoteTipSha) {
+        const countRes = await run(`git rev-list --count ${headSha} --not ${remoteTipSha}`, 'Retry salvage: unpublished commit count');
+        const countOut = outputOf(countRes);
+        if (countOut === null) fail('could not count unpublished local commits', countRes.error);
+        const countLines = outputLines(countOut).filter((l) => /^\d+$/.test(l));
+        if (countLines.length !== 1) fail('unrecognized output counting unpublished local commits', countOut.trim());
+        ahead = Number(countLines[0]);
+    }
+
+    // 3. Uncommitted tracked changes, as a dangling commit (empty = clean).
+    const stashRes = await run(`git ${SALVAGE_IDENTITY_ARGS} stash create`, 'Retry salvage: snapshot of uncommitted tracked changes');
+    const stashOut = outputOf(stashRes);
+    if (stashOut === null) fail('could not snapshot uncommitted tracked changes', stashRes.error);
+    const stashLines = outputLines(stashOut);
+    let stashSha = null;
+    if (stashLines.length > 0) {
+        const found = stashLines.filter((l) => FULL_SHA_LINE_RE.test(l));
+        if (found.length !== 1) fail('unrecognized output snapshotting uncommitted tracked changes', stashOut.trim());
+        stashSha = found[0].toLowerCase();
+    }
+
+    if (ahead === 0 && !stashSha) {
+        log(`[Sync] Retry salvage for member '${member}': nothing unpublished to save (no local commits ahead of '${remoteRef}', no uncommitted tracked changes); no side ref created.`);
+        return null;
+    }
+
+    // 4. The side ref. The sprint branch is not touched.
+    const target = stashSha || headSha;
+    const slug = salvageBranchSlug(branch);
+    const ref = `${SALVAGE_REF_PREFIX}/${slug}/${target.slice(0, 12)}`;
+    const branchRes = await run(`git branch -f ${ref} ${target}`, 'Retry salvage: create side ref');
+    if (outputOf(branchRes) === null) {
+        const text = String(branchRes.error || branchRes.output || '');
+        const conflict = text.match(/'refs\/heads\/([^']+)' exists;\s*cannot create/i);
+        if (conflict || /cannot lock ref/i.test(text)) {
+            const blocking = conflict ? conflict[1] : `${SALVAGE_REF_PREFIX}/${slug}`;
+            throw new GitSyncError(
+                `[Sync] Retry salvage for member '${member}' could not create side ref '${ref}': an existing ref '${blocking}' blocks that name (a ref cannot be both a branch and a directory of branches). ` +
+                `NOT resetting onto '${remoteRef}'; the local branch is unchanged. Inspect it with 'git log ${blocking}', then delete it with 'git branch -D ${blocking}' in that member's work folder and re-run. Output: ${text.trim()}`,
+                { member, gitOutput: text || null, details: { kind: 'retry-salvage-ref-conflict', ref, conflictingRef: blocking } },
+            );
+        }
+        fail(`could not create side ref '${ref}'`, text.trim());
+    }
+
+    const recovery = [`git log ${ref}`];
+    if (ahead > 0) recovery.push(`git cherry-pick ${remoteTipSha}..${headSha}`);
+    if (stashSha) recovery.push(`git stash apply ${stashSha}`);
+    log(
+        `[Sync] Retry salvage for member '${member}': saved ${ahead} unpublished local commit(s)` +
+        `${stashSha ? ' and the uncommitted tracked changes' : ''} on local side ref '${ref}' before resetting onto '${remoteRef}'. ` +
+        `Recover with: ${recovery.join(' ; ')}. Untracked files are left in place. The side ref is local only and is never pushed.`
+    );
+    return { ref, target, headSha, remoteTipSha, ahead, stashSha };
 }
 
 /**

@@ -1,5 +1,5 @@
 // =============================================================================
-// Auto-sprint supervisor -- Backlog-last tree with partial-claim annotations
+// fleet-sprint supervisor -- Backlog-last tree with partial-claim annotations
 // (apra-fleet-eft.6.2, Plan Part 2.3)
 // =============================================================================
 //

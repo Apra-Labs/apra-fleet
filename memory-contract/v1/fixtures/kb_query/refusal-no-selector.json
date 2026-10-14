@@ -2,10 +2,7 @@
   "tool": "kb_query",
   "case": "refusal-no-selector",
   "kind": "refusal",
-  "request": {
-    "repo_path": "<SCRATCH_REPO_A>",
-    "repo_remote_url": "https://example.test/memory-contract-fixtures-a.git"
-  },
+  "request": {},
   "error": {
     "message": "Provide query (free-text search), tag (exact-match tag listing), or flagged_only: true (list contradictions)",
     "thrown": true

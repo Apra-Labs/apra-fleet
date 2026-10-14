@@ -75,5 +75,12 @@ export function vetKbWork(role, result) {
     }
   }
 
+  // kb_discards is applied only by the fleet-sprint engine (maintainer-routed
+  // kb_invalidate). This legacy workflow has no discard path, so refuse and log
+  // rather than silently dropping a reviewer's DISCARD.
+  if (result && Array.isArray(result.kb_discards) && result.kb_discards.length > 0) {
+    rejected.push(`${role}: kb_discards refused -- not supported by this workflow (${result.kb_discards.length} dropped)`);
+  }
+
   return { captures, promotions, rejected };
 }

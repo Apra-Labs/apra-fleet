@@ -1,5 +1,5 @@
 // =============================================================================
-// Auto-sprint supervisor -- the supervisor's OWN stdout/stderr, captured and
+// fleet-sprint supervisor -- the supervisor's OWN stdout/stderr, captured and
 // served (companion to log-view.mjs, which does the same for a sprint CHILD's
 // output). Before this, the supervisor's own console.log/error output only
 // existed wherever the launching shell happened to redirect it (or nowhere,

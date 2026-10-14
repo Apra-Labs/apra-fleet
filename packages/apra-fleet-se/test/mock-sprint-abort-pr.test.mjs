@@ -141,7 +141,7 @@ function mockAbortCallTool(command) {
 }
 
 // -----------------------------------------------------------------------
-// (a) commits exist -> branch pushed and an Auto-sprint [ABORTED] PR is
+// (a) commits exist -> branch pushed and a fleet-sprint [ABORTED] PR is
 // created, with the triggering error's evidence embedded in the PR body.
 // -----------------------------------------------------------------------
 test('finalizeAbort: >=1 commit beyond base -> branch pushed and [ABORTED] PR created with error evidence in body', async () => {
@@ -181,7 +181,7 @@ test('finalizeAbort: >=1 commit beyond base -> branch pushed and [ABORTED] PR cr
     const prCmd = log.find((c) => c.startsWith('curl -sS -X POST') && c.includes('/pulls'));
     check(!!prCmd, `Expected a VCSModule 'curl ... /pulls' create-pull-request command to be dispatched, command log: ${JSON.stringify(log)}`);
     check(
-        prCmd.includes(`"title":"Auto-sprint [ABORTED]: ${branch}"`),
+        prCmd.includes(`"title":"fleet-sprint [ABORTED]: ${branch}"`),
         `Expected the [ABORTED] PR title prefix to appear EXACTLY in the JSON payload, got: ${prCmd}`
     );
     check(

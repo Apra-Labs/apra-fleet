@@ -1,0 +1,28 @@
+{
+  "tool": "kb_capture",
+  "case": "refusal-retire-needs-kb-maintainer",
+  "kind": "refusal",
+  "request": {
+    "type": "knowledge",
+    "title": "Gate retire fixture entry",
+    "summary": "A replacement that names the CONFIRMED entry in supersedes.",
+    "content": "A revised note on the gate retire fixture, meant to replace the earlier entry.",
+    "source_files": [
+      "src/example.ts"
+    ],
+    "symbols": [
+      "gateRetireFixture"
+    ],
+    "supersedes": "d7152240-ecc5-453c-92e1-0002f3ebf944"
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"id\":\"3e8a9b44-31b2-4d45-a36e-70ab35adca53\",\"audn_decision\":\"update\",\"confidence_clamped\":false,\"refused\":[\"d7152240-ecc5-453c-92e1-0002f3ebf944\"]}"
+      }
+    ]
+  },
+  "expected_error_code": "E-RETIRE-NEEDS-KB-MAINTAINER",
+  "session": "PLAIN_A"
+}

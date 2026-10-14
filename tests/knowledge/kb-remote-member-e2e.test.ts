@@ -122,8 +122,7 @@ describe('remote-member KB scoping end-to-end (apra-fleet-b4g.11)', () => {
       content: `Entry about remoteE2eHealthy${tok}, whose basis (fixture.ts) never changes in this test.`,
       symbols: [`remoteE2eHealthy${tok}`],
       source_files: ['src/fixture.ts'],
-      repo_path: localClone,
-    } as any);
+    } as any, { folder: localClone });
 
     await kbCapture({
       type: 'knowledge',
@@ -132,8 +131,7 @@ describe('remote-member KB scoping end-to-end (apra-fleet-b4g.11)', () => {
       content: `Entry about remoteE2eChanged${tok}, staled once fixture2.ts genuinely changes.`,
       symbols: [`remoteE2eChanged${tok}`],
       source_files: ['src/fixture2.ts'],
-      repo_path: localClone,
-    } as any);
+    } as any, { folder: localClone });
 
     expect(await rawStale(localClone, healthyTitle)).toBe(0);
     expect(await rawStale(localClone, changedTitle)).toBe(0);
@@ -143,13 +141,12 @@ describe('remote-member KB scoping end-to-end (apra-fleet-b4g.11)', () => {
 
     // --- Act as the remote member: prime, stats, list from the fake path -
     await kbSessionPrime({
-      repo_path: fakeRemotePath,
-      repo_remote_url: remoteUrl,
+      confidence: ['CONFIRMED', 'INFERRED', 'UNVERIFIED'],
       hint_symbols: [`remoteE2eHealthy${tok}`, `remoteE2eChanged${tok}`],
-    } as any);
+    } as any, { folder: fakeRemotePath, remoteUrl: remoteUrl });
 
-    const statsOut = JSON.parse(await kbStats({ repo_path: fakeRemotePath, repo_remote_url: remoteUrl } as any));
-    const listOut = JSON.parse(await kbList({ repo_path: fakeRemotePath, repo_remote_url: remoteUrl, limit: 50 } as any));
+    const statsOut = JSON.parse(await kbStats({} as any, { folder: fakeRemotePath, remoteUrl: remoteUrl }));
+    const listOut = JSON.parse(await kbList({ limit: 50, confidence: ['CONFIRMED', 'INFERRED', 'UNVERIFIED'] } as any, { folder: fakeRemotePath, remoteUrl: remoteUrl }));
 
     const remoteCalls = recorded.slice(beforeRemoteCalls);
 
@@ -179,7 +176,7 @@ describe('remote-member KB scoping end-to-end (apra-fleet-b4g.11)', () => {
     // prime above -- raw sqlite row AND a subsequent kb_list from the local
     // clone.
     expect(await rawStale(localClone, healthyTitle)).toBe(0);
-    const relistedFromLocal = JSON.parse(await kbList({ repo_path: localClone, limit: 50 } as any));
+    const relistedFromLocal = JSON.parse(await kbList({ limit: 50, confidence: ['CONFIRMED', 'INFERRED', 'UNVERIFIED'] } as any, { folder: localClone }));
     expect(relistedFromLocal.results.some((e: any) => e.title === healthyTitle)).toBe(true);
 
     // ASSERTION 4 -- FRESHNESS NOT DISABLED: a prime from the REAL local
@@ -187,10 +184,9 @@ describe('remote-member KB scoping end-to-end (apra-fleet-b4g.11)', () => {
     // apra-fleet-b4g.4 narrowed freshness checking rather than disabling it.
     fs.writeFileSync(path.join(localClone, 'src', 'fixture2.ts'), 'export const fixture2 = 2; // changed\n');
     await kbSessionPrime({
-      repo_path: localClone,
-      repo_remote_url: remoteUrl,
+      confidence: ['CONFIRMED', 'INFERRED', 'UNVERIFIED'],
       hint_symbols: [`remoteE2eChanged${tok}`],
-    } as any);
+    } as any, { folder: localClone, remoteUrl: remoteUrl });
     expect(await rawStale(localClone, changedTitle)).toBe(1);
   // This test does a real git clone plus sqlite work (two captures, a session
   // prime, stats, list, and a second prime after a file change), and shells out

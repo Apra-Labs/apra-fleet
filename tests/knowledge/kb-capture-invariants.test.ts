@@ -200,7 +200,7 @@ describe('rejection reaches the kb_import call site without killing the import',
     const biblePath = path.join(tmp, 'bible.json');
     fs.writeFileSync(biblePath, JSON.stringify(bible));
 
-    const out = JSON.parse(await kbImport({ path: biblePath, repo: repo }));
+    const out = JSON.parse(await kbImport({ path: biblePath }, { folder: repo }));
 
     expect(out.rejected).toBe(2);
     expect(out.imported).toBe(1);
@@ -226,7 +226,7 @@ describe('rejection reaches the kb_harvest call site without killing the batch',
       '',
     ].join('\n');
 
-    const out = JSON.parse(await kbHarvest({ repo_path: repo, session_transcript: transcript }));
+    const out = JSON.parse(await kbHarvest({ session_transcript: transcript }, { folder: repo }));
 
     expect(out.entries_rejected).toBe(1);
     expect(out.entries_captured).toBe(1);
@@ -237,9 +237,8 @@ describe('rejection reaches the kb_harvest call site without killing the batch',
 
   it('reports entries_rejected alongside the three existing counters', async () => {
     const out = JSON.parse(await kbHarvest({
-      repo_path: repo,
       session_transcript: 'Note: an unfalsifiable aside with no file reference whatsoever here.',
-    }));
+    }, { folder: repo }));
 
     expect(out).toHaveProperty('entries_captured');
     expect(out).toHaveProperty('entries_updated');
@@ -249,7 +248,7 @@ describe('rejection reaches the kb_harvest call site without killing the batch',
   });
 
   it('an empty transcript still reports the fourth counter', async () => {
-    const out = JSON.parse(await kbHarvest({ repo_path: repo }));
+    const out = JSON.parse(await kbHarvest({}, { folder: repo }));
     expect(out.entries_rejected).toBe(0);
   });
 });

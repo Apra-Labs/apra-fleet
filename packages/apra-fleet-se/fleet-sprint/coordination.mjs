@@ -432,9 +432,9 @@ export function createMemberReservationClient(opts = {}) {
             const { ok, outcome } = reservationOutcome(result, text);
             if (!ok) {
                 log(`[member-reservation] ${action} rejected for member '${member}'${outcome ? ` (${outcome})` : ''}: ${text || '(no detail)'}`);
-                return { ok: false, text };
+                return { ok: false, text, outcome };
             }
-            return { ok: true, text };
+            return { ok: true, text, outcome };
         } catch (err) {
             log(`[member-reservation] ${action} failed for member '${member}' (non-fatal; execute_prompt's dispatch-time reservedBy check still applies): ${err.message}`);
             return { ok: false, text: err.message };
@@ -452,6 +452,29 @@ export function createMemberReservationClient(opts = {}) {
             for (const member of members) await callFor('reserve', member);
         },
         releaseAll,
+
+        // Launch reserve, run BEFORE launch alignment moves any member (stash +
+        // branch switch). Unlike reserveAll() it reports the members another
+        // sprint already holds (outcome already_reserved_by_other), so the
+        // caller can refuse the launch before touching them; when any is held,
+        // the members this call did reserve are handed back. A transport throw
+        // or any other rejection stays best-effort, exactly as in reserveAll()
+        // (execute_prompt's dispatch-time reservedBy check still applies).
+        // @returns {Promise<{ held: string[] }>}
+        async reserveForLaunch() {
+            if (!active) return { held: [] };
+            const reserved = [];
+            const held = [];
+            for (const member of members) {
+                const res = await callFor('reserve', member);
+                if (res.ok) reserved.push(member);
+                else if (res.outcome === 'already_reserved_by_other') held.push(member);
+            }
+            if (held.length > 0) {
+                for (const member of reserved) await callFor('release', member);
+            }
+            return { held };
+        },
 
         // (apra-fleet-p2to.4.2) Pause hand-back: release EVERY member so a
         // different sprint may claim it while this one is parked at a

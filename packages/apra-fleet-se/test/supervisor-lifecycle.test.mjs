@@ -14,6 +14,7 @@ import { createHistory, HISTORY_FILENAME } from '../src/supervisor/history.mjs';
 import { createReconciler, isPidAlive } from '../src/supervisor/reconcile.mjs';
 import { createSpawner } from '../src/supervisor/spawner.mjs';
 import { createReadopter } from '../src/supervisor/readopt.mjs';
+import { createBeadsFixture, envWithoutBeadsDir } from './helpers/beads-fixture.mjs';
 
 // =============================================================================
 // apra-fleet-eft.4.6 -- supervisor lifecycle end-to-end test.
@@ -47,6 +48,9 @@ const SE_PKG_ROOT = path.join(__dirname, '..');
 const spawnedPids = new Set();
 /** @type {Set<string>} */
 const tmpDirs = new Set();
+// Beads fixtures, removed via their own cleanup() (with retries) after the
+// processes using them are killed.
+const fixtureCleanups = [];
 
 function track(pid) {
     if (Number.isInteger(pid) && pid > 0) spawnedPids.add(pid);
@@ -60,6 +64,10 @@ function forceKill(pid) {
 after(async () => {
     for (const pid of spawnedPids) forceKill(pid);
     spawnedPids.clear();
+    for (const cleanup of fixtureCleanups.splice(0)) {
+        // eslint-disable-next-line no-await-in-loop
+        await cleanup();
+    }
     for (const dir of tmpDirs) {
         // eslint-disable-next-line no-await-in-loop
         await fsp.rm(dir, { recursive: true, force: true }).catch(() => {});
@@ -362,11 +370,15 @@ describe('supervisor lifecycle -- real `fleet-se serve` stays up, exits only on 
         const dataDir = await mkTmp('eft46-serve-data-');
         const seDataDir = await mkTmp('eft46-serve-se-');
         const port = await getFreePort();
+        // Hermetic tracker via --beads-dir, never this repo's own .beads.
+        const beadsFixture = await createBeadsFixture();
+        fixtureCleanups.push(beadsFixture.cleanup);
 
-        const serve = spawn(process.execPath, [SERVE_BIN, '--port', String(port)], {
+        const serve = spawn(process.execPath, [SERVE_BIN, '--port', String(port), '--beads-dir', beadsFixture.dir], {
             cwd: SE_PKG_ROOT,
             stdio: ['ignore', 'ignore', 'ignore'],
-            env: { ...process.env, APRA_FLEET_DATA_DIR: dataDir, FLEET_SE_DATA_DIR: seDataDir },
+            env: envWithoutBeadsDir({ APRA_FLEET_DATA_DIR: dataDir, FLEET_SE_DATA_DIR: seDataDir }),
+            windowsHide: true,
         });
         track(serve.pid);
         const serveExited = onExit(serve);

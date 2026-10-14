@@ -11,11 +11,14 @@ import { writeStatusline } from '../services/statusline.js';
 import { awsProvider } from '../services/cloud/aws.js';
 import { estimateCost, formatUptimeDuration, uptimeHoursFromLaunch } from '../services/cloud/cost.js';
 import { serverVersion } from '../version.js';
+import { refreshMemberFleetMcp, getMemberFleetMcpDeps, fleetMcpFixLine } from '../services/member-fleet-install.js';
+import { codeIntelAvailability, resolveProviderKey } from './code-intelligence.js';
 import { knownRepoRemoteUrl } from '../services/member-remote-url.js';
 
 export const memberDetailSchema = z.object({
   ...memberIdentifier,
   format: z.enum(['compact', 'json']).default('compact').describe('Output format: "compact" (default, few lines) or "json" (structured data for detailed rendering)'),
+  refresh: z.boolean().optional().describe('Re-probe the member\'s own apra-fleet MCP (fleetMcp) now and record the new status. Without it the last recorded fleetMcp status is returned and nothing is probed. Re-probe after fixing the cause of an unavailable fleetMcp (no restart needed); this does not install.'),
 });
 
 export type MemberDetailInput = z.infer<typeof memberDetailSchema>;
@@ -80,6 +83,31 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
     // provisions it); a static fact, so reported even for an offline member.
     permissionConfigPaths: permissionConfigPathsOf(agent),
   };
+
+  // -- fleetMcp: the recorded status; refresh:true re-probes (without installing) and records --
+  let fleetMcp = agent.fleetMcp;
+  if (input.refresh === true) {
+    try {
+      fleetMcp = await refreshMemberFleetMcp(agent, getMemberFleetMcpDeps(), { install: false });
+    } catch (e: unknown) {
+      fleetMcp = { state: 'unavailable', reason: 'probe-failed', detail: e instanceof Error ? e.message : String(e), checkedAt: new Date().toISOString() };
+    }
+  }
+  result.fleetMcp = fleetMcp ?? null;
+  // One-line fix when the member's KB/code tools are not usable; null otherwise.
+  const fleetMcpFix = fleetMcpFixLine(fleetMcp);
+  result.fleetMcpFix = fleetMcpFix;
+
+  // -- codeIntel: provider, availability and (when unavailable) the cause and remedy --
+  // Checked against THIS server's PATH, so it only describes a member whose
+  // code tools run here; a remote member's own fleet MCP runs them on its host
+  // (null here; member-init's code step exercises that path).
+  result.codeIntel = null;
+  if (isLocal) try {
+    result.codeIntel = codeIntelAvailability(await resolveProviderKey(agent.id));
+  } catch (e: unknown) {
+    result.codeIntel = { provider: agent.codeIntelProvider ?? null, available: false, cause: e instanceof Error ? e.message : String(e), remedy: "run 'apra-fleet install' to configure a code intelligence provider, or update_member code_intel_provider" };
+  }
 
   // -- Cloud Info (parallel with connectivity check) --
   let cloudSection: Record<string, unknown> | undefined;
@@ -167,11 +195,14 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
   }
 
   let apiKeyExists = false;
-  if (provider.authEnvVar) {
+  // Every credential kind counts (e.g. CLAUDE_CODE_OAUTH_TOKEN as well as ANTHROPIC_API_KEY).
+  const authVars = provider.authEnvVarNames?.() ?? (provider.authEnvVar ? [provider.authEnvVar] : []);
+  for (const envVar of authVars) {
     try {
-      const apiKeyResult = await strategy.execCommand(cmds.apiKeyCheck(provider.authEnvVar), 10000);
+      const apiKeyResult = await strategy.execCommand(cmds.apiKeyCheck(envVar), 10000);
       if (apiKeyResult.stdout.trim().length > 5) {
         apiKeyExists = true;
+        break;
       }
     } catch { /* ignore */ }
   }
@@ -204,24 +235,28 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
     lastLlmActivityAt: agent.lastLlmActivityAt ?? null,
   };
 
-  try {
-    const busyCheck = await strategy.execCommand(
-      cmds.fleetProcessCheck(agent.workFolder, agent.sessionId, provider.processName),
-      10000,
-    );
-    const output = busyCheck.stdout.trim().toLowerCase();
-    if (output.includes('fleet-busy')) {
-      session.status = 'busy';
-      if (agent.lastLlmActivityAt) {
-        session.idleSecs = Math.round((Date.now() - new Date(agent.lastLlmActivityAt).getTime()) / 1000);
+  if (agent.llmProvider === 'none' || !provider.processName) {
+    session.status = 'idle';
+  } else {
+    try {
+      const busyCheck = await strategy.execCommand(
+        cmds.fleetProcessCheck(agent.workFolder, agent.sessionId, provider.processName),
+        10000,
+      );
+      const output = busyCheck.stdout.trim().toLowerCase();
+      if (output.includes('fleet-busy')) {
+        session.status = 'busy';
+        if (agent.lastLlmActivityAt) {
+          session.idleSecs = Math.round((Date.now() - new Date(agent.lastLlmActivityAt).getTime()) / 1000);
+        }
+      } else if (output.includes('other-busy')) {
+        session.status = `idle (unrelated ${provider.name} processes running)`;
+      } else {
+        session.status = 'idle';
       }
-    } else if (output.includes('other-busy')) {
-      session.status = `idle (unrelated ${provider.name} processes running)`;
-    } else {
-      session.status = 'idle';
+    } catch {
+      session.status = 'unknown';
     }
-  } catch {
-    session.status = 'unknown';
   }
   result.session = session;
 
@@ -311,6 +346,20 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
   t += `  auth=${authStr} | session=${sessId} (${sessStatus}) | last=${agent.lastUsed ?? 'never'}${tokenStr}\n`;
   const branchStr = branch ? ` | branch=${branch}` : '';
   t += `  cpu=${resources.cpu} | mem=${resources.memory} | disk=${resources.disk}${branchStr}\n`;
+
+  if (fleetMcp) {
+    t += `  fleetMcp=${fleetMcp.state}${fleetMcp.reason ? ` (${fleetMcp.reason})` : ''}${fleetMcp.version ? ` | v${fleetMcp.version.replace(/^v/, '')}` : ''}\n`;
+    if (fleetMcp.installFailure) t += `  fleetMcp upgrade failed (${fleetMcp.installFailure.reason}): ${fleetMcp.detail ?? fleetMcp.installFailure.detail ?? ''}\n`;
+    if (fleetMcpFix) t += `  fleetMcp fix: ${fleetMcpFix}\n`;
+    if (fleetMcp.beads) t += `  bd=${fleetMcp.beads.state}: ${fleetMcp.beads.detail}\n  bd fix: ${fleetMcp.beads.fix}\n`;
+  }
+
+  const codeIntel = result.codeIntel as null | { provider: string | null; available: boolean; cause?: string; remedy?: string };
+  if (codeIntel) t += `  codeIntel=${codeIntel.available ? 'available' : 'unavailable'} (${codeIntel.provider ?? 'unknown'})
+`;
+  if (codeIntel && !codeIntel.available) t += `  codeIntel cause: ${codeIntel.cause}
+  codeIntel fix: ${codeIntel.remedy}
+`;
 
   if (cloudSection) {
     const cs = cloudSection as Record<string, unknown>;

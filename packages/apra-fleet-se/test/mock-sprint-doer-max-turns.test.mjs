@@ -109,7 +109,7 @@ test('mock sprint: a max_turns-exhausted doer streak that succeeds on its first 
 
         check(calls >= 2, `expected at least 2 doer dispatches (original + first resume), got ${calls}`);
         check(observedOpts[0]?.resume !== true, `first dispatch should not be a resume, got resume=${observedOpts[0]?.resume}`);
-        check(observedOpts[1]?.resume === true, `the retry after max_turns exhaustion must be a session resume, not a fresh dispatch, got resume=${observedOpts[1]?.resume}`);
+        check(observedOpts[1]?.resume === 'mock-sprint-session-0001', `the retry after max_turns exhaustion must resume the failed doer session by its explicit id (never resume: true), got resume=${observedOpts[1]?.resume}`);
         check(observedOpts[1]?.max_turns === 1000, `expected the first resume to escalate max_turns to 1000, got ${observedOpts[1]?.max_turns}`);
         check(
             result.logs.some((m) => m.includes('resuming the same session with max_turns=1000 (attempt 1/2)')),

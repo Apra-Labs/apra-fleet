@@ -1,6 +1,7 @@
 import { z } from 'zod';
-import { getKbProviders } from '../services/knowledge/kb-providers.js';
-import { kbScopeFields } from '../services/knowledge/kb-scope-input.js';
+import { KB_REMOVED_SCOPE_KEYS_SHAPE } from '../services/knowledge/kb-removed-scope-keys.js';
+import { getSelfKbProviders, memberOwnerTag, type KbAnchor } from '../services/knowledge/kb-self.js';
+import { KbMemberViewError } from '../services/knowledge/member-bible-view.js';
 import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
 import type { Author } from '../services/knowledge/types.js';
 
@@ -18,13 +19,13 @@ function validateAuthor(role: string | undefined): Author | 'unknown' {
 }
 
 export const kbFeedbackSchema = z.object({
-  ...kbScopeFields,
-  repo_path: z.string().optional()
-    .describe('Path to the repo root this call is about. Selects WHICH project KB is read/written. When omitted, falls back to the calling process cwd, which is only correct for single-repo CLI use -- server-handled tool calls must pass it explicitly.'),
   id: z.string().min(1).describe('ID of the KB entry the feedback applies to'),
   reason: z.string().min(1).describe('What was wrong in practice -- appended to the entry content as an ASCII feedback note'),
   role: z.string().optional()
     .describe('Role hint for provenance: doer/reviewer/planner/plan-reviewer/kb-agent/harvest/pm/user. Validated server-side against the Author enum; invalid or absent stamps "unknown" in the note.'),
+  // Removed pre-redesign scope keys: declared only so a caller still passing one
+  // is refused with E-SCOPE-KEY-REMOVED instead of silently re-scoped.
+  ...KB_REMOVED_SCOPE_KEYS_SHAPE,
 });
 
 export type KbFeedbackInput = z.infer<typeof kbFeedbackSchema>;
@@ -37,8 +38,18 @@ export type KbFeedbackInput = z.infer<typeof kbFeedbackSchema>;
 // resolves it in kb-review. EXCEPTION: an ACTIVE user-directive is flagged for
 // review only (never staled) because directives outrank agent experience and
 // the human decides -- see SqliteProvider.feedback() for the exact guard.
-export async function kbFeedback(input: KbFeedbackInput): Promise<string> {
-  const providers = await getKbProviders(input.repo_path, input.repo_remote_url);
+export async function kbFeedback(input: KbFeedbackInput, anchor?: KbAnchor): Promise<string> {
+  // A MEMBER session reads its checkout bible view, which is read-only: a
+  // typed no-op that touches no store (checked before any provider is opened).
+  if (memberOwnerTag(anchor) !== undefined) {
+    throw new KbMemberViewError(
+      'E-MEMBER-VIEW-READ-ONLY',
+      '',
+      `kb_feedback is not available in a member session: member KB reads come from the checkout bible, which is read-only; entry '${input.id}' was not changed.`,
+      'Run kb_feedback from a FULL session (no member identity), or flag the entry for review through the maintainer.',
+    );
+  }
+  const providers = await getSelfKbProviders(anchor);
   const sqliteProvider = requireSqliteProject(providers.project, 'kb_feedback');
   const author = validateAuthor(input.role);
   const entry = await sqliteProvider.feedback(input.id, input.reason, author);

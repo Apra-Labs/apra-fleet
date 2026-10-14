@@ -1,0 +1,13 @@
+{
+  "tool": "kb_freshness_sweep",
+  "case": "refusal-scope-key-removed",
+  "kind": "refusal",
+  "request": {
+    "repo": "/elsewhere/other-repo"
+  },
+  "error": {
+    "message": "E-SCOPE-KEY-REMOVED: kb_freshness_sweep no longer accepts 'repo' (removed in the KB redesign); the call was not run and no KB was changed. Remediation: repo: nothing -- drop it: same as repo_path, the KB (and kb_stats' bible drift check) is the calling session's own repository. kb_import names a bible file with path, which is unchanged.",
+    "thrown": true
+  },
+  "expected_error_code": "E-SCOPE-KEY-REMOVED"
+}

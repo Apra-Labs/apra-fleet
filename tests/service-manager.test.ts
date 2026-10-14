@@ -231,6 +231,14 @@ describe('LinuxServiceManager', () => {
       expect(content).toContain('Restart=on-failure');
       expect(content).toContain('Environment=APRA_FLEET_SERVICE=1'); // service-launch marker
       expect(content).toContain('WantedBy=default.target');
+      // Service PATH so npx/node resolve under systemd --user (quoted Environment=).
+      expect(content).toMatch(/^Environment="PATH=[^"\n]*\/usr\/bin[^"\n]*"$/m);
+    });
+
+    it('rewrites the unit on re-register (upgrade path refreshes PATH)', async () => {
+      vi.mocked(fs.existsSync).mockReturnValue(true);
+      await new LinuxServiceManager().register('/bin/apra-fleet', [], '/tmp/fleet.log');
+      expect(vi.mocked(fs.writeFileSync).mock.calls.some(c => String(c[1]).includes('Environment="PATH='))).toBe(true);
     });
 
     it('runs daemon-reload and enable after writing unit file', async () => {
@@ -366,6 +374,16 @@ describe('MacOSServiceManager', () => {
       expect(content).toContain('<key>SuccessfulExit</key>');
       expect(content).toContain('<false/>'); // KeepAlive.SuccessfulExit
       expect(content).toContain('<key>APRA_FLEET_SERVICE</key>'); // service-launch marker
+      // Service PATH: launchd's default lacks Homebrew node/npx.
+      const pathValue = /<key>PATH<\/key>\n\s*<string>([^<]*)<\/string>/.exec(content)?.[1] ?? '';
+      expect(pathValue.split(':')).toEqual(expect.arrayContaining(['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin']));
+    });
+
+    it('rewrites the plist on re-register (upgrade path refreshes PATH)', async () => {
+      vi.mocked(fs.existsSync).mockReturnValue(true);
+      await new MacOSServiceManager().register('/bin/apra-fleet', [], '/tmp/fleet.log');
+      const plistCall = vi.mocked(fs.writeFileSync).mock.calls.find(c => String(c[0]).endsWith('.plist'));
+      expect(String(plistCall![1])).toContain('<key>PATH</key>');
     });
 
     it('bootouts before bootstrap to be idempotent', async () => {

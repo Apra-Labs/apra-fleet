@@ -1,5 +1,5 @@
 // =============================================================================
-// Auto-sprint supervisor -- its OWN backlog member
+// fleet-sprint supervisor -- its OWN backlog member
 // =============================================================================
 //
 // A supervisor runs against exactly one beads tracker (its --beads-dir, or

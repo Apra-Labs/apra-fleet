@@ -205,3 +205,33 @@ test('syncMemberAfter Tier 2: omitting agent() entirely preserves the exact pre-
     check(err instanceof GitDivergedError, `expected GitDivergedError, got ${err && err.constructor.name}`);
     check(!(err instanceof GitSyncError) || err instanceof GitDivergedError, 'still the diverged (not generic sync) error type');
 });
+
+test('dispatchConflictResolutionAgent: the dispatch is strict (fail_on_permission_denial: true) so a refused git command is never read as a resolution', async () => {
+    const { agent, calls } = makeAgentMock();
+    await dispatchConflictResolutionAgent({ agent, member: 'm1', branch: 'auto-sprint/x', unmergedPaths: ['a.txt'] });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].opts.fail_on_permission_denial, true);
+    assert.equal(calls[0].opts.resume, false, 'still a fresh session');
+});
+
+test('syncMemberAfter Tier 2: a permission_denied agent() failure is caught, not retried, and ends in the typed GitDivergedError', async () => {
+    const { command } = makeCommandMock({
+        'git push': [fail(' ! [rejected] (non-fast-forward)')],
+        'git pull --rebase': [fail('CONFLICT (content): Merge conflict in a.txt')],
+        'git status --porcelain': [
+            { ok: true, output: 'UU a.txt\n', error: null },
+            { ok: true, output: '', error: null },
+            { ok: true, output: 'UU a.txt\n', error: null },
+        ],
+        'git rebase --abort': [OK],
+    });
+    const denied = Object.assign(new Error('permission denied -- claude (acceptEdits mode) refused Bash "git add a.txt"'), { details: { reason: 'permission_denied' } });
+    const { agent, calls: agentCalls } = makeAgentMock(() => { throw denied; });
+    let err = null;
+    try {
+        await syncMemberAfter('m1', { command, agent, branch: 'auto-sprint/eft-service' });
+    } catch (e) { err = e; }
+    check(err instanceof GitDivergedError, `expected GitDivergedError, got ${err && err.constructor.name}`);
+    check(agentCalls.length === 1, `exactly one Tier 2 attempt, saw ${agentCalls.length}`);
+    check(agentCalls[0].opts.fail_on_permission_denial === true, 'the call that was refused was the strict one');
+});
